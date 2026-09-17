@@ -9490,6 +9490,15 @@ made without evidence.
 **Proof:** run `windows_post_rename_identity_query_is_performed` on a Windows runner — it should
 fail today for the reason above, and pass after whichever answer is chosen.
 
+**Handled 2026-09-17 (same build run as `f-20260917-02`, commit `9ec3567a`).** The prediction in this entry was exact: on a real Windows runner `windows_post_rename_identity_query_is_performed` failed with `The process cannot access the file because it is being used by another process. (os error 32)` — a sharing violation, because `PostRenameSwap` renamed the still-held private temporary and `FILE_SHARE_PRIVATE_TEMP` is `FILE_SHARE_WRITE` alone. Run 35226376200.
+
+Of the two candidate answers this entry offered, the first is rejected outright: `FILE_SHARE_PRIVATE_TEMP` does **not** gain `FILE_SHARE_DELETE`. The temporary is private precisely so that nothing else can open, replace or delete it before commit, and widening the mask to make a test injector succeed would delete the property the code exists to hold. Recorded as `d-20260917-09`.
+
+The second answer turned out to need a third option that this entry did not have, and tracing the code is what produced it: the post-rename identity query reads `metadata(&temp)` from the **retained handle**, so writing a different pathname cannot create the intended race and creating another path yields a different identity — the race as the test stated it is not stageable in-process at all, whatever is swapped. So the test's runtime claim changed, and the invariant it existed to prove — that the post-rename identity comes from the retained handle and never from re-opening the pathname, which is what stops a pathname-substitution race from being observed as the installed object — is now a source pin in `infra/platform_support.rs`, beside this repository's other source pins and using the same `source_for` / `braced_body` / `compact` helpers rather than a second implementation of them.
+
+That pin is not taken on trust. Its staged-failure matrix is recorded next to it: each of its two positive assertions was deliberately broken by editing what the pin *reads* — the `replace_at_driver` body in `fs.rs`, never the test's own logic — and each printed a message of its own at exit status 101, after which `fs.rs` was restored and re-run green. A check whose assertions have never been seen to fail is worse than no check.
+<!-- ledger-meta {"command":"annotate","effect_lines":7,"effect_sha256":"61775bff99fd558edab736df5874b0c408f7e0b098d74c98f970c7a5c34a1b85","input_sha256":"8baef9b89405de1754cdf086bc990457904a61581ec1a5e1ce90d33a92db841c","kind":"mutation-receipt","operation":"d6329c17de1fc7fbd79e500046aec8811f919d503eea3db6d9eadab906cf6150","options":{"section":null},"request_id_sha256":null,"results":["f-20260916-12"],"target":"f-20260916-12","v":1} -->
+
 ---
 
 ## 2026-09-17 — filed through the inbox spool
