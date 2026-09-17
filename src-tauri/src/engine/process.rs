@@ -1715,11 +1715,10 @@ fn pin_engine_launch(
         .filter(|lease| !lease.is_directory())
         .count()
         + executable_leaf_count;
-    let mut files =
-        match root.reserve_leaves(count, &format!("{}:{}", key.tab, key.engine), engine_id) {
-            Ok(files) => files,
-            Err(error) => return Err(PinFailure::Primary(error)),
-        };
+    let mut files = match root.reserve_leaves(count, &engine_launch_key(key), engine_id) {
+        Ok(files) => files,
+        Err(error) => return Err(PinFailure::Primary(error)),
+    };
     let result = (|| {
         files[0].create_from(
             executable.image_file(),
@@ -1820,7 +1819,7 @@ pub(crate) async fn resolve_launch(
                 (executable, reclaim_failures)
             };
             #[cfg(all(test, target_os = "macos"))]
-            if take_engine_launch_value_failure() {
+            if ENGINE_LAUNCH_VALUE_FAILURES.take(&key).is_some() {
                 return Ok(Err(PinFailure::Primary(Error::Conflict(
                     "injected engine launch value construction failure".into(),
                 ))));
@@ -2908,26 +2907,17 @@ fn take_terminate_failure() -> Option<TerminateFailure> {
     TERMINATE_FAILURE.with(|slot| slot.borrow_mut().take())
 }
 
-#[cfg(all(test, target_os = "macos"))]
-static ENGINE_LAUNCH_VALUE_FAILURE: std::sync::OnceLock<std::sync::Mutex<bool>> =
-    std::sync::OnceLock::new();
-
-#[cfg(all(test, target_os = "macos"))]
-fn set_engine_launch_value_failure(failure: bool) {
-    *ENGINE_LAUNCH_VALUE_FAILURE
-        .get_or_init(|| std::sync::Mutex::new(false))
-        .lock()
-        .unwrap() = failure;
+/// The engine key as the launch root records it on a reserved leaf. Tests that inject a
+/// launch failure arm it under this same spelling.
+#[cfg(target_os = "macos")]
+pub(crate) fn engine_launch_key(key: &EngineKey) -> String {
+    format!("{}:{}", key.tab, key.engine)
 }
 
+/// Keyed by the engine identity the launch was admitted for; see `infra::test_hooks`.
 #[cfg(all(test, target_os = "macos"))]
-fn take_engine_launch_value_failure() -> bool {
-    ENGINE_LAUNCH_VALUE_FAILURE
-        .get_or_init(|| std::sync::Mutex::new(false))
-        .lock()
-        .map(|mut failure| std::mem::take(&mut *failure))
-        .unwrap_or(false)
-}
+static ENGINE_LAUNCH_VALUE_FAILURES: crate::infra::test_hooks::KeyedTestValues<EngineKey, ()> =
+    crate::infra::test_hooks::KeyedTestValues::new();
 
 async fn engine_actor_loop(
     mut runtime: EngineRuntime,
@@ -6906,11 +6896,14 @@ mod tests {
             .admit_for_launch(key.clone(), "authorized-engine".into(), engine.id.clone())
             .await
             .unwrap();
+        let replaced = Arc::new(AtomicBool::new(false));
+        let replaced_in_hook = replaced.clone();
         ENGINE_LAUNCH_RESOLUTION_HOOKS.arm(
             key.clone(),
             Box::new(move || {
                 std::fs::rename(&replacement, replacement.with_extension("replaced")).unwrap();
                 std::fs::write(&replacement, "#!/bin/sh\nexit 22\n").unwrap();
+                replaced_in_hook.store(true, AtomicOrdering::SeqCst);
             }),
         );
         let (executable, _) = resolve_launch(
@@ -6923,6 +6916,12 @@ mod tests {
         .await
         .unwrap();
         ENGINE_LAUNCH_RESOLUTION_HOOKS.clear(&key);
+        // Without this the test passes when the hook never fires at all: the unreplaced
+        // executable starts either way, so a lost or miskeyed hook would look like a pass.
+        assert!(
+            replaced.load(AtomicOrdering::SeqCst),
+            "the resolution hook armed for {key:?} never ran, so no replacement was staged"
+        );
 
         let actor = EngineActor::spawn_initialized(executable, EngineDeadlines::default())
             .await
@@ -7416,10 +7415,14 @@ engine_id=stale-engine category=I/O failure",
         let supervisor = Arc::new(EngineSupervisor::default());
         let key = EngineKey::new("value-failure".into(), "value-failure-engine".into()).unwrap();
         let admission = supervisor
-            .admit_for_launch(key, "value-failure-engine".into(), engine.id.clone())
+            .admit_for_launch(
+                key.clone(),
+                "value-failure-engine".into(),
+                engine.id.clone(),
+            )
             .await
             .unwrap();
-        set_engine_launch_value_failure(true);
+        ENGINE_LAUNCH_VALUE_FAILURES.arm(key.clone(), ());
         let result = resolve_launch(
             authority,
             engine,
@@ -7428,7 +7431,7 @@ engine_id=stale-engine category=I/O failure",
             &admission,
         )
         .await;
-        set_engine_launch_value_failure(false);
+        ENGINE_LAUNCH_VALUE_FAILURES.clear(&key);
         assert!(matches!(
             result,
             Err(Error::Conflict(message))
@@ -7468,7 +7471,10 @@ engine_id=stale-engine category=I/O failure",
             .await
             .unwrap();
 
-        crate::infra::path_authority::set_engine_launch_failure(Some(EngineLaunchFailure::Fchmod));
+        crate::infra::path_authority::set_engine_launch_failure(
+            &engine_launch_key(&key),
+            Some(EngineLaunchFailure::Fchmod),
+        );
         crate::infra::fs::set_test_removal_injector(Some(Arc::new(RemovalFault(
             RemovalFaultPoint::BeforeTopOpen,
         ))));
@@ -7481,7 +7487,7 @@ engine_id=stale-engine category=I/O failure",
             &admission,
         )
         .await;
-        crate::infra::path_authority::set_engine_launch_failure(None);
+        crate::infra::path_authority::set_engine_launch_failure(&engine_launch_key(&key), None);
         crate::infra::fs::set_test_removal_injector(None);
 
         assert!(matches!(result, Err(Error::OperationAndCleanup { .. })));
@@ -7616,9 +7622,12 @@ engine_id=pin-failure-engine primary_category=I/O failure cleanup_category=I/O f
             );
             executable.set_test_launch_root(root.clone());
             let key = EngineKey::new("fallback".into(), "fallback-engine".into()).unwrap();
-            crate::infra::path_authority::set_engine_launch_failure(Some(failure));
+            crate::infra::path_authority::set_engine_launch_failure(
+                &engine_launch_key(&key),
+                Some(failure),
+            );
             pin_engine_launch(&mut executable, &key, "fallback-engine", &|| false).unwrap();
-            crate::infra::path_authority::set_engine_launch_failure(None);
+            crate::infra::path_authority::set_engine_launch_failure(&engine_launch_key(&key), None);
             std::fs::rename(&script, directory.path().join("authorized-original.sh")).unwrap();
             std::fs::write(&script, "#!/bin/sh\nexit 22\n").unwrap();
             let actor = EngineActor::spawn_initialized(executable, EngineDeadlines::default())

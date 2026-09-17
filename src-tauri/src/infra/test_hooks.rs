@@ -19,43 +19,54 @@ use std::{
 
 pub(crate) type TestHook = Box<dyn FnOnce() + Send>;
 
-pub(crate) struct KeyedTestHooks<K: 'static> {
-    hooks: OnceLock<Mutex<HashMap<K, TestHook>>>,
+/// A test value — a hook, an injected failure, a flag — held against the identity of the
+/// operation that will consume it, and taken at most once.
+pub(crate) struct KeyedTestValues<K: 'static, V: 'static> {
+    entries: OnceLock<Mutex<HashMap<K, V>>>,
 }
 
-impl<K: Eq + Hash + Send + 'static> KeyedTestHooks<K> {
+/// The common case: the value is a one-shot hook the fire site runs.
+pub(crate) type KeyedTestHooks<K> = KeyedTestValues<K, TestHook>;
+
+impl<K: Eq + Hash + Send + 'static, V: Send + 'static> KeyedTestValues<K, V> {
     pub(crate) const fn new() -> Self {
         Self {
-            hooks: OnceLock::new(),
+            entries: OnceLock::new(),
         }
     }
 
-    fn slot(&self) -> &Mutex<HashMap<K, TestHook>> {
-        self.hooks.get_or_init(|| Mutex::new(HashMap::new()))
+    fn registry(&self) -> &Mutex<HashMap<K, V>> {
+        self.entries.get_or_init(|| Mutex::new(HashMap::new()))
     }
 
-    /// Arms `hook` for exactly `key`; hooks armed for other identities are untouched.
-    pub(crate) fn arm(&self, key: K, hook: TestHook) {
-        if let Ok(mut hooks) = self.slot().lock() {
-            hooks.insert(key, hook);
+    /// Arms `value` for exactly `key`; values armed for other identities are untouched.
+    pub(crate) fn arm(&self, key: K, value: V) {
+        if let Ok(mut entries) = self.registry().lock() {
+            entries.insert(key, value);
         }
     }
 
-    /// Drops a hook that was armed but never fired, so a test leaves nothing behind.
+    /// Drops a value that was armed but never taken, so a test leaves nothing behind.
     pub(crate) fn clear(&self, key: &K) {
-        if let Ok(mut hooks) = self.slot().lock() {
-            hooks.remove(key);
+        if let Ok(mut entries) = self.registry().lock() {
+            entries.remove(key);
         }
     }
 
-    /// Runs the hook armed for exactly this identity, at most once. The lock is released
-    /// before the hook runs, so a hook may arm another.
-    pub(crate) fn run(&self, key: &K) {
-        let hook = match self.slot().lock() {
-            Ok(mut hooks) => hooks.remove(key),
+    /// Takes the value armed for exactly this identity, at most once.
+    pub(crate) fn take(&self, key: &K) -> Option<V> {
+        match self.registry().lock() {
+            Ok(mut entries) => entries.remove(key),
             Err(_) => None,
-        };
-        if let Some(hook) = hook {
+        }
+    }
+}
+
+impl<K: Eq + Hash + Send + 'static> KeyedTestValues<K, TestHook> {
+    /// Runs the hook armed for exactly this identity, at most once. The registry lock is
+    /// released before the hook runs, so a hook may arm another.
+    pub(crate) fn run(&self, key: &K) {
+        if let Some(hook) = self.take(key) {
             hook();
         }
     }
@@ -113,6 +124,30 @@ mod tests {
         assert!(
             !second_ran.load(Ordering::SeqCst),
             "a cleared hook must not run"
+        );
+    }
+
+    /// Arming the same identity twice replaces the first value rather than queueing it. The
+    /// fire site takes one value, so a queue would leave the second armer's hook to be run by
+    /// an unrelated later operation; every caller arms one identity at a time.
+    #[test]
+    fn arming_the_same_identity_twice_keeps_the_later_value() {
+        static REARMED: KeyedTestHooks<String> = KeyedTestHooks::new();
+        let (first_hook, first_ran) = flagging_hook();
+        let (second_hook, second_ran) = flagging_hook();
+        REARMED.arm("same".into(), first_hook);
+        REARMED.arm("same".into(), second_hook);
+
+        REARMED.run(&"same".to_string());
+        assert!(
+            second_ran.load(Ordering::SeqCst) && !first_ran.load(Ordering::SeqCst),
+            "arming twice must leave exactly the later value armed"
+        );
+
+        REARMED.run(&"same".to_string());
+        assert!(
+            !first_ran.load(Ordering::SeqCst),
+            "the replaced value must be dropped, never queued behind the later one"
         );
     }
 }

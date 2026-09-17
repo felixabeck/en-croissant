@@ -2373,19 +2373,12 @@ impl MaterializedFile {
             return Err(Error::Cancellation);
         }
         #[cfg(test)]
-        if let Ok(mut slot) = ENGINE_LAUNCH_BEFORE_CLONE_HOOK
-            .get_or_init(|| std::sync::Mutex::new(None))
-            .lock()
-        {
-            if let Some(hook) = slot.take() {
-                hook();
-            }
-        }
+        ENGINE_LAUNCH_BEFORE_CLONE_HOOKS.run(&self.engine_key);
 
         use rustix::fs::{self as rfs, CloneFlags, Mode};
         use rustix::io::Errno;
         #[cfg(test)]
-        let forced_failure = take_engine_launch_failure();
+        let forced_failure = ENGINE_LAUNCH_FAILURES.take(&self.engine_key);
         #[cfg(test)]
         let cloned = match forced_failure {
             Some(EngineLaunchFailure::CloneExdev) => Err(Errno::XDEV),
@@ -2734,13 +2727,10 @@ std::thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+/// Keyed by the engine key the leaf was reserved for; see `infra::test_hooks`.
 #[cfg(all(test, target_os = "macos"))]
-type EngineLaunchCloneHook = Box<dyn FnOnce() + Send>;
-
-#[cfg(all(test, target_os = "macos"))]
-static ENGINE_LAUNCH_BEFORE_CLONE_HOOK: std::sync::OnceLock<
-    std::sync::Mutex<Option<EngineLaunchCloneHook>>,
-> = std::sync::OnceLock::new();
+static ENGINE_LAUNCH_BEFORE_CLONE_HOOKS: crate::infra::test_hooks::KeyedTestHooks<String> =
+    crate::infra::test_hooks::KeyedTestHooks::new();
 
 #[cfg(all(test, target_os = "macos"))]
 pub(crate) fn set_engine_launch_lock_created_hook(hook: Option<Box<dyn FnOnce()>>) {
@@ -2748,12 +2738,14 @@ pub(crate) fn set_engine_launch_lock_created_hook(hook: Option<Box<dyn FnOnce()>
 }
 
 #[cfg(all(test, target_os = "macos"))]
-pub(crate) fn set_engine_launch_before_clone_hook(hook: Option<Box<dyn FnOnce() + Send>>) {
-    let mut slot = ENGINE_LAUNCH_BEFORE_CLONE_HOOK
-        .get_or_init(|| std::sync::Mutex::new(None))
-        .lock()
-        .unwrap();
-    *slot = hook;
+pub(crate) fn set_engine_launch_before_clone_hook(
+    engine_key: &str,
+    hook: Option<crate::infra::test_hooks::TestHook>,
+) {
+    match hook {
+        Some(hook) => ENGINE_LAUNCH_BEFORE_CLONE_HOOKS.arm(engine_key.to_owned(), hook),
+        None => ENGINE_LAUNCH_BEFORE_CLONE_HOOKS.clear(&engine_key.to_owned()),
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -2816,25 +2808,19 @@ pub(crate) enum EngineLaunchFailure {
     Fchmod,
 }
 
+/// Keyed by the engine key the leaf was reserved for; see `infra::test_hooks`.
 #[cfg(all(test, target_os = "macos"))]
-static ENGINE_LAUNCH_FAILURE: std::sync::OnceLock<std::sync::Mutex<Option<EngineLaunchFailure>>> =
-    std::sync::OnceLock::new();
+static ENGINE_LAUNCH_FAILURES: crate::infra::test_hooks::KeyedTestValues<
+    String,
+    EngineLaunchFailure,
+> = crate::infra::test_hooks::KeyedTestValues::new();
 
 #[cfg(all(test, target_os = "macos"))]
-pub(crate) fn set_engine_launch_failure(failure: Option<EngineLaunchFailure>) {
-    *ENGINE_LAUNCH_FAILURE
-        .get_or_init(|| std::sync::Mutex::new(None))
-        .lock()
-        .unwrap() = failure;
-}
-
-#[cfg(all(test, target_os = "macos"))]
-fn take_engine_launch_failure() -> Option<EngineLaunchFailure> {
-    ENGINE_LAUNCH_FAILURE
-        .get_or_init(|| std::sync::Mutex::new(None))
-        .lock()
-        .unwrap()
-        .take()
+pub(crate) fn set_engine_launch_failure(engine_key: &str, failure: Option<EngineLaunchFailure>) {
+    match failure {
+        Some(failure) => ENGINE_LAUNCH_FAILURES.arm(engine_key.to_owned(), failure),
+        None => ENGINE_LAUNCH_FAILURES.clear(&engine_key.to_owned()),
+    }
 }
 
 const SOUND_ROOT_LEAF: &str = "sound";
@@ -17482,13 +17468,16 @@ mod workspace_directory_enumeration_tests {
             .pop()
             .unwrap();
         let replacement = source_path.clone();
-        set_engine_launch_before_clone_hook(Some(Box::new(move || {
-            fs::rename(&replacement, replacement.with_extension("original")).unwrap();
-            fs::write(&replacement, b"replacement").unwrap();
-        })));
+        set_engine_launch_before_clone_hook(
+            "test:engine",
+            Some(Box::new(move || {
+                fs::rename(&replacement, replacement.with_extension("original")).unwrap();
+                fs::write(&replacement, b"replacement").unwrap();
+            })),
+        );
         leaf.create_from(&source, ENGINE_RESOURCE_LEAF_MODE, &|| false)
             .unwrap();
-        set_engine_launch_before_clone_hook(None);
+        set_engine_launch_before_clone_hook("test:engine", None);
         assert_eq!(fs::read(leaf.path()).unwrap(), b"authorized");
         drop(leaf);
         assert_eq!(root.reclaim().removed, 1);
@@ -17529,10 +17518,10 @@ mod workspace_directory_enumeration_tests {
                 .unwrap()
                 .pop()
                 .unwrap();
-            set_engine_launch_failure(Some(failure));
+            set_engine_launch_failure("test:fallback", Some(failure));
             leaf.create_from(&source, ENGINE_RESOURCE_LEAF_MODE, &|| false)
                 .unwrap();
-            set_engine_launch_failure(None);
+            set_engine_launch_failure("test:fallback", None);
             assert_eq!(fs::read(leaf.path()).unwrap(), b"authorized-fallback-bytes");
             assert_eq!(
                 fs::metadata(leaf.path()).unwrap().permissions().mode() & 0o777,
@@ -17557,9 +17546,9 @@ mod workspace_directory_enumeration_tests {
                 .unwrap()
                 .pop()
                 .unwrap();
-            set_engine_launch_failure(Some(failure));
+            set_engine_launch_failure("test:failure", Some(failure));
             let result = leaf.create_from(&source, ENGINE_RESOURCE_LEAF_MODE, &cancelled);
-            set_engine_launch_failure(None);
+            set_engine_launch_failure("test:failure", None);
             match (failure, result) {
                 (EngineLaunchFailure::Copy, Err(Error::Io(error))) => assert!(error
                     .to_string()
