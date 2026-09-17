@@ -8504,6 +8504,81 @@ than confirm it.
 * **Related:** `f-20260830-06` (parent); the previous Windows puzzle delete compared identity and then deleted by pathname, which slice 1 replaced with a refusal.
 * **Found by:** `f-20260830-06` slice-1 plan (Codex locate probe-2, review-error-handling round 2), 2026-09-14.
 
+**Handled 2026-09-17** by `build` under `/next-finding --pin f-20260914-09 full auto`, in four
+phases plus two review-repair commits: `cd3132dd` (the component gate and the database carrier),
+`a08c62b8` (the puzzle carrier and deletion), `5dcf658f` (the SQLite URI, identity probing and
+database deletion), `56ffadc4` (the search-index loader and sidecar promotion), `c1288101` (three
+missing test anchors) and `139d8e7a` (removing the duplication the port introduced).
+
+**The open question had already been answered twice in this repository, and neither answer was
+platform-specific.** `DatabaseRepository::schema_specific_connection_expected_file_cancellable`
+(`db/repository.rs:268`) has no `cfg` at all and copies a private snapshot from the retained
+descriptor — its own doc calls that "the portable way to prevent an A→B→A replacement from
+redirecting the connection" — and the game-database path sandwiches a pooled pathname connection
+between two `open_current` probes in `acquire_probed`. So SQLite is pathname-opened on Windows
+exactly as on unix, and the identity guarantee comes from `open_current`'s re-verification, not
+from the connection. What the port actually owed was a Windows URI: `sqlite_uri` now delegates to a
+cfg-free `sqlite_uri_for(path, mode, style)` that converts verbatim and plain drive and UNC paths,
+refuses a non-absolute one, checks every component it emits — ancestors included, because the
+conversion gives up verbatim semantics — and refuses a path over the Windows length limit with its
+own message.
+
+**Identity-checked sidecar promotion and deletion without `unlinkat`** are
+`infra::fs::remove_entry_at` and `rename`/`FILE_DISPOSITION_INFORMATION_EX`, which
+`f-20260914-10` and `f-20260914-08` had already ported: on Windows they re-open the named child
+relative to the retained parent, compare the handle identity and mutate **through that handle**, so
+the pathname-delete this finding's refusal replaced cannot come back. On unix the same call narrows
+the window to `remove_entry_at`'s own residual, which `f-20260830-09` records as unfixable there.
+
+**Commands that stop refusing off unix:** `get_db_info`, `delete_database`, `search_position`,
+`preload_reference_db`, `get_puzzle`, `delete_puzzle_database`, plus database and puzzle directory
+enumeration. **Refusal rows 15 body + 9 guard → 6 + 7**, counted from the arrays at each phase's own
+commit (`d-20260916-02`), each removed row replaced by a positive cfg-free assertion. No ignore
+marker was owned by this finding, so none moved; the new accounting is `d-20260917-06`.
+
+**This slice also closes `f-20260916-02` and `f-20260916-03`**, under the scope amendment the
+invoking authority attached: `create_database_child` takes a renderer-supplied filename whose only
+filter rejected `/`, `\` and emptiness, so enabling database creation on Windows put
+`a:stream.db3` and an over-long component on a live route into `open_windows_child`.
+
+**What this run could NOT prove, stated plainly:** no Windows runtime evidence exists.
+`rust-windows-test` dies with `STATUS_ACCESS_VIOLATION` (`f-20260917-02`, still open) and this
+machine has no Windows runtime — `which wine wine64` returns nothing, measured. The evidence is
+`cargo test` (1251 passed), `cargo fmt`, Linux `clippy -D warnings`, and
+`cargo check`/`clippy -D warnings` for `x86_64-pc-windows-gnu`, plus the design choice that carries
+most of the weight: every platform *policy* — the URI shape, the component rules, the probe-error
+classes — is a cfg-free function the Linux suite executes, and the bodies are shared wherever the
+unix arm was already written in dispatching `infra::fs` wrappers. Exactly one Windows-only body
+remains in this slice, `acquire_target`'s three-statement branch, and it is held by a source pin
+named as a pin. `d-20260917-03`'s warning stands: a pin cannot tell a real port from a stub.
+
+**Not covered:** O10 asked for caller-level behavioural tests of the mapped-file class
+(`ERROR_USER_MAPPED_FILE`). It is asserted in the classifier table and each caller's arm is pinned,
+but no Linux test drives a real 1224 through the loader, promotion and deletion — that needs a new
+fault-injection seam on every open in those paths, which is a decision of its own.
+
+**Rejected alternatives**, with the evidence: a descriptor-bound SQLite VFS (the unix arm does not
+have that guarantee either — the repository's two existing answers are above); keeping `\\?\` in
+the URI (SQLite's URI parser would read it as an authority); a parallel Windows arm for
+`open_valid_preferred`, `unlink_database_files` and the promotion (the duplication the plan's
+sharing rule exists to prevent, and a second copy no test on this machine executes); an
+`open_verified_parent_readable` twin (a parameter instead, `d-20260916-04`'s predicate).
+
+**Corrections the implementation made to its own reviewed plan**, both found by phase leaves that
+stopped rather than editing an existing test, and both recorded as decisions: the probe-error class
+is split into `Reparse` and `WrongKind` with a different row per caller (`d-20260917-04` — the
+plan's single rule would have turned the loader's propagated error into a silent "no index" for a
+directory, and would have stopped a deletion over a colliding legacy sidecar that
+`d-20260831-24` deliberately lets proceed), and the loader's error variant for a non-regular
+sidecar moves from `Io` to `InvalidInput` (`d-20260917-05`).
+
+**Plan review:** fourteen rounds, 97 unique issues, 86 adopted, closed at r14 with `review-plan`
+and `review-tests` both APPROVED. The durable record is
+`tasks/handoffs/2026-09-17-f-20260914-09-review.md`; read it before successor work here. Five
+issues were filed as findings rather than carried, and one more was filed from the cumulative-diff
+review.
+<!-- ledger-meta {"command":"annotate","effect_lines":73,"effect_sha256":"a12777972ca37f73460be92a8ddee4a08a30ce0f56b8301c484f816112e4502b","input_sha256":"aee3769eceaca6661b9b166cd55ae8d063bd59c1780986eba75da8588018fc31","kind":"mutation-receipt","operation":"7ad39ef3a3ad27068ed43a14afac89478cf3b4172d420c8d3ffe2c506cf02e66","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-09"],"target":"f-20260914-09","v":1} -->
+
 ### Atomic replacement, downloads and PGN writes are refused on Windows
 
 * **ID:** f-20260914-10 · **Status:** handled · **Area:** native-fs · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
