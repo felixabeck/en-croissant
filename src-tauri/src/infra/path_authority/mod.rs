@@ -286,6 +286,102 @@ mod windows_tests {
         let reloaded = PathAuthority::open(registry, vec![]).unwrap();
         assert!(reloaded.persistent.contains_key(&id.id));
     }
+
+    #[test]
+    fn windows_reparse_ancestor_stable_entry_rebinds_and_changed_entry_quarantines() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        let junction = dir.path().join("junction");
+        fs::create_dir(&real).unwrap();
+        fs::write(real.join("stable.pgn"), b"stable").unwrap();
+        fs::write(real.join("changed.pgn"), b"old").unwrap();
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&real)
+            .status()
+            .unwrap();
+        assert!(status.success(), "mklink /J failed with {status}");
+        let changed = StoredEntry {
+            id: PathRef {
+                id: "windows-changed".into(),
+            },
+            display_name: "changed".into(),
+            class: PathClass::PersistentFile,
+            purpose: Some(EntryPurpose::PgnFile),
+            operations: canonical_operations(EntryPurpose::PgnFile),
+            path: NativePath::from_path(&junction.join("changed.pgn")),
+            identity: identity(&junction.join("changed.pgn")).unwrap(),
+            target_is_dir: false,
+        };
+        let stable = StoredEntry {
+            id: PathRef {
+                id: "windows-stable".into(),
+            },
+            display_name: "stable".into(),
+            class: PathClass::PersistentFile,
+            purpose: Some(EntryPurpose::PgnFile),
+            operations: canonical_operations(EntryPurpose::PgnFile),
+            path: NativePath::from_path(&junction.join("stable.pgn")),
+            identity: identity(&junction.join("stable.pgn")).unwrap(),
+            target_is_dir: false,
+        };
+        fs::write(real.join("replacement.pgn"), b"new").unwrap();
+        fs::remove_file(real.join("changed.pgn")).unwrap();
+        fs::rename(real.join("replacement.pgn"), real.join("changed.pgn")).unwrap();
+        let registry = dir.path().join("registry.json");
+        let registry_value = Registry {
+            schema_version: SCHEMA_VERSION,
+            entries: vec![changed, stable],
+            active_database_root: None,
+            active_puzzle_root: None,
+            active_engine_root: None,
+            pending_artifacts: vec![],
+            provisional_attachments: BTreeSet::new(),
+            image_cleanup: vec![],
+        };
+        fs::write(&registry, serde_json::to_vec(&registry_value).unwrap()).unwrap();
+        let capture = crate::error::LogCaptureScope::start();
+        let mut authority = PathAuthority::open(registry, vec![]).unwrap();
+        assert_eq!(
+            authority.persistent["windows-stable"]
+                .stored
+                .path
+                .to_path()
+                .unwrap(),
+            real.join("stable.pgn")
+        );
+        assert_eq!(
+            authority.persistent["windows-stable"].availability,
+            PathAvailability::Available
+        );
+        let mut file = authority
+            .resolve(
+                &PathRef {
+                    id: "windows-stable".into(),
+                },
+                PathOperation::ReadPgn,
+                &[],
+            )
+            .unwrap()
+            .into_read_file()
+            .unwrap();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"stable");
+        assert_eq!(
+            authority.persistent["windows-changed"].availability,
+            PathAvailability::Unavailable
+        );
+        let warnings: Vec<_> = capture
+            .records()
+            .into_iter()
+            .filter(|record| record.level == log::Level::Warn)
+            .filter(|record| record.message.contains("windows-changed"))
+            .collect();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].message.contains("identity changed"));
+    }
 }
 
 /// A directory reached through a `PathRef` capability. It carries no pathname.
@@ -2109,6 +2205,16 @@ pub(crate) enum AppOwnedDefaultRoot {
 }
 
 impl AppOwnedDefaultRoot {
+    pub(crate) const ALL: &[Self] = &[
+        Self::Databases,
+        Self::Engines,
+        Self::EngineImages,
+        Self::Puzzles,
+        Self::Credentials,
+        #[cfg(target_os = "macos")]
+        Self::EngineLaunch,
+    ];
+
     fn leaf(self) -> &'static str {
         match self {
             Self::Databases => "db",
@@ -3578,6 +3684,7 @@ struct RegistryAdmissionSnapshot {
 /// Backend-only authority registry. Its public methods never parse renderer-provided raw paths.
 pub struct PathAuthority {
     registry_path: PathBuf,
+    app_data_dir: Option<AppDataDir>,
     persistent: BTreeMap<String, Entry>,
     dialogs: HashMap<String, DialogGrant>,
     clock: Arc<dyn Clock>,
@@ -3944,9 +4051,10 @@ impl PathAuthority {
         app_roots: Vec<AppOwnedRoot>,
         launch_root: EngineLaunchRoot,
     ) -> Result<Self, Error> {
-        Self::open_with_clock_inner(
+        Self::open_with_app_data(
             registry_path,
             app_roots,
+            None,
             Arc::new(SystemClock),
             256,
             Some(launch_root),
@@ -3960,9 +4068,10 @@ impl PathAuthority {
         clock: Arc<dyn Clock>,
         dialog_capacity: usize,
     ) -> Result<Self, Error> {
-        Self::open_with_clock_inner(
+        Self::open_with_app_data(
             registry_path,
             app_roots,
+            None,
             clock,
             dialog_capacity,
             #[cfg(target_os = "macos")]
@@ -3972,9 +4081,28 @@ impl PathAuthority {
         )
     }
 
+    pub(crate) fn open_with_app_data(
+        registry_path: PathBuf,
+        app_roots: Vec<AppOwnedRoot>,
+        app_data_dir: Option<AppDataDir>,
+        clock: Arc<dyn Clock>,
+        dialog_capacity: usize,
+        launch_root: LaunchRootArgument,
+    ) -> Result<Self, Error> {
+        Self::open_with_clock_inner(
+            registry_path,
+            app_roots,
+            app_data_dir,
+            clock,
+            dialog_capacity,
+            launch_root,
+        )
+    }
+
     fn open_with_clock_inner(
         registry_path: PathBuf,
         app_roots: Vec<AppOwnedRoot>,
+        app_data_dir: Option<AppDataDir>,
         clock: Arc<dyn Clock>,
         dialog_capacity: usize,
         _launch_root: LaunchRootArgument,
@@ -4050,7 +4178,7 @@ impl PathAuthority {
                     stored,
                     availability: PathAvailability::Unavailable,
                 };
-                refresh_entry(&mut entry);
+                refresh_entry(&mut entry, app_data_dir.as_ref());
                 if loaded.insert(entry.stored.id.id.clone(), entry).is_some() {
                     return Err(Error::InvalidInput(
                         "duplicate path registry identifier".into(),
@@ -4133,6 +4261,7 @@ impl PathAuthority {
         }
         let mut authority = Self {
             registry_path,
+            app_data_dir,
             persistent,
             dialogs: HashMap::new(),
             clock,
@@ -4159,9 +4288,109 @@ impl PathAuthority {
             #[cfg(target_os = "macos")]
             engine_launch_root: _launch_root,
         };
+        // Recovery validates pending roots by their stored spelling; repair legacy spellings
+        // before it runs so a recovered artifact sees the same canonical root as the registry.
+        authority.rebind_legacy_spellings();
         authority.recover_pending_artifacts()?;
         Ok(authority)
     }
+
+    fn rebind_legacy_spellings(&mut self) {
+        let ids: Vec<_> = self.persistent.keys().cloned().collect();
+        let mut rebound_ids = Vec::new();
+
+        for id in ids {
+            let Some(entry) = self.persistent.get_mut(&id) else {
+                continue;
+            };
+            if entry.stored.class == PathClass::AppOwnedRoot {
+                continue;
+            }
+            let path = match entry.stored.path.to_path() {
+                Ok(path) => path,
+                Err(error) => {
+                    entry.availability = PathAvailability::Unavailable;
+                    log::warn!(
+                        "legacy path rebinding skipped for entry {}: {}",
+                        entry.stored.id.id,
+                        error.category()
+                    );
+                    continue;
+                }
+            };
+            if spelling_is_application_owned(self.app_data_dir.as_ref(), &path) {
+                continue;
+            }
+            match classify_canonical_binding(&path) {
+                CanonicalBindingStatus::Canonical | CanonicalBindingStatus::Leafless => continue,
+                CanonicalBindingStatus::NeedsRebinding(canonical) => {
+                    if canonical == path {
+                        continue;
+                    }
+                }
+                CanonicalBindingStatus::Failed(error) => {
+                    entry.availability = PathAvailability::Unavailable;
+                    log::warn!(
+                        "legacy path rebinding skipped for entry {} at {:?}: {}",
+                        entry.stored.id.id,
+                        path,
+                        error.category()
+                    );
+                    continue;
+                }
+            };
+            let shape = AcquireShape::for_persistent_class(
+                entry.stored.class,
+                parent_access_for_operations(&entry.stored.operations),
+            );
+            let acquired = match acquire_target(&path, shape) {
+                Ok(acquired) => acquired,
+                Err(error) => {
+                    entry.availability = PathAvailability::Unavailable;
+                    log::warn!(
+                        "legacy path rebinding skipped for entry {} at {:?}: {}",
+                        entry.stored.id.id,
+                        path,
+                        error.category()
+                    );
+                    continue;
+                }
+            };
+            if acquired.identity != entry.stored.identity {
+                entry.availability = PathAvailability::Unavailable;
+                log::warn!(
+                    "legacy path rebinding skipped for entry {} at {:?}: identity changed",
+                    entry.stored.id.id,
+                    path
+                );
+                continue;
+            }
+            entry.stored.path = NativePath::from_path(&acquired.path);
+            entry.availability = PathAvailability::Available;
+            rebound_ids.push(id);
+        }
+
+        if rebound_ids.is_empty() {
+            return;
+        }
+        let durability = self.commit_registry(
+            self.persistent.clone(),
+            self.active_database_root.clone(),
+            self.active_puzzle_root.clone(),
+            self.active_engine_root.clone(),
+            self.pending_artifacts.clone(),
+            None,
+            true,
+        );
+        if let Err(error) = durability {
+            log::warn!(
+                "legacy path rebinding could not be persisted for entries {:?}: {}",
+                rebound_ids,
+                error.category()
+            );
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn set_activation_observer(
         &mut self,
@@ -4184,7 +4413,7 @@ impl PathAuthority {
         self.evict_dialogs();
         self.refresh_persistent();
         for grant in self.dialogs.values_mut() {
-            refresh_entry(&mut grant.entry);
+            refresh_entry(&mut grant.entry, self.app_data_dir.as_ref());
         }
         self.persistent
             .values()
@@ -4222,10 +4451,19 @@ impl PathAuthority {
             let Some(root) = self.persistent.get(&pending.root.id) else {
                 continue;
             };
-            let Ok(root_identity) = validate_target(
-                &root.stored.path.to_path()?,
-                PathClass::PersistentCustomRoot,
-            ) else {
+            let root_path = match root.stored.path.to_path() {
+                Ok(path) => path,
+                Err(error) => {
+                    log::warn!(
+                        "pending artifact recovery skipped for root {}: {}",
+                        root.stored.id.id,
+                        error.category()
+                    );
+                    continue;
+                }
+            };
+            let Ok(root_identity) = validate_target(&root_path, PathClass::PersistentCustomRoot)
+            else {
                 continue;
             };
             if !pending.payload_bound
@@ -6817,7 +7055,7 @@ impl PathAuthority {
                 if status == WorkspaceRemovalStatus::Complete {
                     return false;
                 }
-                refresh_entry(entry);
+                refresh_entry(entry, self.app_data_dir.as_ref());
                 entry.availability == PathAvailability::Available
             });
         }
@@ -6921,12 +7159,12 @@ impl PathAuthority {
     #[cfg(test)]
     fn refresh_persistent(&mut self) {
         for entry in self.persistent.values_mut() {
-            refresh_entry(entry);
+            refresh_entry(entry, self.app_data_dir.as_ref());
         }
     }
     fn refresh_persistent_id(&mut self, id: &PathRef) {
         if let Some(entry) = self.persistent.get_mut(&id.id) {
-            refresh_entry(entry);
+            refresh_entry(entry, self.app_data_dir.as_ref());
         }
     }
     #[cfg(all(test, unix))]
@@ -7482,7 +7720,46 @@ fn read_registry_bytes(reader: impl Read) -> Result<Vec<u8>, Error> {
     }
     Ok(bytes)
 }
-fn refresh_entry(entry: &mut Entry) {
+enum CanonicalBindingStatus {
+    Canonical,
+    Leafless,
+    NeedsRebinding(PathBuf),
+    Failed(Error),
+}
+
+fn classify_canonical_binding(path: &Path) -> CanonicalBindingStatus {
+    let has_normal_leaf = path.file_name().is_some_and(|name| {
+        !name.is_empty() && name != OsStr::new(".") && name != OsStr::new("..")
+    });
+    if !has_normal_leaf {
+        return CanonicalBindingStatus::Leafless;
+    }
+    match canonical_binding(path) {
+        Ok(canonical) if canonical == path => CanonicalBindingStatus::Canonical,
+        Ok(canonical) => CanonicalBindingStatus::NeedsRebinding(canonical),
+        Err(error) => CanonicalBindingStatus::Failed(error),
+    }
+}
+
+fn spelling_is_application_owned(app_data_dir: Option<&AppDataDir>, path: &Path) -> bool {
+    if path
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return false;
+    }
+    app_data_dir.as_ref().is_some_and(|dir| {
+        AppOwnedDefaultRoot::ALL
+            .iter()
+            .any(|root| path.starts_with(dir.as_path().join(root.leaf())))
+    })
+}
+
+fn spelling_is_exempt(class: PathClass, app_data_dir: Option<&AppDataDir>, path: &Path) -> bool {
+    class == PathClass::AppOwnedRoot || spelling_is_application_owned(app_data_dir, path)
+}
+
+fn refresh_entry(entry: &mut Entry, app_data_dir: Option<&AppDataDir>) {
     #[cfg(test)]
     REFRESH_ENTRY_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow().as_ref() {
@@ -7504,7 +7781,17 @@ fn refresh_entry(entry: &mut Entry) {
     entry.availability =
         validate_target(&path, class).map_or(PathAvailability::Unavailable, |id| {
             if id == entry.stored.identity {
-                PathAvailability::Available
+                if spelling_is_exempt(entry.stored.class, app_data_dir, &path) {
+                    PathAvailability::Available
+                } else {
+                    match classify_canonical_binding(&path) {
+                        CanonicalBindingStatus::Canonical | CanonicalBindingStatus::Leafless => {
+                            PathAvailability::Available
+                        }
+                        CanonicalBindingStatus::NeedsRebinding(_)
+                        | CanonicalBindingStatus::Failed(_) => PathAvailability::Unavailable,
+                    }
+                }
             } else {
                 PathAvailability::Unavailable
             }
@@ -12049,6 +12336,552 @@ mod tests {
         (AppOwnedDefaultRoot::EngineLaunch, "engine-launch"),
     ];
 
+    #[cfg(unix)]
+    #[test]
+    fn rebinding_exempts_every_declared_app_owned_default_root() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real_app_data = dir.path().join("real-app-data");
+        let app_data_link = dir.path().join("app-data-link");
+        fs::create_dir(&real_app_data).unwrap();
+        symlink(&real_app_data, &app_data_link).unwrap();
+        let mut entries = Vec::new();
+        for &(root, leaf) in APP_OWNED_DEFAULT_ROOT_LEAVES {
+            fs::create_dir(real_app_data.join(leaf)).unwrap();
+            entries.push(stored_entry_for(
+                &app_data_link.join(leaf),
+                format!("app-owned-{leaf}"),
+                None,
+                vec![PathOperation::ReadPgn],
+            ));
+            assert_eq!(root.leaf(), leaf);
+        }
+        assert_eq!(
+            APP_OWNED_DEFAULT_ROOT_LEAVES.len(),
+            AppOwnedDefaultRoot::ALL.len()
+        );
+        for root in AppOwnedDefaultRoot::ALL {
+            assert!(
+                APP_OWNED_DEFAULT_ROOT_LEAVES
+                    .iter()
+                    .any(|(candidate, _)| candidate == root),
+                "{root:?} is missing from the independent leaf table"
+            );
+        }
+        for (root, _) in APP_OWNED_DEFAULT_ROOT_LEAVES {
+            assert!(AppOwnedDefaultRoot::ALL.contains(root));
+        }
+        let registry = dir.path().join("registry.json");
+        write_registry_with_entries(&registry, entries);
+        let authority = PathAuthority::open_with_app_data(
+            registry,
+            vec![],
+            Some(AppDataDir::for_test(&app_data_link)),
+            Arc::new(TestClock::new(0)),
+            2,
+            (),
+        )
+        .unwrap();
+        for &(_, leaf) in APP_OWNED_DEFAULT_ROOT_LEAVES {
+            let entry = &authority.persistent[&format!("app-owned-{leaf}")];
+            assert_eq!(
+                entry.stored.path.to_path().unwrap(),
+                app_data_link.join(leaf)
+            );
+            assert_eq!(entry.availability, PathAvailability::Available);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn descriptors_refresh_with_app_data_context_and_quarantines_changed_legacy_entry() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real_app_data = dir.path().join("real-app-data");
+        let app_data_link = dir.path().join("app-data-link");
+        let real_external = dir.path().join("real-external");
+        let external_link = dir.path().join("external-link");
+        fs::create_dir_all(real_app_data.join("db")).unwrap();
+        fs::create_dir(&real_external).unwrap();
+        fs::write(real_app_data.join("db/owned.pgn"), b"owned").unwrap();
+        fs::write(real_external.join("changed.pgn"), b"old").unwrap();
+        symlink(&real_app_data, &app_data_link).unwrap();
+        symlink(&real_external, &external_link).unwrap();
+        let owned = stored_entry_for(
+            &app_data_link.join("db/owned.pgn"),
+            "descriptor-owned",
+            Some(EntryPurpose::PgnFile),
+            canonical_operations(EntryPurpose::PgnFile),
+        );
+        let changed = stored_entry_for(
+            &external_link.join("changed.pgn"),
+            "descriptor-changed",
+            Some(EntryPurpose::PgnFile),
+            canonical_operations(EntryPurpose::PgnFile),
+        );
+        fs::write(real_external.join("replacement"), b"new").unwrap();
+        fs::rename(
+            real_external.join("replacement"),
+            real_external.join("changed.pgn"),
+        )
+        .unwrap();
+        let registry = dir.path().join("registry.json");
+        write_registry_with_entries(&registry, vec![owned, changed]);
+        let mut authority = PathAuthority::open_with_app_data(
+            registry,
+            vec![],
+            Some(AppDataDir::for_test(&app_data_link)),
+            Arc::new(TestClock::new(0)),
+            2,
+            (),
+        )
+        .unwrap();
+        let descriptors = authority.descriptors();
+        let availability = |id: &str| {
+            descriptors
+                .iter()
+                .find(|descriptor| descriptor.id.id == id)
+                .map(|descriptor| descriptor.availability)
+                .unwrap()
+        };
+        assert_eq!(
+            availability("descriptor-owned"),
+            PathAvailability::Available
+        );
+        assert_eq!(
+            availability("descriptor-changed"),
+            PathAvailability::Unavailable
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn app_owned_database_children_and_images_keep_descriptor_bound_spellings() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real_app_data = dir.path().join("real-app-data");
+        let app_data_link = dir.path().join("app-data-link");
+        fs::create_dir(&real_app_data).unwrap();
+        symlink(&real_app_data, &app_data_link).unwrap();
+        let app_data = AppDataDir::for_test(&app_data_link);
+        fs::create_dir(real_app_data.join("db")).unwrap();
+        fs::create_dir(real_app_data.join("engine-images")).unwrap();
+        let mut databases = authorize_existing_dir(&real_app_data.join("db")).unwrap();
+        databases.path = app_data_link.join("db");
+        let mut images = authorize_existing_dir(&real_app_data.join("engine-images")).unwrap();
+        images.path = app_data_link.join("engine-images");
+        let registry = dir.path().join("registry.json");
+        let mut authority = PathAuthority::open_with_app_data(
+            registry.clone(),
+            vec![],
+            Some(app_data),
+            Arc::new(TestClock::new(0)),
+            2,
+            (),
+        )
+        .unwrap();
+        let root = authority
+            .get_or_create_database_root(databases.path(), "Databases", Some(databases.identity()))
+            .unwrap();
+        let child_path = databases.path().join("child.db3");
+        fs::write(&child_path, b"database").unwrap();
+        let child = authority
+            .register_database_child(
+                &root,
+                OsStr::new("child.db3"),
+                "child",
+                observed_identity(&child_path),
+            )
+            .unwrap();
+        let image_leaf = OsString::from(Uuid::new_v4().to_string());
+        let (_, installed) = images
+            .atomic_replace_leaf_identified(&image_leaf, |file| {
+                file.write_all(b"engine image").map_err(Error::from)
+            })
+            .unwrap();
+        let image = authority
+            .register_engine_image(&images, &image_leaf, installed, "image".into())
+            .unwrap();
+        for id in [
+            root.path_ref().clone(),
+            child.path_ref().clone(),
+            image.path_ref().clone(),
+        ] {
+            let path = authority.persistent[&id.id].stored.path.to_path().unwrap();
+            assert!(path.starts_with(&app_data_link));
+            assert_eq!(
+                authority.persistent[&id.id].availability,
+                PathAvailability::Available
+            );
+            authority.refresh_persistent_id(&id);
+            assert_eq!(
+                authority.persistent[&id.id].availability,
+                PathAvailability::Available
+            );
+        }
+        assert_eq!(
+            authority.persistent[&root.id.id]
+                .stored
+                .path
+                .to_path()
+                .unwrap(),
+            databases.path()
+        );
+        assert_eq!(
+            authority.persistent[&child.id.id]
+                .stored
+                .path
+                .to_path()
+                .unwrap(),
+            child_path
+        );
+        assert_eq!(
+            authority.persistent[&image.id.id]
+                .stored
+                .path
+                .to_path()
+                .unwrap(),
+            images.path().join(&image_leaf)
+        );
+        drop(authority);
+
+        let mut reopened = PathAuthority::open_with_app_data(
+            registry,
+            vec![],
+            Some(AppDataDir::for_test(&app_data_link)),
+            Arc::new(TestClock::new(0)),
+            2,
+            (),
+        )
+        .unwrap();
+        let reused_root = reopened
+            .get_or_create_database_root(databases.path(), "Databases", Some(databases.identity()))
+            .unwrap();
+        assert_eq!(reused_root.path_ref(), root.path_ref());
+        assert!(reopened
+            .database_file_target(
+                &DatabaseHandle::new(child.path_ref().clone()),
+                PathOperation::DatabaseRead
+            )
+            .is_ok());
+        for id in [root.path_ref(), child.path_ref(), image.path_ref()] {
+            reopened.refresh_persistent_id(id);
+            assert_eq!(
+                reopened.persistent[&id.id].availability,
+                PathAvailability::Available
+            );
+        }
+        reopened
+            .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                retained_ids: None,
+                abandoned_ids: vec![image.path_ref().clone()],
+                startup: false,
+            })
+            .unwrap();
+        let mut reopened_images =
+            authorize_existing_dir(&real_app_data.join("engine-images")).unwrap();
+        reopened_images.path = app_data_link.join("engine-images");
+        reopened
+            .cleanup_engine_images(&reopened_images, false)
+            .unwrap();
+        assert!(!images.path().join(&image_leaf).exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_app_owned_root_is_exempt_by_class_and_not_by_path() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("runtime-real");
+        let link = dir.path().join("runtime-link");
+        fs::create_dir(&real).unwrap();
+        fs::create_dir(real.join("managed")).unwrap();
+        symlink(&real, &link).unwrap();
+        let app_data = dir.path().join("app-data");
+        fs::create_dir(&app_data).unwrap();
+        let app = AppOwnedRoot::new(
+            "runtime",
+            link.join("managed"),
+            vec![PathOperation::ReadPgn],
+        );
+        let id = app.id.clone();
+        let mut authority = PathAuthority::open_with_app_data(
+            dir.path().join("registry.json"),
+            vec![app],
+            Some(AppDataDir::for_test(&app_data)),
+            Arc::new(TestClock::new(0)),
+            2,
+            (),
+        )
+        .unwrap();
+        assert_eq!(
+            authority.persistent[&id.id].stored.path.to_path().unwrap(),
+            link.join("managed")
+        );
+        assert_eq!(
+            authority.persistent[&id.id].availability,
+            PathAvailability::Available
+        );
+        authority.refresh_persistent_id(&id);
+        assert_eq!(
+            authority.persistent[&id.id].availability,
+            PathAvailability::Available
+        );
+        assert_eq!(
+            authority.persistent[&id.id].stored.path.to_path().unwrap(),
+            link.join("managed")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parent_dir_spelling_under_app_data_is_not_exempt() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real_app_data = dir.path().join("real-app-data");
+        let app_data_link = dir.path().join("app-data-link");
+        fs::create_dir_all(real_app_data.join("db")).unwrap();
+        fs::create_dir_all(dir.path().join("outside/workspace")).unwrap();
+        symlink(&real_app_data, &app_data_link).unwrap();
+        let legacy = app_data_link.join("db/../../outside/workspace");
+        let entry = stored_entry_for(
+            &legacy,
+            "parent-dir-entry",
+            Some(EntryPurpose::PgnWorkspace),
+            canonical_operations(EntryPurpose::PgnWorkspace),
+        );
+        let registry = dir.path().join("registry.json");
+        write_registry_with_entries(&registry, vec![entry]);
+        let authority = PathAuthority::open_with_app_data(
+            registry,
+            vec![],
+            Some(AppDataDir::for_test(&app_data_link)),
+            Arc::new(TestClock::new(0)),
+            2,
+            (),
+        )
+        .unwrap();
+        let stored = &authority.persistent["parent-dir-entry"];
+        assert_ne!(stored.stored.path.to_path().unwrap(), legacy);
+        assert_eq!(stored.availability, PathAvailability::Available);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn app_owned_leaf_name_does_not_exempt_a_sibling_path() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let app_data = dir.path().join("app-data");
+        let real_sibling = dir.path().join("real-sibling");
+        let sibling_link = dir.path().join("sibling-link");
+        fs::create_dir(&app_data).unwrap();
+        fs::create_dir_all(real_sibling.join("db")).unwrap();
+        symlink(&real_sibling, &sibling_link).unwrap();
+        let entry = stored_entry_for(
+            &sibling_link.join("db"),
+            "sibling-db",
+            Some(EntryPurpose::PgnWorkspace),
+            canonical_operations(EntryPurpose::PgnWorkspace),
+        );
+        let registry = dir.path().join("registry.json");
+        write_registry_with_entries(&registry, vec![entry]);
+        let authority = PathAuthority::open_with_app_data(
+            registry,
+            vec![],
+            Some(AppDataDir::for_test(&app_data)),
+            Arc::new(TestClock::new(0)),
+            2,
+            (),
+        )
+        .unwrap();
+        assert_eq!(
+            authority.persistent["sibling-db"]
+                .stored
+                .path
+                .to_path()
+                .unwrap(),
+            real_sibling.join("db")
+        );
+        assert_eq!(
+            authority.persistent["sibling-db"].availability,
+            PathAvailability::Available
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reselecting_rebound_file_and_root_reuses_the_existing_ids() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        let link = dir.path().join("link");
+        fs::create_dir_all(real.join("workspace")).unwrap();
+        fs::write(real.join("study.pgn"), b"*").unwrap();
+        symlink(&real, &link).unwrap();
+        let file = stored_entry_for(
+            &link.join("study.pgn"),
+            "reselect-file",
+            Some(EntryPurpose::PgnFile),
+            canonical_operations(EntryPurpose::PgnFile),
+        );
+        let root = stored_entry_for(
+            &link.join("workspace"),
+            "reselect-root",
+            Some(EntryPurpose::DatabaseRoot),
+            canonical_operations(EntryPurpose::DatabaseRoot),
+        );
+        let registry = dir.path().join("registry.json");
+        write_registry_with_entries(&registry, vec![file, root]);
+        let mut authority = PathAuthority::open(registry, vec![]).unwrap();
+        let file_commit = authority
+            .get_or_create_persistent_file(
+                &link.join("study.pgn"),
+                "study",
+                canonical_operations(EntryPurpose::PgnFile),
+            )
+            .unwrap();
+        let root_handle = authority
+            .get_or_create_database_root(&link.join("workspace"), "workspace", None)
+            .unwrap();
+        assert_eq!(file_commit.id.id, "reselect-file");
+        assert_eq!(root_handle.id.id, "reselect-root");
+        assert_eq!(authority.persistent.len(), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn malformed_persistent_path_and_pending_root_do_not_abort_startup() {
+        let dir = tempfile::tempdir().unwrap();
+        let valid_path = dir.path().join("valid.pgn");
+        fs::write(&valid_path, b"valid").unwrap();
+        let malformed = StoredEntry {
+            id: PathRef {
+                id: "malformed-entry".into(),
+            },
+            display_name: "malformed".into(),
+            class: PathClass::PersistentFile,
+            purpose: Some(EntryPurpose::PgnFile),
+            operations: canonical_operations(EntryPurpose::PgnFile),
+            path: NativePath::Unix { bytes: "!".into() },
+            identity: Identity { a: 0, b: 0 },
+            target_is_dir: false,
+        };
+        let valid = stored_entry_for(
+            &valid_path,
+            "valid-entry",
+            Some(EntryPurpose::PgnFile),
+            canonical_operations(EntryPurpose::PgnFile),
+        );
+        let pending = pending_test_artifact(&malformed.id, "malformed-pending");
+        let registry = dir.path().join("registry.json");
+        write_registry(
+            &registry,
+            &Registry {
+                schema_version: SCHEMA_VERSION,
+                entries: vec![malformed, valid],
+                active_database_root: None,
+                active_puzzle_root: None,
+                active_engine_root: None,
+                pending_artifacts: vec![pending],
+                provisional_attachments: BTreeSet::new(),
+                image_cleanup: vec![],
+            },
+        );
+        let capture = crate::error::LogCaptureScope::start();
+        let authority = PathAuthority::open(registry, vec![]).unwrap();
+        assert_eq!(
+            authority.persistent["malformed-entry"].availability,
+            PathAvailability::Unavailable
+        );
+        assert_eq!(
+            authority.persistent["valid-entry"].availability,
+            PathAvailability::Available
+        );
+        assert_eq!(authority.pending_artifacts.len(), 1);
+        assert!(
+            capture
+                .messages()
+                .iter()
+                .filter(|message| message.contains("malformed-entry"))
+                .count()
+                >= 2
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pending_artifact_recovery_survives_legacy_root_rebinding() {
+        use std::os::unix::fs::symlink;
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        let link = dir.path().join("link");
+        let downloads = real.join("downloads");
+        fs::create_dir_all(&downloads).unwrap();
+        symlink(&real, &link).unwrap();
+        let root = stored_entry_for(
+            &link.join("downloads"),
+            "legacy-pending-root",
+            Some(EntryPurpose::DownloadDestination),
+            canonical_operations(EntryPurpose::DownloadDestination),
+        );
+        let artifact_path = downloads.join("artifact.pgn");
+        fs::write(&artifact_path, b"artifact").unwrap();
+        let artifact_identity = identity(&artifact_path).unwrap();
+        let metadata = fs::metadata(&artifact_path).unwrap();
+        let pending = PendingArtifact {
+            id: PathRef {
+                id: "recovered-artifact".into(),
+            },
+            root: root.id.clone(),
+            filename: NativePath::from_path(Path::new("artifact.pgn")),
+            display_name: "artifact".into(),
+            operations: canonical_operations(EntryPurpose::PgnReadOnlyFile),
+            baseline: None,
+            root_identity: Some(root.identity.clone()),
+            payload_size: 8,
+            payload_sha256: sha256_file(&artifact_path).unwrap().1,
+            payload_bound: true,
+            installed_identity: Some(artifact_identity.clone()),
+            installed_ctime_nanos: Some(
+                i128::from(metadata.ctime()) * 1_000_000_000 + i128::from(metadata.ctime_nsec()),
+            ),
+        };
+        let registry = dir.path().join("registry.json");
+        write_registry(
+            &registry,
+            &Registry {
+                schema_version: SCHEMA_VERSION,
+                entries: vec![root],
+                active_database_root: None,
+                active_puzzle_root: None,
+                active_engine_root: None,
+                pending_artifacts: vec![pending],
+                provisional_attachments: BTreeSet::new(),
+                image_cleanup: vec![],
+            },
+        );
+        let authority = PathAuthority::open(registry, vec![]).unwrap();
+        assert_eq!(
+            authority.persistent["legacy-pending-root"]
+                .stored
+                .path
+                .to_path()
+                .unwrap(),
+            downloads
+        );
+        assert!(authority.pending_artifacts.is_empty());
+        assert!(authority.persistent.contains_key("recovered-artifact"));
+    }
+
     /// The leaves are written out verbatim rather than read back from the enum. A leaf is the
     /// identity of an existing user's app-data directory, so a test that asks the enum what
     /// its leaf is would copy a mistyped one into its own assertion and stay green forever.
@@ -14659,6 +15492,604 @@ mod tests {
             target_is_dir,
             purpose,
         }
+    }
+
+    fn write_registry_with_entries(path: &Path, entries: Vec<StoredEntry>) {
+        write_registry(
+            path,
+            &Registry {
+                schema_version: SCHEMA_VERSION,
+                entries,
+                active_database_root: None,
+                active_puzzle_root: None,
+                active_engine_root: None,
+                pending_artifacts: vec![],
+                provisional_attachments: BTreeSet::new(),
+                image_cleanup: vec![],
+            },
+        );
+    }
+
+    fn write_registry(path: &Path, registry: &Registry) {
+        fs::write(path, serde_json::to_vec(registry).unwrap()).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_persistent_file_is_rebound_and_writable_after_open() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        let link = dir.path().join("link");
+        fs::create_dir(&real).unwrap();
+        fs::write(real.join("g.pgn"), b"1. e4 *").unwrap();
+        symlink(&real, &link).unwrap();
+        let path = link.join("g.pgn");
+        let entry = stored_entry_for(
+            &path,
+            "legacy-file",
+            Some(EntryPurpose::PgnFile),
+            canonical_operations(EntryPurpose::PgnFile),
+        );
+        write_registry_with_entries(&dir.path().join("registry.json"), vec![entry]);
+
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let stored = &authority.persistent["legacy-file"].stored;
+        assert_eq!(stored.path.to_path().unwrap(), real.join("g.pgn"));
+        assert_eq!(
+            authority.persistent["legacy-file"].availability,
+            PathAvailability::Available
+        );
+        let resolved = authority
+            .resolve(
+                &PathRef {
+                    id: "legacy-file".into(),
+                },
+                PathOperation::WritePgn,
+                &[],
+            )
+            .unwrap();
+        let snapshot = resolved.pgn_snapshot().unwrap();
+        let _ = resolved
+            .replace_pgn_atomic(&snapshot, |_source, target| {
+                target.write_all(b"1. d4 *").map_err(Error::from)
+            })
+            .unwrap();
+        assert_eq!(fs::read(real.join("g.pgn")).unwrap(), b"1. d4 *");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_persistent_root_is_rebound_and_supports_descriptor_mutation_after_open() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        let link = dir.path().join("link");
+        fs::create_dir(&real).unwrap();
+        fs::create_dir(real.join("workspace")).unwrap();
+        symlink(&real, &link).unwrap();
+        let path = link.join("workspace");
+        let entry = stored_entry_for(
+            &path,
+            "legacy-root",
+            Some(EntryPurpose::PgnWorkspace),
+            canonical_operations(EntryPurpose::PgnWorkspace),
+        );
+        write_registry_with_entries(&dir.path().join("registry.json"), vec![entry]);
+
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        assert_eq!(
+            authority.persistent["legacy-root"]
+                .stored
+                .path
+                .to_path()
+                .unwrap(),
+            real.join("workspace")
+        );
+        let target = authority
+            .workspace_mutation_target(&FileWorkspaceHandle::new(PathRef {
+                id: "legacy-root".into(),
+            }))
+            .unwrap();
+        let directory = target.directory().unwrap();
+        let _ = crate::infra::fs::atomic_replace_at(directory, OsStr::new("created.pgn"), |file| {
+            file.write_all(b"1. e4 *").map_err(Error::from)
+        })
+        .unwrap();
+        assert_eq!(
+            fs::read(real.join("workspace/created.pgn")).unwrap(),
+            b"1. e4 *"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refresh_entry_rejects_a_legacy_spelling_even_when_identity_matches() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        let link = dir.path().join("link");
+        fs::create_dir(&real).unwrap();
+        fs::write(real.join("g.pgn"), b"*").unwrap();
+        symlink(&real, &link).unwrap();
+        let path = link.join("g.pgn");
+        let mut entry = Entry {
+            stored: stored_entry_for(
+                &path,
+                "legacy-refresh",
+                Some(EntryPurpose::PgnFile),
+                canonical_operations(EntryPurpose::PgnFile),
+            ),
+            availability: PathAvailability::Available,
+        };
+        refresh_entry(&mut entry, None);
+        assert_eq!(entry.availability, PathAvailability::Unavailable);
+
+        let mut refreshed_authority = authority(&dir, Arc::new(TestClock::new(0)));
+        refreshed_authority
+            .persistent
+            .insert("legacy-refresh".into(), entry.clone());
+        refreshed_authority.refresh_persistent_id(&PathRef {
+            id: "legacy-refresh".into(),
+        });
+        assert_eq!(
+            refreshed_authority.persistent["legacy-refresh"].availability,
+            PathAvailability::Unavailable
+        );
+
+        fs::create_dir(real.join("workspace")).unwrap();
+        fs::write(real.join("workspace/child.pgn"), b"*").unwrap();
+        let root_entry = stored_entry_for(
+            &link.join("workspace"),
+            "legacy-refresh-root",
+            Some(EntryPurpose::PgnWorkspace),
+            canonical_operations(EntryPurpose::PgnWorkspace),
+        );
+        let child_entry = stored_entry_for(
+            &link.join("workspace/child.pgn"),
+            "legacy-refresh-child",
+            Some(EntryPurpose::PgnFile),
+            canonical_operations(EntryPurpose::PgnFile),
+        );
+        let mut partial_authority = authority(&dir, Arc::new(TestClock::new(0)));
+        partial_authority.persistent.insert(
+            root_entry.id.id.clone(),
+            Entry {
+                stored: root_entry,
+                availability: PathAvailability::Available,
+            },
+        );
+        partial_authority.persistent.insert(
+            child_entry.id.id.clone(),
+            Entry {
+                stored: child_entry,
+                availability: PathAvailability::Available,
+            },
+        );
+        let mut dropped = Vec::new();
+        partial_authority
+            .remove_workspace_entry(
+                &FileWorkspaceHandle::new(PathRef {
+                    id: "legacy-refresh-root".into(),
+                }),
+                WorkspaceRemovalStatus::Partial,
+                &mut dropped,
+            )
+            .unwrap();
+        assert!(!partial_authority
+            .persistent
+            .contains_key("legacy-refresh-child"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rebinding_is_persisted_and_second_open_does_not_acquire_again() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        let link = dir.path().join("link");
+        fs::create_dir(&real).unwrap();
+        fs::write(real.join("g.pgn"), b"*").unwrap();
+        symlink(&real, &link).unwrap();
+        write_registry_with_entries(
+            &dir.path().join("registry.json"),
+            vec![stored_entry_for(
+                &link.join("g.pgn"),
+                "reopen-file",
+                Some(EntryPurpose::PgnFile),
+                canonical_operations(EntryPurpose::PgnFile),
+            )],
+        );
+
+        ACQUIRE_TARGET_CALLS.with(|calls| calls.set(0));
+        let first = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+        assert_eq!(ACQUIRE_TARGET_CALLS.with(|calls| calls.get()), 1);
+        assert_eq!(
+            first.persistent["reopen-file"]
+                .stored
+                .path
+                .to_path()
+                .unwrap(),
+            real.join("g.pgn")
+        );
+        drop(first);
+        let second = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+        assert_eq!(ACQUIRE_TARGET_CALLS.with(|calls| calls.get()), 1);
+        assert_eq!(
+            second.persistent["reopen-file"]
+                .stored
+                .path
+                .to_path()
+                .unwrap(),
+            real.join("g.pgn")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonical_registry_is_not_rewritten_or_acquired() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("g.pgn");
+        fs::write(&file, b"*").unwrap();
+        let registry = dir.path().join("registry.json");
+        write_registry_with_entries(
+            &registry,
+            vec![stored_entry_for(
+                &file,
+                "canonical-file",
+                Some(EntryPurpose::PgnFile),
+                canonical_operations(EntryPurpose::PgnFile),
+            )],
+        );
+        let before = observed_identity(&registry);
+        ACQUIRE_TARGET_CALLS.with(|calls| calls.set(0));
+        let authority = PathAuthority::open(registry.clone(), vec![]).unwrap();
+        assert_eq!(ACQUIRE_TARGET_CALLS.with(|calls| calls.get()), 0);
+        assert_eq!(observed_identity(&registry), before);
+        assert_eq!(
+            authority.persistent["canonical-file"].availability,
+            PathAvailability::Available
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn changed_legacy_object_is_unavailable_while_other_entries_rebind() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        let link = dir.path().join("link");
+        fs::create_dir(&real).unwrap();
+        fs::write(real.join("changed.pgn"), b"old").unwrap();
+        fs::write(real.join("stable.pgn"), b"stable").unwrap();
+        symlink(&real, &link).unwrap();
+        let changed = stored_entry_for(
+            &link.join("changed.pgn"),
+            "changed-entry",
+            Some(EntryPurpose::PgnFile),
+            canonical_operations(EntryPurpose::PgnFile),
+        );
+        let stable = stored_entry_for(
+            &link.join("stable.pgn"),
+            "stable-entry",
+            Some(EntryPurpose::PgnFile),
+            canonical_operations(EntryPurpose::PgnFile),
+        );
+        fs::write(real.join("replacement"), b"new").unwrap();
+        fs::rename(real.join("replacement"), real.join("changed.pgn")).unwrap();
+        write_registry_with_entries(&dir.path().join("registry.json"), vec![changed, stable]);
+
+        let capture = crate::error::LogCaptureScope::start();
+        let authority = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+        let warnings: Vec<_> = capture
+            .records()
+            .into_iter()
+            .filter(|record| record.level == log::Level::Warn)
+            .filter(|record| record.message.contains("changed-entry"))
+            .collect();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].message.contains("identity changed"));
+        assert_eq!(
+            authority.persistent["changed-entry"]
+                .stored
+                .path
+                .to_path()
+                .unwrap(),
+            link.join("changed.pgn")
+        );
+        assert_eq!(
+            authority.persistent["changed-entry"].availability,
+            PathAvailability::Unavailable
+        );
+        assert_eq!(
+            authority.persistent["stable-entry"]
+                .stored
+                .path
+                .to_path()
+                .unwrap(),
+            real.join("stable.pgn")
+        );
+        assert_eq!(
+            authority.persistent["stable-entry"].availability,
+            PathAvailability::Available
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_canonical_proof_keeps_entry_unavailable_without_aborting_open() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        let link = dir.path().join("link");
+        let moved = dir.path().join("moved");
+        fs::create_dir(&real).unwrap();
+        fs::write(real.join("g.pgn"), b"*").unwrap();
+        symlink(&real, &link).unwrap();
+        let entry = stored_entry_for(
+            &link.join("g.pgn"),
+            "proof-failure",
+            Some(EntryPurpose::PgnFile),
+            canonical_operations(EntryPurpose::PgnFile),
+        );
+        write_registry_with_entries(&dir.path().join("registry.json"), vec![entry]);
+
+        let hook_real = real.clone();
+        let hook_moved = moved.clone();
+        ACQUIRE_TARGET_BEFORE_PROOF_HOOK.with(|slot| {
+            slot.replace(Some(Box::new(move || {
+                fs::rename(&hook_real, &hook_moved).unwrap();
+                fs::create_dir(&hook_real).unwrap();
+                fs::write(hook_real.join("g.pgn"), b"replacement").unwrap();
+            })))
+        });
+        let capture = crate::error::LogCaptureScope::start();
+        let authority = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+        assert_eq!(
+            authority.persistent["proof-failure"]
+                .stored
+                .path
+                .to_path()
+                .unwrap(),
+            link.join("g.pgn")
+        );
+        assert_eq!(
+            authority.persistent["proof-failure"].availability,
+            PathAvailability::Unavailable
+        );
+        assert!(
+            capture
+                .messages()
+                .iter()
+                .filter(|message| message.contains("proof-failure"))
+                .count()
+                >= 1
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn leafless_persistent_spelling_is_not_acquired() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = dir.path().join("registry.json");
+        let root = stored_entry_for(
+            Path::new("/"),
+            "leafless-root",
+            Some(EntryPurpose::PgnWorkspace),
+            canonical_operations(EntryPurpose::PgnWorkspace),
+        );
+        write_registry_with_entries(&registry, vec![root]);
+        ACQUIRE_TARGET_CALLS.with(|calls| calls.set(0));
+        let authority = PathAuthority::open(registry, vec![]).unwrap();
+        assert_eq!(ACQUIRE_TARGET_CALLS.with(|calls| calls.get()), 0);
+        assert_eq!(
+            authority.persistent["leafless-root"]
+                .stored
+                .path
+                .to_path()
+                .unwrap(),
+            Path::new("/")
+        );
+        assert_eq!(
+            authority.persistent["leafless-root"].availability,
+            PathAvailability::Available
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hard_rebinding_commit_failure_is_retried_by_the_next_registration() {
+        struct RenameFailure;
+        impl AtomicWriterInjector for RenameFailure {
+            fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+                if point == AtomicFileFaultPoint::Rename {
+                    Err(std::io::Error::other("injected registry rename failure"))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        let link = dir.path().join("link");
+        fs::create_dir(&real).unwrap();
+        fs::write(real.join("legacy.pgn"), b"*").unwrap();
+        symlink(&real, &link).unwrap();
+        let registry = dir.path().join("registry.json");
+        write_registry_with_entries(
+            &registry,
+            vec![stored_entry_for(
+                &link.join("legacy.pgn"),
+                "hard-failure",
+                Some(EntryPurpose::PgnFile),
+                canonical_operations(EntryPurpose::PgnFile),
+            )],
+        );
+
+        let capture = crate::error::LogCaptureScope::start();
+        set_test_atomic_file_injector(Some(Arc::new(RenameFailure)));
+        let mut authority = PathAuthority::open(registry.clone(), vec![]).unwrap();
+        set_test_atomic_file_injector(None);
+        assert_eq!(
+            authority.persistent["hard-failure"]
+                .stored
+                .path
+                .to_path()
+                .unwrap(),
+            real.join("legacy.pgn")
+        );
+        assert_eq!(
+            authority.persistent["hard-failure"].availability,
+            PathAvailability::Available
+        );
+        assert!(!authority.registry_durability_pending);
+        let warnings: Vec<_> = capture
+            .records()
+            .into_iter()
+            .filter(|record| record.level == log::Level::Warn)
+            .filter(|record| record.message.contains("hard-failure"))
+            .collect();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].message.contains("I/O failure"));
+
+        let fresh = dir.path().join("fresh.pgn");
+        fs::write(&fresh, b"fresh").unwrap();
+        authority
+            .get_or_create_persistent_file(
+                &fresh,
+                "fresh",
+                canonical_operations(EntryPurpose::PgnFile),
+            )
+            .unwrap();
+        drop(authority);
+        let reopened = PathAuthority::open(registry, vec![]).unwrap();
+        assert_eq!(
+            reopened.persistent["hard-failure"]
+                .stored
+                .path
+                .to_path()
+                .unwrap(),
+            real.join("legacy.pgn")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn uncertain_rebinding_commit_adopts_entry_and_marks_pending_durability() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        let link = dir.path().join("link");
+        fs::create_dir(&real).unwrap();
+        fs::write(real.join("legacy.pgn"), b"*").unwrap();
+        symlink(&real, &link).unwrap();
+        let registry = dir.path().join("registry.json");
+        write_registry_with_entries(
+            &registry,
+            vec![stored_entry_for(
+                &link.join("legacy.pgn"),
+                "uncertain-rebind",
+                Some(EntryPurpose::PgnFile),
+                canonical_operations(EntryPurpose::PgnFile),
+            )],
+        );
+
+        set_test_atomic_file_injector(Some(Arc::new(crate::infra::fs::ParentSyncFault(
+            "injected parent sync failure",
+        ))));
+        let authority = PathAuthority::open(registry, vec![]).unwrap();
+        set_test_atomic_file_injector(None);
+        assert_eq!(
+            authority.persistent["uncertain-rebind"]
+                .stored
+                .path
+                .to_path()
+                .unwrap(),
+            real.join("legacy.pgn")
+        );
+        assert_eq!(
+            authority.persistent["uncertain-rebind"].availability,
+            PathAvailability::Available
+        );
+        assert!(authority.registry_durability_pending);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn download_destination_rebind_is_canonical_and_usable() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        let link = dir.path().join("link");
+        fs::create_dir_all(real.join("downloads")).unwrap();
+        symlink(&real, &link).unwrap();
+        let id = "download-destination";
+        let entry = stored_entry_for(
+            &link.join("downloads"),
+            id,
+            Some(EntryPurpose::DownloadDestination),
+            canonical_operations(EntryPurpose::DownloadDestination),
+        );
+        write_registry_with_entries(&dir.path().join("registry.json"), vec![entry]);
+        let mut authority = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+        assert_eq!(
+            authority.persistent[id].stored.path.to_path().unwrap(),
+            real.join("downloads")
+        );
+        let resolved = authority
+            .resolve(
+                &PathRef { id: id.into() },
+                PathOperation::DownloadFile,
+                &[OsString::from("installed.pgn")],
+            )
+            .unwrap();
+        let _ = resolved
+            .atomic_replace_download(|file| file.write_all(b"download").map_err(Error::from))
+            .unwrap();
+        assert_eq!(
+            fs::read(real.join("downloads/installed.pgn")).unwrap(),
+            b"download"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn engine_resource_rebind_is_canonical_and_lease_usable() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        let link = dir.path().join("link");
+        fs::create_dir(&real).unwrap();
+        fs::write(real.join("resource.nnue"), b"resource").unwrap();
+        symlink(&real, &link).unwrap();
+        let id = "engine-resource";
+        let entry = stored_entry_for(
+            &link.join("resource.nnue"),
+            id,
+            Some(EntryPurpose::EngineResource),
+            canonical_operations(EntryPurpose::EngineResource),
+        );
+        write_registry_with_entries(&dir.path().join("registry.json"), vec![entry]);
+        let mut authority = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+        assert_eq!(
+            authority.persistent[id].stored.path.to_path().unwrap(),
+            real.join("resource.nnue")
+        );
+        let handle = EngineResourceHandle::new(
+            PathRef { id: id.into() },
+            EngineResourceHandleKind::File,
+            "resource".into(),
+        );
+        let lease = authority.engine_resource(&handle).unwrap();
+        assert!(!lease.uci_value().unwrap().is_empty());
     }
 
     #[test]

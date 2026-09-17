@@ -2113,17 +2113,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .map_err(|error| {
                             format!("engine launch root initialization failed: {error}")
                         })?;
-                crate::infra::path_authority::PathAuthority::open_with_launch_root(
+                crate::infra::path_authority::PathAuthority::open_with_app_data(
                     authority_registry,
                     vec![],
+                    Some(app_data),
+                    Arc::new(crate::infra::path_authority::SystemClock),
+                    256,
                     launch_root,
                 )
                 .map_err(|error| format!("path authority initialization failed: {error}"))?
             };
             #[cfg(not(target_os = "macos"))]
-            let authority =
-                crate::infra::path_authority::PathAuthority::open(authority_registry, vec![])
-                    .map_err(|error| format!("path authority initialization failed: {error}"))?;
+            let authority = crate::infra::path_authority::PathAuthority::open_with_app_data(
+                authority_registry,
+                vec![],
+                Some(app_data),
+                Arc::new(crate::infra::path_authority::SystemClock),
+                256,
+                (),
+            )
+            .map_err(|error| format!("path authority initialization failed: {error}"))?;
             *app.state::<AppState>()
                 .pgn_path_authority
                 .lock()
@@ -3473,6 +3482,19 @@ mod blocking_offload_scans {
             .expect("path authority initialization call");
         assert!(app_data < credential, "{setup}");
         assert!(credential < authority, "{setup}");
+        assert_eq!(
+            setup.matches("PathAuthority::open_with_app_data(").count(),
+            2,
+            "each startup branch must pass the application-data context: {setup}"
+        );
+        for (offset, _) in setup.match_indices("PathAuthority::open_with_app_data(") {
+            let branch = &setup[offset..];
+            assert!(
+                branch.starts_with("PathAuthority::open_with_app_data(")
+                    && branch.contains("Some(app_data)"),
+                "startup branch must pass app_data to the authority constructor: {setup}"
+            );
+        }
         // The application-data path is constructed once and shared by credential
         // initialization and the macOS launch-root setup.
         let call = &setup[app_data..authority];
