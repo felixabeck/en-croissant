@@ -9615,3 +9615,39 @@ fail today for the reason above, and pass after whichever answer is chosen.
   (the same class of blind assertion, on Windows, repaired in `dc7cef24`).
 * **Found by:** orchestrator of the `f-20260917-02` build run, 2026-09-17, while confirming that a
   macOS failure on its own probe round was not caused by its diff.
+
+---
+
+## 2026-09-17 — filed through the inbox spool
+
+### The vendored `scripts/findings.py` has fallen behind agent-kit, so `kit sync --check` is red on every push
+
+* **ID:** f-20260917-10 · **Status:** open · **Area:** docs-agent-config · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `scripts/findings.py` in this repository, last synced at `0d364b5d`
+  ("chore(findings): sync the ledger tool from agent-kit c92f2c1"), against
+  `~/Projekte/agent-kit/scripts/findings.py`. The gate is `pnpm findings:kit:check`, which wraps
+  `kit sync --check .` and is named by `.claude/skills/push/SKILL.md` as running on **every** push.
+* **Defect:** the check fails with `FAIL .: scripts/findings.py does not match agent-kit`. The
+  drift is upstream-forward, not local corruption: the kit copy has gained subcommands and
+  constants this copy does not have — `answer` (publish one answer atomically through the answers
+  spool), `commit-ledger` (commit an expected ledger snapshot by its exact bytes), an `import
+  signal`, and a replacement of `LEDGER_LOCK_RETRY_WINDOW_SECONDS = 1.0` by
+  `LEDGER_LOCK_WAIT_SECONDS = 660.0` plus `MERGE_DRIVER_CONFIG_LOCK_WAIT_SECONDS = 1.0`, whose
+  comments say the longer wait exists so a writer never races an exact-byte pre-commit hook and
+  its termination grace period. The repository copy is simply an older vendor.
+* **Why it matters:** an unconditional gate that is red for a reason no diff caused trains every
+  push to step over it, which is exactly how a real parity failure gets waved through. The lock
+  constants are the sharper half: this copy's one-second retry window is the behaviour the kit
+  deliberately replaced to stop a ledger writer racing a hook, so a drain writing the ledger here
+  runs with the timing the kit has already judged wrong.
+* **Open question:** is re-vendoring just `kit sync .` plus a commit, or does adopting the newer
+  tool require anything of this repository — the `commit-ledger` path implies an exact-byte
+  pre-commit hook and a merge driver, and this ledger's header, `.gitattributes` and hooks would
+  have to be checked against what the new copy expects before the tool starts assuming them.
+  Answering that is the work; the sync itself is one command.
+* **Related:** `f-20260829-14` (the `_atomic_write` failure reporting this gate's sibling test
+  pins), and the 2026-09-02 resolution recorded in this ledger that made `kit sync --check` the
+  living enforcement after the three-way parity mesh was deleted.
+* **Found by:** orchestrator of the `f-20260917-02` build run, 2026-09-17, running the full push
+  gate set. Not caused by that run's diff: it touches no file under `scripts/`, and
+  `scripts/findings.py` is clean in the working tree.
