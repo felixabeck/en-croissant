@@ -9657,6 +9657,42 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
   `scratchpad/lens-root-cause.txt`, `scratchpad/lens-tests.txt`).
 <!-- ledger-meta {"command":"annotate","effect_lines":15,"effect_sha256":"0d5dff8f2145b44a86d4a6cbec215d10757f80780ad76a0a2c1aa6d186d9f385","input_sha256":"5f4d7e611de17b6b82e90ff2e92ac10c1ed53c08fb604f57fba218591ce646d1","kind":"mutation-receipt","operation":"9fe29bbd6aba02edd54ff2035cb9f1022fec08eea25fcc933815496853d37cd9","options":{"section":null},"request_id_sha256":null,"results":["f-20260917-09"],"target":"f-20260917-09","v":1} -->
 
+* **Handled 2026-09-17** in commits `42d6d699` (the after-spawn hook), `bb8eb823` (the three
+  remaining launch injectors, after push review), `c10e9db9` (proving each injector fired), all
+  pushed as part of `09032702..c10e9db9`. The open question is answered: **the fixture, not the
+  engine-resource lease.** `GAME_ENGINE_AFTER_SPAWN_HOOK` was one process-global `Option<FnOnce>`
+  drained by every game-engine spawn at the top of `initialize_configured_game_engine`, four other
+  `#[cfg(unix)]` tests in `game.rs` spawn game engines, and `cargo test` runs them in parallel in
+  one process — so a foreign spawn consumed this test's hook, and when it did so before this test's
+  own `resolve_launch` the resource was already replaced at authorization time, leaving a different
+  refusal message while `replaced` was already `true`. Linux was immune because the hook was
+  compiled out there.
+* **What replaced it:** `infra::test_hooks::KeyedTestValues<K, V>` (alias `KeyedTestHooks<K>`) holds
+  every one-shot test value against the identity the fire site knows, so it is taken at most once,
+  only for its own operation, and a second armer replaces rather than discards silently. Five
+  injectors now use it: the game after-spawn hook and both `resolve_launch` hooks keyed by
+  `EngineKey`, the two `create_from` injectors keyed by the leaf's `engine_key`, plus the already
+  keyed `RESOURCE_VERIFY_HOOKS`. `engine_launch_key` is the single spelling of that string.
+* **The assertion is no longer blind:** the test reports the actual error, or the key the engine
+  started under, and the `replaced` assertion says what did not happen. Note that the `Where` line
+  filed with this entry points at the old `assert!(matches!(...))`; the diagnostic `match` now sits
+  a few lines above the end of that test, and the test's name is unchanged.
+* **Proof:** the registry's own test stages all four reverts and executes on every platform
+  (reverting the key match fails it with "an operation with a different identity consumed an armed
+  hook"); locally `cargo test` 1254 passed / 0 failed, clippy and fmt clean, the contract, kit
+  parity, backend-test and backend-coverage gates green; on the runner, `rust-macos-test` on the
+  pushed commit `c10e9db9` is **green** (run 35246951216), which is also the first compile of the
+  macOS-gated edits, since this machine has no macOS toolchain (`cargo check --target
+  aarch64-apple-darwin` fails in `ring`'s C build).
+* **Review:** push review ran eight lenses; `review-root-cause` returned `REVISE` in round 1 with
+  three blockers (the unkeyed sibling injectors) and `review-tests` two should-fix (fixtures that
+  passed whether or not their injector fired). Both were fixed, not deferred; round 2 returned
+  `APPROVED` from both. Skipped with evidence: keying by `EngineKey` plus generation — `admit`
+  cancels the previous admission for the same key, and the `create_from` sites know only the engine
+  key string. Lenses ran on Gemini until its individual quota was reached mid-review and finished on
+  Codex through the sanctioned `leaf-quota-retry.py` replacement. Decision: `d-20260917-12`.
+<!-- ledger-meta {"command":"annotate","effect_lines":34,"effect_sha256":"bdd7902104a21cd012894a407f02ecd87336e160e9001ac660ebd0c2aa1bb9cb","input_sha256":"77bb985cffa9b2e5e59502fe66126274ec2b13af05c91b5761e0c41d113faade","kind":"mutation-receipt","operation":"22210d3676f63d6c8ac16988975c74a6c4a2a7ce4946dd2e7ccb3cf6a9757d96","options":{"section":null},"request_id_sha256":null,"results":["f-20260917-09"],"target":"f-20260917-09","v":1} -->
+
 ---
 
 ## 2026-09-17 — filed through the inbox spool
