@@ -653,6 +653,15 @@ async fn delete_puzzle_database_resolved(
     puzzle_cache: Arc<tokio::sync::Mutex<PuzzleCache>>,
     cancellation: tokio_util::sync::CancellationToken,
 ) -> Result<(), Error> {
+    let delete_resolved =
+        |resolved: &crate::infra::path_authority::ResolvedPath| -> Result<Option<Error>, Error> {
+            match resolved.delete_puzzle_database() {
+                Ok(()) => Ok(None),
+                Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(error @ Error::CommittedDurabilityUncertain(_)) => Ok(Some(error)),
+                Err(error) => Err(error),
+            }
+        };
     let deleted_path = path.clone();
     let deletion_and_cleanup = BLOCKING_GATEWAY
         .spawn_cancellable(cancellation, move |token| {
@@ -661,14 +670,9 @@ async fn delete_puzzle_database_resolved(
                     let canonical_path = target.path().to_owned();
                     let deletion_error =
                         match repository.delete_exclusive_cancellable(&target, token, || {
-                            match resolved.delete_puzzle_database() {
-                                Ok(()) => Ok(()),
-                                Err(Error::Io(error))
-                                    if error.kind() == std::io::ErrorKind::NotFound =>
-                                {
-                                    Ok(())
-                                }
-                                Err(error) => Err(error),
+                            match delete_resolved(&resolved)? {
+                                Some(error) => Err(error),
+                                None => Ok(()),
                             }
                         }) {
                             Ok(()) => None,
@@ -681,18 +685,7 @@ async fn delete_puzzle_database_resolved(
                     if token.is_cancelled() {
                         return Err(Error::Cancellation);
                     }
-                    let deletion_error = match resolved.delete_puzzle_database() {
-                        Ok(()) => Ok(()),
-                        Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-                            Ok(())
-                        }
-                        Err(error) => Err(error),
-                    };
-                    match deletion_error {
-                        Ok(()) => (None, None),
-                        Err(error @ Error::CommittedDurabilityUncertain(_)) => (None, Some(error)),
-                        Err(error) => return Err(error),
-                    }
+                    (None, delete_resolved(&resolved)?)
                 }
                 Err(error) => return Err(error),
             };
@@ -718,15 +711,17 @@ async fn delete_puzzle_database_resolved(
     };
     let mut cache = puzzle_cache.lock().await;
     cache.invalidate_database(&deleted_path);
-    if let Some(canonical_path) = canonical_path {
-        if canonical_path != deleted_path {
-            cache.invalidate_database(&canonical_path);
+    if let Some(canonical_path) = canonical_path.as_ref() {
+        if canonical_path != &deleted_path {
+            cache.invalidate_database(canonical_path);
         }
     }
     if let Some(deletion_error) = deletion_error {
         if let Err(cleanup_error) = registry_cleanup {
+            let database_path = canonical_path.as_deref().unwrap_or(&deleted_path);
             log::warn!(
-                "puzzle database registry cleanup failed after durability uncertainty: {cleanup_error}"
+                "puzzle database registry cleanup failed after durability uncertainty for {}: {cleanup_error}",
+                database_path.display()
             );
         }
         return Err(deletion_error);

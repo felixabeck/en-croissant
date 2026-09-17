@@ -1460,13 +1460,17 @@ mod tests {
     #[test]
     fn legacy_index_mapping_is_dropped_before_removal() {
         let source = source_for("db/search_index.rs");
-        let body =
+        let probe =
+            compact(&source[braced_body(source, "pub(crate) fn probe_legacy_index_sidecar_at(")]);
+        let promotion =
             compact(&source[braced_body(source, "pub(crate) fn promote_legacy_index_sidecar_at(")]);
-        let drop_position = body.find("drop(archive)");
-        let remove_position = body.find("remove_entry_at(parent,legacy_leaf,legacy_object,false)");
         assert!(
-            matches!((drop_position, remove_position), (Some(drop), Some(remove)) if drop < remove),
-            "Windows refuses a still-mapped legacy index (ERROR_USER_MAPPED_FILE): drop(archive) must precede remove_entry_at"
+            probe.contains("drop(archive)")
+                && promotion
+                    .find("probe_legacy_index_sidecar_at(")
+                    .zip(promotion.find("remove_entry_at(parent,legacy_leaf,legacy_object,false)"))
+                    .is_some_and(|(probe, remove)| probe < remove),
+            "Windows refuses a still-mapped legacy index (ERROR_USER_MAPPED_FILE): the provenance probe must drop the archive before promotion removes the legacy sidecar"
         );
     }
 

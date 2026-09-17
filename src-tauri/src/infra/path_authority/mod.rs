@@ -609,25 +609,11 @@ impl DatabaseFileTarget {
     pub(crate) fn open_current(&self) -> Result<fs::File, Error> {
         const CONFLICT: &str = "database changed after capability resolution";
 
-        fn map_probe_error(error: Error) -> Error {
+        fn map_probe_error(class: ProbeErrorClass, error: Error) -> Error {
             if matches!(error, Error::Conflict(_)) {
                 return Error::Conflict(CONFLICT.into());
             }
-            match classify_probe_error_kind(&error) {
-                ProbeErrorClass::NotFound
-                | ProbeErrorClass::Reparse
-                | ProbeErrorClass::WrongKind => Error::Conflict(CONFLICT.into()),
-                ProbeErrorClass::Malformed
-                | ProbeErrorClass::MappedFile
-                | ProbeErrorClass::Other => error,
-            }
-        }
-
-        fn map_probe_error_at(error: Error, parent: &fs::File, leaf: &OsStr) -> Error {
-            if matches!(error, Error::Conflict(_)) {
-                return Error::Conflict(CONFLICT.into());
-            }
-            match classify_probe_error(&error, parent, leaf) {
+            match class {
                 ProbeErrorClass::NotFound
                 | ProbeErrorClass::Reparse
                 | ProbeErrorClass::WrongKind => Error::Conflict(CONFLICT.into()),
@@ -643,13 +629,15 @@ impl DatabaseFileTarget {
             false,
             ParentAccess::Readable,
         )
-        .map_err(map_probe_error)?;
+        .map_err(|error| map_probe_error(classify_probe_error_kind(&error), error))?;
         if opened_file_identity(&parent_now)? != opened_file_identity(&self.parent)? {
             return Err(Error::Conflict(CONFLICT.into()));
         }
         let file =
             crate::infra::fs::open_regular_at(&parent_now, &leaf, RegularFileAccess::ReadOnly)
-                .map_err(|error| map_probe_error_at(error, &parent_now, &leaf))?;
+                .map_err(|error| {
+                    map_probe_error(classify_probe_error(&error, &parent_now, &leaf), error)
+                })?;
         if opened_file_identity(&file)? != self.identity {
             return Err(Error::Conflict(CONFLICT.into()));
         }

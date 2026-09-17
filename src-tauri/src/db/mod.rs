@@ -42,7 +42,7 @@ use crate::{
     AppState, SearchCache,
 };
 
-use crate::infra::fs::{entry_identity_at, remove_entry_at, RegularFileAccess};
+use crate::infra::fs::{entry_identity_at, remove_entry_at};
 use chrono::{NaiveDate, NaiveTime};
 use diesel::{
     connection::{DefaultLoadingMode, SimpleConnection},
@@ -2366,7 +2366,8 @@ fn delete_database_blocking(
     if let Some(error) = deletion_durability {
         if let Err(cleanup_error) = registry_result {
             log::warn!(
-                "database registry cleanup failed after durability uncertainty: {cleanup_error}"
+                "database registry cleanup failed after durability uncertainty for {}: {cleanup_error}",
+                target.path().display()
             );
         }
         return finish_database_deletion(primary_gone, unlinked, Err(error));
@@ -2547,32 +2548,24 @@ fn legacy_sidecar_matches(
     leaf: &OsStr,
     expected_source: &IndexSource,
 ) -> Result<Option<(u64, u64)>, Error> {
-    let file = match crate::infra::fs::open_regular_at(parent, leaf, RegularFileAccess::ReadOnly) {
-        Ok(file) => file,
-        Err(error) => {
-            match crate::infra::path_authority::classify_probe_error(&error, parent, leaf) {
-                crate::infra::path_authority::ProbeErrorClass::NotFound
-                | crate::infra::path_authority::ProbeErrorClass::Reparse
-                | crate::infra::path_authority::ProbeErrorClass::WrongKind => return Ok(None),
-                crate::infra::path_authority::ProbeErrorClass::Malformed
-                | crate::infra::path_authority::ProbeErrorClass::MappedFile
-                | crate::infra::path_authority::ProbeErrorClass::Other => return Err(error),
+    let probe =
+        match search_index::probe_legacy_index_sidecar_at(parent, leaf, expected_source, None) {
+            Ok(probe) => probe,
+            Err(error) => {
+                match crate::infra::path_authority::classify_probe_error(&error, parent, leaf) {
+                    crate::infra::path_authority::ProbeErrorClass::NotFound
+                    | crate::infra::path_authority::ProbeErrorClass::Reparse
+                    | crate::infra::path_authority::ProbeErrorClass::WrongKind
+                    | crate::infra::path_authority::ProbeErrorClass::Malformed => return Ok(None),
+                    crate::infra::path_authority::ProbeErrorClass::MappedFile
+                    | crate::infra::path_authority::ProbeErrorClass::Other => return Err(error),
+                }
             }
-        }
-    };
-    if !file.metadata()?.is_file() {
+        };
+    if !probe.source_matches {
         return Ok(None);
     }
-    let identity = crate::infra::path_authority::opened_file_identity(&file)?;
-    let archive = match MmapSearchIndex::open_file(file) {
-        Ok(archive) => archive,
-        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => return Ok(None),
-        Err(error) => return Err(Error::Io(Box::new(error))),
-    };
-    if archive.source() != expected_source {
-        return Ok(None);
-    }
-    Ok(Some(identity))
+    Ok(Some(probe.identity))
 }
 
 fn delete_orphaned_data(db: &mut SqliteConnection) -> Result<(), Error> {

@@ -851,6 +851,39 @@ pub(crate) fn legacy_sidecar_leaf(database_leaf: &OsStr) -> OsString {
         .into_os_string()
 }
 
+pub(crate) struct LegacySidecarProbe {
+    pub(crate) file: File,
+    pub(crate) identity: (u64, u64),
+    pub(crate) source_matches: bool,
+}
+
+pub(crate) fn probe_legacy_index_sidecar_at(
+    parent: &File,
+    leaf: &OsStr,
+    expected_source: &IndexSource,
+    cancellation: Option<&CancellationToken>,
+) -> Result<LegacySidecarProbe, Error> {
+    let file = crate::infra::fs::open_regular_at(
+        parent,
+        leaf,
+        crate::infra::fs::RegularFileAccess::ReadOnly,
+    )?;
+    let identity = crate::infra::path_authority::opened_file_identity(&file)?;
+    let archive = match cancellation {
+        Some(cancellation) => {
+            MmapSearchIndex::open_file_cancellable(file.try_clone()?, cancellation)?
+        }
+        None => MmapSearchIndex::open_file(file.try_clone()?).map_err(Error::from)?,
+    };
+    let source_matches = archive.source() == expected_source;
+    drop(archive);
+    Ok(LegacySidecarProbe {
+        file,
+        identity,
+        source_matches,
+    })
+}
+
 /// Promotes the pre-2.0 extension-replacing sidecar without ever overwriting
 /// an appended sidecar. Only a validated current-version archive whose complete recorded
 /// database provenance matches `db_path` is eligible. The new file is
@@ -915,35 +948,30 @@ pub(crate) fn promote_legacy_index_sidecar_at(
             }
         }
     }
-    let mut source = match crate::infra::fs::open_regular_at(
-        parent,
-        legacy_leaf,
-        crate::infra::fs::RegularFileAccess::ReadOnly,
-    ) {
-        Ok(file) => file,
-        Err(error) => {
-            match crate::infra::path_authority::classify_probe_error(&error, parent, legacy_leaf) {
-                crate::infra::path_authority::ProbeErrorClass::NotFound
-                | crate::infra::path_authority::ProbeErrorClass::Reparse
-                | crate::infra::path_authority::ProbeErrorClass::WrongKind
-                | crate::infra::path_authority::ProbeErrorClass::Malformed => return Ok(false),
-                crate::infra::path_authority::ProbeErrorClass::MappedFile
-                | crate::infra::path_authority::ProbeErrorClass::Other => return Err(error),
-            }
-        }
-    };
-    let archive = match MmapSearchIndex::open_file_cancellable(source.try_clone()?, cancellation) {
-        Ok(archive) => archive,
-        Err(Error::Io(error)) if error.kind() == io::ErrorKind::InvalidData => return Ok(false),
-        Err(error) => return Err(error),
-    };
     let expected = IndexSource::from_database_identity(db_identity)?;
-    let matches = archive.source() == &expected;
-    drop(archive);
-    if !matches {
+    let probe =
+        match probe_legacy_index_sidecar_at(parent, legacy_leaf, &expected, Some(cancellation)) {
+            Ok(probe) => probe,
+            Err(error) => {
+                match crate::infra::path_authority::classify_probe_error(
+                    &error,
+                    parent,
+                    legacy_leaf,
+                ) {
+                    crate::infra::path_authority::ProbeErrorClass::NotFound
+                    | crate::infra::path_authority::ProbeErrorClass::Reparse
+                    | crate::infra::path_authority::ProbeErrorClass::WrongKind
+                    | crate::infra::path_authority::ProbeErrorClass::Malformed => return Ok(false),
+                    crate::infra::path_authority::ProbeErrorClass::MappedFile
+                    | crate::infra::path_authority::ProbeErrorClass::Other => return Err(error),
+                }
+            }
+        };
+    if !probe.source_matches {
         return Ok(false);
     }
-    let legacy_object = crate::infra::path_authority::opened_file_identity(&source)?;
+    let mut source = probe.file;
+    let legacy_object = probe.identity;
     let outcome = atomic_replace_at(parent, preferred_leaf, |destination| {
         crate::infra::fs::assert_entry_identity(parent, legacy_leaf, legacy_object, false)?;
         let mut buffer = [0_u8; 64 * 1024];
