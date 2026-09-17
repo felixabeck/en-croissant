@@ -3245,3 +3245,25 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
   pathname.
 * **Decided by:** build run f-20260917-02, session d3c37561, 2026-09-17 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":20,"effect_sha256":"850cd40539606558cf35e5c507ae420c969dbcdd7dd7325f564a698841f11a26","input_sha256":"4a1222cd861ba13f729ed46a0df860c443e1e7cf44641dddbeaca47914002b91","kind":"mutation-receipt","operation":"6262cd85f7791a084df3c88487c2501c40c5fecdddfa03daee18ee04f79b0e74","options":{"section":null},"request_id_sha256":null,"results":["d-20260917-09"],"target":"decisions-ledger","v":1} -->
+
+### d-20260917-10 — What proves a Windows repair, given there is no Windows runtime on this machine?
+
+* **Question:** What proves a Windows repair, given there is no Windows runtime on this machine?
+* **Governs:** f-20260917-02
+* **Chosen:** the unmodified `Test` workflow's `rust-windows-test` job, read fail-closed in two
+  steps. *Readable* = remote ref SHA == run `headSha` == local `HEAD` and `status: completed`;
+  *green* = readable and the job's `conclusion: success`. The repair is committed on `master` and
+  a slash-free ref `probe-windows-failures` is pushed **from** master, so the runner measures the
+  exact content that will be published and nothing is ever merged out of a branch.
+* **Rejected:** (a) a dedicated diagnostic workflow with `continue-on-error` steps — its green is
+  meaningless by construction, and keeping it forced a contradiction between "the probe ref is
+  exactly master" and "the probe ref carries a workflow master lacks"; (b) developing on the probe
+  branch and merging back, which proves a branch and can leave master red; (c) adding `probe/**`
+  to master's `test.yml` triggers, which puts scaffolding in a production workflow.
+* **Reason:** the diagnostic workflow existed only because the access violation truncated libtest
+  before it printed its `failures:` section. Removing the crash removes the reason. The two-step
+  read matters because the enumeration phase deliberately consumes a *failing* run — a failing job
+  on a readable run is a measurement, a failing job on an unreadable run is nothing, and requiring
+  `success` before reading anything would have made that phase unreachable.
+* **Decided by:** build run f-20260917-02, session d3c37561, 2026-09-17 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":20,"effect_sha256":"6e26534b6983d654d7cd93c320f6f6209326e8aeb309933fd2527485a285b2de","input_sha256":"675cf9ee04c8cd5b838f5f27cd49b2031fb862af0ebbeb0dadce7a5862e98a89","kind":"mutation-receipt","operation":"93e3711adc1c6f2c78d7252a136d0cb0431523b4edc15934c5a9383b6e4718de","options":{"section":null},"request_id_sha256":null,"results":["d-20260917-10"],"target":"decisions-ledger","v":1} -->
