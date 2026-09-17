@@ -9607,7 +9607,7 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 
 ### `production_game_engine_directory_replacement_is_refused_before_any_option` fails intermittently on the macOS runner
 
-* **ID:** f-20260917-09 · **Status:** open · **Area:** native-fs · **Root:** non-linux-platform-port · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260917-09 · **Status:** handled · **Area:** native-fs · **Root:** non-linux-platform-port · **Entry:** lens · **Blocked:** none
 * **Where:** `src-tauri/src/game.rs:3559` — the assertion
   `matches!(result, Err(Error::Conflict(message)) if message == "engine resource changed after authorization")`
   in `game::tests::production_game_engine_directory_replacement_is_refused_before_any_option`.
