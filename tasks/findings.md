@@ -9163,7 +9163,7 @@ it. No Windows runtime evidence exists for any of it (`f-20260917-02`); the Wind
 
 ### `open_windows_child` truncates the NT component length to `u16`, so an over-long name opens a different file
 
-* **ID:** f-20260916-03 · **Status:** open · **Area:** native-fs · **Root:** non-linux-platform-port · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260916-03 · **Status:** handled · **Area:** native-fs · **Root:** non-linux-platform-port · **Entry:** lens · **Blocked:** none
 * **Where:** `open_windows_child` (`src-tauri/src/infra/path_authority/mod.rs:2747-2751`), which builds `UNICODE_STRING { Length: (wide.len() * 2) as u16, MaximumLength: (wide.len() * 2) as u16, Buffer: … }`; the validator that lets the name through is `validate_components` (`:3130-3153`).
 * **Defect:** the byte length is cast to `u16` with no bound, while `validate_components` accepts a single component of arbitrary length. A component of 32,768 UTF-16 units or more wraps the cast, so `NtCreateFile` is handed a shorter length than the caller's name: `"victim"` followed by 32,768 characters presents to NT as `victim`. Every later descriptor-relative operation, including an atomic replacement, then acts on an object the caller never named.
 * **Why it matters:** the path authority exists so that a renderer-supplied name addresses exactly the object it was authorised for. This silently breaks that identity and can overwrite an unintended file. It is unreachable today only because the Windows filesystem paths refuse first; enabling them (`f-20260914-10`) makes it reachable.
