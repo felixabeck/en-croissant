@@ -9170,6 +9170,35 @@ it. No Windows runtime evidence exists for any of it (`f-20260917-02`); the Wind
 * **Related:** `f-20260914-10` (the Windows atomic-replacement port, which makes this reachable and from whose plan this was cut as out-of-mandate, exactly as the alternate-stream gap `f-20260916-02` was); `f-20260916-02` (same helper, same validator, same class of input validation).
 * **Found by:** `review-tauri-security` (confidence 98) in round 5 of the `f-20260914-10` plan review, 2026-09-16, on Codex; source-verified by the orchestrator at the lines above.
 
+**Handled 2026-09-17** by the `f-20260914-09` Windows database port, commit `cd3132dd`, together
+with `f-20260916-02` and under the same scope amendment: `create_database_child` takes a
+renderer-supplied filename, so enabling database creation on Windows put an arbitrarily long
+component on a live route into `open_windows_child`.
+
+**Two guards, deliberately both.** The shared cfg-free `windows_component_refusal` rejects any
+component over 255 UTF-16 units, the NTFS/ReFS maximum, at both gates — so a name long enough to
+wrap the cast can no longer reach it. And the cast itself is gone: `open_windows_child` now builds
+its `UNICODE_STRING` lengths through `unicode_string_lengths(utf16_units) -> Option<(u16, u16)>`,
+which multiplies with `checked_mul`, converts with `u16::try_from`, and returns `None` rather than
+truncating.
+
+The second guard was called redundant by a `review-minimalism` nit (confidence 96) in round 2 of
+the plan review, since the component gate now runs first. **Rejected, with reason:** a silent
+truncation opens a *different object* with no error anywhere, this cast is this finding's literal
+subject, and the check is one comparison. A guard whose absence is unobservable is the kind this
+repository keeps.
+
+**Proof:** `unicode_string_lengths` is cfg-free and unit-tested on Linux at 255, 256 and 32 768
+units, with a source pin that `open_windows_child` actually calls it — the helper and its test
+would both survive a call site reverted to `as u16`, which is why the pin is there. It carries
+`#[cfg_attr(not(windows), allow(dead_code))]` and a comment saying why it is not `#[cfg(windows)]`:
+a gated helper could not be tested on the platform that runs the tests. No Windows runtime evidence
+exists (`f-20260917-02`); the Windows-target check and `clippy -D warnings` are green.
+
+**Related:** `f-20260916-02` (same helper, same validator, closed in the same commit),
+`f-20260914-09`. Review record: `tasks/handoffs/2026-09-17-f-20260914-09-review.md`.
+<!-- ledger-meta {"command":"annotate","effect_lines":27,"effect_sha256":"86b242100bdce4c449bf8a8dd8327045f0b9ab83295797aafb81ec4e0a55ebb5","input_sha256":"78e198e343a1e8cd45892410e7d1797a25f3ea165f0b62214b31f7f7113e5de3","kind":"mutation-receipt","operation":"25ce2197f5b19da9a24e975de9a5be2dddff258c20bd54aa67a879df8675628f","options":{"section":null},"request_id_sha256":null,"results":["f-20260916-03"],"target":"f-20260916-03","v":1} -->
+
 ---
 
 ## 2026-09-16 — filed through the inbox spool
