@@ -9764,3 +9764,13 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
   which of two explanations it is; that entry's repair is the pattern).
 * **Found by:** the `$push` run of `f-20260917-09`, 2026-09-17, reading CI run 35246951216 after
   pushing `09032702..c10e9db9`; re-run of the same job was requested to measure intermittency.
+
+* **Annotated 2026-09-17 (intermittency confirmed; status stays open):** the failed `test` job of
+  run 35246951216 was re-run unchanged, on the same commit `c10e9db9`, and came back **green** —
+  `the finaliser does not remove a fence it does not own` passed. Two observations of the same
+  content, one red and one green, so this is intermittent rather than a regression, and the
+  contract gate on a local run of that identical tree was green both before and after the push.
+  That settles *what* it is and not *which* of the two explanations: the assertion that fires
+  (`result.code === 1`) precedes the stderr assertion, so a failing run still prints nothing about
+  whether the fence survived.
+<!-- ledger-meta {"command":"annotate","effect_lines":8,"effect_sha256":"7169568622599e18dbb435cae9f472ec0d5ac1fde866a0ee2fcdc3348389f65d","input_sha256":"2557536c1ac8169c61ad54862b0296bc855ac9609066f4c2e9ffae6bfe9e6ea9","kind":"mutation-receipt","operation":"4f717cae1b04fc979dc4c81fcf4c0776237730cd79990f0429c37a237963cbeb","options":{"section":null},"request_id_sha256":null,"results":["f-20260917-11"],"target":"f-20260917-11","v":1} -->
