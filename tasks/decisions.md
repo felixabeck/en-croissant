@@ -3288,3 +3288,37 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
   claimed closed, because no in-process oracle can catch a defect inside the shared sequence.
 * **Decided by:** build run f-20260917-02, session d3c37561, 2026-09-17 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":19,"effect_sha256":"64ee2f9d785c7f44d0b93b85158edd809740a4a6190e23bd87b6e21edc5e69ab","input_sha256":"691e99988a9d6cf4edcc59bccb7dfd5662002a44d8f61e61f99a6de811d0a137","kind":"mutation-receipt","operation":"ca2416e3f55b4bfdba62ebdfe7a20ebf24f26096db9a3f8bd82553696f9a16b2","options":{"section":null},"request_id_sha256":null,"results":["d-20260917-11"],"target":"decisions-ledger","v":1} -->
+
+### d-20260917-12 — How does a one-shot test hook survive parallel tests, and what proves the macOS fixture without a macOS runtime?
+
+* **Question:** How does a one-shot test hook survive `cargo test`'s parallel harness, and what
+  proves the macOS fixture is no longer timing-dependent when there is no macOS runtime here?
+* **Governs:** f-20260917-09
+* **Chosen:** hold every one-shot test hook in `infra::test_hooks::KeyedTestHooks<K>`, keyed by an
+  identity the fire site already knows — the admitted `EngineKey` for the game-engine after-spawn
+  hook and for both `resolve_launch` hooks, the resource value for `RESOURCE_VERIFY_HOOKS`. A hook
+  fires only for its own operation, at most once, and arming a second hook cannot discard the
+  first. The proof that executes everywhere is the registry's own test, which stages all four
+  reverts (key match, single-slot storage, one-shot removal, clear); the macOS-only fixture is
+  then confirmed by `rust-macos-test` on the unmodified `Test` workflow, read the way
+  `d-20260917-10` reads the Windows job.
+* **Rejected:** (a) only replacing the blind `assert!(matches!(...))` with a diagnostic `match`,
+  which the finding names as the first step — it makes the next failure legible but leaves the
+  race in place, and the cause was derivable from source without spending another red CI run;
+  (b) serialising the macOS engine tests behind a test mutex, which hides the shared-slot defect
+  instead of removing it and slows every run; (c) a thread-local hook slot, which the fire site
+  cannot rely on because the initialization future is not guaranteed to run on the arming thread;
+  (d) keying only the game-engine hook and filing the two `resolve_launch` slots as a new finding
+  — same mechanism, same files this run had loaded, and `ENGINE_LAUNCH_RESOLUTION_HOOK` is
+  `cfg(unix)`, so its exposure is wider than the one that actually failed.
+* **Reason:** the intermittency is the fixture, not the engine-resource lease: the replacement
+  landing before the authorization snapshot (rather than after it) is precisely what a stolen
+  hook produces, and it explains every measured detail — Linux green because the hook was
+  compiled out, `replaced` true while only the `matches!` assertion failed, and a failure on a
+  commit that touches nothing on the unix path. Keying is the only option that removes the class
+  rather than narrowing it. A macOS toolchain is not available on this machine
+  (`cargo check --target aarch64-apple-darwin` fails in `ring`'s C build for lack of a darwin
+  `cc`), so the macOS-gated bodies were typechecked by source probe on Linux and the platform
+  proof is the runner.
+* **Decided by:** Claude Code, autonomously under `full auto`, next-finding run f-20260917-09 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":32,"effect_sha256":"3a4da86f91dde789960e1af04b994c7dc5e51e821c5172e2f308bb4f65666856","input_sha256":"b81d4bf73c326d2b20b4f8866d1f6d25a1027ef27f5e4a84fef7d75d8feea691","kind":"mutation-receipt","operation":"8bff492e3a26d1c5faa8572c7fd44553f2905e0915ff121520eb0987ebde59f6","options":{"section":null},"request_id_sha256":null,"results":["d-20260917-12"],"target":"decisions-ledger","v":1} -->
