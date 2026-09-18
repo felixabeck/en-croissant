@@ -8763,6 +8763,9 @@ Code b7f52cd4, 285a96d4, 8d8e4274, 25636945. Windows runtime is rust-windows-tes
 * **Related:** `f-20260830-06` (parent), `d-20260906-04`, `d-20260905-11`.
 * **Found by:** `f-20260830-06` slice-1 plan, 2026-09-14 (reversal path of `d-20260906-04` now open).
 
+* **Handled 2026-09-18 (next-finding slice, DeepSeek Full Auto):** unified bundled sound on the existing 127.0.0.1 axum server on every platform. Deleted `sound_resource_path`, the renderer `isLinux`/`convertFileSrc` branch, the `assetProtocol` grant, CSP `asset:`, and the `protocol-asset` feature. `d-20260918-12` records the unification. Code `8738ccf5`; review pin `178c494d`; decision `81b0cc1c`. Review record: `tasks/handoffs/2026-09-18-f-20260914-13-review.md`. Members left open at `build`: `f-20260914-15`, `f-20260914-29`, `f-20260917-04`, `f-20260917-13`.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"9e653170e873b99dee91ac11ac4daf4b139385668969c946ab6743c108ad4a7d","input_sha256":"00eb3b8962bd7cf292a256a79193b3da91bdf3fec2e62e356138fdca1bd5d48c","kind":"mutation-receipt","operation":"0e41ced2529ee959659ba352ea3fc975ef513a9fd97a3432d4063fa3c3fa1c82","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-13"],"target":"f-20260914-13","v":1} -->
+
 ### Account game exports share one progress id per player across concurrent exports
 
 * **ID:** f-20260914-14 · **Status:** open · **Area:** bindings-ipc · **Root:** - · **Entry:** build · **Blocked:** none
