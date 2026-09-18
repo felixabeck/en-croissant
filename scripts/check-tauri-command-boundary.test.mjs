@@ -225,6 +225,13 @@ describe("capability and CSP boundaries", () => {
   test("accepts a CSP without the asset scheme", () => {
     expect(inspectCsp("default-src 'self'; media-src 'self' http://127.0.0.1:*")).toEqual([]);
   });
+
+  test("production CSP keeps loopback media-src for the sound server", () => {
+    const config = JSON.parse(
+      readFileSync(join(REPOSITORY_ROOT, "src-tauri/tauri.conf.json"), "utf8"),
+    );
+    expect(config.app.security.csp).toMatch(/media-src[^;]*http:\/\/127\.0\.0\.1:\*/);
+  });
 });
 
 describe("native-location and asset-protocol boundaries", () => {

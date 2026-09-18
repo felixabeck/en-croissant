@@ -2140,7 +2140,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             specta_builder.mount_events(app);
 
-            // sound-startup
+            // sound-startup — sliced by sound_startup_keeps_all_four_outcomes_distinguishable
             let (port, lifecycle) =
                 match crate::infra::path_authority::ResourceDir::for_app(app.handle()) {
                     Err(error) => {
@@ -2192,7 +2192,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 };
             app.manage(sound::SoundServerPort(port));
             app.manage(lifecycle);
-            // sound-startup-end
+            // sound-startup-end — sliced by sound_startup_keeps_all_four_outcomes_distinguishable
 
             #[cfg(desktop)]
             app.handle().plugin(tauri_plugin_cli::init())?;
