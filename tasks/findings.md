@@ -9052,7 +9052,7 @@ Code b7f52cd4, 285a96d4, 8d8e4274, 25636945. Windows runtime is rust-windows-tes
 
 ### Live analysis accepts a pending result from an engine that was unloaded while the search ran
 
-* **ID:** f-20260914-37 · **Status:** open · **Area:** engine-uci · **Root:** result-not-bound-to-its-process · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260914-37 · **Status:** handled · **Area:** engine-uci · **Root:** result-not-bound-to-its-process · **Entry:** lens · **Blocked:** none
 * **Where:** `src/components/boards/EvalListener.tsx`, `isCurrentAttempt` (around line 222) and the `onBestMoves` / search-result handlers that call it.
 * **Defect:** `isCurrentAttempt` checks that the component is mounted, that the attempt is the active, uncancelled one, that the request fingerprint (tab, close revision, FEN, moves, settings, engine id and handle or URL) is unchanged, that analysis is enabled, that the game is not over, and that the tab exists and is not closing — but not that the engine is still present in the engine list and `loaded`. If an engine (notably a remote one) is unloaded while its result is pending, the result can resolve before the passive unmount cleanup runs and still update the evaluation cache and progress.
 * **Why it matters:** this is the incident class `03826167` ("results from unloaded engines were still consumed", cited in `.claude/rules/async-resource-invariants.md` and `engine-lifecycle.md`), which requires a payload to be used only while its engine is loaded.
