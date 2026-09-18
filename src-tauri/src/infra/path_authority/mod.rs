@@ -189,6 +189,67 @@ mod windows_tests {
         ));
     }
 
+    /// A directory engine resource is promoted through the real dialog API and resolved with an
+    /// empty component list, exactly as production does. The lease must carry the retained
+    /// no-follow handle *and* a non-empty target, because `uci_value` returns that target.
+    #[test]
+    fn windows_engine_resource_directory_lease_carries_its_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let tables = dir.path().join("tables");
+        fs::create_dir(&tables).unwrap();
+        fs::write(tables.join("tablebase"), b"table").unwrap();
+        let mut authority = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+        let grant = authority
+            .grant_dialog(
+                &tables,
+                "resource",
+                PathClass::SingleDialogGrant,
+                PathOperation::EngineResourceRead,
+                std::time::Duration::from_secs(30),
+                1,
+            )
+            .unwrap();
+        let handle = authority
+            .promote_engine_resource(&grant, EngineResourceHandleKind::Directory, "resource")
+            .unwrap();
+        let lease = authority.engine_resource(&handle).unwrap();
+        let value = lease.uci_value().unwrap();
+        assert!(!value.is_empty(), "directory lease must carry a target");
+        assert!(value.contains("tables"), "{value}");
+    }
+
+    /// The junction refusal is the no-follow walk's, not a platform refusal: the directory is
+    /// promoted first, then swapped for a junction, and `engine_resource` must reach
+    /// `open_windows_nofollow` and return `InvalidInput` rather than the old off-unix refusal.
+    #[test]
+    fn windows_engine_resource_directory_junction_is_invalid_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let tables = dir.path().join("tables");
+        fs::create_dir(&tables).unwrap();
+        let elsewhere = dir.path().join("elsewhere");
+        fs::create_dir(&elsewhere).unwrap();
+        let mut authority = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+        let grant = authority
+            .grant_dialog(
+                &tables,
+                "resource",
+                PathClass::SingleDialogGrant,
+                PathOperation::EngineResourceRead,
+                std::time::Duration::from_secs(30),
+                1,
+            )
+            .unwrap();
+        let handle = authority
+            .promote_engine_resource(&grant, EngineResourceHandleKind::Directory, "resource")
+            .unwrap();
+        fs::remove_dir(&tables).unwrap();
+        mklink_junction(&tables, &elsewhere);
+        assert!(matches!(
+            authority.engine_resource(&handle),
+            Err(Error::InvalidInput(_))
+        ));
+    }
+
     #[test]
     fn registry_save_entries_persists_on_windows() {
         let dir = tempfile::tempdir().unwrap();
@@ -5322,12 +5383,6 @@ impl PathAuthority {
         &mut self,
         resource: &EngineResourceHandle,
     ) -> Result<EngineResourceLease, Error> {
-        if resource.kind == EngineResourceHandleKind::Directory {
-            crate::infra::platform_support::off_unix_refusal(
-                "engine directory resources",
-                cfg!(unix),
-            )?;
-        }
         #[cfg(all(test, unix))]
         observe_engine_resolution("resource");
         let mut resolved =
@@ -5362,8 +5417,12 @@ impl PathAuthority {
                 }
                 #[cfg(windows)]
                 {
+                    // The no-follow walk leaves the verified directory handle in the
+                    // `directory` slot and its computed path in `target`, mirroring the File
+                    // arm above. The handle is retained for the lease lifetime; the path is
+                    // only the UCI/CreateProcess string.
                     Ok(EngineResourceLease {
-                        _file: resolved.take_file().ok_or_else(|| {
+                        _file: resolved.take_directory().ok_or_else(|| {
                             Error::InvalidInput("engine resource must be a directory".into())
                         })?,
                         target: resolved.take_target().ok_or_else(|| {

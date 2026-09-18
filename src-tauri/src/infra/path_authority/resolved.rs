@@ -959,13 +959,14 @@ pub(super) fn resolve_windows(
     }
     // The terminal component is a directory: the handle the walk opened and verified IS the
     // capability. Dropping it would leave `capability_directory` with no descriptor to hand out
-    // and force a second, unpinned open by pathname.
+    // and force a second, unpinned open by pathname. The computed `target` is carried on the
+    // lease as the UCI/CreateProcess string, exactly as the file return above does.
     Ok(ResolvedPath {
         operation,
         file: None,
         directory: Some(handle),
         parent: None,
         leaf: None,
-        target: None,
+        target,
     })
 }

@@ -69,6 +69,16 @@ below. Those four retired functions are held to one ungated definition each by
 also the Linux-red pin against re-inserting the `ensure_app_owned_default_dir`
 guard.
 
+Phase 1 of the Windows engine-directory slice (`f-20260914-12`, d-20260918-08)
+removes the `engine_resource` guard row: the Windows Directory arm now consumes
+`take_directory()` plus the `target` the no-follow walk already computed, so a
+directory resource resolves to a lease whose `uci_value` is that retained path.
+That leaves **3 body rows and 5 guard rows**, counted from the arrays below.
+`engine_resource` keeps `#[cfg(windows)]` arms, so it is pinned by the
+Directory-arm source assertion
+(`engine_resource_directory_arm_takes_a_directory_and_target_without_refusals`)
+rather than by `assert_removed_rows_are_ungated`.
+
 Staged failure matrix. Every run used a detached disposable worktree copied
 from this phase, mutated production files only, and ran the named
 `platform_support` test or filter with
@@ -1555,12 +1565,13 @@ mod tests {
         );
     }
 
-    fn assert_removed_rows_are_ungated(
-        phase: &str,
-        rows: &[(&str, &str)],
-        expected_body_rows: usize,
-        expected_guard_rows: usize,
-    ) {
+    /// The live `(body_rows, guard_rows)` counts at the current phase boundary. Every
+    /// `phase_*_removed_rows...` test reads this, so a phase that removes a row edits the live
+    /// count in exactly one place instead of five copies.
+    const LIVE_REFUSAL_ROW_COUNTS: (usize, usize) = (3, 5);
+
+    fn assert_removed_rows_are_ungated(phase: &str, rows: &[(&str, &str)]) {
+        let (expected_body_rows, expected_guard_rows) = LIVE_REFUSAL_ROW_COUNTS;
         let mut failures = Vec::new();
         for (file, signature) in rows {
             let source = source_for(file);
@@ -1616,8 +1627,6 @@ mod tests {
                     "pub(crate) fn database_file_target(",
                 ),
             ],
-            3,
-            6,
         );
     }
 
@@ -1635,8 +1644,6 @@ mod tests {
                     "pub(crate) fn delete_puzzle_database(",
                 ),
             ],
-            3,
-            6,
         );
     }
 
@@ -1648,19 +1655,12 @@ mod tests {
                 ("db/mod.rs", "fn unlink_database_files("),
                 ("db/repository.rs", "pub(crate) fn identity_from_probe("),
             ],
-            3,
-            6,
         );
     }
 
     #[test]
     fn phase_d_removed_rows_have_one_ungated_definition_without_refusals() {
-        assert_removed_rows_are_ungated(
-            "Phase D",
-            &[("db/search.rs", "fn open_valid_preferred(")],
-            3,
-            6,
-        );
+        assert_removed_rows_are_ungated("Phase D", &[("db/search.rs", "fn open_valid_preferred(")]);
     }
 
     #[test]
@@ -1682,9 +1682,22 @@ mod tests {
                     "pub(crate) fn ensure_app_owned_default_dir(",
                 ),
             ],
-            3,
-            6,
         );
+    }
+
+    /// `engine_resource` keeps `#[cfg(windows)]` arms, so it cannot be pinned by
+    /// `assert_removed_rows_are_ungated` (R1-03). This is the Directory arm's replacement pin:
+    /// the arm must take the verified directory handle and its computed target, and must not
+    /// regress to `take_file()` or a platform refusal (R3-04).
+    #[test]
+    fn engine_resource_directory_arm_takes_a_directory_and_target_without_refusals() {
+        let source = source_for("infra/path_authority/mod.rs");
+        let arm = braced_body(source, "EngineResourceHandleKind::Directory => {");
+        let arm = compact(&source[arm]);
+        assert!(arm.contains("resolved.take_directory()"), "{arm}");
+        assert!(arm.contains("resolved.take_target()"), "{arm}");
+        assert!(!arm.contains("resolved.take_file()"), "{arm}");
+        assert!(!arm.contains("off_unix_refusal"), "{arm}");
     }
 
     #[test]
@@ -2146,13 +2159,6 @@ mod tests {
                 operation: "legacy Lichess token migration",
                 effects: &["ProdOAuthServices::new("],
                 nested: false,
-            },
-            GuardRow {
-                file: "infra/path_authority/mod.rs",
-                signature: "pub(crate) fn engine_resource(",
-                operation: "engine directory resources",
-                effects: &["self.resolve("],
-                nested: true,
             },
             GuardRow {
                 file: "fs.rs",
