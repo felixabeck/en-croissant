@@ -2119,7 +2119,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Some(app_data),
                     Arc::new(crate::infra::path_authority::SystemClock),
                     256,
-                    launch_root,
+                    Some(launch_root),
                 )
                 .map_err(|error| format!("path authority initialization failed: {error}"))?
             };

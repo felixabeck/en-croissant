@@ -4045,7 +4045,10 @@ impl PathAuthority {
         Self::open_with_clock(registry_path, app_roots, Arc::new(SystemClock), 256)
     }
 
-    #[cfg(target_os = "macos")]
+    /// Test-only since the startup branches moved to `open_with_app_data`: its remaining callers
+    /// are the macOS engine-launch tests, so it is gated on them rather than carrying
+    /// `allow(dead_code)` into the shipped binary.
+    #[cfg(all(test, target_os = "macos"))]
     pub(crate) fn open_with_launch_root(
         registry_path: PathBuf,
         app_roots: Vec<AppOwnedRoot>,
@@ -7839,6 +7842,43 @@ mod portable_tests {
         PathAuthority::open_with_clock(dir.path().join("registry.json"), vec![], clock, 2).unwrap()
     }
 
+    /// `LaunchRootArgument` is `Option<EngineLaunchRoot>` on macOS and `()` everywhere else
+    /// (`:3752-3754`), so a launch-root argument written at a call site compiles on exactly one of
+    /// the two. Every test that opens the authority with an app-data context goes through this
+    /// wrapper, which keeps the per-platform literal in one place; passing it as a value instead
+    /// would trip `clippy::unit_arg` off macOS.
+    #[cfg(unix)]
+    pub(super) fn authority_with_app_data(
+        registry_path: PathBuf,
+        app_roots: Vec<AppOwnedRoot>,
+        app_data_dir: Option<AppDataDir>,
+        clock: Arc<dyn Clock>,
+        dialog_capacity: usize,
+    ) -> Result<PathAuthority, Error> {
+        #[cfg(target_os = "macos")]
+        {
+            PathAuthority::open_with_app_data(
+                registry_path,
+                app_roots,
+                app_data_dir,
+                clock,
+                dialog_capacity,
+                None,
+            )
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            PathAuthority::open_with_app_data(
+                registry_path,
+                app_roots,
+                app_data_dir,
+                clock,
+                dialog_capacity,
+                (),
+            )
+        }
+    }
+
     /// The missing-file arm of `create_pgn_export_destination`: the eleven un-ignored PGN tests
     /// all write their fixture first, so only this one drives the exclusive create, the two
     /// `sync_all`s and the promotion to a persistent read/write capability.
@@ -7867,7 +7907,7 @@ mod portable_tests {
 #[cfg(unix)]
 #[cfg(test)]
 mod tests {
-    use super::portable_tests::{authority, TestClock};
+    use super::portable_tests::{authority, authority_with_app_data, TestClock};
     use super::resolved::file_identity;
     use super::*;
     use crate::infra::blocking::source_scan::body_at_indent;
@@ -12374,13 +12414,12 @@ mod tests {
         }
         let registry = dir.path().join("registry.json");
         write_registry_with_entries(&registry, entries);
-        let authority = PathAuthority::open_with_app_data(
+        let authority = authority_with_app_data(
             registry,
             vec![],
             Some(AppDataDir::for_test(&app_data_link)),
             Arc::new(TestClock::new(0)),
             2,
-            (),
         )
         .unwrap();
         for &(_, leaf) in APP_OWNED_DEFAULT_ROOT_LEAVES {
@@ -12429,13 +12468,12 @@ mod tests {
         .unwrap();
         let registry = dir.path().join("registry.json");
         write_registry_with_entries(&registry, vec![owned, changed]);
-        let mut authority = PathAuthority::open_with_app_data(
+        let mut authority = authority_with_app_data(
             registry,
             vec![],
             Some(AppDataDir::for_test(&app_data_link)),
             Arc::new(TestClock::new(0)),
             2,
-            (),
         )
         .unwrap();
         let descriptors = authority.descriptors();
@@ -12474,13 +12512,12 @@ mod tests {
         let mut images = authorize_existing_dir(&real_app_data.join("engine-images")).unwrap();
         images.path = app_data_link.join("engine-images");
         let registry = dir.path().join("registry.json");
-        let mut authority = PathAuthority::open_with_app_data(
+        let mut authority = authority_with_app_data(
             registry.clone(),
             vec![],
             Some(app_data),
             Arc::new(TestClock::new(0)),
             2,
-            (),
         )
         .unwrap();
         let root = authority
@@ -12548,13 +12585,12 @@ mod tests {
         );
         drop(authority);
 
-        let mut reopened = PathAuthority::open_with_app_data(
+        let mut reopened = authority_with_app_data(
             registry,
             vec![],
             Some(AppDataDir::for_test(&app_data_link)),
             Arc::new(TestClock::new(0)),
             2,
-            (),
         )
         .unwrap();
         let reused_root = reopened
@@ -12609,13 +12645,12 @@ mod tests {
             vec![PathOperation::ReadPgn],
         );
         let id = app.id.clone();
-        let mut authority = PathAuthority::open_with_app_data(
+        let mut authority = authority_with_app_data(
             dir.path().join("registry.json"),
             vec![app],
             Some(AppDataDir::for_test(&app_data)),
             Arc::new(TestClock::new(0)),
             2,
-            (),
         )
         .unwrap();
         assert_eq!(
@@ -12657,13 +12692,12 @@ mod tests {
         );
         let registry = dir.path().join("registry.json");
         write_registry_with_entries(&registry, vec![entry]);
-        let authority = PathAuthority::open_with_app_data(
+        let authority = authority_with_app_data(
             registry,
             vec![],
             Some(AppDataDir::for_test(&app_data_link)),
             Arc::new(TestClock::new(0)),
             2,
-            (),
         )
         .unwrap();
         let stored = &authority.persistent["parent-dir-entry"];
@@ -12691,13 +12725,12 @@ mod tests {
         );
         let registry = dir.path().join("registry.json");
         write_registry_with_entries(&registry, vec![entry]);
-        let authority = PathAuthority::open_with_app_data(
+        let authority = authority_with_app_data(
             registry,
             vec![],
             Some(AppDataDir::for_test(&app_data)),
             Arc::new(TestClock::new(0)),
             2,
-            (),
         )
         .unwrap();
         assert_eq!(
