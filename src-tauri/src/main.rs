@@ -2113,23 +2113,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .map_err(|error| {
                             format!("engine launch root initialization failed: {error}")
                         })?;
-                crate::infra::path_authority::PathAuthority::open_with_app_data(
+                crate::infra::path_authority::PathAuthority::open_for_app(
                     authority_registry,
                     vec![],
-                    Some(app_data),
-                    Arc::new(crate::infra::path_authority::SystemClock),
-                    256,
+                    app_data,
                     Some(launch_root),
                 )
                 .map_err(|error| format!("path authority initialization failed: {error}"))?
             };
             #[cfg(not(target_os = "macos"))]
-            let authority = crate::infra::path_authority::PathAuthority::open_with_app_data(
+            let authority = crate::infra::path_authority::PathAuthority::open_for_app(
                 authority_registry,
                 vec![],
-                Some(app_data),
-                Arc::new(crate::infra::path_authority::SystemClock),
-                256,
+                app_data,
                 (),
             )
             .map_err(|error| format!("path authority initialization failed: {error}"))?;
@@ -3483,15 +3479,17 @@ mod blocking_offload_scans {
         assert!(app_data < credential, "{setup}");
         assert!(credential < authority, "{setup}");
         assert_eq!(
-            setup.matches("PathAuthority::open_with_app_data(").count(),
+            setup.matches("PathAuthority::open_for_app(").count(),
             2,
             "each startup branch must pass the application-data context: {setup}"
         );
-        for (offset, _) in setup.match_indices("PathAuthority::open_with_app_data(") {
-            let branch = &setup[offset..];
+        for (offset, _) in setup.match_indices("PathAuthority::open_for_app(") {
+            // Scope the slice to this call's own argument list: slicing to the end of `setup`
+            // would let one branch's `Some(app_data)` satisfy the assertion for both.
+            let rest = &setup[offset..];
+            let call = rest.find(')').map_or(rest, |end| &rest[..end]);
             assert!(
-                branch.starts_with("PathAuthority::open_with_app_data(")
-                    && branch.contains("Some(app_data)"),
+                call.contains("app_data"),
                 "startup branch must pass app_data to the authority constructor: {setup}"
             );
         }

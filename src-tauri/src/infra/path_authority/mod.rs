@@ -57,6 +57,10 @@ const SCHEMA_VERSION: u32 = 1;
 const MAX_AUTHORITY_IDS: usize = 4_096;
 const MAX_TRUSTED_OWNER_FAMILIES: usize = 32;
 const MAX_PENDING_ARTIFACTS: usize = 256;
+/// The bound on the dialog-grant table for a real application session. It lived as a literal in
+/// `open` until the app-data context gained its own constructor; naming it keeps startup from
+/// carrying the number at the call site.
+const DEFAULT_DIALOG_CAPACITY: usize = 256;
 const MAX_REGISTRY_BYTES: usize = 16 * 1024 * 1024;
 const MAX_LEGACY_REGISTRY_BYTES: u64 = 64 * 1024 * 1024;
 fn map_db3_children_cancellable<T>(
@@ -3449,10 +3453,7 @@ fn acquire_target(path: &Path, shape: AcquireShape) -> Result<AcquiredTarget, Er
         ),
     };
 
-    let has_normal_leaf = path.file_name().is_some_and(|name| {
-        !name.is_empty() && name != OsStr::new(".") && name != OsStr::new("..")
-    });
-    if !has_normal_leaf {
+    if !has_normal_leaf(path) {
         return Ok(AcquiredTarget {
             path: path.to_path_buf(),
             identity,
@@ -4042,7 +4043,31 @@ impl PathAuthority {
 
     #[cfg(any(test, not(target_os = "macos")))]
     pub fn open(registry_path: PathBuf, app_roots: Vec<AppOwnedRoot>) -> Result<Self, Error> {
-        Self::open_with_clock(registry_path, app_roots, Arc::new(SystemClock), 256)
+        Self::open_with_clock(
+            registry_path,
+            app_roots,
+            Arc::new(SystemClock),
+            DEFAULT_DIALOG_CAPACITY,
+        )
+    }
+
+    /// The production entry point: the application's own data directory is what tells the registry
+    /// which stored spellings are deliberately raw, so startup supplies it here rather than
+    /// assembling a clock and a capacity at the call site.
+    pub(crate) fn open_for_app(
+        registry_path: PathBuf,
+        app_roots: Vec<AppOwnedRoot>,
+        app_data_dir: AppDataDir,
+        launch_root: LaunchRootArgument,
+    ) -> Result<Self, Error> {
+        Self::open_with_app_data(
+            registry_path,
+            app_roots,
+            Some(app_data_dir),
+            Arc::new(SystemClock),
+            DEFAULT_DIALOG_CAPACITY,
+            launch_root,
+        )
     }
 
     /// Test-only since the startup branches moved to `open_with_app_data`: its remaining callers
@@ -4059,7 +4084,7 @@ impl PathAuthority {
             app_roots,
             None,
             Arc::new(SystemClock),
-            256,
+            DEFAULT_DIALOG_CAPACITY,
             Some(launch_root),
         )
     }
@@ -4085,24 +4110,6 @@ impl PathAuthority {
     }
 
     pub(crate) fn open_with_app_data(
-        registry_path: PathBuf,
-        app_roots: Vec<AppOwnedRoot>,
-        app_data_dir: Option<AppDataDir>,
-        clock: Arc<dyn Clock>,
-        dialog_capacity: usize,
-        launch_root: LaunchRootArgument,
-    ) -> Result<Self, Error> {
-        Self::open_with_clock_inner(
-            registry_path,
-            app_roots,
-            app_data_dir,
-            clock,
-            dialog_capacity,
-            launch_root,
-        )
-    }
-
-    fn open_with_clock_inner(
         registry_path: PathBuf,
         app_roots: Vec<AppOwnedRoot>,
         app_data_dir: Option<AppDataDir>,
@@ -4326,11 +4333,7 @@ impl PathAuthority {
             }
             match classify_canonical_binding(&path) {
                 CanonicalBindingStatus::Canonical | CanonicalBindingStatus::Leafless => continue,
-                CanonicalBindingStatus::NeedsRebinding(canonical) => {
-                    if canonical == path {
-                        continue;
-                    }
-                }
+                CanonicalBindingStatus::NeedsRebinding => {}
                 CanonicalBindingStatus::Failed(error) => {
                     entry.availability = PathAvailability::Unavailable;
                     log::warn!(
@@ -7726,20 +7729,24 @@ fn read_registry_bytes(reader: impl Read) -> Result<Vec<u8>, Error> {
 enum CanonicalBindingStatus {
     Canonical,
     Leafless,
-    NeedsRebinding(PathBuf),
+    NeedsRebinding,
     Failed(Error),
 }
 
+/// A leafless spelling — `/`, or one ending in `.` or `..` — has no name for a no-follow parent
+/// walk to open, so acquisition and the load-time rebinding both leave it as the caller wrote it.
+fn has_normal_leaf(path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(|name| !name.is_empty() && name != OsStr::new(".") && name != OsStr::new(".."))
+}
+
 fn classify_canonical_binding(path: &Path) -> CanonicalBindingStatus {
-    let has_normal_leaf = path.file_name().is_some_and(|name| {
-        !name.is_empty() && name != OsStr::new(".") && name != OsStr::new("..")
-    });
-    if !has_normal_leaf {
+    if !has_normal_leaf(path) {
         return CanonicalBindingStatus::Leafless;
     }
     match canonical_binding(path) {
         Ok(canonical) if canonical == path => CanonicalBindingStatus::Canonical,
-        Ok(canonical) => CanonicalBindingStatus::NeedsRebinding(canonical),
+        Ok(_) => CanonicalBindingStatus::NeedsRebinding,
         Err(error) => CanonicalBindingStatus::Failed(error),
     }
 }
@@ -7758,7 +7765,15 @@ fn spelling_is_application_owned(app_data_dir: Option<&AppDataDir>, path: &Path)
     })
 }
 
-fn spelling_is_exempt(class: PathClass, app_data_dir: Option<&AppDataDir>, path: &Path) -> bool {
+/// An entry is outside the canonical-spelling requirement either because the application itself
+/// registered the directory (`AppOwnedRoot`) or because the spelling names something inside one of
+/// its own default roots. Both keep a deliberately raw spelling that `get_or_create_root` and
+/// `cleanup_engine_images` compare lexically.
+fn entry_keeps_its_raw_spelling(
+    class: PathClass,
+    app_data_dir: Option<&AppDataDir>,
+    path: &Path,
+) -> bool {
     class == PathClass::AppOwnedRoot || spelling_is_application_owned(app_data_dir, path)
 }
 
@@ -7784,14 +7799,14 @@ fn refresh_entry(entry: &mut Entry, app_data_dir: Option<&AppDataDir>) {
     entry.availability =
         validate_target(&path, class).map_or(PathAvailability::Unavailable, |id| {
             if id == entry.stored.identity {
-                if spelling_is_exempt(entry.stored.class, app_data_dir, &path) {
+                if entry_keeps_its_raw_spelling(entry.stored.class, app_data_dir, &path) {
                     PathAvailability::Available
                 } else {
                     match classify_canonical_binding(&path) {
                         CanonicalBindingStatus::Canonical | CanonicalBindingStatus::Leafless => {
                             PathAvailability::Available
                         }
-                        CanonicalBindingStatus::NeedsRebinding(_)
+                        CanonicalBindingStatus::NeedsRebinding
                         | CanonicalBindingStatus::Failed(_) => PathAvailability::Unavailable,
                     }
                 }
@@ -12434,7 +12449,12 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn descriptors_refresh_with_app_data_context_and_quarantines_changed_legacy_entry() {
+    /// The load-bearing half is the app-owned entry: without the app-data context reaching
+    /// `descriptors()`'s refresh, its raw spelling would be quarantined. The second entry is
+    /// quarantined because its object changed, not because of its spelling; the spelling branch of
+    /// `refresh_entry` is pinned directly by
+    /// `refresh_entry_rejects_a_legacy_spelling_even_when_identity_matches`.
+    fn descriptors_refresh_keeps_app_owned_spellings_and_quarantines_a_changed_entry() {
         use std::os::unix::fs::symlink;
 
         let dir = tempfile::tempdir().unwrap();
@@ -16003,14 +16023,20 @@ mod tests {
             )
             .unwrap();
         drop(authority);
-        let reopened = PathAuthority::open(registry, vec![]).unwrap();
+        // Read the registry file itself, not a reopened authority: the rebinding pass runs again
+        // on every open, so a reopened authority shows the canonical spelling whether or not the
+        // failed commit was ever flushed. Only the bytes on disk distinguish the two.
+        let persisted: Registry =
+            serde_json::from_str(&fs::read_to_string(&registry).unwrap()).unwrap();
+        let stored = persisted
+            .entries
+            .iter()
+            .find(|entry| entry.id.id == "hard-failure")
+            .expect("the rebound entry stays in the registry");
         assert_eq!(
-            reopened.persistent["hard-failure"]
-                .stored
-                .path
-                .to_path()
-                .unwrap(),
-            real.join("legacy.pgn")
+            stored.path.to_path().unwrap(),
+            real.join("legacy.pgn"),
+            "the next successful commit must flush the rebinding"
         );
     }
 
