@@ -4070,7 +4070,7 @@ impl PathAuthority {
         )
     }
 
-    /// Test-only since the startup branches moved to `open_with_app_data`: its remaining callers
+    /// Test-only since the startup branches moved to `open_for_app`: its remaining callers
     /// are the macOS engine-launch tests, so it is gated on them rather than carrying
     /// `allow(dead_code)` into the shipped binary.
     #[cfg(all(test, target_os = "macos"))]

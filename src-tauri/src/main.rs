@@ -3485,7 +3485,7 @@ mod blocking_offload_scans {
         );
         for (offset, _) in setup.match_indices("PathAuthority::open_for_app(") {
             // Scope the slice to this call's own argument list: slicing to the end of `setup`
-            // would let one branch's `Some(app_data)` satisfy the assertion for both.
+            // would let one branch's `app_data` argument satisfy the assertion for both.
             let rest = &setup[offset..];
             let call = rest.find(')').map_or(rest, |end| &rest[..end]);
             assert!(
