@@ -9898,7 +9898,7 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 
 ### `terminate_bypasses_a_flooded_normal_command_queue` fails intermittently on the Windows runner
 
-* **ID:** f-20260918-01 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260918-01 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `src-tauri/src/engine/process.rs:6618-6643` — `engine::process::tests::terminate_bypasses_a_flooded_normal_command_queue`. The job is `rust-windows-test` in `.github/workflows/test.yml`.
 * **Defect:** the test sleeps 5 ms, floods 32 `set_option` tasks, sleeps 5 ms, then requires `terminate()` within 50 ms and `next_search_line` to return `Err(Error::EngineDisconnected)`. The assertion is a bare `matches!` that prints nothing. Measured on two consecutive `master` Test runs of the same tree (the second commit is docs-only):
   * run 35368484786, `0e43e899`: **FAILED**, `assertion failed: matches!(waiting.await.unwrap(), Err(Error::EngineDisconnected))`, 664 passed / 1 failed / 4 ignored. The two PGN tests added in that range (`same_length_rewrite_restoring_mtime_misses_offset_cache`, `windows_pgn_revision_stamp_source_pin`) were `ok`.
