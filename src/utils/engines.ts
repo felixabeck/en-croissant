@@ -282,18 +282,21 @@ export async function loadDefaultEngineCatalog(
     // Parse only after the backend verified the exact bytes.
     const parsed = z.array(defaultEngineManifestSchema).parse(JSON.parse(document));
     return parsed.map((engine) => {
-        const record = engine as DefaultEngine & { image?: unknown };
+        const image = (engine as { image?: unknown }).image;
         const imageUrl =
-            engine.imageUrl ?? (typeof record.image === "string" ? record.image : undefined);
-        return imageUrl ? { ...engine, imageUrl } : engine;
-    }) as DefaultEngine[];
+            engine.imageUrl ?? (typeof image === "string" ? image : undefined);
+        return (imageUrl ? { ...engine, imageUrl } : engine) as unknown as DefaultEngine;
+    });
 }
 
 export function useDefaultEngines(os: Platform | undefined, opened: boolean) {
     const { data, error, isLoading } = useSWR(opened ? os : null, async (os: Platform) => {
         const bmi2: boolean = await tauri.isBmi2Compatible();
         const engines = await loadDefaultEngineCatalog();
-        return engines.filter((engine) => engine.os === os && engine.bmi2 === bmi2);
+        return engines.filter((engine) => {
+            const entry = engine as DefaultEngine & { os: string; bmi2: boolean };
+            return entry.os === os && entry.bmi2 === bmi2;
+        });
     });
     return {
         defaultEngines: data,

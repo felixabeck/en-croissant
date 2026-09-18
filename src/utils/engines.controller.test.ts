@@ -255,7 +255,11 @@ describe("bundled default-engine catalog", () => {
         expect(error).toBeUndefined();
         expect(defaultEngines?.length).toBeGreaterThan(0);
         expect(
-            defaultEngines?.every((entry) => entry.os === "linux" && entry.bmi2 === true),
+            defaultEngines?.every(
+                (entry) =>
+                    (entry as typeof entry & { os: string; bmi2: boolean }).os === "linux" &&
+                    (entry as typeof entry & { os: string; bmi2: boolean }).bmi2 === true,
+            ),
         ).toBe(true);
         expect(remote.get).not.toHaveBeenCalled();
         expect(fetchSpy).not.toHaveBeenCalled();
