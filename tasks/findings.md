@@ -9643,6 +9643,9 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 * **Related:** `f-20260914-09` (the port that makes this reachable and that closes the two adjacent cases); `d-20260831-23` (promotion must not unlink the last durable copy) constrains any answer.
 * **Found by:** `review-root-cause` (96), `review-plan` (95) and `review-pgn-index` (91) in round 1 of the `f-20260914-09` plan review, 2026-09-17, on Codex; the mapping lifetime was source-verified by the orchestrator at `search_index.rs:939-969` and the cache retention at `search.rs:374`.
 
+* **Handled 2026-09-18 (next-finding slice, Grok full auto, executor Claude):** in-process mapping gate on `SearchCache` (`begin_preferred_replace`). Readers lease the preferred sidecar before open/map. Generate and delete wait until leases drop, then mutate once. Sidecar naming unchanged. Promotion does not wait. Decision `d-20260918-17`. Code `8fc057bf`; decision `9d00bc93`. Review record: `tasks/handoffs/2026-09-18-f-20260917-04-review.md`. Windows 1224-without-lease proof is `rust-windows-test` (`search_index_mapping_gate_external_mapper_fails_once_with_user_mapped_file`). Left open at `build`: `f-20260917-13` (blocked on `f-20260905-10` by `d-20260918-03`).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"2d80acd0aefb344e3d8e3ecb1a79803dc5ded4ffa69c658cb4818c3b4182c8c5","input_sha256":"14c97798c31665151fe3587ab5deaf8fdf599dabec755442747217d6b665df2b","kind":"mutation-receipt","operation":"7edb971319733b80e711505408f4b922f268bfcf858a25a20c3c10fe84edc540","options":{"section":null},"request_id_sha256":null,"results":["f-20260917-04"],"target":"f-20260917-04","v":1} -->
+
 ### A resolved puzzle capability is unusable after its parent directory is renamed, although it retains the parent handle
 
 * **ID:** f-20260917-05 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** lens · **Blocked:** none
