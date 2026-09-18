@@ -211,6 +211,13 @@ describe("bundled default-engine catalog", () => {
         );
         expect(engines.length).toBeGreaterThan(0);
         expect(engines.every((entry) => entry.type === "local")).toBe(true);
+        expect(
+            engines.every(
+                (entry) =>
+                    entry.imageUrl === undefined ||
+                    /^\/engines\/[A-Za-z0-9._-]+\.(png|svg|jpe?g|webp)$/.test(entry.imageUrl),
+            ),
+        ).toBe(true);
     });
 
     it("reports a failed document signature as a distinct error without parsing", async () => {

@@ -25,6 +25,10 @@ function parseManifestPath(path: string) {
     return defaultEngineManifestSchema.safeParse({ ...manifestEntry, path });
 }
 
+function parseManifestImage(image: string) {
+    return defaultEngineManifestSchema.safeParse({ ...manifestEntry, path: "stockfish", image });
+}
+
 describe("default engine manifest paths", () => {
     it("accepts single- and multi-component engine paths", () => {
         const accepted = ["stockfish", "stockfish-17/stockfish-ubuntu-x86-64-bmi2"];
@@ -55,6 +59,27 @@ describe("default engine manifest paths", () => {
                 parseManifestPath(path).success,
             ]),
         ).toStrictEqual(rejected.map(([path, reason]) => [`${path}: ${reason}`, false]));
+    });
+
+    it("accepts only bundled same-origin engine portraits", () => {
+        const accepted = ["/engines/stockfish.png", "/engines/lc0.svg"];
+        expect(accepted.map((image) => [image, parseManifestImage(image).success])).toStrictEqual(
+            accepted.map((image) => [image, true]),
+        );
+    });
+
+    it("rejects remote and traversal portrait URLs", () => {
+        const rejected = [
+            "https://upload.wikimedia.org/wikipedia/commons/3/3a/NewLogoSF.png",
+            "https://images.chesscomfiles.com/chess-themes/computer_chess_championship/avatars/lrg_rubi.png",
+            "https://lczero.org/images/logo.svg",
+            "/board/wood.png",
+            "/engines/../logo.png",
+            "engines/stockfish.png",
+        ];
+        expect(rejected.map((image) => [image, parseManifestImage(image).success])).toStrictEqual(
+            rejected.map((image) => [image, false]),
+        );
     });
 });
 

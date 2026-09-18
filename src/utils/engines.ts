@@ -157,6 +157,10 @@ export type DefaultEngine = Omit<LocalEngine, "handle" | "filename"> & {
     imageUrl?: string;
 };
 
+const bundledEngineImagePath = z
+    .string()
+    .regex(/^\/engines\/[A-Za-z0-9._-]+\.(png|svg|jpe?g|webp)$/);
+
 /**
  * The bundled catalog document is authenticated by a detached minisign signature over its exact
  * bytes. Per-entry signatures still authenticate only the download URL and SHA-256; the backend
@@ -186,7 +190,10 @@ export const defaultEngineManifestSchema = z
         downloadLink: z.string().url(),
         sha256: z.string().regex(/^[a-fA-F0-9]{64}$/),
         signature: z.string().min(1),
-        imageUrl: z.string().url().optional(),
+        // Catalog portraits are bundled under public/engines/; remote URLs are rejected so
+        // display cannot fetch Wikimedia, Chess.com, or other hosts (CSP img-src is 'self').
+        image: bundledEngineImagePath.optional(),
+        imageUrl: bundledEngineImagePath.optional(),
         os: z.enum([
             "linux",
             "macos",
@@ -282,8 +289,7 @@ export async function loadDefaultEngineCatalog(
     // Parse only after the backend verified the exact bytes.
     const parsed = z.array(defaultEngineManifestSchema).parse(JSON.parse(document));
     return parsed.map((engine) => {
-        const image = (engine as { image?: unknown }).image;
-        const imageUrl = engine.imageUrl ?? (typeof image === "string" ? image : undefined);
+        const imageUrl = engine.imageUrl ?? engine.image;
         return (imageUrl ? { ...engine, imageUrl } : engine) as unknown as DefaultEngine;
     });
 }
