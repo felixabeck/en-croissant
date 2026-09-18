@@ -7634,7 +7634,7 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 
 ### Engine archive publication passes a system-temp child to an installer requiring a target-parent sibling
 
-* **ID:** f-20260909-01 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260909-01 · **Status:** handled · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/fs.rs` — `download_engine_archive`, `private_tempdir`; `src-tauri/src/infra/path_authority.rs` — `ResolvedPath::atomic_install_download_dir`; `src-tauri/src/infra/fs.rs` — `unix::install_dir`.
 * **Defect:** the command extracts into `private_tempdir()?.path().join("extracted")`, whose parent is a fresh system temporary directory, then passes that child to `ResolvedPath::atomic_install_download_dir`. The resolved destination is below the engine workspace. `unix::install_dir` opens both parent directories and rejects unless device AND inode match, returning `directory staging source must be in the target's real parent directory`. The final command publication therefore cannot succeed for an ordinary engine workspace, even after valid download and extraction. The internal zip/tar temp-to-temp installs use same-parent staging and do not prove the final command route.
 * **Evidence:** source trace on HEAD `db8a07c5` plus current native-cancellation phase diff; `git blame` attributes the final system-temp command route to `016ec27a7` and same-parent installer check to `97c29addc`. This mismatch predates the current cancellation work; it is not a newly introduced cancellation failure. No real engine download was performed in this trace.
