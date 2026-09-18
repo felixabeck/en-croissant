@@ -113,6 +113,19 @@ mod windows_tests {
         },
     };
 
+    /// A directory junction, not a symlink: `mklink /J` needs neither elevation nor Developer
+    /// Mode, so the fixture runs on a stock `windows-latest` runner. A failure to create it fails
+    /// the test rather than skipping the assertion the fixture exists to drive.
+    pub(super) fn mklink_junction(link: &Path, target: &Path) {
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .status()
+            .expect("mklink must run");
+        assert!(status.success(), "mklink /J failed with {status}");
+    }
+
     #[test]
     fn windows_child_open_maps_absence_and_refuses_wrong_target_types() {
         let dir = tempfile::tempdir().unwrap();
@@ -299,13 +312,7 @@ mod windows_tests {
         fs::create_dir(&real).unwrap();
         fs::write(real.join("stable.pgn"), b"stable").unwrap();
         fs::write(real.join("changed.pgn"), b"old").unwrap();
-        let status = std::process::Command::new("cmd")
-            .args(["/C", "mklink", "/J"])
-            .arg(&junction)
-            .arg(&real)
-            .status()
-            .unwrap();
-        assert!(status.success(), "mklink /J failed with {status}");
+        mklink_junction(&junction, &real);
         let changed = StoredEntry {
             id: PathRef {
                 id: "windows-changed".into(),
@@ -386,6 +393,36 @@ mod windows_tests {
             .collect();
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(warnings[0].message.contains("identity changed"));
+    }
+
+    /// A junction at an app-owned leaf is a directory (`is_dir() == true`) that also carries the
+    /// reparse attribute, so `authorize_existing_dir` must refuse it before `identity()`:
+    /// `identity()` would otherwise reject it as `Error::InvalidInput("symbolic links are not path
+    /// authorities")` and put a different door's fixed text on the wire. `create_dir_all` follows
+    /// the existing junction, so the target directory must stay empty.
+    #[test]
+    fn app_owned_default_root_junction_leaf_is_refused_as_io() {
+        for &(root, leaf) in APP_OWNED_DEFAULT_ROOT_LEAVES {
+            let dir = tempfile::tempdir().unwrap();
+            let app_data = dir.path().join("app-data");
+            let elsewhere = dir.path().join("elsewhere");
+            fs::create_dir(&app_data).unwrap();
+            fs::create_dir(&elsewhere).unwrap();
+            mklink_junction(&app_data.join(leaf), &elsewhere);
+
+            let error = ensure_app_owned_default_dir(&AppDataDir::for_test(&app_data), root)
+                .expect_err("a junction leaf must be refused");
+            let rendered = format!("{error:?}");
+            assert!(
+                matches!(error, Error::Io(inner) if inner.to_string().contains("reparse point")),
+                "{root:?} must be refused as Error::Io mentioning a reparse point: {rendered}"
+            );
+            assert_eq!(
+                fs::read_dir(&elsewhere).unwrap().count(),
+                0,
+                "{root:?} must not write through the junction"
+            );
+        }
     }
 }
 
@@ -7815,6 +7852,22 @@ fn descriptor(stored: &StoredEntry, availability: PathAvailability) -> PathDescr
     }
 }
 
+/// The leaf each app-owned default root materialises under, written out verbatim rather than read
+/// back from `AppOwnedDefaultRoot::leaf()`. A leaf is the identity of an existing user's app-data
+/// directory, so a test that asked the enum for its own expectation would copy a mistyped leaf into
+/// its assertion and stay green forever. `portable_tests` and the unix `mod tests` share this one
+/// table.
+#[cfg(test)]
+const APP_OWNED_DEFAULT_ROOT_LEAVES: &[(AppOwnedDefaultRoot, &str)] = &[
+    (AppOwnedDefaultRoot::Databases, "db"),
+    (AppOwnedDefaultRoot::Engines, "engines"),
+    (AppOwnedDefaultRoot::EngineImages, "engine-images"),
+    (AppOwnedDefaultRoot::Puzzles, "puzzles"),
+    (AppOwnedDefaultRoot::Credentials, "credentials"),
+    #[cfg(target_os = "macos")]
+    (AppOwnedDefaultRoot::EngineLaunch, "engine-launch"),
+];
+
 /// Assertions that hold on every target. `mod tests` below is `#[cfg(unix)]` as a whole, so a
 /// platform-neutral property placed there would silently stop being proven off unix; these live
 /// here instead, and the shared `PathAuthority` constructor lives here with them.
@@ -7906,6 +7959,77 @@ mod portable_tests {
             authority.create_pgn_export_destination(&dir.path().join("export.txt"), "export.txt"),
             Err(Error::InvalidInput(_))
         ));
+    }
+
+    /// The leaves are written out verbatim rather than read back from the enum. A leaf is the
+    /// identity of an existing user's app-data directory, so a test that asks the enum what
+    /// its leaf is would copy a mistyped one into its own assertion and stay green forever.
+    #[test]
+    fn ensure_app_owned_default_dir_creates_each_root_under_its_own_leaf() {
+        let dir = tempfile::tempdir().unwrap();
+        for &(root, leaf) in APP_OWNED_DEFAULT_ROOT_LEAVES {
+            let created =
+                ensure_app_owned_default_dir(&AppDataDir::for_test(dir.path()), root).unwrap();
+            assert_eq!(created.path(), dir.path().join(leaf));
+            assert!(
+                created.path().is_dir(),
+                "{root:?} must create the directory {leaf}"
+            );
+        }
+    }
+
+    #[test]
+    fn ensure_app_owned_default_dir_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::Databases,
+        )
+        .expect("first call creates the root");
+        let second = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::Databases,
+        )
+        .expect("second call accepts the existing root");
+        assert_eq!(first.path(), second.path());
+        assert!(second.path().is_dir());
+    }
+
+    #[test]
+    fn ensure_app_owned_default_dir_rejects_a_regular_file_as_io() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("db"), b"not a directory").unwrap();
+        let error = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::Databases,
+        )
+        .expect_err("a regular file at the leaf must be refused");
+        assert!(
+            matches!(error, Error::Io(_)),
+            "the refusal must stay Error::Io, which renders fixed text: {error:?}"
+        );
+    }
+
+    /// `open_regular_relative` must split the relative spelling itself. A walk built on
+    /// `Path::components()` drops the interior empty segment and the `.`, so `"a//b"` would
+    /// normalise to the real `a/b` and open it. The file exists so a post-normalisation ENOENT
+    /// cannot make the refusal pass by accident; this is the Windows-visible pin.
+    #[test]
+    fn authorized_dir_relative_open_rejects_normalised_spellings() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::Databases,
+        )
+        .unwrap();
+        fs::create_dir(database.path().join("a")).unwrap();
+        fs::write(database.path().join("a/b"), b"must not open").unwrap();
+        for relative in ["a//b", "./x"] {
+            assert!(
+                database.open_regular_relative(Path::new(relative)).is_err(),
+                "{relative} must be refused"
+            );
+        }
     }
 }
 
@@ -12371,16 +12495,6 @@ mod tests {
         assert_eq!(reloaded.active_database_root().unwrap(), None);
     }
 
-    const APP_OWNED_DEFAULT_ROOT_LEAVES: &[(AppOwnedDefaultRoot, &str)] = &[
-        (AppOwnedDefaultRoot::Databases, "db"),
-        (AppOwnedDefaultRoot::Engines, "engines"),
-        (AppOwnedDefaultRoot::EngineImages, "engine-images"),
-        (AppOwnedDefaultRoot::Puzzles, "puzzles"),
-        (AppOwnedDefaultRoot::Credentials, "credentials"),
-        #[cfg(target_os = "macos")]
-        (AppOwnedDefaultRoot::EngineLaunch, "engine-launch"),
-    ];
-
     #[cfg(unix)]
     #[test]
     fn rebinding_exempts_every_declared_app_owned_default_root() {
@@ -12925,23 +13039,6 @@ mod tests {
         assert!(authority.persistent.contains_key("recovered-artifact"));
     }
 
-    /// The leaves are written out verbatim rather than read back from the enum. A leaf is the
-    /// identity of an existing user's app-data directory, so a test that asks the enum what
-    /// its leaf is would copy a mistyped one into its own assertion and stay green forever.
-    #[test]
-    fn ensure_app_owned_default_dir_creates_each_root_under_its_own_leaf() {
-        let dir = tempfile::tempdir().unwrap();
-        for &(root, leaf) in APP_OWNED_DEFAULT_ROOT_LEAVES {
-            let created =
-                ensure_app_owned_default_dir(&AppDataDir::for_test(dir.path()), root).unwrap();
-            assert_eq!(created.path(), dir.path().join(leaf));
-            assert!(
-                created.path().is_dir(),
-                "{root:?} must create the directory {leaf}"
-            );
-        }
-    }
-
     #[cfg(unix)]
     #[test]
     fn ensure_app_owned_default_dir_applies_only_declared_private_mode() {
@@ -12967,38 +13064,6 @@ mod tests {
             assert_eq!(directory.path(), dir.path().join(leaf));
             assert_eq!(mode, expected_mode, "unexpected mode for {root:?}");
         }
-    }
-
-    #[test]
-    fn ensure_app_owned_default_dir_is_idempotent() {
-        let dir = tempfile::tempdir().unwrap();
-        let first = ensure_app_owned_default_dir(
-            &AppDataDir::for_test(dir.path()),
-            AppOwnedDefaultRoot::Databases,
-        )
-        .expect("first call creates the root");
-        let second = ensure_app_owned_default_dir(
-            &AppDataDir::for_test(dir.path()),
-            AppOwnedDefaultRoot::Databases,
-        )
-        .expect("second call accepts the existing root");
-        assert_eq!(first.path(), second.path());
-        assert!(second.path().is_dir());
-    }
-
-    #[test]
-    fn ensure_app_owned_default_dir_rejects_a_regular_file_as_io() {
-        let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("db"), b"not a directory").unwrap();
-        let error = ensure_app_owned_default_dir(
-            &AppDataDir::for_test(dir.path()),
-            AppOwnedDefaultRoot::Databases,
-        )
-        .expect_err("a regular file at the leaf must be refused");
-        assert!(
-            matches!(error, Error::Io(_)),
-            "the refusal must stay Error::Io, which renders fixed text: {error:?}"
-        );
     }
 
     /// Per variant, not once: `create_dir_all` succeeds on a symlink to an existing directory,
@@ -13099,7 +13164,12 @@ mod tests {
     #[test]
     fn authorized_dir_refuses_invalid_relative_components() {
         let root = tempfile::tempdir().unwrap();
-        fs::create_dir(root.path().join("sound")).unwrap();
+        let sound = root.path().join("sound");
+        fs::create_dir(&sound).unwrap();
+        // Put a real file at the normalised target. If the walk used `Path::components()` it would
+        // drop the empty segment and the interior `.`, find this file, and open it.
+        fs::create_dir(sound.join("a")).unwrap();
+        fs::write(sound.join("a/b"), b"must not open").unwrap();
         let directory = open_app_owned_resource_dir(&ResourceDir::for_test(root.path())).unwrap();
         for relative in ["../x", "./x", "a//b", "/absolute"] {
             assert!(

@@ -1703,6 +1703,8 @@ mod tests {
             "infra/fs.rs" => include_str!("fs.rs"),
             "fs.rs" => include_str!("../fs.rs"),
             "chesscom.rs" => include_str!("../chesscom.rs"),
+            "credentials.rs" => include_str!("../credentials.rs"),
+            "main.rs" => include_str!("../main.rs"),
             "oauth.rs" => include_str!("../oauth.rs"),
             "puzzle.rs" => include_str!("../puzzle.rs"),
             "db/repository.rs" => include_str!("../db/repository.rs"),
@@ -2451,6 +2453,13 @@ mod tests {
         );
     }
 
+    fn unported_marker(finding: &str) -> String {
+        format!(
+            "#[cfg_attr(not(unix), ignore = \"unported on this {}: {finding}\")]",
+            "platform"
+        )
+    }
+
     /// D5b. `#[cfg_attr(not(unix), ignore)]` makes `rust-windows-test` print `ignored` and still
     /// exit 0, and the Linux run executes the test either way, so nothing goes red if a marker
     /// stays. This is the assertion that the eleven `f-20260914-08` markers are gone — and that
@@ -2459,22 +2468,32 @@ mod tests {
     #[test]
     fn pgn_tests_carry_no_unported_marker_for_this_finding() {
         let source = source_for("pgn.rs");
-        let marker = |finding: &str| {
-            format!(
-                "#[cfg_attr(not(unix), ignore = \"unported on this {}: {finding}\")]",
-                "platform"
-            )
-        };
         assert_eq!(
-            source.matches(&marker("f-20260914-08")).count(),
+            source.matches(&unported_marker("f-20260914-08")).count(),
             0,
             "the workspace-mutation port removes every f-20260914-08 marker in pgn.rs"
         );
         assert_eq!(
-            source.matches(&marker("f-20260914-10")).count(),
+            source.matches(&unported_marker("f-20260914-10")).count(),
             4,
             "replace_pgn_atomic still refuses, so its four markers stay"
         );
+    }
+
+    /// The eighteen `f-20260914-11` markers are what kept the credential and startup tests from
+    /// running on Windows. An ignore left behind prints `ignored` under `rust-windows-test` and
+    /// still exits 0, so this pin is what makes a re-added marker fail on Linux.
+    #[test]
+    fn startup_registry_files_carry_no_unported_marker_for_this_finding() {
+        for file in ["credentials.rs", "oauth.rs", "main.rs"] {
+            assert_eq!(
+                source_for(file)
+                    .matches(&unported_marker("f-20260914-11"))
+                    .count(),
+                0,
+                "{file} still carries an f-20260914-11 unported marker"
+            );
+        }
     }
 
     #[test]

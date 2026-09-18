@@ -2093,10 +2093,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     app.config().identifier
                 );
             }
-            // The credential store reaches the filesystem only through descriptor primitives
-            // that refuse on non-Unix. That is not a narrowing: this call already returned
-            // `Error::CredentialFailure` on Windows before the routing, because it commits the
-            // registry through `atomic_replace`, which is `#[cfg(unix)]`. See `f-20260830-06`.
+            // Credential initialization reaches the filesystem through the same descriptor doors
+            // as unix: `ensure_app_owned_default_dir`, the `open_regular_relative` walk, and
+            // `atomic_replace_leaf_identified` are all ungated, so Windows materialises
+            // `credentials/` and commits the registry instead of failing at the root. The Lichess
+            // `authenticate` / `migrate_legacy_lichess_token` doors remain refused
+            // (`oauth.rs:445`, `:575`) and are a different finding.
             let app_data = crate::infra::path_authority::AppDataDir::for_app(app.handle())?;
             app.state::<AppState>()
                 .credentials
@@ -3023,7 +3025,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-11")]
     async fn shutdown_drains_real_image_issue_before_seal_rejection_cleanup() {
         let directory = tempfile::tempdir().unwrap();
         let registry = directory.path().join("registry.json");
