@@ -271,12 +271,12 @@ describe("native-location and asset-protocol boundaries", () => {
   test.each([
     ["the old $RESOURCE scope while enabled", { enable: true, scope: ["$RESOURCE/**"] }],
     ["any other scope while enabled", { enable: true, scope: ["$APPDATA/**"] }],
-  ])("rejects an enabled asset protocol with %s through the full boundary runner", (
-    _name,
-    assetProtocol,
-  ) => {
-    expect(fixtureCase({ assetProtocol })).toThrow(/asset protocol must stay disabled/);
-  });
+  ])(
+    "rejects an enabled asset protocol with %s through the full boundary runner",
+    (_name, assetProtocol) => {
+      expect(fixtureCase({ assetProtocol })).toThrow(/asset protocol must stay disabled/);
+    },
+  );
 
   test("allows an absent asset protocol block through the full boundary runner", () => {
     expect(fixtureCase()).not.toThrow();

@@ -378,11 +378,7 @@ try {
       `status ${response.status}, ${body.length} bytes`,
     );
   } catch (error) {
-    check(
-      false,
-      "the loopback sound server serves the bundled standard move sound",
-      error.message,
-    );
+    check(false, "the loopback sound server serves the bundled standard move sound", error.message);
   }
 
   const prepareRetireImageResult = await invokeAndWait(
