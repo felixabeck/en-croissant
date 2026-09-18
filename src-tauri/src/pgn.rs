@@ -1645,16 +1645,10 @@ mod tests {
     /// the tokens out of the acceptance slice, so the pin reads the producer text directly.
     #[test]
     fn windows_pgn_revision_stamp_source_pin() {
+        use crate::infra::blocking::source_scan::body_at_indent;
+
         let source = include_str!("infra/path_authority/resolved.rs");
-        let start = source
-            .find("fn pgn_snapshot_file")
-            .expect("pgn_snapshot_file is present");
-        let rest = &source[start..];
-        let end = rest[1..]
-            .find("fn ")
-            .map(|offset| offset + 1)
-            .expect("pgn_snapshot_file is followed by another function");
-        let slice = &rest[..end];
+        let slice = body_at_indent(source, "fn pgn_snapshot_file");
         assert!(
             slice.contains("GetFileInformationByHandleEx"),
             "the Windows change stamp must query the already-open handle"
