@@ -3907,7 +3907,7 @@ records why the checker was built rather than the gap annotated onto `f-20260830
 
 ### The fork still ships upstream's product name, publisher and engine-manifest origin, and has no release channel of its own
 
-* **ID:** f-20260830-48 · **Status:** open · **Area:** app-startup · **Root:** fork-identity-not-separated · **Entry:** build · **Blocked:** none
+* **ID:** f-20260830-48 · **Status:** handled · **Area:** app-startup · **Root:** fork-identity-not-separated · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/tauri.conf.json:45-46` (`productName`, `mainBinaryName`), `:23`
   (`bundle.publisher`), `:69` (window title); `.github/workflows/release.yml:69-83`;
   `src/utils/engines.ts:173`; `src-tauri/tauri.conf.json` CSP and
