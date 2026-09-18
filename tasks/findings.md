@@ -9891,3 +9891,19 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
   plan review** — it carries the measurements that produced this finding, the dispositions already
   settled, and the two withdrawn mechanisms, so they are not re-derived.
 <!-- ledger-meta {"command":"annotate","effect_lines":5,"effect_sha256":"232b241159561a2fae850f75517f48e6aec08135e61460b157eacc54354f1a58","input_sha256":"e373e20eb2b10e34805f33b9e14685aa9d381d136d1bd75562729c0614dfe7e1","kind":"mutation-receipt","operation":"68d7df8a00409630684402fdb773cba55ee4500307d6de746f2106d7e8650707","options":{"section":null},"request_id_sha256":null,"results":["f-20260917-13"],"target":"f-20260917-13","v":1} -->
+
+---
+
+## 2026-09-18 — filed through the inbox spool
+
+### `terminate_bypasses_a_flooded_normal_command_queue` fails intermittently on the Windows runner
+
+* **ID:** f-20260918-01 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/engine/process.rs:6618-6643` — `engine::process::tests::terminate_bypasses_a_flooded_normal_command_queue`. The job is `rust-windows-test` in `.github/workflows/test.yml`.
+* **Defect:** the test sleeps 5 ms, floods 32 `set_option` tasks, sleeps 5 ms, then requires `terminate()` within 50 ms and `next_search_line` to return `Err(Error::EngineDisconnected)`. The assertion is a bare `matches!` that prints nothing. Measured on two consecutive `master` Test runs of the same tree (the second commit is docs-only):
+  * run 35368484786, `0e43e899`: **FAILED**, `assertion failed: matches!(waiting.await.unwrap(), Err(Error::EngineDisconnected))`, 664 passed / 1 failed / 4 ignored. The two PGN tests added in that range (`same_length_rewrite_restoring_mtime_misses_offset_cache`, `windows_pgn_revision_stamp_source_pin`) were `ok`.
+  * run 35368697898, `de11792d` (build-ledger only, no engine code): **green**, the same test `ok`.
+* **Why it matters:** `rust-windows-test` is one of the three platform jobs. A red job on an unrelated push trains a re-run rather than a look, and will mask a real terminate/search-line regression on Windows.
+* **Open question:** did `terminate` leave the search waiter hanging (or returning a different error) because the flooded normal queue is not actually bypassed on Windows, or is the 5 ms / 50 ms fixture too tight for the runner's scheduler? The first is a product defect in the terminate path; the second is a flaky fixture. Deciding it needs the discarded `waiting` value, so the first step is a `match` whose fallback panics with `{other:?}` — the same repair as `f-20260917-02` / `f-20260917-09`.
+* **Related:** `f-20260917-09` (the same class of blind intermittent assertion, on macOS, different test and area). Not the same Root: that one was engine-resource authorization staging, this is actor terminate vs a flooded command queue.
+* **Found by:** Felix, 2026-09-18, GitHub Test workflow on `0e43e899`; source-checked against the failed job log and the subsequent green run.
