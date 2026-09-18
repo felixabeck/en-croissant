@@ -248,8 +248,23 @@ impl ResolvedPath {
         };
         #[cfg(windows)]
         let ctime_nanos = {
-            use std::os::windows::fs::MetadataExt;
-            i128::from(meta.creation_time())
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Storage::FileSystem::{
+                FileBasicInfo, GetFileInformationByHandleEx, FILE_BASIC_INFO,
+            };
+            let mut info = std::mem::MaybeUninit::<FILE_BASIC_INFO>::zeroed();
+            let ok = unsafe {
+                GetFileInformationByHandleEx(
+                    file.as_raw_handle() as _,
+                    FileBasicInfo,
+                    info.as_mut_ptr().cast(),
+                    std::mem::size_of::<FILE_BASIC_INFO>() as u32,
+                )
+            };
+            if ok == 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            i128::from(unsafe { info.assume_init() }.ChangeTime)
         };
         #[cfg(not(any(unix, windows)))]
         let ctime_nanos = 0;

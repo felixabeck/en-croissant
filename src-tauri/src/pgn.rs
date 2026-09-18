@@ -1574,6 +1574,101 @@ mod tests {
         assert!(Arc::ptr_eq(&scanned, &hit));
     }
 
+    /// A same-length in-place rewrite that restores the last-write timestamp must still miss the
+    /// offset cache. On Unix the inode `ctime` moves; on Windows the open handle's `ChangeTime`
+    /// does. The rewrite goes through the pathname (`std::fs::write`) so identity, size and mtime
+    /// stay equal and only the change stamp separates the two snapshots.
+    #[tokio::test]
+    async fn same_length_rewrite_restoring_mtime_misses_offset_cache() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("rewrite.pgn");
+        let two_games = b"[Event \"A\"]\n\n1. e4\n[Event \"B\"]\n\n1. d4\n";
+        std::fs::write(&path, two_games).expect("write two-game PGN");
+        let resolved = resolved_for(&directory, &path);
+
+        let first_mtime = std::fs::metadata(&path)
+            .expect("read metadata")
+            .modified()
+            .expect("read modified time");
+        let first = resolved.pgn_snapshot().expect("first snapshot");
+        let first_identity = first.identity.clone();
+        let first_revision = first.revision.clone();
+        let repository = PgnRepository::default();
+        let (_, first_games) = scan_current(first, &repository, &CancellationToken::new())
+            .await
+            .expect("initial scan");
+        assert_eq!(first_games.len(), 2);
+
+        // A one-game PGN padded with trailing whitespace to the exact byte length of the two-game
+        // file, so the rewrite preserves `size` and cannot be blamed on a length change.
+        let mut one_game = b"[Event \"A\"]\n\n1. e4\n".to_vec();
+        one_game.resize(two_games.len(), b' ');
+        std::fs::write(&path, &one_game).expect("same-length in-place rewrite");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("open rewrite for timestamp restore")
+            .set_modified(first_mtime)
+            .expect("restore last-write timestamp");
+
+        let second = resolved.pgn_snapshot().expect("second snapshot");
+        assert_eq!(
+            second.identity, first_identity,
+            "in-place rewrite keeps the same identity"
+        );
+        assert_eq!(
+            second.revision.size, first_revision.size,
+            "rewrite preserves the byte length"
+        );
+        assert_eq!(
+            second.revision.mtime_nanos, first_revision.mtime_nanos,
+            "rewrite restores the last-write timestamp"
+        );
+        #[cfg(windows)]
+        assert_ne!(
+            second.revision.ctime_nanos, first_revision.ctime_nanos,
+            "ChangeTime must move when a rewrite restores LastWriteTime"
+        );
+
+        let (_, second_games) = scan_current(second, &repository, &CancellationToken::new())
+            .await
+            .expect("rescan after rewrite");
+        assert!(
+            !Arc::ptr_eq(&first_games, &second_games),
+            "stale offset ranges must not be reused after the rewrite"
+        );
+        assert_eq!(second_games.len(), 1, "rewritten PGN holds one game");
+    }
+
+    /// Pins the Windows change stamp to an inline `GetFileInformationByHandleEx(FileBasicInfo)`
+    /// query inside `pgn_snapshot_file`. Extracting it beside `windows_file_identity` would move
+    /// the tokens out of the acceptance slice, so the pin reads the producer text directly.
+    #[test]
+    fn windows_pgn_revision_stamp_source_pin() {
+        let source = include_str!("infra/path_authority/resolved.rs");
+        let start = source
+            .find("fn pgn_snapshot_file")
+            .expect("pgn_snapshot_file is present");
+        let rest = &source[start..];
+        let end = rest[1..]
+            .find("fn ")
+            .map(|offset| offset + 1)
+            .expect("pgn_snapshot_file is followed by another function");
+        let slice = &rest[..end];
+        assert!(
+            slice.contains("GetFileInformationByHandleEx"),
+            "the Windows change stamp must query the already-open handle"
+        );
+        assert!(
+            slice.contains("ChangeTime"),
+            "the Windows change stamp must be FILE_BASIC_INFO.ChangeTime"
+        );
+        assert!(
+            !slice.contains("creation_time"),
+            "the Windows change stamp must not fall back to creation_time"
+        );
+    }
+
     #[test]
     fn cache_byte_eviction_replacement_and_invalidation_account_exactly() {
         let directory = tempfile::tempdir().expect("temporary directory");
