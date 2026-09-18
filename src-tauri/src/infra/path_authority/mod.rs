@@ -993,52 +993,21 @@ impl AuthorizedDir {
         leaf: &OsStr,
         identity: VerifiedIdentity,
     ) -> Result<(), Error> {
-        #[cfg(unix)]
-        {
-            crate::infra::fs::single_leaf(leaf)?;
-            crate::infra::fs::remove_entry_at(
-                self.directory.as_file(),
-                leaf,
-                identity.pair(),
-                false,
-            )
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = (leaf, identity);
-            Err(crate::infra::platform_support::unsupported(
-                "fd-relative removal",
-            ))
-        }
+        crate::infra::fs::single_leaf(leaf)?;
+        crate::infra::fs::remove_entry_at(self.directory.as_file(), leaf, identity.pair(), false)
     }
 
     pub(crate) fn open_regular_relative(&self, relative: &Path) -> Result<fs::File, Error> {
-        #[cfg(unix)]
-        {
-            use std::os::unix::ffi::{OsStrExt, OsStringExt};
-            let components: Vec<OsString> = relative
-                .as_os_str()
-                .as_bytes()
-                .split(|byte| *byte == b'/')
-                .map(|component| OsString::from_vec(component.to_vec()))
-                .collect();
-            validate_components(&components)?;
-            let (leaf, directories) = components
-                .split_last()
-                .ok_or_else(|| Error::InvalidInput("invalid relative path component".into()))?;
-            let mut parent = self.directory.as_file().try_clone()?;
-            for directory in directories {
-                parent = crate::infra::fs::open_directory_at(&parent, directory, false)?;
-            }
-            crate::infra::fs::open_regular_at(&parent, leaf, RegularFileAccess::ReadOnly)
+        let components = relative_components(relative);
+        validate_components(&components)?;
+        let (leaf, directories) = components
+            .split_last()
+            .ok_or_else(|| Error::InvalidInput("invalid relative path component".into()))?;
+        let mut parent = self.directory.as_file().try_clone()?;
+        for directory in directories {
+            parent = crate::infra::fs::open_directory_at(&parent, directory, false)?;
         }
-        #[cfg(not(unix))]
-        {
-            let _ = relative;
-            Err(crate::infra::platform_support::unsupported(
-                "fd-relative regular-file opening",
-            ))
-        }
+        crate::infra::fs::open_regular_at(&parent, leaf, RegularFileAccess::ReadOnly)
     }
 }
 
@@ -2319,10 +2288,15 @@ impl ResourceDir {
     }
 }
 
-#[cfg(unix)]
 fn authorize_existing_dir(path: &Path) -> Result<AuthorizedDir, Error> {
-    use std::os::unix::fs::MetadataExt;
     let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || is_reparse_point(&metadata) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "app-owned default root is a reparse point",
+        )
+        .into());
+    }
     if !metadata.is_dir() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -2330,21 +2304,13 @@ fn authorize_existing_dir(path: &Path) -> Result<AuthorizedDir, Error> {
         )
         .into());
     }
-    let identity = (metadata.dev(), metadata.ino());
-    let directory = crate::infra::fs::open_verified_directory(path, identity)?;
+    let id = identity(path)?;
+    let directory = crate::infra::fs::open_verified_directory(path, (id.a, id.b))?;
     Ok(AuthorizedDir {
         directory,
-        identity,
+        identity: (id.a, id.b),
         path: path.to_path_buf(),
     })
-}
-
-#[cfg(not(unix))]
-fn authorize_existing_dir(path: &Path) -> Result<AuthorizedDir, Error> {
-    let _ = path;
-    Err(crate::infra::platform_support::unsupported_plural(
-        "authorized directories",
-    ))
 }
 
 /// Materialise one of the application's own default root directories under `app_data_dir`.
@@ -2364,7 +2330,6 @@ pub(crate) fn ensure_app_owned_default_dir(
     app_data_dir: &AppDataDir,
     root: AppOwnedDefaultRoot,
 ) -> Result<AuthorizedDir, Error> {
-    crate::infra::platform_support::off_unix_refusal("app-owned default directories", cfg!(unix))?;
     let path = app_data_dir.as_path().join(root.leaf());
     fs::create_dir_all(&path)?;
     let directory = authorize_existing_dir(&path)?;
@@ -3713,6 +3678,30 @@ pub struct PathAuthority {
     #[cfg(target_os = "macos")]
     engine_launch_root: Option<EngineLaunchRoot>,
 }
+/// Splits a caller-supplied relative path into components without normalising it. `Path::components`
+/// would drop interior `.` and empty segments, silently accepting `"a/./b"` and `"a//b"`; both
+/// must instead reach [`validate_components`] and be refused. The separator differs per platform,
+/// so the platform split lives here rather than in the ungated walk.
+#[cfg(unix)]
+fn relative_components(relative: &Path) -> Vec<OsString> {
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    relative
+        .as_os_str()
+        .as_bytes()
+        .split(|byte| *byte == b'/')
+        .map(|component| OsString::from_vec(component.to_vec()))
+        .collect()
+}
+
+#[cfg(windows)]
+fn relative_components(relative: &Path) -> Vec<OsString> {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    let wide: Vec<u16> = relative.as_os_str().encode_wide().collect();
+    wide.split(|&unit| unit == u16::from(b'\\') || unit == u16::from(b'/'))
+        .map(OsString::from_wide)
+        .collect()
+}
+
 fn validate_components(components: &[OsString]) -> Result<(), Error> {
     for name in components {
         let component = name.as_os_str();
@@ -13215,7 +13204,7 @@ mod tests {
             .lines()
             .filter(|line| line.contains(&private_authorizer))
             .collect();
-        assert_eq!(authorize_signatures.len(), 2, "{authorize_signatures:?}");
+        assert_eq!(authorize_signatures.len(), 1, "{authorize_signatures:?}");
         assert!(authorize_signatures
             .iter()
             .all(|line| *line == expected_authorizer_signature));

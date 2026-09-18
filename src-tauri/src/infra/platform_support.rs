@@ -1,5 +1,5 @@
 /*!
-Phase A through Phase D refusal-pin proof records (2026-09-17).
+Phase A through Phase E refusal-pin proof records (2026-09-17).
 
 The refusal sites are pinned by the G and B rows below: 20 of the original 35,
 after `f-20260914-08` retired eleven by giving them real Windows bodies (the
@@ -60,6 +60,14 @@ positive row-absence assertion and its staged break are recorded below.
 Phase D removes the `open_valid_preferred` row, leaving **6 body rows and 7
 guard rows**, counted from the arrays below. The positive row-absence assertion
 and its staged break are recorded below.
+
+Phase E removes the `ensure_app_owned_default_dir` guard row and the
+`remove_leaf_identified`, `open_regular_relative` and `authorize_existing_dir`
+body rows, leaving **3 body rows and 6 guard rows**, counted from the arrays
+below. Those four retired functions are held to one ungated definition each by
+`phase_e_removed_rows_have_one_ungated_definition_without_refusals`, which is
+also the Linux-red pin against re-inserting the `ensure_app_owned_default_dir`
+guard.
 
 Staged failure matrix. Every run used a detached disposable worktree copied
 from this phase, mutated production files only, and ran the named
@@ -1608,8 +1616,8 @@ mod tests {
                     "pub(crate) fn database_file_target(",
                 ),
             ],
+            3,
             6,
-            7,
         );
     }
 
@@ -1627,8 +1635,8 @@ mod tests {
                     "pub(crate) fn delete_puzzle_database(",
                 ),
             ],
+            3,
             6,
-            7,
         );
     }
 
@@ -1640,8 +1648,8 @@ mod tests {
                 ("db/mod.rs", "fn unlink_database_files("),
                 ("db/repository.rs", "pub(crate) fn identity_from_probe("),
             ],
+            3,
             6,
-            7,
         );
     }
 
@@ -1650,8 +1658,32 @@ mod tests {
         assert_removed_rows_are_ungated(
             "Phase D",
             &[("db/search.rs", "fn open_valid_preferred(")],
+            3,
             6,
-            7,
+        );
+    }
+
+    #[test]
+    fn phase_e_removed_rows_have_one_ungated_definition_without_refusals() {
+        assert_removed_rows_are_ungated(
+            "Phase E",
+            &[
+                ("infra/path_authority/mod.rs", "fn authorize_existing_dir("),
+                (
+                    "infra/path_authority/mod.rs",
+                    "pub(crate) fn open_regular_relative(",
+                ),
+                (
+                    "infra/path_authority/mod.rs",
+                    "pub(crate) fn remove_leaf_identified(",
+                ),
+                (
+                    "infra/path_authority/mod.rs",
+                    "pub(crate) fn ensure_app_owned_default_dir(",
+                ),
+            ],
+            3,
+            6,
         );
     }
 
@@ -1983,30 +2015,6 @@ mod tests {
                 ),
             },
             BodyRow {
-                file: "infra/path_authority/mod.rs",
-                signature: "pub(crate) fn remove_leaf_identified(",
-                form: BodyForm::Block,
-                expected: ExpectedBody::Exact(
-                    r#"{let_=(leaf,identity);Err(crate::infra::platform_support::unsupported("fd-relative removal",))}"#,
-                ),
-            },
-            BodyRow {
-                file: "infra/path_authority/mod.rs",
-                signature: "pub(crate) fn open_regular_relative(",
-                form: BodyForm::Block,
-                expected: ExpectedBody::Exact(
-                    r#"{let_=relative;Err(crate::infra::platform_support::unsupported("fd-relative regular-file opening",))}"#,
-                ),
-            },
-            BodyRow {
-                file: "infra/path_authority/mod.rs",
-                signature: "fn authorize_existing_dir(",
-                form: BodyForm::Counterpart,
-                expected: ExpectedBody::Exact(
-                    r#"{let_=path;Err(crate::infra::platform_support::unsupported_plural("authorized directories",))}"#,
-                ),
-            },
-            BodyRow {
                 file: "infra/path_authority/resolved.rs",
                 signature: "pub(crate) fn atomic_install_download_dir(",
                 form: BodyForm::Block,
@@ -2116,13 +2124,6 @@ mod tests {
 
     fn guard_rows() -> &'static [GuardRow] {
         &[
-            GuardRow {
-                file: "infra/path_authority/mod.rs",
-                signature: "pub(crate) fn ensure_app_owned_default_dir(",
-                operation: "app-owned default directories",
-                effects: &["fs::create_dir_all("],
-                nested: false,
-            },
             GuardRow {
                 file: "fs.rs",
                 signature: "pub async fn download_engine_archive(",
@@ -2607,21 +2608,6 @@ mod tests {
     #[test]
     fn routed_refusal_labels_are_unchanged() {
         let expected = [
-            (
-                "infra/path_authority/mod.rs",
-                "fd-relative removal",
-                "unsupported",
-            ),
-            (
-                "infra/path_authority/mod.rs",
-                "fd-relative regular-file opening",
-                "unsupported",
-            ),
-            (
-                "infra/path_authority/mod.rs",
-                "authorized directories",
-                "unsupported_plural",
-            ),
             (
                 "infra/path_authority/mod.rs",
                 "post-rename marker timestamps",
