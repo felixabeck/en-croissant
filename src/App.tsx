@@ -93,9 +93,11 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
+const t = i18n.t.bind(i18n);
+
 async function installUpdate(update: Update, signal: AbortSignal) {
-  const accepted = await ask(i18n.t("Updater.Available", { version: update.version }), {
-    title: i18n.t("Updater.Title"),
+  const accepted = await ask(t("Updater.Available", { version: update.version }), {
+    title: t("Updater.Title"),
     kind: "info",
   });
   if (!accepted || signal.aborted) return;
@@ -106,7 +108,7 @@ async function installUpdate(update: Update, signal: AbortSignal) {
     warn(`Failed to install update ${update.version}: ${e}`);
     notifications.show({
       color: "red",
-      title: i18n.t("Updater.InstallFailed"),
+      title: t("Updater.InstallFailed"),
       message: String(e),
     });
     return;
