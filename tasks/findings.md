@@ -9957,3 +9957,17 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 * **Open question:** none — `f-20260917-13` made the app-owned tree canonical, so the measured dilemma (same-session child vs DatabaseFile exemption) does not apply here. The repair is the same `acquire_target` + `acquired.path == stored.path` check those two doors now use.
 * **Related:** `f-20260917-13` (Root `non-linux-platform-port`, so the relation is named here rather than shared); `d-20260918-03`.
 * **Found by:** Grok `review-root-cause` on the `f-20260917-13` plan, 2026-09-18. Confidence 82. Deferred from that slice by MANDATE boundary (rule 12a).
+
+---
+
+## 2026-09-19 — filed through the inbox spool
+
+### Windows search-index replace succeeds while an unleased mapping is held, so the 1224 pin never fires
+
+* **ID:** f-20260918-03 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/db/search_index.rs:2257` (`search_index_mapping_gate_external_mapper_fails_once_with_user_mapped_file`); `guarded_generation` at the same file; Windows atomic replace in `src-tauri/src/infra/fs.rs` (share mode includes `FILE_SHARE_DELETE`).
+* **Defect:** the Windows-only test maps the preferred sidecar with `File::open` + `Mmap::map` (no mapping lease) and then calls `guarded_generation`. It asserts `Err(Error::Io)` with `raw_os_error() == Some(1224)` (`ERROR_USER_MAPPED_FILE`) and exactly one tempfile-create attempt. On `windows-latest` (GitHub Actions run 35391848926, job `rust-windows-test`, and again on 35398018524 at `44034209`) it panics with `Ok(DurableCommit)` at `search_index.rs:2285`.
+* **Open question:** should an unleased Windows mapping still make search-index replace fail with 1224 (in which case the replace share/disposition is wrong), or is success under `FILE_SHARE_DELETE` the intended Windows contract (in which case the test's premise is obsolete and must change)?
+* **Why it matters:** `f-20260917-04` closed the in-process mapping gate on the claim that a still-mapped sidecar cannot be replaced out from under a reader. This test is the only assertion that an *external* mapper is refused in one attempt and not retried. A green `DurableCommit` means that claim is unproven on Windows.
+* **Related:** `f-20260917-04` (handled; in-process mapping gate). Named here rather than sharing `Root: non-linux-platform-port`, because the compile/gate parent is closed and this is a remaining runtime pin, not an unbuildable target.
+* **Found by:** Grok, drain session 67bb5fd2-8bef-4d13-b2e3-9b0baf4316a3, while closing `f-20260830-06`. Measured from `rust-windows-test` logs of runs 35391848926 and 35398018524.
