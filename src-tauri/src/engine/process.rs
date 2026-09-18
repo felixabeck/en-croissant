@@ -2539,6 +2539,29 @@ impl EngineActor {
         reply.await.map_err(|_| Error::EngineDisconnected)
     }
 
+    /// Enqueue a `setoption` on the normal command channel without awaiting the
+    /// actor. Used to fill that channel while a search read is parked in
+    /// `select!`; an `await`ed `set_option` would yield and let the actor drain
+    /// the first item, dropping the delayed read.
+    #[cfg(test)]
+    fn try_enqueue_set_option(
+        &self,
+        name: String,
+        value: String,
+    ) -> Result<oneshot::Receiver<Result<(), Error>>, mpsc::error::TrySendError<EngineCommand>>
+    {
+        let (reply_tx, reply) = oneshot::channel();
+        self.tx
+            .try_send(EngineCommand::SetOption {
+                name,
+                value,
+                resource_values: Vec::new(),
+                operation_cancellation: None,
+                reply: reply_tx,
+            })
+            .map(|()| reply)
+    }
+
     pub async fn init_uci(&self) -> Result<(), Error> {
         let (reply_tx, reply) = oneshot::channel();
         self.request(EngineCommand::Init(reply_tx), reply).await?
@@ -6116,21 +6139,32 @@ mod tests {
 
     #[tokio::test]
     async fn termination_preempts_a_silent_search_read() {
-        let ((actor, _), _) = actor_with(&[], false, Some(Duration::from_secs(1)));
+        let read_started = Arc::new(AtomicBool::new(false));
+        let (actor, _) = delayed_search_actor(
+            &["bestmove e2e4"],
+            Duration::from_secs(1),
+            Some(read_started.clone()),
+        );
         let request = actor.start_search(&GoMode::Depth(1)).await.unwrap();
         let waiting = tokio::spawn({
             let actor = actor.clone();
             async move { actor.next_search_line(request).await }
         });
-        tokio::time::sleep(Duration::from_millis(5)).await;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !read_started.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the search read must be pending before terminate");
         tokio::time::timeout(Duration::from_millis(50), actor.terminate())
             .await
             .expect("terminate must preempt stdout wait")
             .unwrap();
-        assert!(matches!(
-            waiting.await.unwrap(),
-            Err(Error::EngineDisconnected)
-        ));
+        match waiting.await.unwrap() {
+            Err(Error::EngineDisconnected) => {}
+            other => panic!("search waiter after terminate: {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -6592,13 +6626,24 @@ mod tests {
 
     #[tokio::test]
     async fn logs_preempt_a_silent_search_read_without_cancelling_the_search() {
-        let ((actor, _), _) = actor_with(&["bestmove e2e4"], false, Some(Duration::from_secs(1)));
+        let read_started = Arc::new(AtomicBool::new(false));
+        let (actor, _) = delayed_search_actor(
+            &["bestmove e2e4"],
+            Duration::from_secs(1),
+            Some(read_started.clone()),
+        );
         let request = actor.start_search(&GoMode::Depth(1)).await.unwrap();
         let waiting = tokio::spawn({
             let actor = actor.clone();
             async move { actor.next_search_line(request).await }
         });
-        tokio::time::sleep(Duration::from_millis(5)).await;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !read_started.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the search read must be pending before logs");
 
         tokio::time::timeout(Duration::from_millis(50), actor.logs())
             .await
@@ -6616,34 +6661,43 @@ mod tests {
 
     #[tokio::test]
     async fn terminate_bypasses_a_flooded_normal_command_queue() {
-        let ((actor, _), _) = actor_with(&[], false, Some(Duration::from_secs(1)));
+        let read_started = Arc::new(AtomicBool::new(false));
+        let (actor, _) = delayed_search_actor(
+            &["bestmove e2e4"],
+            Duration::from_secs(1),
+            Some(read_started.clone()),
+        );
         let request = actor.start_search(&GoMode::Depth(1)).await.unwrap();
         let waiting = tokio::spawn({
             let actor = actor.clone();
             async move { actor.next_search_line(request).await }
         });
-        tokio::time::sleep(Duration::from_millis(5)).await;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !read_started.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the search read must be pending before the flood");
 
         let mut queued = Vec::new();
         for index in 0..32 {
-            let actor = actor.clone();
-            queued.push(tokio::spawn(async move {
-                actor.set_option(&format!("Option{index}"), "1").await
-            }));
+            queued.push(
+                actor
+                    .try_enqueue_set_option(format!("Option{index}"), "1".into())
+                    .expect("normal queue must accept 32 set_option commands while searching"),
+            );
         }
-        tokio::time::sleep(Duration::from_millis(5)).await;
 
         tokio::time::timeout(Duration::from_millis(50), actor.terminate())
             .await
             .expect("terminate must bypass normal queue")
             .unwrap();
-        assert!(matches!(
-            waiting.await.unwrap(),
-            Err(Error::EngineDisconnected)
-        ));
-        for task in queued {
-            let _ = task.await;
+        match waiting.await.unwrap() {
+            Err(Error::EngineDisconnected) => {}
+            other => panic!("search waiter after terminate: {other:?}"),
         }
+        drop(queued);
     }
 
     #[cfg(unix)]
