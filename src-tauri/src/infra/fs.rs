@@ -4171,6 +4171,52 @@ pub(crate) fn create_dir_at(parent: &File, name: &OsStr) -> Result<(), Error> {
     win::create_dir_at(parent, name)
 }
 
+#[cfg(all(test, unix))]
+std::thread_local! {
+    static ENSURE_DIRECTORY_PRE_CREATE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static ENSURE_DIRECTORY_POST_COLLISION_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Runs once, immediately before the next [`ensure_directory_at`] issues its exclusive create.
+#[cfg(all(test, unix))]
+pub(crate) fn set_ensure_directory_pre_create_hook(hook: Option<Box<dyn FnOnce()>>) {
+    ENSURE_DIRECTORY_PRE_CREATE_HOOK.with(|slot| *slot.borrow_mut() = hook);
+}
+
+/// Runs once, after the next [`ensure_directory_at`]'s exclusive create reports `AlreadyExists`
+/// and before the existing name is opened.
+#[cfg(all(test, unix))]
+pub(crate) fn set_ensure_directory_post_collision_hook(hook: Option<Box<dyn FnOnce()>>) {
+    ENSURE_DIRECTORY_POST_COLLISION_HOOK.with(|slot| *slot.borrow_mut() = hook);
+}
+
+/// The crate's one descriptor-relative create-if-missing: an exclusive [`create_dir_at`] whose
+/// `AlreadyExists` is the success path, followed by a no-follow [`open_directory_at`] of `name`
+/// under the same held `parent`. A symlink or reparse point at `name` — including one planted
+/// after the create collided — fails the open rather than being followed. A freshly created
+/// directory gets `create_dir_at`'s mode.
+pub(crate) fn ensure_directory_at(parent: &File, name: &OsStr) -> Result<File, Error> {
+    #[cfg(all(test, unix))]
+    if let Some(hook) = ENSURE_DIRECTORY_PRE_CREATE_HOOK.with(|slot| slot.borrow_mut().take()) {
+        hook();
+    }
+    match create_dir_at(parent, name) {
+        Ok(()) => {}
+        Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            #[cfg(all(test, unix))]
+            if let Some(hook) =
+                ENSURE_DIRECTORY_POST_COLLISION_HOOK.with(|slot| slot.borrow_mut().take())
+            {
+                hook();
+            }
+        }
+        Err(error) => return Err(error),
+    }
+    open_directory_at(parent, name, true)
+}
+
 #[cfg(unix)]
 pub(crate) fn open_directory_at(
     parent: &File,
@@ -5303,6 +5349,72 @@ mod tests {
             }
             other => panic!("expected AlreadyExists, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn ensure_directory_at_creates_a_missing_name_and_reopens_an_existing_one() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        #[cfg(unix)]
+        let parent = File::open(temp.path()).expect("open parent");
+        #[cfg(windows)]
+        let parent = windows_test_parent(temp.path());
+        let created = ensure_directory_at(&parent, OsStr::new("folder")).expect("create");
+        let reopened = ensure_directory_at(&parent, OsStr::new("folder")).expect("reopen");
+        assert!(temp.path().join("folder").is_dir());
+        assert_eq!(
+            crate::infra::path_authority::opened_file_identity(&created).unwrap(),
+            crate::infra::path_authority::opened_file_identity(&reopened).unwrap()
+        );
+    }
+
+    /// Test 3: a symlink planted at the name after the exclusive create collided is refused by the
+    /// no-follow open, not followed.
+    #[cfg(unix)]
+    #[test]
+    fn ensure_directory_at_refuses_a_symlink_planted_after_the_collision() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let outside = temp.path().join("outside");
+        let parent_path = temp.path().join("parent");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::create_dir_all(parent_path.join("child")).unwrap();
+        let parent = File::open(&parent_path).expect("open parent");
+        let child = parent_path.join("child");
+        let target = outside.clone();
+        set_ensure_directory_post_collision_hook(Some(Box::new(move || {
+            std::fs::remove_dir(&child).unwrap();
+            std::os::unix::fs::symlink(&target, &child).unwrap();
+        })));
+        let result = ensure_directory_at(&parent, OsStr::new("child"));
+        set_ensure_directory_post_collision_hook(None);
+        assert!(
+            matches!(result, Err(Error::Io(_))),
+            "a racing symlink must fail the open: {result:?}"
+        );
+        assert!(std::fs::symlink_metadata(parent_path.join("child"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+    }
+
+    /// Test 2 at the helper: a symlink swapped in at the name before the create is not followed
+    /// either — the exclusive `mkdirat` collides with it and the no-follow open refuses it.
+    #[cfg(unix)]
+    #[test]
+    fn ensure_directory_at_refuses_a_symlink_planted_before_the_create() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        let parent = File::open(temp.path()).expect("open parent");
+        let child = temp.path().join("child");
+        let target = outside.clone();
+        set_ensure_directory_pre_create_hook(Some(Box::new(move || {
+            std::os::unix::fs::symlink(&target, &child).unwrap();
+        })));
+        let result = ensure_directory_at(&parent, OsStr::new("child"));
+        set_ensure_directory_pre_create_hook(None);
+        assert!(matches!(result, Err(Error::Io(_))), "{result:?}");
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
     }
 
     #[test]

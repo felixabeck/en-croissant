@@ -1082,13 +1082,8 @@ fn trash_entry(
         return Err(Error::Cancellation);
     }
     // Both components are created through retained descriptors; no recursive pathname creation.
-    match crate::infra::fs::create_dir_at(root_dir, &trash) {
-        Ok(()) => {}
-        Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(error) => return Err(error),
-    }
+    let trash_dir = crate::infra::fs::ensure_directory_at(root_dir, &trash)?;
     let trash_path = root.path().join(TRASH_DIRECTORY);
-    let trash_dir = crate::infra::fs::open_directory_at(root_dir, &trash, true)?;
     let bucket = std::ffi::OsString::from(uuid::Uuid::new_v4().to_string());
     crate::infra::fs::create_dir_at(&trash_dir, &bucket)?;
     let bucket_path = trash_path.join(&bucket);
@@ -2608,6 +2603,57 @@ mod tests {
         .expect("restore directory");
         mutation_target(&state.pgn_path_authority, &descendant_entry)
             .expect("descendant survives restore rebase");
+    }
+
+    /// The trash directory is created if missing and reused when it already exists; a symlink at
+    /// the trash name is refused by the no-follow open, so nothing moves through it.
+    #[cfg(unix)]
+    #[test]
+    fn trash_directory_is_created_if_missing_reused_and_refuses_a_symlink() {
+        let (directory, state, workspace) = workspace_state();
+        let root = directory.path().join("workspace");
+        let (_, first) = registered_child_directory(&state, &workspace, "first");
+        trash_entry(
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+            &workspace,
+            &first,
+            &CancellationToken::new(),
+        )
+        .expect("trash creates its directory");
+        assert!(root.join(TRASH_DIRECTORY).is_dir());
+
+        let (_, second) = registered_child_directory(&state, &workspace, "second");
+        trash_entry(
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+            &workspace,
+            &second,
+            &CancellationToken::new(),
+        )
+        .expect("trash reuses its existing directory");
+        assert_eq!(fs::read_dir(root.join(TRASH_DIRECTORY)).unwrap().count(), 2);
+
+        let outside = directory.path().join("outside");
+        fs::create_dir(&outside).expect("outside directory");
+        fs::rename(
+            root.join(TRASH_DIRECTORY),
+            directory.path().join("old-trash"),
+        )
+        .expect("move trash aside");
+        std::os::unix::fs::symlink(&outside, root.join(TRASH_DIRECTORY)).expect("trash symlink");
+        let (third_path, third) = registered_child_directory(&state, &workspace, "third");
+        let error = trash_entry(
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+            &workspace,
+            &third,
+            &CancellationToken::new(),
+        )
+        .expect_err("a symlinked trash directory must be refused");
+        assert!(matches!(error, Error::Io(_)), "{error:?}");
+        assert!(third_path.is_dir());
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
     }
 
     #[test]

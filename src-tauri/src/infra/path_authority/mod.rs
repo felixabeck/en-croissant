@@ -457,8 +457,8 @@ mod windows_tests {
     /// A junction at an app-owned leaf is a directory (`is_dir() == true`) that also carries the
     /// reparse attribute, so `authorize_existing_dir` must refuse it before `identity()`:
     /// `identity()` would otherwise reject it as `Error::InvalidInput("symbolic links are not path
-    /// authorities")` and put a different door's fixed text on the wire. `create_dir_all` follows
-    /// the existing junction, so the target directory must stay empty.
+    /// authorities")` and put a different door's fixed text on the wire. The no-follow open of the
+    /// existing name must not traverse the junction, so the target directory must stay empty.
     #[test]
     fn app_owned_default_root_junction_leaf_is_refused_as_io() {
         for &(root, leaf) in APP_OWNED_DEFAULT_ROOT_LEAVES {
@@ -2258,6 +2258,7 @@ pub(crate) enum AppOwnedDefaultRoot {
 }
 
 impl AppOwnedDefaultRoot {
+    #[cfg(test)]
     pub(crate) const ALL: &[Self] = &[
         Self::Databases,
         Self::Engines,
@@ -2297,7 +2298,30 @@ impl AppOwnedDefaultRoot {
 /// dialog-derived directory. Without it the leaf was fixed and the parent was an arbitrary
 /// `&Path`, which left `<anywhere>/db` reachable — and `src-tauri/src/infra/**` is invisible to
 /// `check-rust-release-surface.mjs`, so such a caller would cost no counted site.
-pub(crate) struct AppDataDir(PathBuf);
+///
+/// Construction acquires the directory once: the longest existing prefix of the requested path is
+/// canonicalised and opened against its identity, and every missing component below it is created
+/// relative to that held descriptor. The value keeps only the canonical pathname and the retained
+/// descriptor; the original spelling is dropped, so every path derived from it — default roots,
+/// their children, engine images — is canonical from the moment it is registered, and a later
+/// ancestor swap cannot redirect default-root materialisation.
+pub(crate) struct AppDataDir {
+    path: PathBuf,
+    directory: fs::File,
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static APP_DATA_PRE_OPEN_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Runs once in the next [`AppDataDir`] construction, after the existing prefix was canonicalised
+/// and its identity read and before that prefix is opened against the identity.
+#[cfg(test)]
+pub(crate) fn set_app_data_pre_open_hook(hook: Option<Box<dyn FnOnce()>>) {
+    APP_DATA_PRE_OPEN_HOOK.with(|slot| *slot.borrow_mut() = hook);
+}
 
 impl AppDataDir {
     /// The production constructor, and the only one outside tests. Generic over
@@ -2305,7 +2329,7 @@ impl AppDataDir {
     /// workspace helpers stay reachable from `tauri::test::mock_app()`.
     pub(crate) fn for_app<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Self, Error> {
         use tauri::Manager as _;
-        Ok(Self(app.path().app_data_dir()?))
+        Self::acquire(&app.path().app_data_dir()?)
     }
 
     /// Test-only, and `#[cfg(test)]`-gated rather than merely private: a constructor from an
@@ -2314,11 +2338,67 @@ impl AppDataDir {
     /// `app_data_dir()` resolves against the user directory of the machine running them.
     #[cfg(test)]
     pub(crate) fn for_test(path: &Path) -> Self {
-        Self(path.to_path_buf())
+        Self::try_for_test(path).expect("test application data directory is acquirable")
+    }
+
+    /// The fallible form of [`AppDataDir::for_test`], for tests that drive a failing construction.
+    #[cfg(test)]
+    pub(crate) fn try_for_test(path: &Path) -> Result<Self, Error> {
+        Self::acquire(path)
+    }
+
+    /// Every construction failure — including a `Conflict` from a prefix swapped between
+    /// canonicalisation and open — becomes `Error::Io` with fixed text, so no native path reaches
+    /// the renderer. An I/O failure keeps its kind, and with it the MissingResource/Permission
+    /// category.
+    fn acquire(requested: &Path) -> Result<Self, Error> {
+        Self::acquire_canonical(requested).map_err(|error| {
+            let kind = match &error {
+                Error::Io(error) => error.kind(),
+                _ => std::io::ErrorKind::Other,
+            };
+            std::io::Error::new(kind, "application data directory could not be acquired").into()
+        })
+    }
+
+    fn acquire_canonical(requested: &Path) -> Result<Self, Error> {
+        let mut prefix = requested.to_path_buf();
+        let mut missing = Vec::new();
+        loop {
+            match fs::symlink_metadata(&prefix) {
+                Ok(_) => break,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    if !has_normal_leaf(&prefix) {
+                        return Err(error.into());
+                    }
+                    let (Some(name), Some(parent)) = (prefix.file_name(), prefix.parent()) else {
+                        return Err(error.into());
+                    };
+                    missing.push(name.to_os_string());
+                    prefix = parent.to_path_buf();
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        // Ancestors of the requested path may legitimately be symlinks (`/var -> /private/var`);
+        // they are followed exactly once, here, and never again after the descriptor is held.
+        let mut path = fs::canonicalize(&prefix)?;
+        let id = identity(&path)?;
+        #[cfg(test)]
+        if let Some(hook) = APP_DATA_PRE_OPEN_HOOK.with(|slot| slot.borrow_mut().take()) {
+            hook();
+        }
+        let mut directory =
+            crate::infra::fs::open_verified_directory(&path, (id.a, id.b))?.into_file();
+        for name in missing.iter().rev() {
+            directory = crate::infra::fs::ensure_directory_at(&directory, name)?;
+            path.push(name);
+        }
+        Ok(Self { path, directory })
     }
 
     fn as_path(&self) -> &Path {
-        &self.0
+        &self.path
     }
 }
 
@@ -2373,9 +2453,10 @@ fn authorize_existing_dir(path: &Path) -> Result<AuthorizedDir, Error> {
 /// not own, and in particular a user-picked path can never acquire create-if-missing semantics.
 /// Refuses a leaf that is a symlink or not a directory.
 ///
-/// The function returns its verified directory descriptor; subsequent writes must use the
-/// descriptor rather than reopening the pathname. The function's `create_dir_all` call still
-/// follows ancestor symlinks, which is tracked separately.
+/// The leaf is created if missing and opened no-follow relative to the descriptor [`AppDataDir`]
+/// retains, so no pathname walk of the app-data spelling happens here and a swapped ancestor
+/// cannot redirect it. The returned path is the canonical app-data path joined with the leaf.
+/// Subsequent writes must use the returned descriptor rather than reopening the pathname.
 ///
 /// The refusal is built as an `std::io::Error`, so it reaches the renderer as `Error::Io` —
 /// fixed text plus the MissingResource/Permission/Io discrimination. `Error::InvalidInput`
@@ -2384,18 +2465,35 @@ pub(crate) fn ensure_app_owned_default_dir(
     app_data_dir: &AppDataDir,
     root: AppOwnedDefaultRoot,
 ) -> Result<AuthorizedDir, Error> {
-    let path = app_data_dir.as_path().join(root.leaf());
-    fs::create_dir_all(&path)?;
-    let directory = authorize_existing_dir(&path)?;
+    let leaf = OsStr::new(root.leaf());
+    let path = app_data_dir.as_path().join(leaf);
+    let opened = crate::infra::fs::ensure_directory_at(&app_data_dir.directory, leaf)
+        .map_err(|error| default_root_refusal(&path, error))?;
+    let identity = opened_file_identity(&opened)?;
+    let directory = VerifiedDir::new(opened, identity)?;
     #[cfg(unix)]
     if let Some(mode) = root.private_mode() {
-        rustix::fs::fchmod(
-            directory.directory.as_file(),
-            rustix::fs::Mode::from_raw_mode(mode),
-        )
-        .map_err(|error| Error::Io(Box::new(error.into())))?;
+        rustix::fs::fchmod(directory.as_file(), rustix::fs::Mode::from_raw_mode(mode))
+            .map_err(|error| Error::Io(Box::new(error.into())))?;
     }
-    Ok(directory)
+    Ok(AuthorizedDir {
+        directory,
+        identity,
+        path,
+    })
+}
+
+/// Names why a default-root leaf could not be opened as a directory. The descriptor open has
+/// already failed, so the lookup below only chooses the fixed refusal text; nothing is authorised
+/// from it. A link-like leaf (symlink, or a junction on Windows) and a non-directory keep the
+/// refusals `authorize_existing_dir` reports; any other failure passes through unchanged.
+fn default_root_refusal(path: &Path, error: Error) -> Error {
+    let reason = match fs::symlink_metadata(path) {
+        Ok(metadata) if is_link_like(&metadata) => "app-owned default root is a reparse point",
+        Ok(metadata) if !metadata.is_dir() => "app-owned default root is not a directory",
+        _ => return error,
+    };
+    std::io::Error::new(std::io::ErrorKind::InvalidInput, reason).into()
 }
 
 #[cfg(target_os = "macos")]
@@ -3699,7 +3797,6 @@ struct RegistryAdmissionSnapshot {
 /// Backend-only authority registry. Its public methods never parse renderer-provided raw paths.
 pub struct PathAuthority {
     registry_path: PathBuf,
-    app_data_dir: Option<AppDataDir>,
     persistent: BTreeMap<String, Entry>,
     dialogs: HashMap<String, DialogGrant>,
     clock: Arc<dyn Clock>,
@@ -4089,19 +4186,16 @@ impl PathAuthority {
         )
     }
 
-    /// The production entry point: the application's own data directory is what tells the registry
-    /// which stored spellings are deliberately raw, so startup supplies it here rather than
-    /// assembling a clock and a capacity at the call site.
+    /// The production entry point, so startup does not assemble a clock and a capacity at the
+    /// call site.
     pub(crate) fn open_for_app(
         registry_path: PathBuf,
         app_roots: Vec<AppOwnedRoot>,
-        app_data_dir: AppDataDir,
         launch_root: LaunchRootArgument,
     ) -> Result<Self, Error> {
-        Self::open_with_app_data(
+        Self::open_with_launch_root_argument(
             registry_path,
             app_roots,
-            Some(app_data_dir),
             Arc::new(SystemClock),
             DEFAULT_DIALOG_CAPACITY,
             launch_root,
@@ -4117,10 +4211,9 @@ impl PathAuthority {
         app_roots: Vec<AppOwnedRoot>,
         launch_root: EngineLaunchRoot,
     ) -> Result<Self, Error> {
-        Self::open_with_app_data(
+        Self::open_with_launch_root_argument(
             registry_path,
             app_roots,
-            None,
             Arc::new(SystemClock),
             DEFAULT_DIALOG_CAPACITY,
             Some(launch_root),
@@ -4134,10 +4227,9 @@ impl PathAuthority {
         clock: Arc<dyn Clock>,
         dialog_capacity: usize,
     ) -> Result<Self, Error> {
-        Self::open_with_app_data(
+        Self::open_with_launch_root_argument(
             registry_path,
             app_roots,
-            None,
             clock,
             dialog_capacity,
             #[cfg(target_os = "macos")]
@@ -4147,10 +4239,9 @@ impl PathAuthority {
         )
     }
 
-    pub(crate) fn open_with_app_data(
+    pub(crate) fn open_with_launch_root_argument(
         registry_path: PathBuf,
         app_roots: Vec<AppOwnedRoot>,
-        app_data_dir: Option<AppDataDir>,
         clock: Arc<dyn Clock>,
         dialog_capacity: usize,
         _launch_root: LaunchRootArgument,
@@ -4226,7 +4317,7 @@ impl PathAuthority {
                     stored,
                     availability: PathAvailability::Unavailable,
                 };
-                refresh_entry(&mut entry, app_data_dir.as_ref());
+                refresh_entry(&mut entry);
                 if loaded.insert(entry.stored.id.id.clone(), entry).is_some() {
                     return Err(Error::InvalidInput(
                         "duplicate path registry identifier".into(),
@@ -4309,7 +4400,6 @@ impl PathAuthority {
         }
         let mut authority = Self {
             registry_path,
-            app_data_dir,
             persistent,
             dialogs: HashMap::new(),
             clock,
@@ -4366,9 +4456,6 @@ impl PathAuthority {
                     continue;
                 }
             };
-            if spelling_is_application_owned(self.app_data_dir.as_ref(), &path) {
-                continue;
-            }
             match classify_canonical_binding(&path) {
                 CanonicalBindingStatus::Canonical | CanonicalBindingStatus::Leafless => continue,
                 CanonicalBindingStatus::NeedsRebinding => {}
@@ -4457,7 +4544,7 @@ impl PathAuthority {
         self.evict_dialogs();
         self.refresh_persistent();
         for grant in self.dialogs.values_mut() {
-            refresh_entry(&mut grant.entry, self.app_data_dir.as_ref());
+            refresh_entry(&mut grant.entry);
         }
         self.persistent
             .values()
@@ -5155,6 +5242,12 @@ impl PathAuthority {
             self.session_protected_ids.insert(id.id.clone());
             return Ok(id);
         }
+        if expected_identity.is_some() {
+            if let Some(id) = self.adopt_unavailable_root(&path, &identity, purpose, &operations)? {
+                self.session_protected_ids.insert(id.id.clone());
+                return Ok(id);
+            }
+        }
         let id = self
             .persist_entry(
                 &path,
@@ -5166,6 +5259,63 @@ impl PathAuthority {
             .id;
         self.session_protected_ids.insert(id.id.clone());
         Ok(id)
+    }
+
+    /// A default root whose load-time rebinding failed stays `Unavailable` under its old spelling,
+    /// so the lexical lookup above misses the caller's canonical path. When exactly one
+    /// `Unavailable` root of the same purpose carries the verified identity, the canonical path is
+    /// adopted onto that id instead of minting a second root, and every stored path that is a
+    /// component-wise descendant of the old spelling is moved under the canonical one.
+    /// `Available` entries are never rewritten.
+    fn adopt_unavailable_root(
+        &mut self,
+        path: &Path,
+        identity: &Identity,
+        purpose: Option<EntryPurpose>,
+        operations: &[PathOperation],
+    ) -> Result<Option<PathRef>, Error> {
+        let mut matches = self.persistent.values().filter(|entry| {
+            entry.availability == PathAvailability::Unavailable
+                && entry.stored.class == PathClass::PersistentCustomRoot
+                && entry.stored.target_is_dir
+                && entry.stored.identity == *identity
+                && match purpose {
+                    Some(purpose) => entry.stored.purpose == Some(purpose),
+                    None => entry.stored.purpose.is_none() && entry.stored.operations == operations,
+                }
+        });
+        let (Some(entry), None) = (matches.next(), matches.next()) else {
+            return Ok(None);
+        };
+        let root_id = entry.stored.id.clone();
+        let Ok(old_root) = entry.stored.path.to_path() else {
+            return Ok(None);
+        };
+        let mut candidate = self.persistent.clone();
+        for (id, entry) in candidate.iter_mut() {
+            if *id == root_id.id {
+                entry.stored.path = NativePath::from_path(path);
+                if let Some(purpose) = purpose {
+                    entry.stored.operations = canonical_operations(purpose);
+                }
+                entry.availability = PathAvailability::Available;
+                continue;
+            }
+            let Ok(stored) = entry.stored.path.to_path() else {
+                continue;
+            };
+            if let Ok(rest) = stored.strip_prefix(&old_root) {
+                let rebound = if rest.as_os_str().is_empty() {
+                    path.to_path_buf()
+                } else {
+                    path.join(rest)
+                };
+                entry.stored.path = NativePath::from_path(&rebound);
+                refresh_entry(entry);
+            }
+        }
+        require_durable(self.commit_candidate(candidate, None)?)?;
+        Ok(Some(root_id))
     }
 
     /// Builds the recovery-only Complete prune candidate for a replaced root. Explicit workspace
@@ -5933,7 +6083,10 @@ impl PathAuthority {
                 parent_access: parent_access_for_operations(&[operation]),
             },
         )?;
-        if acquired.identity != stored.identity {
+        // Identity alone is not enough: an ancestor swapped for a symlink to a same-inode
+        // directory re-acquires the stored object under a different pathname, and a carrier
+        // bound there would put SQLite and its sidecars outside the authorised directory.
+        if acquired.identity != stored.identity || acquired.path != path {
             return Err(Error::Conflict(
                 "workspace entry is unavailable because its object changed".into(),
             ));
@@ -6518,14 +6671,23 @@ impl PathAuthority {
             ));
         }
         let root = entry.stored.path.to_path()?;
-        if validate_target(&root, PathClass::PersistentCustomRoot)? != entry.stored.identity {
+        // Acquire rather than merely validate: `validate_target` follows ancestors, so a root
+        // whose ancestor was swapped would be committed here and then refused by every
+        // descriptor-relative `resolve`. The re-acquired pathname must be the stored one.
+        let acquired = acquire_target(
+            &root,
+            AcquireShape::Root {
+                parent_access: parent_access_for_operations(&[operation]),
+            },
+        )?;
+        if acquired.identity != entry.stored.identity || acquired.path != root {
             return Err(Error::Conflict(
                 "workspace is unavailable because its root changed".into(),
             ));
         }
         self.session_protected_ids
             .insert(workspace.path_ref().id.clone());
-        Ok(root)
+        Ok(acquired.path)
     }
 
     /// Persists an opaque child handle for an entry observed through a retained directory
@@ -7097,7 +7259,7 @@ impl PathAuthority {
                 if status == WorkspaceRemovalStatus::Complete {
                     return false;
                 }
-                refresh_entry(entry, self.app_data_dir.as_ref());
+                refresh_entry(entry);
                 entry.availability == PathAvailability::Available
             });
         }
@@ -7201,12 +7363,12 @@ impl PathAuthority {
     #[cfg(test)]
     fn refresh_persistent(&mut self) {
         for entry in self.persistent.values_mut() {
-            refresh_entry(entry, self.app_data_dir.as_ref());
+            refresh_entry(entry);
         }
     }
     fn refresh_persistent_id(&mut self, id: &PathRef) {
         if let Some(entry) = self.persistent.get_mut(&id.id) {
-            refresh_entry(entry, self.app_data_dir.as_ref());
+            refresh_entry(entry);
         }
     }
     #[cfg(all(test, unix))]
@@ -7787,33 +7949,14 @@ fn classify_canonical_binding(path: &Path) -> CanonicalBindingStatus {
     }
 }
 
-fn spelling_is_application_owned(app_data_dir: Option<&AppDataDir>, path: &Path) -> bool {
-    if path
-        .components()
-        .any(|component| matches!(component, std::path::Component::ParentDir))
-    {
-        return false;
-    }
-    app_data_dir.as_ref().is_some_and(|dir| {
-        AppOwnedDefaultRoot::ALL
-            .iter()
-            .any(|root| path.starts_with(dir.as_path().join(root.leaf())))
-    })
+/// Only an entry the application registered as an `AppOwnedRoot` keeps a raw spelling. The default
+/// roots under [`AppDataDir`] and everything registered beneath them are stored canonical, because
+/// [`AppDataDir`] itself holds the canonical app-data path, so they need no exemption.
+fn entry_keeps_its_raw_spelling(class: PathClass) -> bool {
+    class == PathClass::AppOwnedRoot
 }
 
-/// An entry is outside the canonical-spelling requirement either because the application itself
-/// registered the directory (`AppOwnedRoot`) or because the spelling names something inside one of
-/// its own default roots. Both keep a deliberately raw spelling that `get_or_create_root` and
-/// `cleanup_engine_images` compare lexically.
-fn entry_keeps_its_raw_spelling(
-    class: PathClass,
-    app_data_dir: Option<&AppDataDir>,
-    path: &Path,
-) -> bool {
-    class == PathClass::AppOwnedRoot || spelling_is_application_owned(app_data_dir, path)
-}
-
-fn refresh_entry(entry: &mut Entry, app_data_dir: Option<&AppDataDir>) {
+fn refresh_entry(entry: &mut Entry) {
     #[cfg(test)]
     REFRESH_ENTRY_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow().as_ref() {
@@ -7835,7 +7978,7 @@ fn refresh_entry(entry: &mut Entry, app_data_dir: Option<&AppDataDir>) {
     entry.availability =
         validate_target(&path, class).map_or(PathAvailability::Unavailable, |id| {
             if id == entry.stored.identity {
-                if entry_keeps_its_raw_spelling(entry.stored.class, app_data_dir, &path) {
+                if entry_keeps_its_raw_spelling(entry.stored.class) {
                     PathAvailability::Available
                 } else {
                     match classify_canonical_binding(&path) {
@@ -7909,25 +8052,23 @@ mod portable_tests {
         PathAuthority::open_with_clock(dir.path().join("registry.json"), vec![], clock, 2).unwrap()
     }
 
-    /// `LaunchRootArgument` is `Option<EngineLaunchRoot>` on macOS and `()` everywhere else
-    /// (`:3752-3754`), so a launch-root argument written at a call site compiles on exactly one of
-    /// the two. Every test that opens the authority with an app-data context goes through this
+    /// `LaunchRootArgument` is `Option<EngineLaunchRoot>` on macOS and `()` everywhere else, so a
+    /// launch-root argument written at a call site compiles on exactly one of the two. Every test
+    /// that opens the authority over an explicit registry path and app roots goes through this
     /// wrapper, which keeps the per-platform literal in one place; passing it as a value instead
     /// would trip `clippy::unit_arg` off macOS.
     #[cfg(unix)]
-    pub(super) fn authority_with_app_data(
+    pub(super) fn authority_at(
         registry_path: PathBuf,
         app_roots: Vec<AppOwnedRoot>,
-        app_data_dir: Option<AppDataDir>,
         clock: Arc<dyn Clock>,
         dialog_capacity: usize,
     ) -> Result<PathAuthority, Error> {
         #[cfg(target_os = "macos")]
         {
-            PathAuthority::open_with_app_data(
+            PathAuthority::open_with_launch_root_argument(
                 registry_path,
                 app_roots,
-                app_data_dir,
                 clock,
                 dialog_capacity,
                 None,
@@ -7935,10 +8076,9 @@ mod portable_tests {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            PathAuthority::open_with_app_data(
+            PathAuthority::open_with_launch_root_argument(
                 registry_path,
                 app_roots,
-                app_data_dir,
                 clock,
                 dialog_capacity,
                 (),
@@ -8067,7 +8207,7 @@ mod portable_tests {
 #[cfg(unix)]
 #[cfg(test)]
 mod tests {
-    use super::portable_tests::{authority, authority_with_app_data, TestClock};
+    use super::portable_tests::{authority, authority_at, TestClock};
     use super::resolved::file_identity;
     use super::*;
     use crate::infra::blocking::source_scan::body_at_indent;
@@ -9146,7 +9286,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn database_file_target_binds_a_symlinked_ancestor_to_its_canonical_parent() {
+    fn database_file_target_refuses_a_verified_raw_spelling_and_mints_the_migrated_canonical_one() {
         use std::os::unix::fs::symlink;
 
         let dir = tempfile::tempdir().unwrap();
@@ -9198,9 +9338,21 @@ mod tests {
                 .unwrap(),
             path
         );
-        let handle = DatabaseHandle::new(raw_spelling.id);
+        // Test 10: the verified door stores the caller's raw spelling, which re-acquires under a
+        // different pathname and is therefore refused; the migrated canonical entry still mints.
+        let refused = authority
+            .database_file_target(
+                &DatabaseHandle::new(raw_spelling.id),
+                PathOperation::DatabaseMutate,
+            )
+            .err()
+            .expect("a verified raw spelling must not mint a target");
+        assert!(matches!(refused, Error::Conflict(_)), "{refused:?}");
         let target = authority
-            .database_file_target(&handle, PathOperation::DatabaseMutate)
+            .database_file_target(
+                &DatabaseHandle::new(canonicalized.id),
+                PathOperation::DatabaseMutate,
+            )
             .unwrap();
         assert_eq!(target.path(), real.join("x.db3"));
         assert_eq!(target.leaf(), OsStr::new("x.db3"));
@@ -12526,9 +12678,11 @@ mod tests {
         assert_eq!(reloaded.active_database_root().unwrap(), None);
     }
 
+    /// Test 8: a raw app-owned spelling written before `AppDataDir` became canonical is rebound at
+    /// load like any other entry, and the default-root registration then reuses it lexically.
     #[cfg(unix)]
     #[test]
-    fn rebinding_exempts_every_declared_app_owned_default_root() {
+    fn rebind_canonicalises_every_declared_app_owned_default_root() {
         use std::os::unix::fs::symlink;
 
         let dir = tempfile::tempdir().unwrap();
@@ -12562,34 +12716,169 @@ mod tests {
         for (root, _) in APP_OWNED_DEFAULT_ROOT_LEAVES {
             assert!(AppOwnedDefaultRoot::ALL.contains(root));
         }
+        entries.push(stored_entry_for(
+            &app_data_link.join("db"),
+            "database-root",
+            Some(EntryPurpose::DatabaseRoot),
+            canonical_operations(EntryPurpose::DatabaseRoot),
+        ));
         let registry = dir.path().join("registry.json");
         write_registry_with_entries(&registry, entries);
-        let authority = authority_with_app_data(
-            registry,
-            vec![],
-            Some(AppDataDir::for_test(&app_data_link)),
-            Arc::new(TestClock::new(0)),
-            2,
-        )
-        .unwrap();
+        let mut authority = authority_at(registry, vec![], Arc::new(TestClock::new(0)), 2).unwrap();
+        let canonical_app_data = fs::canonicalize(&real_app_data).unwrap();
         for &(_, leaf) in APP_OWNED_DEFAULT_ROOT_LEAVES {
             let entry = &authority.persistent[&format!("app-owned-{leaf}")];
             assert_eq!(
                 entry.stored.path.to_path().unwrap(),
-                app_data_link.join(leaf)
+                canonical_app_data.join(leaf)
             );
             assert_eq!(entry.availability, PathAvailability::Available);
         }
+        let databases = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(&app_data_link),
+            AppOwnedDefaultRoot::Databases,
+        )
+        .unwrap();
+        assert_eq!(databases.path(), canonical_app_data.join("db"));
+        let root = authority
+            .get_or_create_database_root(databases.path(), "Databases", Some(databases.identity()))
+            .unwrap();
+        assert_eq!(root.path_ref().id, "database-root");
+    }
+
+    /// Test 9: a default root whose load-time rebinding failed stays `Unavailable`; the next
+    /// verified registration adopts the canonical path onto that same id, moves only its
+    /// component-wise descendants, and leaves a second `Available` same-identity entry alone.
+    #[cfg(unix)]
+    #[test]
+    fn rebind_failure_is_adopted_onto_the_same_root_id() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real_app_data = dir.path().join("real-app-data");
+        let app_data_link = dir.path().join("app-data-link");
+        fs::create_dir_all(real_app_data.join("db")).unwrap();
+        fs::create_dir_all(real_app_data.join("db2")).unwrap();
+        fs::write(real_app_data.join("db/x.db3"), b"database").unwrap();
+        fs::write(real_app_data.join("db2/x.db3"), b"sibling").unwrap();
+        symlink(&real_app_data, &app_data_link).unwrap();
+        let canonical_app_data = fs::canonicalize(&real_app_data).unwrap();
+        let raw_root = stored_entry_for(
+            &app_data_link.join("db"),
+            "raw-root",
+            Some(EntryPurpose::DatabaseRoot),
+            canonical_operations(EntryPurpose::DatabaseRoot),
+        );
+        let raw_child = stored_entry_for(
+            &app_data_link.join("db/x.db3"),
+            "raw-child",
+            Some(EntryPurpose::DatabaseFile),
+            canonical_operations(EntryPurpose::DatabaseFile),
+        );
+        let raw_sibling = stored_entry_for(
+            &app_data_link.join("db2/x.db3"),
+            "raw-sibling",
+            Some(EntryPurpose::DatabaseFile),
+            canonical_operations(EntryPurpose::DatabaseFile),
+        );
+        let available_twin = stored_entry_for(
+            &canonical_app_data.join("db"),
+            "available-twin",
+            Some(EntryPurpose::PgnWorkspace),
+            canonical_operations(EntryPurpose::PgnWorkspace),
+        );
+        let registry = dir.path().join("registry.json");
+        write_registry_with_entries(
+            &registry,
+            vec![raw_root, raw_child, raw_sibling, available_twin],
+        );
+        // The link is absent for the duration of the load, so every raw entry's rebinding fails
+        // and leaves it `Unavailable` under its old spelling.
+        let parked = dir.path().join("parked-link");
+        fs::rename(&app_data_link, &parked).unwrap();
+        let mut authority =
+            authority_at(registry.clone(), vec![], Arc::new(TestClock::new(0)), 2).unwrap();
+        fs::rename(&parked, &app_data_link).unwrap();
+        for id in ["raw-root", "raw-child", "raw-sibling"] {
+            assert_eq!(
+                authority.persistent[id].availability,
+                PathAvailability::Unavailable,
+                "{id}"
+            );
+        }
+        assert_eq!(
+            authority.persistent["available-twin"].availability,
+            PathAvailability::Available
+        );
+
+        let databases = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(&app_data_link),
+            AppOwnedDefaultRoot::Databases,
+        )
+        .unwrap();
+        let root = authority
+            .get_or_create_database_root(databases.path(), "Databases", Some(databases.identity()))
+            .unwrap();
+        assert_eq!(root.path_ref().id, "raw-root");
+        let path_of = |authority: &PathAuthority, id: &str| {
+            authority.persistent[id].stored.path.to_path().unwrap()
+        };
+        assert_eq!(
+            path_of(&authority, "raw-root"),
+            canonical_app_data.join("db")
+        );
+        assert_eq!(
+            authority.persistent["raw-root"].availability,
+            PathAvailability::Available
+        );
+        assert_eq!(
+            path_of(&authority, "raw-child"),
+            canonical_app_data.join("db/x.db3")
+        );
+        assert_eq!(
+            authority.persistent["raw-child"].availability,
+            PathAvailability::Available
+        );
+        assert_eq!(
+            path_of(&authority, "raw-sibling"),
+            app_data_link.join("db2/x.db3")
+        );
+        assert_eq!(
+            path_of(&authority, "available-twin"),
+            canonical_app_data.join("db")
+        );
+        assert_eq!(
+            authority
+                .persistent
+                .values()
+                .filter(|entry| entry.stored.purpose == Some(EntryPurpose::DatabaseRoot))
+                .count(),
+            1
+        );
+        assert!(authority
+            .database_file_target(
+                &DatabaseHandle::new(PathRef {
+                    id: "raw-child".into()
+                }),
+                PathOperation::DatabaseRead
+            )
+            .is_ok());
+        drop(authority);
+
+        let reopened = authority_at(registry, vec![], Arc::new(TestClock::new(0)), 2).unwrap();
+        assert_eq!(
+            path_of(&reopened, "raw-root"),
+            canonical_app_data.join("db")
+        );
     }
 
     #[cfg(unix)]
     #[test]
-    /// The load-bearing half is the app-owned entry: without the app-data context reaching
-    /// `descriptors()`'s refresh, its raw spelling would be quarantined. The second entry is
-    /// quarantined because its object changed, not because of its spelling; the spelling branch of
-    /// `refresh_entry` is pinned directly by
+    /// The owned entry is rebound at load and stays available through `descriptors()`'s refresh;
+    /// the second entry is quarantined because its object changed, not because of its spelling.
+    /// The spelling branch of `refresh_entry` is pinned directly by
     /// `refresh_entry_rejects_a_legacy_spelling_even_when_identity_matches`.
-    fn descriptors_refresh_keeps_app_owned_spellings_and_quarantines_a_changed_entry() {
+    fn rebind_then_descriptors_refresh_keeps_app_owned_entry_and_quarantines_a_changed_entry() {
         use std::os::unix::fs::symlink;
 
         let dir = tempfile::tempdir().unwrap();
@@ -12623,14 +12912,17 @@ mod tests {
         .unwrap();
         let registry = dir.path().join("registry.json");
         write_registry_with_entries(&registry, vec![owned, changed]);
-        let mut authority = authority_with_app_data(
-            registry,
-            vec![],
-            Some(AppDataDir::for_test(&app_data_link)),
-            Arc::new(TestClock::new(0)),
-            2,
-        )
-        .unwrap();
+        let mut authority = authority_at(registry, vec![], Arc::new(TestClock::new(0)), 2).unwrap();
+        assert_eq!(
+            authority.persistent["descriptor-owned"]
+                .stored
+                .path
+                .to_path()
+                .unwrap(),
+            fs::canonicalize(&real_app_data)
+                .unwrap()
+                .join("db/owned.pgn")
+        );
         let descriptors = authority.descriptors();
         let availability = |id: &str| {
             descriptors
@@ -12649,9 +12941,13 @@ mod tests {
         );
     }
 
+    /// Test 7: every default root materialised through a symlinked app-data spelling, and every
+    /// database child, engine image and puzzle root derived from it, is stored canonical in the
+    /// same session, so the path-equal doors accept them and the lexical reuse and image cleanup
+    /// still match.
     #[cfg(unix)]
     #[test]
-    fn app_owned_database_children_and_images_keep_descriptor_bound_spellings() {
+    fn ensure_app_owned_default_dir_through_a_symlink_spelling_stores_canonical_children() {
         use std::os::unix::fs::symlink;
 
         let dir = tempfile::tempdir().unwrap();
@@ -12659,22 +12955,18 @@ mod tests {
         let app_data_link = dir.path().join("app-data-link");
         fs::create_dir(&real_app_data).unwrap();
         symlink(&real_app_data, &app_data_link).unwrap();
+        let canonical_app_data = fs::canonicalize(&real_app_data).unwrap();
         let app_data = AppDataDir::for_test(&app_data_link);
-        fs::create_dir(real_app_data.join("db")).unwrap();
-        fs::create_dir(real_app_data.join("engine-images")).unwrap();
-        let mut databases = authorize_existing_dir(&real_app_data.join("db")).unwrap();
-        databases.path = app_data_link.join("db");
-        let mut images = authorize_existing_dir(&real_app_data.join("engine-images")).unwrap();
-        images.path = app_data_link.join("engine-images");
+        let databases =
+            ensure_app_owned_default_dir(&app_data, AppOwnedDefaultRoot::Databases).unwrap();
+        let images =
+            ensure_app_owned_default_dir(&app_data, AppOwnedDefaultRoot::EngineImages).unwrap();
+        let puzzles =
+            ensure_app_owned_default_dir(&app_data, AppOwnedDefaultRoot::Puzzles).unwrap();
+        assert_eq!(databases.path(), canonical_app_data.join("db"));
         let registry = dir.path().join("registry.json");
-        let mut authority = authority_with_app_data(
-            registry.clone(),
-            vec![],
-            Some(app_data),
-            Arc::new(TestClock::new(0)),
-            2,
-        )
-        .unwrap();
+        let mut authority =
+            authority_at(registry.clone(), vec![], Arc::new(TestClock::new(0)), 2).unwrap();
         let root = authority
             .get_or_create_database_root(databases.path(), "Databases", Some(databases.identity()))
             .unwrap();
@@ -12688,6 +12980,16 @@ mod tests {
                 observed_identity(&child_path),
             )
             .unwrap();
+        let target = authority
+            .database_file_target(
+                &DatabaseHandle::new(child.path_ref().clone()),
+                PathOperation::DatabaseRead,
+            )
+            .unwrap();
+        assert_eq!(target.path(), canonical_app_data.join("db/child.db3"));
+        let puzzle_root = authority
+            .get_or_create_puzzle_root(puzzles.path(), "Puzzles", Some(puzzles.identity()))
+            .unwrap();
         let image_leaf = OsString::from(Uuid::new_v4().to_string());
         let (_, installed) = images
             .atomic_replace_leaf_identified(&image_leaf, |file| {
@@ -12697,16 +12999,24 @@ mod tests {
         let image = authority
             .register_engine_image(&images, &image_leaf, installed, "image".into())
             .unwrap();
-        for id in [
-            root.path_ref().clone(),
-            child.path_ref().clone(),
-            image.path_ref().clone(),
+        for (id, expected) in [
+            (root.path_ref().clone(), canonical_app_data.join("db")),
+            (
+                child.path_ref().clone(),
+                canonical_app_data.join("db/child.db3"),
+            ),
+            (
+                puzzle_root.path_ref().clone(),
+                canonical_app_data.join("puzzles"),
+            ),
+            (
+                image.path_ref().clone(),
+                canonical_app_data.join("engine-images").join(&image_leaf),
+            ),
         ] {
-            let path = authority.persistent[&id.id].stored.path.to_path().unwrap();
-            assert!(path.starts_with(&app_data_link));
             assert_eq!(
-                authority.persistent[&id.id].availability,
-                PathAvailability::Available
+                authority.persistent[&id.id].stored.path.to_path().unwrap(),
+                expected
             );
             authority.refresh_persistent_id(&id);
             assert_eq!(
@@ -12714,57 +13024,28 @@ mod tests {
                 PathAvailability::Available
             );
         }
-        assert_eq!(
-            authority.persistent[&root.id.id]
-                .stored
-                .path
-                .to_path()
-                .unwrap(),
-            databases.path()
-        );
-        assert_eq!(
-            authority.persistent[&child.id.id]
-                .stored
-                .path
-                .to_path()
-                .unwrap(),
-            child_path
-        );
-        assert_eq!(
-            authority.persistent[&image.id.id]
-                .stored
-                .path
-                .to_path()
-                .unwrap(),
-            images.path().join(&image_leaf)
-        );
         drop(authority);
 
-        let mut reopened = authority_with_app_data(
-            registry,
-            vec![],
-            Some(AppDataDir::for_test(&app_data_link)),
-            Arc::new(TestClock::new(0)),
-            2,
-        )
-        .unwrap();
+        let mut reopened = authority_at(registry, vec![], Arc::new(TestClock::new(0)), 2).unwrap();
+        let app_data = AppDataDir::for_test(&app_data_link);
+        let databases =
+            ensure_app_owned_default_dir(&app_data, AppOwnedDefaultRoot::Databases).unwrap();
         let reused_root = reopened
             .get_or_create_database_root(databases.path(), "Databases", Some(databases.identity()))
             .unwrap();
         assert_eq!(reused_root.path_ref(), root.path_ref());
+        let puzzles =
+            ensure_app_owned_default_dir(&app_data, AppOwnedDefaultRoot::Puzzles).unwrap();
+        let reused_puzzles = reopened
+            .get_or_create_puzzle_root(puzzles.path(), "Puzzles", Some(puzzles.identity()))
+            .unwrap();
+        assert_eq!(reused_puzzles.path_ref(), puzzle_root.path_ref());
         assert!(reopened
             .database_file_target(
                 &DatabaseHandle::new(child.path_ref().clone()),
                 PathOperation::DatabaseRead
             )
             .is_ok());
-        for id in [root.path_ref(), child.path_ref(), image.path_ref()] {
-            reopened.refresh_persistent_id(id);
-            assert_eq!(
-                reopened.persistent[&id.id].availability,
-                PathAvailability::Available
-            );
-        }
         reopened
             .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
                 retained_ids: None,
@@ -12772,13 +13053,13 @@ mod tests {
                 startup: false,
             })
             .unwrap();
-        let mut reopened_images =
-            authorize_existing_dir(&real_app_data.join("engine-images")).unwrap();
-        reopened_images.path = app_data_link.join("engine-images");
-        reopened
-            .cleanup_engine_images(&reopened_images, false)
-            .unwrap();
-        assert!(!images.path().join(&image_leaf).exists());
+        let images =
+            ensure_app_owned_default_dir(&app_data, AppOwnedDefaultRoot::EngineImages).unwrap();
+        reopened.cleanup_engine_images(&images, false).unwrap();
+        assert!(!real_app_data
+            .join("engine-images")
+            .join(&image_leaf)
+            .exists());
     }
 
     #[cfg(unix)]
@@ -12792,18 +13073,15 @@ mod tests {
         fs::create_dir(&real).unwrap();
         fs::create_dir(real.join("managed")).unwrap();
         symlink(&real, &link).unwrap();
-        let app_data = dir.path().join("app-data");
-        fs::create_dir(&app_data).unwrap();
         let app = AppOwnedRoot::new(
             "runtime",
             link.join("managed"),
             vec![PathOperation::ReadPgn],
         );
         let id = app.id.clone();
-        let mut authority = authority_with_app_data(
+        let mut authority = authority_at(
             dir.path().join("registry.json"),
             vec![app],
-            Some(AppDataDir::for_test(&app_data)),
             Arc::new(TestClock::new(0)),
             2,
         )
@@ -12824,81 +13102,6 @@ mod tests {
         assert_eq!(
             authority.persistent[&id.id].stored.path.to_path().unwrap(),
             link.join("managed")
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn parent_dir_spelling_under_app_data_is_not_exempt() {
-        use std::os::unix::fs::symlink;
-
-        let dir = tempfile::tempdir().unwrap();
-        let real_app_data = dir.path().join("real-app-data");
-        let app_data_link = dir.path().join("app-data-link");
-        fs::create_dir_all(real_app_data.join("db")).unwrap();
-        fs::create_dir_all(dir.path().join("outside/workspace")).unwrap();
-        symlink(&real_app_data, &app_data_link).unwrap();
-        let legacy = app_data_link.join("db/../../outside/workspace");
-        let entry = stored_entry_for(
-            &legacy,
-            "parent-dir-entry",
-            Some(EntryPurpose::PgnWorkspace),
-            canonical_operations(EntryPurpose::PgnWorkspace),
-        );
-        let registry = dir.path().join("registry.json");
-        write_registry_with_entries(&registry, vec![entry]);
-        let authority = authority_with_app_data(
-            registry,
-            vec![],
-            Some(AppDataDir::for_test(&app_data_link)),
-            Arc::new(TestClock::new(0)),
-            2,
-        )
-        .unwrap();
-        let stored = &authority.persistent["parent-dir-entry"];
-        assert_ne!(stored.stored.path.to_path().unwrap(), legacy);
-        assert_eq!(stored.availability, PathAvailability::Available);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn app_owned_leaf_name_does_not_exempt_a_sibling_path() {
-        use std::os::unix::fs::symlink;
-
-        let dir = tempfile::tempdir().unwrap();
-        let app_data = dir.path().join("app-data");
-        let real_sibling = dir.path().join("real-sibling");
-        let sibling_link = dir.path().join("sibling-link");
-        fs::create_dir(&app_data).unwrap();
-        fs::create_dir_all(real_sibling.join("db")).unwrap();
-        symlink(&real_sibling, &sibling_link).unwrap();
-        let entry = stored_entry_for(
-            &sibling_link.join("db"),
-            "sibling-db",
-            Some(EntryPurpose::PgnWorkspace),
-            canonical_operations(EntryPurpose::PgnWorkspace),
-        );
-        let registry = dir.path().join("registry.json");
-        write_registry_with_entries(&registry, vec![entry]);
-        let authority = authority_with_app_data(
-            registry,
-            vec![],
-            Some(AppDataDir::for_test(&app_data)),
-            Arc::new(TestClock::new(0)),
-            2,
-        )
-        .unwrap();
-        assert_eq!(
-            authority.persistent["sibling-db"]
-                .stored
-                .path
-                .to_path()
-                .unwrap(),
-            real_sibling.join("db")
-        );
-        assert_eq!(
-            authority.persistent["sibling-db"].availability,
-            PathAvailability::Available
         );
     }
 
@@ -13097,9 +13300,9 @@ mod tests {
         }
     }
 
-    /// Per variant, not once: `create_dir_all` succeeds on a symlink to an existing directory,
-    /// and `EngineImages` and `Credentials` are the variants no `get_or_create_*_root` — and
-    /// therefore no `validate_target` — ever follows.
+    /// Per variant, not once: the create-if-missing collides with a symlink to an existing
+    /// directory, and `EngineImages` and `Credentials` are the variants no `get_or_create_*_root`
+    /// — and therefore no `validate_target` — ever follows.
     #[cfg(unix)]
     #[test]
     fn ensure_app_owned_default_dir_refuses_a_symlinked_leaf_for_every_root() {
@@ -13144,6 +13347,166 @@ mod tests {
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
         let error = result.expect_err("opening a permissionless directory must fail");
         assert!(matches!(error, Error::Io(_)), "{error:?}");
+    }
+
+    /// Test 1: once constructed, `AppDataDir` materialises a default root through its retained
+    /// descriptor. Swapping both the construction spelling and the canonical directory for
+    /// symlinks to an outside directory afterwards cannot redirect the create.
+    #[cfg(unix)]
+    #[test]
+    fn ensure_app_owned_default_dir_ignores_an_ancestor_swapped_after_construction() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        let link = dir.path().join("link");
+        let moved = dir.path().join("moved");
+        let outside = dir.path().join("outside");
+        fs::create_dir(&real).unwrap();
+        fs::create_dir(&outside).unwrap();
+        symlink(&real, &link).unwrap();
+        let app_data = AppDataDir::for_test(&link);
+
+        fs::rename(&real, &moved).unwrap();
+        symlink(&outside, &real).unwrap();
+        fs::remove_file(&link).unwrap();
+        symlink(&outside, &link).unwrap();
+
+        ensure_app_owned_default_dir(&app_data, AppOwnedDefaultRoot::Databases).unwrap();
+        assert!(fs::symlink_metadata(moved.join("db")).unwrap().is_dir());
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
+    }
+
+    /// Test 2: only `tmp` exists. After construction holds `tmp`'s descriptor and before the first
+    /// missing component is created, `tmp` is replaced by a symlink to an outside directory. Every
+    /// component is still created in the held directory.
+    #[cfg(unix)]
+    #[test]
+    fn ensure_directory_at_creates_missing_app_data_components_in_the_held_prefix() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let tmp = dir.path().join("tmp");
+        let held = dir.path().join("tmp-held");
+        let outside = dir.path().join("outside");
+        fs::create_dir(&tmp).unwrap();
+        fs::create_dir(&outside).unwrap();
+        let (swap_tmp, swap_held, swap_outside) = (tmp.clone(), held.clone(), outside.clone());
+        crate::infra::fs::set_ensure_directory_pre_create_hook(Some(Box::new(move || {
+            fs::rename(&swap_tmp, &swap_held).unwrap();
+            symlink(&swap_outside, &swap_tmp).unwrap();
+        })));
+        let app_data = AppDataDir::try_for_test(&tmp.join("a/b/app"));
+        crate::infra::fs::set_ensure_directory_pre_create_hook(None);
+        let app_data = app_data.unwrap();
+
+        assert!(fs::symlink_metadata(held.join("a/b/app")).unwrap().is_dir());
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
+        ensure_app_owned_default_dir(&app_data, AppOwnedDefaultRoot::Puzzles).unwrap();
+        assert!(held.join("a/b/app/puzzles").is_dir());
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
+    }
+
+    /// Test 4: the prefix is swapped after it was canonicalised and its identity read, but before
+    /// it is opened against that identity. Construction fails as `Error::Io` with the fixed text,
+    /// and nothing is created on either side of the swap.
+    #[cfg(unix)]
+    #[test]
+    fn try_for_test_maps_a_prefix_swapped_before_its_verified_open_to_io() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let prefix = dir.path().join("prefix");
+        let held = dir.path().join("prefix-held");
+        let outside = dir.path().join("outside");
+        fs::create_dir(&prefix).unwrap();
+        fs::create_dir(&outside).unwrap();
+        let (swap_prefix, swap_held, swap_outside) =
+            (prefix.clone(), held.clone(), outside.clone());
+        set_app_data_pre_open_hook(Some(Box::new(move || {
+            fs::rename(&swap_prefix, &swap_held).unwrap();
+            symlink(&swap_outside, &swap_prefix).unwrap();
+        })));
+        let result = AppDataDir::try_for_test(&prefix.join("app"));
+        set_app_data_pre_open_hook(None);
+
+        match result {
+            Err(Error::Io(error)) => assert_eq!(
+                error.to_string(),
+                "application data directory could not be acquired"
+            ),
+            Err(other) => panic!("construction must fail as Error::Io: {other:?}"),
+            Ok(_) => panic!("a swapped prefix must not be acquired"),
+        }
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(&held).unwrap().count(), 0);
+    }
+
+    /// Test 5 (R3-05): the stored database file's ancestor is replaced by a symlink to the same
+    /// directory under another name. The inode still matches, the pathname does not.
+    #[cfg(unix)]
+    #[test]
+    fn database_file_target_refuses_a_same_inode_ancestor_swap() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        let moved = dir.path().join("moved");
+        fs::create_dir(&real).unwrap();
+        fs::write(real.join("x.db3"), b"database").unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let stored = authority
+            .migrate_legacy_os_path(
+                real.join("x.db3").into_os_string(),
+                "x",
+                PathClass::PersistentFile,
+                canonical_operations(EntryPurpose::DatabaseFile),
+            )
+            .unwrap();
+        let handle = DatabaseHandle::new(stored.id);
+        assert!(authority
+            .database_file_target(&handle, PathOperation::DatabaseRead)
+            .is_ok());
+
+        fs::rename(&real, &moved).unwrap();
+        symlink(&moved, &real).unwrap();
+        let error = authority
+            .database_file_target(&handle, PathOperation::DatabaseMutate)
+            .err()
+            .expect("a same-inode ancestor swap must not mint a target");
+        assert!(matches!(error, Error::Conflict(_)), "{error:?}");
+    }
+
+    /// Test 6 (R3-06): the stored root's ancestor is replaced by a symlink to the same directory
+    /// under another name before activation reads the root.
+    #[cfg(unix)]
+    #[test]
+    fn workspace_root_refuses_a_same_inode_ancestor_swap() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        let moved = dir.path().join("moved");
+        fs::create_dir_all(real.join("root")).unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let root = authority
+            .get_or_create_database_root(&real.join("root"), "Databases", None)
+            .unwrap();
+        let workspace = FileWorkspaceHandle::new(root.path_ref().clone());
+        assert_eq!(
+            authority
+                .workspace_root(&workspace, PathOperation::DatabaseRead)
+                .unwrap(),
+            real.join("root")
+        );
+
+        fs::rename(&real, &moved).unwrap();
+        symlink(&moved, &real).unwrap();
+        let error = authority
+            .workspace_root(&workspace, PathOperation::DatabaseRead)
+            .unwrap_err();
+        assert!(matches!(error, Error::Conflict(_)), "{error:?}");
+        assert!(authority.set_active_database_root(&root).is_err());
     }
 
     #[cfg(unix)]
@@ -15731,7 +16094,7 @@ mod tests {
             ),
             availability: PathAvailability::Available,
         };
-        refresh_entry(&mut entry, None);
+        refresh_entry(&mut entry);
         assert_eq!(entry.availability, PathAvailability::Unavailable);
 
         let mut refreshed_authority = authority(&dir, Arc::new(TestClock::new(0)));

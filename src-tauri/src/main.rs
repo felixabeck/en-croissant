@@ -2421,7 +2421,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // `credentials/` and commits the registry instead of failing at the root. The Lichess
             // `authenticate` / `migrate_legacy_lichess_token` doors remain refused
             // (`oauth.rs:445`, `:575`) and are a different finding.
-            let app_data = crate::infra::path_authority::AppDataDir::for_app(app.handle())?;
+            let app_data = crate::infra::path_authority::AppDataDir::for_app(app.handle())
+                .map_err(|error| {
+                    log::error!("application data directory could not be acquired: {error}");
+                    "application data directory could not be acquired"
+                })?;
             app.state::<AppState>()
                 .credentials
                 .initialize(&app_data)
@@ -2440,7 +2444,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 crate::infra::path_authority::PathAuthority::open_for_app(
                     authority_registry,
                     vec![],
-                    app_data,
                     Some(launch_root),
                 )
                 .map_err(|error| format!("path authority initialization failed: {error}"))?
@@ -2449,7 +2452,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let authority = crate::infra::path_authority::PathAuthority::open_for_app(
                 authority_registry,
                 vec![],
-                app_data,
                 (),
             )
             .map_err(|error| format!("path authority initialization failed: {error}"))?;
@@ -3801,9 +3803,7 @@ mod blocking_offload_scans {
         let main = include_str!("main.rs");
         let setup = body_at_indent(main, ".setup(move |app| {");
         let app_data = setup
-            .find(
-                "let app_data = crate::infra::path_authority::AppDataDir::for_app(app.handle())?;",
-            )
+            .find("let app_data = crate::infra::path_authority::AppDataDir::for_app(app.handle())")
             .expect("application data directory local");
         let credential = setup
             .find(".credentials\n                .initialize(")
@@ -3816,18 +3816,23 @@ mod blocking_offload_scans {
         assert_eq!(
             setup.matches("PathAuthority::open_for_app(").count(),
             2,
-            "each startup branch must pass the application-data context: {setup}"
+            "each startup branch must use the production constructor: {setup}"
         );
         for (offset, _) in setup.match_indices("PathAuthority::open_for_app(") {
-            // Scope the slice to this call's own argument list: slicing to the end of `setup`
-            // would let one branch's `app_data` argument satisfy the assertion for both.
+            // The registry no longer exempts app-owned spellings, so the authority takes no
+            // application-data context: `AppDataDir` is canonical and so is everything under it.
             let rest = &setup[offset..];
             let call = rest.find(')').map_or(rest, |end| &rest[..end]);
             assert!(
-                call.contains("app_data"),
-                "startup branch must pass app_data to the authority constructor: {setup}"
+                !call.contains("app_data"),
+                "startup branch must not pass app_data to the authority constructor: {setup}"
             );
         }
+        // A construction failure is logged at setup with the fixed text, like credentials.
+        assert!(
+            setup.contains("application data directory could not be acquired: {error}"),
+            "{setup}"
+        );
         // The application-data path is constructed once and shared by credential
         // initialization and the macOS launch-root setup.
         let call = &setup[app_data..authority];
