@@ -350,6 +350,24 @@ fn remove_idle_mapping_gate(gates: &DashMap<PathBuf, Arc<MappingGate>>, key: &Pa
     gates.remove_if(key, |_, gate| Arc::strong_count(gate) == 1);
 }
 
+fn release_mapping_gate(
+    gate: Option<Arc<MappingGate>>,
+    gates: &DashMap<PathBuf, Arc<MappingGate>>,
+    key: &Path,
+    release: impl FnOnce(&mut MappingGateState),
+) {
+    let Some(gate) = gate else {
+        return;
+    };
+    {
+        let mut state = gate.state.lock();
+        release(&mut state);
+        gate.changed.notify_all();
+    }
+    drop(gate);
+    remove_idle_mapping_gate(gates, key);
+}
+
 /// Read lease on a preferred-sidecar mapping. Stored on `MmapSearchIndex`
 /// behind an `Arc`, so the last clone of that mapping releases it.
 pub(crate) struct MappingLease {
@@ -375,16 +393,9 @@ impl std::fmt::Debug for MappingLease {
 
 impl Drop for MappingLease {
     fn drop(&mut self) {
-        let Some(gate) = self.gate.take() else {
-            return;
-        };
-        {
-            let mut state = gate.state.lock();
+        release_mapping_gate(self.gate.take(), &self.gates, &self.key, |state| {
             state.leases = state.leases.saturating_sub(1);
-            gate.changed.notify_all();
-        }
-        drop(gate);
-        remove_idle_mapping_gate(&self.gates, &self.key);
+        });
     }
 }
 
@@ -400,16 +411,9 @@ pub(crate) struct PreferredReplaceGuard {
 
 impl Drop for PreferredReplaceGuard {
     fn drop(&mut self) {
-        let Some(gate) = self.gate.take() else {
-            return;
-        };
-        {
-            let mut state = gate.state.lock();
+        release_mapping_gate(self.gate.take(), &self.gates, &self.key, |state| {
             state.draining = false;
-            gate.changed.notify_all();
-        }
-        drop(gate);
-        remove_idle_mapping_gate(&self.gates, &self.key);
+        });
     }
 }
 
@@ -465,8 +469,7 @@ impl SearchCache {
                 gates: Arc::clone(&self.mapping_gates),
             }),
             Err(error) => {
-                drop(gate);
-                remove_idle_mapping_gate(&self.mapping_gates, &key);
+                release_mapping_gate(Some(gate), &self.mapping_gates, &key, |_| {});
                 Err(error)
             }
         }
@@ -490,8 +493,7 @@ impl SearchCache {
             |state| state.draining,
             |state| state.draining = true,
         ) {
-            drop(gate);
-            remove_idle_mapping_gate(&self.mapping_gates, &key);
+            release_mapping_gate(Some(gate), &self.mapping_gates, &key, |_| {});
             return Err(error);
         }
         // The gate mutex is released here: invalidation takes `indexes` and
@@ -687,10 +689,11 @@ impl SearchCache {
     }
 
     /// Explicit in-process invalidation seam for database writes; revision
-    /// keys protect against external replacement. Mutation callers of the
-    /// preferred sidecar reach this through `begin_preferred_replace`, which
-    /// invokes it after setting draining and before the wait for leases; it
-    /// then also evicts entries leased on that gate, whatever their spelling.
+    /// keys protect against external replacement. Evicts cached indexes whose
+    /// identity database path matches. Preferred-sidecar mutation goes through
+    /// `begin_preferred_replace`, which calls `invalidate_entries` with the
+    /// write-guard's gate so leased entries are also dropped by pointer,
+    /// whatever their spelling.
     pub(crate) fn invalidate_database(&self, database: &Path) {
         self.invalidate_entries(database, None);
     }
