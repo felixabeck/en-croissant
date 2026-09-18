@@ -8902,7 +8902,7 @@ Code b7f52cd4, 285a96d4, 8d8e4274, 25636945. Windows runtime is rust-windows-tes
 
 ### Windows PGN cache revision uses creation time as ctime, so a same-length in-place rewrite keeps stale offsets
 
-* **ID:** f-20260914-29 · **Status:** open · **Area:** native-fs · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
+* **ID:** f-20260914-29 · **Status:** handled · **Area:** native-fs · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
 * **Where:** src-tauri/src/infra/path_authority/resolved.rs:181
 * **Defect:** On Windows, revision tracking substitutes `creation_time()` for ctime. An in-place, same-length rewrite that restores the last-write timestamp leaves identity, size, mtime and creation time unchanged, so stale game offsets stay trusted (a cached two-game file rewritten as a padded one-game file still returns the old second range).
 * **Why it matters:** Wrong games are served from a stale index on Windows; part of the Windows port.
