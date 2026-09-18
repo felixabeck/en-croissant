@@ -2327,7 +2327,7 @@ impl ResourceDir {
 
 fn authorize_existing_dir(path: &Path) -> Result<AuthorizedDir, Error> {
     let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() || is_reparse_point(&metadata) {
+    if is_link_like(&metadata) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "app-owned default root is a reparse point",
@@ -3025,7 +3025,7 @@ pub(crate) struct Identity {
 }
 fn identity(path: &Path) -> Result<Identity, Error> {
     let meta = fs::symlink_metadata(path)?;
-    if meta.file_type().is_symlink() || is_reparse_point(&meta) {
+    if is_link_like(&meta) {
         return Err(Error::InvalidInput(
             "symbolic links are not path authorities".into(),
         ));
@@ -3193,6 +3193,11 @@ pub(crate) fn is_reparse_point(meta: &fs::Metadata) -> bool {
     meta.file_attributes() & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
         != 0
 }
+
+fn is_link_like(meta: &fs::Metadata) -> bool {
+    meta.file_type().is_symlink() || is_reparse_point(meta)
+}
+
 #[cfg(windows)]
 fn windows_identity(path: &Path) -> Result<Identity, Error> {
     let file = open_windows_nofollow(path, false)?;
@@ -8030,6 +8035,28 @@ mod portable_tests {
                 "{relative} must be refused"
             );
         }
+    }
+
+    /// Positive nested open on every target. The unix-only
+    /// `authorized_dir_opens_nested_regular_file` cannot see the Windows `relative_components`
+    /// `/` split or the ungated `open_directory_at` walk; this one can.
+    #[test]
+    fn authorized_dir_opens_a_nested_regular_file() {
+        use std::io::Read as _;
+        let dir = tempfile::tempdir().unwrap();
+        let database = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::Databases,
+        )
+        .unwrap();
+        fs::create_dir(database.path().join("a")).unwrap();
+        fs::write(database.path().join("a/b"), b"nested bytes").unwrap();
+        let mut opened = database
+            .open_regular_relative(Path::new("a/b"))
+            .expect("a/b must open through the retained directory");
+        let mut bytes = Vec::new();
+        opened.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"nested bytes");
     }
 }
 
