@@ -9068,7 +9068,7 @@ Code b7f52cd4, 285a96d4, 8d8e4274, 25636945. Windows runtime is rust-windows-tes
 
 ### A trailing line from a finished search can be consumed as the next search's result
 
-* **ID:** f-20260915-01 · **Status:** open · **Area:** engine-uci · **Root:** result-not-bound-to-its-process · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260915-01 · **Status:** handled · **Area:** engine-uci · **Root:** result-not-bound-to-its-process · **Entry:** lens · **Blocked:** none
 * **Where:** `src-tauri/src/engine/process.rs`, `service_search_read` (the request-id check before reading, around line 3032) and the actor state transition to idle on the first `bestmove`.
 * **Defect:** the request id is checked only before a read starts. After search G1's first `bestmove` sets the runtime idle, output that G1 still emits — a delayed `info` line or a duplicate `bestmove` — stays in the pipe untagged. If the caller then sends `position`/`go` for search G2, that old line is read inside G2's search and can be taken as G2's result.
 * **Why it matters:** `engine-lifecycle.md` forbids binding a response to the most recent request because it arrived after it; a result from G1 attributed to G2's position is the stale-result class of `4e8d10b0` and `03826167`.
