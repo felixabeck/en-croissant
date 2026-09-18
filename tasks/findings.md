@@ -9059,6 +9059,9 @@ Code b7f52cd4, 285a96d4, 8d8e4274, 25636945. Windows runtime is rust-windows-tes
 * **Related:** `f-20260831-09` and `f-20260903-01` (same root, handled: results bound to tab, position and process).
 * **Found by:** Codex `review-engine-protocol` plan lens (round 8, confidence 92) during the macOS engine-launch build run, 2026-09-14; source read by the orchestrator, not reproduced by a test.
 
+* **Handled 2026-09-18** in `c099a471`. Entry revalidated at `lens`; confirmed in source: unloading an engine commits to the jotai store before React runs the passive unmount cleanup, so `mounted.current` is still true in that window. `isCurrentAttempt` now reads `enginesAtom` and requires a `loaded` entry whose executable identity (`engineIdentity`: type, id, handle or URL — extracted and shared with the request fingerprint) equals the attempt's. Covers both the remote promise path and the native `best_moves` broadcast. Proof: two new tests in `EvalListener.test.tsx` unload the engine outside `act` (store written, component still mounted) and resolve the result; both red without the fix, green with it. Lens: `review-engine-protocol` on the DeepSeek executor, APPROVED. Rejected: relying on unmount cleanup (the window is the defect) and a render-time ref of `engine.loaded` (only updates on render, same window).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"338aaed8d52118d21dde7861dc4b5aa981f8a988b9f1d05349c33d82e964251e","input_sha256":"5fd3aaaf408389aa2beac6068bba10de8b99e69f0e447375d8378d75198d37dc","kind":"mutation-receipt","operation":"1b7b605a3f2077d04d054152715eb2366cb99de42b764b9a63d040aeae9cadd0","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-37"],"target":"f-20260914-37","v":1} -->
+
 ---
 
 ## 2026-09-15 — filed through the inbox spool
