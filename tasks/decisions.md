@@ -3372,3 +3372,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** d-20260905-02 and d-20260905-07 already accepted that producer shape; d-20260918-02 and d-20260918-03 name the residual as owned by f-20260905-10. Locate confirmed they are independent doors. Reversal: new evidence that Windows create_dir_all is not the same ancestor-symlink window as unix.
 * **Decided by:** Grok, autonomously under `full auto`, next-finding f-20260914-11 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"de835de5173bc9f3938b87f2e2cf718f8768d606c14a6bcbbc6ea0a0686db7ae","input_sha256":"ec4c1ed89cf4c4bc399a8111af66f4a4527b348a48cb43119eae2e3ade58e810","kind":"mutation-receipt","operation":"07f5f30b42d3b1106827b41a09db9b2edb2797bf4a7b26be42b1ec4c20a9b573","options":{"section":null},"request_id_sha256":null,"results":["d-20260918-05"],"target":"decisions-ledger","v":1} -->
+
+### d-20260918-06 — Is AuthorizedDir::remove_leaf_identified ported in the f-20260914-11 slice?
+
+* **Question:** Is AuthorizedDir::remove_leaf_identified ported in the same slice as Windows startup registries, or does shutdown_drains_real_image_issue_before_seal_rejection_cleanup stay ignored?
+* **Governs:** f-20260914-11
+* **Chosen:** port it. Use the existing Windows remove_entry_at dispatcher with the current unix body (single_leaf plus remove_entry_at(..., identity.pair(), false)). Un-ignore the main.rs test.
+* **Rejected:** keep that one f-20260914-11 ignore; pull f-20260914-12 (engine directory resources, archive install, executable mode).
+* **Reason:** the finding's annotation says the port removes the 18 ignore attributes. The test installs a UUID leaf through already-ported atomic_replace_leaf_identified and cleans up only via remove_leaf_identified. Windows remove_entry_at already exists. Reversal: drop the port without restoring the ignore, which reddens rust-windows-test.
+* **Decided by:** Grok, autonomously under `full auto`, next-finding f-20260914-11 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"73eb13f10c3114b8941d8ff25a57163048760d713103cf963a919f0a7b9f0c18","input_sha256":"17c176993b173d2360c758f1b3a7d6614c3065000ceaabd480cd46a3e64238b8","kind":"mutation-receipt","operation":"8707be6dd487fa567a8650f72eea78cd6779e5b37cd30c041df6d612f8e69e05","options":{"section":null},"request_id_sha256":null,"results":["d-20260918-06"],"target":"decisions-ledger","v":1} -->
