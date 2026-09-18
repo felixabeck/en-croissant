@@ -8169,6 +8169,9 @@ The same-parent install check is unchanged. Closed with f-20260914-12
 * **Related:** `f-20260905-03` (its plan review surfaced this; the re-key adds more unix-only reach and relies on this being answered), `f-20260905-05` (Windows is "genuinely open" for directory enumeration), `f-20260830-48`.
 * **Found by:** Claude Code, plan review of `tasks/plans/2026-09-12-repository-identity-key.md`, 2026-09-12, prompted by `review-plan`.
 
+* **Handled (2026-09-18, while closing f-20260830-06):** the original compile break is gone. `database_file_target`, `workspace_mutation_target` and `retained_workspace_target` are no longer `#[cfg(unix)]`-only; `database_file_target` mints through `acquire_target` for every platform. `test.yml` now has `rust-platform` (check + clippy `-D warnings` on both Darwin targets and `x86_64-pc-windows-msvc`) plus `rust-macos-test` and `rust-windows-test`. GitHub Actions run 35385943877 (`f0b203d5`) is green on all five of those jobs. The product question this entry restated was already answered on f-20260830-06 (keep and port). Remaining Windows feature gaps belong to other findings, not to "the backend no longer compiles".
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"1c2880ce583968c98b82959c84b508c820773761d75997849f97ec0c728c4b11","input_sha256":"9cbbec8f3e5482f2bddfb5afd78cc947da4e0ba68ecc42773a86b3e7ac37c3f3","kind":"mutation-receipt","operation":"7e6ef360d72c99721edab869d8fa5d6dbc85e87b35ace2afe39f019de01a7ca0","options":{"section":null},"request_id_sha256":null,"results":["f-20260912-10"],"target":"f-20260912-10","v":1} -->
+
 ### `DatabaseFileTarget` does not carry the canonical pathname, so database callers still resolve a `PathBuf` beside the descriptor they hold
 
 * **ID:** f-20260912-11 · **Status:** handled · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
