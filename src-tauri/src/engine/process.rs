@@ -6137,7 +6137,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn termination_preempts_a_silent_search_read() {
         let read_started = Arc::new(AtomicBool::new(false));
         let (actor, _) = delayed_search_actor(
@@ -6624,7 +6624,7 @@ mod tests {
         assert_eq!(observed_b.ok().flatten(), Some(actual_b));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn logs_preempt_a_silent_search_read_without_cancelling_the_search() {
         let read_started = Arc::new(AtomicBool::new(false));
         let (actor, _) = delayed_search_actor(
@@ -6659,7 +6659,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn terminate_bypasses_a_flooded_normal_command_queue() {
         let read_started = Arc::new(AtomicBool::new(false));
         let (actor, _) = delayed_search_actor(
