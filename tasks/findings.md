@@ -7642,6 +7642,12 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Design boundary:** choose an authority-preserving, lifetime-owned sibling staging representation; do not merely remove the same-parent guard or reopen an unchecked parent pathname. The separate staging-authority questions in `f-20260905-06` and `f-20260905-08` already need a design run. This functional failure is distinct from their allowlist/token questions and from `f-20260906-08` (installed executable mode).
 * **Found by:** Codex root source tracing during the resumed native-blocking-cancellation build, 2026-09-09. Plan authorship and arbitration share root context; Codex detection shares family with phases 1/2/4, Gemini authored phase 3.
 
+download_engine_archive now stages with private_tempdir_in in the destination
+parent and publishes staging.path() through publish_engine_archive_tree.
+The same-parent install check is unchanged. Closed with f-20260914-12
+(d-20260918-11). Code 8d8e4274.
+<!-- ledger-meta {"command":"annotate","effect_lines":4,"effect_sha256":"28ef10af8f9cb4c11e5c2fae62558abb5c983d39f90bc918167f6c022164bbb0","input_sha256":"d63bfe6bf646bd569496e396eb9c3f518c4490ad6e092994e156668fd4420195","kind":"mutation-receipt","operation":"1105d90c7d76420ea95713eabc82cc703ca369a84e415ba3d0301cebf988401a","options":{"section":null},"request_id_sha256":null,"results":["f-20260909-01"],"target":"f-20260909-01","v":1} -->
+
 ---
 
 ## 2026-09-09 — filed through the inbox spool
