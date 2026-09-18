@@ -1435,7 +1435,7 @@ everything else to its existing arm with "Zip must contain a .pgn, .epd, or .bin
 
 ### The crate cannot compile for the configured macOS *or* Windows release targets
 
-* **ID:** f-20260830-06 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260830-06 · **Status:** handled · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** two independent breaks.
   * **macOS:** `src-tauri/src/infra/fs.rs:53` (`#[cfg(unix)] mod unix`), using `rustix::fs::RawDir`
     at `fs.rs:347` (`sync_tree`) and `fs.rs:408` (`remove_tree_at`).
