@@ -3512,3 +3512,15 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** the finding's own weight sentence is the missing gate, not any one `cfg`. Slice 1 plus the child cluster installed that gate; run 35385943877 (`f0b203d5`) measured it green for `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-pc-windows-msvc`, `rust-macos-test` and `rust-windows-test`. Reversal: a later `rust-platform` red on a configured release target, or evidence that `release.yml` still names a target the crate cannot type-check.
 * **Decided by:** Grok, autonomously under `full auto` in a drain session · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"f979fe393adfdb9cb1d1543e4dd3ddbaaf4bafe54be8f380c63416d67ee81c78","input_sha256":"710d1c9b402e703343c24bc8af4a2eaeaf458398fc2098b7b411dba41eebbc8c","kind":"mutation-receipt","operation":"66ba8de0aed7209ea3fab4d6f959ca9275a8113251c13eba78e311eafcc98048","options":{"section":null},"request_id_sha256":null,"results":["d-20260918-19"],"target":"decisions-ledger","v":1} -->
+
+## 2026-09-19 — recorded through the decisions lock
+
+### d-20260919-01 — How does the fork host the engine catalog and updater?
+
+* **Question:** How does ChessFable replace the unsigned www.encroissant.org engine catalog and the removed updater without a new website?
+* **Governs:** f-20260830-48, f-20260831-04
+* **Chosen:** One fork minisign key (updater encoding = base64 of the whole .pub file; artifact encoding = RW line). Engine catalog is bundled JSON plus detached .minisig, verified in Rust. Updater endpoint is this GitHub repo's latest.json. Release undrafts only after a complete tag matrix. Private key lives at ~/.local/share/chessfable/release.minisign.key mode 0600 and in GitHub secrets.
+* **Rejected:** Runtime fetch from raw.githubusercontent.com; a new website; two keys; updater:default; shredding the only re-sign copy; publishing drafts from workflow_dispatch.
+* **Reason:** d-20260907-07 forbids a site; d-20260907-08 forbids an unavailable origin; the live catalog already lacked signatures. Measured: tauri signer generate writes base64-wrapped keys; minisign_verify needs the RW line; gh secret list was empty and is now set.
+* **Decided by:** Grok, full auto drain 5269c4d2-338c-4169-a9e9-dbc6c3c1ab0a · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"7d41980fbf391cad9d3895fa94684802f2b9f9b77b053245efd9ed4480aaa3f5","input_sha256":"c529546b8ea257d0f41f5afd020bf6ac1af9fb278d3815b93266ca367b4dbd34","kind":"mutation-receipt","operation":"ce3c90a4e03aa2123f82a843a91eb1c1a2da69be559c2998f9b40eb2398f66cb","options":{"section":null},"request_id_sha256":null,"results":["d-20260919-01"],"target":"decisions-ledger","v":1} -->
