@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: 13da59b038c692bbf7058f6ecb56c263565a7ece803ec89bbcfdb84e9431bfa8
+# agent-kit-sha256: f941d69f7da54d181eeda36d4968efbb4a654c4f598292aa8052f362a5e17e5f
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -28,6 +28,7 @@ Subcommands
 ``check``        validate every header and the sibling decisions ledger's ids;
                  exit 1 on any violation
 ``list``         print findings, optionally filtered
+``summary``      print counts, who is waiting, and what is drainable
 ``next``         print the highest-ranked pickable cluster, the decisions governing it,
                  and separately the ones merely touching its files
 ``related``      print findings sharing an area or naming the same files
@@ -528,7 +529,17 @@ FELIX_DECISION = "felix-decision"
 SENTRY_UNVERIFIED = "sentry-unverified"
 FELIX_SENTRY_ORIGIN = "felix-sentry-origin"
 SENTRY_VERIFIER_BLOCKERS = frozenset({SENTRY_UNVERIFIED, FELIX_SENTRY_ORIGIN})
+# The derived verification states that make a finding automated-verification
+# work rather than Felix's. It is its own set because the state is derived from
+# the body, not from the `Blocked` slug, and both the summary classifier and the
+# drain read the same two names.
+SENTRY_VERIFICATION_STATES = frozenset({"unverified", "drifted"})
 ANSWERABLE_BLOCKERS = frozenset({FELIX_DECISION})
+# The `summary --json` contract. Versioned because the drain's preflight and
+# the cross-repository view both read it from another process; a shape change
+# that both ends learned to expect the way this one is spelled would otherwise
+# be indistinguishable from a payload that merely happened to parse.
+FINDINGS_SUMMARY_SCHEMA = "findings-summary/1"
 DECIDED_MARKER = "**Decision made:**"
 
 
@@ -1244,6 +1255,127 @@ class Finding:
             f"{self.id}  {self.status:<8} {self.area:<20}{root} "
             f"entry={self.entry}{flag}\n    {self.title}"
         )
+
+
+@dataclass(frozen=True)
+class SummaryBuckets:
+    """One classification of a parsed ledger, for every counting consumer.
+
+    Consumers that print or count Felix-facing classes read these fields
+    instead of re-deriving them, so the overview, the drain's start screen and
+    ``decisions`` cannot disagree about which finding waits on what.
+
+    ``answerable`` is derived from its two stored, slug-partitioned halves
+    rather than stored beside them: a third field could disagree with its own
+    partition.
+    """
+
+    total: int
+    handled: int
+    rejected: int
+    open_: int
+    pickable: tuple[Finding, ...]
+    product: tuple[Finding, ...]
+    approvals: tuple[Finding, ...]
+    preconditions: tuple[Finding, ...]
+    external: tuple[Finding, ...]
+
+    @property
+    def answerable(self) -> tuple[Finding, ...]:
+        return self.product + self.approvals
+
+    @property
+    def blocked(self) -> int:
+        """Every open finding whose blocker is not ``none``, verifier included."""
+        return (
+            len(self.product)
+            + len(self.approvals)
+            + len(self.preconditions)
+            + len(self.external)
+        )
+
+
+def summary_buckets(findings: list[Finding]) -> SummaryBuckets:
+    """Classify parsed findings into the four blocker classes exactly once.
+
+    The verifier class takes precedence over the ``Blocked`` slug, exactly as
+    the drain's row classifier does: a Sentry-origin finding whose body drifted
+    is automated-verification work, never a pickable one, even when its slug is
+    ``none``. That precedence is what keeps every consumer's counts identical.
+    """
+    handled = 0
+    rejected = 0
+    open_findings: list[Finding] = []
+    for finding in findings:
+        if finding.status == "handled":
+            handled += 1
+        elif finding.status == "rejected":
+            rejected += 1
+        elif finding.status == "open":
+            open_findings.append(finding)
+    approvals = tuple(
+        finding
+        for finding in open_findings
+        if classify_blocker(finding.blocked) == BLOCKER_VERIFIER
+        or finding.sentry_verification in SENTRY_VERIFICATION_STATES
+    )
+    approval_ids = {finding.id for finding in approvals}
+    product = tuple(
+        finding for finding in open_findings if finding.blocked == FELIX_DECISION
+    )
+    preconditions = tuple(
+        finding
+        for finding in open_findings
+        if classify_blocker(finding.blocked) == BLOCKER_PRECONDITION
+        and finding.id not in approval_ids
+    )
+    external = tuple(
+        finding
+        for finding in open_findings
+        if classify_blocker(finding.blocked) == BLOCKER_EXTERNAL
+        and finding.id not in approval_ids
+    )
+    return SummaryBuckets(
+        total=len(findings),
+        handled=handled,
+        rejected=rejected,
+        open_=len(open_findings),
+        pickable=tuple(finding for finding in open_findings if finding.pickable),
+        product=product,
+        approvals=approvals,
+        preconditions=preconditions,
+        external=external,
+    )
+
+
+def _summary_counts_line(buckets: SummaryBuckets) -> str:
+    """The one counts line, byte-identical to the drain's historical summary."""
+
+    def amount(count, singular, plural):
+        return "%d %s" % (count, singular if count == 1 else plural)
+
+    return "%s (%s, %s, %s); %s; %s (%s, %s, %s, %s)" % (
+        amount(buckets.total, "finding", "findings"),
+        amount(buckets.handled, "handled", "handled"),
+        amount(buckets.rejected, "rejected", "rejected"),
+        amount(buckets.open_, "open", "open"),
+        amount(len(buckets.pickable), "pickable finding", "pickable findings"),
+        amount(buckets.blocked, "blocked finding", "blocked findings"),
+        amount(len(buckets.product), "decision", "decisions"),
+        amount(
+            len(buckets.approvals),
+            "finding awaiting automated verification",
+            "findings awaiting automated verification",
+        ),
+        amount(
+            len(buckets.preconditions), "Felix precondition", "Felix preconditions"
+        ),
+        amount(
+            len(buckets.external),
+            "external/technical blocker",
+            "external/technical blockers",
+        ),
+    )
 
 
 @dataclass
@@ -2541,19 +2673,22 @@ def _warn_problems(issues: list[str], command: str) -> None:
         )
 
 
-def _warn_pending_inbox(inbox: Path) -> None:
-    """A duplicate check that cannot see the inbox invites the duplicate.
+def _count_pending_inbox(inbox: Path) -> tuple[int, bool, list[Path]]:
+    """Count filed-but-unmerged entries, and whether the spool sweep was complete.
 
-    Entries filed during a drain are not in the ledger yet, so `related` would
-    answer "looks new" about something already filed — and the collision only
-    surfaces later, as a duplicate id that refuses the whole merge.
+    The completeness flag is ``_enumerate_orphan_parts``' own: a part whose
+    ``stat`` raised is dropped from the list, and only the flag distinguishes
+    that from a spool that held nothing. `summary` reports it; the advisory
+    duplicate warning ignores it.
+
+    Returns the count, the flag and the files that were read, so the warning
+    can name the directories without walking the spool a second time.
     """
     legacy = LEGACY_INBOX if inbox == INBOX else inbox.with_suffix(".md")
     claim = CLAIM if inbox == INBOX else inbox.with_name(f"{inbox.name}.claim")
     sources = sorted(inbox.glob("*.md"))
-    # The completeness flag belongs to the sweep, which reports it; here a
-    # dropped part only weakens a duplicate warning that is advisory anyway.
-    sources += _enumerate_orphan_parts(inbox)[0]
+    orphan_parts, complete = _enumerate_orphan_parts(inbox)
+    sources += orphan_parts
     # A prepared or refused batch sits in the claim, outside both the ledger and the spool.
     # Leaving it out here is the worst of the three: `related` would answer
     # "this looks new" about a finding that is already filed but unmergeable,
@@ -2579,9 +2714,22 @@ def _warn_pending_inbox(inbox: Path) -> None:
     for _, text in read:
         _lines, headers, orphans = _unfenced_header_matches(text)
         pending += len(headers) + len(orphans)
+    return pending, complete, [p for p, _ in read]
+
+
+def _warn_pending_inbox(inbox: Path) -> None:
+    """A duplicate check that cannot see the inbox invites the duplicate.
+
+    Entries filed during a drain are not in the ledger yet, so `related` would
+    answer "looks new" about something already filed — and the collision only
+    surfaces later, as a duplicate id that refuses the whole merge.
+    """
+    # The completeness flag belongs to `summary`, which reports it; here a
+    # dropped part only weakens a duplicate warning that is advisory anyway.
+    pending, _complete, sources = _count_pending_inbox(inbox)
     if not pending:
         return
-    sources = [p for p, _ in read]
+    claim = CLAIM if inbox == INBOX else inbox.with_name(f"{inbox.name}.claim")
     # Name the directories that actually hold something; `inbox` alone may not
     # even exist when the pending entries are in the claim or at the legacy path.
     where = ", ".join(dict.fromkeys(str(p.parent) for p in sources))
@@ -3050,13 +3198,143 @@ def cmd_check(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
-    pickable = sum(1 for f in findings if f.pickable)
-    blocked = sum(
-        1
-        for f in findings
-        if f.status == "open" and classify_blocker(f.blocked) != BLOCKER_NONE
+    buckets = summary_buckets(findings)
+    print(
+        f"ok: {buckets.total} findings, {len(buckets.pickable)} pickable, "
+        f"{buckets.blocked} blocked"
     )
-    print(f"ok: {len(findings)} findings, {pickable} pickable, {blocked} blocked")
+    return 0
+
+
+def _summary_waiting_row(finding: Finding) -> str:
+    """One waiting row: id, the slug it waits on, and its heading."""
+    return f"  {finding.id}  {finding.blocked}  {finding.title}"
+
+
+def _render_summary_text(
+    buckets: SummaryBuckets, counts_line: str, pending: int, inbox_complete: bool
+) -> None:
+    """The overview: counts line, then who waits, then what is drainable."""
+    print(counts_line)
+    print()
+    print("WAITING ON YOU")
+    # Three labelled groups in the order Felix reads them: what needs a product
+    # answer, what the machine verifies, then what only he can make true. An
+    # empty group is omitted rather than shown as a bare zero.
+    for label, rows in (
+        ("product decisions", buckets.product),
+        ("Sentry approvals", buckets.approvals),
+        ("preconditions", buckets.preconditions),
+    ):
+        if not rows:
+            continue
+        print(f"{label} ({len(rows)})")
+        for finding in rows:
+            print(_summary_waiting_row(finding))
+    print()
+    print("PICKABLE")
+    print(f"  {len(buckets.pickable)} pickable finding(s)")
+    for finding in buckets.pickable:
+        print(f"  {finding.id}  {finding.area}  {finding.entry}  {finding.title}")
+    print()
+    print("BLOCKED")
+    # Grouped by slug so two findings waiting on the same thing read as one
+    # clearance. Each row repeats its slug: a row lifted out of this section
+    # must still say what it waits on.
+    by_slug: dict[str, list[Finding]] = {}
+    for finding in buckets.external:
+        by_slug.setdefault(finding.blocked, []).append(finding)
+    for slug, rows in by_slug.items():
+        print(f"{slug} ({len(rows)})")
+        for finding in rows:
+            print(f"  {finding.id}  {slug}  {finding.title}")
+    print()
+    print("PENDING INBOX")
+    if inbox_complete:
+        print(f"pending inbox: {pending}")
+    else:
+        print(f"pending inbox: {pending} (incomplete scan)")
+
+
+def _summary_json_payload(
+    buckets: SummaryBuckets,
+    counts_line: str,
+    pending: int,
+    inbox_complete: bool,
+    validation_problems: int,
+) -> dict[str, object]:
+    """The versioned object the drain's preflight and `kit findings` read."""
+
+    def waiting_rows(rows: tuple[Finding, ...], row_class: str) -> list[dict[str, str]]:
+        return [
+            {
+                "id": finding.id,
+                "blocked": finding.blocked,
+                "heading": finding.title,
+                "class": row_class,
+            }
+            for finding in rows
+        ]
+
+    return {
+        "schema": FINDINGS_SUMMARY_SCHEMA,
+        "counts": {
+            "total": buckets.total,
+            "handled": buckets.handled,
+            "rejected": buckets.rejected,
+            "open": buckets.open_,
+            "pickable": len(buckets.pickable),
+            "decisions": len(buckets.product),
+            "sentry": len(buckets.approvals),
+            "preconditions": len(buckets.preconditions),
+            "external": len(buckets.external),
+            "blocked": buckets.blocked,
+            "pending_inbox": pending,
+        },
+        "summary_line": counts_line,
+        "waiting": (
+            waiting_rows(buckets.product, "answerable")
+            + waiting_rows(buckets.approvals, "answerable")
+            + waiting_rows(buckets.preconditions, "precondition")
+        ),
+        "pickable": [
+            {
+                "id": finding.id,
+                "area": finding.area,
+                "entry": finding.entry,
+                "heading": finding.title,
+            }
+            for finding in buckets.pickable
+        ],
+        "external": [
+            {"id": finding.id, "blocked": finding.blocked, "heading": finding.title}
+            for finding in buckets.external
+        ],
+        "pending_inbox_complete": inbox_complete,
+        "validation_problems": validation_problems,
+    }
+
+
+def cmd_summary(args: argparse.Namespace) -> int:
+    """One read-only overview of the ledger: text, or ``--json`` for consumers.
+
+    Read-only and lock-free, like ``list``. A ledger with validation problems
+    still answers with counts and warns on stderr, so one damaged entry does not
+    hide the rest of the queue; only an unparseable ledger fails.
+    """
+    findings, problems, vocabulary = parse(args.ledger)
+    issues = validate(findings, problems, vocabulary)
+    _warn_problems(issues, "summary")
+    buckets = summary_buckets(findings)
+    pending, inbox_complete, _sources = _count_pending_inbox(args.inbox)
+    counts_line = _summary_counts_line(buckets)
+    if _json_requested(args):
+        return _print_json(
+            _summary_json_payload(
+                buckets, counts_line, pending, inbox_complete, len(issues)
+            )
+        )
+    _render_summary_text(buckets, counts_line, pending, inbox_complete)
     return 0
 
 
@@ -7301,17 +7579,6 @@ def cmd_file(args: argparse.Namespace) -> int:
     return 0
 
 
-def _felix_waiting(findings: list[Finding]) -> list[Finding]:
-    """Return open findings blocked on a Felix-facing decision or precondition."""
-    return [
-        finding
-        for finding in findings
-        if finding.status == "open"
-        and classify_blocker(finding.blocked)
-        in {BLOCKER_ANSWERABLE, BLOCKER_PRECONDITION}
-    ]
-
-
 def _read_announcement_state(state_path: Path) -> dict[str, object] | None:
     """Read announcement state, distinguishing absent from damaged state."""
     try:
@@ -7341,7 +7608,8 @@ def _read_announcement_state(state_path: Path) -> dict[str, object] | None:
 def _current_waiting_ids(ledger: Path) -> set[str]:
     """Return ids currently waiting on Felix, for announcement prune/re-read."""
     findings, _problems, _vocabulary = parse(ledger)
-    return {finding.id for finding in _felix_waiting(findings)}
+    buckets = summary_buckets(findings)
+    return {finding.id for finding in buckets.product + buckets.preconditions}
 
 
 def _persist_announcement_state(state_path: Path, announced: dict[str, object]) -> None:
@@ -7409,21 +7677,20 @@ def _announce_felix_blockers_unlocked(shown_ids: set[str], ledger: Path) -> None
         return
 
     findings, _problems, _vocabulary = parse(ledger)
-    shown = [finding for finding in _felix_waiting(findings) if finding.id in shown_ids]
+    buckets = summary_buckets(findings)
+    # The announcement covers the answerable class and preconditions only.
+    # Automated verification is machine work and must never enter Felix's
+    # announcement state, so `buckets.answerable`'s approval half is excluded
+    # here by construction: only the product half is a Felix-facing answer.
+    waiting = sorted(buckets.product + buckets.preconditions, key=lambda f: f.line)
+    shown = [finding for finding in waiting if finding.id in shown_ids]
     fresh = [finding for finding in shown if finding.id not in kept]
     if not fresh:
         return
 
-    answerable = [
-        finding
-        for finding in fresh
-        if classify_blocker(finding.blocked) == BLOCKER_ANSWERABLE
-    ]
-    preconditions = [
-        finding
-        for finding in fresh
-        if classify_blocker(finding.blocked) == BLOCKER_PRECONDITION
-    ]
+    product_ids = {finding.id for finding in buckets.product}
+    answerable = [finding for finding in fresh if finding.id in product_ids]
+    preconditions = [finding for finding in fresh if finding.id not in product_ids]
     if len(fresh) == 1:
         detail = f"{fresh[0].id} — {fresh[0].title[:NOTIFY_TITLE_CHARS]}"
     else:
@@ -7589,18 +7856,10 @@ def cmd_decisions(args: argparse.Namespace) -> int:
             f"WARNING decisions found {len(issues)} validation problem(s)"
             f"{parse_detail}. Run `findings.py check`."
         )
-    all_waiting = _felix_waiting(findings)
-    waiting = [
-        f for f in all_waiting if classify_blocker(f.blocked) == BLOCKER_ANSWERABLE
-    ]
-    preconditions = [
-        f for f in all_waiting if classify_blocker(f.blocked) == BLOCKER_PRECONDITION
-    ]
-    verification = [
-        f
-        for f in findings
-        if f.sentry_verification in {"unverified", "drifted"}
-    ]
+    buckets = summary_buckets(findings)
+    waiting = list(buckets.product)
+    preconditions = list(buckets.preconditions)
+    verification = list(buckets.approvals)
     if args.ids:
         # The drain names the ids a cluster just parked, so a park announcement
         # shows those blockers and not the whole backlog again.
@@ -7631,7 +7890,8 @@ def cmd_decisions(args: argparse.Namespace) -> int:
             f"{len(verification)} Sentry finding(s) awaiting automated "
             "verification — nothing for you to do.\n"
         )
-    product = [f for f in waiting if f.blocked == FELIX_DECISION]
+    # `waiting` is exactly the stored product bucket, so the brief list is it.
+    product = waiting
     if product:
         print(f"{len(product)} product decision(s) waiting on you.\n")
     for f in product:
@@ -9836,6 +10096,17 @@ def main(argv: list[str] | None = None) -> int:
         help="exit 1 without output when validation finds a problem",
     )
     p_list.set_defaults(func=cmd_list)
+
+    p_summary = sub.add_parser(
+        "summary", help="print counts, who is waiting, and what is drainable"
+    )
+    p_summary.add_argument(
+        "--json",
+        action="store_true",
+        help="print the versioned summary object on stdout; warnings stay on stderr",
+    )
+    p_summary.add_argument("--inbox", type=Path, default=None, help=argparse.SUPPRESS)
+    p_summary.set_defaults(func=cmd_summary)
 
     p_next = sub.add_parser("next", help="print the highest-ranked pickable cluster")
     p_next.add_argument("--pin", help="force this finding's cluster")
