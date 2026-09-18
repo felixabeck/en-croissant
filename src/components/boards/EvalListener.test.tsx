@@ -397,12 +397,30 @@ test("a result pending while its engine is unloaded is dropped before React unmo
   expect(store.get(progressAtom("tab-1", chessdbEngine.id))).toBe(0);
 });
 
+test("a result pending while its engine's executable is replaced under the same id is dropped", async () => {
+  const result = deferred<ReturnType<typeof remoteResult>>();
+  fixtures.chessdbGetBestMoves.mockReturnValueOnce(result.promise);
+  store.set(enginesAtom, [chessdbEngine] as any);
+  await rerender();
+  await advanceDebounce();
+
+  // Outside act, as above: still loaded, same id, different endpoint.
+  store.set(enginesAtom, [{ ...chessdbEngine, url: "https://other.example" }] as any);
+  result.resolve(remoteResult(69));
+  await flush();
+
+  expect(store.get(movesAtom("tab-1", chessdbEngine.id))).toEqual(new Map());
+  expect(store.get(progressAtom("tab-1", chessdbEngine.id))).toBe(0);
+});
+
 test("a native broadcast for an engine unloaded before React unmounts it is dropped", async () => {
   fixtures.prepareEngineSearch.mockResolvedValue("generation-unloaded");
   await rerender();
   await advanceDebounce();
 
   store.set(enginesAtom, [{ ...engine, loaded: false }] as any);
+  // Not via `broadcast`: its `act` would re-render, unmount the listener and
+  // unregister it, so the loop would fire nothing and the test would pass vacuously.
   for (const listener of [...fixtures.listeners]) {
     listener({ payload: payload("generation-unloaded") });
   }
