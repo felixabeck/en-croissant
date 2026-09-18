@@ -8756,7 +8756,7 @@ Code b7f52cd4, 285a96d4, 8d8e4274, 25636945. Windows runtime is rust-windows-tes
 
 ### The non-Linux sound route keeps a separate asset-protocol path whose unification waited on the platform decision
 
-* **ID:** f-20260914-13 · **Status:** open · **Area:** native-fs · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
+* **ID:** f-20260914-13 · **Status:** handled · **Area:** native-fs · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/sound.rs` (Linux loopback sound server under `#[cfg(target_os = "linux")]`, `sound_resource_path` for other platforms), `assetProtocol.scope` `["$RESOURCE/**"]` in `src-tauri/tauri.conf.json`, the renderer's non-Linux sound branch.
 * **Defect:** `d-20260906-04` narrowed the non-Linux route's grants but deliberately did not replace it, because whether the fork supported macOS/Windows was parked; its reversal path was "the answer to `f-20260830-06`". Felix answered on 2026-09-12 (port all three), so the two routes now both have to work and be maintained, and the Windows side depends on `authorize_existing_dir`, which refuses on non-unix.
 * **Open question:** unify on one route (the loopback server on every platform, deleting the asset-protocol grant and the renderer branch) or keep and verify both — given `d-20260905-11`'s WebKitGTK measurement and that macOS/Windows webviews differ?
