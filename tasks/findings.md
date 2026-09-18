@@ -8787,6 +8787,9 @@ Code b7f52cd4, 285a96d4, 8d8e4274, 25636945. Windows runtime is rust-windows-tes
 * **Related:** `f-20260830-06` (parent); follow-ups filed from the same plan on 2026-09-14 for Windows workspace, database, atomic replacement, startup, engine resources, sound route and the Windows test job. Plan-review history: `tasks/handoffs/2026-09-14-f-20260830-06-slice-1-review.md` (issues R3-09, R4-01, R4-03, R4-09, R5-01, R5-02).
 * **Found by:** `f-20260830-06` slice-1 plan review rounds 3-5 (review-plan, review-error-handling, review-ipc-contract, review-root-cause, review-tauri-security, review-tests), 2026-09-14.
 
+* **Handled 2026-09-18 (next-finding slice, DeepSeek Full Auto):** first-statement `off_unix_refusal("PGN atomic replacement")` on `delete_game`, `write_game`, and `export_to_pgn`. Helper guard kept. Completeness pins the production call graph (`d-20260918-13`). Code `0ab696a9`, `bfc8f2b0`; decision `4538e0db`. Review record: `tasks/handoffs/2026-09-18-f-20260914-15-review.md`. Members left open at `build`: `f-20260914-29`, `f-20260917-04`, `f-20260917-13`.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"f3a7384fe9cdd9b515cd6b77c43d06ad2ac328b3a7e5fe9645823578c1c542ab","input_sha256":"491d937ec3947c2261aaab726019ef142d6b04d5d0576d5eb6a629ef707bb265","kind":"mutation-receipt","operation":"ec92a25b5efe7039665c5c9a0fda5eae03a1293cc4bc9da3369ab10fc76c03db","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-15"],"target":"f-20260914-15","v":1} -->
+
 ### A legacy session record carrying a bearer token can survive in Web Storage when both sanitising writes fail
 
 * **ID:** f-20260914-16 · **Status:** open · **Area:** oauth-credentials · **Root:** - · **Entry:** build · **Blocked:** none
