@@ -693,9 +693,11 @@ impl UciIo for ChildUciIo {
     }
 }
 
-/// One-owner UCI actor. Its state/request generation is intentionally kept
-/// beside IO, so an old `bestmove` cannot be attributed to a replacement
-/// search.
+/// One-owner UCI actor. Its state/request generation is kept beside IO so a
+/// read is never served for a request that is no longer current, and the
+/// `search_output_unsynchronized` ready barrier discards what a finished
+/// search emits after its `bestmove`. Together they keep an old `bestmove`
+/// from being attributed to a replacement search.
 struct EngineRuntime {
     io: Box<dyn UciIo>,
     state: EngineState,
@@ -4043,6 +4045,24 @@ mod tests {
             *writes.lock().await,
             vec!["go depth 1", "isready", "stop", "isready", "go depth 2"]
         );
+    }
+
+    #[tokio::test]
+    async fn a_failed_ready_barrier_refuses_the_next_search() {
+        let (actor, writes) = actor(&["bestmove e2e4"]);
+        let first = actor.start_search(&GoMode::Depth(1)).await.unwrap();
+        assert_eq!(
+            actor.next_search_line(first).await.unwrap(),
+            Some("bestmove e2e4".into())
+        );
+
+        // No `readyok` follows: the barrier cannot prove the pipe is clean, so
+        // no `go` may be written on it.
+        assert!(matches!(
+            actor.start_search(&GoMode::Depth(2)).await,
+            Err(Error::EngineDisconnected)
+        ));
+        assert_eq!(*writes.lock().await, vec!["go depth 1", "isready"]);
     }
 
     #[tokio::test]
