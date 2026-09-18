@@ -4551,6 +4551,9 @@ allocated the id.
 
 * **Sequenced:** 2026-09-01. Not handled. `d-20260830-15` (Felix, 2026-08-30) defers the fork's own signed engine manifest. Blocked as `sequenced-d-20260830-15` so it leaves the native-fs pick until that work starts (`d-20260901-08`).
 
+* **Handled (2026-09-19):** Worked as part of f-20260830-48. The engine catalog document is now a committed file with a detached minisign signature over its exact bytes. `useDefaultEngines` calls `verify_signed_bytes` before `JSON.parse`. Per-entry `sha256`/`signature` over `${downloadLink}\n${sha256}` still run at download time. Database and puzzle documents are not this finding.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"5986e7312f6d1b21467921221912a21ae62435d5fd0d1bc0bbade9c0065b595f","input_sha256":"f9a9c7a6888344cb03a6d636ceb3e22c9fd0d25a3575fda1625a3191ba385fd7","kind":"mutation-receipt","operation":"02e611e379127487dac308eec4ebb37e0f29891715edaed05635f6116a0bfbd5","options":{"section":null},"request_id_sha256":null,"results":["f-20260831-04"],"target":"f-20260831-04","v":1} -->
+
 ### An inline `;` comment after a move opens a brace comment, merging the next game into the current one
 
 * **ID:** f-20260831-05 · **Status:** handled · **Area:** pgn-import · **Root:** - · **Entry:** lens · **Blocked:** none
