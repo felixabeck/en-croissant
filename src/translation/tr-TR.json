@@ -398,6 +398,7 @@
     "Engines.Add.Cloud": "Bulut",
     "Engines.Add.Elo": "Elo",
     "Engines.Add.Elo.Desc": "Motor ELO'su",
+    "Engines.Add.ErrorCatalog": "Birlikte gelen motor kataloğu imza doğrulamasını geçemedi.",
     "Engines.Add.ErrorFetch": "Motorun bilgileri sunucudan aktarılamadı.",
     "Engines.Add.ImageFile": "Görsel dosyası",
     "Engines.Add.ImageFile.Desc": "Görsel dosyası seçmek için tıklayın (önerilen boyut: 60x60)",

@@ -398,6 +398,7 @@
     "Engines.Add.Cloud": "Cloud",
     "Engines.Add.Elo": "Elo",
     "Engines.Add.Elo.Desc": "Elo der Engine",
+    "Engines.Add.ErrorCatalog": "Der mitgelieferte Engine-Katalog hat die Signaturprüfung nicht bestanden.",
     "Engines.Add.ErrorFetch": "Fehler beim Abrufen der Engine-Informationen vom Server.",
     "Engines.Add.ImageFile": "Bilddatei",
     "Engines.Add.ImageFile.Desc": "Klicke, um die Bilddatei auszuwählen (empfohlene Größe: 60x60)",

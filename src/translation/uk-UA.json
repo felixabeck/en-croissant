@@ -404,6 +404,7 @@
     "Engines.Add.Cloud": "Хмара",
     "Engines.Add.Elo": "Elo",
     "Engines.Add.Elo.Desc": "Ело рушія",
+    "Engines.Add.ErrorCatalog": "Вбудований каталог рушіїв не пройшов перевірку підпису.",
     "Engines.Add.ErrorFetch": "Не вдалося отримати інформацію про рушій із сервера.",
     "Engines.Add.ImageFile": "Файл зображення",
     "Engines.Add.ImageFile.Desc": "Натисніть для вибору файлу зображення (рекомендовано: 60x60)",

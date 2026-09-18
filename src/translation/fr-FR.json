@@ -401,6 +401,7 @@
     "Engines.Add.Cloud": "Nuage",
     "Engines.Add.Elo": "Elo",
     "Engines.Add.Elo.Desc": "Elo du moteur",
+    "Engines.Add.ErrorCatalog": "Le catalogue de moteurs fourni a échoué à la vérification de signature.",
     "Engines.Add.ErrorFetch": "Impossible de télécharger les infos du moteur depuis le serveur.",
     "Engines.Add.ImageFile": "Fichier image",
     "Engines.Add.ImageFile.Desc": "Cliquez pour sélectionner une image (taille recommandée : 60x60px)",

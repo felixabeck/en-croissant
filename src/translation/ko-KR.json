@@ -395,6 +395,7 @@
     "Engines.Add.Cloud": "클라우드",
     "Engines.Add.Elo": "Elo",
     "Engines.Add.Elo.Desc": "엔진의 Elo",
+    "Engines.Add.ErrorCatalog": "포함된 엔진 카탈로그의 서명 검증에 실패했습니다.",
     "Engines.Add.ErrorFetch": "서버에서 엔진 정보를 가져오는데 실패했습니다.",
     "Engines.Add.ImageFile": "이미지 파일",
     "Engines.Add.ImageFile.Desc": "클릭하여 이미지 파일 선택 (권장 크기: 60x60)",

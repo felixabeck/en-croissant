@@ -398,6 +398,7 @@
     "Engines.Add.Cloud": "Sky",
     "Engines.Add.Elo": "Elo",
     "Engines.Add.Elo.Desc": "Computeren sin Elo",
+    "Engines.Add.ErrorCatalog": "Den medfølgende sjakkmotor-katalogen feilet signaturkontrollen.",
     "Engines.Add.ErrorFetch": "Klarte ikke å hente computer info fra serveren.",
     "Engines.Add.ImageFile": "Bildefil",
     "Engines.Add.ImageFile.Desc": "Klikk for å velge bildefilen (anbefalt størrelse: 60x60)",

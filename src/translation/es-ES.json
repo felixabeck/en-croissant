@@ -401,6 +401,7 @@
     "Engines.Add.Cloud": "Nube",
     "Engines.Add.Elo": "Elo",
     "Engines.Add.Elo.Desc": "Elo del motor",
+    "Engines.Add.ErrorCatalog": "El catálogo de motores incluido no superó la verificación de firma.",
     "Engines.Add.ErrorFetch": "No se pudo obtener la información del motor del servidor.",
     "Engines.Add.ImageFile": "Archivo de imagen",
     "Engines.Add.ImageFile.Desc": "Haga clic para seleccionar el archivo de imagen (tamaño recomendado: 60x60)",

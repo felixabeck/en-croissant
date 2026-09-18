@@ -2,7 +2,7 @@ import { tauri } from "@/platform/tauri";
 import engineCatalogDocument from "@/catalogs/engines.json?raw";
 import engineCatalogSignature from "@/catalogs/engines.json.minisig?raw";
 import { runWithAppliedRecovery } from "@/platform/errors";
-import type { Platform } from "@/platform/native";
+import { warn, type Platform } from "@/platform/native";
 import useSWR from "swr";
 import { z } from "zod";
 import {
@@ -275,7 +275,9 @@ export async function loadDefaultEngineCatalog(
     try {
         await tauri.verifySignedBytes(document, signature);
     } catch (error) {
-        throw new EngineCatalogVerificationError(error);
+        const wrapped = new EngineCatalogVerificationError(error);
+        warn(`Engine catalog signature verification failed: ${String(error)}`);
+        throw wrapped;
     }
     // Parse only after the backend verified the exact bytes.
     const parsed = z.array(defaultEngineManifestSchema).parse(JSON.parse(document));

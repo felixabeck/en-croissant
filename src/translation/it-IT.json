@@ -401,6 +401,7 @@
     "Engines.Add.Cloud": "Cloud",
     "Engines.Add.Elo": "Elo",
     "Engines.Add.Elo.Desc": "Elo motore",
+    "Engines.Add.ErrorCatalog": "Il catalogo motori incluso non ha superato la verifica della firma.",
     "Engines.Add.ErrorFetch": "Impossibile recuperare le informazioni del motore dal server.",
     "Engines.Add.ImageFile": "File immagine",
     "Engines.Add.ImageFile.Desc": "Clicca per selezionare il file immagine (dimensione consigliata: 60x60)",

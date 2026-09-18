@@ -404,6 +404,7 @@
     "Engines.Add.Cloud": "Облако",
     "Engines.Add.Elo": "Эло",
     "Engines.Add.Elo.Desc": "Эло движка",
+    "Engines.Add.ErrorCatalog": "Встроенный каталог движков не прошёл проверку подписи.",
     "Engines.Add.ErrorFetch": "Не удалось получить движки с сервера.",
     "Engines.Add.ImageFile": "Файл изображения",
     "Engines.Add.ImageFile.Desc": "Нажмите для выбора файла изображения (рекомендуется: 60x60)",

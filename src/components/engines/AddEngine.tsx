@@ -25,6 +25,7 @@ import {
   type LocalEngine,
   type DefaultEngine,
   type RemoteEngine,
+  EngineCatalogVerificationError,
   installDefaultEngine,
   manifestEngineInstallCard,
   useDefaultEngines,
@@ -100,7 +101,11 @@ function AddEngine({
               })}
               {error && (
                 <Alert icon={<IconAlertCircle size="1rem" />} title={t("Common.Error")} color="red">
-                  {t("Engines.Add.ErrorFetch")}
+                  {t(
+                    error instanceof EngineCatalogVerificationError
+                      ? "Engines.Add.ErrorCatalog"
+                      : "Engines.Add.ErrorFetch",
+                  )}
                 </Alert>
               )}
             </SimpleGrid>

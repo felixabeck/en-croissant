@@ -395,6 +395,7 @@
     "Engines.Add.Cloud": "云端",
     "Engines.Add.Elo": "Elo",
     "Engines.Add.Elo.Desc": "引擎等级分",
+    "Engines.Add.ErrorCatalog": "内置引擎目录签名校验失败。",
     "Engines.Add.ErrorFetch": "从服务器获取引擎信息失败",
     "Engines.Add.ImageFile": "图标文件",
     "Engines.Add.ImageFile.Desc": "点击选择图标文件 (推荐尺寸: 60x60)",

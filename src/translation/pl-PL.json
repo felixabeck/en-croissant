@@ -404,6 +404,7 @@
     "Engines.Add.Cloud": "Chmura",
     "Engines.Add.Elo": "Elo",
     "Engines.Add.Elo.Desc": "Elo silnika",
+    "Engines.Add.ErrorCatalog": "Dołączony katalog silników nie przeszedł weryfikacji podpisu.",
     "Engines.Add.ErrorFetch": "Nie udało się pobrać informacji o silniku z serwera.",
     "Engines.Add.ImageFile": "Plik graficzny",
     "Engines.Add.ImageFile.Desc": "Kliknij, aby wybrać plik graficzny (zalecany rozmiar: 60x60)",

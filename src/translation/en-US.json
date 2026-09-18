@@ -398,6 +398,7 @@
     "Engines.Add.Cloud": "Cloud",
     "Engines.Add.Elo": "Elo",
     "Engines.Add.Elo.Desc": "Engine's Elo",
+    "Engines.Add.ErrorCatalog": "The bundled engine catalog failed signature verification.",
     "Engines.Add.ErrorFetch": "Failed to fetch the engine's info from the server.",
     "Engines.Add.ImageFile": "Image file",
     "Engines.Add.ImageFile.Desc": "Click to select the image file (recommended size: 60x60)",

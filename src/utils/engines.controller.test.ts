@@ -17,6 +17,7 @@ const native = vi.hoisted(() => ({
 
 const remote = vi.hoisted(() => ({ get: vi.fn() }));
 vi.mock("@/platform/http", () => ({ remoteHttp: remote }));
+vi.mock("@/platform/native", () => ({ warn: vi.fn() }));
 
 vi.mock("@/platform/tauri", async () => {
     const actual = await vi.importActual<typeof import("@/platform/tauri")>("@/platform/tauri");

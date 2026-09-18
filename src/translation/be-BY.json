@@ -404,6 +404,7 @@
     "Engines.Add.Cloud": "Хмара",
     "Engines.Add.Elo": "Elo",
     "Engines.Add.Elo.Desc": "Эла рухавіка",
+    "Engines.Add.ErrorCatalog": "Убудаваны каталог рухавікоў не прайшоў праверку подпісу.",
     "Engines.Add.ErrorFetch": "Не ўдалося атрымаць рухавікі з сервера.",
     "Engines.Add.ImageFile": "Файл выявы",
     "Engines.Add.ImageFile.Desc": "Націсніце для выбару файла выявы (рэкамендуецца: 60x60)",

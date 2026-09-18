@@ -401,6 +401,7 @@
     "Engines.Add.Cloud": "Nuvem",
     "Engines.Add.Elo": "Elo",
     "Engines.Add.Elo.Desc": "Elo do motor",
+    "Engines.Add.ErrorCatalog": "O catálogo de motores incluído falhou a verificação de assinatura.",
     "Engines.Add.ErrorFetch": "Não foi possível obter os motores do servidor.",
     "Engines.Add.ImageFile": "Ficheiro de imagem",
     "Engines.Add.ImageFile.Desc": "Clique para selecionar o ficheiro de imagem (recomendado: 60 × 60)",

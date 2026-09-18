@@ -395,6 +395,7 @@
     "Engines.Add.Cloud": "雲端",
     "Engines.Add.Elo": "Elo",
     "Engines.Add.Elo.Desc": "引擎的 Elo 等級分",
+    "Engines.Add.ErrorCatalog": "內建引擎目錄簽名驗證失敗。",
     "Engines.Add.ErrorFetch": "從伺服器取得引擎資訊失敗。",
     "Engines.Add.ImageFile": "圖片檔案",
     "Engines.Add.ImageFile.Desc": "點擊以選取圖片檔案 (建議尺寸: 60x60)",
