@@ -1,9 +1,7 @@
 //! Capability-based authority for native paths.
 //!
-//! Physical paths cross the renderer boundary in exactly one place: `sound_resource_path` returns
-//! the location of one bundled sound file under the resource directory, for the non-Linux
-//! asset-protocol route (`f-20260830-06`). Every other path is a [`PathRef`], an opaque capability
-//! identifier, and every operation is checked at resolution time. Persistent entries retain
+//! No physical path crosses the renderer boundary: every path is a [`PathRef`], an opaque
+//! capability identifier, and every operation is checked at resolution time. Persistent entries retain
 //! filesystem identity; replacement or disappearance makes them unavailable instead of granting
 //! authority to the object that happened to appear at the old location. The exception is an
 //! app-owned default root (`db` / `engines` / `puzzles`) recovered with a matching live
@@ -2147,23 +2145,6 @@ fn owner_families_for_purpose(purpose: EntryPurpose) -> Option<Vec<PathOwnerFami
     })
 }
 
-#[derive(Serialize, Deserialize, Type, Clone, Copy)]
-pub enum SoundKind {
-    Move,
-    Capture,
-    Check,
-}
-
-impl SoundKind {
-    fn file_name(&self) -> &str {
-        match self {
-            Self::Move => "Move.mp3",
-            Self::Capture => "Capture.mp3",
-            Self::Check => "Check.mp3",
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum PathAvailability {
@@ -2351,34 +2332,9 @@ impl ResourceDir {
 
     /// Test-only for the same reason as [`AppDataDir::for_test`]: arbitrary resource roots must
     /// not be constructible in the shipped binary.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn for_test(path: &Path) -> Self {
         Self(path.to_path_buf())
-    }
-
-    pub(crate) fn bundled_sound_path(
-        &self,
-        collection: &str,
-        kind: SoundKind,
-    ) -> Result<PathBuf, Error> {
-        let Some((_, has_check)) = BUNDLED_SOUND_COLLECTIONS
-            .iter()
-            .find(|(name, _)| *name == collection)
-        else {
-            return Err(Error::InvalidInput(
-                "unknown bundled sound collection".into(),
-            ));
-        };
-        if matches!(kind, SoundKind::Check) && !has_check {
-            return Err(Error::InvalidInput(
-                "no bundled check sound in that collection".into(),
-            ));
-        }
-        Ok(self
-            .as_path()
-            .join(SOUND_ROOT_LEAF)
-            .join(collection)
-            .join(kind.file_name()))
     }
 
     fn as_path(&self) -> &Path {
@@ -2998,18 +2954,7 @@ pub(crate) fn set_engine_launch_failure(engine_key: &str, failure: Option<Engine
 }
 
 const SOUND_ROOT_LEAF: &str = "sound";
-const BUNDLED_SOUND_COLLECTIONS: [(&str, bool); 8] = [
-    ("futuristic", true),
-    ("lisp", true),
-    ("nes", true),
-    ("piano", true),
-    ("robot", true),
-    ("sfx", true),
-    ("standard", false),
-    ("woodland", true),
-];
 
-#[cfg(any(target_os = "linux", all(test, unix)))]
 pub(crate) fn open_app_owned_resource_dir(
     resource_dir: &ResourceDir,
 ) -> Result<AuthorizedDir, Error> {
@@ -13406,46 +13351,6 @@ mod tests {
                 "open_app_owned_resource_dir"
             ]
         );
-    }
-
-    #[test]
-    fn bundled_sound_paths_cover_every_collection_and_kind() {
-        let root = PathBuf::from("resource-root");
-        let resource_dir = ResourceDir::for_test(&root);
-        let mut resolved_pairs = 0;
-        for (collection, has_check) in BUNDLED_SOUND_COLLECTIONS {
-            for (kind, file_name) in [
-                (SoundKind::Move, "Move.mp3"),
-                (SoundKind::Capture, "Capture.mp3"),
-                (SoundKind::Check, "Check.mp3"),
-            ] {
-                if matches!(kind, SoundKind::Check) && !has_check {
-                    assert!(matches!(
-                        resource_dir.bundled_sound_path(collection, kind),
-                        Err(Error::InvalidInput(message))
-                            if message == "no bundled check sound in that collection"
-                    ));
-                    continue;
-                }
-                assert_eq!(
-                    resource_dir.bundled_sound_path(collection, kind).unwrap(),
-                    root.join("sound").join(collection).join(file_name)
-                );
-                resolved_pairs += 1;
-            }
-        }
-        assert_eq!(resolved_pairs, 23);
-    }
-
-    #[test]
-    fn bundled_sound_paths_reject_unknown_and_traversal_collections() {
-        let resource_dir = ResourceDir::for_test(Path::new("resource-root"));
-        for collection in ["unknown", "../x"] {
-            assert!(matches!(
-                resource_dir.bundled_sound_path(collection, SoundKind::Move),
-                Err(Error::InvalidInput(_))
-            ));
-        }
     }
 
     /// Tauri production path resolution cannot be exercised by a unit test. Keep the constructor

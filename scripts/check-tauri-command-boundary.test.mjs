@@ -19,7 +19,6 @@ const VALID_SECURITY_CONFIG = JSON.stringify({
   app: {
     security: {
       csp: "default-src self",
-      assetProtocol: { enable: true, scope: ["$RESOURCE/**"] },
     },
   },
 });
@@ -213,11 +212,25 @@ describe("capability and CSP boundaries", () => {
       expect.stringMatching(/exact remote origins/),
     ]);
   });
+
+  test("rejects the asset protocol scheme in any directive", () => {
+    expect(inspectCsp("default-src 'self'; img-src asset:")).toEqual([
+      expect.stringMatching(/asset protocol/),
+    ]);
+    expect(inspectCsp("default-src 'self'; media-src 'self' asset: http://127.0.0.1:*")).toEqual([
+      expect.stringMatching(/asset protocol/),
+    ]);
+  });
+
+  test("accepts a CSP without the asset scheme", () => {
+    expect(inspectCsp("default-src 'self'; media-src 'self' http://127.0.0.1:*")).toEqual([]);
+  });
 });
 
 describe("native-location and asset-protocol boundaries", () => {
-  function fixtureCase({ permissions = [], assetProtocol } = {}) {
+  function fixtureCase({ permissions = [], assetProtocol, csp } = {}) {
     const config = JSON.parse(VALID_SECURITY_CONFIG);
+    if (csp !== undefined) config.app.security.csp = csp;
     if (assetProtocol === null) {
       delete config.app.security.assetProtocol;
     } else if (assetProtocol !== undefined) {
@@ -249,14 +262,30 @@ describe("native-location and asset-protocol boundaries", () => {
   });
 
   test.each([
-    ["a wider scope", { enable: true, scope: ["$APPDATA/**", "$RESOURCE/**"] }],
-    ["a wrong scope", { enable: true, scope: ["$APPDATA/**"] }],
-    ["a disabled protocol", { enable: false, scope: ["$RESOURCE/**"] }],
-    ["an absent block", null],
-  ])("rejects %s through the full boundary runner", (_name, assetProtocol) => {
-    expect(fixtureCase({ assetProtocol })).toThrow(
-      /asset protocol must be enabled with scope exactly \$RESOURCE\/\*\*/,
-    );
+    ["the old $RESOURCE scope while enabled", { enable: true, scope: ["$RESOURCE/**"] }],
+    ["any other scope while enabled", { enable: true, scope: ["$APPDATA/**"] }],
+  ])("rejects an enabled asset protocol with %s through the full boundary runner", (
+    _name,
+    assetProtocol,
+  ) => {
+    expect(fixtureCase({ assetProtocol })).toThrow(/asset protocol must stay disabled/);
+  });
+
+  test("allows an absent asset protocol block through the full boundary runner", () => {
+    expect(fixtureCase()).not.toThrow();
+    expect(fixtureCase({ assetProtocol: null })).not.toThrow();
+  });
+
+  test("allows a disabled asset protocol block through the full boundary runner", () => {
+    expect(
+      fixtureCase({ assetProtocol: { enable: false, scope: ["$RESOURCE/**"] } }),
+    ).not.toThrow();
+  });
+
+  test("rejects a fixture CSP that still lists the asset scheme", () => {
+    expect(
+      fixtureCase({ csp: "default-src 'self'; media-src 'self' asset: http://127.0.0.1:*" }),
+    ).toThrow(/asset protocol/);
   });
 });
 

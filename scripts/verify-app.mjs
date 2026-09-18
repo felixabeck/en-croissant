@@ -10,8 +10,8 @@
 //   3. production startup reclaims unowned authority but preserves owned authority,
 //   4. startup authority reconciliation deletes no user files,
 //   5. the renderer cannot resolve a native base directory,
-//   6. the bounded sound-resource command names the bundled file,
-//   7. the bounded sound-resource command refuses an outside collection,
+//   6. the renderer reaches the loopback sound server through a live non-zero port,
+//   7. that port serves the bundled move sound with bytes,
 //   8. closing it through its own control runs the shutdown sequence to completion,
 //   9. nothing — app or WebKit service process — outlives that close.
 
@@ -349,35 +349,41 @@ try {
     resolveDirectoryResult.resolved ?? resolveDirectoryResult.error,
   );
 
-  const soundPathResult = await invokeAndWait(
+  // A bundled release must publish a live, non-zero sound-server port. `invokeAndWait` stores
+  // success as a string under the success key and failure as `rejected`; a missing command, a
+  // failed invoke and port 0 therefore all fail this check.
+  const soundPortResult = await invokeAndWait(
     session,
-    "sound_resource_path to settle",
-    "__verifyAppSoundPath",
-    `window.__TAURI_INTERNALS__.invoke("sound_resource_path", {
-      collection: "standard",
-      kind: "Move",
-    })`,
-    "path",
+    "get_sound_server_port to settle",
+    "__verifyAppSoundPort",
+    `window.__TAURI_INTERNALS__.invoke("get_sound_server_port")`,
+    "port",
   );
+  const soundServerPort = Number(soundPortResult.port);
   check(
-    typeof soundPathResult.path === "string" &&
-      soundPathResult.path.endsWith("/sound/standard/Move.mp3") &&
-      existsSync(soundPathResult.path),
-    "sound_resource_path names the bundled file",
-    soundPathResult.rejected ?? soundPathResult.error ?? soundPathResult.path,
+    typeof soundPortResult.rejected === "undefined" && Number(soundPortResult.port) > 0,
+    "the renderer reaches a live loopback sound-server port",
+    soundPortResult.rejected ?? soundPortResult.error ?? soundPortResult.port,
   );
 
-  const invalidSoundPathResult = await invokeAndWait(
-    session,
-    "sound_resource_path to refuse an outside collection",
-    "__verifyAppInvalidSoundPath",
-    `window.__TAURI_INTERNALS__.invoke("sound_resource_path", { collection: "../x", kind: "Move" })`,
-  );
-  check(
-    typeof invalidSoundPathResult.rejected === "string",
-    "sound_resource_path refuses a collection outside the bundled set",
-    invalidSoundPathResult.value ?? invalidSoundPathResult.error,
-  );
+  // Node side, not `session.execute`: in-page `fetch` is connect-src, which does not list
+  // 127.0.0.1, and the handler sends no CORS headers. Only media-src allows loopback, so this
+  // proves the axum server serves the bundled file; the webview plays it through <audio>.
+  try {
+    const response = await fetch(`http://127.0.0.1:${soundServerPort}/standard/Move.mp3`);
+    const body = Buffer.from(await response.arrayBuffer());
+    check(
+      response.status === 200 && body.length > 0,
+      "the loopback sound server serves the bundled standard move sound",
+      `status ${response.status}, ${body.length} bytes`,
+    );
+  } catch (error) {
+    check(
+      false,
+      "the loopback sound server serves the bundled standard move sound",
+      error.message,
+    );
+  }
 
   const prepareRetireImageResult = await invokeAndWait(
     session,

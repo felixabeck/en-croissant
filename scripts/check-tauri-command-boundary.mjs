@@ -11,7 +11,6 @@ export const NATIVE_EXPORT_ALLOWLIST = Object.freeze(
   [
     ["@tauri-apps/api/app", "getTauriVersion", "getTauriVersion"],
     ["@tauri-apps/api/app", "getVersion", "getVersion"],
-    ["@tauri-apps/api/core", "convertFileSrc", "convertFileSrc"],
     ["@tauri-apps/api/menu", "Menu", "Menu"],
     ["@tauri-apps/api/menu", "MenuItem", "MenuItem"],
     ["@tauri-apps/api/menu", "PredefinedMenuItem", "PredefinedMenuItem"],
@@ -248,21 +247,24 @@ export function inspectCapability(capabilityJson) {
 }
 
 export function inspectAssetProtocol(assetProtocol) {
-  const validScope =
-    Array.isArray(assetProtocol?.scope) &&
-    assetProtocol.scope.length === 1 &&
-    assetProtocol.scope[0] === "$RESOURCE/**";
-  return assetProtocol?.enable === true && validScope
-    ? []
-    : [
-        `asset protocol must be enabled with scope exactly $RESOURCE/**: ${JSON.stringify(assetProtocol)}`,
-      ];
+  // The loopback sound server serves every platform, so the asset protocol has no consumer:
+  // only an absent block or an explicitly disabled one is acceptable, at any scope.
+  if (!assetProtocol || assetProtocol.enable !== true) return [];
+  return [`asset protocol must stay disabled: ${JSON.stringify(assetProtocol)}`];
 }
 
 export function inspectCsp(csp) {
-  return typeof csp !== "string" || /https?:\/\/\*/.test(csp)
-    ? ["CSP must enumerate exact remote origins"]
-    : [];
+  if (typeof csp !== "string") return ["CSP must enumerate exact remote origins"];
+  const violations = [];
+  if (/https?:\/\/\*/.test(csp)) {
+    violations.push("CSP must enumerate exact remote origins");
+  }
+  // `asset:` names the deleted asset-protocol scheme; a CSP that still lists it re-grants media
+  // and images the unification removed, whatever directive it sits in.
+  if (/(?:^|[\s;])asset:/.test(csp)) {
+    violations.push("CSP must not grant the asset protocol");
+  }
+  return violations;
 }
 
 function readJsonFile(readFile, path) {

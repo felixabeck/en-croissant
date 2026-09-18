@@ -174,9 +174,6 @@ const tauriBootstrap = () => {
             unregisterCallback(id: number) {
                 callbacks.delete(id);
             },
-            convertFileSrc(path: string, protocol = "asset") {
-                return `${protocol}://localhost/${encodeURIComponent(path)}`;
-            },
         },
     });
 };

@@ -1,24 +1,14 @@
-import type { SoundKind } from "@/bindings";
-import { convertFileSrc } from "@/platform/native";
-import { platform } from "@/platform/native";
 import { getDefaultStore } from "jotai";
 import { tauri } from "@/platform/tauri";
 import { soundCollectionAtom, soundVolumeAtom } from "@/state/atoms";
+
+type SoundKind = "Move" | "Capture" | "Check";
 
 const POOL_SIZE = 5;
 const audioPool = Array.from({ length: POOL_SIZE }, () => new Audio());
 let poolIndex = 0;
 
 let soundServerPort: number | null = null;
-const soundUrlCache = new Map<string, string>();
-
-function isLinux(): boolean {
-    try {
-        return platform() === "linux";
-    } catch {
-        return false;
-    }
-}
 
 let lastTime = 0;
 
@@ -50,48 +40,23 @@ export function playSound(capture: boolean, check: boolean) {
         type = "Check";
     }
 
-    const cacheKey = `${collection}/${type}`;
+    getSoundServerPort()
+        .then((port) => {
+            // Port 0 means the backend has no sound server — no bundled sound resources, or the
+            // server failed to start. Requesting http://127.0.0.1:0/ would only produce a console
+            // error per move.
+            if (port === 0) {
+                return;
+            }
+            const url = `http://127.0.0.1:${port}/${collection}/${type}.mp3`;
+            const player = audioPool[poolIndex];
+            poolIndex = (poolIndex + 1) % POOL_SIZE;
 
-    const playWithUrl = (url: string) => {
-        const player = audioPool[poolIndex];
-        poolIndex = (poolIndex + 1) % POOL_SIZE;
-
-        player.src = url;
-        player.volume = volume;
-        player.play().catch((e) => console.error("Audio playback error:", e));
-    };
-
-    if (isLinux()) {
-        getSoundServerPort()
-            .then((port) => {
-                // Port 0 means the backend has no sound server — no bundled sound resources, or
-                // the server failed to start. Requesting http://127.0.0.1:0/ would only produce a
-                // console error per move.
-                if (port === 0) {
-                    return;
-                }
-                const url = `http://127.0.0.1:${port}/${collection}/${type}.mp3`;
-                playWithUrl(url);
-            })
-            .catch(() => {
-                // fails if Tauri APIs are unavailable (e.g., in tests)
-            });
-    } else {
-        if (soundUrlCache.has(cacheKey)) {
-            playWithUrl(soundUrlCache.get(cacheKey)!);
-            return;
-        }
-        tauri
-            .soundResourcePath(collection, type)
-            .then((filePath) => {
-                const assetUrl = convertFileSrc(filePath);
-                soundUrlCache.set(cacheKey, assetUrl);
-
-                playWithUrl(assetUrl);
-            })
-            .catch(() => {
-                // fails if Tauri APIs are unavailable (e.g., in tests), or if the backend rejects
-                // the collection or cannot name the resource path
-            });
-    }
+            player.src = url;
+            player.volume = volume;
+            player.play().catch((e) => console.error("Audio playback error:", e));
+        })
+        .catch(() => {
+            // fails if Tauri APIs are unavailable (e.g., in tests)
+        });
 }

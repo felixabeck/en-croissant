@@ -88,7 +88,7 @@ use crate::puzzle::{
     get_puzzle_workspace, get_themes_for_puzzle, issue_puzzle_download_destination,
     issue_puzzle_workspace, list_puzzle_databases,
 };
-use crate::sound::{get_sound_server_port, sound_resource_path};
+use crate::sound::get_sound_server_port;
 use crate::{
     chess::get_best_moves,
     db::{
@@ -1673,8 +1673,8 @@ struct SoundServerLifecycle {
 }
 
 impl SoundServerLifecycle {
-    // The sound route runs only on Linux (d-20260906-04); elsewhere nothing constructs it.
-    #[cfg(any(target_os = "linux", test))]
+    // One loopback sound route on every platform; setup publishes either a live lifecycle or a
+    // disabled one, so this is constructed in production wherever the app starts.
     fn new(
         shutdown: Option<tokio::sync::oneshot::Sender<()>>,
         join: Option<tauri::async_runtime::JoinHandle<()>>,
@@ -2036,7 +2036,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             set_progress_state,
             clear_progress,
             get_sound_server_port,
-            sound_resource_path,
             download_chess_com_games,
             get_public_chess_com_json
         ))
@@ -2141,67 +2140,59 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             specta_builder.mount_events(app);
 
-            #[cfg(target_os = "linux")]
-            {
-                let (port, lifecycle) =
-                    match crate::infra::path_authority::ResourceDir::for_app(app.handle()) {
-                        Err(error) => {
-                            log::warn!("sound resource root could not be resolved: {error}");
-                            (0, SoundServerLifecycle::new(None, None))
-                        }
-                        Ok(resource_dir) => {
-                            match crate::infra::path_authority::open_app_owned_resource_dir(
-                                &resource_dir,
-                            ) {
-                                Err(Error::Io(error))
-                                    if error.kind() == std::io::ErrorKind::NotFound =>
-                                {
-                                    log::info!(
-                                        "no bundled sound resources found, sound stays disabled"
-                                    );
-                                    (0, SoundServerLifecycle::new(None, None))
-                                }
-                                Err(error) => {
-                                    log::warn!(
-                                        "bundled sound resources could not be opened: {error}"
-                                    );
-                                    (0, SoundServerLifecycle::new(None, None))
-                                }
-                                Ok(sound_dir) => {
-                                    let (shutdown_tx, shutdown_rx) =
-                                        tokio::sync::oneshot::channel();
-                                    // Port 0 means "no sound server"; the renderer skips playback rather
-                                    // than requesting http://127.0.0.1:0/. A construction failure is logged
-                                    // because it is otherwise indistinguishable from a build without sound
-                                    // resources — that silence is how the reactor panic in this very call
-                                    // reached a release.
-                                    match sound::create_sound_server(sound_dir, shutdown_rx) {
-                                        Ok((port, server)) => {
-                                            let join = tauri::async_runtime::spawn(server);
-                                            (
-                                                port,
-                                                SoundServerLifecycle::new(
-                                                    Some(shutdown_tx),
-                                                    Some(join),
-                                                ),
-                                            )
-                                        }
-                                        Err(error) => {
-                                            log::error!(
-                                                "sound server could not be started: {error}"
-                                            );
-                                            (0, SoundServerLifecycle::new(None, None))
-                                        }
+            // sound-startup
+            let (port, lifecycle) =
+                match crate::infra::path_authority::ResourceDir::for_app(app.handle()) {
+                    Err(error) => {
+                        log::warn!("sound resource root could not be resolved: {error}");
+                        (0, SoundServerLifecycle::new(None, None))
+                    }
+                    Ok(resource_dir) => {
+                        match crate::infra::path_authority::open_app_owned_resource_dir(
+                            &resource_dir,
+                        ) {
+                            Err(Error::Io(error))
+                                if error.kind() == std::io::ErrorKind::NotFound =>
+                            {
+                                log::info!(
+                                    "no bundled sound resources found, sound stays disabled"
+                                );
+                                (0, SoundServerLifecycle::new(None, None))
+                            }
+                            Err(error) => {
+                                log::warn!("bundled sound resources could not be opened: {error}");
+                                (0, SoundServerLifecycle::new(None, None))
+                            }
+                            Ok(sound_dir) => {
+                                let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+                                // Port 0 means "no sound server"; the renderer skips playback rather
+                                // than requesting http://127.0.0.1:0/. A construction failure is logged
+                                // because it is otherwise indistinguishable from a build without sound
+                                // resources — that silence is how the reactor panic in this very call
+                                // reached a release.
+                                match sound::create_sound_server(sound_dir, shutdown_rx) {
+                                    Ok((port, server)) => {
+                                        let join = tauri::async_runtime::spawn(server);
+                                        (
+                                            port,
+                                            SoundServerLifecycle::new(
+                                                Some(shutdown_tx),
+                                                Some(join),
+                                            ),
+                                        )
+                                    }
+                                    Err(error) => {
+                                        log::error!("sound server could not be started: {error}");
+                                        (0, SoundServerLifecycle::new(None, None))
                                     }
                                 }
                             }
                         }
-                    };
-                app.manage(sound::SoundServerPort(port));
-                app.manage(lifecycle);
-            }
-            #[cfg(not(target_os = "linux"))]
-            app.manage(sound::SoundServerPort(0));
+                    }
+                };
+            app.manage(sound::SoundServerPort(port));
+            app.manage(lifecycle);
+            // sound-startup-end
 
             #[cfg(desktop)]
             app.handle().plugin(tauri_plugin_cli::init())?;
@@ -3428,38 +3419,58 @@ mod blocking_offload_scans {
     }
 
     #[test]
-    fn linux_sound_startup_keeps_all_four_outcomes_distinguishable() {
+    fn sound_startup_keeps_all_four_outcomes_distinguishable() {
         let main = include_str!("main.rs");
         let setup = body_at_indent(main, ".setup(move |app| {");
-        let linux = body_at_indent(setup, "#[cfg(target_os = \"linux\")]");
+        let startup = setup
+            .split_once("// sound-startup")
+            .expect("sound startup marker")
+            .1
+            .split_once("// sound-startup-end")
+            .expect("sound startup end marker")
+            .0;
 
         assert!(
-            linux.contains("ResourceDir::for_app(app.handle())"),
-            "{linux}"
-        );
-        assert!(linux.contains("open_app_owned_resource_dir("), "{linux}");
-        assert!(linux.contains("std::io::ErrorKind::NotFound"), "{linux}");
-        assert!(
-            linux.contains("no bundled sound resources found, sound stays disabled"),
-            "{linux}"
+            startup.contains("ResourceDir::for_app(app.handle())"),
+            "{startup}"
         );
         assert!(
-            linux.contains("sound resource root could not be resolved"),
-            "{linux}"
+            startup.contains("open_app_owned_resource_dir("),
+            "{startup}"
         );
         assert!(
-            linux.contains("bundled sound resources could not be opened"),
-            "{linux}"
+            startup.contains("std::io::ErrorKind::NotFound"),
+            "{startup}"
         );
         assert!(
-            linux.contains("sound server could not be started"),
-            "{linux}"
+            startup.contains("no bundled sound resources found, sound stays disabled"),
+            "{startup}"
         );
-        assert!(linux.contains("sound::create_sound_server("), "{linux}");
-        assert_eq!(linux.matches("log::warn!(").count(), 2, "{linux}");
-        assert_eq!(linux.matches("log::info!(").count(), 1, "{linux}");
-        assert_eq!(linux.matches("log::error!(").count(), 1, "{linux}");
-        assert!(!linux.contains("BaseDirectory::Resource"), "{linux}");
+        assert!(
+            startup.contains("sound resource root could not be resolved"),
+            "{startup}"
+        );
+        assert!(
+            startup.contains("bundled sound resources could not be opened"),
+            "{startup}"
+        );
+        assert!(
+            startup.contains("sound server could not be started"),
+            "{startup}"
+        );
+        assert!(startup.contains("sound::create_sound_server("), "{startup}");
+        assert_eq!(startup.matches("log::warn!(").count(), 2, "{startup}");
+        assert_eq!(startup.matches("log::info!(").count(), 1, "{startup}");
+        assert_eq!(startup.matches("log::error!(").count(), 1, "{startup}");
+        assert!(!startup.contains("BaseDirectory::Resource"), "{startup}");
+
+        // The ungate is detected on the whole setup body, not only the delimited slice: a restored
+        // platform gate placed above `// sound-startup` must redden this pin too.
+        assert!(!setup.contains("SoundServerPort(0)"), "{setup}");
+        let linux_gate = ["#[cfg(target_os = ", "\"linux\")]"].concat();
+        assert!(!setup.contains(&linux_gate), "{setup}");
+        let non_linux_gate = ["#[cfg(not(target_os = ", "\"linux\"))]"].concat();
+        assert!(!setup.contains(&non_linux_gate), "{setup}");
     }
 
     #[test]

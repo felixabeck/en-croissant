@@ -26,7 +26,7 @@ const mocks = vi.hoisted(() => ({
   listPuzzleDatabases: vi.fn(),
   getPuzzleThemes: vi.fn(),
   getPuzzle: vi.fn(),
-  soundResourcePath: vi.fn(),
+  getSoundServerPort: vi.fn(),
   deletePuzzleDatabase: vi.fn(),
   getThemesForPuzzle: vi.fn(),
   notificationShow: vi.fn(),
@@ -42,7 +42,7 @@ vi.mock("@/platform/tauri", async () => {
       listPuzzleDatabases: mocks.listPuzzleDatabases,
       getPuzzleThemes: mocks.getPuzzleThemes,
       getPuzzle: mocks.getPuzzle,
-      soundResourcePath: mocks.soundResourcePath,
+      getSoundServerPort: mocks.getSoundServerPort,
       deletePuzzleDatabase: mocks.deletePuzzleDatabase,
       getThemesForPuzzle: mocks.getThemesForPuzzle,
     },
@@ -172,7 +172,7 @@ beforeEach(() => {
   });
   mocks.getThemesForPuzzle.mockResolvedValue([]);
   mocks.deletePuzzleDatabase.mockResolvedValue(undefined);
-  mocks.soundResourcePath.mockRejectedValue(new Error("sound disabled in test"));
+  mocks.getSoundServerPort.mockRejectedValue(new Error("sound disabled in test"));
   host = document.createElement("div");
   portals = document.createElement("div");
   portals.innerHTML = `<div id="left"></div><div id="topRight"></div><div id="bottomRight"></div>`;

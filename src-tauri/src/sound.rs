@@ -1,11 +1,8 @@
 use crate::error::Error;
-use crate::infra::path_authority::{ResourceDir, SoundKind};
-use std::path::PathBuf;
 
 pub struct SoundServerPort(pub u16);
 pub struct SoundShutdownTx(pub std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>);
 
-#[cfg(target_os = "linux")]
 mod server {
     use crate::error::Error;
     use crate::infra::path_authority::AuthorizedDir;
@@ -247,7 +244,6 @@ mod server {
     }
 }
 
-#[cfg(target_os = "linux")]
 pub use server::create_sound_server;
 
 #[tauri::command]
@@ -256,54 +252,46 @@ pub fn get_sound_server_port(state: tauri::State<'_, SoundServerPort>) -> Result
     Ok(state.0)
 }
 
-fn sound_path_string(path: PathBuf) -> Result<String, Error> {
-    path.into_os_string().into_string().map_err(|_| {
-        Error::Io(Box::new(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "resource path is not valid UTF-8",
-        )))
-    })
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn sound_resource_path(
-    app: tauri::AppHandle,
-    collection: String,
-    kind: SoundKind,
-) -> Result<String, Error> {
-    sound_path_string(ResourceDir::for_app(&app)?.bundled_sound_path(&collection, kind)?)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Bundled sound now reaches the renderer only as a loopback URL, so the native-path command
+    /// must not come back. This pin lives under `sound::tests` so `cargo test sound::` selects it.
     #[test]
-    fn sound_path_string_preserves_plain_paths() {
-        let plain = PathBuf::from("sound/standard/Move.mp3");
-        assert_eq!(
-            sound_path_string(plain.clone()).unwrap(),
-            plain.to_str().unwrap()
+    fn sound_resource_path_is_gone_from_main() {
+        let main = include_str!("main.rs");
+        assert!(
+            !main.contains("sound_resource_path"),
+            "sound_resource_path must not be registered or imported in main.rs"
         );
     }
 
-    #[cfg(unix)]
+    /// A restored per-test platform gate would only redden CI on macOS and Windows. Construct the
+    /// needle at runtime so this pin's own source does not contain the substring it forbids.
     #[test]
-    fn sound_path_string_rejects_invalid_utf8() {
-        use std::os::unix::ffi::OsStringExt;
-
-        let error = sound_path_string(PathBuf::from(std::ffi::OsString::from_vec(vec![
-            0x66, 0xff,
-        ])))
-        .unwrap_err();
-        assert!(matches!(
-            error,
-            Error::Io(error) if error.kind() == std::io::ErrorKind::InvalidData
-        ));
+    fn sound_module_has_no_linux_platform_gate() {
+        let source = include_str!("sound.rs");
+        let needle = ["target_os = ", "\"linux\""].concat();
+        assert!(!source.contains(&needle), "{needle} must not gate sound.rs");
     }
 
-    #[cfg(target_os = "linux")]
+    /// The `protocol-asset` feature is the last compile-time trace of the deleted asset grant.
+    /// Construct the needle at runtime for the same reason as the platform-gate pin.
+    #[test]
+    fn cargo_tauri_features_have_no_protocol_asset() {
+        let manifest = include_str!("../Cargo.toml");
+        let needle = ["protocol", "-asset"].concat();
+        let tauri_feature_lines: Vec<_> = manifest
+            .lines()
+            .filter(|line| line.trim_start().starts_with("tauri ="))
+            .collect();
+        assert!(!tauri_feature_lines.is_empty(), "tauri dependency line");
+        for line in tauri_feature_lines {
+            assert!(!line.contains(&needle), "{line}");
+        }
+    }
+
     fn authorized_sound_dir() -> (
         tempfile::TempDir,
         crate::infra::path_authority::AuthorizedDir,
@@ -316,7 +304,6 @@ mod tests {
         (root, directory)
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn test_sound_range_matrix() {
         use server::RangeParseResult::*;
@@ -338,7 +325,6 @@ mod tests {
         assert_eq!(server::parse_range("bytes=500-200", 1000), InvalidSyntax);
     }
 
-    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn test_sound_server_ephemeral_startup() {
         let (_root, sound_dir) = authorized_sound_dir();
@@ -360,7 +346,6 @@ mod tests {
         server_future.await;
     }
 
-    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn test_sound_server_bind_failure() {
         let (_root, sound_dir) = authorized_sound_dir();
@@ -383,7 +368,6 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::AddrInUse);
     }
 
-    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn test_sound_server_construction_failure() {
         let (_root, sound_dir) = authorized_sound_dir();
@@ -409,7 +393,6 @@ mod tests {
     /// This must stay a plain `#[test]`: `setup()` calls `create_sound_server` from the main
     /// thread with no ambient runtime, and `#[tokio::test]` would supply the reactor that
     /// production does not have — reintroducing the panic would leave the test green.
-    #[cfg(target_os = "linux")]
     #[test]
     fn test_real_sound_server_binds_without_an_ambient_runtime() {
         let (_root, sound_dir) = authorized_sound_dir();
@@ -419,7 +402,9 @@ mod tests {
         assert_ne!(port, 0);
     }
 
-    #[cfg(target_os = "linux")]
+    // Renaming the resource directory while `AuthorizedDir` holds it open is a sharing violation
+    // on Windows, not a symlink; containment there is the other `open_regular_relative` tests.
+    #[cfg(unix)]
     #[tokio::test]
     async fn sound_server_keeps_serving_from_the_authorized_descriptor_after_a_root_swap() {
         let (root, sound_dir) = authorized_sound_dir();
@@ -455,7 +440,6 @@ mod tests {
         join.await.unwrap();
     }
 
-    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn test_serve_sound_handler() {
         use axum::body::HttpBody;
@@ -700,7 +684,6 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn serve_sound_error_paths_keep_diagnostics_and_never_panic() {
         use crate::infra::blocking::source_scan::body_at_indent;

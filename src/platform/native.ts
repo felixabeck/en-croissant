@@ -1,6 +1,5 @@
 /** The only renderer module that imports Tauri plugin and API runtime values. */
 export { getTauriVersion, getVersion } from "@tauri-apps/api/app";
-export { convertFileSrc } from "@tauri-apps/api/core";
 export { Menu, MenuItem, PredefinedMenuItem, Submenu } from "@tauri-apps/api/menu";
 export { getCurrentWebviewWindow, type WebviewWindow } from "@tauri-apps/api/webviewWindow";
 export { getCurrentWindow } from "@tauri-apps/api/window";

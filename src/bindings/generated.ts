@@ -962,14 +962,6 @@ async getSoundServerPort() : Promise<Result<number, ErrorPayload>> {
     else return { status: "error", error: e  as any };
 }
 },
-async soundResourcePath(collection: string, kind: SoundKind) : Promise<Result<string, ErrorPayload>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("sound_resource_path", { collection, kind }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
 async downloadChessComGames(destination: PathRef, filename: string, player: string, sinceMs: bigint | null, jobId: string) : Promise<Result<ArtifactPublication, ErrorPayload>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("download_chess_com_games", { destination, filename, player, sinceMs, jobId }) };
@@ -1190,7 +1182,6 @@ export type ScoreValue =
 export type Sides = "BlackWhite" | "WhiteBlack" | "Any"
 export type SiteStatsData = { site: string; player: string; data: StatsData[] }
 export type SortDirection = "asc" | "desc"
-export type SoundKind = "Move" | "Capture" | "Check"
 export type StartupPathOwners = { retainedIds: PathRef[]; trustedFamilies: PathOwnerFamily[] }
 export type StatsData = { date: string; is_player_white: boolean; player_elo: number; result: GameOutcome; time_control: string; opening: string }
 export type TimeControl = { initialTime: bigint; increment: bigint }

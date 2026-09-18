@@ -1,15 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-    convertFileSrc: vi.fn((path: string) => `asset://localhost/${path}`),
     getSoundServerPort: vi.fn(),
-    platform: vi.fn(),
-    soundResourcePath: vi.fn(),
-}));
-
-vi.mock("@/platform/native", () => ({
-    convertFileSrc: mocks.convertFileSrc,
-    platform: mocks.platform,
 }));
 
 vi.mock("@/platform/tauri", async () => {
@@ -35,8 +27,7 @@ class FakeAudio implements AudioStub {
     }
 }
 
-async function loadSound({ collection = "standard", platform = "win32" } = {}) {
-    mocks.platform.mockReturnValue(platform);
+async function loadSound({ collection = "standard" } = {}) {
     const [{ getDefaultStore }, { soundCollectionAtom }, sound] = await Promise.all([
         import("jotai"),
         import("@/state/atoms"),
@@ -59,7 +50,6 @@ beforeEach(() => {
     vi.stubGlobal("Audio", FakeAudio);
     audioInstances.length = 0;
     localStorage.removeItem("sound-collection");
-    mocks.soundResourcePath.mockResolvedValue("/resource/sound/standard/Move.mp3");
 });
 
 afterEach(() => {
@@ -73,41 +63,37 @@ describe("playSound", () => {
         ["capture", "standard", true, false, "Capture"],
         ["check in a persisted non-standard collection", "piano", false, true, "Check"],
     ] as const)(
-        "uses the bounded resource path for a %s sound",
+        "plays a %s sound from the loopback server",
         async (_name, collection, capture, check, kind) => {
-            const returnedPath = `/resource/sound/${collection}/${kind}.mp3`;
-            mocks.soundResourcePath.mockResolvedValue(returnedPath);
+            mocks.getSoundServerPort.mockResolvedValue(43123);
             const { playSound } = await loadSound({ collection });
 
             playSound(capture, check);
             await settle();
 
-            expect(mocks.soundResourcePath).toHaveBeenCalledWith(collection, kind);
-            expect(mocks.convertFileSrc).toHaveBeenCalledWith(returnedPath);
-            expect(audioInstances[0].src).toBe(`asset://localhost/${returnedPath}`);
+            expect(mocks.getSoundServerPort).toHaveBeenCalledOnce();
+            expect(audioInstances[0].src).toBe(`http://127.0.0.1:43123/${collection}/${kind}.mp3`);
         },
     );
 
-    test("does not play or throw when the backend rejects the resource path", async () => {
-        mocks.soundResourcePath.mockRejectedValue(new Error("invalid collection"));
+    test("stays silent when the server port is 0", async () => {
+        mocks.getSoundServerPort.mockResolvedValue(0);
+        const { playSound } = await loadSound();
+
+        playSound(false, false);
+        await settle();
+
+        expect(mocks.getSoundServerPort).toHaveBeenCalledOnce();
+        expect(audioInstances.every(({ play }) => !play.mock.calls.length)).toBe(true);
+    });
+
+    test("does not play or throw when the server port request rejects", async () => {
+        mocks.getSoundServerPort.mockRejectedValue(new Error("no sound server"));
         const { playSound } = await loadSound();
 
         expect(() => playSound(false, false)).not.toThrow();
         await settle();
 
         expect(audioInstances.every(({ play }) => !play.mock.calls.length)).toBe(true);
-        expect(mocks.convertFileSrc).not.toHaveBeenCalled();
-    });
-
-    test("uses the sound server on Linux without requesting a resource path", async () => {
-        mocks.getSoundServerPort.mockResolvedValue(43123);
-        const { playSound } = await loadSound({ platform: "linux" });
-
-        playSound(false, false);
-        await settle();
-
-        expect(mocks.getSoundServerPort).toHaveBeenCalledOnce();
-        expect(mocks.soundResourcePath).not.toHaveBeenCalled();
-        expect(audioInstances[0].src).toBe("http://127.0.0.1:43123/standard/Move.mp3");
     });
 });
