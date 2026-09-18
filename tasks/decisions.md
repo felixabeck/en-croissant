@@ -3362,3 +3362,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Felix, 2026-09-12: Windows is a supported platform (f-20260830-06). Locate on 2026-09-18 showed the filed atomic-replace clause is stale. Reversal: Felix says the Windows build may boot without native credentials.
 * **Decided by:** Grok, autonomously under `full auto`, next-finding f-20260914-11 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"4efce83bcfde8dbd149ec0be0e8178f68a8abd304a54a80faa5621063e8718b9","input_sha256":"3832130c4a87482f139ff6226a2d46ee4fb61e65428dbfeda0ec287c772395ac","kind":"mutation-receipt","operation":"352065b87e0306b37efbbc33e3efff1ea4b065db01535c966d9fb785a3a68c76","options":{"section":null},"request_id_sha256":null,"results":["d-20260918-04"],"target":"decisions-ledger","v":1} -->
+
+### d-20260918-05 — Does the Windows startup-registry port also close f-20260905-10?
+
+* **Question:** Does closing f-20260914-11 also close f-20260905-10 (descriptor-backed AppDataDir plus mkdirat), or does create_dir_all stay?
+* **Governs:** f-20260914-11, f-20260905-10
+* **Chosen:** keep create_dir_all; f-20260905-10 stays open. The Windows port of ensure_app_owned_default_dir deletes only the off_unix_refusal guard.
+* **Rejected:** pulling f-20260905-10 into this slice so f-20260917-13 can ride along.
+* **Reason:** d-20260905-02 and d-20260905-07 already accepted that producer shape; d-20260918-02 and d-20260918-03 name the residual as owned by f-20260905-10. Locate confirmed they are independent doors. Reversal: new evidence that Windows create_dir_all is not the same ancestor-symlink window as unix.
+* **Decided by:** Grok, autonomously under `full auto`, next-finding f-20260914-11 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"de835de5173bc9f3938b87f2e2cf718f8768d606c14a6bcbbc6ea0a0686db7ae","input_sha256":"ec4c1ed89cf4c4bc399a8111af66f4a4527b348a48cb43119eae2e3ade58e810","kind":"mutation-receipt","operation":"07f5f30b42d3b1106827b41a09db9b2edb2797bf4a7b26be42b1ec4c20a9b573","options":{"section":null},"request_id_sha256":null,"results":["d-20260918-05"],"target":"decisions-ledger","v":1} -->
