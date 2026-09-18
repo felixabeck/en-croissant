@@ -8731,7 +8731,7 @@ absent here.
 
 ### Windows engine directory resources, archive install and executable mode are refused
 
-* **ID:** f-20260914-12 · **Status:** open · **Area:** engine-uci · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
+* **ID:** f-20260914-12 · **Status:** handled · **Area:** engine-uci · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
 * **Where:** `resolve_windows` returns an empty `ResolvedPath` for directories (`src-tauri/src/infra/path_authority/resolved.rs:840-846`), consumed by `engine_resource` (`src-tauri/src/infra/path_authority/mod.rs:3417-3427`); `atomic_install_download_dir` (`resolved.rs:85-97`); `mark_engine_executable` (`resolved.rs:101-125`).
 * **Defect:** after `f-20260830-06` slice 1 an engine directory resource, an engine archive download/install and "set file as executable" all return `Error::Conflict` on Windows instead of working. Engines whose UCI options name a directory (tablebases, books) cannot be configured.
 * **Why it matters:** Windows is a supported platform (Felix, 2026-09-12). The 2026-09-06 handoff `tasks/handoffs/2026-09-06-non-linux-directory-resources.md` carries the required proof: empty-path and nested directory resources, replaced roots/reparse points, and a live engine resource lease on real target tooling.
