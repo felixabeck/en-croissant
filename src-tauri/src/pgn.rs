@@ -913,6 +913,7 @@ pub async fn delete_game(
     n: i32,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
+    crate::infra::platform_support::off_unix_refusal("PGN atomic replacement", cfg!(unix))?;
     let lease = state.operations.accept("delete_game")?;
     let resolved = resolve_pgn(
         &state,
@@ -971,6 +972,7 @@ pub async fn write_game(
     pgn: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
+    crate::infra::platform_support::off_unix_refusal("PGN atomic replacement", cfg!(unix))?;
     let lease = state.operations.accept("write_game")?;
     let resolved = resolve_pgn(
         &state,

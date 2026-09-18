@@ -100,6 +100,16 @@ list empty the per-row counterpart loop is replaced by
 `remaining_refusal_body_rows_are_none`, and the last `refusal_text_has_one_source`
 carve-out (`"atomic directory installation is "`) is deleted.
 
+The `f-20260914-15` command-entry phase (d-20260918-13) adds a first-statement
+`off_unix_refusal("PGN atomic replacement", cfg!(unix))?;` to `delete_game`, `write_game`
+and `export_to_pgn`: each reached the refusing `replace_pgn_atomic` helper only after
+`operations.accept`, path-authority resolution, PGN scan or database open. The helper guard
+itself stays as the last line of defence for the cores. That leaves **0 body rows and 6
+guard rows**, counted from the arrays below. Completeness is the helper call graph, pinned
+by `production_replace_pgn_atomic_calls_are_only_edit_existing_and_export_to_pgn_blocking`
+and `production_calls_of_every_pgn_atomic_path_node_are_only_from_allowed_callers`, whose
+staged breaks are recorded in the matrix below.
+
 Staged failure matrix. Every run used a detached disposable worktree copied
 from this phase, mutated production files only, and ran the named
 `platform_support` test or filter with
@@ -267,6 +277,19 @@ repeating the 35 names six times.
     `promote_legacy_index_sidecar_at`. Failing test:
     `legacy_index_mapping_is_dropped_before_removal`.
     Message observed: "Windows refuses a still-mapped legacy index (ERROR_USER_MAPPED_FILE): drop(archive) must precede remove_entry_at".
+    Exit status: 101.
+28. S-f15-pin-one — inserted a staged production
+    `F15StagedPinOne.replace_pgn_atomic();` above `mod tests` in
+    `infra/path_authority/mod.rs`. Failing test:
+    `production_replace_pgn_atomic_calls_are_only_edit_existing_and_export_to_pgn_blocking`.
+    Message observed: `production replace_pgn_atomic call pin failed:
+    infra/path_authority/mod.rs: 1 production .replace_pgn_atomic( call(s) outside
+    edit_existing and export_to_pgn_blocking`. Exit status: 101.
+29. S-f15-pin-two — added a staged `#[tauri::command]` `f15_staged_pin_two` in `fs.rs`
+    whose closure calls `crate::pgn::delete_game_core`. Failing test:
+    `production_calls_of_every_pgn_atomic_path_node_are_only_from_allowed_callers`.
+    Message observed: `production PGN atomic-path caller pin failed: fs.rs:
+    delete_game_core called from f15_staged_pin_two, allowed ["delete_game"]`.
     Exit status: 101.
 
 No production whole-function rewrite was needed; all refusal messages remain
@@ -1589,7 +1612,7 @@ mod tests {
     /// The live `(body_rows, guard_rows)` counts at the current phase boundary. Every
     /// `phase_*_removed_rows...` test reads this, so a phase that removes a row edits the live
     /// count in exactly one place instead of five copies.
-    const LIVE_REFUSAL_ROW_COUNTS: (usize, usize) = (0, 3);
+    const LIVE_REFUSAL_ROW_COUNTS: (usize, usize) = (0, 6);
 
     fn assert_removed_rows_are_ungated(phase: &str, rows: &[(&str, &str)]) {
         let (expected_body_rows, expected_guard_rows) = LIVE_REFUSAL_ROW_COUNTS;
@@ -1825,6 +1848,7 @@ mod tests {
                 ("infra/path_authority/mod.rs", "mod resolved;"),
             ],
             "file_workspace.rs" => &[("main.rs", "mod file_workspace;")],
+            "pgn.rs" => &[("main.rs", "mod pgn;")],
             "db/mod.rs" => &[("main.rs", "mod db;")],
             "db/repository.rs" => &[("main.rs", "mod db;"), ("db/mod.rs", "mod repository;")],
             "db/search.rs" => &[("main.rs", "mod db;"), ("db/mod.rs", "mod search;")],
@@ -2222,6 +2246,27 @@ mod tests {
                 effects: &["atomic_replace_at_with_precommit("],
                 nested: false,
             },
+            GuardRow {
+                file: "pgn.rs",
+                signature: "pub async fn delete_game(",
+                operation: "PGN atomic replacement",
+                effects: &["operations.accept("],
+                nested: false,
+            },
+            GuardRow {
+                file: "pgn.rs",
+                signature: "pub async fn write_game(",
+                operation: "PGN atomic replacement",
+                effects: &["operations.accept("],
+                nested: false,
+            },
+            GuardRow {
+                file: "db/mod.rs",
+                signature: "pub async fn export_to_pgn(",
+                operation: "PGN atomic replacement",
+                effects: &["operations.accept("],
+                nested: false,
+            },
         ]
     }
 
@@ -2373,6 +2418,186 @@ mod tests {
             "refusal body rows remain: {}",
             body_rows().len()
         );
+    }
+
+    /// Pin (1) of the `f-20260914-15` completeness unit (d-20260918-13). In production regions
+    /// the helper token `.replace_pgn_atomic(` may occur exactly once, in `edit_existing`, and
+    /// exactly once, in `export_to_pgn_blocking`; every other file's production region holds none.
+    /// The definition is `fn replace_pgn_atomic<F>(`, which this token cannot match, so a third
+    /// production call site — including a test helper above `mod tests` — is the regression.
+    /// Scanning is `Literals::Blank`, so a comment or a string literal cannot hide or fake a call.
+    #[test]
+    fn production_replace_pgn_atomic_calls_are_only_edit_existing_and_export_to_pgn_blocking() {
+        let expected = [
+            ("pgn.rs", "edit_existing"),
+            ("db/mod.rs", "export_to_pgn_blocking"),
+        ];
+        let mut errors = Vec::new();
+        for path in rust_source_paths() {
+            let source = std::fs::read_to_string(&path).unwrap();
+            let key = file_key(&path);
+            let production = production_region(&source);
+            let normalised = normalise(production, Literals::Blank);
+            let count = normalised.matches(".replace_pgn_atomic(").count();
+            match expected.iter().find(|(file, _)| *file == key.as_str()) {
+                Some((_, function)) => {
+                    if count != 1 {
+                        errors.push(format!(
+                            "{key}: expected one production .replace_pgn_atomic( call, found {count}"
+                        ));
+                        continue;
+                    }
+                    let call = normalised
+                        .find(".replace_pgn_atomic(")
+                        .expect("the counted call exists");
+                    match enclosing_function_name(&source, call) {
+                        Some(name) if name == *function => {}
+                        other => errors.push(format!(
+                            "{key}: .replace_pgn_atomic( must be in {function}, enclosing {other:?}"
+                        )),
+                    }
+                }
+                None => {
+                    if count != 0 {
+                        errors.push(format!(
+                            "{key}: {count} production .replace_pgn_atomic( call(s) outside edit_existing and export_to_pgn_blocking"
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(
+            errors.is_empty(),
+            "production replace_pgn_atomic call pin failed:\n{}",
+            errors.join("\n")
+        );
+    }
+
+    /// Pin (2) of the `f-20260914-15` completeness unit (d-20260918-13). Every node on the
+    /// `replace_pgn_atomic` path may be called from production code only by the functions that
+    /// lead to the three guarded commands; a callee's own definition sits outside any body and is
+    /// allowed. This is what catches a new `#[tauri::command]` in any file that calls a `pub`
+    /// core, or a new private wrapper around `commit_pgn_mutation`. Enclosing identity is the
+    /// nearest preceding `fn <name>` whose brace region still contains the call offset.
+    #[test]
+    fn production_calls_of_every_pgn_atomic_path_node_are_only_from_allowed_callers() {
+        let rows: &[(&str, &[&str])] = &[
+            (
+                "replace_pgn_atomic",
+                &["edit_existing", "export_to_pgn_blocking"],
+            ),
+            ("edit_existing", &["commit_pgn_mutation"]),
+            (
+                "commit_pgn_mutation",
+                &["delete_game_core", "write_game_core"],
+            ),
+            ("delete_game_core", &["delete_game"]),
+            ("write_game_core", &["write_game"]),
+            ("export_to_pgn_blocking", &["export_to_pgn"]),
+        ];
+        let mut errors = Vec::new();
+        for path in rust_source_paths() {
+            let source = std::fs::read_to_string(&path).unwrap();
+            let key = file_key(&path);
+            let production = production_region(&source);
+            let normalised = normalise(production, Literals::Blank);
+            for (callee, allowed) in rows {
+                let token = format!("{callee}(");
+                for (call, _) in normalised.match_indices(&token) {
+                    let Some(enclosing) = enclosing_function_name(&source, call) else {
+                        // A callee's own declaration: the signature is outside every body.
+                        continue;
+                    };
+                    if !allowed.contains(&enclosing.as_str()) {
+                        errors.push(format!(
+                            "{key}: {callee} called from {enclosing}, allowed {allowed:?}"
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(
+            errors.is_empty(),
+            "production PGN atomic-path caller pin failed:\n{}",
+            errors.join("\n")
+        );
+    }
+
+    /// The production region of one scanned file: everything before the first `mod tests` whose
+    /// preceding attributes mention `test` (`#[cfg(test)]`, `#[cfg(all(test, unix))]`,
+    /// `#[cfg(all(test, windows))]`). A file with no such module is scanned whole. Splitting on
+    /// the attribute substring is what keeps `db/mod.rs`'s `#[cfg(all(test, unix))]` test body
+    /// out of production (R2-01); the token-boundary check keeps `mod tests_support` from
+    /// ending the region.
+    fn production_region(source: &str) -> &str {
+        let normalised = normalise(source, Literals::Blank);
+        for (start, _) in normalised.match_indices("mod tests") {
+            let end = start + "mod tests".len();
+            if normalised
+                .as_bytes()
+                .get(end)
+                .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+            {
+                continue;
+            }
+            if attribute_lines_before(source, start)
+                .iter()
+                .any(|attribute| attribute.contains("test"))
+            {
+                return &source[..start];
+            }
+        }
+        source
+    }
+
+    /// The `src`-relative slash-joined key of a scanned path, so the two expected files can be
+    /// named the same way `source_for` names them on every host.
+    fn file_key(path: &std::path::Path) -> String {
+        let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
+        path.strip_prefix(root)
+            .unwrap_or(path)
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("/")
+    }
+
+    /// The nearest preceding `fn <name>` whose brace region contains `call`, or `None` when
+    /// `call` is a function's own declaration. A `fn` whose opening brace follows the call cannot
+    /// enclose it; a `fn` that closed before the call is skipped in favour of the next outer one,
+    /// so a call is never attributed to an unrelated earlier function.
+    fn enclosing_function_name(source: &str, call: usize) -> Option<String> {
+        let normalised = normalise(source, Literals::Blank);
+        let mut search_end = call;
+        while let Some(start) = normalised[..search_end].rfind("fn ") {
+            let name = normalised[start + "fn ".len()..]
+                .chars()
+                .take_while(|character| character.is_ascii_alphanumeric() || *character == '_')
+                .collect::<String>();
+            if !name.is_empty() {
+                if let Some(opening) = normalised[start..].find('{').map(|offset| start + offset) {
+                    if call > opening && brace_depth_at(&normalised, opening, call) > 0 {
+                        return Some(name);
+                    }
+                }
+            }
+            search_end = start;
+        }
+        None
+    }
+
+    /// The brace depth at `call` measured from an opening `{` at `opening`; zero or less means the
+    /// block closed before `call`.
+    fn brace_depth_at(normalised: &str, opening: usize, call: usize) -> i32 {
+        let mut depth = 0_i32;
+        for byte in normalised.as_bytes()[opening..call].iter() {
+            match byte {
+                b'{' => depth += 1,
+                b'}' => depth -= 1,
+                _ => {}
+            }
+        }
+        depth
     }
 
     /// The half of `check_helper` that pins the *shape* of a helper: exactly one declaration of

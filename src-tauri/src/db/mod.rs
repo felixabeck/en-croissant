@@ -2825,6 +2825,7 @@ pub async fn export_to_pgn(
     destination: FileWorkspaceHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
+    crate::infra::platform_support::off_unix_refusal("PGN atomic replacement", cfg!(unix))?;
     let operation = state.operations.accept("export_to_pgn")?;
     let cancellation = operation.token();
     let authority = Arc::clone(&state.pgn_path_authority);
