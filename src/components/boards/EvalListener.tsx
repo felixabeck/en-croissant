@@ -47,6 +47,7 @@ import { TreeStateContext } from "../common/TreeStateContext";
 
 type SearchAttempt = {
   fingerprint: string;
+  engineIdentity: string;
   tab: string;
   nativeOwner: NativeSearchOwner | null;
   predecessorOwner: NativeSearchOwner | null;
@@ -59,6 +60,16 @@ type NativeSearchOwner = {
   generation: string;
   stopPromise: Promise<void> | null;
 };
+
+// The executable identity a result is bound to: the same id with a replaced
+// handle or URL is a different engine for result-routing purposes.
+function engineIdentity(engine: Engine): string {
+  return JSON.stringify(
+    engine.type === "local"
+      ? { type: engine.type, id: engine.id, handle: engine.handle }
+      : { type: engine.type, id: engine.id, url: engine.url },
+  );
+}
 
 function stopNativeOwner(owner: NativeSearchOwner): Promise<void> {
   owner.stopPromise ??= stopEngine(owner.engine, owner.tab, owner.generation);
@@ -212,10 +223,7 @@ function EngineListener({
     fen: searchingFen,
     moves: searchingMoves,
     settings: settingsFingerprint,
-    engine:
-      engine.type === "local"
-        ? { type: engine.type, id: engine.id, handle: engine.handle }
-        : { type: engine.type, id: engine.id, url: engine.url },
+    engine: engineIdentity(engine),
   });
   const currentFingerprint = useRef(requestFingerprint);
   currentFingerprint.current = requestFingerprint;
@@ -229,7 +237,13 @@ function EngineListener({
       enabled.current &&
       !gameOver.current &&
       !jotaiStore.get(closingTabsAtom).has(attempt.tab) &&
-      jotaiStore.get(tabsAtom).some((candidate) => candidate.value === attempt.tab)
+      jotaiStore.get(tabsAtom).some((candidate) => candidate.value === attempt.tab) &&
+      // Read the engine list itself rather than trusting this component's
+      // mount: an engine unloaded while its search was pending is committed
+      // to the store before the passive unmount cleanup clears `mounted`.
+      (jotaiStore.get(enginesAtom) ?? []).some(
+        (candidate) => candidate.loaded && engineIdentity(candidate) === attempt.engineIdentity,
+      )
     );
   }, []);
   const onBestMoves = useCallback(
@@ -319,6 +333,7 @@ function EngineListener({
     if (previous) previous.cancelled = true;
     const attempt: SearchAttempt = {
       fingerprint: requestFingerprint,
+      engineIdentity: engineIdentity(engine),
       tab: activeTab!,
       nativeOwner: null,
       predecessorOwner: previous?.nativeOwner ?? previous?.predecessorOwner ?? null,

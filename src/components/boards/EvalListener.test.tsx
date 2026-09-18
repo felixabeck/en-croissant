@@ -379,6 +379,39 @@ test("a ChessDB promise completing after unmount cannot write state", async () =
   expect(store.get(progressAtom("tab-1", chessdbEngine.id))).toBe(0);
 });
 
+test("a result pending while its engine is unloaded is dropped before React unmounts it", async () => {
+  const result = deferred<ReturnType<typeof remoteResult>>();
+  fixtures.chessdbGetBestMoves.mockReturnValueOnce(result.promise);
+  store.set(enginesAtom, [chessdbEngine] as any);
+  await rerender();
+  await advanceDebounce();
+
+  // Outside act: the store holds the unloaded engine while the listener is
+  // still mounted, which is the window between the store write and React's
+  // passive unmount cleanup.
+  store.set(enginesAtom, [{ ...chessdbEngine, loaded: false }] as any);
+  result.resolve(remoteResult(68));
+  await flush();
+
+  expect(store.get(movesAtom("tab-1", chessdbEngine.id))).toEqual(new Map());
+  expect(store.get(progressAtom("tab-1", chessdbEngine.id))).toBe(0);
+});
+
+test("a native broadcast for an engine unloaded before React unmounts it is dropped", async () => {
+  fixtures.prepareEngineSearch.mockResolvedValue("generation-unloaded");
+  await rerender();
+  await advanceDebounce();
+
+  store.set(enginesAtom, [{ ...engine, loaded: false }] as any);
+  for (const listener of [...fixtures.listeners]) {
+    listener({ payload: payload("generation-unloaded") });
+  }
+  await flush();
+
+  expect(store.get(movesAtom())).toEqual(new Map());
+  expect(store.get(progressAtom())).toBe(0);
+});
+
 test("settings and go changes reject old events before debounce and clear cached state", async () => {
   fixtures.prepareEngineSearch
     .mockResolvedValueOnce("generation-old")
