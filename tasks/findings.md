@@ -4522,7 +4522,7 @@ allocated the id.
 
 ### The engine manifest document is unsigned, and can only be signed once the fork serves its own
 
-* **ID:** f-20260831-04 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260831-04 · **Status:** handled · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src/utils/engines.ts` (`defaultEngineManifestSchema`, `useDefaultEngines`), the
   `https://www.encroissant.org/engines` endpoint, and `docs/signed-download-manifests.md`.
 * **Defect:** the manifest document carries no signature. Its per-entry `signature` authenticates
