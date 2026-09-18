@@ -540,8 +540,9 @@ impl ResolvedPath {
         )
     }
 
-    /// Marks exactly the authority-resolved engine file executable. Windows deliberately reports
-    /// unsupported because POSIX executable bits have no truthful equivalent there.
+    /// Marks exactly the authority-resolved engine file executable. Windows has no POSIX
+    /// executable bit; its `#[cfg(not(unix))]` counterpart checks the same engine-install file
+    /// shape and succeeds as a checked no-op.
     #[cfg(unix)]
     pub(crate) fn mark_engine_executable(&self) -> Result<(), Error> {
         if self.operation != PathOperation::EngineInstall {
@@ -565,9 +566,15 @@ impl ResolvedPath {
 
     #[cfg(not(unix))]
     pub(crate) fn mark_engine_executable(&self) -> Result<(), Error> {
-        Err(crate::infra::platform_support::unsupported(
-            "engine executable mode",
-        ))
+        if self.operation != PathOperation::EngineInstall {
+            return Err(Error::InvalidInput(
+                "resolved capability is not an engine install target".into(),
+            ));
+        }
+        self.file
+            .as_ref()
+            .ok_or_else(|| Error::InvalidInput("engine target is a directory".into()))?;
+        Ok(())
     }
 
     pub(crate) fn replace_pgn_atomic<F>(
@@ -635,6 +642,21 @@ impl ResolvedPath {
                 "resolved capability names a directory; a file component is required".into(),
             )
         })
+    }
+
+    /// Builds a `ResolvedPath` directly for the Windows executable-no-op runtime test. Its fields
+    /// are private to this module, and the Windows-only test cannot run on the Linux source-pin
+    /// host, so this is the only way to exercise the counterpart body without a full resolve.
+    #[cfg(all(test, windows))]
+    fn windows_test(operation: PathOperation, file: Option<fs::File>) -> Self {
+        Self {
+            operation,
+            file,
+            directory: None,
+            parent: None,
+            leaf: None,
+            target: None,
+        }
     }
 }
 
@@ -969,4 +991,29 @@ pub(super) fn resolve_windows(
         leaf: None,
         target,
     })
+}
+
+/// Runtime half of the executable no-op pin (R1-07). The counterpart cannot be compiled on the
+/// Linux proof host, so the source pin in `platform_support` and this `#[cfg(windows)]` test
+/// together hold the contract: an engine-install regular file is accepted and a wrong operation
+/// or a directory shape is `InvalidInput`.
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn mark_engine_executable_windows_is_a_checked_noop() {
+        let file = tempfile::tempfile().unwrap();
+        ResolvedPath::windows_test(PathOperation::EngineInstall, Some(file))
+            .mark_engine_executable()
+            .unwrap();
+        assert!(matches!(
+            ResolvedPath::windows_test(PathOperation::EngineInstall, None).mark_engine_executable(),
+            Err(Error::InvalidInput(_))
+        ));
+        assert!(matches!(
+            ResolvedPath::windows_test(PathOperation::ReadPgn, None).mark_engine_executable(),
+            Err(Error::InvalidInput(_))
+        ));
+    }
 }

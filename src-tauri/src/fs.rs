@@ -1606,7 +1606,6 @@ fn set_file_as_executable_blocking(
     authority: &Mutex<Option<crate::infra::path_authority::PathAuthority>>,
     file: crate::infra::path_authority::PathRef,
 ) -> Result<(), Error> {
-    crate::infra::platform_support::off_unix_refusal("engine executable mode", cfg!(unix))?;
     let mut authority = authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;

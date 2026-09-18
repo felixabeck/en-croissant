@@ -79,6 +79,14 @@ Directory-arm source assertion
 (`engine_resource_directory_arm_takes_a_directory_and_target_without_refusals`)
 rather than by `assert_removed_rows_are_ungated`.
 
+Phase 2 of that slice (d-20260918-09) makes Windows executable mode a checked
+no-op: the `#[cfg(not(unix))]` counterpart keeps the EngineInstall and
+file-present checks and returns `Ok(())`, so its refusal body row is deleted and
+the `set_file_as_executable_blocking` guard row and its `"engine executable
+mode"` routed label go with it. That leaves **2 body rows and 4 guard rows**,
+counted from the arrays below, and the Ok counterpart is pinned by
+`mark_engine_executable_windows_is_a_checked_noop` rather than by a refusal row.
+
 Staged failure matrix. Every run used a detached disposable worktree copied
 from this phase, mutated production files only, and ran the named
 `platform_support` test or filter with
@@ -1568,7 +1576,7 @@ mod tests {
     /// The live `(body_rows, guard_rows)` counts at the current phase boundary. Every
     /// `phase_*_removed_rows...` test reads this, so a phase that removes a row edits the live
     /// count in exactly one place instead of five copies.
-    const LIVE_REFUSAL_ROW_COUNTS: (usize, usize) = (3, 5);
+    const LIVE_REFUSAL_ROW_COUNTS: (usize, usize) = (2, 4);
 
     fn assert_removed_rows_are_ungated(phase: &str, rows: &[(&str, &str)]) {
         let (expected_body_rows, expected_guard_rows) = LIVE_REFUSAL_ROW_COUNTS;
@@ -1707,6 +1715,53 @@ mod tests {
         let body = compact(&source[body]);
         assert!(body.contains("opened_file_identity(temp)"));
         assert!(!body.contains("Path::new"));
+    }
+
+    /// Phase 2 (d-20260918-09). Windows executable mode is a checked no-op, so it is no longer a
+    /// remaining-refusal `body_rows` row (R2-01) and this source pin holds the counterpart that
+    /// replaced it: the Windows arm must still check EngineInstall and that a file is present, then
+    /// return `Ok(())`. Dropping either check, or restoring a platform refusal, reddens this test
+    /// on Linux. The `#[cfg(windows)]` runtime half lives in `resolved.rs`, where a `ResolvedPath`
+    /// can be constructed.
+    #[test]
+    fn mark_engine_executable_windows_is_a_checked_noop() {
+        let source = source_for("infra/path_authority/resolved.rs");
+        let starts = function_starts(source, "pub(crate) fn mark_engine_executable(");
+        let counterparts = starts
+            .iter()
+            .copied()
+            .filter(|start| direct_attribute(source, *start, "#[cfg(not(unix))]"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            counterparts.len(),
+            1,
+            "expected exactly one non-unix mark_engine_executable"
+        );
+        let body = compact(&source[body_at(source, counterparts[0])]);
+        assert!(
+            body.contains("self.operation!=PathOperation::EngineInstall"),
+            "the Windows no-op must still check the operation: {body}"
+        );
+        assert!(
+            body.contains(
+                r#"self.file.as_ref().ok_or_else(||Error::InvalidInput("engine target is a directory".into()))?"#
+            ),
+            "the Windows no-op must still check that a file is present: {body}"
+        );
+        assert!(body.contains("Ok(())"), "{body}");
+        assert!(!body.contains("unsupported"), "{body}");
+        assert!(!body.contains("off_unix_refusal"), "{body}");
+    }
+
+    /// R2-03. The command worker must not re-acquire the off-unix refusal now that the Windows
+    /// counterpart is a no-op. Cfg-free, so a re-inserted `off_unix_refusal` in
+    /// `set_file_as_executable_blocking` reddens the Linux run.
+    #[test]
+    fn set_file_as_executable_blocking_has_no_off_unix_refusal() {
+        let source = source_for("fs.rs");
+        let body = compact(&source[braced_body(source, "fn set_file_as_executable_blocking(")]);
+        assert!(!body.contains("off_unix_refusal"), "{body}");
+        assert!(body.contains(".mark_engine_executable()"), "{body}");
     }
 
     fn source_for(file: &str) -> &'static str {
@@ -1991,6 +2046,10 @@ mod tests {
     }
 
     enum ExpectedBody {
+        /// No remaining refusal row is a bare counterpart after Phase 2 ported
+        /// `mark_engine_executable` (d-20260918-09, R2-01). The variant stays so the verifier
+        /// keeps matching the plan's row forms, and is revived by any future refusal row.
+        #[allow(dead_code)]
         Refusal(&'static str),
         Exact(&'static str),
     }
@@ -2008,6 +2067,8 @@ mod tests {
 
     #[derive(Clone, Copy)]
     enum BodyForm {
+        /// See `ExpectedBody::Refusal`: the last counterpart row was deleted in Phase 2.
+        #[allow(dead_code)]
         Counterpart,
         Block,
     }
@@ -2036,12 +2097,6 @@ mod tests {
                 expected: ExpectedBody::Exact(
                     r#"{ifself.operation!=PathOperation::DownloadArchive{returnErr(Error::InvalidInput("resolved capability is not an archive destination".into(),));}lettarget=self.target.as_deref().ok_or_else(||{Error::InvalidInput("archive destination is a directory capability".into())})?;let_=(target,temporary_directory);Err(crate::infra::platform_support::unsupported("atomic archive installation",))}"#,
                 ),
-            },
-            BodyRow {
-                file: "infra/path_authority/resolved.rs",
-                signature: "pub(crate) fn mark_engine_executable(",
-                form: BodyForm::Counterpart,
-                expected: ExpectedBody::Refusal("engine executable mode"),
             },
         ]
     }
@@ -2158,13 +2213,6 @@ mod tests {
                 signature: "pub async fn migrate_legacy_lichess_token(",
                 operation: "legacy Lichess token migration",
                 effects: &["ProdOAuthServices::new("],
-                nested: false,
-            },
-            GuardRow {
-                file: "fs.rs",
-                signature: "fn set_file_as_executable_blocking(",
-                operation: "engine executable mode",
-                effects: &[".lock("],
                 nested: false,
             },
             GuardRow {
@@ -2641,11 +2689,6 @@ mod tests {
             (
                 "infra/path_authority/resolved.rs",
                 "atomic archive installation",
-                "unsupported",
-            ),
-            (
-                "infra/path_authority/resolved.rs",
-                "engine executable mode",
                 "unsupported",
             ),
         ];
