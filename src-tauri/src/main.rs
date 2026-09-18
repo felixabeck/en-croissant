@@ -586,7 +586,9 @@ impl SearchCache {
         }
     }
 
-    #[cfg(test)]
+    // Callers live in `#[cfg(all(test, unix))]` modules. A Windows test
+    // build otherwise trips `dead_code` under rust-platform clippy.
+    #[cfg(all(test, unix))]
     pub(crate) fn get_index(&self, identity: &SearchIndexIdentity) -> Option<MmapSearchIndex> {
         self.indexes
             .lock()

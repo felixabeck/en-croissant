@@ -2258,7 +2258,7 @@ pub(crate) enum AppOwnedDefaultRoot {
 }
 
 impl AppOwnedDefaultRoot {
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) const ALL: &[Self] = &[
         Self::Databases,
         Self::Engines,
@@ -2310,7 +2310,7 @@ pub(crate) struct AppDataDir {
     directory: fs::File,
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 std::thread_local! {
     static APP_DATA_PRE_OPEN_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
@@ -2318,7 +2318,7 @@ std::thread_local! {
 
 /// Runs once in the next [`AppDataDir`] construction, after the existing prefix was canonicalised
 /// and its identity read and before that prefix is opened against the identity.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn set_app_data_pre_open_hook(hook: Option<Box<dyn FnOnce()>>) {
     APP_DATA_PRE_OPEN_HOOK.with(|slot| *slot.borrow_mut() = hook);
 }
@@ -2385,7 +2385,7 @@ impl AppDataDir {
         // they are followed exactly once, here, and never again after the descriptor is held.
         let mut path = fs::canonicalize(&prefix)?;
         let id = identity(&path)?;
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         if let Some(hook) = APP_DATA_PRE_OPEN_HOOK.with(|slot| slot.borrow_mut().take()) {
             hook();
         }
