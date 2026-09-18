@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+    bundledEngineImagePath,
     defaultEngineManifestSchema,
     defaultEngineProgressId,
     engineSchema,
@@ -25,8 +26,12 @@ function parseManifestPath(path: string) {
     return defaultEngineManifestSchema.safeParse({ ...manifestEntry, path });
 }
 
-function parseManifestImage(image: string) {
-    return defaultEngineManifestSchema.safeParse({ ...manifestEntry, path: "stockfish", image });
+function parseManifestPortrait(field: "image" | "imageUrl", value: string) {
+    return defaultEngineManifestSchema.safeParse({
+        ...manifestEntry,
+        path: "stockfish",
+        [field]: value,
+    });
 }
 
 describe("default engine manifest paths", () => {
@@ -63,12 +68,24 @@ describe("default engine manifest paths", () => {
 
     it("accepts only bundled same-origin engine portraits", () => {
         const accepted = ["/engines/stockfish.png", "/engines/lc0.svg"];
-        expect(accepted.map((image) => [image, parseManifestImage(image).success])).toStrictEqual(
-            accepted.map((image) => [image, true]),
+        expect(
+            accepted.flatMap((image) =>
+                (["image", "imageUrl"] as const).map((field) => [
+                    `${field}:${image}`,
+                    parseManifestPortrait(field, image).success,
+                ]),
+            ),
+        ).toStrictEqual(
+            accepted.flatMap((image) =>
+                (["image", "imageUrl"] as const).map((field) => [`${field}:${image}`, true]),
+            ),
+        );
+        expect(accepted.every((image) => bundledEngineImagePath.safeParse(image).success)).toBe(
+            true,
         );
     });
 
-    it("rejects remote and traversal portrait URLs", () => {
+    it("rejects remote and traversal portrait URLs on both catalog fields", () => {
         const rejected = [
             "https://upload.wikimedia.org/wikipedia/commons/3/3a/NewLogoSF.png",
             "https://images.chesscomfiles.com/chess-themes/computer_chess_championship/avatars/lrg_rubi.png",
@@ -77,8 +94,17 @@ describe("default engine manifest paths", () => {
             "/engines/../logo.png",
             "engines/stockfish.png",
         ];
-        expect(rejected.map((image) => [image, parseManifestImage(image).success])).toStrictEqual(
-            rejected.map((image) => [image, false]),
+        expect(
+            rejected.flatMap((image) =>
+                (["image", "imageUrl"] as const).map((field) => [
+                    `${field}:${image}`,
+                    parseManifestPortrait(field, image).success,
+                ]),
+            ),
+        ).toStrictEqual(
+            rejected.flatMap((image) =>
+                (["image", "imageUrl"] as const).map((field) => [`${field}:${image}`, false]),
+            ),
         );
     });
 });

@@ -32,6 +32,7 @@ import { TauriCommandError } from "@/platform/tauri";
 import engineCatalogDocument from "@/catalogs/engines.json?raw";
 import engineCatalogSignature from "@/catalogs/engines.json.minisig?raw";
 import {
+    bundledEngineImagePath,
     EngineCatalogVerificationError,
     loadDefaultEngineCatalog,
     useDefaultEngines,
@@ -44,6 +45,12 @@ import {
     stopEngine,
     type DefaultEngine,
 } from "./engines";
+
+const bundledPortraitUrls = new Set(
+    Object.keys(import.meta.glob("../../public/engines/*", { eager: true })).map(
+        (path) => `/engines/${path.split("/").at(-1)}`,
+    ),
+);
 
 const engine = {
     type: "local" as const,
@@ -159,6 +166,8 @@ describe("engine registration recovery", () => {
             sha256: "a".repeat(64),
             signature: "sig",
             downloadLink: "https://example.com/engines/stockfish.zip",
+            os: "linux",
+            bmi2: true,
         };
         native.getEngineWorkspace.mockResolvedValue(root);
         native.engineArchiveDestination.mockResolvedValue({ id: "dest" });
@@ -212,12 +221,15 @@ describe("bundled default-engine catalog", () => {
         expect(engines.length).toBeGreaterThan(0);
         expect(engines.every((entry) => entry.type === "local")).toBe(true);
         expect(
-            engines.every(
-                (entry) =>
-                    entry.imageUrl === undefined ||
-                    /^\/engines\/[A-Za-z0-9._-]+\.(png|svg|jpe?g|webp)$/.test(entry.imageUrl),
-            ),
-        ).toBe(true);
+            engines.map((entry) => {
+                const portrait = entry.imageUrl;
+                return [
+                    portrait,
+                    bundledEngineImagePath.safeParse(portrait).success,
+                    portrait !== undefined && bundledPortraitUrls.has(portrait),
+                ];
+            }),
+        ).toStrictEqual(engines.map((entry) => [entry.imageUrl, true, true]));
     });
 
     it("reports a failed document signature as a distinct error without parsing", async () => {
@@ -261,13 +273,9 @@ describe("bundled default-engine catalog", () => {
         const { defaultEngines, error } = await renderDefaultEngines();
         expect(error).toBeUndefined();
         expect(defaultEngines?.length).toBeGreaterThan(0);
-        expect(
-            defaultEngines?.every(
-                (entry) =>
-                    (entry as typeof entry & { os: string; bmi2: boolean }).os === "linux" &&
-                    (entry as typeof entry & { os: string; bmi2: boolean }).bmi2 === true,
-            ),
-        ).toBe(true);
+        expect(defaultEngines?.every((entry) => entry.os === "linux" && entry.bmi2 === true)).toBe(
+            true,
+        );
         expect(remote.get).not.toHaveBeenCalled();
         expect(fetchSpy).not.toHaveBeenCalled();
         fetchSpy.mockRestore();

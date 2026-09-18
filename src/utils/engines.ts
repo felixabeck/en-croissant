@@ -149,15 +149,7 @@ export async function registerInstalledEngineHandle(
     );
 }
 
-/** Server manifest entry used only during installation; it is never persisted as an engine. */
-export type DefaultEngine = Omit<LocalEngine, "handle" | "filename"> & {
-    path: string;
-    sha256: string;
-    signature: string;
-    imageUrl?: string;
-};
-
-const bundledEngineImagePath = z
+export const bundledEngineImagePath = z
     .string()
     .regex(/^\/engines\/[A-Za-z0-9._-]+\.(png|svg|jpe?g|webp)$/);
 
@@ -190,8 +182,8 @@ export const defaultEngineManifestSchema = z
         downloadLink: z.string().url(),
         sha256: z.string().regex(/^[a-fA-F0-9]{64}$/),
         signature: z.string().min(1),
-        // Catalog portraits are bundled under public/engines/; remote URLs are rejected so
-        // display cannot fetch Wikimedia, Chess.com, or other hosts (CSP img-src is 'self').
+        // Catalog portraits are bundled under public/engines/. Remote URLs are rejected so
+        // display cannot fetch extra hosts and CSP img-src does not need widening.
         image: bundledEngineImagePath.optional(),
         imageUrl: bundledEngineImagePath.optional(),
         os: z.enum([
@@ -209,6 +201,16 @@ export const defaultEngineManifestSchema = z
         bmi2: z.boolean(),
     })
     .passthrough();
+
+/** Server manifest entry used only during installation; it is never persisted as an engine. */
+export type DefaultEngine = Omit<LocalEngine, "handle" | "filename"> & {
+    path: string;
+    sha256: string;
+    signature: string;
+    imageUrl?: string;
+    os: z.infer<typeof defaultEngineManifestSchema>["os"];
+    bmi2: boolean;
+};
 
 const remoteEngineSchema = z.object({
     type: z.enum(["chessdb", "lichess"]),
@@ -282,9 +284,8 @@ export async function loadDefaultEngineCatalog(
     try {
         await tauri.verifySignedBytes(document, signature);
     } catch (error) {
-        const wrapped = new EngineCatalogVerificationError(error);
         warn(`Engine catalog signature verification failed: ${String(error)}`);
-        throw wrapped;
+        throw new EngineCatalogVerificationError(error);
     }
     // Parse only after the backend verified the exact bytes.
     const parsed = z.array(defaultEngineManifestSchema).parse(JSON.parse(document));
@@ -298,10 +299,7 @@ export function useDefaultEngines(os: Platform | undefined, opened: boolean) {
     const { data, error, isLoading } = useSWR(opened ? os : null, async (os: Platform) => {
         const bmi2: boolean = await tauri.isBmi2Compatible();
         const engines = await loadDefaultEngineCatalog();
-        return engines.filter((engine) => {
-            const entry = engine as DefaultEngine & { os: string; bmi2: boolean };
-            return entry.os === os && entry.bmi2 === bmi2;
-        });
+        return engines.filter((engine) => engine.os === os && engine.bmi2 === bmi2);
     });
     return {
         defaultEngines: data,
