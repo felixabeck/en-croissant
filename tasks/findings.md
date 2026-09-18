@@ -8715,6 +8715,20 @@ Related: `f-20260914-07` added the Windows job (`rust-windows-test`, commit `56e
 visible in the first place.
 <!-- ledger-meta {"command":"annotate","effect_lines":11,"effect_sha256":"43b0e01b213be4327776ed81cd1445aa52cebd5cb93dfa5070c3646bea647534","input_sha256":"221d22f63c1340849b86bb5c3f44e04e07c1465d438874f0a07cd4df58b44d81","kind":"mutation-receipt","operation":"5d90335b148df6bc3ac0e0bd8487391ed1ede6be4b500bf5f68b5633d334952c","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-11"],"target":"f-20260914-11","v":1} -->
 
+Handled 2026-09-18 (Windows startup-registry build run). Startup no longer refuses at
+ensure_app_owned_default_dir, authorize_existing_dir, open_regular_relative or
+remove_leaf_identified. App-owned roots and the credential registry persist through the
+already-ported atomic-replace path. Junction leaves are Error::Io with inner text
+"reparse point". create_dir_all stays; f-20260905-10 remains open. The 18 ignore attributes
+are gone. Decisions d-20260918-04 (persistence path, not degraded mode), d-20260918-05
+(keep create_dir_all), d-20260918-06 (port remove_leaf_identified), and the count
+supersession of d-20260917-06. Review record: tasks/handoffs/2026-09-18-f-20260914-11-review.md.
+Code 6abf3956, 1a1d39ed plus the decision commits. Proof: cargo test --bins platform_support
+(47 ok), ensure_app_owned_default_dir (6 ok), public_registry_survives_restart (ok);
+zero f-20260914-11 markers in src-tauri/src. Windows runtime is rust-windows-test; MinGW
+absent here.
+<!-- ledger-meta {"command":"annotate","effect_lines":12,"effect_sha256":"22f466115a683068b97706c4c04498c861fc0a92cc03c56600c7980e6af70bcc","input_sha256":"feb3d74171ab03c9974d46403f80b167d00feff59f974d50efd662af4281b127","kind":"mutation-receipt","operation":"e5bc05671ca2ad418f7bec32905f0ac9df0b65cb2984eec0c58855fefd8a0432","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-11"],"target":"f-20260914-11","v":1} -->
+
 ### Windows engine directory resources, archive install and executable mode are refused
 
 * **ID:** f-20260914-12 · **Status:** open · **Area:** engine-uci · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
