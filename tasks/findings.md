@@ -8971,6 +8971,43 @@ visible in the first place.
 * **Annotated 2026-09-14 (f-20260914-33 plan review, round 3; status stays open):** two use-time doors are the same class and belong to this finding's design. (1) `database_file_target` (`src-tauri/src/infra/path_authority/mod.rs` ~`:3990`) compares only the re-acquired identity with the stored one, not the canonical path: after `real/x.db3` is stored, replacing `real` with `real -> moved` lets it mint a carrier bound to `moved/x.db3` (same inode) — review-correctness, confidence 98, issue R3-05. (2) `workspace_root` (~`:4584`, used by `set_active_database_root` / puzzle / engine) validates the stored root with ancestor-following `validate_target`, so an ancestor swapped between acquisition and activation still commits the active root, which the next no-follow `resolve` refuses — review-root-cause, confidence 97, issue R3-06. Enforcing path equality at use time would refuse legacy entries persisted under a symlinked-ancestor spelling that work today, so the choice (rebind at load, then enforce equality at use) is this finding's open question, not f-20260914-33's. Plan-review record: `tasks/handoffs/2026-09-14-f-20260914-33-review.md`.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"cb53c1cd56619f399c41c08541df23d5f0061af55fec32f2b2929b714ccff588","input_sha256":"5278733684530f72e3ad62c82352d6064af5a21c3e613a954ba56bd14f8e7046","kind":"mutation-receipt","operation":"df5267bb6176eb5ea17e18ffbf88ff96a6942536493efb36b15201938c9c11af","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-36"],"target":"f-20260914-36","v":1} -->
 
+* **Handled 2026-09-18.** `refresh_entry` now decides availability on the canonical spelling, and a
+  post-construction pass (`rebind_legacy_spellings`) re-proves every non-exempt legacy entry through
+  the existing `acquire_target` primitive, adopts the canonical spelling in memory and commits once.
+  A refusal leaves the entry `Unavailable` with its stored spelling and one `log::warn!` naming the
+  entry, and never fails startup; a hard commit failure keeps the in-memory rebinding, which the next
+  ordinary commit flushes. `recover_pending_artifacts`, which runs immediately after, now skips and
+  logs an undecodable stored path instead of propagating it. Entries whose spelling is deliberately
+  raw are exempt — the six `AppOwnedDefaultRoot` directories under the `AppDataDir` and anything
+  below them, plus `PathClass::AppOwnedRoot` — because `get_or_create_root` (`mod.rs:4790-4806`) and
+  `cleanup_engine_images` (`:6060`) compare those spellings lexically; a path carrying a `ParentDir`
+  component is never exempt. The app-data context reaches the authority through `open_for_app`,
+  because the load loop refreshes every entry before `open` returns; the existing constructors are
+  unchanged.
+* **Commits:** `93f6acf3` (the change), `cbd2df92` (the launch-root argument on every target),
+  `1d1404d7` (diff review round 1), `72db1ac0` (two stale doc references).
+* **Split out, with the measurement that forced it:** path equality at `database_file_target`
+  (R3-05) and `workspace_root` (R3-06) were approaches B and C of this plan through round 3 and are
+  now `f-20260917-13`, blocked on `f-20260905-10`. Three rounds measured that enforcing equality
+  unconditionally refuses a database child registered in the same session, while exempting the
+  app-owned subtree stops `database_file_target` enforcing it for exactly the entries R3-05 is
+  about. Also filed: `f-20260917-12` (an unavailable persisted active root is indistinguishable from
+  none, so the app silently substitutes a fresh default workspace).
+* **Rejected alternatives, each on a measurement:** a stored `descriptor_bound` flag (incomplete —
+  `register_database_child` builds a `StoredEntry` directly at `mod.rs:5513`, and no flag can
+  classify entries written before it existed); containment in a `PathClass::AppOwnedRoot` entry
+  (vacuous in production — `main.rs` passes `vec![]` and `AppOwnedRoot::new` is `#[cfg(test)]`);
+  `starts_with(AppDataDir)` alone (the pickers accept arbitrary paths inside that tree); a
+  `SCHEMA_VERSION` bump; and no exemption at all.
+* **Known residual, owned by `f-20260905-10`:** a user can pick a folder or file inside one of the
+  six app-owned directories and is then exempted with the application's own entries. It is not
+  distinguishable by pathname, and separating it means giving up the lexical reuse above.
+* **Review:** 13 plan-review rounds (all seven lenses APPROVED) and 2 cumulative-diff rounds
+  (eight lenses, all APPROVED). Record: `tasks/handoffs/2026-09-17-f-20260914-36-review.md`.
+  Windows criterion 14 compiles only under `cfg(windows)`; its runtime evidence is the CI
+  `rust-windows-test` job.
+<!-- ledger-meta {"command":"annotate","effect_lines":35,"effect_sha256":"cd67f3e0033fa8be2ab3de14b63518d8feefcf9580fa90f0fc762ac21b72b9dd","input_sha256":"a374af2e4deed0ec3d316f083104418bac042d1a2a9f61a1f49b445546d953a2","kind":"mutation-receipt","operation":"f37899d03190488bfe3aa9551df8b64d1ff3671ff4d109b9271a795d577259d7","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-36"],"target":"f-20260914-36","v":1} -->
+
 ---
 
 ## 2026-09-14 — filed through the inbox spool
