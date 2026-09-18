@@ -8739,6 +8739,15 @@ absent here.
 * **Related:** `f-20260830-06` (parent), the handoff above, and the Windows atomic-replacement finding filed alongside (archive install depends on it).
 * **Found by:** `f-20260830-06` slice-1 plan review (review-plan, review-root-cause, review-tauri-security, review-error-handling), 2026-09-14.
 
+Windows directory engine resources, archive install, and executable mode
+now have real bodies. Directory leases carry the no-follow handle plus the
+computed target. Executable mode is a checked no-op. Archives install
+through install_dir_driver (unix EXCHANGE, Windows backup-rename) and
+download_engine_archive stages as a sibling of the destination.
+Decisions d-20260918-08..11. Review: tasks/handoffs/2026-09-18-f-20260914-12-review.md.
+Code b7f52cd4, 285a96d4, 8d8e4274, 25636945. Windows runtime is rust-windows-test.
+<!-- ledger-meta {"command":"annotate","effect_lines":7,"effect_sha256":"be8bb9290076da720bc18c82e2ef3efbc91b7dd4e1e0cdef6b4a3574610c6c01","input_sha256":"8d8dad20b29b444068ac27a215a257c026b9cdf7c8ca404cf79a408900cb79f9","kind":"mutation-receipt","operation":"13c561d049bcebf1c6c7fa10f4ce5ffd00954b4b473ff637d87101af01891736","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-12"],"target":"f-20260914-12","v":1} -->
+
 ### The non-Linux sound route keeps a separate asset-protocol path whose unification waited on the platform decision
 
 * **ID:** f-20260914-13 · **Status:** open · **Area:** native-fs · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
