@@ -8960,7 +8960,7 @@ visible in the first place.
 
 ### Path-authority entries already persisted under a symlinked-ancestor spelling stay unusable for descriptor-relative operations
 
-* **ID:** f-20260914-36 · **Status:** open · **Area:** native-fs · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
+* **ID:** f-20260914-36 · **Status:** handled · **Area:** native-fs · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/infra/path_authority/mod.rs` registry load (`PathAuthority::open_with_clock`, the `for mut stored in registry.entries` loop near `:2458-2520`) and `refresh_entry` (`:5844`), which deserialise and validate a stored `NativePath` verbatim with the ancestor-following `validate_target`; the refusing use-time walks are `infra/fs.rs` `open_verified_parent` / `open_verified_directory` (via `workspace_mutation_target`, atomic replacement).
 * **Defect:** the fix for `f-20260914-33` binds newly acquired pathnames to their canonical parent, but an entry persisted before that fix (a PGN workspace, PGN file, download destination or engine resource selected through `/tmp`, `/var` or a symlinked home) keeps its symlinked-ancestor spelling. `refresh_entry` still marks it `Available`, while every descriptor-relative mutation refuses it with `Io(NotADirectory)`; re-selecting the same object creates a second entry beside it because the reuse lookups compare spellings lexically.
 * **Why it matters:** the user sees an available workspace that cannot be written; Windows/macOS/Linux porting (`f-20260830-06`, Felix 2026-09-12) makes symlinked system directories an ordinary selection.
