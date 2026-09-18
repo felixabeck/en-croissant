@@ -283,8 +283,7 @@ export async function loadDefaultEngineCatalog(
     const parsed = z.array(defaultEngineManifestSchema).parse(JSON.parse(document));
     return parsed.map((engine) => {
         const image = (engine as { image?: unknown }).image;
-        const imageUrl =
-            engine.imageUrl ?? (typeof image === "string" ? image : undefined);
+        const imageUrl = engine.imageUrl ?? (typeof image === "string" ? image : undefined);
         return (imageUrl ? { ...engine, imageUrl } : engine) as unknown as DefaultEngine;
     });
 }

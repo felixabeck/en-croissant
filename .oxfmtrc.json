@@ -5,6 +5,7 @@
     "public/**/*",
     "src-tauri/**/*",
     ".github/**/*",
+    "src/catalogs/**/*",
     "src/bindings/generated.ts",
     "src/routeTree.gen.ts",
     "bunfig.toml"
