@@ -8694,7 +8694,7 @@ remain open under the same root.
 
 ### Windows startup cannot persist the path-authority and credential registries or create app-owned roots
 
-* **ID:** f-20260914-11 · **Status:** open · **Area:** app-startup · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
+* **ID:** f-20260914-11 · **Status:** handled · **Area:** app-startup · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
 * **Where:** `ensure_app_owned_default_dir` and `authorize_existing_dir` (`src-tauri/src/infra/path_authority/mod.rs` ~`:1625-1660`), `PathAuthority::open` app-root creation (`~:2561`), registry persistence through `atomic_replace`, credential registry initialisation in `src-tauri/src/credentials.rs`.
 * **Defect:** on Windows, authorised directories are refused and registry persistence goes through the refused atomic-replace primitive, so startup reaches typed failures before any feature-level refusal is visible; the application may not start at all.
 * **Why it matters:** Windows is a supported platform (Felix, 2026-09-12, `f-20260830-06`); this is the first thing a Windows user hits.
