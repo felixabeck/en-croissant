@@ -700,6 +700,11 @@ struct EngineRuntime {
     io: Box<dyn UciIo>,
     state: EngineState,
     next_request: u64,
+    /// Set when a search starts and cleared only by a `readyok` read while
+    /// idle. UCI output carries no request id, so a line a finished search
+    /// still emits after its `bestmove` is attributable only by this ready
+    /// barrier: the engine answers `isready` after it, never before.
+    search_output_unsynchronized: bool,
     deadlines: EngineDeadlines,
     logs: BoundedLogs,
     resource_redactions: ResourceRedactions,
@@ -2027,6 +2032,7 @@ impl EngineRuntime {
             io,
             state: EngineState::Idle,
             next_request: 0,
+            search_output_unsynchronized: false,
             deadlines,
             logs: BoundedLogs::default(),
             resource_redactions: ResourceRedactions::default(),
@@ -2162,8 +2168,15 @@ impl EngineRuntime {
     }
 
     pub async fn ensure_ready(&mut self) -> Result<(), Error> {
+        // Only an idle engine's `readyok` closes a search's output: during a
+        // search, lines of that search still follow it.
+        let idle = self.state == EngineState::Idle;
         self.send("isready").await?;
-        self.wait_for("readyok", self.deadlines.readyok).await
+        self.wait_for("readyok", self.deadlines.readyok).await?;
+        if idle {
+            self.search_output_unsynchronized = false;
+        }
+        Ok(())
     }
 
     pub async fn start_uci_configuration(&mut self) -> Result<(), Error> {
@@ -2225,12 +2238,20 @@ impl EngineRuntime {
         ) {
             self.stop_current().await?;
         }
+        // Discard whatever the previous search emitted after its `bestmove`
+        // (a delayed `info`, a duplicate `bestmove`) before `go`, so the new
+        // request id cannot adopt it. `wait_for` drops every line before
+        // `readyok`.
+        if self.search_output_unsynchronized {
+            self.ensure_ready().await?;
+        }
         self.next_request = self
             .next_request
             .checked_add(1)
             .ok_or_else(|| Error::ResourceLimit("engine request generation exhausted".into()))?;
         let id = EngineRequestId(self.next_request);
         self.send(&mode.to_uci_string()?).await?;
+        self.search_output_unsynchronized = true;
         self.state = EngineState::Searching { request_id: id };
         Ok(id)
     }
@@ -3963,13 +3984,86 @@ mod tests {
 
     #[tokio::test]
     async fn replacement_waits_for_old_bestmove_before_go() {
-        let (actor, writes) = actor(&["bestmove e2e4"]);
+        let (actor, writes) = actor(&["bestmove e2e4", "readyok"]);
         let first = actor.start_search(&GoMode::Depth(1)).await.unwrap();
         let second = actor.start_search(&GoMode::Depth(2)).await.unwrap();
         assert_ne!(first, second);
         assert_eq!(
             *writes.lock().await,
-            vec!["go depth 1", "stop", "go depth 2"]
+            vec!["go depth 1", "stop", "isready", "go depth 2"]
+        );
+    }
+
+    #[tokio::test]
+    async fn trailing_output_of_a_finished_search_is_not_the_next_searchs_result() {
+        let (actor, writes) = actor(&[
+            "bestmove e2e4",
+            // Emitted by the first search after its `bestmove`, still unread
+            // when the second search starts.
+            "info depth 9 score cp 12 pv h2h4",
+            "bestmove h2h4",
+            "readyok",
+            "bestmove d2d4",
+        ]);
+        let first = actor.start_search(&GoMode::Depth(1)).await.unwrap();
+        assert_eq!(
+            actor.next_search_line(first).await.unwrap(),
+            Some("bestmove e2e4".into())
+        );
+
+        let second = actor.start_search(&GoMode::Depth(2)).await.unwrap();
+        assert_eq!(
+            actor.next_search_line(second).await.unwrap(),
+            Some("bestmove d2d4".into())
+        );
+        assert_eq!(
+            *writes.lock().await,
+            vec!["go depth 1", "isready", "go depth 2"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_ready_barrier_during_a_search_does_not_close_its_output() {
+        let (actor, writes) = actor(&[
+            "readyok",
+            "bestmove e2e4",
+            "bestmove h2h4",
+            "readyok",
+            "bestmove d2d4",
+        ]);
+        actor.start_search(&GoMode::Depth(1)).await.unwrap();
+        actor.ensure_ready().await.unwrap();
+
+        let second = actor.start_search(&GoMode::Depth(2)).await.unwrap();
+        assert_eq!(
+            actor.next_search_line(second).await.unwrap(),
+            Some("bestmove d2d4".into())
+        );
+        assert_eq!(
+            *writes.lock().await,
+            vec!["go depth 1", "isready", "stop", "isready", "go depth 2"]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_idle_ready_barrier_before_go_is_not_repeated() {
+        let (actor, writes) =
+            actor(&["bestmove e2e4", "bestmove h2h4", "readyok", "bestmove d2d4"]);
+        let first = actor.start_search(&GoMode::Depth(1)).await.unwrap();
+        assert_eq!(
+            actor.next_search_line(first).await.unwrap(),
+            Some("bestmove e2e4".into())
+        );
+
+        actor.ensure_ready().await.unwrap();
+        let second = actor.start_search(&GoMode::Depth(2)).await.unwrap();
+        assert_eq!(
+            actor.next_search_line(second).await.unwrap(),
+            Some("bestmove d2d4".into())
+        );
+        assert_eq!(
+            *writes.lock().await,
+            vec!["go depth 1", "isready", "go depth 2"]
         );
     }
     #[tokio::test]
@@ -4285,7 +4379,9 @@ mod tests {
     async fn cancellation_during_a_pending_search_read_stops_and_allows_a_new_search() {
         let read_started = Arc::new(AtomicBool::new(false));
         let (actor, writes) = delayed_search_actor(
-            &["bestmove e2e4", "bestmove d2d4"],
+            // `bestmove d2d4` is a duplicate the first search emits after
+            // the one `stop` drained; the ready barrier must discard it.
+            &["bestmove e2e4", "bestmove d2d4", "readyok", "bestmove g1f3"],
             Duration::from_millis(300),
             Some(read_started.clone()),
         );
@@ -4325,11 +4421,11 @@ mod tests {
                 .await
                 .expect("the new search read must complete")
                 .unwrap(),
-            Some("bestmove d2d4".into())
+            Some("bestmove g1f3".into())
         );
         assert_eq!(
             *writes.lock().await,
-            vec!["go depth 1", "stop", "go depth 2"]
+            vec!["go depth 1", "stop", "isready", "go depth 2"]
         );
         actor.terminate().await.unwrap();
     }
