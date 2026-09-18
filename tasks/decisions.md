@@ -3352,3 +3352,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** the only exit that survives both arms is making the app-owned tree canonical at its source, which is `f-20260905-10`'s subject (`ensure_app_owned_default_dir` still creates by pathname) and not this slice's to own. Measured in rounds 2 and 3 of the plan review by review-correctness (97, 98, 96), review-root-cause (96) and review-tauri-security (96).
 * **Decided by:** Claude Code, autonomously under `full auto` · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"77363fd784c3afb1196ac9b7265c53ca1735d89aa32284962b6cf548d86eb604","input_sha256":"ee12b237586d480899695f015a83467f8ece1162435dbe14a44c4bc66e989b7c","kind":"mutation-receipt","operation":"fce51b8ed810fb86ea49bff4db596d6840bdf31e5155ca2c4fd8bffbf29bbfc0","options":{"section":null},"request_id_sha256":null,"results":["d-20260918-01","d-20260918-02","d-20260918-03"],"target":"decisions-ledger","v":1} -->
+
+### d-20260918-04 — Is Windows startup degraded-mode, or do the registries get a Windows persistence path?
+
+* **Question:** Is Windows startup degraded-mode (skip unported registries) or do the registries get a Windows persistence path?
+* **Governs:** f-20260914-11
+* **Chosen:** persistence path. After f-20260914-10, atomic replacement is already ported; remaining work is directory authorization, fd-relative open, and fd-relative removal needed to un-ignore the 18th test.
+* **Rejected:** degraded mode in which the app starts without a credential store or path-authority registry.
+* **Reason:** Felix, 2026-09-12: Windows is a supported platform (f-20260830-06). Locate on 2026-09-18 showed the filed atomic-replace clause is stale. Reversal: Felix says the Windows build may boot without native credentials.
+* **Decided by:** Grok, autonomously under `full auto`, next-finding f-20260914-11 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"4efce83bcfde8dbd149ec0be0e8178f68a8abd304a54a80faa5621063e8718b9","input_sha256":"3832130c4a87482f139ff6226a2d46ee4fb61e65428dbfeda0ec287c772395ac","kind":"mutation-receipt","operation":"352065b87e0306b37efbbc33e3efff1ea4b065db01535c966d9fb785a3a68c76","options":{"section":null},"request_id_sha256":null,"results":["d-20260918-04"],"target":"decisions-ledger","v":1} -->
