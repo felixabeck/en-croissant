@@ -33,7 +33,8 @@
     "resources": {
       "../sound/": "sound/"
     },
-    "targets": "all"
+    "targets": "all",
+    "createUpdaterArtifacts": true
   },
   "build": {
     "beforeDevCommand": "pnpm start-vite",
@@ -45,6 +46,12 @@
   "mainBinaryName": "chessfable",
   "identifier": "com.chessriddle.encroissant",
   "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhFQ0Q5NDAzRUE3Qjc4RUMKUldUc2VIdnFBNVROam9xMGl6SjY4UDNaQTJyeE9MY2k5SkY0N25mZVNXNHJxcnpQRW9wWmhMQjcK",
+      "endpoints": [
+        "https://github.com/felixabeck/en-croissant/releases/latest/download/latest.json"
+      ]
+    },
     "cli": {
       "args": [
         {

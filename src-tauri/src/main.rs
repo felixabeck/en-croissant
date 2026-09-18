@@ -2405,6 +2405,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_os::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(move |app| {
             log::info!("Setting up application");
             // A debug build that carries the release identifier writes the installed release's

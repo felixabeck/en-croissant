@@ -1,7 +1,17 @@
 import { localStorageColorSchemeManager, MantineProvider } from "@mantine/core";
-import { Notifications } from "@mantine/notifications";
+import { Notifications, notifications } from "@mantine/notifications";
 import { createRouter, RouterProvider } from "@tanstack/react-router";
-import { getMatches, getVersion, info, warn } from "@/platform/native";
+import i18n from "@/i18n";
+import {
+  ask,
+  check,
+  getMatches,
+  getVersion,
+  info,
+  relaunch,
+  type Update,
+  warn,
+} from "@/platform/native";
 import { getDefaultStore, useAtomValue } from "jotai";
 import { ContextMenuProvider } from "mantine-contextmenu";
 import { useEffect, useMemo, useRef } from "react";
@@ -72,6 +82,60 @@ const preloadReferenceDb = async (
   }
 };
 
+/** Upper bound for the startup update check; a slow or unreachable endpoint must not linger. */
+export const UPDATE_CHECK_TIMEOUT_MS = 15_000;
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`timed out after ${timeoutMs} ms`)), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+async function installUpdate(update: Update, signal: AbortSignal) {
+  const accepted = await ask(i18n.t("Updater.Available", { version: update.version }), {
+    title: i18n.t("Updater.Title"),
+    kind: "info",
+  });
+  if (!accepted || signal.aborted) return;
+  try {
+    await update.downloadAndInstall();
+  } catch (e) {
+    if (signal.aborted) return;
+    warn(`Failed to install update ${update.version}: ${e}`);
+    notifications.show({
+      color: "red",
+      title: i18n.t("Updater.InstallFailed"),
+      message: String(e),
+    });
+    return;
+  }
+  // The plugin API takes no AbortSignal, so an install that settles after unmount is only
+  // prevented from relaunching; the transfer itself is not cancelled.
+  if (signal.aborted) return;
+  await relaunch();
+}
+
+/** Runs after the splash is closed and never blocks it; every failure ends in `warn`. */
+async function checkForAppUpdate(signal: AbortSignal) {
+  let update: Update | null;
+  try {
+    update = await withTimeout(check(), UPDATE_CHECK_TIMEOUT_MS);
+  } catch (e) {
+    if (!signal.aborted) warn(`Update check failed: ${e}`);
+    return;
+  }
+  if (!update) return;
+  try {
+    if (!signal.aborted) await installUpdate(update, signal);
+  } catch (e) {
+    if (!signal.aborted) warn(`Update failed: ${e}`);
+  } finally {
+    void update.close().catch((e) => warn(`Failed to release update handle: ${e}`));
+  }
+}
+
 export function useAppStartup() {
   const initialized = useRef(false);
   useEffect(() => {
@@ -117,9 +181,11 @@ export function useAppStartup() {
       }
     };
 
-    void startupSequence().catch((startupError) =>
-      warn(`Application startup failed: ${String(startupError)}`),
-    );
+    void startupSequence()
+      .catch((startupError) => warn(`Application startup failed: ${String(startupError)}`))
+      .then(() => {
+        if (!signal.aborted) return checkForAppUpdate(signal);
+      });
 
     return () => {
       controller.abort();

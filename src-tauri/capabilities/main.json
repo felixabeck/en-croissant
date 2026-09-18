@@ -28,6 +28,9 @@
         "os:allow-version",
         "cli:allow-cli-matches",
         "process:allow-exit",
+        "process:allow-restart",
+        "updater:allow-check",
+        "updater:allow-download-and-install",
         "log:allow-log"
     ]
 }

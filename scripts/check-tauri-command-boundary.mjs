@@ -30,6 +30,9 @@ export const NATIVE_EXPORT_ALLOWLIST = Object.freeze(
     ["@tauri-apps/plugin-os", "type", "osType"],
     ["@tauri-apps/plugin-os", "version", "OSVersion"],
     ["@tauri-apps/plugin-process", "exit", "exit"],
+    ["@tauri-apps/plugin-process", "relaunch", "relaunch"],
+    ["@tauri-apps/plugin-updater", "check", "check"],
+    ["@tauri-apps/plugin-updater", "Update", "Update"],
   ].map(([specifier, exported, local]) => Object.freeze({ specifier, exported, local })),
 );
 
@@ -41,7 +44,6 @@ export const NATIVE_EXPORT_DENYLIST = Object.freeze(
     { specifier: "@tauri-apps/plugin-fs" },
     { specifier: "@tauri-apps/plugin-http" },
     { specifier: "@tauri-apps/plugin-shell" },
-    { specifier: "@tauri-apps/plugin-updater" },
   ].map(Object.freeze),
 );
 

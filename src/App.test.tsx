@@ -15,6 +15,10 @@ const mocks = vi.hoisted(() => {
   return {
     createAppTheme: vi.fn(() => ({})),
     useAtomValue: vi.fn((_atom: object): unknown => undefined),
+    ask: vi.fn(),
+    check: vi.fn(),
+    relaunch: vi.fn(),
+    showNotification: vi.fn(),
     analytics: {
       capture: vi.fn(),
       enable: vi.fn(),
@@ -41,11 +45,20 @@ const mocks = vi.hoisted(() => {
 });
 
 vi.mock("@/platform/native", () => ({
+  ask: mocks.ask,
   attachConsole: mocks.attachConsole,
+  check: mocks.check,
   getMatches: mocks.getMatches,
   getVersion: mocks.getVersion,
   info: mocks.info,
+  relaunch: mocks.relaunch,
   warn: mocks.warn,
+}));
+vi.mock("@/i18n", () => ({
+  default: {
+    t: (key: string, options?: { version?: string }) =>
+      options?.version ? `${key}:${options.version}` : key,
+  },
 }));
 vi.mock("@/platform/tauri", () => ({
   tauri: {
@@ -72,7 +85,10 @@ vi.mock("@mantine/core", () => ({
   MantineProvider: () => null,
   localStorageColorSchemeManager: vi.fn(() => ({})),
 }));
-vi.mock("@mantine/notifications", () => ({ Notifications: () => null }));
+vi.mock("@mantine/notifications", () => ({
+  Notifications: () => null,
+  notifications: { show: mocks.showNotification },
+}));
 vi.mock("@tanstack/react-router", () => ({
   RouterProvider: () => null,
   createRouter: vi.fn(() => ({})),
@@ -93,7 +109,7 @@ vi.mock("./styles/theme", () => ({
   createAppTheme: mocks.createAppTheme,
 }));
 
-import App, { useAppStartup } from "./App";
+import App, { UPDATE_CHECK_TIMEOUT_MS, useAppStartup } from "./App";
 import { resetEngineOwnerCoordinatorForTests } from "./state/engineOwnerStorage";
 import { resetPathOwnerInitializationForTests } from "./state/pathOwners";
 
@@ -115,7 +131,22 @@ function mockLaunchWithoutCliFile() {
   mocks.getMatches.mockResolvedValue(noCliFileArgs);
 }
 
+/** An available update whose install can be driven by the test. */
+function mockUpdate(downloadAndInstall: () => Promise<void> = () => Promise.resolve()) {
+  const update = {
+    version: "9.9.9",
+    downloadAndInstall: vi.fn(downloadAndInstall),
+    close: vi.fn(() => Promise.resolve()),
+  };
+  mocks.check.mockResolvedValue(update);
+  return update;
+}
+
 beforeEach(() => {
+  mocks.ask.mockReset().mockResolvedValue(false);
+  mocks.check.mockReset().mockResolvedValue(null);
+  mocks.relaunch.mockReset().mockResolvedValue(undefined);
+  mocks.showNotification.mockReset();
   mocks.analytics.capture.mockReset();
   mocks.analytics.enable.mockReset();
   mocks.attachConsole.mockReset();
@@ -161,6 +192,7 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
+  vi.useRealTimers();
 });
 
 describe("useAppStartup", () => {
@@ -393,6 +425,125 @@ describe("useAppStartup", () => {
 
     expect(mocks.attachConsole).not.toHaveBeenCalled();
     expect(mocks.closeSplashscreen).toHaveBeenCalledOnce();
+  });
+});
+
+describe("startup update check", () => {
+  test("shows no dialog when no update is available", async () => {
+    mockLaunchWithoutCliFile();
+
+    await act(async () => root.render(<Probe />));
+
+    expect(mocks.check).toHaveBeenCalledOnce();
+    expect(mocks.ask).not.toHaveBeenCalled();
+    expect(mocks.relaunch).not.toHaveBeenCalled();
+  });
+
+  test("closes the splash before a hanging check reaches its timeout, then warns", async () => {
+    vi.useFakeTimers();
+    mockLaunchWithoutCliFile();
+    mocks.check.mockReturnValue(new Promise(() => undefined));
+
+    await act(async () => root.render(<Probe />));
+
+    expect(mocks.check).toHaveBeenCalledOnce();
+    expect(mocks.closeSplashscreen).toHaveBeenCalledOnce();
+    expect(mocks.warn).not.toHaveBeenCalledWith(expect.stringContaining("Update check failed"));
+
+    await act(async () => vi.advanceTimersByTimeAsync(UPDATE_CHECK_TIMEOUT_MS));
+
+    expect(mocks.warn).toHaveBeenCalledWith(expect.stringContaining("Update check failed"));
+    expect(mocks.ask).not.toHaveBeenCalled();
+  });
+
+  test("warns and continues when the check fails", async () => {
+    mockLaunchWithoutCliFile();
+    mocks.check.mockRejectedValue(new Error("latest.json missing"));
+
+    await act(async () => root.render(<Probe />));
+
+    expect(mocks.warn).toHaveBeenCalledWith(expect.stringContaining("latest.json missing"));
+    expect(mocks.ask).not.toHaveBeenCalled();
+    expect(mocks.closeSplashscreen).toHaveBeenCalledOnce();
+  });
+
+  test("does not download when the user declines", async () => {
+    mockLaunchWithoutCliFile();
+    const update = mockUpdate();
+
+    await act(async () => root.render(<Probe />));
+
+    expect(mocks.ask).toHaveBeenCalledWith("Updater.Available:9.9.9", expect.any(Object));
+    expect(update.downloadAndInstall).not.toHaveBeenCalled();
+    expect(mocks.relaunch).not.toHaveBeenCalled();
+    expect(update.close).toHaveBeenCalledOnce();
+  });
+
+  test("downloads, installs and relaunches when the user accepts", async () => {
+    mockLaunchWithoutCliFile();
+    const update = mockUpdate();
+    mocks.ask.mockResolvedValue(true);
+
+    await act(async () => root.render(<Probe />));
+
+    expect(update.downloadAndInstall).toHaveBeenCalledOnce();
+    expect(mocks.relaunch).toHaveBeenCalledOnce();
+    expect(update.downloadAndInstall.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.relaunch.mock.invocationCallOrder[0],
+    );
+  });
+
+  test("notifies the user and does not relaunch when the install fails", async () => {
+    mockLaunchWithoutCliFile();
+    mockUpdate(() => Promise.reject(new Error("signature mismatch")));
+    mocks.ask.mockResolvedValue(true);
+
+    await act(async () => root.render(<Probe />));
+
+    expect(mocks.showNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Updater.InstallFailed",
+        message: expect.stringContaining("signature mismatch"),
+      }),
+    );
+    expect(mocks.relaunch).not.toHaveBeenCalled();
+  });
+
+  test("does not relaunch when the install settles after unmount", async () => {
+    mockLaunchWithoutCliFile();
+    let finishInstall: () => void = () => undefined;
+    const update = mockUpdate(
+      () =>
+        new Promise<void>((resolve) => {
+          finishInstall = resolve;
+        }),
+    );
+    mocks.ask.mockResolvedValue(true);
+
+    await act(async () => root.render(<Probe />));
+    expect(update.downloadAndInstall).toHaveBeenCalledOnce();
+
+    await act(async () => root.unmount());
+    await act(async () => finishInstall());
+
+    expect(mocks.relaunch).not.toHaveBeenCalled();
+    expect(mocks.showNotification).not.toHaveBeenCalled();
+  });
+
+  test("skips the check when startup was cancelled", async () => {
+    let resolveOwners: () => void = () => {};
+    mocks.reconcileStartupPathOwners.mockImplementation(
+      () =>
+        new Promise<null>((resolve) => {
+          resolveOwners = () => resolve(null);
+        }),
+    );
+
+    await act(async () => root.render(<Probe />));
+    await act(async () => root.unmount());
+    await act(async () => resolveOwners());
+
+    expect(mocks.check).not.toHaveBeenCalled();
   });
 });
 

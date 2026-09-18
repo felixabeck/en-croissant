@@ -99,8 +99,8 @@ describe("source boundary forms", () => {
     ],
     [
       "a dependency-name string",
-      "platform/no-updater.test.ts",
-      'hasDependency(packageJson, "@tauri-apps/plugin-updater")',
+      "platform/fork-updater.test.ts",
+      'source.includes("@tauri-apps/plugin-updater")',
     ],
     ["a type-only barrel import", "foo.ts", 'import type { Score } from "@/bindings"'],
     ["a WebviewWindow listener", "components/TopBar.tsx", "appWindow.onResized(() => {})"],
@@ -167,15 +167,15 @@ describe("native facade contract", () => {
   test("rejects a non-denylisted extra export", () => {
     expectViolation(
       "platform/native.ts",
-      `${NATIVE_SOURCE}\nexport { relaunch } from "@tauri-apps/plugin-process";`,
-      /not allowlisted.*relaunch/,
+      `${NATIVE_SOURCE}\nexport { installUpdate } from "@tauri-apps/plugin-updater";`,
+      /not allowlisted.*installUpdate/,
     );
   });
 
   test("rejects a missing allowlisted export", () => {
     const withoutExit = NATIVE_SOURCE.replace(
-      'export { exit } from "@tauri-apps/plugin-process";\n',
-      "",
+      'export { exit, relaunch } from "@tauri-apps/plugin-process";\n',
+      'export { relaunch } from "@tauri-apps/plugin-process";\n',
     );
     expectViolation("platform/native.ts", withoutExit, /missing.*plugin-process:exit/);
   });
@@ -199,6 +199,17 @@ describe("capability and CSP boundaries", () => {
     expect(inspectCapability({ permissions: ["core:default", "fs:write-all"] })).toEqual(
       expect.arrayContaining([expect.stringMatching(/core:default.*fs:write-all/)]),
     );
+  });
+
+  test("rejects updater:default in favour of exact updater permissions", () => {
+    expect(inspectCapability({ permissions: ["updater:default"] })).toEqual(
+      expect.arrayContaining([expect.stringMatching(/updater:default/)]),
+    );
+    expect(
+      inspectCapability({
+        permissions: ["updater:allow-check", "updater:allow-download-and-install"],
+      }),
+    ).toEqual([]);
   });
 
   test("rejects renderer filesystem permissions", () => {

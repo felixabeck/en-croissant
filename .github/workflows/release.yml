@@ -9,7 +9,30 @@ permissions:
   contents: read
 
 jobs:
+  # One draft per tag; every matrix leg uploads into it so latest.json covers all platforms.
+  create-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    outputs:
+      release_id: ${{ steps.draft.outputs.release_id }}
+    steps:
+      - name: Create draft release
+        id: draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft \
+            --title "$TAG" --notes "See the assets to download and install this version."
+          release_id=$(gh api "repos/$GITHUB_REPOSITORY/releases" \
+            --jq "map(select(.tag_name == \"$TAG\" and .draft)) | first | .id")
+          test -n "$release_id" && test "$release_id" != null
+          echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
+
   release:
+    needs: create-release
     permissions:
       contents: write
     strategy:
@@ -81,9 +104,26 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
           CI: false
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "v__VERSION__"
-          releaseBody: "See the assets to download and install this version."
-          releaseDraft: true
-          prerelease: false
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+          includeUpdaterJson: true
           args: ${{ matrix.args }}
+
+  # Undrafts only after every leg succeeded and latest.json names all four platforms.
+  publish:
+    needs: [create-release, release]
+    if: success() && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify latest.json and publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern latest.json --dir "$RUNNER_TEMP"
+          for platform in linux-x86_64 darwin-aarch64 darwin-x86_64 windows-x86_64; do
+            jq -e --arg p "$platform" '.platforms[$p].url and .platforms[$p].signature' \
+              "$RUNNER_TEMP/latest.json" > /dev/null || { echo "latest.json lacks $platform"; exit 1; }
+          done
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false

@@ -65,6 +65,7 @@ tauri-plugin-process = "2.3.1"
 tauri-plugin-log = "2.8.0"
 tauri-plugin-window-state = "2.4.1"
 tauri-plugin-opener = "2"
+tauri-plugin-updater = "2.10.1"
 memmap2 = "0.9"
 parking_lot = "0.12.1"
 rkyv = { version = "0.8", features = ["bytecheck"] }
