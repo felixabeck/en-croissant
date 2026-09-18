@@ -9977,3 +9977,16 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 * **Why it matters:** `f-20260917-04` closed the in-process mapping gate on the claim that a still-mapped sidecar cannot be replaced out from under a reader. This test is the only assertion that an *external* mapper is refused in one attempt and not retried. A green `DurableCommit` means that claim is unproven on Windows.
 * **Related:** `f-20260917-04` (handled; in-process mapping gate). Named here rather than sharing `Root: non-linux-platform-port`, because the compile/gate parent is closed and this is a remaining runtime pin, not an unbuildable target.
 * **Found by:** Grok, drain session 67bb5fd2-8bef-4d13-b2e3-9b0baf4316a3, while closing `f-20260830-06`. Measured from `rust-windows-test` logs of runs 35391848926 and 35398018524.
+
+---
+
+## 2026-09-19 — filed through the inbox spool
+
+### Database and puzzle default catalogs still come from an unsigned origin this fork does not control
+
+* **ID:** f-20260919-01 · **Status:** open · **Area:** app-startup · **Root:** fork-identity-not-separated · **Entry:** build · **Blocked:** none
+* **Where:** `src/utils/db.ts` (`getDefaultDatabases`, `getDefaultPuzzleDatabases`), `src/platform/http.ts` `remoteHttp` allowlist, CSP `connect-src`/`img-src` for `https://www.encroissant.org`.
+* **Defect:** f-20260830-48 moved the engine catalog off `www.encroissant.org`. Database and puzzle catalogs still fetch that origin. The live documents have no `sha256`/`signature`, so the client schema rejects them, and even a signed entry would fail `validate_artifact_integrity` under the fork key. Artifacts are 0.3–2.8 GB on `db.encroissant.org`.
+* **Open question:** Should default databases and puzzles be bundled metadata pointing at third-party HTTPS hosts the fork hashes and signs, dropped from the product until a hosted catalog exists, or left failing closed on the unowned origin?
+* **Related:** f-20260830-48 (engine half handled 2026-09-19), f-20260831-04 (engine document signing handled). Same root: fork-identity-not-separated.
+* **Found by:** f-20260830-48 distribution run, 2026-09-19.
