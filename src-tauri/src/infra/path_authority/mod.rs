@@ -347,13 +347,14 @@ mod windows_tests {
         fs::write(&registry, serde_json::to_vec(&registry_value).unwrap()).unwrap();
         let capture = crate::error::LogCaptureScope::start();
         let mut authority = PathAuthority::open(registry, vec![]).unwrap();
+        // tempfile's TEMP may be an 8.3 spelling; compare canonical_binding of the real leaf.
         assert_eq!(
             authority.persistent["windows-stable"]
                 .stored
                 .path
                 .to_path()
                 .unwrap(),
-            real.join("stable.pgn")
+            canonical_binding(&real.join("stable.pgn")).unwrap()
         );
         assert_eq!(
             authority.persistent["windows-stable"].availability,
@@ -16148,6 +16149,8 @@ mod tests {
             "resource".into(),
         );
         let lease = authority.engine_resource(&handle).unwrap();
+        #[cfg(target_os = "macos")]
+        lease.pin_test_target_to_original().unwrap();
         assert!(!lease.uci_value().unwrap().is_empty());
     }
 
