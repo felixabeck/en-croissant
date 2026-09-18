@@ -9901,6 +9901,9 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
   settled, and the two withdrawn mechanisms, so they are not re-derived.
 <!-- ledger-meta {"command":"annotate","effect_lines":5,"effect_sha256":"232b241159561a2fae850f75517f48e6aec08135e61460b157eacc54354f1a58","input_sha256":"e373e20eb2b10e34805f33b9e14685aa9d381d136d1bd75562729c0614dfe7e1","kind":"mutation-receipt","operation":"68d7df8a00409630684402fdb773cba55ee4500307d6de746f2106d7e8650707","options":{"section":null},"request_id_sha256":null,"results":["f-20260917-13"],"target":"f-20260917-13","v":1} -->
 
+* **Handled 2026-09-18 (next-finding slice, Grok full auto, executor Claude):** `AppDataDir` retains a verified descriptor of the canonical app-data directory and creates missing components plus each closed-enum leaf with `ensure_directory_at` (`mkdirat`). Load-time rebinding no longer skips app-owned spellings. `database_file_target` and `workspace_root` require `acquired.path == stored.path` as well as identity. Same-session children under a symlink `AppDataDir` store the canonical spelling. Code `4d084fcd`; review repair `3d4e49ac`. Review record: `tasks/handoffs/2026-09-18-f-20260917-13-review.md`. Prerequisite `f-20260905-10` closed in the same slice. Sibling identity-only doors filed separately (download reservation / `workspace_entry_path`). Rejected: use-time canonicalize; keeping the path exemption; `create_dir_all`.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"b54be147a81166e2a73a5c9cbcbea4424a4f3ff9068e676b0be856fc81ed3f4a","input_sha256":"b61fc6aedc9a78fd182e96f829c27f650eaddf37f7943d67e0d6138443639e3e","kind":"mutation-receipt","operation":"e852187def24159e42420db094a43447132cb2ae3329a0e0ae13095f23d8fb62","options":{"section":null},"request_id_sha256":null,"results":["f-20260917-13"],"target":"f-20260917-13","v":1} -->
+
 ---
 
 ## 2026-09-18 — filed through the inbox spool
