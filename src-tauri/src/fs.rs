@@ -1175,7 +1175,6 @@ pub async fn download_engine_archive(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    crate::infra::platform_support::off_unix_refusal("engine archive downloads", cfg!(unix))?;
     let lease = state.download_registry.begin(&state.operations, &job_id)?;
     let cancellation = lease.cancellation_token();
     let operation = lease.into_operation();
@@ -1191,8 +1190,18 @@ pub async fn download_engine_archive(
                 uuid::Uuid::parse_str(&job_id)
                     .map_err(|_| Error::InvalidInput("download job ID must be a UUID".into()))?;
                 validate_artifact_integrity(op, &url, Some(&integrity))?;
-                let staging = private_tempdir()?;
-                let extracted = staging.path().join("extracted");
+                let destination_parent = resolved
+                    .target()
+                    .and_then(|target| target.parent())
+                    .ok_or_else(|| {
+                        Error::InvalidInput("archive destination needs a parent directory".into())
+                    })?
+                    .to_path_buf();
+                // The staging tree is a sibling of the destination, created in the destination's
+                // own parent (d-20260918-11). Publishing it is then a same-directory rename, so
+                // no cross-filesystem copy can quietly replace the atomic install.
+                let staging = private_tempdir_in(".archive", &destination_parent)?;
+                let extracted = staging.path().to_path_buf();
                 let progress_lease = begin_progress(&state.progress_state, &app, id.clone())?;
                 let result = await_staging_deadline(
                     DOWNLOAD_DEADLINE,
@@ -1229,7 +1238,7 @@ pub async fn download_engine_archive(
                     return Err(error);
                 }
                 let install_result = crate::infra::blocking::BLOCKING_GATEWAY
-                    .spawn(move || resolved.atomic_install_download_dir(&extracted))
+                    .spawn(move || publish_engine_archive_tree(&resolved, staging.path()))
                     .await;
                 if let Err(error) = install_result {
                     report_download_error(&state, &app, &progress_lease, &job_id, &error);
@@ -1243,6 +1252,16 @@ pub async fn download_engine_archive(
         },
     )
     .await
+}
+
+/// Publishes a fully extracted engine archive onto its authority-resolved destination. Split out
+/// from `download_engine_archive` so the staging-parent contract (`private_tempdir_in` in the
+/// destination's own parent) can be stated once and pinned without driving a download.
+pub(crate) fn publish_engine_archive_tree(
+    resolved: &crate::infra::path_authority::ResolvedPath,
+    staging_dir: &Path,
+) -> Result<(), Error> {
+    resolved.atomic_install_download_dir(staging_dir)
 }
 
 #[tauri::command]
@@ -1264,6 +1283,10 @@ fn create_private_dir_all(path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
+/// A private staging directory outside any authority-managed parent. Only the unix
+/// private-mode test still calls this; production staging is `private_tempdir_in` beside the
+/// destination it will be installed onto.
+#[cfg(all(test, unix))]
 fn private_tempdir() -> Result<tempfile::TempDir, Error> {
     #[cfg(unix)]
     let mut builder = tempfile::Builder::new();
@@ -1938,6 +1961,134 @@ mod tests {
             body.matches("download_lichess_games_runtime(").count(),
             1,
             "{body}"
+        );
+    }
+
+    #[test]
+    fn download_engine_archive_stages_with_private_tempdir_in() {
+        let source = include_str!("fs.rs");
+        let body = body_at_indent(source, "pub async fn download_engine_archive(");
+        assert!(!body.contains("off_unix_refusal("), "{body}");
+        assert_eq!(body.matches("private_tempdir_in(").count(), 1, "{body}");
+        assert!(
+            !body.contains("private_tempdir()"),
+            "production staging must be a sibling of the destination: {body}"
+        );
+        assert!(
+            body.contains("let destination_parent = resolved"),
+            "the staging parent must come from the resolved destination: {body}"
+        );
+        // The tree is only published after the cancellation check, so a cancelled job can never
+        // leave a partially staged archive installed.
+        let cancel = body
+            .find("if cancellation.is_cancelled()")
+            .expect("download must observe cancellation");
+        let publish = body
+            .find("publish_engine_archive_tree(")
+            .expect("download must publish through the shared helper");
+        assert!(
+            cancel < publish,
+            "cancellation must precede publication: {body}"
+        );
+    }
+
+    #[test]
+    fn install_dir_driver_refuses_parent_mismatch() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let first = root.path().join("first");
+        let second = root.path().join("second");
+        std::fs::create_dir(&first).expect("first");
+        std::fs::create_dir(&second).expect("second");
+        let source = first.join("staging");
+        std::fs::create_dir(&source).expect("staging");
+        std::fs::write(source.join("engine"), b"new").expect("staged file");
+        let target = second.join("installed");
+
+        let error = crate::infra::fs::atomic_install_dir(&source, &target)
+            .expect_err("a staging directory outside the target parent must be refused");
+
+        assert!(matches!(error, Error::InvalidInput(_)), "{error:?}");
+        assert!(!target.exists(), "the refusal installs nothing");
+    }
+
+    #[test]
+    fn publish_engine_archive_tree_installs_a_sibling_staging_dir() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let destination = root.path().join("installed");
+        let staging = root.path().join("staging");
+        std::fs::create_dir(&staging).expect("staging");
+        std::fs::write(staging.join("engine"), b"staged").expect("staged file");
+        let resolved =
+            crate::infra::path_authority::ResolvedPath::download_archive_test(destination.clone());
+
+        publish_engine_archive_tree(&resolved, &staging).expect("publish");
+
+        assert!(
+            !staging.exists(),
+            "the staging name is consumed by the install"
+        );
+        assert_eq!(
+            std::fs::read(destination.join("engine")).expect("installed tree"),
+            b"staged"
+        );
+    }
+
+    /// `INSTALL_BACKUP_PREFIX` names a leftover after a failed rollback, so the installer must
+    /// never sweep it (d-20260918-10). This pins the whole install path — the shared driver, both
+    /// entry points, the Windows rollback, and the directory walk — as free of parent enumeration
+    /// and name-prefix filtering, and pins the one creation site to the shared constant rather
+    /// than a glob.
+    #[test]
+    fn install_dir_does_not_reap_install_backup_prefix() {
+        let source = include_str!("infra/fs.rs");
+        // The functions that choose a *name to delete* may neither match it by prefix nor list the
+        // parent: a leftover backup is left where the user can see it, not swept.
+        for signature in [
+            "fn install_dir_driver<A: DirInstallAdapter>(",
+            "pub(super) fn install_dir(source: &Path, target: &Path) -> Result<(), Error> {",
+            "fn rollback_backup(",
+            "fn directory_entry_at(dir: &File, name: &OsStr) -> Result<Option<WindowsDirEntry>, Error> {",
+        ] {
+            let body = body_at_indent(source, signature);
+            for forbidden in [
+                "starts_with",
+                "trim_start_matches",
+                "enumerate_directory",
+                "read_directory_entries",
+                "remove_dir_all",
+            ] {
+                assert!(
+                    !body.contains(forbidden),
+                    "{signature} must not {forbidden}; a failed rollback's backup is not swept"
+                );
+            }
+        }
+        // The flush walk enumerates the staged tree it was handed, never a name filter over the
+        // destination's parent.
+        let flush = body_at_indent(
+            source,
+            "fn sync_windows_tree(dir: &File, depth: usize) -> Result<(), Error> {",
+        );
+        for forbidden in [
+            "starts_with",
+            "trim_start_matches",
+            "filter(",
+            "remove_dir_all",
+        ] {
+            assert!(
+                !flush.contains(forbidden),
+                "sync_windows_tree must not {forbidden}; it flushes its own handle"
+            );
+        }
+        assert!(
+            flush.contains("enumerate_directory(dir,"),
+            "the flush walks only the handle it was given: {flush}"
+        );
+        // The one backup leaf is built from the shared constant, never from a glob or a listing.
+        let creation = body_at_indent(source, "let backup_name: OsString =");
+        assert!(
+            creation.contains("format!(\"{INSTALL_BACKUP_PREFIX}"),
+            "the backup leaf must be built from the shared constant: {creation}"
         );
     }
 

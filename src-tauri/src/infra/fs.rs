@@ -469,6 +469,12 @@ trait AtomicReplaceAdapter {
     fn cleanup(&self, dir: &File, temp_name: &OsStr, temp: &mut File, primary: Error) -> Error;
 }
 
+/// Leaf-name prefix for the one sibling backup a Windows existing-target install takes before it
+/// renames the staged tree onto the destination name. The constant is cfg-free so the creation
+/// site and the failed-rollback log text share one spelling; only Windows ever creates one.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) const INSTALL_BACKUP_PREFIX: &str = ".install-backup-";
+
 fn cleanup_with_adapter<A: AtomicReplaceAdapter>(
     adapter: &A,
     dir: &File,
@@ -477,6 +483,173 @@ fn cleanup_with_adapter<A: AtomicReplaceAdapter>(
     primary: Error,
 ) -> Error {
     adapter.cleanup(dir, temp_name, temp, primary)
+}
+
+/// Platform seam for `install_dir_driver`, matching `AtomicReplaceAdapter`. Every method is
+/// descriptor-relative: the driver never reopens a mutable parent pathname after the first
+/// identity check. `Entry` is the platform's directory-entry observation (unix `Stat`, the
+/// Windows retained-handle target).
+trait DirInstallAdapter {
+    type Entry;
+
+    /// Open the parent directory of `path` with the access the commit needs.
+    fn open_parent(&self, path: &Path) -> Result<File, Error>;
+    /// The `(volume, index)` / `(dev, ino)` identity of an open parent handle.
+    fn parent_identity(&self, dir: &File) -> Result<(u64, u64), Error>;
+    /// Observe one child leaf without following it. `None` means absent.
+    fn target_stat(&self, dir: &File, name: &OsStr) -> Result<Option<Self::Entry>, Error>;
+    fn is_directory(&self, entry: &Self::Entry) -> bool;
+    fn entry_identity(&self, entry: &Self::Entry) -> (u64, u64);
+    /// No-follow open of a leaf as a real directory; refuses reparse points/special files.
+    fn open_source_directory(&self, parent: &File, name: &OsStr) -> Result<File, Error>;
+    /// Durably flush the staged tree rooted at `dir`, bounded and reparse-refusing.
+    fn flush_tree(&self, dir: &File) -> Result<(), Error>;
+    /// Commit the swap. `original` is the verified existing target entry, if any. Returns the
+    /// sibling leaf that now holds the displaced tree, if the platform displaced one there.
+    fn commit(
+        &self,
+        parent: &File,
+        source_name: &OsStr,
+        target_name: &OsStr,
+        original: Option<&Self::Entry>,
+    ) -> Result<Option<OsString>, Error>;
+    /// Identity-bound removal of the displaced tree at `name`.
+    fn cleanup_displaced(
+        &self,
+        parent: &File,
+        name: &OsStr,
+        expected: &Self::Entry,
+    ) -> Result<(), Error>;
+}
+
+/// The one directory-install body for every OS (d-20260918-10). It owns the parent/source
+/// identity check, the no-follow source/target kind checks, the durable flush, the immediate
+/// pre-commit revalidation, the platform commit, the durable parent syncs, and the old-tree
+/// cleanup. Windows has no directory `EXCHANGE`, so its adapter's commit takes a sibling backup
+/// and rolls it back if the install rename fails; that difference lives entirely in the adapter.
+fn install_dir_driver<A: DirInstallAdapter>(
+    adapter: &A,
+    source: &Path,
+    target: &Path,
+) -> Result<(), Error> {
+    #[cfg(test)]
+    inject_atomic_dir(AtomicDirFaultPoint::SyncEntry)?;
+    let parent = adapter.open_parent(target)?;
+    let source_parent = adapter.open_parent(source)?;
+    let parent_identity = adapter.parent_identity(&parent)?;
+    if adapter.parent_identity(&source_parent)? != parent_identity {
+        return Err(Error::InvalidInput(
+            "directory staging source must be in the target's real parent directory".into(),
+        ));
+    }
+    let source_name = install_leaf(source)?;
+    let target_name = install_leaf(target)?;
+    let source_entry = adapter
+        .target_stat(&parent, source_name)?
+        .ok_or_else(|| Error::InvalidInput("directory staging source does not exist".into()))?;
+    if !adapter.is_directory(&source_entry) {
+        return Err(Error::InvalidInput(
+            "directory staging source must be a real directory".into(),
+        ));
+    }
+    let source_dir = adapter.open_source_directory(&parent, source_name)?;
+    adapter.flush_tree(&source_dir)?;
+    let original = match adapter.target_stat(&parent, target_name)? {
+        Some(entry) if adapter.is_directory(&entry) => Some(entry),
+        Some(_) => {
+            return Err(Error::InvalidInput(
+                "directory target must be a real directory".into(),
+            ))
+        }
+        None => None,
+    };
+    #[cfg(test)]
+    inject_atomic_dir(AtomicDirFaultPoint::PreCommit)?;
+    if adapter.parent_identity(&adapter.open_parent(target)?)? != parent_identity {
+        return Err(Error::Conflict(
+            "directory parent changed concurrently".into(),
+        ));
+    }
+    match adapter.target_stat(&parent, source_name)? {
+        Some(entry) if adapter.entry_identity(&entry) == adapter.entry_identity(&source_entry) => {}
+        _ => {
+            return Err(Error::Conflict(
+                "directory staging source changed concurrently".into(),
+            ))
+        }
+    }
+    match (
+        original.as_ref(),
+        adapter.target_stat(&parent, target_name)?,
+    ) {
+        (None, None) => {}
+        (None, Some(_)) => {
+            return Err(Error::Conflict(
+                "directory target was created concurrently".into(),
+            ))
+        }
+        (Some(_), None) => {
+            return Err(Error::Conflict(
+                "directory target was deleted concurrently".into(),
+            ))
+        }
+        (Some(expected), Some(actual))
+            if adapter.is_directory(&actual)
+                && adapter.entry_identity(expected) == adapter.entry_identity(&actual) => {}
+        _ => {
+            return Err(Error::Conflict(
+                "directory target changed concurrently".into(),
+            ))
+        }
+    }
+    let displaced = adapter.commit(&parent, source_name, target_name, original.as_ref())?;
+    #[cfg(test)]
+    if let Err(error) = inject_atomic_dir(AtomicDirFaultPoint::ParentSync) {
+        log::warn!("directory installation parent sync failed: {error}");
+        return Err(Error::CommittedDurabilityUncertain(
+            crate::error::DurabilityStage::DirectoryInstall,
+        ));
+    }
+    if let Err(error) = parent.sync_all() {
+        log::warn!("directory installation parent sync failed: {error}");
+        return Err(Error::CommittedDurabilityUncertain(
+            crate::error::DurabilityStage::DirectoryInstall,
+        ));
+    }
+    if let (Some(original), Some(displaced)) = (original.as_ref(), displaced.as_deref()) {
+        #[cfg(test)]
+        if let Err(error) = inject_atomic_dir(AtomicDirFaultPoint::BackupCleanup) {
+            log::error!(
+                "directory installed but old tree cleanup at {} failed: {error}",
+                displaced.to_string_lossy()
+            );
+            return Err(Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::OldDirectoryCleanup,
+            ));
+        }
+        if let Err(error) = adapter.cleanup_displaced(&parent, displaced, original) {
+            log::error!(
+                "directory installed but old tree cleanup at {} failed: {error}",
+                displaced.to_string_lossy()
+            );
+            return Err(Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::OldDirectoryCleanup,
+            ));
+        }
+        if let Err(error) = parent.sync_all() {
+            log::warn!("old directory cleanup parent sync failed: {error}");
+            return Err(Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::OldDirectoryCleanupSync,
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn install_leaf(path: &Path) -> Result<&OsStr, Error> {
+    path.file_name()
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| Error::InvalidInput("directory install needs a leaf name".into()))
 }
 
 fn replace_at_driver<A, F, P>(
@@ -1649,159 +1822,94 @@ mod unix {
         }
     }
 
-    pub(super) fn install_dir(source: &Path, target: &Path) -> Result<(), Error> {
-        #[cfg(test)]
-        inject_atomic_dir(AtomicDirFaultPoint::SyncEntry)?;
-        let parent_dir = open_parent(target)?;
-        let source_parent = open_parent(source)?;
-        let parent_meta = parent_dir.metadata().map_err(io)?;
-        let source_parent_meta = source_parent.metadata().map_err(io)?;
-        if parent_meta.dev() != source_parent_meta.dev()
-            || parent_meta.ino() != source_parent_meta.ino()
-        {
-            return Err(Error::InvalidInput(
-                "directory staging source must be in the target's real parent directory".into(),
-            ));
+    struct UnixDirInstallAdapter;
+
+    impl DirInstallAdapter for UnixDirInstallAdapter {
+        type Entry = fs::Stat;
+
+        fn open_parent(&self, path: &Path) -> Result<File, Error> {
+            open_parent(path)
         }
-        let source_name = name(source)?;
-        let target_name = name(target)?;
-        let source_stat = target_stat(&parent_dir, source_name)?
-            .ok_or_else(|| Error::InvalidInput("directory staging source does not exist".into()))?;
-        if FileType::from_raw_mode(source_stat.st_mode) != FileType::Directory {
-            return Err(Error::InvalidInput(
-                "directory staging source must be a real directory".into(),
-            ));
+
+        fn parent_identity(&self, dir: &File) -> Result<(u64, u64), Error> {
+            use std::os::unix::fs::MetadataExt;
+            let metadata = dir.metadata().map_err(io)?;
+            Ok((metadata.dev(), metadata.ino()))
         }
-        let source_dir = File::from(
-            fs::openat(
-                &parent_dir,
-                source_name,
-                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                Mode::empty(),
-            )
-            .map_err(|e| io(e.into()))?,
-        );
-        sync_tree(&source_dir, 0)?;
-        let original = match target_stat(&parent_dir, target_name)? {
-            Some(stat) if FileType::from_raw_mode(stat.st_mode) == FileType::Directory => {
-                Some(stat)
-            }
-            Some(_) => {
-                return Err(Error::InvalidInput(
-                    "directory target must be a real directory".into(),
-                ))
-            }
-            None => None,
-        };
-        #[cfg(test)]
-        inject_atomic_dir(AtomicDirFaultPoint::PreCommit)?;
-        let current_parent = open_parent(target)?.metadata().map_err(io)?;
-        if current_parent.dev() != parent_meta.dev() || current_parent.ino() != parent_meta.ino() {
-            return Err(Error::Conflict(
-                "directory parent changed concurrently".into(),
-            ));
+
+        fn target_stat(&self, dir: &File, name: &OsStr) -> Result<Option<Self::Entry>, Error> {
+            target_stat(dir, name)
         }
-        match target_stat(&parent_dir, source_name)? {
-            Some(stat) if same_inode(&source_stat, &stat) => {}
-            _ => {
-                return Err(Error::Conflict(
-                    "directory staging source changed concurrently".into(),
-                ))
-            }
+
+        fn is_directory(&self, entry: &Self::Entry) -> bool {
+            FileType::from_raw_mode(entry.st_mode) == FileType::Directory
         }
-        match (original.as_ref(), target_stat(&parent_dir, target_name)?) {
-            (None, None) => {}
-            (None, Some(_)) => {
-                return Err(Error::Conflict(
-                    "directory target was created concurrently".into(),
-                ))
-            }
-            (Some(_), None) => {
-                return Err(Error::Conflict(
-                    "directory target was deleted concurrently".into(),
-                ))
-            }
-            (Some(expected), Some(actual))
-                if FileType::from_raw_mode(actual.st_mode) == FileType::Directory
-                    && same_inode(expected, &actual) => {}
-            _ => {
-                return Err(Error::Conflict(
-                    "directory target changed concurrently".into(),
-                ))
-            }
+
+        fn entry_identity(&self, entry: &Self::Entry) -> (u64, u64) {
+            raw_stat_identity(entry)
         }
-        #[cfg(test)]
-        inject_atomic_dir(AtomicDirFaultPoint::BackupRename)?;
-        #[cfg(test)]
-        inject_atomic_dir(AtomicDirFaultPoint::InstallRename)?;
-        if original.is_some() {
-            fs::renameat_with(
-                &parent_dir,
-                source_name,
-                &parent_dir,
-                target_name,
-                RenameFlags::EXCHANGE,
-            )
-            .map_err(|e| io(e.into()))?;
-        } else {
-            fs::renameat_with(
-                &parent_dir,
-                source_name,
-                &parent_dir,
-                target_name,
-                RenameFlags::NOREPLACE,
-            )
-            .map_err(|e| io(e.into()))?;
+
+        fn open_source_directory(&self, parent: &File, name: &OsStr) -> Result<File, Error> {
+            Ok(File::from(
+                fs::openat(
+                    parent,
+                    name,
+                    OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                    Mode::empty(),
+                )
+                .map_err(|e| io(e.into()))?,
+            ))
         }
-        #[cfg(test)]
-        if let Err(error) = inject_atomic_dir(AtomicDirFaultPoint::ParentSync) {
-            log::warn!("directory installation parent sync failed: {error}");
-            return Err(Error::CommittedDurabilityUncertain(
-                crate::error::DurabilityStage::DirectoryInstall,
-            ));
+
+        fn flush_tree(&self, dir: &File) -> Result<(), Error> {
+            sync_tree(dir, 0)
         }
-        if let Err(error) = parent_dir.sync_all() {
-            log::warn!("directory installation parent sync failed: {error}");
-            return Err(Error::CommittedDurabilityUncertain(
-                crate::error::DurabilityStage::DirectoryInstall,
-            ));
-        }
-        if let Some(original) = original.as_ref() {
+
+        fn commit(
+            &self,
+            parent: &File,
+            source_name: &OsStr,
+            target_name: &OsStr,
+            original: Option<&Self::Entry>,
+        ) -> Result<Option<OsString>, Error> {
+            // Unix `BackupRename` names the point immediately before the single `EXCHANGE`; no
+            // backup leaf is created, because `EXCHANGE` swaps both names in one call.
             #[cfg(test)]
-            if let Err(error) = inject_atomic_dir(AtomicDirFaultPoint::BackupCleanup) {
-                log::error!(
-                    "directory installed but old tree cleanup at {} failed: {error}",
-                    source.display()
-                );
-                return Err(Error::CommittedDurabilityUncertain(
-                    crate::error::DurabilityStage::OldDirectoryCleanup,
-                ));
-            }
-            let mut removed_entries = 0;
-            if let Err(error) = remove_tree_at(
-                &parent_dir,
-                source_name,
-                raw_stat_identity(original),
-                0,
-                parent_meta.dev(),
-                &mut removed_entries,
-            ) {
-                log::error!(
-                    "directory installed but old tree cleanup at {} failed: {error}",
-                    source.display()
-                );
-                return Err(Error::CommittedDurabilityUncertain(
-                    crate::error::DurabilityStage::OldDirectoryCleanup,
-                ));
-            }
-            if let Err(error) = parent_dir.sync_all() {
-                log::warn!("old directory cleanup parent sync failed: {error}");
-                return Err(Error::CommittedDurabilityUncertain(
-                    crate::error::DurabilityStage::OldDirectoryCleanupSync,
-                ));
-            }
+            inject_atomic_dir(AtomicDirFaultPoint::BackupRename)?;
+            #[cfg(test)]
+            inject_atomic_dir(AtomicDirFaultPoint::InstallRename)?;
+            let flags = if original.is_some() {
+                RenameFlags::EXCHANGE
+            } else {
+                RenameFlags::NOREPLACE
+            };
+            fs::renameat_with(parent, source_name, parent, target_name, flags)
+                .map_err(|e| io(e.into()))?;
+            // After `EXCHANGE` the displaced old target sits at the source name.
+            Ok(original.map(|_| source_name.to_os_string()))
         }
-        Ok(())
+
+        fn cleanup_displaced(
+            &self,
+            parent: &File,
+            name: &OsStr,
+            expected: &Self::Entry,
+        ) -> Result<(), Error> {
+            let parent_dev = parent.metadata().map_err(io)?.dev();
+            let mut removed_entries = 0;
+            remove_tree_at(
+                parent,
+                name,
+                raw_stat_identity(expected),
+                0,
+                parent_dev,
+                &mut removed_entries,
+            )
+        }
+    }
+
+    pub(super) fn install_dir(source: &Path, target: &Path) -> Result<(), Error> {
+        install_dir_driver(&UnixDirInstallAdapter, source, target)
     }
 }
 
@@ -1841,8 +1949,8 @@ mod win {
             // The NTSTATUS constants and RtlNtStatusToDosError live with the single classifier
             // in path_authority::windows_open_status_error, which this module now routes to.
             Foundation::{
-                ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, HANDLE, STATUS_BUFFER_OVERFLOW,
-                STATUS_NO_MORE_FILES, UNICODE_STRING,
+                ERROR_DIRECTORY, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, HANDLE,
+                STATUS_BUFFER_OVERFLOW, STATUS_NO_MORE_FILES, UNICODE_STRING,
             },
             Security::{
                 AddAccessAllowedAce, CopySid, GetAce, GetKernelObjectSecurity, GetLengthSid,
@@ -3077,6 +3185,267 @@ mod win {
         Ok(())
     }
 
+    /// A directory-entry observation the install driver keeps alive: the retained handle pins the
+    /// observed object so its identity cannot be recycled between the observation and the commit.
+    /// A non-directory leaf is observed only so the driver can refuse it, so its identity is
+    /// carried but never read.
+    pub(super) struct WindowsDirEntry {
+        _pin: File,
+        identity: (u64, u64),
+        is_directory: bool,
+    }
+
+    /// `NtCreateFile` reports a non-directory at a directory-only leaf as
+    /// `STATUS_NOT_A_DIRECTORY`, which the single classifier maps to `ERROR_DIRECTORY`.
+    fn not_a_directory(error: &Error) -> bool {
+        matches!(
+            error,
+            Error::Io(error) if error.raw_os_error() == Some(ERROR_DIRECTORY as i32)
+        )
+    }
+
+    /// Observe one leaf for the install driver. A directory opens with delete access so the
+    /// commit can rename it; any other kind opens non-directory just far enough to confirm it is
+    /// not a directory, which is what the driver refuses; an absent leaf is `None`. A reparse
+    /// point is refused in place, like every other no-follow walk in this module.
+    fn directory_entry_at(dir: &File, name: &OsStr) -> Result<Option<WindowsDirEntry>, Error> {
+        match open_windows_child(
+            dir,
+            name,
+            FILE_OPEN,
+            child_delete_access(true),
+            null(),
+            true,
+            true,
+        ) {
+            Ok(handle) => {
+                if is_reparse_point(&handle.metadata().map_err(io)?) {
+                    return Err(Error::InvalidInput(
+                        "reparse points cannot be authorized".into(),
+                    ));
+                }
+                Ok(Some(WindowsDirEntry {
+                    identity: opened_file_identity(&handle)?,
+                    _pin: handle,
+                    is_directory: true,
+                }))
+            }
+            Err(error) if missing_leaf(&error) => Ok(None),
+            Err(error) if not_a_directory(&error) => {
+                let handle =
+                    open_windows_child(dir, name, FILE_OPEN, TARGET_ACCESS, null(), false, true)?;
+                Ok(Some(WindowsDirEntry {
+                    identity: opened_file_identity(&handle)?,
+                    _pin: handle,
+                    is_directory: false,
+                }))
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Durably flush a staged tree before it becomes the live destination. The walk refuses links
+    /// and special files and is depth-bounded exactly like the cleanup walk, so a planted reparse
+    /// point cannot smuggle in a tree the later cleanup would then have to remove.
+    fn sync_windows_tree(dir: &File, depth: usize) -> Result<(), Error> {
+        for entry in enumerate_directory(dir, &CancellationToken::new())? {
+            ensure_remove_tree_depth(depth.saturating_add(1), MAX_REMOVE_TREE_DEPTH)?;
+            match entry.kind {
+                DirectoryEntryKind::Other => {
+                    return Err(Error::InvalidInput(
+                        "directory install rejects links and special files".into(),
+                    ));
+                }
+                DirectoryEntryKind::RegularFile => {
+                    let file = open_windows_child(
+                        dir,
+                        &entry.name,
+                        FILE_OPEN,
+                        regular_file_access(RegularFileAccess::ReadWrite),
+                        null(),
+                        false,
+                        true,
+                    )?;
+                    if opened_file_identity(&file)? != entry.identity {
+                        return Err(Error::Conflict(
+                            "directory install entry changed concurrently".into(),
+                        ));
+                    }
+                    file.sync_all().map_err(io)?;
+                }
+                DirectoryEntryKind::Directory => {
+                    let child = open_windows_child(
+                        dir,
+                        &entry.name,
+                        FILE_OPEN,
+                        DIRECTORY_ACCESS,
+                        null(),
+                        true,
+                        true,
+                    )?;
+                    if opened_file_identity(&child)? != entry.identity {
+                        return Err(Error::Conflict(
+                            "directory install entry changed concurrently".into(),
+                        ));
+                    }
+                    sync_windows_tree(&child, depth + 1)?;
+                    child.sync_all().map_err(io)?;
+                }
+            }
+        }
+        dir.sync_all().map_err(io)
+    }
+
+    /// Rename the parked old tree back onto the destination name after a failed install rename.
+    /// If this itself fails the installation has committed in name only, so the error is the
+    /// durability-uncertain one and the backup leaf is named in the log. Nothing here reaps
+    /// `INSTALL_BACKUP_PREFIX` leftovers: the user has to be able to see where the old tree went.
+    fn rollback_backup(
+        parent: &File,
+        backup: &mut File,
+        backup_name: &OsStr,
+        target_name: &OsStr,
+    ) -> Result<(), Error> {
+        let uncertain = |error: &Error| {
+            log::error!(
+                "directory install rollback failed; old tree left at {}: {error}",
+                backup_name.to_string_lossy()
+            );
+            Error::CommittedDurabilityUncertain(crate::error::DurabilityStage::DirectoryInstall)
+        };
+        #[cfg(test)]
+        if let Err(error) = inject_atomic_dir(AtomicDirFaultPoint::RollbackRename) {
+            return Err(uncertain(&error));
+        }
+        rename_child(parent, backup, backup_name, target_name, false)
+            .map_err(|error| uncertain(&error))
+    }
+
+    struct WindowsDirInstallAdapter;
+
+    impl DirInstallAdapter for WindowsDirInstallAdapter {
+        type Entry = WindowsDirEntry;
+
+        fn open_parent(&self, path: &Path) -> Result<File, Error> {
+            open_directory_path(path.parent().unwrap_or_else(|| Path::new(".")), true)
+        }
+
+        fn parent_identity(&self, dir: &File) -> Result<(u64, u64), Error> {
+            opened_file_identity(dir)
+        }
+
+        fn target_stat(&self, dir: &File, name: &OsStr) -> Result<Option<Self::Entry>, Error> {
+            directory_entry_at(dir, name)
+        }
+
+        fn is_directory(&self, entry: &Self::Entry) -> bool {
+            entry.is_directory
+        }
+
+        fn entry_identity(&self, entry: &Self::Entry) -> (u64, u64) {
+            entry.identity
+        }
+
+        fn open_source_directory(&self, parent: &File, name: &OsStr) -> Result<File, Error> {
+            open_windows_child(
+                parent,
+                name,
+                FILE_OPEN,
+                DIRECTORY_ACCESS,
+                null(),
+                true,
+                true,
+            )
+        }
+
+        fn flush_tree(&self, dir: &File) -> Result<(), Error> {
+            sync_windows_tree(dir, 0)
+        }
+
+        fn commit(
+            &self,
+            parent: &File,
+            source_name: &OsStr,
+            target_name: &OsStr,
+            original: Option<&Self::Entry>,
+        ) -> Result<Option<OsString>, Error> {
+            let mut source = open_windows_child(
+                parent,
+                source_name,
+                FILE_OPEN,
+                child_delete_access(true),
+                null(),
+                true,
+                true,
+            )?;
+            let Some(original) = original else {
+                // No existing target: one no-replace rename suffices, so there is nothing to
+                // roll back and nothing for the caller to clean up.
+                rename_child(parent, &mut source, source_name, target_name, false)?;
+                return Ok(None);
+            };
+            let backup_name: OsString =
+                format!("{INSTALL_BACKUP_PREFIX}{}", uuid::Uuid::new_v4()).into();
+            let mut target = open_windows_child(
+                parent,
+                target_name,
+                FILE_OPEN,
+                child_delete_access(true),
+                null(),
+                true,
+                true,
+            )?;
+            if opened_file_identity(&target)? != original.identity {
+                return Err(Error::Conflict(
+                    "directory target changed concurrently".into(),
+                ));
+            }
+            // Windows has no directory `EXCHANGE` (d-20260918-10): the live target is parked at a
+            // `{INSTALL_BACKUP_PREFIX}` sibling, the staged tree takes the name with no replace,
+            // and a failed install rename moves the parked tree back.
+            rename_child(parent, &mut target, target_name, &backup_name, false)?;
+            #[cfg(test)]
+            if let Err(error) = inject_atomic_dir(AtomicDirFaultPoint::BackupRename) {
+                rollback_backup(parent, &mut target, &backup_name, target_name)?;
+                return Err(error);
+            }
+            #[cfg(test)]
+            if let Err(error) = inject_atomic_dir(AtomicDirFaultPoint::InstallRename) {
+                rollback_backup(parent, &mut target, &backup_name, target_name)?;
+                return Err(error);
+            }
+            match rename_child(parent, &mut source, source_name, target_name, false) {
+                Ok(()) => Ok(Some(backup_name)),
+                Err(install_error) => {
+                    rollback_backup(parent, &mut target, &backup_name, target_name)?;
+                    Err(install_error)
+                }
+            }
+        }
+
+        fn cleanup_displaced(
+            &self,
+            parent: &File,
+            name: &OsStr,
+            expected: &Self::Entry,
+        ) -> Result<(), Error> {
+            let parent_volume = opened_file_identity(parent)?.0;
+            let mut removed_entries = 0;
+            remove_windows_tree_at(
+                parent,
+                name,
+                expected.identity,
+                0,
+                parent_volume,
+                &mut removed_entries,
+            )
+        }
+    }
+
+    pub(super) fn install_dir(source: &Path, target: &Path) -> Result<(), Error> {
+        install_dir_driver(&WindowsDirInstallAdapter, source, target)
+    }
+
     pub(super) fn remove_entry_at(
         parent: &File,
         name: &OsStr,
@@ -4133,35 +4502,41 @@ where
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AtomicDirFaultPoint {
     SyncEntry,
     PreCommit,
+    /// Unix: immediately before the single `EXCHANGE` (no backup is taken). Windows: after the
+    /// live target has been renamed to the `{INSTALL_BACKUP_PREFIX}` sibling.
     BackupRename,
     InstallRename,
     ParentSync,
     BackupCleanup,
+    /// Windows only: on the rollback arm, immediately before the backup is renamed back onto the
+    /// target name. Never constructed on unix, so its variant is exempt from `dead_code` there.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    RollbackRename,
 }
-#[cfg(all(test, unix))]
+#[cfg(test)]
 pub(crate) trait AtomicDirInjector {
     fn inject(&self, _: AtomicDirFaultPoint) -> std::io::Result<()> {
         Ok(())
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 std::thread_local! {
     static TEST_ATOMIC_DIR_INJECTOR: std::cell::RefCell<Option<Box<dyn AtomicDirInjector>>> =
         const { std::cell::RefCell::new(None) };
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 pub(crate) fn set_test_atomic_dir_injector(injector: Option<Box<dyn AtomicDirInjector>>) {
     TEST_ATOMIC_DIR_INJECTOR.with(|current| *current.borrow_mut() = injector);
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 fn inject_atomic_dir(point: AtomicDirFaultPoint) -> Result<(), Error> {
     TEST_ATOMIC_DIR_INJECTOR.with(|current| {
         current
@@ -4176,10 +4551,9 @@ pub fn atomic_install_dir(temp_path: &Path, target_path: &Path) -> Result<(), Er
     {
         unix::install_dir(temp_path, target_path)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        let _ = (temp_path, target_path);
-        Err(Error::Conflict("atomic directory installation is unsupported on this platform: fd-relative no-follow and durable parent sync cannot be proven".into()))
+        win::install_dir(temp_path, target_path)
     }
 }
 
@@ -6520,7 +6894,7 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
+    /// A single-point injector shared by the unix fault matrix and the Windows rollback tests.
     struct DirFault {
         point: AtomicDirFaultPoint,
     }
@@ -6563,7 +6937,6 @@ mod tests {
             Ok(())
         }
     }
-    #[cfg(unix)]
     impl AtomicDirInjector for DirFault {
         fn inject(&self, point: AtomicDirFaultPoint) -> std::io::Result<()> {
             if point == self.point {
@@ -6735,7 +7108,6 @@ mod tests {
         result
     }
 
-    #[cfg(unix)]
     fn run_atomic_dir_fault(
         source: &Path,
         target: &Path,
@@ -7468,6 +7840,162 @@ mod tests {
         assert!(victim.exists(), "the refusal removes nothing");
     }
 
+    /// A staging tree plus an absent destination, both inside one temp parent.
+    #[cfg(windows)]
+    fn windows_install_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let root = tempfile::tempdir().expect("tempdir");
+        let source = root.path().join("staging");
+        let target = root.path().join("installed");
+        std::fs::create_dir(&source).expect("staging");
+        std::fs::write(source.join("engine"), b"new").expect("staged file");
+        (root, source, target)
+    }
+
+    /// The Windows materialisation of `BackupRename` is the point *after* the live target has
+    /// been parked at `{INSTALL_BACKUP_PREFIX}<uuid>`, so an injected failure there exercises the
+    /// rollback rename rather than the pre-commit revalidation.
+    #[cfg(windows)]
+    struct FailingInstallAndRollback;
+
+    #[cfg(windows)]
+    impl AtomicDirInjector for FailingInstallAndRollback {
+        fn inject(&self, point: AtomicDirFaultPoint) -> std::io::Result<()> {
+            match point {
+                AtomicDirFaultPoint::InstallRename => {
+                    Err(std::io::Error::other("injected install rename"))
+                }
+                AtomicDirFaultPoint::RollbackRename => {
+                    Err(std::io::Error::other("injected rollback rename"))
+                }
+                _ => Ok(()),
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn install_dir_windows_absent_target_renames() {
+        let (_root, source, target) = windows_install_fixture();
+
+        atomic_install_dir(&source, &target).expect("install");
+
+        assert_eq!(
+            std::fs::read(target.join("engine")).expect("installed tree"),
+            b"new"
+        );
+        assert!(
+            !source.exists(),
+            "the staging name is consumed by the rename"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn install_dir_windows_backup_rename_rollbacks() {
+        let (root, source, target) = windows_install_fixture();
+        std::fs::create_dir(&target).expect("existing target");
+        std::fs::write(target.join("old"), b"old").expect("old tree");
+
+        let error = run_atomic_dir_fault(
+            &source,
+            &target,
+            Box::new(DirFault {
+                point: AtomicDirFaultPoint::BackupRename,
+            }),
+        )
+        .expect_err("the injected backup rename must fail the install");
+
+        assert!(matches!(error, Error::Io(_)), "{error:?}");
+        assert_eq!(
+            std::fs::read(target.join("old")).expect("old tree restored"),
+            b"old"
+        );
+        assert!(
+            !target.join("engine").exists(),
+            "the staged tree never lands"
+        );
+        assert!(
+            source.join("engine").is_file(),
+            "the staging tree is untouched"
+        );
+        let leftovers = std::fs::read_dir(root.path())
+            .expect("parent listing")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(INSTALL_BACKUP_PREFIX)
+            })
+            .count();
+        assert_eq!(
+            leftovers, 0,
+            "a successful rollback leaves no backup behind"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn install_dir_windows_rollback_failure_is_durability_uncertain() {
+        let (root, source, target) = windows_install_fixture();
+        std::fs::create_dir(&target).expect("existing target");
+        std::fs::write(target.join("old"), b"old").expect("old tree");
+        let capture = crate::error::LogCaptureScope::start();
+
+        let error = run_atomic_dir_fault(&source, &target, Box::new(FailingInstallAndRollback))
+            .expect_err("a failed rollback is durability-uncertain");
+
+        assert!(
+            matches!(
+                error,
+                Error::CommittedDurabilityUncertain(
+                    crate::error::DurabilityStage::DirectoryInstall
+                )
+            ),
+            "{error:?}"
+        );
+        assert!(!target.exists(), "the install rename never ran");
+        let backup_name = std::fs::read_dir(root.path())
+            .expect("parent listing")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name())
+            .find(|name| name.to_string_lossy().starts_with(INSTALL_BACKUP_PREFIX))
+            .map(|name| name.to_string_lossy().into_owned())
+            .expect("the parked old tree must remain for the user to see");
+        let messages = capture.messages();
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains(&backup_name)),
+            "the failed-rollback log must name the backup leaf {backup_name}: {messages:?}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn install_dir_windows_refuses_a_junction() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let source = root.path().join("staging");
+        let target = root.path().join("installed");
+        let outside = root.path().join("outside");
+        std::fs::create_dir(&outside).expect("outside");
+        let status = std::process::Command::new("cmd")
+            .arg("/C")
+            .arg("mklink")
+            .arg("/J")
+            .arg(&source)
+            .arg(&outside)
+            .status()
+            .expect("mklink must run");
+        assert!(status.success(), "mklink /J failed: {status}");
+
+        let error = atomic_install_dir(&source, &target)
+            .expect_err("a junction staging source must be refused");
+
+        assert!(matches!(error, Error::InvalidInput(_)), "{error:?}");
+        assert!(!target.exists(), "the refusal installs nothing");
+    }
+
     #[cfg(windows)]
     #[test]
     fn windows_replace_at_installs_durably() {
@@ -7831,15 +8359,5 @@ mod tests {
             .expect("a read-only ancestor must not block replacement")
             .expect_durable();
         assert_eq!(std::fs::read(&target).expect("target"), b"new");
-    }
-
-    #[cfg(not(unix))]
-    #[test]
-    fn non_unix_directory_install_is_explicitly_unsupported() {
-        let root = tempfile::tempdir().expect("tempdir");
-        assert!(matches!(
-            atomic_install_dir(&root.path().join("source"), &root.path().join("target")),
-            Err(Error::Conflict(_))
-        ));
     }
 }

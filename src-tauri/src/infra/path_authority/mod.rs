@@ -15444,13 +15444,15 @@ mod tests {
                     && !line.contains("impl ResolvedPath")
             })
             .count();
-        assert_eq!(constructor_count, 5, "{resolved}");
+        // Six sites: unix keeps its two, and the Windows walk adds the archive-direction leaf
+        // that returns the opened directory itself as the capability.
         assert_eq!(
+            constructor_count,
             unix_resolver.matches("ResolvedPath {").count()
                 + windows_resolver.matches("ResolvedPath {").count(),
-            5,
-            "{resolved}"
+            "every construction site must sit in a resolver"
         );
+        assert_eq!(constructor_count, 6, "resolved path construction sites");
         assert!(unix_resolver.contains("crate::infra::fs::open_regular_at"));
         assert_eq!(resolved.matches("File::open").count(), 1);
         assert!(body_at_indent(

@@ -87,6 +87,19 @@ mode"` routed label go with it. That leaves **2 body rows and 4 guard rows**,
 counted from the arrays below, and the Ok counterpart is pinned by
 `mark_engine_executable_windows_is_a_checked_noop` rather than by a refusal row.
 
+Phase 3 of that slice (`f-20260909-01`, d-20260918-10, d-20260918-11) ports the
+last two refusal bodies: `infra/fs.rs::atomic_install_dir` now dispatches to the
+shared `install_dir_driver` on both platforms and
+`infra/path_authority/resolved.rs::atomic_install_download_dir` delegates to it
+on both, so both body rows are deleted. The `fs.rs::download_engine_archive`
+guard row and its `"engine archive downloads"` routed refusal go with them,
+because production staging moved beside the destination
+(`private_tempdir_in`) and the command no longer refuses off unix. That leaves
+**0 body rows and 3 guard rows**, counted from the arrays below; with the body
+list empty the per-row counterpart loop is replaced by
+`remaining_refusal_body_rows_are_none`, and the last `refusal_text_has_one_source`
+carve-out (`"atomic directory installation is "`) is deleted.
+
 Staged failure matrix. Every run used a detached disposable worktree copied
 from this phase, mutated production files only, and ran the named
 `platform_support` test or filter with
@@ -1576,7 +1589,7 @@ mod tests {
     /// The live `(body_rows, guard_rows)` counts at the current phase boundary. Every
     /// `phase_*_removed_rows...` test reads this, so a phase that removes a row edits the live
     /// count in exactly one place instead of five copies.
-    const LIVE_REFUSAL_ROW_COUNTS: (usize, usize) = (2, 4);
+    const LIVE_REFUSAL_ROW_COUNTS: (usize, usize) = (0, 3);
 
     fn assert_removed_rows_are_ungated(phase: &str, rows: &[(&str, &str)]) {
         let (expected_body_rows, expected_guard_rows) = LIVE_REFUSAL_ROW_COUNTS;
@@ -1902,12 +1915,17 @@ mod tests {
             .is_some_and(|attribute| *attribute == expected)
     }
 
+    /// Phase 3 emptied `body_rows()`, so the per-row verifier below has no rows to walk. It is
+    /// retained rather than deleted: the next refusal row revives it wholesale, and the row list
+    /// — not the verifier — is what the phase boundary emptied.
+    #[allow(dead_code)]
     struct CfgBlock {
         attribute_start: usize,
         block: Range<usize>,
         is_not_unix: bool,
     }
 
+    #[allow(dead_code)]
     fn top_level_cfg_blocks(source: &str, body: &Range<usize>) -> Vec<CfgBlock> {
         let normalised = normalise(source, Literals::Blank);
         let mut blocks = Vec::new();
@@ -1950,6 +1968,7 @@ mod tests {
         blocks
     }
 
+    #[allow(dead_code)]
     fn effective_non_unix_body(source: &str, body: &Range<usize>, blocks: &[CfgBlock]) -> String {
         let mut effective = String::new();
         let mut cursor = body.start;
@@ -2045,6 +2064,7 @@ mod tests {
         }
     }
 
+    #[allow(dead_code)]
     enum ExpectedBody {
         /// No remaining refusal row is a bare counterpart after Phase 2 ported
         /// `mark_engine_executable` (d-20260918-09, R2-01). The variant stays so the verifier
@@ -2054,6 +2074,7 @@ mod tests {
         Exact(&'static str),
     }
 
+    #[allow(dead_code)]
     impl ExpectedBody {
         fn compact(&self) -> String {
             match self {
@@ -2065,6 +2086,7 @@ mod tests {
         }
     }
 
+    #[allow(dead_code)]
     #[derive(Clone, Copy)]
     enum BodyForm {
         /// See `ExpectedBody::Refusal`: the last counterpart row was deleted in Phase 2.
@@ -2073,6 +2095,7 @@ mod tests {
         Block,
     }
 
+    #[allow(dead_code)]
     struct BodyRow {
         file: &'static str,
         signature: &'static str,
@@ -2081,26 +2104,10 @@ mod tests {
     }
 
     fn body_rows() -> &'static [BodyRow] {
-        &[
-            BodyRow {
-                file: "infra/fs.rs",
-                signature: "pub fn atomic_install_dir(",
-                form: BodyForm::Block,
-                expected: ExpectedBody::Exact(
-                    r#"{let_=(temp_path,target_path);Err(Error::Conflict("atomic directory installation is unsupported on this platform: fd-relative no-follow and durable parent sync cannot be proven".into()))}"#,
-                ),
-            },
-            BodyRow {
-                file: "infra/path_authority/resolved.rs",
-                signature: "pub(crate) fn atomic_install_download_dir(",
-                form: BodyForm::Block,
-                expected: ExpectedBody::Exact(
-                    r#"{ifself.operation!=PathOperation::DownloadArchive{returnErr(Error::InvalidInput("resolved capability is not an archive destination".into(),));}lettarget=self.target.as_deref().ok_or_else(||{Error::InvalidInput("archive destination is a directory capability".into())})?;let_=(target,temporary_directory);Err(crate::infra::platform_support::unsupported("atomic archive installation",))}"#,
-                ),
-            },
-        ]
+        &[]
     }
 
+    #[allow(dead_code)]
     fn check_source_pin(row: &BodyRow, source: &str, errors: &mut Vec<String>) {
         let label = format!("{}: {}", row.file, row.signature);
         let starts = function_starts(source, row.signature);
@@ -2194,13 +2201,6 @@ mod tests {
 
     fn guard_rows() -> &'static [GuardRow] {
         &[
-            GuardRow {
-                file: "fs.rs",
-                signature: "pub async fn download_engine_archive(",
-                operation: "engine archive downloads",
-                effects: &["download_registry.begin("],
-                nested: false,
-            },
             GuardRow {
                 file: "oauth.rs",
                 signature: "pub async fn authenticate(",
@@ -2362,16 +2362,16 @@ mod tests {
         );
     }
 
+    /// Phase 3 ported the last two refusal bodies (`atomic_install_dir`,
+    /// `atomic_install_download_dir`), so `body_rows()` is now the empty remaining-refusal list.
+    /// The per-row loop above is gone rather than left vacuous; what is left to pin is the count
+    /// itself, so a re-added refusal row fails here and in `assert_removed_rows_are_ungated`.
     #[test]
-    fn non_unix_counterparts_have_only_typed_refusal_bodies() {
-        let mut errors = Vec::new();
-        for row in body_rows() {
-            check_source_pin(row, source_for(row.file), &mut errors);
-        }
+    fn remaining_refusal_body_rows_are_none() {
         assert!(
-            errors.is_empty(),
-            "effective non-unix body pins failed:\n{}",
-            errors.join("\n")
+            body_rows().is_empty(),
+            "refusal body rows remain: {}",
+            body_rows().len()
         );
     }
 
@@ -2659,16 +2659,11 @@ mod tests {
             let normalised = normalise(&source, Literals::Keep);
             for offset in normalised.match_indices(&needle).map(|(offset, _)| offset) {
                 if path.file_name().and_then(|name| name.to_str()) != Some("platform_support.rs") {
-                    let allowed = path.ends_with("infra/fs.rs")
-                        && normalised[..offset].ends_with("atomic directory installation is ")
-                        && normalised[offset + needle.len()..].starts_with(':');
-                    if !allowed {
-                        occurrences.push(format!(
-                            "{}:{}",
-                            path.display(),
-                            source[..offset].matches('\n').count() + 1
-                        ));
-                    }
+                    occurrences.push(format!(
+                        "{}:{}",
+                        path.display(),
+                        source[..offset].matches('\n').count() + 1
+                    ));
                 }
             }
         }
@@ -2680,18 +2675,11 @@ mod tests {
 
     #[test]
     fn routed_refusal_labels_are_unchanged() {
-        let expected = [
-            (
-                "infra/path_authority/mod.rs",
-                "post-rename marker timestamps",
-                "unsupported_plural",
-            ),
-            (
-                "infra/path_authority/resolved.rs",
-                "atomic archive installation",
-                "unsupported",
-            ),
-        ];
+        let expected = [(
+            "infra/path_authority/mod.rs",
+            "post-rename marker timestamps",
+            "unsupported_plural",
+        )];
         let mut errors = Vec::new();
         for (file, operation, function) in expected {
             let source = source_for(file);

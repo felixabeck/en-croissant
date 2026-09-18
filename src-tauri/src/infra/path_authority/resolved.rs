@@ -135,7 +135,7 @@ impl ResolvedPath {
         self.target.take()
     }
 
-    pub(super) fn target(&self) -> Option<&Path> {
+    pub(crate) fn target(&self) -> Option<&Path> {
         self.target.as_deref()
     }
 
@@ -158,17 +158,7 @@ impl ResolvedPath {
         let target = self.target.as_deref().ok_or_else(|| {
             Error::InvalidInput("archive destination is a directory capability".into())
         })?;
-        #[cfg(unix)]
-        {
-            crate::infra::fs::atomic_install_dir(temporary_directory, target)
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = (target, temporary_directory);
-            Err(crate::infra::platform_support::unsupported(
-                "atomic archive installation",
-            ))
-        }
+        crate::infra::fs::atomic_install_dir(temporary_directory, target)
     }
 
     /// Metadata from the exact opened object. It never reconstructs or reveals a pathname.
@@ -658,6 +648,22 @@ impl ResolvedPath {
             target: None,
         }
     }
+
+    /// Builds a `DownloadArchive` capability directly for the sibling-staging test. Its fields
+    /// are private to this module, and `publish_engine_archive_tree` needs a resolved destination
+    /// without driving a full authority walk; this is the narrower counterpart to `windows_test`
+    /// and is the only constructor that carries a `target`.
+    #[cfg(test)]
+    pub(crate) fn download_archive_test(target: PathBuf) -> Self {
+        Self {
+            operation: PathOperation::DownloadArchive,
+            file: None,
+            directory: None,
+            parent: None,
+            leaf: None,
+            target: Some(target),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -879,6 +885,17 @@ pub(super) fn resolve_windows(
         )
     }
 
+    /// `NtCreateFile` answers a non-directory at a `FILE_DIRECTORY_FILE` leaf with
+    /// `STATUS_NOT_A_DIRECTORY`, which `windows_open_status_error` maps to `ERROR_DIRECTORY`.
+    fn is_not_a_directory_error(error: &Error) -> bool {
+        matches!(
+            error,
+            Error::Io(error)
+                if error.raw_os_error()
+                    == Some(windows_sys::Win32::Foundation::ERROR_DIRECTORY as i32)
+        )
+    }
+
     // R1-03/R2-02 - two predicates, not one. The PARENT of the final component must carry
     // GENERIC_WRITE for any operation that creates or replaces the leaf, because the retained
     // parent descriptor also serves FILE_CREATE for the temporary and the RootDirectory rename,
@@ -925,6 +942,12 @@ pub(super) fn resolve_windows(
     };
     for (index, name) in names.iter().enumerate() {
         let last = index + 1 == names.len();
+        // An archive destination names a directory the renderer never creates: the engine
+        // download stages beside it and installs onto it, so the leaf is opened as a directory
+        // even when it is the final component. That turns "an existing regular file sits at the
+        // archive destination" into a typed refusal instead of an `Io` error from a
+        // non-directory open.
+        let download_dir_leaf = last && operation == PathOperation::DownloadArchive;
         // Every operation that can yield an EngineExecutable is kept open
         // without FILE_SHARE_DELETE until CreateProcess has opened it. This
         // seals the authority-validated path against replacement in the
@@ -935,7 +958,7 @@ pub(super) fn resolve_windows(
             FILE_OPEN,
             if last { access } else { parent_access },
             null(),
-            !last,
+            !last || download_dir_leaf,
             super::allows_delete_sharing_for_operation(operation, last),
         ) {
             Ok(file) => file,
@@ -951,9 +974,29 @@ pub(super) fn resolve_windows(
                     target: target.clone(),
                 });
             }
+            Err(error) if download_dir_leaf && is_not_a_directory_error(&error) => {
+                return Err(Error::InvalidInput(
+                    "archive destination must be a directory".into(),
+                ));
+            }
             Err(error) => return Err(error),
         };
         let meta = file.metadata()?;
+        if download_dir_leaf {
+            if super::is_reparse_point(&meta) || !meta.is_dir() {
+                return Err(Error::InvalidInput(
+                    "archive destination must be a directory".into(),
+                ));
+            }
+            return Ok(ResolvedPath {
+                operation,
+                file: None,
+                directory: Some(file),
+                parent: Some(handle.try_clone()?),
+                leaf: Some(name.clone()),
+                target,
+            });
+        }
         if super::is_reparse_point(&meta)
             || (!last && !meta.is_dir())
             || (last && !meta.is_dir() && !meta.is_file())
@@ -1015,5 +1058,30 @@ mod windows_tests {
             ResolvedPath::windows_test(PathOperation::ReadPgn, None).mark_engine_executable(),
             Err(Error::InvalidInput(_))
         ));
+    }
+
+    /// An archive destination is a directory leaf: a regular file already sitting there is a
+    /// typed `InvalidInput`, not the `Io` error a non-directory open would produce.
+    #[test]
+    fn download_archive_leaf_file_is_invalid_input() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("archive"), b"not a directory").unwrap();
+        let parent =
+            crate::infra::path_authority::open_windows_nofollow(dir.path(), false).unwrap();
+        let expected = crate::infra::path_authority::windows_file_identity(&parent).unwrap();
+        let components = vec![OsString::from("archive")];
+
+        let error = match resolve_windows(
+            dir.path(),
+            &expected,
+            true,
+            &components,
+            PathOperation::DownloadArchive,
+        ) {
+            Ok(_) => panic!("a file at the archive destination must be refused"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, Error::InvalidInput(_)), "{error:?}");
     }
 }
