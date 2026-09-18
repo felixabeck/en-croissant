@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: f941d69f7da54d181eeda36d4968efbb4a654c4f598292aa8052f362a5e17e5f
+# agent-kit-sha256: b4b315e4cd5166a369fbd1ec6a83a718eebd1fe8bda73c424090fed5a7cb5eac
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -1321,7 +1321,9 @@ def summary_buckets(findings: list[Finding]) -> SummaryBuckets:
     )
     approval_ids = {finding.id for finding in approvals}
     product = tuple(
-        finding for finding in open_findings if finding.blocked == FELIX_DECISION
+        finding
+        for finding in open_findings
+        if finding.blocked == FELIX_DECISION and finding.id not in approval_ids
     )
     preconditions = tuple(
         finding
@@ -3206,9 +3208,23 @@ def cmd_check(args: argparse.Namespace) -> int:
     return 0
 
 
+def _summary_blocker_slug(finding: Finding) -> str:
+    """The slug queue-facing surfaces print, including derived verifier drift.
+
+    A drifted Sentry-origin finding keeps ``Blocked: none`` on the ledger after
+    approval cleared the slug; ``list``/``next`` already substitute
+    ``sentry-unverified`` so the row still names the wait. Summary must emit
+    the same slug: otherwise ``kit findings`` groups the row under product
+    decisions because ``waiting[].class`` is only ``answerable|precondition``.
+    """
+    if finding.sentry_verification == "drifted":
+        return SENTRY_UNVERIFIED
+    return finding.blocked
+
+
 def _summary_waiting_row(finding: Finding) -> str:
     """One waiting row: id, the slug it waits on, and its heading."""
-    return f"  {finding.id}  {finding.blocked}  {finding.title}"
+    return f"  {finding.id}  {_summary_blocker_slug(finding)}  {finding.title}"
 
 
 def _render_summary_text(
@@ -3269,7 +3285,7 @@ def _summary_json_payload(
         return [
             {
                 "id": finding.id,
-                "blocked": finding.blocked,
+                "blocked": _summary_blocker_slug(finding),
                 "heading": finding.title,
                 "class": row_class,
             }
