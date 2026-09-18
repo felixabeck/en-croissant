@@ -2353,6 +2353,7 @@ impl AppDataDir {
     /// category.
     fn acquire(requested: &Path) -> Result<Self, Error> {
         Self::acquire_canonical(requested).map_err(|error| {
+            log::error!("application data directory acquisition failed: {error}");
             let kind = match &error {
                 Error::Io(error) => error.kind(),
                 _ => std::io::ErrorKind::Other,
@@ -5264,9 +5265,10 @@ impl PathAuthority {
     /// A default root whose load-time rebinding failed stays `Unavailable` under its old spelling,
     /// so the lexical lookup above misses the caller's canonical path. When exactly one
     /// `Unavailable` root of the same purpose carries the verified identity, the canonical path is
-    /// adopted onto that id instead of minting a second root, and every stored path that is a
-    /// component-wise descendant of the old spelling is moved under the canonical one.
-    /// `Available` entries are never rewritten.
+    /// adopted onto that id instead of minting a second root. Component-wise descendants of the
+    /// old spelling — including still-`Available` children — have that prefix rewritten, then
+    /// `refresh_entry` re-checks them. A second `Available` root of the same identity is never
+    /// adopted.
     fn adopt_unavailable_root(
         &mut self,
         path: &Path,
@@ -13317,8 +13319,8 @@ mod tests {
             let error = ensure_app_owned_default_dir(&AppDataDir::for_test(&app_data), root)
                 .expect_err("a symlinked leaf must be refused");
             assert!(
-                matches!(error, Error::Io(_)),
-                "{root:?} must be refused as Error::Io: {error:?}"
+                matches!(error, Error::Io(ref inner) if inner.to_string().contains("reparse point")),
+                "{root:?} must be refused as Error::Io mentioning a reparse point: {error:?}"
             );
             assert_eq!(
                 fs::read_dir(&elsewhere).unwrap().count(),
