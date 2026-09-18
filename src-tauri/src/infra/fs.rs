@@ -3297,28 +3297,32 @@ mod win {
     }
 
     /// Rename the parked old tree back onto the destination name after a failed install rename.
-    /// If this itself fails the installation has committed in name only, so the error is the
-    /// durability-uncertain one and the backup leaf is named in the log. Nothing here reaps
-    /// `INSTALL_BACKUP_PREFIX` leftovers: the user has to be able to see where the old tree went.
+    /// If this itself fails the destination name is still absent — nothing committed — so the
+    /// error is a path-free `Conflict`, not `CommittedDurabilityUncertain` (the renderer maps
+    /// durability to "applied-despite-error"). The backup leaf is named in the log. Nothing
+    /// here reaps `INSTALL_BACKUP_PREFIX` leftovers.
     fn rollback_backup(
         parent: &File,
         backup: &mut File,
         backup_name: &OsStr,
         target_name: &OsStr,
     ) -> Result<(), Error> {
-        let uncertain = |error: &Error| {
+        let incomplete = |error: &Error| {
             log::error!(
                 "directory install rollback failed; old tree left at {}: {error}",
                 backup_name.to_string_lossy()
             );
-            Error::CommittedDurabilityUncertain(crate::error::DurabilityStage::DirectoryInstall)
+            Error::Conflict(
+                "directory installation did not complete; the previous tree was not restored"
+                    .into(),
+            )
         };
         #[cfg(test)]
         if let Err(error) = inject_atomic_dir(AtomicDirFaultPoint::RollbackRename) {
-            return Err(uncertain(&error));
+            return Err(incomplete(&error));
         }
         rename_child(parent, backup, backup_name, target_name, false)
-            .map_err(|error| uncertain(&error))
+            .map_err(|error| incomplete(&error))
     }
 
     struct WindowsDirInstallAdapter;
@@ -7874,6 +7878,36 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn install_dir_windows_replaces_an_existing_target() {
+        let (root, source, target) = windows_install_fixture();
+        std::fs::create_dir(&target).expect("existing target");
+        std::fs::write(target.join("old"), b"old").expect("old tree");
+
+        atomic_install_dir(&source, &target).expect("replace");
+
+        assert_eq!(
+            std::fs::read(target.join("engine")).expect("new tree"),
+            b"new"
+        );
+        assert!(
+            !target.join("old").exists(),
+            "the displaced tree must be removed after a successful replace"
+        );
+        let leftovers = std::fs::read_dir(root.path())
+            .expect("parent listing")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(INSTALL_BACKUP_PREFIX)
+            })
+            .count();
+        assert_eq!(leftovers, 0, "a successful replace leaves no backup");
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn install_dir_windows_absent_target_renames() {
         let (_root, source, target) = windows_install_fixture();
 
@@ -7936,23 +7970,18 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn install_dir_windows_rollback_failure_is_durability_uncertain() {
+    fn install_dir_windows_rollback_failure_is_an_uncommitted_conflict() {
         let (root, source, target) = windows_install_fixture();
         std::fs::create_dir(&target).expect("existing target");
         std::fs::write(target.join("old"), b"old").expect("old tree");
         let capture = crate::error::LogCaptureScope::start();
 
         let error = run_atomic_dir_fault(&source, &target, Box::new(FailingInstallAndRollback))
-            .expect_err("a failed rollback is durability-uncertain");
+            .expect_err("a failed rollback did not commit");
 
         assert!(
-            matches!(
-                error,
-                Error::CommittedDurabilityUncertain(
-                    crate::error::DurabilityStage::DirectoryInstall
-                )
-            ),
-            "{error:?}"
+            matches!(error, Error::Conflict(_)),
+            "failed rollback must not claim durability-uncertain/applied: {error:?}"
         );
         assert!(!target.exists(), "the install rename never ran");
         let backup_name = std::fs::read_dir(root.path())
