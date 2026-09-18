@@ -977,8 +977,16 @@ fn generate_search_index_locked(
                     cancellation,
                 )
             });
-        search_cache.invalidate_database(target.path());
-        search_index::write_entries_to_at(target.parent(), &index_leaf, source, rows, cancellation)
+        let replace_guard = search_cache.begin_preferred_replace(target.path(), cancellation)?;
+        let outcome = search_index::write_entries_to_at(
+            target.parent(),
+            &index_leaf,
+            source,
+            rows,
+            cancellation,
+        );
+        drop(replace_guard);
+        outcome
     })?;
     // Publication has committed once `write_entries_to_at` returns. From here on the durability
     // and cache-invalidation tail must finish even if cancellation arrives concurrently.
@@ -2343,8 +2351,10 @@ fn delete_database_blocking(
     let mut unlinked = 0;
     let mut deletion_durability = None;
     let unlink_result = repository.delete_exclusive_cancellable(&target, cancellation, || {
-        search_cache.invalidate_database(target.path());
-        let result = unlink_database_files(&target, &expected_source)?;
+        let replace_guard = search_cache.begin_preferred_replace(target.path(), cancellation)?;
+        let result = unlink_database_files(&target, &expected_source);
+        drop(replace_guard);
+        let result = result?;
         unlinked = result.0;
         primary_gone = true;
         deletion_durability = result.1;
@@ -4009,6 +4019,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(index.source().object, source.object);
+        // Deletion waits for every lease on the preferred sidecar; this thread's clone would
+        // otherwise block its own delete.
+        drop(index);
 
         delete_database_blocking(
             &state.pgn_path_authority,

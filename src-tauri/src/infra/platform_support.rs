@@ -2990,4 +2990,155 @@ mod tests {
             errors.join("\n")
         );
     }
+
+    fn assert_in_order(body: &str, needles: &[&str]) {
+        let mut cursor = 0;
+        for needle in needles {
+            let offset = body[cursor..]
+                .find(needle)
+                .unwrap_or_else(|| panic!("{needle:?} missing or out of order in {body}"));
+            cursor += offset + needle.len();
+        }
+    }
+
+    fn assert_no_retry_loop(body: &str) {
+        for forbidden in ["loop{", "while", "for", "retry", "1224"] {
+            assert!(!body.contains(forbidden), "{forbidden:?} in {body}");
+        }
+    }
+
+    /// f-20260917-04. Generation takes the preferred-sidecar write-guard, mutates exactly once,
+    /// then drops the guard. It does not take `generation_lock`: the loader already holds it.
+    #[test]
+    fn search_index_generation_mutates_once_under_begin_preferred_replace() {
+        let source = source_for("db/mod.rs");
+        let body = compact(&source[braced_body(source, "fn generate_search_index_locked(")]);
+        assert_in_order(
+            &body,
+            &[
+                "letreplace_guard=search_cache.begin_preferred_replace(target.path(),cancellation)?;",
+                "search_index::write_entries_to_at(",
+                "drop(replace_guard);",
+            ],
+        );
+        assert_eq!(
+            body.matches("begin_preferred_replace(").count(),
+            1,
+            "{body}"
+        );
+        assert_eq!(body.matches("write_entries_to_at(").count(), 1, "{body}");
+        assert!(!body.contains("generation_lock"), "{body}");
+        let guarded = &body[body.find("begin_preferred_replace(").unwrap()
+            ..body.find("drop(replace_guard);").unwrap()];
+        assert_no_retry_loop(guarded);
+    }
+
+    /// f-20260917-04. Deletion takes the write-guard inside the exclusive closure, after
+    /// retirement, and unlinks exactly once; `unlink_database_files` keeps its signature.
+    #[test]
+    fn search_index_deletion_unlinks_once_under_begin_preferred_replace() {
+        let source = source_for("db/mod.rs");
+        let body = compact(&source[braced_body(source, "fn delete_database_blocking(")]);
+        let before_exclusive = &body[..body.find("delete_exclusive_cancellable(").unwrap()];
+        assert!(
+            !before_exclusive.contains("begin_preferred_replace"),
+            "{body}"
+        );
+        let closure = &body[body.find("delete_exclusive_cancellable(").unwrap()
+            ..body.find("ifletErr(error)=unlink_result").unwrap()];
+        assert_in_order(
+            closure,
+            &[
+                "letreplace_guard=search_cache.begin_preferred_replace(target.path(),cancellation)?;",
+                "unlink_database_files(&target,&expected_source);",
+                "drop(replace_guard);",
+            ],
+        );
+        assert_eq!(
+            closure.matches("unlink_database_files(").count(),
+            1,
+            "{closure}"
+        );
+        assert_eq!(
+            body.matches("begin_preferred_replace(").count(),
+            1,
+            "{body}"
+        );
+        let guarded = &closure[closure.find("begin_preferred_replace(").unwrap()
+            ..closure.find("drop(replace_guard);").unwrap()];
+        assert_no_retry_loop(guarded);
+        assert!(compact(source).contains(
+            "fnunlink_database_files(target:&DatabaseFileTarget,expected_source:&IndexSource,)->"
+        ));
+    }
+
+    /// f-20260917-04. Only the two writers call the write-guard; promotion never waits because
+    /// it only creates a preferred leaf that nothing in-process can have mapped.
+    #[test]
+    fn search_index_write_guard_callers_exclude_promotion() {
+        let mut callers = 0;
+        for file in ["db/mod.rs", "db/search.rs", "db/search_index.rs"] {
+            let source = source_for(file);
+            let normalised = normalise(source, Literals::Blank);
+            let test_start = normalised.find("mod tests {").unwrap_or(normalised.len());
+            callers += normalised[..test_start]
+                .matches(".begin_preferred_replace(")
+                .count();
+        }
+        assert_eq!(callers, 2);
+        let source = source_for("db/search_index.rs");
+        let promote =
+            compact(&source[braced_body(source, "pub(crate) fn promote_legacy_index_sidecar_at(")]);
+        assert!(!promote.contains("begin_preferred_replace"), "{promote}");
+        assert!(!promote.contains("lease_preferred_mapping"), "{promote}");
+    }
+
+    /// f-20260917-04. The loader leases the preferred leaf before opening or mapping it, and
+    /// `cache_loaded_index` publishes only through `insert_index`.
+    #[test]
+    fn search_index_reader_leases_before_opening_the_preferred_leaf() {
+        let source = source_for("db/search.rs");
+        let open = compact(&source[braced_body(source, "fn open_valid_preferred(")]);
+        assert_in_order(
+            &open,
+            &[
+                "search_cache.lease_preferred_mapping(target.path(),cancellation)?;",
+                "open_regular_at(",
+                "MmapSearchIndex::open_file_leased(file,lease,cancellation)",
+            ],
+        );
+        let cache = compact(&source[braced_body(source, "fn cache_loaded_index(")]);
+        assert_eq!(cache.matches("search_cache.").count(), 1, "{cache}");
+        assert!(cache.contains("search_cache.insert_index("), "{cache}");
+    }
+
+    /// f-20260917-04. `insert_index` reads draining inside the same `indexes` critical section
+    /// as the insert, and drops displaced indexes only after that section ends.
+    #[test]
+    fn search_index_insert_reads_draining_under_the_indexes_mutex() {
+        let source = source_for("main.rs");
+        let body = compact(&source[braced_body(source, "pub(crate) fn insert_index(")]);
+        let section_start = body.find("letmutcache=self.indexes.lock()").unwrap();
+        let section = &body[section_start..body.find("drop(discarded);").unwrap()];
+        assert_in_order(
+            section,
+            &[
+                "cache.get(&identity)",
+                ".is_draining()",
+                "cache.insert(identity,",
+            ],
+        );
+        let clear = compact(&source[braced_body(source, "pub(crate) fn clear(")]);
+        assert!(!clear.contains("mapping_gates.clear()"), "{clear}");
+        assert!(clear.contains("Arc::strong_count(gate)!=1"), "{clear}");
+        let guard = compact(&source[braced_body(source, "pub(crate) fn begin_preferred_replace(")]);
+        assert_in_order(
+            &guard,
+            &[
+                "|state|state.draining=true",
+                "self.invalidate_entries(database,Some(&gate));",
+                "|state|state.leases>0",
+            ],
+        );
+    }
 }

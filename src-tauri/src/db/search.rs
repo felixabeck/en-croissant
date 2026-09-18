@@ -212,7 +212,9 @@ pub(crate) fn load_search_index_cancellable(
         Some(cancellation),
     )?;
     let expected_source = IndexSource::from_database_identity(&db_identity)?;
-    if let Some(index) = open_valid_preferred(&read_target, &expected_source, cancellation)? {
+    if let Some(index) =
+        open_valid_preferred(search_cache, &read_target, &expected_source, cancellation)?
+    {
         return cache_loaded_index(
             search_cache,
             read_target.path(),
@@ -239,7 +241,9 @@ pub(crate) fn load_search_index_cancellable(
         Some(cancellation),
     )?;
     let expected_source = IndexSource::from_database_identity(&db_identity)?;
-    if let Some(index) = open_valid_preferred(&read_target, &expected_source, cancellation)? {
+    if let Some(index) =
+        open_valid_preferred(search_cache, &read_target, &expected_source, cancellation)?
+    {
         return cache_loaded_index(
             search_cache,
             read_target.path(),
@@ -260,7 +264,9 @@ pub(crate) fn load_search_index_cancellable(
         &db_identity,
         cancellation,
     )?;
-    if let Some(index) = open_valid_preferred(&mutate_target, &expected_source, cancellation)? {
+    if let Some(index) =
+        open_valid_preferred(search_cache, &mutate_target, &expected_source, cancellation)?
+    {
         return cache_loaded_index(
             search_cache,
             mutate_target.path(),
@@ -294,7 +300,9 @@ pub(crate) fn load_search_index_cancellable(
         Some(cancellation),
     )?;
     let expected_source = IndexSource::from_database_identity(&db_identity)?;
-    let Some(index) = open_valid_preferred(&read_target, &expected_source, cancellation)? else {
+    let Some(index) =
+        open_valid_preferred(search_cache, &read_target, &expected_source, cancellation)?
+    else {
         return Err(generation_error
             .unwrap_or_else(|| Error::Conflict("search index changed while loading".into())));
     };
@@ -312,10 +320,14 @@ pub(crate) fn load_search_index_cancellable(
 }
 
 fn open_valid_preferred(
+    search_cache: &SearchCache,
     target: &DatabaseFileTarget,
     expected_source: &IndexSource,
     cancellation: &CancellationToken,
 ) -> Result<Option<MmapSearchIndex>, Error> {
+    // The lease is taken before the leaf is opened, so a writer that has set
+    // draining never races this reader into a new mapping.
+    let lease = search_cache.lease_preferred_mapping(target.path(), cancellation)?;
     let leaf = preferred_sidecar_leaf(target.leaf());
     let file = match crate::infra::fs::open_regular_at(
         target.parent(),
@@ -331,7 +343,7 @@ fn open_valid_preferred(
             }
         },
     };
-    let index = match MmapSearchIndex::open_file_cancellable(file, cancellation) {
+    let index = match MmapSearchIndex::open_file_leased(file, lease, cancellation) {
         Ok(index) => index,
         Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::InvalidData => {
             return Ok(None)
@@ -352,14 +364,7 @@ fn cache_loaded_index(
         return Err(Error::Cancellation);
     }
     let identity = SearchIndexIdentity::for_database(database, expected_source)?;
-    if let Some(index) = search_cache.get_index(&identity) {
-        return Ok((identity, index));
-    }
-
-    if cancellation.is_cancelled() {
-        return Err(Error::Cancellation);
-    }
-    search_cache.insert_index(identity.clone(), index.clone());
+    let index = search_cache.insert_index(identity.clone(), index);
     Ok((identity, index))
 }
 
@@ -1230,7 +1235,12 @@ mod tests {
             .database_identity_expected(&target, target.identity(), None)
             .unwrap();
         let expected_source = IndexSource::from_database_identity(&db_identity).unwrap();
-        let result = open_valid_preferred(&target, &expected_source, &CancellationToken::new());
+        let result = open_valid_preferred(
+            &state.search_cache,
+            &target,
+            &expected_source,
+            &CancellationToken::new(),
+        );
         assert!(matches!(result, Ok(None)), "{result:?}");
         assert_eq!(std::fs::read(&outside).unwrap(), b"outside");
     }

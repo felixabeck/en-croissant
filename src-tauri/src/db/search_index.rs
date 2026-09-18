@@ -562,6 +562,9 @@ pub struct MmapSearchIndex {
     entry_count: usize,
     source: IndexSource,
     chunks: Arc<[ChunkMetadata]>,
+    /// Preferred-sidecar mapping lease, shared by every clone of this mapping.
+    /// Declared after `mmap` so the last clone unmaps before releasing it.
+    lease: Option<Arc<crate::MappingLease>>,
 }
 
 #[derive(Clone, Debug)]
@@ -594,6 +597,22 @@ impl MmapSearchIndex {
                 Error::from(error)
             }
         })
+    }
+
+    /// Maps a preferred sidecar under a lease taken with
+    /// `SearchCache::lease_preferred_mapping` before the leaf was opened.
+    pub(crate) fn open_file_leased(
+        file: File,
+        lease: crate::MappingLease,
+        cancellation: &CancellationToken,
+    ) -> Result<Self, Error> {
+        let mut index = Self::open_file_cancellable(file, cancellation)?;
+        index.lease = Some(Arc::new(lease));
+        Ok(index)
+    }
+
+    pub(crate) fn mapping_gate(&self) -> Option<&Arc<crate::MappingGate>> {
+        self.lease.as_ref().and_then(|lease| lease.gate())
     }
 
     fn open_file_inner(file: File, cancellation: Option<&CancellationToken>) -> io::Result<Self> {
@@ -731,6 +750,7 @@ impl MmapSearchIndex {
             entry_count: header.entry_count,
             source,
             chunks: chunks.into(),
+            lease: None,
         })
     }
 
@@ -1813,6 +1833,460 @@ mod tests {
         let error = MmapSearchIndex::open(&path).expect_err("v7 must be rejected");
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert!(error.to_string().contains("Unsupported version"));
+    }
+
+    const GATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+    struct MappingGateCase {
+        _dir: tempfile::TempDir,
+        database: PathBuf,
+        sidecar: PathBuf,
+        cache: Arc<crate::SearchCache>,
+    }
+
+    impl MappingGateCase {
+        fn new() -> Self {
+            let dir = tempdir().unwrap();
+            let database = dir.path().join("games.db3");
+            std::fs::write(&database, b"database").unwrap();
+            let sidecar = get_index_path(&database);
+            SearchIndexChunk {
+                entries: vec![test_entry(1, vec![])],
+            }
+            .write_to(&sidecar)
+            .unwrap();
+            Self {
+                _dir: dir,
+                database,
+                sidecar,
+                cache: Arc::new(crate::SearchCache::default()),
+            }
+        }
+
+        fn parent(&self) -> File {
+            #[cfg(unix)]
+            let parent = File::open(self.database.parent().unwrap()).unwrap();
+            #[cfg(windows)]
+            let parent = crate::infra::fs::windows_test_parent(self.database.parent().unwrap());
+            parent
+        }
+
+        fn leaf(&self) -> OsString {
+            self.sidecar.file_name().unwrap().to_owned()
+        }
+
+        /// The loader's admission: lease first, then open and map the leaf.
+        fn leased(&self, lease_path: &Path) -> MmapSearchIndex {
+            let token = CancellationToken::new();
+            let lease = self
+                .cache
+                .lease_preferred_mapping(lease_path, &token)
+                .unwrap();
+            MmapSearchIndex::open_file_leased(File::open(&self.sidecar).unwrap(), lease, &token)
+                .unwrap()
+        }
+
+        fn identity(&self) -> crate::SearchIndexIdentity {
+            crate::SearchIndexIdentity::for_database(&self.database, IndexSource::default())
+                .unwrap()
+        }
+
+        fn first_id(&self) -> i32 {
+            MmapSearchIndex::open(&self.sidecar)
+                .unwrap()
+                .get_entry_ref(0)
+                .unwrap()
+                .id
+        }
+    }
+
+    /// Runs the production generation mutate under the write-guard.
+    fn guarded_generation(
+        cache: &crate::SearchCache,
+        database: &Path,
+        parent: &File,
+        leaf: &OsStr,
+        token: &CancellationToken,
+    ) -> Result<AtomicFileOutcome, Error> {
+        let guard = cache.begin_preferred_replace(database, token)?;
+        let outcome = write_entries_to_at(
+            parent,
+            leaf,
+            IndexSource::default(),
+            vec![Ok(test_entry(2, vec![]))],
+            token,
+        );
+        drop(guard);
+        outcome
+    }
+
+    #[test]
+    fn search_index_mapping_gate_generation_waits_until_the_leased_clone_drops() {
+        let case = MappingGateCase::new();
+        let index = case.leased(&case.database);
+        let clone = index.clone();
+        drop(index);
+        let before = std::fs::read(&case.sidecar).unwrap();
+        let parked = case.cache.observe_mapping_gate_park(&case.database);
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let (cache, database, parent, leaf) = (
+            Arc::clone(&case.cache),
+            case.database.clone(),
+            case.parent(),
+            case.leaf(),
+        );
+        let writer = std::thread::spawn(move || {
+            let result =
+                guarded_generation(&cache, &database, &parent, &leaf, &CancellationToken::new());
+            let _ = done_tx.send(result.map(|_| ()));
+        });
+
+        parked
+            .recv_timeout(GATE_TIMEOUT)
+            .expect("writer must park on the live lease");
+        assert_eq!(
+            case.cache.mapping_gate_state(&case.database),
+            Some((1, true))
+        );
+        assert!(done_rx.try_recv().is_err(), "writer must still be waiting");
+        assert_eq!(std::fs::read(&case.sidecar).unwrap(), before);
+
+        drop(clone);
+        done_rx.recv_timeout(GATE_TIMEOUT).unwrap().unwrap();
+        writer.join().unwrap();
+        assert_eq!(case.first_id(), 2);
+        assert_eq!(case.cache.mapping_gate_count(), 0);
+    }
+
+    #[test]
+    fn search_index_mapping_gate_unlink_waits_until_the_leased_clone_drops() {
+        let case = MappingGateCase::new();
+        let clone = case.leased(&case.database).clone();
+        let object =
+            crate::infra::path_authority::opened_file_identity(&File::open(&case.sidecar).unwrap())
+                .unwrap();
+        let parked = case.cache.observe_mapping_gate_park(&case.database);
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let (cache, database, parent, leaf) = (
+            Arc::clone(&case.cache),
+            case.database.clone(),
+            case.parent(),
+            case.leaf(),
+        );
+        let writer = std::thread::spawn(move || {
+            let result = (|| {
+                let guard = cache.begin_preferred_replace(&database, &CancellationToken::new())?;
+                let removed = crate::infra::fs::remove_entry_at(&parent, &leaf, object, false);
+                drop(guard);
+                removed
+            })();
+            let _ = done_tx.send(result);
+        });
+
+        parked
+            .recv_timeout(GATE_TIMEOUT)
+            .expect("writer must park on the live lease");
+        assert!(done_rx.try_recv().is_err(), "writer must still be waiting");
+        assert!(case.sidecar.exists());
+
+        drop(clone);
+        done_rx.recv_timeout(GATE_TIMEOUT).unwrap().unwrap();
+        writer.join().unwrap();
+        assert!(!case.sidecar.exists());
+        assert_eq!(case.cache.mapping_gate_count(), 0);
+    }
+
+    #[test]
+    fn search_index_mapping_gate_cancelled_wait_leaves_sidecar_and_clears_draining() {
+        let case = MappingGateCase::new();
+        let clone = case.leased(&case.database);
+        let before = std::fs::read(&case.sidecar).unwrap();
+        let parked = case.cache.observe_mapping_gate_park(&case.database);
+        let token = CancellationToken::new();
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let (cache, database, parent, leaf, writer_token) = (
+            Arc::clone(&case.cache),
+            case.database.clone(),
+            case.parent(),
+            case.leaf(),
+            token.clone(),
+        );
+        let writer = std::thread::spawn(move || {
+            let result = guarded_generation(&cache, &database, &parent, &leaf, &writer_token);
+            let _ = done_tx.send(result.map(|_| ()));
+        });
+
+        parked.recv_timeout(GATE_TIMEOUT).unwrap();
+        token.cancel();
+        let result = done_rx.recv_timeout(GATE_TIMEOUT).unwrap();
+        writer.join().unwrap();
+        assert!(matches!(result, Err(Error::Cancellation)), "{result:?}");
+        assert_eq!(std::fs::read(&case.sidecar).unwrap(), before);
+        assert_eq!(
+            case.cache.mapping_gate_state(&case.database),
+            Some((1, false))
+        );
+
+        // A cancelled token only fails a lease that would have to wait on draining.
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        let admitted = case
+            .cache
+            .lease_preferred_mapping(&case.database, &cancelled)
+            .expect("draining must be cleared after a cancelled writer");
+        drop(admitted);
+        drop(clone);
+        assert_eq!(case.cache.mapping_gate_count(), 0);
+    }
+
+    #[test]
+    fn search_index_mapping_gate_generation_lock_does_not_block_a_cache_miss_map() {
+        let case = MappingGateCase::new();
+        let lock = case.cache.generation_lock(get_index_path(&case.database));
+        let _held = lock.lock();
+        let index = case.leased(&case.database);
+        assert_eq!(index.get_entry_ref(0).unwrap().id, 1);
+    }
+
+    #[test]
+    fn search_index_mapping_gate_parked_reader_waits_for_the_guard_not_the_mutate() {
+        let case = MappingGateCase::new();
+        let clone = case.leased(&case.database);
+        let writer_parked = case.cache.observe_mapping_gate_park(&case.database);
+
+        let (mutated_tx, mutated_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let (cache, database, parent, leaf) = (
+            Arc::clone(&case.cache),
+            case.database.clone(),
+            case.parent(),
+            case.leaf(),
+        );
+        let writer = std::thread::spawn(move || {
+            let token = CancellationToken::new();
+            let guard = cache.begin_preferred_replace(&database, &token).unwrap();
+            let outcome = write_entries_to_at(
+                &parent,
+                &leaf,
+                IndexSource::default(),
+                vec![Ok(test_entry(2, vec![]))],
+                &token,
+            );
+            let _ = mutated_tx.send(outcome.map(|_| ()));
+            let _ = release_rx.recv_timeout(GATE_TIMEOUT);
+            drop(guard);
+        });
+        writer_parked.recv_timeout(GATE_TIMEOUT).unwrap();
+
+        let reader_parked = case.cache.observe_mapping_gate_park(&case.database);
+        let (admitted_tx, admitted_rx) = std::sync::mpsc::channel();
+        let (cache, database) = (Arc::clone(&case.cache), case.database.clone());
+        let reader = std::thread::spawn(move || {
+            let lease = cache.lease_preferred_mapping(&database, &CancellationToken::new());
+            let _ = admitted_tx.send(lease.map(drop));
+        });
+        reader_parked
+            .recv_timeout(GATE_TIMEOUT)
+            .expect("second reader must park on draining");
+
+        drop(clone);
+        mutated_rx.recv_timeout(GATE_TIMEOUT).unwrap().unwrap();
+        assert!(
+            admitted_rx
+                .recv_timeout(std::time::Duration::from_millis(200))
+                .is_err(),
+            "reader must stay un-admitted until the write-guard drops"
+        );
+        release_tx.send(()).unwrap();
+        admitted_rx.recv_timeout(GATE_TIMEOUT).unwrap().unwrap();
+        writer.join().unwrap();
+        reader.join().unwrap();
+        assert_eq!(case.first_id(), 2);
+    }
+
+    #[test]
+    fn search_index_mapping_gate_insert_while_draining_does_not_grow_the_cache() {
+        let case = MappingGateCase::new();
+        let index = case.leased(&case.database);
+        let parked = case.cache.observe_mapping_gate_park(&case.database);
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let (cache, database) = (Arc::clone(&case.cache), case.database.clone());
+        let writer = std::thread::spawn(move || {
+            let guard = cache.begin_preferred_replace(&database, &CancellationToken::new());
+            let _ = done_tx.send(guard.map(drop));
+        });
+        parked.recv_timeout(GATE_TIMEOUT).unwrap();
+
+        let returned = case.cache.insert_index(case.identity(), index);
+        assert_eq!(case.cache.cached_index_count(), 0);
+        drop(returned);
+        done_rx.recv_timeout(GATE_TIMEOUT).unwrap().unwrap();
+        writer.join().unwrap();
+    }
+
+    #[test]
+    fn search_index_mapping_gate_insert_racing_the_writer_is_skipped_under_indexes() {
+        let case = MappingGateCase::new();
+        let (at_hook_tx, at_hook_rx) = std::sync::mpsc::channel();
+        let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+        case.cache.set_before_insert_index_hook(Box::new(move || {
+            let _ = at_hook_tx.send(());
+            let _ = go_rx.recv_timeout(GATE_TIMEOUT);
+        }));
+        let index = case.leased(&case.database);
+        let identity = case.identity();
+        let cache = Arc::clone(&case.cache);
+        let reader = std::thread::spawn(move || drop(cache.insert_index(identity, index)));
+        at_hook_rx.recv_timeout(GATE_TIMEOUT).unwrap();
+
+        let parked = case.cache.observe_mapping_gate_park(&case.database);
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let (cache, database) = (Arc::clone(&case.cache), case.database.clone());
+        let writer = std::thread::spawn(move || {
+            let guard = cache.begin_preferred_replace(&database, &CancellationToken::new());
+            let _ = done_tx.send(guard.map(drop));
+        });
+        parked.recv_timeout(GATE_TIMEOUT).unwrap();
+        go_tx.send(()).unwrap();
+
+        done_rx
+            .recv_timeout(GATE_TIMEOUT)
+            .expect("an insert under draining must not leave a cached lease behind")
+            .unwrap();
+        reader.join().unwrap();
+        writer.join().unwrap();
+        assert_eq!(case.cache.cached_index_count(), 0);
+    }
+
+    #[test]
+    fn search_index_mapping_gate_invalidates_a_cached_lease_whose_spelling_does_not_canonicalize() {
+        let case = MappingGateCase::new();
+        let spelling = case
+            .database
+            .parent()
+            .unwrap()
+            .join("unreachable-spelling")
+            .join("games.db3");
+        assert!(spelling.canonicalize().is_err());
+        drop(
+            case.cache
+                .insert_index(case.identity(), case.leased(&spelling)),
+        );
+        assert_eq!(case.cache.cached_index_count(), 1);
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let cache = Arc::clone(&case.cache);
+        let writer = std::thread::spawn(move || {
+            let guard = cache.begin_preferred_replace(&spelling, &CancellationToken::new());
+            let _ = done_tx.send(guard);
+        });
+        let guard = done_rx
+            .recv_timeout(GATE_TIMEOUT)
+            .expect("gate-pointer eviction must release the cached lease")
+            .unwrap();
+        writer.join().unwrap();
+        assert_eq!(case.cache.cached_index_count(), 0);
+        drop(guard);
+        assert_eq!(case.cache.mapping_gate_count(), 0);
+    }
+
+    #[test]
+    fn search_index_mapping_gate_write_guard_releases_a_cached_leased_index() {
+        let case = MappingGateCase::new();
+        drop(
+            case.cache
+                .insert_index(case.identity(), case.leased(&case.database)),
+        );
+        assert_eq!(
+            case.cache.mapping_gate_state(&case.database),
+            Some((1, false))
+        );
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let (cache, database) = (Arc::clone(&case.cache), case.database.clone());
+        let writer = std::thread::spawn(move || {
+            let guard = cache.begin_preferred_replace(&database, &CancellationToken::new());
+            let _ = done_tx.send(guard);
+        });
+        let guard = done_rx
+            .recv_timeout(GATE_TIMEOUT)
+            .expect("write-guard must not deadlock on a cached lease")
+            .unwrap();
+        writer.join().unwrap();
+        assert_eq!(
+            case.cache.mapping_gate_state(&case.database),
+            Some((0, true))
+        );
+        drop(guard);
+    }
+
+    #[test]
+    fn search_index_mapping_gate_clear_keeps_a_live_gate_and_reclaims_idle_ones() {
+        let case = MappingGateCase::new();
+        let guard = case
+            .cache
+            .begin_preferred_replace(&case.database, &CancellationToken::new())
+            .unwrap();
+        case.cache.clear();
+        assert_eq!(case.cache.mapping_gate_count(), 1);
+        assert_eq!(
+            case.cache.mapping_gate_state(&case.database),
+            Some((0, true))
+        );
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        assert!(matches!(
+            case.cache
+                .lease_preferred_mapping(&case.database, &cancelled),
+            Err(Error::Cancellation)
+        ));
+        drop(guard);
+        assert_eq!(case.cache.mapping_gate_count(), 0);
+
+        let index = case.leased(&case.database);
+        assert_eq!(case.cache.mapping_gate_count(), 1);
+        drop(index);
+        assert_eq!(case.cache.mapping_gate_count(), 0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn search_index_mapping_gate_external_mapper_fails_once_with_user_mapped_file() {
+        struct MutateAttempts(std::sync::atomic::AtomicUsize);
+
+        impl crate::infra::fs::AtomicWriterInjector for MutateAttempts {
+            fn inject(&self, point: crate::infra::fs::AtomicFileFaultPoint) -> io::Result<()> {
+                if point == crate::infra::fs::AtomicFileFaultPoint::TempfileCreate {
+                    self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+                Ok(())
+            }
+        }
+
+        let case = MappingGateCase::new();
+        let external = File::open(&case.sidecar).unwrap();
+        // An unleased mapping stands in for a mapper outside this process.
+        let mapped = unsafe { Mmap::map(&external) }.unwrap();
+        let attempts = Arc::new(MutateAttempts(std::sync::atomic::AtomicUsize::new(0)));
+        set_test_atomic_file_injector(Some(attempts.clone()));
+        let result = guarded_generation(
+            &case.cache,
+            &case.database,
+            &case.parent(),
+            &case.leaf(),
+            &CancellationToken::new(),
+        );
+        set_test_atomic_file_injector(None);
+        drop(mapped);
+
+        assert!(
+            matches!(result, Err(Error::Io(ref error)) if error.raw_os_error() == Some(1224)),
+            "{result:?}"
+        );
+        assert_eq!(attempts.0.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[test]
