@@ -26,7 +26,7 @@ const mocks = vi.hoisted(() => ({
       path: "stockfish-17/stockfish",
       sha256: "a".repeat(64),
       signature: "sig",
-      downloadLink: "https://www.encroissant.org/engines/stockfish.zip",
+      downloadLink: "https://example.com/engines/stockfish.zip",
     },
   ],
   installDefaultEngine: vi.fn(),

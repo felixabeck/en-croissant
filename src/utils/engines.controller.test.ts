@@ -11,15 +11,29 @@ const native = vi.hoisted(() => ({
     downloadEngineArchive: vi.fn(),
     registerInstalledEngine: vi.fn(),
     getEngineConfig: vi.fn(),
+    isBmi2Compatible: vi.fn(),
+    verifySignedBytes: vi.fn(),
 }));
+
+const remote = vi.hoisted(() => ({ get: vi.fn() }));
+vi.mock("@/platform/http", () => ({ remoteHttp: remote }));
 
 vi.mock("@/platform/tauri", async () => {
     const actual = await vi.importActual<typeof import("@/platform/tauri")>("@/platform/tauri");
     return { ...actual, tauri: native };
 });
 
+import { createElement } from "react";
+import { act } from "react";
+import { createRoot } from "react-dom/client";
+import { SWRConfig } from "swr";
 import { TauriCommandError } from "@/platform/tauri";
+import engineCatalogDocument from "@/catalogs/engines.json?raw";
+import engineCatalogSignature from "@/catalogs/engines.json.minisig?raw";
 import {
+    EngineCatalogVerificationError,
+    loadDefaultEngineCatalog,
+    useDefaultEngines,
     getBestMoves,
     prepareEngineSearch,
     installDefaultEngine,
@@ -143,7 +157,7 @@ describe("engine registration recovery", () => {
             path: "stockfish-17/stockfish",
             sha256: "a".repeat(64),
             signature: "sig",
-            downloadLink: "https://www.encroissant.org/engines/stockfish.zip",
+            downloadLink: "https://example.com/engines/stockfish.zip",
         };
         native.getEngineWorkspace.mockResolvedValue(root);
         native.engineArchiveDestination.mockResolvedValue({ id: "dest" });
@@ -177,5 +191,82 @@ describe("engine registration recovery", () => {
         } finally {
             uuid.mockRestore();
         }
+    });
+});
+
+describe("bundled default-engine catalog", () => {
+    beforeEach(() => {
+        native.verifySignedBytes.mockReset();
+        native.isBmi2Compatible.mockReset();
+        remote.get.mockReset();
+    });
+
+    it("verifies the exact bundled bytes before parsing", async () => {
+        native.verifySignedBytes.mockResolvedValue(null);
+        const engines = await loadDefaultEngineCatalog();
+        expect(native.verifySignedBytes).toHaveBeenCalledWith(
+            engineCatalogDocument,
+            engineCatalogSignature,
+        );
+        expect(engines.length).toBeGreaterThan(0);
+        expect(engines.every((entry) => entry.type === "local")).toBe(true);
+    });
+
+    it("reports a failed document signature as a distinct error without parsing", async () => {
+        const failure = new Error("artifact manifest signature verification failed");
+        native.verifySignedBytes.mockRejectedValue(failure);
+        const parse = vi.spyOn(JSON, "parse");
+        const error = await loadDefaultEngineCatalog("not json", "sig").catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(EngineCatalogVerificationError);
+        expect((error as EngineCatalogVerificationError).cause).toBe(failure);
+        expect(parse).not.toHaveBeenCalledWith("not json");
+        parse.mockRestore();
+    });
+
+    async function renderDefaultEngines() {
+        const seen: Array<ReturnType<typeof useDefaultEngines>> = [];
+        function Probe() {
+            seen.push(useDefaultEngines("linux", true));
+            return null;
+        }
+        const container = document.createElement("div");
+        const root = createRoot(container);
+        await act(async () => {
+            root.render(
+                createElement(
+                    SWRConfig,
+                    { value: { provider: () => new Map(), dedupingInterval: 0 } },
+                    createElement(Probe),
+                ),
+            );
+        });
+        await vi.waitFor(() => expect(seen.at(-1)?.isLoading).toBe(false));
+        const result = seen.at(-1)!;
+        act(() => root.unmount());
+        return result;
+    }
+
+    it("filters the verified catalog by OS and BMI2 without any HTTP call", async () => {
+        const fetchSpy = vi.spyOn(globalThis, "fetch");
+        native.isBmi2Compatible.mockResolvedValue(true);
+        native.verifySignedBytes.mockResolvedValue(null);
+        const { defaultEngines, error } = await renderDefaultEngines();
+        expect(error).toBeUndefined();
+        expect(defaultEngines?.length).toBeGreaterThan(0);
+        expect(
+            defaultEngines?.every((entry) => entry.os === "linux" && entry.bmi2 === true),
+        ).toBe(true);
+        expect(remote.get).not.toHaveBeenCalled();
+        expect(fetchSpy).not.toHaveBeenCalled();
+        fetchSpy.mockRestore();
+    });
+
+    it("exposes a verification failure as an error rather than an empty list", async () => {
+        native.isBmi2Compatible.mockResolvedValue(true);
+        native.verifySignedBytes.mockRejectedValue(new Error("verification failed"));
+        const { defaultEngines, error } = await renderDefaultEngines();
+        expect(defaultEngines).toBeUndefined();
+        expect(error).toBeInstanceOf(EngineCatalogVerificationError);
+        expect(remote.get).not.toHaveBeenCalled();
     });
 });

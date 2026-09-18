@@ -5,9 +5,12 @@ test("accounts-puzzles-engines: local engine validation is visible before any na
     mockScenario,
     capture,
 }) => {
-    await mockScenario({ commands: { is_bmi2_compatible: { result: false } } });
-    await page.route("https://www.encroissant.org/engines?*", async (route) => {
-        await route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
+    // The engine catalog is bundled; only its native signature check is mocked.
+    await mockScenario({
+        commands: {
+            is_bmi2_compatible: { result: false },
+            verify_signed_bytes: { result: null },
+        },
     });
     await page.goto("/engines");
     await page.getByRole("button", { name: "Add New", exact: true }).click();

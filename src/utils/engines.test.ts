@@ -14,7 +14,7 @@ const manifestEntry = {
     type: "local" as const,
     name: "Stockfish",
     version: "17",
-    downloadLink: "https://www.encroissant.org/engines/stockfish.zip",
+    downloadLink: "https://example.com/engines/stockfish.zip",
     sha256: "a".repeat(64),
     signature: "minisign signature",
     os: "linux" as const,
@@ -66,13 +66,13 @@ describe("default-engine installed identity", () => {
         version: "17",
         filename: "stockfish",
         handle: { id: { id: "capability-1" }, kind: "engine" },
-        downloadLink: "https://www.encroissant.org/engines/stockfish.zip",
+        downloadLink: "https://example.com/engines/stockfish.zip",
     };
 
     it("does not treat a distinct download as installed just because the names match", () => {
         expect(
             isManifestEngineInstalled([stockfish], {
-                downloadLink: "https://www.encroissant.org/engines/stockfish-dev.zip",
+                downloadLink: "https://example.com/engines/stockfish-dev.zip",
             }),
         ).toBe(false);
     });
@@ -105,7 +105,7 @@ describe("default-engine installed identity", () => {
         expect(card.progressId).not.toBe("engine_0");
         expect(
             manifestEngineInstallCard([stockfish], {
-                downloadLink: "https://www.encroissant.org/engines/stockfish-dev.zip",
+                downloadLink: "https://example.com/engines/stockfish-dev.zip",
             }).initInstalled,
         ).toBe(false);
     });

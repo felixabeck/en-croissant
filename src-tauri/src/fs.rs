@@ -25,8 +25,9 @@ const DOWNLOAD_DEADLINE: Duration = Duration::from_secs(60 * 60);
 const MAX_ARCHIVE_PATH_BYTES: usize = 1024;
 #[cfg(unix)]
 const MAX_ARCHIVE_PATH_COMPONENTS: usize = crate::infra::fs::MAX_REMOVE_TREE_DEPTH - 1;
-const ARTIFACT_MANIFEST_PUBLIC_KEY: &str =
-    "RWSF3PMxhuaQf7613UytN4bdF7FQyBymLJVDIG3OE8xNa+0fcs6KE6/J";
+/// Standard minisign public-key file of the fork release key: an `untrusted comment:` line, then
+/// the `RW…` key line. Only the key line is handed to the verifier.
+const RELEASE_MINISIGN_PUBLIC_KEY_FILE: &str = include_str!("../keys/release.minisign.pub");
 
 /// Signals a staging producer at its deadline but keeps awaiting its real exit. The caller's
 /// native lease therefore continues to account for a blocking extractor and its private cleanup.
@@ -285,6 +286,16 @@ fn validate_artifact_integrity(
     url: &str,
     integrity: Option<&ArtifactIntegrity>,
 ) -> Result<(), Error> {
+    validate_artifact_integrity_with(op, url, integrity, verify_release_signature)
+}
+
+/// `verify` is the production key in every non-test caller; tests inject a fixture key.
+fn validate_artifact_integrity_with(
+    op: OpClass,
+    url: &str,
+    integrity: Option<&ArtifactIntegrity>,
+    verify: impl Fn(&[u8], &str) -> Result<(), Error>,
+) -> Result<(), Error> {
     let required = matches!(op, OpClass::Engine | OpClass::Db | OpClass::PuzzleDb);
     let Some(integrity) = integrity else {
         return if required {
@@ -303,13 +314,44 @@ fn validate_artifact_integrity(
     {
         return Err(Error::InvalidInput("invalid artifact SHA-256".into()));
     }
-    let key = minisign_verify::PublicKey::from_base64(ARTIFACT_MANIFEST_PUBLIC_KEY)
-        .map_err(|_| Error::InvalidInput("artifact verification key is invalid".into()))?;
-    let signature = minisign_verify::Signature::decode(&integrity.signature)
-        .map_err(|_| Error::InvalidInput("invalid artifact manifest signature".into()))?;
     let payload = format!("{url}\n{}", integrity.sha256.to_ascii_lowercase());
-    key.verify(payload.as_bytes(), &signature, true)
+    verify(payload.as_bytes(), &integrity.signature)
+}
+
+/// Returns the `RW…` key line of the committed release public-key file.
+fn release_public_key_line(file: &str) -> Result<&str, Error> {
+    file.lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("RW"))
+        .ok_or_else(|| Error::InvalidInput("artifact verification key is invalid".into()))
+}
+
+/// Verifies a minisign signature over `payload` with the fork release key.
+fn verify_release_signature(payload: &[u8], signature_text: &str) -> Result<(), Error> {
+    let key_line = release_public_key_line(RELEASE_MINISIGN_PUBLIC_KEY_FILE)?;
+    verify_minisign_signature(key_line, payload, signature_text)
+}
+
+/// Shared minisign check for per-entry artifact payloads and signed catalog documents.
+pub(crate) fn verify_minisign_signature(
+    key_line: &str,
+    payload: &[u8],
+    signature_text: &str,
+) -> Result<(), Error> {
+    let key = minisign_verify::PublicKey::from_base64(key_line)
+        .map_err(|_| Error::InvalidInput("artifact verification key is invalid".into()))?;
+    let signature = minisign_verify::Signature::decode(signature_text)
+        .map_err(|_| Error::InvalidInput("invalid artifact manifest signature".into()))?;
+    key.verify(payload, &signature, true)
         .map_err(|_| Error::InvalidInput("artifact manifest signature verification failed".into()))
+}
+
+/// Verifies a detached minisign signature over the exact UTF-8 bytes of a bundled catalog
+/// document. It authenticates the bytes only; callers parse the document afterwards.
+#[tauri::command]
+#[specta::specta]
+pub async fn verify_signed_bytes(payload: String, signature: String) -> Result<(), Error> {
+    verify_release_signature(payload.as_bytes(), &signature)
 }
 
 fn is_bearer_origin(url: &reqwest::Url) -> bool {
@@ -2785,6 +2827,126 @@ mod tests {
             Some(&integrity),
         )
         .is_err());
+    }
+
+    const FIXTURE_KEY_FILE: &str = "untrusted comment: minisign public key: 65C91D6C15CCA09E\nRWSeoMwVbB3JZcZPvs3BaTowDrUVLpnsrQ8HTgrJnKNZJAnA/6C6/IZr\n";
+    const FIXTURE_DOCUMENT: &str = "[{\"fixture\":true}]\n";
+    const FIXTURE_DOCUMENT_SIGNATURE: &str = "untrusted comment: signature from tauri secret key\nRUSeoMwVbB3JZVkPIyrRxx59DReIPL/CsQ56EZEf2KF/YhjrawABTgv9gKWI7TUb/41yDxtJ8jgml8lYQebPdfpUfNO3tt0xYQY=\ntrusted comment: timestamp:1789770950\tfile:doc\nUBFgHQFDuFfx3UUtc3SaF3z4NuXsQADvIj3KwCf9/LhwgrbsYPqhqSccdJ/f+0oataIoP+Pqxxc2dulznzDNCw==\n";
+    const FIXTURE_ENTRY_URL: &str = "https://example.com/engine.zip";
+    const FIXTURE_ENTRY_SIGNATURE: &str = "untrusted comment: signature from tauri secret key\nRUSeoMwVbB3JZbcm4KridnLveV32EEC9lc/mn4QY/bJHitItGxgiVmDmoWTxW10ZFTIL1+JPBwLpP2a7qNNFMNCRd1rzbnEAzQo=\ntrusted comment: timestamp:1789770951\tfile:entry\nANuUX9ig1RReLQypPm6+UiPp0euvqQuhxD78u8yOjRe/l6Bl3eayMozJBPk9TRjGhcH+67Cqeuge6lDzKlyjDQ==\n";
+
+    fn fixture_verify(payload: &[u8], signature: &str) -> Result<(), Error> {
+        verify_minisign_signature(
+            release_public_key_line(FIXTURE_KEY_FILE)?,
+            payload,
+            signature,
+        )
+    }
+
+    #[test]
+    fn catalog_minisign_fixture_round_trip_accepts_and_rejects_tampering() {
+        fixture_verify(FIXTURE_DOCUMENT.as_bytes(), FIXTURE_DOCUMENT_SIGNATURE).unwrap();
+        let tampered = FIXTURE_DOCUMENT.replace("true", "false");
+        assert_eq!(
+            fixture_verify(tampered.as_bytes(), FIXTURE_DOCUMENT_SIGNATURE)
+                .unwrap_err()
+                .to_string(),
+            "Invalid input: artifact manifest signature verification failed"
+        );
+        // The fixture key is not the production key, so the command rejects fixture signatures.
+        assert!(tauri::async_runtime::block_on(verify_signed_bytes(
+            FIXTURE_DOCUMENT.into(),
+            FIXTURE_DOCUMENT_SIGNATURE.into(),
+        ))
+        .is_err());
+    }
+
+    #[test]
+    fn catalog_minisign_fixture_artifact_integrity_round_trip() {
+        let integrity = ArtifactIntegrity {
+            sha256: "AB".repeat(32),
+            signature: FIXTURE_ENTRY_SIGNATURE.into(),
+        };
+        validate_artifact_integrity_with(
+            OpClass::Engine,
+            FIXTURE_ENTRY_URL,
+            Some(&integrity),
+            fixture_verify,
+        )
+        .unwrap();
+        let tampered = ArtifactIntegrity {
+            sha256: "ac".repeat(32),
+            signature: FIXTURE_ENTRY_SIGNATURE.into(),
+        };
+        assert!(validate_artifact_integrity_with(
+            OpClass::Engine,
+            FIXTURE_ENTRY_URL,
+            Some(&tampered),
+            fixture_verify,
+        )
+        .is_err());
+        assert!(validate_artifact_integrity_with(
+            OpClass::Engine,
+            "https://example.com/other.zip",
+            Some(&integrity),
+            fixture_verify,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn catalog_minisign_production_verifies_committed_engine_catalog() {
+        let public_key_file = include_str!("../keys/release.minisign.pub");
+        assert_eq!(
+            release_public_key_line(RELEASE_MINISIGN_PUBLIC_KEY_FILE).unwrap(),
+            public_key_file.lines().nth(1).unwrap()
+        );
+        let document = include_str!("../../src/catalogs/engines.json");
+        let signature = include_str!("../../src/catalogs/engines.json.minisig");
+        tauri::async_runtime::block_on(verify_signed_bytes(document.into(), signature.into()))
+            .unwrap();
+        assert!(tauri::async_runtime::block_on(verify_signed_bytes(
+            format!("{document} "),
+            signature.into(),
+        ))
+        .is_err());
+
+        let entries: Vec<serde_json::Value> = serde_json::from_str(document).unwrap();
+        assert!(!entries.is_empty());
+        for entry in entries {
+            let integrity = ArtifactIntegrity {
+                sha256: entry["sha256"].as_str().unwrap().into(),
+                signature: entry["signature"].as_str().unwrap().into(),
+            };
+            validate_artifact_integrity(
+                OpClass::Engine,
+                entry["downloadLink"].as_str().unwrap(),
+                Some(&integrity),
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn catalog_minisign_invalid_key_is_a_typed_error() {
+        for key_line in ["RWnot-base64", "", "RW"] {
+            assert_eq!(
+                verify_minisign_signature(
+                    key_line,
+                    FIXTURE_DOCUMENT.as_bytes(),
+                    FIXTURE_DOCUMENT_SIGNATURE,
+                )
+                .unwrap_err()
+                .to_string(),
+                "Invalid input: artifact verification key is invalid"
+            );
+        }
+        for file in ["", "untrusted comment: no key line\n"] {
+            assert_eq!(
+                release_public_key_line(file).unwrap_err().to_string(),
+                "Invalid input: artifact verification key is invalid"
+            );
+        }
     }
 
     #[tokio::test]

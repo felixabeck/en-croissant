@@ -13,6 +13,18 @@ async closeSplashscreen() : Promise<Result<null, ErrorPayload>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Verifies a detached minisign signature over the exact UTF-8 bytes of a bundled catalog
+ * document. It authenticates the bytes only; callers parse the document afterwards.
+ */
+async verifySignedBytes(payload: string, signature: string) : Promise<Result<null, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("verify_signed_bytes", { payload, signature }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async prepareNativeRead() : Promise<Result<string, ErrorPayload>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("prepare_native_read") };

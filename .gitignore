@@ -70,3 +70,6 @@ tasks/.*.part
 # `build` run artefacts. Plans are a run artefact, not a deliverable — the permanent
 # trail is the commit messages and `tasks/findings.md`.
 tasks/plans/
+
+# Minisign release private keys never enter the repository.
+*.minisign.key

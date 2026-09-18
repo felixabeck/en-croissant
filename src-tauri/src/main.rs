@@ -97,7 +97,7 @@ use crate::{
     },
     fs::{
         cancel_download, download_engine_archive, download_file, download_lichess_games,
-        file_exists, get_file_metadata,
+        file_exists, get_file_metadata, verify_signed_bytes,
     },
     opening::{
         get_opening_from_fen, get_opening_from_fens, get_opening_from_name, search_opening_name,
@@ -2247,6 +2247,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let specta_builder = tauri_specta::Builder::new()
         .commands(tauri_specta::collect_commands!(
             close_splashscreen,
+            verify_signed_bytes,
             prepare_native_read,
             cancel_native_read,
             prepare_analysis,

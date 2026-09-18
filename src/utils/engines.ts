@@ -1,5 +1,6 @@
 import { tauri } from "@/platform/tauri";
-import { remoteHttp } from "@/platform/http";
+import engineCatalogDocument from "@/catalogs/engines.json?raw";
+import engineCatalogSignature from "@/catalogs/engines.json.minisig?raw";
 import { runWithAppliedRecovery } from "@/platform/errors";
 import type { Platform } from "@/platform/native";
 import useSWR from "swr";
@@ -157,8 +158,9 @@ export type DefaultEngine = Omit<LocalEngine, "handle" | "filename"> & {
 };
 
 /**
- * The manifest document is unsigned. Per-entry signatures authenticate only the download URL and
- * SHA-256, so path and other metadata remain untrusted until the backend validates them.
+ * The bundled catalog document is authenticated by a detached minisign signature over its exact
+ * bytes. Per-entry signatures still authenticate only the download URL and SHA-256; the backend
+ * remains the containment boundary for `path`.
  */
 export const defaultEngineManifestSchema = z
     .object({
@@ -258,20 +260,38 @@ export function getBestMoves(
     return tauri.getBestMoves(engine.id, engine.handle, tab, goMode, options, generation);
 }
 
+/** Raised when the bundled engine catalog does not match its release signature. */
+export class EngineCatalogVerificationError extends Error {
+    constructor(cause: unknown) {
+        super("engine catalog signature verification failed", { cause });
+        this.name = "EngineCatalogVerificationError";
+    }
+}
+
+export async function loadDefaultEngineCatalog(
+    document: string = engineCatalogDocument,
+    signature: string = engineCatalogSignature,
+): Promise<DefaultEngine[]> {
+    try {
+        await tauri.verifySignedBytes(document, signature);
+    } catch (error) {
+        throw new EngineCatalogVerificationError(error);
+    }
+    // Parse only after the backend verified the exact bytes.
+    const parsed = z.array(defaultEngineManifestSchema).parse(JSON.parse(document));
+    return parsed.map((engine) => {
+        const record = engine as DefaultEngine & { image?: unknown };
+        const imageUrl =
+            engine.imageUrl ?? (typeof record.image === "string" ? record.image : undefined);
+        return imageUrl ? { ...engine, imageUrl } : engine;
+    }) as DefaultEngine[];
+}
+
 export function useDefaultEngines(os: Platform | undefined, opened: boolean) {
     const { data, error, isLoading } = useSWR(opened ? os : null, async (os: Platform) => {
         const bmi2: boolean = await tauri.isBmi2Compatible();
-        // The manifest document is unsigned: per-entry signatures authenticate only
-        // `${downloadLink}\n${sha256}`; `path` and the other metadata are not covered.
-        const url = new URL("/engines", "https://www.encroissant.org");
-        url.searchParams.set("os", os);
-        url.searchParams.set("bmi2", String(bmi2));
-        const data = await remoteHttp.get(url.toString(), {
-            schema: z.array(defaultEngineManifestSchema),
-        });
-        return data.filter(
-            (engine) => engine.os === os && engine.bmi2 === bmi2,
-        ) as unknown as DefaultEngine[];
+        const engines = await loadDefaultEngineCatalog();
+        return engines.filter((engine) => engine.os === os && engine.bmi2 === bmi2);
     });
     return {
         defaultEngines: data,
