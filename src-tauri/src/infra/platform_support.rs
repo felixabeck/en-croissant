@@ -2433,24 +2433,20 @@ mod tests {
             ("db/mod.rs", "export_to_pgn_blocking"),
         ];
         let mut errors = Vec::new();
-        for path in rust_source_paths() {
-            let source = std::fs::read_to_string(&path).unwrap();
-            let key = file_key(&path);
-            let production = production_region(&source);
-            let normalised = normalise(production, Literals::Blank);
+        for_each_production_region(|key, source, normalised| {
             let count = normalised.matches(".replace_pgn_atomic(").count();
-            match expected.iter().find(|(file, _)| *file == key.as_str()) {
+            match expected.iter().find(|(file, _)| *file == key) {
                 Some((_, function)) => {
                     if count != 1 {
                         errors.push(format!(
                             "{key}: expected one production .replace_pgn_atomic( call, found {count}"
                         ));
-                        continue;
+                        return;
                     }
                     let call = normalised
                         .find(".replace_pgn_atomic(")
                         .expect("the counted call exists");
-                    match enclosing_function_name(&source, call) {
+                    match enclosing_function_name(source, call) {
                         Some(name) if name == *function => {}
                         other => errors.push(format!(
                             "{key}: .replace_pgn_atomic( must be in {function}, enclosing {other:?}"
@@ -2465,7 +2461,7 @@ mod tests {
                     }
                 }
             }
-        }
+        });
         assert!(
             errors.is_empty(),
             "production replace_pgn_atomic call pin failed:\n{}",
@@ -2496,15 +2492,11 @@ mod tests {
             ("export_to_pgn_blocking", &["export_to_pgn"]),
         ];
         let mut errors = Vec::new();
-        for path in rust_source_paths() {
-            let source = std::fs::read_to_string(&path).unwrap();
-            let key = file_key(&path);
-            let production = production_region(&source);
-            let normalised = normalise(production, Literals::Blank);
+        for_each_production_region(|key, source, normalised| {
             for (callee, allowed) in rows {
                 let token = format!("{callee}(");
                 for (call, _) in normalised.match_indices(&token) {
-                    let Some(enclosing) = enclosing_function_name(&source, call) else {
+                    let Some(enclosing) = enclosing_function_name(source, call) else {
                         // A callee's own declaration: the signature is outside every body.
                         continue;
                     };
@@ -2515,12 +2507,41 @@ mod tests {
                     }
                 }
             }
-        }
+        });
         assert!(
             errors.is_empty(),
             "production PGN atomic-path caller pin failed:\n{}",
             errors.join("\n")
         );
+    }
+
+    /// Every production `off_unix_refusal(` call goes through `crate::infra::platform_support::`
+    /// and is a `guard_rows` site. A new first-statement (or late) refusal that is not a row
+    /// would leave the PGN call-graph pins green.
+    #[test]
+    fn production_off_unix_refusal_calls_match_guard_rows() {
+        let mut count = 0;
+        for_each_production_region(|_, _, normalised| {
+            count += normalised
+                .matches("crate::infra::platform_support::off_unix_refusal(")
+                .count();
+        });
+        assert_eq!(
+            count,
+            guard_rows().len(),
+            "production off_unix_refusal calls {count} != guard_rows {}",
+            guard_rows().len()
+        );
+    }
+
+    fn for_each_production_region(mut visit: impl FnMut(&str, &str, &str)) {
+        for path in rust_source_paths() {
+            let source = std::fs::read_to_string(&path).unwrap();
+            let key = file_key(&path);
+            let production = production_region(&source);
+            let normalised = normalise(production, Literals::Blank);
+            visit(&key, &source, &normalised);
+        }
     }
 
     /// The production region of one scanned file: everything before the first `mod tests` whose
