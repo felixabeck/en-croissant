@@ -7047,7 +7047,7 @@ Handled 2026-09-19. Root cause measured in the real WebKitGTK window: the first 
 
 ### `computeCoverageForFen` has no in-progress guard, so a repetition line recurses until the stack overflows
 
-* **ID:** f-20260906-01 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260906-01 · **Status:** handled · **Area:** chess-tree · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src/utils/repertoire.ts:104-185`, specifically the `memo.get(fen)` read at line 112.
 * **Defect:** `memo.set(fen, res)` runs only *after* the recursive calls return (lines 148, 181 and
   the early-return branches). While a FEN is still on the call stack its memo entry does not exist,
