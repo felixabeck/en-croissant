@@ -18,8 +18,6 @@ import { runTabCreation } from "@/utils/tabs";
 import { fileWorkspaceKey } from "@/utils/pathCapabilities";
 import type { Entry, FileMetadata } from "./file";
 
-export const DragContext = null as never;
-
 type VisibleEntry = { entry: Entry; depth: number };
 
 function filteredTree(files: Entry[], search: string, filter: string): Entry[] {
