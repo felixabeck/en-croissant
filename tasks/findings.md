@@ -6976,7 +6976,7 @@ Plan: `tasks/plans/2026-09-19-owned-staging-dir.md` (gitignored). Handoff: `task
 
 ### The Files page lost its file card in the audit commit, and double-click does not open a file in the real window
 
-* **ID:** f-20260905-14 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260905-14 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src/components/files/FilesPage.tsx` (renders only `DirectoryTree`, with
   `search=""` and `filter=""` hard-coded), `src/components/files/FileCard.tsx` (still in the
   tree, imported by nothing), `src/components/files/DirectoryTree.tsx` (row `onDoubleClick` on a
