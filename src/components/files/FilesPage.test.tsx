@@ -70,19 +70,6 @@ vi.mock("@mantine/core", () => ({
       {children}
     </button>
   ),
-  Chip: ({
-    checked,
-    onChange,
-    children,
-  }: {
-    checked: boolean;
-    onChange: (checked: boolean) => void;
-    children: React.ReactNode;
-  }) => (
-    <button type="button" aria-pressed={checked} onClick={() => onChange(!checked)}>
-      {children}
-    </button>
-  ),
   Center: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   Group: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   Input: ({
@@ -106,8 +93,36 @@ vi.mock("@mantine/core", () => ({
       </div>
     ) : null,
   Paper: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  ScrollArea: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  Select: () => null,
+  Box: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  ScrollArea: {
+    Autosize: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  },
+  Select: ({
+    "aria-label": ariaLabel,
+    label,
+    value,
+    onChange,
+    data,
+  }: {
+    "aria-label"?: string;
+    label?: string;
+    value: string | null;
+    onChange: (value: string | null) => void;
+    data: { value: string; label: string }[];
+  }) => (
+    <select
+      aria-label={ariaLabel ?? label}
+      value={value ?? ""}
+      onChange={(event) => onChange(event.currentTarget.value || null)}
+    >
+      <option value="" />
+      {data.map((item) => (
+        <option key={item.value} value={item.value}>
+          {item.label}
+        </option>
+      ))}
+    </select>
+  ),
   SimpleGrid: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   Stack: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   Text: ({ children, ...props }: React.HTMLAttributes<HTMLParagraphElement>) => (
@@ -653,13 +668,21 @@ describe("workspace controls", () => {
     expect(tree().getAttribute("data-search")).toBe("sam");
   });
 
-  test("choosing the active type filter again returns to all types", () => {
+  test("the type filter reaches the tree and clearing it returns to all types", () => {
+    const select = container.querySelector(
+      'select[aria-label="Files.FileType"]',
+    ) as HTMLSelectElement;
+    const choose = (value: string) =>
+      act(() => {
+        select.value = value;
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      });
     expect(tree().getAttribute("data-filter")).toBe("");
-    click("Files.FileType.Puzzle");
+    choose("puzzle");
     expect(tree().getAttribute("data-filter")).toBe("puzzle");
-    click("Files.FileType.Game");
+    choose("game");
     expect(tree().getAttribute("data-filter")).toBe("game");
-    click("Files.FileType.Game");
+    choose("");
     expect(tree().getAttribute("data-filter")).toBe("");
   });
 

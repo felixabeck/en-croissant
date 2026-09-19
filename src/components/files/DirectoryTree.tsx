@@ -213,7 +213,9 @@ export default function DirectoryTree({
               <IconFileDescription size={16} />
             )}
           </>
-          <Text size="sm">{node.name}</Text>
+          <Text size="sm" miw={0} style={{ overflowWrap: "anywhere" }}>
+            {node.name}
+          </Text>
           {!isDirectory && <Badge size="xs">{node.numGames}</Badge>}
           <IconAction
             label={t("Common.Delete")}

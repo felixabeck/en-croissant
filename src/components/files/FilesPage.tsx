@@ -2,9 +2,9 @@ import { tauri } from "@/platform/tauri";
 import { runAppliedMutationWithRefresh, runDestructiveWithRefresh } from "@/platform/errors";
 import { runUnlessCancelled } from "@/components/files/notifyError";
 import {
+  Box,
   Button,
   Center,
-  Chip,
   Group,
   Input,
   Paper,
@@ -33,6 +33,12 @@ import { workspaceEntryToEntry } from "./file";
 
 const fileAction = { file: "file", folder: "folder", rename: "rename" } as const;
 type FileAction = (typeof fileAction)[keyof typeof fileAction];
+const FILE_CARD_HEIGHT = "32rem";
+// At 320px and a 200% font scale a label is wider than its column: let it wrap instead of clipping.
+const wrappingButton = {
+  root: { height: "auto", minHeight: "var(--button-height)" },
+  label: { whiteSpace: "normal", overflowWrap: "anywhere" },
+} as const;
 const fileTypes: FileType[] = ["game", "repertoire", "tournament", "puzzle", "other"];
 
 function findEntry(entries: Entry[], key: string): Entry | null {
@@ -175,10 +181,19 @@ export default function FilesPage() {
     await mutate().catch(() => {});
   }
   return (
-    <Stack h="100%" p="md">
+    // The page scrolls as a whole and the columns take their content's height: at a 200% font
+    // scale they are taller than the window and must never be squeezed over each other.
+    <Stack h="100%" p={{ base: "xs", sm: "md" }} style={{ overflow: "auto" }}>
       <Group justify="space-between" wrap="wrap">
-        <Title miw={0}>{t("Files.Title")}</Title>
-        <Button miw={0} disabled={picking} onClick={() => void chooseWorkspace()}>
+        <Title miw={0} fz={{ base: "h3", sm: "h1" }} style={{ overflowWrap: "anywhere" }}>
+          {t("Files.Title")}
+        </Title>
+        <Button
+          miw={0}
+          styles={wrappingButton}
+          disabled={picking}
+          onClick={() => void chooseWorkspace()}
+        >
           {workspace
             ? t("Files.ChangeCollection", { defaultValue: "Change collection" })
             : t("Files.ChooseCollection", { defaultValue: "Choose collection" })}
@@ -194,9 +209,9 @@ export default function FilesPage() {
         </Center>
       )}
       {workspace && (
-        <SimpleGrid cols={{ base: 1, sm: 2 }} flex={1} mih={0} miw={0}>
-          <Paper withBorder p="sm" miw={0} mih={{ base: "20rem", sm: 0 }} h={{ sm: "100%" }}>
-            <Stack gap="xs" h="100%" miw={0}>
+        <SimpleGrid cols={{ base: 1, sm: 2 }} flex="1 0 auto" miw={0}>
+          <Paper withBorder p={{ base: 6, sm: "sm" }} miw={0}>
+            <Stack gap="xs" miw={0}>
               <Group gap="xs" wrap="wrap" miw={0}>
                 <Input
                   size="sm"
@@ -208,27 +223,29 @@ export default function FilesPage() {
                   value={search}
                   onChange={(event) => setSearch(event.currentTarget.value)}
                 />
-                <Button miw={0} onClick={() => setAction(fileAction.file)}>
+                <Button miw={0} styles={wrappingButton} onClick={() => setAction(fileAction.file)}>
                   {t("Files.CreateFile", { defaultValue: "Create file" })}
                 </Button>
-                <Button miw={0} onClick={() => setAction(fileAction.folder)}>
+                <Button
+                  miw={0}
+                  styles={wrappingButton}
+                  onClick={() => setAction(fileAction.folder)}
+                >
                   {t("Files.CreateFolder", { defaultValue: "Create folder" })}
                 </Button>
               </Group>
-              <Group gap={4} wrap="wrap" miw={0} role="group" aria-label={t("Files.FileType")}>
-                {fileTypes.map((type) => (
-                  <Chip
-                    key={type}
-                    variant="outline"
-                    size="sm"
-                    checked={filter === type}
-                    // Choosing the active type again returns to all types.
-                    onChange={() => setFilter(filter === type ? "" : type)}
-                  >
-                    {fileTypeLabels[type]}
-                  </Chip>
-                ))}
-              </Group>
+              {/* A select, not five chips: at 320px and a 200% font scale one chip is wider than the column. */}
+              <Select
+                size="sm"
+                miw={0}
+                clearable
+                aria-label={t("Files.FileType")}
+                placeholder={t("Files.FileType")}
+                value={filter || null}
+                // Choosing the active type again, or clearing, returns to all types.
+                onChange={(value) => setFilter((value as FileType | null) ?? "")}
+                data={fileTypes.map((type) => ({ value: type, label: fileTypeLabels[type] }))}
+              />
               {trashed && (
                 <Group wrap="wrap" miw={0}>
                   <Text size="sm" miw={0}>
@@ -237,10 +254,19 @@ export default function FilesPage() {
                       name: trashed.name,
                     })}
                   </Text>
-                  <Button size="xs" onClick={() => setRestoreTarget(trashed)}>
+                  <Button
+                    size="xs"
+                    styles={wrappingButton}
+                    onClick={() => setRestoreTarget(trashed)}
+                  >
                     {t("Common.Undo", { defaultValue: "Undo" })}
                   </Button>
-                  <Button size="xs" color="red" onClick={() => setPurgeTarget(trashed)}>
+                  <Button
+                    size="xs"
+                    styles={wrappingButton}
+                    color="red"
+                    onClick={() => setPurgeTarget(trashed)}
+                  >
                     {t("Files.DeletePermanently", { defaultValue: "Delete permanently" })}
                   </Button>
                 </Group>
@@ -260,7 +286,7 @@ export default function FilesPage() {
                       {actionError}
                     </Text>
                   )}
-                  <ScrollArea flex={1} mih={0}>
+                  <ScrollArea.Autosize mah="60vh" mih="8rem">
                     <DirectoryTree
                       files={data}
                       refreshDirectory={async () => mutate()}
@@ -276,17 +302,18 @@ export default function FilesPage() {
                       search={search}
                       filter={filter}
                     />
-                  </ScrollArea>
+                  </ScrollArea.Autosize>
                 </>
               )}
             </Stack>
           </Paper>
-          <Paper withBorder p="sm" miw={0} mih={{ base: "20rem", sm: 0 }} h={{ sm: "100%" }}>
+          <Paper withBorder p={{ base: 6, sm: "sm" }} miw={0}>
             {selected?.type === "file" ? (
-              <Stack gap="xs" h="100%" miw={0}>
+              <Stack gap="xs" miw={0}>
                 <Group gap="xs" wrap="wrap" miw={0}>
                   <Button
                     size="xs"
+                    styles={wrappingButton}
                     onClick={() => {
                       setName(selected.name);
                       setAction(fileAction.rename);
@@ -294,17 +321,29 @@ export default function FilesPage() {
                   >
                     {t("Files.Rename", { defaultValue: "Rename" })}
                   </Button>
-                  <Button size="xs" onClick={() => setMoveTarget(fileWorkspaceKey(workspace))}>
+                  <Button
+                    size="xs"
+                    styles={wrappingButton}
+                    onClick={() => setMoveTarget(fileWorkspaceKey(workspace))}
+                  >
                     {t("Files.Move", { defaultValue: "Move" })}
                   </Button>
-                  <Button size="xs" color="red" onClick={() => setDeleteTarget(selected)}>
+                  <Button
+                    size="xs"
+                    styles={wrappingButton}
+                    color="red"
+                    onClick={() => setDeleteTarget(selected)}
+                  >
                     {t("Files.Trash", { defaultValue: "Trash" })}
                   </Button>
                 </Group>
-                <FileCard key={fileWorkspaceKey(selected.handle)} selected={selected} />
+                {/* The card splits a definite height between its game list and preview. */}
+                <Box h={FILE_CARD_HEIGHT}>
+                  <FileCard key={fileWorkspaceKey(selected.handle)} selected={selected} />
+                </Box>
               </Stack>
             ) : selected?.type === "directory" ? (
-              <Center h="100%">
+              <Center mih="12rem">
                 <Stack align="center" gap="xs" miw={0}>
                   <Text fw={600} size="lg" miw={0}>
                     {selected.name}
@@ -318,7 +357,7 @@ export default function FilesPage() {
                 </Stack>
               </Center>
             ) : (
-              <Center h="100%">
+              <Center mih="12rem">
                 <Text c="dimmed" ta="center">
                   {t("Files.NoSelection", { defaultValue: "No file selected" })}
                 </Text>
