@@ -2,10 +2,12 @@ import {
   Box,
   Button,
   Group,
+  RangeSlider,
   SegmentedControl,
   Select,
   SimpleGrid,
   Stack,
+  Switch,
   Text,
 } from "@mantine/core";
 import { DateInput } from "@mantine/dates";
@@ -19,6 +21,8 @@ import { Chessground } from "@/chessground/Chessground";
 import PiecesGrid from "@/components/boards/PiecesGrid";
 import { PlayerSearchInput } from "@/components/databases/PlayerSearchInput";
 import { currentLocalOptionsAtom } from "@/state/atoms";
+
+const YEAR_PRESETS = [1, 3, 5, 10];
 
 function LocalOptionsPanel({ boardFen }: { boardFen: string }) {
   const { t } = useTranslation();
@@ -35,6 +39,7 @@ function LocalOptionsPanel({ boardFen }: { boardFen: string }) {
   };
 
   const [selectedPiece, setSelectedPiece] = useState<Piece | null>(null);
+  const [eloDraft, setEloDraft] = useState<[number, number] | null>(null);
 
   return (
     <Stack>
@@ -84,6 +89,24 @@ function LocalOptionsPanel({ boardFen }: { boardFen: string }) {
               })
             }
           />
+          <Group gap={4}>
+            {YEAR_PRESETS.map((years) => (
+              <Button
+                key={years}
+                size="compact-xs"
+                variant="default"
+                onClick={() =>
+                  // Rolling window from today; the To date is left as is.
+                  setOptions((q) => ({
+                    ...q,
+                    start_date: dayjs().subtract(years, "year").format("YYYY.MM.DD"),
+                  }))
+                }
+              >
+                {t("Board.Database.Local.LastYears", { count: years })}
+              </Button>
+            ))}
+          </Group>
         </Stack>
         <Stack gap={4}>
           <Text fw="bold" fz="sm">
@@ -130,6 +153,44 @@ function LocalOptionsPanel({ boardFen }: { boardFen: string }) {
           />
         </Stack>
       </SimpleGrid>
+
+      <Stack gap={4}>
+        <Text fw="bold" fz="sm">
+          {t("Board.Database.Local.Elo")}
+        </Text>
+        <Text c="dimmed" fz="xs">
+          {t("Board.Database.Local.Elo.BothPlayers")}
+        </Text>
+        <RangeSlider
+          step={10}
+          min={0}
+          max={3000}
+          marks={[
+            { value: 1000, label: String(1000) },
+            { value: 2000, label: String(2000) },
+            { value: 3000, label: String(3000) },
+          ]}
+          value={eloDraft ?? options.elo ?? [0, 3000]}
+          onChange={setEloDraft}
+          onChangeEnd={(value) => {
+            // Commit once per drag so the search does not rerun on every tick.
+            setEloDraft(null);
+            setOptions((q) => ({ ...q, elo: value }));
+          }}
+        />
+      </Stack>
+
+      <Switch
+        // Mantine's label element also wraps the description; keep the accessible name to the label.
+        aria-label={t("Board.Database.Local.ExcludeFastEvents")}
+        label={t("Board.Database.Local.ExcludeFastEvents")}
+        description={t("Board.Database.Local.ExcludeFastEvents.Description")}
+        checked={options.exclude_fast_events ?? false}
+        onChange={(event) => {
+          const checked = event.currentTarget.checked;
+          setOptions((q) => ({ ...q, exclude_fast_events: checked }));
+        }}
+      />
 
       <Stack gap={4}>
         <Text fw="bold" fz="sm">

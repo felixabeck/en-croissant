@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { DatabaseHandle } from "@/bindings";
+import type { DatabaseHandle, GameQuery } from "@/bindings";
+import type { LocalOptions } from "@/components/panels/database/DatabasePanel";
 
 const mocks = vi.hoisted(() => ({
     getDatabaseWorkspace: vi.fn(),
@@ -9,6 +10,7 @@ const mocks = vi.hoisted(() => ({
     logWarn: vi.fn(),
     verifySignedBytes: vi.fn(),
     remoteGet: vi.fn(),
+    searchPosition: vi.fn(),
 }));
 vi.mock("@/platform/tauri", () => ({
     tauri: {
@@ -16,6 +18,7 @@ vi.mock("@/platform/tauri", () => ({
         listWorkspaceDatabases: mocks.listWorkspaceDatabases,
         getDbInfo: mocks.getDbInfo,
         verifySignedBytes: mocks.verifySignedBytes,
+        searchPosition: mocks.searchPosition,
     },
 }));
 vi.mock("@/platform/native", () => ({ error: mocks.logError, warn: mocks.logWarn }));
@@ -37,6 +40,7 @@ import {
     manifestDatabaseInstallCard,
     manifestPuzzleDatabaseInstallCard,
     sameDatabaseHandle,
+    searchPosition,
     type ManagedDatabaseInfo,
 } from "./db";
 
@@ -314,5 +318,51 @@ describe("bundled default catalogs", () => {
         await expect(getDefaultPuzzleDatabases()).rejects.toBeInstanceOf(CatalogVerificationError);
         expect(fetch).not.toHaveBeenCalled();
         expect(mocks.remoteGet).not.toHaveBeenCalled();
+    });
+});
+
+describe("searchPosition query mapping", () => {
+    const localOptions = (overrides: Partial<LocalOptions> = {}): LocalOptions => ({
+        path: handle("local"),
+        fen: "8/8/8/8/8/8/8/8 w - - 0 1",
+        type: "exact",
+        player: null,
+        color: "white",
+        result: "any",
+        ...overrides,
+    });
+    const sentQuery = async (options: LocalOptions): Promise<GameQuery> => {
+        mocks.searchPosition.mockResolvedValue([[], []]);
+        await searchPosition(options, "tab-1");
+        return mocks.searchPosition.mock.calls[0][1] as GameQuery;
+    };
+
+    it("sends the Elo band as both range1 and range2", async () => {
+        const query = await sentQuery(localOptions({ elo: [1850, 2350] }));
+
+        expect(query.range1).toEqual([1850, 2350]);
+        expect(query.range2).toEqual([1850, 2350]);
+    });
+
+    it("omits both ranges when the slider is untouched or at [0, 3000]", async () => {
+        for (const elo of [undefined, [0, 3000] as [number, number]]) {
+            mocks.searchPosition.mockClear();
+            const query = await sentQuery(localOptions({ elo }));
+
+            expect(query).not.toHaveProperty("range1");
+            expect(query).not.toHaveProperty("range2");
+        }
+    });
+
+    it("omits exclude_fast_events when off and sends true when on", async () => {
+        for (const off of [undefined, false]) {
+            mocks.searchPosition.mockClear();
+            const query = await sentQuery(localOptions({ exclude_fast_events: off }));
+            expect(query).not.toHaveProperty("exclude_fast_events");
+        }
+
+        mocks.searchPosition.mockClear();
+        const query = await sentQuery(localOptions({ exclude_fast_events: true }));
+        expect(query.exclude_fast_events).toBe(true);
     });
 });
