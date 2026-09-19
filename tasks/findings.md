@@ -6955,6 +6955,21 @@ Plan: `tasks/plans/2026-09-19-owned-staging-dir.md` (gitignored). Handoff: `task
 * **Found by:** Felix's screenshot of the Files page after choosing the repertoire collection,
   session 2026-09-05.
 
+* **Handled 2026-09-19:** `c21d71b1` renders `IconFolderSymlink` (`size={16} aria-hidden`) as the
+  Move control's child and keeps `label` for the tooltip and accessible name. The unit test asserts
+  an empty text content and an `aria-hidden` svg child; the tests lens saw both go red with the text
+  child restored (`expected 'Files.Move' to be ''`). `database-files` and `confirmation-error` were
+  re-recorded inside the pinned container (`d-20260829-01`) — Felix ran `pnpm test:e2e:update`,
+  because the project settings deny every snapshot-update form to a Claude session; the pre-update
+  diff was confined to the old "1ov" glyphs.
+* **Same-area fix from the root-cause lens:** `cb9d3c30` narrows `IconAction`'s `children` from
+  `ReactNode` to `ReactElement`, so a text child is a compile error (TS2322 seen with the old child
+  restored; all existing call sites compile). The lens swept every `IconAction` call site and found
+  no second text child.
+* **Rejected:** `IconArrowsMove` (reads as drag/pan, and the control opens a destination-folder
+  dialog); a children-shape rule in `scripts/check-ui-boundaries.mjs` (the type already refuses it).
+<!-- ledger-meta {"command":"annotate","effect_lines":13,"effect_sha256":"7d11492fa22ca3533924e7b8543435c533b2f52eb12c5dae1fe4b1ceeceb4802","input_sha256":"4680c6e4bff0e5787503101c421ab3781b4d6cb35864c2b74be27034db275f5a","kind":"mutation-receipt","operation":"bcba074e497c7cfd1c2856080a3bcd2939aafc0b85f8c62f90552e986956cac1","options":{"section":null},"request_id_sha256":null,"results":["f-20260905-13"],"target":"f-20260905-13","v":1} -->
+
 ---
 
 ## 2026-09-05 — filed through the inbox spool
