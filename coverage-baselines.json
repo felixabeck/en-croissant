@@ -92,7 +92,8 @@
           "src/components/puzzles/**",
           "src/utils/chessdb/**",
           "src/utils/engines.ts",
-          "src/utils/puzzles.ts"
+          "src/utils/puzzles.ts",
+          "src/utils/signedCatalog.ts"
         ]
       },
       {
