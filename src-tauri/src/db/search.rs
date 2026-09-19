@@ -477,14 +477,16 @@ fn load_excluded_fast_game_ids(db: &mut SqliteConnection) -> Result<HashSet<i32>
 fn parse_wanted_result(value: Option<&str>) -> Result<Option<GameResult>, Error> {
     value
         .map(|value| match value {
-            "whitewon" => Ok(GameResult::WhiteWin),
-            "blackwon" => Ok(GameResult::BlackWin),
-            "draw" => Ok(GameResult::Draw),
+            "any" => Ok(None),
+            "whitewon" => Ok(Some(GameResult::WhiteWin)),
+            "blackwon" => Ok(Some(GameResult::BlackWin)),
+            "draw" => Ok(Some(GameResult::Draw)),
             _ => Err(Error::InvalidInput(format!(
                 "unsupported result filter: {value}"
             ))),
         })
         .transpose()
+        .map(Option::flatten)
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
@@ -1727,6 +1729,7 @@ mod tests {
     #[test]
     fn result_filter_maps_every_supported_value_and_absence() {
         assert_eq!(parse_wanted_result(None).unwrap(), None);
+        assert_eq!(parse_wanted_result(Some("any")).unwrap(), None);
         assert_eq!(
             parse_wanted_result(Some("whitewon")).unwrap(),
             Some(GameResult::WhiteWin)
@@ -2431,6 +2434,12 @@ mod tests {
                 "World BLITZ Championship",
             ),
             (("Caruana", Some(2780)), ("Ding", Some(2760)), "Rapid Open"),
+            (("Nakamura", Some(2740)), ("Giri", Some(2730)), "Bullet Cup"),
+            (
+                ("Nepo", Some(2760)),
+                ("Aronian", Some(2750)),
+                "Armageddon Final",
+            ),
         ]);
         assert!(FAST_EVENT_NAME_TOKENS.contains(&"blitz"));
         assert!(!FAST_EVENT_NAME_TOKENS
@@ -2444,10 +2453,16 @@ mod tests {
             "fast-off",
         )
         .unwrap();
-        assert_eq!(counted_games(&off), 3);
+        assert_eq!(counted_games(&off), 5);
         assert_eq!(
             sample_events(&off),
-            vec!["Candidates", "Rapid Open", "World BLITZ Championship"]
+            vec![
+                "Armageddon Final",
+                "Bullet Cup",
+                "Candidates",
+                "Rapid Open",
+                "World BLITZ Championship",
+            ]
         );
 
         let mut on_query = exact_position_query(STARTING_FEN);

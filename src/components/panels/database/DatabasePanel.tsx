@@ -333,7 +333,7 @@ function PanelWithError(props: {
       </Alert>
     );
   }
-  if (props.error && props.type !== "local") {
+  if (props.error) {
     children = <Alert color="red">{props.error.toString()}</Alert>;
   }
 

@@ -302,7 +302,7 @@ export async function searchPosition(options: LocalOptions, tab: string, signal?
             },
             start_date: options.start_date,
             end_date: options.end_date,
-            wanted_result: options.result,
+            ...(options.result !== "any" ? { wanted_result: options.result } : {}),
             ...(elo ? { range1: elo, range2: elo } : {}),
             ...(options.exclude_fast_events ? { exclude_fast_events: true } : {}),
         },

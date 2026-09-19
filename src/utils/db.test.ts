@@ -354,6 +354,11 @@ describe("searchPosition query mapping", () => {
         }
     });
 
+    it("omits wanted_result when the explorer result is any", async () => {
+        const query = await sentQuery(localOptions({ result: "any" }));
+        expect(query).not.toHaveProperty("wanted_result");
+    });
+
     it("omits exclude_fast_events when off and sends true when on", async () => {
         for (const off of [undefined, false]) {
             mocks.searchPosition.mockClear();
