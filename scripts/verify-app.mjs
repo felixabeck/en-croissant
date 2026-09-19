@@ -4,7 +4,7 @@
 //   pnpm verify:app                 run the checks
 //   pnpm verify:app --screenshot X  also write a PNG of the page to X
 //
-// It asserts attachment cleanup plus nine things that no other gate in this repository can:
+// It asserts attachment cleanup plus ten things that no other gate in this repository can:
 //   1. the real binary starts, renders and answers script under WebKitGTK,
 //   2. the real renderer exposes the ChessFable document title,
 //   3. production startup reclaims unowned authority but preserves owned authority,
@@ -13,7 +13,20 @@
 //   6. the renderer reaches the loopback sound server through a live non-zero port,
 //   7. that port serves the bundled move sound with bytes,
 //   8. closing it through its own control runs the shutdown sequence to completion,
-//   9. nothing — app or WebKit service process — outlives that close.
+//   9. nothing — app or WebKit service process — outlives that close,
+//  10. a real pointer double-click on a not yet selected Files row opens that file.
+//
+// Staged-failure record for item 10 (push-review-policy §2), one row per check. Checks (2) and
+// (3) were red on 2026-09-19 against the unfixed release binary, in one run where every other
+// check was ok; that run printed "2 check(s) failed" and exited with status 1.
+//   check                                   | message printed                                   | exit
+//   (1) the seeded Files row rendered       | staged after the fix lands (phase 2 follow-up)    | —
+//   (2) the route became /                  | FAIL  a real double-click on the unselected Files | 1
+//                                           |   row navigates to / — timed out waiting for the  |
+//                                           |   double-click to navigate to /; path is /files   |
+//   (3) the opened game's notation is shown | FAIL  a real double-click on the unselected Files | 1
+//                                           |   row shows its game — timed out waiting for the  |
+//                                           |   opened game's notation; expected 1.e4e52.d4d5   |
 
 import { existsSync } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
@@ -35,6 +48,24 @@ const screenshotIndex = process.argv.indexOf("--screenshot");
 const screenshotPath = screenshotIndex === -1 ? undefined : process.argv[screenshotIndex + 1];
 const BASE_DIRECTORY_APP_DATA = 14; // @tauri-apps/api BaseDirectory.AppData
 const IPC_PROBE_TIMEOUT_MS = 5_000;
+const FILES_PROBE_TIMEOUT_MS = 20_000;
+// Gap between the two clicks of the double-click. It must stay inside the platform double-click
+// interval, or WebKitGTK delivers two single clicks and the scenario proves nothing.
+const DOUBLE_CLICK_GAP_MS = 60;
+const filesWorkspaceId = "verify-files-workspace";
+const filesRowName = "verify-sample";
+// Pawn moves only, so the notation reads the same with and without figurines.
+const filesGamePgn = `[Event "verify:app"]
+[Site "?"]
+[Date "2026.09.19"]
+[Round "1"]
+[White "A"]
+[Black "B"]
+[Result "*"]
+
+1. e4 e5 2. d4 d5 *
+`;
+const filesGameNotation = "1.e4e52.d4d5";
 const closeControlProbe = `
   const labelled = document.querySelector('button[aria-label="Close window"]');
   const controls = document.querySelector('[class*="windowControls"]');
@@ -156,12 +187,21 @@ try {
   await waitFor("the seed renderer to expose Tauri", () =>
     seedSession.execute("return typeof window.__TAURI_INTERNALS__ === 'object'").catch(() => false),
   );
-  await seedSession.execute(`localStorage.setItem("engines", arguments[0]); return true`, [
-    JSON.stringify([
-      ownerEngine("retained", retainedImageId),
-      ownerEngine("retire-on-shutdown", retiredImageId),
-    ]),
-  ]);
+  // `file-workspace` owns the Files workspace entry through startup reconciliation.
+  await seedSession.execute(
+    `localStorage.setItem("engines", arguments[0]);
+     localStorage.setItem("file-workspace", arguments[1]);
+     localStorage.setItem("file-workspace-display-name", arguments[2]);
+     return true`,
+    [
+      JSON.stringify([
+        ownerEngine("retained", retainedImageId),
+        ownerEngine("retire-on-shutdown", retiredImageId),
+      ]),
+      JSON.stringify({ id: { id: filesWorkspaceId }, kind: "fileWorkspace" }),
+      JSON.stringify("Files fixture"),
+    ],
+  );
   const seedClose = await closeApplicationThroughTitlebar(seedSession, "seed");
   if (!seedClose.gone || seedClose.survivors.length > 0) {
     throw new Error(`seed processes survived close: ${seedClose.survivors.join(", ")}`);
@@ -182,7 +222,10 @@ try {
   const retainedImage = join(imageDirectory, retainedImageId);
   const retiredImage = join(imageDirectory, retiredImageId);
   const orphanImage = join(imageDirectory, orphanImageId);
+  const filesWorkspace = join(fixtureDirectory, "files-workspace");
   await mkdir(ownedRoot, { recursive: true });
+  await mkdir(filesWorkspace, { recursive: true });
+  await writeFile(join(filesWorkspace, `${filesRowName}.pgn`), filesGamePgn);
   await mkdir(imageDirectory, { recursive: true });
   await writeFile(orphanFile, "do not delete registry fixture bytes");
   await writeFile(retainedImage, "retained managed image bytes");
@@ -253,6 +296,14 @@ try {
           "engineImage",
           ["imageRead"],
           false,
+        ),
+        await storedEntry(
+          filesWorkspaceId,
+          "Files fixture",
+          filesWorkspace,
+          "pgnWorkspace",
+          ["readPgn", "writePgn"],
+          true,
         ),
       ],
       active_database_root: { id: "verify-owned-root" },
@@ -468,6 +519,96 @@ try {
     "a cancelled reservation cannot be claimed by a later native read",
     refusedStart.value ?? refusedStart.error,
   );
+
+  // Files double-click. Runs before the retained reservation is minted, so opening the file cannot
+  // add a reservation to the destroyed-window log line checked below. Navigation stays in-app:
+  // a URL load would replace the main webview document that line is about. Nothing after this
+  // depends on the route the double-click leaves behind.
+  const filesRowCheck = "the seeded workspace file row renders on the Files page";
+  const filesRouteCheck = "a real double-click on the unselected Files row navigates to /";
+  const filesNotationCheck = "a real double-click on the unselected Files row shows its game";
+  const filesRow = await waitFor(
+    "the Files row",
+    async () => {
+      await session
+        .execute(
+          `const link = document.querySelector('a[href="/files"]');
+         if (link && location.pathname !== "/files") link.click();
+         return true`,
+        )
+        .catch(() => false);
+      return session
+        .execute(
+          `const row = document.querySelector('[role="treeitem"][aria-label=' + JSON.stringify(arguments[0]) + ']');
+         if (!row) return false;
+         const box = row.getBoundingClientRect();
+         return { x: Math.round(box.left + Math.min(60, box.width / 2)), y: Math.round(box.top + box.height / 2) };`,
+          [filesRowName],
+        )
+        .catch(() => false);
+    },
+    { timeoutMs: FILES_PROBE_TIMEOUT_MS },
+  ).catch((error) => ({ error: error.message }));
+  check(!filesRow.error, filesRowCheck, filesRow.error);
+  if (filesRow.error) {
+    check(false, filesRouteCheck, "not attempted: the Files row never rendered");
+    check(false, filesNotationCheck, "not attempted: the Files row never rendered");
+  } else {
+    const gesture = await session
+      .call("POST", "/actions", {
+        actions: [
+          {
+            type: "pointer",
+            id: "mouse",
+            parameters: { pointerType: "mouse" },
+            actions: [
+              {
+                type: "pointerMove",
+                duration: 0,
+                x: filesRow.x,
+                y: filesRow.y,
+                origin: "viewport",
+              },
+              { type: "pointerDown", button: 0 },
+              { type: "pointerUp", button: 0 },
+              { type: "pause", duration: DOUBLE_CLICK_GAP_MS },
+              { type: "pointerDown", button: 0 },
+              { type: "pointerUp", button: 0 },
+            ],
+          },
+        ],
+      })
+      .then(
+        () => null,
+        (error) => `the pointer double-click gesture was rejected: ${error.message}`,
+      );
+    const route = gesture
+      ? { error: gesture }
+      : await waitFor(
+          "the double-click to navigate to /",
+          () => session.execute("return location.pathname === '/'").catch(() => false),
+          { timeoutMs: FILES_PROBE_TIMEOUT_MS },
+        ).catch(async (error) => ({
+          error: `${error.message}; path is ${await session
+            .execute("return location.pathname")
+            .catch(() => "unknown")}`,
+        }));
+    check(route === true, filesRouteCheck, route.error);
+    const notation = gesture
+      ? { error: "not attempted: the gesture was rejected" }
+      : await waitFor(
+          "the opened game's notation",
+          () =>
+            session
+              .execute(
+                "return document.body.innerText.replace(/\\s+/g, '').includes(arguments[0])",
+                [filesGameNotation],
+              )
+              .catch(() => false),
+          { timeoutMs: FILES_PROBE_TIMEOUT_MS },
+        ).catch((error) => ({ error: `${error.message}; expected ${filesGameNotation}` }));
+    check(notation === true, filesNotationCheck, notation.error);
+  }
 
   const retainedRead = await invokeAndWait(
     session,
