@@ -6936,7 +6936,7 @@ Plan: `tasks/plans/2026-09-19-owned-staging-dir.md` (gitignored). Handoff: `task
 
 ### The Files page's Move control renders the word "Move" inside an icon-sized button, showing as "1ov"
 
-* **ID:** f-20260905-13 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260905-13 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `src/components/files/DirectoryTree.tsx`, the second `IconAction` in the row actions
   (`label={t("Files.Move")}` with `{t("Files.Move")}` as its *child*), next to the delete action
   that correctly renders `<IconTrash size={16} aria-hidden />`.
