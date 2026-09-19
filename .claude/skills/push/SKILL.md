@@ -131,6 +131,12 @@ Receipts are reusable only for a clean exact tree with the same command, platfor
 an unexpired timestamp. A miss runs the gate under `ensure`; `check` never starts one. Gate failures
 propagate their own exit codes, and a tree change during a run refuses the receipt.
 
+That refusal keys on tracked-file size and mtime, not only bytes, so **the `gate:ensure` gates run
+serially against one another, and no command that can rewrite a tracked file — `pnpm
+bindings:generate`, a stale `pnpm bindings:check`, `pnpm i18n:extract`, `pnpm format`,
+`pnpm lint:fix` — runs concurrently with any of them**, in this session, a parallel script, or a
+review lens working in the checkout. A green `bindings:check` writes nothing (`f-20260906-06`).
+
 ### Cross-layer contracts
 
 Changes to Specta commands/events/types, `src-tauri/src/main.rs`, or `src/bindings/generated.ts` require both backend and frontend gates plus:
@@ -139,7 +145,7 @@ Changes to Specta commands/events/types, `src-tauri/src/main.rs`, or `src/bindin
 pnpm bindings:check
 ```
 
-That command runs the debug Specta exporter in export-only mode and then proves the checked-in binding is exact. Never hand-edit a generated binding to make the gate pass.
+That command runs the debug Specta exporter in export-only mode and then proves the checked-in binding is exact; the exporter writes `src/bindings/generated.ts` only when its bytes differ, so a green check leaves the file untouched. Never hand-edit a generated binding to make the gate pass.
 
 ### Findings ledger
 

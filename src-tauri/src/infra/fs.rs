@@ -4040,6 +4040,25 @@ where
     atomic_replace_with_precommit(target, || Ok(()), write_fn)
 }
 
+/// Replaces `target` with `contents` only when the bytes on disk differ, and reports whether it
+/// wrote. The Specta binding export runs on every debug start and inside `pnpm bindings:check`;
+/// an unconditional rewrite gives the tracked file a new mtime, which refuses any gate receipt
+/// measured beside it (`f-20260906-06`).
+#[cfg(any(debug_assertions, test))]
+pub(crate) fn write_if_changed(target: &Path, contents: &str) -> Result<bool, Error> {
+    match std::fs::read(target) {
+        Ok(existing) if existing == contents.as_bytes() => return Ok(false),
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    // Uncertain durability is harmless here: an export lost to a crash is rewritten by the next.
+    let _durability = atomic_replace(target, |file| {
+        file.write_all(contents.as_bytes()).map_err(Error::from)
+    })?;
+    Ok(true)
+}
+
 pub(crate) fn single_leaf(leaf: &OsStr) -> Result<(), Error> {
     if cfg!(windows) {
         if let Some(reason) = crate::infra::path_authority::windows_component_refusal(leaf) {
@@ -4986,6 +5005,37 @@ mod tests {
         path::PathBuf,
         sync::{Arc, Mutex},
     };
+
+    #[test]
+    fn write_if_changed_leaves_identical_bytes_untouched() {
+        let directory = tempfile::tempdir().expect("binding directory");
+        let path = directory.path().join("generated.ts");
+
+        assert!(write_if_changed(&path, "first").expect("create"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "first");
+
+        let pinned = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+        File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(pinned)
+            .unwrap();
+        assert!(!write_if_changed(&path, "first").expect("identical"));
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().modified().unwrap(),
+            pinned
+        );
+
+        assert!(write_if_changed(&path, "second").expect("changed"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "second");
+        assert_ne!(
+            std::fs::metadata(&path).unwrap().modified().unwrap(),
+            pinned
+        );
+
+        assert!(write_if_changed(directory.path(), "unreadable").is_err());
+    }
 
     /// The module's dual-cfg parent pair, so a test that needs only `std::fs` plus a retained
     /// parent handle runs on both targets instead of being gated to unix by its fixture.

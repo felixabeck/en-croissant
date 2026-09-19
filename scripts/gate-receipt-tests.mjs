@@ -320,6 +320,17 @@ test("9. a gate that modifies and restores an ignored file still gets its receip
   assert.equal(existsSync(join(root, ".gate-receipts", "frontend-build.json")), true);
 });
 
+// f-20260906-06: the refusal keys on mtime, not bytes, so a writer running beside a gate must
+// skip identical content (the Specta binding export does, through `write_if_changed`).
+test("10. a gate that rewrites a tracked file with identical bytes leaves no receipt", async () => {
+  const { root } = await fixture();
+  const command = nodeCommand(
+    `require("node:fs").writeFileSync(${JSON.stringify(join(root, "tracked.txt"))}, "initial\\n")`,
+  );
+  assert.equal(await record(root, { command }), 3);
+  assert.equal(existsSync(join(root, ".gate-receipts", "frontend-build.json")), false);
+});
+
 test("changed commands, changed platforms, malformed receipts, and unavailable tools are misses", async () => {
   const { root } = await fixture();
   const command = nodeCommand("process.exit(0)");

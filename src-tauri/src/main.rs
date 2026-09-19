@@ -2371,13 +2371,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ));
 
     #[cfg(debug_assertions)]
-    specta_builder
-        .export(
-            Typescript::default().bigint(BigIntExportBehavior::BigInt),
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../src/bindings/generated.ts"),
+    {
+        let rendered = specta_builder
+            .export_str(Typescript::default().bigint(BigIntExportBehavior::BigInt))
+            .map_err(|error| format!("failed to render TypeScript bindings: {error}"))?;
+        // `atomic_replace` refuses a parent path with `..`, so resolve the repository root here.
+        let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .ok_or("the manifest directory has no parent")?;
+        crate::infra::fs::write_if_changed(
+            &repository.join("src/bindings/generated.ts"),
+            &rendered,
         )
         .map_err(|error| format!("failed to export TypeScript bindings: {error}"))?;
+    }
 
     #[cfg(debug_assertions)]
     if std::env::args_os().any(|argument| argument == "--export-bindings-only") {
