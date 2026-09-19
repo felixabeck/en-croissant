@@ -4057,6 +4057,7 @@ pub(crate) fn single_leaf(leaf: &OsStr) -> Result<(), Error> {
 /// One-shot native save-dialog destination: the no-follow parent descriptor opened when the
 /// dialog choice arrived, plus its single-component leaf. No pathname is retained for the write,
 /// so a later swap of the parent spelling cannot redirect it.
+#[derive(Debug)]
 pub(crate) struct NativeExportDest {
     parent: File,
     leaf: OsString,
@@ -5634,8 +5635,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let path = temp.path().join("missing").join("board.jpg");
         let error = NativeExportDest::from_save_path(path.clone(), "png")
-            .err()
-            .expect("wrong extension must be refused");
+            .expect_err("wrong extension must be refused");
         assert!(
             matches!(&error, Error::InvalidInput(message) if message == "export must use .png extension"),
             "extension must be checked before the parent is opened: {error:?}"
@@ -5654,8 +5654,7 @@ mod tests {
         let dest = NativeExportDest::from_save_path(link.clone(), "png").expect("dest");
         let error = dest
             .replace(|file| file.write_all(b"png").map_err(Error::from))
-            .err()
-            .expect("symlink leaf must be refused");
+            .expect_err("symlink leaf must be refused");
         assert!(
             matches!(error, Error::InvalidInput(_)),
             "unexpected error: {error:?}"
