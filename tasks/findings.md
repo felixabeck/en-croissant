@@ -10052,3 +10052,16 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 * **Related:** `f-20260905-08` (split out of; Root `-`). `f-20260905-09` (dialog dest). `d-20260901-03`.
 * **Open question:** Should dest-parent mkdir and dest-file `atomic_replace` in `fs.rs` go through an existing dest descriptor (`ResolvedPath` / `open_parent_no_follow` + `ensure_directory_at` / descriptor-relative replace), or does a remaining pathname helper stay because some callers have no held parent?
 * **Found by:** Grok, f-20260905-08 drain 830f0512-6047-4ef0-b8b7-c3c353baa63c, 2026-09-19.
+
+---
+
+## 2026-09-19 — filed through the inbox spool
+
+### Windows cannot adopt an archive staging directory, so zip and tar engine installs always fail there
+
+* **ID:** f-20260919-04 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src-tauri/src/infra/fs.rs` `open_parent_directory` and `OwnedStagingDir::adopt`; production callers `src-tauri/src/fs.rs` `extract_zip_cancellable` and `extract_tar_cancellable`.
+* **Defect:** `adopt` opened its parent as `".."` relative to the child handle. `open_directory_at` reaches `open_windows_child`, whose `single_leaf` refuses a name ending in a dot before any syscall, and an NT relative open has no `..` entry anyway. `adopt` therefore returned `InvalidInput("directory parent could not be opened relative to the child")` on every Windows call. Sixteen tests in `rust-windows-test` were red from `d9c538a3` (f-20260905-06) onwards: nine `infra::fs::tests::owned_staging_dir_*` and seven `fs::tests::extract_{zip,tar}_*`.
+* **Why it matters:** every archive engine download on Windows fails at extraction. Nothing is corrupted; the user sees the install fail.
+* **Related:** f-20260905-06 and f-20260905-08 introduced `OwnedStagingDir` (`d-20260919-03`). The Windows arm was never executed before it was pushed.
+* **Found by:** Claude Code, 2026-09-19, from the job log of run 35419821731 after Felix reported seventeen red `Test` runs.
