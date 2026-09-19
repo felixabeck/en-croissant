@@ -28,17 +28,9 @@ import { type SetTabs } from "@/utils/tabs";
 import { defaultTree, getGameName } from "@/utils/treeReducer";
 import AppModal from "../common/AppModal";
 import GenericCard from "../common/GenericCard";
-import type { FileMetadata, FileType } from "../files/file";
+import { FILE_TYPES, type FileMetadata, type FileType } from "../files/file";
 
 type ImportType = "PGN" | "Link" | "FEN";
-
-const FILE_TYPES = [
-  { translationKey: "Files.FileType.Game", value: "game" },
-  { translationKey: "Files.FileType.Repertoire", value: "repertoire" },
-  { translationKey: "Files.FileType.Tournament", value: "tournament" },
-  { translationKey: "Files.FileType.Puzzle", value: "puzzle" },
-  { translationKey: "Files.FileType.Other", value: "other" },
-] as const;
 
 export default function ImportModal({
   openModal,

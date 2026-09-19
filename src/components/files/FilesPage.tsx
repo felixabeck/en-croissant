@@ -23,23 +23,26 @@ import { useTranslation } from "react-i18next";
 import useSWR from "swr";
 import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import { fileWorkspaceAtom, fileWorkspaceDisplayNameAtom } from "@/state/atoms";
+import { formatNumber } from "@/utils/format";
 import { fileWorkspaceKey } from "@/utils/pathCapabilities";
 import DirectoryTree from "./DirectoryTree";
 import FileCard from "./FileCard";
 import ConfirmModal from "../common/ConfirmModal";
 import AppModal from "../common/AppModal";
 import type { Entry, FileType } from "./file";
-import { workspaceEntryToEntry } from "./file";
+import { FILE_TYPES, workspaceEntryToEntry } from "./file";
 
 const fileAction = { file: "file", folder: "folder", rename: "rename" } as const;
 type FileAction = (typeof fileAction)[keyof typeof fileAction];
 const FILE_CARD_HEIGHT = "32rem";
+const TREE_MAX_HEIGHT = "60vh";
+const TREE_MIN_HEIGHT = "8rem";
+const EMPTY_PANE_MIN_HEIGHT = "12rem";
 // At 320px and a 200% font scale a label is wider than its column: let it wrap instead of clipping.
 const wrappingButton = {
   root: { height: "auto", minHeight: "var(--button-height)" },
   label: { whiteSpace: "normal", overflowWrap: "anywhere" },
 } as const;
-const fileTypes: FileType[] = ["game", "repertoire", "tournament", "puzzle", "other"];
 
 function findEntry(entries: Entry[], key: string): Entry | null {
   for (const entry of entries) {
@@ -56,7 +59,7 @@ export default function FilesPage() {
   const { t } = useTranslation();
   const [workspace, setWorkspace] = useAtom(fileWorkspaceAtom);
   const [, setWorkspaceDisplayName] = useAtom(fileWorkspaceDisplayNameAtom);
-  const [selectedEntry, setSelected] = useState<Entry | null>(null);
+  const [selectedEntry, setSelectedEntry] = useState<Entry | null>(null);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<FileType | "">("");
   const [action, setAction] = useState<FileAction | null>(null);
@@ -89,15 +92,8 @@ export default function FilesPage() {
   // an entry that is gone clears it. Before the first listing the chosen entry stands.
   const selected =
     selectedEntry && data ? findEntry(data, fileWorkspaceKey(selectedEntry.handle)) : selectedEntry;
-  const fileTypeLabels: Record<FileType, string> = {
-    game: t("Files.FileType.Game"),
-    repertoire: t("Files.FileType.Repertoire"),
-    tournament: t("Files.FileType.Tournament"),
-    puzzle: t("Files.FileType.Puzzle"),
-    other: t("Files.FileType.Other"),
-  };
   useEffect(() => {
-    setSelected(null);
+    setSelectedEntry(null);
   }, [workspace]);
   async function chooseWorkspace() {
     if (pendingRef.current) return;
@@ -139,7 +135,7 @@ export default function FilesPage() {
     moveInFlight.current = true;
     setMoving(true);
     setActionError("");
-    setSelected(entry);
+    setSelectedEntry(entry);
     try {
       await runAppliedMutationWithRefresh(
         () => tauri.moveWorkspaceEntry(workspace!, entry.handle, destination),
@@ -239,12 +235,15 @@ export default function FilesPage() {
                 size="sm"
                 miw={0}
                 clearable
-                aria-label={t("Files.FileType")}
-                placeholder={t("Files.FileType")}
+                // A label, not a placeholder: a label wraps, a placeholder is cut off at 320px.
+                label={t("Files.FileType")}
                 value={filter || null}
                 // Choosing the active type again, or clearing, returns to all types.
                 onChange={(value) => setFilter((value as FileType | null) ?? "")}
-                data={fileTypes.map((type) => ({ value: type, label: fileTypeLabels[type] }))}
+                data={FILE_TYPES.map(({ value, translationKey }) => ({
+                  value,
+                  label: t(translationKey),
+                }))}
               />
               {trashed && (
                 <Group wrap="wrap" miw={0}>
@@ -286,16 +285,16 @@ export default function FilesPage() {
                       {actionError}
                     </Text>
                   )}
-                  <ScrollArea.Autosize mah="60vh" mih="8rem">
+                  <ScrollArea.Autosize mah={TREE_MAX_HEIGHT} mih={TREE_MIN_HEIGHT}>
                     <DirectoryTree
                       files={data}
                       refreshDirectory={async () => mutate()}
                       selectedFile={selected}
-                      setSelectedFile={setSelected}
+                      setSelectedFile={setSelectedEntry}
                       onRequestDelete={async (entry) => setDeleteTarget(entry)}
                       onRequestMove={(entry) => {
                         setActionError("");
-                        setSelected(entry);
+                        setSelectedEntry(entry);
                         setMoveTarget(fileWorkspaceKey(workspace));
                       }}
                       onMove={(entry, destination) => moveEntry(entry, destination.handle)}
@@ -343,7 +342,7 @@ export default function FilesPage() {
                 </Box>
               </Stack>
             ) : selected?.type === "directory" ? (
-              <Center mih="12rem">
+              <Center mih={EMPTY_PANE_MIN_HEIGHT}>
                 <Stack align="center" gap="xs" miw={0}>
                   <Text fw={600} size="lg" miw={0}>
                     {selected.name}
@@ -351,13 +350,13 @@ export default function FilesPage() {
                   <Text c="dimmed" size="sm">
                     {t("Files.FolderEntryCount", {
                       defaultValue: "Entries: {{number}}",
-                      number: selected.children.length,
+                      number: formatNumber(selected.children.length),
                     })}
                   </Text>
                 </Stack>
               </Center>
             ) : (
-              <Center mih="12rem">
+              <Center mih={EMPTY_PANE_MIN_HEIGHT}>
                 <Text c="dimmed" ta="center">
                   {t("Files.NoSelection", { defaultValue: "No file selected" })}
                 </Text>
@@ -445,7 +444,7 @@ export default function FilesPage() {
               () => tauri.trashWorkspaceEntry(workspace!, deleteTarget.handle),
               async () => {
                 setTrashed(deleteTarget);
-                setSelected(null);
+                setSelectedEntry(null);
                 setDeleteTarget(null);
                 await mutate();
               },

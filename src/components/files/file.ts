@@ -5,6 +5,15 @@ import { fileWorkspaceHandleSchema } from "@/utils/pathCapabilities";
 const fileTypeSchema = z.enum(["repertoire", "game", "tournament", "puzzle", "other"]);
 export type FileType = z.infer<typeof fileTypeSchema>;
 
+// Literal keys, so the i18n extractor keeps them.
+export const FILE_TYPES = [
+    { translationKey: "Files.FileType.Game", value: "game" },
+    { translationKey: "Files.FileType.Repertoire", value: "repertoire" },
+    { translationKey: "Files.FileType.Tournament", value: "tournament" },
+    { translationKey: "Files.FileType.Puzzle", value: "puzzle" },
+    { translationKey: "Files.FileType.Other", value: "other" },
+] as const satisfies readonly { translationKey: string; value: FileType }[];
+
 export const fileInfoMetadataSchema = z.object({
     type: fileTypeSchema,
     tags: z.array(z.string()),

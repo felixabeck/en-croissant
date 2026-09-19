@@ -4,6 +4,7 @@ import { IconZoomCheck } from "@tabler/icons-react";
 import { useNavigate } from "@tanstack/react-router";
 import { useAtom } from "jotai";
 import { useEffect, useRef, useState } from "react";
+import { useMediaQuery } from "@mantine/hooks";
 import { useTranslation } from "react-i18next";
 import { errorUnlessCancelled } from "@/platform/errors";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
@@ -16,6 +17,9 @@ import { fileWorkspaceKey } from "@/utils/pathCapabilities";
 import GamePreview from "../databases/GamePreview";
 import GameSelector from "../panels/info/GameSelector";
 import type { FileMetadata } from "./file";
+
+// Mantine's `sm` breakpoint, below which the Files page stacks its columns.
+const NARROW_WINDOW = "(max-width: 48em)";
 
 // The parent keys this card by the handle key, so a different file remounts it (resetting the
 // page and the game-name cache) while a relisted copy of the same file keeps both.
@@ -32,11 +36,8 @@ function FileCard({ selected }: { selected: FileMetadata }) {
   const handleRef = useRef(selected.handle);
   handleRef.current = selected.handle;
   const handleKey = fileWorkspaceKey(selected.handle);
-
-  useEffect(() => {
-    setPage(0);
-    setGames(new Map());
-  }, [handleKey]);
+  // Beside the board the preview's move list has no room in a single-column window.
+  const narrow = useMediaQuery(NARROW_WINDOW) ?? false;
 
   // Keyed by the handle, not the entry object: a relisting must not re-read the same file.
   useEffect(() => {
@@ -76,26 +77,24 @@ function FileCard({ selected }: { selected: FileMetadata }) {
   return (
     <Stack h="100%">
       <Stack align="center">
-        <Text ta="center" fz="xl" fw="bold">
+        <Text ta="center" fz="xl" fw="bold" miw={0} style={{ overflowWrap: "anywhere" }}>
           {selected?.name}
         </Text>
         <Badge>{t(`Files.FileType.${capitalize(selected.metadata.type)}`)}</Badge>
       </Stack>
       <Divider />
 
-      <Group align="center" grow px="xs">
-        <Group>
-          <IconAction label={t("Common.Open")} size="sm" onClick={openGame}>
-            <IconZoomCheck />
-          </IconAction>
-        </Group>
-        <Text ta="center" c="dimmed">
+      {/* Not `grow`: equal thirds leave each part 17px wide at 320px and a 200% font scale. */}
+      <Group align="center" justify="space-between" wrap="wrap" px="xs" miw={0}>
+        <IconAction label={t("Common.Open")} size="sm" onClick={openGame}>
+          <IconZoomCheck />
+        </IconAction>
+        <Text ta="center" c="dimmed" miw={0}>
           {t("Files.GameCountSuffix", {
             count: selected.numGames,
             number: formatNumber(selected.numGames),
           })}
         </Text>
-        <div />
       </Group>
 
       {selectedGame && (
@@ -113,7 +112,7 @@ function FileCard({ selected }: { selected: FileMetadata }) {
             <Divider />
           </Box>
           <Box h="55%" px="xs" pb="xs">
-            <GamePreview pgn={selectedGame} />
+            <GamePreview pgn={selectedGame} hideControls={narrow} />
           </Box>
         </>
       )}
