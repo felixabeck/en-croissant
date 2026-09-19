@@ -33,9 +33,9 @@ export type DownloadableDatabaseInfo = {
     signature: string;
 };
 
-/** A puzzle database advertised by the signed remote manifest.
+/** A puzzle database advertised by the bundled signed catalog.
  *
- * Unlike locally installed puzzle databases, a remote entry has no path
+ * Unlike locally installed puzzle databases, a catalog entry has no path
  * capability. It becomes a local database only after the native download has
  * verified and installed it.
  */

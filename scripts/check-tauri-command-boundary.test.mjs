@@ -242,6 +242,7 @@ describe("capability and CSP boundaries", () => {
       readFileSync(join(REPOSITORY_ROOT, "src-tauri/tauri.conf.json"), "utf8"),
     );
     expect(config.app.security.csp).toMatch(/media-src[^;]*http:\/\/127\.0\.0\.1:\*/);
+    expect(config.app.security.csp).not.toMatch(/www\.encroissant\.org/);
   });
 });
 

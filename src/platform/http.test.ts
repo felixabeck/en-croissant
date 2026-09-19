@@ -54,7 +54,7 @@ describe("AllowedOriginHttpClient", () => {
 });
 
 describe("remoteHttp", () => {
-    test("no longer allows the unsigned www.encroissant.org catalog origin", async () => {
+    test("rejects www.encroissant.org before it reaches fetch", async () => {
         const fetchMock = vi.fn();
         vi.stubGlobal("fetch", fetchMock);
         await expect(
