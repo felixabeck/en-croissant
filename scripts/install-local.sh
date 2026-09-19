@@ -6,7 +6,7 @@
 #   bash scripts/install-local.sh                 build from HEAD, then install
 #   bash scripts/install-local.sh --no-build --force
 #       install the build already in target/release as UNREVIEWED
-#   bash scripts/install-local.sh --force         permit a dirty tree or unpushed HEAD
+#   bash scripts/install-local.sh --force         permit a dirty tree, unpushed HEAD, or a tree/HEAD change during the build
 #
 # The desktop entry launches current/bin/chessfable directly, because a GTK window takes its
 # Wayland app id from argv[0] and Plasma matches a window to a launcher by that id. The entry is
@@ -80,6 +80,17 @@ evaluate_tree() {
   fi
 }
 
+refuse_if_upstream_unusable() {
+  if [ "$missing_upstream" -eq 1 ]; then
+    echo "refusing: the current branch has no configured upstream" >&2
+    exit 1
+  fi
+  if [ "$unresolvable_upstream" -eq 1 ]; then
+    echo "refusing: configured upstream $upstream cannot be resolved" >&2
+    exit 1
+  fi
+}
+
 mkdir -p "$ROOT"
 lock_file="$ROOT/.install.lock"
 exec {lock_fd}>"$lock_file"
@@ -92,15 +103,7 @@ evaluate_tree
 head="$current_head"
 short="$current_short"
 provenance="reviewed"
-
-if [ "$missing_upstream" -eq 1 ]; then
-  echo "refusing: the current branch has no configured upstream" >&2
-  exit 1
-fi
-if [ "$unresolvable_upstream" -eq 1 ]; then
-  echo "refusing: configured upstream $upstream cannot be resolved" >&2
-  exit 1
-fi
+refuse_if_upstream_unusable
 if [ "$tree_dirty" -eq 1 ]; then
   if [ "$force" -eq 1 ]; then
     provenance="UNREVIEWED (dirty tree, --force)"
@@ -131,14 +134,7 @@ else
   echo "building release binary from $short …"
   (cd "$REPO" && pnpm build)
   evaluate_tree
-  if [ "$missing_upstream" -eq 1 ]; then
-    echo "refusing: the current branch has no configured upstream" >&2
-    exit 1
-  fi
-  if [ "$unresolvable_upstream" -eq 1 ]; then
-    echo "refusing: configured upstream $upstream cannot be resolved" >&2
-    exit 1
-  fi
+  refuse_if_upstream_unusable
   if [ "$current_head" != "$head" ] || [ "$tree_dirty" -eq 1 ] || [ "$not_ancestor" -eq 1 ]; then
     if [ "$force" -eq 0 ]; then
       echo "refusing: tree or HEAD changed during build (was $short, now $current_short) — the binary is not bound to the reviewed commit" >&2
