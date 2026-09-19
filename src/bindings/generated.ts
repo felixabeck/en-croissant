@@ -790,6 +790,22 @@ async cancelDownload(id: string) : Promise<Result<boolean, ErrorPayload>> {
     else return { status: "error", error: e  as any };
 }
 },
+async prepareDownload() : Promise<Result<string, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("prepare_download") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async releaseDownload(id: string) : Promise<Result<null, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("release_download", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async getTournaments(file: DatabaseHandle, query: TournamentQuery, ticket: string | null) : Promise<Result<QueryResponse<Event[]>, ErrorPayload>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_tournaments", { file, query, ticket }) };

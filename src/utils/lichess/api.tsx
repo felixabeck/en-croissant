@@ -1,4 +1,4 @@
-import { tauri } from "@/platform/tauri";
+import { tauri, withDownloadTicket } from "@/platform/tauri";
 import type { Color } from "@lichess-org/chessground/types";
 import { parseUci } from "chessops";
 import { makeFen } from "chessops/fen";
@@ -385,14 +385,16 @@ export async function downloadLichess(
 ) {
   // The destination command is supplied by the native download authority.  The opaque handle
   // selects the credential in the OS keyring; renderer code never forms an Authorization header.
-  const result = await tauri.downloadLichessGames(
-    handle,
-    destination,
-    `${player}_lichess.pgn`,
-    player,
-    timestamp === null ? null : BigInt(timestamp),
-    games > 0 ? games * 900 : null,
-    crypto.randomUUID(),
+  const result = await withDownloadTicket((ticket) =>
+    tauri.downloadLichessGames(
+      handle,
+      destination,
+      `${player}_lichess.pgn`,
+      player,
+      timestamp === null ? null : BigInt(timestamp),
+      games > 0 ? games * 900 : null,
+      ticket,
+    ),
   );
   // Native publication treats durability uncertainty as committed and returns the recovered
   // capability. Never retry this operation from the renderer.

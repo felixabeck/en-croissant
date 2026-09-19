@@ -453,18 +453,24 @@ pub fn clear_progress(
     state: tauri::State<'_, crate::AppState>,
     app: tauri::AppHandle,
 ) -> Result<u64, Error> {
-    let generation = state.progress_state.clear(&id)?;
-    emit(
-        &app,
-        ProgressItem {
-            id,
-            generation,
-            progress: 0.0,
-            finished: true,
-            state: ProgressState::Cancelled,
-        },
-        true,
-    )?;
+    clear_progress_with(&state.progress_state, id, |item| emit(&app, item, true))
+}
+
+fn clear_progress_with(
+    store: &ProgressStore,
+    id: String,
+    emit_cleared: impl FnOnce(ProgressItem) -> Result<(), Error>,
+) -> Result<u64, Error> {
+    let generation = store.clear(&id)?;
+    if let Err(error) = emit_cleared(ProgressItem {
+        id,
+        generation,
+        progress: 0.0,
+        finished: true,
+        state: ProgressState::Cancelled,
+    }) {
+        log::warn!("cleared progress event could not be emitted: {error}");
+    }
     Ok(generation)
 }
 
@@ -489,6 +495,19 @@ mod tests {
             .is_err());
         let third = store.start("job".into()).unwrap();
         assert!(third.generation > second.generation);
+    }
+
+    #[test]
+    fn clear_returns_generation_when_the_cleared_event_cannot_be_emitted() {
+        let store = ProgressStore::default();
+        store.start("job".into()).unwrap();
+        let generation = clear_progress_with(&store, "job".into(), |_item| {
+            Err(Error::Conflict("event channel unavailable".into()))
+        })
+        .unwrap();
+
+        assert!(generation > 0);
+        assert!(store.get("job").unwrap().is_none());
     }
 
     #[test]

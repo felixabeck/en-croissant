@@ -12,6 +12,7 @@ function Probe({
   subscribe,
   onEvent,
   onError,
+  onSettled,
 }: {
   subscribe: (
     callback: (value: string) => void,
@@ -19,8 +20,9 @@ function Probe({
   ) => Promise<() => void>;
   onEvent: (value: string, signal: AbortSignal) => void | Promise<void>;
   onError: (error: { message: string }, event?: string) => void;
+  onSettled?: (registered: boolean) => void;
 }) {
-  useTauriListener(subscribe, onEvent, { onError });
+  useTauriListener(subscribe, onEvent, { onError, onSettled });
   return null;
 }
 
@@ -50,6 +52,49 @@ describe("useTauriListener", () => {
     await act(async () => root.unmount());
     await act(async () => resolve(cleaned));
     expect(cleaned).toHaveBeenCalledOnce();
+  });
+
+  test("reports successful and failed registration exactly once", async () => {
+    const registered = vi.fn();
+    const subscribe = vi.fn(async () => vi.fn());
+    await act(async () =>
+      root.render(
+        <Probe subscribe={subscribe} onEvent={vi.fn()} onError={vi.fn()} onSettled={registered} />,
+      ),
+    );
+    expect(registered).toHaveBeenCalledOnce();
+    expect(registered).toHaveBeenCalledWith(true);
+
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    const failed = vi.fn();
+    const rejected = vi.fn(async () => Promise.reject(new Error("listener unavailable")));
+    await act(async () =>
+      root.render(
+        <Probe subscribe={rejected} onEvent={vi.fn()} onError={vi.fn()} onSettled={failed} />,
+      ),
+    );
+    expect(failed).toHaveBeenCalledOnce();
+    expect(failed).toHaveBeenCalledWith(false);
+  });
+
+  test("does not report a registration that settles after abort", async () => {
+    let resolve!: (unlisten: () => void) => void;
+    const settled = vi.fn();
+    const subscribe = vi.fn(
+      () =>
+        new Promise<() => void>((done) => {
+          resolve = done;
+        }),
+    );
+    await act(async () =>
+      root.render(
+        <Probe subscribe={subscribe} onEvent={vi.fn()} onError={vi.fn()} onSettled={settled} />,
+      ),
+    );
+    await act(async () => root.unmount());
+    await act(async () => resolve(vi.fn()));
+    expect(settled).not.toHaveBeenCalled();
   });
 
   test("uses the current callback without duplicate subscriptions", async () => {

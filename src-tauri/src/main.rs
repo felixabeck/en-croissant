@@ -97,7 +97,7 @@ use crate::{
     },
     fs::{
         cancel_download, download_engine_archive, download_file, download_lichess_games,
-        file_exists, get_file_metadata, verify_signed_bytes,
+        file_exists, get_file_metadata, prepare_download, release_download, verify_signed_bytes,
     },
     opening::{
         get_opening_from_fen, get_opening_from_fens, get_opening_from_name, search_opening_name,
@@ -743,7 +743,6 @@ pub struct AppState {
     puzzle_cache: Arc<tokio::sync::Mutex<crate::puzzle::PuzzleCache>>,
     pub http_transport: Arc<dyn crate::infra::net::DownloadTransport>,
     pub(crate) json_http_client: Arc<reqwest::Client>,
-    pub download_registry: Arc<crate::fs::DownloadRegistry>,
 }
 
 impl AppState {
@@ -778,7 +777,6 @@ impl AppState {
             puzzle_cache: Arc::new(tokio::sync::Mutex::new(crate::puzzle::PuzzleCache::new())),
             http_transport,
             json_http_client,
-            download_registry: Arc::new(crate::fs::DownloadRegistry),
         })
     }
 }
@@ -831,13 +829,15 @@ fn cancel_destroyed_window_operations_in_registry(operations: &OperationRegistry
     match operations.cancel_owner(label) {
         Ok(tickets) if !tickets.is_empty() => {
             log::info!(
-                "destroyed webview {label} cancelled native reads: {}",
+                "destroyed webview {label} cancelled native reads/downloads: {}",
                 tickets.join(",")
             );
         }
         Ok(_) => {}
         Err(error) => {
-            log::error!("could not cancel native reads for destroyed webview {label}: {error}")
+            log::error!(
+                "could not cancel native reads/downloads for destroyed webview {label}: {error}"
+            )
         }
     }
 }
@@ -2335,6 +2335,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             download_engine_archive,
             download_lichess_games,
             cancel_download,
+            prepare_download,
+            release_download,
             get_tournaments,
             get_db_info,
             get_games,

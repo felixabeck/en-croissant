@@ -217,7 +217,7 @@ export function cancellationError(): TauriCommandError {
 }
 
 async function logCleanupFailure(command: PropertyKey, ticket: string, cause: unknown) {
-    const message = `native read cleanup failed (${String(command)}, ${ticket}): ${normalizeError(cause).message}`;
+    const message = `native ${String(command)} cleanup failed (${ticket}): ${normalizeError(cause).message}`;
     try {
         await logError(message);
     } catch (loggingError) {
@@ -281,6 +281,15 @@ async function withPreparedTicket<T>({
     } finally {
         signal?.removeEventListener("abort", onAbort);
     }
+}
+
+export function withDownloadTicket<T>(continuation: (ticket: string) => Promise<T>): Promise<T> {
+    return withPreparedTicket({
+        operation: "download",
+        prepare: () => commands.prepareDownload(),
+        cancel: (ticket) => commands.releaseDownload(ticket),
+        continuation,
+    });
 }
 
 async function invokeNativeRead(

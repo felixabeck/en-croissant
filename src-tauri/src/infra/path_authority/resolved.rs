@@ -288,6 +288,10 @@ impl ResolvedPath {
         self.atomic_replace_download_cancellable(&CancellationToken::new(), write)
     }
 
+    /// Test-only ungated variant: production downloads publish through
+    /// `atomic_replace_download_cancellable_with_commit_gate`, so that a cancellation
+    /// acknowledged before the rename can never be followed by a publication.
+    #[cfg(all(test, unix))]
     pub(crate) fn atomic_replace_download_cancellable<F>(
         &self,
         cancellation: &CancellationToken,
@@ -323,6 +327,44 @@ impl ResolvedPath {
         )
     }
 
+    pub(crate) fn atomic_replace_download_cancellable_with_commit_gate<F>(
+        &self,
+        cancellation: &CancellationToken,
+        commit_gate: &crate::infra::operations::OperationCommitGate,
+        write: F,
+    ) -> Result<AtomicFileOutcome, Error>
+    where
+        F: FnOnce(&mut fs::File) -> Result<(), Error>,
+    {
+        if self.operation != PathOperation::DownloadFile {
+            return Err(Error::InvalidInput(
+                "resolved capability is not a download destination".into(),
+            ));
+        }
+        let parent = self
+            .parent
+            .as_ref()
+            .ok_or_else(|| Error::Conflict("download parent descriptor is unavailable".into()))?;
+        let leaf = self
+            .leaf
+            .as_ref()
+            .ok_or_else(|| Error::Conflict("download leaf descriptor is unavailable".into()))?;
+        let precommit_cancellation = cancellation.clone();
+        let commit_gate = commit_gate.clone();
+        crate::infra::fs::atomic_replace_at_with_precommit(
+            parent,
+            leaf,
+            move || {
+                self.revalidate_logical_parent()?;
+                if precommit_cancellation.is_cancelled() {
+                    return Err(Error::Cancellation);
+                }
+                commit_gate.begin_commit()
+            },
+            write,
+        )
+    }
+
     /// Streams a previously reserved staging file into the private atomic temporary inode and
     /// verifies its exact reservation digest before `renameat`. A substituted staging pathname
     /// therefore fails before the visible target changes.
@@ -336,14 +378,17 @@ impl ResolvedPath {
             reservation,
             staged_payload,
             &CancellationToken::new(),
+            None,
         )
     }
 
+    #[allow(dead_code)]
     pub(crate) fn atomic_install_reserved_download_cancellable(
         &self,
         reservation: &super::PendingArtifactReservation,
         staged_payload: &Path,
         cancellation: &CancellationToken,
+        commit_gate: Option<&crate::infra::operations::OperationCommitGate>,
     ) -> Result<AtomicInstalledFile, Error> {
         let mut staged = fs::File::open(staged_payload)?;
         let expected_size = reservation.payload_size;
@@ -358,14 +403,19 @@ impl ResolvedPath {
             .ok_or_else(|| Error::Conflict("download leaf descriptor is unavailable".into()))?;
         let copy_cancellation = cancellation.clone();
         let precommit_cancellation = cancellation.clone();
+        let commit_gate = commit_gate.cloned();
         crate::infra::fs::atomic_replace_at_identified_with_precommit(
             parent,
             leaf,
             || {
+                self.revalidate_logical_parent()?;
                 if precommit_cancellation.is_cancelled() {
                     return Err(Error::Cancellation);
                 }
-                self.revalidate_logical_parent()
+                if let Some(commit_gate) = commit_gate.as_ref() {
+                    commit_gate.begin_commit()?;
+                }
+                Ok(())
             },
             move |target| {
                 let mut hasher = sha2::Sha256::new();

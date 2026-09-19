@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import type { UseFormReturnType } from "@mantine/form";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { defaultEngineProgressId, type LocalEngine } from "@/utils/engines";
+import { DownloadCancelLostError } from "@/utils/downloadJobs";
 import AddEngine from "./AddEngine";
 
 const mocks = vi.hoisted(() => ({
@@ -31,12 +32,17 @@ const mocks = vi.hoisted(() => ({
   ],
   installDefaultEngine: vi.fn(),
   clearProgress: vi.fn(),
+  cancelDownload: vi.fn(),
+  withDownloadTicket: vi.fn((run: (ticket: string) => Promise<unknown>) => run("prepared-ticket")),
   notifyUnlessCancelled: vi.fn(),
   progressButtonProps: null as null | {
     id: string;
     initInstalled: boolean;
     completeOnProgressSuccess?: boolean;
     onClick: () => void;
+    onCancel?: () => Promise<unknown>;
+    clearOnCancel?: boolean;
+    inProgress: boolean;
   },
 }));
 
@@ -63,7 +69,9 @@ vi.mock("@/utils/files", () => ({
   usePlatform: () => ({ os: "linux" }),
 }));
 vi.mock("@/platform/tauri", () => ({
-  tauri: { clearProgress: mocks.clearProgress },
+  tauri: { clearProgress: mocks.clearProgress, cancelDownload: mocks.cancelDownload },
+  withDownloadTicket: mocks.withDownloadTicket,
+  cancellationError: () => new Error("Cancellation"),
 }));
 vi.mock("@/components/files/notifyError", () => ({
   notifyUnlessCancelled: mocks.notifyUnlessCancelled,
@@ -85,6 +93,9 @@ vi.mock("../common/ProgressButton", () => ({
     initInstalled: boolean;
     completeOnProgressSuccess?: boolean;
     onClick: () => void;
+    onCancel?: () => Promise<unknown>;
+    clearOnCancel?: boolean;
+    inProgress: boolean;
   }) => {
     mocks.progressButtonProps = props;
     return (
@@ -157,6 +168,7 @@ beforeEach(() => {
   mocks.localSaved = undefined;
   mocks.form = undefined;
   mocks.clearProgress.mockResolvedValue(1n);
+  mocks.cancelDownload.mockResolvedValue(true);
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -223,6 +235,7 @@ test("a succeeded download that fails to register is not treated as installed", 
     root.render(<AddEngine opened setOpened={() => undefined} />);
   });
   expect(mocks.progressButtonProps?.initInstalled).toBe(false);
+  expect(mocks.progressButtonProps?.clearOnCancel).toBe(false);
   await act(async () => {
     mocks.progressButtonProps?.onClick();
     await Promise.resolve();
@@ -233,6 +246,97 @@ test("a succeeded download that fails to register is not treated as installed", 
     defaultEngineProgressId(mocks.defaultEngines[0].downloadLink),
   );
   expect(mocks.progressButtonProps?.initInstalled).toBe(false);
+});
+
+test("cancelling while engine setup is pending loses the race without clearing or notifying", async () => {
+  let finishInstall!: (engine: unknown) => void;
+  const installed = { ...mocks.defaultEngines[0], id: "installed" };
+  mocks.installDefaultEngine.mockReturnValue(
+    new Promise((resolve) => {
+      finishInstall = resolve;
+    }),
+  );
+
+  await act(async () => root.render(<AddEngine opened setOpened={() => undefined} />));
+  await act(async () => mocks.progressButtonProps!.onClick());
+  await vi.waitFor(() => expect(mocks.progressButtonProps?.onCancel).toEqual(expect.any(Function)));
+  const onCancel = mocks.progressButtonProps!.onCancel!;
+  mocks.cancelDownload.mockImplementation(async (ticket: string) => {
+    expect(ticket).toBe("prepared-ticket");
+    finishInstall(installed);
+    return false;
+  });
+
+  await expect(onCancel()).rejects.toBeInstanceOf(DownloadCancelLostError);
+  expect(mocks.installDefaultEngine).toHaveBeenCalledWith(
+    mocks.defaultEngines[0],
+    defaultEngineProgressId(mocks.defaultEngines[0].downloadLink),
+    "prepared-ticket",
+  );
+  expect(mocks.saveEngines).toHaveBeenCalledOnce();
+  expect(mocks.clearProgress).not.toHaveBeenCalled();
+  expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
+});
+
+test("reports a failed cancellation request once", async () => {
+  let finishInstall!: (engine: unknown) => void;
+  mocks.installDefaultEngine.mockReturnValue(
+    new Promise((resolve) => {
+      finishInstall = resolve;
+    }),
+  );
+  await act(async () => root.render(<AddEngine opened setOpened={() => undefined} />));
+  await act(async () => mocks.progressButtonProps!.onClick());
+  await vi.waitFor(() => expect(mocks.progressButtonProps?.onCancel).toEqual(expect.any(Function)));
+  mocks.cancelDownload.mockRejectedValue(new Error("cancel IPC failed"));
+
+  await expect(mocks.progressButtonProps!.onCancel!()).rejects.toThrow("download cancellation");
+  expect(mocks.notifyUnlessCancelled).toHaveBeenCalledOnce();
+  finishInstall({ ...mocks.defaultEngines[0], id: "installed" });
+  await act(async () => Promise.resolve());
+});
+
+test("reports a job failure after cancellation once, without a second cancel notification", async () => {
+  const failure = new Error("engine configuration failed");
+  let rejectInstall!: (error: unknown) => void;
+  mocks.installDefaultEngine.mockReturnValue(
+    new Promise((_resolve, reject) => {
+      rejectInstall = reject;
+    }),
+  );
+  await act(async () => root.render(<AddEngine opened setOpened={() => undefined} />));
+  await act(async () => mocks.progressButtonProps!.onClick());
+  await vi.waitFor(() => expect(mocks.progressButtonProps?.onCancel).toEqual(expect.any(Function)));
+  mocks.cancelDownload.mockImplementation(async () => {
+    rejectInstall(failure);
+    return true;
+  });
+
+  await expect(mocks.progressButtonProps!.onCancel!()).rejects.toBe(failure);
+  expect(mocks.notifyUnlessCancelled).toHaveBeenCalledOnce();
+});
+
+test("a remounted engine card keeps the cancel action for a registered job", async () => {
+  let finishInstall!: (engine: unknown) => void;
+  mocks.installDefaultEngine.mockReturnValue(
+    new Promise((resolve) => {
+      finishInstall = resolve;
+    }),
+  );
+  await act(async () => root.render(<AddEngine opened setOpened={() => undefined} />));
+  await act(async () => mocks.progressButtonProps!.onClick());
+  await vi.waitFor(() => expect(mocks.progressButtonProps?.onCancel).toEqual(expect.any(Function)));
+
+  await act(async () => root.unmount());
+  root = createRoot(host);
+  mocks.progressButtonProps = null;
+  await act(async () => root.render(<AddEngine opened setOpened={() => undefined} />));
+  await vi.waitFor(() => expect(mocks.progressButtonProps?.onCancel).toEqual(expect.any(Function)));
+  const remountedProps = mocks.progressButtonProps!;
+  expect(remountedProps.clearOnCancel).toBe(false);
+
+  finishInstall({ ...mocks.defaultEngines[0], id: "installed" });
+  await act(async () => Promise.resolve());
 });
 
 test("local add closes only for the receipt returned by its exact write", async () => {

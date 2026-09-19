@@ -11,6 +11,8 @@ type ListenerErrorHandler<T> = (error: AppError, event?: T) => void;
 export type TauriListenerOptions<T> = {
     /** Called only while the owner is mounted; errors after abort are silent. */
     onError: ListenerErrorHandler<T>;
+    /** Reports whether the native registration settled while the owner was mounted. */
+    onSettled?: (registered: boolean) => void;
 };
 
 /** Registers exactly one listener and safely disposes registrations which resolve after unmount. */
@@ -21,8 +23,10 @@ export function useTauriListener<T>(
 ) {
     const callbackRef = useRef(callback);
     const onErrorRef = useRef(options.onError);
+    const onSettledRef = useRef(options.onSettled);
     callbackRef.current = callback;
     onErrorRef.current = options.onError;
+    onSettledRef.current = options.onSettled;
 
     useEffect(() => {
         const controller = new AbortController();
@@ -43,10 +47,16 @@ export function useTauriListener<T>(
         }, report)
             .then((registered) => {
                 if (signal.aborted) registered();
-                else unlisten = registered;
+                else {
+                    unlisten = registered;
+                    onSettledRef.current?.(true);
+                }
             })
             .catch((error: unknown) => {
-                if (!signal.aborted) onErrorRef.current(normalizeError(error));
+                if (!signal.aborted) {
+                    onSettledRef.current?.(false);
+                    onErrorRef.current(normalizeError(error));
+                }
             });
         return () => {
             controller.abort();

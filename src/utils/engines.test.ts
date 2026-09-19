@@ -1,4 +1,27 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+const installMocks = vi.hoisted(() => ({
+    downloadEngineArchive: vi.fn(),
+    engineArchiveDestination: vi.fn(),
+    getEngineConfig: vi.fn(),
+    getEngineWorkspace: vi.fn(),
+    registerInstalledEngine: vi.fn(),
+}));
+
+vi.mock("@/platform/tauri", async () => {
+    const actual = await vi.importActual<typeof import("@/platform/tauri")>("@/platform/tauri");
+    return {
+        ...actual,
+        tauri: {
+            ...actual.tauri,
+            downloadEngineArchive: installMocks.downloadEngineArchive,
+            engineArchiveDestination: installMocks.engineArchiveDestination,
+            getEngineConfig: installMocks.getEngineConfig,
+            getEngineWorkspace: installMocks.getEngineWorkspace,
+            registerInstalledEngine: installMocks.registerInstalledEngine,
+        },
+    };
+});
 import {
     bundledEngineImagePath,
     defaultEngineManifestSchema,
@@ -6,6 +29,7 @@ import {
     engineSchema,
     isEngineResourcePathOptionName,
     isManifestEngineInstalled,
+    installDefaultEngine,
     manifestEngineInstallCard,
     parsePersistedEngineJson,
     type LocalEngine,
@@ -165,6 +189,37 @@ describe("default-engine installed identity", () => {
         expect(isEngineResourcePathOptionName("NalimovPath")).toBe(true);
         expect(isEngineResourcePathOptionName("SyzygyPath")).toBe(true);
         expect(isEngineResourcePathOptionName("MultiPV")).toBe(false);
+    });
+});
+
+describe("default-engine download cancellation", () => {
+    it("passes the ticket and stops before engine registration after cancellation", async () => {
+        installMocks.downloadEngineArchive.mockReset().mockRejectedValue(new Error("Cancellation"));
+        installMocks.getEngineWorkspace.mockReset().mockResolvedValue({ id: { id: "root" } });
+        installMocks.engineArchiveDestination
+            .mockReset()
+            .mockResolvedValue({ id: { id: "destination" } });
+        installMocks.registerInstalledEngine.mockReset();
+        installMocks.getEngineConfig.mockReset();
+
+        const engine = {
+            ...manifestEntry,
+            path: "stockfish",
+        } as never;
+        await expect(
+            installDefaultEngine(engine, "progress-id", "ticket-id"),
+        ).rejects.toMatchObject({ message: "Cancellation" });
+
+        expect(installMocks.downloadEngineArchive).toHaveBeenCalledWith(
+            "progress-id",
+            manifestEntry.downloadLink,
+            { id: { id: "destination" } },
+            "stockfish.zip",
+            "ticket-id",
+            { sha256: manifestEntry.sha256, signature: manifestEntry.signature },
+        );
+        expect(installMocks.registerInstalledEngine).not.toHaveBeenCalled();
+        expect(installMocks.getEngineConfig).not.toHaveBeenCalled();
     });
 });
 

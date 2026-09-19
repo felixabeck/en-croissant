@@ -1,4 +1,4 @@
-import { tauri } from "@/platform/tauri";
+import { tauri, withDownloadTicket } from "@/platform/tauri";
 import { notifications } from "@mantine/notifications";
 import { IconX } from "@tabler/icons-react";
 import { error } from "@/platform/native";
@@ -55,12 +55,14 @@ export async function downloadChessCom(
   player: string,
   timestamp: number | null,
 ) {
-  const result = await tauri.downloadChessComGames(
-    destination,
-    `${player}_chesscom.pgn`,
-    player,
-    timestamp === null ? null : BigInt(timestamp),
-    crypto.randomUUID(),
+  const result = await withDownloadTicket((ticket) =>
+    tauri.downloadChessComGames(
+      destination,
+      `${player}_chesscom.pgn`,
+      player,
+      timestamp === null ? null : BigInt(timestamp),
+      ticket,
+    ),
   );
   // `durabilityUncertain` means the native rename committed but its parent-directory fsync
   // acknowledgement was interrupted.  The capability is already durable/reconciled; retrying

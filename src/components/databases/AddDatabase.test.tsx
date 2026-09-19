@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { CatalogVerificationError } from "@/utils/signedCatalog";
 import { conversionProgressId, defaultDatabaseProgressId } from "@/utils/db";
+import { DownloadCancelLostError } from "@/utils/downloadJobs";
 
 const mocks = vi.hoisted(() => ({
   catalogError: undefined as unknown,
@@ -13,6 +14,9 @@ const mocks = vi.hoisted(() => ({
   issuePgnWorkspace: vi.fn(),
   databaseDownloadDestination: vi.fn(),
   downloadFile: vi.fn(),
+  cancelDownload: vi.fn(),
+  clearProgress: vi.fn(),
+  withDownloadTicket: vi.fn((run: (ticket: string) => Promise<unknown>) => run("prepared-ticket")),
   getDatabases: vi.fn(),
   notify: vi.fn(),
   defaultDatabases: [] as Array<{
@@ -29,12 +33,15 @@ const mocks = vi.hoisted(() => ({
     id: string;
     initInstalled: boolean;
     onClick: () => void;
+    onCancel?: () => Promise<unknown>;
+    clearOnCancel?: boolean;
+    inProgress: boolean;
   },
 }));
 
 vi.mock("@/platform/tauri", async () => {
   const actual = await vi.importActual<typeof import("@/platform/tauri")>("@/platform/tauri");
-  return { ...actual, tauri: mocks };
+  return { ...actual, tauri: mocks, withDownloadTicket: mocks.withDownloadTicket };
 });
 vi.mock("@/utils/db", async () => {
   const actual = await vi.importActual<typeof import("@/utils/db")>("@/utils/db");
@@ -65,7 +72,14 @@ vi.mock("../common/FileInput", () => ({
   ),
 }));
 vi.mock("../common/ProgressButton", () => ({
-  default: (props: { id: string; initInstalled: boolean; onClick: () => void }) => {
+  default: (props: {
+    id: string;
+    initInstalled: boolean;
+    onClick: () => void;
+    onCancel?: () => Promise<unknown>;
+    clearOnCancel?: boolean;
+    inProgress: boolean;
+  }) => {
     mocks.progressButtonProps = props;
     return (
       <button type="button" onClick={props.onClick}>
@@ -133,6 +147,8 @@ beforeEach(() => {
   mocks.catalogError = undefined;
   mocks.defaultDatabases = [];
   mocks.progressButtonProps = null;
+  mocks.cancelDownload.mockResolvedValue(true);
+  mocks.clearProgress.mockResolvedValue(1n);
   vi.spyOn(crypto, "randomUUID").mockReturnValue("00000000-0000-4000-8000-000000000001");
   host = document.createElement("div");
   document.body.append(host);
@@ -242,10 +258,11 @@ test("installs a downloaded database with the URL-keyed progress id", async () =
     destination,
     "Lichess.db3",
     null,
-    "00000000-0000-4000-8000-000000000001",
+    "prepared-ticket",
     { sha256: manifestDb.sha256, signature: manifestDb.signature },
   );
   expect(mocks.downloadFile.mock.calls[0]?.[0]).not.toBe("db_0");
+  expect(mocks.progressButtonProps?.clearOnCancel).toBe(false);
   expect(mocks.getDatabases).toHaveBeenCalledOnce();
   expect(setDatabases).toHaveBeenCalledWith(databases);
   expect(mocks.notify).not.toHaveBeenCalled();
@@ -283,6 +300,78 @@ test("reports a failed database download destination without replacing the list"
     message: "permission denied",
   });
   expect(setDatabases).not.toHaveBeenCalled();
+});
+
+test("offers cancellation while setup is pending and keeps cancellation silent", async () => {
+  mocks.defaultDatabases = [manifestDb];
+  let rejectWorkspace!: (error: unknown) => void;
+  mocks.getDatabaseWorkspace.mockReturnValue(
+    new Promise((_resolve, reject) => {
+      rejectWorkspace = reject;
+    }),
+  );
+  await renderAddDatabase();
+  await act(async () => mocks.progressButtonProps!.onClick());
+  await vi.waitFor(() => expect(mocks.progressButtonProps?.onCancel).toEqual(expect.any(Function)));
+
+  const onCancel = mocks.progressButtonProps!.onCancel!;
+  mocks.cancelDownload.mockImplementation(async (ticket: string) => {
+    expect(ticket).toBe("prepared-ticket");
+    rejectWorkspace(new Error("Cancellation"));
+    return true;
+  });
+  await act(async () => onCancel());
+
+  expect(mocks.cancelDownload).toHaveBeenCalledWith("prepared-ticket");
+  expect(mocks.progressButtonProps?.clearOnCancel).toBe(false);
+  expect(mocks.downloadFile).not.toHaveBeenCalled();
+  expect(mocks.notify).not.toHaveBeenCalled();
+});
+
+test("reports a job failure once when cancellation is followed by that failure", async () => {
+  mocks.defaultDatabases = [manifestDb];
+  const failure = new Error("download failed after cancel");
+  let rejectWorkspace!: (error: unknown) => void;
+  mocks.getDatabaseWorkspace.mockReturnValue(
+    new Promise((_resolve, reject) => {
+      rejectWorkspace = reject;
+    }),
+  );
+  await renderAddDatabase();
+  await act(async () => mocks.progressButtonProps!.onClick());
+  await vi.waitFor(() => expect(mocks.progressButtonProps?.onCancel).toEqual(expect.any(Function)));
+  mocks.cancelDownload.mockImplementation(async () => {
+    rejectWorkspace(failure);
+    return true;
+  });
+
+  await expect(mocks.progressButtonProps!.onCancel!()).rejects.toBe(failure);
+  expect(mocks.notify).toHaveBeenCalledTimes(1);
+});
+
+test("does not notify when cancellation loses the completed-job race", async () => {
+  mocks.defaultDatabases = [manifestDb];
+  let resolveWorkspace!: (value: unknown) => void;
+  mocks.getDatabaseWorkspace.mockReturnValue(
+    new Promise((resolve) => {
+      resolveWorkspace = resolve;
+    }),
+  );
+  mocks.databaseDownloadDestination.mockResolvedValue({ id: { id: "destination" } });
+  mocks.downloadFile.mockResolvedValue(undefined);
+  mocks.getDatabases.mockResolvedValue([]);
+  await renderAddDatabase();
+  await act(async () => mocks.progressButtonProps!.onClick());
+  await vi.waitFor(() => expect(mocks.progressButtonProps?.onCancel).toEqual(expect.any(Function)));
+  mocks.cancelDownload.mockImplementation(async () => {
+    resolveWorkspace({ id: { id: "root" } });
+    return false;
+  });
+
+  await expect(mocks.progressButtonProps!.onCancel!()).rejects.toBeInstanceOf(
+    DownloadCancelLostError,
+  );
+  expect(mocks.notify).not.toHaveBeenCalled();
 });
 
 test("keeps the PGN picker silent on Cancellation and notifies a real failure", async () => {

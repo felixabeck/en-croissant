@@ -19,6 +19,9 @@ import { useAtom } from "jotai";
 import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
+import { errorUnlessCancelled } from "@/platform/errors";
+import { warn } from "@/platform/native";
+import { cancelDownload, runDownloadJob, useDownloadJob } from "@/utils/downloadJobs";
 import { enginesAtom } from "@/state/atoms";
 import AppModal from "../common/AppModal";
 import {
@@ -216,22 +219,37 @@ function EngineCard({
   const { t } = useTranslation();
 
   const [inProgress, setInProgress] = useState<boolean>(false);
+  const hasJob = useDownloadJob(progressId ?? "");
   const [installedThisSession, setInstalledThisSession] = useState(false);
   const [, setEngines] = useAtom(enginesAtom);
   const downloadEngine = useCallback(async () => {
     if (!progressId) return;
     setInProgress(true);
     try {
-      const installed = await installDefaultEngine(engine, progressId);
+      const installed = await runDownloadJob(progressId, async (ticket) => {
+        try {
+          return await installDefaultEngine(engine, progressId, ticket);
+        } catch (error) {
+          if (errorUnlessCancelled(error)) {
+            try {
+              await tauri.clearProgress(progressId);
+            } catch (cleanupError) {
+              try {
+                await warn(
+                  `download progress cleanup failed (${progressId}): ${String(cleanupError)}`,
+                );
+              } catch {
+                // A cleanup failure must not replace the original engine error.
+              }
+            }
+          }
+          throw error;
+        }
+      });
       setEngines(async (prev) => [...(await prev), installed]);
       setInstalledThisSession(true);
     } catch (error) {
       notifyUnlessCancelled(t("Common.Error"), error);
-      try {
-        await tauri.clearProgress(progressId);
-      } catch {
-        // Installed state comes from the engine list, not from download success.
-      }
     } finally {
       setInProgress(false);
     }
@@ -274,7 +292,9 @@ function EngineCard({
               onClick={() => {
                 void downloadEngine();
               }}
-              inProgress={inProgress}
+              onCancel={hasJob ? () => cancelDownload(progressId, t("Common.Error")) : undefined}
+              clearOnCancel={false}
+              inProgress={inProgress || hasJob}
               setInProgress={setInProgress}
             />
           )}

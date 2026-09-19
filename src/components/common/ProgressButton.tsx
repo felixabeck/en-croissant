@@ -11,7 +11,7 @@ type Props = {
   id: string;
   initInstalled: boolean;
   onClick: (id: string) => void;
-  onCancel?: () => void | Promise<void>;
+  onCancel?: () => void | Promise<void | { clearedGeneration: bigint | null }>;
   leftIcon?: React.ReactNode;
   labels: {
     completed: string;
@@ -25,6 +25,8 @@ type Props = {
   completeOnProgressSuccess?: boolean;
   inProgress: boolean;
   setInProgress: (inProgress: boolean) => void;
+  /** Whether the button clears native progress after a successful cancellation. */
+  clearOnCancel?: boolean;
 };
 
 function ProgressButton({
@@ -39,9 +41,10 @@ function ProgressButton({
   completeOnProgressSuccess = true,
   inProgress,
   setInProgress,
+  clearOnCancel = true,
 }: Props) {
   const { t } = useTranslation();
-  const { progress, finished, isActive, clear, item } = useProgress(id);
+  const { progress, finished, isActive, clear, fence, discard, item } = useProgress(id);
   const currentId = useRef(id);
   currentId.current = id;
   const completed = initInstalled || (completeOnProgressSuccess && item?.state === "succeeded");
@@ -56,22 +59,28 @@ function ProgressButton({
 
   const handleCancel = useCallback(async () => {
     const cancellingId = id;
+    let outcome: Awaited<ReturnType<NonNullable<Props["onCancel"]>>>;
     try {
-      if (onCancel) {
-        await onCancel();
-      }
+      outcome = onCancel ? await onCancel() : undefined;
     } catch {
       // Keep the running UI if native cancellation could not be acknowledged.
       return;
     }
     if (currentId.current !== cancellingId) return;
     try {
-      await clear();
+      if (clearOnCancel) {
+        await clear();
+      } else if (outcome && "clearedGeneration" in outcome) {
+        if (outcome.clearedGeneration === null) discard();
+        else fence(outcome.clearedGeneration);
+      } else {
+        discard();
+      }
       if (currentId.current === cancellingId) setInProgress(false);
     } catch (error) {
       notifyListenerError(error);
     }
-  }, [id, onCancel, clear, setInProgress]);
+  }, [clear, clearOnCancel, discard, fence, id, onCancel, setInProgress]);
 
   let label: string;
   if (completed) {
@@ -96,7 +105,7 @@ function ProgressButton({
         autoContrast
       >
         <span className={classes.label}>{label}</span>
-        {!completed && progress !== 0 && (
+        {!completed && progress !== 0 && item?.state !== "cancelled" && (
           <Progress
             pos="absolute"
             h="100%"

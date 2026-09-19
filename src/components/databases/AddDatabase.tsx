@@ -33,6 +33,7 @@ import {
 import { capitalize, formatBytes, formatNumber } from "@/utils/format";
 import { runWithAppliedRecovery } from "@/platform/errors";
 import { runUnlessCancelled } from "@/components/files/notifyError";
+import { cancelDownload, runDownloadJob, useDownloadJob } from "@/utils/downloadJobs";
 import { CatalogVerificationError } from "@/utils/signedCatalog";
 import AppModal from "../common/AppModal";
 import FileInput from "../common/FileInput";
@@ -241,24 +242,27 @@ function DatabaseCard({
 }) {
   const { t } = useTranslation();
   const [inProgress, setInProgress] = useState<boolean>(false);
+  const hasJob = useDownloadJob(progressId);
 
   async function downloadDatabase() {
     setInProgress(true);
     try {
-      await runUnlessCancelled(t("Common.Error"), async () => {
-        const root = await tauri.getDatabaseWorkspace();
-        const destination = await tauri.databaseDownloadDestination(root);
-        await tauri.downloadFile(
-          progressId,
-          database.downloadLink,
-          destination,
-          `${database.title}.db3`,
-          null,
-          crypto.randomUUID(),
-          { sha256: database.sha256, signature: database.signature },
-        );
-        await setDatabases(await getDatabases());
-      });
+      await runUnlessCancelled(t("Common.Error"), () =>
+        runDownloadJob(progressId, async (ticket) => {
+          const root = await tauri.getDatabaseWorkspace();
+          const destination = await tauri.databaseDownloadDestination(root);
+          await tauri.downloadFile(
+            progressId,
+            database.downloadLink,
+            destination,
+            `${database.title}.db3`,
+            null,
+            ticket,
+            { sha256: database.sha256, signature: database.signature },
+          );
+          await setDatabases(await getDatabases());
+        }),
+      );
     } finally {
       setInProgress(false);
     }
@@ -311,7 +315,9 @@ function DatabaseCard({
             onClick={() => {
               void downloadDatabase();
             }}
-            inProgress={inProgress}
+            onCancel={hasJob ? () => cancelDownload(progressId, t("Common.Error")) : undefined}
+            clearOnCancel={false}
+            inProgress={inProgress || hasJob}
             setInProgress={setInProgress}
           />
         </Box>

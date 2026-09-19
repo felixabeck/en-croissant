@@ -21,7 +21,7 @@ use crate::infra::fs::atomic_replace;
 use crate::progress::{begin_progress, update_progress_with_state, ProgressLease, ProgressState};
 use crate::AppState;
 
-const MAX_ACTIVE_DOWNLOADS: usize = 32;
+pub(crate) const MAX_ACTIVE_DOWNLOADS: usize = 32;
 const DOWNLOAD_DEADLINE: Duration = Duration::from_secs(60 * 60);
 const MAX_ARCHIVE_PATH_BYTES: usize = 1024;
 const DOWNLOAD_STAGING_PAYLOAD_LEAF: &str = "payload";
@@ -68,48 +68,6 @@ fn download_target_durability(
 pub struct ArtifactIntegrity {
     pub sha256: String,
     pub signature: String,
-}
-
-/// Bounded lifecycle-owned cancellation registry. A lease removes itself on every ordinary
-/// return, error, cancellation, and deadline unwind; IDs therefore cannot accumulate forever.
-#[derive(Default)]
-pub struct DownloadRegistry;
-
-pub struct DownloadLease {
-    operation: crate::infra::operations::OperationLease,
-}
-
-impl DownloadRegistry {
-    pub fn begin(
-        self: &Arc<Self>,
-        operations: &crate::infra::operations::OperationRegistry,
-        id: &str,
-    ) -> Result<DownloadLease, Error> {
-        let _ = self;
-        let label = format!("download publication {id}");
-        Ok(DownloadLease {
-            operation: operations.accept_download(id, &label, MAX_ACTIVE_DOWNLOADS)?,
-        })
-    }
-
-    pub fn cancel(
-        &self,
-        operations: &crate::infra::operations::OperationRegistry,
-        id: &str,
-    ) -> Result<bool, Error> {
-        let _ = self;
-        operations.cancel_accepted(id)
-    }
-}
-
-impl DownloadLease {
-    pub(crate) fn cancellation_token(&self) -> CancellationToken {
-        self.operation.token()
-    }
-
-    pub(crate) fn into_operation(self) -> crate::infra::operations::OperationLease {
-        self.operation
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -718,11 +676,18 @@ pub async fn download_file(
     destination: crate::infra::path_authority::PathRef,
     filename: String,
     app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
     total_size: Option<u32>,
     job_id: String,
     integrity: Option<ArtifactIntegrity>,
 ) -> Result<(), Error> {
+    let lease = state.operations.claim_download(
+        &job_id,
+        window.label(),
+        "download publication",
+        MAX_ACTIVE_DOWNLOADS,
+    )?;
     download_to_destination(
         &id,
         &url,
@@ -733,6 +698,7 @@ pub async fn download_file(
         None,
         total_size,
         job_id,
+        lease,
         false,
         integrity.as_ref(),
     )
@@ -758,19 +724,19 @@ pub(crate) async fn download_to_destination<R: tauri::Runtime>(
     bearer_token: Option<&str>,
     total_size: Option<u32>,
     job_id: String,
+    lease: crate::infra::operations::OperationLease,
     register_pgn_artifact: bool,
     integrity: Option<&ArtifactIntegrity>,
 ) -> Result<Option<crate::infra::path_authority::ArtifactPublication>, Error> {
-    let lease = state.download_registry.begin(&state.operations, &job_id)?;
-    let cancellation = lease.cancellation_token();
-    let operation = lease.into_operation();
+    let cancellation = lease.token();
+    let commit_gate = lease.commit_gate();
     let id = id.to_owned();
     let url = url.to_owned();
     let app = app.clone();
     let state = state.clone();
     let bearer_token = bearer_token.map(str::to_owned);
     let integrity = integrity.cloned();
-    crate::infra::operations::run_native_operation(operation, "download publication", async move {
+    crate::infra::operations::run_native_operation(lease, "download publication", async move {
         download_to_destination_inner(
             &id,
             &url,
@@ -784,6 +750,7 @@ pub(crate) async fn download_to_destination<R: tauri::Runtime>(
             register_pgn_artifact,
             integrity.as_ref(),
             cancellation.clone(),
+            commit_gate,
         )
         .await
         .map_err(sanitize_download_error)
@@ -879,11 +846,10 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
     register_pgn_artifact: bool,
     integrity: Option<&ArtifactIntegrity>,
     cancellation: CancellationToken,
+    commit_gate: crate::infra::operations::OperationCommitGate,
 ) -> Result<Option<crate::infra::path_authority::ArtifactPublication>, Error> {
     // Validate and reserve all fallible producer prerequisites before starting
     // visible progress. No failed setup may leave a running progress entry.
-    uuid::Uuid::parse_str(&job_id)
-        .map_err(|_| Error::InvalidInput("download job ID must be a UUID".into()))?;
     let filename = std::ffi::OsString::from(filename);
     let (op, resolved) = {
         let mut authority_guard = state
@@ -905,6 +871,9 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
     };
     let staged = tempfile::tempdir().map_err(|error| Error::Io(Box::new(error)))?;
     let staged_file = staged.path().join(DOWNLOAD_STAGING_PAYLOAD_LEAF);
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
     let progress_lease = begin_progress(&state.progress_state, app, id.to_owned())?;
     let result = await_staging_deadline(
         DOWNLOAD_DEADLINE,
@@ -980,6 +949,7 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
         None
     };
     let install_reservation = reservation.clone();
+    let commit_gate = commit_gate.clone();
     let install_result = crate::infra::blocking::BLOCKING_GATEWAY
         .spawn_cancellable(cancellation.clone(), move |worker_cancellation| {
             match install_reservation.as_ref() {
@@ -988,6 +958,7 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
                         reservation,
                         &staged_file,
                         worker_cancellation,
+                        Some(&commit_gate),
                     )
                     .map(|installed| {
                         (
@@ -998,10 +969,14 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
                 None => {
                     let mut staged = std::fs::File::open(staged_file)?;
                     resolved
-                        .atomic_replace_download_cancellable(worker_cancellation, |target| {
-                            copy_cancellable(&mut staged, target, worker_cancellation)?;
-                            Ok(())
-                        })
+                        .atomic_replace_download_cancellable_with_commit_gate(
+                            worker_cancellation,
+                            &commit_gate,
+                            |target| {
+                                copy_cancellable(&mut staged, target, worker_cancellation)?;
+                                Ok(())
+                            },
+                        )
                         .map(|outcome| (outcome, None))
                 }
             }
@@ -1063,6 +1038,7 @@ pub(crate) async fn install_staged_pgn_artifact(
     staged: tempfile::NamedTempFile,
     state: &AppState,
     cancellation: &CancellationToken,
+    commit_gate: Option<&crate::infra::operations::OperationCommitGate>,
 ) -> Result<crate::infra::path_authority::ArtifactPublication, Error> {
     let filename = std::ffi::OsString::from(filename);
     let payload = crate::infra::path_authority::hash_staged_payload_cancellable(
@@ -1098,14 +1074,25 @@ pub(crate) async fn install_staged_pgn_artifact(
             std::slice::from_ref(&filename),
         )?;
     let installation_reservation = reservation.clone();
+    let commit_gate = commit_gate.cloned();
     let install = crate::infra::blocking::BLOCKING_GATEWAY
-        .spawn_cancellable(cancellation.clone(), move |worker_cancellation| {
-            resolved.atomic_install_reserved_download_cancellable(
-                &installation_reservation,
-                staged.path(),
-                worker_cancellation,
-            )
-        })
+        .spawn_cancellable(
+            cancellation.clone(),
+            move |worker_cancellation| match commit_gate.as_ref() {
+                Some(commit_gate) => resolved.atomic_install_reserved_download_cancellable(
+                    &installation_reservation,
+                    staged.path(),
+                    worker_cancellation,
+                    Some(commit_gate),
+                ),
+                None => resolved.atomic_install_reserved_download_cancellable(
+                    &installation_reservation,
+                    staged.path(),
+                    worker_cancellation,
+                    None,
+                ),
+            },
+        )
         .await;
     let target_durability = match install {
         Ok(installed) => installed,
@@ -1168,6 +1155,7 @@ pub async fn download_lichess_games(
     estimated_size: Option<u32>,
     job_id: String,
     app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
 ) -> Result<crate::infra::path_authority::ArtifactPublication, Error> {
     download_lichess_games_runtime(
@@ -1178,6 +1166,7 @@ pub async fn download_lichess_games(
         since_ms,
         estimated_size,
         job_id,
+        window.label(),
         &app,
         state.inner(),
     )
@@ -1194,9 +1183,16 @@ async fn download_lichess_games_runtime<R: tauri::Runtime>(
     since_ms: Option<i64>,
     estimated_size: Option<u32>,
     job_id: String,
+    owner: &str,
     app: &tauri::AppHandle<R>,
     state: &AppState,
 ) -> Result<crate::infra::path_authority::ArtifactPublication, Error> {
+    let lease = state.operations.claim_download(
+        &job_id,
+        owner,
+        "download_lichess_games",
+        MAX_ACTIVE_DOWNLOADS,
+    )?;
     let operations = state
         .pgn_path_authority
         .lock()
@@ -1225,6 +1221,7 @@ async fn download_lichess_games_runtime<R: tauri::Runtime>(
         Some(&token),
         estimated_size,
         job_id,
+        lease,
         true,
         None,
     )
@@ -1273,85 +1270,87 @@ pub async fn download_engine_archive(
     job_id: String,
     integrity: ArtifactIntegrity,
     app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    let lease = state.download_registry.begin(&state.operations, &job_id)?;
-    let cancellation = lease.cancellation_token();
-    let operation = lease.into_operation();
-    let state = state.inner().clone();
-    crate::infra::operations::run_native_operation(
-        operation,
+    let lease = state.operations.claim_download(
+        &job_id,
+        window.label(),
         "download_engine_archive",
-        async move {
-            let result = async {
-                let directory_name = std::ffi::OsString::from(directory_name);
-                let (op, resolved) =
-                    resolve_engine_archive_destination(&state, &destination, &directory_name)?;
-                uuid::Uuid::parse_str(&job_id)
-                    .map_err(|_| Error::InvalidInput("download job ID must be a UUID".into()))?;
-                validate_artifact_integrity(op, &url, Some(&integrity))?;
-                let destination_parent = resolved
-                    .target()
-                    .and_then(|target| target.parent())
-                    .ok_or_else(|| {
-                        Error::InvalidInput("archive destination needs a parent directory".into())
-                    })?
-                    .to_path_buf();
-                // The staging tree is a sibling of the destination, created in the destination's
-                // own parent (d-20260918-11). Publishing it is then a same-directory rename, so
-                // no cross-filesystem copy can quietly replace the atomic install.
-                let staging = private_tempdir_in(".archive", &destination_parent)?;
-                let extracted = staging.path().to_path_buf();
-                let progress_lease = begin_progress(&state.progress_state, &app, id.clone())?;
-                let result = await_staging_deadline(
-                    DOWNLOAD_DEADLINE,
-                    &cancellation,
-                    "engine archive download deadline exceeded",
-                    download_file_core_control_with_integrity(
-                        op,
-                        &url,
-                        &extracted,
-                        Some((staging.path().to_path_buf(), None)),
-                        state.http_transport.as_ref(),
-                        None,
-                        None,
-                        cancellation.clone(),
-                        Some(&integrity.sha256),
-                        |progress| {
-                            update_progress_with_state(
-                                &state.progress_state,
-                                &app,
-                                &progress_lease,
-                                progress,
-                                ProgressState::Running,
-                            )
-                        },
-                    ),
-                )
-                .await;
-                if let Err(error) = result {
-                    report_download_error(&state, &app, &progress_lease, &job_id, &error);
-                    return Err(error);
-                }
-                if cancellation.is_cancelled() {
-                    let error = Error::Cancellation;
-                    report_download_error(&state, &app, &progress_lease, &job_id, &error);
-                    return Err(error);
-                }
-                let install_result = crate::infra::blocking::BLOCKING_GATEWAY
-                    .spawn(move || publish_engine_archive_tree(&resolved, staging.path()))
-                    .await;
-                if let Err(error) = install_result {
-                    report_download_error(&state, &app, &progress_lease, &job_id, &error);
-                    return Err(error);
-                }
-                report_download_success(&state, &app, &progress_lease, &job_id);
-                Ok(())
+        MAX_ACTIVE_DOWNLOADS,
+    )?;
+    let cancellation = lease.token();
+    let commit_gate = lease.commit_gate();
+    let state = state.inner().clone();
+    crate::infra::operations::run_native_operation(lease, "download_engine_archive", async move {
+        let result = async {
+            let directory_name = std::ffi::OsString::from(directory_name);
+            let (op, resolved) =
+                resolve_engine_archive_destination(&state, &destination, &directory_name)?;
+            validate_artifact_integrity(op, &url, Some(&integrity))?;
+            let destination_parent = resolved
+                .target()
+                .and_then(|target| target.parent())
+                .ok_or_else(|| {
+                    Error::InvalidInput("archive destination needs a parent directory".into())
+                })?
+                .to_path_buf();
+            // The staging tree is a sibling of the destination, created in the destination's
+            // own parent (d-20260918-11). Publishing it is then a same-directory rename, so
+            // no cross-filesystem copy can quietly replace the atomic install.
+            let staging = private_tempdir_in(".archive", &destination_parent)?;
+            let extracted = staging.path().to_path_buf();
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancellation);
             }
+            let progress_lease = begin_progress(&state.progress_state, &app, id.clone())?;
+            let result = await_staging_deadline(
+                DOWNLOAD_DEADLINE,
+                &cancellation,
+                "engine archive download deadline exceeded",
+                download_file_core_control_with_integrity(
+                    op,
+                    &url,
+                    &extracted,
+                    Some((staging.path().to_path_buf(), None)),
+                    state.http_transport.as_ref(),
+                    None,
+                    None,
+                    cancellation.clone(),
+                    Some(&integrity.sha256),
+                    |progress| {
+                        update_progress_with_state(
+                            &state.progress_state,
+                            &app,
+                            &progress_lease,
+                            progress,
+                            ProgressState::Running,
+                        )
+                    },
+                ),
+            )
             .await;
-            result.map_err(sanitize_download_error)
-        },
-    )
+            if let Err(error) = result {
+                report_download_error(&state, &app, &progress_lease, &job_id, &error);
+                return Err(error);
+            }
+            let commit_gate = commit_gate.clone();
+            let install_result = crate::infra::blocking::BLOCKING_GATEWAY
+                .spawn(move || {
+                    commit_gate.begin_commit()?;
+                    publish_engine_archive_tree(&resolved, staging.path())
+                })
+                .await;
+            if let Err(error) = install_result {
+                report_download_error(&state, &app, &progress_lease, &job_id, &error);
+                return Err(error);
+            }
+            report_download_success(&state, &app, &progress_lease, &job_id);
+            Ok(())
+        }
+        .await;
+        result.map_err(sanitize_download_error)
+    })
     .await
 }
 
@@ -1367,8 +1366,31 @@ pub(crate) fn publish_engine_archive_tree(
 
 #[tauri::command]
 #[specta::specta]
-pub async fn cancel_download(id: String, state: tauri::State<'_, AppState>) -> Result<bool, Error> {
-    state.download_registry.cancel(&state.operations, &id)
+pub fn prepare_download(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, Error> {
+    state.operations.prepare_download(window.label())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn release_download(
+    id: String,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), Error> {
+    state.operations.release_download(&id, window.label())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn cancel_download(
+    id: String,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+) -> Result<bool, Error> {
+    state.operations.cancel_download(&id, window.label())
 }
 
 fn create_private_dir_all(path: &Path) -> Result<(), Error> {
@@ -1977,6 +1999,15 @@ mod tests {
         (authority, root.id)
     }
 
+    fn test_download_lease(state: &AppState) -> (String, crate::infra::operations::OperationLease) {
+        let ticket = state.operations.prepare_download("test").unwrap();
+        let lease = state
+            .operations
+            .claim_download(&ticket, "test", "test download", MAX_ACTIVE_DOWNLOADS)
+            .unwrap();
+        (ticket, lease)
+    }
+
     #[test]
     fn from_operations_derives_exclusive_download_classes() {
         use crate::infra::path_authority::PathOperation::*;
@@ -2030,6 +2061,7 @@ mod tests {
         *state.pgn_path_authority.lock().unwrap() = Some(authority);
         let app = tauri::test::mock_app();
 
+        let (job_id, lease) = test_download_lease(&state);
         let error = download_to_destination(
             "lichess_spoof",
             "https://www.encroissant.org/database.db3",
@@ -2039,7 +2071,8 @@ mod tests {
             &state,
             None,
             None,
-            uuid::Uuid::new_v4().to_string(),
+            job_id,
+            lease,
             false,
             None,
         )
@@ -2060,6 +2093,7 @@ mod tests {
         *state.pgn_path_authority.lock().unwrap() = Some(authority);
         let app = tauri::test::mock_app();
 
+        let job_id = state.operations.prepare_download("test").unwrap();
         let error = download_lichess_games_runtime(
             crate::credentials::LichessAccountHandle::new(),
             destination,
@@ -2067,7 +2101,8 @@ mod tests {
             "player".into(),
             None,
             None,
-            uuid::Uuid::new_v4().to_string(),
+            job_id,
+            "test",
             app.handle(),
             &state,
         )
@@ -2375,15 +2410,15 @@ mod tests {
     }
 
     #[test]
-    fn download_registry_is_bounded_exact_and_cleans_up() {
-        let registry = Arc::new(DownloadRegistry);
+    fn download_reservation_is_bounded_exact_and_cleans_up() {
         let operations = crate::infra::operations::OperationRegistry::default();
-        let first = registry.begin(&operations, "job").unwrap();
-        assert!(registry.begin(&operations, "job").is_err());
-        assert!(registry.cancel(&operations, "job").unwrap());
-        assert!(first.cancellation_token().is_cancelled());
-        drop(first);
-        assert!(!registry.cancel(&operations, "job").unwrap());
+        let first = operations.prepare_download("owner").unwrap();
+        assert!(operations.cancel_download(&first, "owner").unwrap());
+        assert!(matches!(
+            operations.claim_download(&first, "owner", "download", MAX_ACTIVE_DOWNLOADS),
+            Err(Error::Cancellation)
+        ));
+        assert!(!operations.cancel_download(&first, "owner").unwrap());
     }
 
     #[test]
@@ -3785,7 +3820,7 @@ mod tests {
             skip: std::sync::atomic::AtomicUsize::new(2),
         })));
 
-        let job_id = uuid::Uuid::new_v4().to_string();
+        let (job_id, lease) = test_download_lease(&state);
         let result = download_to_destination(
             "progress_download_override",
             "https://example.com/games.pgn",
@@ -3796,6 +3831,7 @@ mod tests {
             None,
             Some(pgn_content.len() as u32),
             job_id,
+            lease,
             true,
             None,
         )
@@ -3837,6 +3873,7 @@ mod tests {
             staged_file,
             &state,
             &CancellationToken::new(),
+            None,
         )
         .await
         .unwrap();
@@ -3878,6 +3915,7 @@ mod tests {
         })));
 
         let progress_id = "progress_no_reservation_uncertainty";
+        let (job_id, lease) = test_download_lease(&state);
         let error = download_to_destination(
             progress_id,
             "https://example.com/games.pgn",
@@ -3887,7 +3925,8 @@ mod tests {
             &state,
             None,
             Some(pgn_content.len() as u32),
-            uuid::Uuid::new_v4().to_string(),
+            job_id,
+            lease,
             false,
             None,
         )
@@ -3938,6 +3977,7 @@ mod tests {
                 staged,
                 &task_state,
                 &task_cancellation,
+                None,
             )
             .await
         });
@@ -3971,6 +4011,7 @@ mod tests {
             staged,
             &state,
             &cancellation,
+            None,
         )
         .await
         .unwrap();
@@ -4030,7 +4071,7 @@ mod tests {
         let pgn_content: &'static [u8] = b"1. e4 e5 2. Nf3 Nc6";
         state.http_transport = mock_successful_transport(pgn_content);
 
-        let job_id = uuid::Uuid::new_v4().to_string();
+        let (job_id, lease) = test_download_lease(&state);
         let err = download_to_destination(
             "progress_verify_fail",
             "https://example.com/games.pgn",
@@ -4041,6 +4082,7 @@ mod tests {
             None,
             Some(pgn_content.len() as u32),
             job_id,
+            lease,
             true,
             None,
         )
@@ -4091,7 +4133,7 @@ mod tests {
         *state.pgn_path_authority.lock().unwrap() = Some(authority);
         let app = test_progress_app();
 
-        let job_id = uuid::Uuid::new_v4().to_string();
+        let (job_id, lease) = test_download_lease(&state);
         let err = download_to_destination(
             "progress_stale_verify",
             "https://example.com/games.pgn",
@@ -4102,6 +4144,7 @@ mod tests {
             None,
             Some(pgn_content.len() as u32),
             job_id,
+            lease,
             true,
             None,
         )
@@ -4162,7 +4205,7 @@ mod tests {
         *state.pgn_path_authority.lock().unwrap() = Some(authority);
         let app = test_progress_app();
 
-        let job_id = uuid::Uuid::new_v4().to_string();
+        let (job_id, lease) = test_download_lease(&state);
         let progress_id = "progress_authority_unavailable";
         let err = download_to_destination(
             progress_id,
@@ -4174,6 +4217,7 @@ mod tests {
             None,
             Some(pgn_content.len() as u32),
             job_id,
+            lease,
             true,
             None,
         )
@@ -4227,7 +4271,7 @@ mod tests {
         *state.pgn_path_authority.lock().unwrap() = Some(authority);
         let app = test_progress_app();
 
-        let job_id = uuid::Uuid::new_v4().to_string();
+        let (job_id, lease) = test_download_lease(&state);
         let publication = download_to_destination(
             progress_id,
             "https://example.com/games.pgn",
@@ -4238,6 +4282,7 @@ mod tests {
             None,
             Some(pgn_content.len() as u32),
             job_id,
+            lease,
             true,
             None,
         )
@@ -4307,9 +4352,7 @@ mod tests {
             let state = weak
                 .upgrade()
                 .expect("state must be alive during transport request");
-            let _ = state
-                .download_registry
-                .cancel(&state.operations, &self.job_id);
+            let _ = state.operations.cancel_download(&self.job_id, "test");
             if self.advance_generation {
                 state
                     .progress_state
@@ -4326,7 +4369,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let (authority, destination, _) = test_downloads_destination(&dir);
         let mut state = AppState::default();
-        let job_id = uuid::Uuid::new_v4().to_string();
+        let job_id = state.operations.prepare_download("test").unwrap();
         let progress_id = "progress_cancel";
         let transport = Arc::new(CancellingTransport {
             job_id: job_id.clone(),
@@ -4339,6 +4382,10 @@ mod tests {
         *transport.state_weak.lock().unwrap() = Arc::downgrade(&state);
         *state.pgn_path_authority.lock().unwrap() = Some(authority);
         let app = test_progress_app();
+        let lease = state
+            .operations
+            .claim_download(&job_id, "test", "test download", MAX_ACTIVE_DOWNLOADS)
+            .unwrap();
 
         let err = download_to_destination(
             progress_id,
@@ -4350,6 +4397,7 @@ mod tests {
             None,
             None,
             job_id,
+            lease,
             true,
             None,
         )
@@ -4425,7 +4473,11 @@ mod tests {
             let app = test_progress_app();
             let app_handle = app.handle().clone();
             let owned_state = Arc::clone(&state);
-            let job_id = uuid::Uuid::new_v4().to_string();
+            let job_id = state.operations.prepare_download("test").unwrap();
+            let lease = state
+                .operations
+                .claim_download(&job_id, "test", "test download", MAX_ACTIVE_DOWNLOADS)
+                .unwrap();
             let progress_id = format!("caller-drop-{publication_fail}");
             let filename = format!("caller-drop-{publication_fail}.bin");
             let task_progress = progress_id.clone();
@@ -4441,6 +4493,7 @@ mod tests {
                     None,
                     None,
                     job_id,
+                    lease,
                     true,
                     None,
                 )

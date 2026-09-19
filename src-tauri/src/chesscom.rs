@@ -215,6 +215,7 @@ pub async fn get_public_chess_com_json(
 
 #[tauri::command]
 #[specta::specta]
+#[allow(clippy::too_many_arguments)]
 pub async fn download_chess_com_games(
     destination: PathRef,
     filename: String,
@@ -222,18 +223,22 @@ pub async fn download_chess_com_games(
     since_ms: Option<i64>,
     job_id: String,
     app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
 ) -> Result<ArtifactPublication, Error> {
-    uuid::Uuid::parse_str(&job_id)
-        .map_err(|_| Error::InvalidInput("download job ID must be a UUID".into()))?;
+    let lease = state.operations.claim_download(
+        &job_id,
+        window.label(),
+        "download_chess_com_games",
+        crate::fs::MAX_ACTIVE_DOWNLOADS,
+    )?;
     let lower_player = player.to_ascii_lowercase();
     let first_month = first_archive_month(since_ms)?;
-    let lease = state.download_registry.begin(&state.operations, &job_id)?;
-    let cancellation = lease.cancellation_token();
-    let operation = lease.into_operation();
+    let cancellation = lease.token();
+    let commit_gate = lease.commit_gate();
     let state = state.inner().clone();
     crate::infra::operations::run_native_operation(
-        operation,
+        lease,
         "download_chess_com_games",
         download_chess_com_games_core(
             destination,
@@ -244,6 +249,7 @@ pub async fn download_chess_com_games(
             app,
             state,
             cancellation,
+            commit_gate,
             EXPORT_TIMEOUT,
         ),
     )
@@ -285,8 +291,12 @@ async fn download_chess_com_games_core<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     state: AppState,
     cancellation: CancellationToken,
+    commit_gate: crate::infra::operations::OperationCommitGate,
     export_timeout: Duration,
 ) -> Result<ArtifactPublication, Error> {
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
     let progress = begin_progress(&state.progress_state, &app, format!("chesscom_{player}"))?;
 
     let result = async {
@@ -375,8 +385,15 @@ async fn download_chess_com_games_core<R: tauri::Runtime>(
         // Publication and its durability/activation tail are deliberately outside the staging
         // timeout. Once installation starts, cancellation checkpoints decide whether publication
         // is still safe; after rename, the real durability and activation outcome always wins.
-        crate::fs::install_staged_pgn_artifact(destination, filename, staged, &state, &cancellation)
-            .await
+        crate::fs::install_staged_pgn_artifact(
+            destination,
+            filename,
+            staged,
+            &state,
+            &cancellation,
+            Some(&commit_gate),
+        )
+        .await
     }
     .await;
 
@@ -577,10 +594,16 @@ mod tests {
         state: AppState,
         timeout: Duration,
     ) -> Result<ArtifactPublication, Error> {
-        let lease = state.download_registry.begin(&state.operations, &job_id)?;
-        let cancellation = lease.cancellation_token();
+        let lease = state.operations.claim_download(
+            &job_id,
+            "test",
+            "download_chess_com_games",
+            crate::fs::MAX_ACTIVE_DOWNLOADS,
+        )?;
+        let cancellation = lease.token();
+        let commit_gate = lease.commit_gate();
         crate::infra::operations::run_native_operation(
-            lease.into_operation(),
+            lease,
             "download_chess_com_games",
             download_chess_com_games_core(
                 destination,
@@ -591,6 +614,7 @@ mod tests {
                 app,
                 state,
                 cancellation,
+                commit_gate,
                 timeout,
             ),
         )
@@ -716,7 +740,7 @@ mod tests {
             1,
             false,
         );
-        let job_id = uuid::Uuid::new_v4().to_string();
+        let job_id = state.operations.prepare_download("test").unwrap();
         let task = tokio::spawn(run_owned_export(
             destination,
             "success.pgn".into(),
@@ -747,7 +771,7 @@ mod tests {
             1,
             true,
         );
-        let job_id = uuid::Uuid::new_v4().to_string();
+        let job_id = state.operations.prepare_download("test").unwrap();
         let task = tokio::spawn(run_owned_export(
             destination,
             "failure.pgn".into(),
@@ -781,7 +805,7 @@ mod tests {
         let error = run_owned_export(
             destination,
             "error.pgn".into(),
-            uuid::Uuid::new_v4().to_string(),
+            state.operations.prepare_download("test").unwrap(),
             app.handle().clone(),
             state.clone(),
             Duration::from_secs(2),
@@ -808,7 +832,7 @@ mod tests {
         });
         let (_dir, state, destination, root, app) = export_fixture(held.clone());
         std::fs::write(root.join("cancel.pgn"), b"previous").unwrap();
-        let job_id = uuid::Uuid::new_v4().to_string();
+        let job_id = state.operations.prepare_download("test").unwrap();
         let task = tokio::spawn(run_owned_export(
             destination,
             "cancel.pgn".into(),
@@ -821,10 +845,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert!(state
-            .download_registry
-            .cancel(&state.operations, &job_id)
-            .unwrap());
+        assert!(state.operations.cancel_download(&job_id, "test").unwrap());
         held.release.notify_waiters();
         assert!(matches!(task.await.unwrap(), Err(Error::Cancellation)));
         assert_eq!(
@@ -852,7 +873,7 @@ mod tests {
         let task = tokio::spawn(run_owned_export(
             destination,
             "deadline.pgn".into(),
-            uuid::Uuid::new_v4().to_string(),
+            state.operations.prepare_download("test").unwrap(),
             app.handle().clone(),
             state.clone(),
             Duration::from_millis(500),
@@ -889,7 +910,7 @@ mod tests {
         let (_dir, state, destination, root, app) = export_fixture(export_transport());
         let (entered, release) =
             hold_atomic_point(crate::infra::fs::AtomicFileFaultPoint::ParentSync, 1, false);
-        let job_id = uuid::Uuid::new_v4().to_string();
+        let job_id = state.operations.prepare_download("test").unwrap();
         let task = tokio::spawn(run_owned_export(
             destination,
             "late.pgn".into(),
@@ -903,10 +924,7 @@ mod tests {
             .unwrap()
             .unwrap();
         tokio::time::sleep(Duration::from_millis(600)).await;
-        assert!(state
-            .download_registry
-            .cancel(&state.operations, &job_id)
-            .unwrap());
+        assert!(!state.operations.cancel_download(&job_id, "test").unwrap());
         release.send(()).unwrap();
         let artifact = task.await.unwrap().unwrap();
         assert_eq!(std::fs::read(root.join("late.pgn")).unwrap(), b"1. e4 e5\n");
@@ -937,7 +955,7 @@ mod tests {
         let task = tokio::spawn(run_owned_export(
             destination,
             "cleared.pgn".into(),
-            uuid::Uuid::new_v4().to_string(),
+            state.operations.prepare_download("test").unwrap(),
             app.handle().clone(),
             state.clone(),
             Duration::from_secs(2),

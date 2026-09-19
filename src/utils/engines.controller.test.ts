@@ -193,9 +193,9 @@ describe("engine registration recovery", () => {
             .mockReturnValueOnce("00000000-0000-4000-8000-00000000000b");
 
         try {
-            const installed = await installDefaultEngine(manifest, "engine_0");
+            const installed = await installDefaultEngine(manifest, "engine_0", "download-ticket");
             expect(installed.handle).toBe(handle);
-            expect(installed.id).toBe("00000000-0000-4000-8000-00000000000b");
+            expect(installed.id).toBe("00000000-0000-4000-8000-00000000000a");
             expect(installed.filename).toBe("stockfish");
             expect(installed.downloadLink).toBe(manifest.downloadLink);
             expect(native.getEngineConfig).toHaveBeenCalledWith(handle);

@@ -21,11 +21,15 @@ function newestProgress(
     if (current.finished && !incoming.finished) {
         return current;
     }
+    if (incoming.finished && !current.finished) {
+        return incoming;
+    }
     return incoming.progress >= current.progress ? incoming : current;
 }
 
 export function useProgress(id: string) {
     const [item, setItem] = useState<ProgressItem | null>(null);
+    const [listenerSettled, setListenerSettled] = useState<boolean | null>(null);
     const minimumGeneration = useRef<bigint>(BigInt(0));
     const currentId = useRef(id);
     currentId.current = id;
@@ -34,6 +38,7 @@ export function useProgress(id: string) {
         let active = true;
         minimumGeneration.current = BigInt(0);
         setItem(null);
+        if (listenerSettled === null) return () => undefined;
         tauri
             .getProgress(id)
             .then((result) => {
@@ -49,7 +54,7 @@ export function useProgress(id: string) {
         return () => {
             active = false;
         };
-    }, [id]);
+    }, [id, listenerSettled]);
 
     const subscribeProgress = useCallback(
         (listener: (event: { payload: ProgressEvent }) => void) =>
@@ -62,29 +67,54 @@ export function useProgress(id: string) {
         ({ payload }) => {
             if (payload.id === id) {
                 if (payload.cleared) {
-                    minimumGeneration.current = payload.generation;
-                    setItem(null);
+                    minimumGeneration.current =
+                        minimumGeneration.current > payload.generation
+                            ? minimumGeneration.current
+                            : payload.generation;
+                    setItem((current) =>
+                        current && current.generation >= payload.generation ? current : null,
+                    );
                     return;
                 }
                 setItem((current) => newestProgress(current, payload, minimumGeneration.current));
             }
         },
-        { onError: notifyListenerError },
+        { onError: notifyListenerError, onSettled: setListenerSettled },
     );
 
     const clear = useCallback(async () => {
         const clearingId = id;
         const generation = await tauri.clearProgress(id);
         if (currentId.current !== clearingId) return;
-        minimumGeneration.current = generation;
-        setItem(null);
+        minimumGeneration.current =
+            minimumGeneration.current > generation ? minimumGeneration.current : generation;
+        setItem((current) => (current && current.generation >= generation ? current : null));
     }, [id]);
+
+    const fence = useCallback((generation: bigint) => {
+        minimumGeneration.current =
+            minimumGeneration.current > generation ? minimumGeneration.current : generation;
+        setItem((current) => (current && current.generation < generation ? null : current));
+    }, []);
+
+    const discard = useCallback(() => {
+        setItem((current) => {
+            if (current) {
+                const generation = current.generation + BigInt(1);
+                minimumGeneration.current =
+                    minimumGeneration.current > generation ? minimumGeneration.current : generation;
+            }
+            return null;
+        });
+    }, []);
 
     return {
         progress: item?.progress ?? 0,
         finished: item?.finished ?? false,
         isActive: item !== null && !item.finished,
         clear,
+        fence,
+        discard,
         item,
     };
 }

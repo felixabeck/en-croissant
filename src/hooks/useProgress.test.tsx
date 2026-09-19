@@ -46,6 +46,8 @@ function Probe({ id }: { id: string }) {
         {state.progress}:{String(state.finished)}
       </output>
       <button onClick={() => void state.clear()}>clear</button>
+      <button onClick={() => state.fence(BigInt(5))}>fence</button>
+      <button onClick={state.discard}>discard</button>
     </>
   );
 }
@@ -136,6 +138,201 @@ describe("useProgress", () => {
     });
 
     expect(container.querySelector("output")?.textContent).toBe("80:true");
+  });
+
+  test("waits for listener registration before requesting a snapshot and repeats for a new id", async () => {
+    let settleListener!: (unlisten: () => void) => void;
+    mocks.listen.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          settleListener = resolve;
+        }),
+    );
+    mocks.getProgress.mockResolvedValue(null);
+
+    await act(async () => root.render(<Probe id="first" />));
+    expect(mocks.getProgress).not.toHaveBeenCalled();
+
+    await act(async () => settleListener(vi.fn()));
+    expect(mocks.getProgress).toHaveBeenCalledWith("first");
+
+    await act(async () => root.render(<Probe id="second" />));
+    expect(mocks.getProgress).toHaveBeenLastCalledWith("second");
+  });
+
+  test("a terminal item at zero replaces a running item at fifty", async () => {
+    mocks.getProgress.mockResolvedValue(null);
+    await act(async () => root.render(<Probe id="job" />));
+    await act(async () => {
+      eventHandler?.({
+        payload: {
+          id: "job",
+          generation: BigInt(4),
+          progress: 50,
+          finished: false,
+          state: "running",
+          cleared: false,
+        },
+      });
+      eventHandler?.({
+        payload: {
+          id: "job",
+          generation: BigInt(4),
+          progress: 0,
+          finished: true,
+          state: "cancelled",
+          cleared: false,
+        },
+      });
+    });
+
+    expect(container.querySelector("output")?.textContent).toBe("0:true");
+  });
+
+  test("a delayed lower cleared event keeps the item and its generation floor", async () => {
+    mocks.getProgress.mockResolvedValue(null);
+    await act(async () => root.render(<Probe id="job" />));
+    await act(async () => {
+      eventHandler?.({
+        payload: {
+          id: "job",
+          generation: BigInt(9),
+          progress: 0,
+          finished: true,
+          state: "cancelled",
+          cleared: true,
+        },
+      });
+      eventHandler?.({
+        payload: {
+          id: "job",
+          generation: BigInt(10),
+          progress: 50,
+          finished: false,
+          state: "running",
+          cleared: false,
+        },
+      });
+      eventHandler?.({
+        payload: {
+          id: "job",
+          generation: BigInt(7),
+          progress: 0,
+          finished: true,
+          state: "cancelled",
+          cleared: true,
+        },
+      });
+      eventHandler?.({
+        payload: {
+          id: "job",
+          generation: BigInt(8),
+          progress: 100,
+          finished: true,
+          state: "succeeded",
+          cleared: false,
+        },
+      });
+    });
+
+    expect(container.querySelector("output")?.textContent).toBe("50:false");
+    expect(container.querySelector("output")?.dataset.generation).toBe("10");
+  });
+
+  test("fences displayed and undisplayed generations", async () => {
+    mocks.getProgress.mockResolvedValue(null);
+    await act(async () => root.render(<Probe id="job" />));
+    await act(async () => {
+      eventHandler?.({
+        payload: {
+          id: "job",
+          generation: BigInt(3),
+          progress: 40,
+          finished: false,
+          state: "running",
+          cleared: false,
+        },
+      });
+      container.querySelectorAll("button")[1]?.click();
+    });
+    expect(container.querySelector("output")?.dataset.generation).toBe("none");
+
+    await act(async () => {
+      eventHandler?.({
+        payload: {
+          id: "job",
+          generation: BigInt(4),
+          progress: 100,
+          finished: true,
+          state: "succeeded",
+          cleared: false,
+        },
+      });
+    });
+    expect(container.querySelector("output")?.dataset.generation).toBe("none");
+
+    await act(async () => {
+      eventHandler?.({
+        payload: {
+          id: "job",
+          generation: BigInt(5),
+          progress: 20,
+          finished: false,
+          state: "running",
+          cleared: false,
+        },
+      });
+    });
+    expect(container.querySelector("output")?.dataset.generation).toBe("5");
+  });
+
+  test("discard hides the current generation but accepts a higher one", async () => {
+    mocks.getProgress.mockResolvedValue(null);
+    await act(async () => root.render(<Probe id="job" />));
+    await act(async () => {
+      eventHandler?.({
+        payload: {
+          id: "job",
+          generation: BigInt(5),
+          progress: 50,
+          finished: false,
+          state: "running",
+          cleared: false,
+        },
+      });
+      container.querySelectorAll("button")[2]?.click();
+    });
+    expect(container.querySelector("output")?.dataset.generation).toBe("none");
+
+    await act(async () => {
+      eventHandler?.({
+        payload: {
+          id: "job",
+          generation: BigInt(6),
+          progress: 10,
+          finished: false,
+          state: "running",
+          cleared: false,
+        },
+      });
+    });
+    expect(container.querySelector("output")?.dataset.generation).toBe("6");
+  });
+
+  test("requests a snapshot after listener registration is rejected", async () => {
+    mocks.listen.mockRejectedValueOnce(new Error("listener unavailable"));
+    mocks.getProgress.mockResolvedValue({
+      id: "job",
+      generation: BigInt(2),
+      progress: 25,
+      finished: false,
+      state: "running",
+      cleared: false,
+    });
+
+    await act(async () => root.render(<Probe id="job" />));
+    await vi.waitFor(() => expect(mocks.getProgress).toHaveBeenCalledWith("job"));
+    expect(container.querySelector("output")?.dataset.generation).toBe("2");
   });
 
   test("clear establishes a generation floor that ignores an old producer", async () => {

@@ -314,6 +314,7 @@ export function useDefaultEngines(os: Platform | undefined, opened: boolean) {
 export async function installDefaultEngine(
     engine: DefaultEngine,
     progressId: string,
+    ticket: string,
 ): Promise<LocalEngine> {
     const url = engine.downloadLink;
     if (!url) {
@@ -322,17 +323,10 @@ export async function installDefaultEngine(
     const root = await tauri.getEngineWorkspace();
     const destination = await tauri.engineArchiveDestination(root);
     const archiveName = url.slice(url.lastIndexOf("/") + 1);
-    await tauri.downloadEngineArchive(
-        progressId,
-        url,
-        destination,
-        archiveName,
-        crypto.randomUUID(),
-        {
-            sha256: engine.sha256,
-            signature: engine.signature,
-        },
-    );
+    await tauri.downloadEngineArchive(progressId, url, destination, archiveName, ticket, {
+        sha256: engine.sha256,
+        signature: engine.signature,
+    });
     const handle = await registerInstalledEngineHandle(root, engine.path);
     const config = await tauri.getEngineConfig(handle);
     return {

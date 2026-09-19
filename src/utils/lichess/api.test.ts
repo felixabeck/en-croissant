@@ -2,9 +2,12 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { cancellationError } from "@/platform/tauri";
 
 const mocks = vi.hoisted(() => ({
+    downloadLichessGames: vi.fn(),
     logError: vi.fn(),
     getPublicLichessJson: vi.fn(),
     lexPgn: vi.fn(),
+    releaseDownload: vi.fn(),
+    withDownloadTicket: vi.fn(),
 }));
 
 vi.mock("@/platform/native", () => ({
@@ -17,19 +20,33 @@ vi.mock("@/platform/tauri", async () => {
         ...actual,
         tauri: {
             ...actual.tauri,
+            downloadLichessGames: mocks.downloadLichessGames,
             getPublicLichessJson: mocks.getPublicLichessJson,
             lexPgn: mocks.lexPgn,
         },
+        withDownloadTicket: mocks.withDownloadTicket,
     };
 });
 
-import { convertToNormalized } from "./api";
+import { convertToNormalized, downloadLichess } from "./api";
 
 describe("convertToNormalized", () => {
     beforeEach(() => {
         mocks.logError.mockReset().mockResolvedValue(undefined);
         mocks.getPublicLichessJson.mockReset();
         mocks.lexPgn.mockReset();
+        mocks.downloadLichessGames.mockReset().mockResolvedValue({ handle: { id: "artifact" } });
+        mocks.releaseDownload.mockReset().mockResolvedValue(undefined);
+        mocks.withDownloadTicket
+            .mockReset()
+            .mockImplementation(async (run: (ticket: string) => Promise<unknown>) => {
+                try {
+                    return await run("prepared-ticket");
+                } catch (error) {
+                    await mocks.releaseDownload("prepared-ticket");
+                    throw error;
+                }
+            });
     });
 
     const dummyGames = [
@@ -137,5 +154,33 @@ describe("convertToNormalized", () => {
         const promise = convertToNormalized(dummyGames, { signal: controller.signal });
         await expect(promise).rejects.toThrow("Cancellation");
         expect(mocks.logError).not.toHaveBeenCalled();
+    });
+
+    test("passes the prepared ticket as the native job id", async () => {
+        const handle = { id: "account" };
+        const destination = { id: "destination" };
+
+        await expect(downloadLichess(handle.id, destination, "player", 123, 2)).resolves.toEqual({
+            id: "artifact",
+        });
+        expect(mocks.downloadLichessGames).toHaveBeenCalledWith(
+            handle.id,
+            destination,
+            "player_lichess.pgn",
+            "player",
+            123n,
+            1800,
+            "prepared-ticket",
+        );
+    });
+
+    test("releases the prepared ticket when the download command rejects", async () => {
+        const failure = new Error("download failed");
+        mocks.downloadLichessGames.mockRejectedValue(failure);
+
+        await expect(
+            downloadLichess("account", { id: "destination" }, "player", null, 0),
+        ).rejects.toBe(failure);
+        expect(mocks.releaseDownload).toHaveBeenCalledWith("prepared-ticket");
     });
 });

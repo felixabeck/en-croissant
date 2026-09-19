@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { CatalogVerificationError } from "@/utils/signedCatalog";
 import { defaultPuzzleDatabaseProgressId } from "@/utils/db";
+import { DownloadCancelLostError } from "@/utils/downloadJobs";
 import AddPuzzle from "./AddPuzzle";
 
 const mocks = vi.hoisted(() => ({
@@ -13,10 +14,16 @@ const mocks = vi.hoisted(() => ({
   defaultDatabases: undefined as unknown,
   issueDownloadDestination: vi.fn(),
   downloadFile: vi.fn(),
+  cancelDownload: vi.fn(),
+  clearProgress: vi.fn(),
+  withDownloadTicket: vi.fn((run: (ticket: string) => Promise<unknown>) => run("prepared-ticket")),
   progressButtonProps: null as null | {
     id: string;
     initInstalled: boolean;
     onClick: () => void;
+    onCancel?: () => Promise<unknown>;
+    clearOnCancel?: boolean;
+    inProgress: boolean;
   },
 }));
 
@@ -40,7 +47,10 @@ vi.mock("@/platform/tauri", () => ({
   tauri: {
     issuePuzzleDownloadDestination: mocks.issueDownloadDestination,
     downloadFile: mocks.downloadFile,
+    cancelDownload: mocks.cancelDownload,
+    clearProgress: mocks.clearProgress,
   },
+  withDownloadTicket: mocks.withDownloadTicket,
 }));
 vi.mock("@/utils/db", async () => {
   const actual = await vi.importActual<typeof import("@/utils/db")>("@/utils/db");
@@ -73,6 +83,9 @@ vi.mock("../common/ProgressButton", () => ({
     initInstalled: boolean;
     onClick: () => void;
     labels: { action: string };
+    onCancel?: () => Promise<unknown>;
+    clearOnCancel?: boolean;
+    inProgress: boolean;
   }) => {
     mocks.progressButtonProps = props;
     return (
@@ -103,6 +116,8 @@ beforeEach(() => {
   mocks.catalogError = undefined;
   mocks.defaultDatabases = undefined;
   mocks.progressButtonProps = null;
+  mocks.cancelDownload.mockResolvedValue(true);
+  mocks.clearProgress.mockResolvedValue(1n);
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -210,9 +225,10 @@ test("installs a downloaded database and refreshes the visible collection", asyn
     { id: { id: "destination" }, kind: "path" },
     "Lichess.db3",
     null,
-    expect.any(String),
+    "prepared-ticket",
     { sha256: tacticsManifest.sha256, signature: tacticsManifest.signature },
   );
+  expect(mocks.progressButtonProps?.clearOnCancel).toBe(false);
   expect(actions.setPuzzleDbs).toHaveBeenCalledWith([{ title: "Lichess.db3" }]);
   expect(mocks.notify).not.toHaveBeenCalled();
 });
@@ -228,6 +244,77 @@ test("reports a failed download without replacing the installed database list", 
     title: "Common.Error",
     message: "Safe error",
   });
+});
+
+test("offers cancellation while setup is pending and keeps cancellation silent", async () => {
+  mocks.defaultDatabases = [tacticsManifest];
+  let rejectDestination!: (error: unknown) => void;
+  mocks.issueDownloadDestination.mockReturnValue(
+    new Promise((_resolve, reject) => {
+      rejectDestination = reject;
+    }),
+  );
+  await render();
+  await act(async () => host.querySelectorAll("button")[1].click());
+  await vi.waitFor(() => expect(mocks.progressButtonProps?.onCancel).toEqual(expect.any(Function)));
+
+  const onCancel = mocks.progressButtonProps!.onCancel!;
+  mocks.cancelDownload.mockImplementation(async (ticket: string) => {
+    expect(ticket).toBe("prepared-ticket");
+    rejectDestination(new Error("Cancellation"));
+    return true;
+  });
+  await act(async () => onCancel());
+
+  expect(mocks.cancelDownload).toHaveBeenCalledWith("prepared-ticket");
+  expect(mocks.progressButtonProps?.clearOnCancel).toBe(false);
+  expect(mocks.downloadFile).not.toHaveBeenCalled();
+  expect(mocks.notify).not.toHaveBeenCalled();
+});
+
+test("reports a job failure once when cancellation is followed by that failure", async () => {
+  mocks.defaultDatabases = [tacticsManifest];
+  const failure = new Error("download failed after cancel");
+  let rejectDestination!: (error: unknown) => void;
+  mocks.issueDownloadDestination.mockReturnValue(
+    new Promise((_resolve, reject) => {
+      rejectDestination = reject;
+    }),
+  );
+  await render();
+  await act(async () => host.querySelectorAll("button")[1].click());
+  await vi.waitFor(() => expect(mocks.progressButtonProps?.onCancel).toEqual(expect.any(Function)));
+  mocks.cancelDownload.mockImplementation(async () => {
+    rejectDestination(failure);
+    return true;
+  });
+
+  await expect(mocks.progressButtonProps!.onCancel!()).rejects.toBe(failure);
+  expect(mocks.notify).toHaveBeenCalledTimes(1);
+});
+
+test("does not notify when cancellation loses the completed-job race", async () => {
+  mocks.defaultDatabases = [tacticsManifest];
+  let resolveDestination!: (value: unknown) => void;
+  mocks.issueDownloadDestination.mockReturnValue(
+    new Promise((resolve) => {
+      resolveDestination = resolve;
+    }),
+  );
+  mocks.downloadFile.mockResolvedValue(undefined);
+  mocks.getPuzzleDatabases.mockResolvedValue([]);
+  await render();
+  await act(async () => host.querySelectorAll("button")[1].click());
+  await vi.waitFor(() => expect(mocks.progressButtonProps?.onCancel).toEqual(expect.any(Function)));
+  mocks.cancelDownload.mockImplementation(async () => {
+    resolveDestination({ id: { id: "destination" } });
+    return false;
+  });
+
+  await expect(mocks.progressButtonProps!.onCancel!()).rejects.toBeInstanceOf(
+    DownloadCancelLostError,
+  );
+  expect(mocks.notify).not.toHaveBeenCalled();
 });
 
 test("unmount cancels a held workspace preview and refuses its stale database list", async () => {

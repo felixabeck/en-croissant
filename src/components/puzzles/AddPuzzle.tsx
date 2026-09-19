@@ -12,6 +12,7 @@ import {
 } from "@/utils/db";
 import { formatBytes, formatNumber } from "@/utils/format";
 import { notifyUnlessCancelled, runUnlessCancelled } from "@/components/files/notifyError";
+import { cancelDownload, runDownloadJob, useDownloadJob } from "@/utils/downloadJobs";
 import { choosePuzzleDatabase, getPuzzleDatabases } from "@/utils/puzzles";
 import ProgressButton from "../common/ProgressButton";
 import { CatalogVerificationError } from "@/utils/signedCatalog";
@@ -111,23 +112,26 @@ function PuzzleDbCard({
 }) {
   const { t } = useTranslation();
   const [inProgress, setInProgress] = useState<boolean>(false);
+  const hasJob = useDownloadJob(progressId);
 
   async function downloadDatabase() {
     setInProgress(true);
     try {
-      await runUnlessCancelled(t("Common.Error"), async () => {
-        const destination = await tauri.issuePuzzleDownloadDestination();
-        await tauri.downloadFile(
-          progressId,
-          puzzleDb.downloadLink,
-          destination,
-          `${puzzleDb.title}.db3`,
-          null,
-          crypto.randomUUID(),
-          { sha256: puzzleDb.sha256, signature: puzzleDb.signature },
-        );
-        setPuzzleDbs(await getPuzzleDatabases());
-      });
+      await runUnlessCancelled(t("Common.Error"), () =>
+        runDownloadJob(progressId, async (ticket) => {
+          const destination = await tauri.issuePuzzleDownloadDestination();
+          await tauri.downloadFile(
+            progressId,
+            puzzleDb.downloadLink,
+            destination,
+            `${puzzleDb.title}.db3`,
+            null,
+            ticket,
+            { sha256: puzzleDb.sha256, signature: puzzleDb.signature },
+          );
+          setPuzzleDbs(await getPuzzleDatabases());
+        }),
+      );
     } finally {
       setInProgress(false);
     }
@@ -174,7 +178,9 @@ function PuzzleDbCard({
             onClick={() => {
               void downloadDatabase();
             }}
-            inProgress={inProgress}
+            onCancel={hasJob ? () => cancelDownload(progressId, t("Common.Error")) : undefined}
+            clearOnCancel={false}
+            inProgress={inProgress || hasJob}
             setInProgress={setInProgress}
           />
         </Box>
