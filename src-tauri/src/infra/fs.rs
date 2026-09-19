@@ -4718,7 +4718,7 @@ pub fn atomic_install_dir(temp_path: &Path, target_path: &Path) -> Result<(), Er
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 std::thread_local! {
     static OPEN_PARENT_CHILD_IDENTITY_HOOK: std::cell::RefCell<Option<(u64, u64)>> =
         const { std::cell::RefCell::new(None) };
@@ -4731,7 +4731,7 @@ std::thread_local! {
 }
 
 /// Replaces the child identity the next [`open_parent_directory`] looks for in the parent.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn set_open_parent_child_identity_hook(identity: Option<(u64, u64)>) {
     OPEN_PARENT_CHILD_IDENTITY_HOOK.with(|slot| *slot.borrow_mut() = identity);
 }
@@ -4748,11 +4748,7 @@ fn opened_identity(file: &File) -> Result<(u64, u64), Error> {
     }
 }
 
-#[cfg(windows)]
-fn open_parent_refused() -> Error {
-    Error::InvalidInput("directory parent could not be opened relative to the child".into())
-}
-
+#[cfg(unix)]
 fn parent_child_mismatch() -> Error {
     Error::Conflict("directory is not a child of its opened parent".into())
 }
@@ -4760,51 +4756,37 @@ fn parent_child_mismatch() -> Error {
 /// Opens the parent of an already-open directory through its relative `".."` entry, then
 /// refuses unless that parent, on the same device, lists a directory with `dir`'s identity. A
 /// mount root fails that check: its `".."` lists the covered mount point, not the root.
+///
+/// Unix only. A Windows relative open has no `".."` (and [`single_leaf`] refuses the name), so
+/// [`OwnedStagingDir::adopt`] reaches its parent through `win::open_verified_parent` instead.
+#[cfg(unix)]
 pub(crate) fn open_parent_directory(dir: &File) -> Result<File, Error> {
+    use rustix::fs::{self as rfs, AtFlags, FileType};
+    use std::os::unix::ffi::OsStrExt;
     let child = opened_identity(dir)?;
     #[cfg(test)]
     let child = OPEN_PARENT_CHILD_IDENTITY_HOOK
         .with(|slot| slot.borrow_mut().take())
         .unwrap_or(child);
-    #[cfg(unix)]
     let parent = open_directory_at(dir, OsStr::new(".."), true)?;
-    #[cfg(windows)]
-    let parent =
-        open_directory_at(dir, OsStr::new(".."), true).map_err(|_| open_parent_refused())?;
     if opened_identity(&parent)?.0 != child.0 {
         return Err(parent_child_mismatch());
     }
-    #[cfg(unix)]
-    {
-        use rustix::fs::{self as rfs, AtFlags, FileType};
-        use std::os::unix::ffi::OsStrExt;
-        let mut found = false;
-        unix::walk_directory(&parent, |bytes, ino| {
-            if found || ino != child.1 {
-                return Ok(());
-            }
-            let stat =
-                match rfs::statat(&parent, OsStr::from_bytes(bytes), AtFlags::SYMLINK_NOFOLLOW) {
-                    Ok(stat) => stat,
-                    Err(_) => return Ok(()),
-                };
-            found = FileType::from_raw_mode(stat.st_mode) == FileType::Directory
-                && unix::raw_stat_identity(&stat) == child;
-            Ok(())
-        })?;
-        if !found {
-            return Err(parent_child_mismatch());
+    let mut found = false;
+    unix::walk_directory(&parent, |bytes, ino| {
+        if found || ino != child.1 {
+            return Ok(());
         }
-    }
-    #[cfg(windows)]
-    {
-        let entries = read_directory_entries_at(&parent, &CancellationToken::new(), &mut |_| true)?;
-        if !entries
-            .iter()
-            .any(|entry| entry.kind == DirectoryEntryKind::Directory && entry.identity == child)
-        {
-            return Err(parent_child_mismatch());
-        }
+        let stat = match rfs::statat(&parent, OsStr::from_bytes(bytes), AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(stat) => stat,
+            Err(_) => return Ok(()),
+        };
+        found = FileType::from_raw_mode(stat.st_mode) == FileType::Directory
+            && unix::raw_stat_identity(&stat) == child;
+        Ok(())
+    })?;
+    if !found {
+        return Err(parent_child_mismatch());
     }
     Ok(parent)
 }
@@ -4813,6 +4795,12 @@ pub(crate) fn open_parent_directory(dir: &File) -> Result<File, Error> {
 /// descriptor. It carries no pathname: installing it and cleaning it up are both relative to the
 /// held parent, so a later swap of the parent's pathname cannot redirect either. Until it is
 /// consumed by a commit, dropping it removes the leaf by identity.
+///
+/// Adoption is the one step that differs by platform. Unix opens the parent relative to the child
+/// (`".."`). Windows has no such open, so it walks the parent's pathname component by component,
+/// refusing every reparse point, and then requires the leaf under that parent to carry the
+/// identity of the already-open child. Nothing is trusted from the string: a pathname swapped
+/// between the two opens ends in `Error::Conflict`, never in a different parent being held.
 pub(crate) struct OwnedStagingDir {
     parent: File,
     leaf: OsString,
@@ -4822,8 +4810,9 @@ pub(crate) struct OwnedStagingDir {
 }
 
 impl OwnedStagingDir {
-    /// No-follow open of `temp`, then [`open_parent_directory`] of that handle, then a check that
-    /// `temp`'s leaf under the held parent is still the opened directory.
+    /// No-follow open of `temp`, then the platform's parent open of that handle (see the type
+    /// documentation), then a check that `temp`'s leaf under the held parent is still the opened
+    /// directory.
     pub(crate) fn adopt(temp: &tempfile::TempDir) -> Result<Self, Error> {
         let leaf = temp
             .path()
@@ -4836,7 +4825,11 @@ impl OwnedStagingDir {
         #[cfg(windows)]
         let child = win::open_directory_path(temp.path(), false)?;
         let identity = opened_identity(&child)?;
+        #[cfg(unix)]
         let parent = open_parent_directory(&child)?;
+        #[cfg(windows)]
+        let (parent, _) =
+            win::open_verified_parent(temp.path(), identity, true, ParentAccess::Writable)?;
         match entry_identity_at(&parent, &leaf, true) {
             Ok(actual) if actual == identity => {}
             Ok(_) => {
@@ -9069,7 +9062,10 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
+    /// Unix always lets the held parent be renamed away. Windows may refuse to rename a directory
+    /// while a descendant handle is open; that is not measured here, so the Windows arm accepts a
+    /// refused swap and then requires the install to land under the unmoved parent. Either way
+    /// nothing may reach a swapped-in directory.
     #[test]
     fn owned_staging_dir_parent_path_swap_cannot_redirect_install() {
         let root = tempfile::tempdir().expect("root");
@@ -9078,16 +9074,58 @@ mod tests {
         std::fs::create_dir(&parent).expect("parent");
         let inner = owned_staging_fixture(&parent);
         let source = OwnedStagingDir::adopt(&inner).expect("adopt");
-        std::fs::rename(&parent, &moved).expect("move parent");
-        std::fs::create_dir(&parent).expect("swap in a new parent");
+        let swapped = match std::fs::rename(&parent, &moved) {
+            Ok(()) => {
+                std::fs::create_dir(&parent).expect("swap in a new parent");
+                true
+            }
+            Err(error) if cfg!(windows) => {
+                eprintln!("parent rename refused while the staging handles are held: {error}");
+                false
+            }
+            Err(error) => panic!("move parent: {error}"),
+        };
         install_owned_staging_dir(source, OsStr::new("extracted")).expect("install");
+        let held = if swapped { &moved } else { &parent };
         assert_eq!(
-            std::fs::read(moved.join("extracted/nested/a.txt")).expect("held parent"),
+            std::fs::read(held.join("extracted").join("nested").join("a.txt"))
+                .expect("held parent"),
             b"staged"
         );
-        assert_eq!(std::fs::read_dir(&parent).expect("swapped").count(), 0);
+        if swapped {
+            assert_eq!(std::fs::read_dir(&parent).expect("swapped").count(), 0);
+        }
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn owned_staging_dir_verified_parent_refuses_when_child_identity_does_not_match() {
+        let outer = tempfile::tempdir().expect("outer");
+        let path = outer.path().join("child");
+        std::fs::create_dir(&path).expect("child");
+        let child = win::open_directory_path(&path, false).expect("open child");
+        let identity = opened_identity(&child).expect("identity");
+        let (reopened, leaf) =
+            win::open_verified_parent(&path, identity, true, ParentAccess::Writable)
+                .expect("genuine parent");
+        assert_eq!(leaf, OsStr::new("child"));
+        assert_eq!(
+            entry_identity_at(&reopened, &leaf, true).expect("leaf under the held parent"),
+            identity
+        );
+        for substituted in [
+            (identity.0, identity.1.wrapping_add(1)),
+            (identity.0.wrapping_add(1), identity.1),
+        ] {
+            assert_fixed_conflict(
+                win::open_verified_parent(&path, substituted, true, ParentAccess::Writable)
+                    .expect_err("mismatched child identity must be refused"),
+                "workspace entry changed concurrently",
+            );
+        }
+    }
+
+    #[cfg(unix)]
     #[test]
     fn owned_staging_dir_open_parent_refuses_when_child_identity_does_not_match() {
         let outer = tempfile::tempdir().expect("outer");
