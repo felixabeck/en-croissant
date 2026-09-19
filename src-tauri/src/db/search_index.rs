@@ -1891,6 +1891,15 @@ mod tests {
                 .unwrap()
         }
 
+        /// An unleased mapping of the sidecar, standing in for a mapper outside this process,
+        /// with the bytes it mapped. The file handle is returned for its identity.
+        fn mapped_external(&self) -> (File, Mmap, Vec<u8>) {
+            let before = std::fs::read(&self.sidecar).unwrap();
+            let external = File::open(&self.sidecar).unwrap();
+            let mapped = unsafe { Mmap::map(&external) }.unwrap();
+            (external, mapped, before)
+        }
+
         fn first_id(&self) -> i32 {
             MmapSearchIndex::open(&self.sidecar)
                 .unwrap()
@@ -2252,8 +2261,7 @@ mod tests {
         assert_eq!(case.cache.mapping_gate_count(), 0);
     }
 
-    /// An unleased mapping stands in for a mapper outside this process, which no lease can see.
-    /// The replace is a rename onto the leaf (POSIX semantics on Windows too), so it commits in one
+    /// No lease can see a mapper outside this process. The replace is a rename onto the leaf (POSIX semantics on Windows too), so it commits in one
     /// attempt and the mapper keeps the generation it mapped. `ERROR_USER_MAPPED_FILE` was the
     /// assumed Windows outcome until the runner measured a durable commit (`f-20260918-03`).
     #[test]
@@ -2270,9 +2278,7 @@ mod tests {
         }
 
         let case = MappingGateCase::new();
-        let before = std::fs::read(&case.sidecar).unwrap();
-        let external = File::open(&case.sidecar).unwrap();
-        let mapped = unsafe { Mmap::map(&external) }.unwrap();
+        let (_external, mapped, before) = case.mapped_external();
         let attempts = Arc::new(MutateAttempts(std::sync::atomic::AtomicUsize::new(0)));
         set_test_atomic_file_injector(Some(attempts.clone()));
         let result = guarded_generation(
@@ -2296,10 +2302,8 @@ mod tests {
     #[test]
     fn search_index_mapping_gate_external_mapper_keeps_its_generation_across_unlink() {
         let case = MappingGateCase::new();
-        let before = std::fs::read(&case.sidecar).unwrap();
-        let external = File::open(&case.sidecar).unwrap();
+        let (external, mapped, before) = case.mapped_external();
         let object = crate::infra::path_authority::opened_file_identity(&external).unwrap();
-        let mapped = unsafe { Mmap::map(&external) }.unwrap();
 
         let guard = case
             .cache
