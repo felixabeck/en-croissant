@@ -10078,3 +10078,17 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 * **Why it matters:** a permanently red platform job trains a re-run instead of a look and hides the next real Windows regression, which is what happened to the staging-directory defect filed beside this entry.
 * **Related:** f-20260918-03 (the third red test in the same runs), f-20260830-06 (the Windows job itself).
 * **Found by:** Claude Code, 2026-09-19, from the job logs of runs 35391848926 through 35419821731 and a local `cargo clippy --target x86_64-pc-windows-gnu`.
+
+---
+
+## 2026-09-19 — filed through the inbox spool
+
+### Is the in-process search-index mapping gate still needed now that a mapped sidecar can be replaced on Windows?
+
+* **ID:** f-20260919-06 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/db/search_index.rs` and `SearchCache::begin_preferred_replace` / `lease_preferred_mapping`; callers in `src-tauri/src/db/search.rs` and `delete_database_blocking`.
+* **Defect:** `d-20260918-17` built the mapping gate on the premise that Windows refuses to replace or delete a sidecar with a live section (`ERROR_USER_MAPPED_FILE`). The replace is a `FILE_RENAME_POSIX_SEMANTICS` rename and the delete a `FILE_DISPOSITION_POSIX_SEMANTICS` unlink; `rust-windows-test` measured a durable commit under an unleased mapping on every run from 35391848926 onwards. If the delete measures the same, the gate serialises readers and writers for a failure that cannot occur.
+* **Open question:** remove the gate (readers keep the generation they mapped, as on unix), or keep it for a property other than 1224 — for example bounding how long a superseded generation stays pinned on disk by a long search? The tests `search_index_mapping_gate_external_mapper_keeps_its_generation_across_one_replace` and `..._across_unlink` are the measurements to cite.
+* **Why it matters:** the gate adds a cancellable wait to every generate and delete and a lease to every load. Harmless if unneeded, but it is concurrency machinery whose stated reason is now disproven.
+* **Related:** f-20260917-04 (handled; built the gate), f-20260918-03 (the disproven pin).
+* **Found by:** Claude Code, 2026-09-19, while repairing f-20260918-03; deferred as a design question under rule 4b.
