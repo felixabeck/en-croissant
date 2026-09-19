@@ -4823,8 +4823,10 @@ impl OwnedStagingDir {
             .to_os_string();
         #[cfg(unix)]
         let child = unix::open_dir_no_follow(temp.path())?;
+        // Writable: the relative creates make directories below this handle, and the Windows
+        // `create_dir_at` flushes its parent, which a read-only directory handle refuses.
         #[cfg(windows)]
-        let child = win::open_directory_path(temp.path(), false)?;
+        let child = win::open_directory_path(temp.path(), true)?;
         let identity = opened_identity(&child)?;
         #[cfg(unix)]
         let parent = open_parent_directory(&child)?;
@@ -9069,8 +9071,7 @@ mod tests {
         }
     }
 
-    /// Runs on Windows too: every staging handle is opened with `FILE_SHARE_DELETE`, which is what
-    /// lets the held parent be renamed away there.
+    #[cfg(unix)]
     #[test]
     fn owned_staging_dir_parent_path_swap_cannot_redirect_install() {
         let root = tempfile::tempdir().expect("root");
@@ -9083,11 +9084,31 @@ mod tests {
         std::fs::create_dir(&parent).expect("swap in a new parent");
         install_owned_staging_dir(source, OsStr::new("extracted")).expect("install");
         assert_eq!(
-            std::fs::read(moved.join("extracted").join("nested").join("a.txt"))
-                .expect("held parent"),
+            std::fs::read(moved.join("extracted/nested/a.txt")).expect("held parent"),
             b"staged"
         );
         assert_eq!(std::fs::read_dir(&parent).expect("swapped").count(), 0);
+    }
+
+    /// The unix swap cannot be staged on Windows: while the staging handles are held the OS
+    /// refuses to rename their parent (measured on `windows-latest`, run 35424078540: os error 5),
+    /// so the held parent is still the named one when the install lands.
+    #[cfg(windows)]
+    #[test]
+    fn owned_staging_dir_held_parent_cannot_be_renamed_away_before_install() {
+        let root = tempfile::tempdir().expect("root");
+        let parent = root.path().join("parent");
+        std::fs::create_dir(&parent).expect("parent");
+        let inner = owned_staging_fixture(&parent);
+        let source = OwnedStagingDir::adopt(&inner).expect("adopt");
+        let refused = std::fs::rename(&parent, root.path().join("moved"))
+            .expect_err("a held staging parent cannot be renamed");
+        assert_eq!(refused.kind(), std::io::ErrorKind::PermissionDenied);
+        install_owned_staging_dir(source, OsStr::new("extracted")).expect("install");
+        assert_eq!(
+            std::fs::read(parent.join("extracted").join("nested").join("a.txt")).expect("install"),
+            b"staged"
+        );
     }
 
     #[cfg(windows)]
