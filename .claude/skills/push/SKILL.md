@@ -258,8 +258,10 @@ Use the exact-string override keywords from
 - Require `git diff --check`, all affected gates green on the final tree, and no unresolved `Fix` finding.
 - If a final gate requires a repair, return to `repair`, commit the repair, and rerun the affected
   final gates on the changed tree before push. The push then uses the unchanged verified tree.
+- Before pushing, apply the shared policy §8 "A red remote is a red gate". The jobs this machine cannot reproduce are `rust-windows-test`, `rust-macos-test` and the `rust-platform` matrix of the `Test` workflow (a Linux host type-checks the Windows target through the MinGW cross toolchain of `d-20260916-07`, but runs none of its tests). Read them with `gh run list --branch <branch> --workflow Test --status completed --limit 1 --json databaseId,conclusion,headSha`, then `gh run view <id> --json jobs`; if one of them is red and this push does not repair it, refuse.
 - Run ordinary non-force `git push` to the configured upstream.
 - Verify local `HEAD` equals `@{u}` and report commits, destination, gate results, review findings/verdicts, and that no release/deployment occurred.
+- Wait for those jobs on the pushed SHA (measured at about five minutes; the whole run takes about twenty) and gate on each job's `conclusion`, never on the run having started. Red returns to `repair`; read the failing tests from `gh api repos/<owner>/<repo>/actions/jobs/<job-id>/logs`, because `gh run view --log-failed` returned nothing for these runs on 2026-09-19.
 - The post-push coordination-record exception remains governed by
   `~/.claude/references/coordination-file-commits.md`; it does not generalize to implementation changes.
 - On `master`, after that verification, run the installer (a Tauri release build followed by an atomic swap of `~/.local/opt/chessfable/current`):
