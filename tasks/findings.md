@@ -7974,7 +7974,7 @@ The same-parent install check is unchanged. Closed with f-20260914-12
 
 ### Files workspace controls overflow a narrow viewport at 200% font scale
 
-* **ID:** f-20260910-06 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260910-06 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `src/components/files/FilesPage.tsx:130-153`, workspace controls and surrounding layout.
 * **Defect:** after choosing a workspace at 320px and 200% font scale in German, document scrollWidth is 448px. The page behind a confirmation dialog visibly clips its heading and controls. The dialog itself is bounded to 288px. This is additional Files-page evidence related to f-20260829-02; it is separate from confirmation message extraction.
 * **Evidence:** the new directory-trash scenario in `e2e/async-errors.spec.ts` reached its translated alert, then the existing full-document overflow assertion failed with 448 > 320. The screenshot and trace are in `/tmp/build-confirmation-704e13a8/snapshot-1/log` and `artifacts/frontend-audit/test-results/async-errors-async-errors--6a375--in-the-confirmation-dialog-async-errors/` for this run.
