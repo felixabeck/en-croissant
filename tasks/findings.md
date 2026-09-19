@@ -7982,6 +7982,9 @@ The same-parent install check is unchanged. Closed with f-20260914-12
 * **Proof:** a Files workspace scenario at 320px and 200% German passes the existing document-width assertion, with a reviewed screenshot and affected frontend gates.
 * **Deferred from:** f-20260830-11; Files layout is outside its confirmed message-localization scope.
 
+Handled 2026-09-19 together with f-20260905-14. The Files controls fit 320px / 200% German without hidden overflow: wrapping buttons, a clearable file-type Select instead of chips, content-sized columns (`409a6378`, `1eee6218`, `6315ddab`). Both e2e overflow assertions printed `horizontal overflow: 448px > 320px` on the pre-fix page; the directory-trash scenario asserts the full page again and `assertNothingClipped` inspects both columns (`060654fc`). TopBar clipping at 320px stays with f-20260829-02.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"7f18a3c61df9d2ac2661620ec537087f64d97b711795c0237231a58c55ee86fa","input_sha256":"c1d68bc33c4284f172c9373fc2e0f18554383f96622a704db33db805f5485ac9","kind":"mutation-receipt","operation":"5ef8357ad968b1fb152cc18ef81e4f6f482b4d99d8e1ca060df32ac931b4beb7","options":{"section":null},"request_id_sha256":null,"results":["f-20260910-06"],"target":"f-20260910-06","v":1} -->
+
 ### Documented container e2e argument separator silently defeats project selection
 
 * **ID:** f-20260910-07 · **Status:** open · **Area:** e2e-gate · **Root:** - · **Entry:** lens · **Blocked:** none
