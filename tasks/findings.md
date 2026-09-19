@@ -6765,7 +6765,7 @@ Plan: `tasks/plans/2026-09-19-owned-staging-dir.md` (gitignored). Handoff: `task
 
 ### Ten reaches write to a backend-chosen destination that `PathRef` cannot represent — and the engine-image write is still a live symlink window
 
-* **ID:** f-20260905-07 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260905-07 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src-tauri/src/fs.rs:484`, `:591`, `:592`, `:827`, `:1243`, `:1444`, `:1503`;
   `src-tauri/src/main.rs:569` and `main.rs:1104` (the engine-image write);
   `src-tauri/src/sound.rs:113`. Also `src-tauri/src/infra/path_authority.rs` —
