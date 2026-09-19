@@ -4040,23 +4040,25 @@ where
     atomic_replace_with_precommit(target, || Ok(()), write_fn)
 }
 
-/// Replaces `target` with `contents` only when the bytes on disk differ, and reports whether it
-/// wrote. The Specta binding export runs on every debug start and inside `pnpm bindings:check`;
-/// an unconditional rewrite gives the tracked file a new mtime, which refuses any gate receipt
-/// measured beside it (`f-20260906-06`).
+/// Replaces `target` with `contents` only when the bytes on disk differ. The Specta binding
+/// export runs on every debug start and inside `pnpm bindings:check`; an unconditional rewrite
+/// gives the tracked file a new mtime, which refuses any gate receipt measured beside it
+/// (`f-20260906-06`). A lost parent sync is an error: the caller is a check that must not pass
+/// on an uncertain write.
 #[cfg(any(debug_assertions, test))]
-pub(crate) fn write_if_changed(target: &Path, contents: &str) -> Result<bool, Error> {
+pub(crate) fn write_if_changed(target: &Path, contents: &str) -> Result<(), Error> {
     match std::fs::read(target) {
-        Ok(existing) if existing == contents.as_bytes() => return Ok(false),
+        Ok(existing) if existing == contents.as_bytes() => return Ok(()),
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
-    // Uncertain durability is harmless here: an export lost to a crash is rewritten by the next.
-    let _durability = atomic_replace(target, |file| {
+    match atomic_replace(target, |file| {
         file.write_all(contents.as_bytes()).map_err(Error::from)
-    })?;
-    Ok(true)
+    })? {
+        AtomicFileOutcome::DurableCommit => Ok(()),
+        AtomicFileOutcome::CommittedDurabilityUncertain(error) => Err(error.into()),
+    }
 }
 
 pub(crate) fn single_leaf(leaf: &OsStr) -> Result<(), Error> {
@@ -5011,7 +5013,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("binding directory");
         let path = directory.path().join("generated.ts");
 
-        assert!(write_if_changed(&path, "first").expect("create"));
+        write_if_changed(&path, "first").expect("create");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "first");
 
         let pinned = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
@@ -5021,13 +5023,13 @@ mod tests {
             .unwrap()
             .set_modified(pinned)
             .unwrap();
-        assert!(!write_if_changed(&path, "first").expect("identical"));
+        write_if_changed(&path, "first").expect("identical");
         assert_eq!(
             std::fs::metadata(&path).unwrap().modified().unwrap(),
             pinned
         );
 
-        assert!(write_if_changed(&path, "second").expect("changed"));
+        write_if_changed(&path, "second").expect("changed");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "second");
         assert_ne!(
             std::fs::metadata(&path).unwrap().modified().unwrap(),

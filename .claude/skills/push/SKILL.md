@@ -131,11 +131,11 @@ Receipts are reusable only for a clean exact tree with the same command, platfor
 an unexpired timestamp. A miss runs the gate under `ensure`; `check` never starts one. Gate failures
 propagate their own exit codes, and a tree change during a run refuses the receipt.
 
-That refusal keys on tracked-file size and mtime, not only bytes, so **the `gate:ensure` gates run
-serially against one another, and no command that can rewrite a tracked file — `pnpm
-bindings:generate`, a stale `pnpm bindings:check`, `pnpm i18n:extract`, `pnpm format`,
-`pnpm lint:fix` — runs concurrently with any of them**, in this session, a parallel script, or a
-review lens working in the checkout. A green `bindings:check` writes nothing (`f-20260906-06`).
+That refusal keys on tracked-file size and mtime, not only bytes, so **receipt-backed runs
+(`gate:ensure`, `gate:run`) run serially against one another, and no command that can rewrite a
+tracked file — `pnpm bindings:generate`, a stale `pnpm bindings:check`, `pnpm i18n:extract`,
+`pnpm format`, `pnpm lint:fix` — runs concurrently with any of them**, in this session, a parallel
+script, or a review lens working in the checkout (`f-20260906-06`).
 
 ### Cross-layer contracts
 

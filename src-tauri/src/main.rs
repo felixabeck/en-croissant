@@ -2383,7 +2383,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &repository.join("src/bindings/generated.ts"),
             &rendered,
         )
-        .map_err(|error| format!("failed to export TypeScript bindings: {error}"))?;
+        // Debug, not Display: `Error::Io` displays as a bare "I/O failure" for the renderer.
+        .map_err(|error| format!("failed to export TypeScript bindings: {error:?}"))?;
     }
 
     #[cfg(debug_assertions)]
