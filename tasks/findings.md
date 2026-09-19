@@ -6890,7 +6890,7 @@ Plan: `tasks/plans/2026-09-19-owned-staging-dir.md` (gitignored). Handoff: `task
 
 ### The local opening explorer cannot filter by rating or restrict to recent games in one step
 
-* **ID:** f-20260905-12 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260905-12 · **Status:** handled · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src/components/panels/database/DatabasePanel.tsx` (`LocalOptions`),
   `src/components/panels/database/options/LocalOptionsPanel.tsx`, `src-tauri/src/db/search.rs`
   (`search_position` and the `PositionStats` aggregation), `src-tauri/src/db/mod.rs` (`GameQuery`
