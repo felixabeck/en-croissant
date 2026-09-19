@@ -434,7 +434,11 @@ fn elo_in_range(elo: i16, range: Option<(i32, i32)>) -> bool {
 const FAST_EVENT_NAME_TOKENS: [&str; 3] = ["blitz", "bullet", "armageddon"];
 
 #[cfg(test)]
-static SEARCH_POSITION_INSTRUMENT: AtomicBool = AtomicBool::new(false);
+thread_local! {
+    // Per thread, not per process: search_position_blocking reads it on the calling test's
+    // thread, so a parallel search test cannot count into an instrumented test's counters.
+    static SEARCH_POSITION_INSTRUMENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 // Taken only by `mod tests`, which is unix-only; `cfg(test)` alone is dead code on Windows.
 #[cfg(all(test, unix))]
 static SEARCH_POSITION_INSTRUMENT_LOCK: Mutex<()> = Mutex::new(());
@@ -675,7 +679,7 @@ fn search_position_blocking<R: tauri::Runtime>(
         return Err(Error::Cancellation);
     }
     #[cfg(test)]
-    let instrument = SEARCH_POSITION_INSTRUMENT.load(Ordering::SeqCst);
+    let instrument = SEARCH_POSITION_INSTRUMENT.get();
     // Omitted and explicit false are the same query and must share a cache key.
     let mut query = query;
     if query.exclude_fast_events == Some(false) {
@@ -2355,14 +2359,14 @@ mod tests {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             PROCESS_ENTRY_CALLS.store(0, Ordering::SeqCst);
             EXCLUDE_FAST_SQL_COMPLETED.store(false, Ordering::SeqCst);
-            SEARCH_POSITION_INSTRUMENT.store(true, Ordering::SeqCst);
+            SEARCH_POSITION_INSTRUMENT.set(true);
             Self { _lock: lock }
         }
     }
 
     impl Drop for SearchInstrument {
         fn drop(&mut self) {
-            SEARCH_POSITION_INSTRUMENT.store(false, Ordering::SeqCst);
+            SEARCH_POSITION_INSTRUMENT.set(false);
         }
     }
 
