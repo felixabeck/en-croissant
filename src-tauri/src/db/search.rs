@@ -11,7 +11,7 @@ use shakmaty::{
 use specta::Type;
 use std::{
     cmp::Reverse,
-    collections::BinaryHeap,
+    collections::{BinaryHeap, HashSet},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -423,6 +423,57 @@ fn matches_date(date: Option<&str>, start: Option<&str>, end: Option<&str>) -> b
     start.is_none_or(|bound| date >= bound) && end.is_none_or(|bound| date <= bound)
 }
 
+/// Inclusive Elo bound. The index stores a missing rating as 0, so a band
+/// starting above 0 excludes unrated players.
+fn elo_in_range(elo: i16, range: Option<(i32, i32)>) -> bool {
+    let elo = i32::from(elo);
+    range.is_none_or(|(min, max)| elo >= min && elo <= max)
+}
+
+/// Case-insensitive event-name substrings of fast events. Rapid is kept on purpose.
+const FAST_EVENT_NAME_TOKENS: [&str; 3] = ["blitz", "bullet", "armageddon"];
+
+#[cfg(test)]
+static SEARCH_POSITION_INSTRUMENT: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+static SEARCH_POSITION_INSTRUMENT_LOCK: Mutex<()> = Mutex::new(());
+#[cfg(test)]
+static PROCESS_ENTRY_CALLS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static EXCLUDE_FAST_SQL_COMPLETED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+type ExcludeFastLoadHook = Box<dyn FnOnce() -> Option<Result<HashSet<i32>, Error>>>;
+
+#[cfg(test)]
+thread_local! {
+    // Runs at the start of load_excluded_fast_game_ids, inside the SQLite
+    // cancellation scope. Some(result) replaces the whole load.
+    static EXCLUDE_FAST_LOAD_HOOK: std::cell::RefCell<Option<ExcludeFastLoadHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Ids of games whose event name contains a fast-event token. Runs as the
+/// entire body of one `with_sqlite_cancellation` scope.
+fn load_excluded_fast_game_ids(db: &mut SqliteConnection) -> Result<HashSet<i32>, Error> {
+    #[cfg(test)]
+    if let Some(result) = EXCLUDE_FAST_LOAD_HOOK
+        .with(|hook| hook.borrow_mut().take())
+        .and_then(|hook| hook())
+    {
+        return result;
+    }
+    let mut fast_events = events::table.select(events::id).into_boxed();
+    for token in FAST_EVENT_NAME_TOKENS {
+        fast_events = fast_events.or_filter(events::name.like(format!("%{token}%")));
+    }
+    let ids: Vec<i32> = games::table
+        .filter(games::event_id.eq_any(fast_events))
+        .select(games::id)
+        .load(db)?;
+    Ok(ids.into_iter().collect())
+}
+
 fn parse_wanted_result(value: Option<&str>) -> Result<Option<GameResult>, Error> {
     value
         .map(|value| match value {
@@ -620,6 +671,13 @@ fn search_position_blocking<R: tauri::Runtime>(
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
+    #[cfg(test)]
+    let instrument = SEARCH_POSITION_INSTRUMENT.load(Ordering::SeqCst);
+    // Omitted and explicit false are the same query and must share a cache key.
+    let mut query = query;
+    if query.exclude_fast_events == Some(false) {
+        query.exclude_fast_events = None;
+    }
     let database_handle = file;
     let target = super::resolve_database(authority, &database_handle, PathOperation::DatabaseRead)?;
     let _collision_cleanup =
@@ -671,9 +729,26 @@ fn search_position_blocking<R: tauri::Runtime>(
 
     let wanted_result = parse_wanted_result(query.wanted_result.as_deref())?;
 
+    let excluded_fast_game_ids: Option<HashSet<i32>> = if query.exclude_fast_events == Some(true) {
+        let ids = super::sqlite_cancellation::with_sqlite_cancellation(cancellation, || {
+            load_excluded_fast_game_ids(db)
+        })?;
+        #[cfg(test)]
+        if instrument {
+            EXCLUDE_FAST_SQL_COMPLETED.store(true, Ordering::SeqCst);
+        }
+        Some(ids)
+    } else {
+        None
+    };
+
     info!("start search on {}", lease.id);
 
     let process_entry = |entry: SearchGameEntryRef<'_>| -> Result<(), Error> {
+        #[cfg(test)]
+        if instrument {
+            PROCESS_ENTRY_CALLS.fetch_add(1, Ordering::SeqCst);
+        }
         if cancellation.is_cancelled() {
             return Err(Error::Cancellation);
         }
@@ -718,6 +793,20 @@ fn search_position_blocking<R: tauri::Runtime>(
             query.start_date.as_deref(),
             query.end_date.as_deref(),
         ) {
+            return Ok(());
+        }
+
+        // range1 bounds White and range2 bounds Black in position search.
+        if !elo_in_range(entry.white_elo, query.range1)
+            || !elo_in_range(entry.black_elo, query.range2)
+        {
+            return Ok(());
+        }
+
+        if excluded_fast_game_ids
+            .as_ref()
+            .is_some_and(|ids| ids.contains(&entry.id))
+        {
             return Ok(());
         }
 
@@ -1951,9 +2040,25 @@ mod tests {
     const AFTER_D4_FEN: &str = "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq d3 0 1";
 
     fn insert_white_win_e4_e5(connection: &mut SqliteConnection) -> i32 {
-        let white = create_player(connection, "Carlsen").unwrap();
-        let black = create_player(connection, "Nakamura").unwrap();
-        let event = create_event(connection, "Candidates").unwrap();
+        insert_e4_e5_game(
+            connection,
+            ("Carlsen", Some(2800)),
+            ("Nakamura", Some(2700)),
+            "Candidates",
+        )
+    }
+
+    /// Inserts a 1-0 game with the same 1. e4 e5 mainline as the base fixture,
+    /// so it matches every starting-position search.
+    fn insert_e4_e5_game(
+        connection: &mut SqliteConnection,
+        (white_name, white_elo): (&str, Option<i32>),
+        (black_name, black_elo): (&str, Option<i32>),
+        event_name: &str,
+    ) -> i32 {
+        let white = create_player(connection, white_name).unwrap();
+        let black = create_player(connection, black_name).unwrap();
+        let event = create_event(connection, event_name).unwrap();
         let site = create_site(connection, "Madrid").unwrap();
 
         let mut chess = Chess::default();
@@ -1973,8 +2078,8 @@ mod tests {
                 site_id: site.id,
                 white_id: white.id,
                 black_id: black.id,
-                white_elo: Some(2800),
-                black_elo: Some(2700),
+                white_elo,
+                black_elo,
                 white_material: i32::from(material.white),
                 black_material: i32::from(material.black),
                 date: Some("2026.08.09"),
@@ -2193,5 +2298,277 @@ mod tests {
         let excluded_date =
             run_position_search(&app, &handle, wrong_date, "search-date-miss").unwrap();
         assert_eq!((excluded_date.0.len(), excluded_date.1.len()), (0, 0));
+    }
+
+    /// Base fixture plus extra 1. e4 e5 games, inserted before the first
+    /// search builds the index.
+    /// (White name, Elo), (Black name, Elo), event name.
+    type ExtraGame<'a> = ((&'a str, Option<i32>), (&'a str, Option<i32>), &'a str);
+
+    fn filter_search_database(
+        extra: &[ExtraGame<'_>],
+    ) -> (
+        TempDir,
+        tauri::AppHandle<tauri::test::MockRuntime>,
+        DatabaseHandle,
+        PathBuf,
+    ) {
+        let (dir, app, handle, database) = position_search_database();
+        tauri_specta::Builder::<tauri::test::MockRuntime>::new()
+            .events(tauri_specta::collect_events!(
+                crate::progress::ProgressEvent
+            ))
+            .mount_events(&app);
+        let mut connection = SqliteConnection::establish(database.to_str().unwrap()).unwrap();
+        for &(white, black, event) in extra {
+            insert_e4_e5_game(&mut connection, white, black, event);
+        }
+        drop(connection);
+        (dir, app, handle, database)
+    }
+
+    /// Total games counted across all moves.
+    fn counted_games(result: &(Vec<PositionStats>, Vec<NormalizedGame>)) -> i32 {
+        result.0.iter().map(|m| m.white + m.draw + m.black).sum()
+    }
+
+    fn sample_events(result: &(Vec<PositionStats>, Vec<NormalizedGame>)) -> Vec<String> {
+        let mut events: Vec<String> = result.1.iter().map(|game| game.event.clone()).collect();
+        events.sort();
+        events
+    }
+
+    /// Holds the instrumentation lock for a whole test sequence, with the
+    /// counters reset. Dropping clears the instrument flag, also on panic.
+    struct SearchInstrument {
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl SearchInstrument {
+        fn start() -> Self {
+            let lock = SEARCH_POSITION_INSTRUMENT_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            PROCESS_ENTRY_CALLS.store(0, Ordering::SeqCst);
+            EXCLUDE_FAST_SQL_COMPLETED.store(false, Ordering::SeqCst);
+            SEARCH_POSITION_INSTRUMENT.store(true, Ordering::SeqCst);
+            Self { _lock: lock }
+        }
+    }
+
+    impl Drop for SearchInstrument {
+        fn drop(&mut self) {
+            SEARCH_POSITION_INSTRUMENT.store(false, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn elo_in_range_excludes_unrated_zero_when_band_starts_above_zero() {
+        assert!(elo_in_range(0, None));
+        assert!(!elo_in_range(0, Some((1, 3000))));
+        assert!(elo_in_range(0, Some((0, 2000))));
+        assert!(elo_in_range(1850, Some((1850, 2350))));
+        assert!(elo_in_range(2350, Some((1850, 2350))));
+        assert!(!elo_in_range(2351, Some((1850, 2350))));
+        // Bounds outside i16 must widen the rating, not narrow the bound.
+        assert!(elo_in_range(i16::MAX, Some((0, 40_000))));
+        assert!(!elo_in_range(i16::MAX, Some((40_000, 50_000))));
+    }
+
+    #[test]
+    fn position_search_elo_band_requires_both_players_and_excludes_unrated() {
+        let (_dir, app, handle, _database) = filter_search_database(&[(
+            ("Unrated White", None),
+            ("Unrated Black", None),
+            "Club Open",
+        )]);
+
+        let unfiltered = run_position_search(
+            &app,
+            &handle,
+            exact_position_query(STARTING_FEN),
+            "elo-none",
+        )
+        .unwrap();
+        assert_eq!(counted_games(&unfiltered), 2);
+        assert_eq!(sample_events(&unfiltered), vec!["Candidates", "Club Open"]);
+
+        let mut both_in = exact_position_query(STARTING_FEN);
+        both_in.range1 = Some((2700, 2900));
+        both_in.range2 = Some((2700, 2900));
+        let hit = run_position_search(&app, &handle, both_in, "elo-hit").unwrap();
+        assert_eq!(counted_games(&hit), 1);
+        assert_eq!(hit.0[0].move_, "e4");
+        assert_eq!(sample_events(&hit), vec!["Candidates"]);
+        assert_eq!(hit.1[0].white, "Carlsen");
+
+        let mut slice = exact_position_query(STARTING_FEN);
+        slice.range1 = Some((1850, 2350));
+        slice.range2 = Some((1850, 2350));
+        let missed = run_position_search(&app, &handle, slice, "elo-slice").unwrap();
+        assert_eq!((missed.0.len(), missed.1.len()), (0, 0));
+
+        let mut black_out = exact_position_query(STARTING_FEN);
+        black_out.range1 = Some((2700, 2900));
+        black_out.range2 = Some((1000, 1200));
+        let missed = run_position_search(&app, &handle, black_out, "elo-black-out").unwrap();
+        assert_eq!((missed.0.len(), missed.1.len()), (0, 0));
+
+        let mut positive_band = exact_position_query(STARTING_FEN);
+        positive_band.range1 = Some((1, 3000));
+        positive_band.range2 = Some((1, 3000));
+        let rated = run_position_search(&app, &handle, positive_band, "elo-unrated").unwrap();
+        assert_eq!(counted_games(&rated), 1);
+        assert_eq!(sample_events(&rated), vec!["Candidates"]);
+    }
+
+    #[test]
+    fn position_search_exclude_fast_events_is_name_based() {
+        let (_dir, app, handle, _database) = filter_search_database(&[
+            (
+                ("Firouzja", Some(2750)),
+                ("So", Some(2750)),
+                "World BLITZ Championship",
+            ),
+            (("Caruana", Some(2780)), ("Ding", Some(2760)), "Rapid Open"),
+        ]);
+        assert!(FAST_EVENT_NAME_TOKENS.contains(&"blitz"));
+        assert!(!FAST_EVENT_NAME_TOKENS
+            .iter()
+            .any(|token| "rapid open".contains(token)));
+
+        let off = run_position_search(
+            &app,
+            &handle,
+            exact_position_query(STARTING_FEN),
+            "fast-off",
+        )
+        .unwrap();
+        assert_eq!(counted_games(&off), 3);
+        assert_eq!(
+            sample_events(&off),
+            vec!["Candidates", "Rapid Open", "World BLITZ Championship"]
+        );
+
+        let mut on_query = exact_position_query(STARTING_FEN);
+        on_query.exclude_fast_events = Some(true);
+        let on = run_position_search(&app, &handle, on_query, "fast-on").unwrap();
+        assert_eq!(counted_games(&on), 2);
+        assert_eq!(on.0[0].move_, "e4");
+        assert_eq!(sample_events(&on), vec!["Candidates", "Rapid Open"]);
+    }
+
+    #[test]
+    fn position_search_exclude_fast_events_sql_failure_is_an_error() {
+        let (_dir, app, handle, _database) = filter_search_database(&[(
+            ("Firouzja", Some(2750)),
+            ("So", Some(2750)),
+            "Titled Blitz Arena",
+        )]);
+        // Build the index first so the failure can only come from the exclude pass.
+        let built = run_position_search(
+            &app,
+            &handle,
+            exact_position_query(STARTING_FEN),
+            "sql-built",
+        )
+        .unwrap();
+        assert_eq!(counted_games(&built), 2);
+
+        let instrument = SearchInstrument::start();
+        EXCLUDE_FAST_LOAD_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(|| {
+                Some(Err(Error::InvalidInput(
+                    "injected exclude-fast SQL failure".into(),
+                )))
+            }));
+        });
+        let mut query = exact_position_query(STARTING_FEN);
+        query.exclude_fast_events = Some(true);
+        let result = run_position_search(&app, &handle, query, "sql-failure");
+        assert!(
+            matches!(
+                &result,
+                Err(Error::InvalidInput(message)) if message == "injected exclude-fast SQL failure"
+            ),
+            "{:?}",
+            result.as_ref().err()
+        );
+        assert!(!EXCLUDE_FAST_SQL_COMPLETED.load(Ordering::SeqCst));
+        assert_eq!(PROCESS_ENTRY_CALLS.load(Ordering::SeqCst), 0);
+        drop(instrument);
+    }
+
+    #[test]
+    fn position_search_exclude_fast_events_cancels_during_event_sql_without_cache_publication() {
+        let (_dir, app, handle, _database) = filter_search_database(&[(
+            ("Firouzja", Some(2750)),
+            ("So", Some(2750)),
+            "Armageddon Final",
+        )]);
+        let state = app.state::<AppState>();
+        load_search_index(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            &handle,
+        )
+        .unwrap();
+        assert!(state.search_cache.results.lock().unwrap().values.is_empty());
+
+        let instrument = SearchInstrument::start();
+        let cancellation = CancellationToken::new();
+        let hook_token = cancellation.clone();
+        EXCLUDE_FAST_LOAD_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                hook_token.cancel();
+                None
+            }));
+        });
+        let mut query = exact_position_query(STARTING_FEN);
+        query.exclude_fast_events = Some(true);
+        let progress = JobProgress::new(app.clone(), "fast-cancel".into()).unwrap();
+        let permit = state.new_request.clone().try_acquire_owned().unwrap();
+        let result = search_position_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            permit,
+            progress.lease(),
+            app.clone(),
+            handle.clone(),
+            query,
+            &cancellation,
+        );
+        assert!(
+            matches!(result, Err(Error::Cancellation)),
+            "{:?}",
+            result.as_ref().err()
+        );
+        assert!(cancellation.is_cancelled());
+        assert!(state.search_cache.results.lock().unwrap().values.is_empty());
+        assert_eq!(PROCESS_ENTRY_CALLS.load(Ordering::SeqCst), 0);
+        assert!(!EXCLUDE_FAST_SQL_COMPLETED.load(Ordering::SeqCst));
+        drop(instrument);
+    }
+
+    #[test]
+    fn position_search_exclude_fast_events_false_and_omitted_share_cache_key() {
+        let (_dir, app, handle, _database) = filter_search_database(&[]);
+        let instrument = SearchInstrument::start();
+
+        let omitted =
+            run_position_search(&app, &handle, exact_position_query(STARTING_FEN), "omitted")
+                .unwrap();
+        assert_eq!(counted_games(&omitted), 1);
+        assert!(PROCESS_ENTRY_CALLS.load(Ordering::SeqCst) > 0);
+        PROCESS_ENTRY_CALLS.store(0, Ordering::SeqCst);
+
+        let mut explicit_false = exact_position_query(STARTING_FEN);
+        explicit_false.exclude_fast_events = Some(false);
+        let cached = run_position_search(&app, &handle, explicit_false, "explicit-false").unwrap();
+        assert_eq!(counted_games(&cached), 1);
+        assert_eq!(PROCESS_ENTRY_CALLS.load(Ordering::SeqCst), 0);
+        drop(instrument);
     }
 }

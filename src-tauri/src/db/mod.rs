@@ -1417,6 +1417,8 @@ pub struct GameQuery {
     pub position: Option<PositionQueryJs>,
     #[specta(optional)]
     pub wanted_result: Option<String>,
+    #[specta(optional)]
+    pub exclude_fast_events: Option<bool>,
 }
 
 impl GameQuery {
