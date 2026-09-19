@@ -7007,6 +7007,9 @@ Plan: `tasks/plans/2026-09-19-owned-staging-dir.md` (gitignored). Handoff: `task
 * **Related:** `f-20260905-13` (the clipped Move control in the same tree row).
 * **Found by:** Felix opening his imported repertoires, session 2026-09-05.
 
+Handled 2026-09-19. Root cause measured in the real WebKitGTK window: the first click of a double-click selected the row, the Rename/Move/Trash bar was inserted above the tree, the row moved 30px and the second click landed on the bar. Fix `30bd1054` (file card restored in a second column, nothing selection-dependent above the tree), layout repairs `409a6378`, `1eee6218`, `6315ddab`. Proof: `pnpm verify:app` item 10 drives a real pointer double-click (`cac5a275`, staged reds in `4e3c5296`); e2e `060654fc`. Decisions d-20260919-11, d-20260919-12. Type editing from the card is left to f-20260919-07. Record: `tasks/handoffs/2026-09-19-files-page-file-card-review.md`.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"db90e3981dae4621faa0b93082a14dc515e0ff053a1820fd20e78c29a8ac5a91","input_sha256":"347d3c00eb4bf6a53fab77ff51093f658de650dafd75d5fba1b1ea4d12302dc3","kind":"mutation-receipt","operation":"9ba561972c79dc698761615357ef71dd79b38a9dd9cac2858f70d3e398f1a478","options":{"section":null},"request_id_sha256":null,"results":["f-20260905-14"],"target":"f-20260905-14","v":1} -->
+
 ---
 
 ## 2026-09-05 — filed through the inbox spool
