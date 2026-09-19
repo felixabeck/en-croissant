@@ -4,7 +4,7 @@ import { IconZoomCheck } from "@tabler/icons-react";
 import { useNavigate } from "@tanstack/react-router";
 import { useAtom } from "jotai";
 import { useEffect, useRef, useState } from "react";
-import { useMediaQuery } from "@mantine/hooks";
+import { useElementSize } from "@mantine/hooks";
 import { useTranslation } from "react-i18next";
 import { errorUnlessCancelled } from "@/platform/errors";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
@@ -18,8 +18,13 @@ import GamePreview from "../databases/GamePreview";
 import GameSelector from "../panels/info/GameSelector";
 import type { FileMetadata } from "./file";
 
-// Mantine's `sm` breakpoint, below which the Files page stacks its columns.
-const NARROW_WINDOW = "(max-width: 48em)";
+// Below this card width the preview's move list has no room beside the board. In rem, because the
+// list's needs grow with the font scale while a window width in px does not.
+const PREVIEW_CONTROLS_MIN_WIDTH_REM = 26;
+
+function rootFontSizePx() {
+  return Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+}
 
 // The parent keys this card by the handle key, so a different file remounts it (resetting the
 // page and the game-name cache) while a relisted copy of the same file keeps both.
@@ -36,8 +41,8 @@ function FileCard({ selected }: { selected: FileMetadata }) {
   const handleRef = useRef(selected.handle);
   handleRef.current = selected.handle;
   const handleKey = fileWorkspaceKey(selected.handle);
-  // Beside the board the preview's move list has no room in a single-column window.
-  const narrow = useMediaQuery(NARROW_WINDOW) ?? false;
+  const { ref: cardRef, width: cardWidth } = useElementSize();
+  const narrow = cardWidth < PREVIEW_CONTROLS_MIN_WIDTH_REM * rootFontSizePx();
 
   // Keyed by the handle, not the entry object: a relisting must not re-read the same file.
   useEffect(() => {
@@ -75,7 +80,7 @@ function FileCard({ selected }: { selected: FileMetadata }) {
   }
 
   return (
-    <Stack h="100%">
+    <Stack h="100%" ref={cardRef}>
       <Stack align="center">
         <Text ta="center" fz="xl" fw="bold" miw={0} style={{ overflowWrap: "anywhere" }}>
           {selected?.name}

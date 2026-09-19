@@ -66,6 +66,15 @@ function renderWithMantine(ui: React.ReactNode, root: Root) {
   });
 }
 
+// jsdom has no ResizeObserver; the card measures itself to decide whether the preview has room for
+// its move list. Unobserved, the width stays 0 and the preview renders without controls.
+class MockResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+globalThis.ResizeObserver = MockResizeObserver;
+
 describe("FileCard", () => {
   let container: HTMLDivElement;
   let root: Root;
