@@ -2252,9 +2252,12 @@ mod tests {
         assert_eq!(case.cache.mapping_gate_count(), 0);
     }
 
-    #[cfg(windows)]
+    /// An unleased mapping stands in for a mapper outside this process, which no lease can see.
+    /// The replace is a rename onto the leaf (POSIX semantics on Windows too), so it commits in one
+    /// attempt and the mapper keeps the generation it mapped. `ERROR_USER_MAPPED_FILE` was the
+    /// assumed Windows outcome until the runner measured a durable commit (`f-20260918-03`).
     #[test]
-    fn search_index_mapping_gate_external_mapper_fails_once_with_user_mapped_file() {
+    fn search_index_mapping_gate_external_mapper_keeps_its_generation_across_one_replace() {
         struct MutateAttempts(std::sync::atomic::AtomicUsize);
 
         impl crate::infra::fs::AtomicWriterInjector for MutateAttempts {
@@ -2267,8 +2270,8 @@ mod tests {
         }
 
         let case = MappingGateCase::new();
+        let before = std::fs::read(&case.sidecar).unwrap();
         let external = File::open(&case.sidecar).unwrap();
-        // An unleased mapping stands in for a mapper outside this process.
         let mapped = unsafe { Mmap::map(&external) }.unwrap();
         let attempts = Arc::new(MutateAttempts(std::sync::atomic::AtomicUsize::new(0)));
         set_test_atomic_file_injector(Some(attempts.clone()));
@@ -2280,13 +2283,35 @@ mod tests {
             &CancellationToken::new(),
         );
         set_test_atomic_file_injector(None);
-        drop(mapped);
 
-        assert!(
-            matches!(result, Err(Error::Io(ref error)) if error.raw_os_error() == Some(1224)),
-            "{result:?}"
-        );
+        assert!(result.is_ok(), "{result:?}");
         assert_eq!(attempts.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(&mapped[..], before.as_slice());
+        assert_ne!(std::fs::read(&case.sidecar).unwrap(), before);
+        assert_eq!(case.first_id(), 2);
+    }
+
+    /// The delete counterpart: removing the leaf under an unleased mapping unlinks the name and
+    /// leaves the mapper its bytes.
+    #[test]
+    fn search_index_mapping_gate_external_mapper_keeps_its_generation_across_unlink() {
+        let case = MappingGateCase::new();
+        let before = std::fs::read(&case.sidecar).unwrap();
+        let external = File::open(&case.sidecar).unwrap();
+        let object = crate::infra::path_authority::opened_file_identity(&external).unwrap();
+        let mapped = unsafe { Mmap::map(&external) }.unwrap();
+
+        let guard = case
+            .cache
+            .begin_preferred_replace(&case.database, &CancellationToken::new())
+            .unwrap();
+        let removed =
+            crate::infra::fs::remove_entry_at(&case.parent(), &case.leaf(), object, false);
+        drop(guard);
+
+        assert!(removed.is_ok(), "{removed:?}");
+        assert!(!case.sidecar.exists());
+        assert_eq!(&mapped[..], before.as_slice());
     }
 
     #[test]
