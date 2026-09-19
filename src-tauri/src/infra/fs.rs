@@ -3042,7 +3042,7 @@ mod win {
         .map_err(map_create_collision)?;
         if !opened_is_disk(&created) {
             return Err(Error::InvalidInput(
-                "created database must be a regular file".into(),
+                "created file must be a regular file".into(),
             ));
         }
         let identity = opened_file_identity(&created)?;
@@ -4228,6 +4228,7 @@ pub(crate) fn entry_identity_at(
 
 #[cfg(unix)]
 pub(crate) fn create_dir_at(parent: &File, name: &OsStr) -> Result<(), Error> {
+    single_leaf(name)?;
     use rustix::fs::{self as rfs, Mode};
     rfs::mkdirat(parent, name, Mode::from_raw_mode(0o700))
         .map_err(|error| Error::Io(Box::new(error.into())))?;
@@ -4237,6 +4238,7 @@ pub(crate) fn create_dir_at(parent: &File, name: &OsStr) -> Result<(), Error> {
 
 #[cfg(windows)]
 pub(crate) fn create_dir_at(parent: &File, name: &OsStr) -> Result<(), Error> {
+    single_leaf(name)?;
     win::create_dir_at(parent, name)
 }
 
@@ -4267,6 +4269,7 @@ pub(crate) fn set_ensure_directory_post_collision_hook(hook: Option<Box<dyn FnOn
 /// after the create collided — fails the open rather than being followed. A freshly created
 /// directory gets `create_dir_at`'s mode.
 pub(crate) fn ensure_directory_at(parent: &File, name: &OsStr) -> Result<File, Error> {
+    single_leaf(name)?;
     #[cfg(all(test, unix))]
     if let Some(hook) = ENSURE_DIRECTORY_PRE_CREATE_HOOK.with(|slot| slot.borrow_mut().take()) {
         hook();
@@ -4373,7 +4376,7 @@ pub(crate) fn create_regular_at(parent: &File, name: &OsStr) -> Result<(File, (u
     let stat = rfs::fstat(&created).map_err(|error| Error::Io(Box::new(error.into())))?;
     if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
         return Err(Error::InvalidInput(
-            "created database must be a regular file".into(),
+            "created file must be a regular file".into(),
         ));
     }
     Ok((created, unix::raw_stat_identity(&stat)))
@@ -4818,6 +4821,65 @@ impl OwnedStagingDir {
     pub(crate) fn parent_identity(&self) -> Result<(u64, u64), Error> {
         opened_identity(&self.parent)
     }
+
+    /// Creates-if-missing each component of `relative` below the held child, one
+    /// [`ensure_directory_at`] per component. An empty `relative` is the staging root itself.
+    pub(crate) fn ensure_relative_directory(&self, relative: &Path) -> Result<(), Error> {
+        let components = owned_staging_components(relative)?;
+        ensure_owned_staging_walk(owned_staging_child(self)?, &components)?;
+        Ok(())
+    }
+
+    /// Exclusively creates the regular-file leaf of `relative` (mode 0o600 on unix) after
+    /// creating-if-missing its parent components below the held child.
+    pub(crate) fn create_relative_regular(&self, relative: &Path) -> Result<File, Error> {
+        let components = owned_staging_components(relative)?;
+        let (leaf, parents) = components
+            .split_last()
+            .ok_or_else(|| Error::InvalidInput("owned staging file needs a leaf name".into()))?;
+        let child = owned_staging_child(self)?;
+        let parent = ensure_owned_staging_walk(child, parents)?;
+        let (created, _) = create_regular_at(parent.as_ref().unwrap_or(child), leaf)?;
+        Ok(created)
+    }
+}
+
+fn owned_staging_child(staging: &OwnedStagingDir) -> Result<&File, Error> {
+    staging
+        .child
+        .as_ref()
+        .ok_or_else(|| Error::Conflict("owned staging directory was already consumed".into()))
+}
+
+/// Splits `relative` into single-leaf components. Anything but plain names is refused, including
+/// a `.` or empty component that [`Path::components`] would silently normalise away.
+fn owned_staging_components(relative: &Path) -> Result<Vec<&OsStr>, Error> {
+    let refused = || Error::InvalidInput("owned staging path must be plain relative names".into());
+    let mut components = Vec::new();
+    let mut spelled = 0;
+    for component in relative.components() {
+        let std::path::Component::Normal(name) = component else {
+            return Err(refused());
+        };
+        single_leaf(name).map_err(|_| refused())?;
+        spelled += name.len();
+        components.push(name);
+    }
+    spelled += components.len().saturating_sub(1);
+    if spelled != relative.as_os_str().len() {
+        return Err(refused());
+    }
+    Ok(components)
+}
+
+/// Walks `components` from `root` with [`ensure_directory_at`]. `None` means no component, so the
+/// directory reached is `root` itself.
+fn ensure_owned_staging_walk(root: &File, components: &[&OsStr]) -> Result<Option<File>, Error> {
+    let mut current: Option<File> = None;
+    for name in components {
+        current = Some(ensure_directory_at(current.as_ref().unwrap_or(root), name)?);
+    }
+    Ok(current)
 }
 
 impl Drop for OwnedStagingDir {
@@ -5680,6 +5742,30 @@ mod tests {
         set_ensure_directory_pre_create_hook(None);
         assert!(matches!(result, Err(Error::Io(_))), "{result:?}");
         assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn ensure_directory_at_and_create_dir_at_refuse_non_single_leaves() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(temp.path().join("parent")).expect("parent");
+        let parent = test_parent(&temp.path().join("parent"));
+        for leaf in ["..", ".", "", "a/b"] {
+            assert!(
+                matches!(
+                    ensure_directory_at(&parent, OsStr::new(leaf)),
+                    Err(Error::InvalidInput(_))
+                ),
+                "{leaf:?}"
+            );
+            assert!(
+                matches!(
+                    create_dir_at(&parent, OsStr::new(leaf)),
+                    Err(Error::InvalidInput(_))
+                ),
+                "{leaf:?}"
+            );
+        }
+        assert!(!temp.path().join("a").exists());
     }
 
     #[test]
@@ -8943,9 +9029,23 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             signatures.len(),
-            2,
-            "OwnedStagingDir has adopt plus parent_identity: {signatures:?}"
+            4,
+            "OwnedStagingDir has adopt, parent_identity and the two relative creates: {signatures:?}"
         );
+        // The relative creates take a `&Path` below the held child; they are not constructors.
+        let relative = [
+            "fn ensure_relative_directory(",
+            "fn create_relative_regular(",
+        ];
+        for name in relative {
+            let signature = signatures
+                .iter()
+                .find(|signature| signature.starts_with(name))
+                .unwrap_or_else(|| panic!("{name} is an OwnedStagingDir method: {signatures:?}"));
+            assert!(signature.contains("&self"), "{signature}");
+            assert!(!signature.contains("Self"), "{signature}");
+        }
+        signatures.retain(|signature| !relative.iter().any(|name| signature.starts_with(name)));
         let install = normalised
             .find("fn install_owned_staging_dir(")
             .expect("install entry");
@@ -8969,5 +9069,123 @@ mod tests {
                 .any(|signature| signature.contains("parent_identity")),
             "parent_identity is the held-parent accessor: {signatures:?}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_staging_dir_relative_walk_refuses_a_planted_symlink_component() {
+        let outer = tempfile::tempdir().expect("outer");
+        let outside = outer.path().join("outside");
+        std::fs::create_dir(&outside).expect("outside");
+        let inner = owned_staging_fixture(outer.path());
+        let staging = OwnedStagingDir::adopt(&inner).expect("adopt");
+        let planted = inner.path().join("members");
+        for create_file in [false, true] {
+            let (target, link) = (outside.clone(), planted.clone());
+            set_ensure_directory_pre_create_hook(Some(Box::new(move || {
+                std::os::unix::fs::symlink(&target, &link).unwrap();
+            })));
+            let result = if create_file {
+                staging
+                    .create_relative_regular(Path::new("members/a.txt"))
+                    .map(drop)
+            } else {
+                staging.ensure_relative_directory(Path::new("members/sub"))
+            };
+            set_ensure_directory_pre_create_hook(None);
+            assert!(matches!(result, Err(Error::Io(_))), "{result:?}");
+            assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+            std::fs::remove_file(&planted).expect("remove planted link");
+        }
+    }
+
+    #[test]
+    fn owned_staging_dir_relative_walk_refuses_non_plain_components() {
+        let outer = tempfile::tempdir().expect("outer");
+        let inner = owned_staging_fixture(outer.path());
+        let staging = OwnedStagingDir::adopt(&inner).expect("adopt");
+        let absolute = outer.path().join("escaped");
+        let mut refused = vec![
+            Path::new(".."),
+            Path::new("nested/../escaped"),
+            Path::new("./nested"),
+            Path::new("nested/./a"),
+            Path::new("nested//a"),
+            Path::new("nested/"),
+            absolute.as_path(),
+        ];
+        if cfg!(windows) {
+            refused.push(Path::new("C:escaped"));
+        }
+        for relative in refused {
+            for result in [
+                staging.ensure_relative_directory(relative),
+                staging.create_relative_regular(relative).map(drop),
+            ] {
+                match result {
+                    Err(Error::InvalidInput(message)) => {
+                        assert!(
+                            !message.contains('/') && !message.contains("escaped"),
+                            "{message}"
+                        )
+                    }
+                    other => panic!("{relative:?} must be InvalidInput, got {other:?}"),
+                }
+            }
+        }
+        assert!(!outer.path().join("escaped").exists());
+        staging
+            .ensure_relative_directory(Path::new(""))
+            .expect("empty relative is the staging root");
+        assert!(matches!(
+            staging.create_relative_regular(Path::new("")),
+            Err(Error::InvalidInput(_))
+        ));
+    }
+
+    #[test]
+    fn owned_staging_dir_create_relative_regular_is_exclusive() {
+        let outer = tempfile::tempdir().expect("outer");
+        let inner = owned_staging_fixture(outer.path());
+        let staging = OwnedStagingDir::adopt(&inner).expect("adopt");
+        let mut created = staging
+            .create_relative_regular(Path::new("deep/er/b.txt"))
+            .expect("create");
+        created.write_all(b"member").expect("write");
+        drop(created);
+        assert!(staging
+            .create_relative_regular(Path::new("deep/er/b.txt"))
+            .is_err());
+        staging
+            .ensure_relative_directory(Path::new("deep/er"))
+            .expect("existing directories are reopened");
+        assert_eq!(
+            std::fs::read(inner.path().join("deep/er/b.txt")).expect("member"),
+            b"member"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(inner.path().join("deep/er/b.txt"))
+                .expect("metadata")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+    }
+
+    #[test]
+    fn owned_staging_dir_drop_removes_unconsumed_leaf_after_keep() {
+        let outer = tempfile::tempdir().expect("outer");
+        let inner = owned_staging_fixture(outer.path());
+        let staging = OwnedStagingDir::adopt(&inner).expect("adopt");
+        let leaf = inner.keep();
+        staging
+            .create_relative_regular(Path::new("nested/b.txt"))
+            .expect("create");
+        let before = owned_staging_drop_removals();
+        drop(staging);
+        assert_eq!(owned_staging_drop_removals(), before + 1);
+        assert!(!leaf.exists());
     }
 }
