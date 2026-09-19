@@ -435,7 +435,8 @@ const FAST_EVENT_NAME_TOKENS: [&str; 3] = ["blitz", "bullet", "armageddon"];
 
 #[cfg(test)]
 static SEARCH_POSITION_INSTRUMENT: AtomicBool = AtomicBool::new(false);
-#[cfg(test)]
+// Taken only by `mod tests`, which is unix-only; `cfg(test)` alone is dead code on Windows.
+#[cfg(all(test, unix))]
 static SEARCH_POSITION_INSTRUMENT_LOCK: Mutex<()> = Mutex::new(());
 #[cfg(test)]
 static PROCESS_ENTRY_CALLS: AtomicUsize = AtomicUsize::new(0);
