@@ -10065,3 +10065,16 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 * **Why it matters:** every archive engine download on Windows fails at extraction. Nothing is corrupted; the user sees the install fail.
 * **Related:** f-20260905-06 and f-20260905-08 introduced `OwnedStagingDir` (`d-20260919-03`). The Windows arm was never executed before it was pushed.
 * **Found by:** Claude Code, 2026-09-19, from the job log of run 35419821731 after Felix reported seventeen red `Test` runs.
+
+---
+
+## 2026-09-19 — filed through the inbox spool
+
+### Windows-only test and lint failures reach master because the push never reads the remote result
+
+* **ID:** f-20260919-05 · **Status:** open · **Area:** ci-workflows · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src-tauri/src/infra/path_authority/mod.rs` `ensure_app_owned_default_dir_creates_each_root_under_its_own_leaf`; `src-tauri/src/db/search.rs` `SEARCH_POSITION_INSTRUMENT_LOCK`; `.claude/skills/push/SKILL.md` section 4.
+* **Defect:** two mechanical Windows failures. The path-authority test compared the canonical app-data child (`\\?\C:\Users\runneradmin\...`) with the raw 8.3 tempdir spelling (`C:\Users\RUNNER~1\...`), red from `44034209`. The instrument lock is `cfg(test)` while its only user, `mod tests`, is `cfg(all(test, unix))`, so Windows clippy `-D warnings` fails on `dead_code` from `16601625`. Behind both: `$push` ended at `HEAD == @{u}`, so seventeen consecutive pushes (`e0ec7100` to `48c1df2c`) landed on a master whose `rust-windows-test` was already red, and neither failure was filed.
+* **Why it matters:** a permanently red platform job trains a re-run instead of a look and hides the next real Windows regression, which is what happened to the staging-directory defect filed beside this entry.
+* **Related:** f-20260918-03 (the third red test in the same runs), f-20260830-06 (the Windows job itself).
+* **Found by:** Claude Code, 2026-09-19, from the job logs of runs 35391848926 through 35419821731 and a local `cargo clippy --target x86_64-pc-windows-gnu`.
