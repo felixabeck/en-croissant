@@ -544,17 +544,56 @@ fn install_dir_driver<A: DirInstallAdapter>(
     }
     let source_name = install_leaf(source)?;
     let target_name = install_leaf(target)?;
+    // The pathname entry keeps its reopen of the target parent immediately before commit.
+    let revalidate_parent = || {
+        if adapter.parent_identity(&adapter.open_parent(target)?)? != parent_identity {
+            return Err(Error::Conflict(
+                "directory parent changed concurrently".into(),
+            ));
+        }
+        Ok(())
+    };
+    install_dir_at_driver(
+        adapter,
+        &parent,
+        source_name,
+        None,
+        target_name,
+        &revalidate_parent,
+        &mut false,
+    )
+}
+
+/// The held-parent body of [`install_dir_driver`]: both leaves are names under the one open
+/// `parent`, so same-parent is structural. `expected_source` pins the staged leaf to an identity
+/// captured earlier. `revalidate_parent` runs immediately before the commit revalidation.
+/// `committed` is set once the platform commit has returned `Ok`, so a caller can tell a
+/// pre-commit failure from `CommittedDurabilityUncertain`.
+fn install_dir_at_driver<A: DirInstallAdapter>(
+    adapter: &A,
+    parent: &File,
+    source_name: &OsStr,
+    expected_source: Option<(u64, u64)>,
+    target_name: &OsStr,
+    revalidate_parent: &dyn Fn() -> Result<(), Error>,
+    committed: &mut bool,
+) -> Result<(), Error> {
     let source_entry = adapter
-        .target_stat(&parent, source_name)?
+        .target_stat(parent, source_name)?
         .ok_or_else(|| Error::InvalidInput("directory staging source does not exist".into()))?;
+    if expected_source.is_some_and(|expected| adapter.entry_identity(&source_entry) != expected) {
+        return Err(Error::Conflict(
+            "directory staging source changed concurrently".into(),
+        ));
+    }
     if !adapter.is_directory(&source_entry) {
         return Err(Error::InvalidInput(
             "directory staging source must be a real directory".into(),
         ));
     }
-    let source_dir = adapter.open_source_directory(&parent, source_name)?;
+    let source_dir = adapter.open_source_directory(parent, source_name)?;
     adapter.flush_tree(&source_dir)?;
-    let original = match adapter.target_stat(&parent, target_name)? {
+    let original = match adapter.target_stat(parent, target_name)? {
         Some(entry) if adapter.is_directory(&entry) => Some(entry),
         Some(_) => {
             return Err(Error::InvalidInput(
@@ -565,12 +604,8 @@ fn install_dir_driver<A: DirInstallAdapter>(
     };
     #[cfg(test)]
     inject_atomic_dir(AtomicDirFaultPoint::PreCommit)?;
-    if adapter.parent_identity(&adapter.open_parent(target)?)? != parent_identity {
-        return Err(Error::Conflict(
-            "directory parent changed concurrently".into(),
-        ));
-    }
-    match adapter.target_stat(&parent, source_name)? {
+    revalidate_parent()?;
+    match adapter.target_stat(parent, source_name)? {
         Some(entry) if adapter.entry_identity(&entry) == adapter.entry_identity(&source_entry) => {}
         _ => {
             return Err(Error::Conflict(
@@ -578,10 +613,7 @@ fn install_dir_driver<A: DirInstallAdapter>(
             ))
         }
     }
-    match (
-        original.as_ref(),
-        adapter.target_stat(&parent, target_name)?,
-    ) {
+    match (original.as_ref(), adapter.target_stat(parent, target_name)?) {
         (None, None) => {}
         (None, Some(_)) => {
             return Err(Error::Conflict(
@@ -602,7 +634,8 @@ fn install_dir_driver<A: DirInstallAdapter>(
             ))
         }
     }
-    let displaced = adapter.commit(&parent, source_name, target_name, original.as_ref())?;
+    let displaced = adapter.commit(parent, source_name, target_name, original.as_ref())?;
+    *committed = true;
     #[cfg(test)]
     if let Err(error) = inject_atomic_dir(AtomicDirFaultPoint::ParentSync) {
         log::warn!("directory installation parent sync failed: {error}");
@@ -627,7 +660,7 @@ fn install_dir_driver<A: DirInstallAdapter>(
                 crate::error::DurabilityStage::OldDirectoryCleanup,
             ));
         }
-        if let Err(error) = adapter.cleanup_displaced(&parent, displaced, original) {
+        if let Err(error) = adapter.cleanup_displaced(parent, displaced, original) {
             log::error!(
                 "directory installed but old tree cleanup at {} failed: {error}",
                 displaced.to_string_lossy()
@@ -1410,7 +1443,7 @@ mod unix {
     fn parent(path: &Path) -> &Path {
         path.parent().unwrap_or_else(|| Path::new("."))
     }
-    fn open_dir_no_follow(path: &Path) -> Result<File, Error> {
+    pub(super) fn open_dir_no_follow(path: &Path) -> Result<File, Error> {
         let initial = if path.is_absolute() {
             Path::new("/")
         } else {
@@ -1910,6 +1943,24 @@ mod unix {
 
     pub(super) fn install_dir(source: &Path, target: &Path) -> Result<(), Error> {
         install_dir_driver(&UnixDirInstallAdapter, source, target)
+    }
+
+    pub(super) fn install_dir_at(
+        parent: &File,
+        source_name: &OsStr,
+        expected_source: (u64, u64),
+        target_name: &OsStr,
+        committed: &mut bool,
+    ) -> Result<(), Error> {
+        install_dir_at_driver(
+            &UnixDirInstallAdapter,
+            parent,
+            source_name,
+            Some(expected_source),
+            target_name,
+            &|| Ok(()),
+            committed,
+        )
     }
 }
 
@@ -3450,6 +3501,24 @@ mod win {
         install_dir_driver(&WindowsDirInstallAdapter, source, target)
     }
 
+    pub(super) fn install_dir_at(
+        parent: &File,
+        source_name: &OsStr,
+        expected_source: (u64, u64),
+        target_name: &OsStr,
+        committed: &mut bool,
+    ) -> Result<(), Error> {
+        install_dir_at_driver(
+            &WindowsDirInstallAdapter,
+            parent,
+            source_name,
+            Some(expected_source),
+            target_name,
+            &|| Ok(()),
+            committed,
+        )
+    }
+
     pub(super) fn remove_entry_at(
         parent: &File,
         name: &OsStr,
@@ -3814,7 +3883,7 @@ mod win {
         }
     }
 
-    fn open_directory_path(path: &Path, writable: bool) -> Result<File, Error> {
+    pub(super) fn open_directory_path(path: &Path, writable: bool) -> Result<File, Error> {
         let mut base = PathBuf::new();
         let mut components = path.components().peekable();
         if path.is_absolute() {
@@ -4605,6 +4674,198 @@ pub fn atomic_install_dir(temp_path: &Path, target_path: &Path) -> Result<(), Er
     {
         win::install_dir(temp_path, target_path)
     }
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static OPEN_PARENT_CHILD_IDENTITY_HOOK: std::cell::RefCell<Option<(u64, u64)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+std::thread_local! {
+    /// Armed `OwnedStagingDir` drops on this thread, so a test can observe disarming.
+    static OWNED_STAGING_DROP_REMOVALS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Replaces the child identity the next [`open_parent_directory`] looks for in the parent.
+#[cfg(test)]
+pub(crate) fn set_open_parent_child_identity_hook(identity: Option<(u64, u64)>) {
+    OPEN_PARENT_CHILD_IDENTITY_HOOK.with(|slot| *slot.borrow_mut() = identity);
+}
+
+fn opened_identity(file: &File) -> Result<(u64, u64), Error> {
+    #[cfg(unix)]
+    {
+        let stat = rustix::fs::fstat(file).map_err(|error| io(error.into()))?;
+        Ok(unix::raw_stat_identity(&stat))
+    }
+    #[cfg(windows)]
+    {
+        crate::infra::path_authority::opened_file_identity(file)
+    }
+}
+
+#[cfg(windows)]
+fn open_parent_refused() -> Error {
+    Error::InvalidInput("directory parent could not be opened relative to the child".into())
+}
+
+fn parent_child_mismatch() -> Error {
+    Error::Conflict("directory is not a child of its opened parent".into())
+}
+
+/// Opens the parent of an already-open directory through its relative `".."` entry, then
+/// refuses unless that parent, on the same device, lists a directory with `dir`'s identity. A
+/// mount root fails that check: its `".."` lists the covered mount point, not the root.
+pub(crate) fn open_parent_directory(dir: &File) -> Result<File, Error> {
+    let child = opened_identity(dir)?;
+    #[cfg(test)]
+    let child = OPEN_PARENT_CHILD_IDENTITY_HOOK
+        .with(|slot| slot.borrow_mut().take())
+        .unwrap_or(child);
+    #[cfg(unix)]
+    let parent = open_directory_at(dir, OsStr::new(".."), true)?;
+    #[cfg(windows)]
+    let parent =
+        open_directory_at(dir, OsStr::new(".."), true).map_err(|_| open_parent_refused())?;
+    if opened_identity(&parent)?.0 != child.0 {
+        return Err(parent_child_mismatch());
+    }
+    #[cfg(unix)]
+    {
+        use rustix::fs::{self as rfs, AtFlags, FileType};
+        use std::os::unix::ffi::OsStrExt;
+        let mut found = false;
+        unix::walk_directory(&parent, |bytes, ino| {
+            if found || ino != child.1 {
+                return Ok(());
+            }
+            let stat =
+                match rfs::statat(&parent, OsStr::from_bytes(bytes), AtFlags::SYMLINK_NOFOLLOW) {
+                    Ok(stat) => stat,
+                    Err(_) => return Ok(()),
+                };
+            found = FileType::from_raw_mode(stat.st_mode) == FileType::Directory
+                && unix::raw_stat_identity(&stat) == child;
+            Ok(())
+        })?;
+        if !found {
+            return Err(parent_child_mismatch());
+        }
+    }
+    #[cfg(windows)]
+    {
+        let entries = read_directory_entries_at(&parent, &CancellationToken::new(), &mut |_| true)?;
+        if !entries
+            .iter()
+            .any(|entry| entry.kind == DirectoryEntryKind::Directory && entry.identity == child)
+        {
+            return Err(parent_child_mismatch());
+        }
+    }
+    Ok(parent)
+}
+
+/// A directory the process created (a `tempfile::TempDir`), held as a leaf under one open parent
+/// descriptor. It carries no pathname: installing it and cleaning it up are both relative to the
+/// held parent, so a later swap of the parent's pathname cannot redirect either. Until it is
+/// consumed by a commit, dropping it removes the leaf by identity.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct OwnedStagingDir {
+    parent: File,
+    leaf: OsString,
+    child: Option<File>,
+    identity: (u64, u64),
+    armed: bool,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl OwnedStagingDir {
+    /// No-follow open of `temp`, then [`open_parent_directory`] of that handle, then a check that
+    /// `temp`'s leaf under the held parent is still the opened directory.
+    pub(crate) fn adopt(temp: &tempfile::TempDir) -> Result<Self, Error> {
+        let leaf = temp
+            .path()
+            .file_name()
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| Error::InvalidInput("owned staging directory needs a leaf name".into()))?
+            .to_os_string();
+        #[cfg(unix)]
+        let child = unix::open_dir_no_follow(temp.path())?;
+        #[cfg(windows)]
+        let child = win::open_directory_path(temp.path(), false)?;
+        let identity = opened_identity(&child)?;
+        let parent = open_parent_directory(&child)?;
+        match entry_identity_at(&parent, &leaf, true) {
+            Ok(actual) if actual == identity => {}
+            _ => {
+                return Err(Error::Conflict(
+                    "owned staging directory changed concurrently".into(),
+                ))
+            }
+        }
+        Ok(Self {
+            parent,
+            leaf,
+            child: Some(child),
+            identity,
+            armed: true,
+        })
+    }
+}
+
+impl Drop for OwnedStagingDir {
+    fn drop(&mut self) {
+        drop(self.child.take());
+        if !self.armed {
+            return;
+        }
+        #[cfg(test)]
+        OWNED_STAGING_DROP_REMOVALS.with(|count| count.set(count.get() + 1));
+        if let Err(error) = remove_entry_at(&self.parent, &self.leaf, self.identity, true) {
+            log::warn!("owned staging directory cleanup failed: {error}");
+        }
+    }
+}
+
+/// Installs `source` onto `dest_leaf`, a sibling name under the source's held parent: absent, or
+/// an existing real directory to replace. Same-parent is structural, so there is no pathname
+/// reopen. Once the commit has returned, `source` no longer owns a leaf and its cleanup is
+/// disarmed, including when the result is `CommittedDurabilityUncertain`.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn install_owned_staging_dir(
+    mut source: OwnedStagingDir,
+    dest_leaf: &OsStr,
+) -> Result<(), Error> {
+    single_leaf(dest_leaf)?;
+    if dest_leaf == source.leaf {
+        return Err(Error::InvalidInput(
+            "owned staging directory cannot install onto itself".into(),
+        ));
+    }
+    drop(source.child.take());
+    let mut committed = false;
+    #[cfg(unix)]
+    let result = unix::install_dir_at(
+        &source.parent,
+        &source.leaf,
+        source.identity,
+        dest_leaf,
+        &mut committed,
+    );
+    #[cfg(windows)]
+    let result = win::install_dir_at(
+        &source.parent,
+        &source.leaf,
+        source.identity,
+        dest_leaf,
+        &mut committed,
+    );
+    if committed {
+        source.armed = false;
+    }
+    result
 }
 
 #[cfg(test)]
@@ -8500,5 +8761,198 @@ mod tests {
             .expect("a read-only ancestor must not block replacement")
             .expect_durable();
         assert_eq!(std::fs::read(&target).expect("target"), b"new");
+    }
+
+    fn owned_staging_fixture(parent: &Path) -> tempfile::TempDir {
+        let inner = tempfile::Builder::new()
+            .prefix(".zip")
+            .tempdir_in(parent)
+            .expect("inner staging");
+        std::fs::create_dir(inner.path().join("nested")).expect("nested");
+        std::fs::write(inner.path().join("nested").join("a.txt"), b"staged").expect("member");
+        inner
+    }
+
+    fn assert_fixed_conflict(error: Error, expected: &str) {
+        match error {
+            Error::Conflict(message) => {
+                assert_eq!(message, expected);
+                assert!(!message.contains('/') && !message.contains('\\'));
+            }
+            other => panic!("expected Conflict, got {other:?}"),
+        }
+    }
+
+    fn owned_staging_drop_removals() -> usize {
+        OWNED_STAGING_DROP_REMOVALS.with(std::cell::Cell::get)
+    }
+
+    #[test]
+    fn owned_staging_dir_adopt_and_install_onto_an_absent_leaf() {
+        let outer = tempfile::tempdir().expect("outer");
+        let inner = owned_staging_fixture(outer.path());
+        let before = owned_staging_drop_removals();
+        let source = OwnedStagingDir::adopt(&inner).expect("adopt");
+        install_owned_staging_dir(source, OsStr::new("extracted")).expect("install");
+        assert_eq!(owned_staging_drop_removals(), before);
+        assert_eq!(
+            std::fs::read(outer.path().join("extracted/nested/a.txt")).expect("installed"),
+            b"staged"
+        );
+        assert!(!inner.path().exists());
+    }
+
+    #[test]
+    fn owned_staging_dir_replaces_an_existing_real_directory() {
+        let outer = tempfile::tempdir().expect("outer");
+        let dest = outer.path().join("extracted");
+        std::fs::create_dir(&dest).expect("existing dest");
+        std::fs::write(dest.join("old.txt"), b"old").expect("old member");
+        let inner = owned_staging_fixture(outer.path());
+        let source = OwnedStagingDir::adopt(&inner).expect("adopt");
+        install_owned_staging_dir(source, OsStr::new("extracted")).expect("install");
+        assert_eq!(
+            std::fs::read(dest.join("nested/a.txt")).expect("new"),
+            b"staged"
+        );
+        assert!(!dest.join("old.txt").exists());
+        let names: Vec<_> = std::fs::read_dir(outer.path())
+            .expect("list")
+            .map(|entry| entry.expect("entry").file_name())
+            .collect();
+        assert_eq!(names, vec![OsString::from("extracted")]);
+    }
+
+    #[test]
+    fn owned_staging_dir_source_identity_substitution_before_commit_is_conflict() {
+        let outer = tempfile::tempdir().expect("outer");
+        let inner = owned_staging_fixture(outer.path());
+        let source = OwnedStagingDir::adopt(&inner).expect("adopt");
+        std::fs::remove_dir_all(inner.path()).expect("remove adopted leaf");
+        std::fs::create_dir(inner.path()).expect("substitute leaf");
+        std::fs::write(inner.path().join("planted.txt"), b"planted").expect("planted");
+        let before = owned_staging_drop_removals();
+        let error = install_owned_staging_dir(source, OsStr::new("extracted"))
+            .expect_err("substituted source must be refused");
+        assert_fixed_conflict(error, "directory staging source changed concurrently");
+        // A pre-commit refusal leaves Drop armed; its identity check spares the substitute.
+        assert_eq!(owned_staging_drop_removals(), before + 1);
+        assert!(!outer.path().join("extracted").exists());
+        assert!(inner.path().join("planted.txt").exists());
+    }
+
+    #[test]
+    fn owned_staging_dir_drop_removes_unconsumed_leaf() {
+        let outer = tempfile::tempdir().expect("outer");
+        let inner = owned_staging_fixture(outer.path());
+        let before = owned_staging_drop_removals();
+        drop(OwnedStagingDir::adopt(&inner).expect("adopt"));
+        assert_eq!(owned_staging_drop_removals(), before + 1);
+        assert!(!inner.path().exists());
+    }
+
+    #[test]
+    fn owned_staging_dir_drop_is_inert_after_commit_including_uncertain_durability() {
+        for existing in [false, true] {
+            let outer = tempfile::tempdir().expect("outer");
+            let dest = outer.path().join("extracted");
+            if existing {
+                std::fs::create_dir(&dest).expect("existing dest");
+            }
+            let inner = owned_staging_fixture(outer.path());
+            let source = OwnedStagingDir::adopt(&inner).expect("adopt");
+            let before = owned_staging_drop_removals();
+            set_test_atomic_dir_injector(Some(Box::new(DirFault {
+                point: AtomicDirFaultPoint::ParentSync,
+            })));
+            let result = install_owned_staging_dir(source, OsStr::new("extracted"));
+            set_test_atomic_dir_injector(None);
+            assert!(matches!(
+                result,
+                Err(Error::CommittedDurabilityUncertain(
+                    crate::error::DurabilityStage::DirectoryInstall
+                ))
+            ));
+            assert_eq!(owned_staging_drop_removals(), before, "existing={existing}");
+            assert_eq!(
+                std::fs::read(dest.join("nested/a.txt")).expect("committed tree"),
+                b"staged",
+                "existing={existing}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_staging_dir_parent_path_swap_cannot_redirect_install() {
+        let root = tempfile::tempdir().expect("root");
+        let parent = root.path().join("parent");
+        let moved = root.path().join("moved");
+        std::fs::create_dir(&parent).expect("parent");
+        let inner = owned_staging_fixture(&parent);
+        let source = OwnedStagingDir::adopt(&inner).expect("adopt");
+        std::fs::rename(&parent, &moved).expect("move parent");
+        std::fs::create_dir(&parent).expect("swap in a new parent");
+        install_owned_staging_dir(source, OsStr::new("extracted")).expect("install");
+        assert_eq!(
+            std::fs::read(moved.join("extracted/nested/a.txt")).expect("held parent"),
+            b"staged"
+        );
+        assert_eq!(std::fs::read_dir(&parent).expect("swapped").count(), 0);
+    }
+
+    #[test]
+    fn owned_staging_dir_open_parent_refuses_when_child_identity_does_not_match() {
+        let outer = tempfile::tempdir().expect("outer");
+        std::fs::create_dir(outer.path().join("child")).expect("child");
+        let parent = test_parent(outer.path());
+        let child = open_directory_at(&parent, OsStr::new("child"), false).expect("open child");
+        let identity = opened_identity(&child).expect("identity");
+        let reopened = open_parent_directory(&child).expect("genuine parent");
+        assert_eq!(
+            opened_identity(&reopened).expect("parent identity"),
+            opened_identity(&parent).expect("held identity")
+        );
+        for substituted in [
+            (identity.0, identity.1.wrapping_add(1)),
+            (identity.0.wrapping_add(1), identity.1),
+        ] {
+            set_open_parent_child_identity_hook(Some(substituted));
+            let result = open_parent_directory(&child);
+            set_open_parent_child_identity_hook(None);
+            assert_fixed_conflict(
+                result.expect_err("mismatched child identity must be refused"),
+                "directory is not a child of its opened parent",
+            );
+        }
+    }
+
+    #[test]
+    fn owned_staging_dir_source_scan_has_no_path_constructor() {
+        let source = include_str!("fs.rs");
+        let normalised = normalise(source, Literals::Blank);
+        assert_eq!(normalised.matches("impl OwnedStagingDir {").count(), 1);
+        let body = &normalised[braced_body(source, "impl OwnedStagingDir {")];
+        let mut signatures = body
+            .match_indices("fn ")
+            .map(|(start, _)| &body[start..start + body[start..].find('{').expect("fn body")])
+            .collect::<Vec<_>>();
+        assert_eq!(
+            signatures.len(),
+            1,
+            "OwnedStagingDir has one constructor: {signatures:?}"
+        );
+        let install = normalised
+            .find("fn install_owned_staging_dir(")
+            .expect("install entry");
+        signatures.push(&normalised[install..install + normalised[install..].find('{').unwrap()]);
+        let fields = &normalised[braced_body(source, "pub(crate) struct OwnedStagingDir {")];
+        for text in signatures.iter().copied().chain([fields]) {
+            assert!(
+                !text.contains("Path"),
+                "OwnedStagingDir must not be constructible from a pathname: {text}"
+            );
+        }
+        assert!(signatures[0].contains("temp: &tempfile::TempDir"));
     }
 }
