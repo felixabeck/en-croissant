@@ -6874,7 +6874,7 @@ Plan: `tasks/plans/2026-09-19-owned-staging-dir.md` (gitignored). Handoff: `task
 
 ### `install-local.sh` still records provenance `reviewed` for a binary it never bound to HEAD
 
-* **ID:** f-20260905-11 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260905-11 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `scripts/install-local.sh:47` (`--untracked-files=no`), `:48` (`provenance="reviewed"` before any rebuild), `:71-74` (`pnpm build` with no post-build recheck), `:5` (`--no-build` copies `target/release` as-is). Tracking ref stored in a local named `upstream` at `:46`.
 * **Defect:** the versioned `releases/<commit>-<timestamp>` layout and atomic `current` swap (4c487d3b) closed the partial-publication hole: VERSION, icon, binary and sound resources land in a staging directory before `current` is renamed. Three provenance holes remain. `--no-build` copies whatever executable is in ignored `target/release` and still labels it `reviewed` with the current HEAD. The dirty check ignores untracked files, so an untracked build input can be compiled. Validation runs only before `pnpm build`; a concurrent edit during the compile is installed under the earlier HEAD. The local `upstream` is `@{upstream}` (origin/master here), which is this fork's tracking ref, not the `upstream` remote (the original project).
 * **Why it matters:** `$push` on master now runs this script as its last step and CLAUDE.md tells Felix the daily app is a reviewed copy. A stale or concurrently-edited binary published as `reviewed` is the failure the script exists to prevent.
