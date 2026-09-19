@@ -10198,6 +10198,18 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 * **Found by:** the `f-20260905-13` push, reading the named remote jobs before pushing,
   2026-09-19.
 
+* **Handled 2026-09-19 by `7f7a61a5`** (the `f-20260905-14` build run, which met the same failure
+  on `060654fc` and repaired it as a red remote gate without seeing this entry):
+  `SEARCH_POSITION_INSTRUMENT` is now a `thread_local!` `Cell<bool>`, read once on the calling
+  thread in `search_position_blocking` and captured into `process_entry`, so a parallel search test
+  can no longer count into an instrumented test's `PROCESS_ENTRY_CALLS`. This differs from the fix
+  shape above, which ruled out a thread-local *counter* because entries run on Rayon workers; a
+  thread-local *flag* read before the fan-out does not have that problem. `rust-macos-test` is green
+  on the three runs since (`20f1e20a`, `907923a7`, `cc525869`). The residual risk of that design —
+  the injectors going silent once the search moves behind the blocking gateway — is
+  `f-20260919-09`. The loop proof named above was not run by this closure.
+<!-- ledger-meta {"command":"annotate","effect_lines":10,"effect_sha256":"e55ddccde58a48a1df210cdd34e33e7d83fd50439e463a5e8c481b670d6fc719","input_sha256":"1a5955626198176ef09baaacd9abc83cb14d81e94f773fc2c7188522690278d7","kind":"mutation-receipt","operation":"d5e9c885fdfbe3a6fc95319807996f7c73b558e298a344aa3dabdde4b0dd767f","options":{"section":null},"request_id_sha256":null,"results":["f-20260919-08"],"target":"f-20260919-08","v":1} -->
+
 ---
 
 ## 2026-09-19 — filed through the inbox spool
