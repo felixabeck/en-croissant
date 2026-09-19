@@ -9984,7 +9984,7 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 
 ### Database and puzzle default catalogs still come from an unsigned origin this fork does not control
 
-* **ID:** f-20260919-01 · **Status:** open · **Area:** app-startup · **Root:** fork-identity-not-separated · **Entry:** build · **Blocked:** none
+* **ID:** f-20260919-01 · **Status:** handled · **Area:** app-startup · **Root:** fork-identity-not-separated · **Entry:** build · **Blocked:** none
 * **Where:** `src/utils/db.ts` (`getDefaultDatabases`, `getDefaultPuzzleDatabases`), `src/platform/http.ts` `remoteHttp` allowlist, CSP `connect-src`/`img-src` for `https://www.encroissant.org`.
 * **Defect:** f-20260830-48 moved the engine catalog off `www.encroissant.org`. Database and puzzle catalogs still fetch that origin. The live documents have no `sha256`/`signature`, so the client schema rejects them, and even a signed entry would fail `validate_artifact_integrity` under the fork key. Artifacts are 0.3–2.8 GB on `db.encroissant.org`.
 * **Open question:** Should default databases and puzzles be bundled metadata pointing at third-party HTTPS hosts the fork hashes and signs, dropped from the product until a hosted catalog exists, or left failing closed on the unowned origin?
