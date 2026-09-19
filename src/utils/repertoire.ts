@@ -97,43 +97,43 @@ async function buildDbCache(
 }
 
 /**
- * Compute coverage and missing games for a single board FEN.
- * Recurses into child FENs (which must already be in dbCache and stateMoves).
- * Results are stored in a Map so each FEN is processed only once.
+ * Compute coverage and missing games for a single `getBoardState` key.
+ * Recurses into child keys (which must already be in dbCache and stateMoves).
+ * Results are stored in a Map so each key is processed only once.
  */
 function computeCoverageForFen(
-    fen: string,
+    boardFen: string,
     dbCache: DbCache,
     stateMoves: Map<string, Map<string, string>>,
     orientation: "white" | "black",
     minGames: number,
     memo: Map<string, { coverage: number; missing: number }>,
 ): { coverage: number; missing: number } {
-    const cached = memo.get(fen);
+    const cached = memo.get(boardFen);
     if (cached) return cached;
-    // Board-state keys drop the clocks, so a repetition line maps a FEN back onto one still on
-    // the call stack. Seed the memo with the neutral result before recursing so that re-entry
+    // Board-state keys drop the clocks, so a repetition line maps a position back onto one still
+    // on the call stack. Seed the memo with the neutral result before recursing so that re-entry
     // terminates; every exit below overwrites it with the real value.
-    memo.set(fen, { coverage: 1, missing: 0 });
+    memo.set(boardFen, { coverage: 1, missing: 0 });
 
-    const dbData = dbCache.get(fen);
+    const dbData = dbCache.get(boardFen);
     const moves = dbData?.moves ?? [];
     const total = dbData?.total ?? 0;
 
     if (total < minGames) {
         const res = { coverage: 1, missing: 0 };
-        memo.set(fen, res);
+        memo.set(boardFen, res);
         return res;
     }
 
-    const sideToMove = fen.split(" ")[1]; // "w" or "b"
+    const sideToMove = boardFen.split(" ")[1]; // "w" or "b"
     const isUserTurn = sideToMove === orientation[0];
 
     if (isUserTurn) {
-        const childFenMap = stateMoves.get(fen);
+        const childFenMap = stateMoves.get(boardFen);
         if (!childFenMap || childFenMap.size === 0) {
             const res = { coverage: 0, missing: total };
-            memo.set(fen, res);
+            memo.set(boardFen, res);
             return res;
         }
         let maxCoverage = 0;
@@ -149,7 +149,7 @@ function computeCoverageForFen(
             maxCoverage = Math.max(maxCoverage, child.coverage);
         }
         const res = { coverage: maxCoverage, missing: 0 };
-        memo.set(fen, res);
+        memo.set(boardFen, res);
         return res;
     } else {
         // Opponent's turn
@@ -157,14 +157,14 @@ function computeCoverageForFen(
         const sigTotal = significant.reduce((sum, m) => sum + m.white + m.draw + m.black, 0);
         if (sigTotal === 0) {
             const res = { coverage: 1, missing: 0 };
-            memo.set(fen, res);
+            memo.set(boardFen, res);
             return res;
         }
         let weighted = 0;
         let maxMissing = 0;
         for (const m of significant) {
             const freq = (m.white + m.draw + m.black) / sigTotal;
-            const childFen = stateMoves.get(fen)?.get(m.move);
+            const childFen = stateMoves.get(boardFen)?.get(m.move);
             if (childFen) {
                 const child = computeCoverageForFen(
                     childFen,
@@ -182,7 +182,7 @@ function computeCoverageForFen(
             }
         }
         const res = { coverage: weighted, missing: maxMissing };
-        memo.set(fen, res);
+        memo.set(boardFen, res);
         return res;
     }
 }

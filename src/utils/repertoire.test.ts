@@ -85,14 +85,30 @@ test("a repetition line terminates coverage instead of recursing until the stack
     }
     normalizeTreeHalfMoves(root);
     expect(getBoardState(parent.fen)).toBe(getBoardState(root.fen));
+    // After 1. Nf3 the opponent also plays 1... d5, which the repertoire does not answer, so the
+    // start position's real coverage is 0.5 — distinguishable from the neutral placeholder.
+    const afterNf3 = getBoardState(line[0].fen);
     mocks.searchPosition.mockImplementation(async ({ fen }: { fen: string }) => [
-        [{ move: nextSan.get(fen), white: 10, draw: 0, black: 0 }],
+        [
+            { move: nextSan.get(fen), white: 10, draw: 0, black: 0 },
+            ...(fen === afterNf3 ? [{ move: "d5", white: 10, draw: 0, black: 0 }] : []),
+        ],
     ]);
 
-    const { coverageMap } = await computeTreeCoverage(root, "white", database, 1, [], stateMoves);
+    const { coverageMap, missingGamesMap } = await computeTreeCoverage(
+        root,
+        "white",
+        database,
+        1,
+        [],
+        stateMoves,
+    );
 
-    expect(coverageMap.get("")).toBe(1);
-    expect(coverageMap.get("0,0,0,0")).toBe(1);
+    expect(coverageMap.get("")).toBe(0.5);
+    expect(coverageMap.get("0,0,0,0")).toBe(0.5);
+    expect(coverageMap.get("0")).toBe(0.5);
+    expect(missingGamesMap.get("0")).toBe(10);
+    expect(coverageMap.get("0,0")).toBe(1);
 });
 
 describe("findBiggestGap", () => {
