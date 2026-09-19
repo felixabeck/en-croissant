@@ -3524,3 +3524,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** d-20260907-07 forbids a site; d-20260907-08 forbids an unavailable origin; the live catalog already lacked signatures. Measured: tauri signer generate writes base64-wrapped keys; minisign_verify needs the RW line; gh secret list was empty and is now set.
 * **Decided by:** Grok, full auto drain 5269c4d2-338c-4169-a9e9-dbc6c3c1ab0a · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"7d41980fbf391cad9d3895fa94684802f2b9f9b77b053245efd9ed4480aaa3f5","input_sha256":"c529546b8ea257d0f41f5afd020bf6ac1af9fb278d3815b93266ca367b4dbd34","kind":"mutation-receipt","operation":"ce3c90a4e03aa2123f82a843a91eb1c1a2da69be559c2998f9b40eb2398f66cb","options":{"section":null},"request_id_sha256":null,"results":["d-20260919-01"],"target":"decisions-ledger","v":1} -->
+
+### d-20260919-02 — How does ChessFable ship default database and puzzle catalogs without www.encroissant.org?
+
+* **Question:** Should default databases and puzzles be bundled signed metadata pointing at third-party HTTPS hosts the fork hashes and signs, dropped from the product until a hosted catalog exists, or left failing closed on the unowned origin?
+* **Governs:** f-20260919-01
+* **Chosen:** Bundled JSON plus detached minisig in `src/catalogs/databases.json` and `src/catalogs/puzzles.json`, verified before parse, with per-entry integrity over `{downloadLink}\n{sha256}` using the fork release key. Artifact bytes stay on `db.encroissant.org`.
+* **Rejected:** Dropping the Add Database / Add Puzzle web lists until a fork-hosted catalog exists. Leaving the getters on `www.encroissant.org` (unsigned live JSON, schema-reject, fail closed). A new website (`d-20260907-07`). Signing against an origin this fork does not control (`d-20260919-01` already rejected that for engines).
+* **Reason:** Same contract as the engine catalog (`d-20260919-01`). Live artifacts were reachable (measured Content-Length and SHA-256). `d-20260907-08` forbids replacing a live origin with an unavailable fork origin. Leela already uses `db.encroissant.org`.
+* **Decided by:** Grok, autonomously under `full auto`, drain a4f49c70-507e-46c1-86a9-5b59c95ce0b6 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"16cea16ca6aa6114db0e1ca8907b764c73829c32854bfc3aba6599ae50ff71ef","input_sha256":"6338d0f8759e1f1717cbb59d415d007704a874a00fba445e297811bcec94fc3e","kind":"mutation-receipt","operation":"cb34ee0eb51ac43b29fa31c2c9c65d19c413f4d23a74557b4d18167275ddecf6","options":{"section":null},"request_id_sha256":null,"results":["d-20260919-02"],"target":"decisions-ledger","v":1} -->
