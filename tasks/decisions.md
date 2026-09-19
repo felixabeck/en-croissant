@@ -3594,3 +3594,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Felix named ChessBase Mega25_Elo_1850_2350 as the model — a game-level rating slice, not a mover filter. Position search already stores both Elos on the index entry. The games-table ranges already exist as range1/range2; reusing them avoids a duplicate field. The panel must say which rule it uses; "Both players" is that statement.
 * **Decided by:** drain-92e2f30a-0a07-4c9a-993d-ff62aeaf68be · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"3772b3eb1d24d529efd8b7fa20493bf0af6daa327a93d73ba7346cb1a8b2a45b","input_sha256":"abd29166735ad02eae7d3eeaa82c913c81a1edaae9384472badb8fdc4f0b8769","kind":"mutation-receipt","operation":"90fc86e4c98581485a55326c1db84bcd455713ddb97a58a0c6986b7efa11c844","options":{"section":null},"request_id_sha256":null,"results":["d-20260919-08"],"target":"decisions-ledger","v":1} -->
+
+### d-20260919-09 — Which event-name tokens does the local explorer exclude-fast toggle match?
+
+* **Question:** Which event-name substrings should the local explorer "exclude fast events" toggle drop, and is the default on?
+* **Governs:** f-20260905-12
+* **Chosen:** Case-insensitive substring match on Events.Name for blitz, bullet, and armageddon. Rapid and Schnell are kept. Default off. Implemented as optional GameQuery.exclude_fast_events, not a TimeControl tag, and not an index-format change.
+* **Rejected:** Matching rapid or Schnell (contradicts "rapid tolerated"). Filtering Games.TimeControl (empty on Mega/YottaBase). Default on (would change today's explorer counts without an explicit act). Adding event_id to SearchGameEntry.
+* **Reason:** Felix's addendum listed those names as how official rapid/blitz events are recognised, and the target set is classical plus tolerated rapid, nothing faster. Mega/YottaBase carry no TimeControl tag. The search index has no event column, so a SQL subquery on Events.Name is the filter that leaves the index unchanged.
+* **Decided by:** drain-92e2f30a-0a07-4c9a-993d-ff62aeaf68be · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"7fa8f11e51ad12bf1d4f430badb4ea3a6dd0972e12fe554bd8d88aa82bd62417","input_sha256":"6f74c10a6d4de16823602dd5300d8a958aaa37f173fb0f8fea2a86cff435c3e5","kind":"mutation-receipt","operation":"d4eb80f350d1017f84c466d6a7f46cf3ebf5861d32244dc99c7e47875dfdea02","options":{"section":null},"request_id_sha256":null,"results":["d-20260919-09"],"target":"decisions-ledger","v":1} -->
