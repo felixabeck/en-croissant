@@ -6752,6 +6752,13 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 * **Related:** `f-20260901-01`, which this splits out of.
 * **Found by:** Claude Code, locate stage of `tasks/plans/2026-09-04-fs-surface-allowlist-shrink.md`, 2026-09-05.
 
+**Handled 2026-09-19.** Production `extract_zip_cancellable` / `extract_tar_cancellable` no longer call pathname `atomic_install_dir`. They adopt the inner `TempDir` as `OwnedStagingDir` and install onto the destination leaf under the held parent (`install_extracted_tree`). `PATHNAME_FNS` is unchanged. `INITIAL_FS_SURFACE_COUNTS` for `src-tauri/src/fs.rs` shrinks 10 to 8. Outer `.archive` staging stays `private_tempdir_in` (`d-20260918-11`). `f-20260905-08` stays open at `entry=build` and is governed by `d-20260919-03`.
+
+Commits: `c4c4195c` (OwnedStagingDir), `27988fae` (extractors + count). Rejected: checker exemption; PathAuthority registry staging; infra `&Path` wrapper; converting outer archive staging.
+
+Plan: `tasks/plans/2026-09-19-owned-staging-dir.md` (gitignored). Handoff: `tasks/handoffs/2026-09-19-f-20260905-06-review.md`.
+<!-- ledger-meta {"command":"annotate","effect_lines":5,"effect_sha256":"91a370208d5f48ca6d015cea6fcd67849f5fc4d6ca37b398f8938bc8bd8e1614","input_sha256":"db24ce87dc104eb89a65d02f4e08fb5f8bcc6604e7e15e789a7fc366aa65339b","kind":"mutation-receipt","operation":"5f49c13b0593fbbc05a46775a884e6ffb5467a6001c7208048b1715758e12147","options":{"section":null},"request_id_sha256":null,"results":["f-20260905-06"],"target":"f-20260905-06","v":1} -->
+
 ---
 
 ## 2026-09-05 — filed through the inbox spool
