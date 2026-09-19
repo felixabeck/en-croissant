@@ -7068,6 +7068,9 @@ Handled 2026-09-19. Root cause measured in the real WebKitGTK window: the first 
   `gemini-3.8-flash-medium` (confidence 98) and `gemini-3.8-flash-high` (confidence 100); the memo
   ordering and the `getBoardState` key shape were then verified by reading the source.
 
+* **Handled 2026-09-19 (drain 23367904):** `computeCoverageForFen` now seeds `memo` with the neutral `{ coverage: 1, missing: 0 }` right after the cache miss, before any recursion; every exit overwrites it with the real value, so a re-entry through a repetition cycle terminates. Regression test `a repetition line terminates coverage…` in `src/utils/repertoire.test.ts` drives `computeTreeCoverage` over 1. Nf3 Nf6 2. Ng1 Ng8 and is red (`RangeError: Maximum call stack size exceeded`) with the seed reverted. Commit `e8cd538d`. Known approximation, accepted as the filed fix shape: a node evaluated while an ancestor is still in progress memoises a value computed against that ancestor's neutral placeholder; a repetition returns to a position the repertoire already covers, so treating the cycling edge as covered is the intended semantics. The finding's "uncaught" claim was checked: `RepertoireInfo.tsx` catches and notifies, so the panel showed an error instead of coverage rather than crashing — still wrong, now fixed.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"4720324af1497945072e6026b0a51375605c2eab56567522695b5dfa655f80fe","input_sha256":"9a681a199f0e4bb26676a4148688dd9e7552f5cf0539d7d1f09bfbac3e1e642e","kind":"mutation-receipt","operation":"a99ca32c4d3f0dbfc188188d53959869175f41916de167e523dedcb56cbbf7c2","options":{"section":null},"request_id_sha256":null,"results":["f-20260906-01"],"target":"f-20260906-01","v":1} -->
+
 ---
 
 ## 2026-09-06 — filed through the inbox spool
