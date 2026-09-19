@@ -4748,6 +4748,7 @@ fn opened_identity(file: &File) -> Result<(u64, u64), Error> {
     }
 }
 
+/// Unix only, like its one caller [`open_parent_directory`].
 #[cfg(unix)]
 fn parent_child_mismatch() -> Error {
     Error::Conflict("directory is not a child of its opened parent".into())
@@ -4827,16 +4828,18 @@ impl OwnedStagingDir {
         let identity = opened_identity(&child)?;
         #[cfg(unix)]
         let parent = open_parent_directory(&child)?;
+        // The shared helper words its mismatch for a workspace entry the user named; this leaf
+        // is internal staging, so it reports as the identity check below does.
         #[cfg(windows)]
         let (parent, _) =
-            win::open_verified_parent(temp.path(), identity, true, ParentAccess::Writable)?;
+            win::open_verified_parent(temp.path(), identity, true, ParentAccess::Writable)
+                .map_err(|error| match error {
+                    Error::Conflict(_) => owned_staging_changed(),
+                    other => other,
+                })?;
         match entry_identity_at(&parent, &leaf, true) {
             Ok(actual) if actual == identity => {}
-            Ok(_) => {
-                return Err(Error::Conflict(
-                    "owned staging directory changed concurrently".into(),
-                ))
-            }
+            Ok(_) => return Err(owned_staging_changed()),
             Err(error) => return Err(error),
         }
         Ok(Self {
@@ -4874,6 +4877,10 @@ impl OwnedStagingDir {
         let (created, _) = create_regular_at(parent.as_ref().unwrap_or(child), leaf)?;
         Ok(created)
     }
+}
+
+fn owned_staging_changed() -> Error {
+    Error::Conflict("owned staging directory changed concurrently".into())
 }
 
 fn owned_staging_child(staging: &OwnedStagingDir) -> Result<&File, Error> {
@@ -9062,10 +9069,8 @@ mod tests {
         }
     }
 
-    /// Unix always lets the held parent be renamed away. Windows may refuse to rename a directory
-    /// while a descendant handle is open; that is not measured here, so the Windows arm accepts a
-    /// refused swap and then requires the install to land under the unmoved parent. Either way
-    /// nothing may reach a swapped-in directory.
+    /// Runs on Windows too: every staging handle is opened with `FILE_SHARE_DELETE`, which is what
+    /// lets the held parent be renamed away there.
     #[test]
     fn owned_staging_dir_parent_path_swap_cannot_redirect_install() {
         let root = tempfile::tempdir().expect("root");
@@ -9074,27 +9079,15 @@ mod tests {
         std::fs::create_dir(&parent).expect("parent");
         let inner = owned_staging_fixture(&parent);
         let source = OwnedStagingDir::adopt(&inner).expect("adopt");
-        let swapped = match std::fs::rename(&parent, &moved) {
-            Ok(()) => {
-                std::fs::create_dir(&parent).expect("swap in a new parent");
-                true
-            }
-            Err(error) if cfg!(windows) => {
-                eprintln!("parent rename refused while the staging handles are held: {error}");
-                false
-            }
-            Err(error) => panic!("move parent: {error}"),
-        };
+        std::fs::rename(&parent, &moved).expect("move parent");
+        std::fs::create_dir(&parent).expect("swap in a new parent");
         install_owned_staging_dir(source, OsStr::new("extracted")).expect("install");
-        let held = if swapped { &moved } else { &parent };
         assert_eq!(
-            std::fs::read(held.join("extracted").join("nested").join("a.txt"))
+            std::fs::read(moved.join("extracted").join("nested").join("a.txt"))
                 .expect("held parent"),
             b"staged"
         );
-        if swapped {
-            assert_eq!(std::fs::read_dir(&parent).expect("swapped").count(), 0);
-        }
+        assert_eq!(std::fs::read_dir(&parent).expect("swapped").count(), 0);
     }
 
     #[cfg(windows)]
