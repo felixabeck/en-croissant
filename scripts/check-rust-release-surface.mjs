@@ -14,7 +14,6 @@ export const DEAD_CODE_ALLOWLIST = new Set(INITIAL_DEAD_CODE_ALLOWLIST);
 const INITIAL_FS_SURFACE_ALLOWLIST = Object.freeze([
   "src-tauri/src/file_workspace.rs",
   "src-tauri/src/fs.rs",
-  "src-tauri/src/main.rs",
 ]);
 
 export const FS_SURFACE_ALLOWLIST = new Set(INITIAL_FS_SURFACE_ALLOWLIST);
@@ -23,7 +22,6 @@ export const FS_SURFACE_ALLOWLIST = new Set(INITIAL_FS_SURFACE_ALLOWLIST);
 export const INITIAL_FS_SURFACE_COUNTS = Object.freeze({
   "src-tauri/src/file_workspace.rs": 1,
   "src-tauri/src/fs.rs": 7,
-  "src-tauri/src/main.rs": 1,
 });
 
 const INJECTION_NAME = /(?:FaultPoint|Injector|_with_injector)/i;

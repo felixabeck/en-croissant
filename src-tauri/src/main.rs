@@ -1084,12 +1084,8 @@ fn save_native_export_blocking(
     extension: String,
     bytes: Vec<u8>,
 ) -> Result<(), Error> {
-    if path.extension().and_then(|value| value.to_str()) != Some(extension.as_str()) {
-        return Err(Error::InvalidInput(format!(
-            "export must use .{extension} extension"
-        )));
-    }
-    let outcome = crate::infra::fs::atomic_replace(&path, |file| {
+    let dest = crate::infra::fs::NativeExportDest::from_save_path(path, &extension)?;
+    let outcome = dest.replace(|file| {
         file.write_all(&bytes).map_err(Error::from)?;
         Ok(())
     })?;
@@ -4056,6 +4052,26 @@ mod blocking_offload_scans {
         assert!(
             !list_command.contains("count_pgn_games_core"),
             "list_file_workspace must delegate count_pgn_games_core to list_file_workspace_core: {list_command}"
+        );
+    }
+
+    #[test]
+    fn native_export_writes_through_the_held_parent_descriptor() {
+        let main = include_str!("main.rs");
+        let blocking = body_at_indent(main, "fn save_native_export_blocking(");
+        assert!(
+            blocking.contains("NativeExportDest::from_save_path("),
+            "save_native_export_blocking must build a NativeExportDest: {blocking}"
+        );
+        assert!(
+            !blocking.contains("atomic_replace("),
+            "save_native_export_blocking must not replace by pathname: {blocking}"
+        );
+        let fs = include_str!("infra/fs.rs");
+        let replace = body_at_indent(fs, "pub(crate) fn replace<F>(&self, write_fn: F)");
+        assert!(
+            replace.contains("atomic_replace_at("),
+            "NativeExportDest::replace must write relative to the held parent: {replace}"
         );
     }
 

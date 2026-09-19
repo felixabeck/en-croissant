@@ -4054,8 +4054,46 @@ pub(crate) fn single_leaf(leaf: &OsStr) -> Result<(), Error> {
     Ok(())
 }
 
-/// Replaces one leaf below an already-authority-validated directory descriptor. No mutable
-/// parent pathname is reopened between capability resolution and the final `renameat`.
+/// One-shot native save-dialog destination: the no-follow parent descriptor opened when the
+/// dialog choice arrived, plus its single-component leaf. No pathname is retained for the write,
+/// so a later swap of the parent spelling cannot redirect it.
+pub(crate) struct NativeExportDest {
+    parent: File,
+    leaf: OsString,
+}
+
+impl NativeExportDest {
+    /// Checks the extension before opening anything, then pins the parent without following a
+    /// final link.
+    pub(crate) fn from_save_path(
+        path: std::path::PathBuf,
+        expected_extension: &str,
+    ) -> Result<Self, Error> {
+        if path.extension().and_then(|value| value.to_str()) != Some(expected_extension) {
+            return Err(Error::InvalidInput(format!(
+                "export must use .{expected_extension} extension"
+            )));
+        }
+        let leaf = path
+            .file_name()
+            .ok_or_else(|| Error::InvalidInput("leaf name must be one component".into()))?
+            .to_os_string();
+        single_leaf(&leaf)?;
+        let parent = open_parent_no_follow(&path)?;
+        Ok(Self { parent, leaf })
+    }
+
+    pub(crate) fn replace<F>(&self, write_fn: F) -> Result<AtomicFileOutcome, Error>
+    where
+        F: FnOnce(&mut File) -> Result<(), Error>,
+    {
+        atomic_replace_at(&self.parent, &self.leaf, write_fn)
+    }
+}
+
+/// Replaces one leaf below a directory descriptor the caller already opened (authority-validated,
+/// or a one-shot native-dialog parent). No mutable parent pathname is reopened between that open
+/// and the final `renameat`.
 pub fn atomic_replace_at<F>(
     parent: &File,
     leaf: &OsStr,
@@ -5589,6 +5627,66 @@ mod tests {
         std::os::unix::fs::symlink("target", temp.path().join("link")).expect("link");
         let parent = File::open(temp.path()).expect("open parent");
         assert!(open_regular_at(&parent, OsStr::new("link"), RegularFileAccess::ReadOnly).is_err());
+    }
+
+    #[test]
+    fn native_export_dest_refuses_wrong_extension() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("missing").join("board.jpg");
+        let error = NativeExportDest::from_save_path(path.clone(), "png")
+            .err()
+            .expect("wrong extension must be refused");
+        assert!(
+            matches!(&error, Error::InvalidInput(message) if message == "export must use .png extension"),
+            "extension must be checked before the parent is opened: {error:?}"
+        );
+        assert!(!path.exists());
+        assert!(!temp.path().join("missing").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_export_dest_refuses_symlink_leaf() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(temp.path().join("target.png"), b"target").expect("write target");
+        let link = temp.path().join("board.png");
+        std::os::unix::fs::symlink("target.png", &link).expect("link");
+        let dest = NativeExportDest::from_save_path(link.clone(), "png").expect("dest");
+        let error = dest
+            .replace(|file| file.write_all(b"png").map_err(Error::from))
+            .err()
+            .expect("symlink leaf must be refused");
+        assert!(
+            matches!(error, Error::InvalidInput(_)),
+            "unexpected error: {error:?}"
+        );
+        assert!(std::fs::symlink_metadata(&link)
+            .expect("link remains")
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            std::fs::read(temp.path().join("target.png")).unwrap(),
+            b"target"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_export_dest_write_follows_held_parent_after_rename() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let original = temp.path().join("original");
+        let moved = temp.path().join("moved");
+        std::fs::create_dir(&original).expect("original");
+        let dest =
+            NativeExportDest::from_save_path(original.join("board.png"), "png").expect("dest");
+        std::fs::rename(&original, &moved).expect("rename parent");
+        std::fs::create_dir(&original).expect("replacement parent");
+        let outcome = dest
+            .replace(|file| file.write_all(b"png").map_err(Error::from))
+            .expect("replace");
+        assert!(matches!(outcome, AtomicFileOutcome::DurableCommit));
+        assert_eq!(std::fs::read(moved.join("board.png")).unwrap(), b"png");
+        assert!(!original.join("board.png").exists());
     }
 
     #[cfg(unix)]
