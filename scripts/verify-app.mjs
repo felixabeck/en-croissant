@@ -19,8 +19,13 @@
 // Staged-failure record for item 10 (push-review-policy §2), one row per check. Checks (2) and
 // (3) were red on 2026-09-19 against the unfixed release binary, in one run where every other
 // check was ok; that run printed "2 check(s) failed" and exited with status 1.
+// Check (1) was staged the same day on the fixed tree by a release build whose Files page rendered
+// an empty tree ("3 check(s) failed", status 1); the file was restored and the rebuild ran green.
 //   check                                   | message printed                                   | exit
-//   (1) the seeded Files row rendered       | staged after the fix lands (phase 2 follow-up)    | —
+//   (1) the seeded Files row rendered       | FAIL  the seeded workspace file row renders on    | 1
+//                                           |   the Files page — timed out waiting for the      |
+//                                           |   Files row; (2) and (3) then print "not          |
+//                                           |   attempted: the Files row never rendered"        |
 //   (2) the route became /                  | FAIL  a real double-click on the unselected Files | 1
 //                                           |   row navigates to / — timed out waiting for the  |
 //                                           |   double-click to navigate to /; path is /files   |
