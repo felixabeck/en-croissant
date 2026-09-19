@@ -261,10 +261,10 @@ Use the exact-string override keywords from
 - Before pushing, apply the shared policy §8 "A red remote is a red gate". The jobs this machine
   cannot reproduce are `rust-windows-test`, `rust-macos-test` and the `rust-platform` matrix of the
   `Test` workflow (a Linux host type-checks the Windows target through the MinGW cross toolchain of
-  `d-20260916-07`, but runs none of its tests). Read them with
-  `gh run list --branch <branch> --workflow Test --status completed --limit 1 --json databaseId,conclusion,headSha`,
-  then `gh run view <id> --json jobs`; if one of them is red and this push does not repair it,
-  refuse.
+  `d-20260916-07`, but runs none of its tests). Read them from the newest run in which they have
+  completed — they finish about fifteen minutes before the run does:
+  `gh run list --branch <branch> --workflow Test --limit 3 --json databaseId,headSha,status`, then
+  `gh run view <id> --json jobs`; if one of them is red and this push does not repair it, refuse.
 - Run ordinary non-force `git push` to the configured upstream.
 - Verify local `HEAD` equals `@{u}` and report commits, destination, gate results, review findings/verdicts, and that no release/deployment occurred.
 - Wait for those jobs on the pushed SHA (measured at about five minutes; the whole run takes about
