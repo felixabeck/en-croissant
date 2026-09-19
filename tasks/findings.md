@@ -6816,7 +6816,7 @@ Plan: `tasks/plans/2026-09-19-owned-staging-dir.md` (gitignored). Handoff: `task
 
 ### Seven backend-owned staging reaches still write by pathname inside a tempfile the process just created
 
-* **ID:** f-20260905-08 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260905-08 · **Status:** handled · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/fs.rs:484` (`create_dir_all` of a download parent), `:591` (`create_dir_all` of an archive parent), `:592` (`atomic_replace` into that parent), `:827` (`File::open` of a staged download), `:1243` (`DirBuilder` in `create_private_dir_all`), `:1444` (`atomic_replace` in `extract_gz`), `:1503` (`OpenOptions` in `private_output_file`).
 * **Defect:** these seven of the original ten "backend-chosen destination" counted sites in `f-20260905-07` are one class — they write inside a `tempfile` directory the process just created. They are the same design question as `f-20260905-06`'s two `atomic_install_dir` sites: whether `PathAuthority` grows a staging concept these can register against, or whether the release-surface checker learns a named exemption for backend-owned temporaries. Answering it inside the `f-20260905-07` AuthorizedDir run would have decided `f-20260905-06`'s question in a slice that does not own it.
 * **Why it matters:** seven of the remaining counted sites in `fs.rs`, and the only residue of `f-20260905-07` that is not a dialog destination. Closing them empties most of that file's count.
