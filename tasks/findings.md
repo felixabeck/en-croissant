@@ -6924,6 +6924,12 @@ Plan: `tasks/plans/2026-09-19-owned-staging-dir.md` (gitignored). Handoff: `task
   events" toggle implemented as a case-insensitive event-name predicate, and state in the panel
   that it is name-based. Felix's target set: classical only, rapid tolerated, nothing faster.
 
+* **Handled:** Local explorer Elo band applies to both players (caption "Both players"); year presets 1/3/5/10 write rolling start_date; exclude-fast toggle matches blitz/bullet/armageddon event names and keeps rapid. Position search honours range1/range2 and optional exclude_fast_events without changing the search index.
+* **Commits:** 16601625 (Rust aggregation + bindings), 685552fd (explorer UI, mapping, i18n, tests).
+* **Decisions:** d-20260919-08 (both-players Elo), d-20260919-09 (exclude-fast tokens).
+* **Rejected:** mover-only and average Elo; TimeControl tag filter; default 1850–2350 band; index format change.
+<!-- ledger-meta {"command":"annotate","effect_lines":4,"effect_sha256":"18eb05c4723f86775a61c6128d222fa15d73601ec0cea336e2cb643fb7b69e1f","input_sha256":"5f8d1d768f2e8022b09a5fa8e17915246161984e4f74e01fc045b1e63dc0fae5","kind":"mutation-receipt","operation":"310d2bc37e591d5b8ce056f2bb7d50bfffa53a22b65c5274a709a81c65690c90","options":{"section":null},"request_id_sha256":null,"results":["f-20260905-12"],"target":"f-20260905-12","v":1} -->
+
 ---
 
 ## 2026-09-05 — filed through the inbox spool
