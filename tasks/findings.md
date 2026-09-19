@@ -10078,7 +10078,7 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 
 ### Windows-only test and lint failures reach master because the push never reads the remote result
 
-* **ID:** f-20260919-05 · **Status:** open · **Area:** ci-workflows · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260919-05 · **Status:** handled · **Area:** ci-workflows · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src-tauri/src/infra/path_authority/mod.rs` `ensure_app_owned_default_dir_creates_each_root_under_its_own_leaf`; `src-tauri/src/db/search.rs` `SEARCH_POSITION_INSTRUMENT_LOCK`; `.claude/skills/push/SKILL.md` section 4.
 * **Defect:** two mechanical Windows failures. The path-authority test compared the canonical app-data child (`\\?\C:\Users\runneradmin\...`) with the raw 8.3 tempdir spelling (`C:\Users\RUNNER~1\...`), red from `44034209`. The instrument lock is `cfg(test)` while its only user, `mod tests`, is `cfg(all(test, unix))`, so Windows clippy `-D warnings` fails on `dead_code` from `16601625`. Behind both: `$push` ended at `HEAD == @{u}`, so seventeen consecutive pushes (`e0ec7100` to `48c1df2c`) landed on a master whose `rust-windows-test` was already red, and neither failure was filed.
 * **Why it matters:** a permanently red platform job trains a re-run instead of a look and hides the next real Windows regression, which is what happened to the staging-directory defect filed beside this entry.
