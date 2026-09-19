@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: b4b315e4cd5166a369fbd1ec6a83a718eebd1fe8bda73c424090fed5a7cb5eac
+# agent-kit-sha256: 1a79fe8ce2a2a277537e3a79bdabae3c07888227f4b5c5a2fe6f24e79211527f
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -4612,8 +4612,10 @@ def ledger_lock_path(ledger: Path) -> Path:
 
 
 # Open file descriptors for ledger locks this process currently holds, keyed by
-# the resolved lock path. The fd IS the lock -- `flock` is released when it is
-# closed or the process dies -- so it has to outlive `acquire_ledger_lock`.
+# `str(lock)` as passed to `acquire_ledger_lock`. The fd IS the lock -- `flock`
+# is released when it is closed or the process dies -- so it has to outlive
+# `acquire_ledger_lock`. Callers that need the fd (the drain's ledger-only
+# rebase) go through `held_ledger_lock_fd`, not this dict.
 _HELD_LEDGER_LOCKS: dict[str, int] = {}
 
 
@@ -4716,6 +4718,17 @@ def acquire_ledger_lock(
             continue
         _HELD_LEDGER_LOCKS[str(lock)] = fd
         return True, time.monotonic() - started
+
+
+def held_ledger_lock_fd(lock: Path) -> int | None:
+    """Return this process's open flock descriptor for ``lock``, or ``None``.
+
+    The descriptor *is* the lock. Handing it to a child via ``pass_fds`` keeps
+    the fence after this process dies, including SIGKILL. ``None`` means this
+    process does not currently hold ``lock``; the lookup key is ``str(lock)`` as
+    passed to ``acquire_ledger_lock``.
+    """
+    return _HELD_LEDGER_LOCKS.get(str(lock))
 
 
 def release_ledger_lock(lock: Path) -> None:
