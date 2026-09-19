@@ -10085,6 +10085,9 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 * **Related:** f-20260918-03 (the third red test in the same runs), f-20260830-06 (the Windows job itself).
 * **Found by:** Claude Code, 2026-09-19, from the job logs of runs 35391848926 through 35419821731 and a local `cargo clippy --target x86_64-pc-windows-gnu`.
 
+* **Handled (2026-09-19, Claude Code):** the path-authority test compares through `canonical_binding` (`1de314b6`); the instrument lock is `cfg(all(test, unix))` like its only user (`732d8dee`), proven by `cargo clippy --target x86_64-pc-windows-gnu --all-targets -- -D warnings` locally and the `rust-platform` Windows job on `5bf8e48c`. The stacking mechanism is closed at the push step: `push-review-policy.md` section 8 "A red remote is a red gate" (agent-kit `a0111b3`) refuses a push onto a red not-locally-reproducible job unless the push is its repair and waits for those jobs afterwards; `.claude/skills/push/SKILL.md` names the jobs and commands (`98bcedaa`, `5284874d`). The clause was applied to this run itself: the first push came back red on four tests and was repaired in-session before anything else. Drain-side measurement of remote CI is filed in agent-kit's inbox as a separate finding.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"8b184b20d5a55c3b3c8bb39cf3a62aa1ae7b012af2b2c10c7772750b94a640ac","input_sha256":"0346b78e02f5e70b9b92e8be030c87a058b653a1525634ed3eddf5ec52412473","kind":"mutation-receipt","operation":"663b177fd4009948a5dabc2ed30573613559091d0ce03ff01ab80a0fa77380e4","options":{"section":null},"request_id_sha256":null,"results":["f-20260919-05"],"target":"f-20260919-05","v":1} -->
+
 ---
 
 ## 2026-09-19 — filed through the inbox spool
