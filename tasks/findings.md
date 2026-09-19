@@ -10164,7 +10164,7 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 
 ### Two `db::search` cache tests are flaky: the process-wide instrument flag counts other parallel tests' searches, and reddened `test` and `rust-macos-test` on a docs-only push
 
-* **ID:** f-20260919-08 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260919-08 · **Status:** handled · **Area:** db-search · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `src-tauri/src/db/search.rs` — `PROCESS_ENTRY_CALLS` (static, line 442), the
   `#[cfg(test)] if instrument { … fetch_add … }` in `process_entry` (line ~753), the test guard
   `SearchInstrument` (line ~2347), and the tests
