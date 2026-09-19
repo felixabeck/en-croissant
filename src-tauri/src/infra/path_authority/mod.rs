@@ -8121,7 +8121,11 @@ mod portable_tests {
         for &(root, leaf) in APP_OWNED_DEFAULT_ROOT_LEAVES {
             let created =
                 ensure_app_owned_default_dir(&AppDataDir::for_test(dir.path()), root).unwrap();
-            assert_eq!(created.path(), dir.path().join(leaf));
+            // The app-data root is canonical; a Windows tempdir is spelled in 8.3 form.
+            assert_eq!(
+                created.path(),
+                canonical_binding(&dir.path().join(leaf)).unwrap()
+            );
             assert!(
                 created.path().is_dir(),
                 "{root:?} must create the directory {leaf}"
