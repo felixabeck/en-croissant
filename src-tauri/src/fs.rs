@@ -1458,7 +1458,8 @@ fn validate_archive_path(path: &str) -> Result<PathBuf, Error> {
             "Archive path has too many components".into(),
         ));
     }
-    Ok(p.to_path_buf())
+    // Only the normal names: `.` and trailing separators would be refused by the owned staging walk.
+    Ok(p.components().collect())
 }
 
 fn extract_zip_cancellable(
@@ -1470,6 +1471,9 @@ fn extract_zip_cancellable(
 ) -> Result<(), Error> {
     create_private_dir_all(dest_parent)?;
     let temp_dir = private_tempdir_in(".zip", dest_parent)?;
+    let staging = crate::infra::fs::OwnedStagingDir::adopt(&temp_dir)?;
+    // Only after a successful adopt: from here `staging` alone removes the leaf by identity.
+    let _ = temp_dir.keep();
 
     let mut archive = zip::ZipArchive::new(file).map_err(|e| Error::InvalidInput(e.to_string()))?;
 
@@ -1500,14 +1504,10 @@ fn extract_zip_cancellable(
             ));
         }
 
-        let outpath = temp_dir.path().join(&validated_path);
         if (*file.name()).ends_with('/') {
-            create_private_dir_all(&outpath)?;
+            staging.ensure_relative_directory(&validated_path)?;
         } else {
-            if let Some(p) = outpath.parent() {
-                create_private_dir_all(p)?;
-            }
-            let mut outfile = private_output_file(&outpath)?;
+            let mut outfile = staging.create_relative_regular(&validated_path)?;
             bounded_copy(
                 &mut file,
                 &mut outfile,
@@ -1519,7 +1519,7 @@ fn extract_zip_cancellable(
         }
     }
 
-    install_extracted_tree(&temp_dir, dest_parent, dest_leaf)
+    install_extracted_tree(staging, dest_parent, dest_leaf)
 }
 
 fn extract_tar_cancellable(
@@ -1531,6 +1531,9 @@ fn extract_tar_cancellable(
 ) -> Result<(), Error> {
     create_private_dir_all(dest_parent)?;
     let temp_dir = private_tempdir_in(".tar", dest_parent)?;
+    let staging = crate::infra::fs::OwnedStagingDir::adopt(&temp_dir)?;
+    // Only after a successful adopt: from here `staging` alone removes the leaf by identity.
+    let _ = temp_dir.keep();
 
     let mut archive = tar::Archive::new(file);
     let mut entry_count = 0;
@@ -1566,14 +1569,10 @@ fn extract_tar_cancellable(
             return Err(Error::ResourceLimit("Tar entry too large".into()));
         }
 
-        let outpath = temp_dir.path().join(&validated_path);
         if entry_type.is_dir() {
-            create_private_dir_all(&outpath)?;
+            staging.ensure_relative_directory(&validated_path)?;
         } else {
-            if let Some(p) = outpath.parent() {
-                create_private_dir_all(p)?;
-            }
-            let mut outfile = private_output_file(&outpath)?;
+            let mut outfile = staging.create_relative_regular(&validated_path)?;
             bounded_copy(
                 &mut entry,
                 &mut outfile,
@@ -1585,7 +1584,7 @@ fn extract_tar_cancellable(
         }
     }
 
-    install_extracted_tree(&temp_dir, dest_parent, dest_leaf)
+    install_extracted_tree(staging, dest_parent, dest_leaf)
 }
 
 #[cfg(test)]
@@ -1605,15 +1604,14 @@ fn set_dest_parent_identity_pre_open_hook(hook: Option<DestParentIdentityPreOpen
     DEST_PARENT_IDENTITY_PRE_OPEN_HOOK.with(|slot| *slot.borrow_mut() = hook);
 }
 
-/// Installs an extracted inner tree onto `dest_leaf`. The install parent is only the descriptor
-/// adopted from `inner`; `dest_parent` is opened once, without following links, just to confirm
-/// it is that same directory.
+/// Installs an already adopted inner tree onto `dest_leaf`. The install parent is only the
+/// descriptor held by `source`; `dest_parent` is opened once, without following links, just to
+/// confirm it is that same directory.
 fn install_extracted_tree(
-    inner: &tempfile::TempDir,
+    source: crate::infra::fs::OwnedStagingDir,
     dest_parent: &Path,
     dest_leaf: &OsStr,
 ) -> Result<(), Error> {
-    let source = crate::infra::fs::OwnedStagingDir::adopt(inner)?;
     #[cfg(test)]
     let substituted = DEST_PARENT_IDENTITY_PRE_OPEN_HOOK
         .with(|slot| slot.borrow_mut().take())
@@ -1761,17 +1759,6 @@ fn extract_tar(
 #[cfg(test)]
 fn extract_gz(file: std::fs::File, target_path: &Path, limits: ArchiveLimits) -> Result<(), Error> {
     extract_gz_cancellable(file, target_path, limits, &CancellationToken::new())
-}
-
-fn private_output_file(path: &Path) -> Result<std::fs::File, Error> {
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    Ok(options.open(path)?)
 }
 
 #[tauri::command]
@@ -2689,8 +2676,46 @@ mod tests {
                 .replace('(', "_cancellable(");
             assert!(body.contains(&production), "{body}");
         }
+        for signature in ["fn extract_zip_cancellable(", "fn extract_tar_cancellable("] {
+            let body = body_at_indent(source, signature);
+            let tempdir = body
+                .find("private_tempdir_in(")
+                .expect("private_tempdir_in");
+            let adopt = body
+                .find("OwnedStagingDir::adopt(&temp_dir)?;")
+                .expect("adopt after private_tempdir_in");
+            let keep = body
+                .find("\n    let _ = temp_dir.keep();\n")
+                .expect("discarded keep() statement");
+            let member_loop = body.find("\n    for ").expect("member loop");
+            assert!(
+                tempdir < adopt && adopt < keep && keep < member_loop,
+                "{body}"
+            );
+            assert_eq!(body.matches("= temp_dir.keep()").count(), 1, "{body}");
+            let inner = &body[tempdir..];
+            assert!(inner.contains("ensure_relative_directory("), "{body}");
+            assert!(inner.contains("create_relative_regular("), "{body}");
+            for banned in [
+                ".join(",
+                "File::create",
+                "std::fs::create_dir",
+                "create_private_dir_all",
+                "OpenOptions",
+                "private_output_file",
+            ] {
+                assert!(!inner.contains(banned), "{banned}: {body}");
+            }
+        }
+        assert!(!production.contains("private_output_file"));
         let helper = body_at_indent(source, "fn install_extracted_tree(");
-        assert!(helper.contains("OwnedStagingDir::adopt(inner)"), "{helper}");
+        assert!(
+            source.contains(
+                "fn install_extracted_tree(\n    source: crate::infra::fs::OwnedStagingDir,"
+            ),
+            "{helper}"
+        );
+        assert!(!helper.contains("adopt("), "{helper}");
         assert!(
             helper.contains("install_owned_staging_dir(source, dest_leaf)"),
             "{helper}"
