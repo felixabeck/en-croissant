@@ -10151,3 +10151,43 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 * **Related:** `f-20260905-14` (Files page lost its file card; its run restores the card with a
   Rename action only and deferred type editing here).
 * **Found by:** the `f-20260905-14` build run, locate stage, 2026-09-19.
+
+---
+
+## 2026-09-19 — filed through the inbox spool
+
+### Two `db::search` cache tests are flaky: the process-wide instrument flag counts other parallel tests' searches, and reddened `test` and `rust-macos-test` on a docs-only push
+
+* **ID:** f-20260919-08 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src-tauri/src/db/search.rs` — `PROCESS_ENTRY_CALLS` (static, line 442), the
+  `#[cfg(test)] if instrument { … fetch_add … }` in `process_entry` (line ~753), the test guard
+  `SearchInstrument` (line ~2347), and the tests
+  `position_search_exclude_fast_events_false_and_omitted_share_cache_key` (assert at 2587) and
+  `position_search_exclude_fast_events_cancels_during_event_sql_without_cache_publication` (assert at
+  2566).
+* **Defect:** `SearchInstrument::start()` takes `SEARCH_POSITION_INSTRUMENT_LOCK` and sets the
+  process-wide `SEARCH_POSITION_INSTRUMENT` flag. The lock serialises only the three tests that
+  take it; the flag is read by **every** search in the process. About 22 other tests in the module
+  run `search_position_blocking` / `run_position_search` without the lock, and cargo runs them in
+  parallel threads, so any of them that overlaps an instrumented test increments
+  `PROCESS_ENTRY_CALLS` and the instrumented test's `assert_eq!(…, 0)` fails depending on
+  scheduling. Measured 2026-09-19, run 35424865981 on `db90f77f`: `rust-macos-test` failed the
+  first test (`left: 2, right: 0` at `search.rs:2587`), and the Linux `test` job's "Run Rust tests
+  with coverage" step failed both. The ten commits between it and `5bf8e48c` — whose run
+  35424524326 is green in every job — touch only `tasks/` and `.claude/skills/push/SKILL.md`, so no
+  code change can be the cause.
+* **Consequence:** `rust-macos-test` is a named remote gate (`.claude/skills/push/SKILL.md` §4,
+  policy §8 "A red remote is a red gate"), so a scheduling-dependent failure refuses every push
+  until someone reruns the job, and each red run mails Felix.
+* **Fix shape:** bind the count to the search that asked instead of to the process — a
+  `thread_local!` counter does not work because entries are processed on Rayon workers; carry the
+  instrument as a per-call value instead (for example an `Option<Arc<AtomicUsize>>` test hook
+  passed beside the existing `EXCLUDE_FAST_LOAD_HOOK`, or keyed by the `JobProgress` id), so an
+  uninstrumented search cannot touch an instrumented test's counter. Same treatment for
+  `EXCLUDE_FAST_SQL_COMPLETED`. Proof: run the module's tests in a loop with
+  `--test-threads` at the core count; before the fix it should fail within a few dozen rounds.
+* **Why `lens`:** test-only instrumentation inside one file, no contract change;
+  `review-pgn-index` owns `db/**`, and `review-tests` should confirm the new counter cannot be
+  reached from another test.
+* **Found by:** the `f-20260905-13` push, reading the named remote jobs before pushing,
+  2026-09-19.
