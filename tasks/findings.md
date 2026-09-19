@@ -7191,7 +7191,7 @@ Correction: the "Handled structurally …" annotation above and the earlier stat
 
 ### `pnpm bindings:check` rewrites `src/bindings/generated.ts` and refuses any receipt-backed gate running beside it
 
-* **ID:** f-20260906-06 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260906-06 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `scripts/check-bindings.mjs` (runs the exporter, which writes the file unconditionally);
   `scripts/gate-receipt.mjs` `trackedFileMetadata` (snapshots size and mtime_ns of every tracked
   file); `.claude/skills/push/SKILL.md` "Cross-layer contracts" (names `pnpm bindings:check` with
