@@ -6832,7 +6832,7 @@ Plan: `tasks/plans/2026-09-19-owned-staging-dir.md` (gitignored). Handoff: `task
 
 ### The native save-dialog export writes by pathname to a destination PathRef cannot represent
 
-* **ID:** f-20260905-09 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260905-09 · **Status:** handled · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/main.rs:570` (`save_native_export_blocking`; filed as `main.rs:569` in `f-20260905-07`).
 * **Defect:** the export destination comes from a native save dialog. `d-20260901-03` already recorded that `PathRef` cannot represent that destination. There is no check-then-use pair to close with `AuthorizedDir`: the process never owned the parent, and `AuthorizedDir`'s producers cannot express an arbitrary path. This is a different design question from the app-owned and resource-root conversions `f-20260905-07` closed.
 * **Why it matters:** the last counted reach in `main.rs` (the allowlist count is now 1). Emptying `main.rs` from the filesystem-surface allowlist waits on this.
