@@ -1458,8 +1458,11 @@ fn validate_archive_path(path: &str) -> Result<PathBuf, Error> {
             "Archive path has too many components".into(),
         ));
     }
-    // Only the normal names: `.` and trailing separators would be refused by the owned staging walk.
-    Ok(p.components().collect())
+    // Only Normal names: Path::components keeps a leading CurDir (`./foo` stays `./foo`),
+    // which the owned staging walk refuses. Middle `.` and trailing slashes are already dropped.
+    Ok(p.components()
+        .filter(|component| matches!(component, std::path::Component::Normal(_)))
+        .collect())
 }
 
 fn extract_zip_cancellable(
@@ -2931,6 +2934,19 @@ mod tests {
             validate_archive_path("safe/directory/file.bin").unwrap(),
             PathBuf::from("safe/directory/file.bin")
         );
+        assert_eq!(
+            validate_archive_path("./bin/tool").unwrap(),
+            PathBuf::from("bin/tool")
+        );
+        assert_eq!(
+            validate_archive_path("a/./b.txt").unwrap(),
+            PathBuf::from("a/b.txt")
+        );
+        assert_eq!(validate_archive_path("./").unwrap(), PathBuf::new());
+        assert_eq!(
+            validate_archive_path("explicit/").unwrap(),
+            PathBuf::from("explicit")
+        );
         assert!(validate_archive_path("../escape").is_err());
         assert!(validate_archive_path("/absolute").is_err());
         assert!(validate_archive_path("nul\0byte").is_err());
@@ -2941,6 +2957,49 @@ mod tests {
             PathBuf::from(&maximum)
         );
         assert!(validate_archive_path(&"a".repeat(1025)).is_err());
+    }
+
+    #[test]
+    fn extract_tar_dot_prefixed_members_install_at_normalised_paths() {
+        let dir = tempdir().unwrap();
+        let tar_path = dir.path().join("dot.tar");
+        let mut tar = tar::Builder::new(std::fs::File::create(&tar_path).unwrap());
+        for (name, body) in [("./bin/tool", &b"abc"[..]), ("a/./nested.txt", &b"xyz"[..])] {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(body.len() as u64);
+            header.set_cksum();
+            tar.append_data(&mut header, name, body).unwrap();
+        }
+        tar.finish().unwrap();
+
+        let output = dir.path().join("extracted");
+        extract_tar(
+            std::fs::File::open(&tar_path).unwrap(),
+            &output,
+            OpClass::Engine.limits(),
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(output.join("bin/tool")).unwrap(), b"abc");
+        assert_eq!(std::fs::read(output.join("a/nested.txt")).unwrap(), b"xyz");
+    }
+
+    #[test]
+    fn extract_zip_dot_prefixed_members_install_at_normalised_paths() {
+        let dir = tempdir().unwrap();
+        let zip_path = dir.path().join("dot.zip");
+        write_zip(
+            &zip_path,
+            &[("./bin/tool", b"abc"), ("a/./nested.txt", b"xyz")],
+        );
+        let output = dir.path().join("extracted");
+        extract_zip(
+            std::fs::File::open(&zip_path).unwrap(),
+            &output,
+            OpClass::Engine.limits(),
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(output.join("bin/tool")).unwrap(), b"abc");
+        assert_eq!(std::fs::read(output.join("a/nested.txt")).unwrap(), b"xyz");
     }
 
     #[cfg(unix)]
