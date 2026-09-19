@@ -2,7 +2,8 @@ import { tauri } from "@/platform/tauri";
 import engineCatalogDocument from "@/catalogs/engines.json?raw";
 import engineCatalogSignature from "@/catalogs/engines.json.minisig?raw";
 import { runWithAppliedRecovery } from "@/platform/errors";
-import { warn, type Platform } from "@/platform/native";
+import { type Platform } from "@/platform/native";
+import { CatalogVerificationError, loadSignedCatalog } from "@/utils/signedCatalog";
 import useSWR from "swr";
 import { z } from "zod";
 import {
@@ -270,9 +271,9 @@ export function getBestMoves(
 }
 
 /** Raised when the bundled engine catalog does not match its release signature. */
-export class EngineCatalogVerificationError extends Error {
+export class EngineCatalogVerificationError extends CatalogVerificationError {
     constructor(cause: unknown) {
-        super("engine catalog signature verification failed", { cause });
+        super(cause, "engine catalog signature verification failed");
         this.name = "EngineCatalogVerificationError";
     }
 }
@@ -281,14 +282,16 @@ export async function loadDefaultEngineCatalog(
     document: string = engineCatalogDocument,
     signature: string = engineCatalogSignature,
 ): Promise<DefaultEngine[]> {
+    let parsed: z.infer<typeof defaultEngineManifestSchema>[];
     try {
-        await tauri.verifySignedBytes(document, signature);
+        parsed = await loadSignedCatalog(document, signature, z.array(defaultEngineManifestSchema));
     } catch (error) {
-        warn(`Engine catalog signature verification failed: ${String(error)}`);
-        throw new EngineCatalogVerificationError(error);
+        // Keep the engine-specific type so AddEngine maps it to its catalog error.
+        if (error instanceof CatalogVerificationError) {
+            throw new EngineCatalogVerificationError(error.cause);
+        }
+        throw error;
     }
-    // Parse only after the backend verified the exact bytes.
-    const parsed = z.array(defaultEngineManifestSchema).parse(JSON.parse(document));
     return parsed.map((engine) => {
         const imageUrl = engine.imageUrl ?? engine.image;
         return (imageUrl ? { ...engine, imageUrl } : engine) as unknown as DefaultEngine;

@@ -29,6 +29,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { SWRConfig } from "swr";
 import { TauriCommandError } from "@/platform/tauri";
+import { CatalogVerificationError } from "@/utils/signedCatalog";
 import engineCatalogDocument from "@/catalogs/engines.json?raw";
 import engineCatalogSignature from "@/catalogs/engines.json.minisig?raw";
 import {
@@ -238,6 +239,7 @@ describe("bundled default-engine catalog", () => {
         const parse = vi.spyOn(JSON, "parse");
         const error = await loadDefaultEngineCatalog("not json", "sig").catch((e: unknown) => e);
         expect(error).toBeInstanceOf(EngineCatalogVerificationError);
+        expect(error).toBeInstanceOf(CatalogVerificationError);
         expect((error as EngineCatalogVerificationError).cause).toBe(failure);
         expect(parse).not.toHaveBeenCalledWith("not json");
         parse.mockRestore();
