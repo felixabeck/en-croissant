@@ -6881,6 +6881,9 @@ Plan: `tasks/plans/2026-09-19-owned-staging-dir.md` (gitignored). Handoff: `task
 * **Related:** foreign commits `24720681`, `56b171ae`, `bcd7c9e4`, `4c487d3b` (Claude session `01JAkRySrZTT3Xzew3Jv7uJk`) landed on master during the AuthorizedDir push review.
 * **Found by:** Codex `review-correctness` / `review-root-cause` / `review-error-handling` over `d25d12a6..56b171ae`, 2026-09-05; re-checked against `4c487d3b`. Confidence 99. Deferred because that session is still iterating the installer on the same branch; rewriting it here races them.
 
+* **Handled 2026-09-19:** `reviewed` is written only when this invocation compiled from a tree that was, and still is, the reviewed HEAD. `--no-build` refuses without `--force` and otherwise records `UNREVIEWED (prebuilt binary, --force)`. Dirty check is default porcelain (untracked files count). `evaluate_tree` runs before and after `pnpm build` under the install lock; HEAD mismatch or a newly dirty tree refuses, or records UNREVIEWED with `--force`. `@{upstream}` stays the fork tracking ref (not a defect). Commits `6707cb04`, `ec6347ea`. Decision `d-20260919-07` (id allocated at record time). Rejected: compile-time SHA in the binary; `--no-build` as reviewed; ancestry against the `upstream` remote.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"0b78ba7b2e44f8889a5a1b681d4ae30adc13ac789ff6a940891f761a71467b99","input_sha256":"7b082b6e6bc37e885b95949d6938f15e42a34f5132d4426e49bdfb9725843a1d","kind":"mutation-receipt","operation":"bcfff3d7efeffc3a911e4d6bdfc0f1dff91a98d0513d16a0cdfe82c42c59c14f","options":{"section":null},"request_id_sha256":null,"results":["f-20260905-11"],"target":"f-20260905-11","v":1} -->
+
 ---
 
 ## 2026-09-05 — filed through the inbox spool
