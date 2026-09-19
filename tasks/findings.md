@@ -10101,3 +10101,38 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 * **Why it matters:** the gate adds a cancellable wait to every generate and delete and a lease to every load. Harmless if unneeded, but it is concurrency machinery whose stated reason is now disproven.
 * **Related:** f-20260917-04 (handled; built the gate), f-20260918-03 (the disproven pin).
 * **Found by:** Claude Code, 2026-09-19, while repairing f-20260918-03; deferred as a design question under rule 4b.
+
+---
+
+## 2026-09-19 — filed through the inbox spool
+
+### A workspace file's type cannot be changed: no native command writes metadata alone, and a same-name rename is rejected
+
+* **ID:** f-20260919-07 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/file_workspace.rs` (`rename_workspace_file_blocking`, the only writer of the
+  `.info` sidecar after creation), `src/bindings/generated.ts` (`renameWorkspaceFile`), and the
+  empty `EditModal` stub formerly in `src/components/files/Modals.tsx`.
+* **Defect:** upstream's Files page had an `EditModal` that changed a file's name **and its type**
+  (game, repertoire, tournament, puzzle, other). The audit commit `3afed031` replaced the plugin-fs
+  sidecar write with `rename_workspace_file(workspace, entry, name, metadata)`, which writes type and
+  tags only as part of a rename. Measured 2026-09-19 through real IPC in the release binary
+  (disposable `verify:app`-style probe, seeded workspace): calling it with the **unchanged** name and
+  `metadata.type = "repertoire"` rejects with `{"category":"io","message":"I/O failure"}` and leaves
+  the listing unchanged. So a type can only be changed by also renaming the file, and no UI offers
+  even that: `FilesPage.tsx` always passes the file's current type and tags. A file without a sidecar
+  lists as `other` and can never become a repertoire from inside the app, which also hollows out the
+  Files page's type filter.
+* **Fix shape:** a native command that atomically replaces the sidecar for a registered workspace
+  file (same descriptor-relative discipline and durability reporting as the rename path), registered
+  in Specta, bound, routed through `src/platform/tauri.ts`; then an edit dialog on the Files page's
+  file card that edits name and type together and picks rename-with-metadata or metadata-only by
+  whether the name changed.
+* **Open question:** should a metadata-only write be a new command, or should
+  `rename_workspace_file` treat an unchanged name as "sidecar only"? The second keeps the IPC surface
+  smaller but overloads a rename's durability-stage reporting (`WorkspaceSidecarReplacement` without a
+  preceding PGN rename) and its rollback contract.
+* **Why `build`:** new IPC command on a security-relevant filesystem surface, bindings, and a
+  renderer dialog; the contract question above must be settled before code.
+* **Related:** `f-20260905-14` (Files page lost its file card; its run restores the card with a
+  Rename action only and deferred type editing here).
+* **Found by:** the `f-20260905-14` build run, locate stage, 2026-09-19.
