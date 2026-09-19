@@ -1,12 +1,18 @@
 import { describe, beforeEach, expect, test, vi } from "vitest";
 import type { DatabaseHandle } from "@/bindings";
 import { parseUci } from "chessops";
-import { createNode, defaultTree, normalizeTreeHalfMoves, type TreeNode } from "./treeReducer";
+import {
+    createNode,
+    defaultTree,
+    getBoardState,
+    normalizeTreeHalfMoves,
+    type TreeNode,
+} from "./treeReducer";
 
 const mocks = vi.hoisted(() => ({ searchPosition: vi.fn() }));
 vi.mock("./db", () => ({ searchPosition: mocks.searchPosition }));
 
-import { fetchPositionMoves, findBiggestGap } from "./repertoire";
+import { computeTreeCoverage, fetchPositionMoves, findBiggestGap } from "./repertoire";
 
 const database: DatabaseHandle = { id: { id: "db" }, kind: "database" };
 
@@ -39,6 +45,54 @@ test("ordinary search failure rejects instead of publishing empty full coverage"
     const failure = new Error("database unavailable");
     mocks.searchPosition.mockRejectedValue(failure);
     await expect(fetchPositionMoves(database, "fen")).rejects.toBe(failure);
+});
+
+test("a repetition line terminates coverage instead of recursing until the stack overflows", async () => {
+    // 1. Nf3 Nf6 2. Ng1 Ng8 returns to the start position; with the clocks stripped both visits
+    // share one board-state key, so stateMoves closes a cycle.
+    const line = [
+        {
+            san: "Nf3",
+            uci: "g1f3",
+            fen: "rnbqkbnr/pppppppp/8/8/8/5N2/PPPPPPPP/RNBQKB1R b KQkq - 1 1",
+        },
+        {
+            san: "Nf6",
+            uci: "g8f6",
+            fen: "rnbqkb1r/pppppppp/5n2/8/8/5N2/PPPPPPPP/RNBQKB1R w KQkq - 2 2",
+        },
+        {
+            san: "Ng1",
+            uci: "f3g1",
+            fen: "rnbqkb1r/pppppppp/5n2/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 3 2",
+        },
+        {
+            san: "Ng8",
+            uci: "f6g8",
+            fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 4 3",
+        },
+    ];
+    const root = defaultTree().root;
+    const stateMoves = new Map<string, Map<string, string>>();
+    const nextSan = new Map<string, string>();
+    let parent = root;
+    for (const { san, uci, fen } of line) {
+        const child = createNode({ fen, move: parseUci(uci)!, san, halfMoves: 0 });
+        parent.children.push(child);
+        stateMoves.set(getBoardState(parent.fen), new Map([[san, getBoardState(fen)]]));
+        nextSan.set(getBoardState(parent.fen), san);
+        parent = child;
+    }
+    normalizeTreeHalfMoves(root);
+    expect(getBoardState(parent.fen)).toBe(getBoardState(root.fen));
+    mocks.searchPosition.mockImplementation(async ({ fen }: { fen: string }) => [
+        [{ move: nextSan.get(fen), white: 10, draw: 0, black: 0 }],
+    ]);
+
+    const { coverageMap } = await computeTreeCoverage(root, "white", database, 1, [], stateMoves);
+
+    expect(coverageMap.get("")).toBe(1);
+    expect(coverageMap.get("0,0,0,0")).toBe(1);
 });
 
 describe("findBiggestGap", () => {

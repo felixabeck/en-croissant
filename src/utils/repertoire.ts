@@ -111,6 +111,10 @@ function computeCoverageForFen(
 ): { coverage: number; missing: number } {
     const cached = memo.get(fen);
     if (cached) return cached;
+    // Board-state keys drop the clocks, so a repetition line maps a FEN back onto one still on
+    // the call stack. Seed the memo with the neutral result before recursing so that re-entry
+    // terminates; every exit below overwrites it with the real value.
+    memo.set(fen, { coverage: 1, missing: 0 });
 
     const dbData = dbCache.get(fen);
     const moves = dbData?.moves ?? [];
