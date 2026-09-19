@@ -6823,6 +6823,9 @@ Plan: `tasks/plans/2026-09-19-owned-staging-dir.md` (gitignored). Handoff: `task
 * **Related:** `f-20260905-06` (temp-to-temp `atomic_install_dir`; Root `-`, so the relation is named here rather than shared); `f-20260905-07`, which this splits out of; `d-20260901-03` (`PathRef` cannot represent backend temp dirs).
 * **Found by:** Grok, implementation of `tasks/plans/2026-09-05-authorized-directory-descriptors.md` phase 5, 2026-09-05.
 
+* **Handled 2026-09-19 (drain 830f0512-6047-4ef0-b8b7-c3c353baa63c).** Zip/tar archive members are created from `OwnedStagingDir`'s held child after adopt then discarded `keep()`. `private_output_file` is gone. `PATHNAME_FNS` unchanged. `fs.rs` counted surface 8→7. `validate_archive_path` keeps only Normal components so `./foo` extracts. Commits `3da51da6`, `00b1617c`, `a4ceb775`. Rejected: checker exemption; PathAuthority staging registry; child-File accessor; converting download `File::open` without payload creation; converting dest-parent mkdir in this slice (`d-20260919-03`, `d-20260919-04`). Follow-ons in the inbox spool: download staging pathname create/open; remaining dest-parent mkdir / dest-file `atomic_replace`. Plan-review handoff: `tasks/handoffs/2026-09-19-f-20260905-08-review.md`.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"5c87022415b725df46d5cab39144f259772519cabb7cde27412fe2d8f50851c1","input_sha256":"6fab8c1d3bf5df77b412d877946956a8b4f71c9239a0d87b0195726b9e95f2dc","kind":"mutation-receipt","operation":"a50b144f9dd0c8dc6fa960a8be8277c850b62f00698dcea64e4d114076638a32","options":{"section":null},"request_id_sha256":null,"results":["f-20260905-08"],"target":"f-20260905-08","v":1} -->
+
 ---
 
 ## 2026-09-05 — filed through the inbox spool
