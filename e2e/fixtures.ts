@@ -1,5 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test as base } from "@playwright/test";
+import { expect, test as base, type Locator, type Page } from "@playwright/test";
 import type { ErrorPayload } from "../src/bindings/generated";
 
 type MockCommand = {
@@ -25,7 +25,74 @@ export const filesWorkspaceFixture = {
         gameCount: null,
         lastModified: 0,
     },
+    pgnFile: {
+        handle: { id: { id: "najdorf-file" }, kind: "fileWorkspace" },
+        kind: "file",
+        name: "Najdorf",
+        children: [],
+        metadata: { type: "game", tags: [] },
+        gameCount: 1,
+        lastModified: 0,
+    },
+    pgnGame: '[Event "E2E"]\n[White "Weiss"]\n[Black "Schwarz"]\n[Result "*"]\n\n1. e4 c5 *',
 } as const;
+
+/** Native answers for selecting `pgnFile`: the card and its game list read and lex the one game. */
+// The document-width assertion cannot see overflow that the Files page's own scroll container, or a
+// control with `overflow: hidden`, absorbs — a page that scrolled or cut its overflow away would
+// pass it. So neither an ancestor of the target nor anything inside it may be narrower than its
+// content.
+export async function assertNothingClipped(target: Locator) {
+    const offenders = await target.evaluate((element) => {
+        const describe = (node: Element) =>
+            `${node.tagName.toLowerCase()}.${node.className}: ${node.scrollWidth}px > ${node.clientWidth}px`;
+        // An ellipsis is a deliberate, visible truncation (a game name in the list), not hidden overflow.
+        const clipped = (node: Element) =>
+            node.scrollWidth > node.clientWidth + 1 &&
+            getComputedStyle(node).textOverflow !== "ellipsis";
+        const found: string[] = [];
+        for (let node = element.parentElement; node; node = node.parentElement) {
+            if (clipped(node)) found.push(describe(node));
+        }
+        for (const node of [element, ...element.querySelectorAll("*")]) {
+            // An element without a layout box (an svg child, a hidden input) reports 0 for both.
+            if (node.clientWidth > 0 && clipped(node)) found.push(describe(node));
+        }
+        return found;
+    });
+    expect(offenders, `content wider than its container: ${offenders.join("; ")}`).toEqual([]);
+}
+
+// Both Files columns with everything in them: the controls and tree, the action row and the card.
+export async function assertFilesColumnsNotClipped(page: Page) {
+    for (const column of await page.locator(".mantine-SimpleGrid-root > *").all()) {
+        await assertNothingClipped(column);
+    }
+}
+
+// Selects a Files tree row by its name. Once a row wraps at a narrow width its centre can be one of
+// its icon buttons, so a plain row click would not select; the name always does.
+export async function selectFilesTreeRow(page: Page, name: string): Promise<Locator> {
+    const row = page.getByRole("treeitem", { name, exact: true });
+    await row.getByText(name, { exact: true }).click();
+    await expect(row).toHaveAttribute("aria-selected", "true");
+    return row;
+}
+
+export const pgnFileCommands: NonNullable<MockScenario["commands"]> = {
+    read_games: { result: [filesWorkspaceFixture.pgnGame] },
+    lex_pgn: {
+        result: [
+            { type: "Header", value: { tag: "Event", value: "E2E" } },
+            { type: "Header", value: { tag: "White", value: "Weiss" } },
+            { type: "Header", value: { tag: "Black", value: "Schwarz" } },
+            { type: "Header", value: { tag: "Result", value: "*" } },
+            { type: "San", value: "e4" },
+            { type: "San", value: "c5" },
+            { type: "Outcome", value: "*" },
+        ],
+    },
+};
 
 export function filesWorkspaceCommands(
     listResults: unknown[],

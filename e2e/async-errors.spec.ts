@@ -4,11 +4,16 @@ import {
     expect,
     filesWorkspaceCommands,
     filesWorkspaceFixture,
+    pgnFileCommands,
+    assertFilesColumnsNotClipped,
+    assertNothingClipped,
+    selectFilesTreeRow,
     test,
     type MockScenario,
 } from "./fixtures";
 
-const { workspace, openingDirectory } = filesWorkspaceFixture;
+const { workspace, openingDirectory, pgnFile } = filesWorkspaceFixture;
+
 const refreshedDirectory = {
     ...openingDirectory,
     handle: { id: { id: "refreshed-directory" }, kind: "fileWorkspace" },
@@ -100,6 +105,7 @@ test("async-errors: localizes directory-trash failures in the confirmation dialo
     page,
     mockScenario,
     assertAccessible,
+    assertNoHorizontalOverflow,
 }) => {
     await mockScenario({
         commands: filesWorkspaceCommands([[openingDirectory]], {
@@ -120,12 +126,42 @@ test("async-errors: localizes directory-trash failures in the confirmation dialo
     await expect(dialog.getByRole("button", { name: "Löschen", exact: true })).toBeEnabled();
     await expect(page.locator("body")).not.toContainText("private native diagnostic");
     await expect(page.locator("body")).not.toContainText("/private/file.pgn");
-    // The Files page behind this modal has a separately filed narrow-layout defect.
-    // Check the changed dialog itself without claiming that background layout is fixed.
-    await assertDialogWithinViewport(dialog);
+    await assertNoHorizontalOverflow();
     await assertAccessible();
     await dialog.getByRole("button", { name: "Löschen", exact: true }).scrollIntoViewIfNeeded();
     await expect(page).toHaveScreenshot("confirmation-error.png", { fullPage: true });
+});
+
+test("async-errors: fits a selected PGN file and its card at 320px", async ({
+    page,
+    mockScenario,
+    assertAccessible,
+    assertNoHorizontalOverflow,
+}) => {
+    await mockScenario({
+        commands: filesWorkspaceCommands([[openingDirectory, pgnFile]], pgnFileCommands),
+    });
+    await page.goto("/files");
+    await page.getByRole("button", { name: "Sammlung auswählen" }).click();
+    const fileRow = await selectFilesTreeRow(page, pgnFile.name);
+    // Nothing before this line depends on the card, so an overflowing page fails here.
+    await assertNoHorizontalOverflow();
+    await assertNothingClipped(fileRow);
+
+    // By text: each tree row also carries an icon-only "Verschieben" button.
+    for (const name of ["Umbenennen", "Verschieben", "Papierkorb"]) {
+        await expect(page.locator("button", { hasText: new RegExp(`^${name}$`) })).toBeVisible();
+    }
+    await expect(page.getByRole("button", { name: "Öffnen", exact: true })).toBeVisible();
+    await expect(page.getByText("Weiss - Schwarz")).toBeVisible();
+    // Both columns with everything in them: the controls and tree, the action row and the card.
+    await assertFilesColumnsNotClipped(page);
+    await assertAccessible();
+    // The page scrolls inside its own container, so a full-page capture is one screen. A window
+    // tall enough for both stacked columns puts the whole card into the picture.
+    await page.setViewportSize({ width: 320, height: 3200 });
+    await assertFilesColumnsNotClipped(page);
+    await expect(page).toHaveScreenshot("files-file-selected.png");
 });
 
 const partialRemovalPayload = {

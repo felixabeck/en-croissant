@@ -1,6 +1,14 @@
-import { expect, filesWorkspaceCommands, filesWorkspaceFixture, test } from "./fixtures";
+import {
+    expect,
+    filesWorkspaceCommands,
+    filesWorkspaceFixture,
+    pgnFileCommands,
+    assertFilesColumnsNotClipped,
+    selectFilesTreeRow,
+    test,
+} from "./fixtures";
 
-const { openingDirectory } = filesWorkspaceFixture;
+const { openingDirectory, pgnFile } = filesWorkspaceFixture;
 
 test("database-files: grants a workspace and creates a folder through typed IPC", async ({
     page,
@@ -10,7 +18,8 @@ test("database-files: grants a workspace and creates a folder through typed IPC"
     capture,
 }) => {
     await mockScenario({
-        commands: filesWorkspaceCommands([[], [openingDirectory]], {
+        commands: filesWorkspaceCommands([[pgnFile], [openingDirectory, pgnFile]], {
+            ...pgnFileCommands,
             create_workspace_directory: { result: openingDirectory },
         }),
     });
@@ -27,7 +36,11 @@ test("database-files: grants a workspace and creates a folder through typed IPC"
     await expect(page.locator('[data-modal-content="true"]')).toHaveCount(0);
 
     await expect(page.getByText("Openings")).toBeVisible();
+    await selectFilesTreeRow(page, pgnFile.name);
+    await expect(page.getByRole("button", { name: /^open$/i })).toBeVisible();
+    await expect(page.getByText("Weiss - Schwarz")).toBeVisible();
     await assertNoHorizontalOverflow();
+    await assertFilesColumnsNotClipped(page);
     await assertAccessible();
     await capture("database-files");
     await expect(page).toHaveScreenshot("database-files.png", { fullPage: true });
