@@ -3584,3 +3584,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The three filed holes were `--no-build` copying `target/release`, `--untracked-files=no`, and no post-build recheck. Binding in the installer closes them without a compile-time SHA. `$push` already calls the script with no flags, so the daily path still rebuilds and can still write `reviewed`.
 * **Decided by:** Grok drain 2b746a66-8148-4ad1-8f23-b1e420cf6bb7, full auto · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"8655b41d08669ed249dbb6ed644157bd1f84bc3d5679b8db0f2e0c60e4d13d1f","input_sha256":"69525e480acc1a26dfe44e5a221476711abd87dbdb1b993098f0bac72b08673f","kind":"mutation-receipt","operation":"6654082d6cff882552d94b071bb0978d8d747c870d54c3426284c125aa835aed","options":{"section":null},"request_id_sha256":null,"results":["d-20260919-07"],"target":"decisions-ledger","v":1} -->
+
+### d-20260919-08 — How does the local explorer Elo band apply to the two players?
+
+* **Question:** Does the local opening-explorer Elo band filter the mover, the average rating, or both players?
+* **Governs:** f-20260905-12
+* **Chosen:** Both players must lie in the band (AND). The panel caption is "Both players". The explorer sends the same (min, max) as GameQuery.range1 and range2; position search applies range1 to White Elo and range2 to Black Elo. Unrated (indexed 0) is excluded when the band minimum is greater than 0. An untouched 0–3000 slider is no filter.
+* **Rejected:** Mover-only (a 2800 vs 1400 game would enter an 1850–2350 slice). Average of the two ratings (the same pairing would enter if the mean did). A third GameQuery Elo field. Defaulting the band to 1850–2350.
+* **Reason:** Felix named ChessBase Mega25_Elo_1850_2350 as the model — a game-level rating slice, not a mover filter. Position search already stores both Elos on the index entry. The games-table ranges already exist as range1/range2; reusing them avoids a duplicate field. The panel must say which rule it uses; "Both players" is that statement.
+* **Decided by:** drain-92e2f30a-0a07-4c9a-993d-ff62aeaf68be · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"3772b3eb1d24d529efd8b7fa20493bf0af6daa327a93d73ba7346cb1a8b2a45b","input_sha256":"abd29166735ad02eae7d3eeaa82c913c81a1edaae9384472badb8fdc4f0b8769","kind":"mutation-receipt","operation":"90fc86e4c98581485a55326c1db84bcd455713ddb97a58a0c6986b7efa11c844","options":{"section":null},"request_id_sha256":null,"results":["d-20260919-08"],"target":"decisions-ledger","v":1} -->
