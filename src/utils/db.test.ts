@@ -6,15 +6,25 @@ const mocks = vi.hoisted(() => ({
     listWorkspaceDatabases: vi.fn(),
     getDbInfo: vi.fn(),
     logError: vi.fn(),
+    logWarn: vi.fn(),
+    verifySignedBytes: vi.fn(),
+    remoteGet: vi.fn(),
 }));
 vi.mock("@/platform/tauri", () => ({
     tauri: {
         getDatabaseWorkspace: mocks.getDatabaseWorkspace,
         listWorkspaceDatabases: mocks.listWorkspaceDatabases,
         getDbInfo: mocks.getDbInfo,
+        verifySignedBytes: mocks.verifySignedBytes,
     },
 }));
-vi.mock("@/platform/native", () => ({ error: mocks.logError }));
+vi.mock("@/platform/native", () => ({ error: mocks.logError, warn: mocks.logWarn }));
+vi.mock("@/platform/http", () => ({ remoteHttp: { get: mocks.remoteGet } }));
+import databaseCatalogDocument from "@/catalogs/databases.json?raw";
+import databaseCatalogSignature from "@/catalogs/databases.json.minisig?raw";
+import puzzleCatalogDocument from "@/catalogs/puzzles.json?raw";
+import puzzleCatalogSignature from "@/catalogs/puzzles.json.minisig?raw";
+import { CatalogVerificationError } from "@/utils/signedCatalog";
 import {
     conversionProgressId,
     databaseHandleFromKey,
@@ -210,38 +220,10 @@ const puzzleManifestEntry = {
     description: "A curated puzzle database",
     puzzleCount: 1_000,
     storageSize: 2_048,
-    downloadLink: "https://www.encroissant.org/puzzles/lichess.db3",
+    downloadLink: "https://db.encroissant.org/puzzles/lichess.db3",
     sha256: "a".repeat(64),
     signature: "untrusted comment: test signature",
 };
-
-function mockPuzzleManifest(body: unknown) {
-    vi.stubGlobal(
-        "fetch",
-        vi.fn().mockResolvedValue(new Response(JSON.stringify(body), { status: 200 })),
-    );
-}
-
-describe("default puzzle database manifest", () => {
-    it("accepts a complete downloadable puzzle database", async () => {
-        mockPuzzleManifest([puzzleManifestEntry]);
-
-        await expect(getDefaultPuzzleDatabases()).resolves.toEqual([puzzleManifestEntry]);
-    });
-
-    it("rejects malformed artifact integrity metadata", async () => {
-        mockPuzzleManifest([{ ...puzzleManifestEntry, sha256: "not-a-sha256" }]);
-
-        await expect(getDefaultPuzzleDatabases()).rejects.toMatchObject({ kind: "schema" });
-    });
-
-    it("rejects a manifest entry without a signature", async () => {
-        const { signature: _signature, ...entryWithoutSignature } = puzzleManifestEntry;
-        mockPuzzleManifest([entryWithoutSignature]);
-
-        await expect(getDefaultPuzzleDatabases()).rejects.toMatchObject({ kind: "schema" });
-    });
-});
 
 describe("manifest install-card identity", () => {
     const link = "https://db.encroissant.org/example.db3";
@@ -284,27 +266,53 @@ describe("manifest install-card identity", () => {
     });
 });
 
-describe("default game database manifest", () => {
-    const entry = {
-        title: "Example database",
-        game_count: 42,
-        player_count: 12,
-        storage_size: 4_096,
-        downloadLink: "https://db.encroissant.org/example.db3",
-        sha256: "b".repeat(64),
-        signature: "untrusted comment: test signature",
-    };
+describe("bundled default catalogs", () => {
+    beforeEach(() => {
+        mocks.verifySignedBytes.mockReset();
+        mocks.remoteGet.mockReset();
+        vi.stubGlobal("fetch", vi.fn());
+    });
+    afterEach(() => vi.unstubAllGlobals());
 
-    it("accepts the remote fields used by the installer and defaults the description", async () => {
-        mockPuzzleManifest([entry]);
+    it("verifies the exact bundled database catalog bytes without any HTTP request", async () => {
+        mocks.verifySignedBytes.mockResolvedValue(null);
 
-        await expect(getDefaultDatabases()).resolves.toEqual([{ ...entry, description: "" }]);
+        const databases = await getDefaultDatabases();
+
+        expect(mocks.verifySignedBytes).toHaveBeenCalledWith(
+            databaseCatalogDocument,
+            databaseCatalogSignature,
+        );
+        expect(databases.map((db) => db.title)).toContain("Lumbra's Gigabase");
+        expect(
+            databases.every((db) => db.downloadLink.startsWith("https://db.encroissant.org/")),
+        ).toBe(true);
+        expect(fetch).not.toHaveBeenCalled();
+        expect(mocks.remoteGet).not.toHaveBeenCalled();
     });
 
-    it("rejects an unsigned database entry", async () => {
-        const { signature: _signature, ...unsigned } = entry;
-        mockPuzzleManifest([unsigned]);
+    it("verifies the exact bundled puzzle catalog bytes without any HTTP request", async () => {
+        mocks.verifySignedBytes.mockResolvedValue(null);
 
-        await expect(getDefaultDatabases()).rejects.toMatchObject({ kind: "schema" });
+        const puzzles = await getDefaultPuzzleDatabases();
+
+        expect(mocks.verifySignedBytes).toHaveBeenCalledWith(
+            puzzleCatalogDocument,
+            puzzleCatalogSignature,
+        );
+        expect(puzzles.map((db) => db.downloadLink)).toEqual([
+            "https://db.encroissant.org/Lichess%20Puzzles%202026.db3",
+        ]);
+        expect(fetch).not.toHaveBeenCalled();
+        expect(mocks.remoteGet).not.toHaveBeenCalled();
+    });
+
+    it("rejects with CatalogVerificationError instead of an empty list when verification fails", async () => {
+        mocks.verifySignedBytes.mockRejectedValue(new Error("bad signature"));
+
+        await expect(getDefaultDatabases()).rejects.toBeInstanceOf(CatalogVerificationError);
+        await expect(getDefaultPuzzleDatabases()).rejects.toBeInstanceOf(CatalogVerificationError);
+        expect(fetch).not.toHaveBeenCalled();
+        expect(mocks.remoteGet).not.toHaveBeenCalled();
     });
 });

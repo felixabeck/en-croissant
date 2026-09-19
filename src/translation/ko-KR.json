@@ -328,6 +328,7 @@
     "Common.WHITE": "백",
     "Databases.Add.ClickToSelectPGN": "클릭하여 PGN 파일 선택",
     "Databases.Add.Convert": "변환",
+    "Databases.Add.ErrorCatalog": "포함된 데이터베이스 카탈로그의 서명 검증에 실패했습니다.",
     "Databases.Add.ErrorFetch": "서버에서 데이터베이스 정보를 가져오는데 실패했습니다.",
     "Databases.Add.Title": "데이터베이스 추가",
     "Databases.Add.Web": "웹",

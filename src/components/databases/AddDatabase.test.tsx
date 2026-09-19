@@ -1,9 +1,11 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { CatalogVerificationError } from "@/utils/signedCatalog";
 import { conversionProgressId, defaultDatabaseProgressId } from "@/utils/db";
 
 const mocks = vi.hoisted(() => ({
+  catalogError: undefined as unknown,
   getDatabaseWorkspace: vi.fn(),
   createWorkspaceDatabase: vi.fn(),
   listWorkspaceDatabases: vi.fn(),
@@ -41,7 +43,7 @@ vi.mock("@/utils/db", async () => {
     getDatabases: mocks.getDatabases,
     useDefaultDatabases: () => ({
       defaultDatabases: mocks.defaultDatabases,
-      error: undefined,
+      error: mocks.catalogError,
       isLoading: false,
     }),
   };
@@ -128,6 +130,7 @@ let host: HTMLDivElement;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.catalogError = undefined;
   mocks.defaultDatabases = [];
   mocks.progressButtonProps = null;
   vi.spyOn(crypto, "randomUUID").mockReturnValue("00000000-0000-4000-8000-000000000001");
@@ -342,4 +345,18 @@ test("keeps the modal open when local conversion fails", async () => {
     title: "Common.Error",
     message: "permission denied",
   });
+});
+
+test("shows the catalog verification error instead of the fetch error", async () => {
+  mocks.catalogError = new CatalogVerificationError(new Error("bad signature"));
+  await renderAddDatabase();
+  expect(host.textContent).toContain("Databases.Add.ErrorCatalog");
+  expect(host.textContent).not.toContain("Databases.Add.ErrorFetch");
+});
+
+test("keeps the fetch error for other catalog failures", async () => {
+  mocks.catalogError = new Error("offline");
+  await renderAddDatabase();
+  expect(host.textContent).toContain("Databases.Add.ErrorFetch");
+  expect(host.textContent).not.toContain("Databases.Add.ErrorCatalog");
 });

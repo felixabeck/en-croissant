@@ -14,6 +14,7 @@ import { formatBytes, formatNumber } from "@/utils/format";
 import { notifyUnlessCancelled, runUnlessCancelled } from "@/components/files/notifyError";
 import { choosePuzzleDatabase, getPuzzleDatabases } from "@/utils/puzzles";
 import ProgressButton from "../common/ProgressButton";
+import { CatalogVerificationError } from "@/utils/signedCatalog";
 import AppModal from "../common/AppModal";
 
 function AddPuzzle({
@@ -84,7 +85,11 @@ function AddPuzzle({
           })}
           {error && (
             <Alert icon={<IconAlertCircle size="1rem" />} title={t("Common.Error")} color="red">
-              {t("Databases.Add.ErrorFetch")}
+              {t(
+                error instanceof CatalogVerificationError
+                  ? "Databases.Add.ErrorCatalog"
+                  : "Databases.Add.ErrorFetch",
+              )}
             </Alert>
           )}
         </Stack>

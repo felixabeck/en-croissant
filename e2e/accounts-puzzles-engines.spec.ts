@@ -35,13 +35,13 @@ test("accounts-puzzles-engines: local engine validation is visible before any na
 
 test("accounts-puzzles-engines: navigates empty account, puzzle, and engine states", async ({
     page,
+    mockScenario,
     assertAccessible,
     assertNoHorizontalOverflow,
     capture,
 }) => {
-    await page.route("https://www.encroissant.org/puzzle_databases", async (route) => {
-        await route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
-    });
+    // The puzzle catalog is bundled; only its native signature check is mocked.
+    await mockScenario({ commands: { verify_signed_bytes: { result: null } } });
     await page.goto("/accounts");
     await expect(page.getByRole("button", { name: /add account/i })).toBeVisible();
     await page.getByRole("button", { name: /add account/i }).click();

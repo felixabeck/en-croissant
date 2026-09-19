@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { z } from "zod";
-import { AllowedOriginHttpClient, HttpError } from "./http";
+import { AllowedOriginHttpClient, HttpError, remoteHttp } from "./http";
 
 const client = new AllowedOriginHttpClient(["https://api.example.test"]);
 
@@ -50,5 +50,16 @@ describe("AllowedOriginHttpClient", () => {
                 signal: controller.signal,
             }),
         ).rejects.toMatchObject({ kind: "abort" } satisfies Partial<HttpError>);
+    });
+});
+
+describe("remoteHttp", () => {
+    test("no longer allows the unsigned www.encroissant.org catalog origin", async () => {
+        const fetchMock = vi.fn();
+        vi.stubGlobal("fetch", fetchMock);
+        await expect(
+            remoteHttp.get("https://www.encroissant.org/databases", { schema: z.unknown() }),
+        ).rejects.toMatchObject({ kind: "network" } satisfies Partial<HttpError>);
+        expect(fetchMock).not.toHaveBeenCalled();
     });
 });

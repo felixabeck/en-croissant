@@ -33,6 +33,7 @@ import {
 import { capitalize, formatBytes, formatNumber } from "@/utils/format";
 import { runWithAppliedRecovery } from "@/platform/errors";
 import { runUnlessCancelled } from "@/components/files/notifyError";
+import { CatalogVerificationError } from "@/utils/signedCatalog";
 import AppModal from "../common/AppModal";
 import FileInput from "../common/FileInput";
 import ProgressButton from "../common/ProgressButton";
@@ -166,7 +167,11 @@ function AddDatabase({
               })}
               {error && (
                 <Alert icon={<IconAlertCircle size="1rem" />} title={t("Common.Error")} color="red">
-                  {t("Databases.Add.ErrorFetch")}
+                  {t(
+                    error instanceof CatalogVerificationError
+                      ? "Databases.Add.ErrorCatalog"
+                      : "Databases.Add.ErrorFetch",
+                  )}
                 </Alert>
               )}
             </SimpleGrid>

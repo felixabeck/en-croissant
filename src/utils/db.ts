@@ -1,5 +1,8 @@
 import { tauri } from "@/platform/tauri";
-import { remoteHttp } from "@/platform/http";
+import databaseCatalogDocument from "@/catalogs/databases.json?raw";
+import databaseCatalogSignature from "@/catalogs/databases.json.minisig?raw";
+import puzzleCatalogDocument from "@/catalogs/puzzles.json?raw";
+import puzzleCatalogSignature from "@/catalogs/puzzles.json.minisig?raw";
 import { z } from "zod";
 import useSWR from "swr";
 import {
@@ -15,6 +18,7 @@ import {
 import type { LocalOptions } from "@/components/panels/database/DatabasePanel";
 import { capabilityKey } from "@/utils/pathCapabilities";
 import { collectSequential } from "@/utils/collectSequential";
+import { loadSignedCatalog } from "@/utils/signedCatalog";
 
 export type SuccessDatabaseInfo = Extract<DatabaseInfo, { type: "success" }>;
 export type ManagedDatabaseInfo = DatabaseInfo & { file: DatabaseHandle };
@@ -244,16 +248,22 @@ export function useDefaultDatabases(opened: boolean) {
     };
 }
 
+/** Bundled default database catalog; throws `CatalogVerificationError` when its signature fails. */
 export async function getDefaultDatabases(): Promise<DownloadableDatabaseInfo[]> {
-    return await remoteHttp.get("https://www.encroissant.org/databases", {
-        schema: downloadableDatabaseManifestSchema,
-    });
+    return await loadSignedCatalog(
+        databaseCatalogDocument,
+        databaseCatalogSignature,
+        downloadableDatabaseManifestSchema,
+    );
 }
 
+/** Bundled default puzzle catalog; throws `CatalogVerificationError` when its signature fails. */
 export async function getDefaultPuzzleDatabases(): Promise<DownloadablePuzzleDatabase[]> {
-    return await remoteHttp.get("https://www.encroissant.org/puzzle_databases", {
-        schema: z.array(downloadablePuzzleDatabaseSchema),
-    });
+    return await loadSignedCatalog(
+        puzzleCatalogDocument,
+        puzzleCatalogSignature,
+        z.array(downloadablePuzzleDatabaseSchema),
+    );
 }
 
 export interface Opening {

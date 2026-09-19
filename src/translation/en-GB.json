@@ -331,6 +331,7 @@
     "Common.WHITE": "WHITE",
     "Databases.Add.ClickToSelectPGN": "Click to select the PGN file",
     "Databases.Add.Convert": "Convert",
+    "Databases.Add.ErrorCatalog": "The bundled database catalogue failed signature verification.",
     "Databases.Add.ErrorFetch": "Failed to fetch the database's info from the server.",
     "Databases.Add.Title": "Add Database",
     "Databases.Add.Web": "Web",

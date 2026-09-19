@@ -1,0 +1,52 @@
+[
+    {
+        "title": "Lumbra's Gigabase",
+        "description": "",
+        "player_count": 526520,
+        "game_count": 9570564,
+        "storage_size": 2789040128,
+        "downloadLink": "https://db.encroissant.org/LumbrasGigaBase2025-06.db3",
+        "sha256": "8ab16592d4072ae2a1af5356cd83b6fd92de8bee0ad05f0e2be0f0f05f5431a5",
+        "signature": "untrusted comment: signature from tauri secret key\nRUTseHvqA5TNjueAp93+ENwwTphBuTQwzjl3Yw59MmBqXF5yObt90kvEHKcLs/moVvQMic3kqBtmh0omI5esu2wxLR4q26kM6g0=\ntrusted comment: timestamp:1789777664\tfile:payload-8ab16592d4072ae2a1af5356cd83b6fd92de8bee0ad05f0e2be0f0f05f5431a5.txt\npdZVBRRIr+6KDPkgt2nzgxjuw1BfpZBiSLyGj07kgPXxl4fDNwp6+61zPF31KWBH5RsI5yi2hyx4qps/v+KiCg==\n"
+    },
+    {
+        "title": "Caissabase 2024",
+        "description": "",
+        "player_count": 321095,
+        "game_count": 5404926,
+        "storage_size": 1318744064,
+        "downloadLink": "https://db.encroissant.org/caissabase_2024.db3",
+        "sha256": "70b619a1161326ca0b525df187b10efd119a3b03acc7c75c0c75f673c3af58e6",
+        "signature": "untrusted comment: signature from tauri secret key\nRUTseHvqA5TNjrOO1EsstExtAHsO0YJBZ274nWwQBYZmIL0i15lXwftVokEJ6/Gy6OmNTZIO4TcFM9KkWASNC/M861DNTQr1jgA=\ntrusted comment: timestamp:1789777665\tfile:payload-70b619a1161326ca0b525df187b10efd119a3b03acc7c75c0c75f673c3af58e6.txt\n75kfwSP/LcRF9HKv4KXnHJncgGab1P9odJtNoZu79WNucN1JrPW8VxnssyXw2IeA3O0OKZdlhLGJmutQYU92BA==\n"
+    },
+    {
+        "title": "Ajedrez Data - Correspondence",
+        "description": "",
+        "player_count": 40547,
+        "game_count": 1524027,
+        "storage_size": 328458240,
+        "downloadLink": "https://db.encroissant.org/AJ-COR.db3",
+        "sha256": "ba61bf32953f44ba90b6804d042dc8113213ac73825e416f5c189db2aa5e6cc0",
+        "signature": "untrusted comment: signature from tauri secret key\nRUTseHvqA5TNjuxiu9k406W0eKYWqFiHRhLVwqAO4Fbs88py17/l+ZKT4E9osrs66PAxanKzmGBklw0fct0FWWi7zWq1KbqULgQ=\ntrusted comment: timestamp:1789777665\tfile:payload-ba61bf32953f44ba90b6804d042dc8113213ac73825e416f5c189db2aa5e6cc0.txt\ngPm133XJtSvpygLDvelmOLxu+YX0uBS8SMWX8DOgn76emLVHPLHzWctR+2ZGr9g48R+3X2JGloavV0yMHFZdAQ==\n"
+    },
+    {
+        "title": "Ajedrez Data - OTB",
+        "description": "",
+        "player_count": 144015,
+        "game_count": 4279012,
+        "storage_size": 993509376,
+        "downloadLink": "https://db.encroissant.org/AJ-OTB.db3",
+        "sha256": "ef62056768c41c0eae8c534a469bb06886f720d28ca52f2f3e3082260ab3b277",
+        "signature": "untrusted comment: signature from tauri secret key\nRUTseHvqA5TNjudoL/f04kMyk6nebq59hjJVPRubfOUyfgIUPQPlqzn54HxUfRJ6nVfCD+nGh2O2RZ8NLIPE9sMa3sfNZbnSeQk=\ntrusted comment: timestamp:1789777665\tfile:payload-ef62056768c41c0eae8c534a469bb06886f720d28ca52f2f3e3082260ab3b277.txt\nW6JCj5wXj/okaXhjytzV+wP0FAEGP2U+k85bQUnmDSMMaCt7zbZApw/qobA18TUMYvlZInNUTgzBmFQEZ/5lCg==\n"
+    },
+    {
+        "title": "MillionBase",
+        "description": "",
+        "player_count": 284403,
+        "game_count": 3451068,
+        "storage_size": 779833344,
+        "downloadLink": "https://db.encroissant.org/mb-3.db3",
+        "sha256": "d66b1b50c63f42a658926c2193160341237209c283310e019aae3149fa62cbfc",
+        "signature": "untrusted comment: signature from tauri secret key\nRUTseHvqA5TNjhWb/ge9X3Qt94GOMpNj7jOy27wg+9jThzrRMTrzAsUC0hwqXIT44b/EbUQ3LTvRHriovrfvP3JQ7UMFehKNXAg=\ntrusted comment: timestamp:1789777665\tfile:payload-d66b1b50c63f42a658926c2193160341237209c283310e019aae3149fa62cbfc.txt\nlagiyUReQLSlSR2MqpoQxMyNLpfUDQ+UV5tmqIf9BD+1ImUIlfa9g75kqwwFW63o3bY/nK0yk/AkPrj2xLcMCw==\n"
+    }
+]

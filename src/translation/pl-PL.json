@@ -337,6 +337,7 @@
     "Common.WHITE": "BIAŁE",
     "Databases.Add.ClickToSelectPGN": "Kliknij, aby wybrać plik PGN",
     "Databases.Add.Convert": "Konwertuj",
+    "Databases.Add.ErrorCatalog": "Dołączony katalog baz danych nie przeszedł weryfikacji podpisu.",
     "Databases.Add.ErrorFetch": "Nie udało się pobrać informacji o bazie danych z serwera.",
     "Databases.Add.Title": "Dodaj bazę danych",
     "Databases.Add.Web": "Sieć",

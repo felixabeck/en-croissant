@@ -13,15 +13,23 @@ passes both strings to the `verify_signed_bytes` command and parses the JSON onl
 verified it; a verification failure surfaces as a distinct error, not as an empty list. Changing a
 single byte of `engines.json` requires re-signing the document.
 
-**Database and puzzle catalog documents.** `/databases` and `/puzzle_databases` on
-`https://www.encroissant.org` remain unsigned documents. Their entries are not signed by the fork
-key, so their downloads fail closed until those catalogs are hosted and re-signed.
+**Database and puzzle catalog documents.** The default database and puzzle catalogs are bundled
+the same way: `src/catalogs/databases.json` with `src/catalogs/databases.json.minisig`, and
+`src/catalogs/puzzles.json` with `src/catalogs/puzzles.json.minisig`. Each detached Minisign
+signature covers the exact file bytes (no canonicalization, no JSON re-serialization). Both go
+through the same verify-then-parse path as the engine catalog, and a verification failure surfaces
+as a distinct error, not as an empty list. The renderer no longer fetches any catalog from
+`https://www.encroissant.org`; the artifacts themselves are downloaded natively from their
+`downloadLink`.
 
 **Per-entry payload.** For each entry, `signature` authenticates only `downloadLink` together with
 `sha256`; `path`, `name`, `version`, `os`, `bmi2`, and image fields are covered only by the engine
 document signature, not by the entry signature. The backend's `register_installed_engine`
 `Component::Normal` check and `validate_components` in `src-tauri/src/infra/path_authority.rs`
 remain the containment boundary.
+For databases and puzzle databases, `title`, `description`, and the count and size fields are
+likewise covered only by the catalog document signature, not by the entry signature. The native
+filename is `${title}.db3`, so it is document-signed in the same way the engine `path` is.
 
 Every downloadable entry must contain:
 
@@ -42,4 +50,4 @@ Existing manifest fields remain required by their consumers. In addition to `sha
 - Databases require `title`, `player_count`, `game_count`, `storage_size`, and `downloadLink`; `description` is optional and defaults to an empty string.
 - Puzzle databases require `title`, `description`, `puzzleCount`, `storageSize`, and `downloadLink`.
 
-Release automation must calculate the digest from the final hosted artifact, construct the exact payload, sign it with the protected release private key, JSON-escape the complete Minisign signature, and publish the manifest only after the artifact is immutable and reachable. The private key must never enter this repository or CI logs. For the engine catalog, the signed entries and the detached document signature are committed together. Unsigned legacy entries are deliberately rejected rather than downloaded.
+Release automation must calculate the digest from the final hosted artifact, construct the exact payload, sign it with the protected release private key, JSON-escape the complete Minisign signature, and publish the manifest only after the artifact is immutable and reachable. The private key must never enter this repository or CI logs. For the engine, database, and puzzle catalogs, the signed entries and the detached document signature are committed together. Unsigned legacy entries are deliberately rejected rather than downloaded.

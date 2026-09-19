@@ -334,6 +334,7 @@
     "Common.WHITE": "BIANCO",
     "Databases.Add.ClickToSelectPGN": "Clicca per selezionare il file PGN",
     "Databases.Add.Convert": "Converti",
+    "Databases.Add.ErrorCatalog": "Il catalogo database incluso non ha superato la verifica della firma.",
     "Databases.Add.ErrorFetch": "Impossibile recuperare le informazioni del database dal server.",
     "Databases.Add.Title": "Aggiungi database",
     "Databases.Add.Web": "Web",

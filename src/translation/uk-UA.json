@@ -337,6 +337,7 @@
     "Common.WHITE": "БІЛІ",
     "Databases.Add.ClickToSelectPGN": "Натисніть для вибору файлу PGN",
     "Databases.Add.Convert": "Конвертувати",
+    "Databases.Add.ErrorCatalog": "Вбудований каталог баз даних не пройшов перевірку підпису.",
     "Databases.Add.ErrorFetch": "Не вдалося отримати бази даних з сервера.",
     "Databases.Add.Title": "Додати базу даних",
     "Databases.Add.Web": "Веб",

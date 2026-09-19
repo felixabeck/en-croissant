@@ -1,0 +1,11 @@
+[
+    {
+        "title": "Lichess Puzzles 2026",
+        "description": "A collection of all puzzles from Lichess.org",
+        "puzzleCount": 5751400,
+        "storageSize": 1172987904,
+        "downloadLink": "https://db.encroissant.org/Lichess%20Puzzles%202026.db3",
+        "sha256": "86e93ada18f59be8c192e983ea4e1d84b395b66e198424f4f045bab8e371d0f3",
+        "signature": "untrusted comment: signature from tauri secret key\nRUTseHvqA5TNjkSBnceSrb1wuu3BejDBtzDoZC4SmkM7MXk2/c7UWroF2ls/R9ihQc9cpsyr6Iv0CQOOUTf6bW8kNFUq7/uxEAU=\ntrusted comment: timestamp:1789777666\tfile:payload-86e93ada18f59be8c192e983ea4e1d84b395b66e198424f4f045bab8e371d0f3.txt\nbSji+qyCbcsRiCN2MFHSqZqcdRTggKgYK1Rp3hr4r34GfLSpDNL4/CChQfrrWF8PZYfEAsVa9gfX8RXauQ38CQ==\n"
+    }
+]

@@ -331,6 +331,7 @@
     "Common.WHITE": "BEYAZ",
     "Databases.Add.ClickToSelectPGN": "PGN dosyası seçmek için tıklayın",
     "Databases.Add.Convert": "Dönüştür",
+    "Databases.Add.ErrorCatalog": "Birlikte gelen veritabanı kataloğu imza doğrulamasını geçemedi.",
     "Databases.Add.ErrorFetch": "Veritabanı bilgileri sunucudan aktarılamadı.",
     "Databases.Add.Title": "Veritabanı Ekle",
     "Databases.Add.Web": "Web",

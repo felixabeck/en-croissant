@@ -331,6 +331,7 @@
     "Common.WHITE": "HVIT",
     "Databases.Add.ClickToSelectPGN": "Klikk for å velge PGN-filen",
     "Databases.Add.Convert": "Konverter",
+    "Databases.Add.ErrorCatalog": "Den medfølgende databasekatalogen feilet signaturkontrollen.",
     "Databases.Add.ErrorFetch": "Kunne ikke hente databasens info fra serveren.",
     "Databases.Add.Title": "Legg til database",
     "Databases.Add.Web": "Internett",

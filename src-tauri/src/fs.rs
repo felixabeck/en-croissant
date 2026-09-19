@@ -2928,6 +2928,72 @@ mod tests {
     }
 
     #[test]
+    fn catalog_minisign_production_verifies_committed_database_catalog() {
+        let public_key_file = include_str!("../keys/release.minisign.pub");
+        assert_eq!(
+            release_public_key_line(RELEASE_MINISIGN_PUBLIC_KEY_FILE).unwrap(),
+            public_key_file.lines().nth(1).unwrap()
+        );
+        let document = include_str!("../../src/catalogs/databases.json");
+        let signature = include_str!("../../src/catalogs/databases.json.minisig");
+        tauri::async_runtime::block_on(verify_signed_bytes(document.into(), signature.into()))
+            .unwrap();
+        assert!(tauri::async_runtime::block_on(verify_signed_bytes(
+            format!("{document} "),
+            signature.into(),
+        ))
+        .is_err());
+
+        let entries: Vec<serde_json::Value> = serde_json::from_str(document).unwrap();
+        assert!(!entries.is_empty());
+        for entry in entries {
+            let integrity = ArtifactIntegrity {
+                sha256: entry["sha256"].as_str().unwrap().into(),
+                signature: entry["signature"].as_str().unwrap().into(),
+            };
+            validate_artifact_integrity(
+                OpClass::Db,
+                entry["downloadLink"].as_str().unwrap(),
+                Some(&integrity),
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn catalog_minisign_production_verifies_committed_puzzle_catalog() {
+        let public_key_file = include_str!("../keys/release.minisign.pub");
+        assert_eq!(
+            release_public_key_line(RELEASE_MINISIGN_PUBLIC_KEY_FILE).unwrap(),
+            public_key_file.lines().nth(1).unwrap()
+        );
+        let document = include_str!("../../src/catalogs/puzzles.json");
+        let signature = include_str!("../../src/catalogs/puzzles.json.minisig");
+        tauri::async_runtime::block_on(verify_signed_bytes(document.into(), signature.into()))
+            .unwrap();
+        assert!(tauri::async_runtime::block_on(verify_signed_bytes(
+            format!("{document} "),
+            signature.into(),
+        ))
+        .is_err());
+
+        let entries: Vec<serde_json::Value> = serde_json::from_str(document).unwrap();
+        assert!(!entries.is_empty());
+        for entry in entries {
+            let integrity = ArtifactIntegrity {
+                sha256: entry["sha256"].as_str().unwrap().into(),
+                signature: entry["signature"].as_str().unwrap().into(),
+            };
+            validate_artifact_integrity(
+                OpClass::PuzzleDb,
+                entry["downloadLink"].as_str().unwrap(),
+                Some(&integrity),
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
     fn catalog_minisign_invalid_key_is_a_typed_error() {
         for key_line in ["RWnot-base64", "", "RW"] {
             assert_eq!(

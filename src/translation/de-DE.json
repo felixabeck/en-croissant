@@ -331,6 +331,7 @@
     "Common.WHITE": "WEISS",
     "Databases.Add.ClickToSelectPGN": "Klicke, um die PGN-Datei auszuwählen",
     "Databases.Add.Convert": "Konvertieren",
+    "Databases.Add.ErrorCatalog": "Der mitgelieferte Datenbank-Katalog hat die Signaturprüfung nicht bestanden.",
     "Databases.Add.ErrorFetch": "Fehler beim Abrufen der Datenbankinformationen vom Server.",
     "Databases.Add.Title": "Datenbank hinzufügen",
     "Databases.Add.Web": "Web",

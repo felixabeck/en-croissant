@@ -334,6 +334,7 @@
     "Common.WHITE": "BLANCAS",
     "Databases.Add.ClickToSelectPGN": "Haga clic para seleccionar el archivo PGN",
     "Databases.Add.Convert": "Convertir",
+    "Databases.Add.ErrorCatalog": "El catálogo de bases de datos incluido no superó la verificación de firma.",
     "Databases.Add.ErrorFetch": "No se pudo obtener la información de la base de datos del servidor.",
     "Databases.Add.Title": "Agregar base de datos",
     "Databases.Add.Web": "Web",

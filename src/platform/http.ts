@@ -52,7 +52,6 @@ export class AllowedOriginHttpClient {
 
 /** Fixed public origins used by unauthenticated renderer requests. */
 export const remoteHttp = new AllowedOriginHttpClient([
-    "https://www.encroissant.org",
     "https://api.chess.com",
     "https://www.chess.com",
     "https://lichess.org",

@@ -1,10 +1,12 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { CatalogVerificationError } from "@/utils/signedCatalog";
 import { defaultPuzzleDatabaseProgressId } from "@/utils/db";
 import AddPuzzle from "./AddPuzzle";
 
 const mocks = vi.hoisted(() => ({
+  catalogError: undefined as unknown,
   choosePuzzleDatabase: vi.fn(),
   getPuzzleDatabases: vi.fn(),
   notify: vi.fn(),
@@ -20,7 +22,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("swr/immutable", () => ({
-  default: () => ({ data: mocks.defaultDatabases, error: undefined }),
+  default: () => ({ data: mocks.defaultDatabases, error: mocks.catalogError }),
 }));
 vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.notify } }));
 vi.mock("@/utils/puzzles", () => ({
@@ -98,6 +100,7 @@ let host: HTMLDivElement;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.catalogError = undefined;
   mocks.defaultDatabases = undefined;
   mocks.progressButtonProps = null;
   host = document.createElement("div");
@@ -265,4 +268,18 @@ test("unmount during the accepted picker prevents a later preview", async () => 
   expect(actions.setPuzzleDbs).not.toHaveBeenCalled();
   expect(actions.setOpened).not.toHaveBeenCalled();
   expect(mocks.notify).not.toHaveBeenCalled();
+});
+
+test("shows the catalog verification error instead of the fetch error", async () => {
+  mocks.catalogError = new CatalogVerificationError(new Error("bad signature"));
+  await render();
+  expect(host.textContent).toContain("Databases.Add.ErrorCatalog");
+  expect(host.textContent).not.toContain("Databases.Add.ErrorFetch");
+});
+
+test("keeps the fetch error for other catalog failures", async () => {
+  mocks.catalogError = new Error("offline");
+  await render();
+  expect(host.textContent).toContain("Databases.Add.ErrorFetch");
+  expect(host.textContent).not.toContain("Databases.Add.ErrorCatalog");
 });
