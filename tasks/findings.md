@@ -10197,3 +10197,23 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
   reached from another test.
 * **Found by:** the `f-20260905-13` push, reading the named remote jobs before pushing,
   2026-09-19.
+
+---
+
+## 2026-09-19 — filed through the inbox spool
+
+### Position-search test injectors are thread-local and would go silent behind the blocking gateway
+
+* **ID:** f-20260919-09 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src-tauri/src/db/search.rs`: `SEARCH_POSITION_INSTRUMENT` and `EXCLUDE_FAST_LOAD_HOOK`
+  (both `thread_local!`), read inside `search_position_blocking` and `load_excluded_fast_game_ids`.
+* **Defect:** `7f7a61a5` made the instrument flag thread-local to stop parallel search tests counting
+  into an instrumented test's counters (red `rust-macos-test` on `060654fc`, `PROCESS_ENTRY_CALLS == 2`).
+  That is correct for every current test, which calls `search_position_blocking` on its own thread.
+  Production dispatches the same function through `BLOCKING_GATEWAY.spawn_cancellable`, on another OS
+  thread. A future test driving the real `search_position` command would read the flag as `false` and
+  find no hook there, so its instrument assertions would pass vacuously. `cc9af733` moved the
+  engine-registry injectors from `thread_local!` to `Arc<dyn ... + Send + Sync>` for exactly this reason.
+  Raised by `review-root-cause` on `7f7a61a5` (should-fix, confidence 80).
+* **Fix direction:** carry both injectors the way `cc9af733` does (owned by the test, handed across the
+  worker), or make a gateway-routed instrumented call fail loudly instead of reading a default.
