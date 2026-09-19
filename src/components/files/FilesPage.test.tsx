@@ -16,7 +16,8 @@ const mocks = vi.hoisted(() => ({
   setWorkspace: vi.fn(),
   setWorkspaceDisplayName: vi.fn(),
   notify: vi.fn(),
-  data: [] as Array<unknown>,
+  data: [] as Array<unknown> | undefined,
+  cardMounts: [] as string[],
   error: undefined as Error | undefined,
 }));
 const stateAtoms = vi.hoisted(() => ({ fileWorkspaceAtom: {}, fileWorkspaceDisplayNameAtom: {} }));
@@ -69,8 +70,27 @@ vi.mock("@mantine/core", () => ({
       {children}
     </button>
   ),
+  Chip: ({
+    checked,
+    onChange,
+    children,
+  }: {
+    checked: boolean;
+    onChange: (checked: boolean) => void;
+    children: React.ReactNode;
+  }) => (
+    <button type="button" aria-pressed={checked} onClick={() => onChange(!checked)}>
+      {children}
+    </button>
+  ),
   Center: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   Group: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  Input: ({
+    leftSection: _leftSection,
+    ...props
+  }: React.InputHTMLAttributes<HTMLInputElement> & { leftSection?: React.ReactNode }) => (
+    <input {...props} />
+  ),
   Modal: ({
     opened,
     title,
@@ -86,7 +106,9 @@ vi.mock("@mantine/core", () => ({
       </div>
     ) : null,
   Paper: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  ScrollArea: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   Select: () => null,
+  SimpleGrid: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   Stack: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   Text: ({ children, ...props }: React.HTMLAttributes<HTMLParagraphElement>) => (
     <p {...props}>{children}</p>
@@ -111,17 +133,25 @@ vi.mock("./DirectoryTree", () => ({
     selectedFile,
     onRequestMove,
     onMove,
+    search,
+    filter,
   }: {
     files: Array<unknown>;
     setSelectedFile: (entry: unknown) => void;
     selectedFile: { name?: string } | null;
     onRequestMove?: (entry: unknown) => void;
     onMove?: (entry: unknown, destination: unknown) => Promise<void> | void;
+    search: string;
+    filter: string;
   }) => (
     <>
+      <span data-testid="tree" data-search={search} data-filter={filter} />
       <output>{selectedFile?.name || "No selection"}</output>
       <button type="button" onClick={() => setSelectedFile(files[0])}>
         Select sample file
+      </button>
+      <button type="button" onClick={() => setSelectedFile(files[1])}>
+        Select destination folder
       </button>
       <button type="button" onClick={() => onRequestMove?.(files[0])}>
         Context Move
@@ -144,6 +174,19 @@ vi.mock("./DirectoryTree", () => ({
     </>
   ),
 }));
+
+vi.mock("./FileCard", async () => {
+  const { useEffect, useRef } = await vi.importActual<typeof import("react")>("react");
+  return {
+    default: function FileCardStub({ selected }: { selected: { name: string } }) {
+      const mountName = useRef(selected.name);
+      useEffect(() => {
+        mocks.cardMounts.push(mountName.current);
+      }, []);
+      return <section data-testid="file-card">{selected.name}</section>;
+    },
+  };
+});
 
 const workspace = { id: { id: "workspace-token" }, kind: "fileWorkspace" };
 const entry = {
@@ -210,6 +253,7 @@ async function completeTrash() {
 beforeEach(async () => {
   vi.clearAllMocks();
   mocks.data = [entry, destination];
+  mocks.cardMounts = [];
   mocks.error = undefined;
   mocks.mutate.mockResolvedValue(undefined);
   mocks.trashWorkspaceEntry.mockResolvedValue(undefined);
@@ -419,7 +463,7 @@ test("applied-despite-error create refreshes and closes without operationFailed"
   );
   click("Create file");
   await settle();
-  const input = container.querySelector("input")! as HTMLInputElement;
+  const input = container.querySelector('[role="dialog"] input')! as HTMLInputElement;
   await act(async () => {
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
       input,
@@ -584,5 +628,105 @@ describe("move controller", () => {
     expect(container.querySelector("output")?.textContent).toBe("sample.pgn");
     expect(document.activeElement).toBe(drag);
     expect(mocks.mutate).not.toHaveBeenCalled();
+  });
+});
+
+function tree() {
+  return container.querySelector('[data-testid="tree"]')!;
+}
+
+function card() {
+  return container.querySelector('[data-testid="file-card"]');
+}
+
+async function rerender() {
+  await act(async () => root.render(<FilesPage />));
+}
+
+describe("workspace controls", () => {
+  test("search text reaches the tree", async () => {
+    const input = container.querySelector('input[aria-label="Common.Search"]') as HTMLInputElement;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "sam");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(tree().getAttribute("data-search")).toBe("sam");
+  });
+
+  test("choosing the active type filter again returns to all types", () => {
+    expect(tree().getAttribute("data-filter")).toBe("");
+    click("Files.FileType.Puzzle");
+    expect(tree().getAttribute("data-filter")).toBe("puzzle");
+    click("Files.FileType.Game");
+    expect(tree().getAttribute("data-filter")).toBe("game");
+    click("Files.FileType.Game");
+    expect(tree().getAttribute("data-filter")).toBe("");
+  });
+
+  test("create file and create folder stay reachable", () => {
+    click("Create folder");
+    expect(container.querySelector('[role="dialog"]')?.getAttribute("aria-label")).toBe(
+      "Create folder",
+    );
+  });
+});
+
+describe("selection column", () => {
+  test("shows a placeholder without a selection", () => {
+    expect(card()).toBeNull();
+    expect(container.textContent).toContain("No file selected");
+  });
+
+  test("a selected file renders its card and actions, and nothing before the tree changes", () => {
+    const before = container.innerHTML.slice(0, container.innerHTML.indexOf('data-testid="tree"'));
+    click("Select sample file");
+    const after = container.innerHTML.slice(0, container.innerHTML.indexOf('data-testid="tree"'));
+    expect(after).toBe(before);
+    expect(card()?.textContent).toBe("sample.pgn");
+    for (const node of [button("Rename"), button("Move"), button("Trash"), card()!]) {
+      expect(tree().compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+    expect(container.textContent).not.toContain("No file selected");
+  });
+
+  test("a selected folder shows its name and entry count", () => {
+    click("Select destination folder");
+    expect(card()).toBeNull();
+    expect(button("Rename")).toBeUndefined();
+    expect(container.textContent).toContain("Entries: {{number}}");
+  });
+
+  test("a refreshed listing re-derives the selection by handle", async () => {
+    click("Select sample file");
+    mocks.data = [{ ...entry, name: "renamed.pgn", handle: { ...entry.handle } }, destination];
+    await rerender();
+    expect(card()?.textContent).toBe("renamed.pgn");
+    expect(container.querySelector("output")?.textContent).toBe("renamed.pgn");
+    // Same handle key: the card is not remounted.
+    expect(mocks.cardMounts).toEqual(["sample.pgn"]);
+  });
+
+  test("a different file remounts the card", async () => {
+    const other = { ...entry, handle: { id: { id: "other-token" }, kind: "fileWorkspace" } };
+    click("Select sample file");
+    mocks.data = [other, destination];
+    await rerender();
+    click("Select sample file");
+    expect(mocks.cardMounts).toEqual(["sample.pgn", "sample.pgn"]);
+  });
+
+  test("a vanished entry clears the selection", async () => {
+    click("Select sample file");
+    mocks.data = [destination];
+    await rerender();
+    expect(card()).toBeNull();
+    expect(container.textContent).toContain("No file selected");
+  });
+
+  test("the selection stands while no listing is available", async () => {
+    click("Select sample file");
+    mocks.data = undefined;
+    await rerender();
+    expect(card()?.textContent).toBe("sample.pgn");
   });
 });

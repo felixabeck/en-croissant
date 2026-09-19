@@ -1,9 +1,9 @@
 import { tauri } from "@/platform/tauri";
 import { Badge, Box, Divider, Group, Stack, Text } from "@mantine/core";
-import { IconEdit, IconZoomCheck } from "@tabler/icons-react";
+import { IconZoomCheck } from "@tabler/icons-react";
 import { useNavigate } from "@tanstack/react-router";
 import { useAtom } from "jotai";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { errorUnlessCancelled } from "@/platform/errors";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
@@ -11,22 +11,15 @@ import { tabsAtom } from "@/state/atoms";
 import { IconAction } from "@/components/common/IconAction";
 import { openFile } from "@/utils/files";
 import { runTabCreation } from "@/utils/tabs";
-import { capitalize } from "@/utils/format";
+import { capitalize, formatNumber } from "@/utils/format";
+import { fileWorkspaceKey } from "@/utils/pathCapabilities";
 import GamePreview from "../databases/GamePreview";
 import GameSelector from "../panels/info/GameSelector";
 import type { FileMetadata } from "./file";
 
-function FileCard({
-  selected,
-  games,
-  setGames,
-  toggleEditModal,
-}: {
-  selected: FileMetadata;
-  games: Map<number, string>;
-  setGames: React.Dispatch<React.SetStateAction<Map<number, string>>>;
-  toggleEditModal: () => void;
-}) {
+// The parent keys this card by the handle key, so a different file remounts it (resetting the
+// page and the game-name cache) while a relisted copy of the same file keeps both.
+function FileCard({ selected }: { selected: FileMetadata }) {
   const { t } = useTranslation();
 
   const [, setTabs] = useAtom(tabsAtom);
@@ -34,16 +27,23 @@ function FileCard({
 
   const [selectedGame, setSelectedGame] = useState<string | null>(null);
   const [page, setPage] = useState(0);
+  const [games, setGames] = useState<Map<number, string>>(new Map());
+  // Two handles with the same key are the same file, so a new handle object must not retrigger the read.
+  const handleRef = useRef(selected.handle);
+  handleRef.current = selected.handle;
+  const handleKey = fileWorkspaceKey(selected.handle);
 
   useEffect(() => {
     setPage(0);
-  }, [selected]);
+    setGames(new Map());
+  }, [handleKey]);
 
+  // Keyed by the handle, not the entry object: a relisting must not re-read the same file.
   useEffect(() => {
     const controller = new AbortController();
     async function loadGames() {
       try {
-        const data = await tauri.readGames(selected.handle, page, page, {
+        const data = await tauri.readGames(handleRef.current, page, page, {
           signal: controller.signal,
         });
         if (!controller.signal.aborted) {
@@ -59,7 +59,7 @@ function FileCard({
     return () => {
       controller.abort();
     };
-  }, [selected, page, t]);
+  }, [handleKey, page, t]);
 
   function openGame() {
     void runTabCreation({
@@ -88,12 +88,12 @@ function FileCard({
           <IconAction label={t("Common.Open")} size="sm" onClick={openGame}>
             <IconZoomCheck />
           </IconAction>
-          <IconAction label={t("Files.EditMetadata")} size="sm" onClick={() => toggleEditModal()}>
-            <IconEdit />
-          </IconAction>
         </Group>
         <Text ta="center" c="dimmed">
-          {selected?.numGames} {t("Common.Games")}
+          {t("Files.GameCountSuffix", {
+            count: selected.numGames,
+            number: formatNumber(selected.numGames),
+          })}
         </Text>
         <div />
       </Group>

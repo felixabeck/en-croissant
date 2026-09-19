@@ -113,29 +113,13 @@ describe("FileCard", () => {
       },
     );
 
-    await renderWithMantine(
-      <FileCard
-        selected={sampleFileA}
-        games={new Map()}
-        setGames={vi.fn()}
-        toggleEditModal={vi.fn()}
-      />,
-      root,
-    );
+    await renderWithMantine(<FileCard selected={sampleFileA} />, root);
 
     expect(mocks.readGames).toHaveBeenCalledTimes(1);
     expect(signals[0].aborted).toBe(false);
 
     // Rapid switch to file B
-    await renderWithMantine(
-      <FileCard
-        selected={sampleFileB}
-        games={new Map()}
-        setGames={vi.fn()}
-        toggleEditModal={vi.fn()}
-      />,
-      root,
-    );
+    await renderWithMantine(<FileCard selected={sampleFileB} />, root);
 
     expect(signals[0].aborted).toBe(true);
     expect(mocks.readGames).toHaveBeenCalledTimes(2);
@@ -166,15 +150,7 @@ describe("FileCard", () => {
       },
     );
 
-    await renderWithMantine(
-      <FileCard
-        selected={sampleFileA}
-        games={new Map()}
-        setGames={vi.fn()}
-        toggleEditModal={vi.fn()}
-      />,
-      root,
-    );
+    await renderWithMantine(<FileCard selected={sampleFileA} />, root);
 
     expect(capturedSignal).toBeDefined();
     expect(capturedSignal.aborted).toBe(false);
@@ -188,15 +164,7 @@ describe("FileCard", () => {
   test("cancelled readGames does not show failure notification", async () => {
     mocks.readGames.mockRejectedValue(cancellationError());
 
-    await renderWithMantine(
-      <FileCard
-        selected={sampleFileA}
-        games={new Map()}
-        setGames={vi.fn()}
-        toggleEditModal={vi.fn()}
-      />,
-      root,
-    );
+    await renderWithMantine(<FileCard selected={sampleFileA} />, root);
 
     expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
     expect(container.querySelector("[data-testid='game-preview']")).toBeNull();
@@ -206,15 +174,7 @@ describe("FileCard", () => {
     const error = new Error("Failed to read game");
     mocks.readGames.mockRejectedValue(error);
 
-    await renderWithMantine(
-      <FileCard
-        selected={sampleFileA}
-        games={new Map()}
-        setGames={vi.fn()}
-        toggleEditModal={vi.fn()}
-      />,
-      root,
-    );
+    await renderWithMantine(<FileCard selected={sampleFileA} />, root);
 
     expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", error);
     expect(container.querySelector("[data-testid='game-preview']")).toBeNull();
@@ -229,27 +189,11 @@ describe("FileCard", () => {
         }),
     );
 
-    await renderWithMantine(
-      <FileCard
-        selected={sampleFileA}
-        games={new Map()}
-        setGames={vi.fn()}
-        toggleEditModal={vi.fn()}
-      />,
-      root,
-    );
+    await renderWithMantine(<FileCard selected={sampleFileA} />, root);
 
     // Switch to file B before A fails
     mocks.readGames.mockResolvedValueOnce(["pgn-b"]);
-    await renderWithMantine(
-      <FileCard
-        selected={sampleFileB}
-        games={new Map()}
-        setGames={vi.fn()}
-        toggleEditModal={vi.fn()}
-      />,
-      root,
-    );
+    await renderWithMantine(<FileCard selected={sampleFileB} />, root);
 
     // Now A fails late
     await act(async () => {
@@ -258,5 +202,33 @@ describe("FileCard", () => {
 
     expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
     expect(container.querySelector("[data-testid='game-preview']")?.textContent).toBe("pgn-b");
+  });
+
+  test("a relisted copy of the same file keeps the page and reads no games again", async () => {
+    mocks.readGames.mockResolvedValue(["pgn-a"]);
+
+    await renderWithMantine(<FileCard selected={sampleFileA} />, root);
+    expect(mocks.readGames).toHaveBeenCalledTimes(1);
+
+    await renderWithMantine(
+      <FileCard
+        selected={{ ...sampleFileA, name: "renamed", handle: { ...sampleFileA.handle } }}
+      />,
+      root,
+    );
+
+    expect(mocks.readGames).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain("renamed");
+    expect(container.querySelector("[data-testid='game-preview']")?.textContent).toBe("pgn-a");
+  });
+
+  test("renders no metadata-edit control", async () => {
+    mocks.readGames.mockResolvedValue(["pgn-a"]);
+
+    await renderWithMantine(<FileCard selected={sampleFileA} />, root);
+
+    expect(container.querySelector('[aria-label="Files.EditMetadata"]')).toBeNull();
+    expect(container.textContent).not.toContain("Files.EditMetadata");
+    expect(container.querySelector('[aria-label="Common.Open"]')).not.toBeNull();
   });
 });
