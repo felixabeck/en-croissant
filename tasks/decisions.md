@@ -3554,3 +3554,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** an unchanged Status is a drain-loop. 08 and 09 are independently pickable Root-`-` entries; d-20260905-06 sliced 07 to the token plus the engine-image window, and d-20260919-03 refused folding 08 back into a sibling slice. 07's own questions are settled (d-20260905-07 through d-20260905-12) and present in the tree (`atomic_replace_leaf_identified`, `register_engine_image(&AuthorizedDir, …)`, `serve_sound` on a retained descriptor). Parent-tracking would re-run this id forever without touching 08 or 09.
 * **Decided by:** Grok, autonomously under `full auto`, drain session 78169956-b117-452b-a8df-1231a84a355e · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"465201efc563b5c0208961e75bfa6cdab053a3abfadb944aeea81040c818c01e","input_sha256":"5bdf367e70fb589402b044ed8776c3f598cbf185196f6b2cb5a77018bb3ecd5d","kind":"mutation-receipt","operation":"018229e5497ee13ebe7128ea31b3f1903f50b008235166eaf75131d8be99660e","options":{"section":null},"request_id_sha256":null,"results":["d-20260919-04"],"target":"decisions-ledger","v":1} -->
+
+### d-20260919-05 — Zip/tar inner writes only for f-20260905-08, or also download staging File::open?
+
+* **Question:** After d-20260919-03 chose OwnedStagingDir, does this f-20260905-08 run convert zip/tar inner member writes only, or also the download staging payload File::open?
+* **Governs:** f-20260905-08
+* **Chosen:** zip/tar inner member writes only. Download staging create/open and dest-parent mkdir stay follow-ons.
+* **Rejected:** converting File::open at fs.rs:999 without converting payload creation in download_file_core (would claim the payload closed while bytes are still made by pathname). Rejected: converting the shared download core in this run (also names engine-archive dest parents). Rejected: leaving 08 open as a parent tracker (d-20260919-04).
+* **Reason:** locate showed the original seven sites mixed tempfile interiors with destination parents. Inner zip/tar members are the obligation d-20260919-03 named. Download File::open is a last read of a payload still written by pathname.
+* **Decided by:** Grok, autonomously under full auto, drain 830f0512-6047-4ef0-b8b7-c3c353baa63c · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"86da79af24a6df3026788fc7986bfde7252d46d59f71c544c689f060478620fa","input_sha256":"38699e6098860d19c9e014a13b964e8682e2a13a432281dfaf80ca8b089a5b2c","kind":"mutation-receipt","operation":"165424b140ea39255acec6407ed89d7cd0f975dbc6c995f056d052259daa6faf","options":{"section":null},"request_id_sha256":null,"results":["d-20260919-05"],"target":"decisions-ledger","v":1} -->
