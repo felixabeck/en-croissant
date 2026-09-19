@@ -10013,6 +10013,9 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 * **Related:** `f-20260917-04` (handled; in-process mapping gate). Named here rather than sharing `Root: non-linux-platform-port`, because the compile/gate parent is closed and this is a remaining runtime pin, not an unbuildable target.
 * **Found by:** Grok, drain session 67bb5fd2-8bef-4d13-b2e3-9b0baf4316a3, while closing `f-20260830-06`. Measured from `rust-windows-test` logs of runs 35391848926 and 35398018524.
 
+* **Handled (2026-09-19, Claude Code, interactive run after Felix reported seventeen red `Test` runs):** the open question is answered by measurement — success is the Windows contract. Replace and unlink both commit in one attempt under an unleased mapping and the mapper keeps its bytes (`windows-latest`, runs 35424078540 and 35424524326). The 1224 pin is replaced by `search_index_mapping_gate_external_mapper_keeps_its_generation_across_one_replace` and `..._across_unlink`, which run on every platform (`5eaa5f1b`, `8e1b6481`). Decision `d-20260919-10` supersedes the premise of `d-20260918-17`. Whether the gate is still needed is `f-20260919-06`. Proof: `rust-windows-test` 717 passed, 0 failed on `5bf8e48c`.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"da859fac2926d487e64713b36afe6846646351727f35367a33c7ff89b1f4ea7c","input_sha256":"ffe0a72474c2f1a7fb7d6865378a87ff11d08c597dbcbdfc6ed271ed4ad4a8d0","kind":"mutation-receipt","operation":"391340bffe01f4d6fae1cb75c2f3867ef4b324e5e854a4e31fa221cfa36d3043","options":{"section":null},"request_id_sha256":null,"results":["f-20260918-03"],"target":"f-20260918-03","v":1} -->
+
 ---
 
 ## 2026-09-19 — filed through the inbox spool
