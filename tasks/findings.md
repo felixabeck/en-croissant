@@ -6733,7 +6733,7 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 
 ### The temp-to-temp `atomic_install_dir` pair is counted by bare name and cannot use the download-directory route
 
-* **ID:** f-20260905-06 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260905-06 · **Status:** handled · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/fs.rs:1374` and `:1436` — the two `atomic_install_dir` call sites;
   `src-tauri/src/infra/path_authority.rs` — `ResolvedPath::atomic_install_download_dir`.
 * **Defect:** these two sites are counted because `PATHNAME_FNS` matches by **bare name**, and
