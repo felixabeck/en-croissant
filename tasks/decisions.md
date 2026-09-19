@@ -3614,3 +3614,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** new evidence under clause 2: two runner measurements replace an assertion nobody had run (rule 12b). This supersedes the premise and the sentence "External mappers still surface as MappedFile/Io after the wait" in `d-20260918-17`; its chosen mechanism stands until f-20260919-06 is worked.
 * **Decided by:** Claude Code, autonomously under `full auto` · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"8605dc7b099f590c662301dafb6553664612c8cb76f3690d8da9f081771b9301","input_sha256":"c34aff784ccfeb53929268795466e3cf69356ba57335e7c10a11f14a23cc719f","kind":"mutation-receipt","operation":"d133ffbd38d22d7dbb646c87de2818d284441928efbf97b13fb54d9a9458de74","options":{"section":null},"request_id_sha256":null,"results":["d-20260919-10"],"target":"decisions-ledger","v":1} -->
+
+### d-20260919-11 — What fixes "double-click on a Files row opens nothing" — the gesture, `draggable`, or the layout?
+
+* **Question:** What fixes "double-click on a Files row opens nothing" in the real window — the gesture handling, the row's `draggable` attribute, or the page layout?
+* **Governs:** f-20260905-14
+* **Chosen:** The layout. Nothing whose presence depends on the selection is rendered before the tree; Rename/Move/Trash live in the card column. `draggable` stays. `pnpm verify:app` item 10 (a real W3C pointer double-click on a not yet selected row) is the standing proof.
+* **Rejected:** Removing `draggable` (the finding's prime suspect); debouncing clicks, counting `mousedown`, or deferring the selection render — each keeps a tree that moves under the pointer.
+* **Reason:** Measured 2026-09-19 in the release binary: on an unselected row the first click selected it, the page inserted its action bar above the tree, the row moved from y=140 to y=170, and the second click landed on the bar (`dblclick` fired on another element, the Rename modal opened, no `dragstart` at all). On a pre-selected row the identical gesture opened the game. The finding's second suspect, a discarded `openEntry` rejection, was already fixed by `813563b7`/`db8a07c5`.
+* **Decided by:** Claude Code (Fable), `full auto` build run 2026-09-19 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"409db94564a4fbe7b6658087f77e95e82e50944ba39b1b24aa975d6c92b3af75","input_sha256":"65313d2707e224a5daec88680c4169d0e293c1072e7b7144075099482a9527cf","kind":"mutation-receipt","operation":"2d677047e9250c7f10aa94c42c46e5f6ba41b87bca4624378dd3d9ccb0bed117","options":{"section":null},"request_id_sha256":null,"results":["d-20260919-11"],"target":"decisions-ledger","v":1} -->
