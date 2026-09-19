@@ -10005,7 +10005,7 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 
 ### Windows search-index replace succeeds while an unleased mapping is held, so the 1224 pin never fires
 
-* **ID:** f-20260918-03 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260918-03 · **Status:** handled · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/db/search_index.rs:2257` (`search_index_mapping_gate_external_mapper_fails_once_with_user_mapped_file`); `guarded_generation` at the same file; Windows atomic replace in `src-tauri/src/infra/fs.rs` (share mode includes `FILE_SHARE_DELETE`).
 * **Defect:** the Windows-only test maps the preferred sidecar with `File::open` + `Mmap::map` (no mapping lease) and then calls `guarded_generation`. It asserts `Err(Error::Io)` with `raw_os_error() == Some(1224)` (`ERROR_USER_MAPPED_FILE`) and exactly one tempfile-create attempt. On `windows-latest` (GitHub Actions run 35391848926, job `rust-windows-test`, and again on 35398018524 at `44034209`) it panics with `Ok(DurableCommit)` at `search_index.rs:2285`.
 * **Open question:** should an unleased Windows mapping still make search-index replace fail with 1224 (in which case the replace share/disposition is wrong), or is success under `FILE_SHARE_DELETE` the intended Windows contract (in which case the test's premise is obsolete and must change)?
