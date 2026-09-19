@@ -5,7 +5,7 @@ import {
   type ActionIconProps,
   type ElementProps,
 } from "@mantine/core";
-import { forwardRef, type ReactNode } from "react";
+import { forwardRef, type ReactElement } from "react";
 
 type IconActionProps = Omit<
   ActionIconProps & ElementProps<"button", keyof ActionIconProps>,
@@ -13,7 +13,8 @@ type IconActionProps = Omit<
 > & {
   /** Localized accessible name and tooltip text. */
   label: string;
-  children: ReactNode;
+  /** The icon. An element, never text: the button is icon-sized and clips a word. */
+  children: ReactElement;
   pending?: boolean;
   pressed?: boolean;
 };
