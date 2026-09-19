@@ -1,4 +1,5 @@
 use std::{
+    ffi::{OsStr, OsString},
     future::Future,
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -369,6 +370,7 @@ async fn download_file_core<F>(
     op: OpClass,
     url: &str,
     path: &Path,
+    staging: Option<(PathBuf, Option<OsString>)>,
     transport: &dyn crate::infra::net::DownloadTransport,
     token: Option<&str>,
     total_size: Option<u32>,
@@ -381,6 +383,7 @@ where
         op,
         url,
         path,
+        staging,
         transport,
         token,
         total_size,
@@ -396,6 +399,7 @@ async fn download_file_core_control<F>(
     op: OpClass,
     url: &str,
     path: &Path,
+    staging: Option<(PathBuf, Option<OsString>)>,
     transport: &dyn crate::infra::net::DownloadTransport,
     token: Option<&str>,
     total_size: Option<u32>,
@@ -409,6 +413,7 @@ where
         op,
         url,
         path,
+        staging,
         transport,
         token,
         total_size,
@@ -420,10 +425,44 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Splits the staging a zip or tar download installs under into the extractor's parent and
+/// leaf, refusing when `path` is not the directory that staging names.
+fn archive_install_names<'a>(
+    path: &Path,
+    staging: &'a Option<(PathBuf, Option<OsString>)>,
+) -> Result<(&'a Path, &'a OsStr), Error> {
+    let mismatch = || Error::InvalidInput("archive target does not match its staging".into());
+    match staging {
+        None => Err(Error::InvalidInput(
+            "archive extract needs process-owned staging".into(),
+        )),
+        Some((root, None)) => {
+            if path != root.as_path() {
+                return Err(mismatch());
+            }
+            match (root.parent(), root.file_name()) {
+                (Some(parent), Some(leaf)) => Ok((parent, leaf)),
+                _ => Err(mismatch()),
+            }
+        }
+        Some((root, Some(leaf))) => {
+            if path != root.join(leaf) {
+                return Err(mismatch());
+            }
+            Ok((root.as_path(), leaf.as_os_str()))
+        }
+    }
+}
+
+/// `staging` names the process-owned directory a zip or tar payload is installed under:
+/// `(root, None)` replaces `root` itself (engine), `(root, Some(leaf))` installs onto
+/// `root/leaf` (payload). Both must agree with `path`; gzip and plain files ignore it.
+#[allow(clippy::too_many_arguments)]
 async fn download_file_core_control_with_integrity<F>(
     op: OpClass,
     url: &str,
     path: &Path,
+    staging: Option<(PathBuf, Option<OsString>)>,
     transport: &dyn crate::infra::net::DownloadTransport,
     token: Option<&str>,
     total_size: Option<u32>,
@@ -619,10 +658,25 @@ where
                         "Archive payload is not allowed for this operation".into(),
                     ));
                 }
-                if is_zip {
-                    extract_zip_cancellable(file, &path, limits, cancellation)?;
-                } else if is_tar {
-                    extract_tar_cancellable(file, &path, limits, cancellation)?;
+                if is_zip || is_tar {
+                    let (dest_parent, dest_leaf) = archive_install_names(&path, &staging)?;
+                    if is_zip {
+                        extract_zip_cancellable(
+                            file,
+                            dest_parent,
+                            dest_leaf,
+                            limits,
+                            cancellation,
+                        )?;
+                    } else {
+                        extract_tar_cancellable(
+                            file,
+                            dest_parent,
+                            dest_leaf,
+                            limits,
+                            cancellation,
+                        )?;
+                    }
                 } else {
                     extract_gz_cancellable(file, &path, limits, cancellation)?;
                 }
@@ -860,6 +914,7 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
             op,
             url,
             &staged_file,
+            Some((staged.path().to_path_buf(), Some("payload".into()))),
             state.http_transport.as_ref(),
             bearer_token,
             total_size,
@@ -1253,6 +1308,7 @@ pub async fn download_engine_archive(
                         op,
                         &url,
                         &extracted,
+                        Some((staging.path().to_path_buf(), None)),
                         state.http_transport.as_ref(),
                         None,
                         None,
@@ -1404,13 +1460,13 @@ fn validate_archive_path(path: &str) -> Result<PathBuf, Error> {
 
 fn extract_zip_cancellable(
     file: std::fs::File,
-    target_path: &Path,
+    dest_parent: &Path,
+    dest_leaf: &OsStr,
     limits: ArchiveLimits,
     cancellation: &CancellationToken,
 ) -> Result<(), Error> {
-    let target_dir = target_path.parent().unwrap_or_else(|| Path::new("."));
-    create_private_dir_all(target_dir)?;
-    let temp_dir = private_tempdir_in(".zip", target_dir)?;
+    create_private_dir_all(dest_parent)?;
+    let temp_dir = private_tempdir_in(".zip", dest_parent)?;
 
     let mut archive = zip::ZipArchive::new(file).map_err(|e| Error::InvalidInput(e.to_string()))?;
 
@@ -1460,19 +1516,18 @@ fn extract_zip_cancellable(
         }
     }
 
-    crate::infra::fs::atomic_install_dir(temp_dir.path(), target_path)?;
-    Ok(())
+    install_extracted_tree(&temp_dir, dest_parent, dest_leaf)
 }
 
 fn extract_tar_cancellable(
     file: std::fs::File,
-    target_path: &Path,
+    dest_parent: &Path,
+    dest_leaf: &OsStr,
     limits: ArchiveLimits,
     cancellation: &CancellationToken,
 ) -> Result<(), Error> {
-    let target_dir = target_path.parent().unwrap_or_else(|| Path::new("."));
-    create_private_dir_all(target_dir)?;
-    let temp_dir = private_tempdir_in(".tar", target_dir)?;
+    create_private_dir_all(dest_parent)?;
+    let temp_dir = private_tempdir_in(".tar", dest_parent)?;
 
     let mut archive = tar::Archive::new(file);
     let mut entry_count = 0;
@@ -1527,8 +1582,48 @@ fn extract_tar_cancellable(
         }
     }
 
-    crate::infra::fs::atomic_install_dir(temp_dir.path(), target_path)?;
-    Ok(())
+    install_extracted_tree(&temp_dir, dest_parent, dest_leaf)
+}
+
+#[cfg(test)]
+type DestParentIdentityPreOpenHook = Box<dyn FnOnce(&Path) -> PathBuf>;
+
+#[cfg(test)]
+std::thread_local! {
+    static DEST_PARENT_IDENTITY_PRE_OPEN_HOOK:
+        std::cell::RefCell<Option<DestParentIdentityPreOpenHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Runs once, after the inner tree is adopted and before `dest_parent` is opened for the identity
+/// check. It receives `dest_parent` and returns the directory that open should name instead.
+#[cfg(test)]
+fn set_dest_parent_identity_pre_open_hook(hook: Option<DestParentIdentityPreOpenHook>) {
+    DEST_PARENT_IDENTITY_PRE_OPEN_HOOK.with(|slot| *slot.borrow_mut() = hook);
+}
+
+/// Installs an extracted inner tree onto `dest_leaf`. The install parent is only the descriptor
+/// adopted from `inner`; `dest_parent` is opened once, without following links, just to confirm
+/// it is that same directory.
+fn install_extracted_tree(
+    inner: &tempfile::TempDir,
+    dest_parent: &Path,
+    dest_leaf: &OsStr,
+) -> Result<(), Error> {
+    let source = crate::infra::fs::OwnedStagingDir::adopt(inner)?;
+    #[cfg(test)]
+    let substituted = DEST_PARENT_IDENTITY_PRE_OPEN_HOOK
+        .with(|slot| slot.borrow_mut().take())
+        .map(|hook| hook(dest_parent));
+    #[cfg(test)]
+    let dest_parent = substituted.as_deref().unwrap_or(dest_parent);
+    let named = crate::infra::fs::open_parent_no_follow(&dest_parent.join(dest_leaf))?;
+    if crate::infra::path_authority::opened_file_identity(&named)? != source.parent_identity()? {
+        return Err(Error::Conflict(
+            "archive staging parent changed concurrently".into(),
+        ));
+    }
+    crate::infra::fs::install_owned_staging_dir(source, dest_leaf)
 }
 
 fn extract_gz_cancellable(
@@ -1624,7 +1719,19 @@ fn extract_zip(
     target_path: &Path,
     limits: ArchiveLimits,
 ) -> Result<(), Error> {
-    extract_zip_cancellable(file, target_path, limits, &CancellationToken::new())
+    let (Some(dest_parent), Some(dest_leaf)) = (target_path.parent(), target_path.file_name())
+    else {
+        return Err(Error::InvalidInput(
+            "archive target needs a parent and a leaf".into(),
+        ));
+    };
+    extract_zip_cancellable(
+        file,
+        dest_parent,
+        dest_leaf,
+        limits,
+        &CancellationToken::new(),
+    )
 }
 
 #[cfg(test)]
@@ -1633,7 +1740,19 @@ fn extract_tar(
     target_path: &Path,
     limits: ArchiveLimits,
 ) -> Result<(), Error> {
-    extract_tar_cancellable(file, target_path, limits, &CancellationToken::new())
+    let (Some(dest_parent), Some(dest_leaf)) = (target_path.parent(), target_path.file_name())
+    else {
+        return Err(Error::InvalidInput(
+            "archive target needs a parent and a leaf".into(),
+        ));
+    };
+    extract_tar_cancellable(
+        file,
+        dest_parent,
+        dest_leaf,
+        limits,
+        &CancellationToken::new(),
+    )
 }
 
 #[cfg(test)]
@@ -2345,6 +2464,241 @@ mod tests {
         );
     }
 
+    fn write_zip(path: &Path, entries: &[(&str, &[u8])]) {
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+        for (name, body) in entries {
+            zip.start_file(*name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(body).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    fn leaves(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    struct ResetDestParentHook;
+    impl Drop for ResetDestParentHook {
+        fn drop(&mut self) {
+            set_dest_parent_identity_pre_open_hook(None);
+        }
+    }
+
+    #[test]
+    fn extract_zip_cancel_or_fail_leaves_no_inner_staging_leaf() {
+        let archives = tempdir().unwrap();
+        let good = archives.path().join("good.zip");
+        write_zip(&good, &[("a.txt", b"a")]);
+        let bad = archives.path().join("bad.zip");
+        write_zip(&bad, &[("ok.txt", b"ok"), ("../escape.txt", b"x")]);
+
+        let parent = tempdir().unwrap();
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        let error = extract_zip_cancellable(
+            std::fs::File::open(&good).unwrap(),
+            parent.path(),
+            OsStr::new("payload"),
+            OpClass::Engine.limits(),
+            &cancelled,
+        )
+        .unwrap_err();
+        assert!(matches!(error, Error::Cancellation));
+        assert!(
+            leaves(parent.path()).is_empty(),
+            "{:?}",
+            leaves(parent.path())
+        );
+
+        let error = extract_zip_cancellable(
+            std::fs::File::open(&bad).unwrap(),
+            parent.path(),
+            OsStr::new("payload"),
+            OpClass::Engine.limits(),
+            &CancellationToken::new(),
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "Invalid input: Parent dir in path");
+        assert!(
+            leaves(parent.path()).is_empty(),
+            "{:?}",
+            leaves(parent.path())
+        );
+    }
+
+    #[test]
+    fn extract_tar_cancel_or_fail_leaves_no_inner_staging_leaf() {
+        let archives = tempdir().unwrap();
+        let tar_path = archives.path().join("good.tar");
+        let mut header = tar::Header::new_gnu();
+        header.set_size(3);
+        header.set_cksum();
+        let mut tar = tar::Builder::new(std::fs::File::create(&tar_path).unwrap());
+        tar.append_data(&mut header, "ok.txt", b"abc".as_slice())
+            .unwrap();
+        tar.finish().unwrap();
+        drop(tar);
+        let limits = ArchiveLimits {
+            compressed: 1 << 20,
+            expanded: 2,
+            per_entry: 1 << 20,
+            entries: 8,
+            ratio: 10,
+        };
+
+        let parent = tempdir().unwrap();
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        let error = extract_tar_cancellable(
+            std::fs::File::open(&tar_path).unwrap(),
+            parent.path(),
+            OsStr::new("payload"),
+            OpClass::Engine.limits(),
+            &cancelled,
+        )
+        .unwrap_err();
+        assert!(matches!(error, Error::Cancellation));
+        assert!(
+            leaves(parent.path()).is_empty(),
+            "{:?}",
+            leaves(parent.path())
+        );
+
+        let error = extract_tar_cancellable(
+            std::fs::File::open(&tar_path).unwrap(),
+            parent.path(),
+            OsStr::new("payload"),
+            limits,
+            &CancellationToken::new(),
+        )
+        .unwrap_err();
+        assert!(matches!(error, Error::ResourceLimit(_)), "{error}");
+        assert!(
+            leaves(parent.path()).is_empty(),
+            "{:?}",
+            leaves(parent.path())
+        );
+    }
+
+    #[test]
+    fn extract_zip_engine_shape_identity_hook_is_conflict() {
+        let _reset = ResetDestParentHook;
+        let archives = tempdir().unwrap();
+        let archive = archives.path().join("engine.zip");
+        write_zip(&archive, &[("engine.bin", b"engine")]);
+        let root = tempdir().unwrap();
+        let outer = private_tempdir_in(".archive", root.path()).unwrap();
+        let outer_leaf = outer.path().file_name().unwrap().to_os_string();
+        let elsewhere = tempdir().unwrap();
+        let substitute = elsewhere.path().to_path_buf();
+        set_dest_parent_identity_pre_open_hook(Some(Box::new(move |_| substitute)));
+
+        let error = extract_zip_cancellable(
+            std::fs::File::open(&archive).unwrap(),
+            root.path(),
+            &outer_leaf,
+            OpClass::Engine.limits(),
+            &CancellationToken::new(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Conflict: archive staging parent changed concurrently"
+        );
+        assert!(!error.to_string().contains('/'));
+        assert_eq!(
+            leaves(root.path()),
+            vec![outer_leaf.to_string_lossy().into_owned()]
+        );
+        assert!(leaves(outer.path()).is_empty());
+    }
+
+    #[test]
+    fn extract_zip_inner_leaf_substitution_before_install_is_conflict() {
+        let _reset = ResetDestParentHook;
+        let archives = tempdir().unwrap();
+        let archive = archives.path().join("payload.zip");
+        write_zip(&archive, &[("real.txt", b"real")]);
+        let parent = tempdir().unwrap();
+        let moved = tempdir().unwrap();
+        let moved_path = moved.path().join("original");
+        set_dest_parent_identity_pre_open_hook(Some(Box::new(move |dest_parent| {
+            let inner = std::fs::read_dir(dest_parent)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .find(|path| {
+                    path.file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with(".zip")
+                })
+                .expect("inner staging leaf");
+            std::fs::rename(&inner, &moved_path).unwrap();
+            std::fs::create_dir(&inner).unwrap();
+            std::fs::write(inner.join("planted.txt"), b"planted").unwrap();
+            dest_parent.to_path_buf()
+        })));
+
+        let error = extract_zip_cancellable(
+            std::fs::File::open(&archive).unwrap(),
+            parent.path(),
+            OsStr::new("payload"),
+            OpClass::Engine.limits(),
+            &CancellationToken::new(),
+        )
+        .unwrap_err();
+        assert!(matches!(error, Error::Conflict(_)), "{error}");
+        assert!(!error.to_string().contains('/'), "{error}");
+        assert!(!parent.path().join("payload").exists());
+    }
+
+    #[test]
+    fn extract_zip_and_tar_source_scan_has_no_atomic_install_dir() {
+        let source = include_str!("fs.rs");
+        let production = &source[..source
+            .find("#[cfg(test)]\nmod tests {")
+            .expect("test module")];
+        assert!(!production.contains("atomic_install_dir"));
+        for signature in [
+            "fn extract_zip_cancellable(",
+            "fn extract_tar_cancellable(",
+            "fn install_extracted_tree(",
+            "fn extract_zip(",
+            "fn extract_tar(",
+        ] {
+            let body = body_at_indent(source, signature);
+            assert!(!body.contains("atomic_install_dir"), "{body}");
+        }
+        for signature in ["fn extract_zip_cancellable(", "fn extract_tar_cancellable("] {
+            let body = body_at_indent(source, signature);
+            assert!(body.contains("install_extracted_tree("), "{body}");
+        }
+        for signature in ["fn extract_zip(", "fn extract_tar("] {
+            let body = body_at_indent(source, signature);
+            let production = signature
+                .trim_start_matches("fn ")
+                .replace('(', "_cancellable(");
+            assert!(body.contains(&production), "{body}");
+        }
+        let helper = body_at_indent(source, "fn install_extracted_tree(");
+        assert!(helper.contains("OwnedStagingDir::adopt(inner)"), "{helper}");
+        assert!(
+            helper.contains("install_owned_staging_dir(source, dest_leaf)"),
+            "{helper}"
+        );
+        assert_eq!(
+            helper.matches("open_parent_no_follow(").count(),
+            1,
+            "{helper}"
+        );
+    }
+
     use crate::infra::net::{DownloadResponse, DownloadTransport};
     use reqwest::header::{HeaderMap, HeaderValue};
 
@@ -2386,6 +2740,7 @@ mod tests {
             OpClass::Lichess,
             "https://lichess.org/test",
             &target,
+            None,
             &mock,
             None,
             None,
@@ -2424,6 +2779,7 @@ mod tests {
             OpClass::Lichess,
             "https://lichess.org/test",
             &target,
+            None,
             &mock,
             None,
             None,
@@ -2471,6 +2827,7 @@ mod tests {
             OpClass::Lichess,
             "https://lichess.org/test",
             &target,
+            None,
             &mock,
             Some("my_secret_token"),
             None,
@@ -2499,6 +2856,7 @@ mod tests {
             OpClass::Lichess,
             "https://lichess.org:444/export",
             &dir.path().join("out.pgn"),
+            None,
             &mock,
             Some("secret"),
             None,
@@ -3015,6 +3373,95 @@ mod tests {
         }
     }
 
+    fn zip_response(bytes: Vec<u8>) -> MockTransport {
+        MockTransport {
+            responses: std::sync::Mutex::new(vec![Ok(DownloadResponse {
+                status: 200,
+                headers: HeaderMap::new(),
+                content_length: Some(bytes.len() as u64),
+                stream: Box::pin(futures_util::stream::iter(vec![Ok(bytes::Bytes::from(
+                    bytes,
+                ))])),
+            })]),
+            requests_seen: std::sync::Mutex::new(vec![]),
+        }
+    }
+
+    fn zip_payload() -> Vec<u8> {
+        let archives = tempdir().unwrap();
+        let path = archives.path().join("payload.zip");
+        write_zip(&path, &[("engine.bin", b"engine")]);
+        std::fs::read(path).unwrap()
+    }
+
+    async fn download_zip_with_staging(
+        path: &Path,
+        staging: Option<(PathBuf, Option<OsString>)>,
+    ) -> Error {
+        download_file_core(
+            OpClass::Engine,
+            "https://github.com/owner/repo/releases/download/v1/engine.zip",
+            path,
+            staging,
+            &zip_response(zip_payload()),
+            None,
+            None,
+            |_| Ok(()),
+        )
+        .await
+        .unwrap_err()
+    }
+
+    #[tokio::test]
+    async fn download_archive_without_staging_is_invalid_input() {
+        let root = tempdir().unwrap();
+        let target = root.path().join("payload");
+        let error = download_zip_with_staging(&target, None).await;
+        assert_eq!(
+            error.to_string(),
+            "Invalid input: archive extract needs process-owned staging"
+        );
+        assert!(!target.exists());
+        assert!(leaves(root.path()).is_empty(), "{:?}", leaves(root.path()));
+    }
+
+    #[tokio::test]
+    async fn download_archive_staging_root_path_mismatch_is_invalid_input() {
+        let root = tempdir().unwrap();
+        let staging = private_tempdir_in(".archive", root.path()).unwrap();
+        let other = root.path().join("other");
+        let error =
+            download_zip_with_staging(&other, Some((staging.path().to_path_buf(), None))).await;
+        assert_eq!(
+            error.to_string(),
+            "Invalid input: archive target does not match its staging"
+        );
+        assert!(!error.to_string().contains('/'));
+        assert!(!other.exists());
+        assert!(leaves(staging.path()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn download_archive_staging_payload_path_mismatch_is_invalid_input() {
+        let staged = tempdir().unwrap();
+        let other = staged.path().join("other");
+        let error = download_zip_with_staging(
+            &other,
+            Some((staged.path().to_path_buf(), Some("payload".into()))),
+        )
+        .await;
+        assert_eq!(
+            error.to_string(),
+            "Invalid input: archive target does not match its staging"
+        );
+        assert!(!error.to_string().contains('/'));
+        assert!(
+            leaves(staged.path()).is_empty(),
+            "{:?}",
+            leaves(staged.path())
+        );
+    }
+
     #[tokio::test]
     async fn checksum_mismatch_never_installs_the_downloaded_payload() {
         let dir = tempdir().unwrap();
@@ -3034,6 +3481,7 @@ mod tests {
             OpClass::Db,
             "https://www.encroissant.org/data.db3",
             &target,
+            None,
             &mock,
             None,
             None,
@@ -3064,6 +3512,7 @@ mod tests {
             OpClass::Lichess,
             "https://lichess.org/export",
             &target,
+            None,
             &mock,
             None,
             None,
@@ -3098,6 +3547,7 @@ mod tests {
             OpClass::Lichess,
             "https://lichess.org/test",
             &target,
+            None,
             &mock,
             None,
             None,

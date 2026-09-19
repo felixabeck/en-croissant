@@ -4771,7 +4771,6 @@ pub(crate) fn open_parent_directory(dir: &File) -> Result<File, Error> {
 /// descriptor. It carries no pathname: installing it and cleaning it up are both relative to the
 /// held parent, so a later swap of the parent's pathname cannot redirect either. Until it is
 /// consumed by a commit, dropping it removes the leaf by identity.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct OwnedStagingDir {
     parent: File,
     leaf: OsString,
@@ -4780,7 +4779,6 @@ pub(crate) struct OwnedStagingDir {
     armed: bool,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl OwnedStagingDir {
     /// No-follow open of `temp`, then [`open_parent_directory`] of that handle, then a check that
     /// `temp`'s leaf under the held parent is still the opened directory.
@@ -4813,6 +4811,12 @@ impl OwnedStagingDir {
             armed: true,
         })
     }
+
+    /// Identity of the held parent descriptor, for a caller that must confirm the directory it
+    /// named is the one this value will install into.
+    pub(crate) fn parent_identity(&self) -> Result<(u64, u64), Error> {
+        opened_identity(&self.parent)
+    }
 }
 
 impl Drop for OwnedStagingDir {
@@ -4833,7 +4837,6 @@ impl Drop for OwnedStagingDir {
 /// an existing real directory to replace. Same-parent is structural, so there is no pathname
 /// reopen. Once the commit has returned, `source` no longer owns a leaf and its cleanup is
 /// disarmed, including when the result is `CommittedDurabilityUncertain`.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn install_owned_staging_dir(
     mut source: OwnedStagingDir,
     dest_leaf: &OsStr,
@@ -8939,8 +8942,8 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             signatures.len(),
-            1,
-            "OwnedStagingDir has one constructor: {signatures:?}"
+            2,
+            "OwnedStagingDir has adopt plus parent_identity: {signatures:?}"
         );
         let install = normalised
             .find("fn install_owned_staging_dir(")
@@ -8953,6 +8956,17 @@ mod tests {
                 "OwnedStagingDir must not be constructible from a pathname: {text}"
             );
         }
-        assert!(signatures[0].contains("temp: &tempfile::TempDir"));
+        assert!(
+            signatures
+                .iter()
+                .any(|signature| signature.contains("temp: &tempfile::TempDir")),
+            "adopt takes TempDir: {signatures:?}"
+        );
+        assert!(
+            signatures
+                .iter()
+                .any(|signature| signature.contains("parent_identity")),
+            "parent_identity is the held-parent accessor: {signatures:?}"
+        );
     }
 }
