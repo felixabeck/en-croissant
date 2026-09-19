@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# Install a reviewed ChessFable build for daily use, separate from the build tree.
+# Install a ChessFable build for daily use, separate from the build tree.
+# provenance `reviewed` is written only when this invocation compiled from a clean
+# tree whose HEAD is still on the branch's @{upstream}.
 #
-#   bash scripts/install-local.sh            build from HEAD, then install
-#   bash scripts/install-local.sh --no-build install the build already in target/release
-#   bash scripts/install-local.sh --force    permit a dirty tree or unpushed HEAD and record it
+#   bash scripts/install-local.sh                 build from HEAD, then install
+#   bash scripts/install-local.sh --no-build --force
+#       install the build already in target/release as UNREVIEWED
+#   bash scripts/install-local.sh --force         permit a dirty tree or unpushed HEAD
 #
 # The desktop entry launches current/bin/chessfable directly, because a GTK window takes its
 # Wayland app id from argv[0] and Plasma matches a window to a launcher by that id. The entry is
@@ -40,38 +43,42 @@ binary="${identity[0]}"
 product_name="${identity[1]}"
 DESKTOP="$APPLICATIONS_DIR/$binary.desktop"
 
-head="$(git -C "$REPO" rev-parse HEAD)"
-short="$(git -C "$REPO" rev-parse --short "$head")"
-if ! upstream="$(git -C "$REPO" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)"; then
-  echo "refusing: the current branch has no configured upstream" >&2
-  exit 1
-fi
-dirty="$(git -C "$REPO" status --porcelain --untracked-files=no)"
-provenance="reviewed"
-if [ -n "$dirty" ]; then
-  if [ "$force" -eq 1 ]; then
-    provenance="UNREVIEWED (dirty tree, --force)"
-  else
-    echo "refusing: tracked files are modified — the binary would not match any reviewed commit" >&2
-    printf '%s\n' "$dirty" >&2
-    echo "commit or stash first, or pass --force for a deliberate local trial" >&2
-    exit 1
-  fi
-fi
+tree_dirty=0
+tree_dirty_text=""
+missing_upstream=0
+unresolvable_upstream=0
+not_ancestor=0
+current_head=""
+current_short=""
+upstream=""
 
-if ! git -C "$REPO" rev-parse --verify "$upstream^{commit}" >/dev/null 2>&1; then
-  echo "refusing: configured upstream $upstream cannot be resolved" >&2
-  exit 1
-fi
-if ! git -C "$REPO" merge-base --is-ancestor "$head" "$upstream"; then
-  if [ "$force" -eq 1 ]; then
-    provenance="UNREVIEWED (HEAD not on $upstream, --force)"
+evaluate_tree() {
+  local status_out
+  current_head="$(git -C "$REPO" rev-parse HEAD)"
+  current_short="$(git -C "$REPO" rev-parse --short "$current_head")"
+  status_out="$(git -C "$REPO" status --porcelain)"
+  if [ -n "$status_out" ]; then
+    tree_dirty=1
+    tree_dirty_text="$status_out"
   else
-    echo "refusing: HEAD $short is not contained in $upstream — it has not passed the push review" >&2
-    echo "run \$push first, or pass --force for a deliberate local trial" >&2
-    exit 1
+    tree_dirty=0
+    tree_dirty_text=""
   fi
-fi
+  missing_upstream=0
+  unresolvable_upstream=0
+  not_ancestor=0
+  if ! upstream="$(git -C "$REPO" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)"; then
+    missing_upstream=1
+    return
+  fi
+  if ! git -C "$REPO" rev-parse --verify "$upstream^{commit}" >/dev/null 2>&1; then
+    unresolvable_upstream=1
+    return
+  fi
+  if ! git -C "$REPO" merge-base --is-ancestor "$current_head" "$upstream"; then
+    not_ancestor=1
+  fi
+}
 
 mkdir -p "$ROOT"
 lock_file="$ROOT/.install.lock"
@@ -81,9 +88,71 @@ if ! flock "$lock_fd"; then
   exit 1
 fi
 
-if [ "$build" -eq 1 ]; then
+evaluate_tree
+head="$current_head"
+short="$current_short"
+provenance="reviewed"
+
+if [ "$missing_upstream" -eq 1 ]; then
+  echo "refusing: the current branch has no configured upstream" >&2
+  exit 1
+fi
+if [ "$unresolvable_upstream" -eq 1 ]; then
+  echo "refusing: configured upstream $upstream cannot be resolved" >&2
+  exit 1
+fi
+if [ "$tree_dirty" -eq 1 ]; then
+  if [ "$force" -eq 1 ]; then
+    provenance="UNREVIEWED (dirty tree, --force)"
+  else
+    echo "refusing: the worktree has modified or untracked files — the binary would not match any reviewed commit" >&2
+    printf '%s\n' "$tree_dirty_text" >&2
+    echo "commit, delete, or git stash -u first, or pass --force for a deliberate local trial" >&2
+    exit 1
+  fi
+fi
+if [ "$not_ancestor" -eq 1 ]; then
+  if [ "$force" -eq 1 ]; then
+    provenance="UNREVIEWED (HEAD not on $upstream, --force)"
+  else
+    echo "refusing: HEAD $short is not contained in $upstream — it has not passed the push review" >&2
+    echo "run \$push first, or pass --force for a deliberate local trial" >&2
+    exit 1
+  fi
+fi
+
+if [ "$build" -eq 0 ]; then
+  if [ "$force" -eq 0 ]; then
+    echo "refusing: --no-build copies an unbound binary — rebuild, or pass --force for a deliberate local trial" >&2
+    exit 1
+  fi
+  provenance="UNREVIEWED (prebuilt binary, --force)"
+else
   echo "building release binary from $short …"
   (cd "$REPO" && pnpm build)
+  evaluate_tree
+  if [ "$missing_upstream" -eq 1 ]; then
+    echo "refusing: the current branch has no configured upstream" >&2
+    exit 1
+  fi
+  if [ "$unresolvable_upstream" -eq 1 ]; then
+    echo "refusing: configured upstream $upstream cannot be resolved" >&2
+    exit 1
+  fi
+  if [ "$current_head" != "$head" ] || [ "$tree_dirty" -eq 1 ] || [ "$not_ancestor" -eq 1 ]; then
+    if [ "$force" -eq 0 ]; then
+      echo "refusing: tree or HEAD changed during build (was $short, now $current_short) — the binary is not bound to the reviewed commit" >&2
+      [ -z "$tree_dirty_text" ] || printf '%s\n' "$tree_dirty_text" >&2
+      exit 1
+    fi
+    if [ "$current_head" != "$head" ]; then
+      provenance="UNREVIEWED (HEAD moved during build, --force)"
+    elif [ "$tree_dirty" -eq 1 ]; then
+      provenance="UNREVIEWED (dirty tree, --force)"
+    else
+      provenance="UNREVIEWED (HEAD not on $upstream, --force)"
+    fi
+  fi
 fi
 [ -x "$RELEASE_DIR/$binary" ] || { echo "no release binary in $RELEASE_DIR" >&2; exit 1; }
 [ -d "$RELEASE_DIR/sound" ] || { echo "no bundled sound/ resources in $RELEASE_DIR — the build is incomplete" >&2; exit 1; }

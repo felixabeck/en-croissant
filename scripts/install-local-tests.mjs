@@ -59,6 +59,7 @@ async function fixture(t, { productName = "ChessFable", binaryName = "chessfable
   await chmod(join(repo, "src-tauri/target/release", binaryName), 0o755);
   await writeFile(join(repo, "src-tauri/target/release/sound/move.mp3"), "sound");
   await writeFile(join(repo, "src-tauri/icons/icon.png"), "icon");
+  await writeFile(join(repo, ".gitignore"), "/src-tauri/target/\n");
   git(repo, "init", "-b", "master");
   git(repo, "config", "user.name", "Installer Fixture");
   git(repo, "config", "user.email", "fixture@example.invalid");
@@ -144,8 +145,8 @@ async function seedPointers(install) {
   return { a, b };
 }
 
-function run({ repo, install, data, bin }, failure) {
-  return spawnSync("bash", [join(repo, "scripts/install-local.sh"), "--no-build"], {
+function run({ repo, install, data, bin }, failure, extraArgs = ["--no-build", "--force"]) {
+  return spawnSync("bash", [join(repo, "scripts/install-local.sh"), ...extraArgs], {
     cwd: repo,
     encoding: "utf8",
     env: {
@@ -159,7 +160,7 @@ function run({ repo, install, data, bin }, failure) {
 }
 
 function spawnRun(_t, { repo, install, data, bin, base, childRuns }, options = {}) {
-  const child = spawn("bash", [join(repo, "scripts/install-local.sh"), "--no-build"], {
+  const child = spawn("bash", [join(repo, "scripts/install-local.sh"), "--no-build", "--force"], {
     cwd: repo,
     detached: true,
     env: {
@@ -206,6 +207,24 @@ async function waitForPath(path) {
     }
   }
   assert.fail(`timed out waiting for ${path}`);
+}
+
+async function provenanceLine(install) {
+  const current = await readlink(join(install, "current"));
+  const text = await readFile(join(current, "VERSION"), "utf8");
+  const line = text.split("\n").find((entry) => entry.startsWith("provenance "));
+  assert.ok(line, text);
+  return line;
+}
+
+function assertRefusedNothingInstalled(result, pattern) {
+  assert.notEqual(result.status, 0, result.stderr);
+  assert.match(result.stderr, pattern);
+}
+
+async function writePnpmStub(bin, script) {
+  await writeFile(join(bin, "pnpm"), `#!/bin/sh\nset -e\n${script}\n`);
+  await chmod(join(bin, "pnpm"), 0o755);
 }
 
 async function releaseNames(install) {
@@ -270,6 +289,7 @@ test("installs the derived binary, resources, compatibility link, desktop entry 
     /^ChessFable local installer release v1\ninvocation \.staging-[A-Za-z0-9]{8}\n$/u,
   );
   assert.equal((await lstat(join(f.install, ".install.lock"))).isFile(), true);
+  assert.equal(await provenanceLine(f.install), "provenance UNREVIEWED (prebuilt binary, --force)");
   assert.deepEqual(await releaseNames(f.install), ["A", "B", current.split("/").at(-1)].sort());
   assert.deepEqual(await installerTemps(f), []);
 });
@@ -474,17 +494,23 @@ test("refuses dirty, unpushed and missing-upstream repositories", async (t) => {
     join(dirty.repo, "scripts/install-local.sh"),
     `${await readFile(installerSource, "utf8")}\n`,
   );
-  assert.match(run(dirty).stderr, /tracked files are modified/u);
+  const dirtyResult = run(dirty, undefined, ["--no-build"]);
+  assertRefusedNothingInstalled(dirtyResult, /the worktree has modified or untracked files/u);
+  await assert.rejects(lstat(join(dirty.install, "current")), { code: "ENOENT" });
 
   const unpushed = await fixture(t);
   await writeFile(join(unpushed.repo, "new"), "new");
   git(unpushed.repo, "add", "new");
   git(unpushed.repo, "commit", "-m", "unpushed");
-  assert.match(run(unpushed).stderr, /not contained in origin\/master/u);
+  const unpushedResult = run(unpushed, undefined, ["--no-build"]);
+  assertRefusedNothingInstalled(unpushedResult, /not contained in origin\/master/u);
+  await assert.rejects(lstat(join(unpushed.install, "current")), { code: "ENOENT" });
 
   const missing = await fixture(t);
   git(missing.repo, "branch", "--unset-upstream");
-  assert.match(run(missing).stderr, /has no configured upstream/u);
+  const missingResult = run(missing, undefined, ["--no-build"]);
+  assertRefusedNothingInstalled(missingResult, /has no configured upstream/u);
+  await assert.rejects(lstat(join(missing.install, "current")), { code: "ENOENT" });
 });
 
 test("refuses to replace foreign current and previous files", async (t) => {
@@ -497,4 +523,135 @@ test("refuses to replace foreign current and previous files", async (t) => {
     assert.match(result.stderr, new RegExp(`${pointer} exists and is not a symlink`, "u"));
     assert.equal(await readFile(join(f.install, pointer), "utf8"), "foreign");
   }
+});
+
+test("refuses --no-build without --force on a clean tree", async (t) => {
+  const f = await fixture(t);
+  const result = run(f, undefined, ["--no-build"]);
+  assertRefusedNothingInstalled(result, /--no-build copies an unbound binary/u);
+  await assert.rejects(lstat(join(f.install, "current")), { code: "ENOENT" });
+});
+
+test("refuses an untracked non-ignored file without --force", async (t) => {
+  const f = await fixture(t);
+  await writeFile(join(f.repo, "stray.txt"), "stray");
+  const result = run(f, undefined, ["--no-build"]);
+  assertRefusedNothingInstalled(result, /the worktree has modified or untracked files/u);
+  await assert.rejects(lstat(join(f.install, "current")), { code: "ENOENT" });
+});
+
+test("records UNREVIEWED dirty provenance with --force and a stub build", async (t) => {
+  const f = await fixture(t);
+  await writeFile(join(f.repo, "scripts/install-local.sh"), `${await readFile(installerSource, "utf8")}\n`);
+  await writePnpmStub(
+    f.bin,
+    `
+mkdir -p src-tauri/target/release/sound
+printf '%s\\n' '#!/bin/sh' 'exit 0' > src-tauri/target/release/${f.binaryName}
+chmod 755 src-tauri/target/release/${f.binaryName}
+printf sound > src-tauri/target/release/sound/move.mp3
+`,
+  );
+  const result = run(f, undefined, ["--force"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(await provenanceLine(f.install), "provenance UNREVIEWED (dirty tree, --force)");
+});
+
+test("reviewed path requires this invocation's pnpm build marker", async (t) => {
+  const f = await fixture(t);
+  const marker = "PROVENANCE-BUILD-MARKER";
+  await writePnpmStub(
+    f.bin,
+    `
+mkdir -p src-tauri/target/release/sound
+printf '%s\\n' '#!/bin/sh' 'exit 0' > src-tauri/target/release/${f.binaryName}
+printf '${marker}' >> src-tauri/target/release/${f.binaryName}
+chmod 755 src-tauri/target/release/${f.binaryName}
+printf sound > src-tauri/target/release/sound/move.mp3
+`,
+  );
+  const result = run(f, undefined, []);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(await provenanceLine(f.install), "provenance reviewed");
+  const current = await readlink(join(f.install, "current"));
+  assert.match(await readFile(join(current, "bin", f.binaryName), "utf8"), new RegExp(marker, "u"));
+});
+
+test("refuses when a stub build writes an untracked file", async (t) => {
+  const f = await fixture(t);
+  await writePnpmStub(
+    f.bin,
+    `
+printf stray > during-build.txt
+mkdir -p src-tauri/target/release/sound
+printf '%s\\n' '#!/bin/sh' 'exit 0' > src-tauri/target/release/${f.binaryName}
+chmod 755 src-tauri/target/release/${f.binaryName}
+printf sound > src-tauri/target/release/sound/move.mp3
+`,
+  );
+  const result = run(f, undefined, []);
+  assertRefusedNothingInstalled(result, /tree or HEAD changed during build/u);
+  await assert.rejects(lstat(join(f.install, "current")), { code: "ENOENT" });
+});
+
+test("refuses when a stub build moves HEAD onto @{upstream}", async (t) => {
+  const f = await fixture(t);
+  await writePnpmStub(
+    f.bin,
+    `
+printf extra > extra.txt
+git add extra.txt
+git commit -m extra
+git push origin HEAD
+mkdir -p src-tauri/target/release/sound
+printf '%s\\n' '#!/bin/sh' 'exit 0' > src-tauri/target/release/${f.binaryName}
+chmod 755 src-tauri/target/release/${f.binaryName}
+printf sound > src-tauri/target/release/sound/move.mp3
+`,
+  );
+  const result = run(f, undefined, []);
+  assertRefusedNothingInstalled(result, /tree or HEAD changed during build/u);
+  await assert.rejects(lstat(join(f.install, "current")), { code: "ENOENT" });
+});
+
+test("records UNREVIEWED when --force and HEAD moves during build", async (t) => {
+  const f = await fixture(t);
+  await writePnpmStub(
+    f.bin,
+    `
+printf extra > extra.txt
+git add extra.txt
+git commit -m extra
+git push origin HEAD
+mkdir -p src-tauri/target/release/sound
+printf '%s\\n' '#!/bin/sh' 'exit 0' > src-tauri/target/release/${f.binaryName}
+chmod 755 src-tauri/target/release/${f.binaryName}
+printf sound > src-tauri/target/release/sound/move.mp3
+`,
+  );
+  const result = run(f, undefined, ["--force"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    await provenanceLine(f.install),
+    "provenance UNREVIEWED (HEAD moved during build, --force)",
+  );
+});
+
+test("never promotes a dirty --force build to reviewed after the stub reverts the file", async (t) => {
+  const f = await fixture(t);
+  const tracked = join(f.repo, "scripts/install-local.sh");
+  await writeFile(tracked, `${await readFile(installerSource, "utf8")}\n`);
+  await writePnpmStub(
+    f.bin,
+    `
+git checkout -- scripts/install-local.sh
+mkdir -p src-tauri/target/release/sound
+printf '%s\\n' '#!/bin/sh' 'exit 0' > src-tauri/target/release/${f.binaryName}
+chmod 755 src-tauri/target/release/${f.binaryName}
+printf sound > src-tauri/target/release/sound/move.mp3
+`,
+  );
+  const result = run(f, undefined, ["--force"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(await provenanceLine(f.install), "provenance UNREVIEWED (dirty tree, --force)");
 });
