@@ -2376,14 +2376,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .export_str(Typescript::default().bigint(BigIntExportBehavior::BigInt))
             .map_err(|error| format!("failed to render TypeScript bindings: {error}"))?;
         // `atomic_replace` refuses a parent path with `..`, so resolve the repository root here.
-        let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .ok_or("the manifest directory has no parent")?;
         crate::infra::fs::write_if_changed(
             &repository.join("src/bindings/generated.ts"),
             &rendered,
         )
-        // Debug, not Display: `Error::Io` displays as a bare "I/O failure" for the renderer.
+        // Debug, not Display: `Error::Io` displays only a renderer-safe "I/O failure", and this
+        // CLI export needs the cause.
         .map_err(|error| format!("failed to export TypeScript bindings: {error:?}"))?;
     }
 

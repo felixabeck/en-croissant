@@ -4043,8 +4043,8 @@ where
 /// Replaces `target` with `contents` only when the bytes on disk differ. The Specta binding
 /// export runs on every debug start and inside `pnpm bindings:check`; an unconditional rewrite
 /// gives the tracked file a new mtime, which refuses any gate receipt measured beside it
-/// (`f-20260906-06`). A lost parent sync is an error: the caller is a check that must not pass
-/// on an uncertain write.
+/// (`f-20260906-06`). An uncertain commit is an error that says the file may already be
+/// replaced: the caller is a check that must not pass on an uncertain write.
 #[cfg(any(debug_assertions, test))]
 pub(crate) fn write_if_changed(target: &Path, contents: &str) -> Result<(), Error> {
     match std::fs::read(target) {
@@ -4057,7 +4057,11 @@ pub(crate) fn write_if_changed(target: &Path, contents: &str) -> Result<(), Erro
         file.write_all(contents.as_bytes()).map_err(Error::from)
     })? {
         AtomicFileOutcome::DurableCommit => Ok(()),
-        AtomicFileOutcome::CommittedDurabilityUncertain(error) => Err(error.into()),
+        AtomicFileOutcome::CommittedDurabilityUncertain(error) => Err(std::io::Error::new(
+            error.kind(),
+            format!("replaced, but durability is uncertain: {error}"),
+        )
+        .into()),
     }
 }
 
@@ -5035,6 +5039,13 @@ mod tests {
             std::fs::metadata(&path).unwrap().modified().unwrap(),
             pinned
         );
+
+        set_test_atomic_file_injector(Some(Arc::new(ParentSyncFault("uncertain"))));
+        let uncertain = write_if_changed(&path, "third");
+        set_test_atomic_file_injector(None);
+        let message = format!("{:?}", uncertain.expect_err("uncertain commit"));
+        assert!(message.contains("durability is uncertain"), "{message}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "third");
 
         assert!(write_if_changed(directory.path(), "unreadable").is_err());
     }
