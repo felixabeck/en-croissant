@@ -10012,3 +10012,27 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 
 * **Handled (2026-09-19, drain a4f49c70-507e-46c1-86a9-5b59c95ce0b6):** Default database and puzzle catalogs are bundled JSON plus detached minisig, verified with `verify_signed_bytes` before parse, with per-entry sha256/signature under the fork key. Artifacts remain on db.encroissant.org (same residual as Leela). `www.encroissant.org` removed from `remoteHttp` and CSP. Commits `e7c2c508` (shared loader) and `2a8c1260` (catalogs + origin removal). Rejected: dropping the feature; leaving the unsigned live origin; a new website (`d-20260907-07`).
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"4e289738768e033fd29fe6d3fad67f587bfc8c88117de91b704d6f3b8abf9987","input_sha256":"48024426a97bf6aadb8c83ec4bd9263be0b75b435a5db63ba8de6d24e73efb7c","kind":"mutation-receipt","operation":"3b71811a7aa9cfcdbe3126f455360a42f0bf36b01dd54b7d8ebee77efeed5d3f","options":{"section":null},"request_id_sha256":null,"results":["f-20260919-01"],"target":"f-20260919-01","v":1} -->
+
+---
+
+## 2026-09-19 — filed through the inbox spool
+
+### Download staging still creates and reopens the payload by pathname
+
+* **ID:** f-20260919-02 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/fs.rs:563` and `:685` (`create_dir_all` of `path.parent()` in `download_file_core_control_with_integrity` when `path` is `staged/payload`), `:686` (`atomic_replace` of that payload), `:999` (`std::fs::File::open(staged_file)` on the non-reservation arm), `src-tauri/src/infra/path_authority/mod.rs` (`hash_staged_payload_cancellable` `File::open`), `src-tauri/src/infra/path_authority/resolved.rs` (`atomic_install_reserved_download_cancellable` `File::open`).
+* **Defect:** `download_to_destination_inner` creates `tempfile::tempdir()`, joins `payload`, and lets the shared download core mkdir/write/replace that leaf by pathname, then reopens it by pathname to install. `f-20260905-08` closed zip/tar *inner* member writes through `OwnedStagingDir` and deliberately left this caller: converting only the last `File::open` would leave the bytes created by pathname, and converting the shared core would also hit engine-archive dest parents. Reservation-arm opens are pinned in `path_authority` (`File::open` count in `resolved.rs`).
+* **Why it matters:** the process-owned download staging directory is still a pathname TOCTOU between create and install. Closing it empties more of `fs.rs`'s counted surface (`File::open` plus the core sites when they name this tempfile).
+* **Related:** `f-20260905-08` (the slice that split this out; Root `-`, so named here). `d-20260919-03` (OwnedStagingDir, no checker exemption).
+* **Open question:** Should payload creation in `download_file_core_control_with_integrity` take an already-adopted `OwnedStagingDir` when the destination is process-owned staging, or should the shared core stay pathname and only `download_to_destination_inner` write through a descriptor-relative create of `payload`?
+* **Found by:** Grok, f-20260905-08 drain 830f0512-6047-4ef0-b8b7-c3c353baa63c, 2026-09-19.
+
+### Remaining fs.rs counted reaches are destination-parent mkdir and destination-file atomic_replace
+
+* **ID:** f-20260919-03 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/fs.rs:563` and `:685` (`std::fs::create_dir_all` of a destination parent in `download_file_core_control_with_integrity` when `path` is not a tempfile leaf), `:686` (`atomic_replace` of that dest file), `:1375` (`DirBuilder` in `create_private_dir_all` for zip/tar/gz dest parents at `:1471`, `:1532`, `:1639`), `:1641` (`atomic_replace` in `extract_gz_cancellable`), plus the R4 import of `atomic_replace` at `:20`.
+* **Defect:** after `f-20260905-08` removed inner tempfile `OpenOptions`, these counted sites remain. They name destination parents or destination files, not the process-owned inner extract tree. `create_private_dir_all` exists only for those dest parents. `d-20260901-03` already recorded that `PathRef` cannot represent every destination; `f-20260905-09` owns the save-dialog case separately.
+* **Why it matters:** `fs.rs` counted surface is 7. Emptying the allowlist entry waits on dest-parent mkdir and dest-file replace (and on the download-staging follow-on when those lines are the tempfile caller).
+* **Related:** `f-20260905-08` (split out of; Root `-`). `f-20260905-09` (dialog dest). `d-20260901-03`.
+* **Open question:** Should dest-parent mkdir and dest-file `atomic_replace` in `fs.rs` go through an existing dest descriptor (`ResolvedPath` / `open_parent_no_follow` + `ensure_directory_at` / descriptor-relative replace), or does a remaining pathname helper stay because some callers have no held parent?
+* **Found by:** Grok, f-20260905-08 drain 830f0512-6047-4ef0-b8b7-c3c353baa63c, 2026-09-19.
