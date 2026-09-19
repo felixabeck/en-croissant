@@ -565,7 +565,10 @@ test("refuses an untracked non-ignored file without --force", async (t) => {
 
 test("records UNREVIEWED dirty provenance with --force and a stub build", async (t) => {
   const f = await fixture(t);
-  await writeFile(join(f.repo, "scripts/install-local.sh"), `${await readFile(installerSource, "utf8")}\n`);
+  await writeFile(
+    join(f.repo, "scripts/install-local.sh"),
+    `${await readFile(installerSource, "utf8")}\n`,
+  );
   await writePnpmStub(f);
   const result = run(f, undefined, ["--force"]);
   assert.equal(result.status, 0, result.stderr);
@@ -615,7 +618,10 @@ test("records UNREVIEWED when --force and HEAD moves during build", async (t) =>
 
 test("never promotes a dirty --force build to reviewed after the stub reverts the file", async (t) => {
   const f = await fixture(t);
-  await writeFile(join(f.repo, "scripts/install-local.sh"), `${await readFile(installerSource, "utf8")}\n`);
+  await writeFile(
+    join(f.repo, "scripts/install-local.sh"),
+    `${await readFile(installerSource, "utf8")}\n`,
+  );
   await writePnpmStub(f, "git checkout -- scripts/install-local.sh");
   const result = run(f, undefined, ["--force"]);
   assert.equal(result.status, 0, result.stderr);
