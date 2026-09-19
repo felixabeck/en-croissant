@@ -242,8 +242,10 @@ What is **not** settled, all of it filed in `tasks/findings.md` rather than only
   **Never rewrite a baseline to clear a red ratchet** (`docs/coverage.md`) — lowering the backend
   floor to the runner's 744 would have permanently retired the only enforcement of a recursive
   delete that guards against directory traversal. `.claude/settings.json` denies the known spellings
-  of `coverage:baseline:*` and of a direct `--write-baseline` call, as well as the repository's e2e
-  snapshot-update and force-push command forms. `.claude/hooks/block-env-files.sh` adds semantic
+  of `coverage:baseline:*` and of a direct `--write-baseline` call, as well as a direct host
+  `playwright … --update-snapshots` and the force-push command forms; re-recording inside the
+  pinned container is open to every agent under the rule in `.claude/skills/verify-ui/SKILL.md`
+  (`d-20260919-13`). `.claude/hooks/block-env-files.sh` adds semantic
   protection for secret-file access. These are defense-in-depth guards: the rule is what binds, and
   a determined invocation can phrase a command differently.
 - **Mutation testing now has valid evidence on this tree for the first time** (`f-20260829-05`,

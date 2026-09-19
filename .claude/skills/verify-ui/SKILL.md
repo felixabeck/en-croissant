@@ -41,7 +41,16 @@ now does (proof 2 below).
    the same image — there is deliberately no script that re-records them on
    the host, and a direct `playwright ... --update-snapshots` is denied in the
    project settings, because host-rendered images would overwrite the
-   canonical ones.
+   canonical ones. The container form is open to every agent
+   (`d-20260919-13`), under one rule that binds all of them:
+
+   * Run `pnpm test:e2e:container` **first** and read every `*-diff.png` it
+     writes. Re-record only when each moved snapshot differs solely where the
+     change was meant to show. A difference anywhere else is a regression to
+     fix, never evidence to refresh.
+   * Predict which snapshots will move before re-recording, and stop if the
+     run rewrites any other.
+   * Name every moved snapshot in the commit message and in the report.
 2. **The real application, driven:** `pnpm verify:app`. It starts an
    off-screen compositor (`kwin_wayland --virtual`), then `tauri-driver` ->
    `WebKitWebDriver` -> the release binary, and drives the actual product: real
