@@ -1,5 +1,11 @@
 import { Badge, Box, Group, Text } from "@mantine/core";
-import { IconFileDescription, IconFolder, IconFolderOpen, IconTrash } from "@tabler/icons-react";
+import {
+  IconFileDescription,
+  IconFolder,
+  IconFolderOpen,
+  IconFolderSymlink,
+  IconTrash,
+} from "@tabler/icons-react";
 import { useAtom } from "jotai";
 import { type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
@@ -232,7 +238,7 @@ export default function DirectoryTree({
               onRequestMove?.(node);
             }}
           >
-            {t("Files.Move")}
+            <IconFolderSymlink size={16} aria-hidden />
           </IconAction>
         </Group>
       </Box>

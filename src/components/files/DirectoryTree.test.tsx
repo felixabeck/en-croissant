@@ -26,6 +26,9 @@ vi.mock("@tabler/icons-react", () => ({
   IconFileDescription: () => null,
   IconFolder: () => null,
   IconFolderOpen: () => null,
+  IconFolderSymlink: (props: { "aria-hidden"?: boolean }) => (
+    <svg aria-hidden={props["aria-hidden"]} />
+  ),
   IconTrash: () => null,
 }));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => mocks.navigate }));
@@ -279,6 +282,9 @@ test("routes context, M, and drag move intents with opaque entry handles", async
 
   const rootMove = item("Root").querySelector<HTMLButtonElement>('button[aria-label="Files.Move"]');
   expect(rootMove).not.toBeNull();
+  // An icon-sized button clips text; the name lives in the label, the child is a glyph.
+  expect(rootMove?.textContent).toBe("");
+  expect(rootMove?.querySelector("svg[aria-hidden]")).not.toBeNull();
   act(() => rootMove?.click());
   expect(onRequestMove).toHaveBeenCalledWith(rootFile);
   onRequestMove.mockClear();
