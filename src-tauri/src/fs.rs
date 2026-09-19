@@ -24,6 +24,7 @@ use crate::AppState;
 const MAX_ACTIVE_DOWNLOADS: usize = 32;
 const DOWNLOAD_DEADLINE: Duration = Duration::from_secs(60 * 60);
 const MAX_ARCHIVE_PATH_BYTES: usize = 1024;
+const DOWNLOAD_STAGING_PAYLOAD_LEAF: &str = "payload";
 #[cfg(unix)]
 const MAX_ARCHIVE_PATH_COMPONENTS: usize = crate::infra::fs::MAX_REMOVE_TREE_DEPTH - 1;
 /// Standard minisign public-key file of the fork release key: an `untrusted comment:` line, then
@@ -424,7 +425,6 @@ where
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
 /// Splits the staging a zip or tar download installs under into the extractor's parent and
 /// leaf, refusing when `path` is not the directory that staging names.
 fn archive_install_names<'a>(
@@ -904,7 +904,7 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
         (op, resolved)
     };
     let staged = tempfile::tempdir().map_err(|error| Error::Io(Box::new(error)))?;
-    let staged_file = staged.path().join("payload");
+    let staged_file = staged.path().join(DOWNLOAD_STAGING_PAYLOAD_LEAF);
     let progress_lease = begin_progress(&state.progress_state, app, id.to_owned())?;
     let result = await_staging_deadline(
         DOWNLOAD_DEADLINE,
@@ -914,7 +914,10 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
             op,
             url,
             &staged_file,
-            Some((staged.path().to_path_buf(), Some("payload".into()))),
+            Some((
+                staged.path().to_path_buf(),
+                Some(DOWNLOAD_STAGING_PAYLOAD_LEAF.into()),
+            )),
             state.http_transport.as_ref(),
             bearer_token,
             total_size,
@@ -3447,7 +3450,10 @@ mod tests {
         let other = staged.path().join("other");
         let error = download_zip_with_staging(
             &other,
-            Some((staged.path().to_path_buf(), Some("payload".into()))),
+            Some((
+                staged.path().to_path_buf(),
+                Some(DOWNLOAD_STAGING_PAYLOAD_LEAF.into()),
+            )),
         )
         .await;
         assert_eq!(

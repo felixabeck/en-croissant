@@ -4797,11 +4797,12 @@ impl OwnedStagingDir {
         let parent = open_parent_directory(&child)?;
         match entry_identity_at(&parent, &leaf, true) {
             Ok(actual) if actual == identity => {}
-            _ => {
+            Ok(_) => {
                 return Err(Error::Conflict(
                     "owned staging directory changed concurrently".into(),
                 ))
             }
+            Err(error) => return Err(error),
         }
         Ok(Self {
             parent,
