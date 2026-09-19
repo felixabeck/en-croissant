@@ -6839,6 +6839,10 @@ Plan: `tasks/plans/2026-09-19-owned-staging-dir.md` (gitignored). Handoff: `task
 * **Related:** `f-20260905-07`, which this splits out of; `d-20260901-03`.
 * **Found by:** Grok, implementation of `tasks/plans/2026-09-05-authorized-directory-descriptors.md` phase 5, 2026-09-05.
 
+* **Open question:** What type carries a native save-dialog destination so the one-shot PNG/CSV write uses descriptor-relative `atomic_replace_at` without a PathAuthority grant and without a counted pathname reach in `main.rs`?
+* **Entry revalidation (2026-09-19, pickup of pinned f-20260905-09):** stays `build`. `d-20260901-03` still holds: `PathRef` cannot represent this destination. `AuthorizedDir` producers stay closed (`d-20260905-07`). Current tree still has one counted reach in `main.rs`: `save_native_export_blocking` → `crate::infra::fs::atomic_replace(&path, …)` (`src-tauri/src/main.rs:1092`; `INITIAL_FS_SURFACE_COUNTS["src-tauri/src/main.rs"] = 1`). PGN's `create_pgn_export_destination` is a persistent workspace grant for a later renderer write and is the wrong product for bytes already in hand. The design question this run answers is recorded as the decision governing this id (NativeExportDest). Proof: `scripts/check-rust-release-surface.mjs:17` still lists `main.rs`; callers are only `save_board_snapshot` and `save_engine_logs`.
+<!-- ledger-meta {"command":"annotate","effect_lines":2,"effect_sha256":"2a79f36964d934832309a636679825465a656ddd0310d8cedd9cd2211b56e4fd","input_sha256":"9d316aab18813af0dd33e84b3762b11c7b9ee71953b2efed2659b21de5a5256d","kind":"mutation-receipt","operation":"5771f7c8b675937a4d55f52b5ea814e00d7c38ec236accc66eccb61e82b99442","options":{"section":null},"request_id_sha256":null,"results":["f-20260905-09"],"target":"f-20260905-09","v":1} -->
+
 ---
 
 ## 2026-09-05 — filed through the inbox spool
