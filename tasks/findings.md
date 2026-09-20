@@ -10365,3 +10365,16 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 * **How:** follow `docs/coverage.md:43-56` in full — green check against the existing baseline first, CI artifact from a run containing `4d025de9`, verify the measurement inputs match, require every covered count and ratio to stay level or rise without a shrink allowance, then `coverage:baseline:frontend` and record the CI run, commit, artifact and every metric delta in `tasks/decisions.md`, as `d-20260911-02` did.
 * **Blocked on:** the baseline commands are denied by default in `.claude/settings.json`; the denial is honoured, not circumvented. Also on the push having landed.
 * **Found by:** Claude Code, 2026-09-20, in round 2 of the `f-20260920-03` plan review (J2).
+
+---
+
+## 2026-09-20 — filed through the inbox spool
+
+### The native operation registry holds downloads in a pool still named, typed and documented as reads
+
+* **ID:** f-20260920-07 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src-tauri/src/infra/operations.rs:15-16` (`reads`), `:26-43` (`ReadState`, `ReadEntry`), `:132` (`MAX_NATIVE_READS`), `:270` (`requested_analysis: bool`), `:601-602` (the drain path), and the comments around each.
+* **Defect:** `459b649f` gave downloads their own reservation kind and admitted them into the same pool the native reads use, reusing `reads`, `ReadState`, `ReadEntry`, `MAX_NATIVE_READS` and the read drain path without renaming any of them. The type names and the comments now describe a scope the code no longer has, so the next reader has to infer from call sites that `MAX_NATIVE_READS` also bounds concurrent downloads. The kind is additionally dispatched through an opaque `requested_analysis: bool` whose callers pass bare `true`/`false`, which now has to be read as "not a download, not a read" rather than as a question about analysis.
+* **Why it matters:** the bound and the drain semantics are shared between two operation classes, and nothing in the names says so. A later change that tunes `MAX_NATIVE_READS` for reads silently retunes download concurrency.
+* **Fix shape:** rename the pool and its types to the operation scope they now have, and replace the boolean with the reservation-kind enum the registry already tracks internally, so a call site names its kind.
+* **Found by:** Claude Code, 2026-09-20, `$push` review of `563790ff..HEAD` (review-code-quality, blocker, confidence 98; the boolean at should-fix, 95). Origin commit `459b649f` (`f-20260906-07`), a different area from the run that found it.
