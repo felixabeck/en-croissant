@@ -19,7 +19,10 @@ Phase A G rows (each staged message names the listed file and signature):
 `fs.rs::download_engine_archive`,
 `oauth.rs::authenticate`, `oauth.rs::migrate_legacy_lichess_token`,
 `infra/path_authority/mod.rs::engine_resource`,
-`fs.rs::set_file_as_executable_blocking`,
+`fs.rs::set_file_as_executable_blocking` (retired 2026-09-20 with the command
+itself, `f-20260906-08`; the guard moved to
+`infra/path_authority/mod.rs::register_installed_engine`, which is where the
+executable mark now happens),
 `puzzle.rs::delete_puzzle_database`, `puzzle.rs::get_puzzle`.
 
 Phase A B rows (each staged message names the listed file and signature).
@@ -86,6 +89,15 @@ the `set_file_as_executable_blocking` guard row and its `"engine executable
 mode"` routed label go with it. That leaves **2 body rows and 4 guard rows**,
 counted from the arrays below, and the Ok counterpart is pinned by
 `mark_engine_executable_windows_is_a_checked_noop` rather than by a refusal row.
+
+On 2026-09-20 (`f-20260906-08`) `set_file_as_executable` itself was deleted: it
+had had no renderer caller since `3afed031`, and the executable mark moved into
+`infra/path_authority/mod.rs::register_installed_engine`, which already resolves
+the target under `EngineInstall`. Its test guard moved with it and is now
+`register_installed_engine_marks_executable_without_off_unix_refusal`, which
+additionally pins `?`-propagation, mark-before-persist ordering, and the absence
+of the deleted command from `fs.rs` and `main.rs`. No row count changes: the
+guard row had already gone in the paragraph above.
 
 Phase 3 of that slice (`f-20260909-01`, d-20260918-10, d-20260918-11) ports the
 last two refusal bodies: `infra/fs.rs::atomic_install_dir` now dispatches to the
@@ -1789,15 +1801,51 @@ mod tests {
         assert!(!body.contains("off_unix_refusal"), "{body}");
     }
 
-    /// R2-03. The command worker must not re-acquire the off-unix refusal now that the Windows
-    /// counterpart is a no-op. Cfg-free, so a re-inserted `off_unix_refusal` in
-    /// `set_file_as_executable_blocking` reddens the Linux run.
+    /// R2-03. Installed-engine registration must propagate executable-mark failures, perform the
+    /// mark before persistence, and must not re-acquire the off-unix refusal. The deleted command
+    /// must not return in either source file.
+    ///
+    /// Staged-failure matrix (2026-09-20; each break changed the real source read by `source_for`
+    /// and was restored before the next run; the verifier assertions were never edited):
+    /// - Dropped `?` from `resolved.mark_engine_executable()?` (with `let _ =`): assertion (a)
+    ///   printed `register_installed_engine must propagate executable-mark errors with ?`; exit
+    ///   status 101.
+    /// - Moved the executable-mark call after `register_engine_file_from_resolved(`: assertion
+    ///   (b) printed `register_installed_engine must mark executable before persistence`; exit
+    ///   status 101.
+    /// - Inserted an `off_unix_refusal` mention into the registration body: assertion (c) printed
+    ///   `register_installed_engine must not contain an off-unix refusal`; exit status 101.
+    /// - Reintroduced `set_file_as_executable` into `fs.rs`: assertion (d) printed
+    ///   `deleted executable command must be absent from fs.rs and main.rs`; exit status 101.
     #[test]
-    fn set_file_as_executable_blocking_has_no_off_unix_refusal() {
-        let source = source_for("fs.rs");
-        let body = compact(&source[braced_body(source, "fn set_file_as_executable_blocking(")]);
-        assert!(!body.contains("off_unix_refusal"), "{body}");
-        assert!(body.contains(".mark_engine_executable()"), "{body}");
+    fn register_installed_engine_marks_executable_without_off_unix_refusal() {
+        let source = source_for("infra/path_authority/mod.rs");
+        let body =
+            compact(&source[braced_body(source, "pub(crate) fn register_installed_engine(")]);
+        assert!(
+            body.contains(".mark_engine_executable()?"),
+            "register_installed_engine must propagate executable-mark errors with ?"
+        );
+        let mark = body
+            .find(".mark_engine_executable()?")
+            .expect("the executable-mark call was asserted above");
+        let register = body
+            .find("register_engine_file_from_resolved(")
+            .expect("the registration call must be present");
+        assert!(
+            mark < register,
+            "register_installed_engine must mark executable before persistence"
+        );
+        assert!(
+            !body.contains("off_unix_refusal"),
+            "register_installed_engine must not contain an off-unix refusal"
+        );
+        let fs = source_for("fs.rs");
+        let main = source_for("main.rs");
+        assert!(
+            !fs.contains("set_file_as_executable") && !main.contains("set_file_as_executable"),
+            "deleted executable command must be absent from fs.rs and main.rs"
+        );
     }
 
     fn source_for(file: &str) -> &'static str {

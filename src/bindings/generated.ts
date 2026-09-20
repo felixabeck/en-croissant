@@ -609,14 +609,6 @@ async deleteEmptyGames(file: DatabaseHandle) : Promise<Result<null, ErrorPayload
 async clearGames() : Promise<void> {
     await TAURI_INVOKE("clear_games");
 },
-async setFileAsExecutable(file: PathRef) : Promise<Result<null, ErrorPayload>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("set_file_as_executable", { file }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
 async deleteIndexes(file: DatabaseHandle) : Promise<Result<null, ErrorPayload>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("delete_indexes", { file }) };

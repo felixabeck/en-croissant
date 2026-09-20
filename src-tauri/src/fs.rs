@@ -1814,39 +1814,6 @@ fn extract_gz(file: std::fs::File, target_path: &Path, limits: ArchiveLimits) ->
 
 #[tauri::command]
 #[specta::specta]
-pub async fn set_file_as_executable(
-    file: crate::infra::path_authority::PathRef,
-    state: tauri::State<'_, AppState>,
-) -> Result<(), Error> {
-    let authority = Arc::clone(&state.pgn_path_authority);
-    crate::infra::operations::run_accepted_blocking(
-        &state.operations,
-        "set_file_as_executable",
-        move || set_file_as_executable_blocking(&authority, file),
-    )
-    .await
-}
-
-fn set_file_as_executable_blocking(
-    authority: &Mutex<Option<crate::infra::path_authority::PathAuthority>>,
-    file: crate::infra::path_authority::PathRef,
-) -> Result<(), Error> {
-    let mut authority = authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-    authority
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .resolve(
-            &file,
-            crate::infra::path_authority::PathOperation::EngineInstall,
-            &[],
-        )?
-        .mark_engine_executable()
-}
-
-#[tauri::command]
-#[specta::specta]
 pub async fn file_exists(
     file: crate::infra::path_authority::PathRef,
     state: tauri::State<'_, AppState>,

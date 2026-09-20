@@ -73,7 +73,6 @@ use crate::file_workspace::{
     map_picker_join, move_workspace_entry, permanently_delete_workspace_entry,
     rename_workspace_file, restore_workspace_entry, trash_workspace_entry,
 };
-use crate::fs::set_file_as_executable;
 use crate::lexer::lex_pgn;
 use crate::lichess::{
     get_authenticated_lichess_account, get_authenticated_lichess_explorer, get_public_lichess_json,
@@ -2314,7 +2313,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             delete_duplicated_games,
             delete_empty_games,
             clear_games,
-            set_file_as_executable,
             delete_indexes,
             create_indexes,
             edit_db_info,
@@ -3659,7 +3657,6 @@ mod blocking_offload_scans {
                 "delete_puzzle_database",
             ),
             ("fs.rs", include_str!("fs.rs"), "download_engine_archive"),
-            ("fs.rs", include_str!("fs.rs"), "set_file_as_executable"),
             (
                 "chesscom.rs",
                 include_str!("chesscom.rs"),
@@ -4016,10 +4013,6 @@ mod blocking_offload_scans {
         }
         let fs = include_str!("fs.rs");
         for (signature, worker) in [
-            (
-                "pub async fn set_file_as_executable(",
-                "set_file_as_executable_blocking",
-            ),
             ("pub async fn file_exists(", "file_exists_blocking"),
             (
                 "pub async fn get_file_metadata(",
