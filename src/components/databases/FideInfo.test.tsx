@@ -38,7 +38,7 @@ class MockResizeObserver {
 }
 globalThis.ResizeObserver = MockResizeObserver;
 
-function mockFideInfoDependencies(rejectFlagpack: boolean) {
+function mockFideInfoDependencies({ rejectFlagpack }: { rejectFlagpack: boolean }) {
   vi.doMock("@/utils/lichess/api", () => ({
     getFidePlayer: mocks.getFidePlayer,
   }));
@@ -55,9 +55,9 @@ function mockFideInfoDependencies(rejectFlagpack: boolean) {
   }
 }
 
-async function importFideInfo(rejectFlagpack = false) {
+async function importFideInfo({ rejectFlagpack = false } = {}) {
   vi.resetModules();
-  mockFideInfoDependencies(rejectFlagpack);
+  mockFideInfoDependencies({ rejectFlagpack });
   const flagpack = await import("./flagpack");
   const loadFlagpack = vi.spyOn(flagpack, "loadFlagpack");
   const [{ default: FideInfo }, { SWRConfig }] = await Promise.all([
@@ -145,7 +145,7 @@ test("an open modal renders the real federation flag", async () => {
 
 test("a rejected flag import is silent and does not retry", async () => {
   vi.useFakeTimers();
-  const { FideInfo, SWRConfig, loadFlagpack } = await importFideInfo(true);
+  const { FideInfo, SWRConfig, loadFlagpack } = await importFideInfo({ rejectFlagpack: true });
   mocks.getFidePlayer.mockResolvedValue(player("Test Player"));
 
   await renderFideInfo(FideInfo, SWRConfig, {
@@ -169,7 +169,7 @@ test("a rejected flag import is silent and does not retry", async () => {
 });
 
 test("reopening after a rejection makes one new flag-pack attempt", async () => {
-  const { FideInfo, SWRConfig, loadFlagpack } = await importFideInfo(true);
+  const { FideInfo, SWRConfig, loadFlagpack } = await importFideInfo({ rejectFlagpack: true });
   mocks.getFidePlayer.mockResolvedValue(player("Reopened Player"));
   const swrValue = { provider: () => new Map() };
   const props = {
@@ -205,7 +205,7 @@ test("a closed modal does not start either lookup", async () => {
 });
 
 test("a second mounted instance suppresses a retry after a shared failure", async () => {
-  const { FideInfo, SWRConfig, loadFlagpack } = await importFideInfo(true);
+  const { FideInfo, SWRConfig, loadFlagpack } = await importFideInfo({ rejectFlagpack: true });
   mocks.getFidePlayer.mockImplementation(async (name: string) => player(name));
   const swrValue = { provider: () => new Map() };
 
