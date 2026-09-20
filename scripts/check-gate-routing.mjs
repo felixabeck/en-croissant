@@ -10,6 +10,15 @@ const PACKAGE_JSON = "package.json";
 const TEST_WORKFLOW = ".github/workflows/test.yml";
 const VITE_CONFIG = "vite.config.ts";
 const CONTRACT_GATE = "gates:contract:check";
+// The kit-parity gate must run the RELEASED kit. `kit` on PATH resolves to
+// $HOME/.local/share/agent-kit/current/bin/kit, an immutable release worktree
+// that only a gated agent-kit push publishes. A script spelling out a path into
+// ~/Projekte/agent-kit would run whatever is saved in that checkout right now,
+// including half-written edits, which is what the release channel exists to keep
+// out of this gate. Reachability alone does not catch that, so it is asserted here.
+const KIT_PARITY_SCRIPT = "findings:kit:check";
+const KIT_PARITY_COMMAND = "env -u KIT_ROOT kit sync --check .";
+const KIT_WORKBENCH_PATH = "Projekte/agent-kit";
 const PATH_SCOPED_CI_SCRIPTS = Object.freeze({
   "test:coverage": "### TypeScript/React frontend",
   "coverage:frontend:check": "### TypeScript/React frontend",
@@ -451,6 +460,33 @@ export async function checkGateRouting(
 
   if (!(CONTRACT_GATE in scripts)) {
     findings.push(`package.json is missing ${CONTRACT_GATE}; add the shared contract chain`);
+  }
+
+  // Only the CONTENT is asserted here. A missing script is already caught by the
+  // routing rule above: the push skill invokes `pnpm findings:kit:check`, and a
+  // command naming a package script that does not exist is reported there. A
+  // second missing-script rule would duplicate it and would fire on fixtures
+  // that legitimately model only part of the manifest.
+  const kitParity = scripts[KIT_PARITY_SCRIPT];
+  if (typeof kitParity === "string") {
+    if (kitParity.trim() !== KIT_PARITY_COMMAND) {
+      findings.push(
+        `${KIT_PARITY_SCRIPT} must be exactly ${KIT_PARITY_COMMAND}, not ${kitParity}; ` +
+          "the gate runs the released kit on PATH",
+      );
+    }
+    if (kitParity.includes(KIT_WORKBENCH_PATH)) {
+      findings.push(
+        `${KIT_PARITY_SCRIPT} names the kit workbench path ${KIT_WORKBENCH_PATH}; ` +
+          "use the released kit on PATH so an unreleased edit cannot reach this gate",
+      );
+    }
+  }
+  if (pushSkill.includes(`${KIT_WORKBENCH_PATH}/bin/kit`)) {
+    findings.push(
+      `${PUSH_SKILL} names the kit workbench driver ${KIT_WORKBENCH_PATH}/bin/kit; ` +
+        "the kit-parity gate runs the released kit on PATH",
+    );
   }
 
   const skillContractReferences = directGateCommands.flatMap((command) =>
