@@ -37,6 +37,13 @@ const B0_ORACLE_FORMS = [
   ["J", 'await import("@tauri-apps/" + "plugin-updater");', "must-stay-silent"],
   ["K", `// we do not use ${UPDATER_SPECIFIER} here`, "must-stay-silent"],
   ["L", `const msg = "install ${UPDATER_SPECIFIER}";`, "must-stay-silent"],
+  ["M", `const m = await import(// c\r"${UPDATER_SPECIFIER}");`, "must-be-violation"],
+  ["N", `import /* c */ "${UPDATER_SPECIFIER}";`, "must-be-violation"],
+  ["O", `import { check } from /* c */ "${UPDATER_SPECIFIER}";`, "must-be-violation"],
+  ["P", `const m = require /* c */ ("${UPDATER_SPECIFIER}");`, "must-be-violation"],
+  ["Q", `const m = await import /* c */ ("${UPDATER_SPECIFIER}");`, "must-be-violation"],
+  ["R", `vi.mock /* c */ ("${UPDATER_SPECIFIER}");`, "must-be-violation"],
+  ["S", `const m = await import\n// c\n("${UPDATER_SPECIFIER}");`, "must-be-violation"],
 ];
 const B0_ORACLE_CASES = B0_ORACLE_FORMS.flatMap(([row, source, expected]) =>
   ["components/probe.ts", "bindings/generated.ts"].map((path) => ({

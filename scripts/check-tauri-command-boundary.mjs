@@ -48,17 +48,23 @@ export const NATIVE_EXPORT_DENYLIST = Object.freeze(
 );
 
 const TAURI_SPECIFIER = String.raw`@tauri-apps/(?:api(?:/[^"']*)?|plugin-[^"']*)`;
-const FROM_SPECIFIER = new RegExp(String.raw`\bfrom\s*["'](${TAURI_SPECIFIER})["']`, "g");
-const SIDE_EFFECT_SPECIFIER = new RegExp(String.raw`\bimport\s*["'](${TAURI_SPECIFIER})["']`, "g");
-const CALL_ARGUMENT_GAP = String.raw`\s*(?:(?:\/\/[^\r\n]*(?:\r?\n|$)|\/\*[\s\S]*?\*\/)\s*)*`;
+const SPECIFIER_GAP = String.raw`\s*(?:(?:\/\/[^\r\n\u2028\u2029]*(?:[\r\n\u2028\u2029]|$)|\/\*[\s\S]*?\*\/)\s*)*`;
+const FROM_SPECIFIER = new RegExp(
+  String.raw`\bfrom${SPECIFIER_GAP}["'](${TAURI_SPECIFIER})["']`,
+  "g",
+);
+const SIDE_EFFECT_SPECIFIER = new RegExp(
+  String.raw`\bimport${SPECIFIER_GAP}["'](${TAURI_SPECIFIER})["']`,
+  "g",
+);
 const TEMPLATE_TAURI_SPECIFIER = '@tauri-apps/(?:api(?:/[^"`]*)?|plugin-[^"`]*)';
 const CALL_SPECIFIER = [
   new RegExp(
-    String.raw`\b(?:import|require|vi\.mock)\s*\(${CALL_ARGUMENT_GAP}["'](${TAURI_SPECIFIER})["']`,
+    String.raw`\b(?:import|require|vi\.mock)${SPECIFIER_GAP}\(${SPECIFIER_GAP}["'](${TAURI_SPECIFIER})["']`,
     "g",
   ),
   new RegExp(
-    String.raw`\b(?:import|require|vi\.mock)\s*\(${CALL_ARGUMENT_GAP}` +
+    String.raw`\b(?:import|require|vi\.mock)${SPECIFIER_GAP}\(${SPECIFIER_GAP}` +
       "`(?![^`]*\\$\\{)(" +
       TEMPLATE_TAURI_SPECIFIER +
       ")`",
