@@ -149,12 +149,16 @@ async function renderFideInfo(
   });
 }
 
+// Both queries are scoped to this test's own root, never to `document`. The mutation gate's dry
+// run executes every test file in one process, and a document-wide `svg[viewBox="0 0 32 24"]`
+// count picked up flags rendered by another file: the two-instance case asserted zero flags and
+// found two.
 function modalText() {
-  return document.querySelector('[role="dialog"]')?.textContent || "";
+  return container.querySelector('[role="dialog"]')?.textContent || "";
 }
 
 function flagSvgs() {
-  return document.querySelectorAll('svg[viewBox="0 0 32 24"]');
+  return container.querySelectorAll('svg[viewBox="0 0 32 24"]');
 }
 
 test("an open modal renders the real federation flag", async () => {
@@ -238,7 +242,7 @@ test("a closed modal does not start either lookup", async () => {
 
   expect(mocks.getFidePlayer).not.toHaveBeenCalled();
   expect(loadFlagpack).not.toHaveBeenCalled();
-  expect(document.querySelector('[role="dialog"]')).toBeNull();
+  expect(container.querySelector('[role="dialog"]')).toBeNull();
   expect(flagSvgs()).toHaveLength(0);
 });
 
@@ -262,13 +266,13 @@ test("a second mounted instance suppresses a retry after a shared failure", asyn
 
   await renderPair(true);
   await vi.waitFor(() => expect(loadFlagpack).toHaveBeenCalledOnce());
-  await vi.waitFor(() => expect(document.body.textContent).toContain("Black Player"));
+  await vi.waitFor(() => expect(container.textContent).toContain("Black Player"));
 
   await renderPair(false);
   await renderPair(true);
 
   expect(loadFlagpack).toHaveBeenCalledOnce();
-  expect(document.body.textContent).not.toContain("Common.Loading");
+  expect(container.textContent).not.toContain("Common.Loading");
   expect(flagSvgs()).toHaveLength(0);
 });
 
