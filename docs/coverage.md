@@ -26,6 +26,31 @@ backstop is gone. Any future mechanism that changes *what gets measured* — an 
 `rust-branch-coverage.mjs`, a new include/exclude glob — must be expressed through the config so it
 reaches that signature, or the narrowing becomes invisible.
 
+**A narrowing can also arrive through the test suite, where neither guard looks.** An eager `?raw`
+import of a file inside the coverage include set registers that file in the v8 coverage map as a
+string module with no coverable statements. Vitest generates empty-but-counted coverage only for
+files *absent* from that map, so the file is then reported as `LF:0 FNF:0 BRF:0` instead of its
+real uncovered counts — it silently leaves the denominator. Measured: a single raw import of one
+file zeroes exactly that file and nothing else; an eager `import.meta.glob` of `src/**` with
+`query: "?raw"` in one test file zeroed 91 of 232 production files between 2026-09-19 and
+2026-09-20, taking the reported `settings` line coverage from 13.39 % to 98.88 % while the gate
+stayed green (`f-20260920-18`).
+
+Nothing catches this numerically, in either direction of arrival. The covered counts never move —
+a blanked file contributed no covered records before or after — so neither ratchet clause fires,
+and the shrink allowance above forgives the vanished totals by construction. Measured: a broken
+measurement passes against the pre-existing baseline *and* against a baseline written from a
+repaired run. Only the reverse fails, loudly: a repaired measurement checked against a baseline
+written from a broken run reports a ratio regression. So refreshing a baseline from a corrupted
+measurement is the trap to avoid above all — afterwards the repair itself looks like the
+regression, and the cheapest green is to keep the instrument broken.
+
+The practical rule: a test may read source text off disk, but **must not import a file inside
+`src/**/*.{ts,tsx}` through `?raw`, `?url` or `?inline`**. Raw imports of files outside that set —
+`src-tauri/**`, `.github/**`, `@/catalogs/*.json` — are unaffected and are used deliberately. If a
+source scan needs the whole renderer tree, it belongs in a `scripts/**` checker, where several
+already live, not in a renderer test.
+
 Every area has a permanent, behavior-derived floor calibrated below its verified baseline; the
 floor prevents broad test-suite collapse while the exact-count baseline catches smaller
 regressions. Settings (2% lines, 3% functions, 1% branches) is backed by directory-workspace

@@ -9,12 +9,6 @@ const FORK_UPDATE_ENDPOINT =
     "https://github.com/felixabeck/en-croissant/releases/latest/download/latest.json";
 const RETIRED_UPSTREAM_KEY = "RWSF3PMxhuaQf7613UytN4bdF7FQyBymLJVDIG3OE8xNa+0fcs6KE6/J";
 
-const rendererSources = import.meta.glob<string>(["../**/*.{ts,tsx}", "!../**/*.test.{ts,tsx}"], {
-    query: "?raw",
-    import: "default",
-    eager: true,
-});
-
 type JsonObject = Record<string, unknown>;
 
 /** A minisign key line decodes to `Ed` + 8-byte key id + 32-byte Ed25519 key. */
@@ -109,11 +103,4 @@ test("release.yml builds on tags into one draft and publishes only a complete ma
         expect(publish).toContain(platform);
     }
     expect(publish).toMatch(/--draft=false/);
-});
-
-test("only the native facade imports the updater plugin", () => {
-    const importers = Object.entries(rendererSources)
-        .filter(([, source]) => source.includes("@tauri-apps/plugin-updater"))
-        .map(([path]) => path);
-    expect(importers).toEqual(["./native.ts"]);
 });
