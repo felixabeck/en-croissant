@@ -168,6 +168,32 @@ describe("source boundary forms", () => {
     }
     expect(performance.now() - startedAt).toBeLessThan(1000);
   });
+
+  // The gap scans comments, so a `from` followed by an unterminated line comment
+  // scans to end of input. On a file that is one enormous line of `from//` that
+  // makes the scan quadratic: measured 3.5 ms at 6 KB, 13.6 ms at 12 KB, 75.4 ms
+  // at 29 KB, 304.9 ms at 59 KB. Line structure removes it entirely - the same
+  // 59 KB wrapped at 80 columns is 1.0 ms - and the real 57 KB
+  // src/bindings/generated.ts is 0.42 ms, with the whole gate at 0.20 s over 368
+  // files. The bound below is therefore generous on purpose: it exists to catch a
+  // return to exponential behaviour, not to pin the quadratic constant. The
+  // standing fix is a comment-masking pre-pass, which would let every gap collapse
+  // back to `\s*` - see f-20260920-20, where masking and a parser are weighed.
+  test("stays proportionate on a pathological single-line source", () => {
+    const pathological = "from//".repeat(10_000);
+    const wrapped = pathological.replace(/(.{80})/g, "$1\n");
+
+    const startedPathological = performance.now();
+    expect(inspectSource("components/probe.ts", pathological)).toEqual([]);
+    const pathologicalMs = performance.now() - startedPathological;
+
+    const startedWrapped = performance.now();
+    expect(inspectSource("components/probe.ts", wrapped)).toEqual([]);
+    const wrappedMs = performance.now() - startedWrapped;
+
+    expect(pathologicalMs).toBeLessThan(5000);
+    expect(wrappedMs).toBeLessThan(1000);
+  });
 });
 
 describe("native facade contract", () => {
