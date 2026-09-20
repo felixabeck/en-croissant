@@ -1,1 +1,7 @@
 * text=auto eol=lf
+
+# The two ledgers are append-only. `findings.py merge-driver` merges diverged
+# appends block by block and validates the result; the driver command is
+# installed into .git/config by `findings.py check` (agent-kit f-20260907-04).
+tasks/findings.md merge=ledger-append
+tasks/decisions.md merge=ledger-append
