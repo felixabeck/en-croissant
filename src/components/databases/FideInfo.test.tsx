@@ -202,20 +202,24 @@ test("a rejected flag import is silent and does not retry", async () => {
   expect(flagSvgs()).toHaveLength(0);
 });
 
-test("reopening after a rejection makes one new flag-pack attempt", async () => {
+test("a fresh mount after a rejection makes one new flag-pack attempt", async () => {
   const { FideInfo, SWRConfig, loadFlagpack } = await importFideInfo({ rejectFlagpack: true });
   mocks.getFidePlayer.mockResolvedValue(player("Reopened Player"));
   const swrValue = { provider: () => new Map() };
-  const props = {
-    setOpened: vi.fn(),
-    name: "Reopened Player",
-  };
+  const props = { setOpened: vi.fn(), name: "Reopened Player" };
 
   await renderFideInfo(FideInfo, SWRConfig, { ...props, opened: true }, swrValue);
   await vi.waitFor(() => expect(loadFlagpack).toHaveBeenCalledOnce());
   await vi.waitFor(() => expect(modalText()).toContain("Reopened Player"));
 
-  await renderFideInfo(FideInfo, SWRConfig, { ...props, opened: false }, swrValue);
+  // The component is unmounted between the two opens, not merely closed. Closing it leaves a
+  // mounted hook whose key goes null, and whether its revalidator is deregistered before the
+  // reopen re-registers one is a React scheduling detail, not a contract: under Stryker's
+  // full-suite run this case saw one call, under a single-file run two. What SWR does guarantee
+  // is the pair this file pins at both ends — a fresh mount with no live revalidator on the key
+  // revalidates once (here), and a mount while another revalidator on that key already holds the
+  // error does not revalidate at all (the next case).
+  await act(async () => root.render(null));
   await renderFideInfo(FideInfo, SWRConfig, { ...props, opened: true }, swrValue);
   await vi.waitFor(() => expect(loadFlagpack).toHaveBeenCalledTimes(2));
 
