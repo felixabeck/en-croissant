@@ -10336,3 +10336,17 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 * **Why it matters:** `pnpm bundle:check` is a push gate. The next frontend addition of any size fails on `total`, and the only lever is genuinely removing code rather than rearranging it — the same class of arrival-blocking gate that `f-20260920-03` was.
 * **Candidate, not a decision:** `mantine-flagpack` is 955,312 raw bytes for a component that renders one flag. It is now behind a dynamic import, so it no longer burdens any route, but it is still shipped and still counted by `total`. Replacing it — a Unicode regional-indicator flag, or a single inline SVG per country actually used — would delete most of it. That changes what a user sees (and on WebKitGTK under Linux regional-indicator sequences frequently have no glyph and render as two letters), so it is a product decision for Felix, not a technical one. Do not treat this entry as authorising it.
 * **Found by:** Claude Code, 2026-09-20, measuring the five bundle variants for `f-20260920-03`.
+
+---
+
+## 2026-09-20 — filed through the inbox spool
+
+### `bundle:check` measures bytes and cannot prove that a package stays out of a route's static closure
+
+* **ID:** f-20260920-05 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** felix-tooling-nod
+* **Where:** `scripts/check-bundle-budget.mjs:26-50` (`collectRecordAssets` walks manifest `imports`), `:63-90` (`buildBundleReport` sums gzip bytes per route closure), `bundle-budgets.json`.
+* **Defect:** `4d025de9` moved `mantine-flagpack` behind a dynamic edge, and the only durable guard on that placement is quantitative: returning the whole pack to the **board** route's static closure costs ~242,000 bytes and now fails the 550,000 cap. Nothing checks the edge itself. A smaller lazy route can statically import the pack and stay under the cap, and a single named flag statically imported anywhere is invisible to the gate. Three lenses raised this independently during the plan review (J1, K3) and it was accepted as a limitation rather than closed.
+* **Why it matters:** the property the change actually establishes — "this package is reached only through a dynamic edge" — is proven once, by hand, at implementation time and recorded in `4d025de9`'s commit message. From then on it is guarded only by an inequality that happens to hold. The same accident can recur in a shape the gate does not see.
+* **Candidate fix:** `buildBundleReport` already has the manifest graph. An assertion that a named set of packages appears in no route's transitive `imports` closure is a small addition to the existing checker, configured beside the limits in `bundle-budgets.json`.
+* **Blocked on:** universal rule 6d — this is new executable checking code where the cheap alternative (a one-time manual manifest read, which is what `4d025de9` did) already exists. Named to Felix in chat on 2026-09-20 with that alternative; he has not asked for the checker. Not blocked on a product question, so it carries no `felix-decision`.
+* **Found by:** Claude Code, 2026-09-20, in rounds 2-4 of the `f-20260920-03` plan review.
