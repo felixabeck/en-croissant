@@ -3737,3 +3737,28 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** (b) is ruled out by measurement — it trades an invisible cost for a user-visible one, a lost sound. Between the latch and the memo the case is closer: the memo's extra behaviour is genuinely unobservable, and this run argued for it across three plan revisions, first as "inseparable" from the required bound (refuted: the attempt latch separates them) and then as "harmless". Both review lenses, asked the question as a contested invariant with the three options named, chose the latch independently, and the argument that settles it is not about harm: an unmandated behaviour change is not the implementing session's to grant, however small, and the latch is exactly what the finding asks for and nothing more. The price is that the bound must be *stated* with an in-flight qualifier instead of as a flat "one" — which is honest, and is asserted by a test. Reversal path: if the in-flight window ever needs closing, the memo is the mechanism and it needs a mandate that asks for it.
 * **Decided by:** Claude Code (Opus 5), 2026-09-20, plan review rounds 2-5 on Codex; record `tasks/handoffs/2026-09-20-f-20260906-10-review.md` · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"cb762d940358879b382c04ee6e8e983fa74668af94de680433cd064bd408a4b6","input_sha256":"c394fa2e4f159b375066f99dea288e4134d414036d79ba0f0b5f25413dbfff3a","kind":"mutation-receipt","operation":"78771592f3577dbd11df7851156e351841e60202ab324671b99901c0a3dd46f1","options":{"section":null},"request_id_sha256":null,"results":["d-20260920-08"],"target":"decisions-ledger","v":1} -->
+
+### d-20260920-09 — How does `FideInfo.test.tsx` declare the `mantine-flagpack` mock state for a case?
+
+* **Question:** How does `FideInfo.test.tsx` declare the `mantine-flagpack` mock state for a case?
+* **Governs:** f-20260920-13
+* **Chosen:** Exactly one mock action is queued per case, in `importFideInfo` — the case says
+  `vi.doMock` or `vi.doUnmock` and nothing else queues an action for that specifier. The
+  `vi.doUnmock("mantine-flagpack")` in `afterEach` is gone.
+* **Rejected:** (a) Keeping the `afterEach` unmock as a safety net. Vitest 4.1.0 resolves queued
+  mock actions concurrently and applies them in resolution order rather than queue order
+  (`BareModuleMocker.resolveMocks` maps them through one `Promise.all`), so the hook's unmock and
+  the case's mock land in an arbitrary order — measured, 1 of 50 iterations on this tree, and 11
+  of 80 whole-file runs under 8-way concurrency. (b) Proving the registration took effect by
+  eagerly `await import("mantine-flagpack")` inside `importFideInfo` before importing
+  `./flagpack`: measured, it perturbs the module graph and makes the last case fail
+  deterministically (3 of 3 runs, with and without the `afterEach` unmock). (c) Narrowing the
+  DOM query again, which is what the three earlier attempts on this file did.
+* **Reason:** The race needs two pending actions for one specifier; one action cannot be
+  reordered against anything. The hook's unmock was redundant to begin with, because every case
+  goes through `importFideInfo` and declares the registration it wants. Post-repair: 0 failures
+  in 260 whole-file runs at 8- and 12-way concurrency, against 11 of 80 before; full frontend
+  suite 1254 tests green. Reversal path: put `vi.doUnmock("mantine-flagpack")` back in
+  `afterEach` — and the flake returns until Vitest applies queued actions in queue order.
+* **Decided by:** Claude Code, next-finding f-20260920-13, 2026-09-20 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":23,"effect_sha256":"60c1cf198c678ab8b47ccfd93077c020d3415c443f1a457c53ac0abc90ad89d0","input_sha256":"e5f25ae15e37b371ca615f55f8906b7c7a4ddfba080ec7d3c647166a345d2d32","kind":"mutation-receipt","operation":"0041377be824ee16ffd8acbe65ae9430c4b175ff5aaa22462bfa177317cd3579","options":{"section":null},"request_id_sha256":null,"results":["d-20260920-09"],"target":"decisions-ledger","v":1} -->
