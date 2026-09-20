@@ -5614,6 +5614,7 @@ impl PathAuthority {
                 "installed engine must be a regular file".into(),
             ));
         }
+        resolved.mark_engine_executable()?;
         let identity = resolved.identity()?;
         let path = resolved
             .target()

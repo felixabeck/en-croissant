@@ -2040,6 +2040,7 @@ mod tests {
         crate::infra::path_authority::PathAuthority,
         crate::infra::path_authority::PathRef,
         PathBuf,
+        crate::infra::path_authority::EngineRootHandle,
     ) {
         let engine_root = dir.path().join("engines");
         std::fs::create_dir(&engine_root).unwrap();
@@ -2048,7 +2049,7 @@ mod tests {
             .get_or_create_engine_root(&engine_root, "Engines", None)
             .unwrap();
         let destination = authority.engine_archive_destination(&root).unwrap();
-        (authority, destination, engine_root)
+        (authority, destination, engine_root, root)
     }
 
     fn unsigned_test_integrity(payload: &[u8]) -> ArtifactIntegrity {
@@ -3276,6 +3277,83 @@ mod tests {
         assert_mode_700(gzip_target.parent().unwrap());
     }
 
+    /// Staged-failure matrix (2026-09-20; each run exited 101):
+    /// - Removed `resolved.mark_engine_executable()?` from `register_installed_engine`: the
+    ///   registration-mode assertion printed `installed engine execution permission check failed:
+    ///   expected at least one execute bit, got 0o600`; the execution assertion printed
+    ///   `installed engine execution check failed: kind=PermissionDenied, raw_os_error=Some(13),
+    ///   Permission denied (os error 13)` (raw error 13 is EACCES).
+    /// - Changed `Mode::from_raw_mode(0o600)` in `src-tauri/src/infra/fs.rs:4436` to `0o700`: the
+    ///   extraction-mode assertion printed `archive extraction mode check failed: expected 0o600,
+    ///   got 0o700`. This also reddens `owned_staging_dir_create_relative_regular_is_exclusive`'s
+    ///   own `0o600` assertion at `src-tauri/src/infra/fs.rs:9385`; that collateral test was not
+    ///   included in the filtered run.
+    ///
+    /// The first staged break was restored before the second; the mode constant was restored
+    /// before the final full-suite run. The unstageable `fchmod`-failure branch is argued in the
+    /// Phase 1 specification, not represented as a staged row here.
+    #[cfg(unix)]
+    #[test]
+    fn installed_engine_archive_registration_makes_payload_executable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _lock = UMASK_TEST_LOCK.lock().unwrap();
+        let _umask = UmaskGuard::zero();
+        let dir = tempdir().unwrap();
+        let archive_path = dir.path().join("engine.zip");
+        write_zip(&archive_path, &[("engine", b"#!/bin/sh\necho ok\n")]);
+        let (mut authority, _destination, engine_root, root_handle) = engine_destination(&dir);
+        let install_dir = engine_root.join("engine");
+        let installed_path = install_dir.join("engine");
+
+        extract_zip(
+            std::fs::File::open(&archive_path).unwrap(),
+            &install_dir,
+            OpClass::Engine.limits(),
+        )
+        .unwrap();
+        let extraction_mode = std::fs::metadata(&installed_path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        authority
+            .register_installed_engine(&root_handle, "engine/engine")
+            .unwrap();
+        let registration_mode = std::fs::metadata(&installed_path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        let execution = std::process::Command::new(&installed_path).output();
+
+        let mut failures = Vec::new();
+        if extraction_mode != 0o600 {
+            failures.push(format!(
+                "archive extraction mode check failed: expected 0o600, got {extraction_mode:#o}"
+            ));
+        }
+        if registration_mode & 0o111 == 0 {
+            failures.push(format!(
+                "installed engine execution permission check failed: expected at least one execute bit, got {registration_mode:#o}"
+            ));
+        }
+        match execution {
+            Ok(output) if output.status.success() && output.stdout == b"ok\n" => {}
+            Ok(output) => failures.push(format!(
+                "installed engine execution check failed: status={}, stdout={:?}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout)
+            )),
+            Err(error) => failures.push(format!(
+                "installed engine execution check failed: kind={:?}, raw_os_error={:?}, {error}",
+                error.kind(),
+                error.raw_os_error()
+            )),
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
     #[test]
     fn gzip_extraction_keeps_the_installed_file_and_reports_uncertain_durability() {
         let root = tempdir().unwrap();
@@ -3835,7 +3913,7 @@ mod tests {
     #[tokio::test]
     async fn externally_cancelled_engine_archive_drops_stream_without_installation() {
         let dir = tempdir().unwrap();
-        let (authority, destination, engine_root) = engine_destination(&dir);
+        let (authority, destination, engine_root, _) = engine_destination(&dir);
         let first_seen = Arc::new(AtomicBool::new(false));
         let stopped = Arc::new(AtomicBool::new(false));
         let state = Arc::new(AppState {
@@ -3994,7 +4072,7 @@ mod tests {
     async fn engine_archive_commit_gate_race_preserves_linearized_outcome() {
         {
             let dir = tempdir().unwrap();
-            let (authority, destination, engine_root) = engine_destination(&dir);
+            let (authority, destination, engine_root, _) = engine_destination(&dir);
             let payload = zip_payload();
             let state = AppState {
                 http_transport: Arc::new(zip_response(payload.clone())),
@@ -4040,7 +4118,7 @@ mod tests {
 
         {
             let dir = tempdir().unwrap();
-            let (authority, destination, engine_root) = engine_destination(&dir);
+            let (authority, destination, engine_root, _) = engine_destination(&dir);
             let payload = zip_payload();
             let state = AppState {
                 http_transport: Arc::new(zip_response(payload.clone())),
