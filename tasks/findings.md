@@ -10391,3 +10391,16 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 * **Why it matters:** `sessionStorage` is a single shared quota for the whole renderer. Orphaned histories accumulate for the lifetime of the session across every closed puzzle tab, and a quota exhaustion there takes down the persistence of every other feature, not just puzzles. `.claude/rules/persisted-state.md` requires write/read symmetry and a bounded retention policy; this has neither.
 * **Fix shape:** bound the retained history, validate it on read through the schema route the rest of `src/state/**` uses, and remove the key in `closeWorkspaceTabAtom` alongside the tab tree. A migration that drops unrecognised `${id}-puzzles` records at startup clears what is already stranded.
 * **Found by:** Claude Code, 2026-09-20, `$push` review of `563790ff..HEAD` (review-persisted-state, blocker, confidence 98). Pre-existing — origin `0a101c7ff`, key spelling `5d2c70662`, still omitted by `813563b7`; unrelated to the two pieces of work in that range.
+
+---
+
+## 2026-09-20 — filed through the inbox spool
+
+### The download manifest signs the raw URL string while the transport requests its normalized form
+
+* **ID:** f-20260920-09 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src-tauri/src/fs.rs:277` (the signed payload covers the URL as written in the manifest) and `:468` (the request is issued with `reqwest::Url::as_str()`).
+* **Defect (reported by a lens, confirm first):** the signature is computed over the manifest's raw URL text, but the bytes actually fetched come from `reqwest::Url::as_str()`, which normalizes — a default port is dropped, the path and escaping are canonicalized. Signature verification therefore proves a string that is not necessarily the string contacted. `https://host:443/path` and `https://host/path` sign differently and fetch identically.
+* **Why it matters:** the digest still gates installation, so this is not a path to installing unsigned content; what is lost is the manifest's claim about *which origin was contacted*. `docs/signed-download-manifests.md` presents the signed URL as part of the guarantee, and it is weaker than it reads.
+* **Fix shape:** sign the normalized form, or request the exact signed string — one of the two, decided once and stated in `docs/signed-download-manifests.md`, plus a test that signs `https://host:443/…` and asserts the request URL matches the signed bytes.
+* **Found by:** Claude Code, 2026-09-20, `$push` review of `563790ff..HEAD` (review-tauri-security, should-fix, confidence 96). Pre-existing, origin `c8fd767d`.
