@@ -1076,23 +1076,14 @@ pub(crate) async fn install_staged_pgn_artifact(
     let installation_reservation = reservation.clone();
     let commit_gate = commit_gate.cloned();
     let install = crate::infra::blocking::BLOCKING_GATEWAY
-        .spawn_cancellable(
-            cancellation.clone(),
-            move |worker_cancellation| match commit_gate.as_ref() {
-                Some(commit_gate) => resolved.atomic_install_reserved_download_cancellable(
-                    &installation_reservation,
-                    staged.path(),
-                    worker_cancellation,
-                    Some(commit_gate),
-                ),
-                None => resolved.atomic_install_reserved_download_cancellable(
-                    &installation_reservation,
-                    staged.path(),
-                    worker_cancellation,
-                    None,
-                ),
-            },
-        )
+        .spawn_cancellable(cancellation.clone(), move |worker_cancellation| {
+            resolved.atomic_install_reserved_download_cancellable(
+                &installation_reservation,
+                staged.path(),
+                worker_cancellation,
+                commit_gate.as_ref(),
+            )
+        })
         .await;
     let target_durability = match install {
         Ok(installed) => installed,
@@ -1283,75 +1274,110 @@ pub async fn download_engine_archive(
     let commit_gate = lease.commit_gate();
     let state = state.inner().clone();
     crate::infra::operations::run_native_operation(lease, "download_engine_archive", async move {
-        let result = async {
-            let directory_name = std::ffi::OsString::from(directory_name);
-            let (op, resolved) =
-                resolve_engine_archive_destination(&state, &destination, &directory_name)?;
-            validate_artifact_integrity(op, &url, Some(&integrity))?;
-            let destination_parent = resolved
-                .target()
-                .and_then(|target| target.parent())
-                .ok_or_else(|| {
-                    Error::InvalidInput("archive destination needs a parent directory".into())
-                })?
-                .to_path_buf();
-            // The staging tree is a sibling of the destination, created in the destination's
-            // own parent (d-20260918-11). Publishing it is then a same-directory rename, so
-            // no cross-filesystem copy can quietly replace the atomic install.
-            let staging = private_tempdir_in(".archive", &destination_parent)?;
-            let extracted = staging.path().to_path_buf();
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancellation);
-            }
-            let progress_lease = begin_progress(&state.progress_state, &app, id.clone())?;
-            let result = await_staging_deadline(
-                DOWNLOAD_DEADLINE,
-                &cancellation,
-                "engine archive download deadline exceeded",
-                download_file_core_control_with_integrity(
-                    op,
-                    &url,
-                    &extracted,
-                    Some((staging.path().to_path_buf(), None)),
-                    state.http_transport.as_ref(),
-                    None,
-                    None,
-                    cancellation.clone(),
-                    Some(&integrity.sha256),
-                    |progress| {
-                        update_progress_with_state(
-                            &state.progress_state,
-                            &app,
-                            &progress_lease,
-                            progress,
-                            ProgressState::Running,
-                        )
-                    },
-                ),
-            )
-            .await;
-            if let Err(error) = result {
-                report_download_error(&state, &app, &progress_lease, &job_id, &error);
-                return Err(error);
-            }
-            let commit_gate = commit_gate.clone();
-            let install_result = crate::infra::blocking::BLOCKING_GATEWAY
-                .spawn(move || {
-                    commit_gate.begin_commit()?;
-                    publish_engine_archive_tree(&resolved, staging.path())
-                })
-                .await;
-            if let Err(error) = install_result {
-                report_download_error(&state, &app, &progress_lease, &job_id, &error);
-                return Err(error);
-            }
-            report_download_success(&state, &app, &progress_lease, &job_id);
-            Ok(())
-        }
-        .await;
-        result.map_err(sanitize_download_error)
+        download_engine_archive_core(
+            id,
+            url,
+            destination,
+            directory_name,
+            job_id,
+            integrity,
+            app,
+            state,
+            cancellation,
+            commit_gate,
+            |op, url, integrity| validate_artifact_integrity(op, url, Some(integrity)),
+        )
+        .await
+        .map_err(sanitize_download_error)
     })
     .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn download_engine_archive_core<R, V>(
+    id: String,
+    url: String,
+    destination: crate::infra::path_authority::PathRef,
+    directory_name: String,
+    job_id: String,
+    integrity: ArtifactIntegrity,
+    app: tauri::AppHandle<R>,
+    state: AppState,
+    cancellation: CancellationToken,
+    commit_gate: crate::infra::operations::OperationCommitGate,
+    validate_integrity: V,
+) -> Result<(), Error>
+where
+    R: tauri::Runtime,
+    V: Fn(OpClass, &str, &ArtifactIntegrity) -> Result<(), Error> + Send + 'static,
+{
+    let result = async {
+        let directory_name = std::ffi::OsString::from(directory_name);
+        let (op, resolved) =
+            resolve_engine_archive_destination(&state, &destination, &directory_name)?;
+        validate_integrity(op, &url, &integrity)?;
+        let destination_parent = resolved
+            .target()
+            .and_then(|target| target.parent())
+            .ok_or_else(|| {
+                Error::InvalidInput("archive destination needs a parent directory".into())
+            })?
+            .to_path_buf();
+        // The staging tree is a sibling of the destination, created in the destination's
+        // own parent (d-20260918-11). Publishing it is then a same-directory rename, so
+        // no cross-filesystem copy can quietly replace the atomic install.
+        let staging = private_tempdir_in(".archive", &destination_parent)?;
+        let extracted = staging.path().to_path_buf();
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
+        let progress_lease = begin_progress(&state.progress_state, &app, id.clone())?;
+        let result = await_staging_deadline(
+            DOWNLOAD_DEADLINE,
+            &cancellation,
+            "engine archive download deadline exceeded",
+            download_file_core_control_with_integrity(
+                op,
+                &url,
+                &extracted,
+                Some((staging.path().to_path_buf(), None)),
+                state.http_transport.as_ref(),
+                None,
+                None,
+                cancellation.clone(),
+                Some(&integrity.sha256),
+                |progress| {
+                    update_progress_with_state(
+                        &state.progress_state,
+                        &app,
+                        &progress_lease,
+                        progress,
+                        ProgressState::Running,
+                    )
+                },
+            ),
+        )
+        .await;
+        if let Err(error) = result {
+            report_download_error(&state, &app, &progress_lease, &job_id, &error);
+            return Err(error);
+        }
+        let commit_gate = commit_gate.clone();
+        let install_result = crate::infra::blocking::BLOCKING_GATEWAY
+            .spawn(move || {
+                commit_gate.begin_commit()?;
+                publish_engine_archive_tree(&resolved, staging.path())
+            })
+            .await;
+        if let Err(error) = install_result {
+            report_download_error(&state, &app, &progress_lease, &job_id, &error);
+            return Err(error);
+        }
+        report_download_success(&state, &app, &progress_lease, &job_id);
+        Ok(())
+    }
+    .await;
+    result.map_err(sanitize_download_error)
 }
 
 /// Publishes a fully extracted engine archive onto its authority-resolved destination. Split out
@@ -1925,7 +1951,16 @@ fn get_file_metadata_with_authority(
 mod tests {
     use super::*;
     use crate::infra::blocking::source_scan::body_at_indent;
-    use std::io::Write;
+    use std::{
+        future::Future,
+        io::Write,
+        pin::Pin,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc, Mutex,
+        },
+        task::{Context, Poll},
+    };
     use tempfile::tempdir;
 
     #[test]
@@ -1997,6 +2032,30 @@ mod tests {
             .get_or_create_database_root(&database_root, "Databases", None)
             .unwrap();
         (authority, root.id)
+    }
+
+    fn engine_destination(
+        dir: &tempfile::TempDir,
+    ) -> (
+        crate::infra::path_authority::PathAuthority,
+        crate::infra::path_authority::PathRef,
+        PathBuf,
+    ) {
+        let engine_root = dir.path().join("engines");
+        std::fs::create_dir(&engine_root).unwrap();
+        let mut authority = test_path_authority(dir);
+        let root = authority
+            .get_or_create_engine_root(&engine_root, "Engines", None)
+            .unwrap();
+        let destination = authority.engine_archive_destination(&root).unwrap();
+        (authority, destination, engine_root)
+    }
+
+    fn unsigned_test_integrity(payload: &[u8]) -> ArtifactIntegrity {
+        ArtifactIntegrity {
+            sha256: format!("{:x}", Sha256::digest(payload)),
+            signature: String::new(),
+        }
     }
 
     fn test_download_lease(state: &AppState) -> (String, crate::infra::operations::OperationLease) {
@@ -2156,7 +2215,7 @@ mod tests {
     #[test]
     fn download_engine_archive_stages_with_private_tempdir_in() {
         let source = include_str!("fs.rs");
-        let body = body_at_indent(source, "pub async fn download_engine_archive(");
+        let body = body_at_indent(source, "async fn download_engine_archive_core<");
         assert!(!body.contains("off_unix_refusal("), "{body}");
         assert_eq!(body.matches("private_tempdir_in(").count(), 1, "{body}");
         assert!(
@@ -2785,6 +2844,75 @@ mod tests {
                 return Err(Error::InvalidInput("No more mock responses".into()));
             }
             resps.remove(0)
+        }
+    }
+
+    struct BlockingChunkStream {
+        first_chunk: Mutex<Option<bytes::Bytes>>,
+        release: Arc<tokio::sync::Notify>,
+        waiting: Mutex<Option<Pin<Box<dyn Future<Output = ()> + Send>>>>,
+        first_seen: Arc<AtomicBool>,
+        stopped: Arc<AtomicBool>,
+    }
+
+    impl BlockingChunkStream {
+        fn new(first_seen: Arc<AtomicBool>, stopped: Arc<AtomicBool>) -> Self {
+            Self {
+                first_chunk: Mutex::new(Some(bytes::Bytes::from_static(b"first"))),
+                release: Arc::new(tokio::sync::Notify::new()),
+                waiting: Mutex::new(None),
+                first_seen,
+                stopped,
+            }
+        }
+    }
+
+    impl futures_util::Stream for BlockingChunkStream {
+        type Item = Result<bytes::Bytes, Error>;
+
+        fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            let this = self.get_mut();
+            if let Some(chunk) = this.first_chunk.lock().unwrap().take() {
+                this.first_seen.store(true, Ordering::SeqCst);
+                return Poll::Ready(Some(Ok(chunk)));
+            }
+            let mut waiting = this.waiting.lock().unwrap();
+            if waiting.is_none() {
+                *waiting = Some(Box::pin(this.release.clone().notified_owned()));
+            }
+            let Some(future) = waiting.as_mut() else {
+                return Poll::Pending;
+            };
+            match future.as_mut().poll(cx) {
+                Poll::Ready(()) => Poll::Ready(None),
+                Poll::Pending => Poll::Pending,
+            }
+        }
+    }
+
+    impl Drop for BlockingChunkStream {
+        fn drop(&mut self) {
+            self.stopped.store(true, Ordering::SeqCst);
+        }
+    }
+
+    struct BlockingChunkTransport {
+        first_seen: Arc<AtomicBool>,
+        stopped: Arc<AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl DownloadTransport for BlockingChunkTransport {
+        async fn request(&self, _: &str, _: HeaderMap) -> Result<DownloadResponse, Error> {
+            Ok(DownloadResponse {
+                status: 200,
+                headers: HeaderMap::new(),
+                content_length: Some(10),
+                stream: Box::pin(BlockingChunkStream::new(
+                    Arc::clone(&self.first_seen),
+                    Arc::clone(&self.stopped),
+                )),
+            })
         }
     }
 
@@ -3652,6 +3780,315 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn externally_cancelled_generic_download_drops_stream_without_publication() {
+        let dir = tempdir().unwrap();
+        let (authority, destination, download_root) = test_downloads_destination(&dir);
+        let first_seen = Arc::new(AtomicBool::new(false));
+        let stopped = Arc::new(AtomicBool::new(false));
+        let state = Arc::new(AppState {
+            http_transport: Arc::new(BlockingChunkTransport {
+                first_seen: Arc::clone(&first_seen),
+                stopped: Arc::clone(&stopped),
+            }),
+            ..AppState::default()
+        });
+        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        let app = test_progress_app();
+        let app_handle = app.handle().clone();
+        let (job_id, lease) = test_download_lease(&state);
+        let cancel_id = job_id.clone();
+        let task_state = Arc::clone(&state);
+        let task = tokio::spawn(async move {
+            download_to_destination(
+                "external-cancel-generic",
+                "https://example.com/download.pgn",
+                destination,
+                "download.pgn".into(),
+                &app_handle,
+                &task_state,
+                None,
+                None,
+                job_id,
+                lease,
+                false,
+                None,
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !first_seen.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(state
+            .operations
+            .cancel_download(&cancel_id, "test")
+            .unwrap());
+        let error = task.await.unwrap().unwrap_err();
+        assert!(matches!(error, Error::Cancellation));
+        assert!(stopped.load(Ordering::SeqCst));
+        assert!(!download_root.join("download.pgn").exists());
+    }
+
+    #[tokio::test]
+    async fn externally_cancelled_engine_archive_drops_stream_without_installation() {
+        let dir = tempdir().unwrap();
+        let (authority, destination, engine_root) = engine_destination(&dir);
+        let first_seen = Arc::new(AtomicBool::new(false));
+        let stopped = Arc::new(AtomicBool::new(false));
+        let state = Arc::new(AppState {
+            http_transport: Arc::new(BlockingChunkTransport {
+                first_seen: Arc::clone(&first_seen),
+                stopped: Arc::clone(&stopped),
+            }),
+            ..AppState::default()
+        });
+        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        let app = test_progress_app();
+        let (job_id, lease) = test_download_lease(&state);
+        let cancel_id = job_id.clone();
+        let cancellation = lease.token();
+        let commit_gate = lease.commit_gate();
+        let integrity = unsigned_test_integrity(b"not a complete archive");
+        let task_state = (*state).clone();
+        let task_app = app.handle().clone();
+        let task_job_id = job_id;
+        let task = tokio::spawn(crate::infra::operations::run_native_operation(
+            lease,
+            "download_engine_archive",
+            download_engine_archive_core(
+                "external-cancel-engine".into(),
+                "https://example.com/engine.zip".into(),
+                destination,
+                "engine".into(),
+                task_job_id,
+                integrity,
+                task_app,
+                task_state,
+                cancellation,
+                commit_gate,
+                |_, _, _| Ok(()),
+            ),
+        ));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !first_seen.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(state
+            .operations
+            .cancel_download(&cancel_id, "test")
+            .unwrap());
+        let error = task.await.unwrap().unwrap_err();
+        assert!(matches!(error, Error::Cancellation));
+        assert!(stopped.load(Ordering::SeqCst));
+        assert!(!engine_root.join("engine").exists());
+    }
+
+    #[tokio::test]
+    async fn generic_download_commit_gate_race_preserves_linearized_outcome() {
+        {
+            let dir = tempdir().unwrap();
+            let (authority, destination, download_root) = test_downloads_destination(&dir);
+            let payload: &'static [u8] = b"committed generic download";
+            let state = AppState {
+                http_transport: mock_successful_transport(payload),
+                ..AppState::default()
+            };
+            *state.pgn_path_authority.lock().unwrap() = Some(authority);
+            let state = Arc::new(state);
+            let app = test_progress_app();
+            let app_handle = app.handle().clone();
+            let (job_id, lease) = test_download_lease(&state);
+            let cancel_id = job_id.clone();
+            let (entered, release) = hold_commit_hook(job_id.clone(), true);
+            let task_state = Arc::clone(&state);
+            let task = tokio::spawn(async move {
+                download_to_destination(
+                    "generic-commit-after",
+                    "https://example.com/committed.pgn",
+                    destination,
+                    "committed.pgn".into(),
+                    &app_handle,
+                    &task_state,
+                    None,
+                    None,
+                    job_id,
+                    lease,
+                    false,
+                    None,
+                )
+                .await
+            });
+            tokio::time::timeout(Duration::from_secs(2), entered)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(!state
+                .operations
+                .cancel_download(&cancel_id, "test")
+                .unwrap());
+            release.send(()).unwrap();
+            assert!(task.await.unwrap().is_ok());
+            assert_eq!(
+                std::fs::read(download_root.join("committed.pgn")).unwrap(),
+                payload
+            );
+        }
+
+        {
+            let dir = tempdir().unwrap();
+            let (authority, destination, download_root) = test_downloads_destination(&dir);
+            let payload: &'static [u8] = b"cancelled generic download";
+            let state = AppState {
+                http_transport: mock_successful_transport(payload),
+                ..AppState::default()
+            };
+            *state.pgn_path_authority.lock().unwrap() = Some(authority);
+            let state = Arc::new(state);
+            let app = test_progress_app();
+            let app_handle = app.handle().clone();
+            let (job_id, lease) = test_download_lease(&state);
+            let cancel_id = job_id.clone();
+            let (entered, release) = hold_commit_hook(job_id.clone(), false);
+            let task_state = Arc::clone(&state);
+            let task = tokio::spawn(async move {
+                download_to_destination(
+                    "generic-commit-before",
+                    "https://example.com/cancelled.pgn",
+                    destination,
+                    "cancelled.pgn".into(),
+                    &app_handle,
+                    &task_state,
+                    None,
+                    None,
+                    job_id,
+                    lease,
+                    false,
+                    None,
+                )
+                .await
+            });
+            tokio::time::timeout(Duration::from_secs(2), entered)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(state
+                .operations
+                .cancel_download(&cancel_id, "test")
+                .unwrap());
+            release.send(()).unwrap();
+            assert!(matches!(
+                task.await.unwrap().unwrap_err(),
+                Error::Cancellation
+            ));
+            assert!(!download_root.join("cancelled.pgn").exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn engine_archive_commit_gate_race_preserves_linearized_outcome() {
+        {
+            let dir = tempdir().unwrap();
+            let (authority, destination, engine_root) = engine_destination(&dir);
+            let payload = zip_payload();
+            let state = AppState {
+                http_transport: Arc::new(zip_response(payload.clone())),
+                ..AppState::default()
+            };
+            *state.pgn_path_authority.lock().unwrap() = Some(authority);
+            let state = Arc::new(state);
+            let app = test_progress_app();
+            let (job_id, lease) = test_download_lease(&state);
+            let cancel_id = job_id.clone();
+            let (entered, release) = hold_commit_hook(job_id.clone(), true);
+            let cancellation = lease.token();
+            let commit_gate = lease.commit_gate();
+            let task = tokio::spawn(crate::infra::operations::run_native_operation(
+                lease,
+                "download_engine_archive",
+                download_engine_archive_core(
+                    "engine-commit-after".into(),
+                    "https://example.com/engine.zip".into(),
+                    destination,
+                    "engine".into(),
+                    job_id,
+                    unsigned_test_integrity(&payload),
+                    app.handle().clone(),
+                    (*state).clone(),
+                    cancellation,
+                    commit_gate,
+                    |_, _, _| Ok(()),
+                ),
+            ));
+            tokio::time::timeout(Duration::from_secs(2), entered)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(!state
+                .operations
+                .cancel_download(&cancel_id, "test")
+                .unwrap());
+            release.send(()).unwrap();
+            assert!(task.await.unwrap().is_ok());
+            assert!(engine_root.join("engine").exists());
+        }
+
+        {
+            let dir = tempdir().unwrap();
+            let (authority, destination, engine_root) = engine_destination(&dir);
+            let payload = zip_payload();
+            let state = AppState {
+                http_transport: Arc::new(zip_response(payload.clone())),
+                ..AppState::default()
+            };
+            *state.pgn_path_authority.lock().unwrap() = Some(authority);
+            let state = Arc::new(state);
+            let app = test_progress_app();
+            let (job_id, lease) = test_download_lease(&state);
+            let cancel_id = job_id.clone();
+            let cancellation = lease.token();
+            let commit_gate = lease.commit_gate();
+            let (entered, release_tx) = hold_commit_hook(job_id.clone(), false);
+            let task = tokio::spawn(crate::infra::operations::run_native_operation(
+                lease,
+                "download_engine_archive",
+                download_engine_archive_core(
+                    "engine-commit-before".into(),
+                    "https://example.com/engine.zip".into(),
+                    destination,
+                    "engine".into(),
+                    job_id,
+                    unsigned_test_integrity(&payload),
+                    app.handle().clone(),
+                    (*state).clone(),
+                    cancellation,
+                    commit_gate,
+                    |_, _, _| Ok(()),
+                ),
+            ));
+            tokio::time::timeout(Duration::from_secs(2), entered)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(state
+                .operations
+                .cancel_download(&cancel_id, "test")
+                .unwrap());
+            release_tx.send(()).unwrap();
+            assert!(matches!(
+                task.await.unwrap().unwrap_err(),
+                Error::Cancellation
+            ));
+            assert!(!engine_root.join("engine").exists());
+        }
+    }
+
+    #[tokio::test]
     async fn test_download_file_length_mismatch() {
         let dir = tempdir().unwrap();
         let target = dir.path().join("out.txt");
@@ -3731,6 +4168,27 @@ mod tests {
             }
             Ok(())
         }
+    }
+
+    fn hold_commit_hook(
+        id: String,
+        after: bool,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        std::sync::mpsc::SyncSender<()>,
+    ) {
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let hook = Box::new(move || {
+            let _ = entered_tx.send(());
+            let _ = release_rx.recv_timeout(Duration::from_secs(5));
+        });
+        if after {
+            crate::infra::operations::arm_commit_after_hook(id, hook);
+        } else {
+            crate::infra::operations::arm_commit_before_hook(id, hook);
+        }
+        (entered_rx, release_tx)
     }
 
     struct CancelSecondParentSync {

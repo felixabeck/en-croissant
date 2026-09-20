@@ -1,4 +1,3 @@
-import { tauri } from "@/platform/tauri";
 import {
   Alert,
   Box,
@@ -20,8 +19,12 @@ import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { errorUnlessCancelled } from "@/platform/errors";
-import { warn } from "@/platform/native";
-import { cancelDownload, runDownloadJob, useDownloadJob } from "@/utils/downloadJobs";
+import {
+  cancelDownload,
+  clearDownloadProgress,
+  runDownloadJob,
+  useDownloadJob,
+} from "@/utils/downloadJobs";
 import { enginesAtom } from "@/state/atoms";
 import AppModal from "../common/AppModal";
 import {
@@ -231,17 +234,7 @@ function EngineCard({
           return await installDefaultEngine(engine, progressId, ticket);
         } catch (error) {
           if (errorUnlessCancelled(error)) {
-            try {
-              await tauri.clearProgress(progressId);
-            } catch (cleanupError) {
-              try {
-                await warn(
-                  `download progress cleanup failed (${progressId}): ${String(cleanupError)}`,
-                );
-              } catch {
-                // A cleanup failure must not replace the original engine error.
-              }
-            }
+            await clearDownloadProgress(progressId);
           }
           throw error;
         }

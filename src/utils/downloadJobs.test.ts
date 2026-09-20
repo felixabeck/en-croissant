@@ -76,6 +76,10 @@ describe("download jobs", () => {
 
     test("cancels a running job and clears progress before releasing it", async () => {
         let rejectRun!: (error: unknown) => void;
+        let settleClear!: (generation: bigint) => void;
+        mocks.clearProgress.mockImplementation(
+            () => new Promise<bigint>((resolve) => (settleClear = resolve)),
+        );
         const running = runDownloadJob(
             "job",
             () =>
@@ -88,6 +92,11 @@ describe("download jobs", () => {
         await Promise.resolve();
         expect(mocks.cancelDownload).toHaveBeenCalledWith("prepared-ticket");
         rejectRun(cancellationError());
+        await vi.waitFor(() => expect(mocks.clearProgress).toHaveBeenCalledWith("job"));
+        expect(() => runDownloadJob("job", async () => undefined)).toThrow(
+            DownloadJobAlreadyRunningError,
+        );
+        settleClear(42n);
         await expect(running).rejects.toMatchObject({ message: "Cancellation" });
         await expect(cancel).resolves.toEqual({ clearedGeneration: 42n });
         expect(mocks.clearProgress).toHaveBeenCalledWith("job");

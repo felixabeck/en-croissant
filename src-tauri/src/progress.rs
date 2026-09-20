@@ -462,14 +462,17 @@ fn clear_progress_with(
     emit_cleared: impl FnOnce(ProgressItem) -> Result<(), Error>,
 ) -> Result<u64, Error> {
     let generation = store.clear(&id)?;
-    if let Err(error) = emit_cleared(ProgressItem {
-        id,
+    let item = ProgressItem {
+        id: id.clone(),
         generation,
         progress: 0.0,
         finished: true,
         state: ProgressState::Cancelled,
-    }) {
-        log::warn!("cleared progress event could not be emitted: {error}");
+    };
+    if let Err(error) = emit_cleared(item) {
+        log::warn!(
+            "cleared progress event could not be emitted for {id} generation {generation}: {error}"
+        );
     }
     Ok(generation)
 }

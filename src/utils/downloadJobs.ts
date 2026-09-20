@@ -51,16 +51,16 @@ function isCancellation(error: unknown): boolean {
     return errorUnlessCancelled(error) === null;
 }
 
-async function clearCancelledProgress(progressId: string, entry: DownloadJobEntry) {
+export async function clearDownloadProgress(progressId: string): Promise<bigint | null> {
     try {
-        entry.clearedGeneration = await tauri.clearProgress(progressId);
+        return await tauri.clearProgress(progressId);
     } catch (error) {
-        entry.clearedGeneration = null;
         try {
             await warn(`download progress cleanup failed (${progressId}): ${String(error)}`);
         } catch {
             // Progress cleanup is best effort and must not replace the download result.
         }
+        return null;
     }
 }
 
@@ -112,7 +112,9 @@ export function runDownloadJob<T>(
 
     entry.settlement = execution
         .catch(async (error) => {
-            if (isCancellation(error)) await clearCancelledProgress(progressId, entry);
+            if (isCancellation(error)) {
+                entry.clearedGeneration = await clearDownloadProgress(progressId);
+            }
             throw error;
         })
         .finally(() => {

@@ -221,7 +221,10 @@ async function logCleanupFailure(command: PropertyKey, ticket: string, cause: un
     try {
         await logError(message);
     } catch (loggingError) {
-        console.error("Native read cleanup logging failed", normalizeError(loggingError));
+        console.error(
+            `Native ${String(command)} cleanup logging failed (${ticket})`,
+            normalizeError(loggingError),
+        );
     }
 }
 

@@ -215,7 +215,7 @@ pub async fn get_public_chess_com_json(
 
 #[tauri::command]
 #[specta::specta]
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // IPC contract is generated and intentionally stable.
 pub async fn download_chess_com_games(
     destination: PathRef,
     filename: String,

@@ -300,37 +300,13 @@ impl ResolvedPath {
     where
         F: FnOnce(&mut fs::File) -> Result<(), Error>,
     {
-        if self.operation != PathOperation::DownloadFile {
-            return Err(Error::InvalidInput(
-                "resolved capability is not a download destination".into(),
-            ));
-        }
-        let parent = self
-            .parent
-            .as_ref()
-            .ok_or_else(|| Error::Conflict("download parent descriptor is unavailable".into()))?;
-        let leaf = self
-            .leaf
-            .as_ref()
-            .ok_or_else(|| Error::Conflict("download leaf descriptor is unavailable".into()))?;
-        let precommit_cancellation = cancellation.clone();
-        crate::infra::fs::atomic_replace_at_with_precommit(
-            parent,
-            leaf,
-            || {
-                if precommit_cancellation.is_cancelled() {
-                    return Err(Error::Cancellation);
-                }
-                self.revalidate_logical_parent()
-            },
-            write,
-        )
+        self.atomic_replace_download_cancellable_inner(cancellation, None, write)
     }
 
-    pub(crate) fn atomic_replace_download_cancellable_with_commit_gate<F>(
+    fn atomic_replace_download_cancellable_inner<F>(
         &self,
         cancellation: &CancellationToken,
-        commit_gate: &crate::infra::operations::OperationCommitGate,
+        commit_gate: Option<&crate::infra::operations::OperationCommitGate>,
         write: F,
     ) -> Result<AtomicFileOutcome, Error>
     where
@@ -350,7 +326,7 @@ impl ResolvedPath {
             .as_ref()
             .ok_or_else(|| Error::Conflict("download leaf descriptor is unavailable".into()))?;
         let precommit_cancellation = cancellation.clone();
-        let commit_gate = commit_gate.clone();
+        let commit_gate = commit_gate.cloned();
         crate::infra::fs::atomic_replace_at_with_precommit(
             parent,
             leaf,
@@ -359,10 +335,25 @@ impl ResolvedPath {
                 if precommit_cancellation.is_cancelled() {
                     return Err(Error::Cancellation);
                 }
-                commit_gate.begin_commit()
+                if let Some(commit_gate) = commit_gate.as_ref() {
+                    commit_gate.begin_commit()?
+                }
+                Ok(())
             },
             write,
         )
+    }
+
+    pub(crate) fn atomic_replace_download_cancellable_with_commit_gate<F>(
+        &self,
+        cancellation: &CancellationToken,
+        commit_gate: &crate::infra::operations::OperationCommitGate,
+        write: F,
+    ) -> Result<AtomicFileOutcome, Error>
+    where
+        F: FnOnce(&mut fs::File) -> Result<(), Error>,
+    {
+        self.atomic_replace_download_cancellable_inner(cancellation, Some(commit_gate), write)
     }
 
     /// Streams a previously reserved staging file into the private atomic temporary inode and
@@ -382,7 +373,6 @@ impl ResolvedPath {
         )
     }
 
-    #[allow(dead_code)]
     pub(crate) fn atomic_install_reserved_download_cancellable(
         &self,
         reservation: &super::PendingArtifactReservation,

@@ -11,6 +11,8 @@ const mocks = vi.hoisted(() => ({
     getGameEngineLogs: vi.fn(),
     prepareNativeRead: vi.fn(),
     cancelNativeRead: vi.fn(),
+    prepareDownload: vi.fn(),
+    releaseDownload: vi.fn(),
     prepareAnalysis: vi.fn(),
     cancelAnalysis: vi.fn(),
     getGames: vi.fn(),
@@ -36,6 +38,8 @@ vi.mock("@/bindings/generated", () => ({
         getGameEngineLogs: mocks.getGameEngineLogs,
         prepareNativeRead: mocks.prepareNativeRead,
         cancelNativeRead: mocks.cancelNativeRead,
+        prepareDownload: mocks.prepareDownload,
+        releaseDownload: mocks.releaseDownload,
         prepareAnalysis: mocks.prepareAnalysis,
         cancelAnalysis: mocks.cancelAnalysis,
         getGames: mocks.getGames,
@@ -80,6 +84,8 @@ describe("tauri command facade", () => {
     beforeEach(() => {
         mocks.prepareNativeRead.mockReset();
         mocks.cancelNativeRead.mockReset();
+        mocks.prepareDownload.mockReset();
+        mocks.releaseDownload.mockReset();
         mocks.prepareAnalysis.mockReset();
         mocks.cancelAnalysis.mockReset();
         mocks.getGames.mockReset();
@@ -99,6 +105,26 @@ describe("tauri command facade", () => {
             {},
             "ticket-1",
         );
+    });
+
+    test("withDownloadTicket owns the generated reservation lifecycle", async () => {
+        const { withDownloadTicket } = await import("./tauri");
+        mocks.prepareDownload.mockResolvedValue({ status: "ok", data: "download-ticket" });
+        mocks.releaseDownload.mockResolvedValue({ status: "ok", data: null });
+
+        const continuation = vi.fn(async (ticket: string) => {
+            expect(ticket).toBe("download-ticket");
+            throw new Error("download failed");
+        });
+        await expect(withDownloadTicket(continuation)).rejects.toThrow("download failed");
+        expect(mocks.prepareDownload).toHaveBeenCalledOnce();
+        expect(mocks.releaseDownload).toHaveBeenCalledWith("download-ticket");
+
+        mocks.prepareDownload.mockResolvedValue({ status: "ok", data: "successful-ticket" });
+        await expect(withDownloadTicket(async (ticket) => ticket)).resolves.toBe(
+            "successful-ticket",
+        );
+        expect(mocks.releaseDownload).toHaveBeenCalledOnce();
     });
 
     test("pgn and workspace reads reserve tickets and pass outside positional arguments", async () => {
@@ -324,7 +350,7 @@ describe("tauri command facade", () => {
             }),
         ).rejects.toThrow("primary failed");
         expect(fallback).toHaveBeenCalledWith(
-            "Native read cleanup logging failed",
+            "Native getGames cleanup logging failed (fallback-ticket)",
             expect.objectContaining({ message: "logger failed" }),
         );
         fallback.mockRestore();
