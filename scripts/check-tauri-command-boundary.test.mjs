@@ -155,11 +155,17 @@ describe("source boundary forms", () => {
     expect(inspectSource(path, source)).toEqual([]);
   });
 
-  test("handles a long comment gap without catastrophic backtracking", () => {
-    const source = "// from " + "/*x*/".repeat(200) + " end\n";
+  test("handles long comment gaps without catastrophic backtracking", () => {
+    const sources = [
+      "from " + "/".repeat(200) + "x",
+      "from " + "//x ".repeat(200) + "z",
+      "from " + "/*x*/".repeat(200) + "z",
+    ];
     const startedAt = performance.now();
 
-    expect(inspectSource("components/probe.ts", source)).toEqual([]);
+    for (const source of sources) {
+      expect(inspectSource("components/probe.ts", source)).toEqual([]);
+    }
     expect(performance.now() - startedAt).toBeLessThan(1000);
   });
 });

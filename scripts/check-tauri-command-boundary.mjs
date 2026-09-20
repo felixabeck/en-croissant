@@ -48,7 +48,7 @@ export const NATIVE_EXPORT_DENYLIST = Object.freeze(
 );
 
 const TAURI_SPECIFIER = String.raw`@tauri-apps/(?:api(?:/[^"']*)?|plugin-[^"']*)`;
-const SPECIFIER_GAP = String.raw`(?:\s|\/\/[^\r\n\u2028\u2029]*|\/\*(?:[^*]|\*(?!\/))*\*\/)*`;
+const SPECIFIER_GAP = String.raw`(?:\s|\/\/[^\r\n\u2028\u2029]*(?=[\r\n\u2028\u2029]|$)|\/\*(?:[^*]|\*(?!\/))*\*\/)*`;
 const FROM_SPECIFIER = new RegExp(
   String.raw`\bfrom${SPECIFIER_GAP}["'](${TAURI_SPECIFIER})["']`,
   "g",
