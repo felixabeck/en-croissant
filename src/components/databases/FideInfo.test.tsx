@@ -171,6 +171,12 @@ function modalText() {
 // 206 ms, and every later one under 2 ms.
 const FLAG_WAIT_MS = 4_000;
 
+// The retry window the no-retry case waits out: SWR's own error-retry interval, and a pause long
+// enough to cover several of them. Both are named for the same reason as `FLAG_WAIT_MS` — the
+// relation between them is the point, and a bare `200` beside a bare `10` hides it.
+const RETRY_INTERVAL_MS = 10;
+const RETRY_WINDOW_MS = 200;
+
 function flagSvgs() {
   return container.querySelectorAll('svg[viewBox="0 0 32 24"]');
 }
@@ -194,7 +200,7 @@ test("a rejected flag import is silent and does not retry", async () => {
   const { FideInfo, SWRConfig, loadFlagpack } = await importFideInfo({ rejectFlagpack: true });
   mocks.getFidePlayer.mockResolvedValue(player("Test Player"));
 
-  // Real timers with a 10 ms retry interval, not fake timers: this file mocks modules and
+  // Real timers with a short retry interval, not fake timers: this file mocks modules and
   // imports the component dynamically, and freezing the clock across that made the case
   // order-dependent under Stryker's full-suite dry run. `errorRetryInterval` shortens the
   // window the assertion below waits out; it deliberately does NOT set `shouldRetryOnError`,
@@ -203,12 +209,12 @@ test("a rejected flag import is silent and does not retry", async () => {
     FideInfo,
     SWRConfig,
     { opened: true, setOpened: vi.fn(), name: "Test Player" },
-    { provider: () => new Map(), errorRetryInterval: 10 },
+    { provider: () => new Map(), errorRetryInterval: RETRY_INTERVAL_MS },
   );
   await vi.waitFor(() => expect(loadFlagpack).toHaveBeenCalledOnce());
   await vi.waitFor(() => expect(modalText()).toContain("Test Player"));
   await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    await new Promise((resolve) => setTimeout(resolve, RETRY_WINDOW_MS));
   });
 
   expect(loadFlagpack).toHaveBeenCalledOnce();
