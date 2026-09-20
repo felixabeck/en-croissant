@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { CatalogVerificationError } from "@/utils/signedCatalog";
 import { defaultPuzzleDatabaseProgressId } from "@/utils/db";
-import { DownloadCancelLostError } from "@/utils/downloadJobs";
+import { DownloadCancelLostError } from "@/hooks/downloadJobs";
 import AddPuzzle from "./AddPuzzle";
 
 const mocks = vi.hoisted(() => ({

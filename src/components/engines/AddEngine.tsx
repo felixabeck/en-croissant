@@ -24,7 +24,7 @@ import {
   clearDownloadProgress,
   runDownloadJob,
   useDownloadJob,
-} from "@/utils/downloadJobs";
+} from "@/hooks/downloadJobs";
 import { enginesAtom } from "@/state/atoms";
 import AppModal from "../common/AppModal";
 import {

@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import type { UseFormReturnType } from "@mantine/form";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { defaultEngineProgressId, type LocalEngine } from "@/utils/engines";
-import { DownloadCancelLostError } from "@/utils/downloadJobs";
+import { DownloadCancelLostError } from "@/hooks/downloadJobs";
 import AddEngine from "./AddEngine";
 
 const mocks = vi.hoisted(() => ({

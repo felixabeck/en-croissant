@@ -12,7 +12,7 @@ import {
 } from "@/utils/db";
 import { formatBytes, formatNumber } from "@/utils/format";
 import { notifyUnlessCancelled, runUnlessCancelled } from "@/components/files/notifyError";
-import { cancelDownload, runDownloadJob, useDownloadJob } from "@/utils/downloadJobs";
+import { cancelDownload, runDownloadJob, useDownloadJob } from "@/hooks/downloadJobs";
 import { choosePuzzleDatabase, getPuzzleDatabases } from "@/utils/puzzles";
 import ProgressButton from "../common/ProgressButton";
 import { CatalogVerificationError } from "@/utils/signedCatalog";
