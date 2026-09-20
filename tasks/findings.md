@@ -10350,3 +10350,18 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 * **Candidate fix:** `buildBundleReport` already has the manifest graph. An assertion that a named set of packages appears in no route's transitive `imports` closure is a small addition to the existing checker, configured beside the limits in `bundle-budgets.json`.
 * **Blocked on:** universal rule 6d — this is new executable checking code where the cheap alternative (a one-time manual manifest read, which is what `4d025de9` did) already exists. Named to Felix in chat on 2026-09-20 with that alternative; he has not asked for the checker. Not blocked on a product question, so it carries no `felix-decision`.
 * **Found by:** Claude Code, 2026-09-20, in rounds 2-4 of the `f-20260920-03` plan review.
+
+---
+
+## 2026-09-20 — filed through the inbox spool
+
+### The frontend coverage baseline was not refreshed after `f-20260920-03` added `FideInfo` coverage
+
+* **ID:** f-20260920-06 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** felix-baseline-deny-lifted
+* **Where:** `coverage-baselines.json` (`databases-files`: 953/1804 lines, 194/409 functions, 1141/2773 branches), `docs/coverage.md:43-56`, `src/components/databases/FideInfo.test.tsx`.
+* **Defect:** `4d025de9` added six tests over `FideInfo.tsx` and `flagpack.ts`, both inside the `databases-files` area, and `pnpm coverage:frontend:check` is green — but the baseline still records the pre-change counts, so the new coverage is not binding. A later change can give those lines back without the ratchet objecting.
+* **Why it matters:** `docs/coverage.md:43` states the rule directly: "After adding coverage, deliberately refresh the frontend baseline so the new gains become binding." Leaving it unrefreshed is the documented way coverage silently erodes.
+* **Why it could not be done in that change:** the documented procedure requires the `frontend-coverage` LCOV artifact from a **successful `Test` run in `felixabeck/en-croissant` on a tree matching the candidate**, compared against a fresh local `pnpm test:coverage`. No such CI run can exist until the push that `f-20260920-03` unblocked has landed. The dependency is structural, not effort.
+* **How:** follow `docs/coverage.md:43-56` in full — green check against the existing baseline first, CI artifact from a run containing `4d025de9`, verify the measurement inputs match, require every covered count and ratio to stay level or rise without a shrink allowance, then `coverage:baseline:frontend` and record the CI run, commit, artifact and every metric delta in `tasks/decisions.md`, as `d-20260911-02` did.
+* **Blocked on:** the baseline commands are denied by default in `.claude/settings.json`; the denial is honoured, not circumvented. Also on the push having landed.
+* **Found by:** Claude Code, 2026-09-20, in round 2 of the `f-20260920-03` plan review (J2).
