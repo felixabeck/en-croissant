@@ -10296,7 +10296,7 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 
 ### The `largestLazy` bundle budget has no headroom left: the board route sits 33 gzip bytes over the cap
 
-* **ID:** f-20260920-03 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260920-03 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `bundle-budgets.json` (`limits.largestLazy: 750000`, `measurement` recorded 2026-08-09 at `729006`), `scripts/check-bundle-budget.mjs` (`largestLazy` = the assets `src/routes/index.lazy.tsx` pulls beyond the entry), `src/components/panels/analysis/ReportPanel.tsx:10` → `src/components/common/EvalChart.tsx:1` (`AreaChart`).
 * **Defect:** the cap is exhausted, not violated by a careless diff. Measured on 2026-09-20: the merge-base tree (`563790ff`) is already at **749,363** of 750,000 gzip bytes — 637 bytes of headroom, after the August measurement of 729,006 was consumed by intervening work that never re-recorded it. `f-20260906-07` (download cancellation, three commits) needs ~685 bytes in that chunk after the registry was slimmed as far as its contract allows (deferred promise removed, three error classes collapsed into one, settle/notify wrappers merged, `getServerSnapshot` dropped), leaving the gate red at **750,033** — 33 bytes over. Any frontend feature now fails this gate on arrival.
 * **Why it matters:** `pnpm bundle:check` is a push gate, so the next frontend change cannot land until this is resolved, and the project rule is explicit that a budget is never edited to make a gate pass (`.claude/skills/push/SKILL.md`, "Never run `coverage:baseline:*` or edit a budget to make a gate pass").
