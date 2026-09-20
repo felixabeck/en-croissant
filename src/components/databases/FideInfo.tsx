@@ -1,18 +1,11 @@
 import { Avatar, Badge, Card, Center, Divider, Group, Stack, Text } from "@mantine/core";
 import { IconCloud } from "@tabler/icons-react";
-import * as Flags from "mantine-flagpack";
 import { useTranslation } from "react-i18next";
 import useSWR from "swr/immutable";
 import { getFidePlayer } from "@/utils/lichess/api";
 import { IconAction } from "@/components/common/IconAction";
 import AppModal from "../common/AppModal";
-
-import COUNTRIES from "./countries.json";
-
-const flags = Object.entries(Flags).map(([key, value]) => ({
-  key: key.replace("Flag", ""),
-  component: value,
-}));
+import { loadFlagpack } from "./flagpack";
 
 function FideInfo({
   opened,
@@ -31,10 +24,15 @@ function FideInfo({
   } = useSWR(!opened ? null : name, async (name) => {
     return await getFidePlayer(name);
   });
+  const { data: flagpack } = useSWR(opened ? ["fide-flagpack"] : null, loadFlagpack, {
+    shouldRetryOnError: false,
+  });
 
-  const country = COUNTRIES.find((c) => c.ioc === player?.federation);
+  const country = flagpack?.countries.find((c) => c.ioc === player?.federation);
 
-  const Flag = player?.federation ? flags.find((f) => f.key === country?.a2)?.component : undefined;
+  const Flag = player?.federation
+    ? flagpack?.flags.find((f) => f.key === country?.a2)?.component
+    : undefined;
 
   return (
     <AppModal
