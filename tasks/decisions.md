@@ -3654,3 +3654,15 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** one writer serves all three callers, so the property holds for every path that runs the exporter, not only the check. `export_str` equals what `export` wrote because no formatter is configured on `Typescript::default()`. Reversal path: restore `specta_builder.export(...)` in `main.rs`.
 * **Decided by:** Claude Code (Opus 5), drain run 2026-09-19 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"960dbe599eecfe1f3a24a72194fb3631227799046263e0a00c25ccb2e9137051","input_sha256":"92feda617f4866ef3649599595b9c868d8cb7ef8fa6e1a5b152fc874518e0e5b","kind":"mutation-receipt","operation":"2f2033c7a7f892fb446d0b9a8579dbb7691be9b1d9ee29011d5bcfe12e350199","options":{"section":null},"request_id_sha256":null,"results":["d-20260919-14"],"target":"decisions-ledger","v":1} -->
+
+## 2026-09-20 — recorded through the decisions lock
+
+### d-20260920-01 — What identifies a download natively, so a Cancel pressed before the command registered it is not lost?
+
+* **Question:** What identifies a download natively, so a Cancel pressed before the command registered it is not lost?
+* **Governs:** f-20260906-07
+* **Chosen:** A native-minted, owner-bound reservation, exactly like native reads and analysis: `prepare_download(window)` mints a ticket into the same bounded, TTL'd reservation pool; every download command claims it as its **first fallible step** with `window.label()` as owner; `cancel_download` marks a still-reserved ticket cancelled so the later claim fails with `Cancellation`, and `release_download` returns an unclaimed one. The renderer never invents a job id.
+* **Rejected:** keeping renderer-chosen `crypto.randomUUID()` ids plus a native "tombstone" set that pre-cancels an id that has not arrived yet — it needs its own bound and TTL for ids that never arrive, and leaves the identity renderer-controlled. Also rejected: a renderer-only cancelled flag checked before invoking, which leaves the IPC-in-flight window open.
+* **Reason:** the reservation protocol already exists for the two other classes of native work, is bounded (`MAX_NATIVE_READS`), owner-checked and TTL-purged, and claim-first makes every command's ownership reachable in a test. The pre-registration window that the finding describes closes by construction rather than by timing.
+* **Decided by:** drain 13b31f81 (`/next-finding --pin f-20260906-07 full auto`), 2026-09-20 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"992d87022d14f316a3e1f968bc1f546f8c94b16c468b840ad5e34c31f8deb02d","input_sha256":"8d2ad4110f7af924dcacb600dc0ab127304a7e619e65009d8ee7cda694be4b56","kind":"mutation-receipt","operation":"5b655124fd94eae3605137a69ab714ad91add566522da4f908a4845e59af5775","options":{"section":null},"request_id_sha256":null,"results":["d-20260920-01"],"target":"decisions-ledger","v":1} -->
