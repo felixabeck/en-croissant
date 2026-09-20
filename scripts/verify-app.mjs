@@ -8,11 +8,12 @@
 //   group | assertions
 //   startup | production authority, user-file safety, owned-image cleanup, real IPC bridge,
 //            document title
-//   image/CSP | LocalImage render/data URL/decode, detached blob rejection
+//   image/CSP | retained-engine-portrait-render, retained-engine-data-url,
+//              retained-engine-WebKitGTK-decode, detached-blob-CSP-rejection
 //   native services | path capability refusal, live sound port and bundled sound bytes
 //   attachments | prepare, retire, live-session bytes/intent, titlebar cleanup
 //   native reads | mint, cancel, cancelled-ticket refusal, retained ticket, destroyed-window log
-//   Files | row render, real double-click route, opened-game notation
+//   Files | seeded-row-render, double-click-route, opened-game-notation
 //   titlebar/process | rendered controls, process-before-close, process-after-close
 //   shutdown | start, bounded completion, sound signal
 //
@@ -22,29 +23,31 @@
 // artefact READS — the built binary, its configuration and its bundled resources — never in this
 // file's own logic, and is restored immediately afterwards.
 //
-// Items 11 and 12 (2026-09-20). Two breaks, chosen so that each half fails alone: that is what
-// proves the CSP control is independent of the positive check, and therefore that a green run
-// cannot have come from a widened policy.
+// retained-engine-portrait-render, retained-engine-data-url, retained-engine-WebKitGTK-decode,
+// and detached-blob-CSP-rejection (2026-09-20). Two breaks, chosen so that each half fails alone:
+// that is what proves the CSP control is independent of the positive check, and therefore that a
+// green run cannot have come from a widened policy.
 //   break                                   | check                        | message printed     | exit
-//   production LocalImage reverted to        | (11) rendered on the Engines | FAIL  the retained  | 1
-//   URL.createObjectURL, i.e. the pre-fix    |      page                    |   engine LocalImage |
+//   production LocalImage reverted to        | retained-engine-portrait-    | FAIL  the retained  | 1
+//   URL.createObjectURL, i.e. the pre-fix    |      render                  |   engine LocalImage |
 //   state of f-20260906-09; CSP untouched.   |                              |   rendered on the   |
-//   All three item-11 assertions fail, each  |                              |   Engines page —    |
-//   printing its own line, and item 12 stays |                              |   timed out waiting |
-//   green — so the two are not entangled.    |                              |   for the retained  |
-//                                            |                              |   engine portrait   |
+//   All three retained-engine assertions fail,|                              |   Engines page —    |
+//   each printing its own line, and detached- |                              |   timed out waiting |
+//   blob-CSP-rejection stays green — so the   |                              |   for the retained  |
+//   two are not entangled.                   |                              |   engine portrait   |
 //                                            |                              |   to render and     |
 //                                            |                              |   decode            |
-//                                            | (11) data URL                | FAIL  … uses an     | 1
+//                                            | retained-engine-data-url     | FAIL  … uses an     | 1
 //                                            |                              |   image/png data    |
 //                                            |                              |   URL — same detail |
-//                                            | (11) decodes                 | FAIL  … data URL    | 1
+//                                            | retained-engine-WebKitGTK-   | FAIL  … data URL    | 1
+//                                            |   decode                     |                  |
 //                                            |                              |   decodes in        |
 //                                            |                              |   WebKitGTK — same  |
 //                                            |                              |   detail            |
-//   img-src gains `blob:` in tauri.conf.json,| (12) CSP rejects a blob      | FAIL  the           | 1
+//   img-src gains `blob:` in tauri.conf.json,| detached-blob-CSP-rejection  | FAIL  the           | 1
 //   production left correct. Exactly one     |      image URL               |   production CSP    |
-//   check fails; all three item-11           |                              |   rejects a detached|
+//   check fails; all three retained-engine   |                              |   rejects a detached|
 //   assertions stay green.                   |                              |   blob image URL    |
 //                                            |                              |   with an img-src   |
 //                                            |                              |   violation —       |
@@ -105,24 +108,25 @@
 //                                            |   bytes and intent while retaining the owner    |
 //
 // Rows above are deliberately not inferred from collateral failures: the same assertion was
-// retained only where its own FAIL line was printed. Stage 8's "retain nothing" break printed the
-// existing item-10 Files rows (and exited 1), because it reclaimed the Files workspace; it did
-// not move the three startup assertions above.
+// retained only where its own FAIL line was printed. The "retain nothing" break printed the
+// existing Files rows (seeded-row-render, double-click-route, and opened-game-notation) (and
+// exited 1), because it reclaimed the Files workspace; it did not move the three startup
+// assertions above.
 //
-// Staged-failure record for item 10 (push-review-policy §2), one row per check. Checks (2) and
-// (3) were red on 2026-09-19 against the unfixed release binary, in one run where every other
+// Staged-failure record for the Files checks (push-review-policy §2), one row per check. The
+// double-click-route and opened-game-notation checks were red on 2026-09-19 against the unfixed release binary, in one run where every other
 // check was ok; that run printed "2 check(s) failed" and exited with status 1.
-// Check (1) was staged the same day on the fixed tree by a release build whose Files page rendered
+// The seeded-row-render check was staged the same day on the fixed tree by a release build whose Files page rendered
 // an empty tree ("3 check(s) failed", status 1); the file was restored and the rebuild ran green.
 //   check                                   | message printed                                   | exit
-//   (1) the seeded Files row rendered       | FAIL  the seeded workspace file row renders on    | 1
+//   seeded-row-render                        | FAIL  the seeded workspace file row renders on    | 1
 //                                           |   the Files page — timed out waiting for the      |
 //                                           |   Files row; (2) and (3) then print "not          |
 //                                           |   attempted: the Files row never rendered"        |
-//   (2) the route became /                  | FAIL  a real double-click on the unselected Files | 1
+//   double-click-route                        | FAIL  a real double-click on the unselected Files | 1
 //                                           |   row navigates to / — timed out waiting for the  |
 //                                           |   double-click to navigate to /; path is /files   |
-//   (3) the opened game's notation is shown | FAIL  a real double-click on the unselected Files | 1
+//   opened-game-notation                      | FAIL  a real double-click on the unselected Files | 1
 //                                           |   row shows its game — timed out waiting for the  |
 //                                           |   opened game's notation; expected 1.e4e52.d4d5   |
 
@@ -145,9 +149,10 @@
 //                                         | call this check, so a dead application cannot print
 //                                         | this assertion's FAIL line.
 //
-// Abort-only attempts are not rows: stage 5's unconditional startup attachment error aborted at
-// "timed out waiting for production startup to reconcile the seeded path registry"; stage 6 then
-// aborted at "timed out waiting for the managed-image cleanup intent" after its two rows. A first
+// Abort-only attempts are not rows: the break described as "unconditional startup attachment error"
+// aborted at "timed out waiting for production startup to reconcile the seeded path registry";
+// the break described as "managed-image cleanup intent" then aborted at
+// "timed out waiting for the managed-image cleanup intent" after its two rows. A first
 // process-survival break also aborted at "seed processes survived close: 4062332, 4062375" before
 // the assertion session. A first image-cleanup break left all checks green because startup never
 // put the retained image through that cleanup path; it was restored and replaced by the staged
@@ -192,16 +197,17 @@ const filesGamePgn = `[Event "verify:app"]
 1. e4 e5 2. d4 d5 *
 `;
 const filesGameNotation = "1.e4e52.d4d5";
-const closeControlProbe = `
+const closeControlLookup = `
   const labelled = document.querySelector('button[aria-label="Close window"]');
   const controls = document.querySelector('[class*="windowControls"]');
   const fallback = controls ? controls.querySelector('button:last-of-type') : null;
+`;
+const closeControlProbe = `
+  ${closeControlLookup}
   return labelled ? "label" : fallback ? "fallback" : false;
 `;
 const closeControlAction = `
-  const labelled = document.querySelector('button[aria-label="Close window"]');
-  const controls = document.querySelector('[class*="windowControls"]');
-  const fallback = controls ? controls.querySelector('button:last-of-type') : null;
+  ${closeControlLookup}
   const close = labelled || fallback;
   if (!close) throw new Error("could not find the close control in the window-controls group");
   setTimeout(() => close.click(), 0);
@@ -719,30 +725,30 @@ try {
       : undefined,
   );
 
-  const cancelledRead = await invokeAndWait(
+  const preparedRead = await invokeAndWait(
     session,
     "native read reservation to settle",
     "__verifyAppPreparedRead",
     `window.__TAURI_INTERNALS__.invoke("prepare_native_read", {})`,
   );
   check(
-    typeof cancelledRead.value === "string",
+    typeof preparedRead.value === "string",
     "the native backend mints an opaque read reservation",
-    cancelledRead.rejected ?? cancelledRead.error,
+    preparedRead.rejected ?? preparedRead.error,
   );
-  const cancelledTicket = cancelledRead.value;
+  const preparedTicket = preparedRead.value;
   const cancelRead = await invokeAndWait(
     session,
     "native read cancellation to settle",
     "__verifyAppCancelledRead",
-    `window.__TAURI_INTERNALS__.invoke("cancel_native_read", { ticket: ${JSON.stringify(cancelledTicket)} })`,
+    `window.__TAURI_INTERNALS__.invoke("cancel_native_read", { ticket: ${JSON.stringify(preparedTicket)} })`,
   );
   check(cancelRead.value === "null", "the native backend acknowledges reservation cancellation");
   const refusedStart = await invokeAndWait(
     session,
     "cancelled native read start to settle",
     "__verifyAppRefusedRead",
-    `window.__TAURI_INTERNALS__.invoke("lex_pgn", { pgn: "1. e4 *", ticket: ${JSON.stringify(cancelledTicket)} })`,
+    `window.__TAURI_INTERNALS__.invoke("lex_pgn", { pgn: "1. e4 *", ticket: ${JSON.stringify(preparedTicket)} })`,
   );
   check(
     typeof refusedStart.rejected === "string" &&

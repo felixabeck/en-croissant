@@ -1,12 +1,11 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import type { EngineImageHandle } from "@/bindings";
+import type { EngineImageData, EngineImageHandle } from "@/bindings";
 
 const mocks = vi.hoisted(() => ({
   readEngineImage: vi.fn(),
   warn: vi.fn(),
-  logError: vi.fn(),
 }));
 
 vi.mock("@mantine/core", () => ({
@@ -14,13 +13,15 @@ vi.mock("@mantine/core", () => ({
 }));
 vi.mock("@/platform/tauri", () => ({ tauri: { readEngineImage: mocks.readEngineImage } }));
 vi.mock("@/platform/native", () => ({
-  error: mocks.logError,
   warn: mocks.warn,
 }));
 
 import LocalImage from "./LocalImage";
 
-type ImageData = { bytes: number[]; mimeType: string };
+// This deliberately mirrors LocalImage's chunk size without importing it: the payload must span
+// more than one chunk, and a non-multiple of 3 exposes per-chunk btoa instead of hiding it. At
+// 8190, a per-chunk btoa regression leaves every test green; at 8192, this case reds it.
+const INDEPENDENT_CHUNK_SIZE = 8192;
 
 let container: HTMLDivElement;
 let root: Root;
@@ -74,7 +75,7 @@ test("renders a resolved PNG as an independently encoded data URL", async () => 
 });
 
 test("preserves exact base64 across the non-aligned chunk boundary", async () => {
-  const bytes = Array.from({ length: 8192 * 2 + 1 }, (_, index) => index % 256);
+  const bytes = Array.from({ length: INDEPENDENT_CHUNK_SIZE * 2 + 1 }, (_, index) => index % 256);
   mocks.readEngineImage.mockResolvedValue({ bytes, mimeType: "image/png" });
 
   await act(async () => renderImage("chunked-image"));
@@ -151,21 +152,26 @@ test("swallows a logger rejection", async () => {
   expect(mocks.warn).toHaveBeenCalledTimes(1);
 });
 
-test("ignores a stale successful read", async () => {
-  const first = deferred<ImageData>();
-  const second = deferred<ImageData>();
+async function settleSecondRead(secondBytes: number[]) {
+  const first = deferred<EngineImageData>();
+  const second = deferred<EngineImageData>();
   mocks.readEngineImage.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
 
   await act(async () => renderImage("first-image"));
   await act(async () => renderImage("second-image"));
 
-  const secondBytes = [4, 5, 6];
   await act(async () => {
     second.resolve({ bytes: secondBytes, mimeType: "image/png" });
     await second.promise;
   });
   const secondSrc = `data:image/png;base64,${independentBase64(secondBytes)}`;
   expect(renderedSrc()).toBe(secondSrc);
+
+  return { first, secondSrc };
+}
+
+test("ignores a stale successful read", async () => {
+  const { first, secondSrc } = await settleSecondRead([4, 5, 6]);
 
   const firstBytes = [7, 8, 9];
   await act(async () => {
@@ -177,20 +183,7 @@ test("ignores a stale successful read", async () => {
 });
 
 test("ignores a stale rejected read", async () => {
-  const first = deferred<ImageData>();
-  const second = deferred<ImageData>();
-  mocks.readEngineImage.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
-
-  await act(async () => renderImage("first-image"));
-  await act(async () => renderImage("second-image"));
-
-  const secondBytes = [10, 11, 12];
-  await act(async () => {
-    second.resolve({ bytes: secondBytes, mimeType: "image/png" });
-    await second.promise;
-  });
-  const secondSrc = `data:image/png;base64,${independentBase64(secondBytes)}`;
-  expect(renderedSrc()).toBe(secondSrc);
+  const { first, secondSrc } = await settleSecondRead([10, 11, 12]);
 
   await act(async () => {
     first.reject(new Error("stale read failed"));
