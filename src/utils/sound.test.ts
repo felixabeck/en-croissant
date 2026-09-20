@@ -107,11 +107,11 @@ describe("playSound", () => {
 
     test("stops asking after the first failed port request", async () => {
         mocks.getSoundServerPort.mockRejectedValue(new Error("no sound server"));
-        const { playSound } = await loadSound();
+        const { playSound, THROTTLE_MS } = await loadSound();
 
         playSound(false, false);
         await settle();
-        vi.advanceTimersByTime(76);
+        vi.advanceTimersByTime(THROTTLE_MS + 1);
         playSound(false, false);
         await settle();
 
@@ -122,39 +122,66 @@ describe("playSound", () => {
     });
 
     test("reports one warning for overlapping failed port requests", async () => {
-        let rejectPort!: (reason?: unknown) => void;
-        const portRequest = new Promise<number>((_, reject) => {
-            rejectPort = reject;
-        });
-        mocks.getSoundServerPort.mockReturnValue(portRequest);
-        const { playSound } = await loadSound();
+        const firstPort = Promise.withResolvers<number>();
+        const secondPort = Promise.withResolvers<number>();
+        mocks.getSoundServerPort
+            .mockReturnValueOnce(firstPort.promise)
+            .mockReturnValueOnce(secondPort.promise);
+        const { playSound, THROTTLE_MS } = await loadSound();
 
         playSound(false, false);
-        vi.advanceTimersByTime(76);
+        vi.advanceTimersByTime(THROTTLE_MS + 1);
         playSound(false, false);
         expect(mocks.getSoundServerPort).toHaveBeenCalledTimes(2);
 
-        rejectPort(new Error("no sound server"));
+        firstPort.reject(new Error("no sound server"));
+        secondPort.reject(new Error("no sound server"));
         await settle();
 
         expect(mocks.warn).toHaveBeenCalledOnce();
     });
 
     test("plays both sounds for overlapping successful port requests", async () => {
-        let resolvePort!: (port: number | PromiseLike<number>) => void;
-        const portRequest = new Promise<number>((resolve) => {
-            resolvePort = resolve;
-        });
-        mocks.getSoundServerPort.mockReturnValue(portRequest);
-        const { playSound } = await loadSound();
+        const firstPort = Promise.withResolvers<number>();
+        const secondPort = Promise.withResolvers<number>();
+        mocks.getSoundServerPort
+            .mockReturnValueOnce(firstPort.promise)
+            .mockReturnValueOnce(secondPort.promise);
+        const { playSound, THROTTLE_MS } = await loadSound();
 
         playSound(false, false);
-        vi.advanceTimersByTime(76);
+        vi.advanceTimersByTime(THROTTLE_MS + 1);
         playSound(false, false);
 
-        resolvePort(43123);
+        firstPort.resolve(43123);
+        secondPort.resolve(43123);
         await settle();
 
+        expect(audioInstances.filter(({ play }) => play.mock.calls.length > 0)).toHaveLength(2);
+    });
+
+    test("keeps a cached port usable after an overlapping failure", async () => {
+        const failedPort = Promise.withResolvers<number>();
+        const validPort = Promise.withResolvers<number>();
+        mocks.getSoundServerPort
+            .mockReturnValueOnce(failedPort.promise)
+            .mockReturnValueOnce(validPort.promise);
+        const { playSound, THROTTLE_MS } = await loadSound();
+
+        playSound(false, false);
+        vi.advanceTimersByTime(THROTTLE_MS + 1);
+        playSound(false, false);
+
+        failedPort.reject(new Error("no sound server"));
+        validPort.resolve(43123);
+        await settle();
+
+        vi.advanceTimersByTime(THROTTLE_MS + 1);
+        playSound(false, false);
+        await settle();
+
+        expect(mocks.getSoundServerPort).toHaveBeenCalledTimes(2);
+        expect(mocks.warn).toHaveBeenCalledOnce();
         expect(audioInstances.filter(({ play }) => play.mock.calls.length > 0)).toHaveLength(2);
     });
 
