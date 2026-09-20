@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: efb1b7988a7db905a70516279a7f4ba6b34f7d05810c713f2681bc989b13144d
+# agent-kit-sha256: ef79f81e105277bcc9fb297c8cb78e97f44baa5f42454ba6f01564b75be1b832
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -9544,6 +9544,8 @@ def _warn_ledger_commit(
     cause: str,
     scratch: Path | None,
     companion_scratch: Path | None = None,
+    *,
+    durable_head: str = "",
 ) -> None:
     identifiers = " ".join(intent.identifiers) or "(unknown ids)"
     recovery = f"; written bytes: {scratch}" if scratch is not None else ""
@@ -9579,11 +9581,10 @@ def _warn_ledger_commit(
             + " ".join(intent.provisional)
             + " printed above are provisional — a replay re-mints any that were used meanwhile"
         )
-    durable = getattr(intent, "_durable_head", "")
-    if durable:
+    if durable_head:
         prefix = (
             f"WARNING ledger commit for {intent.ledger} after {intent.command} "
-            f"({identifiers}) is durable as {durable} but was not fully verified: "
+            f"({identifiers}) is durable as {durable_head} but was not fully verified: "
         )
     else:
         prefix = (
@@ -9862,11 +9863,10 @@ def _attempt_ledger_commit(
         else None
     )
 
-    intent._durable_head = ""
+    installed_head = ""
 
     def failed(cause: str, *, durable_head: str = "",
                phase: str = "before-update-ref") -> LedgerCommitResult:
-        intent._durable_head = durable_head
         # An unborn repository has no HEAD to preserve yet.  The mutation
         # remains successful and the untracked ledger is intentionally skipped;
         # emitting the normal recovery warning would turn that supported setup
@@ -9874,7 +9874,8 @@ def _attempt_ledger_commit(
         unborn_head = (intent.head_at_write is None
                        and cause.startswith("commit helper failed: could not resolve HEAD:"))
         if warn and not unborn_head:
-            _warn_ledger_commit(intent, cause, scratch, companion_scratch)
+            _warn_ledger_commit(
+                intent, cause, scratch, companion_scratch, durable_head=durable_head)
         return LedgerCommitResult(False, cause, durable_head, phase)
 
     root = cast(Path, REPO_ROOT).resolve()
@@ -10061,13 +10062,15 @@ def _attempt_ledger_commit(
         if update_ref.returncode != 0:
             holds, detail = _head_postcondition(intent)
             if holds:
+                durable_head = _resolve_head(root)
                 _safe_discard_scratch(scratch)
                 _safe_discard_scratch(companion_scratch)
                 return LedgerCommitResult(
-                    True, durable_head=new_head, phase="before-update-ref")
+                    True, durable_head=durable_head, phase="before-update-ref")
             return failed(
                 f"HEAD moved during commit: {_git_failure_detail(update_ref)}",
                 phase="before-update-ref")
+        installed_head = new_head
         refreshed, refresh_detail = _refresh_ledger_index(root, modes_blobs)
         if not refreshed:
             return failed(
@@ -10080,7 +10083,11 @@ def _attempt_ledger_commit(
         _safe_discard_scratch(companion_scratch)
         return LedgerCommitResult(True, durable_head=new_head, phase="after-update-ref")
     except (LedgerError, OSError, UnicodeError, ValueError) as exc:
-        return failed(f"commit helper failed: {exc}")
+        return failed(
+            f"commit helper failed: {exc}",
+            durable_head=installed_head,
+            phase="after-update-ref" if installed_head else "before-update-ref",
+        )
     finally:
         if temp_index is not None:
             with suppress(OSError):
@@ -10405,23 +10412,32 @@ def main(argv: list[str] | None = None) -> int:
                     and bool(getattr(args, "hold_consumer_lock", False))
                     and intent.replaced
                     and not commit_result.durable
-                    and not commit_result.durable_head
                     and os.environ.get(LEDGER_COMMIT_ENV) != "0"
                 ):
-                    retry = _attempt_ledger_commit(intent, warn=False)
-                    if retry.durable:
-                        commit_result = retry
-                    else:
+                    if commit_result.durable_head:
                         _warn_ledger_commit(
                             intent,
-                            retry.cause or commit_result.cause,
+                            commit_result.cause,
                             _save_ledger_commit_scratch(intent),
+                            durable_head=commit_result.durable_head,
                         )
-                        if "worktree ledger differs" in (retry.cause or ""):
-                            command_result = 2
+                        command_result = 3
+                    else:
+                        retry = _attempt_ledger_commit(intent, warn=False)
+                        if retry.durable:
+                            commit_result = retry
                         else:
-                            print("ledger applied, commit failed", file=sys.stderr)
-                            command_result = 3
+                            _warn_ledger_commit(
+                                intent,
+                                retry.cause or commit_result.cause,
+                                _save_ledger_commit_scratch(intent),
+                                durable_head=retry.durable_head,
+                            )
+                            if "worktree ledger differs" in (retry.cause or ""):
+                                command_result = 2
+                            else:
+                                print("ledger applied, commit failed", file=sys.stderr)
+                                command_result = 3
                 if (
                     commit_result.durable
                     and intent.finalize is not None
