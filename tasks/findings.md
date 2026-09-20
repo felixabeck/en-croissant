@@ -10394,6 +10394,31 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 * **Blocked on:** the baseline commands are denied by default in `.claude/settings.json`; the denial is honoured, not circumvented. Also on the push having landed.
 * **Found by:** Claude Code, 2026-09-20, in round 2 of the `f-20260920-03` plan review (J2).
 
+**Unblocked except for the deny, 2026-09-20.** Phase 1 of `tasks/plans/2026-09-20-coverage-instrument-repair.md` landed as `d017475f` and CI run **35535051738** is green on that exact SHA, so the artifact this refresh requires now exists: `frontend-coverage`, artifact id **10612620560**, unexpired.
+
+The refresh is verified and ready; only `pnpm coverage:baseline:frontend` remains, and the harness refused it (`Permission to use Bash with command pnpm coverage:baseline:frontend has been denied`). The denial is honoured, not circumvented.
+
+**Verification already done, per `docs/coverage.md:43-56`:**
+
+* `pnpm coverage:frontend:check` green against the existing baseline first — the refresh is upward, not a repair of a red gate.
+* Measurement inputs identical: `git diff --stat d017475f..HEAD -- src vite.config.ts package.json pnpm-lock.yaml coverage-areas.json` is empty, so the CI tree and the candidate measure the same thing.
+* CI compared against a fresh local `pnpm test:coverage` metric by metric: **0 disagreements of 30**.
+* **0 of 30 metrics would fall below the baseline**, and no shrink allowance is needed for any of them.
+
+**It is wider than this finding's title says.** Eight of the ten areas have unrecorded gains, not just `databases-files`; `settings` is unchanged and `tabs-routing` gains nothing (its line total shrinks by 1 with covered level). The largest are `databases-files` (+176 lines, +20 functions, +272 branches) and `boards-game-analysis` (+105/+15/+36). The full 24-row table is in the run's chat report.
+
+**To land it**, with the CI artifact placed as `coverage/lcov.info` first and the local run restored afterwards — the restore matters, because checking the new baseline against the file it was written from proves nothing:
+
+    cp coverage/lcov.info /tmp/frontend-local.lcov
+    gh run download 35535051738 -n frontend-coverage -D /tmp/ci-cov
+    cp /tmp/ci-cov/lcov.info coverage/lcov.info
+    pnpm coverage:baseline:frontend
+    cp /tmp/frontend-local.lcov coverage/lcov.info
+    pnpm coverage:frontend:check
+
+Then record the run id, commit, artifact id and every metric delta in `tasks/decisions.md`, as `d-20260911-02` did.
+<!-- ledger-meta {"command":"annotate","effect_lines":23,"effect_sha256":"b12dfb8d271d39c612efb8ba0fc5367f1d1121f6d5409cdbdb9fe4a65a3ff999","input_sha256":"74a07391aa56b618336f5d574d9d3e01fa708a561a913971fded0df80c52e675","kind":"mutation-receipt","operation":"aeb8d0f054b878b75bce1bf918f07a3645eb122c79d920d8a438e4e95559cde3","options":{"section":null},"request_id_sha256":null,"results":["f-20260920-06"],"target":"f-20260920-06","v":1} -->
+
 ---
 
 ## 2026-09-20 — filed through the inbox spool
