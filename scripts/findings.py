@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: 1a79fe8ce2a2a277537e3a79bdabae3c07888227f4b5c5a2fe6f24e79211527f
+# agent-kit-sha256: da484eeb23ed0819d4e6bfa996816a1d0d017a6b777a07e78cadf175a61513b3
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -1215,9 +1215,15 @@ class Finding:
         )
 
     @property
-    def sentry_verification(self) -> str | None:
-        """Return derived Sentry verification state for queue-facing surfaces."""
-        if self.status != "open" or not _body_is_sentry_origin(_unfenced_body(self)):
+    def sentry_origin_clearance(self) -> str | None:
+        """Return why a Sentry origin is not cleared, or None once it is.
+
+        Status-independent, so a header change is judged on the approval
+        evidence the body actually carries rather than on the entry's current
+        status.  `None` means either "not Sentry-origin at all" or "origin
+        approved and the approval still covers this body".
+        """
+        if not _body_is_sentry_origin(_unfenced_body(self)):
             return None
         if classify_blocker(self.blocked) == BLOCKER_VERIFIER:
             return "unverified"
@@ -1233,6 +1239,13 @@ class Finding:
         if verified_body_sha256(self) != verifier_digest:
             return "drifted"
         return None
+
+    @property
+    def sentry_verification(self) -> str | None:
+        """Return derived Sentry verification state for queue-facing surfaces."""
+        if self.status != "open":
+            return None
+        return self.sentry_origin_clearance
 
     @property
     def cluster_key(self) -> tuple[str, str]:
@@ -8136,7 +8149,6 @@ def _answerable_header_change_refusal(
     target = next((finding for finding in findings if finding.id == finding_id), None)
     if target is None:
         return None
-    target_is_sentry = _body_is_sentry_origin(_unfenced_body(target))
     if target.blocked in SENTRY_VERIFIER_BLOCKERS:
         if status in {"handled", "rejected"}:
             return (
@@ -8149,11 +8161,18 @@ def _answerable_header_change_refusal(
                 "only sentry-unverified is accepted"
             )
         return None
-    if target_is_sentry and blocked is not None and blocked != SENTRY_UNVERIFIED:
-        return (
-            f"cannot set a Sentry-origin finding to blocker {blocked}; "
-            f"only {SENTRY_UNVERIFIED} is accepted"
-        )
+    if blocked is not None and blocked != SENTRY_UNVERIFIED:
+        # The gate exists so attacker-authored Sentry event text cannot reach
+        # Felix's queue unverified.  Once the origin is approved that risk is
+        # discharged, and an approved entry has to be parkable like any other --
+        # otherwise its question must be split into a second entry, away from
+        # the evidence the brief contract exists to keep with it.
+        clearance = target.sentry_origin_clearance
+        if clearance is not None:
+            return (
+                f"cannot set a {clearance} Sentry-origin finding to blocker "
+                f"{blocked}; only {SENTRY_UNVERIFIED} is accepted"
+            )
     if target.blocked not in ANSWERABLE_BLOCKERS:
         return None
     blocked_change = blocked is not None and blocked not in ANSWERABLE_BLOCKERS
