@@ -4,7 +4,7 @@
 //   pnpm verify:app                 run the checks
 //   pnpm verify:app --screenshot X  also write a PNG of the page to X
 //
-// It asserts attachment cleanup plus ten things that no other gate in this repository can:
+// It asserts attachment cleanup plus twelve things that no other gate in this repository can:
 //   1. the real binary starts, renders and answers script under WebKitGTK,
 //   2. the real renderer exposes the ChessFable document title,
 //   3. production startup reclaims unowned authority but preserves owned authority,
@@ -15,6 +15,44 @@
 //   8. closing it through its own control runs the shutdown sequence to completion,
 //   9. nothing — app or WebKit service process — outlives that close,
 //  10. a real pointer double-click on a not yet selected Files row opens that file.
+//  11. a registered engine portrait renders through LocalImage as a decoded data URL,
+//  12. the production CSP rejects a blob URL as an image source.
+//
+// STAGED-FAILURE RECORD (push-review-policy §2), one row per assertion. The policy's fifth
+// condition is that an inherited artefact is a finding, not a licence: until every assertion here
+// carries a row, this file's green is not citable as evidence. Items 11 and 12 were staged on
+// 2026-09-20 when they were written; item 10 was staged on 2026-09-19; the rest are being staged
+// now and are marked UNSTAGED until they are. A break is made in what the artefact READS — the
+// built binary, its configuration and its bundled resources — never in this file's own logic, and
+// is restored immediately afterwards.
+//
+// Items 11 and 12 (2026-09-20). Two breaks, chosen so that each half fails alone: that is what
+// proves the CSP control is independent of the positive check, and therefore that a green run
+// cannot have come from a widened policy.
+//   break                                   | check                        | message printed     | exit
+//   production LocalImage reverted to        | (11) rendered on the Engines | FAIL  the retained  | 1
+//   URL.createObjectURL, i.e. the pre-fix    |      page                    |   engine LocalImage |
+//   state of f-20260906-09; CSP untouched.   |                              |   rendered on the   |
+//   All three item-11 assertions fail, each  |                              |   Engines page —    |
+//   printing its own line, and item 12 stays |                              |   timed out waiting |
+//   green — so the two are not entangled.    |                              |   for the retained  |
+//                                            |                              |   engine portrait   |
+//                                            |                              |   to render and     |
+//                                            |                              |   decode            |
+//                                            | (11) data URL                | FAIL  … uses an     | 1
+//                                            |                              |   image/png data    |
+//                                            |                              |   URL — same detail |
+//                                            | (11) decodes                 | FAIL  … data URL    | 1
+//                                            |                              |   decodes in        |
+//                                            |                              |   WebKitGTK — same  |
+//                                            |                              |   detail            |
+//   img-src gains `blob:` in tauri.conf.json,| (12) CSP rejects a blob      | FAIL  the           | 1
+//   production left correct. Exactly one     |      image URL               |   production CSP    |
+//   check fails; all three item-11           |                              |   rejects a detached|
+//   assertions stay green.                   |                              |   blob image URL    |
+//                                            |                              |   with an img-src   |
+//                                            |                              |   violation —       |
+//                                            |                              |   {"timeout":true}  |
 //
 // Staged-failure record for item 10 (push-review-policy §2), one row per check. Checks (2) and
 // (3) were red on 2026-09-19 against the unfixed release binary, in one run where every other
@@ -53,6 +91,7 @@ const screenshotIndex = process.argv.indexOf("--screenshot");
 const screenshotPath = screenshotIndex === -1 ? undefined : process.argv[screenshotIndex + 1];
 const BASE_DIRECTORY_APP_DATA = 14; // @tauri-apps/api BaseDirectory.AppData
 const IPC_PROBE_TIMEOUT_MS = 5_000;
+const CSP_PROBE_TIMEOUT_MS = 4_000;
 const FILES_PROBE_TIMEOUT_MS = 20_000;
 // Gap between the two clicks of the double-click. It must stay inside the platform double-click
 // interval, or WebKitGTK delivers two single clicks and the scenario proves nothing.
@@ -176,6 +215,8 @@ try {
   // the real application origin. Seed valid durable image owners, close cleanly, and only then
   // install the registry fixture that the asserted startup must reconcile.
   const retainedImageId = "11111111-1111-4111-8111-111111111111";
+  const retainedImageBase64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
   const retiredImageId = "22222222-2222-4222-8222-222222222222";
   const orphanImageId = "33333333-3333-4333-8333-333333333333";
   const ownerEngine = (id, imageId) => ({
@@ -233,7 +274,8 @@ try {
   await writeFile(join(filesWorkspace, `${filesRowName}.pgn`), filesGamePgn);
   await mkdir(imageDirectory, { recursive: true });
   await writeFile(orphanFile, "do not delete registry fixture bytes");
-  await writeFile(retainedImage, "retained managed image bytes");
+  const retainedImageBytes = Buffer.from(retainedImageBase64, "base64");
+  await writeFile(retainedImage, retainedImageBytes);
   await writeFile(retiredImage, "retired managed image bytes");
   await writeFile(orphanImage, "orphan managed image bytes");
   const registryFile = join(
@@ -386,6 +428,108 @@ try {
   check(
     (await session.execute("return document.title")) === "ChessFable",
     "the real renderer exposes the ChessFable document title",
+  );
+
+  const retainedEnginePortrait = await waitFor(
+    "the retained engine portrait to render and decode",
+    async () => {
+      await session
+        .execute(
+          `const link = document.querySelector('a[href="/engines"]');
+         if (link && location.pathname !== "/engines") link.click();
+         return true`,
+        )
+        .catch(() => false);
+      return session
+        .execute(
+          `const image = document.querySelector('img[alt="Fixture retained"]');
+         if (!image || image.naturalWidth <= 0) return false;
+         return { src: image.getAttribute("src"), naturalWidth: image.naturalWidth };`,
+        )
+        .catch(() => false);
+    },
+    { timeoutMs: FILES_PROBE_TIMEOUT_MS },
+  ).catch((error) => ({ error: error.message }));
+  check(
+    !retainedEnginePortrait.error,
+    "the retained engine LocalImage rendered on the Engines page",
+    retainedEnginePortrait.error,
+  );
+  check(
+    typeof retainedEnginePortrait.src === "string" &&
+      retainedEnginePortrait.src.startsWith("data:image/png;base64,"),
+    "the retained engine LocalImage uses an image/png data URL",
+    retainedEnginePortrait.error ?? retainedEnginePortrait.src,
+  );
+  check(
+    retainedEnginePortrait.naturalWidth > 0,
+    "the retained engine LocalImage data URL decodes in WebKitGTK",
+    retainedEnginePortrait.error ?? String(retainedEnginePortrait.naturalWidth),
+  );
+
+  const blobCspResult = await invokeAndWait(
+    session,
+    "the detached blob image CSP violation to settle",
+    "__verifyAppBlobImageCsp",
+    `(() => {
+      const bytes = new Uint8Array(${JSON.stringify([...retainedImageBytes])});
+      const objectUrl = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
+      return new Promise((resolve) => {
+        let settled = false;
+        let timeoutId;
+        const image = document.createElement("img");
+        const listener = (event) => {
+          if (
+            typeof event.violatedDirective !== "string" ||
+            !event.violatedDirective.startsWith("img-src") ||
+            event.blockedURI !== "blob"
+          ) {
+            return;
+          }
+          finish(
+            JSON.stringify({
+              violatedDirective: event.violatedDirective,
+              blockedURI: event.blockedURI,
+            }),
+          );
+        };
+        const cleanup = () => {
+          if (timeoutId !== undefined) clearTimeout(timeoutId);
+          URL.revokeObjectURL(objectUrl);
+          document.removeEventListener("securitypolicyviolation", listener);
+        };
+        const finish = (value) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          resolve(value);
+        };
+        try {
+          document.addEventListener("securitypolicyviolation", listener);
+          timeoutId = setTimeout(
+            () => finish(JSON.stringify({ timeout: true })),
+            ${CSP_PROBE_TIMEOUT_MS},
+          );
+          image.src = objectUrl;
+        } catch (error) {
+          finish(JSON.stringify({ error: String(error) }));
+        }
+      });
+    })()`,
+  );
+  let blobCspEvent;
+  try {
+    blobCspEvent = JSON.parse(blobCspResult.value ?? "null");
+  } catch {
+    blobCspEvent = undefined;
+  }
+  check(
+    typeof blobCspResult.rejected === "undefined" &&
+      typeof blobCspEvent?.violatedDirective === "string" &&
+      blobCspEvent.violatedDirective.startsWith("img-src") &&
+      blobCspEvent.blockedURI === "blob",
+    "the production CSP rejects a detached blob image URL with an img-src violation",
+    blobCspResult.rejected ?? blobCspResult.error ?? blobCspResult.value,
   );
 
   const resolveDirectoryResult = await invokeAndWait(
