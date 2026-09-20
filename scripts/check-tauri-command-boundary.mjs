@@ -48,7 +48,7 @@ export const NATIVE_EXPORT_DENYLIST = Object.freeze(
 );
 
 const TAURI_SPECIFIER = String.raw`@tauri-apps/(?:api(?:/[^"']*)?|plugin-[^"']*)`;
-const SPECIFIER_GAP = String.raw`\s*(?:(?:\/\/[^\r\n\u2028\u2029]*(?:[\r\n\u2028\u2029]|$)|\/\*[\s\S]*?\*\/)\s*)*`;
+const SPECIFIER_GAP = String.raw`(?:\s|\/\/[^\r\n\u2028\u2029]*|\/\*(?:[^*]|\*(?!\/))*\*\/)*`;
 const FROM_SPECIFIER = new RegExp(
   String.raw`\bfrom${SPECIFIER_GAP}["'](${TAURI_SPECIFIER})["']`,
   "g",
@@ -60,11 +60,11 @@ const SIDE_EFFECT_SPECIFIER = new RegExp(
 const TEMPLATE_TAURI_SPECIFIER = '@tauri-apps/(?:api(?:/[^"`]*)?|plugin-[^"`]*)';
 const CALL_SPECIFIER = [
   new RegExp(
-    String.raw`\b(?:import|require|vi\.mock)${SPECIFIER_GAP}\(${SPECIFIER_GAP}["'](${TAURI_SPECIFIER})["']`,
+    String.raw`\b(?:import|require|vi${SPECIFIER_GAP}\.${SPECIFIER_GAP}mock)${SPECIFIER_GAP}\(${SPECIFIER_GAP}["'](${TAURI_SPECIFIER})["']`,
     "g",
   ),
   new RegExp(
-    String.raw`\b(?:import|require|vi\.mock)${SPECIFIER_GAP}\(${SPECIFIER_GAP}` +
+    String.raw`\b(?:import|require|vi${SPECIFIER_GAP}\.${SPECIFIER_GAP}mock)${SPECIFIER_GAP}\(${SPECIFIER_GAP}` +
       "`(?![^`]*\\$\\{)(" +
       TEMPLATE_TAURI_SPECIFIER +
       ")`",
@@ -77,11 +77,11 @@ const GENERATED_BINDINGS_IMPORT_ALLOWLIST = new Set([
   "@tauri-apps/api/webviewWindow",
 ]);
 const NATIVE_EXPORT = new RegExp(
-  String.raw`\bexport\s*\{([\s\S]*?)\}\s*from\s*["'](${TAURI_SPECIFIER})["']`,
+  String.raw`\bexport\s*\{([\s\S]*?)\}${SPECIFIER_GAP}from${SPECIFIER_GAP}["'](${TAURI_SPECIFIER})["']`,
   "g",
 );
 const NATIVE_EXPORT_STAR = new RegExp(
-  String.raw`\bexport\s*\*\s*(?:as\s+[A-Za-z_$][\w$]*\s*)?from\s*["'](${TAURI_SPECIFIER})["']`,
+  String.raw`\bexport\s*\*\s*(?:as\s+[A-Za-z_$][\w$]*)?${SPECIFIER_GAP}from${SPECIFIER_GAP}["'](${TAURI_SPECIFIER})["']`,
   "g",
 );
 const MODULE_CALL = /\b(?:import|require)\s*\(\s*["']([^"']+)["']/g;

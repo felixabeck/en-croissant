@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { performance } from "node:perf_hooks";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
 import {
@@ -44,6 +45,8 @@ const B0_ORACLE_FORMS = [
   ["Q", `const m = await import /* c */ ("${UPDATER_SPECIFIER}");`, "must-be-violation"],
   ["R", `vi.mock /* c */ ("${UPDATER_SPECIFIER}");`, "must-be-violation"],
   ["S", `const m = await import\n// c\n("${UPDATER_SPECIFIER}");`, "must-be-violation"],
+  ["T", `vi /* c */ .mock("${UPDATER_SPECIFIER}");`, "must-be-violation"],
+  ["U", `vi . mock("${UPDATER_SPECIFIER}");`, "must-be-violation"],
 ];
 const B0_ORACLE_CASES = B0_ORACLE_FORMS.flatMap(([row, source, expected]) =>
   ["components/probe.ts", "bindings/generated.ts"].map((path) => ({
@@ -151,11 +154,27 @@ describe("source boundary forms", () => {
   ])("allows %s", (_name, path, source) => {
     expect(inspectSource(path, source)).toEqual([]);
   });
+
+  test("handles a long comment gap without catastrophic backtracking", () => {
+    const source = "// from " + "/*x*/".repeat(200) + " end\n";
+    const startedAt = performance.now();
+
+    expect(inspectSource("components/probe.ts", source)).toEqual([]);
+    expect(performance.now() - startedAt).toBeLessThan(1000);
+  });
 });
 
 describe("native facade contract", () => {
   test("accepts today's exact native facade", () => {
     expect(inspectSource("platform/native.ts", NATIVE_SOURCE)).toEqual([]);
+  });
+
+  test("accepts a comment after from in a native re-export", () => {
+    const withComment = NATIVE_SOURCE.replace(
+      'export { check, type Update } from "@tauri-apps/plugin-updater";',
+      'export { check, type Update } from /* c */ "@tauri-apps/plugin-updater";',
+    );
+    expect(inspectSource("platform/native.ts", withComment)).toEqual([]);
   });
 
   test.each([
