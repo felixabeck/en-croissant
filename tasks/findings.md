@@ -10417,3 +10417,16 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 * **Why it matters:** the orphan is a bearer credential the application no longer knows it holds, so nothing will ever revoke or clean it up; the user sees a signed-out app with a live token still in the keyring. Same identity-versus-pathname class as `f-20260918-02` and `f-20260920-*` on the download installer, in the credential store rather than the filesystem.
 * **Fix shape:** make startup resolve the registry through the same authority descriptor the writer holds, or detect the mismatch and reconcile the keyring against it explicitly, plus a test that renames the directory between a write and a restart.
 * **Found by:** Claude Code, 2026-09-20, `$push` review of `563790ff..HEAD` (review-tauri-security, should-fix, confidence 96). Pre-existing, origin `aba6ab7fe`.
+
+---
+
+## 2026-09-20 — filed through the inbox spool
+
+### Two download-cancellation test fixtures describe a flow that no longer exists
+
+* **ID:** f-20260920-11 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src/utils/engines.controller.test.ts:193` (second `randomUUID()` mock value), `src/components/common/ProgressButton.test.tsx:331` (duplicated `progress.fence` assertion).
+* **Defect:** `459b649f` replaced renderer-minted job ids with native tickets, so the second queued `randomUUID()` return in the engines controller test is now unreachable — the fixture still narrates a two-id flow the code does not have. Separately, `ProgressButton.test.tsx` asserts `progress.fence` twice in one case; deleting the second assertion loses no coverage.
+* **Why it matters:** neither breaks a test. Both make the next reader reconstruct a contract from a fixture that is describing the previous one, which is the specific way test files stop being documentation.
+* **Fix shape:** drop the unreachable mock value and the duplicate assertion; no behaviour or coverage changes, so the existing suites are the proof.
+* **Found by:** Claude Code, 2026-09-20, `$push` review of `563790ff..HEAD` (review-code-quality should-fix 99; review-minimalism nit 99). Origin commits `459b649f` and `018df655` (`f-20260906-07`), a different area from the run that found it.
