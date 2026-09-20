@@ -650,7 +650,7 @@ try {
 
   const log = await readLog();
   check(
-    log.includes(`destroyed webview main cancelled native reads: ${retainedTicket}`),
+    log.includes(`destroyed webview main cancelled native reads/downloads: ${retainedTicket}`),
     "the real destroyed-window event cancels the exact retained main-webview reservation",
   );
   check(
