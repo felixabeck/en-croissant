@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
     getSoundServerPort: vi.fn(),
-    warn: vi.fn().mockResolvedValue(undefined),
+    warn: vi.fn(),
 }));
 
 vi.mock("@/platform/tauri", async () => {
@@ -41,7 +41,8 @@ async function loadSound({ collection = "standard" } = {}) {
 }
 
 async function settle() {
-    // Five ticks drain the port await, outer catch, warn call, warn rejection, and console fallback.
+    // Five ticks drain the port await, the lookup's rejection handler, the warn call, warn's own
+    // rejection, and the console fallback — the deepest chain any case here observes.
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();

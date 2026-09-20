@@ -24,11 +24,14 @@ async function getSoundServerPort(): Promise<number> {
 }
 
 export function playSound(capture: boolean, check: boolean) {
+    // The null check is deliberate, not redundant: two lookups can overlap, and one may reject
+    // while the other resolves a real port. A known-good port then outranks the stale failure,
+    // in either arrival order.
     if (soundServerPortFailed && soundServerPort === null) {
         return;
     }
 
-    // only play at most 1 sound every 75ms
+    // only play at most 1 sound every THROTTLE_MS
     const now = Date.now();
     if (now - lastTime < THROTTLE_MS) {
         return;
