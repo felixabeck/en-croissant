@@ -76,6 +76,15 @@ vi.mock("react-i18next", () => ({
   }),
 }));
 
+// Exactly one mock action for `mantine-flagpack` is queued per case — never a second one from a
+// hook. Vitest 4.1.0 resolves the queued actions concurrently and applies them in *resolution*
+// order rather than queue order (`BareModuleMocker.resolveMocks` maps them through one
+// `Promise.all`), so two actions queued for the same specifier before the next import are applied
+// in an arbitrary order. The `vi.doUnmock("mantine-flagpack")` that used to sit in `afterEach` was
+// exactly that second action, and under load it landed after this one often enough to redden CI:
+// the rejection case then rendered a real flag, and a later case waited out its timeout on a flag
+// pack that was still mocked. Measured on this tree: 50 iterations of unmock-then-mock-then-import
+// produced one iteration in which the unmock won.
 function mockFideInfoDependencies({ rejectFlagpack }: { rejectFlagpack: boolean }) {
   if (rejectFlagpack) {
     vi.doMock("mantine-flagpack", () => {
@@ -129,7 +138,6 @@ afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
   vi.useRealTimers();
-  vi.doUnmock("mantine-flagpack");
 });
 
 async function renderFideInfo(
@@ -157,6 +165,12 @@ function modalText() {
   return container.querySelector('[role="dialog"]')?.textContent || "";
 }
 
+// Below the 5 s default test timeout on purpose. The previous 15 s could never be reached, so a
+// flag that never arrived surfaced as a bare "Test timed out in 5000ms" instead of naming the
+// count that was wrong. The slowest real `mantine-flagpack` import measured on this tree was
+// 206 ms, and every later one under 2 ms.
+const FLAG_WAIT_MS = 4_000;
+
 function flagSvgs() {
   return container.querySelectorAll('svg[viewBox="0 0 32 24"]');
 }
@@ -171,7 +185,7 @@ test("an open modal renders the real federation flag", async () => {
     name: "Magnus",
   });
 
-  await vi.waitFor(() => expect(flagSvgs()).toHaveLength(1), { timeout: 15_000 });
+  await vi.waitFor(() => expect(flagSvgs()).toHaveLength(1), { timeout: FLAG_WAIT_MS });
   expect(loadFlagpack).toHaveBeenCalledOnce();
   expect(modalText()).toContain("Magnus");
 });
@@ -286,7 +300,7 @@ test("a player named fide-flagpack keeps the player and flag SWR entries separat
     name: "fide-flagpack",
   });
 
-  await vi.waitFor(() => expect(flagSvgs()).toHaveLength(1), { timeout: 15_000 });
+  await vi.waitFor(() => expect(flagSvgs()).toHaveLength(1), { timeout: FLAG_WAIT_MS });
   expect(loadFlagpack).toHaveBeenCalledOnce();
   expect(mocks.getFidePlayer).toHaveBeenCalledWith("fide-flagpack");
   expect(modalText()).toContain("fide-flagpack");
