@@ -4,27 +4,23 @@
 //   pnpm verify:app                 run the checks
 //   pnpm verify:app --screenshot X  also write a PNG of the page to X
 //
-// It asserts attachment cleanup plus twelve things that no other gate in this repository can:
-//   1. the real binary starts, renders and answers script under WebKitGTK,
-//   2. the real renderer exposes the ChessFable document title,
-//   3. production startup reclaims unowned authority but preserves owned authority,
-//   4. startup authority reconciliation deletes no user files,
-//   5. the renderer cannot resolve a native base directory,
-//   6. the renderer reaches the loopback sound server through a live non-zero port,
-//   7. that port serves the bundled move sound with bytes,
-//   8. closing it through its own control runs the shutdown sequence to completion,
-//   9. nothing — app or WebKit service process — outlives that close,
-//  10. a real pointer double-click on a not yet selected Files row opens that file.
-//  11. a registered engine portrait renders through LocalImage as a decoded data URL,
-//  12. the production CSP rejects a blob URL as an image source.
+// It asserts thirty independently reported checks that no other gate in this repository can:
+//   group | assertions
+//   startup | production authority, user-file safety, owned-image cleanup, real IPC bridge,
+//            document title
+//   image/CSP | LocalImage render/data URL/decode, detached blob rejection
+//   native services | path capability refusal, live sound port and bundled sound bytes
+//   attachments | prepare, retire, live-session bytes/intent, titlebar cleanup
+//   native reads | mint, cancel, cancelled-ticket refusal, retained ticket, destroyed-window log
+//   Files | row render, real double-click route, opened-game notation
+//   titlebar/process | rendered controls, process-before-close, process-after-close
+//   shutdown | start, bounded completion, sound signal
 //
 // STAGED-FAILURE RECORD (push-review-policy §2), one row per assertion. The policy's fifth
 // condition is that an inherited artefact is a finding, not a licence: until every assertion here
-// carries a row, this file's green is not citable as evidence. Items 11 and 12 were staged on
-// 2026-09-20 when they were written; item 10 was staged on 2026-09-19; the rest are being staged
-// now and are marked UNSTAGED until they are. A break is made in what the artefact READS — the
-// built binary, its configuration and its bundled resources — never in this file's own logic, and
-// is restored immediately afterwards.
+// carries a row, this file's green is not citable as evidence. A break is made in what the
+// artefact READS — the built binary, its configuration and its bundled resources — never in this
+// file's own logic, and is restored immediately afterwards.
 //
 // Items 11 and 12 (2026-09-20). Two breaks, chosen so that each half fails alone: that is what
 // proves the CSP control is independent of the positive check, and therefore that a green run
@@ -54,6 +50,65 @@
 //                                            |                              |   violation —       |
 //                                            |                              |   {"timeout":true}  |
 //
+// Rows for the other assertions (all runs exited 1):
+//   break                                   | assertion/message                              | exit
+//   active-root retention removed and the   | FAIL  production startup reclaims unowned      | 1
+//   disposable owned-root directory removed |   authority and preserves native-owned          |
+//                                            |   authority; FAIL  startup authority             |
+//                                            |   reconciliation deletes no user files          |
+//   startup image reconciliation retired the | FAIL  trusted production startup preserves     | 1
+//   retained fixture image                  |   owned images and cleans only the orphan       |
+//   path capability was re-added and sound  | FAIL  the renderer cannot resolve a base        | 1
+//   port returned 0                         |   directory (core:path grants are gone) —      |
+//                                            |   /tmp/chessfable-verify-nKX32P/.local/share/  |
+//                                            |   com.chessriddle.encroissant/x                 |
+//                                            | FAIL  the renderer reaches a live loopback      |
+//                                            |   sound-server port — 0                         |
+//                                            | FAIL  the loopback sound server serves the      |
+//                                            |   bundled standard move sound — fetch failed    |
+//   index.html title changed and            | FAIL  the real renderer exposes the ChessFable  | 1
+//   prepare_native_read returned Err         |   document title                               |
+//                                            | FAIL  the native backend mints an opaque read   |
+//                                            |   reservation — {"category":"invalid-input",   |
+//                                            |   "message":"Invalid input: STAGED BREAK",     |
+//                                            |   "tag":"backend-error"}                       |
+//                                            | FAIL  the native backend acknowledges            |
+//                                            |   reservation cancellation                      |
+//                                            | FAIL  a cancelled reservation cannot be claimed  |
+//                                            |   by a later native read — [object Object],     |
+//                                            |   [object Object]                               |
+//   non-startup attachment actions returned  | FAIL  real attachment IPC prepares the exact    | 1
+//   Err                                     |   next durable owner set — {"category":         |
+//                                            |   "message":"Invalid input: STAGED BREAK d",    |
+//                                            |   "tag":"backend-error"}                       |
+//                                            | FAIL  real attachment IPC retires the selected  |
+//                                            |   managed image — {"category":"invalid-input", |
+//                                            |   "message":"Invalid input: STAGED BREAK d",    |
+//                                            |   "tag":"backend-error"}                       |
+//   live-session retirement deleted bytes    | FAIL  retirement preserves image bytes for the  | 1
+//   while retaining cleanup intent           |   live session and records cleanup intent       |
+//   the stage-4 reservation break            | FAIL  a native read reservation is retained      | 1
+//                                            |   until titlebar close — {"category":            |
+//                                            |   "message":"Invalid input: STAGED BREAK",      |
+//                                            |   "tag":"backend-error"}                       |
+//                                            | FAIL  the real destroyed-window event cancels   |
+//                                            |   the exact retained main-webview reservation    |
+//   the three shutdown log lines were        | FAIL  the shutdown sequence started              | 1
+//   renamed                                  | FAIL  the shutdown cleanup ran to completion    |
+//                                            |   inside its budget                            |
+//                                            | FAIL  the sound server shutdown was signalled    |
+//   assertion close retained the app and    | FAIL  application pid 4078384 and recorded      | 1
+//   first WebKit service process             |   WebKit service pids [4078409, 4078446] do not |
+//                                            |   exist after the close — surviving pids:       |
+//                                            |   4078384, 4078409                             |
+//   shutdown skipped image cleanup           | FAIL  titlebar shutdown removes retired image    | 1
+//                                            |   bytes and intent while retaining the owner    |
+//
+// Rows above are deliberately not inferred from collateral failures: the same assertion was
+// retained only where its own FAIL line was printed. Stage 8's "retain nothing" break printed the
+// existing item-10 Files rows (and exited 1), because it reclaimed the Files workspace; it did
+// not move the three startup assertions above.
+//
 // Staged-failure record for item 10 (push-review-policy §2), one row per check. Checks (2) and
 // (3) were red on 2026-09-19 against the unfixed release binary, in one run where every other
 // check was ok; that run printed "2 check(s) failed" and exited with status 1.
@@ -70,6 +125,33 @@
 //   (3) the opened game's notation is shown | FAIL  a real double-click on the unselected Files | 1
 //                                           |   row shows its game — timed out waiting for the  |
 //                                           |   opened game's notation; expected 1.e4e52.d4d5   |
+
+// ARGUED, NOT STAGED. These assertions have no row because the only available break aborts before
+// their check (or requires editing this verifier):
+//   assertion                              | reason observed
+//   the real Tauri IPC bridge is present   | Removing the bridge from the bundled renderer made
+//                                         | the seed run abort at "timed out waiting for seed
+//                                         | window controls", before any assertion line.
+//   the custom title bar rendered its     | Removing the controls made the same prerequisite
+//   window controls                       | wait abort at "timed out waiting for seed window
+//                                         | controls". Once that wait succeeds, its probe can
+//                                         | return only "label" or "fallback", both accepted
+//                                         | by the assertion; making it fail would edit the
+//                                         | verifier or abort the prerequisite.
+//   the application process is running    | A binary that exited during setup made the run abort
+//   before the close                     | at "WebDriver session creation failed: This operation
+//                                         | was aborted". The close helper reads appProcesses()
+//                                         | and throws if no application exists before it can
+//                                         | call this check, so a dead application cannot print
+//                                         | this assertion's FAIL line.
+//
+// Abort-only attempts are not rows: stage 5's unconditional startup attachment error aborted at
+// "timed out waiting for production startup to reconcile the seeded path registry"; stage 6 then
+// aborted at "timed out waiting for the managed-image cleanup intent" after its two rows. A first
+// process-survival break also aborted at "seed processes survived close: 4062332, 4062375" before
+// the assertion session. A first image-cleanup break left all checks green because startup never
+// put the retained image through that cleanup path; it was restored and replaced by the staged
+// startup-retirement break above. None of these aborts is cited as assertion evidence.
 
 import { existsSync } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
