@@ -2,12 +2,15 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
     getSoundServerPort: vi.fn(),
+    warn: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("@/platform/tauri", async () => {
     const actual = await vi.importActual<typeof import("@/platform/tauri")>("@/platform/tauri");
     return { ...actual, tauri: mocks };
 });
+
+vi.mock("@/platform/native", () => ({ warn: mocks.warn }));
 
 type AudioStub = {
     play: ReturnType<typeof vi.fn>;
@@ -38,6 +41,10 @@ async function loadSound({ collection = "standard" } = {}) {
 }
 
 async function settle() {
+    // Five ticks drain the port await, outer catch, warn call, warn rejection, and console fallback.
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
 }
@@ -47,6 +54,7 @@ beforeEach(() => {
     vi.setSystemTime(new Date("2026-09-06T12:00:00Z"));
     vi.resetModules();
     vi.clearAllMocks();
+    mocks.warn.mockResolvedValue(undefined);
     vi.stubGlobal("Audio", FakeAudio);
     audioInstances.length = 0;
     localStorage.removeItem("sound-collection");
@@ -95,5 +103,97 @@ describe("playSound", () => {
         await settle();
 
         expect(audioInstances.every(({ play }) => !play.mock.calls.length)).toBe(true);
+    });
+
+    test("stops asking after the first failed port request", async () => {
+        mocks.getSoundServerPort.mockRejectedValue(new Error("no sound server"));
+        const { playSound } = await loadSound();
+
+        playSound(false, false);
+        await settle();
+        vi.advanceTimersByTime(76);
+        playSound(false, false);
+        await settle();
+
+        expect(mocks.getSoundServerPort).toHaveBeenCalledOnce();
+        expect(mocks.warn).toHaveBeenCalledOnce();
+        expect(mocks.warn).toHaveBeenCalledWith(expect.stringContaining("no sound server"));
+        expect(audioInstances.every(({ play }) => !play.mock.calls.length)).toBe(true);
+    });
+
+    test("reports one warning for overlapping failed port requests", async () => {
+        let rejectPort!: (reason?: unknown) => void;
+        const portRequest = new Promise<number>((_, reject) => {
+            rejectPort = reject;
+        });
+        mocks.getSoundServerPort.mockReturnValue(portRequest);
+        const { playSound } = await loadSound();
+
+        playSound(false, false);
+        vi.advanceTimersByTime(76);
+        playSound(false, false);
+        expect(mocks.getSoundServerPort).toHaveBeenCalledTimes(2);
+
+        rejectPort(new Error("no sound server"));
+        await settle();
+
+        expect(mocks.warn).toHaveBeenCalledOnce();
+    });
+
+    test("plays both sounds for overlapping successful port requests", async () => {
+        let resolvePort!: (port: number | PromiseLike<number>) => void;
+        const portRequest = new Promise<number>((resolve) => {
+            resolvePort = resolve;
+        });
+        mocks.getSoundServerPort.mockReturnValue(portRequest);
+        const { playSound } = await loadSound();
+
+        playSound(false, false);
+        vi.advanceTimersByTime(76);
+        playSound(false, false);
+
+        resolvePort(43123);
+        await settle();
+
+        expect(audioInstances.filter(({ play }) => play.mock.calls.length > 0)).toHaveLength(2);
+    });
+
+    test("falls back to console when reporting the port failure rejects", async () => {
+        const soundError = new Error("no sound server");
+        const logError = new Error("logger unavailable");
+        mocks.getSoundServerPort.mockRejectedValue(soundError);
+        mocks.warn.mockRejectedValue(logError);
+        const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+        try {
+            const { playSound } = await loadSound();
+            playSound(false, false);
+            await settle();
+
+            expect(mocks.warn).toHaveBeenCalledOnce();
+            expect(consoleWarn).toHaveBeenCalledOnce();
+            expect(consoleWarn).toHaveBeenCalledWith(
+                "Sound server port request failed, and the log facade did too:",
+                soundError,
+                logError,
+            );
+        } finally {
+            consoleWarn.mockRestore();
+        }
+    });
+
+    test("keeps playSound fire-and-forget", async () => {
+        mocks.getSoundServerPort.mockResolvedValue(43123);
+        const { playSound: playSuccessfulSound } = await loadSound();
+
+        expect(playSuccessfulSound(false, false)).toBeUndefined();
+        await settle();
+
+        vi.resetModules();
+        mocks.getSoundServerPort.mockRejectedValue(new Error("no sound server"));
+        const { playSound: playFailedSound } = await loadSound();
+
+        expect(playFailedSound(false, false)).toBeUndefined();
+        await settle();
     });
 });

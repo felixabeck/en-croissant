@@ -1,4 +1,5 @@
 import { getDefaultStore } from "jotai";
+import { warn } from "@/platform/native";
 import { tauri } from "@/platform/tauri";
 import { soundCollectionAtom, soundVolumeAtom } from "@/state/atoms";
 
@@ -9,6 +10,7 @@ const audioPool = Array.from({ length: POOL_SIZE }, () => new Audio());
 let poolIndex = 0;
 
 let soundServerPort: number | null = null;
+let soundServerPortFailed = false;
 
 let lastTime = 0;
 
@@ -21,6 +23,10 @@ async function getSoundServerPort(): Promise<number> {
 }
 
 export function playSound(capture: boolean, check: boolean) {
+    if (soundServerPortFailed) {
+        return;
+    }
+
     // only play at most 1 sound every 75ms
     const now = Date.now();
     if (now - lastTime < 75) {
@@ -56,7 +62,15 @@ export function playSound(capture: boolean, check: boolean) {
             player.volume = volume;
             player.play().catch((e) => console.error("Audio playback error:", e));
         })
-        .catch(() => {
-            // fails if Tauri APIs are unavailable (e.g., in tests)
+        .catch((error) => {
+            if (soundServerPortFailed) return;
+            soundServerPortFailed = true;
+            void warn(`Sound server port request failed: ${String(error)}`).catch((logError) =>
+                console.warn(
+                    "Sound server port request failed, and the log facade did too:",
+                    error,
+                    logError,
+                ),
+            );
         });
 }
