@@ -10312,3 +10312,14 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
   * **Session:** 13b31f81-b2df-4eac-b76a-05609dce6a23 — `~/.claude/projects/-home-felixb-Projekte-chessfable/13b31f81-b2df-4eac-b76a-05609dce6a23.jsonl`
 * **Found by:** Claude Code, 2026-09-20, running the push gates for `f-20260906-07`.
 * **Decision made:** Option C: load the flag pack on demand. Neither (a) lazy EvalChart — measured red on the total cap at 1,550,268 — nor (b) re-record the budget. Felix, 2026-09-20 in chat: "Alright, then let's take option C. Full auto executor codex." — felix: Answer recorded through the findings answer route.
+
+* **Resolved:** 2026-09-20 by `4d025de9` — option C, neither branch the finding offered. The
+  measured composition above attributed the whole shared chunk to `AreaChart`; its largest member
+  was in fact `mantine-flagpack` at 955,312 raw bytes, ahead of `recharts` at 446,618, statically
+  imported by `FideInfo.tsx:3` to render at most one flag. Loading it on demand took the board
+  route from 750,033 to 508,291 gzip bytes and `total` from 1,547,311 to 1,546,205. The
+  `largestLazy` ceiling was tightened 750,000 → 550,000 in the same change; no ceiling was raised.
+  Branch (a) of the decision, lazy `EvalChart`, was measured and is **red**: it moves `total` to
+  1,550,268, 268 bytes over its own cap. Plan and ten review rounds:
+  `tasks/handoffs/2026-09-20-board-route-bundle-budget-review.md`.
+<!-- ledger-meta {"command":"annotate","effect_lines":9,"effect_sha256":"e5af8101ba02eee2dd71170e57909881a32612015c2eba32da92973fb31ef11f","input_sha256":"722c5eee77b87e4736cc7d4687f06f7e611f69313bd6136601d5de54f4390171","kind":"mutation-receipt","operation":"a166e6f53166a15010323534c9bd3df05de6cb6854dbac66a69141caebc09a77","options":{"section":null},"request_id_sha256":null,"results":["f-20260920-03"],"target":"f-20260920-03","v":1} -->
