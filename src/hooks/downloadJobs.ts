@@ -4,62 +4,47 @@ import { errorUnlessCancelled } from "@/platform/errors";
 import { cancellationError, tauri, withDownloadTicket } from "@/platform/tauri";
 import { warn } from "@/platform/native";
 
-export class DownloadCancelLostError extends Error {
-    constructor() {
-        super("the download already completed");
-        this.name = "DownloadCancelLostError";
-    }
-}
+/**
+ * Why a cancellation did not take effect. `lost` means the download settled on its own
+ * (it finished, or no job was registered), `request` that the cancel IPC itself failed -
+ * the card notifies only the latter - and `busy` that a job for this progress id is
+ * already running.
+ */
+export type DownloadCancelReason = "lost" | "request" | "busy";
 
-export class DownloadCancelRequestError extends Error {
-    readonly cause: unknown;
+export type DownloadCancelError = Error & { reason: DownloadCancelReason; cause?: unknown };
 
-    constructor(cause: unknown) {
-        super("download cancellation could not be delivered");
-        this.name = "DownloadCancelRequestError";
-        this.cause = cause;
-    }
-}
-
-export class DownloadJobAlreadyRunningError extends Error {
-    constructor() {
-        super("a download is already running for this progress id");
-        this.name = "DownloadJobAlreadyRunningError";
-    }
+/** `reason` is what a caller branches on; the message repeats it so a log line still says why. */
+export function downloadCancelError(
+    reason: DownloadCancelReason,
+    cause?: unknown,
+): DownloadCancelError {
+    return Object.assign(new Error(reason), { reason, cause });
 }
 
 type CancelOutcome = { clearedGeneration: bigint | null };
 
 type DownloadJobEntry = {
     cancelRequested: boolean;
-    started: boolean;
-    ticket: Promise<string>;
-    resolveTicket: (ticket: string) => void;
-    rejectTicket: (error: unknown) => void;
+    /** Set once the native ticket exists; before that a cancel needs no native call. */
+    ticket: string | null;
     settlement: Promise<unknown>;
     clearedGeneration: bigint | null;
 };
 
 const jobs = new Map<string, DownloadJobEntry>();
 const subscribers = new Set<() => void>();
+const publish = () => subscribers.forEach((subscriber) => subscriber());
 
-function publish() {
-    for (const subscriber of subscribers) subscriber();
-}
-
-function isCancellation(error: unknown): boolean {
-    return errorUnlessCancelled(error) === null;
-}
-
-export async function clearDownloadProgress(progressId: string): Promise<bigint | null> {
+/**
+ * Clears a job's progress entry, best effort: the result of a download is never a failure to
+ * tidy its bar. `warn` itself rejects without a Tauri backend, so its promise is swallowed too.
+ */
+async function clearDownloadProgress(progressId: string): Promise<bigint | null> {
     try {
         return await tauri.clearProgress(progressId);
     } catch (error) {
-        try {
-            await warn(`download progress cleanup failed (${progressId}): ${String(error)}`);
-        } catch {
-            // Progress cleanup is best effort and must not replace the download result.
-        }
+        void warn(`clear progress ${progressId}: ${String(error)}`).catch(() => undefined);
         return null;
     }
 }
@@ -68,53 +53,36 @@ export function runDownloadJob<T>(
     progressId: string,
     run: (ticket: string) => Promise<T>,
 ): Promise<T> {
-    if (jobs.has(progressId)) throw new DownloadJobAlreadyRunningError();
+    if (jobs.has(progressId)) throw downloadCancelError("busy");
 
-    let resolveTicket!: (ticket: string) => void;
-    let rejectTicket!: (error: unknown) => void;
-    const ticket = new Promise<string>((resolve, reject) => {
-        resolveTicket = resolve;
-        rejectTicket = reject;
-    });
-    // The ticket is only observed by a concurrent cancellation. Keep a rejected
-    // preparation from becoming an unhandled promise rejection when no canceler
-    // is waiting for it.
-    void ticket.catch(() => undefined);
     const entry: DownloadJobEntry = {
         cancelRequested: false,
-        started: false,
-        ticket,
-        resolveTicket,
-        rejectTicket,
+        ticket: null,
         settlement: Promise.resolve(),
         clearedGeneration: null,
     };
     jobs.set(progressId, entry);
     publish();
 
-    const execution = (async () => {
-        try {
-            return await withDownloadTicket(async (preparedTicket) => {
-                entry.resolveTicket(preparedTicket);
-                if (entry.cancelRequested) throw cancellationError();
-                entry.started = true;
-                return run(preparedTicket);
-            });
-        } catch (error) {
-            entry.rejectTicket(error);
-            // A cancellation that arrives before preparation completes means the command
-            // never started. Preserve the cancellation category even if preparation itself
-            // rejected, while leaving failures after invocation untouched.
-            if (entry.cancelRequested && !entry.started) throw cancellationError();
-            throw error;
-        }
-    })();
+    const execution = withDownloadTicket(async (preparedTicket) => {
+        // A cancel that arrives before this point never reached native work: the ticket is
+        // still unclaimed and `withDownloadTicket` releases it on this rejection.
+        if (entry.cancelRequested) throw cancellationError();
+        entry.ticket = preparedTicket;
+        return run(preparedTicket);
+    }).catch((error) => {
+        // A preparation that failed while a cancel was pending is that cancel, not an error.
+        if (entry.cancelRequested && entry.ticket === null) throw cancellationError();
+        throw error;
+    });
 
     entry.settlement = execution
+        // A job that did not succeed leaves no bar behind: the store keeps a terminal item at the
+        // last percentage it reached (cancelled or failed), which would otherwise still be drawn.
+        // Clearing here, before the entry is released below, is what keeps a retry's own bar safe:
+        // no start is accepted for this id until the clear has been answered.
         .catch(async (error) => {
-            if (isCancellation(error)) {
-                entry.clearedGeneration = await clearDownloadProgress(progressId);
-            }
+            entry.clearedGeneration = await clearDownloadProgress(progressId);
             throw error;
         })
         .finally(() => {
@@ -124,36 +92,38 @@ export function runDownloadJob<T>(
     return entry.settlement as Promise<T>;
 }
 
-export async function cancelDownloadJob(progressId: string): Promise<CancelOutcome> {
+/**
+ * Cancels the running download for `progressId` and answers what the UI may hide: the generation
+ * the job's own progress clear returned, or `null` when that clear was refused. It rejects with a
+ * `reason` of `lost` when the download settled on its own (or no job is registered) and `request`
+ * when the cancellation could not be delivered - only the latter is notified here, because the
+ * job's own failure is already reported by the wrapper around `runDownloadJob`.
+ */
+export async function cancelDownloadJob(
+    progressId: string,
+    errorTitle?: string,
+): Promise<CancelOutcome> {
     const entry = jobs.get(progressId);
-    if (!entry) throw new DownloadCancelLostError();
+    if (!entry) throw downloadCancelError("lost");
     entry.cancelRequested = true;
 
-    let preparedTicket: string;
-    try {
-        preparedTicket = await entry.ticket;
-    } catch {
-        return await settleCancellation(entry);
+    if (entry.ticket !== null) {
+        try {
+            await tauri.cancelDownload(entry.ticket);
+        } catch (error) {
+            if (errorTitle !== undefined) notifyUnlessCancelled(errorTitle, error);
+            throw downloadCancelError("request", error);
+        }
     }
-
-    try {
-        await tauri.cancelDownload(preparedTicket);
-    } catch (error) {
-        throw new DownloadCancelRequestError(error);
-    }
-    return settleCancellation(entry);
-}
-
-async function settleCancellation(entry: DownloadJobEntry): Promise<CancelOutcome> {
     try {
         await entry.settlement;
-        throw new DownloadCancelLostError();
     } catch (error) {
-        if (isCancellation(error)) {
+        if (errorUnlessCancelled(error) === null) {
             return { clearedGeneration: entry.clearedGeneration };
         }
         throw error;
     }
+    throw downloadCancelError("lost");
 }
 
 export function useDownloadJob(progressId: string): boolean {
@@ -163,20 +133,5 @@ export function useDownloadJob(progressId: string): boolean {
             return () => subscribers.delete(listener);
         },
         () => jobs.has(progressId),
-        () => false,
     );
-}
-
-export async function cancelDownload(
-    progressId: string,
-    errorTitle: string,
-): Promise<CancelOutcome> {
-    try {
-        return await cancelDownloadJob(progressId);
-    } catch (error) {
-        if (error instanceof DownloadCancelRequestError) {
-            notifyUnlessCancelled(errorTitle, error.cause);
-        }
-        throw error;
-    }
 }

@@ -8,7 +8,6 @@ const progress = vi.hoisted(() => ({
   isActive: false,
   clear: vi.fn(),
   fence: vi.fn(),
-  discard: vi.fn(),
   item: {
     id: "engine_0",
     generation: 1n,
@@ -67,7 +66,6 @@ beforeEach(() => {
   };
   progress.clear.mockReset().mockResolvedValue(undefined);
   progress.fence.mockReset();
-  progress.discard.mockReset();
   notifyListenerError.mockReset();
 });
 
@@ -271,11 +269,10 @@ test("a successful non-clearing cancel fences its returned generation", async ()
   expect(onCancel).toHaveBeenCalledOnce();
   expect(progress.clear).not.toHaveBeenCalled();
   expect(progress.fence).toHaveBeenCalledWith(4n);
-  expect(progress.discard).not.toHaveBeenCalled();
   expect(setInProgress).toHaveBeenCalledWith(false);
 });
 
-test("a successful non-clearing cancel with no generation discards the display", async () => {
+test("a successful non-clearing cancel with no generation fences the displayed generation", async () => {
   progress.progress = 50;
   progress.finished = false;
   progress.isActive = true;
@@ -300,8 +297,7 @@ test("a successful non-clearing cancel with no generation discards the display",
   await act(async () => host.querySelector<HTMLButtonElement>("[data-testid='cancel']")!.click());
 
   expect(progress.clear).not.toHaveBeenCalled();
-  expect(progress.discard).toHaveBeenCalledOnce();
-  expect(progress.fence).not.toHaveBeenCalled();
+  expect(progress.fence).toHaveBeenCalledWith(null);
   expect(setInProgress).toHaveBeenCalledWith(false);
 });
 
@@ -332,7 +328,7 @@ test("a rejected cancel keeps the running UI and is not reported by the button",
 
   expect(progress.clear).not.toHaveBeenCalled();
   expect(progress.fence).not.toHaveBeenCalled();
-  expect(progress.discard).not.toHaveBeenCalled();
+  expect(progress.fence).not.toHaveBeenCalled();
   expect(setInProgress).not.toHaveBeenCalledWith(false);
   expect(notifyListenerError).not.toHaveBeenCalled();
 });

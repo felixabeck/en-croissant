@@ -44,7 +44,7 @@ function ProgressButton({
   clearOnCancel = true,
 }: Props) {
   const { t } = useTranslation();
-  const { progress, finished, isActive, clear, fence, discard, item } = useProgress(id);
+  const { progress, finished, isActive, clear, fence, item } = useProgress(id);
   const currentId = useRef(id);
   currentId.current = id;
   const completed = initInstalled || (completeOnProgressSuccess && item?.state === "succeeded");
@@ -70,17 +70,14 @@ function ProgressButton({
     try {
       if (clearOnCancel) {
         await clear();
-      } else if (outcome && "clearedGeneration" in outcome) {
-        if (outcome.clearedGeneration === null) discard();
-        else fence(outcome.clearedGeneration);
       } else {
-        discard();
+        fence(outcome && "clearedGeneration" in outcome ? outcome.clearedGeneration : null);
       }
       if (currentId.current === cancellingId) setInProgress(false);
     } catch (error) {
       notifyListenerError(error);
     }
-  }, [clear, clearOnCancel, discard, fence, id, onCancel, setInProgress]);
+  }, [clear, clearOnCancel, fence, id, onCancel, setInProgress]);
 
   let label: string;
   if (completed) {

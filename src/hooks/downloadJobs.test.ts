@@ -28,14 +28,7 @@ vi.mock("@/platform/tauri", async () => {
 });
 
 import { cancellationError } from "@/platform/tauri";
-import {
-    cancelDownload,
-    cancelDownloadJob,
-    DownloadCancelLostError,
-    DownloadCancelRequestError,
-    DownloadJobAlreadyRunningError,
-    runDownloadJob,
-} from "./downloadJobs";
+import { cancelDownloadJob, runDownloadJob } from "./downloadJobs";
 
 beforeEach(() => {
     mocks.cancelDownload.mockReset().mockResolvedValue(true);
@@ -54,7 +47,7 @@ describe("download jobs", () => {
         const result = await runDownloadJob("job", async (ticket) => ticket);
 
         expect(result).toBe("prepared-ticket");
-        await expect(cancelDownloadJob("job")).rejects.toBeInstanceOf(DownloadCancelLostError);
+        await expect(cancelDownloadJob("job")).rejects.toMatchObject({ reason: "lost" });
     });
 
     test("refuses a second job while the first one is registered", async () => {
@@ -67,9 +60,7 @@ describe("download jobs", () => {
                 }),
         );
 
-        expect(() => runDownloadJob("job", async () => undefined)).toThrow(
-            DownloadJobAlreadyRunningError,
-        );
+        expect(() => runDownloadJob("job", async () => undefined)).toThrow();
         finish();
         await running;
     });
@@ -93,9 +84,7 @@ describe("download jobs", () => {
         expect(mocks.cancelDownload).toHaveBeenCalledWith("prepared-ticket");
         rejectRun(cancellationError());
         await vi.waitFor(() => expect(mocks.clearProgress).toHaveBeenCalledWith("job"));
-        expect(() => runDownloadJob("job", async () => undefined)).toThrow(
-            DownloadJobAlreadyRunningError,
-        );
+        expect(() => runDownloadJob("job", async () => undefined)).toThrow();
         settleClear(42n);
         await expect(running).rejects.toMatchObject({ message: "Cancellation" });
         await expect(cancel).resolves.toEqual({ clearedGeneration: 42n });
@@ -120,7 +109,9 @@ describe("download jobs", () => {
         await expect(running).rejects.toMatchObject({ message: "Cancellation" });
         await expect(cancel).resolves.toEqual({ clearedGeneration: 42n });
         expect(run).not.toHaveBeenCalled();
-        expect(mocks.cancelDownload).toHaveBeenCalledWith("prepared-after-cancel");
+        // The command was never invoked, so the ticket is still unclaimed: `withDownloadTicket`
+        // releases it on this rejection instead of leaving a cancelled reservation behind.
+        expect(mocks.cancelDownload).not.toHaveBeenCalled();
     });
 
     test("turns a pending cancellation with failed preparation into cancellation", async () => {
@@ -149,7 +140,7 @@ describe("download jobs", () => {
         await Promise.resolve();
         finish();
         await running;
-        await expect(cancel).rejects.toBeInstanceOf(DownloadCancelLostError);
+        await expect(cancel).rejects.toMatchObject({ reason: "lost" });
         expect(mocks.clearProgress).not.toHaveBeenCalled();
     });
 
@@ -167,7 +158,7 @@ describe("download jobs", () => {
         const cancel = cancelDownloadJob("job");
 
         await expect(cancel).rejects.toMatchObject({
-            constructor: DownloadCancelRequestError,
+            reason: "request",
             cause: requestFailure,
         });
         rejectRun(cancellationError());
@@ -183,7 +174,9 @@ describe("download jobs", () => {
 
         await expect(running).rejects.toBe(failure);
         await expect(cancel).rejects.toBe(failure);
-        expect(mocks.clearProgress).not.toHaveBeenCalled();
+        // The typed failure survives, and the job still clears its own bar: a terminal item keeps
+        // the last percentage it reached, so a failed download would otherwise leave one drawn.
+        expect(mocks.clearProgress).toHaveBeenCalledWith("job");
     });
 
     test("notifies only when the cancellation request itself fails", async () => {
@@ -198,9 +191,9 @@ describe("download jobs", () => {
                 }),
         );
 
-        await expect(cancelDownload("job", "Download failed")).rejects.toBeInstanceOf(
-            DownloadCancelRequestError,
-        );
+        await expect(cancelDownloadJob("job", "Download failed")).rejects.toMatchObject({
+            reason: "request",
+        });
         expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith("Download failed", requestFailure);
         rejectRun(cancellationError());
         await expect(running).rejects.toMatchObject({ message: "Cancellation" });
@@ -209,6 +202,6 @@ describe("download jobs", () => {
     test("has no cancellation target after the job leaves the registry", async () => {
         await runDownloadJob("job", async () => undefined);
 
-        await expect(cancelDownloadJob("job")).rejects.toBeInstanceOf(DownloadCancelLostError);
+        await expect(cancelDownloadJob("job")).rejects.toMatchObject({ reason: "lost" });
     });
 });

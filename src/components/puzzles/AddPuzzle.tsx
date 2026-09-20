@@ -12,7 +12,7 @@ import {
 } from "@/utils/db";
 import { formatBytes, formatNumber } from "@/utils/format";
 import { notifyUnlessCancelled, runUnlessCancelled } from "@/components/files/notifyError";
-import { cancelDownload, runDownloadJob, useDownloadJob } from "@/hooks/downloadJobs";
+import { cancelDownloadJob, runDownloadJob, useDownloadJob } from "@/hooks/downloadJobs";
 import { choosePuzzleDatabase, getPuzzleDatabases } from "@/utils/puzzles";
 import ProgressButton from "../common/ProgressButton";
 import { CatalogVerificationError } from "@/utils/signedCatalog";
@@ -178,7 +178,7 @@ function PuzzleDbCard({
             onClick={() => {
               void downloadDatabase();
             }}
-            onCancel={hasJob ? () => cancelDownload(progressId, t("Common.Error")) : undefined}
+            onCancel={hasJob ? () => cancelDownloadJob(progressId, t("Common.Error")) : undefined}
             clearOnCancel={false}
             inProgress={inProgress || hasJob}
             setInProgress={setInProgress}

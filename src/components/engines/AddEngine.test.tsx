@@ -3,7 +3,6 @@ import { createRoot, type Root } from "react-dom/client";
 import type { UseFormReturnType } from "@mantine/form";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { defaultEngineProgressId, type LocalEngine } from "@/utils/engines";
-import { DownloadCancelLostError } from "@/hooks/downloadJobs";
 import AddEngine from "./AddEngine";
 
 const mocks = vi.hoisted(() => ({
@@ -267,7 +266,7 @@ test("cancelling while engine setup is pending loses the race without clearing o
     return false;
   });
 
-  await expect(onCancel()).rejects.toBeInstanceOf(DownloadCancelLostError);
+  await expect(onCancel()).rejects.toMatchObject({ reason: "lost" });
   expect(mocks.installDefaultEngine).toHaveBeenCalledWith(
     mocks.defaultEngines[0],
     defaultEngineProgressId(mocks.defaultEngines[0].downloadLink),
@@ -290,7 +289,9 @@ test("reports a failed cancellation request once", async () => {
   await vi.waitFor(() => expect(mocks.progressButtonProps?.onCancel).toEqual(expect.any(Function)));
   mocks.cancelDownload.mockRejectedValue(new Error("cancel IPC failed"));
 
-  await expect(mocks.progressButtonProps!.onCancel!()).rejects.toThrow("download cancellation");
+  await expect(mocks.progressButtonProps!.onCancel!()).rejects.toMatchObject({
+    reason: "request",
+  });
   expect(mocks.notifyUnlessCancelled).toHaveBeenCalledOnce();
   finishInstall({ ...mocks.defaultEngines[0], id: "installed" });
   await act(async () => Promise.resolve());

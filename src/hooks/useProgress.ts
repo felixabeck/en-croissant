@@ -82,31 +82,25 @@ export function useProgress(id: string) {
         { onError: notifyListenerError, onSettled: setListenerSettled },
     );
 
+    /**
+     * Hides everything below `generation`, or - with `null`, when a cancellation could not report
+     * one - everything up to and including what is displayed. A later job's items stay visible,
+     * because the progress clock only moves forward.
+     */
+    const fence = useCallback((generation: bigint | null) => {
+        setItem((current) => {
+            const floor = generation ?? (current ? current.generation + BigInt(1) : null);
+            if (floor === null) return current;
+            if (minimumGeneration.current < floor) minimumGeneration.current = floor;
+            return current && current.generation < floor ? null : current;
+        });
+    }, []);
+
     const clear = useCallback(async () => {
         const clearingId = id;
         const generation = await tauri.clearProgress(id);
-        if (currentId.current !== clearingId) return;
-        minimumGeneration.current =
-            minimumGeneration.current > generation ? minimumGeneration.current : generation;
-        setItem((current) => (current && current.generation >= generation ? current : null));
-    }, [id]);
-
-    const fence = useCallback((generation: bigint) => {
-        minimumGeneration.current =
-            minimumGeneration.current > generation ? minimumGeneration.current : generation;
-        setItem((current) => (current && current.generation < generation ? null : current));
-    }, []);
-
-    const discard = useCallback(() => {
-        setItem((current) => {
-            if (current) {
-                const generation = current.generation + BigInt(1);
-                minimumGeneration.current =
-                    minimumGeneration.current > generation ? minimumGeneration.current : generation;
-            }
-            return null;
-        });
-    }, []);
+        if (currentId.current === clearingId) fence(generation);
+    }, [fence, id]);
 
     return {
         progress: item?.progress ?? 0,
@@ -114,7 +108,6 @@ export function useProgress(id: string) {
         isActive: item !== null && !item.finished,
         clear,
         fence,
-        discard,
         item,
     };
 }

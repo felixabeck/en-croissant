@@ -18,13 +18,7 @@ import { useAtom } from "jotai";
 import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
-import { errorUnlessCancelled } from "@/platform/errors";
-import {
-  cancelDownload,
-  clearDownloadProgress,
-  runDownloadJob,
-  useDownloadJob,
-} from "@/hooks/downloadJobs";
+import { cancelDownloadJob, runDownloadJob, useDownloadJob } from "@/hooks/downloadJobs";
 import { enginesAtom } from "@/state/atoms";
 import AppModal from "../common/AppModal";
 import {
@@ -229,16 +223,9 @@ function EngineCard({
     if (!progressId) return;
     setInProgress(true);
     try {
-      const installed = await runDownloadJob(progressId, async (ticket) => {
-        try {
-          return await installDefaultEngine(engine, progressId, ticket);
-        } catch (error) {
-          if (errorUnlessCancelled(error)) {
-            await clearDownloadProgress(progressId);
-          }
-          throw error;
-        }
-      });
+      const installed = await runDownloadJob(progressId, (ticket) =>
+        installDefaultEngine(engine, progressId, ticket),
+      );
       setEngines(async (prev) => [...(await prev), installed]);
       setInstalledThisSession(true);
     } catch (error) {
@@ -285,7 +272,7 @@ function EngineCard({
               onClick={() => {
                 void downloadEngine();
               }}
-              onCancel={hasJob ? () => cancelDownload(progressId, t("Common.Error")) : undefined}
+              onCancel={hasJob ? () => cancelDownloadJob(progressId, t("Common.Error")) : undefined}
               clearOnCancel={false}
               inProgress={inProgress || hasJob}
               setInProgress={setInProgress}

@@ -47,7 +47,7 @@ function Probe({ id }: { id: string }) {
       </output>
       <button onClick={() => void state.clear()}>clear</button>
       <button onClick={() => state.fence(BigInt(5))}>fence</button>
-      <button onClick={state.discard}>discard</button>
+      <button onClick={() => state.fence(null)}>discard</button>
     </>
   );
 }

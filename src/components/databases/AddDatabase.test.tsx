@@ -3,7 +3,6 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { CatalogVerificationError } from "@/utils/signedCatalog";
 import { conversionProgressId, defaultDatabaseProgressId } from "@/utils/db";
-import { DownloadCancelLostError } from "@/hooks/downloadJobs";
 
 const mocks = vi.hoisted(() => ({
   catalogError: undefined as unknown,
@@ -368,9 +367,7 @@ test("does not notify when cancellation loses the completed-job race", async () 
     return false;
   });
 
-  await expect(mocks.progressButtonProps!.onCancel!()).rejects.toBeInstanceOf(
-    DownloadCancelLostError,
-  );
+  await expect(mocks.progressButtonProps!.onCancel!()).rejects.toMatchObject({ reason: "lost" });
   expect(mocks.notify).not.toHaveBeenCalled();
 });
 

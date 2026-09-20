@@ -33,7 +33,7 @@ import {
 import { capitalize, formatBytes, formatNumber } from "@/utils/format";
 import { runWithAppliedRecovery } from "@/platform/errors";
 import { runUnlessCancelled } from "@/components/files/notifyError";
-import { cancelDownload, runDownloadJob, useDownloadJob } from "@/hooks/downloadJobs";
+import { cancelDownloadJob, runDownloadJob, useDownloadJob } from "@/hooks/downloadJobs";
 import { CatalogVerificationError } from "@/utils/signedCatalog";
 import AppModal from "../common/AppModal";
 import FileInput from "../common/FileInput";
@@ -315,7 +315,7 @@ function DatabaseCard({
             onClick={() => {
               void downloadDatabase();
             }}
-            onCancel={hasJob ? () => cancelDownload(progressId, t("Common.Error")) : undefined}
+            onCancel={hasJob ? () => cancelDownloadJob(progressId, t("Common.Error")) : undefined}
             clearOnCancel={false}
             inProgress={inProgress || hasJob}
             setInProgress={setInProgress}
