@@ -10488,6 +10488,44 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 * **Reproduced locally on atlas, and on a commit that predates the suspected diff (2026-09-20).** This entry says the file "passes locally on the failing tree (6 passed)". That is no longer the whole picture: it fails locally too, roughly **one run in three**, and the file alone is enough — no full-suite run required. Measured during the `f-20260906-10` push, which touches only `src/utils/sound.ts`, `src/utils/sound.test.ts` and `scripts/findings.py`: `pnpm gate:ensure frontend-coverage` went red on `FideInfo.test.tsx` after the *same* gate had passed on the immediately preceding tree, then `npx vitest run src/components/databases/FideInfo.test.tsx` gave pass, pass, **fail** on three consecutive invocations. The failing pair and the symptoms are byte-identical to the CI report above: `a rejected flag import is silent and does not retry` → `expected <svg …(2)>…(2)</svg>`, and `a player named fide-flagpack keeps the player and flag SWR entries separate` → `Test timed out in 5000ms` (5003 ms). One earlier local failure instead hit `a second mounted instance suppresses a retry after a shared failure`, so the *set* of victims is wider than two. **It is not this range's doing, and that was measured rather than assumed:** a detached worktree at `c9497316`, the merge-base of this push, produced pass, pass, pass, **fail** with the identical pair — the flake predates every commit here. Two consequences for the fix. First, the repro loop is cheap: `npx vitest run src/components/databases/FideInfo.test.tsx` in a loop of ten on any tree, no CI and no full suite, which is a far better oracle than the "run the whole suite and repeat it" this entry proposes. Second, candidate (a) gains weight over (b): a single-file run has no other spec's roots to leak from, so the surviving `svg` almost certainly comes from module state inside this file's own `importFideInfo`/`vi.mock` pair rather than from another file's React tree. **This push proceeded**: the gate was re-run and went green, the failure is pre-existing, reproducible on the merge-base, and in an area this range does not touch — recorded here rather than hidden in a gate log.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"d0768e22bfec4b3124bdf439e1f2e61e9cc68f55094341cd5590dd2ff69d6e4e","input_sha256":"e7c85e6f5532ae3821d1768e5515be228511f5a970c8d44f3c59f8ca00affb49","kind":"mutation-receipt","operation":"dc1a12a8360a0c32508b0efc555a2bc9649b53ddddecd091f4411a165c12571b","options":{"section":null},"request_id_sha256":null,"results":["f-20260920-13"],"target":"f-20260920-13","v":1} -->
 
+* **Handled 2026-09-20 — the leak was Vitest's mock queue, not the DOM query or a React root.**
+  `BareModuleMocker.resolveMocks` (vitest 4.1.0,
+  `vitest/dist/chunks/startVitestModuleRunner.C3ZR-4J3.js:103`) resolves every queued mock action
+  through one `Promise.all` and applies `unmockPath`/`mockPath` in **resolution** order, not queue
+  order. The file queued two actions for `mantine-flagpack` before each case's first import: the
+  `vi.doUnmock` in `afterEach`, then the case's own `vi.doMock`/`vi.doUnmock` from
+  `importFideInfo`. Under load they landed backwards often enough to redden CI — the rejection
+  case then rendered a real flag, and a later case waited out its timeout on a flag pack that was
+  still mocked. Measured directly, not inferred: a probe looping 50x
+  `{ vi.resetModules(); vi.doUnmock("mantine-flagpack"); vi.doMock("mantine-flagpack", throwing);
+  await import("mantine-flagpack") }` reported `{"mockWon":49,"unmockWon":1}`.
+  **Fix:** delete the redundant `afterEach` unmock, so exactly one action is ever queued per case
+  and there is nothing to reorder. Every case already declares the registration it wants through
+  `importFideInfo`. Recorded as `d-20260920-09`.
+* **Also repaired, same file: the `vi.waitFor` timeout of 15_000 ms could never be reached.**
+  vitest's default `testTimeout` is 5000 ms and `vite.config.ts` does not raise it, so the two
+  flag assertions always died as a bare `Test timed out in 5000ms` instead of naming the count
+  that was wrong — which is why the CI report showed a timeout rather than an assertion. Both now
+  use `FLAG_WAIT_MS = 4_000`, below the test timeout. Measured: the slowest real
+  `mantine-flagpack` import on this tree is 206 ms and every later one under 2 ms.
+* **Proof, the way the gate fails, repeated.** Pre-repair, the file run 80x across 8 concurrent
+  vitest processes: **11 failures**, spread over four of the six cases — `a player named
+  fide-flagpack ...` 11x, `a second mounted instance ...` 4x, `a fresh mount after a rejection
+  ...` 4x, `a rejected flag import ...` 3x, which matches the wider victim set this entry already
+  recorded. Post-repair: **0 of 80** at 8-way concurrency and **0 of 180** at 12-way, plus the
+  full frontend suite (137 files, 1254 tests) green. Ten unloaded single-file runs were green on
+  the *broken* tree, so load is what exposes it — a plain loop is not a sufficient oracle here.
+* **Rejected alternative, measured rather than argued:** proving the registration by eagerly
+  `await import("mantine-flagpack")` inside `importFideInfo`. It perturbs the module graph and
+  made `a player named fide-flagpack ...` fail deterministically (3 of 3 runs), with and without
+  the `afterEach` unmock. `d-20260920-09` records it so the next session does not retry it.
+* **Note for any future `vi.doMock` user in this repo** — today `FideInfo.test.tsx` is the only
+  one: never let a hook and a case both queue an action for the same specifier before the next
+  import. The upstream ordering bug makes that pair a coin flip.
+* Reviewed by `review-tests` on the Codex executor over the cumulative diff: `VERDICT: APPROVED`,
+  no findings (`/tmp/build-2942204/lens-tests.txt`).
+<!-- ledger-meta {"command":"annotate","effect_lines":36,"effect_sha256":"3022bf391d4c8d4d79e83b336259bb7396b02d0563e4a01a4b975106717a5c47","input_sha256":"c377af63ab49c5c38ff8f22d41ca431c7d41c07af95b85e264b38b35b341e795","kind":"mutation-receipt","operation":"67b68980a73e11ca837becafb5b517f02bf77a13c76b62e959f67d958df19485","options":{"section":null},"request_id_sha256":null,"results":["f-20260920-13"],"target":"f-20260920-13","v":1} -->
+
 ---
 
 ## 2026-09-20 — filed through the inbox spool
