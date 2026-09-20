@@ -60,7 +60,7 @@ describe("download jobs", () => {
                 }),
         );
 
-        expect(() => runDownloadJob("job", async () => undefined)).toThrow();
+        expect(() => runDownloadJob("job", async () => undefined)).toThrow("busy");
         finish();
         await running;
     });
@@ -84,7 +84,7 @@ describe("download jobs", () => {
         expect(mocks.cancelDownload).toHaveBeenCalledWith("prepared-ticket");
         rejectRun(cancellationError());
         await vi.waitFor(() => expect(mocks.clearProgress).toHaveBeenCalledWith("job"));
-        expect(() => runDownloadJob("job", async () => undefined)).toThrow();
+        expect(() => runDownloadJob("job", async () => undefined)).toThrow("busy");
         settleClear(42n);
         await expect(running).rejects.toMatchObject({ message: "Cancellation" });
         await expect(cancel).resolves.toEqual({ clearedGeneration: 42n });
