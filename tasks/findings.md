@@ -10244,3 +10244,70 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
   Raised by `review-root-cause` on `7f7a61a5` (should-fix, confidence 80).
 * **Fix direction:** carry both injectors the way `cc9af733` does (owned by the test, handed across the
   worker), or make a gateway-routed instrumented call fail loudly instead of reading a default.
+
+---
+
+## 2026-09-20 — filed through the inbox spool
+
+### After a renderer reload an in-flight download shows its progress but offers no Cancel
+
+* **ID:** f-20260919-10 · **Status:** open · **Area:** bindings-ipc · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src/utils/downloadJobs.ts` (module-level job registry introduced by `f-20260906-07`), `src/hooks/useProgress.ts` (`getProgress` restores the bar after reload), `src-tauri/src/infra/operations.rs` (accepted downloads are completion-owned; `cancel_owner` runs only on webview destroy, `src-tauri/src/main.rs:2562`).
+* **Defect:** `f-20260906-07` makes download cancellation go through a renderer-held job registry keyed by progress id, holding the native-minted ticket. A webview reload (WebKitGTK Ctrl+R, a crash-recovery reload) empties that registry while the native download keeps running under its accepted lease; `useProgress` restores the running bar from `get_progress`, and the card renders no Cancel because no job is registered. The user again cannot stop the transfer until it finishes. The same reload also orphans the renderer handles of any other completion-owned native operation (analysis operation ids held in tab stores), so the class is broader than downloads.
+* **Why it matters:** the mandate of `f-20260906-07` (a user can stop a download) does not survive a reload; low frequency in a desktop app, but the bar then shows a job the UI cannot act on.
+* **Fix shape:** either native lookup — accepted downloads record their progress id and owner, and a `cancel_download_for_progress(progress_id)` command (owner-checked) serves a card with no local job — or treat a reload like a destroy for completion-owned work (cancel the owner's accepted operations on page load of a known label). The second changes semantics for every accepted operation and needs its own design.
+* **Open question:** should a renderer reload cancel the reloading webview's completion-owned operations, or should the renderer re-acquire cancellation authority for them by a native lookup keyed on a display identity?
+* **Found by:** review-engine-protocol (Codex) in plan review round 2 of `f-20260906-07`, 2026-09-19; filed by Claude Code.
+
+### `install_staged_pgn_artifact` leaks its persisted artifact reservation when the following `resolve` fails
+
+* **ID:** f-20260919-11 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src-tauri/src/fs.rs` `install_staged_pgn_artifact` (~1060-1110): `reserve_download_artifact(...)` persists a `PendingArtifactReservation`, then `resolve(&destination, PathOperation::DownloadFile, …)?` can return early; the reservation is only cleaned up on paths after the installation begins, and `PendingArtifactReservation` has no `Drop`.
+* **Defect (reported by a lens, confirm first):** each authority failure between reservation and installation leaves one pending-artifact entry behind, so repeated failures can exhaust the pending-artifact bound (reported as 256) and refuse later Chess.com imports until a sweep reclaims them. The `download_to_destination` reserved branch (fs.rs ~982-1008) should be checked for the same shape.
+* **Fix shape:** release the reservation on every early-return path after it was persisted — an owning guard with an explicit commit, or reorder so `resolve` precedes `reserve_download_artifact` if the authority permits — plus a test that forces `resolve` to fail and asserts the pending count is unchanged.
+* **Found by:** review-error-handling (Codex) during plan review round 7 of `f-20260906-07`, 2026-09-19; outside that plan's mandate, filed by Claude Code.
+
+### `begin_progress` stores a Running entry and then fails on an emit error, leaving an ownerless running bar for the entry's TTL
+
+* **ID:** f-20260919-12 · **Status:** open · **Area:** bindings-ipc · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src-tauri/src/progress.rs:275-280` (`begin_progress`: `store.start(id)?` then the start emit's error is propagated); callers exit on that error before any terminal transition — `src-tauri/src/fs.rs:908`, `:1305`, `src-tauri/src/chesscom.rs:290`, `src-tauri/src/chess.rs:1141`, `src-tauri/src/db/mod.rs:8476`.
+* **Defect:** if the start event cannot be emitted, the store already holds a Running entry for the id, but the caller returns the error and never writes a terminal state. A card that later snapshots that id shows a running bar with no job behind it until the running TTL purges it (progress.rs:100-103).
+* **Fix shape:** make the start emit best-effort after the entry is stored (log, return the lease) so every caller continues to its normal terminal transition, or remove the stored entry when the emit fails; test with an injected failing emitter in the style of `update_progress_with_emitter`. Shared by analysis, database and download jobs, which is why it was kept out of `f-20260906-07`.
+* **Found by:** review-error-handling (Codex) during plan review of `f-20260906-07`, 2026-09-19 (rounds 16 and 19); filed by Claude Code.
+
+### `atomic_install_download_dir` reopens its staging and target directories by path, so the engine-archive install has the same identity-only containment gap as its siblings
+
+* **ID:** f-20260920-01 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src-tauri/src/infra/path_authority/resolved.rs` `atomic_install_download_dir` (~:149) and the `private_tempdir_in` / install sequence it drives; consumer `publish_engine_archive_tree` (`src-tauri/src/fs.rs`).
+* **Defect (reported by a lens, confirm before fixing):** the resolved directory identity is dropped and both the temporary directory and the target are reopened by pathname. If the validated engine parent is replaced by another real directory between validation and installation, both reopen under the substitute, the same-parent check still passes, and a signed archive is installed outside the authorised root. Same containment class as `f-20260918-02` (`reserve_download_artifact`, `activate_download_artifact`, `workspace_entry_path`), which does not name this door.
+* **Why it matters:** an engine binary installed outside the workspace the user authorised, from a path the authority believed it had validated.
+* **Fix shape:** the same repair `f-20260917-13` applied to its two doors — `acquire_target` plus an `acquired.path == stored.path` check — carried into the directory-install path; a test that swaps the parent between validation and install must fail the install.
+* **Related:** `f-20260918-02` (same class, sibling doors; Root `-`, so the relation is named here).
+* **Found by:** review-tauri-security (Codex) over the `f-20260906-07` cumulative diff, 2026-09-20; outside that mandate, filed by Claude Code.
+
+### A cancelled Chess.com download keeps parsing and staging the archive it already fetched
+
+* **ID:** f-20260920-02 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src-tauri/src/chesscom.rs` — the parse-and-stage loop after the final archive fetch (~:348), between the last cancellation-aware fetch and the install-time check.
+* **Defect:** once the last month's archive has been fetched, cancellation is not observed again while the games are parsed and written into the staged PGN. A user who cancels at that moment keeps the CPU and disk work running to the end of the archive; only publication is prevented. Found while `f-20260906-07` made Cancel reach the download at all — the transfer now stops, this tail does not.
+* **Why it matters:** "Cancel stops the work" is only true up to the last fetch; a large account export keeps writing for the rest of its staging pass.
+* **Fix shape:** check the cancellation token between games (or per chunk) in that loop and return `Error::Cancellation`, matching the fetch loop above it; assert it with the existing blocking-transport test shape by cancelling after the final fetch.
+* **Found by:** review-correctness (Codex) over the `f-20260906-07` cumulative diff, 2026-09-20; outside that mandate (the mandate's three cards are the database, puzzle and engine flows), filed by Claude Code.
+
+### The `largestLazy` bundle budget has no headroom left: the board route sits 33 gzip bytes over the cap
+
+* **ID:** f-20260920-03 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** felix-decision
+* **Where:** `bundle-budgets.json` (`limits.largestLazy: 750000`, `measurement` recorded 2026-08-09 at `729006`), `scripts/check-bundle-budget.mjs` (`largestLazy` = the assets `src/routes/index.lazy.tsx` pulls beyond the entry), `src/components/panels/analysis/ReportPanel.tsx:10` → `src/components/common/EvalChart.tsx:1` (`AreaChart`).
+* **Defect:** the cap is exhausted, not violated by a careless diff. Measured on 2026-09-20: the merge-base tree (`563790ff`) is already at **749,363** of 750,000 gzip bytes — 637 bytes of headroom, after the August measurement of 729,006 was consumed by intervening work that never re-recorded it. `f-20260906-07` (download cancellation, three commits) needs ~685 bytes in that chunk after the registry was slimmed as far as its contract allows (deferred promise removed, three error classes collapsed into one, settle/notify wrappers merged, `getServerSnapshot` dropped), leaving the gate red at **750,033** — 33 bytes over. Any frontend feature now fails this gate on arrival.
+* **Why it matters:** `pnpm bundle:check` is a push gate, so the next frontend change cannot land until this is resolved, and the project rule is explicit that a budget is never edited to make a gate pass (`.claude/skills/push/SKILL.md`, "Never run `coverage:baseline:*` or edit a budget to make a gate pass").
+* **Measured composition of that chunk** (raw bytes, 2026-09-20): `AreaChart` 1,183,636 · `index.lazy` 738,135 · `MoveControls` 221,867 · `GameInfo` 98,247 · `Piece` 28,894 · `ProgressButton` 21,475. `AreaChart` is reached statically from `ReportPanel`, so every board route pays for the evaluation chart whether or not the user opens the analysis panel.
+* **Open question:** is the evaluation chart loaded on demand (and what does the analysis panel show while it loads), or is the budget re-recorded at the size the app has reached? Felix decides which, because it is the first visible change to the analysis panel's opening behaviour; the mechanics of either are settled below.
+* **Fix shape:** (a) load `EvalChart` on demand (`lazy()` + a `Suspense` fallback in `ReportPanel`), which removes the largest single contributor from the route's initial graph and restores real headroom — the chart then appears a tick after the analysis panel opens; or (b) re-measure and re-record the budget deliberately, with the new measurement block, as a recorded decision that the app is allowed to be this size. Measured and rejected during `f-20260906-07`: making the `AddDatabase` modal lazy (750,481 — the extra chunk costs more than it saves) and extracting a shared `DownloadProgressButton` (750,321, same reason).
+  * **Decision:** should the evaluation chart load on demand, or should the budget be re-recorded at the size the app has actually reached?
+  * **(a) lazy `EvalChart`** — one import plus a `Suspense` boundary in `ReportPanel`; frees roughly a quarter of a megabyte of raw JS from every board route; the chart fades in a moment after the analysis panel is opened, on every open, including yours.
+  * **(b) re-record the budget** — no runtime change; the cap becomes ~751 KB with a fresh `measurement` block and a decision entry; the next feature gets whatever headroom is granted, and the app keeps loading the chart eagerly.
+  * **Ruled out:** shaving the cancellation feature further — the remaining code is the reviewed contract (ticket registry, one-owner notifications, generation fence), and the last four micro-trims yielded 1-15 bytes each against a 33-byte gap.
+  * **Product impact:** (a) changes what a user sees when opening the analysis panel — the evaluation chart appears a beat later than the rest of the panel, every time — in exchange for a faster first paint of every board. (b) keeps today's behaviour and lets the desktop bundle keep growing.
+  * **Recommend:** (a), because the chart is the single largest thing in the route and is useless until the panel is open, and because a cap that is re-recorded whenever it binds stops being a cap. Against it: it is a visible change to the app's main flow, made for a budget rather than for the user, and a Suspense boundary is a new failure surface in the panel that matters most.
+  * **Session:** 13b31f81-b2df-4eac-b76a-05609dce6a23 — `~/.claude/projects/-home-felixb-Projekte-chessfable/13b31f81-b2df-4eac-b76a-05609dce6a23.jsonl`
+* **Found by:** Claude Code, 2026-09-20, running the push gates for `f-20260906-07`.
