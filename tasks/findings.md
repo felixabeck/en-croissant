@@ -10378,3 +10378,16 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 * **Why it matters:** the bound and the drain semantics are shared between two operation classes, and nothing in the names says so. A later change that tunes `MAX_NATIVE_READS` for reads silently retunes download concurrency.
 * **Fix shape:** rename the pool and its types to the operation scope they now have, and replace the boolean with the reservation-kind enum the registry already tracks internally, so a call site names its kind.
 * **Found by:** Claude Code, 2026-09-20, `$push` review of `563790ff..HEAD` (review-code-quality, blocker, confidence 98; the boolean at should-fix, 95). Origin commit `459b649f` (`f-20260906-07`), a different area from the run that found it.
+
+---
+
+## 2026-09-20 — filed through the inbox spool
+
+### Puzzle history is written to unbounded raw sessionStorage that closing the tab never removes
+
+* **ID:** f-20260920-08 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src/components/puzzles/Puzzles.tsx:83` (`${id}-puzzles`, Mantine's raw JSON storage hook), `src/state/atoms.ts:115` (`closeWorkspaceTabAtom` removes only the tab-tree key).
+* **Defect (reported by a lens, confirm first):** each puzzle tab persists its whole attempt history under `${id}-puzzles` through Mantine's unbounded raw JSON storage. Closing the tab removes the tab-tree key and leaves that one behind, so the entry outlives every reference to it. Nothing validates the shape on hydration either, so an older or truncated record is handed straight to `puzzles.filter`.
+* **Why it matters:** `sessionStorage` is a single shared quota for the whole renderer. Orphaned histories accumulate for the lifetime of the session across every closed puzzle tab, and a quota exhaustion there takes down the persistence of every other feature, not just puzzles. `.claude/rules/persisted-state.md` requires write/read symmetry and a bounded retention policy; this has neither.
+* **Fix shape:** bound the retained history, validate it on read through the schema route the rest of `src/state/**` uses, and remove the key in `closeWorkspaceTabAtom` alongside the tab tree. A migration that drops unrecognised `${id}-puzzles` records at startup clears what is already stranded.
+* **Found by:** Claude Code, 2026-09-20, `$push` review of `563790ff..HEAD` (review-persisted-state, blocker, confidence 98). Pre-existing — origin `0a101c7ff`, key spelling `5d2c70662`, still omitted by `813563b7`; unrelated to the two pieces of work in that range.
