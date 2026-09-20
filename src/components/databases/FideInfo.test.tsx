@@ -15,6 +15,7 @@ type FideInfoProps = {
 
 type FideInfoComponent = (props: FideInfoProps) => ReactNode;
 type SwrConfigComponent = (typeof import("swr"))["SWRConfig"];
+type SwrConfigValue = Parameters<SwrConfigComponent>[0]["value"];
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 Object.defineProperty(window, "matchMedia", {
@@ -38,20 +39,50 @@ class MockResizeObserver {
 }
 globalThis.ResizeObserver = MockResizeObserver;
 
+// `react-i18next` and the FIDE API are mocked statically for the whole file. They were per-case
+// `vi.doMock`s until the retry case stopped using fake timers, at which point the changed ordering
+// exposed the leak the plan review had predicted: `vi.resetModules()` does not clear the mock
+// registry, and a `vi.doUnmock` in `afterEach` left a later case rendering against the real
+// `react-i18next` ("useTranslation is not a function"). Only `mantine-flagpack` varies per case,
+// so only it is registered dynamically.
+// `AppModal` is replaced by a plain dialog element. The real one is a Mantine `Modal`: it portals
+// out of the container and runs a Transition, which produced unactioned state updates and a
+// five-second timeout in the cases that re-render. Nothing here asserts modal chrome — the cases
+// are about what the flag loader does — so the shell is mocked and `@mantine/core` itself is left
+// real, because the flag components rendered by the real `mantine-flagpack` need it.
+vi.mock("../common/AppModal", () => ({
+  default: ({
+    children,
+    opened,
+    title,
+  }: {
+    children?: ReactNode;
+    opened: boolean;
+    title?: ReactNode;
+  }) =>
+    opened ? (
+      <div role="dialog">
+        <div>{title}</div>
+        {children}
+      </div>
+    ) : null,
+}));
+
+vi.mock("@/utils/lichess/api", () => ({ getFidePlayer: mocks.getFidePlayer }));
+vi.mock("react-i18next", () => ({
+  useTranslation: () => ({
+    t: (key: string, options?: { year?: number }) =>
+      key === "Databases.FIDE.Born" ? `Born ${options?.year}` : key,
+  }),
+}));
+
 function mockFideInfoDependencies({ rejectFlagpack }: { rejectFlagpack: boolean }) {
-  vi.doMock("@/utils/lichess/api", () => ({
-    getFidePlayer: mocks.getFidePlayer,
-  }));
-  vi.doMock("react-i18next", () => ({
-    useTranslation: () => ({
-      t: (key: string, options?: { year?: number }) =>
-        key === "Databases.FIDE.Born" ? `Born ${options?.year}` : key,
-    }),
-  }));
   if (rejectFlagpack) {
     vi.doMock("mantine-flagpack", () => {
       throw new Error("flag pack unavailable");
     });
+  } else {
+    vi.doUnmock("mantine-flagpack");
   }
 }
 
@@ -98,8 +129,6 @@ afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
   vi.useRealTimers();
-  vi.doUnmock("@/utils/lichess/api");
-  vi.doUnmock("react-i18next");
   vi.doUnmock("mantine-flagpack");
 });
 
@@ -107,7 +136,7 @@ async function renderFideInfo(
   FideInfo: FideInfoComponent,
   SWRConfig: SwrConfigComponent,
   props: FideInfoProps,
-  swrValue = { provider: () => new Map() },
+  swrValue: SwrConfigValue = { provider: () => new Map() },
 ) {
   await act(async () => {
     root.render(
@@ -144,19 +173,24 @@ test("an open modal renders the real federation flag", async () => {
 });
 
 test("a rejected flag import is silent and does not retry", async () => {
-  vi.useFakeTimers();
   const { FideInfo, SWRConfig, loadFlagpack } = await importFideInfo({ rejectFlagpack: true });
   mocks.getFidePlayer.mockResolvedValue(player("Test Player"));
 
-  await renderFideInfo(FideInfo, SWRConfig, {
-    opened: true,
-    setOpened: vi.fn(),
-    name: "Test Player",
-  });
+  // Real timers with a 10 ms retry interval, not fake timers: this file mocks modules and
+  // imports the component dynamically, and freezing the clock across that made the case
+  // order-dependent under Stryker's full-suite dry run. `errorRetryInterval` shortens the
+  // window the assertion below waits out; it deliberately does NOT set `shouldRetryOnError`,
+  // which is the property under test — delete it from `FideInfo` and this case goes red.
+  await renderFideInfo(
+    FideInfo,
+    SWRConfig,
+    { opened: true, setOpened: vi.fn(), name: "Test Player" },
+    { provider: () => new Map(), errorRetryInterval: 10 },
+  );
   await vi.waitFor(() => expect(loadFlagpack).toHaveBeenCalledOnce());
   await vi.waitFor(() => expect(modalText()).toContain("Test Player"));
   await act(async () => {
-    await vi.advanceTimersByTimeAsync(60_000);
+    await new Promise((resolve) => setTimeout(resolve, 200));
   });
 
   expect(loadFlagpack).toHaveBeenCalledOnce();
