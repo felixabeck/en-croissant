@@ -23,6 +23,29 @@ const VALID_SECURITY_CONFIG = JSON.stringify({
   },
 });
 const temporaryRoots = [];
+const UPDATER_SPECIFIER = "@tauri-apps/plugin-updater";
+const B0_ORACLE_FORMS = [
+  ["A", `import { check } from "${UPDATER_SPECIFIER}";`, "must-stay-a-violation"],
+  ["B", `await import("${UPDATER_SPECIFIER}");`, "must-stay-a-violation"],
+  ["C", `await import(\`${UPDATER_SPECIFIER}\`);`, "must-flip"],
+  ["D", `await import(/* c */ "${UPDATER_SPECIFIER}");`, "must-flip"],
+  ["E", `require(\`${UPDATER_SPECIFIER}\`);`, "must-flip"],
+  ["F", `require(/* c */ "${UPDATER_SPECIFIER}");`, "must-flip"],
+  ["G", `vi.mock(\`${UPDATER_SPECIFIER}\`);`, "must-flip"],
+  ["H", `vi.mock(/* c */ "${UPDATER_SPECIFIER}");`, "must-flip"],
+  ["I", `import "${UPDATER_SPECIFIER}";`, "must-stay-a-violation"],
+  ["J", 'await import("@tauri-apps/" + "plugin-updater");', "must-stay-silent"],
+  ["K", `// we do not use ${UPDATER_SPECIFIER} here`, "must-stay-silent"],
+  ["L", `const msg = "install ${UPDATER_SPECIFIER}";`, "must-stay-silent"],
+];
+const B0_ORACLE_CASES = B0_ORACLE_FORMS.flatMap(([row, source, expected]) =>
+  ["components/probe.ts", "bindings/generated.ts"].map((path) => ({
+    row,
+    path,
+    source,
+    expected,
+  })),
+);
 
 afterAll(() => {
   for (const root of temporaryRoots) rmSync(root, { recursive: true, force: true });
@@ -35,6 +58,11 @@ function expectViolation(path, source, message, options) {
 }
 
 describe("source boundary forms", () => {
+  test.each(B0_ORACLE_CASES)("B0 row $row on $path is $expected", ({ path, source, expected }) => {
+    const violations = inspectSource(path, source);
+    expect(violations.length > 0).toBe(expected !== "must-stay-silent");
+  });
+
   test.each([
     ["from a plugin", "foo.ts", 'import { platform } from "@tauri-apps/plugin-os"', /@tauri-apps/],
     ["from the root API", "foo.ts", 'import { event } from "@tauri-apps/api"', /@tauri-apps/],
@@ -93,9 +121,12 @@ describe("source boundary forms", () => {
       'import { commands, events } from "@/bindings/generated"; events.foo.listen(cb)',
     ],
     [
-      "generated binding Tauri imports",
+      "generated binding Tauri imports and event proxy listeners",
       "bindings/generated.ts",
-      'import { invoke } from "@tauri-apps/api/core"',
+      'import { invoke } from "@tauri-apps/api/core";\n' +
+        'import { listen as eventListen } from "@tauri-apps/api/event";\n' +
+        'import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";\n' +
+        "window.listen(name, arg);\nTAURI_API_EVENT.listen(name, arg);",
     ],
     [
       "a dependency-name string",

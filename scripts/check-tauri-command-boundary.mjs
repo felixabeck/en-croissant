@@ -50,10 +50,26 @@ export const NATIVE_EXPORT_DENYLIST = Object.freeze(
 const TAURI_SPECIFIER = String.raw`@tauri-apps/(?:api(?:/[^"']*)?|plugin-[^"']*)`;
 const FROM_SPECIFIER = new RegExp(String.raw`\bfrom\s*["'](${TAURI_SPECIFIER})["']`, "g");
 const SIDE_EFFECT_SPECIFIER = new RegExp(String.raw`\bimport\s*["'](${TAURI_SPECIFIER})["']`, "g");
-const CALL_SPECIFIER = new RegExp(
-  String.raw`\b(?:import|require|vi\.mock)\s*\(\s*["'](${TAURI_SPECIFIER})["']`,
-  "g",
-);
+const CALL_ARGUMENT_GAP = String.raw`\s*(?:(?:\/\/[^\r\n]*(?:\r?\n|$)|\/\*[\s\S]*?\*\/)\s*)*`;
+const TEMPLATE_TAURI_SPECIFIER = '@tauri-apps/(?:api(?:/[^"`]*)?|plugin-[^"`]*)';
+const CALL_SPECIFIER = [
+  new RegExp(
+    String.raw`\b(?:import|require|vi\.mock)\s*\(${CALL_ARGUMENT_GAP}["'](${TAURI_SPECIFIER})["']`,
+    "g",
+  ),
+  new RegExp(
+    String.raw`\b(?:import|require|vi\.mock)\s*\(${CALL_ARGUMENT_GAP}` +
+      "`(?![^`]*\\$\\{)(" +
+      TEMPLATE_TAURI_SPECIFIER +
+      ")`",
+    "g",
+  ),
+];
+const GENERATED_BINDINGS_IMPORT_ALLOWLIST = new Set([
+  "@tauri-apps/api/core",
+  "@tauri-apps/api/event",
+  "@tauri-apps/api/webviewWindow",
+]);
 const NATIVE_EXPORT = new RegExp(
   String.raw`\bexport\s*\{([\s\S]*?)\}\s*from\s*["'](${TAURI_SPECIFIER})["']`,
   "g",
@@ -147,7 +163,7 @@ function inspectNativeSource(source, allowlist, denylist) {
   if (
     hasMatchingSpecifier(
       withoutNamedExports,
-      [FROM_SPECIFIER, SIDE_EFFECT_SPECIFIER, CALL_SPECIFIER],
+      [FROM_SPECIFIER, SIDE_EFFECT_SPECIFIER, ...CALL_SPECIFIER],
       () => true,
     )
   ) {
@@ -173,24 +189,25 @@ export function inspectSource(
   source,
   { allowlist = NATIVE_EXPORT_ALLOWLIST, denylist = NATIVE_EXPORT_DENYLIST } = {},
 ) {
-  if (path === "bindings/generated.ts") return [];
   const violations = [];
   const isTauriFacade = path === "platform/tauri.ts";
   const isNativeFacade = path === "platform/native.ts";
+  const isGeneratedBindingsPath = path === "bindings/generated.ts";
 
   if (isNativeFacade) {
     violations.push(...inspectNativeSource(source, allowlist, denylist));
   } else if (
     hasMatchingSpecifier(
       source,
-      [FROM_SPECIFIER, SIDE_EFFECT_SPECIFIER, CALL_SPECIFIER],
-      () => true,
+      [FROM_SPECIFIER, SIDE_EFFECT_SPECIFIER, ...CALL_SPECIFIER],
+      (specifier) =>
+        !isGeneratedBindingsPath || !GENERATED_BINDINGS_IMPORT_ALLOWLIST.has(specifier),
     )
   ) {
     violations.push("direct @tauri-apps module access");
   }
 
-  if (!isTauriFacade) {
+  if (!isTauriFacade && !isGeneratedBindingsPath) {
     if (
       hasMatchingSpecifier(
         source,
