@@ -10695,3 +10695,16 @@ Accepted for now, with `stays proportionate on a pathological single-line source
 
 **This is the same design question the finding already asks.** A comment-masking pre-pass makes the cost linear and lets every gap collapse back to `\s*`, which is exactly the masking option weighed in the Open question above — so the performance case is evidence for that option, not a separate task.
 <!-- ledger-meta {"command":"annotate","effect_lines":7,"effect_sha256":"22512735217c08de725d04cf3387472a1a945e03d639d9eb9699f785d059429e","input_sha256":"1d049d1185da9c50a105878f6ebfdc305604e4c06e18a41e8abb3f6383a9721e","kind":"mutation-receipt","operation":"05707eb545ba53c08794540720b2f7d779c5c2e08bac3f685f5b15314904f6f2","options":{"section":null},"request_id_sha256":null,"results":["f-20260920-20"],"target":"f-20260920-20","v":1} -->
+
+---
+
+## 2026-09-21 — filed through the inbox spool
+
+### Writing a coverage baseline reports success after the formatter failed
+
+* **ID:** f-20260921-01 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `scripts/coverage-report.mjs:271-285` (`writeBaseline`), `:326-329` (`main`'s write branch).
+* **Defect:** `writeBaseline` runs `oxfmt` over the file it just wrote and, when that returns a non-zero status or the binary is missing, writes a warning to stderr and returns normally. `main` then prints `Wrote coverage baseline: <path>` and the process exits 0. A failure is therefore reported as a success, and the baseline is left in `JSON.stringify` formatting, which `oxfmt --check` rejects — so the next `pnpm lint:ci` is red for a reason unrelated to the change that is being made. That is the exact trap the adjacent comment says the formatting call exists to prevent; the call was added, the failure path was not.
+* **Why it matters:** baseline writing is rare, deliberate and denied to agents by `.claude/settings.json`, so it runs at the moments when the operator is least able to check a warning scrolled past the success line. It is also the operation that decides what every later coverage run is measured against.
+* **Candidate fix:** treat a non-zero `spawnSync` status, and a spawn error, as a failure of `writeBaseline` — throw, so `main`'s existing `catch` prints the message and sets a non-zero exit code, and do not claim the baseline was written. Alternatively keep the write but print the failure on the error path rather than as a warning beside a success line. Either way the exit status must stop being 0.
+* **Found by:** `review-error-handling` (blocker, confidence 99) in round 5 of the plan review for `f-20260920-19`, 2026-09-21. It is a pre-existing defect in the same file that plan changes, not something that plan introduces; filed rather than folded in, because it is unrelated to the blank-measurement mandate (universal rule 4b, and the adoption gate in rule 12a).
