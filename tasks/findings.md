@@ -7386,7 +7386,7 @@ Final review repair completed in 88c1b7bb (tab transitions), 3de47fe2 (ordinary 
 
 ### Saved game-player selection still submits an engine ID after that engine is permanently retired
 
-* **ID:** f-20260906-15 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260906-15 · **Status:** handled · **Area:** engine-uci · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `src/components/engines/EnginesPage.tsx:620-626`, `src/components/boards/EnginesSelect.tsx:17-27`, `src/components/boards/BoardGame.tsx:359-397`, `src-tauri/src/engine/process.rs:629-630`.
 * **Defect:** Select local engine A as a game player, remove A in Engines, then start the game in the same session. Removal permanently tombstones application ID A, but EnginesSelect leaves an absent selected ID intact and BoardGame forwards it. The supervisor correctly rejects the retired ID, so the saved selection offers a game configuration that cannot start.
 * **Fix direction:** Revalidate game-player selection against current engine identities; preserve the native retirement barrier from d-20260901-17 rather than unretiring a removed ID. Cover deletion with zero/other remaining engines and delete-then-start-game.
