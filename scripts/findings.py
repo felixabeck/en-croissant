@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: ef79f81e105277bcc9fb297c8cb78e97f44baa5f42454ba6f01564b75be1b832
+# agent-kit-sha256: 8ad0863d376e83aa9def96779dd283a952d339e095dfc9f029f56b3dbcc609d6
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -43,7 +43,8 @@ Subcommands
 ``set-header``  mutate selected fields of one finding header
 ``annotate``    append file contents to one finding entry
 ``record-decision`` append decisions through the decisions ledger lock
-``set-trailer`` update decision supersession references and their covering receipt
+``set-trailer`` set decision supersession references, adding the trailer where an
+                 entry predates it, and refresh their covering receipt
 ``merge-driver`` git merge driver for the two ledgers (``%O %A %B %P``); appends merge
                  block by block, everything else falls back to ``git merge-file``
 """
@@ -391,6 +392,8 @@ NEXT_OUTCOME_BLOCKED_ONLY = "blocked-only"
 # must agree on the accepted bullet class or a gated entry can be reported as
 # having no Sentry short-ID.
 _BULLET = r"[*+-]"
+BULLET_LINE_RE = re.compile(rf"^[ \t]*{_BULLET}[ \t]+\S")
+CONTINUATION_LINE_RE = re.compile(r"^[ \t]+\S")
 REJECTED_RE = re.compile(
     rf"^[ \t]*{_BULLET}[ \t]+\*\*Why rejected:\*\*[ \t]*(?P<reason>\S.*)",
     re.MULTILINE,
@@ -8101,19 +8104,20 @@ def _decision_clause_one_issues(entry: str) -> list[str]:
                 f"### {match.group('id')} — {match.group('question')} is missing "
                 "clause 1 field(s): " + ", ".join(missing)
             )
-        # The trailer is not decoration: `set-trailer` requires exactly one
-        # `Superseded-by` to match and replace, so a decision recorded without
-        # it can never be superseded — the reversal path the ledger promises is
-        # closed at the moment of writing, and nothing notices until someone
-        # tries. `check` does not read it either, so the writer is the only
-        # place this can be caught. Measured 2026-09-09: d-20260909-05 and -06
-        # were recorded without it and passed every gate.
+        # The trailer is not decoration. `set-trailer` can ADD one to an entry
+        # that predates the requirement, but that is a repair for history, not a
+        # licence to keep writing entries without it: the added bullet records
+        # the supersession without recording who decided the entry, because that
+        # is no longer recoverable at supersession time. A new record can carry
+        # both, so it must. `check` does not read the trailer either, so the
+        # writer is the only place this can be caught. Measured 2026-09-09:
+        # d-20260909-05 and -06 were recorded without it and passed every gate.
         if SUPERSEDED_BY_RE.search(body) is None:
             issues.append(
                 f"### {match.group('id')} — {match.group('question')} is missing "
                 "the `* **Decided by:** <session/run> · **Superseded-by:** -` "
-                "trailer; without it `set-trailer` can never supersede this "
-                "decision"
+                "trailer; `set-trailer` would have to repair this entry later, "
+                "and by then the decider is unrecoverable"
             )
         if GOVERNS_RE.search(body) is None:
             issues.append(
@@ -8365,6 +8369,37 @@ def _annotation_refusal(annotation: str, target: Finding, source: Path) -> str |
     return None
 
 
+def _needs_blank_before_block(
+    lines: list[str], insertion: int, block: list[str]
+) -> bool:
+    """Whether a block appended at `insertion` must be separated by a blank line.
+
+    Two commands append into an entry — `annotate` and `set-trailer` — and both
+    need this answer, so it is asked once. Without a blank line a block joins the
+    paragraph above it and renders as part of it; every hand-written closure note
+    in the ledger has the blank line, and `annotate` was silently producing a
+    different shape than the file's own convention until it got one.
+
+    The exception is one list item landing after another: a blank line there makes
+    the whole list LOOSE, so every existing item grows a paragraph gap. **A wrapped
+    bullet's continuation counts as being inside the list.** The decisions ledger
+    holds such a bullet (`d-20260904-20`, whose `Decided by` runs to a second,
+    indented line), and reading only the immediately preceding line would call it a
+    paragraph and loosen the list it belongs to.
+    """
+    if insertion <= 0 or not block or not block[0].strip():
+        return False
+    previous = lines[insertion - 1]
+    if not previous.strip():
+        return False
+    if not BULLET_LINE_RE.match(block[0]):
+        return True
+    index = insertion - 1
+    while index > 0 and CONTINUATION_LINE_RE.match(lines[index]):
+        index -= 1
+    return not BULLET_LINE_RE.match(lines[index])
+
+
 def cmd_annotate(args: argparse.Namespace) -> int:
     """Insert a file's lines into one finding entry under the ledger lock."""
     raw_annotation, annotation = _read_mutation_input(args.file)
@@ -8387,12 +8422,7 @@ def cmd_annotate(args: argparse.Namespace) -> int:
         end = _find_entry_span(lines, fence_states, index)
         effect = annotation.splitlines()
         block = list(effect)
-        # Separate the annotation from the entry body it lands after. Without
-        # this the appended block is joined to the preceding paragraph and
-        # renders as part of it -- every hand-written closure note in the
-        # ledger has the blank line, so the command was silently producing a
-        # different shape than the file's own convention.
-        if end > 0 and lines[end - 1].strip() and block and block[0].strip():
+        if _needs_blank_before_block(lines, end, block):
             block.insert(0, "")
         block.append(RECEIPT_PLACEHOLDER)
         lines[end:end] = block
@@ -8520,7 +8550,11 @@ def cmd_record_decision(args: argparse.Namespace) -> int:
 
 
 def cmd_set_trailer(args: argparse.Namespace) -> int:
-    """Replace supersession references and refresh covering receipts atomically."""
+    """Set supersession references and refresh covering receipts atomically.
+
+    An entry that predates the trailer requirement has the bullet ADDED rather
+    than being refused; see the insertion branch for why it is added bare.
+    """
     # `-` alone is the documented unsuperseded state, so a mistaken supersession
     # can be reverted through the same receipted write that made it.
     clearing = args.superseded_by in (["-"], ["`-`"])
@@ -8551,6 +8585,10 @@ def cmd_set_trailer(args: argparse.Namespace) -> int:
             _find_entry_span(lines, mask, start),
             next((index for index, _ in headings if index > start), len(lines)),
         )
+        # Identity for the replace path: nothing is inserted, so `shifted` below
+        # never moves an index. Set here rather than in the branch so the closure
+        # cannot read an unbound name when no insertion happens.
+        inserted_at, inserted_count = len(lines), 0
         trailers = []
         for index in range(start + 1, end):
             if mask[index] is not FenceState.OUTSIDE:
@@ -8558,27 +8596,73 @@ def cmd_set_trailer(args: argparse.Namespace) -> int:
             masked_line = _mask_inline_code_spans(lines[index])
             for marker in SUPERSEDED_BY_MARKER_RE.finditer(masked_line):
                 trailers.append((index, SUPERSEDED_BY_RE.match(masked_line, marker.start())))
-        if len(trailers) != 1 or trailers[0][1] is None:
+        if not trailers:
+            # The trailer became a requirement partway through the ledger's life,
+            # so the entries written before it were unreachable by the one command
+            # allowed to route a superseded decision forward — and hand-editing is
+            # barred, because it takes no lock while `merge-inbox` may hold one.
+            # Measured in Korrigio 2026-09-21: 598 of 707 entries, back to
+            # `d-20260816-01`. Appending the bullet is inside what this command
+            # already does; it holds the ledger lock and has validated both ids.
+            #
+            # A bare `**Superseded-by:**` bullet, not the canonical
+            # `**Decided by:** … · **Superseded-by:** …` pair: who decided an entry
+            # that never recorded it is not recoverable here, and inventing a
+            # decider would write a false attribution into the very ledger whose
+            # attributions the rules exist to protect. `load_decisions` reads the
+            # trailer per line, so a standalone bullet supersedes exactly as the
+            # paired form does.
+            #
+            # The bullet goes BEFORE the entry's trailing receipt line, not after
+            # it: a `record-decision` receipt is the last line of the batch it
+            # covers, and a bullet appended past it would read as belonging to
+            # nothing. That puts the insertion inside a covering effect window,
+            # which the loop below repairs — see `shifted`.
+            insertion = end
+            while insertion > start + 1 and (
+                not lines[insertion - 1].strip()
+                or lines[insertion - 1].startswith(LEDGER_META_PREFIX)
+            ):
+                insertion -= 1
+            addition = [f"* **Superseded-by:** {written}"]
+            if _needs_blank_before_block(lines, insertion, addition):
+                addition.insert(0, "")
+            lines[insertion:insertion] = addition
+            inserted_at, inserted_count = insertion, len(addition)
+            changed = set(range(insertion, insertion + inserted_count))
+        elif len(trailers) != 1 or trailers[0][1] is None:
             raise LedgerError(f"decision {args.id} requires exactly one valid Superseded-by trailer")
-        index, match = trailers[0]
-        assert match is not None
-        lines[index] = (
-            lines[index][:match.start("refs")]
-            + written
-            + lines[index][match.end("refs"):]
-        )
+        else:
+            index, match = trailers[0]
+            assert match is not None
+            lines[index] = (
+                lines[index][:match.start("refs")]
+                + written
+                + lines[index][match.end("refs"):]
+            )
+            changed = {index}
         # A record-decision receipt can cover a whole batch. Refresh its entire
         # effect, keeping operation/input identity so the original append replays.
         # Process in file order in case a covering effect contains earlier metadata.
-        changed = {index}
+        #
+        # `metadata` was scanned from the ORIGINAL text, so every index it carries
+        # has to be moved across the insertion before it means anything in `lines`.
+        # A batch receipt sits after the last entry it covers, so adding a trailer
+        # to any earlier entry of that batch lands inside the hashed effect and
+        # widens it by exactly the inserted lines. Leaving `effect_lines` alone
+        # would rehash a window sliding off the front of its own effect.
+        def shifted(index: int) -> int:
+            return index + inserted_count if index >= inserted_at else index
+
         for meta in metadata:
             if meta.data.get("kind") != MUTATION_RECEIPT_KIND:
                 continue
-            receipt_index = meta.line - 1
-            effect_start = receipt_index - cast(int, meta.data["effect_lines"])
+            receipt_index = shifted(meta.line - 1)
+            effect_start = shifted(meta.line - 1 - cast(int, meta.data["effect_lines"]))
             if not any(effect_start <= line < receipt_index for line in changed):
                 continue
             data = dict(meta.data)
+            data["effect_lines"] = receipt_index - effect_start
             data["effect_sha256"] = _sha256_text("\n".join(lines[effect_start:receipt_index]))
             lines[receipt_index] = _metadata_line(data)
             changed.add(receipt_index)
@@ -10329,7 +10413,9 @@ def main(argv: list[str] | None = None) -> int:
     p_record.set_defaults(func=cmd_record_decision)
 
     p_trailer = sub.add_parser(
-        "set-trailer", help="replace decision supersession references under the ledger lock"
+        "set-trailer",
+        help="set decision supersession references under the ledger lock, "
+        "adding the trailer to an entry that has none",
     )
     p_trailer.add_argument("id")
     p_trailer.add_argument("--superseded-by", nargs="+", required=True)
