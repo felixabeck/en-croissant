@@ -14,8 +14,12 @@ vi.mock("@tabler/icons-react", () => ({
 vi.mock("@/components/common/GoModeInput", () => ({ default: () => null }));
 vi.mock("@/components/common/TimeInput", () => ({ default: () => null }));
 vi.mock("@/components/panels/analysis/EngineSettingsForm", () => ({ default: () => null }));
+const picker = vi.hoisted(() => ({ setEngine: null as ((engine: unknown) => void) | null }));
 vi.mock("./EnginesSelect", () => ({
-  EnginesSelect: () => null,
+  EnginesSelect: ({ setEngine }: { setEngine: (engine: unknown) => void }) => {
+    picker.setEngine = setEngine;
+    return null;
+  },
 }));
 vi.mock("@mantine/core", () => ({
   Center: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
@@ -126,4 +130,45 @@ test("engine to human removes engine-owned fields while retaining shared time", 
     timeUnit: "s",
     incrementUnit: "s",
   });
+});
+
+test("a refreshed record for the same engine keeps the per-game settings", () => {
+  const selected = {
+    type: "local" as const,
+    id: "engine-a",
+    name: "Engine A",
+    version: "1",
+    filename: "a",
+    handle: { id: { id: "a" }, kind: "engine" as const },
+    settings: [{ type: "string" as const, name: "Threads", value: "1" }],
+  };
+  const { getCurrent } = renderOpponent({
+    type: "engine",
+    engine: selected,
+    go: { t: "Depth", c: 20 },
+    engineSettings: [{ type: "string", name: "Threads", value: "8" }],
+  });
+
+  // Editing the engine's global settings must not silently discard this player's overrides.
+  act(() => picker.setEngine?.({ ...selected, name: "Engine A renamed" }));
+  expect(getCurrent()).toMatchObject({
+    engine: { name: "Engine A renamed" },
+    engineSettings: [{ type: "string", name: "Threads", value: "8" }],
+  });
+
+  // Choosing a different engine does replace them with that engine's own settings.
+  act(() =>
+    picker.setEngine?.({
+      ...selected,
+      id: "engine-b",
+      settings: [{ type: "string", name: "Hash", value: "512" }],
+    }),
+  );
+  expect(getCurrent()).toMatchObject({
+    engineSettings: [{ type: "string", name: "Hash", value: "512" }],
+  });
+
+  // Clearing the selection clears the overrides with it.
+  act(() => picker.setEngine?.(null));
+  expect(getCurrent()).toMatchObject({ engine: null, engineSettings: undefined });
 });

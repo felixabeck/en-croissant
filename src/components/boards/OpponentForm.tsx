@@ -76,11 +76,22 @@ export function OpponentForm({
         <EnginesSelect
           engine={opponent.engine}
           setEngine={(engine) =>
-            setOpponent((prev) => ({
-              ...prev,
-              engine,
-              engineSettings: engine?.settings || undefined,
-            }))
+            setOpponent((prev) => {
+              const previous = prev.type === "engine" ? prev.engine : null;
+              // Per-game settings belong to the player, not to the engine record, so a
+              // refreshed record for the same engine keeps them; only a different engine
+              // replaces them with that engine's own defaults.
+              const sameEngine = engine !== null && previous?.id === engine.id;
+              return {
+                ...prev,
+                engine,
+                engineSettings: sameEngine
+                  ? prev.type === "engine"
+                    ? prev.engineSettings
+                    : undefined
+                  : engine?.settings || undefined,
+              };
+            })
           }
         />
       )}

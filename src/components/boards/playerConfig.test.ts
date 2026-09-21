@@ -94,12 +94,12 @@ test("per-game engine settings replace the engine's stored settings, and an empt
         options: [],
     });
 
-    // Neither source present is the remaining case the `?? []` tail exists for.
+    // Neither source present is the remaining case the `?? []` tail exists for, and the
+    // engine's own settings come from the live record rather than from the saved selection.
     expect(
-        toPlayerConfig(
-            engineOpponent({ engine: { ...engine, settings: undefined } as LocalEngine }),
-            registered,
-        ),
+        toPlayerConfig(engineOpponent({ engine: { ...engine, settings: undefined } }), [
+            { ...engine, settings: undefined },
+        ]),
     ).toMatchObject({ options: [] });
 });
 
@@ -163,4 +163,38 @@ test("an engine list that has not hydrated cannot prove the selection is live", 
         type: "human",
         name: "Felix",
     });
+});
+
+test("engine-owned fields come from the live record, not from the saved selection", () => {
+    // A re-registered binary keeps its application id but gets a new handle; launching the
+    // stale handle would run the executable the user replaced.
+    const stale: LocalEngine = {
+        ...engine,
+        name: "Old name",
+        handle: { id: { id: "stale-path-ref" }, kind: "engine" } as LocalEngine["handle"],
+        settings: [{ type: "string", name: "Threads", value: "1" }],
+    };
+    const current: LocalEngine = {
+        ...engine,
+        name: "Current name",
+        settings: [{ type: "string", name: "Threads", value: "16" }],
+    };
+
+    expect(toPlayerConfig(engineOpponent({ engine: stale }), [current])).toMatchObject({
+        name: "Current name",
+        engineId: engine.id,
+        handle,
+        options: [{ type: "string", name: "Threads", value: "16" }],
+    });
+
+    // The player's own per-game settings still win over the live record's defaults.
+    expect(
+        toPlayerConfig(
+            engineOpponent({
+                engine: stale,
+                engineSettings: [{ type: "string", name: "Threads", value: "4" }],
+            }),
+            [current],
+        ),
+    ).toMatchObject({ options: [{ type: "string", name: "Threads", value: "4" }] });
 });

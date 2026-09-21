@@ -1,6 +1,6 @@
 import type { PlayerConfig } from "@/bindings";
 import { normalizeEngineOptions } from "@/components/engines/engineOptions";
-import type { Engine } from "@/utils/engines";
+import type { Engine, LocalEngine } from "@/utils/engines";
 import type { OpponentSettings } from "./OpponentForm";
 
 /** A player configuration was incomplete before it could be sent to the backend. */
@@ -20,10 +20,11 @@ export class MissingLocalEngineError extends Error {
  * arriving later stays bound to the engine that was actually asked. MultiPV is dropped because
  * a game engine plays one move, and a time control makes `go` the backend's decision.
  *
- * `availableEngines` is the live engine list and is authoritative: removing an engine
- * permanently retires its application id (d-20260901-17), so a selection that survived the
- * removal — or one that cannot be proven live because the list has not hydrated yet
- * (`undefined`) — is rejected here rather than sent to a supervisor that will refuse it.
+ * `availableEngines` is the live engine list and is authoritative, both for existence and for
+ * the engine's own fields. Removing an engine permanently retires its application id
+ * (d-20260901-17), so a selection that survived the removal — or one that cannot be proven live
+ * because the list has not hydrated yet (`undefined`) — is rejected here rather than sent to a
+ * supervisor that will refuse it.
  */
 export function toPlayerConfig(
     settings: OpponentSettings,
@@ -39,17 +40,23 @@ export function toPlayerConfig(
     if (!engine || engine.type !== "local") {
         throw new MissingLocalEngineError();
     }
-    if (!availableEngines?.some((known) => known.type === "local" && known.id === engine.id)) {
+    const live = availableEngines?.find(
+        (known): known is LocalEngine => known.type === "local" && known.id === engine.id,
+    );
+    if (!live) {
         throw new MissingLocalEngineError(
             "The selected local engine is not in the current engine list",
         );
     }
     return {
         type: "engine",
-        name: engine.name ?? "Engine",
-        engineId: engine.id,
-        handle: engine.handle,
-        options: normalizeEngineOptions(settings.engineSettings ?? engine.settings ?? []).filter(
+        name: live.name ?? "Engine",
+        engineId: live.id,
+        handle: live.handle,
+        // The persisted selection is a snapshot; engine-owned fields come from the live record,
+        // so a re-registered binary is not launched from a stale handle. Per-game settings are
+        // the player's own and still win over the engine's defaults.
+        options: normalizeEngineOptions(settings.engineSettings ?? live.settings ?? []).filter(
             (setting) => setting.name !== "MultiPV",
         ),
         go: settings.timeControl ? null : settings.go,
