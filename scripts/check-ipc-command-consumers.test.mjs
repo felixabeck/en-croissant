@@ -799,6 +799,8 @@ describe("allowlist, inputs, and real-tree boundaries", () => {
     expectSet(check(files), [c1("X")]);
   });
 
+  // Two full scans of the real tree; measured at about 1 s here and past Vitest's 5 s
+  // default on the CI runner.
   test("is green on the real tree and keeps the empty-allowlist oracle landing-order independent", () => {
     expect(runIpcCommandConsumerCheck()).toEqual([]);
     const violations = runIpcCommandConsumerCheck({ allowlist: [] });
@@ -813,7 +815,7 @@ describe("allowlist, inputs, and real-tree boundaries", () => {
         ),
     );
     expect(dead).toEqual(new Set(allowlisted.map(({ command }) => command)));
-  });
+  }, 60_000);
 
   test("stays green after the exported commands are removed", () => {
     expect(check({}, { names: [], allowlist: [] })).toEqual([]);

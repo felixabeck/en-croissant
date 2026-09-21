@@ -3,6 +3,12 @@ import { parseSync } from "@babel/core";
 export function parseTsSource(source, path) {
   return parseSync(source, {
     filename: path,
+    // A parse failure's code frame is colorized whenever Babel thinks the terminal wants
+    // it, and GitHub Actions sets FORCE_COLOR=1: measured, the same source yields a plain
+    // frame locally and an ANSI-escaped one on the runner, so a checker whose diagnostic is
+    // asserted exactly is red on CI and green here. Pinning it plain makes the message the
+    // same string in both environments.
+    highlightCode: false,
     parserOpts: {
       plugins: path.endsWith(".tsx") ? ["typescript", "jsx"] : ["typescript"],
       sourceType: "module",
