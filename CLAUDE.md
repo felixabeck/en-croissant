@@ -98,7 +98,8 @@ mutant.
 Mechanical classes already covered by a checker, so review effort belongs elsewhere:
 untranslated JSX and missing locale keys (`pnpm i18n:jsx`, `pnpm i18n:check`), direct
 `@tauri-apps/*` imports and raw `listen()` outside the platform facade
-(`pnpm tauri:boundary:check`), and direct `ActionIcon`/`Modal` imports plus unsafe focus resets
+(`pnpm tauri:boundary:check`), exported IPC commands without a production renderer consumer
+(`pnpm ipc:consumers:check`), and direct `ActionIcon`/`Modal` imports plus unsafe focus resets
 (`pnpm ui:boundary:check`).
 
 ## Review lenses

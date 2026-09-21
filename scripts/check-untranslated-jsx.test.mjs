@@ -2,9 +2,25 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, test } from "vitest";
-import { checkUntranslatedJsx, findLiterals, listSourceFiles } from "./check-untranslated-jsx.mjs";
+import { describe, expect, test, vi } from "vitest";
 import { gitInit, gitTrack } from "./test-git-init.mjs";
+
+const parserSeam = vi.hoisted(() => ({ parseTsSource: null }));
+
+vi.mock("./parse-ts-source.mjs", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    parseTsSource(...args) {
+      return parserSeam.parseTsSource
+        ? parserSeam.parseTsSource(...args)
+        : actual.parseTsSource(...args);
+    },
+  };
+});
+
+const { checkUntranslatedJsx, findLiterals, listSourceFiles } =
+  await import("./check-untranslated-jsx.mjs");
 
 // Vitest serves this module from a non-file URL, so `import.meta.dirname` is
 // the only stable way to name the checker for a subprocess run.
@@ -13,7 +29,7 @@ const checkerPath = join(import.meta.dirname, "check-untranslated-jsx.mjs");
 function assertCli(result, status, stderr) {
   expect(result.error).toBeUndefined();
   expect(result.status).toBe(status);
-  expect(result.stderr.trim()).toMatch(stderr);
+  expect(result.stderr).toBe(stderr);
 }
 
 function workspace() {
@@ -28,6 +44,31 @@ function workspace() {
 }
 
 describe("untranslated UI literal gate", () => {
+  test("uses the extracted parser result", async () => {
+    const root = workspace();
+    parserSeam.parseTsSource = () => ({ type: "JSXText", value: "Parser sentinel" });
+    try {
+      expect(await checkUntranslatedJsx(root)).toEqual([
+        'src/components/Tracked.tsx: "Parser sentinel"',
+        'src/components/Untracked.tsx: "Parser sentinel"',
+      ]);
+    } finally {
+      parserSeam.parseTsSource = null;
+    }
+  });
+
+  test("preserves the parser error on an unparseable source", () => {
+    let thrown;
+    try {
+      findLiterals("const = ;", "src/bad.tsx");
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown?.message).toBe(
+      `${join(process.cwd(), "src/bad.tsx")}: Unexpected token (1:6)\n\n> 1 | const = ;\n    |       ^`,
+    );
+  });
+
   test("rejects data, ternary, native-dialog, notification, and dynamic aria literals", () => {
     const source = `
       <Select data={[{ value: "white", label: "White" }]} aria-label={enabled ? "Disable" : "Enable"} />;
@@ -97,16 +138,24 @@ describe("untranslated UI literal file discovery", () => {
     const clean = workspace();
     writeFileSync(join(clean, "src", "components", "Tracked.tsx"), '<Text>{t("a")}</Text>;\n');
     const green = spawnSync(process.execPath, [checkerPath], { cwd: clean, encoding: "utf8" });
-    assertCli(green, 0, /^$/u);
+    assertCli(green, 0, "");
 
     const root = workspace();
     writeFileSync(join(root, "src", "components", "Loud.tsx"), "<Text>Loud copy</Text>;\n");
     const red = spawnSync(process.execPath, [checkerPath], { cwd: root, encoding: "utf8" });
-    assertCli(red, 1, /Loud\.tsx: "Loud copy"/u);
+    assertCli(
+      red,
+      1,
+      'Untranslated UI literals found. Use t()/Trans; allowed technical exceptions are documented in this script.\nsrc/components/Loud.tsx: "Loud copy"\nsrc/components/Tracked.tsx: "Tracked copy"\n',
+    );
 
     const outside = mkdtempSync(join(tmpdir(), "untranslated-jsx-nogit-"));
     mkdirSync(join(outside, "src"), { recursive: true });
     const broken = spawnSync(process.execPath, [checkerPath], { cwd: outside, encoding: "utf8" });
-    assertCli(broken, 2, /Cannot enumerate working-tree files/u);
+    assertCli(
+      broken,
+      2,
+      "Cannot enumerate working-tree files: git ls-files --others --exclude-standard -- src failed (fatal: not a git repository (or any of the parent directories): .git)\n",
+    );
   });
 });

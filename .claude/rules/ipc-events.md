@@ -24,7 +24,8 @@ paths:
 **Nothing reaches the renderer except through the Specta registry: every event payload type appears
 in `collect_events!` and every command in `collect_commands!` in `src-tauri/src/main.rs`. Progress
 is reported through the existing `ProgressEvent` in `src-tauri/src/progress.rs`, never through a new
-ad-hoc event. Anything broadcast globally carries an id the receiver filters on.**
+ad-hoc event. Anything broadcast globally carries an id the receiver filters on. The consumer gate
+also rejects an exported IPC command that has no resolved production renderer consumer.**
 
 ## Why
 

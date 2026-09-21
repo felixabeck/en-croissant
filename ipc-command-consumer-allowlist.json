@@ -1,0 +1,5 @@
+[
+  { "command": "getFileMetadata", "finding": "f-20260906-11" },
+  { "command": "getOpeningFromFen", "finding": "f-20260906-11" },
+  { "command": "getPuzzleDbInfo", "finding": "f-20260906-11" }
+]

@@ -1,7 +1,7 @@
-import { parseSync } from "@babel/core";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { isEntrypoint } from "./entrypoint.mjs";
+import { parseTsSource } from "./parse-ts-source.mjs";
 import { listWorkingTreeFiles } from "./working-tree-files.mjs";
 const userFacingAttributes = new Set([
   "aria-label",
@@ -97,10 +97,7 @@ function isUserFacingCall(node) {
 
 export function findLiterals(source, filename = "source.tsx") {
   const literals = [];
-  const ast = parseSync(source, {
-    filename,
-    parserOpts: { plugins: ["typescript", "jsx"] },
-  });
+  const ast = parseTsSource(source, filename);
 
   function visit(node, userFacing = false) {
     if (!node || typeof node !== "object") return;
