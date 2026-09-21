@@ -10419,6 +10419,33 @@ The refresh is verified and ready; only `pnpm coverage:baseline:frontend` remain
 Then record the run id, commit, artifact id and every metric delta in `tasks/decisions.md`, as `d-20260911-02` did.
 <!-- ledger-meta {"command":"annotate","effect_lines":23,"effect_sha256":"b12dfb8d271d39c612efb8ba0fc5367f1d1121f6d5409cdbdb9fe4a65a3ff999","input_sha256":"74a07391aa56b618336f5d574d9d3e01fa708a561a913971fded0df80c52e675","kind":"mutation-receipt","operation":"aeb8d0f054b878b75bce1bf918f07a3645eb122c79d920d8a438e4e95559cde3","options":{"section":null},"request_id_sha256":null,"results":["f-20260920-06"],"target":"f-20260920-06","v":1} -->
 
+**Closed 2026-09-21.** The refresh is done and recorded as `d-20260921-01`.
+
+`coverage-baselines.json` now carries the 30 metrics of CI run 35535051738 (artifact 10612620560,
+commit `d017475f`) — the first measurement taken with the instrument repaired by `f-20260920-18`.
+23 of the 30 metrics rise; none falls. The diff is 46 covered/total pairs, with the recorded scope
+signature and both floors untouched.
+
+Evidence, all re-verified on pickup HEAD `5129405a` rather than carried over:
+
+* CI LCOV is the repaired measurement — 232 `SF` records, 3 files at `LF:0`, against 91 blanked
+  while `aee810b7`'s glob was in the tree.
+* Measurement inputs unchanged between `d017475f` and `5129405a`; the only `package.json` hunk
+  rewrites the `findings:kit:check` script line.
+* Fresh local `pnpm test:coverage` agrees with CI on all 30 metrics exactly — 0 disagreements,
+  covered and total alike.
+* `assertBaseline(CI, pre-existing baseline)` passed before the write, with zero shrink allowances.
+* No refresh sits between the defect and this one: `98fe9ffc` and `69ce3d9e` of 2026-09-19 changed
+  zero covered/total values, so the previous numeric baseline `bf0d9b78` (2026-09-11) predates the
+  glob. The corrupted-baseline trap in `docs/coverage.md` was therefore never entered.
+* `pnpm coverage:frontend:check` green (exit 0) against the restored **local** LCOV — deliberately
+  a different file from the artifact the baseline was written from.
+
+The `coverage:baseline:frontend` deny was honored, not worked around: it refused the agent, and
+Felix ran the write himself. `felix-baseline-deny-lifted` is cleared for this finding only; the
+deny stays in place for the next one.
+<!-- ledger-meta {"command":"annotate","effect_lines":25,"effect_sha256":"d495b2c35aa08f852b004a99d38d1a607654fb205cd7bf75aeead1c342f0b35d","input_sha256":"955a2440921b298f38d1d7ae077ebd7fd4e07ab5801ae9edd50f7010fe5a0623","kind":"mutation-receipt","operation":"1a6eb64d5f9f10764562f1def5b5a08a3d7b79028333d2734719f23fff8b9c9d","options":{"section":null},"request_id_sha256":null,"results":["f-20260920-06"],"target":"f-20260920-06","v":1} -->
+
 ---
 
 ## 2026-09-20 — filed through the inbox spool
