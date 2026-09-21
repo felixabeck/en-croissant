@@ -10385,7 +10385,7 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 
 ### The frontend coverage baseline was not refreshed after `f-20260920-03` added `FideInfo` coverage
 
-* **ID:** f-20260920-06 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** felix-baseline-deny-lifted
+* **ID:** f-20260920-06 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `coverage-baselines.json` (`databases-files`: 953/1804 lines, 194/409 functions, 1141/2773 branches), `docs/coverage.md:43-56`, `src/components/databases/FideInfo.test.tsx`.
 * **Defect:** `4d025de9` added six tests over `FideInfo.tsx` and `flagpack.ts`, both inside the `databases-files` area, and `pnpm coverage:frontend:check` is green — but the baseline still records the pre-change counts, so the new coverage is not binding. A later change can give those lines back without the ratchet objecting.
 * **Why it matters:** `docs/coverage.md:43` states the rule directly: "After adding coverage, deliberately refresh the frontend baseline so the new gains become binding." Leaving it unrefreshed is the documented way coverage silently erodes.
