@@ -45,6 +45,7 @@ import {
 } from "@/components/files/notifyError";
 import {
   closingTabsAtom,
+  enginesAtom,
   flipBoardAfterMoveAtom,
   gameIdFamily,
   gameSessionFamily,
@@ -563,6 +564,9 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
         clockRevisionRef.current = BigInt(-1);
         const playerSettings = getPlayers();
         atomStore.set(ownerPlayersAtom, playerSettings);
+        // The engine list is read at submission time, not at selection time: an engine removed
+        // after the form was filled in has a permanently retired id (d-20260901-17).
+        const availableEngines = atomStore.get(enginesAtom);
 
         const boardOrientation =
           playerSettings.black.type === "human" && playerSettings.white.type === "engine"
@@ -576,8 +580,8 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
         const initialMoves = getTreeMoves();
 
         const config: GameConfigInput = {
-          white: toPlayerConfig(playerSettings.white),
-          black: toPlayerConfig(playerSettings.black),
+          white: toPlayerConfig(playerSettings.white, availableEngines),
+          black: toPlayerConfig(playerSettings.black, availableEngines),
           whiteTimeControl: playerSettings.white.timeControl
             ? {
                 initialTime: playerSettings.white.timeControl.seconds,

@@ -510,15 +510,17 @@ test("both player owners retain resource A across engine-list replacement and re
     ]);
     for (const hydrated of [hydrated1, hydrated2]) {
         expect(hydrated).toMatchObject({ engine: { imageHandle: imageA } });
-        const config = toPlayerConfig(hydrated);
+        const config = toPlayerConfig(hydrated, [playerEngine]);
         expect(config.type).toBe("engine");
         if (config.type !== "engine") throw new Error("expected engine player config");
         expect(config.options).toEqual([
             { type: "resource", name: "EvalFile", resources: [resourceA] },
         ]);
     }
-    expect(toPlayerConfig(hydrated1)).toMatchObject({ go: { t: "Depth", c: 18 } });
-    expect(toPlayerConfig(hydrated2)).toMatchObject({ go: { t: "Nodes", c: 1234 } });
+    expect(toPlayerConfig(hydrated1, [playerEngine])).toMatchObject({ go: { t: "Depth", c: 18 } });
+    expect(toPlayerConfig(hydrated2, [playerEngine])).toMatchObject({
+        go: { t: "Nodes", c: 1234 },
+    });
 });
 
 test("post-storage reconciliation failure is truthful and a later save retries successfully", async () => {

@@ -45,6 +45,7 @@ vi.mock("@/state/atoms", async () => {
   return {
     activeTabAtom: atom<string | null>("tab-a"),
     closingTabsAtom: atom<Set<string>>(new Set<string>()),
+    enginesAtom: atom<any[] | undefined>([]),
     flipBoardAfterMoveAtom: atom(false),
     gameIdFamily,
     gameSessionFamily,
@@ -222,6 +223,7 @@ vi.mock("../common/IconAction", () => ({
 import {
   closingTabsAtom,
   disposeTabAtoms,
+  enginesAtom,
   flipBoardAfterMoveAtom,
   gameIdFamily,
   gamePlayer1SettingsAtom,
@@ -262,8 +264,12 @@ function state(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/**
+ * Builds an engine fixture and registers it in the live engine list, because `startGame`
+ * rejects a selection whose application id is not registered any more.
+ */
 function engine(id: string) {
-  return {
+  const created = {
     type: "local" as const,
     id,
     name: `Engine ${id}`,
@@ -272,6 +278,8 @@ function engine(id: string) {
     handle: { id: { id }, kind: "engine" as const },
     settings: [],
   };
+  store.set(enginesAtom, [...(store.get(enginesAtom) ?? []), created]);
+  return created;
 }
 
 function button(label: string) {
@@ -384,6 +392,7 @@ beforeEach(() => {
     subscribe: vi.fn(() => vi.fn()),
   };
   store.set(closingTabsAtom, new Set());
+  store.set(enginesAtom, []);
   store.set(flipBoardAfterMoveAtom, false);
   store.set(tabsAtom, [
     { name: "A", value: "tab-a", type: "play", gameOrigin: { kind: "none" } },
@@ -1920,6 +1929,41 @@ test("synchronous player conversion failure clears pending start and permits ret
   await act(async () => Promise.resolve());
   await start();
   expect(fixtures.startGame).toHaveBeenCalledOnce();
+});
+
+test("a player selection whose engine was removed never reaches the backend", async () => {
+  // Removal permanently retires the application id, so the start is refused here rather than
+  // by the supervisor, whatever the picker last wrote into the saved selection.
+  store.set(gamePlayer1SettingsAtom, {
+    type: "engine",
+    engine: engine("retired-before-start"),
+    go: { t: "Infinite" },
+  });
+  store.set(enginesAtom, []);
+  await render();
+  await start();
+  expect(fixtures.startGame).not.toHaveBeenCalled();
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+    "Board.Opponent.Error.MissingEngine",
+  );
+  expect(fixtures.logError).toHaveBeenCalledWith(
+    "game command start failed [tab=tab-a generation=1]: The selected local engine is not in the current engine list",
+  );
+});
+
+test("a start before the engine list has hydrated is refused instead of guessed", async () => {
+  store.set(gamePlayer1SettingsAtom, {
+    type: "engine",
+    engine: engine("unhydrated-start"),
+    go: { t: "Infinite" },
+  });
+  store.set(enginesAtom, undefined as never);
+  await render();
+  await start();
+  expect(fixtures.startGame).not.toHaveBeenCalled();
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+    "Board.Opponent.Error.MissingEngine",
+  );
 });
 
 test("close intent refuses start without pending work and release permits retry", async () => {

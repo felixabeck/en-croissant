@@ -19,6 +19,9 @@ const engine: LocalEngine = {
     ],
 } as LocalEngine;
 
+/** The live engine list the selection is validated against at submission time. */
+const registered: LocalEngine[] = [engine];
+
 function engineOpponent(overrides: Partial<Extract<OpponentSettings, { type: "engine" }>> = {}) {
     return {
         type: "engine",
@@ -29,7 +32,7 @@ function engineOpponent(overrides: Partial<Extract<OpponentSettings, { type: "en
 }
 
 test("engine player config carries the immutable application engine id and the engine handle", () => {
-    expect(toPlayerConfig(engineOpponent())).toEqual({
+    expect(toPlayerConfig(engineOpponent(), registered)).toEqual({
         type: "engine",
         name: "Engine",
         engineId: "engine-application-id",
@@ -40,11 +43,14 @@ test("engine player config carries the immutable application engine id and the e
 });
 
 test("a human player needs no engine and keeps an explicit name", () => {
-    expect(toPlayerConfig({ type: "human", name: "Felix" })).toEqual({
+    expect(toPlayerConfig({ type: "human", name: "Felix" }, registered)).toEqual({
         type: "human",
         name: "Felix",
     });
-    expect(toPlayerConfig({ type: "human" })).toEqual({ type: "human", name: "Player" });
+    expect(toPlayerConfig({ type: "human" }, registered)).toEqual({
+        type: "human",
+        name: "Player",
+    });
 });
 
 test("an engine player without a usable local engine is rejected, not sent to the backend", () => {
@@ -54,7 +60,7 @@ test("an engine player without a usable local engine is rejected, not sent to th
     ]) {
         let thrown: unknown;
         try {
-            toPlayerConfig(settings);
+            toPlayerConfig(settings, registered);
         } catch (error) {
             thrown = error;
         }
@@ -70,6 +76,7 @@ test("an engine without a name falls back to a default name", () => {
     expect(
         toPlayerConfig(
             engineOpponent({ engine: { ...engine, name: undefined } as unknown as LocalEngine }),
+            registered,
         ),
     ).toMatchObject({ name: "Engine" });
 });
@@ -78,16 +85,20 @@ test("per-game engine settings replace the engine's stored settings, and an empt
     expect(
         toPlayerConfig(
             engineOpponent({ engineSettings: [{ type: "string", name: "Threads", value: "8" }] }),
+            registered,
         ),
     ).toMatchObject({ options: [{ type: "string", name: "Threads", value: "8" }] });
 
     // An explicit empty list is a choice, not a reason to fall back to the engine's settings.
-    expect(toPlayerConfig(engineOpponent({ engineSettings: [] }))).toMatchObject({ options: [] });
+    expect(toPlayerConfig(engineOpponent({ engineSettings: [] }), registered)).toMatchObject({
+        options: [],
+    });
 
     // Neither source present is the remaining case the `?? []` tail exists for.
     expect(
         toPlayerConfig(
             engineOpponent({ engine: { ...engine, settings: undefined } as LocalEngine }),
+            registered,
         ),
     ).toMatchObject({ options: [] });
 });
@@ -104,6 +115,7 @@ test("resource options are passed through untouched while string options are nor
             engineOpponent({
                 engineSettings: [resource, { type: "string", name: "Hash", value: "1024" }],
             }),
+            registered,
         ),
     ).toMatchObject({
         options: [resource, { type: "string", name: "Hash", value: "1024" }],
@@ -116,11 +128,39 @@ test("a time control hands the go mode to the backend instead of fixing it here"
         { t: "Nodes", c: 500_000 },
         { t: "Infinite" },
     ] satisfies GoMode[]) {
-        expect(toPlayerConfig(engineOpponent({ go }))).toMatchObject({ go });
+        expect(toPlayerConfig(engineOpponent({ go }), registered)).toMatchObject({ go });
         expect(
             toPlayerConfig(
                 engineOpponent({ go, timeControl: { seconds: 180_000, increment: 2_000 } }),
+                registered,
             ),
         ).toMatchObject({ go: null });
     }
+});
+
+test("an engine removed after selection is rejected instead of submitted with a retired id", () => {
+    // Removing an engine permanently retires its application id, so the supervisor would refuse
+    // the start; the renderer must not offer a configuration that cannot run.
+    let thrown: unknown;
+    try {
+        toPlayerConfig(engineOpponent(), [{ ...engine, id: "another-engine" }]);
+    } catch (error) {
+        thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(MissingLocalEngineError);
+    expect(thrown).toMatchObject({ code: "missing-local-engine" });
+    expect((thrown as Error).message).toBe(
+        "The selected local engine is not in the current engine list",
+    );
+
+    expect(() => toPlayerConfig(engineOpponent(), [])).toThrow(MissingLocalEngineError);
+});
+
+test("an engine list that has not hydrated cannot prove the selection is live", () => {
+    expect(() => toPlayerConfig(engineOpponent(), undefined)).toThrow(MissingLocalEngineError);
+    // A human player needs no engine list at all.
+    expect(toPlayerConfig({ type: "human", name: "Felix" }, undefined)).toEqual({
+        type: "human",
+        name: "Felix",
+    });
 });
