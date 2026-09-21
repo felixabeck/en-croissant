@@ -799,22 +799,26 @@ describe("allowlist, inputs, and real-tree boundaries", () => {
     expectSet(check(files), [c1("X")]);
   });
 
-  // Two full scans of the real tree; measured at about 1 s here and past Vitest's 5 s
-  // default on the CI runner.
-  test("is green on the real tree and keeps the empty-allowlist oracle landing-order independent", () => {
+  // One full scan of the real tree; measured at about 1 s here and past Vitest's 5 s default
+  // on the CI runner. The oracle was `dead === allowlisted` while f-20260906-11 was open, so
+  // that it held whichever of the two landed first, and it therefore also held on the tree
+  // where all three commands were still registered. That finding has landed: every exported
+  // command now has a production consumer, so the allowlist is the empty list and the tree
+  // state itself is the assertion. Both expectations were staged, each printing a payload only
+  // it can produce: the first (violation strings) against this tree with a one-entry allowlist
+  // naming the no-longer-exported `getFileMetadata`, which yields the C3 and C4.3 pair; the
+  // second (allowlist objects) against the reverted tree `26833df3`, where the scan is green
+  // because the allowlist still covers all three commands and the file parses to three
+  // entries — the case the old oracle accepted. An allowlist regrowth is caught by the second
+  // expectation even when its entry is
+  // valid enough for C2-C4 to stay silent, which is why no third `allowlist: []` scan is
+  // asserted here — with the file empty it is the first expectation, and with the file
+  // non-empty the second has already gone red.
+  test("is green on the real tree with nothing suppressed by the allowlist", () => {
     expect(runIpcCommandConsumerCheck()).toEqual([]);
-    const violations = runIpcCommandConsumerCheck({ allowlist: [] });
-    const allowlisted = JSON.parse(
-      readFileSync(join(process.cwd(), "ipc-command-consumer-allowlist.json"), "utf8"),
-    );
-    const dead = new Set(
-      violations
-        .filter((violation) => violation.startsWith("C1: "))
-        .map((violation) =>
-          violation.slice("C1: command ".length, -" has no production consumer".length),
-        ),
-    );
-    expect(dead).toEqual(new Set(allowlisted.map(({ command }) => command)));
+    expect(
+      JSON.parse(readFileSync(join(process.cwd(), "ipc-command-consumer-allowlist.json"), "utf8")),
+    ).toEqual([]);
   }, 60_000);
 
   test("stays green after the exported commands are removed", () => {

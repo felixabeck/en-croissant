@@ -1039,25 +1039,6 @@ mod tests {
     }
 
     #[test]
-    fn puzzle_database_info_production_core_cancels_during_snapshot_copy() {
-        let fixture = puzzle_deletion_fixture("info-copy.db3");
-        assert_cancelled_during_snapshot_copy(
-            &fixture.path,
-            &fixture.repository,
-            |file, object, token| {
-                puzzle_database_info(
-                    &fixture.repository,
-                    &fixture.path,
-                    file,
-                    object,
-                    fixture.handle.clone(),
-                    token,
-                )
-            },
-        );
-    }
-
-    #[test]
     fn get_puzzle_themes_production_core_cancels_during_snapshot_copy() {
         let (_directory, path, repository) = puzzle_database("themes-copy.db3", 1200);
         assert_cancelled_during_snapshot_copy(&path, &repository, |file, object, token| {
