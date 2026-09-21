@@ -161,72 +161,72 @@
   "areas": {
     "application-bootstrap": {
       "lines": {
-        "covered": 104,
-        "total": 128
+        "covered": 121,
+        "total": 146
       },
       "functions": {
-        "covered": 19,
-        "total": 36
+        "covered": 26,
+        "total": 44
       },
       "branches": {
-        "covered": 39,
-        "total": 58
+        "covered": 50,
+        "total": 74
       }
     },
     "boards-game-analysis": {
       "lines": {
-        "covered": 1758,
-        "total": 4359
+        "covered": 1863,
+        "total": 4379
       },
       "functions": {
-        "covered": 304,
-        "total": 804
+        "covered": 319,
+        "total": 806
       },
       "branches": {
-        "covered": 1592,
-        "total": 5773
+        "covered": 1628,
+        "total": 5782
       }
     },
     "databases-files": {
       "lines": {
-        "covered": 953,
-        "total": 1804
+        "covered": 1129,
+        "total": 1841
       },
       "functions": {
-        "covered": 194,
-        "total": 409
+        "covered": 214,
+        "total": 419
       },
       "branches": {
-        "covered": 1141,
-        "total": 2773
+        "covered": 1413,
+        "total": 2779
       }
     },
     "accounts-remote": {
       "lines": {
-        "covered": 438,
-        "total": 1056
+        "covered": 444,
+        "total": 1058
       },
       "functions": {
-        "covered": 94,
-        "total": 236
+        "covered": 98,
+        "total": 238
       },
       "branches": {
-        "covered": 373,
+        "covered": 379,
         "total": 1210
       }
     },
     "puzzles-engines": {
       "lines": {
-        "covered": 763,
-        "total": 1181
+        "covered": 794,
+        "total": 1199
       },
       "functions": {
-        "covered": 169,
-        "total": 307
+        "covered": 182,
+        "total": 318
       },
       "branches": {
-        "covered": 700,
-        "total": 1266
+        "covered": 727,
+        "total": 1291
       }
     },
     "settings": {
@@ -245,36 +245,36 @@
     },
     "shared-shell-ui": {
       "lines": {
-        "covered": 158,
-        "total": 317
+        "covered": 182,
+        "total": 323
       },
       "functions": {
-        "covered": 26,
-        "total": 68
+        "covered": 32,
+        "total": 69
       },
       "branches": {
-        "covered": 166,
-        "total": 432
+        "covered": 188,
+        "total": 438
       }
     },
     "state-persistence": {
       "lines": {
-        "covered": 1267,
-        "total": 1493
+        "covered": 1317,
+        "total": 1544
       },
       "functions": {
-        "covered": 322,
-        "total": 396
+        "covered": 340,
+        "total": 414
       },
       "branches": {
-        "covered": 681,
-        "total": 916
+        "covered": 719,
+        "total": 958
       }
     },
     "tabs-routing": {
       "lines": {
         "covered": 687,
-        "total": 1241
+        "total": 1240
       },
       "functions": {
         "covered": 151,
@@ -287,16 +287,16 @@
     },
     "tauri-ipc-platform": {
       "lines": {
-        "covered": 335,
-        "total": 350
+        "covered": 337,
+        "total": 351
       },
       "functions": {
         "covered": 88,
         "total": 95
       },
       "branches": {
-        "covered": 201,
-        "total": 228
+        "covered": 204,
+        "total": 230
       }
     }
   }
