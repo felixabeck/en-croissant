@@ -475,14 +475,6 @@ async searchOpeningName(query: string) : Promise<Result<OutOpening[], ErrorPaylo
     else return { status: "error", error: e  as any };
 }
 },
-async getOpeningFromFen(fen: string) : Promise<Result<string, ErrorPayload>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("get_opening_from_fen", { fen }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
 async getOpeningFromFens(fens: string[]) : Promise<Result<string, ErrorPayload>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_opening_from_fens", { fens }) };
@@ -518,14 +510,6 @@ async getEngineConfig(engine: EngineHandle) : Promise<Result<EngineConfig, Error
 async fileExists(file: PathRef) : Promise<Result<boolean, ErrorPayload>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("file_exists", { file }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async getFileMetadata(file: PathRef) : Promise<Result<FileMetadata, ErrorPayload>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("get_file_metadata", { file }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -846,14 +830,6 @@ async getPlayers(file: DatabaseHandle, query: PlayerQuery, ticket: string | null
     else return { status: "error", error: e  as any };
 }
 },
-async getPuzzleDbInfo(file: PathRef, ticket: string | null) : Promise<Result<PuzzleDatabaseInfo, ErrorPayload>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("get_puzzle_db_info", { file, ticket }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
 async getPuzzleThemes(file: PathRef, ticket: string | null) : Promise<Result<string[], ErrorPayload>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_puzzle_themes", { file, ticket }) };
@@ -1117,7 +1093,6 @@ export type ErrorCategory = "io" | "parsing" | "platform" | "network" | "chess-d
 export type ErrorPayload = { tag: ErrorPayloadTag; category: ErrorCategory; message: string }
 export type ErrorPayloadTag = "backend-error"
 export type Event = { id: number; name: string | null }
-export type FileMetadata = { last_modified: number }
 export type FileWorkspaceDescriptor = { handle: FileWorkspaceHandle; displayName: string; availability: PathAvailability }
 /**
  * Renderer-safe handle for one authority-managed file workspace. It cannot contain a native

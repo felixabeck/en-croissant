@@ -1838,39 +1838,6 @@ fn file_exists_blocking(
     file_exists_with_authority(authority, &file)
 }
 
-#[derive(Debug, Type, serde::Serialize)]
-pub struct FileMetadata {
-    pub last_modified: u32,
-}
-
-#[tauri::command]
-#[specta::specta]
-pub async fn get_file_metadata(
-    file: crate::infra::path_authority::PathRef,
-    state: tauri::State<'_, AppState>,
-) -> Result<FileMetadata, Error> {
-    let authority = Arc::clone(&state.pgn_path_authority);
-    crate::infra::operations::run_accepted_blocking(
-        &state.operations,
-        "get_file_metadata",
-        move || get_file_metadata_blocking(&authority, file),
-    )
-    .await
-}
-
-fn get_file_metadata_blocking(
-    authority: &Mutex<Option<crate::infra::path_authority::PathAuthority>>,
-    file: crate::infra::path_authority::PathRef,
-) -> Result<FileMetadata, Error> {
-    let mut authority_guard = authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-    let authority = authority_guard
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-    get_file_metadata_with_authority(authority, &file)
-}
-
 fn resolve_engine_binary_for_inspection(
     authority: &mut crate::infra::path_authority::PathAuthority,
     file: &crate::infra::path_authority::PathRef,
@@ -1899,19 +1866,6 @@ fn file_exists_with_authority(
     file: &crate::infra::path_authority::PathRef,
 ) -> Result<bool, Error> {
     Ok(resolve_engine_binary_for_inspection(authority, file)?.is_some())
-}
-
-fn get_file_metadata_with_authority(
-    authority: &mut crate::infra::path_authority::PathAuthority,
-    file: &crate::infra::path_authority::PathRef,
-) -> Result<FileMetadata, Error> {
-    let resolved = resolve_engine_binary_for_inspection(authority, file)?
-        .ok_or_else(|| Error::Conflict("engine binary inspection could not be completed".into()))?;
-    Ok(FileMetadata {
-        last_modified: resolved.modified_seconds().map_err(|_| {
-            Error::Conflict("engine binary inspection could not be completed".into())
-        })?,
-    })
 }
 
 #[cfg(test)]
@@ -2372,7 +2326,7 @@ mod tests {
     }
 
     #[test]
-    fn get_file_metadata_rejects_a_capability_without_engine_inspection_authority() {
+    fn engine_binary_inspection_rejects_a_capability_without_inspection_authority() {
         let dir = tempdir().unwrap();
         let executable = dir.path().join("private-engine");
         std::fs::write(&executable, b"engine").unwrap();
@@ -2386,7 +2340,7 @@ mod tests {
             )
             .unwrap();
 
-        let error = get_file_metadata_with_authority(&mut authority, &handle.id).unwrap_err();
+        let error = file_exists_with_authority(&mut authority, &handle.id).unwrap_err();
         let serialized = serde_json::to_string(&error).unwrap();
         let payload: serde_json::Value =
             serde_json::from_str(&serialized).expect("serialized error is a JSON object");
@@ -2395,30 +2349,6 @@ mod tests {
         assert_eq!(payload["message"], error.to_string());
         assert!(!serialized.contains(&executable.display().to_string()));
         assert!(!serialized.contains("Permission denied"));
-        assert!(!serialized.contains("os error"));
-    }
-
-    #[test]
-    fn get_file_metadata_redacts_a_deleted_engine_path_and_os_error() {
-        let dir = tempdir().unwrap();
-        let executable = dir.path().join("private-engine");
-        std::fs::write(&executable, b"engine").unwrap();
-        let mut authority = test_path_authority(&dir);
-        let handle = authority
-            .register_engine_file(&executable, "engine")
-            .unwrap();
-        std::fs::remove_file(&executable).unwrap();
-
-        let error =
-            get_file_metadata_with_authority(&mut authority, handle.path_ref()).unwrap_err();
-        let serialized = serde_json::to_string(&error).unwrap();
-        let payload: serde_json::Value =
-            serde_json::from_str(&serialized).expect("serialized error is a JSON object");
-        assert!(matches!(error, Error::Conflict(_)));
-        assert_eq!(payload["category"], "conflict");
-        assert_eq!(payload["message"], error.to_string());
-        assert!(!serialized.contains(&executable.display().to_string()));
-        assert!(!serialized.contains("No such file"));
         assert!(!serialized.contains("os error"));
     }
 

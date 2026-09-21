@@ -45,9 +45,7 @@ struct FischerRandomRecord {
     fen: String,
 }
 
-#[tauri::command]
-#[specta::specta]
-pub fn get_opening_from_fen(fen: &str) -> Result<String, Error> {
+fn get_opening_from_fen(fen: &str) -> Result<String, Error> {
     let fen: Fen = fen.parse()?;
     get_opening_from_setup(fen.into_setup())
 }

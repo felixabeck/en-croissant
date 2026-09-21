@@ -573,43 +573,6 @@ async fn puzzle_database_info_for_file(
 
 #[tauri::command]
 #[specta::specta]
-pub async fn get_puzzle_db_info(
-    file: crate::infra::path_authority::PathRef,
-    ticket: Option<String>,
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, crate::AppState>,
-) -> Result<PuzzleDatabaseInfo, Error> {
-    let operation = crate::native_read_operation(ticket, &window, &state, "get_puzzle_db_info")?;
-    let cancellation = operation.token();
-    let resolved = resolve_puzzle(
-        &state,
-        &file,
-        crate::infra::path_authority::PathOperation::PuzzleRead,
-    )?;
-    let expected_object = resolved.puzzle_database_identity()?;
-    let file_handle = resolved.puzzle_database_file()?;
-    let path = resolved.puzzle_database_path()?;
-    let repository = state.database_repository.clone();
-    crate::infra::operations::run_native_operation(operation, "get_puzzle_db_info", async move {
-        BLOCKING_GATEWAY
-            .spawn_cancellable(cancellation, move |token| {
-                let _pinned = resolved;
-                puzzle_database_info(
-                    repository.as_ref(),
-                    &path,
-                    file_handle,
-                    expected_object,
-                    file,
-                    token,
-                )
-            })
-            .await
-    })
-    .await
-}
-
-#[tauri::command]
-#[specta::specta]
 pub async fn delete_puzzle_database(
     file: crate::infra::path_authority::PathRef,
     state: tauri::State<'_, crate::AppState>,
@@ -1076,7 +1039,7 @@ mod tests {
     }
 
     #[test]
-    fn get_puzzle_db_info_production_core_cancels_during_snapshot_copy() {
+    fn puzzle_database_info_production_core_cancels_during_snapshot_copy() {
         let fixture = puzzle_deletion_fixture("info-copy.db3");
         assert_cancelled_during_snapshot_copy(
             &fixture.path,

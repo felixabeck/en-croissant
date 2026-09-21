@@ -83,9 +83,9 @@ use crate::oauth::{
 };
 use crate::pgn::{count_pgn_games, delete_game, read_games, write_game};
 use crate::puzzle::{
-    delete_puzzle_database, get_puzzle, get_puzzle_db_info, get_puzzle_themes,
-    get_puzzle_workspace, get_themes_for_puzzle, issue_puzzle_download_destination,
-    issue_puzzle_workspace, list_puzzle_databases,
+    delete_puzzle_database, get_puzzle, get_puzzle_themes, get_puzzle_workspace,
+    get_themes_for_puzzle, issue_puzzle_download_destination, issue_puzzle_workspace,
+    list_puzzle_databases,
 };
 use crate::sound::get_sound_server_port;
 use crate::{
@@ -96,11 +96,9 @@ use crate::{
     },
     fs::{
         cancel_download, download_engine_archive, download_file, download_lichess_games,
-        file_exists, get_file_metadata, prepare_download, release_download, verify_signed_bytes,
+        file_exists, prepare_download, release_download, verify_signed_bytes,
     },
-    opening::{
-        get_opening_from_fen, get_opening_from_fens, get_opening_from_name, search_opening_name,
-    },
+    opening::{get_opening_from_fens, get_opening_from_name, search_opening_name},
 };
 use tokio::sync::Semaphore;
 
@@ -2295,13 +2293,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             get_puzzle_workspace,
             list_puzzle_databases,
             search_opening_name,
-            get_opening_from_fen,
             get_opening_from_fens,
             get_opening_from_name,
             get_players_game_info,
             get_engine_config,
             file_exists,
-            get_file_metadata,
             merge_players,
             convert_pgn,
             get_player,
@@ -2341,7 +2337,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             get_latest_game_timestamp,
             search_position,
             get_players,
-            get_puzzle_db_info,
             get_puzzle_themes,
             get_themes_for_puzzle,
             delete_puzzle_database,
@@ -4012,15 +4007,7 @@ mod blocking_offload_scans {
             assert_offloads(file_workspace, signature, worker);
         }
         let fs = include_str!("fs.rs");
-        for (signature, worker) in [
-            ("pub async fn file_exists(", "file_exists_blocking"),
-            (
-                "pub async fn get_file_metadata(",
-                "get_file_metadata_blocking",
-            ),
-        ] {
-            assert_offloads(fs, signature, worker);
-        }
+        assert_offloads(fs, "pub async fn file_exists(", "file_exists_blocking");
         for signature in [
             "async fn save_board_snapshot(",
             "async fn save_engine_logs(",

@@ -161,21 +161,6 @@ impl ResolvedPath {
         crate::infra::fs::atomic_install_dir(temporary_directory, target)
     }
 
-    /// Metadata from the exact opened object. It never reconstructs or reveals a pathname.
-    pub(crate) fn modified_seconds(&self) -> Result<u32, Error> {
-        let file = self
-            .file
-            .as_ref()
-            .ok_or_else(|| Error::InvalidInput("capability names a directory".into()))?;
-        file.metadata()?
-            .modified()?
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_err(|error| Error::InvalidInput(format!("invalid modification time: {error}")))?
-            .as_secs()
-            .try_into()
-            .map_err(|_| Error::ResourceLimit("file modification time exceeds u32 range".into()))
-    }
-
     /// Transfers the already-opened, identity-checked regular file to a native
     /// streaming consumer.  This is intentionally not a path accessor.
     pub(crate) fn into_read_file(mut self) -> Result<fs::File, Error> {
