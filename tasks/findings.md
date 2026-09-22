@@ -11014,3 +11014,43 @@ It matters more since 2026-09-22 than before: `buildCoverageReport` now merges r
   `f-20260906-23`, 2026-09-22, which needed the assumption for the practice store's per-deck mutex
   and found nothing enforcing it. The plan states the limitation and files it here rather than
   fixing the application's process model inside a storage change.
+
+---
+
+## 2026-09-22 — filed through the inbox spool
+
+### Prepending a mainline move shifts sibling indices without rebasing `headers.start`
+
+* **ID:** f-20260922-08 · **Status:** open · **Area:** chess-tree · **Root:** tree-path-rebasing · **Entry:** lens · **Blocked:** none
+* **Where:** `src/state/store/tree.ts:745` (`makeMove`'s `moveNode.children.unshift(newMoveNode)` under
+  `mainline: true`), reached from `src/components/boards/BoardGame.tsx:439` (`syncTreeWithMoves`) and
+  `src/components/puzzles/PuzzleBoard.tsx:100` / `Puzzles.tsx:846` through `makeMoves`.
+* **Defect, measured 2026-09-22:** `unshift` renumbers every existing sibling at that depth by +1, and
+  nothing rebases `state.headers.start` across it — unlike `deleteMove` and `promoteVariation`, which
+  both call the `rebasePathAfter*` helpers added by `b82021ec` for exactly this class. Probe against
+  the real store: with a tree whose root has one child `e4` and `headers.start = [0]`,
+  `getNodeAtPath(root, start).san` is `e4`; after
+  `makeMove({ payload: parseUci("d2d4"), mainline: true, changePosition: false })` from the root the
+  children are `d4,e4`, `headers.start` is still `[0]`, and it now addresses **`d4`**. The repertoire
+  start silently moved to a different move.
+* **Reachability:** `setStart` is offered by the notation context menu
+  (`src/components/common/CompleteMoveCell.tsx:156`), which `GameNotation` renders in the play-a-game
+  board as well, and `BoardGame.syncTreeWithMoves` is the code that prepends mainline moves — so a user
+  who marks a start square in a game tab and then continues the game hits it. `practicePath` is exposed
+  to the same shift by construction, but no flow that sets `practicePath` also calls `mainline: true`,
+  so that half is latent rather than reachable today.
+* **Why it matters:** `.claude/rules/chess-tree-semantics.md` — a `number[]` path is re-derived after any
+  mutation that can insert, delete, promote or reorder nodes. `f-20260909-07` (`b82021ec`, same `Root`)
+  closed the delete and promote half of this and left the insert half open; `f-20260922-04`,
+  `f-20260914-26` and `f-20260914-27` are the practice-path and `setFen` half. This is the remaining
+  mutation that renumbers siblings.
+* **Fix shape:** the insertion point already knows the parent path and that index 0 was taken, so the
+  existing `rebasePathAfterPromotion(target, parentPath, /* promotedIndex */ …)` is not the right helper
+  — an insert shifts every sibling at or above the insertion index by +1, which is its own one-line
+  rule. Decide whether `makeMove` gains that rebase directly or whether the three index-shifting
+  mutations are routed through one helper, and cover `practicePath` with it so the latent half cannot
+  become reachable later.
+* **Found by:** the orchestrator, while planning `f-20260922-04`, 2026-09-22 — read while establishing
+  which mutations renumber siblings, then reproduced against the real store before filing. Outside that
+  plan's MANDATE (which is the drill path and `setFen`) and in a different flow, so filed rather than
+  folded in.
