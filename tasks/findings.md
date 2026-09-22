@@ -10955,3 +10955,32 @@ This is the second annotation in a row where a claim in this entry turned out to
 
 It matters more since 2026-09-22 than before: `buildCoverageReport` now merges records for one file across `SF` spellings, so a malformed record no longer has to duplicate a whole file's spelling to interact with a well-formed one. Whatever this finding decides about rejecting malformed counters must decide this case with it — reject the record, drop the unmatched `FNDA`, or keep the phantom and say so — and the answer belongs in the same measurement against both instruments.
 <!-- ledger-meta {"command":"annotate","effect_lines":4,"effect_sha256":"3dc97aa5d5175bd143d160e4ed0436e21e177c38991cffe1c0b55414861392f1","input_sha256":"dd4f18fcf19fc424d59c57332f870bbceff6ff9d951c341bfb555661be612941","kind":"mutation-receipt","operation":"d2860b30688598ae2dca1e240673244cc088b4c1fd2a54a471a9f40d595dd165","options":{"section":null},"request_id_sha256":null,"results":["f-20260922-05"],"target":"f-20260922-05","v":1} -->
+
+---
+
+## 2026-09-22 — filed through the inbox spool
+
+### The migrated `deck-*` browser keys are left in place and need a later deletion pass
+
+* **ID:** f-20260922-06 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src/state/practiceStorage.ts` (the startup migration pass planned by
+  `tasks/plans/2026-09-22-practice-durable-storage.md`), `src/state/pathOwners.ts:177-191`,
+  `src/routes/__root.tsx:143-152`.
+* **Defect:** the practice-persistence change migrates every `deck-<id>-<game>` value into the
+  native store and then **leaves the browser key in place**, marked migrated by the native envelope.
+  The migrated copy therefore keeps occupying the ~5 MB localStorage quota it already occupied, and
+  two copies of the same learning history exist until this is cleaned up.
+* **Why it is deferred rather than done there:** `localStorage` has no compare-and-swap, so between
+  the final `getItem` and the `removeItem` another writer can extend or replace the value and have
+  that write deleted. The only writer that ever wrote these keys is a **pre-upgrade build of the
+  application**, which can run concurrently — two instances share one webview data directory and
+  `src-tauri/src/main.rs:2424-2437` installs no single-instance plugin. Five rounds of plan review
+  were spent trying to make that deletion safe before the plan withdrew it; the honest answer is that
+  it is safe only once no pre-upgrade build can plausibly still be in use.
+* **Fix shape:** once that is true, delete the key after a successful migration, and drop the legacy
+  half of the startup path-owner union in `pathOwners.ts` at the same time — it exists only because
+  the keys are still there. Until then nothing should try to be cleverer about it.
+* **Depends on:** `f-20260906-23` shipping first; this is the follow-up, not an alternative to it.
+* **Found by:** the plan review for `f-20260906-23`, rounds 4 and 5, 2026-09-22 — `review-plan`
+  (confidence 98), `review-correctness` (99), `review-root-cause`, `review-error-handling` and
+  `review-code-quality` each produced the same loss sequence independently.
