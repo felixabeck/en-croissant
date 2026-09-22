@@ -299,6 +299,20 @@ test("unions records for one file reached through two SF spellings", async () =>
   assert.deepEqual(withBlank.utilities, measured);
 });
 
+test("keeps two declarations apart when a field value contains the joining character", () => {
+  // `FN:<line>,<name>` splits on the first comma, so `FN:1,f:g` is line `1`, name `f:g`, while
+  // `FN:1:f,g` is line `1:f`, name `g` -- two different declarations. Joining identity fields with
+  // a colon gave both `1:f:g:0`, and since the per-declaration counter restarts in each record,
+  // merging two records for one file then reported one function where there are two. Within a
+  // single record the counter hid it; across records it does not, which is exactly the merge this
+  // report now performs for two spellings of one path.
+  const declarations = parseLcov(
+    "TN:\nSF:a.ts\nFN:1,f:g\nFNDA:1,f:g\nend_of_record\n" +
+      "TN:\nSF:a.ts\nFN:1:f,g\nFNDA:0,g\nend_of_record\n",
+  );
+  assert.deepEqual(declarations[0].metrics.functions, { covered: 1, total: 2 });
+});
+
 test("gives a function the same identity whatever order the records declare it in", async () => {
   // Two records for one file need not list their functions in the same order. An occurrence index
   // counted per *name* made `FN:10,f; FN:20,f` and `FN:20,f; FN:10,f` four distinct functions and
