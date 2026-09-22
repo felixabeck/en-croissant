@@ -71,9 +71,10 @@ canonical push contract. Two properties worth knowing before planning any change
   deleting covered code is neutral rather than a regression — before that, removing one provably
   dead branch reddened the gate and the cheapest way to stay green was to leave dead code in place
   (`f-20260829-15`, `d-20260829-03`). The allowance is bounded by the shrink and every use is
-  printed, so the measured set is policed by two guards rather than by any number: the recorded
-  *scope*, and the blank-measurement check that fails a measured file contributing no line, function
-  or branch record unless it is declared `statementFree`. `bundle-budgets.json` caps entry,
+  printed. That allowance is also why neither ratchet can see the measured set *shrinking*, so two
+  non-numeric guards do that instead: the recorded *scope*, which pins what is measured, and the
+  blank-measurement check, which fails a measured file that contributes no line, function or branch
+  record unless it is declared `statementFree`. `bundle-budgets.json` caps entry,
   largest-lazy, and total gzip bytes. Never lower a floor or rewrite a baseline to accept a
   regression — see `docs/coverage.md`.
 

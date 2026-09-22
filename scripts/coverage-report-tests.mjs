@@ -95,6 +95,20 @@ function lcovRecord(file, { lines = 0, functions = 0, branches = 0 } = {}) {
   return records.join("\n");
 }
 
+const OXFMT_SCRIPTS = {
+  "non-zero": "#!/bin/sh\nprintf '%s' 'formatter rejected the temporary baseline' >&2\nexit 23\n",
+  // A formatter killed by a signal leaves `status` null, which `status !== 0` still catches.
+  // Without this fixture a regression to `status > 0` would report the kill as a success.
+  signal: "#!/bin/sh\nkill -TERM $$\n",
+};
+
+async function installOxfmt(root, script) {
+  await mkdir(join(root, "node_modules", ".bin"), { recursive: true });
+  await writeFile(join(root, "node_modules", ".bin", "oxfmt"), OXFMT_SCRIPTS[script], {
+    mode: 0o755,
+  });
+}
+
 function blankLcov(file) {
   return lcovRecord(file);
 }
@@ -251,6 +265,46 @@ test("accepts a declared blank without changing area metrics", async () => {
       branches: { covered: 1, total: 2 },
     },
   });
+});
+
+test("merges records for one file reached through two SF spellings", async () => {
+  // `parseLcov` merges by the raw `SF` string, and both spellings occur for real: `llvm-cov`
+  // writes absolute paths, `@vitest/coverage-v8` repo-relative ones. Keeping only the last
+  // record would let the blank one hide the covered one and reject a measured file.
+  const { root } = await fixture();
+  const absolute = lcov.replace(
+    "SF:src/utils/example.ts",
+    `SF:${join(root, "src/utils/example.ts")}`,
+  );
+  const report = await buildCoverageReport({
+    config,
+    configPath: "coverage-areas.json",
+    lcov: `${absolute}${blankLcov("src/utils/example.ts")}`,
+    root,
+  });
+  assert.deepEqual(report.utilities, {
+    lines: { covered: 1, total: 2 },
+    functions: { covered: 1, total: 1 },
+    branches: { covered: 1, total: 2 },
+  });
+});
+
+test("rejects a declaration for a file that exists on disk but is excluded", async () => {
+  // Condition 2 is measured-set membership, not filesystem existence: an implementation
+  // checking `fs.existsSync` would accept this declaration and the file would stay out of the
+  // denominator with a config entry that looks deliberate.
+  const excludedFile = "src/utils/tests/helper.ts";
+  const { root } = await fixture({ files: { [excludedFile]: "export const helper = 1;\n" } });
+  await assert.rejects(
+    () =>
+      buildCoverageReport({
+        config: withStatementFree([excludedFile]),
+        configPath: "coverage-areas.json",
+        lcov,
+        root,
+      }),
+    /Coverage statementFree declarations are outside the measured production set: src\/utils\/tests\/helper\.ts\./,
+  );
 });
 
 test("rejects two declared paths absent from the measured production set", async () => {
@@ -462,6 +516,14 @@ test("rejects narrowing the measured scope, which shrinks the total without dele
     () => assertBaseline({ utilities: metrics() }, baseline, declared),
     namesEveryPinnedComponent,
   );
+  // And the other direction: a baseline that records a declaration the config no longer makes.
+  // The comparison is a string equality, so this is symmetric by construction -- but only this
+  // case proves it, and it is the direction in which a declaration quietly disappears.
+  const staleBaseline = { ...baseline, scope: scopeSignature(declared) };
+  assert.throws(
+    () => assertBaseline({ utilities: metrics() }, staleBaseline, config),
+    namesEveryPinnedComponent,
+  );
 });
 
 test("accepts a shrinking total when coverage rises", () => {
@@ -619,6 +681,47 @@ test("reports each statementFree validation condition through the CLI", async ()
   }
 });
 
+test("reports a stale recorded scope through the CLI", async () => {
+  // The scope message is the one this run rewrote, and a unit call to `assertBaseline` proves
+  // neither the stderr an operator sees nor the exit status.
+  const { root } = await fixture();
+  const declared = cliConfig([{ path: "src/utils/example.ts", reason: "Fixture declaration." }]);
+  await writeFile(join(root, "config.json"), JSON.stringify(cliConfig()));
+  await writeFile(join(root, "lcov.info"), lcov);
+  await writeFile(
+    join(root, "baseline.json"),
+    JSON.stringify({
+      version: 1,
+      scope: scopeSignature(declared),
+      areas: {
+        utilities: {
+          lines: { covered: 1, total: 2 },
+          functions: { covered: 1, total: 1 },
+          branches: { covered: 1, total: 2 },
+        },
+      },
+    }),
+  );
+  const result = spawnSync(
+    process.execPath,
+    [
+      join(process.cwd(), "scripts", "coverage-report.mjs"),
+      "--config",
+      "config.json",
+      "--baseline",
+      "baseline.json",
+      "--lcov",
+      "lcov.info",
+    ],
+    { cwd: root, encoding: "utf8" },
+  );
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.stderr, /Coverage measurement scope changed/);
+  assert.match(result.stderr, /statementFree/);
+  assert.match(result.stderr, /scope subtree by hand/);
+  assert.doesNotMatch(result.stderr, /coverage:baseline:|--write-baseline/);
+});
+
 test("rejects an undeclared blank before the CLI writes a baseline", async () => {
   const blankFile = "src/utils/blank.ts";
   const { root } = await fixture({ files: { [blankFile]: "export type Blank = string;\n" } });
@@ -658,6 +761,10 @@ test("preserves the previous baseline and cleans up every failed write path", as
       formatter: "non-zero",
     },
     {
+      name: "formatter killed by a signal",
+      formatter: "signal",
+    },
+    {
       name: "missing formatter binary",
       formatter: "missing",
     },
@@ -678,13 +785,8 @@ test("preserves the previous baseline and cleans up every failed write path", as
     const outputPath = join(root, "scratch-baseline.json");
     const temporaryPath = `${outputPath}${temporarySuffix}`;
     await writeFile(outputPath, previousBaseline);
-    if (failureCase.formatter === "non-zero") {
-      await mkdir(join(root, "node_modules", ".bin"), { recursive: true });
-      await writeFile(
-        join(root, "node_modules", ".bin", "oxfmt"),
-        "#!/bin/sh\nprintf '%s' 'formatter rejected the temporary baseline' >&2\nexit 23\n",
-        { mode: 0o755 },
-      );
+    if (failureCase.formatter && failureCase.formatter !== "missing") {
+      await installOxfmt(root, failureCase.formatter);
     }
 
     const unlinkCalls = [];
@@ -745,6 +847,15 @@ test("preserves the previous baseline and cleans up every failed write path", as
         /status=23; signal=null; stderr="formatter rejected the temporary baseline"/,
       );
     }
+    if (failureCase.name === "formatter killed by a signal") {
+      assert.match(
+        error.message,
+        new RegExp(
+          `Failed to format coverage baseline with ${resolve(root, "node_modules/.bin/oxfmt")}`,
+        ),
+      );
+      assert.match(error.message, /status=null; signal=SIGTERM/);
+    }
     if (failureCase.name === "missing formatter binary") {
       assert.match(
         error.message,
@@ -761,13 +872,8 @@ test("preserves the previous baseline and cleans up every failed write path", as
 
   const assertFormatterCliFailure = async (failureCase) => {
     const { root } = await fixture();
-    if (failureCase.name === "formatter non-zero exit") {
-      await mkdir(join(root, "node_modules", ".bin"), { recursive: true });
-      await writeFile(
-        join(root, "node_modules", ".bin", "oxfmt"),
-        "#!/bin/sh\nprintf '%s' 'formatter rejected the temporary baseline' >&2\nexit 23\n",
-        { mode: 0o755 },
-      );
+    if (failureCase.formatter && failureCase.formatter !== "missing") {
+      await installOxfmt(root, failureCase.formatter);
     }
     const cliResult = await runCoverageCli(root, {
       config: cliConfig(),
@@ -783,6 +889,8 @@ test("preserves the previous baseline and cleans up every failed write path", as
         cliResult.stderr,
         /status=23; signal=null; stderr="formatter rejected the temporary baseline"/,
       );
+    } else if (failureCase.name === "formatter killed by a signal") {
+      assert.match(cliResult.stderr, /status=null; signal=SIGTERM/);
     } else {
       assert.match(
         cliResult.stderr,
