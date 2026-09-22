@@ -277,7 +277,7 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
   reaches that signature — including f-20260829-04's exclusion, whose implementation must therefore
   extend `scopeSignature` too.
 * **Decided by:** Claude Code, autonomously under `full auto` while Felix was away, after three
-  rounds of six plan-review lenses · **Superseded-by:** -
+  rounds of six plan-review lenses · **Superseded-by:** d-20260922-08
 
 ### d-20260830-09 — f-20260829-04 was pinned for this run. Land the instrument change, or park it?
 
