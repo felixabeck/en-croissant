@@ -16015,9 +16015,8 @@ mod tests {
                     availability: PathAvailability::Available,
                 },
             );
-            wrong_purpose_results.push(authority.download_destination_is_known(&PathRef {
-                id: id.into(),
-            }));
+            wrong_purpose_results
+                .push(authority.download_destination_is_known(&PathRef { id: id.into() }));
         }
         assert_eq!(wrong_purpose_results, [false, false]);
 
