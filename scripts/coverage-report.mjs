@@ -1,51 +1,155 @@
 /**
- * Recorded failure evidence for this artefact.
+ * The failure matrix for this artefact.
  *
  * `push-review-policy.md:211-219` asks that a verification artefact whose output is read as
  * evidence outside a test run carry, in its own header, the message and exit status each of its
- * assertions was *seen* to produce. This script is such an artefact: `package.json:37,40` and
+ * assertions was *seen* to produce; `:221-243` asks that the enumeration be complete, every path
+ * staged or argued. This script is such an artefact — `package.json:37,40` and
  * `.github/workflows/test.yml:157,230` cite its exit status for both coverage ratchets and both
- * area-floor gates.
+ * area-floor gates — and until 2026-09-22 it had no matrix at all (`f-20260921-02`).
  *
- * The rows below are the paths the blank-measurement work changed (`f-20260920-19`), each run
- * against the real frontend LCOV on 2026-09-22. The four rows with an offender list were run
- * twice, once with one offender and once with two, because a message naming only the first
- * offender passes every single-offender run. Messages are quoted to their distinguishing clause.
+ * **Every row below was run.** The enumeration was rebuilt from this source rather than copied
+ * from the finding: two `grep` passes — `throw new Error|process.exitCode|stderr.write`, then
+ * `await |spawnSync` for the rejections that reach `main().catch` — plus a reading of every entry
+ * point's parameters for the class neither pattern can see, a property access on unvalidated input
+ * before it is checked. Five consecutive review rounds corrected a matrix that had been assembled
+ * from the previous matrix, and each inherited the last one's errors; that is why this one starts
+ * from the file.
  *
- *   row 1  undeclared blank, 1 offender   exit 1  "Coverage measurement is blank for production
- *          staged by raw-importing                 files: src/components/boards/EditingCard.tsx."
- *          one never-imported file
- *   row 1  undeclared blank, 2 offenders  exit 1  "... files: src/components/boards/
- *                                                  AnnotationHint.tsx, src/components/boards/
- *                                                  EditingCard.tsx." -- one message, both paths,
- *                                                  sorted
- *   row 2a dead declaration, absent file  exit 1  "Coverage statementFree declarations are outside
- *          1 offender / 2 offenders               the measured production set:
- *                                                 src/does-not-exist.ts." / "...
- *                                                 src/also-missing.ts, src/does-not-exist.ts."
- *   row 2b dead declaration, existing but  exit 1 "... outside the measured production set:
- *          excluded file                          src/routeTree.gen.ts." / "...
- *          1 offender / 2 offenders               src/routeTree.gen.ts, src/vite-env.d.ts."
- *   row 3  declaration that is a lie       exit 1 "Coverage statementFree declarations are no
- *          1 offender / 2 offenders               longer blank: src/utils/format.ts." / "...
- *                                                 src/utils/chess.ts, src/utils/format.ts."
- *   row 9  scope mismatch, rewritten       exit 1 "Coverage measurement scope changed: source ids
- *          message                                and roots, include globs, exclude globs,
- *                                                 statementFree declarations, or area ids,
- *                                                 sources, and paths no longer match the
- *                                                 baseline. ... Re-record the scope subtree by
- *                                                 hand, leave areas untouched ..." -- and it does
- *                                                 not name `coverage:baseline:*`
+ * **39 distinct failure paths**, plus one swallowed cleanup path that deliberately produces no
+ * failure of its own (row 32) and one shared sink (row 41). No row is *argued*: every one is
+ * staged. "Argued" is reserved for a path that could only be reached by editing the verifier,
+ * doing harm that outlives the run, or touching something the run may not modify, and none of
+ * these is. Rows are staged against scratch directories and scratch configs; nothing here names
+ * `coverage-baselines.json` or `backend-coverage-baselines.json` as a target.
  *
- * Nine runs, one record each. Rows 2a, 2b and 3 were staged with a scratch copy of
- * `coverage-areas.json`; row 9 with a scratch copy of the baseline whose recorded scope was one
- * `statementFree` entry stale; row 1 by a throwaway test, deleted afterwards, with the gate
- * measured green before and green again after. Row 2b uses a file that exists on disk and is
- * excluded, because condition 2 is measured-set membership and not filesystem existence.
+ * Module-level rows are reached by calling the exported function directly, which is a real caller:
+ * `scripts/coverage-report-tests.mjs` does the same. Their exit status is the CLI's only when they
+ * are reached through it, and row 41 records what that is. `TypeError` rows are the wrong-shape
+ * class and are recorded as what they are, not dressed up as diagnostics.
  *
- * This is not the artefact's complete failure matrix — the remaining paths are `f-20260921-02`.
- * Until that matrix exists, a green run of this script may not be cited as evidence without
- * naming what it does not cover.
+ *  #  site                what fails                          message (to its distinguishing part)
+ * --- ------------------- ---------------------------------- ------------------------------------
+ *  1  :254    assignArea   no area claims a production file   `Unmapped production file: src/other.ts`
+ *  2  :254    assignArea   two areas claim the same file      `Production file belongs to multiple
+ *                                                             coverage areas: src/utils/a.ts
+ *                                                             (utilities, second)`
+ *  3  :293                 an area's declared source is not   `Coverage area utilities has the
+ *                          the source the file came from      wrong source for src/utils/example.ts`
+ *  4  :313                 a production file has no LCOV      `Coverage data missing for production
+ *                          record at all                      files: src/utils/example.ts`
+ *  5  :329                 an undeclared blank record         `Coverage measurement is blank for
+ *                          (condition 1)                      production files: src/utils/blank.ts.`
+ *  6  :339                 a declared path outside the        `Coverage statementFree declarations
+ *                          measured set (condition 2)         are outside the measured production
+ *                                                             set: src/gone.ts.`
+ *  7  :349                 a declared path that is measured   `Coverage statementFree declarations
+ *                          and not blank (condition 3)        are no longer blank:
+ *                                                             src/utils/example.ts.`
+ *  8  :355                 a configured area with no          `Coverage data missing for area:
+ *                          measured file at all               empty`
+ *  9  :273    ->           the source root is unreadable      `EACCES: permission denied, scandir
+ *      files-below.mjs:5   (readdir at the root)              '<root>/src'`
+ * 10  files-below.mjs:5    a directory *below* the source     `EACCES: permission denied, scandir
+ *      via :9 recursion    root is unreadable                 '<root>/src/locked'`
+ * 11  :272                 config of the wrong shape: `{}`    TypeError: `config.sources is not
+ *                                                             iterable`
+ * 12  :296                 `{"sources":[],"areas":null}`      TypeError: `Cannot read properties of
+ *                                                             null (reading 'map')`
+ * 13  :277    ->           a source with no `include` list    TypeError: `Cannot read properties of
+ *      coverage-scope.mjs:34                                   undefined (reading 'some')`
+ * 14  :277    ->           a source with no `exclude` list    TypeError: `Cannot read properties of
+ *      coverage-scope.mjs:39                                   undefined (reading 'map')`
+ * 15  :187    parseLcov    given something not a string       TypeError: `Cannot read properties of
+ *                                                             null (reading 'replaceAll')`
+ * 16  :387                 the baseline's version is not 1    `Unsupported coverage baseline format`
+ *                          or it carries no `areas`
+ * 17  :390                 no recorded scope, checked         `Coverage baseline is missing its
+ *                          against a config                   recorded scope`
+ * 18  :392                 the recorded scope no longer       `Coverage measurement scope changed:
+ *                          matches the config                 source ids and roots, include globs,
+ *                                                             exclude globs, statementFree
+ *                                                             declarations, or area ids, sources,
+ *                                                             and paths ... Re-record the scope
+ *                                                             subtree by hand ...`
+ * 19  :404                 a measured area the baseline       `Missing baseline for area: utilities`
+ *                          does not carry
+ * 20  :409                 a baseline area missing one        `Missing functions baseline for area:
+ *                          metric                             utilities`
+ * 21  :441                 a covered count or ratio           `utilities lines regressed: 1/2,
+ *                          regressed                          baseline 2/2`
+ * 22  :448                 a baseline area absent from the    `Baseline references unknown area:
+ *                          report                             ghost`
+ * 23  :386                 a baseline of the wrong shape:     TypeError: `Cannot read properties of
+ *                          `null`                             null (reading 'version')`
+ * 24  :456                 an area with no                    `Missing minimum coverage for area:
+ *                          `minimumCoverage`                  utilities`
+ * 25  :458                 an area with no entry in the       `Missing coverage report for area:
+ *                          report. Reachable through the      utilities`
+ *                          exported API, not through the
+ *                          CLI, and it stays for that
+ * 26  :462                 a minimum that is not a            `Invalid lines minimum coverage for
+ *                          percentage                         area: utilities`
+ * 27  :467                 a measured area below its floor    `utilities lines is below minimum
+ *                                                             coverage: 50.00% < 80.00%`
+ * 28  :488                 the temporary write rejects        the rejection, unchanged:
+ *                                                             `writeFile refused`
+ * 29  :505                 the formatter exits non-zero       `Failed to format coverage baseline
+ *                                                             with <path>: status=23; signal=null;
+ *                                                             stderr="rejected"`
+ * 30  :505                 the formatter binary is missing    `... status=null; signal=null;
+ *                                                             stderr=""; error.code=ENOENT;
+ *                                                             error.message="spawnSync <path>
+ *                                                             ENOENT"`
+ * 31  :510                 the rename into place rejects      the rejection, unchanged:
+ *                                                             `rename refused`
+ * 32  :479                 cleanup's unlink rejects after a   **no failure of its own**: the
+ *                          failure. Deliberately swallowed    primary error is rethrown unchanged
+ *                          so it cannot replace the           (`rename refused`) and the temporary
+ *                          actionable error                   file survives as evidence
+ * 33  :524                 an option with no value            `Missing value for --config`
+ *                                                             — exit 1
+ * 34  :527                 an unknown argument                `Unknown argument: --nope` — exit 1
+ * 35  :530                 a required option omitted          `Usage: coverage-report.mjs --config
+ *                                                             <file> ...` — exit 1
+ * 36  :540                 the config file does not exist     `ENOENT: no such file or directory,
+ *                                                             open '<root>/missing.json'` — exit 1
+ * 37  :540                 the config file is not JSON        SyntaxError: `Expected property name
+ *                                                             or '}' in JSON at position 2` — exit 1
+ * 38  :542                 an LCOV file does not exist        `ENOENT: ... '<root>/missing.info'`
+ *                                                             — exit 1
+ * 39  :553                 the baseline file does not exist   `ENOENT: ... '<root>/missing.json'`
+ *                                                             — exit 1
+ * 40  :553                 the baseline file is not JSON      SyntaxError, as row 37 — exit 1
+ * 41  :567                 `main().catch` — the shared sink,  every throw above, reached through
+ *                          **not an independent failure**     the CLI, prints `error.message` on
+ *                                                             stderr and exits **1**. Measured with
+ *                                                             row 17's throw: exit 1, message on
+ *                                                             stderr, nothing on stdout
+ *
+ * **The rows the blank-measurement work added or changed were also staged against the real
+ * frontend LCOV**, not only against fixtures, because that is the artefact an operator runs. Each
+ * of rows 5, 6, 7 and 18 was run twice there, once with one offender and once with two, since a
+ * message naming only the first offender passes every single-offender run. Nine runs, one record
+ * each, all exit 1:
+ *
+ *   row 5   staged by raw-importing one never-imported production file, then two:
+ *           `... files: src/components/boards/EditingCard.tsx.` and
+ *           `... files: src/components/boards/AnnotationHint.tsx,
+ *           src/components/boards/EditingCard.tsx.` — one message, both paths, sorted. The gate
+ *           was measured green before and green again after the throwaway test was deleted.
+ *   row 6   scratch config declaring `src/does-not-exist.ts`, then it and `src/also-missing.ts`;
+ *           and separately `src/routeTree.gen.ts`, then it and `src/vite-env.d.ts` — files that
+ *           exist on disk and are excluded, because condition 2 is measured-set membership and
+ *           not filesystem existence.
+ *   row 7   scratch config declaring `src/utils/format.ts`, then it and `src/utils/chess.ts`.
+ *   row 18  a scratch baseline whose recorded scope was one `statementFree` entry stale — and the
+ *           message does **not** name `coverage:baseline:*`, which is the route this repository
+ *           denies.
+ *
+ * What this matrix does **not** cover, stated rather than implied: `parseLcov`'s tolerance of
+ * malformed counter lines, which fail no assertion and are merged as written; and the behaviour of
+ * any consumer of this script beyond its exit status and `error.message`.
  */
 import { spawnSync } from "node:child_process";
 import { readFile, rename as renameFile, unlink as unlinkFile, writeFile } from "node:fs/promises";

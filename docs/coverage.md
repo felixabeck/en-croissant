@@ -56,6 +56,13 @@ written from a broken run reports a ratio regression. So refreshing a baseline f
 measurement is the trap to avoid above all — afterwards the repair itself looks like the
 regression, and the cheapest green is to keep the instrument broken.
 
+Both gates are enforced by one script, and its own failure surface is recorded rather than
+assumed: the complete failure matrix — every path it can fail on, how each was staged, and the
+message and exit status each was seen to produce — is the header comment of
+`scripts/coverage-report.mjs`. It lives there rather than here because that is the artefact, and
+this is documentation adjacent to it. Cite that script's green result as evidence only alongside
+what the matrix says it does not cover.
+
 The blank-measurement check now enforces this class mechanically: a measured file with zero line,
 function, and branch records fails unless it is declared under `statementFree`. The residual hole
 is deliberate and narrow: condition 3 cannot tell that a declared file gained statements if it is
