@@ -272,16 +272,34 @@ test("clearSavedDataFromMenu does not clear when ask is false", async () => {
 });
 
 test("clearSavedDataFromMenu clears when ask is true", async () => {
-    let cleared = false;
-    await clearSavedDataFromMenu({
+    const clear = deferred<void>();
+    const pending = clearSavedDataFromMenu({
         ask: async () => true,
         confirmMessage: "sure?",
         title: "clear",
-        clear: () => {
-            cleared = true;
-        },
+        clear: () => clear.promise,
     });
-    expect(cleared).toBe(true);
+    let settled = false;
+    void pending.then(() => {
+        settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    clear.resolve();
+    await pending;
+    expect(settled).toBe(true);
+});
+
+test("clearSavedDataFromMenu rejects when clearing rejects", async () => {
+    const clear = deferred<void>();
+    const pending = clearSavedDataFromMenu({
+        ask: async () => true,
+        confirmMessage: "sure?",
+        title: "clear",
+        clear: () => clear.promise,
+    });
+    clear.reject(new Error("migration failed"));
+    await expect(pending).rejects.toThrow("migration failed");
 });
 
 test("bindAppMenuCallbacks returns runMenu's promise for each wired command", async () => {

@@ -212,10 +212,10 @@ export async function clearSavedDataFromMenu(deps: {
     ask: (message: string, options: { title: string }) => Promise<boolean>;
     confirmMessage: string;
     title: string;
-    clear: () => void;
+    clear: () => void | Promise<void>;
 }): Promise<void> {
     const confirmed = await deps.ask(deps.confirmMessage, { title: deps.title });
-    if (confirmed) deps.clear();
+    if (confirmed) await deps.clear();
 }
 
 export async function runNativeMenuAction(

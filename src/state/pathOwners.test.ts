@@ -1,13 +1,22 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { serializeStorageValue } from "./store/debouncedStorage";
 
-const mocks = vi.hoisted(() => ({ reconcile: vi.fn(), reconcileAttachments: vi.fn() }));
+const persistError = vi.hoisted(() => ({ report: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+    list: vi.fn(),
+    migrate: vi.fn(),
+    reconcile: vi.fn(),
+    reconcileAttachments: vi.fn(),
+}));
 vi.mock("@/platform/tauri", () => ({
     tauri: {
+        listPracticeDecks: mocks.list,
+        migratePracticeDeck: mocks.migrate,
         reconcileStartupPathOwners: mocks.reconcile,
         reconcileEngineAttachments: mocks.reconcileAttachments,
     },
 }));
+vi.mock("./persistError", () => ({ reportPersistError: persistError.report }));
 
 import {
     collectOriginalPathOwners,
@@ -15,6 +24,7 @@ import {
     resetPathOwnerInitializationForTests,
 } from "./pathOwners";
 import { resetEngineOwnerCoordinatorForTests, saveEngineOwnerValue } from "./engineOwnerStorage";
+import { ensurePracticeMigration, resetPracticeMigrationForTests } from "./practiceStorage";
 
 const path = (id: string) => ({ id });
 const fileHandle = (id: string) => ({ id: path(id), kind: "fileWorkspace" as const });
@@ -28,10 +38,20 @@ function setJson(storage: Storage, key: string, value: unknown) {
 beforeEach(() => {
     localStorage.clear();
     sessionStorage.clear();
+    mocks.list.mockReset().mockResolvedValue({ decks: [], anomalies: [] });
+    mocks.migrate.mockReset().mockResolvedValue({
+        status: "migrated",
+        entries: 0,
+        positions: 0,
+        positionsDigest: "positions",
+        entriesDigest: "entries",
+    });
     mocks.reconcile.mockReset().mockResolvedValue(null);
     mocks.reconcileAttachments.mockReset().mockResolvedValue(null);
     resetPathOwnerInitializationForTests();
     resetEngineOwnerCoordinatorForTests();
+    resetPracticeMigrationForTests();
+    persistError.report.mockReset();
 });
 
 describe("collectOriginalPathOwners", () => {
@@ -349,10 +369,99 @@ test("initialization shares one native reconciliation promise", async () => {
     const first = initializePathOwners();
     const second = initializePathOwners();
     expect(first).toBe(second);
+    await vi.waitFor(() => expect(mocks.reconcile).toHaveBeenCalledOnce());
     expect(mocks.reconcile).toHaveBeenCalledOnce();
     resolve();
     await first;
     expect(mocks.reconcileAttachments).toHaveBeenCalledOnce();
+});
+
+test("builds the practice union after migration and keeps a key inserted during the pass", async () => {
+    localStorage.setItem("deck-before-0", JSON.stringify({ positions: [], logs: [] }));
+    mocks.list.mockResolvedValue({
+        decks: [{ fileId: "native", game: 1 }],
+        anomalies: [],
+    });
+    mocks.migrate.mockImplementation(async () => {
+        localStorage.setItem("deck-during-2", JSON.stringify({ positions: [], logs: [] }));
+        return {
+            status: "migrated",
+            entries: 0,
+            positions: 0,
+            positionsDigest: "positions",
+            entriesDigest: "entries",
+        };
+    });
+
+    await ensurePracticeMigration();
+    await initializePathOwners();
+
+    const owners = mocks.reconcile.mock.calls[0][0];
+    expect(owners.retainedIds).toEqual(
+        expect.arrayContaining([{ id: "before" }, { id: "during" }, { id: "native" }]),
+    );
+    expect(owners.trustedFamilies).toContain("practiceDeck");
+});
+
+test("retains an orphan identity, distrusts practice data, and reports the anomaly once", async () => {
+    mocks.list.mockResolvedValue({
+        decks: [],
+        anomalies: [
+            {
+                kind: "OrphanShard",
+                leaf: "orphan-shard",
+                fileId: "orphan",
+                game: 3,
+            },
+        ],
+    });
+
+    await ensurePracticeMigration();
+    await initializePathOwners();
+
+    const owners = mocks.reconcile.mock.calls[0][0];
+    expect(owners.retainedIds).toContainEqual({ id: "orphan" });
+    expect(owners.trustedFamilies).not.toContain("practiceDeck");
+    expect(persistError.report).toHaveBeenCalledOnce();
+});
+
+test("does not retain an identity from an IdentityMismatch anomaly", async () => {
+    mocks.list.mockResolvedValue({
+        decks: [],
+        anomalies: [
+            {
+                kind: "IdentityMismatch",
+                leaf: "mismatched",
+                fileId: null,
+                game: null,
+            },
+        ],
+    });
+
+    await ensurePracticeMigration();
+    await initializePathOwners();
+
+    const owners = mocks.reconcile.mock.calls[0][0];
+    expect(owners.retainedIds).not.toContainEqual({ id: "mismatched" });
+    expect(owners.trustedFamilies).not.toContain("practiceDeck");
+});
+
+test("retains a native identity on the second startup after the legacy key is removed", async () => {
+    localStorage.setItem("deck-native-0", JSON.stringify({ positions: [], logs: [] }));
+    mocks.list.mockResolvedValue({
+        decks: [{ fileId: "native", game: 0 }],
+        anomalies: [],
+    });
+
+    await ensurePracticeMigration();
+    await initializePathOwners();
+    localStorage.removeItem("deck-native-0");
+    resetPathOwnerInitializationForTests();
+    mocks.reconcile.mockClear();
+
+    await initializePathOwners();
+
+    expect(mocks.reconcile.mock.calls[0][0].retainedIds).toContainEqual({ id: "native" });
 });
 
 test("a failed first add leaves absent storage trusted for fresh startup reclamation", async () => {

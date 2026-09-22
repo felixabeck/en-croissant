@@ -12,6 +12,7 @@ import i18n from "@/i18n";
 import type { ReviewLog } from "ts-fsrs";
 import { z } from "zod";
 import { type Position, positionSchema } from "@/components/files/opening";
+import { pathRefSchema } from "@/utils/pathCapabilities";
 import { getBoardState } from "@/utils/treeReducer";
 import { reportPersistError } from "./persistError";
 
@@ -56,6 +57,33 @@ export type PracticeDeckValue = {
 
 export type PracticeDeckKey = { file: string; game: number };
 
+export type PracticeLegacyDeckKey = {
+    key: string;
+    identity: PracticeDeckKey;
+};
+
+export type PracticeLegacyDeckScan = {
+    keys: PracticeLegacyDeckKey[];
+    trusted: boolean;
+    complete: boolean;
+};
+
+export type PracticeMigrationDeckOutcome = {
+    key: string;
+    identity: PracticeDeckKey;
+    status: PracticeMigrationOutcome["status"] | "failed";
+    entries?: number;
+    positions?: number;
+    error?: AppError;
+};
+
+export type PracticeMigrationPassResult = {
+    outcomes: PracticeMigrationDeckOutcome[];
+    inventory: PracticeDeckInventory | null;
+    scanTrusted: boolean;
+    inventoryTrusted: boolean;
+};
+
 export type PracticeRatingMutation = {
     type: "rating";
     positions: Position[];
@@ -78,18 +106,314 @@ export type PracticeDeckAction =
 
 const positionsDocumentSchema = z.object({ positions: positionSchema.array() });
 
-export let practiceMigrationReady: Promise<void> = Promise.resolve();
 type PracticeDeckCreationGuard = (identity: PracticeDeckKey) => Promise<void>;
 let practiceDeckCreationGuard: PracticeDeckCreationGuard = async () => undefined;
+let practiceMigrationFailures = new Map<string, AppError>();
+let practiceWritesBlocked = false;
+let reportedInventoryAnomalies = new Set<string>();
+let practiceMigrationPromise: Promise<PracticeMigrationPassResult> | undefined;
 
-/** Phase 4 registers the startup migration pass; phase 3 deliberately resolves immediately. */
-export function registerPracticeMigration(ready: Promise<void>): void {
-    practiceMigrationReady = ready;
+const LEGACY_DECK_KEY = /^deck-(.+)-(-?\d+)$/;
+
+function identityKey(identity: PracticeDeckKey): string {
+    return `${identity.file}\u0000${identity.game}`;
+}
+
+function displayIdentity(identity: PracticeDeckKey): string {
+    return `${identity.file} (${identity.game})`;
+}
+
+function errorAsAppError(error: unknown): AppError {
+    return normalizeError(error);
+}
+
+function reportMigrationFailures(
+    failures: Array<{ identity?: PracticeDeckKey; label?: string }>,
+    reasonKey:
+        | "Board.Practice.MigrationFailed"
+        | "Board.Practice.MigrationScanFailed"
+        | "Board.Practice.InventoryDamaged",
+): void {
+    const labels = failures.map(({ identity, label }) =>
+        identity ? displayIdentity(identity) : (label ?? i18n.t("Board.Practice.Data")),
+    );
+    if (typeof reportPersistError === "function") {
+        reportPersistError(
+            new Error(
+                i18n.t(reasonKey, {
+                    decks: labels.length > 0 ? labels.join(", ") : i18n.t("Board.Practice.Data"),
+                }),
+            ),
+        );
+    }
+}
+
+/** Enumerate only legacy deck key names; values are intentionally not read here. */
+export function scanLegacyPracticeDeckKeys(storage?: Storage): PracticeLegacyDeckScan {
+    const keys: PracticeLegacyDeckKey[] = [];
+    let trusted = true;
+    try {
+        const source = storage ?? globalThis.localStorage;
+        for (let index = 0; index < source.length; index += 1) {
+            const key = source.key(index);
+            if (!key?.startsWith("deck-")) continue;
+            const match = LEGACY_DECK_KEY.exec(key);
+            const game = match ? Number(match[2]) : Number.NaN;
+            if (
+                !match ||
+                !Number.isSafeInteger(game) ||
+                !pathRefSchema.safeParse({ id: match[1] }).success
+            ) {
+                trusted = false;
+                continue;
+            }
+            keys.push({ key, identity: { file: match[1], game } });
+        }
+        return { keys, trusted, complete: true };
+    } catch {
+        return { keys, trusted: false, complete: false };
+    }
+}
+
+export function reportPracticeInventoryAnomalies(inventory: PracticeDeckInventory): void {
+    const newAnomalies = inventory.anomalies.filter((anomaly) => {
+        const key = `${anomaly.kind}\u0000${anomaly.leaf}`;
+        if (reportedInventoryAnomalies.has(key)) return false;
+        reportedInventoryAnomalies.add(key);
+        return true;
+    });
+    if (newAnomalies.length === 0) return;
+    for (const anomaly of newAnomalies) {
+        if (anomaly.fileId !== null && anomaly.game !== null) {
+            practiceMigrationFailures.set(
+                identityKey({ file: anomaly.fileId, game: anomaly.game }),
+                errorAsAppError(new Error(i18n.t("Board.Practice.InventoryDamaged"))),
+            );
+        }
+    }
+    reportMigrationFailures(
+        newAnomalies.map((anomaly) =>
+            anomaly.fileId !== null && anomaly.game !== null
+                ? { identity: { file: anomaly.fileId, game: anomaly.game } }
+                : { label: anomaly.leaf },
+        ),
+        "Board.Practice.InventoryDamaged",
+    );
+}
+
+function inventoryIdentity(identity: { fileId: string; game: number }): string {
+    return identityKey({ file: identity.fileId, game: identity.game });
+}
+
+function healthyNativeIdentities(inventory: PracticeDeckInventory): Set<string> {
+    const damaged = new Set(
+        inventory.anomalies
+            .filter((anomaly) => anomaly.fileId !== null && anomaly.game !== null)
+            .map((anomaly) => inventoryIdentity({ fileId: anomaly.fileId!, game: anomaly.game! })),
+    );
+    return new Set(
+        inventory.decks.map(inventoryIdentity).filter((identity) => !damaged.has(identity)),
+    );
+}
+
+function legacyDocument(
+    storage: Storage,
+    legacy: PracticeLegacyDeckKey,
+): { raw: string; data: PracticeData } {
+    const raw = storage.getItem(legacy.key);
+    if (raw === null) {
+        throw new Error(i18n.t("Board.Practice.MigrationValueMissing"));
+    }
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(raw) as unknown;
+    } catch (error) {
+        throw new Error(i18n.t("Board.Practice.MigrationValueInvalid"), { cause: error });
+    }
+    const result = practiceDataSchema.safeParse(parsed);
+    if (!result.success) {
+        throw new Error(i18n.t("Board.Practice.MigrationValueInvalid"), { cause: result.error });
+    }
+    return { raw, data: result.data as unknown as PracticeData };
+}
+
+function outcomeForHeldDeck(legacy: PracticeLegacyDeckKey): PracticeMigrationDeckOutcome {
+    return { key: legacy.key, identity: legacy.identity, status: "alreadyMigrated" };
+}
+
+async function migrateLegacyDeck(
+    storage: Storage,
+    legacy: PracticeLegacyDeckKey,
+): Promise<PracticeMigrationDeckOutcome> {
+    try {
+        const document = legacyDocument(storage, legacy);
+        const outcome = await migratePracticeDeck(
+            legacy.identity.file,
+            legacy.identity.game,
+            document.raw,
+        );
+        if (
+            outcome.status === "migrated" &&
+            (outcome.entries !== document.data.logs.length ||
+                outcome.positions !== document.data.positions.length)
+        ) {
+            throw new Error(i18n.t("Board.Practice.MigrationCountMismatch"));
+        }
+        practiceMigrationFailures.delete(identityKey(legacy.identity));
+        return {
+            key: legacy.key,
+            identity: legacy.identity,
+            status: outcome.status,
+            entries: outcome.entries,
+            positions: outcome.positions,
+        };
+    } catch (error) {
+        const appError = errorAsAppError(error);
+        practiceMigrationFailures.set(identityKey(legacy.identity), appError);
+        return { key: legacy.key, identity: legacy.identity, status: "failed", error: appError };
+    }
+}
+
+async function migrationPass(): Promise<PracticeMigrationPassResult> {
+    const scan = scanLegacyPracticeDeckKeys();
+    let inventory: PracticeDeckInventory | null = null;
+    let inventoryTrusted = true;
+    let globalFailure: string | undefined;
+    try {
+        inventory = await listPracticeDecks();
+        reportPracticeInventoryAnomalies(inventory);
+    } catch (error) {
+        inventoryTrusted = false;
+        practiceWritesBlocked = true;
+        globalFailure = errorAsAppError(error).message;
+    }
+
+    if (!scan.complete || !scan.trusted) {
+        practiceWritesBlocked = true;
+        if (!scan.complete) globalFailure ??= "saved-data enumeration failed";
+        else globalFailure ??= "saved-data enumeration found an invalid deck key";
+    }
+
+    const outcomes: PracticeMigrationDeckOutcome[] = [];
+    if (scan.complete && inventoryTrusted && inventory) {
+        const held = healthyNativeIdentities(inventory);
+        let storage: Storage | null;
+        try {
+            storage = globalThis.localStorage;
+        } catch {
+            storage = null;
+        }
+        if (!storage) {
+            practiceWritesBlocked = true;
+            globalFailure ??= "saved-data storage is unavailable";
+        } else {
+            for (const legacy of scan.keys) {
+                const outcome = held.has(identityKey(legacy.identity))
+                    ? outcomeForHeldDeck(legacy)
+                    : await migrateLegacyDeck(storage, legacy);
+                outcomes.push(outcome);
+            }
+        }
+    } else {
+        for (const legacy of scan.keys) {
+            const error = new Error(i18n.t("Board.Practice.MigrationScanFailed"));
+            const appError = errorAsAppError(error);
+            practiceMigrationFailures.set(identityKey(legacy.identity), appError);
+            outcomes.push({
+                key: legacy.key,
+                identity: legacy.identity,
+                status: "failed",
+                error: appError,
+            });
+        }
+    }
+
+    const failures = outcomes.filter((outcome) => outcome.status === "failed");
+    if (globalFailure) {
+        reportMigrationFailures(
+            [
+                { label: globalFailure },
+                ...failures.map((failure) => ({ identity: failure.identity })),
+            ],
+            "Board.Practice.MigrationScanFailed",
+        );
+    } else if (failures.length > 0) {
+        reportMigrationFailures(
+            failures.map((failure) => ({ identity: failure.identity })),
+            "Board.Practice.MigrationFailed",
+        );
+    }
+    if (scan.complete && scan.trusted && inventoryTrusted) practiceWritesBlocked = false;
+    return { outcomes, inventory, scanTrusted: scan.trusted, inventoryTrusted };
+}
+
+function startPracticeMigrationPass(): Promise<PracticeMigrationPassResult> {
+    const run = migrationPass().catch((error) => {
+        practiceWritesBlocked = true;
+        const appError = errorAsAppError(error);
+        reportMigrationFailures(
+            [{ label: appError.message }],
+            "Board.Practice.MigrationScanFailed",
+        );
+        return {
+            outcomes: [],
+            inventory: null,
+            scanTrusted: false,
+            inventoryTrusted: false,
+        } satisfies PracticeMigrationPassResult;
+    });
+    return run;
+}
+
+export function ensurePracticeMigration(): Promise<PracticeMigrationPassResult> {
+    practiceMigrationPromise ??= startPracticeMigrationPass();
+    return practiceMigrationPromise;
+}
+
+export function runPracticeMigrationPass(): Promise<PracticeMigrationPassResult> {
+    const run = startPracticeMigrationPass();
+    practiceMigrationPromise ??= run;
+    return run;
+}
+
+function migrationBlock(identity: PracticeDeckKey): Error | null {
+    if (practiceWritesBlocked) return new Error(i18n.t("Board.Practice.MigrationScanFailed"));
+    const failure = practiceMigrationFailures.get(identityKey(identity));
+    return failure ? new Error(failure.message, { cause: failure }) : null;
+}
+
+async function migrateLegacyDeckInline(identity: PracticeDeckKey): Promise<void> {
+    const scan = scanLegacyPracticeDeckKeys();
+    if (!scan.complete) {
+        practiceWritesBlocked = true;
+        throw new Error(i18n.t("Board.Practice.MigrationScanFailed"));
+    }
+    const legacy = scan.keys.find((entry) => identityKey(entry.identity) === identityKey(identity));
+    if (!legacy) return;
+
+    if (!scan.trusted) practiceWritesBlocked = true;
+
+    let inventory: PracticeDeckInventory;
+    try {
+        inventory = await listPracticeDecks();
+    } catch (error) {
+        practiceWritesBlocked = true;
+        throw error;
+    }
+    if (healthyNativeIdentities(inventory).has(identityKey(identity))) return;
+
+    const outcome = await migrateLegacyDeck(globalThis.localStorage, legacy);
+    if (outcome.status === "failed") {
+        throw new Error(outcome.error?.message ?? i18n.t("Board.Practice.MigrationFailed"));
+    }
 }
 
 export function resetPracticeMigrationForTests(): void {
-    practiceMigrationReady = Promise.resolve();
-    practiceDeckCreationGuard = async () => undefined;
+    practiceMigrationPromise = undefined;
+    practiceMigrationFailures = new Map();
+    practiceWritesBlocked = false;
+    reportedInventoryAnomalies = new Set();
+    practiceDeckCreationGuard = migrateLegacyDeckInline;
 }
 
 /** Phase 4 registers the legacy-key recheck used immediately before first deck creation. */
@@ -288,7 +612,9 @@ class PracticeRatingDroppedError extends Error {
 
 async function hydrate(identity: PracticeDeckKey): Promise<PracticeDeckValue> {
     if (identity.file === "") return emptyDeck("ready");
-    await practiceMigrationReady;
+    await ensurePracticeMigration();
+    const blocked = migrationBlock(identity);
+    if (blocked) throw blocked;
     const snapshot = await loadPracticeDeck(identity.file, identity.game);
     return snapshot ? deckFromSnapshot(snapshot) : emptyDeck("ready");
 }
@@ -377,6 +703,7 @@ async function persistSync(
         return readyState(committed, committed.positions);
     }
     if (committed.revision === 0 && committed.generation === 0) {
+        await ensurePracticeMigration();
         await practiceDeckCreationGuard(identity);
     }
     const committedCards = new Map(
@@ -674,3 +1001,5 @@ export function createPracticeDeckAtom(
     );
     return deckAtom;
 }
+
+practiceDeckCreationGuard = migrateLegacyDeckInline;

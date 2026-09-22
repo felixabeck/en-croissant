@@ -1424,9 +1424,6 @@ fn migration_outcome(
     })
 }
 
-// Phase 4 replaces the command placeholder with the migration workflow and uses this store
-// function.
-#[allow(dead_code)]
 pub(crate) fn migrate_practice_deck_in(
     directory: &AuthorizedDir,
     file_id: &str,
@@ -1650,9 +1647,6 @@ fn anomaly(
     }
 }
 
-// Phase 4 replaces the command placeholder with the enumeration workflow and uses this store
-// function.
-#[allow(dead_code)]
 pub(crate) fn list_practice_decks_in(
     directory: &AuthorizedDir,
 ) -> Result<PracticeDeckInventory, Error> {
@@ -2072,19 +2066,15 @@ pub async fn migrate_practice_deck(
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<PracticeMigrationOutcome, Error> {
     let authority = Arc::clone(&state.pgn_path_authority);
+    let authorization_file_id = file_id.clone();
     run_accepted_practice_command(
         app,
         authority,
         &state.operations,
         "migrate_practice_deck",
-        Some(file_id),
+        Some(authorization_file_id),
         false,
-        move |_| {
-            let _ = (game, legacy_document);
-            Err(Error::Conflict(
-                "practice migration is not enabled yet".into(),
-            ))
-        },
+        move |directory| migrate_practice_deck_in(directory, &file_id, game, &legacy_document),
     )
     .await
 }
@@ -2153,11 +2143,7 @@ pub async fn list_practice_decks(
         "list_practice_decks",
         None,
         false,
-        move |_| {
-            Err(Error::Conflict(
-                "practice migration is not enabled yet".into(),
-            ))
-        },
+        list_practice_decks_in,
     )
     .await
 }

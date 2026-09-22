@@ -14,6 +14,13 @@ import {
     collectOriginalEngineOwnerSnapshot,
     reconcileStartupEngineAttachments,
 } from "./engineOwnerStorage";
+import {
+    ensurePracticeMigration,
+    listPracticeDecks,
+    reportPracticeInventoryAnomalies,
+    scanLegacyPracticeDeckKeys,
+    type PracticeLegacyDeckScan,
+} from "./practiceStorage";
 
 type StorageRead = { present: false } | { present: true; value: unknown } | { failed: true };
 
@@ -175,23 +182,6 @@ function collectOriginalSnapshots(local?: Storage, session?: Storage): OriginalO
         ),
     );
 
-    let deckTrusted = true;
-    try {
-        for (let index = 0; index < local.length; index++) {
-            const key = local.key(index);
-            if (!key?.startsWith("deck-")) continue;
-            const match = /^deck-(.+)-(-?\d+)$/.exec(key);
-            if (!match || !pathRefSchema.safeParse({ id: match[1] }).success) {
-                deckTrusted = false;
-                continue;
-            }
-            ids.add(match[1]);
-        }
-    } catch {
-        deckTrusted = false;
-    }
-    trust("practiceDeck", deckTrusted);
-
     return {
         pathOwners: {
             retainedIds: [...ids].sort().map((id) => ({ id })),
@@ -202,7 +192,16 @@ function collectOriginalSnapshots(local?: Storage, session?: Storage): OriginalO
 }
 
 export function collectOriginalPathOwners(local?: Storage, session?: Storage): StartupPathOwners {
-    return collectOriginalSnapshots(local, session).pathOwners;
+    const snapshots = collectOriginalSnapshots(local, session).pathOwners;
+    const scan = scanLegacyPracticeDeckKeys(local);
+    const retainedIds = new Set(snapshots.retainedIds.map(({ id }) => id));
+    scan.keys.forEach(({ identity }) => retainedIds.add(identity.file));
+    return {
+        retainedIds: [...retainedIds].sort().map((id) => ({ id })),
+        trustedFamilies: scan.trusted
+            ? [...new Set([...snapshots.trustedFamilies, "practiceDeck" as const])].sort()
+            : snapshots.trustedFamilies,
+    };
 }
 
 const originalSnapshots = collectOriginalSnapshots();
@@ -212,8 +211,37 @@ export const originalEngineAttachmentIds = originalSnapshots.engineAttachmentIds
 let initialization: Promise<void> | undefined;
 export function initializePathOwners(): Promise<void> {
     if (!initialization) {
-        const owners = tauri.reconcileStartupPathOwners(originalPathOwnersSnapshot);
-        initialization = reconcileStartupEngineAttachments(originalEngineAttachmentIds, owners);
+        initialization = (async () => {
+            await ensurePracticeMigration();
+
+            let inventory: Awaited<ReturnType<typeof listPracticeDecks>> | null = null;
+            let inventoryTrusted = true;
+            try {
+                inventory = await listPracticeDecks();
+                reportPracticeInventoryAnomalies(inventory);
+            } catch {
+                inventoryTrusted = false;
+            }
+            const scan: PracticeLegacyDeckScan = scanLegacyPracticeDeckKeys();
+            const retainedIds = new Set(originalPathOwnersSnapshot.retainedIds.map(({ id }) => id));
+            inventory?.decks.forEach(({ fileId }) => retainedIds.add(fileId));
+            inventory?.anomalies.forEach((anomaly) => {
+                if (anomaly.kind === "OrphanShard" && anomaly.fileId) {
+                    retainedIds.add(anomaly.fileId);
+                }
+            });
+            scan.keys.forEach(({ identity }) => retainedIds.add(identity.file));
+
+            const trustedFamilies = new Set(originalPathOwnersSnapshot.trustedFamilies);
+            if (inventoryTrusted && scan.trusted && inventory && inventory.anomalies.length === 0) {
+                trustedFamilies.add("practiceDeck");
+            }
+            const owners = tauri.reconcileStartupPathOwners({
+                retainedIds: [...retainedIds].sort().map((id) => ({ id })),
+                trustedFamilies: [...trustedFamilies].sort(),
+            });
+            await reconcileStartupEngineAttachments(originalEngineAttachmentIds, owners);
+        })();
     }
     const current = initialization;
     return current;

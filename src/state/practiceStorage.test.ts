@@ -1,7 +1,9 @@
 import { createStore } from "jotai";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { ReviewLog } from "ts-fsrs";
+import type { PracticeMigrationOutcome } from "@/bindings";
 import type { Position } from "@/components/files/opening";
+import { createZodStorage } from "./utils";
 
 const native = vi.hoisted(() => ({
     acknowledge: vi.fn(),
@@ -39,10 +41,12 @@ vi.mock("@/i18n", () => ({
 
 import {
     createPracticeDeckAtom,
+    ensurePracticeMigration,
+    practiceDataSchema,
     PRACTICE_MAX_CONFLICT_RETRIES,
     PRACTICE_SYNC_DEBOUNCE_MS,
-    registerPracticeMigration,
     resetPracticeMigrationForTests,
+    runPracticeMigrationPass,
     type PracticeDeckValue,
     type PracticeRatingMutation,
 } from "./practiceStorage";
@@ -102,7 +106,26 @@ function deferred<T>() {
     return { promise, reject, resolve };
 }
 
+function legacyData() {
+    return { positions: [position()], logs: [{ fen: firstFen, rating: 3 }] };
+}
+
+function migrationOutcome(
+    overrides: Partial<PracticeMigrationOutcome> = {},
+): PracticeMigrationOutcome {
+    return {
+        status: "migrated",
+        entries: 1,
+        positions: 1,
+        positionsDigest: "positions-digest",
+        entriesDigest: "entries-digest",
+        ...overrides,
+    };
+}
+
 beforeEach(() => {
+    localStorage.clear();
+    sessionStorage.clear();
     native.acknowledge.mockReset().mockResolvedValue(null);
     native.load.mockReset();
     native.loadReviews.mockReset();
@@ -121,21 +144,18 @@ afterEach(() => {
 });
 
 describe("the real practice deck atom", () => {
-    test("hydrates after migration readiness and reloads on a new mount", async () => {
-        let releaseMigration!: () => void;
-        const migration = new Promise<void>((resolve) => {
-            releaseMigration = resolve;
-        });
-        registerPracticeMigration(migration);
+    test("a deck hydration starts and waits for the startup migration pass", async () => {
+        const migration = deferred<{ decks: never[]; anomalies: never[] }>();
+        native.list.mockReturnValueOnce(migration.promise);
         const first = position();
         native.load.mockResolvedValue(snapshot([first]));
 
         const mounted = mountDeck();
         expect(mounted.store.get(mounted.atom).status).toBe("loading");
-        await Promise.resolve();
+        await vi.waitFor(() => expect(native.list).toHaveBeenCalledOnce());
         expect(native.load).not.toHaveBeenCalled();
 
-        releaseMigration();
+        migration.resolve({ decks: [], anomalies: [] });
         await waitForReady(mounted.store, mounted.atom);
         expect(mounted.store.get(mounted.atom).positions).toEqual([first]);
         mounted.unsubscribe();
@@ -146,6 +166,12 @@ describe("the real practice deck atom", () => {
         expect(native.load).toHaveBeenCalledTimes(2);
         expect(reloaded.store.get(reloaded.atom).revision).toBe(9);
         reloaded.unsubscribe();
+        expect(await ensurePracticeMigration()).toEqual({
+            outcomes: [],
+            inventory: { decks: [], anomalies: [] },
+            scanTrusted: true,
+            inventoryTrusted: true,
+        });
     });
 
     test("does not call native storage for an empty tab identity", async () => {
@@ -499,5 +525,135 @@ describe("the real practice deck atom", () => {
         await Promise.resolve();
         expect(second.store.get(second.atom).positions[0]?.fen).toBe(sameBoardDifferentFen);
         second.unsubscribe();
+    });
+});
+
+describe("the eager legacy migration pass", () => {
+    test("isolates a failed first deck and still migrates later decks", async () => {
+        localStorage.setItem("deck-first-0", JSON.stringify(legacyData()));
+        localStorage.setItem("deck-later-1", JSON.stringify(legacyData()));
+        native.list.mockResolvedValue({ decks: [], anomalies: [] });
+        native.migrate
+            .mockRejectedValueOnce(new Error("first deck failed"))
+            .mockResolvedValueOnce(migrationOutcome());
+
+        const result = await runPracticeMigrationPass();
+
+        expect(native.migrate).toHaveBeenCalledTimes(2);
+        expect(result.outcomes.map(({ status }) => status)).toEqual(["failed", "migrated"]);
+        expect(persistError.report).toHaveBeenCalledOnce();
+        const blocked = mountDeck("first", 0);
+        await vi.waitFor(() => expect(blocked.store.get(blocked.atom).status).toBe("read-failed"));
+        await blocked.store.set(blocked.atom, { type: "sync", positions: [position()] });
+        expect(native.sync).not.toHaveBeenCalled();
+        blocked.unsubscribe();
+    });
+
+    test("parses the real createZodStorage JSON.stringify representation", async () => {
+        createZodStorage(practiceDataSchema, localStorage).setItem(
+            "deck-real-0",
+            legacyData() as never,
+        );
+        native.list.mockResolvedValue({ decks: [], anomalies: [] });
+        native.migrate.mockResolvedValue(migrationOutcome());
+
+        await runPracticeMigrationPass();
+
+        expect(native.migrate).toHaveBeenCalledWith("real", 0, JSON.stringify(legacyData()));
+    });
+
+    test("continues past malformed keys while retaining valid keys and distrusting the family", async () => {
+        localStorage.setItem("deck-before-0", JSON.stringify(legacyData()));
+        localStorage.setItem("deck-malformed", JSON.stringify(legacyData()));
+        localStorage.setItem("deck-held-1", JSON.stringify(legacyData()));
+        native.list.mockResolvedValue({
+            decks: [{ fileId: "held", game: 1 }],
+            anomalies: [],
+        });
+        native.migrate.mockResolvedValue(migrationOutcome());
+
+        const result = await runPracticeMigrationPass();
+
+        expect(native.migrate).toHaveBeenCalledWith("before", 0, JSON.stringify(legacyData()));
+        expect(native.migrate).toHaveBeenCalledTimes(1);
+        expect(result.outcomes).toEqual([
+            expect.objectContaining({ identity: { file: "before", game: 0 }, status: "migrated" }),
+            expect.objectContaining({
+                identity: { file: "held", game: 1 },
+                status: "alreadyMigrated",
+            }),
+        ]);
+        expect(result.scanTrusted).toBe(false);
+        expect(persistError.report).toHaveBeenCalledOnce();
+    });
+
+    test("fails closed when whole-storage enumeration throws", async () => {
+        const originalLength = Object.getOwnPropertyDescriptor(Storage.prototype, "length");
+        Object.defineProperty(Storage.prototype, "length", {
+            configurable: true,
+            get: () => {
+                throw new Error("enumeration denied");
+            },
+        });
+        native.list.mockResolvedValue({ decks: [], anomalies: [] });
+        try {
+            const result = await runPracticeMigrationPass();
+            expect(result.scanTrusted).toBe(false);
+            const mounted = mountDeck("unseen", 0);
+            await vi.waitFor(() =>
+                expect(mounted.store.get(mounted.atom).status).toBe("read-failed"),
+            );
+            await mounted.store.set(mounted.atom, { type: "sync", positions: [position()] });
+            expect(native.sync).not.toHaveBeenCalled();
+            mounted.unsubscribe();
+        } finally {
+            if (originalLength) Object.defineProperty(Storage.prototype, "length", originalLength);
+        }
+    });
+
+    test("treats a migrated count mismatch as a failed, write-blocked deck", async () => {
+        localStorage.setItem("deck-count-0", JSON.stringify(legacyData()));
+        native.list.mockResolvedValue({ decks: [], anomalies: [] });
+        native.migrate.mockResolvedValue(migrationOutcome({ entries: 2 }));
+
+        const result = await runPracticeMigrationPass();
+
+        expect(result.outcomes[0]?.status).toBe("failed");
+        const mounted = mountDeck("count", 0);
+        await vi.waitFor(() => expect(mounted.store.get(mounted.atom).status).toBe("read-failed"));
+        mounted.unsubscribe();
+    });
+
+    test("does not count-compare an AlreadyMigrated outcome", async () => {
+        localStorage.setItem("deck-already-0", JSON.stringify(legacyData()));
+        native.list.mockResolvedValue({ decks: [], anomalies: [] });
+        native.migrate.mockResolvedValue(
+            migrationOutcome({ status: "alreadyMigrated", entries: 99, positions: 77 }),
+        );
+
+        const result = await runPracticeMigrationPass();
+
+        expect(result.outcomes[0]).toEqual(
+            expect.objectContaining({ status: "alreadyMigrated", entries: 99, positions: 77 }),
+        );
+        expect(persistError.report).not.toHaveBeenCalled();
+    });
+
+    test("rechecks and migrates a legacy key immediately before native creation", async () => {
+        native.load.mockResolvedValue(null);
+        native.list.mockResolvedValue({ decks: [], anomalies: [] });
+        native.migrate.mockResolvedValue(migrationOutcome());
+        const mounted = mountDeck("appeared", 0);
+        await waitForReady(mounted.store, mounted.atom);
+        localStorage.setItem("deck-appeared-0", JSON.stringify(legacyData()));
+        vi.useFakeTimers();
+
+        const write = mounted.store.set(mounted.atom, { type: "sync", positions: [position()] });
+        await vi.advanceTimersByTimeAsync(PRACTICE_SYNC_DEBOUNCE_MS);
+        await write;
+
+        expect(native.migrate).toHaveBeenCalledWith("appeared", 0, JSON.stringify(legacyData()));
+        expect(native.sync).toHaveBeenCalledOnce();
+        mounted.unsubscribe();
     });
 });
