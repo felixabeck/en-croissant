@@ -140,6 +140,58 @@ folded into that round.
 * **O5** — thirteen cases in `scripts/coverage-report-tests.mjs`.
 * **O6** — `docs/coverage.md` and `CLAUDE.md:74`, whose "only guard" sentences become false.
 
+## The implementation run, 2026-09-22 — appended after the record was first written
+
+No further review round ran: round 19 had closed with both lenses APPROVED and every issue of the
+I–AJ series dispositioned. What follows is what implementation added to the history, recorded here
+because `tasks/plans/` is gitignored and this file is the durable end of that thread.
+
+**Commits**, in order: the record above; `feat(coverage)` (Phase 1, the guard); `fix(coverage)`
+(Phase 2a, the baseline writer, closing `f-20260921-01`); `refactor(coverage)` (Phase 2b, the dead
+check, part of `f-20260921-02`); `docs(coverage)` (Phase 3, the failure matrix, closing
+`f-20260921-02`); then one commit per ledger mutation.
+
+**Decisions allocated:** `d-20260922-04` (the declaration list over three more `exclude` entries),
+`d-20260922-05` (the residual hole shipped, stated and pinned — the I1/J3 arbitration),
+`d-20260922-06` (Phases 2a, 2b and 3 in the run under rule 4b, not as mandate obligations),
+`d-20260922-07` (the negative control's three runs, with exit statuses and stderr, and the
+`format.ts` experiment), `d-20260922-08` (the partial supersession of `d-20260830-08`'s "only
+guard" clause, which `set-trailer` records at the target).
+
+**The negative control ran, and the plan's `X6` limitation is discharged.** Green before, exit 0;
+a throwaway `?raw` import of `src/components/boards/EditingCard.tsx` took it from `LF:19` to blank
+and the gate to exit 1 naming exactly that file; a second never-imported file beside it produced
+one message naming both, sorted; green restored, exit 0. Full text in `d-20260922-07`.
+
+**The `format.ts` experiment came out the way `review-tests` suspected in round 8, and the plan was
+right to keep it over `review-minimalism`'s X11 objection.** Raw-importing a file that other tests
+import as a module does **not** blank it: `format.ts` kept `LF:56 LH:19 FNF:18 FNH:6 BRF:35 BRH:7`
+and the gate stayed green. Only a file absent from the v8 map can be blanked. `docs/coverage.md`
+described the class more widely than that and was corrected in the Phase 1 commit — so the
+"finding about the existing paragraph" the plan anticipated was handled in place rather than filed,
+the paragraph being inside the commit's own scope.
+
+**Downstream rework, the metric the record left open.** Two defects in the delegated Phase 1 work,
+both caught by the orchestrator's diff review before the commit, neither traceable to the plan:
+the existing exclude-driven scope-mismatch assertion had been *replaced* by the new
+`statementFree` one instead of joined by it, and the corrected `CLAUDE.md` sentence read badly.
+Both are one-line repairs. No plan obligation was found wrong during implementation, and no
+acceptance criterion had to be renegotiated.
+
+**One departure from the plan's letter, recorded rather than left to be noticed.** The plan's
+acceptance criterion 5 calls row 9 "a scratch config whose `statementFree` differs from the
+committed baseline's recorded `scope`". No such config exists: adding a declaration trips
+condition 2 or 3, removing one trips condition 1, and the order is normalised — so a config with a
+different list cannot reach `assertBaseline` at all. The row was staged the other way round, with a
+scratch *baseline* whose recorded scope is one `statementFree` entry stale, which is also the
+realistic case: the config edited and the baseline not re-recorded. The obligation — that the
+rewritten message be proved at the CLI, with its stderr and exit status — is met in full.
+
+**The matrix is larger than the plan's upper bound, as the plan expected.** Rebuilt from the source
+rather than from `f-20260921-02`'s table: **39 distinct failure paths**, all staged and none argued,
+plus one swallowed cleanup path and one shared sink. The plan named "roughly 36 plus one shared
+sink" as an upper bound on a table that had never been rebuilt.
+
 ---
 
 The remainder of this file is the plan's `## Reviews` section, verbatim.
