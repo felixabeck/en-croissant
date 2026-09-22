@@ -309,18 +309,23 @@ test("counts two same-named functions declared on one line as two", () => {
   assert.deepEqual(declarations[0].metrics.functions, { covered: 1, total: 2 });
 });
 
-test("keeps two declarations apart when a field value contains the joining character", () => {
-  // `FN:<line>,<name>` splits on the first comma, so `FN:1,f:g` is line `1`, name `f:g`, while
-  // `FN:1:f,g` is line `1:f`, name `g` -- two different declarations. Joining identity fields with
-  // a colon gave both `1:f:g:0`, and since the per-declaration counter restarts in each record,
-  // merging two records for one file then reported one function where there are two. Within a
-  // single record the counter hid it; across records it does not, which is exactly the merge this
-  // report now performs for two spellings of one path.
-  const declarations = parseLcov(
-    "TN:\nSF:a.ts\nFN:1,f:g\nFNDA:1,f:g\nend_of_record\n" +
-      "TN:\nSF:a.ts\nFN:1:f,g\nFNDA:0,g\nend_of_record\n",
-  );
-  assert.deepEqual(declarations[0].metrics.functions, { covered: 1, total: 2 });
+test("keeps two declarations apart whatever characters their field values contain", () => {
+  // Identities are assembled from unvalidated LCOV field values, so no separator is safe: for any
+  // choice there is an input containing it. `FN:<line>,<name>` splits on the first comma, so each
+  // pair below is two different declarations that a joined key collapses into one -- and because
+  // the per-declaration counter restarts in each record, the collapse only shows once two records
+  // for one file are merged, which is exactly what this report now does for two spellings of one
+  // path.
+  for (const [first, second] of [
+    ["1,f:g", "1:f,g"],
+    ["1,a\u0000b", "1\u0000a,b"],
+  ]) {
+    const declarations = parseLcov(
+      `TN:\nSF:a.ts\nFN:${first}\nFNDA:1,${first.split(",")[1]}\nend_of_record\n` +
+        `TN:\nSF:a.ts\nFN:${second}\nFNDA:0,${second.split(",")[1]}\nend_of_record\n`,
+    );
+    assert.deepEqual(declarations[0].metrics.functions, { covered: 1, total: 2 });
+  }
 });
 
 test("gives a function the same identity whatever order the records declare it in", async () => {

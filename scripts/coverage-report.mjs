@@ -65,7 +65,7 @@
  * 14b :361                 a `statementFree` entry that is     TypeError: `Cannot destructure
  *                          not an object: `[null]`            property 'path' of 'object null' as
  *                                                             it is null.`
- * 15  :211    parseLcov    given something not a string       TypeError: `Cannot read properties of
+ * 15  :214    parseLcov    given something not a string       TypeError: `Cannot read properties of
  *                                                             null (reading 'replaceAll')`
  * 16  :431                 the baseline's version is not 1    `Unsupported coverage baseline format`
  *                          or it carries no `areas`
@@ -158,8 +158,10 @@
  *           denies.
  *
  * What this matrix does **not** cover, stated rather than implied: `parseLcov`'s tolerance of
- * malformed counter lines, which fail no assertion and are merged as written; and the behaviour of
- * any consumer of this script beyond its exit status and `error.message`.
+ * malformed counter lines, which fail no assertion and are merged as written — a non-numeric hit
+ * count is coerced, and an `FNDA` with no matching `FN` in its record becomes a phantom function
+ * (`f-20260922-05`) — and the behaviour of any consumer of this script beyond its exit status and
+ * `error.message`.
  */
 import { spawnSync } from "node:child_process";
 import { readFile, rename as renameFile, unlink as unlinkFile, writeFile } from "node:fs/promises";
@@ -170,11 +172,12 @@ import { filesBelow } from "./files-below.mjs";
 
 const METRICS = ["lines", "functions", "branches"];
 
-// Counter identities are built from LCOV field values, which are unvalidated text that may itself
-// contain a colon. Joining them on a character no field can hold keeps two different declarations
-// from colliding on one identity -- `FN:1:f,f` and `FN:1,f` are two functions, and a colon-joined
-// key made the second one look like a repeat of the first.
-const FIELD = "\u0000";
+// Counter identities are built from LCOV field values, which are unvalidated text: a field may
+// contain any character, including whatever separator the identity would otherwise be joined on.
+// `FN:1:f,f` and `FN:1,f` are two declarations that a colon-joined key merged into one, and every
+// other separator has an input that does the same to it. Encoding the fields as a JSON array is
+// injective for arbitrary strings, so the question does not arise again.
+const identity = (...fields) => JSON.stringify(fields);
 
 function emptyMetrics() {
   return Object.fromEntries(METRICS.map((metric) => [metric, { covered: 0, total: 0 }]));
@@ -233,7 +236,7 @@ export function parseLcov(lcov, identify = (file) => file) {
     if (!report) continue;
     if (key === "DA") {
       const [line, hits, checksum = ""] = value.split(",");
-      addCounter(report.lines, `${line}${FIELD}${checksum}`, Number(hits));
+      addCounter(report.lines, identity(line, checksum), Number(hits));
     } else if (key === "FN") {
       // The occurrence index counts same-named declarations *on the same line*, not same-named
       // declarations anywhere in the file. Both spellings disambiguate the only case that needs
@@ -244,28 +247,25 @@ export function parseLcov(lcov, identify = (file) => file) {
       // that is what pairs an `FNDA` line with its `FN`.
       const [line, name] = value.split(",");
       const functionsWithName = report.functionIdsByName.get(name) ?? [];
-      const declarationKey = `${line}${FIELD}${name}`;
+      const declarationKey = identity(line, name);
       const sameLine = report.functionsByDeclaration.get(declarationKey) ?? 0;
-      const identity = `${declarationKey}${FIELD}${sameLine}`;
+      const functionIdentity = identity(line, name, sameLine);
       report.functionsByDeclaration.set(declarationKey, sameLine + 1);
-      report.functions.set(identity, 0);
-      functionsWithName.push(identity);
+      report.functions.set(functionIdentity, 0);
+      functionsWithName.push(functionIdentity);
       report.functionIdsByName.set(name, functionsWithName);
     } else if (key === "FNDA") {
       const [hits, name] = value.split(",");
       const occurrence = report.functionDataOccurrences.get(name) ?? 0;
-      const identity =
-        report.functionIdsByName.get(name)?.[occurrence] ??
-        `${FIELD}unmatched${FIELD}${name}${FIELD}${occurrence}`;
+      // `null` where a declaration would carry its line: no `FN` line can produce it, so an
+      // `FNDA` with no matching declaration cannot collide with a real function.
+      const functionIdentity =
+        report.functionIdsByName.get(name)?.[occurrence] ?? identity(null, name, occurrence);
       report.functionDataOccurrences.set(name, occurrence + 1);
-      addCounter(report.functions, identity, Number(hits));
+      addCounter(report.functions, functionIdentity, Number(hits));
     } else if (key === "BRDA") {
       const [line, block, branch, hits] = value.split(",");
-      addCounter(
-        report.branches,
-        `${line}${FIELD}${block}${FIELD}${branch}`,
-        hits === "-" ? 0 : Number(hits),
-      );
+      addCounter(report.branches, identity(line, block, branch), hits === "-" ? 0 : Number(hits));
     }
   }
   mergeReport(report);
