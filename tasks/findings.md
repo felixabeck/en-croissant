@@ -10840,3 +10840,35 @@ This is the second annotation in a row where a claim in this entry turned out to
   state), which is exactly this finding's open question. Whoever takes it gets both halves at once:
   the seam that makes the two arms testable is the seam that removes the copies.
 <!-- ledger-meta {"command":"annotate","effect_lines":18,"effect_sha256":"b44d23ab5b3f77112e8be05b1e9bb40920be86ee37b4988c55ae99e9e1e3a0cf","input_sha256":"1cf65153e492839dcfb60061244df33442f9adc0bba34ed3348fd744194ef771","kind":"mutation-receipt","operation":"46d65090eb59af0b06403f4a14764550fb4398be06fd1b854bfb470490f61335","options":{"section":null},"request_id_sha256":null,"results":["f-20260922-01"],"target":"f-20260922-01","v":1} -->
+
+---
+
+## 2026-09-22 — filed through the inbox spool
+
+### `syncDeck` keeps a card's stale full FEN, so an exact `findFen` lookup drops the card and hides its history
+
+* **ID:** f-20260922-02 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src/components/files/opening.ts:125-133` (`syncDeck`'s `existingByFen` map and
+  `merged.push({ ...prev, answer: pos.answer })`), against the exact lookups at
+  `src/components/panels/practice/PracticePanel.tsx:240`, `:990` and `:1064`
+  (`findFen(c.fen, root)` / `findFen(log.fen, root)`, `src/utils/treeReducer.ts:50`).
+* **Defect:** `syncDeck` matches an existing card to a rebuilt one by `getBoardState(fen)` — piece
+  placement, side to move, castling and en passant — but then keeps `prev`, so the card retains the
+  **old full FEN including the halfmove and fullmove counters**. The rebuilt tree can reach the same
+  board state at a different move number (a transposition, an inserted or deleted earlier move, a
+  changed start position), at which point the stored `fen` string no longer occurs anywhere in the
+  tree. Every consumer looks the card up with `findFen`, which compares the FEN string exactly.
+* **Why it matters:** `PracticePanel.tsx:240` treats "not found" as "this position left the
+  repertoire" and filters the card out of the deck, so a card the sync deliberately preserved is
+  deleted on the next render together with its scheduling state; `:1064` silently skips the
+  corresponding review-log entries, so the user's history appears to shrink. The two behaviours
+  agree with each other, which is why neither looks like a bug from inside the UI.
+* **Candidate fix:** carry the rebuilt `pos.fen` forward instead of `prev.fen`
+  (`merged.push({ ...prev, fen: pos.fen, answer: pos.answer })`), or make the consumers look up by
+  board state through the same `getBoardState` comparison the merge already uses. The two must
+  agree; today the write side compares board state and the read side compares the full string.
+* **Found by:** `review-chess-semantics` (blocker, confidence 98) in round 1 of the plan review for
+  `f-20260906-23`, 2026-09-22. Filed rather than folded in: no obligation of that finding's mandate
+  fails without it (rule 12a adoption gate). The orchestrator verified both halves in source —
+  `merged.push({ ...prev, answer: pos.answer })` at `opening.ts:133` and the exact `findFen`
+  comparison at `treeReducer.ts:50`.
