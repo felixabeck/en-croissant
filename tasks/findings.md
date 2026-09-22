@@ -10685,7 +10685,7 @@ Not closed by this run: `f-20260920-06`, the baseline refresh, which was the fin
 
 ### Nothing in CI asserts that the coverage measurement still covers every production file
 
-* **ID:** f-20260920-19 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** felix-tooling-nod
+* **ID:** f-20260920-19 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `scripts/coverage-report.mjs:117-157` (`buildCoverageReport` already builds `productionFiles` and throws when a file has no LCOV record at all), `:221-235` (the shrink allowance), `coverage-areas.json`, `docs/coverage.md:22-46`.
 * **Defect:** `f-20260920-18` is fixed but has no runnable regression anchor. Reintroducing an eager `?raw` import of a file inside the coverage include set leaves `pnpm test:coverage` green *and* `pnpm coverage:frontend:check` green, because the covered counts do not move and the shrink allowance forgives the vanished totals. The only detector is the manual `awk '/^LF:0$/{c++}' coverage/lcov.info` check recorded in the plan's acceptance criteria, which no gate runs.
 * **Why it matters:** measured in all four combinations, the numeric ratchets never redden when this defect *arrives* — a broken measurement passes against the pre-existing baseline and against a baseline written from a repaired run. They redden only on its *departure*, when a repaired measurement is checked against a baseline written from a broken one. So the class that silently retired 39 % of the frontend from the coverage denominators for a day can recur with exactly the same silence.
