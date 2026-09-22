@@ -10724,7 +10724,7 @@ Accepted for now, with `stays proportionate on a pathological single-line source
 
 ### Writing a coverage baseline reports success after the formatter failed
 
-* **ID:** f-20260921-01 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260921-01 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `scripts/coverage-report.mjs:271-285` (`writeBaseline`), `:326-329` (`main`'s write branch).
 * **Defect:** `writeBaseline` runs `oxfmt` over the file it just wrote and, when that returns a non-zero status or the binary is missing, writes a warning to stderr and returns normally. `main` then prints `Wrote coverage baseline: <path>` and the process exits 0. A failure is therefore reported as a success, and the baseline is left in `JSON.stringify` formatting, which `oxfmt --check` rejects — so the next `pnpm lint:ci` is red for a reason unrelated to the change that is being made. That is the exact trap the adjacent comment says the formatting call exists to prevent; the call was added, the failure path was not.
 * **Why it matters:** baseline writing is rare, deliberate and denied to agents by `.claude/settings.json`, so it runs at the moments when the operator is least able to check a warning scrolled past the success line. It is also the operation that decides what every later coverage run is measured against.
