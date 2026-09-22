@@ -10872,3 +10872,35 @@ This is the second annotation in a row where a claim in this entry turned out to
   fails without it (rule 12a adoption gate). The orchestrator verified both halves in source —
   `merged.push({ ...prev, answer: pos.answer })` at `opening.ts:133` and the exact `findFen`
   comparison at `treeReducer.ts:50`.
+
+---
+
+## 2026-09-22 — filed through the inbox spool
+
+### The practice logs modal numbers every move from the wrong side and keys its cards by a repeating FEN
+
+* **ID:** f-20260922-03 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src/components/panels/practice/PracticePanel.tsx:1063-1075` (`logs.map`, `Card
+  key={log.fen}`, and the `Math.floor(node.halfMoves / 2) + 1` / `node.halfMoves % 2 === 0`
+  formatting of `node.san`).
+* **Defect:** two independent defects in the same four lines. (1) **Numbering is off by one side.**
+  `log.fen` is the position the user was asked about, so `node` is that position and `node.san` is
+  the move that *led into* it, whose ply is `halfMoves - 1`. Using the position's own parity
+  renders the move played after `1.e4` as `1... e4` and the move after `1.e4 e5` as `2. e5`, where
+  the correct renderings are `1. e4` and `1... e5`. (2) **`key={log.fen}` repeats.** Reviewing the
+  same position twice — the normal case for spaced repetition — produces two log entries with the
+  same FEN and therefore two React children with the same key.
+* **Why it matters:** every line of the review history is labelled with the wrong move number, which
+  is the one thing that makes a log entry identifiable; and the duplicate keys make React reuse or
+  drop siblings, so entries can render with a neighbour's data after a re-render.
+* **Candidate fix:** number from the move's own ply — `Math.floor((node.halfMoves - 1) / 2) + 1`
+  with the inverted parity — or reuse the existing shared move-numbering helper rather than a third
+  inline copy of the formula; and key the card by the log's position in the list combined with its
+  review timestamp, or by the review id if one is introduced. `f-20260909-06` (handled) is the same
+  class of numbering defect in a different place and records the custom-start-FEN case this formula
+  also ignores.
+* **Found by:** `review-chess-semantics` (blocker, confidence 95) in round 1 of the plan review for
+  `f-20260906-23`, 2026-09-22; the duplicate-key half was found by the orchestrator while verifying
+  it. Both verified in source. Filed rather than folded in: the plan for `f-20260906-23` changes how
+  the modal *loads* its entries, not how it renders one, and no obligation of that mandate fails
+  without this (rule 12a adoption gate).
