@@ -10904,3 +10904,34 @@ This is the second annotation in a row where a claim in this entry turned out to
   it. Both verified in source. Filed rather than folded in: the plan for `f-20260906-23` changes how
   the modal *loads* its entries, not how it renders one, and no obligation of that mandate fails
   without this (rule 12a adoption gate).
+
+---
+
+## 2026-09-22 — filed through the inbox spool
+
+### Three tree-mutation paths leave the practice path and the custom start FEN stale — reported, not yet re-measured
+
+* **ID:** f-20260922-04 · **Status:** open · **Area:** chess-tree · **Root:** tree-path-rebasing · **Entry:** lens · **Blocked:** none
+* **Where:** `src/state/store/tree.ts:818` (delete/promote rebasing `state.position` and
+  `headers.start` but not `practicePath`), `:257` (the transposition fallback selecting
+  `candidates[0]` then `children[0]`), `:217` (`setFen` replacing the root without updating
+  `headers.fen` or clearing `headers.start`).
+* **Defect, as reported:** (1) deleting or promoting a node rebases the cursor and the repertoire
+  start path but leaves `practicePath` pointing at its old index list, so promoting a practised
+  variation from `[1,0]` to `[0,0]` leaves the drill path addressing a different node. (2) The
+  transposition fallback ignores the active practice path and walks `candidates[0]` then
+  `children[0]`, so from the side line `1.Nf3 Nc6 2.e4 e5` it can jump into the mainline's `3.Bb5`
+  instead of continuing or ending the drill. (3) `setFen` replaces the root without updating
+  `headers.fen` or clearing `headers.start`, so editing any header afterwards spreads the stale FEN
+  back through `setHeaders` and resets the board to the previous position.
+* **Why it matters:** `f-20260909-07` (handled, same `Root`) fixed exactly this class for the cursor
+  and the repertoire-start path; if these three are real, the rebasing is incomplete in the one
+  place that addresses a user's drill, and a stale `number[]` path silently addresses the wrong node
+  rather than failing (`.claude/rules/chess-tree-semantics.md`).
+* **Status of the evidence:** all three come from `review-chess-semantics` (blockers, confidence 96,
+  94 and 97) in round 1 of the plan review for `f-20260906-23`, 2026-09-22. **The orchestrator did
+  not re-measure them** — they are outside that plan's files and were filed under rule 4b rather
+  than investigated. Treat the line numbers and the sequences as claims to reproduce first; the
+  run that picks this up starts by confirming or refuting each one separately, and splits the entry
+  if they turn out to be different defects.
+* **Found by:** `review-chess-semantics`, plan review for `f-20260906-23`, round 1, 2026-09-22.
