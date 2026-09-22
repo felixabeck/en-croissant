@@ -11072,6 +11072,9 @@ It matters more since 2026-09-22 than before: `buildCoverageReport` now merges r
   plan's MANDATE (which is the drill path and `setFen`) and in a different flow, so filed rather than
   folded in.
 
+A plan closing this entry together with `f-20260922-04` (and the other of `f-20260922-08`/`f-20260922-10`) is **approved by all nine lenses after seven rounds**, 2026-09-22, and not yet implemented at the time of this note. **Load `tasks/handoffs/2026-09-22-tree-path-insert-rehydrate-review.md` before reviewing or implementing** — it carries the plan verbatim, issues I1-I24 with dispositions, and the three rejections (I4/D11, I18, I23) not to relitigate without new evidence; the O1-O3 half's own record is `tasks/handoffs/2026-09-22-practice-path-rebasing-review.md`.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"8f53ca874bfad9faba8b9245fba44858270c29f1c7db242c54e640196d115792","input_sha256":"695b8012a1f73ae73d1fd1c3fb8481bc881b882a9d5180c08ec1ae34cd52d5e3","kind":"mutation-receipt","operation":"f8e23b4e8925718a48ded3c62c695bea6ec10aaa31d65935ff069b6e602b7337","options":{"section":null},"request_id_sha256":null,"results":["f-20260922-08"],"target":"f-20260922-08","v":1} -->
+
 ---
 
 ## 2026-09-22 — filed through the inbox spool
