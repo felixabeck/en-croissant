@@ -53,7 +53,6 @@ import {
   currentShowCommentsAtom,
   currentTabAtom,
   deckAtomFamily,
-  type PracticeData,
   type PracticeSessionStats,
   practiceCardStartTimeAtom,
   practiceCompletedSummaryAtom,
@@ -62,6 +61,7 @@ import {
   practiceStateAtom,
   practiceAutoDifficultyAtom,
 } from "@/state/atoms";
+import type { PracticeData } from "@/state/practiceStorage";
 import { getTabFile, getTabGameNumber } from "@/utils/tabs";
 import { fileWorkspaceKey } from "@/utils/pathCapabilities";
 import { findFen, getNodeAtPath } from "@/utils/treeReducer";

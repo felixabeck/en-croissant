@@ -7,7 +7,6 @@ import { atom, type PrimitiveAtom } from "jotai";
 import { atomFamily, atomWithStorage, unwrap } from "jotai/utils";
 import type { AtomFamily } from "jotai/vanilla/utils/atomFamily";
 import type { SyncStorage } from "jotai/vanilla/utils/atomWithStorage";
-import type { ReviewLog } from "ts-fsrs";
 import { z } from "zod";
 import type {
     BestMoves,
@@ -18,7 +17,6 @@ import type {
     PathRef,
 } from "@/bindings";
 import type { OpponentSettings } from "@/state/opponentSettings";
-import { type Position, positionSchema } from "@/components/files/opening";
 import type { LocalOptions } from "@/components/panels/database/DatabasePanel";
 import { positionFromFen, swapMove } from "@/utils/chessops";
 import { sameDatabaseHandle, type SuccessDatabaseInfo } from "@/utils/db";
@@ -45,6 +43,9 @@ import { reportPersistError } from "./persistError";
 import { originalPathOwnersSnapshot } from "./pathOwners";
 import { createEngineOwnerStorage, type EngineOwnerSaveReceipt } from "./engineOwnerStorage";
 import { defaultPlayerSettings, opponentSettingsSchema } from "@/state/opponentSettings";
+import { practiceDataSchema, type PracticeData } from "./practiceStorage";
+
+export type { PracticeData } from "./practiceStorage";
 
 // Capture durable capability owners before any persisted atom can hydrate, normalize, or repair
 // its source record. App startup consumes this immutable snapshot.
@@ -714,22 +715,6 @@ export const pendingGameStartFamily = atomFamily((_tab: string) =>
 );
 
 // Practice
-
-const reviewLogSchema = z
-    .object({
-        fen: z.string(),
-    })
-    .passthrough();
-
-const practiceDataSchema = z.object({
-    positions: positionSchema.array(),
-    logs: reviewLogSchema.array(),
-});
-
-export type PracticeData = {
-    positions: Position[];
-    logs: (ReviewLog & { fen: string })[];
-};
 
 export const deckAtomFamily = atomFamily(
     ({ file, game }: { file: string; game: number }) =>

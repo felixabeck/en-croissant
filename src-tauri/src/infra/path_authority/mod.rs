@@ -2288,7 +2288,6 @@ pub(crate) enum AppOwnedDefaultRoot {
     EngineImages,
     Puzzles,
     Credentials,
-    #[allow(dead_code)]
     Practice,
     #[cfg(target_os = "macos")]
     EngineLaunch,
@@ -5788,7 +5787,6 @@ impl PathAuthority {
     /// Membership and the operation bit are inspected before refresh so a wrong-purpose id
     /// cannot cause filesystem validation of its target. Migration and repair intentionally pass
     /// `false`: membership is enough for those recovery operations.
-    #[allow(dead_code)]
     pub(crate) fn authorize_practice_deck(
         &mut self,
         id: &PathRef,
@@ -8259,6 +8257,74 @@ mod portable_tests {
         assert!(authority.authorize_practice_deck(&id, true).is_err());
         authority.pending_unpersisted_removals.clear();
         assert!(authority.authorize_practice_deck(&id, false).is_ok());
+    }
+
+    #[test]
+    fn practice_commands_refuse_bad_ids_before_opening_the_practice_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("practice.pgn");
+        fs::write(&file, b"file").unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(1)));
+        let stored = |id: &str, operations| StoredEntry {
+            id: PathRef { id: id.into() },
+            display_name: id.into(),
+            class: PathClass::PersistentFile,
+            purpose: Some(EntryPurpose::PgnReadOnlyFile),
+            operations,
+            path: NativePath::from_path(&file),
+            identity: identity(&file).unwrap(),
+            target_is_dir: false,
+        };
+
+        authority.persistent.insert(
+            "staged".into(),
+            Entry {
+                stored: stored("staged", vec![PathOperation::ReadPgn]),
+                availability: PathAvailability::Available,
+            },
+        );
+        authority
+            .pending_unpersisted_removals
+            .insert("staged".into());
+        authority.persistent.insert(
+            "wrong-purpose".into(),
+            Entry {
+                stored: stored("wrong-purpose", Vec::new()),
+                availability: PathAvailability::Available,
+            },
+        );
+        authority.persistent.insert(
+            "revoked".into(),
+            Entry {
+                stored: stored("revoked", vec![PathOperation::ReadPgn]),
+                availability: PathAvailability::Available,
+            },
+        );
+        authority.persistent.remove("revoked");
+
+        let command_authority = std::sync::Mutex::new(Some(authority));
+        for id in ["unknown", "revoked", "staged", "wrong-purpose"] {
+            assert!(
+                crate::practice::authorize_practice_command(&command_authority, id, true).is_err(),
+                "ordinary practice command authorization must refuse {id}"
+            );
+        }
+        assert!(crate::practice::authorize_practice_command(
+            &command_authority,
+            "wrong-purpose",
+            false
+        )
+        .is_ok());
+        assert!(crate::practice::authorize_practice_command(
+            &command_authority,
+            "wrong-purpose",
+            false
+        )
+        .is_ok());
+        assert!(
+            !dir.path().join("practice").exists(),
+            "authorization must not open the practice root"
+        );
     }
 
     /// The leaves are written out verbatim rather than read back from the enum. A leaf is the

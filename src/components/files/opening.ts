@@ -1,7 +1,7 @@
 import type { SetStateAction } from "react";
 import { type Card, createEmptyCard, fsrs, type Grade, generatorParameters } from "ts-fsrs";
 import { z } from "zod";
-import type { PracticeData } from "@/state/atoms";
+import type { PracticeData } from "@/state/practiceStorage";
 import { isPrefix } from "@/utils/misc";
 import { getBoardState, type TreeNode, treeIterator } from "@/utils/treeReducer";
 

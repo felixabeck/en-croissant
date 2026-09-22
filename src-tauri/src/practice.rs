@@ -1,14 +1,13 @@
 //! Native, crash-consistent storage for practice decks.
 //!
-//! This module deliberately contains no Tauri commands. Phase 2 can put thin command wrappers
-//! around these synchronous functions and run them in the blocking gateway without changing the
-//! store's locking or error semantics.
-
-#![allow(dead_code)]
+//! This module contains the synchronous practice store and its Tauri command wrappers. The
+//! wrappers run these functions in the blocking gateway without changing the store's locking or
+//! error semantics.
 
 use crate::{
     error::{DurabilityStage, Error},
     infra::{
+        blocking::BLOCKING_GATEWAY,
         fs::{self, DirectoryEntryKind},
         path_authority::AuthorizedDir,
     },
@@ -190,7 +189,6 @@ struct ShardFile {
 #[derive(Clone, Copy, Debug)]
 struct Reconciliation {
     total_entries: u32,
-    applied_entries: u32,
     newly_orphaned: u32,
 }
 
@@ -710,7 +708,6 @@ fn reconcile(
     }
     Ok(Reconciliation {
         total_entries: total,
-        applied_entries: total,
         newly_orphaned: total - envelope.applied_entries,
     })
 }
@@ -769,7 +766,7 @@ fn snapshot_from(
     })
 }
 
-pub(crate) fn load_practice_deck(
+pub(crate) fn load_practice_deck_in(
     directory: &AuthorizedDir,
     file_id: &str,
     game: i32,
@@ -908,7 +905,7 @@ fn entry_position(shards: &[ShardFile], entry_id: &str) -> Option<u32> {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn record_practice_review(
+pub(crate) fn record_practice_review_in(
     directory: &AuthorizedDir,
     file_id: &str,
     game: i32,
@@ -1035,7 +1032,7 @@ fn new_positions(file_id: &str, game: i32, positions: Vec<Value>) -> PositionsEn
     }
 }
 
-pub(crate) fn sync_practice_positions(
+pub(crate) fn sync_practice_positions_in(
     directory: &AuthorizedDir,
     file_id: &str,
     game: i32,
@@ -1102,7 +1099,7 @@ fn remove_leaf_if_present(directory: &AuthorizedDir, leaf: &str) -> Result<(), E
         .map_err(|error| operation_error("remove practice leaf", leaf, error))
 }
 
-pub(crate) fn reset_practice_deck(
+pub(crate) fn reset_practice_deck_in(
     directory: &AuthorizedDir,
     file_id: &str,
     game: i32,
@@ -1177,7 +1174,7 @@ fn parse_cursor(cursor: Option<&str>) -> Result<Option<Cursor>, Error> {
     }))
 }
 
-pub(crate) fn load_practice_reviews(
+pub(crate) fn load_practice_reviews_in(
     directory: &AuthorizedDir,
     file_id: &str,
     game: i32,
@@ -1287,7 +1284,7 @@ pub(crate) fn load_practice_reviews(
     })
 }
 
-pub(crate) fn acknowledge_practice_orphans(
+pub(crate) fn acknowledge_practice_orphans_in(
     directory: &AuthorizedDir,
     file_id: &str,
     game: i32,
@@ -1427,7 +1424,10 @@ fn migration_outcome(
     })
 }
 
-pub(crate) fn migrate_practice_deck(
+// Phase 4 replaces the command placeholder with the migration workflow and uses this store
+// function.
+#[allow(dead_code)]
+pub(crate) fn migrate_practice_deck_in(
     directory: &AuthorizedDir,
     file_id: &str,
     game: i32,
@@ -1607,7 +1607,7 @@ pub(crate) fn migrate_practice_deck(
     })
 }
 
-pub(crate) fn repair_practice_deck(
+pub(crate) fn repair_practice_deck_in(
     directory: &AuthorizedDir,
     file_id: &str,
     game: i32,
@@ -1650,7 +1650,10 @@ fn anomaly(
     }
 }
 
-pub(crate) fn list_practice_decks(
+// Phase 4 replaces the command placeholder with the enumeration workflow and uses this store
+// function.
+#[allow(dead_code)]
+pub(crate) fn list_practice_decks_in(
     directory: &AuthorizedDir,
 ) -> Result<PracticeDeckInventory, Error> {
     let entries = fs::read_directory_entries_at(
@@ -1824,6 +1827,339 @@ pub(crate) fn list_practice_decks(
         decks: decks.into_values().collect(),
         anomalies,
     })
+}
+
+pub(crate) fn authorize_practice_command(
+    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    file_id: &str,
+    requires_read_pgn: bool,
+) -> Result<(), Error> {
+    let mut authority_lock = authority
+        .lock()
+        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
+    let authority = authority_lock
+        .as_mut()
+        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
+    authority.authorize_practice_deck(
+        &crate::infra::path_authority::PathRef {
+            id: file_id.to_owned(),
+        },
+        requires_read_pgn,
+    )
+}
+
+fn run_practice_command_blocking<T, F>(
+    app: &tauri::AppHandle,
+    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    file_id: Option<&str>,
+    requires_read_pgn: bool,
+    operation: F,
+) -> Result<T, Error>
+where
+    F: FnOnce(&AuthorizedDir) -> Result<T, Error>,
+{
+    if let Some(file_id) = file_id {
+        authorize_practice_command(authority, file_id, requires_read_pgn)?;
+    }
+    let directory = crate::infra::path_authority::ensure_app_owned_default_dir(
+        &crate::infra::path_authority::AppDataDir::for_app(app)?,
+        crate::infra::path_authority::AppOwnedDefaultRoot::Practice,
+    )?;
+    operation(&directory)
+}
+
+async fn run_practice_command<T, F>(
+    app: tauri::AppHandle,
+    authority: Arc<std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>>,
+    file_id: String,
+    requires_read_pgn: bool,
+    operation: F,
+) -> Result<T, Error>
+where
+    T: Send + 'static,
+    F: FnOnce(&AuthorizedDir) -> Result<T, Error> + Send + 'static,
+{
+    BLOCKING_GATEWAY
+        .spawn(move || {
+            run_practice_command_blocking(
+                &app,
+                &authority,
+                Some(&file_id),
+                requires_read_pgn,
+                operation,
+            )
+        })
+        .await
+}
+
+async fn run_accepted_practice_command<T, F>(
+    app: tauri::AppHandle,
+    authority: Arc<std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>>,
+    operations: &crate::infra::operations::OperationRegistry,
+    operation_name: &'static str,
+    file_id: Option<String>,
+    requires_read_pgn: bool,
+    operation: F,
+) -> Result<T, Error>
+where
+    T: Send + 'static,
+    F: FnOnce(&AuthorizedDir) -> Result<T, Error> + Send + 'static,
+{
+    crate::infra::operations::run_accepted_blocking(operations, operation_name, move || {
+        run_practice_command_blocking(
+            &app,
+            &authority,
+            file_id.as_deref(),
+            requires_read_pgn,
+            operation,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn load_practice_deck(
+    file_id: String,
+    game: i32,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<Option<PracticeDeckSnapshot>, Error> {
+    let authority = Arc::clone(&state.pgn_path_authority);
+    let authorization_file_id = file_id.clone();
+    run_practice_command(
+        app,
+        authority,
+        authorization_file_id,
+        true,
+        move |directory| load_practice_deck_in(directory, &file_id, game),
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+#[allow(clippy::too_many_arguments)]
+pub async fn record_practice_review(
+    file_id: String,
+    game: i32,
+    generation: u32,
+    revision: u32,
+    base_revision: u32,
+    positions_document: String,
+    entry: String,
+    entry_id: String,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<u32, Error> {
+    let authority = Arc::clone(&state.pgn_path_authority);
+    let authorization_file_id = file_id.clone();
+    run_practice_command(
+        app,
+        authority,
+        authorization_file_id,
+        true,
+        move |directory| {
+            record_practice_review_in(
+                directory,
+                &file_id,
+                game,
+                generation,
+                revision,
+                base_revision,
+                &positions_document,
+                &entry,
+                &entry_id,
+            )
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn sync_practice_positions(
+    file_id: String,
+    game: i32,
+    generation: u32,
+    revision: u32,
+    positions_document: String,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<u32, Error> {
+    let authority = Arc::clone(&state.pgn_path_authority);
+    let authorization_file_id = file_id.clone();
+    run_practice_command(
+        app,
+        authority,
+        authorization_file_id,
+        true,
+        move |directory| {
+            sync_practice_positions_in(
+                directory,
+                &file_id,
+                game,
+                generation,
+                revision,
+                &positions_document,
+            )
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn reset_practice_deck(
+    file_id: String,
+    game: i32,
+    generation: u32,
+    revision: u32,
+    positions_document: String,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<u32, Error> {
+    let authority = Arc::clone(&state.pgn_path_authority);
+    let authorization_file_id = file_id.clone();
+    run_practice_command(
+        app,
+        authority,
+        authorization_file_id,
+        true,
+        move |directory| {
+            reset_practice_deck_in(
+                directory,
+                &file_id,
+                game,
+                generation,
+                revision,
+                &positions_document,
+            )
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn load_practice_reviews(
+    file_id: String,
+    game: i32,
+    cursor: Option<String>,
+    limit: u32,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<PracticeReviewPage, Error> {
+    let authority = Arc::clone(&state.pgn_path_authority);
+    let authorization_file_id = file_id.clone();
+    run_practice_command(
+        app,
+        authority,
+        authorization_file_id,
+        true,
+        move |directory| load_practice_reviews_in(directory, &file_id, game, cursor, limit),
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn migrate_practice_deck(
+    file_id: String,
+    game: i32,
+    legacy_document: String,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<PracticeMigrationOutcome, Error> {
+    let authority = Arc::clone(&state.pgn_path_authority);
+    run_accepted_practice_command(
+        app,
+        authority,
+        &state.operations,
+        "migrate_practice_deck",
+        Some(file_id),
+        false,
+        move |_| {
+            let _ = (game, legacy_document);
+            Err(Error::Conflict(
+                "practice migration is not enabled yet".into(),
+            ))
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn acknowledge_practice_orphans(
+    file_id: String,
+    game: i32,
+    generation: u32,
+    acknowledged_count: u32,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<(), Error> {
+    let authority = Arc::clone(&state.pgn_path_authority);
+    let authorization_file_id = file_id.clone();
+    run_practice_command(
+        app,
+        authority,
+        authorization_file_id,
+        true,
+        move |directory| {
+            acknowledge_practice_orphans_in(
+                directory,
+                &file_id,
+                game,
+                generation,
+                acknowledged_count,
+            )
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn repair_practice_deck(
+    file_id: String,
+    game: i32,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<(), Error> {
+    let authority = Arc::clone(&state.pgn_path_authority);
+    let authorization_file_id = file_id.clone();
+    run_practice_command(
+        app,
+        authority,
+        authorization_file_id,
+        false,
+        move |directory| repair_practice_deck_in(directory, &file_id, game),
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn list_practice_decks(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<PracticeDeckInventory, Error> {
+    let authority = Arc::clone(&state.pgn_path_authority);
+    run_accepted_practice_command(
+        app,
+        authority,
+        &state.operations,
+        "list_practice_decks",
+        None,
+        false,
+        move |_| {
+            Err(Error::Conflict(
+                "practice migration is not enabled yet".into(),
+            ))
+        },
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -2000,8 +2336,8 @@ mod tests {
     #[test]
     fn practice_round_trip_uses_the_app_owned_practice_root() {
         let (temp, directory) = directory();
-        sync_practice_positions(&directory, "file", 1, 0, 0, &positions()).unwrap();
-        record_practice_review(
+        sync_practice_positions_in(&directory, "file", 1, 0, 0, &positions()).unwrap();
+        record_practice_review_in(
             &directory,
             "file",
             1,
@@ -2013,7 +2349,9 @@ mod tests {
             "a",
         )
         .unwrap();
-        let snapshot = load_practice_deck(&directory, "file", 1).unwrap().unwrap();
+        let snapshot = load_practice_deck_in(&directory, "file", 1)
+            .unwrap()
+            .unwrap();
         assert_eq!(snapshot.revision, 2);
         assert!(temp
             .path()
@@ -2025,7 +2363,9 @@ mod tests {
     #[test]
     fn missing_and_malformed_documents_are_not_empty_decks() {
         let (_temp, directory) = directory();
-        assert!(load_practice_deck(&directory, "file", 1).unwrap().is_none());
+        assert!(load_practice_deck_in(&directory, "file", 1)
+            .unwrap()
+            .is_none());
         let leaf = positions_leaf(&hash_deck("file", 1));
         write_json(
             &directory,
@@ -2036,7 +2376,7 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            load_practice_deck(&directory, "file", 1),
+            load_practice_deck_in(&directory, "file", 1),
             Err(Error::InvalidInput(_))
         ));
     }
@@ -2057,7 +2397,7 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            load_practice_deck(&directory1, "file", 1),
+            load_practice_deck_in(&directory1, "file", 1),
             Err(Error::InvalidInput(_))
         ));
 
@@ -2082,7 +2422,7 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            load_practice_reviews(&directory2, "file", 1, None, 1),
+            load_practice_reviews_in(&directory2, "file", 1, None, 1),
             Err(Error::InvalidInput(_))
         ));
     }
@@ -2105,7 +2445,7 @@ mod tests {
             "test",
         )
         .unwrap();
-        let inventory = list_practice_decks(&directory1).unwrap();
+        let inventory = list_practice_decks_in(&directory1).unwrap();
         assert_eq!(
             inventory.decks,
             vec![PracticeDeckIdentity {
@@ -2139,7 +2479,7 @@ mod tests {
             "test",
         )
         .unwrap();
-        let inventory = list_practice_decks(&directory2).unwrap();
+        let inventory = list_practice_decks_in(&directory2).unwrap();
         assert!(inventory.decks.is_empty());
         assert!(inventory.anomalies.iter().any(|anomaly| {
             anomaly.kind == PracticeStoreAnomalyKind::OrphanShard
@@ -2160,7 +2500,7 @@ mod tests {
         let hash = hash_deck("file", 1);
         let leaf = positions_leaf(&hash);
         symlink(&target, directory.path().join(&leaf)).unwrap();
-        assert!(load_practice_deck(&directory, "file", 1).is_err());
+        assert!(load_practice_deck_in(&directory, "file", 1).is_err());
         assert!(directory
             .atomic_replace_leaf_identified(OsStr::new(&leaf), |file| {
                 file.write_all(b"replacement").map_err(Error::from)
@@ -2183,9 +2523,9 @@ mod tests {
     #[test]
     fn record_is_idempotent_and_rejects_reused_ids() {
         let (_temp, directory) = directory();
-        sync_practice_positions(&directory, "file", 1, 0, 0, &positions()).unwrap();
+        sync_practice_positions_in(&directory, "file", 1, 0, 0, &positions()).unwrap();
         assert_eq!(
-            record_practice_review(
+            record_practice_review_in(
                 &directory,
                 "file",
                 1,
@@ -2200,7 +2540,7 @@ mod tests {
             2
         );
         assert_eq!(
-            record_practice_review(
+            record_practice_review_in(
                 &directory,
                 "file",
                 1,
@@ -2215,7 +2555,7 @@ mod tests {
             2
         );
         assert!(matches!(
-            record_practice_review(
+            record_practice_review_in(
                 &directory,
                 "file",
                 1,
@@ -2233,11 +2573,11 @@ mod tests {
     #[test]
     fn orphan_count_survives_reload_and_later_writes() {
         let (_temp, directory) = directory();
-        sync_practice_positions(&directory, "file", 1, 0, 0, &positions()).unwrap();
+        sync_practice_positions_in(&directory, "file", 1, 0, 0, &positions()).unwrap();
         RECORD_AFTER_APPEND_HOOK.with(|slot| {
             *slot.borrow_mut() = Some(Box::new(|| Err(Error::Conflict("interrupted".into()))))
         });
-        assert!(record_practice_review(
+        assert!(record_practice_review_in(
             &directory,
             "file",
             1,
@@ -2250,13 +2590,13 @@ mod tests {
         )
         .is_err());
         assert_eq!(
-            load_practice_deck(&directory, "file", 1)
+            load_practice_deck_in(&directory, "file", 1)
                 .unwrap()
                 .unwrap()
                 .unapplied_reviews,
             1
         );
-        record_practice_review(
+        record_practice_review_in(
             &directory,
             "file",
             1,
@@ -2269,15 +2609,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            load_practice_deck(&directory, "file", 1)
+            load_practice_deck_in(&directory, "file", 1)
                 .unwrap()
                 .unwrap()
                 .unapplied_reviews,
             1
         );
-        acknowledge_practice_orphans(&directory, "file", 1, 0, 1).unwrap();
+        acknowledge_practice_orphans_in(&directory, "file", 1, 0, 1).unwrap();
         assert!(
-            load_practice_deck(&directory, "file", 1)
+            load_practice_deck_in(&directory, "file", 1)
                 .unwrap()
                 .unwrap()
                 .orphans_acknowledged
@@ -2287,8 +2627,8 @@ mod tests {
     #[test]
     fn reset_bumps_generation_and_clears_orphans() {
         let (_temp, directory) = directory();
-        sync_practice_positions(&directory, "file", 1, 0, 0, &positions()).unwrap();
-        record_practice_review(
+        sync_practice_positions_in(&directory, "file", 1, 0, 0, &positions()).unwrap();
+        record_practice_review_in(
             &directory,
             "file",
             1,
@@ -2300,9 +2640,11 @@ mod tests {
             "a",
         )
         .unwrap();
-        let revision = reset_practice_deck(&directory, "file", 1, 0, 2, &positions()).unwrap();
+        let revision = reset_practice_deck_in(&directory, "file", 1, 0, 2, &positions()).unwrap();
         assert_eq!(revision, 3);
-        let snapshot = load_practice_deck(&directory, "file", 1).unwrap().unwrap();
+        let snapshot = load_practice_deck_in(&directory, "file", 1)
+            .unwrap()
+            .unwrap();
         assert_eq!(snapshot.generation, 1);
         assert_eq!(snapshot.unapplied_reviews, 0);
     }
@@ -2310,11 +2652,11 @@ mod tests {
     #[test]
     fn record_interruption_then_intervening_commit_requires_reconciliation_retry() {
         let (_temp, directory) = directory();
-        sync_practice_positions(&directory, "file", 1, 0, 0, &positions()).unwrap();
+        sync_practice_positions_in(&directory, "file", 1, 0, 0, &positions()).unwrap();
         RECORD_AFTER_APPEND_HOOK.with(|slot| {
             *slot.borrow_mut() = Some(Box::new(|| Err(Error::Conflict("interrupt A".into()))))
         });
-        assert!(record_practice_review(
+        assert!(record_practice_review_in(
             &directory,
             "file",
             1,
@@ -2326,7 +2668,7 @@ mod tests {
             "a"
         )
         .is_err());
-        record_practice_review(
+        record_practice_review_in(
             &directory,
             "file",
             1,
@@ -2339,7 +2681,7 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            record_practice_review(
+            record_practice_review_in(
                 &directory,
                 "file",
                 1,
@@ -2352,7 +2694,7 @@ mod tests {
             ),
             Err(Error::Conflict(_))
         ));
-        record_practice_review(
+        record_practice_review_in(
             &directory,
             "file",
             1,
@@ -2364,7 +2706,7 @@ mod tests {
             "a",
         )
         .unwrap();
-        let page = load_practice_reviews(&directory, "file", 1, None, 500).unwrap();
+        let page = load_practice_reviews_in(&directory, "file", 1, None, 500).unwrap();
         assert_eq!(
             page.entries
                 .iter()
@@ -2384,11 +2726,11 @@ mod tests {
     #[test]
     fn record_interruption_immediate_retry_applies_the_tail_without_an_orphan() {
         let (_temp, directory) = directory();
-        sync_practice_positions(&directory, "file", 1, 0, 0, &positions()).unwrap();
+        sync_practice_positions_in(&directory, "file", 1, 0, 0, &positions()).unwrap();
         RECORD_AFTER_APPEND_HOOK.with(|slot| {
             *slot.borrow_mut() = Some(Box::new(|| Err(Error::Conflict("interrupt A".into()))))
         });
-        assert!(record_practice_review(
+        assert!(record_practice_review_in(
             &directory,
             "file",
             1,
@@ -2401,7 +2743,7 @@ mod tests {
         )
         .is_err());
         assert_eq!(
-            record_practice_review(
+            record_practice_review_in(
                 &directory,
                 "file",
                 1,
@@ -2415,11 +2757,13 @@ mod tests {
             .unwrap(),
             2
         );
-        let snapshot = load_practice_deck(&directory, "file", 1).unwrap().unwrap();
+        let snapshot = load_practice_deck_in(&directory, "file", 1)
+            .unwrap()
+            .unwrap();
         assert_eq!(snapshot.revision, 2);
         assert_eq!(snapshot.unapplied_reviews, 0);
         assert_eq!(
-            load_practice_reviews(&directory, "file", 1, None, 500)
+            load_practice_reviews_in(&directory, "file", 1, None, 500)
                 .unwrap()
                 .entries
                 .iter()
@@ -2432,11 +2776,11 @@ mod tests {
     #[test]
     fn record_interruption_then_orphan_persistence_keeps_the_count_sticky_on_retry() {
         let (_temp, directory) = directory();
-        sync_practice_positions(&directory, "file", 1, 0, 0, &positions()).unwrap();
+        sync_practice_positions_in(&directory, "file", 1, 0, 0, &positions()).unwrap();
         RECORD_AFTER_APPEND_HOOK.with(|slot| {
             *slot.borrow_mut() = Some(Box::new(|| Err(Error::Conflict("interrupt A".into()))))
         });
-        assert!(record_practice_review(
+        assert!(record_practice_review_in(
             &directory,
             "file",
             1,
@@ -2448,7 +2792,7 @@ mod tests {
             "a"
         )
         .is_err());
-        record_practice_review(
+        record_practice_review_in(
             &directory,
             "file",
             1,
@@ -2461,13 +2805,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            load_practice_deck(&directory, "file", 1)
+            load_practice_deck_in(&directory, "file", 1)
                 .unwrap()
                 .unwrap()
                 .unapplied_reviews,
             1
         );
-        record_practice_review(
+        record_practice_review_in(
             &directory,
             "file",
             1,
@@ -2480,7 +2824,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            load_practice_deck(&directory, "file", 1)
+            load_practice_deck_in(&directory, "file", 1)
                 .unwrap()
                 .unwrap()
                 .unapplied_reviews,
@@ -2491,17 +2835,25 @@ mod tests {
     #[test]
     fn record_interruption_more_than_two_shards_still_finds_the_original_id() {
         let (_temp, directory) = directory();
-        sync_practice_positions(&directory, "file", 1, 0, 0, &positions()).unwrap();
+        sync_practice_positions_in(&directory, "file", 1, 0, 0, &positions()).unwrap();
         RECORD_AFTER_APPEND_HOOK.with(|slot| {
             *slot.borrow_mut() = Some(Box::new(|| Err(Error::Conflict("interrupt A".into()))))
         });
         let large = serde_json::json!({"fen":"a", "payload":"x".repeat(15_000)}).to_string();
-        assert!(
-            record_practice_review(&directory, "file", 1, 0, 1, 1, &positions(), &large, "a")
-                .is_err()
-        );
+        assert!(record_practice_review_in(
+            &directory,
+            "file",
+            1,
+            0,
+            1,
+            1,
+            &positions(),
+            &large,
+            "a"
+        )
+        .is_err());
         for index in 0..30_u32 {
-            record_practice_review(
+            record_practice_review_in(
                 &directory,
                 "file",
                 1,
@@ -2514,11 +2866,12 @@ mod tests {
             )
             .unwrap();
         }
-        record_practice_review(&directory, "file", 1, 0, 31, 1, &positions(), &large, "a").unwrap();
+        record_practice_review_in(&directory, "file", 1, 0, 31, 1, &positions(), &large, "a")
+            .unwrap();
         let mut cursor = None;
         let mut ids = Vec::new();
         loop {
-            let page = load_practice_reviews(&directory, "file", 1, cursor, 10).unwrap();
+            let page = load_practice_reviews_in(&directory, "file", 1, cursor, 10).unwrap();
             ids.extend(page.entries.into_iter().map(|entry| entry.id));
             cursor = page.next_cursor;
             if cursor.is_none() {
@@ -2532,11 +2885,11 @@ mod tests {
     #[test]
     fn uncertain_shard_append_does_not_advance_the_positions_anchor() {
         let (_temp, directory) = directory();
-        sync_practice_positions(&directory, "file", 1, 0, 0, &positions()).unwrap();
+        sync_practice_positions_in(&directory, "file", 1, 0, 0, &positions()).unwrap();
         set_test_atomic_file_injector(Some(std::sync::Arc::new(ParentSyncFault(
             "practice shard parent sync",
         ))));
-        let result = record_practice_review(
+        let result = record_practice_review_in(
             &directory,
             "file",
             1,
@@ -2555,13 +2908,13 @@ mod tests {
             ))
         ));
         assert_eq!(
-            load_practice_deck(&directory, "file", 1)
+            load_practice_deck_in(&directory, "file", 1)
                 .unwrap()
                 .unwrap()
                 .revision,
             1
         );
-        record_practice_review(
+        record_practice_review_in(
             &directory,
             "file",
             1,
@@ -2574,7 +2927,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            load_practice_reviews(&directory, "file", 1, None, 500)
+            load_practice_reviews_in(&directory, "file", 1, None, 500)
                 .unwrap()
                 .entries
                 .len(),
@@ -2585,11 +2938,11 @@ mod tests {
     #[test]
     fn revision_conflict_leaves_the_positions_bytes_unchanged() {
         let (temp, directory) = directory();
-        sync_practice_positions(&directory, "file", 1, 0, 0, &positions()).unwrap();
+        sync_practice_positions_in(&directory, "file", 1, 0, 0, &positions()).unwrap();
         let leaf = positions_leaf(&hash_deck("file", 1));
         let before = fs::read(temp.path().join("practice").join(&leaf)).unwrap();
         assert!(matches!(
-            record_practice_review(
+            record_practice_review_in(
                 &directory,
                 "file",
                 1,
@@ -2611,12 +2964,12 @@ mod tests {
     #[test]
     fn new_review_entries_are_bounded_but_legacy_entries_are_not_rejected_by_that_bound() {
         let (_temp, directory) = directory();
-        sync_practice_positions(&directory, "file", 1, 0, 0, &positions()).unwrap();
+        sync_practice_positions_in(&directory, "file", 1, 0, 0, &positions()).unwrap();
         let large_entry =
             serde_json::json!({"fen":"a", "payload":"x".repeat(PRACTICE_ENTRY_MAX_BYTES)})
                 .to_string();
         assert!(matches!(
-            record_practice_review(
+            record_practice_review_in(
                 &directory,
                 "file",
                 1,
@@ -2631,7 +2984,7 @@ mod tests {
         ));
         let legacy = serde_json::json!({"positions":[{"fen":"a"}],"logs":[serde_json::from_str::<Value>(&large_entry).unwrap()]}).to_string();
         assert_eq!(
-            migrate_practice_deck(&directory, "legacy", 1, &legacy)
+            migrate_practice_deck_in(&directory, "legacy", 1, &legacy)
                 .unwrap()
                 .entries,
             1
@@ -2646,9 +2999,9 @@ mod tests {
             "logs": [{"fen": "a", "rating": 3}, {"fen": "b", "rating": 4}]
         })
         .to_string();
-        let outcome = migrate_practice_deck(&directory, "file", 1, &legacy).unwrap();
+        let outcome = migrate_practice_deck_in(&directory, "file", 1, &legacy).unwrap();
         assert_eq!(outcome.status, PracticeMigrationStatus::Migrated);
-        let second = migrate_practice_deck(&directory, "file", 1, "not-read").unwrap();
+        let second = migrate_practice_deck_in(&directory, "file", 1, "not-read").unwrap();
         assert_eq!(second.status, PracticeMigrationStatus::AlreadyMigrated);
         assert!(directory
             .open_regular_relative(Path::new(&state_leaf(&hash_deck("file", 1))))
@@ -2667,7 +3020,7 @@ mod tests {
             call: AtomicUsize::new(0),
             fail_on: 2,
         })));
-        let result = migrate_practice_deck(&directory, "file", 1, &legacy);
+        let result = migrate_practice_deck_in(&directory, "file", 1, &legacy);
         set_test_atomic_file_injector(None);
         assert!(matches!(
             result,
@@ -2686,7 +3039,7 @@ mod tests {
             MigrationPhase::Migrating
         );
         assert_eq!(
-            migrate_practice_deck(&directory, "file", 1, &legacy)
+            migrate_practice_deck_in(&directory, "file", 1, &legacy)
                 .unwrap()
                 .status,
             PracticeMigrationStatus::Migrated
@@ -2696,8 +3049,8 @@ mod tests {
     #[test]
     fn reset_uncertain_positions_write_preserves_old_generation_shards() {
         let (_temp, directory) = directory();
-        sync_practice_positions(&directory, "file", 1, 0, 0, &positions()).unwrap();
-        record_practice_review(
+        sync_practice_positions_in(&directory, "file", 1, 0, 0, &positions()).unwrap();
+        record_practice_review_in(
             &directory,
             "file",
             1,
@@ -2717,7 +3070,7 @@ mod tests {
             call: AtomicUsize::new(0),
             fail_on: 1,
         })));
-        let result = reset_practice_deck(&directory, "file", 1, 0, 2, &positions());
+        let result = reset_practice_deck_in(&directory, "file", 1, 0, 2, &positions());
         set_test_atomic_file_injector(None);
         assert!(matches!(
             result,
@@ -2727,7 +3080,7 @@ mod tests {
         ));
         assert!(old_shard.exists());
         assert_eq!(
-            load_practice_deck(&directory, "file", 1)
+            load_practice_deck_in(&directory, "file", 1)
                 .unwrap()
                 .unwrap()
                 .generation,
@@ -2784,7 +3137,7 @@ mod tests {
         let state_before = fs::read(directory.path().join(&state_leaf_name)).unwrap();
         let shard_before = fs::read(directory.path().join(&shard_leaf_name)).unwrap();
         assert!(matches!(
-            migrate_practice_deck(&directory, "file", 1, "not-json"),
+            migrate_practice_deck_in(&directory, "file", 1, "not-json"),
             Err(Error::InvalidInput(_))
         ));
         assert_eq!(
@@ -2805,18 +3158,20 @@ mod tests {
             "logs": [{"fen": "old"}]
         })
         .to_string();
-        migrate_practice_deck(&directory, "file", 1, &legacy).unwrap();
-        repair_practice_deck(&directory, "file", 1).unwrap();
-        assert!(load_practice_deck(&directory, "file", 1).unwrap().is_none());
-        sync_practice_positions(&directory, "file", 1, 0, 0, &positions()).unwrap();
+        migrate_practice_deck_in(&directory, "file", 1, &legacy).unwrap();
+        repair_practice_deck_in(&directory, "file", 1).unwrap();
+        assert!(load_practice_deck_in(&directory, "file", 1)
+            .unwrap()
+            .is_none());
+        sync_practice_positions_in(&directory, "file", 1, 0, 0, &positions()).unwrap();
         assert_eq!(
-            migrate_practice_deck(&directory, "file", 1, &legacy)
+            migrate_practice_deck_in(&directory, "file", 1, &legacy)
                 .unwrap()
                 .status,
             PracticeMigrationStatus::AlreadyMigrated
         );
         assert_eq!(
-            load_practice_deck(&directory, "file", 1)
+            load_practice_deck_in(&directory, "file", 1)
                 .unwrap()
                 .unwrap()
                 .positions_document,
@@ -2827,10 +3182,10 @@ mod tests {
     #[test]
     fn native_deck_migration_is_already_migrated_and_never_parses_legacy() {
         let (_temp, directory) = directory();
-        sync_practice_positions(&directory, "file", 1, 0, 0, &positions()).unwrap();
+        sync_practice_positions_in(&directory, "file", 1, 0, 0, &positions()).unwrap();
         let before = all_leaf_bytes(&directory);
         assert_eq!(
-            migrate_practice_deck(&directory, "file", 1, "not-json")
+            migrate_practice_deck_in(&directory, "file", 1, "not-json")
                 .unwrap()
                 .status,
             PracticeMigrationStatus::AlreadyMigrated
@@ -2842,8 +3197,8 @@ mod tests {
     fn native_position_changes_survive_migration_with_the_original_legacy_value() {
         let (_temp, directory) = directory();
         let original = legacy(&[serde_json::json!({"fen": "original"})], &[]);
-        sync_practice_positions(&directory, "sync", 1, 0, 0, &positions()).unwrap();
-        sync_practice_positions(
+        sync_practice_positions_in(&directory, "sync", 1, 0, 0, &positions()).unwrap();
+        sync_practice_positions_in(
             &directory,
             "sync",
             1,
@@ -2853,21 +3208,21 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            migrate_practice_deck(&directory, "sync", 1, &original)
+            migrate_practice_deck_in(&directory, "sync", 1, &original)
                 .unwrap()
                 .status,
             PracticeMigrationStatus::AlreadyMigrated
         );
         assert_eq!(
-            load_practice_deck(&directory, "sync", 1)
+            load_practice_deck_in(&directory, "sync", 1)
                 .unwrap()
                 .unwrap()
                 .positions_document,
             r#"{"positions":[{"fen":"changed"}]}"#
         );
 
-        sync_practice_positions(&directory, "reset", 1, 0, 0, &positions()).unwrap();
-        reset_practice_deck(
+        sync_practice_positions_in(&directory, "reset", 1, 0, 0, &positions()).unwrap();
+        reset_practice_deck_in(
             &directory,
             "reset",
             1,
@@ -2877,13 +3232,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            migrate_practice_deck(&directory, "reset", 1, &original)
+            migrate_practice_deck_in(&directory, "reset", 1, &original)
                 .unwrap()
                 .status,
             PracticeMigrationStatus::AlreadyMigrated
         );
         assert_eq!(
-            load_practice_deck(&directory, "reset", 1)
+            load_practice_deck_in(&directory, "reset", 1)
                 .unwrap()
                 .unwrap()
                 .positions_document,
@@ -2898,17 +3253,17 @@ mod tests {
             &[serde_json::json!({"fen": "a"})],
             &[serde_json::json!({"n": 1})],
         );
-        migrate_practice_deck(&directory, "file", 1, &value).unwrap();
+        migrate_practice_deck_in(&directory, "file", 1, &value).unwrap();
         let hash = hash_deck("file", 1);
         let state_before = leaf_bytes(&directory, &state_leaf(&hash));
         let shard_before = leaf_bytes(&directory, &shard_leaf(&hash, 0, 0));
         fs::remove_file(directory.path().join(positions_leaf(&hash))).unwrap();
         assert!(matches!(
-            load_practice_deck(&directory, "file", 1),
+            load_practice_deck_in(&directory, "file", 1),
             Err(Error::InvalidInput(_))
         ));
         assert!(matches!(
-            migrate_practice_deck(&directory, "file", 1, "not-json"),
+            migrate_practice_deck_in(&directory, "file", 1, "not-json"),
             Err(Error::InvalidInput(_))
         ));
         assert_eq!(state_before, leaf_bytes(&directory, &state_leaf(&hash)));
@@ -2921,7 +3276,7 @@ mod tests {
     #[test]
     fn migrating_state_with_healthy_positions_advances_without_importing() {
         let (_temp, directory) = directory();
-        sync_practice_positions(&directory, "file", 1, 0, 0, &positions()).unwrap();
+        sync_practice_positions_in(&directory, "file", 1, 0, 0, &positions()).unwrap();
         let hash = hash_deck("file", 1);
         write_test_state(
             &directory,
@@ -2931,7 +3286,7 @@ mod tests {
             &"0".repeat(64),
         );
         assert_eq!(
-            migrate_practice_deck(&directory, "file", 1, "not-json")
+            migrate_practice_deck_in(&directory, "file", 1, "not-json")
                 .unwrap()
                 .status,
             PracticeMigrationStatus::AlreadyMigrated
@@ -2959,7 +3314,7 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            migrate_practice_deck(&directory, "file", 1, "not-json"),
+            migrate_practice_deck_in(&directory, "file", 1, "not-json"),
             Err(Error::InvalidInput(_))
         ));
         assert_eq!(
@@ -2988,7 +3343,7 @@ mod tests {
             &first_digest,
         );
         assert_eq!(
-            migrate_practice_deck(&directory, "clean", 1, &second)
+            migrate_practice_deck_in(&directory, "clean", 1, &second)
                 .unwrap()
                 .status,
             PracticeMigrationStatus::Migrated
@@ -3013,7 +3368,7 @@ mod tests {
         let state_before = leaf_bytes(&directory, &state_leaf(&hash));
         let shard_before = leaf_bytes(&directory, &shard_leaf(&hash, 0, 0));
         assert!(matches!(
-            migrate_practice_deck(&directory, "stranded", 1, &second),
+            migrate_practice_deck_in(&directory, "stranded", 1, &second),
             Err(Error::Conflict(_))
         ));
         assert_eq!(state_before, leaf_bytes(&directory, &state_leaf(&hash)));
@@ -3021,7 +3376,7 @@ mod tests {
             shard_before,
             leaf_bytes(&directory, &shard_leaf(&hash, 0, 0))
         );
-        assert!(list_practice_decks(&directory)
+        assert!(list_practice_decks_in(&directory)
             .unwrap()
             .anomalies
             .iter()
@@ -3045,15 +3400,15 @@ mod tests {
         let hash = hash_deck("orphan", 7);
         let before = all_leaf_bytes(&directory);
         assert!(matches!(
-            migrate_practice_deck(&directory, "orphan", 7, "not-json"),
+            migrate_practice_deck_in(&directory, "orphan", 7, "not-json"),
             Err(Error::Conflict(_))
         ));
         assert_eq!(before, all_leaf_bytes(&directory));
         assert!(matches!(
-            load_practice_deck(&directory, "orphan", 7),
+            load_practice_deck_in(&directory, "orphan", 7),
             Err(Error::InvalidInput(_))
         ));
-        assert!(list_practice_decks(&directory)
+        assert!(list_practice_decks_in(&directory)
             .unwrap()
             .anomalies
             .iter()
@@ -3068,8 +3423,8 @@ mod tests {
     #[test]
     fn missing_review_shard_is_invalid_through_load_and_already_migrated() {
         let (_temp, directory) = directory();
-        sync_practice_positions(&directory, "file", 1, 0, 0, &positions()).unwrap();
-        record_practice_review(
+        sync_practice_positions_in(&directory, "file", 1, 0, 0, &positions()).unwrap();
+        record_practice_review_in(
             &directory,
             "file",
             1,
@@ -3088,11 +3443,11 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            load_practice_deck(&directory, "file", 1),
+            load_practice_deck_in(&directory, "file", 1),
             Err(Error::InvalidInput(_))
         ));
         assert!(matches!(
-            migrate_practice_deck(&directory, "file", 1, "not-json"),
+            migrate_practice_deck_in(&directory, "file", 1, "not-json"),
             Err(Error::InvalidInput(_))
         ));
     }
@@ -3125,7 +3480,7 @@ mod tests {
             )
             .unwrap();
         }
-        migrate_practice_deck(&directory, "file", 1, &shrunk).unwrap();
+        migrate_practice_deck_in(&directory, "file", 1, &shrunk).unwrap();
         let expected = imported_shards(
             "file",
             1,
@@ -3140,7 +3495,7 @@ mod tests {
         .map(|entry| entry.id)
         .rev()
         .collect::<Vec<_>>();
-        let actual = load_practice_reviews(&directory, "file", 1, None, 500)
+        let actual = load_practice_reviews_in(&directory, "file", 1, None, 500)
             .unwrap()
             .entries
             .into_iter()
@@ -3176,7 +3531,7 @@ mod tests {
             &[serde_json::json!({"n": 1})],
         );
         assert!(matches!(
-            migrate_practice_deck(&directory, "file", 1, &value),
+            migrate_practice_deck_in(&directory, "file", 1, &value),
             Err(Error::InvalidInput(_))
         ));
         assert!(read_positions(&directory, &hash).unwrap().is_none());
@@ -3197,7 +3552,7 @@ mod tests {
             .flat_map(|shard| shard.entries.iter().cloned())
             .collect::<Vec<_>>();
         let expected_digest = migration_entries_digest(&expected_entries).unwrap();
-        migrate_practice_deck(&directory, "file", 1, &value).unwrap();
+        migrate_practice_deck_in(&directory, "file", 1, &value).unwrap();
         let hash = hash_deck("file", 1);
         let leaf = shard_leaf(&hash, 0, 0);
         let mut shard: ReviewShardEnvelope =
@@ -3211,7 +3566,7 @@ mod tests {
             "test",
         )
         .unwrap();
-        let outcome = migrate_practice_deck(&directory, "file", 1, "not-json").unwrap();
+        let outcome = migrate_practice_deck_in(&directory, "file", 1, "not-json").unwrap();
         assert_ne!(outcome.entries_digest, expected_digest);
     }
 
@@ -3222,10 +3577,10 @@ mod tests {
             &[serde_json::json!({"fen": "legacy"})],
             &[serde_json::json!({"n": 1})],
         );
-        migrate_practice_deck(&directory, "file", 1, &value).unwrap();
+        migrate_practice_deck_in(&directory, "file", 1, &value).unwrap();
         let hash = hash_deck("file", 1);
         let original = read_positions(&directory, &hash).unwrap().unwrap();
-        record_practice_review(
+        record_practice_review_in(
             &directory,
             "file",
             1,
@@ -3237,8 +3592,8 @@ mod tests {
             "new",
         )
         .unwrap();
-        sync_practice_positions(&directory, "file", 1, 0, 2, &positions()).unwrap();
-        reset_practice_deck(&directory, "file", 1, 0, 3, &positions()).unwrap();
+        sync_practice_positions_in(&directory, "file", 1, 0, 2, &positions()).unwrap();
+        reset_practice_deck_in(&directory, "file", 1, 0, 3, &positions()).unwrap();
         let current = read_positions(&directory, &hash).unwrap().unwrap();
         assert_eq!(current.generation, 1);
         assert_eq!(current.legacy_source, original.legacy_source);
@@ -3266,7 +3621,7 @@ mod tests {
         let before = all_leaf_bytes(&directory);
         let oversized = "x".repeat(PRACTICE_LEGACY_MAX_BYTES + 1);
         assert!(matches!(
-            migrate_practice_deck(&directory, "file", 1, &oversized),
+            migrate_practice_deck_in(&directory, "file", 1, &oversized),
             Err(Error::InvalidInput(_))
         ));
         assert_eq!(before, all_leaf_bytes(&directory));
@@ -3278,7 +3633,7 @@ mod tests {
         .to_string();
         assert!(under_legacy_near_positions_limit.len() < PRACTICE_LEGACY_MAX_BYTES);
         assert_eq!(
-            migrate_practice_deck(&directory, "under", 1, &under_legacy_near_positions_limit)
+            migrate_practice_deck_in(&directory, "under", 1, &under_legacy_near_positions_limit)
                 .unwrap()
                 .status,
             PracticeMigrationStatus::Migrated
@@ -3290,7 +3645,7 @@ mod tests {
         .to_string();
         let before_over = all_leaf_bytes(&directory);
         assert!(matches!(
-            migrate_practice_deck(&directory, "file", 1, &over_positions),
+            migrate_practice_deck_in(&directory, "file", 1, &over_positions),
             Err(Error::InvalidInput(_))
         ));
         assert_eq!(before_over, all_leaf_bytes(&directory));
@@ -3301,7 +3656,7 @@ mod tests {
         let (_temp, directory) = directory();
         let logs = vec![serde_json::json!({"n": 1}), serde_json::json!({"n": 2})];
         let value = legacy(&[serde_json::json!({"fen": "a"})], &logs);
-        let outcome = migrate_practice_deck(&directory, "file", 1, &value).unwrap();
+        let outcome = migrate_practice_deck_in(&directory, "file", 1, &value).unwrap();
         let hash = hash_deck("file", 1);
         let envelope = read_positions(&directory, &hash).unwrap().unwrap();
         let shards = read_shards(&directory, &hash, 0).unwrap();
@@ -3319,7 +3674,7 @@ mod tests {
         assert_eq!(envelope.orphan_entries, 0);
         assert_eq!(outcome.entries, envelope.applied_entries);
         assert_eq!(
-            load_practice_deck(&directory, "file", 1)
+            load_practice_deck_in(&directory, "file", 1)
                 .unwrap()
                 .unwrap()
                 .unapplied_reviews,
@@ -3338,7 +3693,7 @@ mod tests {
             &"0".repeat(64),
         );
         assert_eq!(
-            sync_practice_positions(&directory, "reset", 1, 0, 0, &positions()).unwrap(),
+            sync_practice_positions_in(&directory, "reset", 1, 0, 0, &positions()).unwrap(),
             1
         );
         write_test_state(
@@ -3349,7 +3704,7 @@ mod tests {
             &"0".repeat(64),
         );
         assert!(matches!(
-            sync_practice_positions(&directory, "migrating", 1, 0, 0, &positions()),
+            sync_practice_positions_in(&directory, "migrating", 1, 0, 0, &positions()),
             Err(Error::Conflict(_))
         ));
         write_test_state(
@@ -3360,7 +3715,7 @@ mod tests {
             &"0".repeat(64),
         );
         assert!(matches!(
-            sync_practice_positions(&directory, "migrated", 1, 0, 0, &positions()),
+            sync_practice_positions_in(&directory, "migrated", 1, 0, 0, &positions()),
             Err(Error::Conflict(_))
         ));
         write_test_shard(
@@ -3372,7 +3727,7 @@ mod tests {
             vec![test_review("id", 1, serde_json::json!({"x": 1}))],
         );
         assert!(matches!(
-            sync_practice_positions(&directory, "shards", 1, 0, 0, &positions()),
+            sync_practice_positions_in(&directory, "shards", 1, 0, 0, &positions()),
             Err(Error::Conflict(_))
         ));
     }
@@ -3386,7 +3741,7 @@ mod tests {
         ] {
             write_test_state(&directory, file_id, 1, phase, &"0".repeat(64));
             assert!(matches!(
-                load_practice_deck(&directory, file_id, 1),
+                load_practice_deck_in(&directory, file_id, 1),
                 Err(Error::InvalidInput(_))
             ));
         }
@@ -3397,7 +3752,7 @@ mod tests {
             MigrationPhase::Reset,
             &"0".repeat(64),
         );
-        assert!(load_practice_deck(&directory, "reset", 1)
+        assert!(load_practice_deck_in(&directory, "reset", 1)
             .unwrap()
             .is_none());
     }
@@ -3405,11 +3760,11 @@ mod tests {
     #[test]
     fn orphan_acknowledgement_is_generation_checked_and_new_orphans_unacknowledge_it() {
         let (_temp, directory) = directory();
-        sync_practice_positions(&directory, "file", 1, 0, 0, &positions()).unwrap();
+        sync_practice_positions_in(&directory, "file", 1, 0, 0, &positions()).unwrap();
         RECORD_AFTER_APPEND_HOOK.with(|slot| {
             *slot.borrow_mut() = Some(Box::new(|| Err(Error::Conflict("interrupt A".into()))))
         });
-        assert!(record_practice_review(
+        assert!(record_practice_review_in(
             &directory,
             "file",
             1,
@@ -3421,7 +3776,7 @@ mod tests {
             "a"
         )
         .is_err());
-        record_practice_review(
+        record_practice_review_in(
             &directory,
             "file",
             1,
@@ -3433,13 +3788,15 @@ mod tests {
             "b",
         )
         .unwrap();
-        acknowledge_practice_orphans(&directory, "file", 1, 0, 1).unwrap();
-        let before = load_practice_deck(&directory, "file", 1).unwrap().unwrap();
+        acknowledge_practice_orphans_in(&directory, "file", 1, 0, 1).unwrap();
+        let before = load_practice_deck_in(&directory, "file", 1)
+            .unwrap()
+            .unwrap();
         assert!(before.orphans_acknowledged);
         RECORD_AFTER_APPEND_HOOK.with(|slot| {
             *slot.borrow_mut() = Some(Box::new(|| Err(Error::Conflict("interrupt C".into()))))
         });
-        assert!(record_practice_review(
+        assert!(record_practice_review_in(
             &directory,
             "file",
             1,
@@ -3451,15 +3808,19 @@ mod tests {
             "c"
         )
         .is_err());
-        let after = load_practice_deck(&directory, "file", 1).unwrap().unwrap();
+        let after = load_practice_deck_in(&directory, "file", 1)
+            .unwrap()
+            .unwrap();
         assert_eq!(after.unapplied_reviews, before.unapplied_reviews + 1);
         assert!(!after.orphans_acknowledged);
-        acknowledge_practice_orphans(&directory, "file", 1, 0, 1).unwrap();
-        let still_same = load_practice_deck(&directory, "file", 1).unwrap().unwrap();
+        acknowledge_practice_orphans_in(&directory, "file", 1, 0, 1).unwrap();
+        let still_same = load_practice_deck_in(&directory, "file", 1)
+            .unwrap()
+            .unwrap();
         assert_eq!(still_same.unapplied_reviews, after.unapplied_reviews);
-        reset_practice_deck(&directory, "file", 1, 0, 2, &positions()).unwrap();
+        reset_practice_deck_in(&directory, "file", 1, 0, 2, &positions()).unwrap();
         assert!(matches!(
-            acknowledge_practice_orphans(&directory, "file", 1, 0, 0),
+            acknowledge_practice_orphans_in(&directory, "file", 1, 0, 0),
             Err(Error::Conflict(_))
         ));
     }
@@ -3481,7 +3842,7 @@ mod tests {
             vec![test_review("old", 1, serde_json::json!({"old": true}))],
         );
         assert_eq!(
-            load_practice_reviews(&directory, "file", 1, None, 500)
+            load_practice_reviews_in(&directory, "file", 1, None, 500)
                 .unwrap()
                 .entries
                 .len(),
@@ -3489,7 +3850,7 @@ mod tests {
         );
         let before = all_leaf_bytes(&directory);
         assert!(matches!(
-            record_practice_review(
+            record_practice_review_in(
                 &directory,
                 "file",
                 1,
@@ -3504,14 +3865,14 @@ mod tests {
         ));
         assert_eq!(before, all_leaf_bytes(&directory));
         assert_eq!(
-            reset_practice_deck(&directory, "file", 1, 0, u32::MAX, &positions()).unwrap(),
+            reset_practice_deck_in(&directory, "file", 1, 0, u32::MAX, &positions()).unwrap(),
             1
         );
         let reset = read_positions(&directory, &hash).unwrap().unwrap();
         assert_eq!(reset.revision, 1);
         assert_eq!(reset.generation, 1);
         assert!(matches!(
-            record_practice_review(
+            record_practice_review_in(
                 &directory,
                 "file",
                 1,
@@ -3529,7 +3890,7 @@ mod tests {
     #[test]
     fn repair_recovers_lost_positions_stranded_migration_and_malformed_positions() {
         let (_temp, directory) = directory();
-        sync_practice_positions(&directory, "lost", 1, 0, 0, &positions()).unwrap();
+        sync_practice_positions_in(&directory, "lost", 1, 0, 0, &positions()).unwrap();
         write_test_shard(
             &directory,
             "lost",
@@ -3539,8 +3900,10 @@ mod tests {
             vec![test_review("id", 1, serde_json::json!({"x": 1}))],
         );
         fs::remove_file(directory.path().join(positions_leaf(&hash_deck("lost", 1)))).unwrap();
-        repair_practice_deck(&directory, "lost", 1).unwrap();
-        assert!(load_practice_deck(&directory, "lost", 1).unwrap().is_none());
+        repair_practice_deck_in(&directory, "lost", 1).unwrap();
+        assert!(load_practice_deck_in(&directory, "lost", 1)
+            .unwrap()
+            .is_none());
 
         write_test_state(
             &directory,
@@ -3557,8 +3920,8 @@ mod tests {
             0,
             vec![test_review("id", 1, serde_json::json!({"x": 1}))],
         );
-        repair_practice_deck(&directory, "stranded", 1).unwrap();
-        assert!(load_practice_deck(&directory, "stranded", 1)
+        repair_practice_deck_in(&directory, "stranded", 1).unwrap();
+        assert!(load_practice_deck_in(&directory, "stranded", 1)
             .unwrap()
             .is_none());
         assert_eq!(
@@ -3575,8 +3938,8 @@ mod tests {
             b"not-json",
         )
         .unwrap();
-        repair_practice_deck(&directory, "malformed", 1).unwrap();
-        assert!(load_practice_deck(&directory, "malformed", 1)
+        repair_practice_deck_in(&directory, "malformed", 1).unwrap();
+        assert!(load_practice_deck_in(&directory, "malformed", 1)
             .unwrap()
             .is_none());
 
@@ -3586,9 +3949,9 @@ mod tests {
             b"not-json",
         )
         .unwrap();
-        repair_practice_deck(&directory, "never", 1).unwrap();
+        repair_practice_deck_in(&directory, "never", 1).unwrap();
         assert_eq!(
-            migrate_practice_deck(
+            migrate_practice_deck_in(
                 &directory,
                 "never",
                 1,
@@ -3600,10 +3963,10 @@ mod tests {
         );
 
         let migrated = legacy(&[serde_json::json!({"fen": "a"})], &[]);
-        migrate_practice_deck(&directory, "migrated", 1, &migrated).unwrap();
-        repair_practice_deck(&directory, "migrated", 1).unwrap();
+        migrate_practice_deck_in(&directory, "migrated", 1, &migrated).unwrap();
+        repair_practice_deck_in(&directory, "migrated", 1).unwrap();
         assert_eq!(
-            migrate_practice_deck(&directory, "migrated", 1, "not-json")
+            migrate_practice_deck_in(&directory, "migrated", 1, "not-json")
                 .unwrap()
                 .status,
             PracticeMigrationStatus::AlreadyMigrated
@@ -3712,7 +4075,7 @@ mod tests {
             "logs": [{"payload": "x".repeat(PRACTICE_SHARD_SEAL_BYTES)}]
         })
         .to_string();
-        let outcome = migrate_practice_deck(&directory, "oversized", 1, &oversized).unwrap();
+        let outcome = migrate_practice_deck_in(&directory, "oversized", 1, &oversized).unwrap();
         assert_eq!(outcome.entries, 1);
         let imported = read_shards(&directory, &hash_deck("oversized", 1), 0).unwrap();
         assert_eq!(imported.len(), 1);
@@ -3733,10 +4096,10 @@ mod tests {
         assert!(validate_positions_document(&over_positions, "test").is_err());
 
         let (_temp, directory) = directory();
-        sync_practice_positions(&directory, "file", 1, 0, 0, &positions()).unwrap();
+        sync_practice_positions_in(&directory, "file", 1, 0, 0, &positions()).unwrap();
         let at_entry_limit = format!("{{\"x\":\"{}\"}}", "x".repeat(PRACTICE_ENTRY_MAX_BYTES));
         assert!(matches!(
-            record_practice_review(
+            record_practice_review_in(
                 &directory,
                 "file",
                 1,
@@ -3754,7 +4117,7 @@ mod tests {
             "x".repeat(PRACTICE_ENTRY_MAX_BYTES - 16)
         );
         assert!(below_entry_limit.len() < PRACTICE_ENTRY_MAX_BYTES);
-        record_practice_review(
+        record_practice_review_in(
             &directory,
             "file",
             1,
@@ -3767,7 +4130,7 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            record_practice_review(
+            record_practice_review_in(
                 &directory,
                 "file",
                 1,
@@ -3794,11 +4157,11 @@ mod tests {
             .collect();
         write_test_shard(&directory, "file", 1, 0, 0, entries);
         write_positions(&directory, &hash, &envelope).unwrap();
-        let page = load_practice_reviews(&directory, "file", 1, None, u32::MAX).unwrap();
+        let page = load_practice_reviews_in(&directory, "file", 1, None, u32::MAX).unwrap();
         assert_eq!(page.entries.len(), PRACTICE_READ_MAX_ENTRIES as usize);
         assert!(page.next_cursor.is_some());
         assert!(matches!(
-            load_practice_reviews(
+            load_practice_reviews_in(
                 &directory,
                 "file",
                 1,
@@ -3837,7 +4200,7 @@ mod tests {
         let mut cursor = None;
         let mut ids = Vec::new();
         loop {
-            let page = load_practice_reviews(&directory, "file", 1, cursor, 2).unwrap();
+            let page = load_practice_reviews_in(&directory, "file", 1, cursor, 2).unwrap();
             ids.extend(page.entries.into_iter().map(|entry| entry.id));
             cursor = page.next_cursor;
             if cursor.is_none() {
@@ -3850,8 +4213,8 @@ mod tests {
     #[test]
     fn reset_clears_all_applied_orphan_and_acknowledged_counters() {
         let (_temp, directory) = directory();
-        sync_practice_positions(&directory, "file", 1, 0, 0, &positions()).unwrap();
-        record_practice_review(
+        sync_practice_positions_in(&directory, "file", 1, 0, 0, &positions()).unwrap();
+        record_practice_review_in(
             &directory,
             "file",
             1,
@@ -3866,7 +4229,7 @@ mod tests {
         RECORD_AFTER_APPEND_HOOK.with(|slot| {
             *slot.borrow_mut() = Some(Box::new(|| Err(Error::Conflict("interrupt".into()))))
         });
-        assert!(record_practice_review(
+        assert!(record_practice_review_in(
             &directory,
             "file",
             1,
@@ -3878,8 +4241,8 @@ mod tests {
             "b"
         )
         .is_err());
-        acknowledge_practice_orphans(&directory, "file", 1, 0, 1).unwrap();
-        reset_practice_deck(&directory, "file", 1, 0, 2, &positions()).unwrap();
+        acknowledge_practice_orphans_in(&directory, "file", 1, 0, 1).unwrap();
+        reset_practice_deck_in(&directory, "file", 1, 0, 2, &positions()).unwrap();
         let envelope = read_positions(&directory, &hash_deck("file", 1))
             .unwrap()
             .unwrap();
@@ -3891,12 +4254,12 @@ mod tests {
     #[test]
     fn many_interrupted_ratings_remain_visible_and_are_not_reduced_by_later_writes() {
         let (_temp, directory) = directory();
-        sync_practice_positions(&directory, "file", 1, 0, 0, &positions()).unwrap();
+        sync_practice_positions_in(&directory, "file", 1, 0, 0, &positions()).unwrap();
         for index in 0..5_u32 {
             RECORD_AFTER_APPEND_HOOK.with(|slot| {
                 *slot.borrow_mut() = Some(Box::new(|| Err(Error::Conflict("interrupt".into()))))
             });
-            assert!(record_practice_review(
+            assert!(record_practice_review_in(
                 &directory,
                 "file",
                 1,
@@ -3909,17 +4272,19 @@ mod tests {
             )
             .is_err());
         }
-        let snapshot = load_practice_deck(&directory, "file", 1).unwrap().unwrap();
+        let snapshot = load_practice_deck_in(&directory, "file", 1)
+            .unwrap()
+            .unwrap();
         assert_eq!(snapshot.unapplied_reviews, 5);
         assert_eq!(
-            load_practice_reviews(&directory, "file", 1, None, 500)
+            load_practice_reviews_in(&directory, "file", 1, None, 500)
                 .unwrap()
                 .entries
                 .len(),
             5
         );
-        sync_practice_positions(&directory, "file", 1, 0, 1, &positions()).unwrap();
-        record_practice_review(
+        sync_practice_positions_in(&directory, "file", 1, 0, 1, &positions()).unwrap();
+        record_practice_review_in(
             &directory,
             "file",
             1,
@@ -3932,7 +4297,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            load_practice_deck(&directory, "file", 1)
+            load_practice_deck_in(&directory, "file", 1)
                 .unwrap()
                 .unwrap()
                 .unapplied_reviews,
@@ -3950,7 +4315,7 @@ mod tests {
         let target = directory.path().join("outside");
         fs::write(&target, b"outside").unwrap();
         symlink(&target, directory.path().join(positions_leaf(&hash))).unwrap();
-        assert!(list_practice_decks(&directory)
+        assert!(list_practice_decks_in(&directory)
             .unwrap()
             .anomalies
             .iter()
@@ -3973,7 +4338,7 @@ mod tests {
             }));
         });
         assert!(matches!(
-            migrate_practice_deck(&directory, "file", 1, &value),
+            migrate_practice_deck_in(&directory, "file", 1, &value),
             Err(Error::Conflict(_))
         ));
         let hash = hash_deck("file", 1);
@@ -3982,14 +4347,14 @@ mod tests {
             .filter(|(leaf, _)| leaf.starts_with(&format!("{hash}-g")))
             .collect::<BTreeMap<_, _>>();
         assert!(read_positions(&directory, &hash).unwrap().is_none());
-        migrate_practice_deck(&directory, "file", 1, &value).unwrap();
+        migrate_practice_deck_in(&directory, "file", 1, &value).unwrap();
         let shards_after = all_leaf_bytes(&directory)
             .into_iter()
             .filter(|(leaf, _)| leaf.starts_with(&format!("{hash}-g")))
             .collect::<BTreeMap<_, _>>();
         assert_eq!(shards_before, shards_after);
         assert_eq!(
-            load_practice_reviews(&directory, "file", 1, None, 500)
+            load_practice_reviews_in(&directory, "file", 1, None, 500)
                 .unwrap()
                 .entries
                 .len(),
@@ -4000,9 +4365,9 @@ mod tests {
     #[test]
     fn review_pages_are_newest_first_and_limit_is_bounded() {
         let (_temp, directory) = directory();
-        sync_practice_positions(&directory, "file", 1, 0, 0, &positions()).unwrap();
+        sync_practice_positions_in(&directory, "file", 1, 0, 0, &positions()).unwrap();
         for index in 0..3 {
-            record_practice_review(
+            record_practice_review_in(
                 &directory,
                 "file",
                 1,
@@ -4015,10 +4380,10 @@ mod tests {
             )
             .unwrap();
         }
-        let page = load_practice_reviews(&directory, "file", 1, None, 2).unwrap();
+        let page = load_practice_reviews_in(&directory, "file", 1, None, 2).unwrap();
         assert_eq!(page.entries.len(), 2);
         assert_eq!(page.entries[0].id, "2");
-        let next = load_practice_reviews(&directory, "file", 1, page.next_cursor, 2).unwrap();
+        let next = load_practice_reviews_in(&directory, "file", 1, page.next_cursor, 2).unwrap();
         assert_eq!(next.entries.len(), 1);
     }
 
@@ -4049,7 +4414,7 @@ mod tests {
             )
             .unwrap();
         }
-        let page = load_practice_reviews(&directory, "file", 1, None, 500).unwrap();
+        let page = load_practice_reviews_in(&directory, "file", 1, None, 500).unwrap();
         assert_eq!(
             page.entries
                 .into_iter()
@@ -4062,14 +4427,14 @@ mod tests {
     #[test]
     fn two_writers_from_one_revision_are_serialized() {
         let (_temp, directory) = directory();
-        sync_practice_positions(&directory, "file", 1, 0, 0, &positions()).unwrap();
+        sync_practice_positions_in(&directory, "file", 1, 0, 0, &positions()).unwrap();
         let barrier = Arc::new(Barrier::new(3));
         let first_dir = Arc::new(directory);
         let second_dir = first_dir.clone();
         let first_barrier = barrier.clone();
         let first = thread::spawn(move || {
             first_barrier.wait();
-            record_practice_review(
+            record_practice_review_in(
                 &first_dir,
                 "file",
                 1,
@@ -4084,7 +4449,7 @@ mod tests {
         let second_barrier = barrier.clone();
         let second = thread::spawn(move || {
             second_barrier.wait();
-            record_practice_review(
+            record_practice_review_in(
                 &second_dir,
                 "file",
                 1,
@@ -4120,7 +4485,7 @@ mod tests {
                         thread::sleep(Duration::from_millis(700));
                     }))
                 });
-                record_practice_review(
+                record_practice_review_in(
                     &directory,
                     "file",
                     1,
@@ -4133,7 +4498,7 @@ mod tests {
                 )
                 .expect("first child commits");
             } else {
-                let first = record_practice_review(
+                let first = record_practice_review_in(
                     &directory,
                     "file",
                     1,
@@ -4145,7 +4510,7 @@ mod tests {
                     "b",
                 );
                 assert!(matches!(first, Err(Error::Conflict(_))));
-                record_practice_review(
+                record_practice_review_in(
                     &directory,
                     "file",
                     1,
@@ -4162,7 +4527,7 @@ mod tests {
         }
 
         let (_temp, directory) = directory();
-        sync_practice_positions(&directory, "file", 1, 0, 0, &positions()).unwrap();
+        sync_practice_positions_in(&directory, "file", 1, 0, 0, &positions()).unwrap();
         let root = directory.path().parent().unwrap().to_path_buf();
         let ready = root.join("child-ready");
         let executable = env::current_exe().unwrap();
@@ -4193,7 +4558,7 @@ mod tests {
             .unwrap();
         assert!(first.wait().unwrap().success());
         assert!(second.wait().unwrap().success());
-        let page = load_practice_reviews(&directory, "file", 1, None, 500).unwrap();
+        let page = load_practice_reviews_in(&directory, "file", 1, None, 500).unwrap();
         assert_eq!(page.entries.len(), 2);
     }
 }

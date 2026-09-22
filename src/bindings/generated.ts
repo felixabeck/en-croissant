@@ -475,6 +475,78 @@ async listPuzzleDatabases(ticket: string | null) : Promise<Result<PuzzleDatabase
     else return { status: "error", error: e  as any };
 }
 },
+async loadPracticeDeck(fileId: string, game: number) : Promise<Result<PracticeDeckSnapshot | null, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("load_practice_deck", { fileId, game }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async recordPracticeReview(fileId: string, game: number, generation: number, revision: number, baseRevision: number, positionsDocument: string, entry: string, entryId: string) : Promise<Result<number, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("record_practice_review", { fileId, game, generation, revision, baseRevision, positionsDocument, entry, entryId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async syncPracticePositions(fileId: string, game: number, generation: number, revision: number, positionsDocument: string) : Promise<Result<number, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("sync_practice_positions", { fileId, game, generation, revision, positionsDocument }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async resetPracticeDeck(fileId: string, game: number, generation: number, revision: number, positionsDocument: string) : Promise<Result<number, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("reset_practice_deck", { fileId, game, generation, revision, positionsDocument }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async loadPracticeReviews(fileId: string, game: number, cursor: string | null, limit: number) : Promise<Result<PracticeReviewPage, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("load_practice_reviews", { fileId, game, cursor, limit }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async migratePracticeDeck(fileId: string, game: number, legacyDocument: string) : Promise<Result<PracticeMigrationOutcome, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("migrate_practice_deck", { fileId, game, legacyDocument }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async acknowledgePracticeOrphans(fileId: string, game: number, generation: number, acknowledgedCount: number) : Promise<Result<null, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("acknowledge_practice_orphans", { fileId, game, generation, acknowledgedCount }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async repairPracticeDeck(fileId: string, game: number) : Promise<Result<null, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("repair_practice_deck", { fileId, game }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async listPracticeDecks() : Promise<Result<PracticeDeckInventory, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_practice_decks") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async searchOpeningName(query: string) : Promise<Result<OutOpening[], ErrorPayload>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("search_opening_name", { query }) };
@@ -1052,7 +1124,7 @@ export type DatabaseInfo = { title: string; description: string; player_count: n
 export type DatabaseRootHandle = { id: PathRef; kind: DatabaseRootHandleKind }
 export type DatabaseRootHandleKind = "databaseRoot"
 export type DrawReason = "stalemate" | "insufficientMaterial" | "threefoldRepetition" | "fiftyMoveRule" | "agreement"
-export type DurabilityStage = "ArchiveCommitMarker" | "ArchiveFileReplacement" | "ArchiveReservationJournal" | "DatabasePgnReplacement" | "DirectoryInstall" | "DownloadTargetReplacement" | "GzipFileReplacement" | "NativeExport" | "OldDirectoryCleanup" | "OldDirectoryCleanupSync" | "PgnEdit" | "RegistryReplacement" | "SearchIndexReplacement" | "WorkspacePgnCreation" | "WorkspaceRemoval" | "WorkspaceSidecarCreation" | "WorkspaceSidecarReplacement"
+export type DurabilityStage = "ArchiveCommitMarker" | "ArchiveFileReplacement" | "ArchiveReservationJournal" | "DatabasePgnReplacement" | "DirectoryInstall" | "DownloadTargetReplacement" | "GzipFileReplacement" | "NativeExport" | "OldDirectoryCleanup" | "OldDirectoryCleanupSync" | "PgnEdit" | "RegistryReplacement" | "SearchIndexReplacement" | "WorkspacePgnCreation" | "WorkspaceRemoval" | "WorkspaceSidecarCreation" | "WorkspaceSidecarReplacement" | "PracticePositions" | "PracticeReviewShard" | "PracticeState"
 /**
  * Prepare marks the supplied current-session attachments as prepared without retiring omitted
  * IDs; an empty list is an explicit prepare with no retained attachments.
@@ -1150,6 +1222,15 @@ export type PlayerSort = "id" | "name" | "elo"
 export type PlayersTime = { white: number; black: number; winc: number; binc: number }
 export type PositionQueryJs = { fen: string; type_: string }
 export type PositionStats = { move: string; white: number; draw: number; black: number }
+export type PracticeDeckIdentity = { fileId: string; game: number }
+export type PracticeDeckInventory = { decks: PracticeDeckIdentity[]; anomalies: PracticeStoreAnomaly[] }
+export type PracticeDeckSnapshot = { positionsDocument: string; revision: number; generation: number; migrated: boolean; unappliedReviews: number; orphansAcknowledged: boolean }
+export type PracticeMigrationOutcome = { status: PracticeMigrationStatus; entries: number; positions: number; positionsDigest: string; entriesDigest: string }
+export type PracticeMigrationStatus = "migrated" | "alreadyMigrated"
+export type PracticeReviewEntry = { id: string; entry: string }
+export type PracticeReviewPage = { entries: PracticeReviewEntry[]; nextCursor: string | null }
+export type PracticeStoreAnomaly = { kind: PracticeStoreAnomalyKind; leaf: string; fileId: string | null; game: number | null }
+export type PracticeStoreAnomalyKind = "OrphanShard" | "IdentityMismatch" | "Unreadable" | "NotARegularFile" | "StrandedMigration"
 export type ProgressEvent = { id: string; generation: bigint; progress: number; finished: boolean; state: ProgressState; cleared: boolean }
 export type ProgressItem = { id: string; generation: bigint; progress: number; finished: boolean; state: ProgressState }
 export type ProgressLease = { id: string; generation: bigint }

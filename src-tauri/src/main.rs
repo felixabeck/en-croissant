@@ -83,6 +83,11 @@ use crate::oauth::{
     remove_lichess_account,
 };
 use crate::pgn::{count_pgn_games, delete_game, read_games, write_game};
+use crate::practice::{
+    acknowledge_practice_orphans, list_practice_decks, load_practice_deck, load_practice_reviews,
+    migrate_practice_deck, record_practice_review, repair_practice_deck, reset_practice_deck,
+    sync_practice_positions,
+};
 use crate::puzzle::{
     delete_puzzle_database, get_puzzle, get_puzzle_themes, get_puzzle_workspace,
     get_themes_for_puzzle, issue_puzzle_download_destination, issue_puzzle_workspace,
@@ -2322,6 +2327,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             issue_puzzle_workspace,
             get_puzzle_workspace,
             list_puzzle_databases,
+            load_practice_deck,
+            record_practice_review,
+            sync_practice_positions,
+            reset_practice_deck,
+            load_practice_reviews,
+            migrate_practice_deck,
+            acknowledge_practice_orphans,
+            repair_practice_deck,
+            list_practice_decks,
             search_opening_name,
             get_opening_from_fens,
             get_opening_from_name,
