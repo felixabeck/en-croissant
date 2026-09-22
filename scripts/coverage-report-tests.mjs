@@ -299,6 +299,16 @@ test("unions records for one file reached through two SF spellings", async () =>
   assert.deepEqual(withBlank.utilities, measured);
 });
 
+test("counts two same-named functions declared on one line as two", () => {
+  // The per-declaration index exists only for this case -- a name and a line shared by two
+  // declarations. Dropping it collapses them into one identity and reports one function where
+  // there are two, which no other fixture notices because every other one uses distinct lines.
+  const declarations = parseLcov(
+    "TN:\nSF:a.ts\nFN:1,f\nFN:1,f\nFNDA:1,f\nFNDA:0,f\nend_of_record\n",
+  );
+  assert.deepEqual(declarations[0].metrics.functions, { covered: 1, total: 2 });
+});
+
 test("keeps two declarations apart when a field value contains the joining character", () => {
   // `FN:<line>,<name>` splits on the first comma, so `FN:1,f:g` is line `1`, name `f:g`, while
   // `FN:1:f,g` is line `1:f`, name `g` -- two different declarations. Joining identity fields with
