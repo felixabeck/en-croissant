@@ -271,32 +271,49 @@ test("unions records for one file reached through two SF spellings", async () =>
   // Both spellings occur for real: `llvm-cov` writes absolute paths, `@vitest/coverage-v8`
   // repo-relative ones, and several LCOV files may be joined in one run. The two records must be
   // merged by counter identity, exactly as two identical spellings already are -- summing them
-  // would double every total, and keeping only the last would let a blank record hide a covered
-  // one and reject a file that is measured after all.
+  // would double every total, and keeping only one of them would drop the counters only the other
+  // carries. The two records below are deliberately *disjoint*, so neither failure passes.
   const { root } = await fixture();
-  const absolute = lcov.replace(
-    "SF:src/utils/example.ts",
-    `SF:${join(root, "src/utils/example.ts")}`,
-  );
+  const absolute = `TN:\nSF:${join(root, "src/utils/example.ts")}\nFN:1,example\nFNDA:1,example\nDA:1,1\nBRDA:1,0,0,1\nend_of_record\n`;
+  const relative = `TN:\nSF:src/utils/example.ts\nDA:2,0\nBRDA:1,0,1,0\nend_of_record\n`;
   const measured = {
     lines: { covered: 1, total: 2 },
     functions: { covered: 1, total: 1 },
     branches: { covered: 1, total: 2 },
   };
-  const duplicated = await buildCoverageReport({
+  const united = await buildCoverageReport({
     config,
     configPath: "coverage-areas.json",
-    lcov: `${absolute}${lcov}`,
+    lcov: `${absolute}${relative}`,
     root,
   });
-  assert.deepEqual(duplicated.utilities, measured);
+  assert.deepEqual(united.utilities, measured);
+  // And a blank record for the other spelling neither hides the covered one nor is mistaken for
+  // a blank measurement of the file.
   const withBlank = await buildCoverageReport({
     config,
     configPath: "coverage-areas.json",
-    lcov: `${absolute}${blankLcov("src/utils/example.ts")}`,
+    lcov: `${absolute}${relative}${blankLcov("src/utils/example.ts")}`,
     root,
   });
   assert.deepEqual(withBlank.utilities, measured);
+});
+
+test("gives a function the same identity whatever order the records declare it in", async () => {
+  // Two records for one file need not list their functions in the same order. An occurrence index
+  // counted per *name* made `FN:10,f; FN:20,f` and `FN:20,f; FN:10,f` four distinct functions and
+  // reported 2/4 for a file with two.
+  const { root } = await fixture();
+  const forward = `TN:\nSF:${join(root, "src/utils/example.ts")}\nFN:10,f\nFN:20,f\nFNDA:1,f\nFNDA:0,f\nDA:10,1\nDA:20,0\nend_of_record\n`;
+  const reversed = `TN:\nSF:src/utils/example.ts\nFN:20,f\nFN:10,f\nFNDA:0,f\nFNDA:1,f\nDA:20,0\nDA:10,1\nend_of_record\n`;
+  const report = await buildCoverageReport({
+    config,
+    configPath: "coverage-areas.json",
+    lcov: `${forward}${reversed}`,
+    root,
+  });
+  assert.deepEqual(report.utilities.functions, { covered: 1, total: 2 });
+  assert.deepEqual(report.utilities.lines, { covered: 1, total: 2 });
 });
 
 test("rejects a statementFree list of the wrong shape rather than ignoring it", async () => {

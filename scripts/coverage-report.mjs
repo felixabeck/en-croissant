@@ -228,9 +228,17 @@ export function parseLcov(lcov, identify = (file) => file) {
       const [line, hits, checksum = ""] = value.split(",");
       addCounter(report.lines, `${line}:${checksum}`, Number(hits));
     } else if (key === "FN") {
+      // The occurrence index counts same-named declarations *on the same line*, not same-named
+      // declarations anywhere in the file. Both spellings disambiguate the only case that needs
+      // it -- two functions sharing a name and a line -- but only this one is independent of
+      // declaration order, and two records for one file need not list their functions in the same
+      // order. Counting per name made `FN:10,f; FN:20,f` and `FN:20,f; FN:10,f` four distinct
+      // functions instead of two. `functionIdsByName` keeps declaration order regardless, because
+      // that is what pairs an `FNDA` line with its `FN`.
       const [line, name] = value.split(",");
       const functionsWithName = report.functionIdsByName.get(name) ?? [];
-      const identity = `${line}:${name}:${functionsWithName.length}`;
+      const sameLine = functionsWithName.filter((id) => id.startsWith(`${line}:${name}:`)).length;
+      const identity = `${line}:${name}:${sameLine}`;
       report.functions.set(identity, 0);
       functionsWithName.push(identity);
       report.functionIdsByName.set(name, functionsWithName);
