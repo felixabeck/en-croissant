@@ -11137,3 +11137,15 @@ It matters more since 2026-09-22 than before: `buildCoverageReport` now merges r
 * **Why it matters:** `.claude/rules/async-resource-invariants.md` — no `!`/throw on anything that reaches the renderer from a database, and every async operation has an error path and a terminal state. Puzzle moves come from a user-selected puzzle database. A partial application is the silent version of the same defect: the tree the user sees is neither the before nor the after state.
 * **Fix shape:** parse the whole payload against a scratch position before touching the draft, so `makeMoves` is all-or-nothing, and give it a result the caller can act on; route the "View solution" loop through the same validation (or through `makeMoves`) and wrap it so the playing state always ends. Whether an invalid stored puzzle should be skipped, marked, or reported is the caller's decision and belongs in that run.
 * **Found by:** `review-error-handling` (blocker 96, should-fix 96) in round 2 of the plan review for `f-20260922-08`/`f-20260922-10`, 2026-09-22; the orchestrator read both sites before filing. Outside that plan's MANDATE (path rebasing), so filed rather than folded in. Related, different mechanism: `f-20260920-08` (puzzle history storage).
+
+---
+
+## 2026-09-22 — filed through the inbox spool
+
+### `tabStorage` fire-and-forgets two `warn` calls whose rejection nothing handles
+
+* **ID:** f-20260922-14 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src/state/store/tabStorage.ts:280` (`read`'s migration-rewrite failure) and `:336` (`flush`'s per-key write failure), both `void warn(...)` with no `.catch`.
+* **Defect (read, not reproduced at runtime):** `warn` is `@tauri-apps/plugin-log`'s, re-exported unchanged by `src/platform/native.ts:8`, and returns a promise that rejects when the log IPC fails. `void` discards the promise without handling it, so a logging failure inside a storage-failure path becomes an unhandled rejection. The three other fire-and-forget log calls in `src/` (`sound.ts:73`, `LocalImage.tsx:40`, `downloadJobs.ts:47`) all attach a `.catch`; these two are the only ones that do not.
+* **Why it matters:** `.claude/rules/async-resource-invariants.md` — every asynchronous operation has an error path. These fire precisely when storage is already failing (quota, a write rejected), which is the moment a second, unhandled failure is least useful. `f-20260906-10` (handled, `85ad4f67`) records why `.catch(() => undefined)` alone is not always right: there the `warn` was the only record of the failure; here each call already sits in a path that either retains the pending state for a retry or returns the decoded value, so the choice between a silent catch and a `console.warn` fallback is the fix's to make, citing that decision.
+* **Found by:** `review-error-handling` (should-fix, confidence 94) in round 3 of the plan review for `f-20260922-08`/`f-20260922-10`, 2026-09-22; the orchestrator grepped every `void warn|error|info` site before filing. Pre-existing and outside that plan's MANDATE (the plan adds no log call), so filed rather than folded in.
