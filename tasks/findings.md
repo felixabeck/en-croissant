@@ -7409,7 +7409,7 @@ Final review repair completed in 88c1b7bb (tab transitions), 3de47fe2 (ordinary 
 
 ### A saved download destination that is absent from native authority has no re-selection recovery
 
-* **ID:** f-20260906-16 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260906-16 · **Status:** handled · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src/state/atoms.ts:142-148`, `src/components/home/AccountCard.tsx:205-210`.
 * **Defect:** Persist a shape-valid download-destination-capability such as an ID whose native registry record is missing after registry loss/partial recovery. ensureDownloadDestination returns that ID solely because its shape is valid; subsequent native download resolution fails and the normal picker branch is never reached. This already occurs before any startup reclamation change.
 * **Needed:** A bounded native-validity/re-selection recovery contract that distinguishes missing authority from offline/permission/other download failures; do not silently discard a valid offline destination or turn every backend error into a new picker. Prove reload with an unknown ID can recover, while a valid owned/offline destination is preserved.
