@@ -6,7 +6,6 @@ import type { SetStateAction } from "react";
 import { atom, type PrimitiveAtom } from "jotai";
 import { atomFamily, atomWithStorage, unwrap } from "jotai/utils";
 import type { AtomFamily } from "jotai/vanilla/utils/atomFamily";
-import type { SyncStorage } from "jotai/vanilla/utils/atomWithStorage";
 import { z } from "zod";
 import type {
     BestMoves,
@@ -43,7 +42,7 @@ import { reportPersistError } from "./persistError";
 import { originalPathOwnersSnapshot } from "./pathOwners";
 import { createEngineOwnerStorage, type EngineOwnerSaveReceipt } from "./engineOwnerStorage";
 import { defaultPlayerSettings, opponentSettingsSchema } from "@/state/opponentSettings";
-import { practiceDataSchema, type PracticeData } from "./practiceStorage";
+import { createPracticeDeckAtom, type PracticeData } from "./practiceStorage";
 
 export type { PracticeData } from "./practiceStorage";
 
@@ -717,15 +716,7 @@ export const pendingGameStartFamily = atomFamily((_tab: string) =>
 // Practice
 
 export const deckAtomFamily = atomFamily(
-    ({ file, game }: { file: string; game: number }) =>
-        atomWithStorage<PracticeData>(
-            `deck-${file}-${game}`,
-            {
-                positions: [],
-                logs: [],
-            },
-            createZodStorage(practiceDataSchema, localStorage) as any as SyncStorage<PracticeData>, // TODO: fix types
-        ),
+    ({ file, game }: { file: string; game: number }) => createPracticeDeckAtom({ file, game }),
 
     (a, b) => a.file === b.file && a.game === b.game,
 );

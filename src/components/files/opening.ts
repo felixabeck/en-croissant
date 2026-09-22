@@ -1,7 +1,12 @@
-import type { SetStateAction } from "react";
-import { type Card, createEmptyCard, fsrs, type Grade, generatorParameters } from "ts-fsrs";
+import {
+    type Card,
+    createEmptyCard,
+    fsrs,
+    type Grade,
+    type ReviewLog,
+    generatorParameters,
+} from "ts-fsrs";
 import { z } from "zod";
-import type { PracticeData } from "@/state/practiceStorage";
 import { isPrefix } from "@/utils/misc";
 import { getBoardState, type TreeNode, treeIterator } from "@/utils/treeReducer";
 
@@ -95,23 +100,27 @@ export function getCardForReview(
 }
 
 export function updateCardPerformance(
-    setPositions: React.Dispatch<SetStateAction<PracticeData>>,
+    positions: Position[],
     i: number,
     card: Card,
     grade: 1 | 2 | 3 | 4,
-) {
+): {
+    positions: Position[];
+    entry: ReviewLog & { fen: string };
+    entryId: string;
+} | null {
     const schedulingCards = f.repeat(card, new Date());
 
     const { card: newCard, log } = schedulingCards[grade];
-
-    setPositions((data) => {
-        data.positions[i].card = newCard;
-        data.logs.push({ ...log, fen: data.positions[i].fen });
-        return {
-            positions: data.positions,
-            logs: data.logs,
-        };
-    });
+    const position = positions[i];
+    if (!position) return null;
+    return {
+        positions: positions.map((candidate, index) =>
+            index === i ? { ...candidate, card: newCard } : candidate,
+        ),
+        entry: { ...log, fen: position.fen },
+        entryId: crypto.randomUUID(),
+    };
 }
 
 export function syncDeck(

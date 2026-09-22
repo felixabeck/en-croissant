@@ -29,6 +29,7 @@ const fixtures = vi.hoisted(() => ({
   }),
   storeSet: vi.fn(),
   dueStats: { due: 0, unseen: 0 },
+  deckStatus: "ready" as "loading" | "ready" | "read-failed" | "write-pending" | "write-blocked",
 }));
 
 import NewTabHome from "./NewTabHome";
@@ -57,7 +58,7 @@ vi.mock("jotai", () => ({
       return [[{ value: "new-tab", name: "Home", type: "new" }], fixtures.setTabs];
     }
     if (atom === fixtures.atoms.deckFamily) {
-      return [{ positions: [] }, vi.fn()];
+      return [{ positions: [], status: fixtures.deckStatus }, vi.fn()];
     }
     return [[], vi.fn()];
   },
@@ -127,6 +128,7 @@ beforeEach(() => {
   fixtures.createTab.mockResolvedValue("tab-id");
   fixtures.readGames.mockResolvedValue(["*"]);
   fixtures.dueStats = { due: 0, unseen: 0 };
+  fixtures.deckStatus = "ready";
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -246,6 +248,27 @@ test("hides due practice counts when a repertoire is fully practiced", async () 
   expect(container.textContent).toContain("white");
   expect(container.textContent).not.toContain("Board.Practice.Due");
 });
+
+test.each(["loading", "read-failed"] as const)(
+  "does not show a due badge while the practice deck is %s",
+  async (status) => {
+    fixtures.deckStatus = status;
+    fixtures.dueStats = { due: 2, unseen: 1 };
+    fixtures.recentFiles = [
+      {
+        name: "white",
+        handle: { id: { id: "white" }, kind: "fileWorkspace" },
+        type: "repertoire",
+        lastOpened: 3,
+      },
+    ];
+
+    await act(async () => {
+      root.render(<NewTabHome id="new-tab" />);
+    });
+    expect(container.textContent).not.toContain("Board.Practice.Due");
+  },
+);
 
 test("opens a recent repertoire into the practice panel", async () => {
   fixtures.recentFiles = [

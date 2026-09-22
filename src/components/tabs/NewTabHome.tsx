@@ -59,6 +59,8 @@ function RecentFileDuePositions({ file }: { file: string }) {
     }),
   );
 
+  if (deck.status !== "ready" && deck.status !== "write-pending") return null;
+
   const stats = getStats(deck.positions);
 
   if (stats.due + stats.unseen === 0) return null;
