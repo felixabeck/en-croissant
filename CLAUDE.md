@@ -71,9 +71,11 @@ canonical push contract. Two properties worth knowing before planning any change
   deleting covered code is neutral rather than a regression — before that, removing one provably
   dead branch reddened the gate and the cheapest way to stay green was to leave dead code in place
   (`f-20260829-15`, `d-20260829-03`). The allowance is bounded by the shrink and every use is
-  printed, and it makes the recorded *scope* the only remaining guard against narrowing the measured
-  set. `bundle-budgets.json` caps entry, largest-lazy, and total gzip bytes. Never lower a floor or
-  rewrite a baseline to accept a regression — see `docs/coverage.md`.
+  printed, so the measured set is policed by two guards rather than by any number: the recorded
+  *scope*, and the blank-measurement check that fails a measured file contributing no line, function
+  or branch record unless it is declared `statementFree`. `bundle-budgets.json` caps entry,
+  largest-lazy, and total gzip bytes. Never lower a floor or rewrite a baseline to accept a
+  regression — see `docs/coverage.md`.
 
 **Frontend mutation testing is a receipt-backed frontend push gate.** It runs all three packages
 through `gate:ensure frontend-mutation` and was measured at 323 s on the runner. The backend suite

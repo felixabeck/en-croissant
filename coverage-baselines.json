@@ -15,6 +15,11 @@
           "src/bindings/generated.ts",
           "src/routeTree.gen.ts",
           "src/vite-env.d.ts"
+        ],
+        "statementFree": [
+          "src/bindings/index.ts",
+          "src/platform/native.ts",
+          "src/state/persistError.ts"
         ]
       }
     ],

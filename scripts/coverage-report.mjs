@@ -1,3 +1,52 @@
+/**
+ * Recorded failure evidence for this artefact.
+ *
+ * `push-review-policy.md:211-219` asks that a verification artefact whose output is read as
+ * evidence outside a test run carry, in its own header, the message and exit status each of its
+ * assertions was *seen* to produce. This script is such an artefact: `package.json:37,40` and
+ * `.github/workflows/test.yml:157,230` cite its exit status for both coverage ratchets and both
+ * area-floor gates.
+ *
+ * The rows below are the paths the blank-measurement work changed (`f-20260920-19`), each run
+ * against the real frontend LCOV on 2026-09-22. The four rows with an offender list were run
+ * twice, once with one offender and once with two, because a message naming only the first
+ * offender passes every single-offender run. Messages are quoted to their distinguishing clause.
+ *
+ *   row 1  undeclared blank, 1 offender   exit 1  "Coverage measurement is blank for production
+ *          staged by raw-importing                 files: src/components/boards/EditingCard.tsx."
+ *          one never-imported file
+ *   row 1  undeclared blank, 2 offenders  exit 1  "... files: src/components/boards/
+ *                                                  AnnotationHint.tsx, src/components/boards/
+ *                                                  EditingCard.tsx." -- one message, both paths,
+ *                                                  sorted
+ *   row 2a dead declaration, absent file  exit 1  "Coverage statementFree declarations are outside
+ *          1 offender / 2 offenders               the measured production set:
+ *                                                 src/does-not-exist.ts." / "...
+ *                                                 src/also-missing.ts, src/does-not-exist.ts."
+ *   row 2b dead declaration, existing but  exit 1 "... outside the measured production set:
+ *          excluded file                          src/routeTree.gen.ts." / "...
+ *          1 offender / 2 offenders               src/routeTree.gen.ts, src/vite-env.d.ts."
+ *   row 3  declaration that is a lie       exit 1 "Coverage statementFree declarations are no
+ *          1 offender / 2 offenders               longer blank: src/utils/format.ts." / "...
+ *                                                 src/utils/chess.ts, src/utils/format.ts."
+ *   row 9  scope mismatch, rewritten       exit 1 "Coverage measurement scope changed: source ids
+ *          message                                and roots, include globs, exclude globs,
+ *                                                 statementFree declarations, or area ids,
+ *                                                 sources, and paths no longer match the
+ *                                                 baseline. ... Re-record the scope subtree by
+ *                                                 hand, leave areas untouched ..." -- and it does
+ *                                                 not name `coverage:baseline:*`
+ *
+ * Nine runs, one record each. Rows 2a, 2b and 3 were staged with a scratch copy of
+ * `coverage-areas.json`; row 9 with a scratch copy of the baseline whose recorded scope was one
+ * `statementFree` entry stale; row 1 by a throwaway test, deleted afterwards, with the gate
+ * measured green before and green again after. Row 2b uses a file that exists on disk and is
+ * excluded, because condition 2 is measured-set membership and not filesystem existence.
+ *
+ * This is not the artefact's complete failure matrix — the remaining paths are `f-20260921-02`.
+ * Until that matrix exists, a green run of this script may not be cited as evidence without
+ * naming what it does not cover.
+ */
 import { spawnSync } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -114,7 +163,7 @@ function addMetrics(total, addition) {
   }
 }
 
-export async function buildCoverageReport({ config, lcov, root }) {
+export async function buildCoverageReport({ config, configPath, lcov, root }) {
   const productionFiles = new Map();
   for (const source of config.sources) {
     const files = (await filesBelow(resolve(root, source.root))).map((path) =>
@@ -135,6 +184,7 @@ export async function buildCoverageReport({ config, lcov, root }) {
   const report = Object.fromEntries(config.areas.map((area) => [area.id, emptyMetrics()]));
   const coverageFilesByArea = Object.fromEntries(config.areas.map((area) => [area.id, 0]));
   const filesWithCoverage = new Set();
+  const coverageMetricsByFile = new Map();
   for (const record of parseLcov(lcov)) {
     const file = normalisePath(record.file, root);
     const sourceId = productionFiles.get(file);
@@ -145,11 +195,51 @@ export async function buildCoverageReport({ config, lcov, root }) {
     addMetrics(report[area.id], record.metrics);
     coverageFilesByArea[area.id] += 1;
     filesWithCoverage.add(file);
+    coverageMetricsByFile.set(file, record.metrics);
   }
 
   const missingFiles = [...productionFiles.keys()].filter((file) => !filesWithCoverage.has(file));
   if (missingFiles.length)
     throw new Error(`Coverage data missing for production files: ${missingFiles.join(", ")}`);
+  const isBlankMeasurement = (metrics) =>
+    metrics.lines.total === 0 && metrics.functions.total === 0 && metrics.branches.total === 0;
+  const statementFreeDeclarations = config.sources.flatMap((source) =>
+    (source.statementFree ?? []).map(({ path }) => ({ path, sourceId: source.id })),
+  );
+  const declaredStatementFree = new Set(
+    statementFreeDeclarations
+      .filter(({ path, sourceId }) => productionFiles.get(path) === sourceId)
+      .map(({ path }) => path),
+  );
+  const blankFiles = [...productionFiles.keys()]
+    .filter((file) => isBlankMeasurement(coverageMetricsByFile.get(file)))
+    .filter((file) => !declaredStatementFree.has(file))
+    .sort();
+  if (blankFiles.length)
+    throw new Error(
+      `Coverage measurement is blank for production files: ${blankFiles.join(", ")}. ` +
+        "A file present in the LCOV with no line, function or branch records has left the denominator without changing any percentage. " +
+        `If the file genuinely has no statements, declare it under statementFree in ${configPath}; otherwise something removed it from the measurement (see docs/coverage.md).`,
+    );
+  const deadStatementFree = statementFreeDeclarations
+    .filter(({ path, sourceId }) => productionFiles.get(path) !== sourceId)
+    .map(({ path }) => path)
+    .sort();
+  if (deadStatementFree.length)
+    throw new Error(
+      `Coverage statementFree declarations are outside the measured production set: ${deadStatementFree.join(", ")}. ` +
+        "Remove each dead declaration or restore the file to the measured production set.",
+    );
+  const nonBlankStatementFree = statementFreeDeclarations
+    .filter(({ path, sourceId }) => productionFiles.get(path) === sourceId)
+    .filter(({ path }) => !isBlankMeasurement(coverageMetricsByFile.get(path)))
+    .map(({ path }) => path)
+    .sort();
+  if (nonBlankStatementFree.length)
+    throw new Error(
+      `Coverage statementFree declarations are no longer blank: ${nonBlankStatementFree.join(", ")}. ` +
+        "Remove each declaration so the file contributes its coverage records.",
+    );
   for (const area of config.areas) {
     if (coverageFilesByArea[area.id] === 0)
       throw new Error(`Coverage data missing for area: ${area.id}`);
@@ -158,11 +248,11 @@ export async function buildCoverageReport({ config, lcov, root }) {
 }
 
 /**
- * The globs that decide *what gets measured*. Numbers alone cannot tell deleting
- * an untested file apart from carving one out of the measured set: both leave
- * `covered` unchanged and shrink `total`. Pinning the scope separates them, so
- * the ratchets below can judge coverage without also having to police the
- * denominator.
+ * The globs that decide *what gets measured*, plus the measured files permitted
+ * to contribute nothing. Numbers alone cannot tell deleting an untested file
+ * apart from carving one out of the measured set: both leave `covered` unchanged
+ * and shrink `total`. Pinning the scope separates them, so the ratchets below
+ * can judge coverage without also having to police the denominator.
  */
 export function scopeSignature(config) {
   return {
@@ -171,6 +261,7 @@ export function scopeSignature(config) {
       root: source.root,
       include: [...source.include].sort(),
       exclude: [...excludePatterns(source)].sort(),
+      statementFree: source.statementFree?.map(({ path }) => path).sort(),
     })),
     areas: config.areas.map((area) => ({
       id: area.id,
@@ -189,9 +280,12 @@ export function assertBaseline(report, baseline, config) {
     if (!baseline.scope) throw new Error("Coverage baseline is missing its recorded scope");
     if (JSON.stringify(baseline.scope) !== actualScope) {
       throw new Error(
-        "Coverage measurement scope changed: the include/exclude globs no longer match the " +
+        "Coverage measurement scope changed: source ids and roots, include globs, exclude globs, " +
+          "statementFree declarations, or area ids, sources, and paths no longer match the " +
           "baseline. Narrowing the measured set hides untested code without changing any " +
-          "percentage. Re-record it deliberately with the matching coverage:baseline:* script.",
+          "percentage. Re-record the scope subtree by hand, leave areas untouched, and prove " +
+          "the edit is scope-only by comparing the parsed committed baseline with the parsed " +
+          "working-tree baseline (see docs/coverage.md).",
       );
     }
   }
@@ -312,7 +406,7 @@ async function main() {
   const lcov = (
     await Promise.all(options.lcov.map((file) => readFile(resolve(root, file), "utf8")))
   ).join("\n");
-  const areas = await buildCoverageReport({ config, lcov, root });
+  const areas = await buildCoverageReport({ config, configPath: options.config, lcov, root });
   if (options.writeBaseline) {
     await writeBaseline({
       areas,

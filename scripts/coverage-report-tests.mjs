@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, relative, resolve, sep } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import test from "node:test";
 import {
   assertAreaFloors,
@@ -45,10 +45,14 @@ const config = {
 const lcov = `TN:\nSF:src/utils/example.ts\nFN:1,example\nFNDA:1,example\nDA:1,1\nDA:2,0\nBRDA:1,0,0,1\nBRDA:1,0,1,0\nend_of_record\n`;
 const duplicateFunctionLcov = `TN:\nSF:src/utils/example.ts\nFN:1,handler\nFN:10,handler\nFNDA:1,handler\nFNDA:0,handler\nDA:1,1\nDA:10,0\nend_of_record\n`;
 
-async function fixture({ source = "export const example = 1;\n" } = {}) {
+async function fixture({ source = "export const example = 1;\n", files = {} } = {}) {
   const root = await mkdtemp(join(tmpdir(), "coverage-report-"));
-  await mkdir(join(root, "src", "utils"), { recursive: true });
-  await writeFile(join(root, "src", "utils", "example.ts"), source);
+  const fixtureFiles = { "src/utils/example.ts": source, ...files };
+  for (const [path, contents] of Object.entries(fixtureFiles)) {
+    const filePath = join(root, path);
+    await mkdir(dirname(filePath), { recursive: true });
+    await writeFile(filePath, contents);
+  }
   return { root };
 }
 
@@ -59,6 +63,76 @@ function metrics(metric, covered, total) {
     branches: { covered: 1, total: 2 },
     [metric]: { covered, total },
   };
+}
+
+function withStatementFree(paths) {
+  return {
+    ...config,
+    sources: [
+      {
+        ...config.sources[0],
+        statementFree: paths.map((path) => ({ path, reason: "Fixture declaration." })),
+      },
+    ],
+  };
+}
+
+function lcovRecord(file, { lines = 0, functions = 0, branches = 0 } = {}) {
+  const records = [`TN:`, `SF:${file}`];
+  for (let index = 1; index <= functions; index += 1) {
+    records.push(`FN:${index},function${index}`, `FNDA:1,function${index}`);
+  }
+  for (let index = 1; index <= lines; index += 1) records.push(`DA:${index},1`);
+  for (let index = 1; index <= branches; index += 1) records.push(`BRDA:${index},0,${index - 1},1`);
+  records.push("end_of_record", "");
+  return records.join("\n");
+}
+
+function blankLcov(file) {
+  return lcovRecord(file);
+}
+
+function cliConfig(statementFree = []) {
+  return {
+    version: 1,
+    sources: [
+      {
+        id: "frontend",
+        root: "src",
+        include: ["src/**/*.ts"],
+        exclude: [],
+        ...(statementFree.length > 0 ? { statementFree } : {}),
+      },
+    ],
+    areas: [
+      {
+        id: "utilities",
+        source: "frontend",
+        minimumCoverage: { lines: 0, functions: 0, branches: 0 },
+        paths: ["src/utils/**"],
+      },
+    ],
+  };
+}
+
+async function runCoverageCli(root, { config, lcov, writeBaseline = false }) {
+  await writeFile(join(root, "config.json"), JSON.stringify(config));
+  await writeFile(join(root, "lcov.info"), lcov);
+  if (!writeBaseline) await writeFile(join(root, "baseline.json"), JSON.stringify({ version: 1 }));
+  return spawnSync(
+    process.execPath,
+    [
+      join(process.cwd(), "scripts", "coverage-report.mjs"),
+      "--config",
+      "config.json",
+      "--baseline",
+      writeBaseline ? "scratch-baseline.json" : "baseline.json",
+      "--lcov",
+      "lcov.info",
+      ...(writeBaseline ? ["--write-baseline"] : []),
+    ],
+    { cwd: root, encoding: "utf8" },
+  );
 }
 
 test("parses LCOV line, function, and branch totals", () => {
@@ -95,6 +169,7 @@ test("preserves zero coverage as totals rather than dropping it", async () => {
   const { root } = await fixture();
   const report = await buildCoverageReport({
     config,
+    configPath: "coverage-areas.json",
     lcov: lcov
       .replace("FNDA:1", "FNDA:0")
       .replace("DA:1,1", "DA:1,0")
@@ -106,6 +181,188 @@ test("preserves zero coverage as totals rather than dropping it", async () => {
     functions: { covered: 0, total: 1 },
     branches: { covered: 0, total: 2 },
   });
+});
+
+test("rejects a blank measurement for an undeclared production file", async () => {
+  const blankFile = "src/utils/blank.ts";
+  const { root } = await fixture({ files: { [blankFile]: "export type Blank = string;\n" } });
+  await assert.rejects(
+    () =>
+      buildCoverageReport({
+        config,
+        configPath: "coverage-areas.json",
+        lcov: `${lcov}${blankLcov(blankFile)}`,
+        root,
+      }),
+    (error) => {
+      assert.equal(
+        error.message,
+        "Coverage measurement is blank for production files: src/utils/blank.ts. " +
+          "A file present in the LCOV with no line, function or branch records has left the denominator without changing any percentage. " +
+          "If the file genuinely has no statements, declare it under statementFree in coverage-areas.json; otherwise something removed it from the measurement (see docs/coverage.md).",
+      );
+      return true;
+    },
+  );
+});
+
+test("names two blank undeclared production files in stable order", async () => {
+  const blankFiles = ["src/utils/blank-b.ts", "src/utils/blank-a.ts"];
+  const { root } = await fixture({
+    files: Object.fromEntries(blankFiles.map((file) => [file, "export type Blank = string;\n"])),
+  });
+  await assert.rejects(
+    () =>
+      buildCoverageReport({
+        config,
+        configPath: "coverage-areas.json",
+        lcov: `${lcov}${blankLcov(blankFiles[0])}${blankLcov(blankFiles[1])}`,
+        root,
+      }),
+    /Coverage measurement is blank for production files: src\/utils\/blank-a\.ts, src\/utils\/blank-b\.ts\./,
+  );
+});
+
+test("accepts a declared blank without changing area metrics", async () => {
+  const blankFile = "src/utils/blank.ts";
+  const { root } = await fixture({ files: { [blankFile]: "export type Blank = string;\n" } });
+  // O2 residual limitation: a declared file that gains statements and is raw-imported stays blank and is not caught.
+  const report = await buildCoverageReport({
+    config: withStatementFree([blankFile]),
+    configPath: "coverage-areas.json",
+    lcov: `${lcov}${blankLcov(blankFile)}`,
+    root,
+  });
+  assert.deepEqual(report, {
+    utilities: {
+      lines: { covered: 1, total: 2 },
+      functions: { covered: 1, total: 1 },
+      branches: { covered: 1, total: 2 },
+    },
+  });
+});
+
+test("rejects two declared paths absent from the measured production set", async () => {
+  const declaredPaths = ["src/utils/dead-b.ts", "src/utils/dead-a.ts"];
+  const { root } = await fixture();
+  await assert.rejects(
+    () =>
+      buildCoverageReport({
+        config: withStatementFree(declaredPaths),
+        configPath: "coverage-areas.json",
+        lcov,
+        root,
+      }),
+    /Coverage statementFree declarations are outside the measured production set: src\/utils\/dead-a\.ts, src\/utils\/dead-b\.ts\. Remove each dead declaration or restore the file to the measured production set\./,
+  );
+});
+
+test("rejects declared paths that are no longer blank", async () => {
+  const declaredPaths = ["src/utils/declared-b.ts", "src/utils/declared-a.ts"];
+  const { root } = await fixture({
+    files: Object.fromEntries(
+      declaredPaths.map((file) => [file, "export const declared = true;\n"]),
+    ),
+  });
+  const declaredLcov = declaredPaths.map((file) =>
+    lcovRecord(file, { lines: 1, functions: 1, branches: 1 }),
+  );
+  await assert.rejects(
+    () =>
+      buildCoverageReport({
+        config: withStatementFree(declaredPaths),
+        configPath: "coverage-areas.json",
+        lcov: `${lcov}${declaredLcov.join("")}`,
+        root,
+      }),
+    /Coverage statementFree declarations are no longer blank: src\/utils\/declared-a\.ts, src\/utils\/declared-b\.ts\. Remove each declaration so the file contributes its coverage records\./,
+  );
+
+  const partialZeroCases = [
+    ["lines", { lines: 0, functions: 1, branches: 1 }],
+    ["functions", { lines: 1, functions: 0, branches: 1 }],
+    ["branches", { lines: 1, functions: 1, branches: 0 }],
+  ];
+  for (const [metric, totals] of partialZeroCases) {
+    const file = `src/utils/declared-partial-${metric}.ts`;
+    const partialFixture = await fixture({ files: { [file]: "export const declared = true;\n" } });
+    await assert.rejects(
+      () =>
+        buildCoverageReport({
+          config: withStatementFree([file]),
+          configPath: "coverage-areas.json",
+          lcov: `${lcov}${lcovRecord(file, totals)}`,
+          root: partialFixture.root,
+        }),
+      new RegExp(
+        `Coverage statementFree declarations are no longer blank: ${file.replaceAll("/", "\\/")}\\.`,
+      ),
+    );
+  }
+});
+
+test("matches statementFree declarations literally rather than as globs", async () => {
+  const { root } = await fixture();
+  await assert.rejects(
+    () =>
+      buildCoverageReport({
+        config: withStatementFree(["src/**"]),
+        configPath: "coverage-areas.json",
+        lcov,
+        root,
+      }),
+    /Coverage statementFree declarations are outside the measured production set: src\/\*\*\./,
+  );
+});
+
+test("accepts each partial-zero permutation for an undeclared production file", async () => {
+  const partialZeroCases = [
+    ["lines", { lines: 0, functions: 1, branches: 1 }],
+    ["functions", { lines: 1, functions: 0, branches: 1 }],
+    ["branches", { lines: 1, functions: 1, branches: 0 }],
+  ];
+  for (const [metric, totals] of partialZeroCases) {
+    const file = `src/utils/partial-${metric}.ts`;
+    const partialFixture = await fixture({ files: { [file]: "export const partial = true;\n" } });
+    const report = await buildCoverageReport({
+      config,
+      configPath: "coverage-areas.json",
+      lcov: `${lcov}${lcovRecord(file, totals)}`,
+      root: partialFixture.root,
+    });
+    assert.deepEqual(report.utilities, {
+      lines: { covered: 1 + (totals.lines > 0 ? 1 : 0), total: 2 + totals.lines },
+      functions: { covered: 1 + (totals.functions > 0 ? 1 : 0), total: 1 + totals.functions },
+      branches: { covered: 1 + (totals.branches > 0 ? 1 : 0), total: 2 + totals.branches },
+    });
+  }
+});
+
+test("rejects a blank measurement for a backend-shaped configuration", async () => {
+  const backendConfig = {
+    version: 1,
+    sources: [
+      {
+        id: "backend",
+        root: "src-tauri/src",
+        include: ["src-tauri/src/**/*.rs"],
+        exclude: [],
+      },
+    ],
+    areas: [{ id: "backend-area", source: "backend", paths: ["src-tauri/src/**"] }],
+  };
+  const blankFile = "src-tauri/src/blank.rs";
+  const { root } = await fixture({ files: { [blankFile]: "pub type Blank = ();\n" } });
+  await assert.rejects(
+    () =>
+      buildCoverageReport({
+        config: backendConfig,
+        configPath: "backend-coverage-areas.json",
+        lcov: blankLcov(blankFile),
+        root,
+      }),
+    /Coverage measurement is blank for production files: src-tauri\/src\/blank\.rs\./,
+  );
 });
 
 test("rejects coverage regressions", () => {
@@ -155,16 +412,44 @@ test("rejects narrowing the measured scope, which shrinks the total without dele
       },
     ],
   };
+  // The second narrowing route the signature pins: the same measured file is
+  // instead permitted to contribute nothing. Both must reject, or declaring a
+  // file would be a narrowing that no guard sees.
+  const declared = {
+    ...config,
+    sources: [
+      {
+        ...config.sources[0],
+        statementFree: [
+          { path: "src/untested-thing.ts", reason: "The fixture changed its declaration." },
+        ],
+      },
+    ],
+  };
   const baseline = {
     version: 1,
     scope: scopeSignature(config),
     areas: { utilities: { ...metrics(), lines: { covered: 50, total: 100 } } },
   };
+  const namesEveryPinnedComponent = (error) => {
+    assert.match(error.message, /source ids and roots/);
+    assert.match(error.message, /include globs/);
+    assert.match(error.message, /exclude globs/);
+    assert.match(error.message, /statementFree/);
+    assert.match(error.message, /area ids, sources, and paths/);
+    assert.match(error.message, /scope subtree by hand/);
+    assert.doesNotMatch(error.message, /coverage:baseline:|--write-baseline/);
+    return true;
+  };
   // Numbers alone would pass: covered is unchanged and the ratio rose.
   assert.doesNotThrow(() => assertBaseline({ utilities: metrics() }, baseline, config));
   assert.throws(
     () => assertBaseline({ utilities: metrics() }, baseline, widened),
-    /measurement scope changed/,
+    namesEveryPinnedComponent,
+  );
+  assert.throws(
+    () => assertBaseline({ utilities: metrics() }, baseline, declared),
+    namesEveryPinnedComponent,
   );
 });
 
@@ -290,6 +575,58 @@ test("announces baseline allowances through the CLI", async () => {
   );
 });
 
+test("reports each statementFree validation condition through the CLI", async () => {
+  const blankFile = "src/utils/blank.ts";
+  const blankFixture = await fixture({ files: { [blankFile]: "export type Blank = string;\n" } });
+  const deadFixture = await fixture();
+  const nonBlankFixture = await fixture();
+  const cases = [
+    {
+      root: blankFixture.root,
+      config: cliConfig(),
+      lcov: `${lcov}${blankLcov(blankFile)}`,
+      message: /Coverage measurement is blank for production files: src\/utils\/blank\.ts\./,
+    },
+    {
+      root: deadFixture.root,
+      config: cliConfig([{ path: "src/utils/dead.ts", reason: "Fixture declaration." }]),
+      lcov,
+      message:
+        /Coverage statementFree declarations are outside the measured production set: src\/utils\/dead\.ts\./,
+    },
+    {
+      root: nonBlankFixture.root,
+      config: cliConfig([{ path: "src/utils/example.ts", reason: "Fixture declaration." }]),
+      lcov,
+      message: /Coverage statementFree declarations are no longer blank: src\/utils\/example\.ts\./,
+    },
+  ];
+  for (const { root, config, lcov: fixtureLcov, message } of cases) {
+    const result = await runCoverageCli(root, { config, lcov: fixtureLcov });
+    assert.notEqual(result.status, 0, result.stdout);
+    assert.match(result.stderr, message);
+  }
+});
+
+test("rejects an undeclared blank before the CLI writes a baseline", async () => {
+  const blankFile = "src/utils/blank.ts";
+  const { root } = await fixture({ files: { [blankFile]: "export type Blank = string;\n" } });
+  const result = await runCoverageCli(root, {
+    config: cliConfig(),
+    lcov: `${lcov}${blankLcov(blankFile)}`,
+    writeBaseline: true,
+  });
+  assert.notEqual(result.status, 0, result.stdout);
+  assert.match(
+    result.stderr,
+    /Coverage measurement is blank for production files: src\/utils\/blank\.ts\./,
+  );
+  await assert.rejects(
+    () => readFile(join(root, "scratch-baseline.json")),
+    (error) => error.code === "ENOENT",
+  );
+});
+
 test("enforces configured percentage floors for every area metric", () => {
   const report = {
     utilities: {
@@ -319,19 +656,31 @@ test("rejects unmapped production files and missing coverage input", async () =>
   const unmapped = await fixture();
   await writeFile(join(unmapped.root, "src", "other.ts"), "export const other = 1;\n");
   await assert.rejects(
-    () => buildCoverageReport({ config, lcov, root: unmapped.root }),
+    () =>
+      buildCoverageReport({ config, configPath: "coverage-areas.json", lcov, root: unmapped.root }),
     /Unmapped production file/,
   );
   const missing = await fixture();
   await assert.rejects(
-    () => buildCoverageReport({ config, lcov: "", root: missing.root }),
+    () =>
+      buildCoverageReport({
+        config,
+        configPath: "coverage-areas.json",
+        lcov: "",
+        root: missing.root,
+      }),
     /Coverage data missing/,
   );
 });
 
 test("writes a baseline with exact integer totals", async () => {
   const { root } = await fixture();
-  const areas = await buildCoverageReport({ config, lcov, root });
+  const areas = await buildCoverageReport({
+    config,
+    configPath: "coverage-areas.json",
+    lcov,
+    root,
+  });
   const path = join(root, "baseline.json");
   await writeBaseline({ areas, path });
   const baseline = JSON.parse(await readFile(path, "utf8"));
@@ -354,6 +703,15 @@ test("scopeSignature normalises exclude through excludePatterns", () => {
     "src-tauri/src/**/mod.rs",
     "src-tauri/src/db/schema.rs",
   ]);
+});
+
+test("scopeSignature omits absent statementFree and sorts declared paths without reasons", () => {
+  const withoutStatementFree = JSON.stringify(scopeSignature(config));
+  assert.doesNotMatch(withoutStatementFree, /statementFree/);
+  const statementFreeConfig = withStatementFree(["src/utils/z.ts", "src/utils/a.ts"]);
+  const signature = scopeSignature(statementFreeConfig);
+  assert.deepEqual(signature.sources[0].statementFree, ["src/utils/a.ts", "src/utils/z.ts"]);
+  assert.doesNotMatch(JSON.stringify(signature), /Fixture declaration/);
 });
 
 test("coverage tools follow the pinned compiler host, including Windows tool suffixes", () => {

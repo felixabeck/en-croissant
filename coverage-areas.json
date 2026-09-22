@@ -23,6 +23,20 @@
           "pattern": "src/vite-env.d.ts",
           "reason": "Vite ambient type declarations with no runtime code."
         }
+      ],
+      "statementFree": [
+        {
+          "path": "src/bindings/index.ts",
+          "reason": "Type-only re-export barrel; no runtime statements."
+        },
+        {
+          "path": "src/platform/native.ts",
+          "reason": "Value re-export barrel over @tauri-apps/*; no runtime statements."
+        },
+        {
+          "path": "src/state/persistError.ts",
+          "reason": "One-line re-export; no runtime statements."
+        }
       ]
     }
   ],
