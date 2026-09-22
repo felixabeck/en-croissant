@@ -4,7 +4,7 @@
 //   pnpm verify:app                 run the checks
 //   pnpm verify:app --screenshot X  also write a PNG of the page to X
 //
-// It asserts thirty independently reported checks that no other gate in this repository can:
+// It asserts thirty-three independently reported checks that no other gate in this repository can:
 //   group | assertions
 //   startup | production authority, user-file safety, owned-image cleanup, real IPC bridge,
 //            document title
@@ -107,6 +107,18 @@
 //   shutdown skipped image cleanup           | FAIL  titlebar shutdown removes retired image    | 1
 //                                            |   bytes and intent while retaining the owner    |
 //
+// Download-destination assertions (2026-09-22). Each staged break fails only its own assertion;
+// the fixture or assertion argument was restored immediately after the run.
+//   break                                   | assertion/message                              | exit
+//   verify-download-destination entry      | FAIL  real IPC preserves the persisted          | 1
+//   removed from the fixture                |   offline download destination                 |
+//                                            |   false                                        |
+//   assertion 2 receives the known id       | FAIL  real IPC rejects a fresh download         | 1
+//                                            |   destination id                               |
+//                                            |   true                                         |
+//   assertion 3 receives the known id       | FAIL  real IPC rejects a database-root id       | 1
+//                                            |   true                                         |
+//
 // Rows above are deliberately not inferred from collateral failures: the same assertion was
 // retained only where its own FAIL line was printed. The "retain nothing" break printed the
 // existing Files rows (seeded-row-render, double-click-route, and opened-game-notation) (and
@@ -159,7 +171,8 @@
 // startup-retirement break above. None of these aborts is cited as assertion evidence.
 
 import { existsSync } from "node:fs";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import {
   APP_BINARY,
@@ -326,6 +339,7 @@ try {
     `localStorage.setItem("engines", arguments[0]);
      localStorage.setItem("file-workspace", arguments[1]);
      localStorage.setItem("file-workspace-display-name", arguments[2]);
+     localStorage.setItem("download-destination-capability", arguments[3]);
      return true`,
     [
       JSON.stringify([
@@ -334,6 +348,7 @@ try {
       ]),
       JSON.stringify({ id: { id: filesWorkspaceId }, kind: "fileWorkspace" }),
       JSON.stringify("Files fixture"),
+      JSON.stringify({ id: "verify-download-destination" }),
     ],
   );
   const seedClose = await closeApplicationThroughTitlebar(seedSession, "seed");
@@ -348,6 +363,7 @@ try {
 
   const fixtureDirectory = join(profileDirectory, "path-owner-fixture");
   const ownedRoot = join(fixtureDirectory, "owned-database-root");
+  const downloadDestination = join(fixtureDirectory, "download-destination");
   const orphanFile = join(fixtureDirectory, "orphan-opening-book.bin");
   const imageDirectory = join(
     profileDirectory,
@@ -358,6 +374,7 @@ try {
   const orphanImage = join(imageDirectory, orphanImageId);
   const filesWorkspace = join(fixtureDirectory, "files-workspace");
   await mkdir(ownedRoot, { recursive: true });
+  await mkdir(downloadDestination, { recursive: true });
   await mkdir(filesWorkspace, { recursive: true });
   await writeFile(join(filesWorkspace, `${filesRowName}.pgn`), filesGamePgn);
   await mkdir(imageDirectory, { recursive: true });
@@ -398,6 +415,14 @@ try {
           ownedRoot,
           "databaseRoot",
           ["databaseRead", "databaseMutate", "databaseCreate", "databaseExport", "downloadFile"],
+          true,
+        ),
+        await storedEntry(
+          "verify-download-destination",
+          "Download destination fixture",
+          downloadDestination,
+          "downloadDestination",
+          ["downloadFile"],
           true,
         ),
         await storedEntry(
@@ -449,6 +474,7 @@ try {
       image_cleanup: [],
     }),
   );
+  await rm(downloadDestination, { recursive: true, force: true });
   const logFile = join(
     profileDirectory,
     ".local/share/com.chessriddle.encroissant/logs/en-croissant.log",
@@ -516,6 +542,60 @@ try {
   check(
     (await session.execute("return document.title")) === "ChessFable",
     "the real renderer exposes the ChessFable document title",
+  );
+
+  const persistedDownloadDestination = await session.execute(`
+    const serialized = localStorage.getItem("download-destination-capability");
+    return serialized === null ? null : JSON.parse(serialized);
+  `);
+  const knownDownloadDestinationResult = await invokeAndWait(
+    session,
+    "download_destination_is_known for the persisted destination to settle",
+    "__verifyAppKnownDownloadDestination",
+    `window.__TAURI_INTERNALS__.invoke("download_destination_is_known", {
+      destination: ${JSON.stringify(persistedDownloadDestination)},
+    })`,
+  );
+  check(
+    knownDownloadDestinationResult.value === "true",
+    "real IPC preserves the persisted offline download destination",
+    knownDownloadDestinationResult.rejected ??
+      knownDownloadDestinationResult.error ??
+      knownDownloadDestinationResult.value,
+  );
+
+  const freshDownloadDestination = { id: randomUUID() };
+  const freshDownloadDestinationResult = await invokeAndWait(
+    session,
+    "download_destination_is_known for a fresh destination to settle",
+    "__verifyAppFreshDownloadDestination",
+    `window.__TAURI_INTERNALS__.invoke("download_destination_is_known", {
+      destination: ${JSON.stringify(freshDownloadDestination)},
+    })`,
+  );
+  check(
+    freshDownloadDestinationResult.value === "false",
+    "real IPC rejects a fresh download destination id",
+    freshDownloadDestinationResult.rejected ??
+      freshDownloadDestinationResult.error ??
+      freshDownloadDestinationResult.value,
+  );
+
+  const databaseRootDestination = { id: "verify-owned-root" };
+  const databaseRootDestinationResult = await invokeAndWait(
+    session,
+    "download_destination_is_known for the database root to settle",
+    "__verifyAppDatabaseRootDestination",
+    `window.__TAURI_INTERNALS__.invoke("download_destination_is_known", {
+      destination: ${JSON.stringify(databaseRootDestination)},
+    })`,
+  );
+  check(
+    databaseRootDestinationResult.value === "false",
+    "real IPC rejects a database-root id",
+    databaseRootDestinationResult.rejected ??
+      databaseRootDestinationResult.error ??
+      databaseRootDestinationResult.value,
   );
 
   const retainedEnginePortrait = await waitFor(
