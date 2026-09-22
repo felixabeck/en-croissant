@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  rename as renameFile,
+  unlink as unlinkFile,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import test from "node:test";
@@ -115,10 +122,14 @@ function cliConfig(statementFree = []) {
   };
 }
 
-async function runCoverageCli(root, { config, lcov, writeBaseline = false }) {
+async function runCoverageCli(root, { config, lcov, writeBaseline = false, baselineContents }) {
   await writeFile(join(root, "config.json"), JSON.stringify(config));
   await writeFile(join(root, "lcov.info"), lcov);
-  if (!writeBaseline) await writeFile(join(root, "baseline.json"), JSON.stringify({ version: 1 }));
+  if (baselineContents !== undefined) {
+    await writeFile(join(root, "scratch-baseline.json"), baselineContents);
+  } else if (!writeBaseline) {
+    await writeFile(join(root, "baseline.json"), JSON.stringify({ version: 1 }));
+  }
   return spawnSync(
     process.execPath,
     [
@@ -625,6 +636,173 @@ test("rejects an undeclared blank before the CLI writes a baseline", async () =>
     () => readFile(join(root, "scratch-baseline.json")),
     (error) => error.code === "ENOENT",
   );
+});
+
+test("preserves the previous baseline and cleans up every failed write path", async (t) => {
+  const previousBaseline = Buffer.from("previous baseline bytes\n");
+  const temporarySuffix = ".tmp.json";
+  const failureCases = [
+    {
+      name: "writeFile failure",
+      configure: (fileSystem) => {
+        const primaryError = new Error("writeFile failed");
+        fileSystem.writeFile = async (path, contents) => {
+          await writeFile(path, contents);
+          throw primaryError;
+        };
+        return primaryError;
+      },
+    },
+    {
+      name: "formatter non-zero exit",
+      formatter: "non-zero",
+    },
+    {
+      name: "missing formatter binary",
+      formatter: "missing",
+    },
+    {
+      name: "rename failure",
+      configure: (fileSystem) => {
+        const primaryError = new Error("rename failed");
+        fileSystem.rename = async () => {
+          throw primaryError;
+        };
+        return primaryError;
+      },
+    },
+  ];
+
+  const runCase = async (failureCase, cleanupFails) => {
+    const { root } = await fixture();
+    const outputPath = join(root, "scratch-baseline.json");
+    const temporaryPath = `${outputPath}${temporarySuffix}`;
+    await writeFile(outputPath, previousBaseline);
+    if (failureCase.formatter === "non-zero") {
+      await mkdir(join(root, "node_modules", ".bin"), { recursive: true });
+      await writeFile(
+        join(root, "node_modules", ".bin", "oxfmt"),
+        "#!/bin/sh\nprintf '%s' 'formatter rejected the temporary baseline' >&2\nexit 23\n",
+        { mode: 0o755 },
+      );
+    }
+
+    const unlinkCalls = [];
+    const fileSystem = {
+      writeFile,
+      rename: renameFile,
+      unlink: async (path) => {
+        unlinkCalls.push(path);
+        if (cleanupFails) throw new Error("unlink failed");
+        return unlinkFile(path);
+      },
+    };
+    const injectedPrimaryError = failureCase.configure?.(fileSystem);
+    const write = () => writeBaseline({ areas: { utilities: {} }, path: outputPath }, fileSystem);
+    let error;
+    const invoke = failureCase.formatter
+      ? async () => {
+          const previousDirectory = process.cwd();
+          process.chdir(root);
+          try {
+            return await write();
+          } finally {
+            process.chdir(previousDirectory);
+          }
+        }
+      : write;
+    await assert.rejects(invoke, (caught) => {
+      error = caught;
+      return true;
+    });
+
+    assert.deepEqual(await readFile(outputPath), previousBaseline);
+    if (cleanupFails) {
+      assert.deepEqual(unlinkCalls, [temporaryPath]);
+      assert.ok(await readFile(temporaryPath, "utf8"));
+    } else {
+      await assert.rejects(
+        () => readFile(temporaryPath),
+        (cleanupError) => cleanupError.code === "ENOENT",
+      );
+    }
+
+    if (injectedPrimaryError) {
+      assert.equal(error, injectedPrimaryError);
+      assert.equal(error.message, injectedPrimaryError.message);
+    }
+    if (failureCase.name === "writeFile failure") assert.equal(error.message, "writeFile failed");
+    if (failureCase.name === "rename failure") assert.equal(error.message, "rename failed");
+    if (failureCase.name === "formatter non-zero exit") {
+      assert.match(
+        error.message,
+        new RegExp(
+          `Failed to format coverage baseline with ${resolve(root, "node_modules/.bin/oxfmt")}`,
+        ),
+      );
+      assert.match(
+        error.message,
+        /status=23; signal=null; stderr="formatter rejected the temporary baseline"/,
+      );
+    }
+    if (failureCase.name === "missing formatter binary") {
+      assert.match(
+        error.message,
+        new RegExp(
+          `Failed to format coverage baseline with ${resolve(root, "node_modules/.bin/oxfmt")}`,
+        ),
+      );
+      assert.match(
+        error.message,
+        /status=null; signal=null; stderr=""; error\.code=ENOENT; error\.message=/,
+      );
+    }
+  };
+
+  const assertFormatterCliFailure = async (failureCase) => {
+    const { root } = await fixture();
+    if (failureCase.name === "formatter non-zero exit") {
+      await mkdir(join(root, "node_modules", ".bin"), { recursive: true });
+      await writeFile(
+        join(root, "node_modules", ".bin", "oxfmt"),
+        "#!/bin/sh\nprintf '%s' 'formatter rejected the temporary baseline' >&2\nexit 23\n",
+        { mode: 0o755 },
+      );
+    }
+    const cliResult = await runCoverageCli(root, {
+      config: cliConfig(),
+      lcov,
+      writeBaseline: true,
+      baselineContents: previousBaseline,
+    });
+    assert.notEqual(cliResult.status, 0, cliResult.stdout);
+    assert.doesNotMatch(cliResult.stdout, /Wrote coverage baseline:/);
+    assert.match(cliResult.stderr, /Failed to format coverage baseline with /);
+    if (failureCase.name === "formatter non-zero exit") {
+      assert.match(
+        cliResult.stderr,
+        /status=23; signal=null; stderr="formatter rejected the temporary baseline"/,
+      );
+    } else {
+      assert.match(
+        cliResult.stderr,
+        /status=null; signal=null; stderr=""; error\.code=ENOENT; error\.message=/,
+      );
+    }
+    assert.deepEqual(await readFile(join(root, "scratch-baseline.json")), previousBaseline);
+    await assert.rejects(
+      () => readFile(join(root, "scratch-baseline.json.tmp.json")),
+      (cleanupError) => cleanupError.code === "ENOENT",
+    );
+  };
+
+  for (const failureCase of failureCases) {
+    await t.test(`${failureCase.name}: failed write`, async () => {
+      await runCase(failureCase, false);
+      if (failureCase.formatter) await assertFormatterCliFailure(failureCase);
+    });
+    await t.test(`${failureCase.name}: failed cleanup`, () => runCase(failureCase, true));
+  }
 });
 
 test("enforces configured percentage floors for every area metric", () => {

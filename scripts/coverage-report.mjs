@@ -48,7 +48,7 @@
  * naming what it does not cover.
  */
 import { spawnSync } from "node:child_process";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, rename as renameFile, unlink as unlinkFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { excluded, excludePatterns, matches, normalisePath } from "./coverage-scope.mjs";
 import { isEntrypoint } from "./entrypoint.mjs";
@@ -362,20 +362,45 @@ export function assertAreaFloors(report, config) {
   }
 }
 
-export async function writeBaseline({ areas, scope, path }) {
-  await writeFile(path, `${JSON.stringify({ version: 1, scope, areas }, null, 2)}\n`);
-  // `JSON.stringify` cannot reproduce oxfmt's style (it collapses short arrays onto one line),
-  // so a freshly written baseline fails `oxfmt --check` and therefore `pnpm lint:ci`. Formatting
-  // it here keeps the trap out of the workflow: re-recording a baseline is rare and deliberate,
-  // and discovering afterwards that the linter is red for a reason unrelated to your change is
-  // exactly the kind of detour nobody remembers the fix for. Measured 2026-08-29, when it
-  // reddened CI one commit after an authorized re-record.
-  const formatter = resolve("node_modules/.bin/oxfmt");
-  const formatted = spawnSync(formatter, [path], { encoding: "utf8" });
-  if (formatted.status !== 0) {
-    process.stderr.write(
-      `warning: wrote ${path} but could not run oxfmt on it; run \`pnpm format\` before committing\n`,
+const defaultFileSystem = { rename: renameFile, unlink: unlinkFile, writeFile };
+
+async function cleanupTemporaryFile(unlink, temporaryPath) {
+  try {
+    await unlink(temporaryPath);
+  } catch {
+    // Preserve the primary failure. A failed cleanup leaves the temporary file as evidence.
+  }
+}
+
+export async function writeBaseline({ areas, scope, path }, fileSystem = defaultFileSystem) {
+  const temporaryPath = `${path}.tmp.json`;
+  try {
+    await fileSystem.writeFile(
+      temporaryPath,
+      `${JSON.stringify({ version: 1, scope, areas }, null, 2)}\n`,
     );
+    // `JSON.stringify` cannot reproduce oxfmt's style (it collapses short arrays onto one line),
+    // so a freshly written baseline fails `oxfmt --check` and therefore `pnpm lint:ci`. Formatting
+    // it here keeps the trap out of the workflow: re-recording a baseline is rare and deliberate,
+    // and discovering afterwards that the linter is red for a reason unrelated to your change is
+    // exactly the kind of detour nobody remembers the fix for. Measured 2026-08-29, when it
+    // reddened CI one commit after an authorized re-record.
+    const formatter = resolve("node_modules/.bin/oxfmt");
+    const formatted = spawnSync(formatter, [temporaryPath], { encoding: "utf8" });
+    if (formatted.status !== 0 || formatted.error) {
+      const spawnError = formatted.error;
+      const errorDetails = spawnError
+        ? `; error.code=${spawnError.code}; error.message=${JSON.stringify(spawnError.message)}`
+        : "";
+      throw new Error(
+        `Failed to format coverage baseline with ${formatter}: status=${formatted.status}; ` +
+          `signal=${formatted.signal}; stderr=${JSON.stringify(formatted.stderr ?? "")}${errorDetails}`,
+      );
+    }
+    await fileSystem.rename(temporaryPath, path);
+  } catch (error) {
+    await cleanupTemporaryFile(fileSystem.unlink, temporaryPath);
+    throw error;
   }
 }
 
