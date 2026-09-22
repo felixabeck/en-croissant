@@ -309,22 +309,26 @@ test("counts two same-named functions declared on one line as two", () => {
   assert.deepEqual(declarations[0].metrics.functions, { covered: 1, total: 2 });
 });
 
-test("keeps two declarations apart whatever characters their field values contain", () => {
+test("keeps two counters apart whatever characters their field values contain", () => {
   // Identities are assembled from unvalidated LCOV field values, so no separator is safe: for any
-  // choice there is an input containing it. `FN:<line>,<name>` splits on the first comma, so each
-  // pair below is two different declarations that a joined key collapses into one -- and because
-  // the per-declaration counter restarts in each record, the collapse only shows once two records
-  // for one file are merged, which is exactly what this report now does for two spellings of one
-  // path.
-  for (const [first, second] of [
-    ["1,f:g", "1:f,g"],
-    ["1,a\u0000b", "1\u0000a,b"],
-  ]) {
-    const declarations = parseLcov(
-      `TN:\nSF:a.ts\nFN:${first}\nFNDA:1,${first.split(",")[1]}\nend_of_record\n` +
-        `TN:\nSF:a.ts\nFN:${second}\nFNDA:0,${second.split(",")[1]}\nend_of_record\n`,
-    );
-    assert.deepEqual(declarations[0].metrics.functions, { covered: 1, total: 2 });
+  // choice there is an input containing it. Each pair below is two different counters that a joined
+  // key collapses into one -- and because the per-declaration counter restarts in each record, the
+  // collapse only shows once two records for one file are merged, which is exactly what this report
+  // now does for two spellings of one path. All three counter kinds are covered, because each
+  // builds its own identity and could be reverted on its own.
+  const record = (counters) => `TN:\nSF:a.ts\n${counters}\nend_of_record\n`;
+  // Each pair is chosen so that *every* joined form collapses it, not only one particular
+  // separator: the colon pair catches a colon join, the `\u0000` pairs catch that join, and only
+  // an injective encoding survives both.
+  const cases = [
+    ["functions", "FN:1,f:g\nFNDA:1,f:g", "FN:1:f,g\nFNDA:0,g"],
+    ["functions", "FN:1,a\u0000b\nFNDA:1,a\u0000b", "FN:1\u0000a,b\nFNDA:0,b"],
+    ["lines", "DA:1,1,a\u0000b", "DA:1\u0000a,0,b"],
+    ["branches", "BRDA:1,0,a\u0000b,1", "BRDA:1\u00000,a,b,0"],
+  ];
+  for (const [metric, first, second] of cases) {
+    const merged = parseLcov(`${record(first)}${record(second)}`);
+    assert.deepEqual(merged[0].metrics[metric], { covered: 1, total: 2 }, metric);
   }
 });
 
@@ -346,9 +350,11 @@ test("gives a function the same identity whatever order the records declare it i
 });
 
 test("rejects a statementFree list of the wrong shape rather than ignoring it", async () => {
-  // Matrix rows 14a and 14b record these as wrong-shape failures. Silently ignoring a malformed
-  // declaration would make a mistyped entry a no-op, which is the one outcome the list must not
-  // have, so the shapes are pinned here rather than only measured once.
+  // Matrix rows 14a and 14b record these two shapes as wrong-shape failures. Silently ignoring a
+  // malformed declaration would make a mistyped entry a no-op, which is the one outcome the list
+  // must not have, so the shapes are pinned here rather than only measured once. `null` is
+  // deliberately not among them: `?? []` reads it as "no declarations", which is a safe reading --
+  // the genuinely statement-free files then fail condition 1 loudly rather than quietly.
   const { root } = await fixture();
   for (const statementFree of [{}, [null]]) {
     await assert.rejects(
