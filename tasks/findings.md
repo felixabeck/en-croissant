@@ -10984,3 +10984,33 @@ It matters more since 2026-09-22 than before: `buildCoverageReport` now merges r
 * **Found by:** the plan review for `f-20260906-23`, rounds 4 and 5, 2026-09-22 — `review-plan`
   (confidence 98), `review-correctness` (99), `review-root-cause`, `review-error-handling` and
   `review-code-quality` each produced the same loss sequence independently.
+
+---
+
+## 2026-09-22 — filed through the inbox spool
+
+### The application has no single-instance guard, so two instances share one app-data directory
+
+* **ID:** f-20260922-07 · **Status:** open · **Area:** app-startup · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/main.rs:2424-2437` (the Tauri builder's plugin set).
+* **Defect:** nothing prevents a second instance of ChessFable from starting. Both instances resolve
+  the same `AppDataDir`, the same path-authority registry
+  (`src-tauri/src/main.rs:2469`, `path-authority.json`) and the same webview data directory, and
+  therefore the same `localStorage`/`sessionStorage`. Every in-process guard in the codebase — the
+  per-resource mutexes, the operation registry, the planned per-deck lock of
+  `tasks/plans/2026-09-22-practice-durable-storage.md` — is scoped to one process and does not hold
+  across two.
+* **Why it matters:** the failure modes are silent rather than loud. Two instances appending to the
+  same newest review shard can lose one entry; two startup path-owner reconciliations can race; two
+  engine registries can disagree about which processes exist. Each subsystem currently states "one
+  process" as an assumption, and the assumption is not enforced anywhere.
+* **Open question:** is the answer `tauri-plugin-single-instance` (focus the running window and
+  exit), or a lock file under the app-data directory with an explicit "another instance is running"
+  message, or per-resource cross-process locking? The first is the smallest and matches what the
+  code already assumes; the third is the only one that would actually support two windows, and
+  nothing in the product asks for that. The answer decides whether every "one process" assumption in
+  the codebase becomes true or has to be replaced.
+* **Found by:** `review-ipc-contract` and `review-plan` in rounds 4 and 5 of the plan review for
+  `f-20260906-23`, 2026-09-22, which needed the assumption for the practice store's per-deck mutex
+  and found nothing enforcing it. The plan states the limitation and files it here rather than
+  fixing the application's process model inside a storage change.
