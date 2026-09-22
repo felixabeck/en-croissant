@@ -9028,6 +9028,11 @@ Code b7f52cd4, 285a96d4, 8d8e4274, 25636945. Windows runtime is rust-windows-tes
 * **Why it matters:** `number[]` paths must be rebased after every tree mutation (`.claude/rules/chess-tree-semantics.md`).
 * **Found by:** `review-chess-semantics` cumulative diff review lens (Codex), 2026-09-14, confidence 92, during the `f-20260830-06` slice-1 build run (range `950f2e1d..16476781`). Pre-existing (originating commit `93b36669 / b82021ec`), outside that run's area, so deferred; not reproduced in that run.
 
+**Duplicate of claim (1) of `f-20260922-04`**, which reproduced it on 2026-09-22 and is the entry the work is planned under. This one contributes the sequence where the practised node itself is deleted; the plan clamps `practicePath` to the deleted node's parent rather than clearing it, precisely so `goToNext` cannot follow the surviving sibling as the deleted card's continuation.
+
+Closed together with `f-20260922-04` and `f-20260914-27` by the plan recorded in `tasks/handoffs/2026-09-22-practice-path-rebasing-review.md` — approved by all nine lenses, **not yet implemented**.
+<!-- ledger-meta {"command":"annotate","effect_lines":3,"effect_sha256":"64c36ad50b5e1273a3ce47a0ada4c264793b86812ff051ba3fcb605d2bf5578c","input_sha256":"8384197587c0e492438bcfa19258c525e24ffe2bac686bb3a3f46de7f23bd647","kind":"mutation-receipt","operation":"71acb3e439540643e319db8ba6e80550b7e64ec84f14b83ab2626083f6bfe688","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-26"],"target":"f-20260914-26","v":1} -->
+
 ### `setFen` rebuilds the root but leaves `headers.fen` stale, so a later header edit restores the old start position
 
 * **ID:** f-20260914-27 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
