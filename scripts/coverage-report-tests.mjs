@@ -267,26 +267,55 @@ test("accepts a declared blank without changing area metrics", async () => {
   });
 });
 
-test("merges records for one file reached through two SF spellings", async () => {
-  // `parseLcov` merges by the raw `SF` string, and both spellings occur for real: `llvm-cov`
-  // writes absolute paths, `@vitest/coverage-v8` repo-relative ones. Keeping only the last
-  // record would let the blank one hide the covered one and reject a measured file.
+test("unions records for one file reached through two SF spellings", async () => {
+  // Both spellings occur for real: `llvm-cov` writes absolute paths, `@vitest/coverage-v8`
+  // repo-relative ones, and several LCOV files may be joined in one run. The two records must be
+  // merged by counter identity, exactly as two identical spellings already are -- summing them
+  // would double every total, and keeping only the last would let a blank record hide a covered
+  // one and reject a file that is measured after all.
   const { root } = await fixture();
   const absolute = lcov.replace(
     "SF:src/utils/example.ts",
     `SF:${join(root, "src/utils/example.ts")}`,
   );
-  const report = await buildCoverageReport({
+  const measured = {
+    lines: { covered: 1, total: 2 },
+    functions: { covered: 1, total: 1 },
+    branches: { covered: 1, total: 2 },
+  };
+  const duplicated = await buildCoverageReport({
+    config,
+    configPath: "coverage-areas.json",
+    lcov: `${absolute}${lcov}`,
+    root,
+  });
+  assert.deepEqual(duplicated.utilities, measured);
+  const withBlank = await buildCoverageReport({
     config,
     configPath: "coverage-areas.json",
     lcov: `${absolute}${blankLcov("src/utils/example.ts")}`,
     root,
   });
-  assert.deepEqual(report.utilities, {
-    lines: { covered: 1, total: 2 },
-    functions: { covered: 1, total: 1 },
-    branches: { covered: 1, total: 2 },
-  });
+  assert.deepEqual(withBlank.utilities, measured);
+});
+
+test("rejects a statementFree list of the wrong shape rather than ignoring it", async () => {
+  // Matrix rows 14a and 14b record these as wrong-shape failures. Silently ignoring a malformed
+  // declaration would make a mistyped entry a no-op, which is the one outcome the list must not
+  // have, so the shapes are pinned here rather than only measured once.
+  const { root } = await fixture();
+  for (const statementFree of [{}, [null]]) {
+    await assert.rejects(
+      () =>
+        buildCoverageReport({
+          config: { ...config, sources: [{ ...config.sources[0], statementFree }] },
+          configPath: "coverage-areas.json",
+          lcov,
+          root,
+        }),
+      TypeError,
+    );
+  }
 });
 
 test("rejects a declaration for a file that exists on disk but is excluded", async () => {

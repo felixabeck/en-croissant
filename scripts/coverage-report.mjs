@@ -52,85 +52,85 @@
  *      files-below.mjs:5   (readdir at the root)              '<root>/src'`
  * 10  files-below.mjs:5    a directory *below* the source     `EACCES: permission denied, scandir
  *      via :9 recursion    root is unreadable                 '<root>/src/locked'`
- * 11  :282                 config of the wrong shape: `{}`    TypeError: `config.sources is not
+ * 11  :290                 config of the wrong shape: `{}`    TypeError: `config.sources is not
  *                                                             iterable`
- * 12  :306                 `{"sources":[],"areas":null}`      TypeError: `Cannot read properties of
+ * 12  :314                 `{"sources":[],"areas":null}`      TypeError: `Cannot read properties of
  *                                                             null (reading 'map')`
- * 13  :287    ->           a source with no `include` list    TypeError: `Cannot read properties of
+ * 13  :295    ->           a source with no `include` list    TypeError: `Cannot read properties of
  *      coverage-scope.mjs:34                                   undefined (reading 'some')`
- * 14  :287    ->           a source with no `exclude` list    TypeError: `Cannot read properties of
+ * 14  :295    ->           a source with no `exclude` list    TypeError: `Cannot read properties of
  *      coverage-scope.mjs:39                                   undefined (reading 'map')`
- * 14a :333                 a `statementFree` that is not an    TypeError: `(source.statementFree ??
+ * 14a :339                 a `statementFree` that is not an    TypeError: `(source.statementFree ??
  *                          array: `{}`                        []).map is not a function`
- * 14b :333                 a `statementFree` entry that is     TypeError: `Cannot destructure
+ * 14b :339                 a `statementFree` entry that is     TypeError: `Cannot destructure
  *                          not an object: `[null]`            property 'path' of 'object null' as
  *                                                             it is null.`
- * 15  :197    parseLcov    given something not a string       TypeError: `Cannot read properties of
+ * 15  :205    parseLcov    given something not a string       TypeError: `Cannot read properties of
  *                                                             null (reading 'replaceAll')`
- * 16  :403                 the baseline's version is not 1    `Unsupported coverage baseline format`
+ * 16  :409                 the baseline's version is not 1    `Unsupported coverage baseline format`
  *                          or it carries no `areas`
- * 17  :406                 no recorded scope, checked         `Coverage baseline is missing its
+ * 17  :412                 no recorded scope, checked         `Coverage baseline is missing its
  *                          against a config                   recorded scope`
- * 18  :409                 the recorded scope no longer       `Coverage measurement scope changed:
+ * 18  :415                 the recorded scope no longer       `Coverage measurement scope changed:
  *                          matches the config                 source ids and roots, include globs,
  *                                                             exclude globs, statementFree
  *                                                             declarations, or area ids, sources,
  *                                                             and paths ... Re-record the scope
  *                                                             subtree by hand ...`
- * 19  :420                 a measured area the baseline       `Missing baseline for area: utilities`
+ * 19  :426                 a measured area the baseline       `Missing baseline for area: utilities`
  *                          does not carry
- * 20  :425                 a baseline area missing one        `Missing functions baseline for area:
+ * 20  :431                 a baseline area missing one        `Missing functions baseline for area:
  *                          metric                             utilities`
- * 21  :458                 a covered count or ratio           `utilities lines regressed: 1/2,
+ * 21  :464                 a covered count or ratio           `utilities lines regressed: 1/2,
  *                          regressed                          baseline 2/2`
- * 22  :464                 a baseline area absent from the    `Baseline references unknown area:
+ * 22  :470                 a baseline area absent from the    `Baseline references unknown area:
  *                          report                             ghost`
- * 23  :402                 a baseline of the wrong shape:     TypeError: `Cannot read properties of
+ * 23  :408                 a baseline of the wrong shape:     TypeError: `Cannot read properties of
  *                          `null`                             null (reading 'version')`
- * 24  :472                 an area with no                    `Missing minimum coverage for area:
+ * 24  :478                 an area with no                    `Missing minimum coverage for area:
  *                          `minimumCoverage`                  utilities`
- * 25  :474                 an area with no entry in the       `Missing coverage report for area:
+ * 25  :480                 an area with no entry in the       `Missing coverage report for area:
  *                          report. Reachable through the      utilities`
  *                          exported API, not through the
  *                          CLI, and it stays for that
- * 26  :478                 a minimum that is not a            `Invalid lines minimum coverage for
+ * 26  :484                 a minimum that is not a            `Invalid lines minimum coverage for
  *                          percentage                         area: utilities`
- * 27  :484                 a measured area below its floor    `utilities lines is below minimum
+ * 27  :490                 a measured area below its floor    `utilities lines is below minimum
  *                                                             coverage: 50.00% < 80.00%`
- * 28  :504                 the temporary write rejects        the rejection, unchanged:
+ * 28  :510                 the temporary write rejects        the rejection, unchanged:
  *                                                             `writeFile refused`
- * 29  :522                 the formatter exits non-zero       `Failed to format coverage baseline
+ * 29  :528                 the formatter exits non-zero       `Failed to format coverage baseline
  *                                                             with <path>: status=23; signal=null;
  *                                                             stderr="rejected"`
- * 29b :522                 the formatter is killed by a       `... status=null; signal=SIGTERM;
+ * 29b :528                 the formatter is killed by a       `... status=null; signal=SIGTERM;
  *                          signal                             stderr=""` -- `status !== 0` is true
  *                                                             for `null`, so a kill is caught
  *                                                             rather than reported as success
- * 30  :522                 the formatter binary is missing    `... status=null; signal=null;
+ * 30  :528                 the formatter binary is missing    `... status=null; signal=null;
  *                                                             stderr=""; error.code=ENOENT;
  *                                                             error.message="spawnSync <path>
  *                                                             ENOENT"`
- * 31  :526                 the rename into place rejects      the rejection, unchanged:
+ * 31  :532                 the rename into place rejects      the rejection, unchanged:
  *                                                             `rename refused`
- * 32  :495                 cleanup's unlink rejects after a   **no failure of its own**: the
+ * 32  :501                 cleanup's unlink rejects after a   **no failure of its own**: the
  *                          failure. Deliberately swallowed    primary error is rethrown unchanged
  *                          so it cannot replace the           (`rename refused`) and the temporary
  *                          actionable error                   file survives as evidence
- * 33  :540                 an option with no value            `Missing value for --config`
+ * 33  :546                 an option with no value            `Missing value for --config`
  *                                                             — exit 1
- * 34  :543                 an unknown argument                `Unknown argument: --nope` — exit 1
- * 35  :547                 a required option omitted          `Usage: coverage-report.mjs --config
+ * 34  :549                 an unknown argument                `Unknown argument: --nope` — exit 1
+ * 35  :553                 a required option omitted          `Usage: coverage-report.mjs --config
  *                                                             <file> ...` — exit 1
- * 36  :556                 the config file does not exist     `ENOENT: no such file or directory,
+ * 36  :562                 the config file does not exist     `ENOENT: no such file or directory,
  *                                                             open '<root>/missing.json'` — exit 1
- * 37  :556                 the config file is not JSON        SyntaxError: `Expected property name
+ * 37  :562                 the config file is not JSON        SyntaxError: `Expected property name
  *                                                             or '}' in JSON at position 2` — exit 1
- * 38  :558                 an LCOV file does not exist        `ENOENT: ... '<root>/missing.info'`
+ * 38  :564                 an LCOV file does not exist        `ENOENT: ... '<root>/missing.info'`
  *                                                             — exit 1
- * 39  :569                 the baseline file does not exist   `ENOENT: ... '<root>/missing.json'`
+ * 39  :575                 the baseline file does not exist   `ENOENT: ... '<root>/missing.json'`
  *                                                             — exit 1
- * 40  :569                 the baseline file is not JSON      SyntaxError, as row 37 — exit 1
- * 41  :583                 `main().catch` — the shared sink,  every throw above, reached through
+ * 40  :575                 the baseline file is not JSON      SyntaxError, as row 37 — exit 1
+ * 41  :589                 `main().catch` — the shared sink,  every throw above, reached through
  *                          **not an independent failure**     the CLI, prints `error.message` on
  *                                                             stderr and exits **1**. Measured with
  *                                                             row 17's throw: exit 1, message on
@@ -174,7 +174,15 @@ function emptyMetrics() {
   return Object.fromEntries(METRICS.map((metric) => [metric, { covered: 0, total: 0 }]));
 }
 
-export function parseLcov(lcov) {
+/**
+ * `identify` maps an `SF` value to the identity records are merged under, and defaults to the
+ * value itself. `buildCoverageReport` passes the repo-relative normaliser, because one file can
+ * legitimately appear under two spellings — `llvm-cov` writes absolute paths, `@vitest/coverage-v8`
+ * repo-relative ones, and several LCOV files may be joined in one run. Merging them here, by
+ * counter identity, is the only place that can do it correctly: past this function the counters are
+ * gone and only totals remain, which can be summed but not unioned.
+ */
+export function parseLcov(lcov, identify = (file) => file) {
   const reports = new Map();
   let report;
 
@@ -206,7 +214,7 @@ export function parseLcov(lcov) {
     const value = separator === -1 ? "" : rawLine.slice(separator + 1);
     if (key === "SF") {
       report = {
-        file: value,
+        file: identify(value),
         lines: new Map(),
         functions: new Map(),
         branches: new Map(),
@@ -305,21 +313,19 @@ export async function buildCoverageReport({ config, configPath, lcov, root }) {
 
   const report = Object.fromEntries(config.areas.map((area) => [area.id, emptyMetrics()]));
   const coverageFilesByArea = Object.fromEntries(config.areas.map((area) => [area.id, 0]));
-  // Keyed by *normalised* path, and merged rather than overwritten: `parseLcov` merges records by
-  // the raw `SF` string, so one file reached through two spellings -- an absolute path from
-  // `llvm-cov` and a repo-relative one from `@vitest/coverage-v8` are both real here -- arrives as
-  // two records that the area totals below aggregate correctly. Keeping only the last of them
-  // would let a blank record hide a covered one, or reject a file that is measured after all.
+  // `parseLcov` is given the normaliser, so every spelling of one file arrives as ONE record with
+  // its counters unioned. Doing it here instead would be too late twice over: the area totals
+  // below would add the same file's records once each, and the blank check further down would see
+  // whichever record happened to come last.
   const coverageMetricsByFile = new Map();
-  for (const record of parseLcov(lcov)) {
-    const file = normalisePath(record.file, root);
+  for (const record of parseLcov(lcov, (file) => normalisePath(file, root))) {
+    const file = record.file;
     const sourceId = productionFiles.get(file);
     if (!sourceId) continue;
     const area = assignArea(file, config);
     addMetrics(report[area.id], record.metrics);
     coverageFilesByArea[area.id] += 1;
-    if (!coverageMetricsByFile.has(file)) coverageMetricsByFile.set(file, emptyMetrics());
-    addMetrics(coverageMetricsByFile.get(file), record.metrics);
+    coverageMetricsByFile.set(file, record.metrics);
   }
 
   const missingFiles = [...productionFiles.keys()].filter(
