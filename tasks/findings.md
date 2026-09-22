@@ -10936,6 +10936,13 @@ This is the second annotation in a row where a claim in this entry turned out to
   if they turn out to be different defects.
 * **Found by:** `review-chess-semantics`, plan review for `f-20260906-23`, round 1, 2026-09-22.
 
+**All three claims were reproduced against the real store on 2026-09-22 and all three are real**, so the entry is not split: they share one mechanism (a `number[]` path outliving the tree it indexed) and one plan closes them together with `f-20260914-26` and `f-20260914-27`, which are duplicates of claims (1) and (3) of this entry.
+
+A plan exists and is **approved by all nine review lenses after ten rounds**, but is **not yet implemented** — the review ran in a session that was asked for the plan only. The durable record, containing both the plan and the complete review history (issue IDs I1-I62), is `tasks/handoffs/2026-09-22-practice-path-rebasing-review.md`; the untracked working copy is `tasks/plans/2026-09-22-practice-path-rebasing.md`. **Load the handoff before starting**: it records two claims the review made and then refuted with its own measurements, and a scope dispute dispositioned three times that must not be relitigated.
+
+Measured, beyond what this entry reported: the review also found that `setState` and `reset` leave `practicePath` addressing the old tree by the same shallow merge, and that `setHeaders` has the same gap as `setFen` when it rebuilds the root. All four are in the plan. Filed out of the review and **not** part of it: `f-20260922-08`, `f-20260922-09`, `f-20260922-10`, `f-20260922-11`, `f-20260922-12`.
+<!-- ledger-meta {"command":"annotate","effect_lines":5,"effect_sha256":"266c2b0357c8c08e9aa834df9456fdb110cb9e030e3890015fe7a75e7e6b5be3","input_sha256":"7d7e27a15aef79cb4d24b17a3275963671074dbdd05ec674b066b9a1ba3defb5","kind":"mutation-receipt","operation":"a25bba6a9e6643521d86aec1c5a71414b823290ded1846b60bb0d2b06503415e","options":{"section":null},"request_id_sha256":null,"results":["f-20260922-04"],"target":"f-20260922-04","v":1} -->
+
 ---
 
 ## 2026-09-22 — filed through the inbox spool
