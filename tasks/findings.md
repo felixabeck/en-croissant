@@ -10812,3 +10812,22 @@ This is the second annotation in a row where a claim in this entry turned out to
 * **Open question:** what shape does the fault-injection seam take? Driving a poisoned lock needs a deliberate panic inside a held guard, or a test-only constructor that hands out a pre-poisoned `Mutex`, or a trait seam in front of the lock. `scripts/check-rust-release-surface.mjs` refuses a public fault-injection item or import outside a `#[cfg(test)]` region (R2 of that checker, `d-20260831-07`), so the seam has to be `cfg`-gated, and `AppState` is constructed in `main.rs`'s setup closure rather than by a testable factory. Whether the answer is one gated helper on `AppState`, a `PathAuthorityHandle` newtype that owns the lock and the two mappings in one place (which would also delete twenty copies of the same four lines, universal rule 11), or per-command tests through an injected state, is a design decision spanning every one of those commands.
 * **Related:** found while planning `f-20260906-16` (`tasks/plans/2026-09-22-download-destination-recovery.md`, obligation B1), whose own new command inherits the same unproven mapping; that finding deliberately does not fix this, because the repair spans every authority-locking command and needs the seam decided first. `f-20260904-05` (handled) covers cancellation tokens on the same commands, not their lock-failure mapping.
 * **Found by:** `review-tests` (confidence 92) and `review-error-handling` (confidence 88) in round 2 of `f-20260906-16`'s plan review, 2026-09-22; the orchestrator confirmed the absence by reading the command bodies and the `#[cfg(test)]` module in `src-tauri/src/main.rs`.
+
+* **Annotated 2026-09-22 (cumulative-diff review of `f-20260906-16`, commits `0eeddbb3`, `2c6779ce`; status stays open):**
+  `download_destination_is_known_blocking` in `src-tauri/src/main.rs` is the **21st** hand-written
+  copy of the two mappings (25 occurrences of each literal in that file today). `review-minimalism`
+  reached this finding independently over that diff at confidence 96, asking for a shared authority
+  accessor so the change "does not add another divergent copy". **Disposition: `Defer` into this
+  finding, not a new one** — it is the same repair this entry's `Open question` already names as one
+  of its three candidate shapes (the `PathAuthorityHandle` newtype that would own the lock and both
+  mappings and delete the copies, universal rule 11).
+  Measured while deciding: the 25 sites are **not** uniform, which is why this is a design question
+  and not a mechanical extraction. Some take the guard inside a `run_accepted_blocking` closure with
+  `as_mut()`, some at function top level under different binding names, at least one chains
+  `as_mut().ok_or_else(…)?` without binding at all, and the new one takes `as_ref()` because its
+  predicate is `&self`. A guard-returning helper would leave every caller doing `.as_mut()` again —
+  reintroducing an `unwrap`/`expect` that `.claude/rules/async-resource-invariants.md` forbids on a
+  renderer-driven path — so the seam has to be chosen (closure-taking helper, newtype, or injected
+  state), which is exactly this finding's open question. Whoever takes it gets both halves at once:
+  the seam that makes the two arms testable is the seam that removes the copies.
+<!-- ledger-meta {"command":"annotate","effect_lines":18,"effect_sha256":"b44d23ab5b3f77112e8be05b1e9bb40920be86ee37b4988c55ae99e9e1e3a0cf","input_sha256":"1cf65153e492839dcfb60061244df33442f9adc0bba34ed3348fd744194ef771","kind":"mutation-receipt","operation":"46d65090eb59af0b06403f4a14764550fb4398be06fd1b854bfb470490f61335","options":{"section":null},"request_id_sha256":null,"results":["f-20260922-01"],"target":"f-20260922-01","v":1} -->
