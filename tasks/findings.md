@@ -9041,6 +9041,11 @@ Closed together with `f-20260922-04` and `f-20260914-27` by the plan recorded in
 * **Why it matters:** The game tree silently loses the user's position on an unrelated header edit; `.claude/rules/chess-tree-semantics.md`.
 * **Found by:** `review-chess-semantics` cumulative diff review lens (Codex), 2026-09-14, confidence 99, during the `f-20260830-06` slice-1 build run (range `950f2e1d..16476781`). Pre-existing (originating commit `93b36669`), outside that run's area, so deferred; not reproduced in that run.
 
+**Duplicate of claim (3) of `f-20260922-04`**, which reproduced it on 2026-09-22: after `setFen`, `headers.fen` still holds the old FEN, and the next `setHeaders` on any unrelated field rebuilds the root from it and discards the custom position.
+
+Closed together with `f-20260922-04` and `f-20260914-26` by the plan recorded in `tasks/handoffs/2026-09-22-practice-path-rebasing-review.md` — approved by all nine lenses, **not yet implemented**. That plan also covers `setHeaders` itself, `setState` and `reset`, which the review measured to have the same gap.
+<!-- ledger-meta {"command":"annotate","effect_lines":3,"effect_sha256":"9b59d68122b74caf5e084fab48aac693958f725f9ba4d0e8b0cdfe4bf8fb81d0","input_sha256":"f55c6eb665c6d15812115af041ee415ebfba2b49912bb8ee31bda3f39d1629de","kind":"mutation-receipt","operation":"4cf8119c5e75c1ec30fffe37a79d45247e76eb8819f9d312c5fa2b2be2945d78","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-27"],"target":"f-20260914-27","v":1} -->
+
 ### Threefold detection after `appendMove` walks the selected variation instead of the main line it appended to
 
 * **ID:** f-20260914-28 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
