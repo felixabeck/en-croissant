@@ -11102,6 +11102,9 @@ A plan closing this entry together with `f-20260922-04` (and the other of `f-202
 * **Open question:** what a failed path should become at rehydration — clamped to the deepest node that resolves (which is what the reader already does, only silently), cleared to the root, or refused so the tab reports corrupt state. The answer differs per path: `position` has a natural clamp, `headers.start` has a natural "no start", and `practicePath` guards a drill and must not be widened by accident.
 * **Found by:** `review-persisted-state` (blocker, confidence 98), with `review-chess-semantics` (91), `review-error-handling` (94) and `review-root-cause` (96) reporting the same gap, in round 1 of the plan review for `f-20260922-04`, 2026-09-22. Skipped in that plan on the measured grounds above and filed here instead.
 
+A plan closing this entry together with `f-20260922-04` (and the other of `f-20260922-08`/`f-20260922-10`) is **approved by all nine lenses after seven rounds**, 2026-09-22, and not yet implemented at the time of this note. **Load `tasks/handoffs/2026-09-22-tree-path-insert-rehydrate-review.md` before reviewing or implementing** — it carries the plan verbatim, issues I1-I24 with dispositions, and the three rejections (I4/D11, I18, I23) not to relitigate without new evidence; the O1-O3 half's own record is `tasks/handoffs/2026-09-22-practice-path-rebasing-review.md`.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"8f53ca874bfad9faba8b9245fba44858270c29f1c7db242c54e640196d115792","input_sha256":"695b8012a1f73ae73d1fd1c3fb8481bc881b882a9d5180c08ec1ae34cd52d5e3","kind":"mutation-receipt","operation":"d5061fb1059f41598fca1e767b64bc83eb2b08f18026b12cd442d13730bf374c","options":{"section":null},"request_id_sha256":null,"results":["f-20260922-10"],"target":"f-20260922-10","v":1} -->
+
 ---
 
 ## 2026-09-22 — filed through the inbox spool
