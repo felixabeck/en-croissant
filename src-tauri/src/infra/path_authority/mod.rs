@@ -878,6 +878,10 @@ mod verified_identity {
     pub(crate) struct VerifiedIdentity((u64, u64));
 
     impl VerifiedIdentity {
+        pub(crate) fn from_pair(pair: (u64, u64)) -> Self {
+            Self(pair)
+        }
+
         pub(super) fn pair(self) -> (u64, u64) {
             self.0
         }
@@ -1079,6 +1083,10 @@ impl AuthorizedDir {
         &self.path
     }
 
+    pub(crate) fn directory_file(&self) -> &fs::File {
+        self.directory.as_file()
+    }
+
     #[cfg(target_os = "macos")]
     pub(crate) fn try_clone(&self) -> Result<fs::File, Error> {
         self.directory.as_file().try_clone().map_err(Error::from)
@@ -1093,6 +1101,14 @@ impl AuthorizedDir {
         crate::infra::fs::remove_entry_at(self.directory.as_file(), leaf, identity.pair(), false)
     }
 
+    pub(crate) fn remove_leaf_identified_pair(
+        &self,
+        leaf: &OsStr,
+        identity: (u64, u64),
+    ) -> Result<(), Error> {
+        self.remove_leaf_identified(leaf, VerifiedIdentity::from_pair(identity))
+    }
+
     pub(crate) fn open_regular_relative(&self, relative: &Path) -> Result<fs::File, Error> {
         let components = relative_components(relative);
         validate_components(&components)?;
@@ -1104,6 +1120,25 @@ impl AuthorizedDir {
             parent = crate::infra::fs::open_directory_at(&parent, directory, false)?;
         }
         crate::infra::fs::open_regular_at(&parent, leaf, RegularFileAccess::ReadOnly)
+    }
+
+    /// Opens or creates one regular lock leaf relative to this retained directory. The operation
+    /// is non-exclusive because every process must obtain the same inode before taking its
+    /// advisory lock; `NOFOLLOW` still prevents a planted link from becoming that inode.
+    pub(crate) fn open_or_create_regular_relative(
+        &self,
+        relative: &Path,
+    ) -> Result<fs::File, Error> {
+        let components = relative_components(relative);
+        validate_components(&components)?;
+        let (leaf, directories) = components
+            .split_last()
+            .ok_or_else(|| Error::InvalidInput("invalid relative path component".into()))?;
+        let mut parent = self.directory.as_file().try_clone()?;
+        for directory in directories {
+            parent = crate::infra::fs::open_directory_at(&parent, directory, false)?;
+        }
+        crate::infra::fs::open_or_create_regular_at(&parent, leaf)
     }
 }
 
@@ -2253,6 +2288,8 @@ pub(crate) enum AppOwnedDefaultRoot {
     EngineImages,
     Puzzles,
     Credentials,
+    #[allow(dead_code)]
+    Practice,
     #[cfg(target_os = "macos")]
     EngineLaunch,
 }
@@ -2265,6 +2302,7 @@ impl AppOwnedDefaultRoot {
         Self::EngineImages,
         Self::Puzzles,
         Self::Credentials,
+        Self::Practice,
         #[cfg(target_os = "macos")]
         Self::EngineLaunch,
     ];
@@ -2276,6 +2314,7 @@ impl AppOwnedDefaultRoot {
             Self::EngineImages => "engine-images",
             Self::Puzzles => "puzzles",
             Self::Credentials => "credentials",
+            Self::Practice => "practice",
             #[cfg(target_os = "macos")]
             Self::EngineLaunch => "engine-launch",
         }
@@ -2287,7 +2326,11 @@ impl AppOwnedDefaultRoot {
             Self::Credentials => Some(0o700),
             #[cfg(target_os = "macos")]
             Self::EngineLaunch => Some(0o700),
-            Self::Databases | Self::Engines | Self::EngineImages | Self::Puzzles => None,
+            Self::Databases
+            | Self::Engines
+            | Self::EngineImages
+            | Self::Puzzles
+            | Self::Practice => None,
         }
     }
 }
@@ -5741,6 +5784,33 @@ impl PathAuthority {
         }
     }
 
+    /// Checks a practice deck capability without making availability part of authorisation.
+    /// Membership and the operation bit are inspected before refresh so a wrong-purpose id
+    /// cannot cause filesystem validation of its target. Migration and repair intentionally pass
+    /// `false`: membership is enough for those recovery operations.
+    #[allow(dead_code)]
+    pub(crate) fn authorize_practice_deck(
+        &mut self,
+        id: &PathRef,
+        requires_read_pgn: bool,
+    ) -> Result<(), Error> {
+        if self.pending_unpersisted_removals.contains(&id.id) {
+            return Err(Error::InvalidInput(
+                "unknown or revoked practice deck".into(),
+            ));
+        }
+        let authorized = self.persistent.get(&id.id).is_some_and(|entry| {
+            !requires_read_pgn || entry.stored.operations.contains(&PathOperation::ReadPgn)
+        });
+        if !authorized {
+            return Err(Error::InvalidInput(
+                "unknown or unauthorized practice deck".into(),
+            ));
+        }
+        self.refresh_persistent_id(id);
+        Ok(())
+    }
+
     pub(crate) fn set_active_database_root(
         &mut self,
         root: &DatabaseRootHandle,
@@ -8026,6 +8096,7 @@ const APP_OWNED_DEFAULT_ROOT_LEAVES: &[(AppOwnedDefaultRoot, &str)] = &[
     (AppOwnedDefaultRoot::EngineImages, "engine-images"),
     (AppOwnedDefaultRoot::Puzzles, "puzzles"),
     (AppOwnedDefaultRoot::Credentials, "credentials"),
+    (AppOwnedDefaultRoot::Practice, "practice"),
     #[cfg(target_os = "macos")]
     (AppOwnedDefaultRoot::EngineLaunch, "engine-launch"),
 ];
@@ -8118,6 +8189,76 @@ mod portable_tests {
             authority.create_pgn_export_destination(&dir.path().join("export.txt"), "export.txt"),
             Err(Error::InvalidInput(_))
         ));
+    }
+
+    #[test]
+    fn practice_authorization_checks_membership_and_purpose_before_refresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("practice.pgn");
+        fs::write(&file, b"file").unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(1)));
+        let stored = StoredEntry {
+            id: PathRef {
+                id: "practice".into(),
+            },
+            display_name: "practice".into(),
+            class: PathClass::PersistentFile,
+            purpose: Some(EntryPurpose::PgnReadOnlyFile),
+            operations: vec![PathOperation::ReadPgn],
+            path: NativePath::from_path(&file),
+            identity: identity(&file).unwrap(),
+            target_is_dir: false,
+        };
+        authority.persistent.insert(
+            "practice".into(),
+            Entry {
+                stored,
+                availability: PathAvailability::Available,
+            },
+        );
+        let id = PathRef {
+            id: "practice".into(),
+        };
+        authority.authorize_practice_deck(&id, true).unwrap();
+        fs::remove_file(&file).unwrap();
+        authority.authorize_practice_deck(&id, true).unwrap();
+
+        let wrong_path = dir.path().join("wrong.pgn");
+        fs::write(&wrong_path, b"file").unwrap();
+        let wrong = StoredEntry {
+            id: PathRef { id: "wrong".into() },
+            display_name: "wrong".into(),
+            class: PathClass::PersistentFile,
+            purpose: Some(EntryPurpose::DatabaseFile),
+            operations: vec![],
+            path: NativePath::from_path(&wrong_path),
+            identity: identity(&wrong_path).unwrap(),
+            target_is_dir: false,
+        };
+        authority.persistent.insert(
+            "wrong".into(),
+            Entry {
+                stored: wrong,
+                availability: PathAvailability::Available,
+            },
+        );
+        assert!(authority
+            .authorize_practice_deck(&PathRef { id: "wrong".into() }, true)
+            .is_err());
+        assert!(authority
+            .authorize_practice_deck(
+                &PathRef {
+                    id: "missing".into()
+                },
+                true
+            )
+            .is_err());
+        authority
+            .pending_unpersisted_removals
+            .insert("practice".into());
+        assert!(authority.authorize_practice_deck(&id, true).is_err());
+        authority.pending_unpersisted_removals.clear();
+        assert!(authority.authorize_practice_deck(&id, false).is_ok());
     }
 
     /// The leaves are written out verbatim rather than read back from the enum. A leaf is the
@@ -13801,8 +13942,12 @@ mod tests {
             AppOwnedDefaultRoot::Puzzles => path_authority
                 .get_or_create_puzzle_root(directory.path(), "Puzzles", Some(expected_identity))
                 .map(|handle| handle.path_ref().clone()),
-            AppOwnedDefaultRoot::EngineImages | AppOwnedDefaultRoot::Credentials => {
-                panic!("engine images and credentials do not have a persistent root entry")
+            AppOwnedDefaultRoot::EngineImages
+            | AppOwnedDefaultRoot::Credentials
+            | AppOwnedDefaultRoot::Practice => {
+                panic!(
+                    "engine images, credentials and practice do not have a persistent root entry"
+                )
             }
             #[cfg(target_os = "macos")]
             AppOwnedDefaultRoot::EngineLaunch => {
@@ -13826,8 +13971,12 @@ mod tests {
             AppOwnedDefaultRoot::Puzzles => path_authority
                 .set_active_puzzle_root(&PuzzleRootHandle::new(id.clone()))
                 .unwrap(),
-            AppOwnedDefaultRoot::EngineImages | AppOwnedDefaultRoot::Credentials => {
-                panic!("engine images and credentials do not have a persistent root entry")
+            AppOwnedDefaultRoot::EngineImages
+            | AppOwnedDefaultRoot::Credentials
+            | AppOwnedDefaultRoot::Practice => {
+                panic!(
+                    "engine images, credentials and practice do not have a persistent root entry"
+                )
             }
             #[cfg(target_os = "macos")]
             AppOwnedDefaultRoot::EngineLaunch => {
@@ -13850,8 +13999,12 @@ mod tests {
             AppOwnedDefaultRoot::Puzzles => {
                 assert_eq!(path_authority.active_puzzle_root().unwrap(), None)
             }
-            AppOwnedDefaultRoot::EngineImages | AppOwnedDefaultRoot::Credentials => {
-                panic!("engine images and credentials do not have a persistent root entry")
+            AppOwnedDefaultRoot::EngineImages
+            | AppOwnedDefaultRoot::Credentials
+            | AppOwnedDefaultRoot::Practice => {
+                panic!(
+                    "engine images, credentials and practice do not have a persistent root entry"
+                )
             }
             #[cfg(target_os = "macos")]
             AppOwnedDefaultRoot::EngineLaunch => {

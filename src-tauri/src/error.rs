@@ -21,6 +21,9 @@ pub enum DurabilityStage {
     WorkspaceRemoval,
     WorkspaceSidecarCreation,
     WorkspaceSidecarReplacement,
+    PracticePositions,
+    PracticeReviewShard,
+    PracticeState,
 }
 
 impl std::fmt::Display for DurabilityStage {
@@ -47,6 +50,9 @@ impl std::fmt::Display for DurabilityStage {
             Self::WorkspaceRemoval => "workspace removal",
             Self::WorkspaceSidecarCreation => "workspace sidecar creation",
             Self::WorkspaceSidecarReplacement => "workspace sidecar replacement",
+            Self::PracticePositions => "practice positions replacement",
+            Self::PracticeReviewShard => "practice review-shard replacement",
+            Self::PracticeState => "practice migration-state replacement",
         })
     }
 }

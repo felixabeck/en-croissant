@@ -19,6 +19,7 @@ mod lichess;
 mod oauth;
 mod opening;
 mod pgn;
+mod practice;
 mod progress;
 mod puzzle;
 mod sound;

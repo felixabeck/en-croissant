@@ -3026,6 +3026,25 @@ mod win {
         Ok(opened)
     }
 
+    pub(super) fn open_or_create_regular_at(parent: &File, name: &OsStr) -> Result<File, Error> {
+        const FILE_OPEN_IF: u32 = 0x0000_0003;
+        let opened = open_windows_child(
+            parent,
+            name,
+            FILE_OPEN_IF,
+            regular_file_access(RegularFileAccess::ReadWrite),
+            null(),
+            false,
+            true,
+        )?;
+        if !opened_is_disk(&opened) {
+            return Err(Error::InvalidInput(
+                "lock leaf must be a regular file".into(),
+            ));
+        }
+        Ok(opened)
+    }
+
     pub(super) fn create_regular_at(
         parent: &File,
         name: &OsStr,
@@ -4419,6 +4438,36 @@ pub(crate) fn open_regular_at(
     access: RegularFileAccess,
 ) -> Result<File, Error> {
     win::open_regular_at(parent, name, access)
+}
+
+/// Opens an existing regular leaf or creates it when absent. This is intentionally separate from
+/// `create_regular_at`: advisory lock leaves are shared by processes and therefore must not use
+/// `O_EXCL`, while they still require the same no-follow and regular-file checks.
+#[cfg(unix)]
+pub(crate) fn open_or_create_regular_at(parent: &File, name: &OsStr) -> Result<File, Error> {
+    single_leaf(name)?;
+    use rustix::fs::{self as rfs, FileType, Mode, OFlags};
+    let opened = File::from(
+        rfs::openat(
+            parent,
+            name,
+            OFlags::RDWR | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::from_raw_mode(0o600),
+        )
+        .map_err(|error| Error::Io(Box::new(error.into())))?,
+    );
+    let stat = rfs::fstat(&opened).map_err(|error| Error::Io(Box::new(error.into())))?;
+    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
+        return Err(Error::InvalidInput(
+            "lock leaf must be a regular file".into(),
+        ));
+    }
+    Ok(opened)
+}
+
+#[cfg(windows)]
+pub(crate) fn open_or_create_regular_at(parent: &File, name: &OsStr) -> Result<File, Error> {
+    win::open_or_create_regular_at(parent, name)
 }
 
 /// Creates one private regular-file leaf below a retained directory descriptor. The exclusive
