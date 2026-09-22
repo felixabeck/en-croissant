@@ -143,6 +143,14 @@ async issueDownloadDestination() : Promise<Result<PathRef, ErrorPayload>> {
     else return { status: "error", error: e  as any };
 }
 },
+async downloadDestinationIsKnown(destination: PathRef) : Promise<Result<boolean, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("download_destination_is_known", { destination }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 /**
  * Native-only database-root selection.  A directory is promoted immediately
  * to a persistent database workspace and the renderer receives only its

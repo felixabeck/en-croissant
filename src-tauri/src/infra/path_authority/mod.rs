@@ -6166,6 +6166,13 @@ impl PathAuthority {
             .ok_or_else(|| Error::InvalidInput("unknown, revoked, or expired path grant".into()))
     }
 
+    pub(crate) fn download_destination_is_known(&self, id: &PathRef) -> bool {
+        !self.pending_unpersisted_removals.contains(&id.id)
+            && self.persistent.get(&id.id).is_some_and(|entry| {
+                entry.stored.purpose == Some(EntryPurpose::DownloadDestination)
+            })
+    }
+
     pub(crate) fn reconcile_startup_owners(
         &mut self,
         owners: StartupPathOwners,
@@ -15968,6 +15975,112 @@ mod tests {
             target_is_dir,
             purpose,
         }
+    }
+
+    #[test]
+    fn download_destination_is_known_matches_persistent_download_roots_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+
+        assert!(!authority.download_destination_is_known(&PathRef {
+            id: "missing".into(),
+        }));
+
+        let dialog_path = dir.path().join("dialog");
+        fs::create_dir(&dialog_path).unwrap();
+        let dialog_id = authority
+            .grant_dialog(
+                &dialog_path,
+                "dialog",
+                PathClass::SingleDialogGrant,
+                PathOperation::DownloadFile,
+                Duration::from_secs(60),
+                1,
+            )
+            .unwrap();
+        assert!(!authority.download_destination_is_known(&dialog_id));
+
+        let mut wrong_purpose_results = Vec::new();
+        for (id, purpose) in [
+            ("database", EntryPurpose::DatabaseRoot),
+            ("puzzle", EntryPurpose::PuzzleRoot),
+        ] {
+            let path = dir.path().join(id);
+            fs::create_dir(&path).unwrap();
+            let stored = stored_entry_for(&path, id, Some(purpose), canonical_operations(purpose));
+            authority.persistent.insert(
+                id.into(),
+                Entry {
+                    stored,
+                    availability: PathAvailability::Available,
+                },
+            );
+            wrong_purpose_results.push(authority.download_destination_is_known(&PathRef {
+                id: id.into(),
+            }));
+        }
+        assert_eq!(wrong_purpose_results, [false, false]);
+
+        let file = dir.path().join("file.pgn");
+        fs::write(&file, b"file").unwrap();
+        let stored = stored_entry_for(
+            &file,
+            "file",
+            Some(EntryPurpose::PgnFile),
+            canonical_operations(EntryPurpose::PgnFile),
+        );
+        authority.persistent.insert(
+            "file".into(),
+            Entry {
+                stored,
+                availability: PathAvailability::Available,
+            },
+        );
+        assert!(!authority.download_destination_is_known(&PathRef { id: "file".into() }));
+
+        let pending_path = dir.path().join("pending");
+        fs::create_dir(&pending_path).unwrap();
+        let pending = stored_entry_for(
+            &pending_path,
+            "pending",
+            Some(EntryPurpose::DownloadDestination),
+            canonical_operations(EntryPurpose::DownloadDestination),
+        );
+        authority.persistent.insert(
+            "pending".into(),
+            Entry {
+                stored: pending,
+                availability: PathAvailability::Available,
+            },
+        );
+        authority
+            .pending_unpersisted_removals
+            .insert("pending".into());
+        assert!(!authority.download_destination_is_known(&PathRef {
+            id: "pending".into(),
+        }));
+
+        let destination_path = dir.path().join("destination");
+        fs::create_dir(&destination_path).unwrap();
+        let destination = stored_entry_for(
+            &destination_path,
+            "destination",
+            Some(EntryPurpose::DownloadDestination),
+            canonical_operations(EntryPurpose::DownloadDestination),
+        );
+        authority.persistent.insert(
+            "destination".into(),
+            Entry {
+                stored: destination,
+                availability: PathAvailability::Available,
+            },
+        );
+        let destination_id = PathRef {
+            id: "destination".into(),
+        };
+        assert!(authority.download_destination_is_known(&destination_id));
+        fs::remove_dir(&destination_path).unwrap();
+        assert!(authority.download_destination_is_known(&destination_id));
     }
 
     fn write_registry_with_entries(path: &Path, entries: Vec<StoredEntry>) {

@@ -203,8 +203,14 @@ export function AccountCard({
   }
 
   async function ensureDownloadDestination(): Promise<PathRef> {
-    if (isPathRef(downloadDestination)) return downloadDestination;
-    if (downloadDestination !== null) setDownloadDestination(null);
+    if (isPathRef(downloadDestination)) {
+      if (await tauri.downloadDestinationIsKnown(downloadDestination)) {
+        return downloadDestination;
+      }
+      setDownloadDestination(null);
+    } else if (downloadDestination !== null) {
+      setDownloadDestination(null);
+    }
     const result = await tauri.issueDownloadDestination();
     setDownloadDestination(result);
     return result;

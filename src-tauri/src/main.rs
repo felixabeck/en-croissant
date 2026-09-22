@@ -1214,6 +1214,34 @@ fn issue_download_destination_blocking(
         .id)
 }
 
+#[tauri::command]
+#[specta::specta]
+async fn download_destination_is_known(
+    destination: crate::infra::path_authority::PathRef,
+    state: tauri::State<'_, AppState>,
+) -> Result<bool, Error> {
+    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    crate::infra::operations::run_accepted_blocking(
+        &state.operations,
+        "download_destination_is_known",
+        move || download_destination_is_known_blocking(&authority, destination),
+    )
+    .await
+}
+
+fn download_destination_is_known_blocking(
+    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    destination: crate::infra::path_authority::PathRef,
+) -> Result<bool, Error> {
+    let authority = authority
+        .lock()
+        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
+    let authority = authority
+        .as_ref()
+        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
+    Ok(authority.download_destination_is_known(&destination))
+}
+
 /// Native-only database-root selection.  A directory is promoted immediately
 /// to a persistent database workspace and the renderer receives only its
 /// opaque handle.
@@ -2253,6 +2281,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             open_documentation,
             open_app_log,
             issue_download_destination,
+            download_destination_is_known,
             issue_database_workspace,
             get_database_workspace,
             list_workspace_databases,
@@ -3905,6 +3934,10 @@ mod blocking_offload_scans {
             (
                 "async fn issue_download_destination(",
                 "issue_download_destination_blocking",
+            ),
+            (
+                "async fn download_destination_is_known(",
+                "download_destination_is_known_blocking",
             ),
             (
                 "async fn issue_database_workspace(",
