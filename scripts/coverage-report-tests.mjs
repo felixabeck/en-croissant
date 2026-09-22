@@ -830,6 +830,27 @@ test("enforces configured percentage floors for every area metric", () => {
   );
 });
 
+test("rejects an area whose declared source is not the file's source", async () => {
+  // The only surviving copy of this check, and the one the production-file loop runs. The LCOV
+  // loop's identical copy was dead for every input -- it saw only files that loop had already
+  // validated -- and was deleted with `f-20260921-02`.
+  const { root } = await fixture();
+  const mismatched = {
+    ...config,
+    areas: [{ ...config.areas[0], source: "backend" }],
+  };
+  await assert.rejects(
+    () =>
+      buildCoverageReport({
+        config: mismatched,
+        configPath: "coverage-areas.json",
+        lcov,
+        root,
+      }),
+    /Coverage area utilities has the wrong source for src\/utils\/example\.ts/,
+  );
+});
+
 test("rejects unmapped production files and missing coverage input", async () => {
   const unmapped = await fixture();
   await writeFile(join(unmapped.root, "src", "other.ts"), "export const other = 1;\n");

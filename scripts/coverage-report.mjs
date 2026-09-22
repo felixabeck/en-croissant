@@ -175,6 +175,14 @@ export async function buildCoverageReport({ config, configPath, lcov, root }) {
     }
   }
 
+  // Every production file's area must belong to the source the file came from. This is the only
+  // place that is checked, and the LCOV loop below deliberately does not repeat it: it reaches a
+  // record only when `productionFiles` already holds the file, this loop has run the identical
+  // comparison over every entry of that map, and neither the map nor `assignArea` -- a pure
+  // function of (path, config) -- changes in between. The duplicate copy was therefore dead for
+  // every input and unreachable by any caller, being interior to this function, and was removed
+  // (`f-20260921-02`). `assertAreaFloors`' similar-looking branch is a different case: it is
+  // exported and the tests call it directly, so it stays.
   for (const [file, sourceId] of productionFiles) {
     const area = assignArea(file, config);
     if (area.source !== sourceId)
@@ -190,8 +198,6 @@ export async function buildCoverageReport({ config, configPath, lcov, root }) {
     const sourceId = productionFiles.get(file);
     if (!sourceId) continue;
     const area = assignArea(file, config);
-    if (area.source !== sourceId)
-      throw new Error(`Coverage area ${area.id} has the wrong source for ${file}`);
     addMetrics(report[area.id], record.metrics);
     coverageFilesByArea[area.id] += 1;
     filesWithCoverage.add(file);
