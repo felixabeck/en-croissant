@@ -7417,6 +7417,15 @@ Final review repair completed in 88c1b7bb (tab transitions), 3de47fe2 (ordinary 
 * **Deferral:** Separate recovery design outside f-20260830-35/f-20260901-13. The startup sweep ignores already-unknown references to avoid blocking unrelated reclamation; it does not create this pre-existing invalid-reference state and will retain every known saved destination. AccountCard is not an implementation owner in that task.
 * **Found by:** Codex persisted-state plan lens, round 4, confidence 96; main verified the stored-key/consumer chain, 2026-09-06.
 
+* **Annotated 2026-09-22 (plan review complete; status stays open until this run's push lands):**
+  the durable record of this finding's plan review is
+  `tasks/handoffs/2026-09-22-f-20260906-16-review.md`. **Load it before any further plan review in
+  this area** — the plan file itself is gitignored and will disappear, and the record carries the
+  eleven rounds, every raw verdict, and the mechanisms that were measured wrong rather than merely
+  rejected. Inherited issue IDs R1-10 and R1-16 are `Skip` with reasons; R2-08 is `Defer`, filed as
+  `f-20260922-01`. Implemented in `0eeddbb3` and `2c6779ce`.
+<!-- ledger-meta {"command":"annotate","effect_lines":8,"effect_sha256":"22ef9e8bb64627903e5951cb4ded030e8fad77250d35fc8dba3ea4a9ed4de241","input_sha256":"752814826f2dedc1c91403048a82db5fc732a6ebeb2cc02ead0fcafd347a3b2c","kind":"mutation-receipt","operation":"167d11a6905e13e9d75e96b539c53f1af8ec073b040fc53ce4ed8881ee69f540","options":{"section":null},"request_id_sha256":null,"results":["f-20260906-16"],"target":"f-20260906-16","v":1} -->
+
 ---
 
 ## 2026-09-06 — filed through the inbox spool
