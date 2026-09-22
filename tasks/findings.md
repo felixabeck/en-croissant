@@ -11054,3 +11054,16 @@ It matters more since 2026-09-22 than before: `buildCoverageReport` now merges r
   which mutations renumber siblings, then reproduced against the real store before filing. Outside that
   plan's MANDATE (which is the drill path and `setFen`) and in a different flow, so filed rather than
   folded in.
+
+---
+
+## 2026-09-22 — filed through the inbox spool
+
+### Tab close commits the workspace before deleting the tree key, so a failed delete orphans it forever
+
+* **ID:** f-20260922-09 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src/state/atoms.ts:112-125` (`commitWorkspaceAtom` is committed, *then* `tabStorage.remove(tabId)` runs inside a `try` whose error is only reported), `src/state/store/tabStorage.ts:318-321` (`remove` calls `sessionStorage.removeItem` with no retry or deferred-cleanup record).
+* **Defect:** the order is commit-then-clean, and the cleanup failure is swallowed into `reportPersistError` while the close returns `true`. The tab id is gone from the workspace at that point, and the only startup cleanup examines ids that are still present in workspace metadata, so the compressed tree value for that tab stays in `sessionStorage` for the rest of the window's life with nothing able to name it.
+* **Why it matters:** `sessionStorage` is the shared, quota-bounded store every tab tree persists into (`.claude/rules/persisted-state.md`); an orphan consumes that quota and cannot be reclaimed, and the user is told the close succeeded. `async-resource-invariants.md`: a registry entry whose removal depends on the happy path.
+* **Open question:** whether the fix is to delete the tree key **before** committing the workspace (making a failed delete abort the close, at the cost of a tab that refuses to close), or to record the orphan in workspace metadata so startup cleanup can find it later. The first is simpler and fails loudly; the second keeps the close working. Whichever is chosen decides whether `remove` must become fallible in its signature.
+* **Found by:** `review-persisted-state` (should-fix, confidence 96) in round 1 of the plan review for `f-20260922-04`, 2026-09-22; the orchestrator confirmed the ordering and the swallowed error by reading both files before filing. Outside that plan's MANDATE (tree-path rebasing), so filed rather than folded in.
