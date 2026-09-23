@@ -3933,3 +3933,58 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** the total ceiling exists to make growth a conscious decision (docs/bundle-budgets.md: raising a limit needs an updated measurement and rationale). This growth is the feature itself, measured per asset. Reversal path: restore `"total": 1550000` in `bundle-budgets.json` once the catalogues or the client shrink below it.
 * **Decided by:** Claude Code (orchestrator), f-20260906-23 build, final gates · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"2ac8198a62f535e03707ce39939b05f9cae8efab7692181745172f84e6fcaa12","input_sha256":"21161701f4f682c14d29af499f48ae82dbf499af4aa2d5b8afcaf5f73e78a75c","kind":"mutation-receipt","operation":"1a85e360e6111916bc3548c5e10fa7da525c833b8f464042267c2abe8a1e2b1b","options":{"section":null},"request_id_sha256":null,"results":["d-20260923-03"],"target":"decisions-ledger","v":1} -->
+
+### d-20260923-04 — Where does a practicePath go when deleteMove removes its node?
+
+* **Question:** `deleteMove` can delete the node the practice path addresses. Should `practicePath` clamp to the deleted node's parent or become `null`?
+* **Governs:** f-20260922-04
+* **Chosen:** clamp to the deleted node's parent, as the cursor already does. Surviving paths are rebased through one step shared by `position`, `headers.start` and `practicePath` (`rebaseTrackedPaths` in `src/state/store/tree.ts`), with a per-path fallback.
+* **Rejected:** `null`, matching `headers.start`'s `undefined`.
+* **Reason:** `practicePath` is the only thing stopping `goToNext` from revealing the answer while the practice UI is still on screen. `null` would widen the guard to unrestricted navigation and let `goToNext` follow the surviving sibling as the deleted card's continuation, which is f-20260914-26's reported sequence. A clamp leaves cursor and path at the same depth, so the guard refuses to advance. Plan D1, reviewed over ten rounds; record `tasks/handoffs/2026-09-22-practice-path-rebasing-review.md`.
+* **Decided by:** Claude Code (orchestrator), tree-path-rebasing build, plan review 2026-09-22 · **Superseded-by:** -
+
+### d-20260923-05 — With an active practice path, what may goToNext do?
+
+* **Question:** With `practicePath` set, should `goToNext` still take the transposition fallback, and may it advance from a cursor that left the drill line?
+* **Governs:** f-20260922-04
+* **Chosen:** it advances only when `position` is a proper prefix of `practicePath`, and only by `practicePath[position.length]`. It never takes the transposition fallback. Otherwise it does nothing. With no practice path, behaviour is unchanged.
+* **Rejected:** redirecting the transposition jump onto the path; a length-only guard.
+* **Reason:** the jump's target is on another branch, so no index of a root-anchored path survives it, and a redirect cannot be expressed. A length-only guard applies the path's next index to whatever branch the cursor is on. Accepted consequence: after clicking a move off the drill line, the forward arrow does nothing until the cursor is back on the path. Plan D2.
+* **Decided by:** Claude Code (orchestrator), tree-path-rebasing build, plan review 2026-09-22 · **Superseded-by:** -
+
+### d-20260923-06 — What does installing a new root from a FEN leave behind?
+
+* **Question:** `setFen` and `setHeaders`' rebuild branch replace the tree. Which header and path values must they write, and from where?
+* **Governs:** f-20260922-04
+* **Chosen:** one shared installer (`installRoot`) writes `headers.fen` from the installed `root.fen`, drops `headers.start`, sets `practicePath` to `null` and `position` to `[]`, on a fresh headers object. `setState` and `reset` set only `practicePath = null`, since they install a whole state object.
+* **Rejected:** copying the raw FEN argument into `headers.fen`; clearing only the paths.
+* **Reason:** `setHeaders` rebuilds whenever `headers.fen !== root.fen`, so that equality is load-bearing. Deriving one side from the other makes it structural instead of dependent on every caller pre-normalizing (`defaultTree` trims). Plan D3.
+* **Decided by:** Claude Code (orchestrator), tree-path-rebasing build, plan review 2026-09-22 · **Superseded-by:** -
+
+### d-20260923-07 — How does a mainline prepend keep tracked paths on their nodes?
+
+* **Question:** `makeMove` with `mainline` unshifts the new child and renumbers every sibling. Is the shift expressed through the existing promotion rebase, and does its helper take the inserted index?
+* **Governs:** f-20260922-08
+* **Chosen:** its own rule, `rebasePathAfterPrepend(target, parent)`, run through the shared `rebaseTrackedPaths` step in the inserting branch, after the `unshift` and before the `changePosition` block. It has no index parameter. An unchanged path keeps its array identity.
+* **Rejected:** "push, then promote the last index" through `rebasePathAfterPromotion` (the same arithmetic under the wrong operation's name); an inserted-index parameter.
+* **Reason:** the only insertion that shifts siblings inserts at 0, since `push` shifts nothing, so an index parameter would be a speculative extension point. The `changePosition` block picks `push(0)` by comparing `state.position === position`, so replacing an unchanged cursor would select the last child instead of the new first one. Plan D8, D9 and M16; record `tasks/handoffs/2026-09-22-tree-path-insert-rehydrate-review.md`.
+* **Decided by:** Claude Code (orchestrator), tree-path-rebasing build, plan review 2026-09-22 · **Superseded-by:** -
+
+### d-20260923-08 — Where and how is a persisted path that no longer resolves repaired?
+
+* **Question:** A stored `position`, `headers.start` or `practicePath` can fail to resolve in the root stored with it. Where is it checked, what repair does each path get, and is the stored value corrected or kept with a derived effective value?
+* **Governs:** f-20260922-10
+* **Chosen:** in `parseTree` (`src/state/store/tabStorage.ts`), after the Zod parse. `position` and `practicePath` clamp to their longest resolving prefix, `headers.start` is dropped, and `null` or absent stays as it is. The stored value is corrected, and `read` writes the repair back once. The walk is `getResolvedPathLength` in `treeReducer.ts`, which `parseStartHeader` also uses.
+* **Rejected:** checking in `onRehydrateStorage` (repairs memory only, so storage stays stale); one uniform rule (clamping a start silently moves the repertoire start, and clearing a practice path widens the drill guard); rejecting the tab (loses a valid game over a stale index); keeping the stale value and deriving an effective one.
+* **Reason:** `parseTree` is the one validator shared by `read`, `seed` and both clones. The path and its tree live in the same record, so no external context can make a stale path valid again. A kept stale start starts resolving again once the tree grows, and then addresses an unrelated move. Plan D6, D7 and D11. The finding was deliberately not closed as latent once f-20260922-08 shipped (D10): the boundary check also covers unknown future mutations and legacy envelopes.
+* **Decided by:** Claude Code (orchestrator), tree-path-rebasing build, plan review 2026-09-22 · **Superseded-by:** -
+
+### d-20260923-09 — Does the tree store's setState validate the paths it is given?
+
+* **Question:** Cumulative review (chess-semantics lens) proposed that `setState` resolve incoming `position` and `headers.start` against the supplied root. Validate there, or at the producer?
+* **Governs:** f-20260922-10
+* **Chosen:** at the producer. `parsePGN` now stores only the validated `Start` path in `headers.start` (it used to keep the raw tag after rejecting it) and sets `position` from it. `setState` keeps the fields it is given, as plan O3 says.
+* **Rejected:** a second validation in `setState`.
+* **Reason:** both production callers, `PgnInput.tsx` and `InfoPanel.tsx`, build their tree with `parsePGN`, the boundary where untrusted PGN text enters. `setState` takes a typed `TreeState` from those callers only. Reversal path: if a caller that bypasses `parsePGN` appears, run `getResolvedPathLength` in `setState`.
+* **Decided by:** Claude Code (orchestrator), tree-path-rebasing build, cumulative review 2026-09-23 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":53,"effect_sha256":"d9d5ca9c139b067425cd5ac52e0e9a54803b519b5305ecaa8cd11849a8816624","input_sha256":"bd87952c6eac2694251be5825885bafbb859de3e687d7511217931aaac6787d9","kind":"mutation-receipt","operation":"898643922d6b19d23e7746016be0cdf50d00f01044eb2e301e8eabc6b06adf18","options":{"section":null},"request_id_sha256":null,"results":["d-20260923-04","d-20260923-05","d-20260923-06","d-20260923-07","d-20260923-08","d-20260923-09"],"target":"decisions-ledger","v":1} -->
