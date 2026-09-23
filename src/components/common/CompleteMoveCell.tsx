@@ -73,7 +73,7 @@ type CompleteMoveCellProps = {
   annotations: Annotation[];
   showComments: boolean;
   move?: string | null;
-  fen?: string;
+  fen: string;
   first?: boolean;
   node: TreeNode;
   nodeIndex: NotationNodeIndex;
@@ -106,7 +106,7 @@ function CompleteMoveCell({
   const isCurrentVariation = providedIsCurrentVariation ?? node === state.currentNode();
   const isStart = providedIsStart ?? equal(path, state.headers.start || []);
   const transpositions = useMemo(
-    () => (fen && nodeIndex && node ? getTranspositions(fen, node, path, root, nodeIndex) : []),
+    () => getTranspositions(fen, node, path, root, nodeIndex),
     [fen, node, nodeIndex, path, root],
   );
   const [open, setOpen] = useState(false);
