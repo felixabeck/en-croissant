@@ -886,8 +886,12 @@ test("read persists repaired paths back into the stored envelope", () => {
 test("seed and both clone routes store repaired start headers", () => {
     const stale = treeWithPaths({ start: [0, 5] });
 
+    // seed and cloneDurable write sessionStorage directly; the raw value is asserted because read
+    // would repair a stale path on its own and hide a writer that stored it.
     storage.seed("seed-repair", stale);
-    expect(storage.read("seed-repair")?.state).not.toHaveProperty("headers.start");
+    expect(deserializeStorageValue(sessionStorage.getItem("seed-repair")!)).not.toHaveProperty(
+        "state.headers.start",
+    );
 
     persistTree("clone-source-repair", stale);
     storage.clone("clone-source-repair", "clone-target-repair");
@@ -895,5 +899,7 @@ test("seed and both clone routes store repaired start headers", () => {
 
     persistTree("durable-source-repair", stale);
     storage.cloneDurable("durable-source-repair", "durable-target-repair");
-    expect(storage.read("durable-target-repair")?.state).not.toHaveProperty("headers.start");
+    expect(
+        deserializeStorageValue(sessionStorage.getItem("durable-target-repair")!),
+    ).not.toHaveProperty("state.headers.start");
 });

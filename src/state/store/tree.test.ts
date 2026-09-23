@@ -633,11 +633,15 @@ test("setState clears practicePath and keeps the supplied start path", () => {
     expect(state.report).toBe(tree.report);
 });
 
-test("reset clears practicePath", () => {
-    const store = createTreeStore();
-    store.getState().setPracticePath([0, 1]);
+test("reset clears practicePath and the start path", () => {
+    const tree = defaultTree();
+    tree.root.children = [node("old-root-child", [node("old-grandchild")])];
+    tree.headers.start = [0, 0];
+    const store = createTreeStore(undefined, tree);
+    store.getState().setPracticePath([0, 0]);
 
     store.getState().reset();
 
     expect(store.getState().practicePath).toBeNull();
+    expect(store.getState().headers.start).toBeUndefined();
 });

@@ -164,8 +164,8 @@ export function closeTreeStore(tab: string): void {
 
 function installRoot(state: Draft<TreeStoreState>, root: TreeNode): void {
     state.root = root;
-    // A fresh object: setHeaders has just assigned the caller's headers into the draft, and a
-    // start path indexes the tree being replaced.
+    // A fresh headers object, never a mutation of the current one: in setHeaders it is the caller's
+    // object, just assigned into the draft. The start path indexed the tree being replaced.
     const { start: _start, ...headers } = state.headers;
     state.headers = { ...headers, fen: root.fen };
     state.practicePath = null;
@@ -235,7 +235,7 @@ export const createTreeStore = (id?: string, initTree?: TreeState) => {
                     return { position: [...state.position, childIndex] };
                 }
 
-                // No children — try transposition fallback
+                // No children — outside an active drill, try the transposition fallback
                 if (practicePath !== null) return {};
 
                 const currentFen = getBoardState(node.fen);
