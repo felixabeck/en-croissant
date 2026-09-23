@@ -4517,6 +4517,639 @@ mod tests {
     }
 
     #[test]
+    fn persisted_positions_and_state_reject_oversize_versions_and_invalid_metadata() {
+        let (_temp, oversized_directory) = directory();
+        let oversized_hash = hash_deck("oversized", 1);
+        let oversized_leaf = positions_leaf(&oversized_hash);
+        let oversized_bytes = vec![b'x'; PRACTICE_POSITIONS_MAX_BYTES + 1];
+        fs::write(
+            oversized_directory.path().join(&oversized_leaf),
+            &oversized_bytes,
+        )
+        .unwrap();
+        assert!(matches!(
+            load_practice_deck_in(&oversized_directory, "oversized", 1),
+            Err(Error::InvalidInput(_))
+        ));
+        assert_eq!(
+            leaf_bytes(&oversized_directory, &oversized_leaf),
+            oversized_bytes
+        );
+
+        let mut unsupported = new_positions("unsupported", 1, vec![]);
+        unsupported.version = PRACTICE_STORAGE_VERSION + 1;
+        let (_temp, unsupported_directory) = directory();
+        write_positions(
+            &unsupported_directory,
+            &hash_deck("unsupported", 1),
+            &unsupported,
+        )
+        .unwrap();
+        assert!(matches!(
+            load_practice_deck_in(&unsupported_directory, "unsupported", 1),
+            Err(Error::InvalidInput(_))
+        ));
+
+        let (_bad_state_temp, bad_state_directory) = directory();
+        write_test_state(
+            &bad_state_directory,
+            "bad-digest",
+            1,
+            MigrationPhase::Migrating,
+            "not-a-sha256-digest",
+        );
+        assert!(matches!(
+            read_state(&bad_state_directory, &hash_deck("bad-digest", 1)),
+            Err(Error::InvalidInput(_))
+        ));
+
+        let mut invalid_envelopes = Vec::new();
+        let mut long_anchor = new_positions("invalid", 1, vec![]);
+        long_anchor.last_entry_id = Some("i".repeat(PRACTICE_ID_MAX_BYTES + 1));
+        invalid_envelopes.push(long_anchor);
+        let mut malformed_digest = new_positions("invalid", 1, vec![]);
+        malformed_digest.last_entry_digest = Some("not-a-sha256-digest".to_owned());
+        invalid_envelopes.push(malformed_digest);
+        let mut missing_both_migration_markers = new_positions("invalid", 1, vec![]);
+        missing_both_migration_markers.legacy_source = LegacySource::LocalStorage;
+        invalid_envelopes.push(missing_both_migration_markers);
+        let mut missing_positions_digest = new_positions("invalid", 1, vec![]);
+        missing_positions_digest.legacy_source = LegacySource::LocalStorage;
+        missing_positions_digest.migrated_entries = Some(0);
+        invalid_envelopes.push(missing_positions_digest);
+        let mut missing_entry_count = new_positions("invalid", 1, vec![]);
+        missing_entry_count.legacy_source = LegacySource::LocalStorage;
+        missing_entry_count.migrated_positions_digest = Some("0".repeat(64));
+        invalid_envelopes.push(missing_entry_count);
+
+        for envelope in invalid_envelopes {
+            let (_temp, directory) = directory();
+            let hash = hash_deck("invalid", 1);
+            write_positions(&directory, &hash, &envelope).unwrap();
+            let before = leaf_bytes(&directory, &positions_leaf(&hash));
+            assert!(matches!(
+                load_practice_deck_in(&directory, "invalid", 1),
+                Err(Error::InvalidInput(_))
+            ));
+            assert_eq!(leaf_bytes(&directory, &positions_leaf(&hash)), before);
+        }
+    }
+
+    #[test]
+    fn incoming_positions_enforce_canonical_and_persisted_size_limits() {
+        let (_temp, directory) = directory();
+        let near_limit = format!(
+            "{{\"positions\":[\"{}\"]}}",
+            "x".repeat(PRACTICE_POSITIONS_MAX_BYTES - 100)
+        );
+        assert!(near_limit.len() < PRACTICE_POSITIONS_MAX_BYTES);
+        let before = all_leaf_bytes(&directory);
+        assert!(matches!(
+            sync_practice_positions_in(&directory, "envelope-size", 1, 0, 0, &near_limit),
+            Err(Error::InvalidInput(_))
+        ));
+        assert_eq!(all_leaf_bytes(&directory), before);
+
+        // A short exponent can expand when serde_json canonicalizes it to a decimal float.
+        let mut numbers = String::with_capacity(4 * 700_000);
+        for index in 0..700_000 {
+            if index != 0 {
+                numbers.push(',');
+            }
+            numbers.push_str("1e9");
+        }
+        let canonical_oversize = format!("{{\"positions\":[{numbers}]}}");
+        assert!(canonical_oversize.len() < PRACTICE_POSITIONS_MAX_BYTES);
+        assert!(matches!(
+            sync_practice_positions_in(&directory, "canonical-size", 1, 0, 0, &canonical_oversize),
+            Err(Error::InvalidInput(_))
+        ));
+        let legacy_oversize = format!("{{\"positions\":[{numbers}],\"logs\":[]}}");
+        assert!(legacy_oversize.len() < PRACTICE_LEGACY_MAX_BYTES);
+        assert!(matches!(
+            migrate_practice_deck_in(&directory, "legacy-canonical-size", 1, &legacy_oversize),
+            Err(Error::InvalidInput(_))
+        ));
+        assert_eq!(all_leaf_bytes(&directory), before);
+    }
+
+    #[test]
+    fn invalid_owned_names_are_ignored_and_orphan_shards_are_classified() {
+        let (_temp, directory) = directory();
+        fs::write(
+            directory.path().join("short-positions.json"),
+            b"not an owned practice leaf",
+        )
+        .unwrap();
+        fs::write(
+            directory
+                .path()
+                .join(format!("{}-positions.json", "g".repeat(64))),
+            b"not an owned practice leaf",
+        )
+        .unwrap();
+        fs::write(
+            directory
+                .path()
+                .join(format!("{}-state.json", "A".repeat(64))),
+            b"not an owned practice leaf",
+        )
+        .unwrap();
+        fs::write(
+            directory.path().join("short.lock"),
+            b"not an owned lock leaf",
+        )
+        .unwrap();
+        fs::write(
+            directory.path().join(format!("{}.lock", "g".repeat(64))),
+            b"not an owned lock leaf",
+        )
+        .unwrap();
+
+        let generation_hash = hash_deck("wrong-generation", 1);
+        write_json(
+            &directory,
+            &shard_leaf(&generation_hash, 0, 0),
+            &ReviewShardEnvelope {
+                version: PRACTICE_STORAGE_VERSION,
+                file_id: "wrong-generation".to_owned(),
+                game: 1,
+                generation: 1,
+                ordinal: 0,
+                entries: vec![test_review("entry", 1, serde_json::json!({"n": 1}))],
+            },
+            DurabilityStage::PracticeReviewShard,
+            "test",
+        )
+        .unwrap();
+        let empty_hash = hash_deck("empty-orphan", 1);
+        write_test_shard(&directory, "empty-orphan", 1, 0, 0, vec![]);
+        let ordinal_hash = hash_deck("wrong-ordinal", 1);
+        write_json(
+            &directory,
+            &shard_leaf(&ordinal_hash, 0, 0),
+            &ReviewShardEnvelope {
+                version: PRACTICE_STORAGE_VERSION,
+                file_id: "wrong-ordinal".to_owned(),
+                game: 1,
+                generation: 0,
+                ordinal: 1,
+                entries: vec![test_review("entry", 1, serde_json::json!({"n": 1}))],
+            },
+            DurabilityStage::PracticeReviewShard,
+            "test",
+        )
+        .unwrap();
+        let identity_hash = hash_deck("wrong-identity", 1);
+        write_json(
+            &directory,
+            &shard_leaf(&identity_hash, 0, 0),
+            &ReviewShardEnvelope {
+                version: PRACTICE_STORAGE_VERSION,
+                file_id: "another-deck".to_owned(),
+                game: 1,
+                generation: 0,
+                ordinal: 0,
+                entries: vec![test_review("entry", 1, serde_json::json!({"n": 1}))],
+            },
+            DurabilityStage::PracticeReviewShard,
+            "test",
+        )
+        .unwrap();
+        let invalid_entry_hash = hash_deck("invalid-entry-orphan", 1);
+        write_test_shard(
+            &directory,
+            "invalid-entry-orphan",
+            1,
+            0,
+            0,
+            vec![test_review("", 1, serde_json::json!({"n": 1}))],
+        );
+
+        let inventory = list_practice_decks_in(&directory).unwrap();
+        assert!(inventory.decks.is_empty());
+        assert!(inventory.anomalies.iter().any(|anomaly| {
+            anomaly.kind == PracticeStoreAnomalyKind::IdentityMismatch
+                && anomaly.leaf == shard_leaf(&generation_hash, 0, 0)
+        }));
+        assert!(inventory.anomalies.iter().any(|anomaly| {
+            anomaly.kind == PracticeStoreAnomalyKind::Unreadable
+                && anomaly.leaf == shard_leaf(&empty_hash, 0, 0)
+        }));
+        assert!(inventory.anomalies.iter().any(|anomaly| {
+            anomaly.kind == PracticeStoreAnomalyKind::IdentityMismatch
+                && anomaly.leaf == shard_leaf(&ordinal_hash, 0, 0)
+        }));
+        assert!(inventory.anomalies.iter().any(|anomaly| {
+            anomaly.kind == PracticeStoreAnomalyKind::IdentityMismatch
+                && anomaly.leaf == shard_leaf(&identity_hash, 0, 0)
+        }));
+        assert!(inventory.anomalies.iter().any(|anomaly| {
+            anomaly.kind == PracticeStoreAnomalyKind::Unreadable
+                && anomaly.leaf == shard_leaf(&invalid_entry_hash, 0, 0)
+        }));
+        assert_eq!(inventory.anomalies.len(), 5);
+    }
+
+    #[test]
+    fn shard_reading_rejects_inconsistent_envelopes_and_review_ids() {
+        let valid_shard = ReviewShardEnvelope {
+            version: PRACTICE_STORAGE_VERSION,
+            file_id: "file".to_owned(),
+            game: 1,
+            generation: 0,
+            ordinal: 0,
+            entries: vec![test_review("entry", 1, serde_json::json!({"n": 1}))],
+        };
+        let mut wrong_version = valid_shard.clone();
+        wrong_version.version += 1;
+        let mut wrong_identity = valid_shard.clone();
+        wrong_identity.file_id = "other".to_owned();
+        let mut wrong_generation = valid_shard.clone();
+        wrong_generation.generation = 1;
+        let mut wrong_ordinal = valid_shard.clone();
+        wrong_ordinal.ordinal = 1;
+        let mut empty_shard = valid_shard.clone();
+        empty_shard.entries.clear();
+        let mut empty_id = valid_shard.clone();
+        empty_id.entries[0].id.clear();
+        let mut long_id = valid_shard.clone();
+        long_id.entries[0].id = "i".repeat(PRACTICE_ID_MAX_BYTES + 1);
+        let mut zero_revision = valid_shard.clone();
+        zero_revision.entries[0].rev = 0;
+
+        for shard in [
+            wrong_version,
+            wrong_identity,
+            wrong_generation,
+            wrong_ordinal,
+            empty_shard,
+            empty_id,
+            long_id,
+            zero_revision,
+        ] {
+            let (_temp, directory) = directory();
+            let hash = hash_deck("file", 1);
+            write_positions(&directory, &hash, &new_positions("file", 1, vec![])).unwrap();
+            write_json(
+                &directory,
+                &shard_leaf(&hash, 0, 0),
+                &shard,
+                DurabilityStage::PracticeReviewShard,
+                "test",
+            )
+            .unwrap();
+            assert!(matches!(
+                load_practice_reviews_in(&directory, "file", 1, None, 10),
+                Err(Error::InvalidInput(_))
+            ));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shard_reads_refuse_non_regular_files() {
+        use std::os::unix::fs::symlink;
+
+        let (_temp, directory) = directory();
+        sync_practice_positions_in(&directory, "file", 1, 0, 0, &positions()).unwrap();
+        let hash = hash_deck("file", 1);
+        let target = directory.path().join("shard-target");
+        fs::write(&target, b"not a shard").unwrap();
+        let leaf = shard_leaf(&hash, 0, 0);
+        symlink(&target, directory.path().join(&leaf)).unwrap();
+
+        assert!(matches!(
+            load_practice_reviews_in(&directory, "file", 1, None, 10),
+            Err(Error::InvalidInput(_))
+        ));
+        assert_eq!(fs::read(&target).unwrap(), b"not a shard");
+        assert!(directory.path().join(leaf).exists());
+    }
+
+    #[test]
+    fn missing_deck_operations_and_stale_writes_return_typed_errors_without_changes() {
+        let (_temp, directory) = directory();
+        assert_eq!(
+            load_practice_reviews_in(&directory, "missing", 1, None, 10).unwrap(),
+            PracticeReviewPage {
+                entries: vec![],
+                next_cursor: None,
+            }
+        );
+        assert!(matches!(
+            acknowledge_practice_orphans_in(&directory, "missing", 1, 0, 0),
+            Err(Error::InvalidInput(_))
+        ));
+        assert!(matches!(
+            reset_practice_deck_in(&directory, "missing", 1, 0, 0, &positions()),
+            Err(Error::InvalidInput(_))
+        ));
+        assert!(matches!(
+            sync_practice_positions_in(&directory, "missing", 1, 1, 0, &positions()),
+            Err(Error::Conflict(_))
+        ));
+
+        sync_practice_positions_in(&directory, "file", 1, 0, 0, &positions()).unwrap();
+        let before = all_leaf_bytes(&directory);
+        assert!(matches!(
+            record_practice_review_in(
+                &directory,
+                "file",
+                1,
+                0,
+                1,
+                1,
+                &positions(),
+                &entry("empty-id"),
+                ""
+            ),
+            Err(Error::InvalidInput(_))
+        ));
+        for result in [
+            sync_practice_positions_in(&directory, "file", 1, 1, 1, &positions()),
+            sync_practice_positions_in(&directory, "file", 1, 0, 0, &positions()),
+            reset_practice_deck_in(&directory, "file", 1, 1, 1, &positions()),
+            reset_practice_deck_in(&directory, "file", 1, 0, 0, &positions()),
+            record_practice_review_in(
+                &directory,
+                "file",
+                1,
+                1,
+                1,
+                1,
+                &positions(),
+                &entry("stale-generation"),
+                "stale-generation",
+            ),
+            record_practice_review_in(
+                &directory,
+                "file",
+                1,
+                0,
+                99,
+                1,
+                &positions(),
+                &entry("stale-revision"),
+                "stale-revision",
+            ),
+        ] {
+            assert!(matches!(result, Err(Error::Conflict(_))));
+        }
+        assert!(matches!(
+            acknowledge_practice_orphans_in(&directory, "file", 1, 1, 0),
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(all_leaf_bytes(&directory), before);
+    }
+
+    #[test]
+    fn review_retry_ids_use_the_requested_revision_span() {
+        let (_temp, directory) = directory();
+        sync_practice_positions_in(&directory, "file", 1, 0, 0, &positions()).unwrap();
+        record_practice_review_in(
+            &directory,
+            "file",
+            1,
+            0,
+            1,
+            1,
+            &positions(),
+            &entry("first"),
+            "first",
+        )
+        .unwrap();
+        record_practice_review_in(
+            &directory,
+            "file",
+            1,
+            0,
+            2,
+            2,
+            &positions(),
+            &entry("second"),
+            "second",
+        )
+        .unwrap();
+        record_practice_review_in(
+            &directory,
+            "file",
+            1,
+            0,
+            3,
+            3,
+            &positions(),
+            &entry("third"),
+            "third",
+        )
+        .unwrap();
+
+        let before = all_leaf_bytes(&directory);
+        assert!(matches!(
+            record_practice_review_in(
+                &directory,
+                "file",
+                1,
+                0,
+                4,
+                1,
+                &positions(),
+                &entry("changed second"),
+                "second"
+            ),
+            Err(Error::InvalidInput(_))
+        ));
+        assert_eq!(all_leaf_bytes(&directory), before);
+
+        assert_eq!(
+            record_practice_review_in(
+                &directory,
+                "file",
+                1,
+                0,
+                4,
+                3,
+                &positions(),
+                &entry("fourth"),
+                "fourth"
+            )
+            .unwrap(),
+            5
+        );
+        assert_eq!(
+            load_practice_reviews_in(&directory, "file", 1, None, 10)
+                .unwrap()
+                .entries
+                .into_iter()
+                .map(|review| review.id)
+                .collect::<Vec<_>>(),
+            ["fourth", "third", "second", "first"]
+        );
+    }
+
+    #[test]
+    fn review_cursor_errors_and_pages_cross_shards_at_the_page_boundary() {
+        let (_temp, directory) = directory();
+        let hash = hash_deck("file", 1);
+        let mut envelope = new_positions("file", 1, vec![]);
+        envelope.applied_entries = 5;
+        write_positions(&directory, &hash, &envelope).unwrap();
+        for (ordinal, start, end) in [(0, 0, 2), (1, 2, 4), (2, 4, 5)] {
+            write_test_shard(
+                &directory,
+                "file",
+                1,
+                0,
+                ordinal,
+                (start..end)
+                    .map(|index| {
+                        test_review(
+                            &format!("id-{index}"),
+                            index + 1,
+                            serde_json::json!({"n": index}),
+                        )
+                    })
+                    .collect(),
+            );
+        }
+
+        assert!(matches!(
+            load_practice_reviews_in(&directory, "file", 1, Some(String::new()), 3),
+            Err(Error::InvalidInput(_))
+        ));
+        assert!(matches!(
+            load_practice_reviews_in(&directory, "file", 1, Some("malformed".to_owned()), 3),
+            Err(Error::InvalidInput(_))
+        ));
+        assert!(matches!(
+            load_practice_reviews_in(&directory, "file", 1, Some("0:99:0".to_owned()), 3),
+            Err(Error::InvalidInput(_))
+        ));
+        assert!(matches!(
+            load_practice_reviews_in(&directory, "file", 1, Some("1:0:0".to_owned()), 3),
+            Err(Error::Conflict(_))
+        ));
+        assert!(matches!(
+            load_practice_reviews_in(&directory, "file", 1, Some("0:2:2".to_owned()), 3),
+            Err(Error::InvalidInput(_))
+        ));
+        assert_eq!(
+            load_practice_reviews_in(&directory, "file", 1, None, 0).unwrap(),
+            PracticeReviewPage {
+                entries: vec![],
+                next_cursor: None,
+            }
+        );
+        let first_page = load_practice_reviews_in(&directory, "file", 1, None, 3).unwrap();
+        assert_eq!(
+            first_page
+                .entries
+                .iter()
+                .map(|review| review.id.as_str())
+                .collect::<Vec<_>>(),
+            ["id-4", "id-3", "id-2"]
+        );
+        assert_eq!(first_page.next_cursor.as_deref(), Some("0:0:2"));
+        let last_page =
+            load_practice_reviews_in(&directory, "file", 1, first_page.next_cursor, 3).unwrap();
+        assert_eq!(
+            last_page
+                .entries
+                .into_iter()
+                .map(|review| review.id)
+                .collect::<Vec<_>>(),
+            ["id-1", "id-0"]
+        );
+        assert_eq!(last_page.next_cursor, None);
+    }
+
+    #[test]
+    fn inventory_keeps_reset_marker_identity_without_reporting_damage() {
+        let (_temp, directory) = directory();
+        write_test_state(
+            &directory,
+            "reset-only",
+            1,
+            MigrationPhase::Reset,
+            &"0".repeat(64),
+        );
+
+        let inventory = list_practice_decks_in(&directory).unwrap();
+
+        assert_eq!(
+            inventory.decks,
+            vec![PracticeDeckIdentity {
+                file_id: "reset-only".to_owned(),
+                game: 1,
+            }]
+        );
+        assert!(inventory.anomalies.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn migration_refuses_non_regular_existing_generation_zero_shards() {
+        use std::os::unix::fs::symlink;
+
+        let (_temp, directory) = directory();
+        let hash = hash_deck("file", 1);
+        let document = legacy(&[serde_json::json!({"fen": "a"})], &[]);
+        let legacy_value: Value = serde_json::from_str(&document).unwrap();
+        write_test_state(
+            &directory,
+            "file",
+            1,
+            MigrationPhase::Migrating,
+            &digest_value(&legacy_value).unwrap(),
+        );
+        let target = directory.path().join("outside-migration-shard");
+        fs::write(&target, b"outside").unwrap();
+        let leaf = shard_leaf(&hash, 0, 0);
+        symlink(&target, directory.path().join(&leaf)).unwrap();
+
+        assert!(matches!(
+            migrate_practice_deck_in(&directory, "file", 1, &document),
+            Err(Error::InvalidInput(_))
+        ));
+        assert!(!directory.path().join(positions_leaf(&hash)).exists());
+        assert!(directory.path().join(&leaf).exists());
+        assert_eq!(fs::read(&target).unwrap(), b"outside");
+        assert_eq!(
+            read_state(&directory, &hash).unwrap().unwrap().phase,
+            MigrationPhase::Migrating
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn repair_reports_partial_removal_when_a_corrupt_shard_is_not_regular() {
+        use std::os::unix::fs::symlink;
+
+        let (_temp, directory) = directory();
+        sync_practice_positions_in(&directory, "file", 1, 0, 0, &positions()).unwrap();
+        let hash = hash_deck("file", 1);
+        let target = directory.path().join("outside-shard");
+        fs::write(&target, b"outside").unwrap();
+        let leaf = shard_leaf(&hash, 0, 0);
+        symlink(&target, directory.path().join(&leaf)).unwrap();
+
+        let error = repair_practice_deck_in(&directory, "file", 1).unwrap_err();
+        match error {
+            Error::PartialRemoval {
+                removed_entries,
+                cause,
+            } => {
+                assert_eq!(removed_entries, 1);
+                assert!(matches!(cause.as_ref(), Error::InvalidInput(_)));
+            }
+            other => panic!("expected partial removal, got {other:?}"),
+        }
+        assert!(!directory.path().join(positions_leaf(&hash)).exists());
+        assert!(directory.path().join(leaf).exists());
+        assert_eq!(fs::read(&target).unwrap(), b"outside");
+    }
+
+    #[test]
     fn paging_many_shards_returns_every_id_in_reverse_written_order() {
         let (_temp, directory) = directory();
         let hash = hash_deck("file", 1);
