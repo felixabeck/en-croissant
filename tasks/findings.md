@@ -9043,7 +9043,7 @@ Closed together with `f-20260922-04` and `f-20260914-27` by the plan recorded in
 
 ### `setFen` rebuilds the root but leaves `headers.fen` stale, so a later header edit restores the old start position
 
-* **ID:** f-20260914-27 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260914-27 · **Status:** handled · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** src/state/store/tree.ts:217 (`setFen`), and `setHeaders` which rebuilds the root from `headers.fen`
 * **Defect:** After `setFen` to a custom position (for example `8/8/8/8/8/8/4K3/7k b - - 0 23`), `headers.fen` still holds the previous start FEN. Editing any ordinary header through `setHeaders({...headers, event: "x"})` rebuilds the root from that stale FEN and erases the custom position and its moves.
 * **Why it matters:** The game tree silently loses the user's position on an unrelated header edit; `.claude/rules/chess-tree-semantics.md`.
