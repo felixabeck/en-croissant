@@ -667,7 +667,7 @@ function makeMove({
     clock,
     sound = true,
 }: {
-    state: TreeState;
+    state: TreeStoreState;
     move: Move;
     last: boolean;
     changePosition?: boolean;
@@ -723,6 +723,11 @@ function makeMove({
         });
         if (mainline) {
             moveNode.children.unshift(newMoveNode);
+            rebaseTrackedPaths(state, (target) => rebasePathAfterPrepend(target, position), {
+                position: state.position,
+                start: state.headers.start,
+                practicePath: state.practicePath,
+            });
         } else {
             moveNode.children.push(newMoveNode);
         }
@@ -786,6 +791,13 @@ function rebasePathAfterPromotion(target: number[], parent: number[], promotedIn
     const siblingIndex = rebased[parent.length];
     if (siblingIndex === promotedIndex) rebased[parent.length] = 0;
     else if (siblingIndex < promotedIndex) rebased[parent.length] += 1;
+    return rebased;
+}
+
+function rebasePathAfterPrepend(target: number[], parent: number[]): number[] {
+    if (target.length <= parent.length || !isPrefix(parent, target)) return target;
+    const rebased = [...target];
+    rebased[parent.length] += 1;
     return rebased;
 }
 

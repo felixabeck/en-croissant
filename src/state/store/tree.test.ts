@@ -1,5 +1,6 @@
 import { parseUci } from "chessops";
-import { INITIAL_FEN } from "chessops/fen";
+import { INITIAL_FEN, makeFen } from "chessops/fen";
+import { makeSan } from "chessops/san";
 import { expect, test } from "vitest";
 import {
     createNode,
@@ -8,6 +9,7 @@ import {
     getNodeAtPath,
     type TreeNode,
 } from "@/utils/treeReducer";
+import { positionFromFen } from "@/utils/chessops";
 import { createTreeStore } from "./tree";
 
 function node(name: string, children: TreeNode[] = []): TreeNode {
@@ -43,6 +45,43 @@ function nestedPracticePathStore() {
 
     const tree = defaultTree();
     tree.root.children = [node("a", grandchildren("a")), node("b", grandchildren("b"))];
+    return createTreeStore(undefined, tree);
+}
+
+function addMove(parent: TreeNode, uci: string): TreeNode {
+    const move = parseUci(uci);
+    const [position] = positionFromFen(parent.fen);
+    if (!move || !position) throw new Error(`Invalid fixture move: ${uci}`);
+    const san = makeSan(position, move);
+    if (san === "--") throw new Error(`Illegal fixture move: ${uci}`);
+    position.play(move);
+    const child = createNode({
+        fen: makeFen(position.toSetup()),
+        move,
+        san,
+        halfMoves: parent.halfMoves + 1,
+    });
+    parent.children.push(child);
+    return child;
+}
+
+function mainlinePrependStore() {
+    const tree = defaultTree();
+    const e4 = addMove(tree.root, "e2e4");
+    const d4 = addMove(tree.root, "d2d4");
+
+    for (const uci of ["e7e5", "c7c5", "e7e6", "c7c6"]) {
+        const reply = addMove(e4, uci);
+        const continuations = uci === "e7e5" ? ["g1f3", "f1c4", "b1c3"] : ["g1f3"];
+        for (const continuation of continuations) {
+            addMove(addMove(reply, continuation), "b8c6");
+        }
+    }
+
+    for (const uci of ["d7d5", "g8f6", "e7e6", "f7f5"]) {
+        addMove(addMove(d4, uci), "c2c4");
+    }
+
     return createTreeStore(undefined, tree);
 }
 
@@ -225,6 +264,194 @@ test.each(["delete", "promote"] as const)("a null practicePath stays null after 
     else store.getState().promoteVariation([0, 2]);
 
     expect(store.getState().practicePath).toBeNull();
+});
+
+test("a root mainline prepend rebases the repertoire start and practice path", () => {
+    const store = mainlinePrependStore();
+    store.getState().setStart([0]);
+    store.getState().setPracticePath([1, 0]);
+    const startNode = getNodeAtPath(store.getState().root, [0]);
+    const practiceNode = getNodeAtPath(store.getState().root, [1, 0]);
+
+    store.getState().makeMove({ payload: "c4", mainline: true, changePosition: false });
+
+    const state = store.getState();
+    expect(state.headers.start).toEqual([1]);
+    expect(getNodeAtPath(state.root, state.headers.start!)).toBe(startNode);
+    expect(state.practicePath).toEqual([2, 0]);
+    expect(getNodeAtPath(state.root, state.practicePath!)).toBe(practiceNode);
+    expect(state.position).toEqual([]);
+});
+
+test("a mainline prepend at depth one shifts a repertoire start at child index zero", () => {
+    const store = mainlinePrependStore();
+    store.getState().goToMove([0]);
+    store.getState().setStart([0, 0, 0]);
+    const startNode = getNodeAtPath(store.getState().root, [0, 0, 0]);
+
+    store.getState().makeMove({ payload: "d5", mainline: true, changePosition: false });
+
+    const state = store.getState();
+    expect(state.headers.start).toEqual([0, 1, 0]);
+    expect(getNodeAtPath(state.root, state.headers.start!)).toBe(startNode);
+});
+
+test("a mainline prepend rebases a practice path through a later child", () => {
+    const store = mainlinePrependStore();
+    store.getState().goToMove([0]);
+    store.getState().setPracticePath([0, 2, 0]);
+    const practiceNode = getNodeAtPath(store.getState().root, [0, 2, 0]);
+
+    store.getState().makeMove({ payload: "d5", mainline: true, changePosition: false });
+
+    const state = store.getState();
+    expect(state.practicePath).toEqual([0, 3, 0]);
+    expect(getNodeAtPath(state.root, state.practicePath!)).toBe(practiceNode);
+});
+
+test("a mainline prepend leaves a tracked path on another root branch unchanged", () => {
+    const store = mainlinePrependStore();
+    store.getState().goToMove([0]);
+    store.getState().setStart([1, 1, 0]);
+    const startNode = getNodeAtPath(store.getState().root, [1, 1, 0]);
+
+    store.getState().makeMove({ payload: "d5", mainline: true, changePosition: false });
+
+    const state = store.getState();
+    expect(state.headers.start).toEqual([1, 1, 0]);
+    expect(getNodeAtPath(state.root, state.headers.start!)).toBe(startNode);
+});
+
+test("a mainline prepend leaves a practice path on the insertion parent unchanged", () => {
+    const store = mainlinePrependStore();
+    store.getState().goToMove([0]);
+    store.getState().setPracticePath([0]);
+    const practiceSan = getNodeAtPath(store.getState().root, [0]).san;
+
+    store.getState().makeMove({ payload: "d5", mainline: true, changePosition: false });
+
+    const state = store.getState();
+    expect(state.practicePath).toEqual([0]);
+    // The insertion parent is on the mutated chain, which Immer clones, so identity cannot hold.
+    expect(getNodeAtPath(state.root, state.practicePath!).san).toBe(practiceSan);
+});
+
+test("a mainline prepend leaves absent start and null practice paths absent", () => {
+    const store = mainlinePrependStore();
+    store.getState().goToMove([0]);
+    store.getState().setPracticePath(null);
+
+    store.getState().makeMove({ payload: "d5", mainline: true, changePosition: false });
+
+    expect(store.getState().headers.start).toBeUndefined();
+    expect(store.getState().practicePath).toBeNull();
+});
+
+test("a mainline move already present among the children does not rebase tracked paths", () => {
+    const store = mainlinePrependStore();
+    store.getState().goToMove([0]);
+    store.getState().setStart([0, 0, 0]);
+    const startNode = getNodeAtPath(store.getState().root, [0, 0, 0]);
+
+    store.getState().makeMove({ payload: "e5", mainline: true, changePosition: false });
+
+    const state = store.getState();
+    expect(state.headers.start).toEqual([0, 0, 0]);
+    expect(getNodeAtPath(state.root, state.headers.start!)).toBe(startNode);
+});
+
+test("a mainline prepend shifts tracked paths at a deeper insertion depth", () => {
+    const store = mainlinePrependStore();
+    store.getState().goToMove([0, 0]);
+    store.getState().setPracticePath([0, 0, 2, 0]);
+    const practiceNode = getNodeAtPath(store.getState().root, [0, 0, 2, 0]);
+
+    store.getState().makeMove({ payload: "d4", mainline: true, changePosition: false });
+
+    const state = store.getState();
+    expect(state.practicePath).toEqual([0, 0, 3, 0]);
+    expect(getNodeAtPath(state.root, state.practicePath!)).toBe(practiceNode);
+});
+
+test("a non-mainline append leaves tracked paths unchanged", () => {
+    const store = mainlinePrependStore();
+    store.getState().goToMove([0]);
+    store.getState().setStart([0, 0, 0]);
+    store.getState().setPracticePath([0, 2, 0]);
+    const startNode = getNodeAtPath(store.getState().root, [0, 0, 0]);
+    const practiceNode = getNodeAtPath(store.getState().root, [0, 2, 0]);
+
+    store.getState().makeMove({ payload: "d5", changePosition: false });
+
+    const state = store.getState();
+    expect(state.headers.start).toEqual([0, 0, 0]);
+    expect(getNodeAtPath(state.root, state.headers.start!)).toBe(startNode);
+    expect(state.practicePath).toEqual([0, 2, 0]);
+    expect(getNodeAtPath(state.root, state.practicePath!)).toBe(practiceNode);
+});
+
+test("a mainline prepend with changePosition selects the new first child", () => {
+    const store = mainlinePrependStore();
+    store.getState().goToMove([0]);
+
+    store.getState().makeMove({ payload: "d5", mainline: true });
+
+    const state = store.getState();
+    expect(state.position).toEqual([0, 0]);
+    expect(getNodeAtPath(state.root, state.position).san).toBe("d5");
+});
+
+test("a root mainline prepend selects the new move and rebases the old start", () => {
+    const store = mainlinePrependStore();
+    store.getState().setStart([0]);
+    const startNode = getNodeAtPath(store.getState().root, [0]);
+
+    store.getState().makeMove({ payload: "c4", mainline: true });
+
+    const state = store.getState();
+    expect(state.position).toEqual([0]);
+    expect(getNodeAtPath(state.root, state.position).san).toBe("c4");
+    expect(state.headers.start).toEqual([1]);
+    expect(getNodeAtPath(state.root, state.headers.start!)).toBe(startNode);
+});
+
+test("makeMoves rebases once for the first prepend and selects the final move", () => {
+    const store = mainlinePrependStore();
+    store.getState().goToMove([0]);
+    store.getState().setStart([0, 0, 0]);
+    const startNode = getNodeAtPath(store.getState().root, [0, 0, 0]);
+
+    store.getState().makeMoves({ payload: ["d5", "Nf3"], mainline: true });
+
+    const state = store.getState();
+    expect(state.headers.start).toEqual([0, 1, 0]);
+    expect(getNodeAtPath(state.root, state.headers.start!)).toBe(startNode);
+    expect(state.position).toEqual([0, 0, 0]);
+    expect(getNodeAtPath(state.root, state.position).san).toBe("Nf3");
+});
+
+test("deleteMove rebases the cursor through a later sibling by identity", () => {
+    const store = nestedPracticePathStore();
+    store.getState().goToMove([0, 3, 0]);
+    const nodeBefore = getNodeAtPath(store.getState().root, [0, 3, 0]);
+
+    store.getState().deleteMove([0, 2]);
+
+    const state = store.getState();
+    expect(state.position).toEqual([0, 2, 0]);
+    expect(getNodeAtPath(state.root, state.position)).toBe(nodeBefore);
+});
+
+test("deleteMove rebases the repertoire start through a later sibling by identity", () => {
+    const store = nestedPracticePathStore();
+    store.getState().setStart([0, 3, 0]);
+    const nodeBefore = getNodeAtPath(store.getState().root, [0, 3, 0]);
+
+    store.getState().deleteMove([0, 2]);
+
+    const state = store.getState();
+    expect(state.headers.start).toEqual([0, 2, 0]);
+    expect(getNodeAtPath(state.root, state.headers.start!)).toBe(nodeBefore);
 });
 
 test("deleting a sibling rebases deep cursor and repertoire start to the same nodes", () => {
