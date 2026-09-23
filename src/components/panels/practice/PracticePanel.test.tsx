@@ -32,7 +32,12 @@ const fixtures = vi.hoisted(() => ({
   setPracticeStats: vi.fn(),
   setPracticeMoveController: vi.fn(),
   buildFromTree: vi.fn(() => []),
-  syncDeck: vi.fn((..._args: unknown[]) => ({ added: 0, positions: [] as unknown[], removed: 0 })),
+  syncDeck: vi.fn((..._args: unknown[]) => ({
+    added: 0,
+    positions: [] as unknown[],
+    removed: 0,
+    updated: 0,
+  })),
   getCardForReview: vi.fn(),
   updateCardPerformance: vi.fn(),
   loadPracticeReviews: vi.fn(),
@@ -260,7 +265,9 @@ beforeEach(() => {
   fixtures.autoDifficulty = "none";
   fixtures.getCardForReview.mockReset().mockReturnValue(null);
   fixtures.updateCardPerformance.mockReset();
-  fixtures.syncDeck.mockReset().mockReturnValue({ added: 0, positions: [], removed: 0 });
+  fixtures.syncDeck
+    .mockReset()
+    .mockReturnValue({ added: 0, positions: [], removed: 0, updated: 0 });
   fixtures.tree.headers = { orientation: "white", start: [] };
   fixtures.practiceState = { phase: "idle" };
   fixtures.practiceStats = {
@@ -357,7 +364,7 @@ test("re-diffs the same tree once a new hydration lands", async () => {
   // it); the sync diffed from it is dropped while the deck loads, so the hydrated deck must be
   // diffed again against the same tree.
   const extended = [position("in-repertoire"), position("added-by-the-new-tree")];
-  fixtures.syncDeck.mockReturnValue({ added: 1, positions: extended, removed: 0 });
+  fixtures.syncDeck.mockReturnValue({ added: 1, positions: extended, removed: 0, updated: 0 });
   fixtures.setDeck.mockClear();
 
   fixtures.deck = deck({ positions: [], status: "loading" });
@@ -381,6 +388,18 @@ test("re-diffs an unchanged tree when the practised side or start changes", asyn
   await rerenderPracticePanel();
   expect(fixtures.syncDeck).toHaveBeenCalledTimes(2);
   expect(fixtures.syncDeck.mock.calls[1][3]).toEqual([0]);
+});
+
+test("persists a changed answer even when no position was added or removed", async () => {
+  const promoted = [{ ...position("in-repertoire"), answer: "d4" }];
+  fixtures.syncDeck.mockReturnValue({ added: 0, positions: promoted, removed: 0, updated: 1 });
+  fixtures.setDeck.mockClear();
+  fixtures.tree.root = {};
+  await rerenderPracticePanel();
+
+  expect(fixtures.setDeck).toHaveBeenCalledTimes(1);
+  const update = fixtures.setDeck.mock.calls[0][0] as (value: unknown) => { positions: unknown };
+  expect(update(fixtures.deck).positions).toBe(promoted);
 });
 
 test("a committed rating does not re-diff an unchanged tree", async () => {

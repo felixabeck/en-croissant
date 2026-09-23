@@ -128,7 +128,7 @@ export function syncDeck(
     tree: TreeNode,
     color: "white" | "black",
     start: number[],
-): { positions: Position[]; added: number; removed: number } {
+): { positions: Position[]; added: number; removed: number; updated: number } {
     const freshPositions = buildFromTree(tree, color, start);
 
     const existingByFen = new Map<string, Position>();
@@ -137,10 +137,14 @@ export function syncDeck(
     }
 
     let added = 0;
+    // A retained card whose expected answer moved (e.g. a promoted variation) is a change to persist
+    // even though no position was added or removed.
+    let updated = 0;
     const merged: Position[] = [];
     for (const pos of freshPositions) {
         const prev = existingByFen.get(getBoardState(pos.fen));
         if (prev) {
+            if (prev.answer !== pos.answer) updated++;
             merged.push({ ...prev, answer: pos.answer });
         } else {
             merged.push(pos);
@@ -151,7 +155,7 @@ export function syncDeck(
     const freshFens = new Set(freshPositions.map((p) => getBoardState(p.fen)));
     const removed = existing.filter((p) => !freshFens.has(getBoardState(p.fen))).length;
 
-    return { positions: merged, added, removed };
+    return { positions: merged, added, removed, updated };
 }
 
 export function getNextReviewTimes(card: Card): Record<Grade, Date> {

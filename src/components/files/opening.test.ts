@@ -44,7 +44,7 @@ test("deck synchronization preserves a card across clock-only FEN changes", () =
     refreshedTree.children.push(practiceNode("8/8/8/8/8/8/4P3/K6k w - - 30 44", "e6"));
     const result = syncDeck([existing], refreshedTree, "white", []);
 
-    expect(result).toMatchObject({ added: 0, removed: 0 });
+    expect(result).toMatchObject({ added: 0, removed: 0, updated: 1 });
     expect(result.positions[0].card.reps).toBe(4);
     expect(result.positions[0].answer).toBe("e6");
 });
