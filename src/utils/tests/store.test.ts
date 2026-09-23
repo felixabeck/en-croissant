@@ -1015,8 +1015,7 @@ test("practice mode: goToNext does not advance from an off-path cursor", () => {
 });
 
 test("practice mode: goToNext does not use transposition fallback past the drill path", () => {
-    const sharedFen =
-        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1";
+    const sharedFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1";
     const target: TreeNode = {
         ...defaultTree().root,
         fen: sharedFen,
