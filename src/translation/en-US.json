@@ -203,6 +203,7 @@
     "Board.Practice.HardHint": "Took effort to recall (2)",
     "Board.Practice.HowDifficult": "How difficult was this?",
     "Board.Practice.InventoryDamaged": "Practice data for {{decks}} is damaged.",
+    "Board.Practice.InventoryUnreadable": "Practice data for {{decks}} could not be read.",
     "Board.Practice.KeyboardHint": "Press 1-4 to rate quickly",
     "Board.Practice.Loading": "Loading practice deck…",
     "Board.Practice.LoadMore": "Load more",

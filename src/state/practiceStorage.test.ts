@@ -282,6 +282,12 @@ describe("the real practice deck atom", () => {
                         fileId: "repaired",
                         game: 0,
                     },
+                    {
+                        kind: "StrandedMigration",
+                        leaf: "repaired-state.json",
+                        fileId: "repaired",
+                        game: 0,
+                    },
                 ],
             })
             .mockResolvedValue({ decks: [], anomalies: [] });
@@ -296,6 +302,12 @@ describe("the real practice deck atom", () => {
         const result = await ensurePracticeMigration();
 
         expect(native.migrate).toHaveBeenCalledTimes(2);
+        expect(native.migrate).toHaveBeenLastCalledWith(
+            "repaired",
+            0,
+            JSON.stringify(legacyData()),
+        );
+        expect(native.list).toHaveBeenCalledTimes(2);
         expect(result.inventory?.anomalies).toEqual([]);
         expect(result.outcomes).toEqual([
             expect.objectContaining({
@@ -337,6 +349,35 @@ describe("the real practice deck atom", () => {
         mounted.unsubscribe();
     });
 
+    test("an unreadable deck with retained legacy data stays non-repairable after migration I/O failure", async () => {
+        localStorage.setItem("deck-unreadable-0", JSON.stringify(legacyData()));
+        native.list.mockResolvedValue({
+            decks: [{ fileId: "unreadable", game: 0 }],
+            anomalies: [
+                {
+                    kind: "Unreadable",
+                    leaf: "unreadable-positions.json",
+                    fileId: "unreadable",
+                    game: 0,
+                },
+            ],
+        });
+        native.migrate.mockRejectedValueOnce({
+            tag: "backend-error",
+            category: "io",
+            message: "practice read failed",
+        });
+
+        const result = await runPracticeMigrationPass();
+        const mounted = mountDeck("unreadable", 0);
+        await vi.waitFor(() => expect(mounted.store.get(mounted.atom).status).toBe("read-failed"));
+
+        expect(result.outcomes[0]?.status).toBe("failed");
+        expect(mounted.store.get(mounted.atom).repairable).toBe(false);
+        expect(native.repair).not.toHaveBeenCalled();
+        mounted.unsubscribe();
+    });
+
     test("adopts the committed reset revision after partial removal", async () => {
         const initial = position();
         const resetPosition = position(sameBoardDifferentFen);
@@ -358,6 +399,35 @@ describe("the real practice deck atom", () => {
         expect(value.generation).toBe(3);
         expect(value.error?.category).toBe("applied-despite-error");
         mounted.unsubscribe();
+    });
+
+    test("a reset committed before partial-removal still clears identity failure state", async () => {
+        native.load.mockResolvedValue(snapshot([position()], { revision: 4, generation: 2 }));
+        const mounted = mountDeck("file-a", 0);
+        await waitForReady(mounted.store, mounted.atom);
+
+        localStorage.setItem("deck-file-a-0", JSON.stringify(legacyData()));
+        native.list.mockResolvedValue({ decks: [], anomalies: [] });
+        native.migrate.mockRejectedValueOnce({
+            tag: "backend-error",
+            category: "invalid-input",
+            message: "damaged native deck",
+        });
+        expect((await runPracticeMigrationPass()).outcomes[0]?.status).toBe("failed");
+        native.reset.mockRejectedValueOnce({
+            tag: "backend-error",
+            category: "partial-removal",
+            message: "partially removed: review cleanup",
+        });
+
+        await mounted.store.set(mounted.atom, { type: "reset", positions: [position()] });
+        expect(mounted.store.get(mounted.atom).error?.category).toBe("applied-despite-error");
+        mounted.unsubscribe();
+
+        const reopened = mountDeck("file-a", 0);
+        await waitForReady(reopened.store, reopened.atom);
+        expect(reopened.store.get(reopened.atom).positions).toEqual([position()]);
+        reopened.unsubscribe();
     });
 
     test("merges a committed rating into a later debounced sync", async () => {

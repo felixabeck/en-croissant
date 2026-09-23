@@ -52,7 +52,7 @@ export function practiceSessionReducer(
 export function emptyPracticeStats(): PracticeSessionStats {
     return {
         mode: "anki",
-        remainingPositions: [],
+        remainingPositionKeys: [],
         correct: 0,
         incorrect: 0,
         streak: 0,

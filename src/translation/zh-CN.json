@@ -202,6 +202,7 @@
     "Board.Practice.HardHint": "费劲才想起来 (2)",
     "Board.Practice.HowDifficult": "这个难度如何？",
     "Board.Practice.InventoryDamaged": "{{decks}} 的练习数据已损坏。",
+    "Board.Practice.InventoryUnreadable": "无法读取 {{decks}} 的练习数据。",
     "Board.Practice.KeyboardHint": "按 1-4 快速评分",
     "Board.Practice.Loading": "正在加载练习牌组…",
     "Board.Practice.LoadMore": "加载更多",

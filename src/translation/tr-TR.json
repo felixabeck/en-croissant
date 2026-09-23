@@ -203,6 +203,7 @@
     "Board.Practice.HardHint": "Hatırlamak çaba gerektirdi (2)",
     "Board.Practice.HowDifficult": "Bu ne kadar zordu?",
     "Board.Practice.InventoryDamaged": "{{decks}} için çalışma verileri hasarlı.",
+    "Board.Practice.InventoryUnreadable": "{{decks}} için çalışma verileri okunamadı.",
     "Board.Practice.KeyboardHint": "Hızlı değerlendirmek için 1-4 tuşlarına basın",
     "Board.Practice.Loading": "Çalışma destesi yükleniyor…",
     "Board.Practice.LoadMore": "Daha fazla yükle",

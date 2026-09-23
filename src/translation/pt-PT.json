@@ -204,6 +204,7 @@
     "Board.Practice.HardHint": "Exigiu esforço para recordar (2)",
     "Board.Practice.HowDifficult": "Qual foi a dificuldade?",
     "Board.Practice.InventoryDamaged": "Os dados de prática de {{decks}} estão danificados.",
+    "Board.Practice.InventoryUnreadable": "Não foi possível ler os dados de prática de {{decks}}.",
     "Board.Practice.KeyboardHint": "Prima 1–4 para classificar rapidamente",
     "Board.Practice.Loading": "A carregar o baralho de prática…",
     "Board.Practice.LoadMore": "Carregar mais",

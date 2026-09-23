@@ -755,7 +755,7 @@ export const practiceMoveControllerAtom = tabValue(practiceMoveControllerFamily)
 
 export type PracticeSessionStats = {
     mode: "anki" | "full";
-    remainingPositions: string[];
+    remainingPositionKeys: string[];
     correct: number;
     incorrect: number;
     streak: number;
@@ -765,7 +765,7 @@ export type PracticeSessionStats = {
 const practiceSessionStatsFamily = atomFamily((_tab: string) =>
     atom<PracticeSessionStats>({
         mode: "anki",
-        remainingPositions: [],
+        remainingPositionKeys: [],
         correct: 0,
         incorrect: 0,
         streak: 0,

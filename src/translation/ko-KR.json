@@ -202,6 +202,7 @@
     "Board.Practice.HardHint": "기억해 내는 데 애를 먹었어요 (2)",
     "Board.Practice.HowDifficult": "이 수는 얼마나 어려웠나요?",
     "Board.Practice.InventoryDamaged": "{{decks}}의 연습 데이터가 손상되었습니다.",
+    "Board.Practice.InventoryUnreadable": "{{decks}}의 연습 데이터를 읽을 수 없습니다.",
     "Board.Practice.KeyboardHint": "난이도를 빠르게 평가하려면 1~4를 누르세요",
     "Board.Practice.Loading": "연습 덱을 불러오는 중…",
     "Board.Practice.LoadMore": "더 불러오기",

@@ -205,6 +205,7 @@
     "Board.Practice.HardHint": "Wymagało wysiłku, aby sobie przypomnieć (2)",
     "Board.Practice.HowDifficult": "Jak trudne to było?",
     "Board.Practice.InventoryDamaged": "Dane ćwiczeń dla {{decks}} są uszkodzone.",
+    "Board.Practice.InventoryUnreadable": "Nie udało się odczytać danych ćwiczeń dla {{decks}}.",
     "Board.Practice.KeyboardHint": "Naciśnij 1–4, aby szybko ocenić",
     "Board.Practice.Loading": "Wczytywanie talii ćwiczeń…",
     "Board.Practice.LoadMore": "Wczytaj więcej",

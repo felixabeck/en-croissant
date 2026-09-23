@@ -205,6 +205,7 @@
     "Board.Practice.HardHint": "Спатрэбіліся намаганні, каб успомніць (2)",
     "Board.Practice.HowDifficult": "Наколькі гэта было складана?",
     "Board.Practice.InventoryDamaged": "Даныя трэніроўкі для {{decks}} пашкоджаны.",
+    "Board.Practice.InventoryUnreadable": "Даныя трэніроўкі для {{decks}} не ўдалося прачытаць.",
     "Board.Practice.KeyboardHint": "Націсніце 1–4 для хуткай ацэнкі",
     "Board.Practice.Loading": "Загрузка кало́ды трэніроўкі…",
     "Board.Practice.LoadMore": "Загрузіць яшчэ",

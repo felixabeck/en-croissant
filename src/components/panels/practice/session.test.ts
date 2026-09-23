@@ -138,7 +138,7 @@ describe("practiceSessionReducer", () => {
         expect(idlePracticeSession(23)).toEqual({ phase: "idle", token: 23 });
         expect(emptyPracticeStats()).toEqual({
             mode: "anki",
-            remainingPositions: [],
+            remainingPositionKeys: [],
             correct: 0,
             incorrect: 0,
             streak: 0,

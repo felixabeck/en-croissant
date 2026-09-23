@@ -205,6 +205,7 @@
     "Board.Practice.HardHint": "Потребовалось усилие, чтобы вспомнить (2)",
     "Board.Practice.HowDifficult": "Насколько это было сложно?",
     "Board.Practice.InventoryDamaged": "Данные для тренировки {{decks}} повреждены.",
+    "Board.Practice.InventoryUnreadable": "Не удалось прочитать данные для тренировки {{decks}}.",
     "Board.Practice.KeyboardHint": "Нажмите 1–4 для быстрой оценки",
     "Board.Practice.Loading": "Загрузка колоды практики…",
     "Board.Practice.LoadMore": "Загрузить ещё",

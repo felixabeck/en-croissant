@@ -203,6 +203,7 @@
     "Board.Practice.HardHint": "Mit Mühe erinnert (2)",
     "Board.Practice.HowDifficult": "Wie schwierig war das?",
     "Board.Practice.InventoryDamaged": "Trainingsdaten für {{decks}} sind beschädigt.",
+    "Board.Practice.InventoryUnreadable": "Trainingsdaten für {{decks}} konnten nicht gelesen werden.",
     "Board.Practice.KeyboardHint": "Drücke 1–4 für eine schnelle Bewertung",
     "Board.Practice.Loading": "Trainingsdeck wird geladen …",
     "Board.Practice.LoadMore": "Mehr laden",

@@ -204,6 +204,7 @@
     "Board.Practice.HardHint": "Molto sforzo necessario (2)",
     "Board.Practice.HowDifficult": "Quanto era difficile?",
     "Board.Practice.InventoryDamaged": "I dati di pratica di {{decks}} sono danneggiati.",
+    "Board.Practice.InventoryUnreadable": "Impossibile leggere i dati di pratica di {{decks}}.",
     "Board.Practice.KeyboardHint": "Premi un tasto da 1 a 4 per una rapida valutazione",
     "Board.Practice.Loading": "Caricamento del mazzo di allenamento…",
     "Board.Practice.LoadMore": "Carica altro",

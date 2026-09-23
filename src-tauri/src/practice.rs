@@ -577,6 +577,21 @@ fn read_positions(
     hash: &str,
 ) -> Result<Option<PositionsEnvelope>, Error> {
     let leaf = positions_leaf(hash);
+    #[cfg(test)]
+    let inject_io_failure = PRACTICE_POSITIONS_READ_IO_FAILURE_HOOK.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.as_deref() == Some(hash) {
+            slot.take().is_some()
+        } else {
+            false
+        }
+    });
+    #[cfg(test)]
+    if inject_io_failure {
+        return Err(Error::Io(Box::new(std::io::Error::other(
+            "injected positions read failure",
+        ))));
+    }
     let Some(mut envelope) = read_json::<PositionsEnvelope>(
         directory,
         &leaf,
@@ -1715,7 +1730,11 @@ pub(crate) fn repair_practice_deck_in(
             }
             remove(leaf)?;
         }
-        if invalid_state {
+        let migration_never_committed = state
+            .as_ref()
+            .is_some_and(|state| state.phase == MigrationPhase::Migrating);
+        if invalid_state || migration_never_committed {
+            // Retained legacy data remains eligible when this migration marker is removed.
             remove(&state_leaf(&hash))?;
         } else if let Some(mut state) = state {
             state.phase = MigrationPhase::Reset;
@@ -2270,6 +2289,7 @@ thread_local! {
     static RECORD_AFTER_APPEND_HOOK: std::cell::RefCell<Option<RecordAfterAppendHook>> = const { std::cell::RefCell::new(None) };
     static MIGRATION_BEFORE_READBACK_HOOK: std::cell::RefCell<Option<MigrationHook>> = const { std::cell::RefCell::new(None) };
     static MIGRATION_BEFORE_POSITIONS_HOOK: std::cell::RefCell<Option<MigrationHook>> = const { std::cell::RefCell::new(None) };
+    static PRACTICE_POSITIONS_READ_IO_FAILURE_HOOK: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -2435,6 +2455,32 @@ mod tests {
             validation_failure_kind(&damaged),
             PracticeStoreAnomalyKind::DamagedDeck
         );
+    }
+
+    #[test]
+    fn inventory_keeps_identity_when_positions_read_fails_with_io() {
+        let (_temp, directory) = directory();
+        sync_practice_positions_in(&directory, "file", 1, 0, 0, &positions()).unwrap();
+        write_test_state(
+            &directory,
+            "file",
+            1,
+            MigrationPhase::Migrating,
+            &"0".repeat(64),
+        );
+        let hash = hash_deck("file", 1);
+        PRACTICE_POSITIONS_READ_IO_FAILURE_HOOK.with(|slot| {
+            *slot.borrow_mut() = Some(hash.clone());
+        });
+
+        let inventory = list_practice_decks_in(&directory).unwrap();
+
+        assert!(inventory.anomalies.iter().any(|anomaly| {
+            anomaly.kind == PracticeStoreAnomalyKind::Unreadable
+                && anomaly.leaf == positions_leaf(&hash)
+                && anomaly.file_id.as_deref() == Some("file")
+                && anomaly.game == Some(1)
+        }));
     }
 
     fn test_review(id: &str, rev: u32, value: Value) -> ReviewShardEntry {
@@ -4078,13 +4124,9 @@ mod tests {
         assert!(load_practice_deck_in(&directory, "stranded", 1)
             .unwrap()
             .is_none());
-        assert_eq!(
-            read_state(&directory, &hash_deck("stranded", 1))
-                .unwrap()
-                .unwrap()
-                .phase,
-            MigrationPhase::Reset
-        );
+        assert!(read_state(&directory, &hash_deck("stranded", 1))
+            .unwrap()
+            .is_none());
 
         let malformed_hash = hash_deck("malformed", 1);
         fs::write(
@@ -4168,6 +4210,78 @@ mod tests {
     }
 
     #[test]
+    fn repairing_migrating_state_reimports_the_retained_legacy_history() {
+        let (_temp, directory) = directory();
+        let legacy_document = legacy(
+            &[serde_json::json!({"fen": "legacy-position"})],
+            &[serde_json::json!({"fen": "legacy-review", "rating": 3})],
+        );
+        let legacy_value: Value = serde_json::from_str(&legacy_document).unwrap();
+        let legacy_digest = digest_value(&legacy_value).unwrap();
+        write_test_state(
+            &directory,
+            "file",
+            1,
+            MigrationPhase::Migrating,
+            &legacy_digest,
+        );
+        write_test_shard(
+            &directory,
+            "file",
+            1,
+            0,
+            0,
+            vec![test_review(
+                "interrupted",
+                1,
+                serde_json::json!({"fen": "partial"}),
+            )],
+        );
+
+        repair_practice_deck_in(&directory, "file", 1).unwrap();
+        assert!(read_state(&directory, &hash_deck("file", 1))
+            .unwrap()
+            .is_none());
+        let migrated = migrate_practice_deck_in(&directory, "file", 1, &legacy_document).unwrap();
+
+        assert_eq!(migrated.status, PracticeMigrationStatus::Migrated);
+        assert_eq!(migrated.entries, 1);
+        assert_eq!(migrated.positions, 1);
+        let page = load_practice_reviews_in(&directory, "file", 1, None, 10).unwrap();
+        assert_eq!(page.entries.len(), 1);
+        assert!(page.entries[0].entry.contains("legacy-review"));
+    }
+
+    #[test]
+    fn repairing_reset_state_keeps_legacy_migration_held() {
+        let (_temp, directory) = directory();
+        let legacy_document = legacy(&[serde_json::json!({"fen": "legacy"})], &[]);
+        write_test_state(
+            &directory,
+            "file",
+            1,
+            MigrationPhase::Reset,
+            &"0".repeat(64),
+        );
+
+        repair_practice_deck_in(&directory, "file", 1).unwrap();
+
+        assert_eq!(
+            read_state(&directory, &hash_deck("file", 1))
+                .unwrap()
+                .unwrap()
+                .phase,
+            MigrationPhase::Reset
+        );
+        assert_eq!(
+            migrate_practice_deck_in(&directory, "file", 1, &legacy_document)
+                .unwrap()
+                .status,
+            PracticeMigrationStatus::AlreadyMigrated
+        );
+    }
+
+    #[test]
     fn repair_maps_state_write_failure_after_deletions_to_partial_removal() {
         let (_temp, directory) = directory();
         let hash = hash_deck("file", 1);
@@ -4176,7 +4290,7 @@ mod tests {
             &directory,
             "file",
             1,
-            MigrationPhase::Migrating,
+            MigrationPhase::Migrated,
             &"0".repeat(64),
         );
         write_test_shard(

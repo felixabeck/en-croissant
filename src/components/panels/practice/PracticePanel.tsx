@@ -270,10 +270,13 @@ function PracticePanel() {
     (stats?: Partial<PracticeSessionStats>) => {
       const currentDeck = deckRef.current;
       const currentStats = { ...sessionStatsRef.current, ...stats };
-      if (currentDeck.positions.length === 0) return;
+      if (currentDeck.positions.length === 0) {
+        completePracticeSession(currentStats);
+        return;
+      }
 
       const currentMode = currentStats.mode;
-      let remaining = currentStats.remainingPositions;
+      let remaining = currentStats.remainingPositionKeys;
 
       let card: (typeof currentDeck.positions)[0] | null | undefined;
 
@@ -285,8 +288,8 @@ function PracticePanel() {
           if (card) break;
           remaining = remaining.slice(1);
         }
-        if (remaining.length !== currentStats.remainingPositions.length) {
-          const nextStats = { ...currentStats, remainingPositions: remaining };
+        if (remaining.length !== currentStats.remainingPositionKeys.length) {
+          const nextStats = { ...currentStats, remainingPositionKeys: remaining };
           sessionStatsRef.current = nextStats;
           setSessionStats(nextStats);
           Object.assign(currentStats, nextStats);
@@ -309,7 +312,7 @@ function PracticePanel() {
         });
         const nextStats =
           currentMode === "full"
-            ? { ...currentStats, remainingPositions: remaining.slice(1) }
+            ? { ...currentStats, remainingPositionKeys: remaining.slice(1) }
             : currentStats;
         sessionStatsRef.current = nextStats;
         setSessionStats(nextStats);
@@ -365,10 +368,10 @@ function PracticePanel() {
       const latestStats = sessionStatsRef.current;
       const nextStats = {
         ...latestStats,
-        remainingPositions:
+        remainingPositionKeys:
           latestStats.mode === "full"
-            ? latestStats.remainingPositions.slice(1)
-            : latestStats.remainingPositions,
+            ? latestStats.remainingPositionKeys.slice(1)
+            : latestStats.remainingPositionKeys,
         correct: latestStats.correct + 1,
         streak: latestStats.streak + 1,
         bestStreak: Math.max(latestStats.bestStreak, latestStats.streak + 1),
@@ -398,7 +401,7 @@ function PracticePanel() {
             const latestStats = sessionStatsRef.current;
             const nextStats = {
               ...latestStats,
-              remainingPositions: latestStats.remainingPositions.slice(1),
+              remainingPositionKeys: latestStats.remainingPositionKeys.slice(1),
               correct: latestStats.correct + 1,
               streak: latestStats.streak + 1,
               bestStreak: Math.max(latestStats.bestStreak, latestStats.streak + 1),
@@ -451,7 +454,7 @@ function PracticePanel() {
           sessionStatsRef.current.mode === "full"
             ? {
                 ...sessionStatsRef.current,
-                remainingPositions: sessionStatsRef.current.remainingPositions.filter(
+                remainingPositionKeys: sessionStatsRef.current.remainingPositionKeys.filter(
                   (key) => key !== positionKey,
                 ),
               }
@@ -543,7 +546,7 @@ function PracticePanel() {
     setCompletedSummary(null);
     const stats: Partial<PracticeSessionStats> = {
       mode: "anki",
-      remainingPositions: [],
+      remainingPositionKeys: [],
       correct: 0,
       incorrect: 0,
       streak: 0,
@@ -558,7 +561,7 @@ function PracticePanel() {
     const positionKeys = deckRef.current.positions.map((position) => getBoardState(position.fen));
     const stats: Partial<PracticeSessionStats> = {
       mode: "full",
-      remainingPositions: positionKeys,
+      remainingPositionKeys: positionKeys,
       correct: 0,
       incorrect: 0,
       streak: 0,
@@ -570,9 +573,9 @@ function PracticePanel() {
 
   function skipCard() {
     const latestStats = sessionStatsRef.current;
-    if (latestStats.mode === "full" && latestStats.remainingPositions.length > 0) {
-      const remainingPositions = latestStats.remainingPositions.slice(1);
-      const nextStats = { ...latestStats, remainingPositions };
+    if (latestStats.mode === "full" && latestStats.remainingPositionKeys.length > 0) {
+      const remainingPositionKeys = latestStats.remainingPositionKeys.slice(1);
+      const nextStats = { ...latestStats, remainingPositionKeys };
       sessionStatsRef.current = nextStats;
       setSessionStats(nextStats);
       newPractice(nextStats);

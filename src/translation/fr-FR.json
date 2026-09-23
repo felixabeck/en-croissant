@@ -204,6 +204,7 @@
     "Board.Practice.HardHint": "J'ai dû faire un effort pour m'en souvenir (2)",
     "Board.Practice.HowDifficult": "C'était difficile à quel point ?",
     "Board.Practice.InventoryDamaged": "Les données d’entraînement de {{decks}} sont endommagées.",
+    "Board.Practice.InventoryUnreadable": "Impossible de lire les données d’entraînement de {{decks}}.",
     "Board.Practice.KeyboardHint": "Appuyez sur les touches 1 à 4 pour noter rapidement",
     "Board.Practice.Loading": "Chargement du paquet d’entraînement…",
     "Board.Practice.LoadMore": "Charger plus",

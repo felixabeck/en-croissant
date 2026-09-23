@@ -203,6 +203,7 @@
     "Board.Practice.HardHint": "Krevde anstrengelse å huske (2)",
     "Board.Practice.HowDifficult": "Hvor vanskelig var dette?",
     "Board.Practice.InventoryDamaged": "Øvingsdata for {{decks}} er skadet.",
+    "Board.Practice.InventoryUnreadable": "Øvingsdata for {{decks}} kunne ikke leses.",
     "Board.Practice.KeyboardHint": "Trykk 1–4 for rask vurdering",
     "Board.Practice.Loading": "Laster inn øvingsstokk…",
     "Board.Practice.LoadMore": "Last inn mer",
