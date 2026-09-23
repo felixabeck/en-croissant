@@ -11181,7 +11181,7 @@ Not yet root-caused: which layer decides "focus the existing tab" on open (`src/
 
 ### verify:app's +500 practice sync check fails deterministically when the fixture prunes its source tree instead of a clone
 
-* **ID:** f-20260923-02 · **Status:** open · **Area:** gate-scripts · **Root:** none · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260923-02 · **Status:** handled · **Area:** gate-scripts · **Root:** none · **Entry:** lens · **Blocked:** none
 
 Measured on 2026-09-23 against one unchanged release binary (built from f9c90e45), each run inside `systemd-run --user --scope -p MemoryMax=4G -p MemorySwapMax=0`. In `scripts/verify-app.mjs`, the practice scenario builds one branching fixture tree and prunes it to a 12,000-card initial file and a 12,500-card extended file. Pruning two clones of an untouched source tree passed "the real sync path stores 500 further repertoire positions" in 5 of 5 runs. Pruning the source itself as the extended fixture and cloning once for the initial one, a review nit to save one clone, failed that check and the dependent final-count check in 6 of 6 runs. The failing runs showed the reopened tab's panel still at 12,000 positions after the 600 s wait. Scope memory peaked at 1.87 GiB with zero `high`/`max` events, so memory pressure is ruled out.
 
