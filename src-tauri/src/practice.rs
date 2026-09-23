@@ -2307,11 +2307,16 @@ mod tests {
         ensure_app_owned_default_dir, AppDataDir, AppOwnedDefaultRoot, AuthorizedDir,
     };
     use std::{
-        env, fs,
-        path::PathBuf,
-        process::Command,
+        fs,
         sync::{atomic::AtomicUsize, Arc, Barrier},
         thread,
+    };
+    // Only the Unix cross-process lock test spawns a child of this test binary.
+    #[cfg(unix)]
+    use std::{
+        env,
+        path::PathBuf,
+        process::Command,
         time::{Duration, Instant},
     };
 
