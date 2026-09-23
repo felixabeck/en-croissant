@@ -18,7 +18,7 @@ import { currentTabAtom } from "@/state/atoms";
 import type { Annotation } from "@/utils/annotation";
 import { hasMorePriority, stripClock } from "@/utils/chess";
 import { getTabFile } from "@/utils/tabs";
-import { getNodeAtPath, type TreeNode } from "@/utils/treeReducer";
+import type { TreeNode } from "@/utils/treeReducer";
 import type { NotationNodeIndex } from "./notationRows";
 import { pathForNotationNode } from "./notationRows";
 import MoveCell from "./MoveCell";
@@ -38,7 +38,9 @@ function getTranspositionMap(root: TreeNode) {
     const matchingNodes = map.get(strippedFen);
     if (matchingNodes) matchingNodes.push(node);
     else map.set(strippedFen, [node]);
-    for (const child of node.children) stack.push(child);
+    for (let index = node.children.length - 1; index >= 0; index -= 1) {
+      stack.push(node.children[index]);
+    }
   }
 
   transpositionCache.set(root, map);
@@ -73,16 +75,13 @@ type CompleteMoveCellProps = {
   move?: string | null;
   fen?: string;
   first?: boolean;
-  node?: TreeNode;
-  nodeIndex?: NotationNodeIndex;
-  /** Kept for callers outside the notation row renderer while they migrate to node identity. */
-  movePath?: number[];
-  targetRef?: React.RefObject<HTMLSpanElement | null>;
+  node: TreeNode;
+  nodeIndex: NotationNodeIndex;
   tableLayout?: boolean;
   scoreText?: string;
   isStart?: boolean;
   isCurrentVariation?: boolean;
-  root?: TreeNode;
+  root: TreeNode;
 };
 
 function CompleteMoveCell({
@@ -93,23 +92,17 @@ function CompleteMoveCell({
   move,
   fen,
   first,
-  node: providedNode,
+  node,
   nodeIndex,
-  movePath,
   tableLayout,
   scoreText,
   isStart: providedIsStart,
   isCurrentVariation: providedIsCurrentVariation,
-  root: providedRoot,
+  root,
 }: CompleteMoveCellProps) {
   const store = useContext(TreeStateContext)!;
   const state = store.getState();
-  const root = providedRoot ?? state.root;
-  const node = providedNode ?? (movePath ? getNodeAtPath(root, movePath) : root);
-  const path = useMemo(
-    () => (nodeIndex && node ? pathForNotationNode(nodeIndex, node) : (movePath ?? [])) ?? [],
-    [node, nodeIndex, movePath],
-  );
+  const path = useMemo(() => pathForNotationNode(nodeIndex, node) ?? [], [node, nodeIndex]);
   const isCurrentVariation = providedIsCurrentVariation ?? node === state.currentNode();
   const isStart = providedIsStart ?? equal(path, state.headers.start || []);
   const transpositions = useMemo(
@@ -306,7 +299,8 @@ export default memo(CompleteMoveCell, (prev, next) => {
     equal(prev.annotations, next.annotations) &&
     prev.showComments === next.showComments &&
     prev.first === next.first &&
-    equal(prev.movePath, next.movePath) &&
+    prev.root === next.root &&
+    prev.nodeIndex === next.nodeIndex &&
     prev.halfMoves === next.halfMoves &&
     prev.tableLayout === next.tableLayout &&
     prev.scoreText === next.scoreText &&

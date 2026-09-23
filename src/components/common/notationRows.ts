@@ -10,7 +10,6 @@ export type NotationMove = {
 
 export type InlineNotationRow = {
     type: "moves";
-    view: "inline";
     depth: number;
     moves: NotationMove[];
     variationParent?: TreeNode;
@@ -18,7 +17,6 @@ export type InlineNotationRow = {
 
 export type TableNotationRow = {
     type: "table";
-    view: "table";
     moveNumber: number;
     white: NotationMove | null;
     black: NotationMove | null;
@@ -143,14 +141,13 @@ function addComment(
 function addInlineVariationRows(
     rows: NotationRow[],
     rowForNode: Map<TreeNode, number>,
-    index: NotationNodeIndex,
     parent: TreeNode,
     depth: number,
     options: NotationRowOptions,
 ): void {
     const stack: InlineTask[] = [];
     queueVariationTasks(rows, rowForNode, parent, depth, options, stack);
-    appendInlineTasks(rows, rowForNode, index, stack, options);
+    appendInlineTasks(rows, rowForNode, stack, options);
 }
 
 function queueVariationTasks(
@@ -185,7 +182,6 @@ function queueVariationTasks(
 function appendInlineTasks(
     rows: NotationRow[],
     rowForNode: Map<TreeNode, number>,
-    _index: NotationNodeIndex,
     stack: InlineTask[],
     options: NotationRowOptions,
 ): void {
@@ -210,7 +206,6 @@ function appendInlineTasks(
             if (hasComment || hasVariations || reachedLimit) {
                 addRow(rows, rowForNode, {
                     type: "moves",
-                    view: "inline",
                     depth: task.depth,
                     moves: moves.splice(0),
                     variationParent: task.variationParent,
@@ -255,7 +250,6 @@ function appendInlineTasks(
             if (node.children.length === 0) {
                 addRow(rows, rowForNode, {
                     type: "moves",
-                    view: "inline",
                     depth: task.depth,
                     moves: moves.splice(0),
                     variationParent: task.variationParent,
@@ -272,14 +266,12 @@ function appendInlineTasks(
 function appendMainlineInlineRows(
     rows: NotationRow[],
     rowForNode: Map<TreeNode, number>,
-    index: NotationNodeIndex,
     root: TreeNode,
     options: NotationRowOptions,
 ): void {
     appendInlineTasks(
         rows,
         rowForNode,
-        index,
         [{ parent: root, childIndex: 0, depth: 0, first: true }],
         options,
     );
@@ -295,7 +287,6 @@ function addTableRow(
 ): void {
     addRow(rows, rowForNode, {
         type: "table",
-        view: "table",
         moveNumber,
         white: white ? { node: white, first: true } : null,
         black: black ? { node: black, first: true } : null,
@@ -306,7 +297,6 @@ function addTableRow(
 function appendTableRows(
     rows: NotationRow[],
     rowForNode: Map<TreeNode, number>,
-    index: NotationNodeIndex,
     root: TreeNode,
     options: NotationRowOptions,
 ): void {
@@ -323,7 +313,7 @@ function appendTableRows(
             const hasVariations = options.showVariations && variations.length > 0;
             addTableRow(rows, rowForNode, moveNumber, null, child, false);
             if (hasComment) addComment(rows, rowForNode, 0, child.comment);
-            if (hasVariations) addInlineVariationRows(rows, rowForNode, index, current, 0, options);
+            if (hasVariations) addInlineVariationRows(rows, rowForNode, current, 0, options);
             current = child;
             continue;
         }
@@ -338,20 +328,17 @@ function appendTableRows(
         if (whiteBoundary) {
             addTableRow(rows, rowForNode, moveNumber, child, null, !!black);
             if (whiteHasComment) addComment(rows, rowForNode, 0, child.comment);
-            if (whiteHasVariations)
-                addInlineVariationRows(rows, rowForNode, index, current, 0, options);
+            if (whiteHasVariations) addInlineVariationRows(rows, rowForNode, current, 0, options);
 
             if (black) {
                 addTableRow(rows, rowForNode, moveNumber, null, black, false);
                 if (blackHasComment) addComment(rows, rowForNode, 0, black.comment);
-                if (blackHasVariations)
-                    addInlineVariationRows(rows, rowForNode, index, child, 0, options);
+                if (blackHasVariations) addInlineVariationRows(rows, rowForNode, child, 0, options);
             }
         } else {
             addTableRow(rows, rowForNode, moveNumber, child, black, false);
             if (blackHasComment) addComment(rows, rowForNode, 0, black.comment);
-            if (blackHasVariations)
-                addInlineVariationRows(rows, rowForNode, index, child, 0, options);
+            if (blackHasVariations) addInlineVariationRows(rows, rowForNode, child, 0, options);
         }
 
         current = black ?? child;
@@ -368,9 +355,9 @@ export function buildNotationRows(root: TreeNode, options: NotationRowOptions): 
     }
 
     if (options.tableView) {
-        appendTableRows(rows, rowForNode, index, root, options);
+        appendTableRows(rows, rowForNode, root, options);
     } else {
-        appendMainlineInlineRows(rows, rowForNode, index, root, options);
+        appendMainlineInlineRows(rows, rowForNode, root, options);
     }
 
     return { rows, index, rowForNode };

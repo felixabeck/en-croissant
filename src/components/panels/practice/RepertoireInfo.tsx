@@ -107,12 +107,8 @@ function RepertoireInfo() {
     hasStart && position.length < startPath.length && isPrefix(position, startPath);
   const isEmptyTree = root.children.length === 0;
 
-  const startNode = useMemo(() => getNodeAtPath(root, startPath), [root, startPath]);
-
   const startStateMoves = useMemo(() => {
     const movesMap = new Map<string, Map<string, string>>();
-    if (!startNode) return movesMap;
-
     for (const [fen, entries] of Object.entries(boardStateMap)) {
       const perFenMap = new Map<string, string>();
       for (const { node, path } of entries) {
@@ -129,7 +125,7 @@ function RepertoireInfo() {
       }
     }
     return movesMap;
-  }, [boardStateMap, startNode, startPath]);
+  }, [boardStateMap, startPath]);
 
   useEffect(() => {
     if (!referenceDb) return;

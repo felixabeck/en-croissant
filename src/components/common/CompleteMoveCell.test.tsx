@@ -1,3 +1,4 @@
+import { parseUci } from "chessops";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -170,4 +171,153 @@ test("opens one context menu and sends every action the identity-derived path", 
   });
   expect(actions.deleteMove).toHaveBeenCalledWith(expectedPath);
   expect(actions.setStart).not.toHaveBeenCalledWith([1]);
+});
+
+test("navigates to the first transposition in tree order", async () => {
+  const tree = defaultTree();
+  const move = parseUci("e2e4")!;
+  const firstBranch = createNode({
+    fen: "first-branch w - - 0 1",
+    move,
+    san: "first-branch",
+    halfMoves: 1,
+  });
+  const firstTargetParent = createNode({
+    fen: "first-parent w - - 0 1",
+    move,
+    san: "first-parent",
+    halfMoves: 2,
+  });
+  const secondTargetParent = createNode({
+    fen: "second-parent w - - 0 1",
+    move,
+    san: "second-parent",
+    halfMoves: 2,
+  });
+  const firstTarget = createNode({
+    fen: "shared w - - 0 1",
+    move,
+    san: "first-target",
+    halfMoves: 3,
+  });
+  const secondTarget = createNode({
+    fen: "shared w - - 0 1",
+    move,
+    san: "second-target",
+    halfMoves: 3,
+  });
+  const current = createNode({
+    fen: "shared w - - 0 1",
+    move,
+    san: "current",
+    halfMoves: 1,
+  });
+  firstBranch.children = [firstTargetParent, secondTargetParent];
+  firstTargetParent.children = [firstTarget];
+  secondTargetParent.children = [secondTarget];
+  tree.root.children = [firstBranch, current];
+
+  const store = createTreeStore();
+  store.setState({ ...store.getState(), root: tree.root });
+  const index = createNotationNodeIndex(tree.root);
+
+  await act(async () => {
+    root.render(
+      <TreeStateContext.Provider value={store}>
+        <CompleteMoveCell
+          node={current}
+          nodeIndex={index}
+          root={tree.root}
+          halfMoves={current.halfMoves}
+          move={current.san}
+          fen={current.fen}
+          comment=""
+          annotations={[]}
+          showComments={false}
+          isStart={false}
+          isCurrentVariation={false}
+        />
+      </TreeStateContext.Provider>,
+    );
+  });
+
+  await act(async () => {
+    host.querySelector<HTMLButtonElement>('[aria-label="Notation.Transposition"]')!.click();
+  });
+
+  expect(store.getState().position).toEqual([0, 0, 0]);
+});
+
+test("updates transposition actions when another branch is added", async () => {
+  const tree = defaultTree();
+  const move = parseUci("e2e4")!;
+  const branch = createNode({
+    fen: "branch w - - 0 1",
+    move,
+    san: "branch",
+    halfMoves: 1,
+  });
+  const current = createNode({
+    fen: "shared w - - 0 1",
+    move,
+    san: "current",
+    halfMoves: 1,
+  });
+  tree.root.children = [branch, current];
+  const store = createTreeStore();
+  store.setState({ ...store.getState(), root: tree.root });
+  const initialIndex = createNotationNodeIndex(tree.root);
+
+  await act(async () => {
+    root.render(
+      <TreeStateContext.Provider value={store}>
+        <CompleteMoveCell
+          node={current}
+          nodeIndex={initialIndex}
+          root={tree.root}
+          halfMoves={current.halfMoves}
+          move={current.san}
+          fen={current.fen}
+          comment=""
+          annotations={[]}
+          showComments={false}
+          isStart={false}
+          isCurrentVariation={false}
+        />
+      </TreeStateContext.Provider>,
+    );
+  });
+  expect(host.querySelector('[aria-label="Notation.Transposition"]')).toBeNull();
+
+  const target = createNode({
+    fen: current.fen,
+    move,
+    san: "target",
+    halfMoves: 2,
+  });
+  const nextBranch = { ...branch, children: [target] };
+  const nextRoot = { ...tree.root, children: [nextBranch, current] };
+  const nextIndex = createNotationNodeIndex(nextRoot);
+
+  await act(async () => {
+    root.render(
+      <TreeStateContext.Provider value={store}>
+        <CompleteMoveCell
+          node={current}
+          nodeIndex={nextIndex}
+          root={nextRoot}
+          halfMoves={current.halfMoves}
+          move={current.san}
+          fen={current.fen}
+          comment=""
+          annotations={[]}
+          showComments={false}
+          isStart={false}
+          isCurrentVariation={false}
+        />
+      </TreeStateContext.Provider>,
+    );
+  });
+
+  expect(host.querySelector('[aria-label="Notation.Transposition"]')).not.toBeNull();
 });

@@ -4,8 +4,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { createTreeStore, type TreeStore } from "@/state/store/tree";
 import { TreeStateContext } from "./TreeStateContext";
-import { defaultTree, type TreeNode } from "@/utils/treeReducer";
-import { NOTATION_ROW_MAX_MOVES, pathForNotationNode } from "./notationRows";
+import { createNode, defaultTree, type TreeNode } from "@/utils/treeReducer";
+import { buildNotationRows, NOTATION_ROW_MAX_MOVES, pathForNotationNode } from "./notationRows";
 
 const atoms = vi.hoisted(() => ({
   invisible: Symbol("invisible"),
@@ -14,7 +14,10 @@ const atoms = vi.hoisted(() => ({
   table: Symbol("table"),
   keyMap: Symbol("key-map"),
 }));
-const virtualizerMock = vi.hoisted(() => ({ current: null as null | { count: number } }));
+const virtualizerMock = vi.hoisted(() => ({
+  current: null as null | { count: number },
+  scrollCalls: [] as { index: number; options: unknown }[],
+}));
 
 vi.mock("@/state/atoms", () => ({
   currentInvisibleAtom: atoms.invisible,
@@ -110,7 +113,9 @@ vi.mock("@tanstack/react-virtual", () => ({
           start: index * 30,
         })),
       measureElement: () => undefined,
-      scrollToIndex: () => undefined,
+      scrollToIndex: (index: number, options: unknown) => {
+        virtualizerMock.scrollCalls.push({ index, options });
+      },
     };
   },
 }));
@@ -129,6 +134,7 @@ beforeEach(() => {
   document.body.append(host);
   root = createRoot(host);
   store = createTreeStore();
+  virtualizerMock.scrollCalls.length = 0;
 });
 
 afterEach(async () => {
@@ -176,4 +182,115 @@ test("virtualizes a 20,000-node line and navigates/highlights mounted moves", as
   await act(async () => mounted()[1].click());
   expect(store.getState().position).toEqual([0, 0]);
   expect(host.querySelector('[data-node="m2"][data-current="true"]')).not.toBeNull();
+});
+
+test("scrolls to a deep current node row after navigation", async () => {
+  const state = defaultTree();
+  let parent = state.root;
+  const targetPath: number[] = [];
+  let target: TreeNode = state.root;
+  for (let index = 1; index <= 20_000; index += 1) {
+    const child = createNode({
+      fen: "line w - - 0 1",
+      move: parseUci("e2e4")!,
+      san: `m${index}`,
+      halfMoves: index,
+    });
+    parent.children = [child];
+    parent = child;
+    targetPath.push(0);
+    target = child;
+  }
+  store.getState().setState(state);
+
+  await act(async () => {
+    root.render(
+      <TreeStateContext.Provider value={store}>
+        <GameNotation />
+      </TreeStateContext.Provider>,
+    );
+  });
+
+  const model = buildNotationRows(state.root, {
+    showVariations: true,
+    showComments: false,
+    tableView: false,
+  });
+  const targetRow = model.rowForNode.get(target);
+  expect(targetRow).toBeDefined();
+  expect(targetRow).toBeGreaterThan(20);
+  virtualizerMock.scrollCalls.length = 0;
+
+  await act(async () => {
+    store.getState().goToMove(targetPath);
+  });
+
+  expect(virtualizerMock.scrollCalls).toContainEqual({
+    index: targetRow,
+    options: { align: "center" },
+  });
+});
+
+test("scrolls to the nearest listed ancestor inside a collapsed variation", async () => {
+  const state = defaultTree();
+  const move = parseUci("e2e4")!;
+  const mainline = createNode({
+    fen: "mainline w - - 0 1",
+    move,
+    san: "mainline",
+    halfMoves: 1,
+  });
+  const mainlineContinuation = createNode({
+    fen: "continuation b - - 0 1",
+    move,
+    san: "continuation",
+    halfMoves: 2,
+  });
+  const variation = createNode({
+    fen: "variation b - - 0 1",
+    move,
+    san: "variation",
+    halfMoves: 2,
+  });
+  const deepVariation = createNode({
+    fen: "deep-variation w - - 0 1",
+    move,
+    san: "deep-variation",
+    halfMoves: 3,
+  });
+  state.root.children = [mainline];
+  mainline.children = [mainlineContinuation, variation];
+  variation.children = [deepVariation];
+  store.getState().setState(state);
+
+  await act(async () => {
+    root.render(
+      <TreeStateContext.Provider value={store}>
+        <GameNotation />
+      </TreeStateContext.Provider>,
+    );
+  });
+
+  const toggle = host.querySelector<HTMLButtonElement>('[aria-label="Notation.ToggleVariation"]');
+  expect(toggle).not.toBeNull();
+  await act(async () => toggle!.click());
+  virtualizerMock.scrollCalls.length = 0;
+
+  const collapsedModel = buildNotationRows(state.root, {
+    showVariations: true,
+    showComments: false,
+    tableView: false,
+    collapsedVariations: new Set([mainline]),
+  });
+  const ancestorRow = collapsedModel.rowForNode.get(mainline);
+  expect(ancestorRow).toBeDefined();
+
+  await act(async () => {
+    store.getState().goToMove([0, 1, 0]);
+  });
+
+  expect(virtualizerMock.scrollCalls).toContainEqual({
+    index: ancestorRow,
+    options: { align: "center" },
+  });
 });
