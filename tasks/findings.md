@@ -9038,6 +9038,9 @@ Code b7f52cd4, 285a96d4, 8d8e4274, 25636945. Windows runtime is rust-windows-tes
 Closed together with `f-20260922-04` and `f-20260914-27` by the plan recorded in `tasks/handoffs/2026-09-22-practice-path-rebasing-review.md` — approved by all nine lenses, **not yet implemented**.
 <!-- ledger-meta {"command":"annotate","effect_lines":3,"effect_sha256":"64c36ad50b5e1273a3ce47a0ada4c264793b86812ff051ba3fcb605d2bf5578c","input_sha256":"8384197587c0e492438bcfa19258c525e24ffe2bac686bb3a3f46de7f23bd647","kind":"mutation-receipt","operation":"71acb3e439540643e319db8ba6e80550b7e64ec84f14b83ab2626083f6bfe688","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-26"],"target":"f-20260914-26","v":1} -->
 
+* **Resolution (2026-09-23):** handled with its canonical finding `f-20260922-04`. The practice path is rebased by `deleteMove` and `promoteVariation` (`911707f7`), and `goToNext` no longer leaves the drill path (`a5c93d9f`). Decisions `d-20260923-04`, `-05`.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"b2977a9a98ddecf8e8b021b520657dcefe2f71fb48375adfa6bb88147ba38dfc","input_sha256":"c3c93cb6546c3844d13733f33d88d51be8da25273b65729cc5c6d861d33e0596","kind":"mutation-receipt","operation":"0ff2c3de0a22eb15512dfa039fc0dc55bd9a6b08a4b95f8982fb209069254336","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-26"],"target":"f-20260914-26","v":1} -->
+
 ### `setFen` rebuilds the root but leaves `headers.fen` stale, so a later header edit restores the old start position
 
 * **ID:** f-20260914-27 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
