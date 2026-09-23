@@ -1,6 +1,6 @@
 # Plan review handoff — f-20260906-23, durable native storage for practice decks
 
-**Date:** 2026-09-22 · **Status:** plan closed for review at revision r27, not implemented ·
+**Date:** 2026-09-22 · **Status:** plan closed for review at revision r27; implemented 2026-09-23 (see *Implementation record*) ·
 **Plan file:** `tasks/plans/2026-09-22-practice-durable-storage.md` (git-ignored; this record is the
 durable one) · **Executor for every lens:** Codex, `gpt-5.6-luna`.
 
@@ -112,6 +112,53 @@ phase cannot be built as written, report the deviation rather than re-planning �
 of review stand behind the wording, and several of the sentences that read like fussiness are
 scar tissue from a mechanism that was measurably wrong.
 
-This file is **uncommitted** on purpose: another session held the repository's build lock for the
-whole of this run, and an inert Markdown file left dirty is what its push contract permits. Commit it
-with the implementation.
+This file was committed with phase 1 (`48bac7b0`); the implementation record below closes it.
+
+## Implementation record (2026-09-23)
+
+The frozen r27 plan was built without re-planning, orchestrated by Claude Code with every phase leaf
+and every lens on Codex (`--role sensitive`). Phases 1-4 landed as planned
+(`96377288`, `3d551434`, `ae1bccf8`, `4f0e8d82`). Deviations and additions:
+
+* **Phase 5, not in the plan: the notation renderer.** The phase-4 `verify:app` scenario was
+  OOM-killed twice at the session's 8 GiB cap while opening the 12,000-position repertoire. Felix
+  ruled out raising the cap, lengthening the timeout or shrinking the fixture and asked for the root
+  cause. Measured under a 3 GiB scope, `GameNotation` retained ~150 KB per tree node. Fixed in
+  `88ad35ef`: an O(n) row model with virtualized rendering and no store-level `boardStateMap`
+  (decision `d-20260923-01`). A 30,753-node repertoire now opens at a 1,242 MiB peak. The fixture's
+  25,000-ply single line was also never openable (`MAX_TREE_DEPTH = 512`), so it was regenerated as
+  a branching tree of the same 12,000 positions.
+* **Cumulative diff review: rounds 1-13, converged.** Round 1 ran ten lenses over the whole diff,
+  and its adopted fixes are in `69727992` and `e5ea8a13`. Rounds 2-8 were closure rounds over those
+  fixes, each opening narrower issues that were fixed and re-checked. In order: repair left a stale
+  process-level failure record; session cards were addressed by deck index; the repair of an
+  unfinalized migration shadowed the legacy history (decision `d-20260923-02`); an I/O retry
+  regained the destructive Repair offer; stale hydration results mutated the controller;
+  repairability had to come from the inventory's damage finding, because `invalid-input` also
+  carries authorization refusals; an orphan-count overflow sat outside the shared validation. The
+  commits are `931ae80b` through `f9c90e45`. Rounds 9-13 checked the sync-effect fixes below, one
+  commit per round, each closed by the lens that raised it.
+* **A product race found by the real-app scenario.** The "+500 positions" check failed
+  deterministically whenever the verifier's timing changed. A failure-branch diagnostic decoded the
+  reopened tab's persisted tree: exactly the extended fixture's 25,002 nodes, while the practice
+  deck stayed at 12,000. `PracticePanel` diffed the tree against the deck atom's stale "ready"
+  snapshot on remount, the atom dropped that write while loading, and the effect never retried.
+  Fixed in `530149e3`, and the scenario's staged row reproduces the failure when the fix is
+  reverted. The same effect then got three more fixes: `411196a5` re-diffs when the practised side
+  or start changes; `999903c0` persists answers changed by a promoted variation; `05f27e5b`
+  persists a pure reordering. `b912b802` carries the rebuilt FEN forward and closes
+  `f-20260922-02`, which was folded in because the same function was being changed.
+* **Recorded skips.** Native practice data survives "Clear saved data", as the plan's product
+  decision says. There is no backoff on conflict retries: they are bounded to 2, and each reloads
+  committed state inside one per-deck write chain. A shard whose stored identity contradicts its
+  SHA-256-derived name (only producible by hand-editing app data) gets Retry, not Repair.
+  `remove_entry_at`'s identity-then-unlink race stays deferred to `f-20260830-09`. The
+  chess-semantics findings in surrounding code stay deferred to `f-20260922-03`, `-04`, `-08` and
+  `-10`.
+* **Filed during implementation:** `f-20260923-01` (a restored tab, and a mounted Files card, keep
+  a pre-rewrite tree after the PGN changed on disk). `f-20260923-02` was opened and then handled:
+  its "fixture sensitivity" premise was withdrawn once the diagnostic showed the product race.
+* **Closure proof:** the `verify:app` practice scenario (plan section E), with 14 practice checks
+  inside 47 in total and staged-failure rows for each new assertion. The one exception is the
+  post-key-removal retention check, which is argued rather than staged because an owner-dropping
+  break fails the relaunch wait before that line prints.
