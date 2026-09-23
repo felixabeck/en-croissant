@@ -239,6 +239,7 @@
     "Board.Practice.Reset.Description": "Czy na pewno chcesz zresetować dane debiutu „{{name}}”? Cały postęp nauki zostanie utracony.",
     "Board.Practice.Reset.Title": "Zresetuj dane debiutu",
     "Board.Practice.ResultDistribution": "Białe {{white}}% / Remisy {{draw}}% / Czarne {{black}}%",
+    "Board.Practice.Retry": "Spróbuj ponownie",
     "Board.Practice.SessionCorrect": "Poprawne",
     "Board.Practice.SessionIncorrect": "Niepoprawne",
     "Board.Practice.ShowAll": "Pokaż wszystkie pozycje",

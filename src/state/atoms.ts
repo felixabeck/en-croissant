@@ -725,6 +725,7 @@ export type PracticePhase =
     | "idle" // Not practicing
     | "waiting" // Waiting for user to make a move
     | "correct" // Move was correct, waiting for quality rating
+    | "advancing" // A correct answer was rated; waiting to show the next card
     | "incorrect"; // Move was incorrect, showing feedback
 
 export type PracticeState = {
@@ -733,7 +734,7 @@ export type PracticeState = {
     answer?: string;
     playedMove?: string;
     timeTaken?: number;
-    positionIndex?: number;
+    positionKey?: string;
 };
 
 export const practiceStateFamily = atomFamily((_tab: string) =>
@@ -754,7 +755,7 @@ export const practiceMoveControllerAtom = tabValue(practiceMoveControllerFamily)
 
 export type PracticeSessionStats = {
     mode: "anki" | "full";
-    remainingPositions: number[];
+    remainingPositions: string[];
     correct: number;
     incorrect: number;
     streak: number;

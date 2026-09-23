@@ -237,6 +237,7 @@
     "Board.Practice.Reset.Description": "Er du sikker på at du vil tilbakestille åpningsdataene for \"{{name}}\"? All læringsframdrift går tapt.",
     "Board.Practice.Reset.Title": "Tilbakestill åpningsdata",
     "Board.Practice.ResultDistribution": "Hvit {{white}}% / Remis {{draw}}% / Svart {{black}}%",
+    "Board.Practice.Retry": "Prøv igjen",
     "Board.Practice.SessionCorrect": "Riktig",
     "Board.Practice.SessionIncorrect": "Feil",
     "Board.Practice.ShowAll": "Vis alle stillinger",

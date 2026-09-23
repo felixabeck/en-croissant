@@ -238,6 +238,7 @@
     "Board.Practice.Reset.Description": "Tem a certeza de que pretende repor os dados de abertura de \"{{name}}\"? Todo o progresso de aprendizagem será perdido.",
     "Board.Practice.Reset.Title": "Repor dados de abertura",
     "Board.Practice.ResultDistribution": "Brancas {{white}}% / Empates {{draw}}% / Pretas {{black}}%",
+    "Board.Practice.Retry": "Tentar novamente",
     "Board.Practice.SessionCorrect": "Corretas",
     "Board.Practice.SessionIncorrect": "Incorretas",
     "Board.Practice.ShowAll": "Mostrar todas as posições",

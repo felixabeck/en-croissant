@@ -239,6 +239,7 @@
     "Board.Practice.Reset.Description": "Скинути дані дебюту «{{name}}»? Увесь прогрес навчання буде втрачено.",
     "Board.Practice.Reset.Title": "Скинути дані дебюту",
     "Board.Practice.ResultDistribution": "Білі {{white}}% / Нічиї {{draw}}% / Чорні {{black}}%",
+    "Board.Practice.Retry": "Повторити",
     "Board.Practice.SessionCorrect": "Правильно",
     "Board.Practice.SessionIncorrect": "Неправильно",
     "Board.Practice.ShowAll": "Показати всі позиції",

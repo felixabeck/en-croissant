@@ -237,6 +237,7 @@
     "Board.Practice.Reset.Description": "Möchtest du die Eröffnungsdaten für „{{name}}“ wirklich zurücksetzen? Der gesamte Lernfortschritt geht verloren.",
     "Board.Practice.Reset.Title": "Eröffnungsdaten zurücksetzen",
     "Board.Practice.ResultDistribution": "Weiß {{white}}% / Remis {{draw}}% / Schwarz {{black}}%",
+    "Board.Practice.Retry": "Erneut versuchen",
     "Board.Practice.SessionCorrect": "Richtig",
     "Board.Practice.SessionIncorrect": "Falsch",
     "Board.Practice.ShowAll": "Alle Positionen anzeigen",

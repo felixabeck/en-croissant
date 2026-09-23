@@ -103,6 +103,25 @@ test("the production clear path refuses when inventory reports a damaged deck", 
   expect(clear).not.toHaveBeenCalled();
 });
 
+test("the production clear path does not name a repaired native deck", async () => {
+  const clear = vi.fn();
+
+  await clearThroughProductionPath(
+    {
+      outcomes: [],
+      inventory: {
+        decks: [{ fileId: "repaired", game: 0 }],
+        anomalies: [],
+      },
+      scanTrusted: true,
+      inventoryTrusted: true,
+    },
+    clear,
+  );
+
+  expect(clear).toHaveBeenCalledOnce();
+});
+
 test("the production clear path waits for migration and runs a fresh pass before clearing", async () => {
   const migration = deferred<void>();
   const clear = vi.fn();

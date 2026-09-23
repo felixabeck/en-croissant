@@ -13,7 +13,7 @@ describe("practiceSessionReducer", () => {
             type: "start",
             token: 1,
             fen: "fen-a",
-            positionIndex: 2,
+            positionKey: "board-a",
         });
         const incorrect = practiceSessionReducer(waiting, {
             type: "incorrect",
@@ -39,7 +39,7 @@ describe("practiceSessionReducer", () => {
             type: "start",
             token: 5,
             fen: "fen-a",
-            positionIndex: 2,
+            positionKey: "board-a",
         });
 
         expect(
@@ -53,7 +53,7 @@ describe("practiceSessionReducer", () => {
             phase: "correct",
             token: 5,
             currentFen: "fen-a",
-            positionIndex: 2,
+            positionKey: "board-a",
             answer: "Nf3",
             timeTaken: 12,
         });
@@ -69,7 +69,7 @@ describe("practiceSessionReducer", () => {
             phase: "incorrect",
             token: 5,
             currentFen: "fen-a",
-            positionIndex: 2,
+            positionKey: "board-a",
             answer: "Nf3",
             playedMove: "Nc3",
             timeTaken: 12,
@@ -81,7 +81,7 @@ describe("practiceSessionReducer", () => {
             type: "start",
             token: 3,
             fen: "fen-a",
-            positionIndex: 0,
+            positionKey: "board-a",
         });
         const stopped = practiceSessionReducer(waiting, { type: "end", token: 3 });
         expect(
@@ -107,7 +107,7 @@ describe("practiceSessionReducer", () => {
             type: "start",
             token: 7,
             fen: "history-card",
-            positionIndex: 4,
+            positionKey: "board-a",
         });
         const completed = practiceSessionReducer(
             practiceSessionReducer(waiting, {
@@ -126,7 +126,7 @@ describe("practiceSessionReducer", () => {
             type: "start",
             token: 1,
             fen: "fen-a",
-            positionIndex: 0,
+            positionKey: "board-a",
         });
         expect(canSubmitPracticeMove(waiting, "fen-a")).toBe(true);
         expect(canSubmitPracticeMove(waiting, "fen-b")).toBe(false);

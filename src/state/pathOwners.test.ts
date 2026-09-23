@@ -446,6 +446,27 @@ test("retains a damaged deck identity while distrusting practice data", async ()
     expect(owners.trustedFamilies).not.toContain("practiceDeck");
 });
 
+test("retains an unreadable deck identity while distrusting practice data", async () => {
+    mocks.list.mockResolvedValue({
+        decks: [{ fileId: "unreadable", game: 5 }],
+        anomalies: [
+            {
+                kind: "Unreadable",
+                leaf: "unreadable-positions.json",
+                fileId: "unreadable",
+                game: 5,
+            },
+        ],
+    });
+
+    await ensurePracticeMigration();
+    await initializePathOwners();
+
+    const owners = mocks.reconcile.mock.calls[0][0];
+    expect(owners.retainedIds).toContainEqual({ id: "unreadable" });
+    expect(owners.trustedFamilies).not.toContain("practiceDeck");
+});
+
 test("does not retain an identity from an IdentityMismatch anomaly", async () => {
     mocks.list.mockResolvedValue({
         decks: [],

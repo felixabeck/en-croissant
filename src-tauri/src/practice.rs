@@ -204,6 +204,18 @@ struct ValidatedDeck {
 struct DeckValidationFailure {
     error: Error,
     identity: Option<PracticeDeckIdentity>,
+    io: bool,
+}
+
+impl DeckValidationFailure {
+    fn new(error: Error, identity: Option<PracticeDeckIdentity>) -> Self {
+        let io = matches!(&error, Error::Io(_));
+        Self {
+            error,
+            identity,
+            io,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -744,24 +756,17 @@ fn read_validated_deck(
             game: positions.game,
         })
     });
-    let state = state_result.map_err(|error| DeckValidationFailure {
-        error,
-        identity: positions_identity.clone(),
-    })?;
+    let state = state_result
+        .map_err(|error| DeckValidationFailure::new(error, positions_identity.clone()))?;
     let state_identity = state.as_ref().map(|state| PracticeDeckIdentity {
         file_id: state.file_id.clone(),
         game: state.game,
     });
-    let positions = positions_result.map_err(|error| DeckValidationFailure {
-        error,
-        identity: state_identity.clone(),
-    })?;
+    let positions = positions_result
+        .map_err(|error| DeckValidationFailure::new(error, state_identity.clone()))?;
     let Some(positions) = positions else {
-        let shard_leaves =
-            all_shard_leaves(directory, hash).map_err(|error| DeckValidationFailure {
-                error,
-                identity: state_identity.clone(),
-            })?;
+        let shard_leaves = all_shard_leaves(directory, hash)
+            .map_err(|error| DeckValidationFailure::new(error, state_identity.clone()))?;
         return Ok(ValidatedDeck {
             state,
             positions: None,
@@ -774,14 +779,10 @@ fn read_validated_deck(
         file_id: positions.file_id.clone(),
         game: positions.game,
     });
-    let shards = read_shards(directory, hash, positions.generation).map_err(|error| {
-        DeckValidationFailure {
-            error,
-            identity: identity.clone(),
-        }
-    })?;
+    let shards = read_shards(directory, hash, positions.generation)
+        .map_err(|error| DeckValidationFailure::new(error, identity.clone()))?;
     let reconciliation = reconcile(&positions, &shards, &positions_leaf(hash))
-        .map_err(|error| DeckValidationFailure { error, identity })?;
+        .map_err(|error| DeckValidationFailure::new(error, identity))?;
     Ok(ValidatedDeck {
         state,
         positions: Some(positions),
@@ -905,7 +906,7 @@ fn append_sealed_review(
     Ok(())
 }
 
-// The appender carries the shard metadata and sealing policy, so rating and migration cannot diverge.
+// This shared appender carries the shard metadata and sealing policy, so rating and migration cannot diverge.
 #[allow(clippy::too_many_arguments)]
 fn append_review(
     directory: &AuthorizedDir,
@@ -914,7 +915,7 @@ fn append_review(
     game: i32,
     generation: u32,
     revision: u32,
-    shards: &[ShardFile],
+    latest_shard: Option<&ReviewShardEnvelope>,
     entry_id: &str,
     entry: &Value,
 ) -> Result<(), Error> {
@@ -923,10 +924,7 @@ fn append_review(
         rev: revision,
         entry: canonical_value(entry),
     };
-    let mut next = shards
-        .iter()
-        .map(|shard| shard.envelope.clone())
-        .collect::<Vec<_>>();
+    let mut next = latest_shard.cloned().into_iter().collect::<Vec<_>>();
     append_sealed_review(&mut next, file_id, game, generation, review)?;
     let target = next
         .last()
@@ -996,7 +994,7 @@ fn entry_position(shards: &[ShardFile], entry_id: &str) -> Option<u32> {
     None
 }
 
-// The command mirrors the stable IPC wire shape: one rating carries its optimistic snapshot and entry.
+// This internal helper mirrors the stable IPC wire shape: one rating carries its optimistic snapshot and entry.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn record_practice_review_in(
     directory: &AuthorizedDir,
@@ -1087,7 +1085,7 @@ pub(crate) fn record_practice_review_in(
                 game,
                 generation,
                 next_revision,
-                &shards,
+                shards.last().map(|shard| &shard.envelope),
                 entry_id,
                 &incoming_entry,
             )?;
@@ -1400,8 +1398,7 @@ pub(crate) fn acknowledge_practice_orphans_in(
 ) -> Result<(), Error> {
     let hash = hash_deck(file_id, game);
     with_deck_lock(directory, &hash, || {
-        let Some((mut envelope, _shards, _reconciliation)) = load_valid_deck(directory, &hash)?
-        else {
+        let Some((mut envelope, ..)) = load_valid_deck(directory, &hash)? else {
             return Err(invalid_leaf(
                 &positions_leaf(&hash),
                 "cannot acknowledge an empty deck",
@@ -1521,7 +1518,7 @@ pub(crate) fn migrate_practice_deck_in(
         }
         if let Some(positions) = loaded.positions {
             let shards = loaded.shards;
-            let reconciliation = loaded.reconciliation.ok_or_else(|| {
+            loaded.reconciliation.ok_or_else(|| {
                 invalid_leaf(&positions_leaf(&hash), "practice reconciliation is missing")
             })?;
             if let Some(state) = state {
@@ -1545,7 +1542,6 @@ pub(crate) fn migrate_practice_deck_in(
                 "positions".to_owned(),
                 Value::Array(positions.positions.clone()),
             )]));
-            let _reconciliation = reconciliation;
             return migration_outcome(
                 PracticeMigrationStatus::AlreadyMigrated,
                 &all_entries,
@@ -1756,6 +1752,14 @@ fn anomaly(
     }
 }
 
+fn validation_failure_kind(failure: &DeckValidationFailure) -> PracticeStoreAnomalyKind {
+    if failure.io {
+        PracticeStoreAnomalyKind::Unreadable
+    } else {
+        PracticeStoreAnomalyKind::DamagedDeck
+    }
+}
+
 pub(crate) fn list_practice_decks_in(
     directory: &AuthorizedDir,
 ) -> Result<PracticeDeckInventory, Error> {
@@ -1861,12 +1865,12 @@ pub(crate) fn list_practice_decks_in(
                 }
             }
             Err(failure) => {
-                if let Some(identity) = failure.identity {
+                if let Some(ref identity) = failure.identity {
                     decks
                         .entry(hash.clone())
                         .or_insert_with(|| identity.clone());
                     anomalies.push(anomaly(
-                        PracticeStoreAnomalyKind::DamagedDeck,
+                        validation_failure_kind(&failure),
                         positions_leaf(&hash),
                         Some((&identity.file_id, identity.game)),
                     ));
@@ -2398,6 +2402,39 @@ mod tests {
             "test",
         )
         .unwrap();
+    }
+
+    fn assert_damaged_identity(inventory: &PracticeDeckInventory, file_id: &str, game: i32) {
+        assert!(inventory.anomalies.iter().any(|anomaly| {
+            anomaly.kind == PracticeStoreAnomalyKind::DamagedDeck
+                && anomaly.file_id.as_deref() == Some(file_id)
+                && anomaly.game == Some(game)
+        }));
+    }
+
+    #[test]
+    fn validated_read_failures_distinguish_io_from_invalid_content() {
+        let identity = Some(PracticeDeckIdentity {
+            file_id: "file".to_owned(),
+            game: 1,
+        });
+        let unreadable = DeckValidationFailure::new(
+            Error::Io(Box::new(std::io::Error::other("permission denied"))),
+            identity.clone(),
+        );
+        let damaged = DeckValidationFailure::new(
+            Error::InvalidInput("malformed practice leaf".into()),
+            identity,
+        );
+
+        assert_eq!(
+            validation_failure_kind(&unreadable),
+            PracticeStoreAnomalyKind::Unreadable
+        );
+        assert_eq!(
+            validation_failure_kind(&damaged),
+            PracticeStoreAnomalyKind::DamagedDeck
+        );
     }
 
     fn test_review(id: &str, rev: u32, value: Value) -> ReviewShardEntry {
@@ -3252,15 +3289,7 @@ mod tests {
             migrate_practice_deck_in(&directory, "file", 1, "not-json"),
             Err(Error::InvalidInput(_))
         ));
-        assert!(list_practice_decks_in(&directory)
-            .unwrap()
-            .anomalies
-            .iter()
-            .any(|anomaly| {
-                anomaly.kind == PracticeStoreAnomalyKind::DamagedDeck
-                    && anomaly.file_id.as_deref() == Some("file")
-                    && anomaly.game == Some(1)
-            }));
+        assert_damaged_identity(&list_practice_decks_in(&directory).unwrap(), "file", 1);
         assert_eq!(
             state_before,
             fs::read(directory.path().join(&state_leaf_name)).unwrap()
@@ -3392,15 +3421,7 @@ mod tests {
             shard_before,
             leaf_bytes(&directory, &shard_leaf(&hash, 0, 0))
         );
-        assert!(list_practice_decks_in(&directory)
-            .unwrap()
-            .anomalies
-            .iter()
-            .any(|anomaly| {
-                anomaly.kind == PracticeStoreAnomalyKind::DamagedDeck
-                    && anomaly.file_id.as_deref() == Some("file")
-                    && anomaly.game == Some(1)
-            }));
+        assert_damaged_identity(&list_practice_decks_in(&directory).unwrap(), "file", 1);
     }
 
     #[test]
@@ -3415,15 +3436,7 @@ mod tests {
             MigrationPhase::Migrating,
             &"0".repeat(64),
         );
-        assert!(list_practice_decks_in(&directory)
-            .unwrap()
-            .anomalies
-            .iter()
-            .any(|anomaly| {
-                anomaly.kind == PracticeStoreAnomalyKind::DamagedDeck
-                    && anomaly.file_id.as_deref() == Some("file")
-                    && anomaly.game == Some(1)
-            }));
+        assert_damaged_identity(&list_practice_decks_in(&directory).unwrap(), "file", 1);
         assert_eq!(
             migrate_practice_deck_in(&directory, "file", 1, "not-json")
                 .unwrap()
@@ -3456,15 +3469,7 @@ mod tests {
             migrate_practice_deck_in(&directory, "file", 1, "not-json"),
             Err(Error::InvalidInput(_))
         ));
-        assert!(list_practice_decks_in(&directory)
-            .unwrap()
-            .anomalies
-            .iter()
-            .any(|anomaly| {
-                anomaly.kind == PracticeStoreAnomalyKind::DamagedDeck
-                    && anomaly.file_id.as_deref() == Some("file")
-                    && anomaly.game == Some(1)
-            }));
+        assert_damaged_identity(&list_practice_decks_in(&directory).unwrap(), "file", 1);
         assert_eq!(
             read_state(&directory, &hash).unwrap().unwrap().phase,
             MigrationPhase::Migrating
@@ -3598,15 +3603,7 @@ mod tests {
             migrate_practice_deck_in(&directory, "file", 1, "not-json"),
             Err(Error::InvalidInput(_))
         ));
-        assert!(list_practice_decks_in(&directory)
-            .unwrap()
-            .anomalies
-            .iter()
-            .any(|anomaly| {
-                anomaly.kind == PracticeStoreAnomalyKind::DamagedDeck
-                    && anomaly.file_id.as_deref() == Some("file")
-                    && anomaly.game == Some(1)
-            }));
+        assert_damaged_identity(&list_practice_decks_in(&directory).unwrap(), "file", 1);
     }
 
     #[test]
@@ -4100,6 +4097,39 @@ mod tests {
             .unwrap()
             .is_none());
 
+        let malformed_state_hash = hash_deck("malformed-state", 1);
+        fs::write(
+            directory.path().join(state_leaf(&malformed_state_hash)),
+            b"not-json",
+        )
+        .unwrap();
+        repair_practice_deck_in(&directory, "malformed-state", 1).unwrap();
+        assert!(!directory
+            .path()
+            .join(state_leaf(&malformed_state_hash))
+            .exists());
+
+        let mismatched_state_hash = hash_deck("mismatched-state", 1);
+        write_json(
+            &directory,
+            &state_leaf(&mismatched_state_hash),
+            &MigrationStateEnvelope {
+                version: PRACTICE_STORAGE_VERSION,
+                file_id: "other-file".to_owned(),
+                game: 1,
+                phase: MigrationPhase::Migrating,
+                legacy_digest: "0".repeat(64),
+            },
+            DurabilityStage::PracticeState,
+            "test",
+        )
+        .unwrap();
+        repair_practice_deck_in(&directory, "mismatched-state", 1).unwrap();
+        assert!(!directory
+            .path()
+            .join(state_leaf(&mismatched_state_hash))
+            .exists());
+
         let never_hash = hash_deck("never", 1);
         fs::write(
             directory.path().join(positions_leaf(&never_hash)),
@@ -4184,7 +4214,10 @@ mod tests {
                 1,
                 0,
                 index + 1,
-                &read_shards(&directory, &hash, 0).unwrap(),
+                read_shards(&directory, &hash, 0)
+                    .unwrap()
+                    .last()
+                    .map(|shard| &shard.envelope),
                 &format!("id-{index}"),
                 &value,
             )
@@ -4213,7 +4246,10 @@ mod tests {
                 1,
                 0,
                 index + 1,
-                &read_shards(&directory, &exact_hash, 0).unwrap(),
+                read_shards(&directory, &exact_hash, 0)
+                    .unwrap()
+                    .last()
+                    .map(|shard| &shard.envelope),
                 &format!("id-{index}"),
                 &serde_json::json!({"payload": "x".repeat(7_000)}),
             )
@@ -4250,7 +4286,10 @@ mod tests {
             1,
             0,
             99,
-            &read_shards(&directory, &exact_hash, 0).unwrap(),
+            read_shards(&directory, &exact_hash, 0)
+                .unwrap()
+                .last()
+                .map(|shard| &shard.envelope),
             "crosses-exact-budget",
             &serde_json::json!({"small": true}),
         )

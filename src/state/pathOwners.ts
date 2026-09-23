@@ -227,7 +227,9 @@ export function initializePathOwners(): Promise<void> {
             inventory?.decks.forEach(({ fileId }) => retainedIds.add(fileId));
             inventory?.anomalies.forEach((anomaly) => {
                 if (
-                    (anomaly.kind === "OrphanShard" || anomaly.kind === "DamagedDeck") &&
+                    (anomaly.kind === "OrphanShard" ||
+                        anomaly.kind === "DamagedDeck" ||
+                        anomaly.kind === "Unreadable") &&
                     anomaly.fileId
                 ) {
                     retainedIds.add(anomaly.fileId);

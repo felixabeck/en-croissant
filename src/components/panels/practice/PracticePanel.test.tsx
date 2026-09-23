@@ -45,6 +45,7 @@ const fixtures = vi.hoisted(() => ({
     setPracticePath: vi.fn(),
   },
   currentTab: { value: "practice-tab" },
+  autoDifficulty: "none" as "none" | "1" | "2" | "3" | "4",
 }));
 
 vi.mock("@/state/atoms", () => ({
@@ -79,7 +80,7 @@ vi.mock("jotai", () => ({
   },
   useAtomValue: (atom: symbol) => {
     if (atom === fixtures.atoms.currentTab) return fixtures.currentTab;
-    if (atom === fixtures.atoms.practiceAutoDifficulty) return "none";
+    if (atom === fixtures.atoms.practiceAutoDifficulty) return fixtures.autoDifficulty;
     if (atom === fixtures.atoms.practiceCardStartTime) return 0;
     return false;
   },
@@ -110,6 +111,7 @@ vi.mock("@/utils/tabs", () => ({
 }));
 vi.mock("@/utils/pathCapabilities", () => ({ fileWorkspaceKey: () => "file-a" }));
 vi.mock("@/utils/treeReducer", () => ({
+  getBoardState: (fen: string) => fen,
   findFen: (fen: string) => (fen.startsWith("in-repertoire") ? [0] : null),
   getNodeAtPath: () => ({ halfMoves: 0, san: "e4" }),
 }));
@@ -212,10 +214,10 @@ vi.mock("ts-fsrs", () => ({
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import PracticePanel from "./PracticePanel";
 
-const position = (fen: string) => ({
+const position = (fen: string, card = { due: "2026-09-22T00:00:00.000Z", reps: 0 }) => ({
   fen,
   answer: "e4",
-  card: { due: "2026-09-22T00:00:00.000Z", reps: 0 },
+  card,
 });
 
 function deck(overrides: Record<string, unknown> = {}) {
@@ -250,6 +252,7 @@ let container: HTMLDivElement | undefined;
 beforeEach(() => {
   vi.clearAllMocks();
   fixtures.deck = deck();
+  fixtures.autoDifficulty = "none";
   fixtures.getCardForReview.mockReset().mockReturnValue(null);
   fixtures.updateCardPerformance.mockReset();
   fixtures.practiceState = { phase: "idle" };
@@ -310,6 +313,25 @@ test("shows a read failure with repair, no empty deck, and blocked controls", as
   expect(container?.textContent).not.toContain("Board.Practice.StartPractice");
   expect(container?.textContent).not.toContain("Common.Reset");
   expect(fixtures.setDeck).not.toHaveBeenCalled();
+});
+
+test("shows retry without repair for an unreadable deck", async () => {
+  fixtures.deck = deck({
+    positions: [],
+    status: "read-failed",
+    repairable: false,
+    error: { message: "read failed" },
+  });
+  await act(async () =>
+    root?.render(
+      <TreeStateContext.Provider value={fixtures.tree as any}>
+        <PracticePanel />
+      </TreeStateContext.Provider>,
+    ),
+  );
+
+  expect(container?.textContent).toContain("Board.Practice.Retry");
+  expect(container?.textContent).not.toContain("Board.Practice.Repair");
 });
 
 test("dispatches repair only after confirmation", async () => {
@@ -507,18 +529,30 @@ function latestMoveController(): { submitMove: (san: string) => void } {
   return value;
 }
 
-test("normal-mode rating selects the next card after the immutable deck update", async () => {
+test("normal-mode rating follows the board identity after a deck sync and ignores a duplicate", async () => {
   vi.useFakeTimers();
   const first = position("in-repertoire-first");
-  const second = position("in-repertoire-second");
+  const second = position("in-repertoire-second", {
+    due: "2026-09-23T00:00:00.000Z",
+    reps: 0,
+  });
+  const inserted = position("in-repertoire-inserted", {
+    due: "2026-09-24T00:00:00.000Z",
+    reps: 0,
+  });
   const rated = {
     ...first,
     card: { ...first.card, due: "2026-10-01T00:00:00.000Z", reps: 1 },
   };
   fixtures.deck = deck({ positions: [first, second] });
-  fixtures.getCardForReview.mockReturnValueOnce(first).mockReturnValueOnce(second);
+  fixtures.getCardForReview.mockImplementation(
+    (positions: any[]) =>
+      positions
+        .filter((candidate) => new Date(candidate.card.due) <= new Date())
+        .sort((left, right) => +new Date(left.card.due) - +new Date(right.card.due))[0] ?? null,
+  );
   fixtures.updateCardPerformance.mockReturnValue({
-    positions: [rated, second],
+    positions: [inserted, rated, second],
     entry: { fen: first.fen, rating: 3 },
     entryId: "rated-first",
   });
@@ -550,12 +584,91 @@ test("normal-mode rating selects the next card after the immutable deck update",
       </TreeStateContext.Provider>,
     ),
   );
+  fixtures.deck = deck({ positions: [inserted, first, second] });
+  await act(async () =>
+    root?.render(
+      <TreeStateContext.Provider value={fixtures.tree as any}>
+        <PracticePanel />
+      </TreeStateContext.Provider>,
+    ),
+  );
   const good = [...(container?.querySelectorAll("button") ?? [])].find((button) =>
     button.textContent?.includes("Board.Practice.Good"),
   );
-  await act(async () => good?.click());
+  await act(async () => {
+    good?.click();
+    good?.click();
+  });
   await act(async () => vi.advanceTimersByTimeAsync(300));
 
+  expect(fixtures.updateCardPerformance).toHaveBeenCalledOnce();
+  expect(fixtures.updateCardPerformance.mock.calls[0]?.[1]).toBe(1);
+  expect(fixtures.practiceStats.correct).toBe(1);
+  expect(fixtures.practiceState.currentFen).toBe(second.fen);
+  vi.useRealTimers();
+});
+
+test("auto-difficulty rates the latest card after a deck sync", async () => {
+  vi.useFakeTimers();
+  fixtures.autoDifficulty = "3";
+  const first = position("in-repertoire-first");
+  const second = position("in-repertoire-second", {
+    due: "2026-09-23T00:00:00.000Z",
+    reps: 0,
+  });
+  const inserted = position("in-repertoire-inserted", {
+    due: "2026-09-24T00:00:00.000Z",
+    reps: 0,
+  });
+  const rated = {
+    ...first,
+    card: { ...first.card, due: "2026-10-01T00:00:00.000Z", reps: 1 },
+  };
+  fixtures.deck = deck({ positions: [first, second] });
+  fixtures.getCardForReview.mockImplementation(
+    (positions: any[]) =>
+      positions
+        .filter((candidate) => new Date(candidate.card.due) <= new Date())
+        .sort((left, right) => +new Date(left.card.due) - +new Date(right.card.due))[0] ?? null,
+  );
+  fixtures.updateCardPerformance.mockReturnValue({
+    positions: [inserted, rated, second],
+    entry: { fen: first.fen, rating: 3 },
+    entryId: "rated-first",
+  });
+  await act(async () =>
+    root?.render(
+      <TreeStateContext.Provider value={fixtures.tree as any}>
+        <PracticePanel />
+      </TreeStateContext.Provider>,
+    ),
+  );
+
+  const start = [...(container?.querySelectorAll("button") ?? [])].find((button) =>
+    button.textContent?.includes("Board.Practice.StartPractice"),
+  );
+  await act(async () => start?.click());
+  fixtures.tree.currentNode = () => ({ fen: first.fen });
+  await act(async () =>
+    root?.render(
+      <TreeStateContext.Provider value={fixtures.tree as any}>
+        <PracticePanel />
+      </TreeStateContext.Provider>,
+    ),
+  );
+  await act(async () => latestMoveController().submitMove("e4"));
+  fixtures.deck = deck({ positions: [inserted, first, second] });
+  await act(async () =>
+    root?.render(
+      <TreeStateContext.Provider value={fixtures.tree as any}>
+        <PracticePanel />
+      </TreeStateContext.Provider>,
+    ),
+  );
+  await act(async () => vi.advanceTimersByTimeAsync(300));
+
+  expect(fixtures.updateCardPerformance).toHaveBeenCalledOnce();
+  expect(fixtures.updateCardPerformance.mock.calls[0]?.[1]).toBe(1);
   expect(fixtures.practiceState.currentFen).toBe(second.fen);
   vi.useRealTimers();
 });
@@ -564,6 +677,7 @@ test("full-repertoire mode enters the first position and advances through the re
   vi.useFakeTimers();
   const first = position("in-repertoire-first");
   const second = position("in-repertoire-second");
+  const inserted = position("in-repertoire-inserted");
   fixtures.deck = deck({ positions: [first, second] });
   await act(async () =>
     root?.render(
@@ -588,6 +702,7 @@ test("full-repertoire mode enters the first position and advances through the re
     ),
   );
   await act(async () => latestMoveController().submitMove("e4"));
+  fixtures.deck = deck({ positions: [inserted, first, second] });
   await act(async () =>
     root?.render(
       <TreeStateContext.Provider value={fixtures.tree as any}>

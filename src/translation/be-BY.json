@@ -239,6 +239,7 @@
     "Board.Practice.Reset.Description": "Вы ўпэўнены, што хочаце скінуць даныя дэбюту «{{name}}»? Увесь прагрэс навучання будзе страчаны.",
     "Board.Practice.Reset.Title": "Скінуць даныя дэбюту",
     "Board.Practice.ResultDistribution": "Белыя {{white}}% / Нічыя {{draw}}% / Чорныя {{black}}%",
+    "Board.Practice.Retry": "Паўтарыць",
     "Board.Practice.SessionCorrect": "Правільна",
     "Board.Practice.SessionIncorrect": "Няправільна",
     "Board.Practice.ShowAll": "Паказаць усе пазіцыі",

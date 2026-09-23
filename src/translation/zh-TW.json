@@ -236,6 +236,7 @@
     "Board.Practice.Reset.Description": "您确定要重置“{{name}}”的开局数据吗？所有的学习进度都将丢失！",
     "Board.Practice.Reset.Title": "重置开局数据",
     "Board.Practice.ResultDistribution": "白方 {{white}}% / 和棋 {{draw}}% / 黑方 {{black}}%",
+    "Board.Practice.Retry": "重試",
     "Board.Practice.SessionCorrect": "正确",
     "Board.Practice.SessionIncorrect": "错误",
     "Board.Practice.ShowAll": "顯示所有局面",

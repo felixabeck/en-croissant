@@ -270,6 +270,96 @@ describe("the real practice deck atom", () => {
         unsubscribe();
     });
 
+    test("repair clears stale migration state, migrates retained legacy data, and rehydrates", async () => {
+        localStorage.setItem("deck-repaired-0", JSON.stringify(legacyData()));
+        native.list
+            .mockResolvedValueOnce({
+                decks: [{ fileId: "repaired", game: 0 }],
+                anomalies: [
+                    {
+                        kind: "DamagedDeck",
+                        leaf: "repaired-positions.json",
+                        fileId: "repaired",
+                        game: 0,
+                    },
+                ],
+            })
+            .mockResolvedValue({ decks: [], anomalies: [] });
+        native.migrate
+            .mockRejectedValueOnce(new Error("repair required"))
+            .mockResolvedValueOnce(migrationOutcome());
+        const mounted = mountDeck("repaired", 0);
+        await vi.waitFor(() => expect(mounted.store.get(mounted.atom).status).toBe("read-failed"));
+
+        native.load.mockResolvedValue(snapshot([position()], { revision: 8 }));
+        await mounted.store.set(mounted.atom, { type: "repair" });
+        const result = await ensurePracticeMigration();
+
+        expect(native.migrate).toHaveBeenCalledTimes(2);
+        expect(result.inventory?.anomalies).toEqual([]);
+        expect(result.outcomes).toEqual([
+            expect.objectContaining({
+                identity: { file: "repaired", game: 0 },
+                status: "migrated",
+            }),
+        ]);
+        mounted.unsubscribe();
+
+        const reopened = mountDeck("repaired", 0);
+        await waitForReady(reopened.store, reopened.atom);
+        expect(reopened.store.get(reopened.atom).positions).toEqual([position()]);
+        reopened.unsubscribe();
+    });
+
+    test("an unreadable identity is read-failed, retryable, and has no repair offer state", async () => {
+        native.list
+            .mockResolvedValueOnce({
+                decks: [{ fileId: "unreadable", game: 0 }],
+                anomalies: [
+                    {
+                        kind: "Unreadable",
+                        leaf: "unreadable-positions.json",
+                        fileId: "unreadable",
+                        game: 0,
+                    },
+                ],
+            })
+            .mockResolvedValueOnce({ decks: [], anomalies: [] });
+        native.load.mockResolvedValue(snapshot([position()]));
+        const mounted = mountDeck("unreadable", 0);
+        await vi.waitFor(() => expect(mounted.store.get(mounted.atom).status).toBe("read-failed"));
+        expect(mounted.store.get(mounted.atom).repairable).toBe(false);
+
+        await mounted.store.set(mounted.atom, { type: "retry" });
+        await waitForReady(mounted.store, mounted.atom);
+        expect(native.load).toHaveBeenCalledOnce();
+        expect(native.repair).not.toHaveBeenCalled();
+        mounted.unsubscribe();
+    });
+
+    test("adopts the committed reset revision after partial removal", async () => {
+        const initial = position();
+        const resetPosition = position(sameBoardDifferentFen);
+        native.load.mockResolvedValue(snapshot([initial], { revision: 4, generation: 2 }));
+        native.reset.mockRejectedValueOnce({
+            tag: "backend-error",
+            category: "partial-removal",
+            message: "partially removed: practice deck",
+        });
+        const mounted = mountDeck();
+        await waitForReady(mounted.store, mounted.atom);
+
+        await mounted.store.set(mounted.atom, { type: "reset", positions: [resetPosition] });
+
+        const value = mounted.store.get(mounted.atom);
+        expect(value.status).toBe("write-blocked");
+        expect(value.positions).toEqual([resetPosition]);
+        expect(value.revision).toBe(5);
+        expect(value.generation).toBe(3);
+        expect(value.error?.category).toBe("applied-despite-error");
+        mounted.unsubscribe();
+    });
+
     test("merges a committed rating into a later debounced sync", async () => {
         const source = position();
         const syncPosition = position(sameBoardDifferentFen);
@@ -552,6 +642,26 @@ describe("the real practice deck atom", () => {
 });
 
 describe("the eager legacy migration pass", () => {
+    test("does not hold a damaged native identity over its retained legacy value", async () => {
+        localStorage.setItem("deck-damaged-4", JSON.stringify(legacyData()));
+        native.list.mockResolvedValue({
+            decks: [{ fileId: "damaged", game: 4 }],
+            anomalies: [
+                {
+                    kind: "DamagedDeck",
+                    leaf: "damaged-positions.json",
+                    fileId: "damaged",
+                    game: 4,
+                },
+            ],
+        });
+        native.migrate.mockResolvedValue(migrationOutcome());
+
+        await runPracticeMigrationPass();
+
+        expect(native.migrate).toHaveBeenCalledWith("damaged", 4, JSON.stringify(legacyData()));
+    });
+
     test("isolates a failed first deck and still migrates later decks", async () => {
         localStorage.setItem("deck-first-0", JSON.stringify(legacyData()));
         localStorage.setItem("deck-later-1", JSON.stringify(legacyData()));

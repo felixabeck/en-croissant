@@ -237,6 +237,7 @@
     "Board.Practice.Reset.Description": "Are you sure you want to reset the opening data for \"{{name}}\"? All the learning progress will be lost.",
     "Board.Practice.Reset.Title": "Reset opening data",
     "Board.Practice.ResultDistribution": "{{white}}% / {{draw}}% / {{black}}%",
+    "Board.Practice.Retry": "Retry",
     "Board.Practice.SessionCorrect": "Correct",
     "Board.Practice.SessionIncorrect": "Incorrect",
     "Board.Practice.ShowAll": "Show all positions",

@@ -238,6 +238,7 @@
     "Board.Practice.Reset.Description": "Êtes-vous sûr de vouloir réinitialiser les données d'ouverture pour « {{name}} » ? Toute la progression de l'apprentissage sera perdue.",
     "Board.Practice.Reset.Title": "Réinitialiser les données d'ouverture",
     "Board.Practice.ResultDistribution": "Blancs {{white}}% / Nuls {{draw}}% / Noirs {{black}}%",
+    "Board.Practice.Retry": "Réessayer",
     "Board.Practice.SessionCorrect": "Correct",
     "Board.Practice.SessionIncorrect": "Incorrect",
     "Board.Practice.ShowAll": "Montrer toutes les positions",

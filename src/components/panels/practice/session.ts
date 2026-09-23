@@ -9,9 +9,10 @@ export function idlePracticeSession(token = 0): PracticeSession {
 }
 
 export type PracticeEvent =
-    | { type: "start"; token: number; fen: string; positionIndex: number }
+    | { type: "start"; token: number; fen: string; positionKey: string }
     | { type: "correct"; token: number; answer: string; timeTaken: number }
     | { type: "incorrect"; token: number; answer: string; playedMove: string; timeTaken: number }
+    | { type: "advance"; token: number }
     | { type: "end"; token: number };
 
 /**
@@ -27,11 +28,14 @@ export function practiceSessionReducer(
             phase: "waiting",
             token: event.token,
             currentFen: event.fen,
-            positionIndex: event.positionIndex,
+            positionKey: event.positionKey,
         };
     }
     if (event.token !== state.token) return state;
     if (event.type === "end") return idlePracticeSession(event.token);
+    if (event.type === "advance") {
+        return state.phase === "correct" ? { ...state, phase: "advancing" } : state;
+    }
     if (state.phase !== "waiting") return state;
     if (event.type === "correct") {
         return { ...state, phase: "correct", answer: event.answer, timeTaken: event.timeTaken };

@@ -238,6 +238,7 @@
     "Board.Practice.Reset.Description": "¿Seguro que deseas restablecer los datos de apertura de «{{name}}»? Se perderá todo el progreso de aprendizaje.",
     "Board.Practice.Reset.Title": "Restablecer datos de apertura",
     "Board.Practice.ResultDistribution": "Blancas {{white}}% / Tablas {{draw}}% / Negras {{black}}%",
+    "Board.Practice.Retry": "Reintentar",
     "Board.Practice.SessionCorrect": "Correcto",
     "Board.Practice.SessionIncorrect": "Incorrecto",
     "Board.Practice.ShowAll": "Mostrar todas las posiciones",

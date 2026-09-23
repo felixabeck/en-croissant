@@ -237,6 +237,7 @@
     "Board.Practice.Reset.Description": "\"{{name}}\" için açılış verilerini sıfırlamak istediğinizden emin misiniz? Tüm öğrenme ilerlemesi kaybolacak.",
     "Board.Practice.Reset.Title": "Açılış verilerini sıfırla",
     "Board.Practice.ResultDistribution": "Beyaz {{white}}% / Beraberlik {{draw}}% / Siyah {{black}}%",
+    "Board.Practice.Retry": "Tekrar dene",
     "Board.Practice.SessionCorrect": "Doğru",
     "Board.Practice.SessionIncorrect": "Yanlış",
     "Board.Practice.ShowAll": "Tüm pozisyonları göster",

@@ -22,7 +22,7 @@ export const PRACTICE_LOG_PAGE_SIZE = 100;
 /** Mirrors the native u32::MAX refusal for optimistic practice revisions. */
 const PRACTICE_REVISION_MAX = 0xffffffff;
 
-/** The old browser shape is retained only as migration input for startup migration. */
+/** The old browser shape is retained only as input for startup and inline migration. */
 export const reviewLogSchema = z
     .object({
         fen: z.string(),
@@ -53,6 +53,7 @@ export type PracticeDeckValue = {
     unappliedReviews: number;
     orphansAcknowledged: boolean;
     status: PracticeDeckStatus;
+    repairable?: boolean;
     error?: AppError;
 };
 
@@ -98,7 +99,8 @@ export type PracticeDeckMutation =
     | { type: "sync"; positions: Position[] }
     | { type: "reset"; positions: Position[] }
     | { type: "acknowledge" }
-    | { type: "repair" };
+    | { type: "repair" }
+    | { type: "retry" };
 
 export type PracticeDeckAction =
     | PracticeDeckValue
@@ -107,9 +109,8 @@ export type PracticeDeckAction =
 
 const positionsDocumentSchema = z.object({ positions: positionSchema.array() });
 
-type PracticeDeckCreationGuard = (identity: PracticeDeckKey) => Promise<void>;
-let practiceDeckCreationGuard: PracticeDeckCreationGuard = async () => undefined;
-let practiceMigrationFailures = new Map<string, AppError>();
+type PracticeMigrationFailure = { error: AppError; repairable: boolean };
+let practiceMigrationFailures = new Map<string, PracticeMigrationFailure>();
 let practiceWritesBlocked = false;
 let reportedInventoryAnomalies = new Set<string>();
 let practiceMigrationPromise: Promise<PracticeMigrationPassResult> | undefined;
@@ -126,6 +127,15 @@ function displayIdentity(identity: PracticeDeckKey): string {
 
 function errorAsAppError(error: unknown): AppError {
     return normalizeError(error);
+}
+
+class PracticeMigrationBlockedError extends Error {
+    constructor(
+        readonly appError: AppError,
+        readonly repairable: boolean,
+    ) {
+        super(appError.message, { cause: appError });
+    }
 }
 
 function reportMigrationFailures(
@@ -188,7 +198,15 @@ export function reportPracticeInventoryAnomalies(inventory: PracticeDeckInventor
         if (anomaly.fileId !== null && anomaly.game !== null) {
             practiceMigrationFailures.set(
                 identityKey({ file: anomaly.fileId, game: anomaly.game }),
-                errorAsAppError(new Error(i18n.t("Board.Practice.InventoryDamaged"))),
+                {
+                    error: {
+                        ...errorAsAppError(new Error(i18n.t("Board.Practice.InventoryDamaged"))),
+                        ...(anomaly.kind === "Unreadable"
+                            ? { backendCategory: "io" as const }
+                            : {}),
+                    },
+                    repairable: anomaly.kind !== "Unreadable",
+                },
             );
         }
     }
@@ -200,6 +218,45 @@ export function reportPracticeInventoryAnomalies(inventory: PracticeDeckInventor
         ),
         "Board.Practice.InventoryDamaged",
     );
+}
+
+function sameIdentity(left: PracticeDeckKey, right: { fileId: string; game: number }): boolean {
+    return left.file === right.fileId && left.game === right.game;
+}
+
+function clearIdentityFromMigrationResult(
+    result: PracticeMigrationPassResult,
+    identity: PracticeDeckKey,
+): PracticeMigrationPassResult {
+    const key = identityKey(identity);
+    return {
+        ...result,
+        outcomes: result.outcomes.filter(
+            (outcome) => identityKey(outcome.identity) !== key || outcome.status !== "failed",
+        ),
+        inventory: result.inventory
+            ? {
+                  ...result.inventory,
+                  anomalies: result.inventory.anomalies.filter(
+                      (anomaly) =>
+                          anomaly.fileId === null ||
+                          anomaly.game === null ||
+                          !sameIdentity(identity, {
+                              fileId: anomaly.fileId,
+                              game: anomaly.game,
+                          }),
+                  ),
+              }
+            : null,
+    };
+}
+
+function clearPracticeIdentityState(identity: PracticeDeckKey, rerunMigration: boolean): void {
+    practiceMigrationFailures.delete(identityKey(identity));
+    const previous = practiceMigrationPromise;
+    if (!previous) return;
+    const cleaned = previous.then((result) => clearIdentityFromMigrationResult(result, identity));
+    practiceMigrationPromise = rerunMigration ? cleaned.then(() => migrationPass()) : cleaned;
 }
 
 function inventoryIdentity(identity: { fileId: string; game: number }): string {
@@ -270,7 +327,10 @@ async function migrateLegacyDeck(
         };
     } catch (error) {
         const appError = errorAsAppError(error);
-        practiceMigrationFailures.set(identityKey(legacy.identity), appError);
+        practiceMigrationFailures.set(identityKey(legacy.identity), {
+            error: appError,
+            repairable: true,
+        });
         return { key: legacy.key, identity: legacy.identity, status: "failed", error: appError };
     }
 }
@@ -319,7 +379,10 @@ async function migrationPass(): Promise<PracticeMigrationPassResult> {
         for (const legacy of scan.keys) {
             const error = new Error(i18n.t("Board.Practice.MigrationScanFailed"));
             const appError = errorAsAppError(error);
-            practiceMigrationFailures.set(identityKey(legacy.identity), appError);
+            practiceMigrationFailures.set(identityKey(legacy.identity), {
+                error: appError,
+                repairable: true,
+            });
             outcomes.push({
                 key: legacy.key,
                 identity: legacy.identity,
@@ -345,7 +408,18 @@ async function migrationPass(): Promise<PracticeMigrationPassResult> {
         );
     }
     if (scan.complete && scan.trusted && inventoryTrusted) practiceWritesBlocked = false;
-    return { outcomes, inventory, scanTrusted: scan.trusted, inventoryTrusted };
+    let result: PracticeMigrationPassResult = {
+        outcomes,
+        inventory,
+        scanTrusted: scan.trusted,
+        inventoryTrusted,
+    };
+    for (const outcome of outcomes) {
+        if (outcome.status !== "failed") {
+            result = clearIdentityFromMigrationResult(result, outcome.identity);
+        }
+    }
+    return result;
 }
 
 function startPracticeMigrationPass(): Promise<PracticeMigrationPassResult> {
@@ -373,14 +447,14 @@ export function ensurePracticeMigration(): Promise<PracticeMigrationPassResult> 
 
 export function runPracticeMigrationPass(): Promise<PracticeMigrationPassResult> {
     const run = startPracticeMigrationPass();
-    practiceMigrationPromise ??= run;
+    practiceMigrationPromise = run;
     return run;
 }
 
 function migrationBlock(identity: PracticeDeckKey): Error | null {
     if (practiceWritesBlocked) return new Error(i18n.t("Board.Practice.MigrationScanFailed"));
     const failure = practiceMigrationFailures.get(identityKey(identity));
-    return failure ? new Error(failure.message, { cause: failure }) : null;
+    return failure ? new PracticeMigrationBlockedError(failure.error, failure.repairable) : null;
 }
 
 async function migrateLegacyDeckInline(identity: PracticeDeckKey): Promise<void> {
@@ -407,6 +481,7 @@ async function migrateLegacyDeckInline(identity: PracticeDeckKey): Promise<void>
     if (outcome.status === "failed") {
         throw new Error(outcome.error?.message ?? i18n.t("Board.Practice.MigrationFailed"));
     }
+    clearPracticeIdentityState(identity, false);
 }
 
 export function resetPracticeMigrationForTests(): void {
@@ -414,7 +489,6 @@ export function resetPracticeMigrationForTests(): void {
     practiceMigrationFailures = new Map();
     practiceWritesBlocked = false;
     reportedInventoryAnomalies = new Set();
-    practiceDeckCreationGuard = migrateLegacyDeckInline;
 }
 
 const emptyDeck = (status: PracticeDeckStatus = "loading"): PracticeDeckValue => ({
@@ -546,10 +620,13 @@ function deckFromSnapshot(snapshot: PracticeDeckSnapshot): PracticeDeckValue {
 }
 
 function failureState(current: PracticeDeckValue, error: unknown): PracticeDeckValue {
+    const practiceError = error instanceof PracticeMigrationBlockedError ? error : null;
+    const normalized = normalizeError(practiceError?.appError ?? error);
     return {
         ...current,
         status: "read-failed",
-        error: normalizeError(error),
+        repairable: practiceError?.repairable ?? normalized.backendCategory !== "io",
+        error: normalized,
     };
 }
 
@@ -701,7 +778,7 @@ async function persistSync(
     let effectiveCommitted = committed;
     if (committed.revision === 0 && committed.generation === 0) {
         await ensurePracticeMigration();
-        await practiceDeckCreationGuard(identity);
+        await migrateLegacyDeckInline(identity);
         const snapshot = await loadPracticeDeck(identity.file, identity.game);
         if (snapshot) effectiveCommitted = deckFromSnapshot(snapshot);
     }
@@ -737,6 +814,7 @@ async function persistReset(
         committed.revision,
         positionsDocument(positions),
     );
+    clearPracticeIdentityState(identity, false);
     return readyState(
         {
             ...committed,
@@ -806,27 +884,30 @@ export function createPracticeDeckAtom(
         controller.mounted = true;
         controller.writeBlocked = false;
         controller.committed = identity.file === "" ? initial : null;
-        const sequence = ++controller.requestSequence;
         setState(initial);
-        const writesBeforeHydration = controller.writeChain;
-        void writesBeforeHydration
-            .then(() => hydrate(identity))
-            .then(
-                (next) => {
-                    controller.committed = next;
-                    controller.writeBlocked = false;
-                    if (controller.mounted && sequence === controller.requestSequence) {
-                        setState(next);
-                    }
-                },
-                (error) => {
-                    controller.committed = null;
-                    controller.writeBlocked = true;
-                    if (controller.mounted && sequence === controller.requestSequence) {
-                        setState(failureState(initial, error));
-                    }
-                },
-            );
+        const startHydration = (sequence: number, loading: PracticeDeckValue) => {
+            const writesBeforeHydration = controller.writeChain;
+            void writesBeforeHydration
+                .then(() => hydrate(identity))
+                .then(
+                    (next) => {
+                        controller.committed = next;
+                        controller.writeBlocked = false;
+                        if (controller.mounted && sequence === controller.requestSequence) {
+                            setState(next);
+                        }
+                    },
+                    (error) => {
+                        controller.committed = null;
+                        controller.writeBlocked = true;
+                        if (controller.mounted && sequence === controller.requestSequence) {
+                            setState(failureState(loading, error));
+                        }
+                    },
+                );
+        };
+        const sequence = ++controller.requestSequence;
+        startHydration(sequence, initial);
         return () => {
             controller.mounted = false;
             controller.requestSequence += 1;
@@ -857,6 +938,39 @@ export function createPracticeDeckAtom(
                     set(stateAtom, readyState(current, mutation.positions));
                 }
                 return Promise.resolve();
+            }
+
+            if (mutation.type === "retry") {
+                const sequence = ++controller.requestSequence;
+                const loading = emptyDeck("loading");
+                controller.writeBlocked = false;
+                controller.committed = null;
+                set(stateAtom, loading);
+                const run = controller.writeChain.then(async () => {
+                    clearPracticeIdentityState(identity, true);
+                    await ensurePracticeMigration();
+                    return hydrate(identity);
+                });
+                void run.then(
+                    (next) => {
+                        controller.committed = next;
+                        controller.writeBlocked = false;
+                        if (controller.mounted && sequence === controller.requestSequence) {
+                            set(stateAtom, next);
+                        }
+                    },
+                    (error) => {
+                        controller.committed = null;
+                        controller.writeBlocked = true;
+                        if (controller.mounted && sequence === controller.requestSequence) {
+                            set(stateAtom, failureState(loading, error));
+                        }
+                    },
+                );
+                return run.then(
+                    () => undefined,
+                    () => undefined,
+                );
             }
 
             const observeWrite = (
@@ -917,6 +1031,7 @@ export function createPracticeDeckAtom(
                     task: async () => {
                         await repairPracticeDeck(identity.file, identity.game);
                         controller.writeBlocked = false;
+                        clearPracticeIdentityState(identity, true);
                         return emptyDeck("ready");
                     },
                 });
@@ -1004,5 +1119,3 @@ export function createPracticeDeckAtom(
     );
     return deckAtom;
 }
-
-practiceDeckCreationGuard = migrateLegacyDeckInline;

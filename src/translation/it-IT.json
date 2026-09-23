@@ -238,6 +238,7 @@
     "Board.Practice.Reset.Description": "Sei sicure di voler resettare i dati sulle aperture per \"{{name}}\"? Tutti i progressi di apprendimento andranno persi.",
     "Board.Practice.Reset.Title": "Resetta dati aperture",
     "Board.Practice.ResultDistribution": "Bianchi {{white}}% / Patte {{draw}}% / Neri {{black}}%",
+    "Board.Practice.Retry": "Riprova",
     "Board.Practice.SessionCorrect": "Corretto",
     "Board.Practice.SessionIncorrect": "Errato",
     "Board.Practice.ShowAll": "Mostra tutte le posizioni",

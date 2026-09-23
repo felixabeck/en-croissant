@@ -70,7 +70,7 @@ import {
 } from "@/state/practiceStorage";
 import { getTabFile, getTabGameNumber } from "@/utils/tabs";
 import { fileWorkspaceKey } from "@/utils/pathCapabilities";
-import { findFen, getNodeAtPath } from "@/utils/treeReducer";
+import { findFen, getBoardState, getNodeAtPath } from "@/utils/treeReducer";
 import RepertoireInfo from "./RepertoireInfo";
 import {
   canSubmitPracticeMove,
@@ -79,6 +79,9 @@ import {
   practiceSessionReducer,
   type PracticeSession,
 } from "./session";
+
+const PRACTICE_ADVANCE_DELAY_MS = 300;
+const PRACTICE_INCORRECT_DELAY_MS = 500;
 
 function PracticePanel() {
   const { t } = useTranslation();
@@ -157,6 +160,7 @@ function PracticePanel() {
   const sessionRef = useRef<PracticeSession>(idlePracticeSession());
   const endPracticeSessionRef = useRef<() => void>(() => undefined);
   const navigationTimersRef = useRef(new Set<ReturnType<typeof setTimeout>>());
+  const scheduledAdvanceTokensRef = useRef(new Set<number>());
   const deckRef = useRef(deck);
   deckRef.current = deck;
   const rootRef = useRef(root);
@@ -173,10 +177,19 @@ function PracticePanel() {
   makeMoveRef.current = makeMove;
 
   const rateCard = useCallback(
-    (positionIndex: number, card: import("ts-fsrs").Card, grade: 1 | 2 | 3 | 4) => {
-      const sourcePosition = deckRef.current.positions[positionIndex];
+    (positionKey: string, grade: 1 | 2 | 3 | 4) => {
+      const positionIndex = deckRef.current.positions.findIndex(
+        (position) => getBoardState(position.fen) === positionKey,
+      );
+      const sourcePosition =
+        positionIndex === -1 ? undefined : deckRef.current.positions[positionIndex];
       if (!sourcePosition) return;
-      const update = updateCardPerformance(deckRef.current.positions, positionIndex, card, grade);
+      const update = updateCardPerformance(
+        deckRef.current.positions,
+        positionIndex,
+        sourcePosition.card,
+        grade,
+      );
       if (!update) return;
       deckRef.current = {
         ...deckRef.current,
@@ -185,6 +198,7 @@ function PracticePanel() {
         error: undefined,
       };
       setDeck({ type: "rating", ...update, sourcePosition });
+      return true;
     },
     [setDeck],
   );
@@ -192,6 +206,7 @@ function PracticePanel() {
   const clearPracticeTimers = useCallback(() => {
     for (const timer of navigationTimersRef.current) clearTimeout(timer);
     navigationTimersRef.current.clear();
+    scheduledAdvanceTokensRef.current.clear();
     if (syncMessageTimerRef.current) clearTimeout(syncMessageTimerRef.current);
     syncMessageTimerRef.current = null;
   }, []);
@@ -241,8 +256,11 @@ function PracticePanel() {
   );
 
   const scheduleForSession = useCallback((token: number, callback: () => void, delay: number) => {
+    if (scheduledAdvanceTokensRef.current.has(token)) return;
+    scheduledAdvanceTokensRef.current.add(token);
     const timer = setTimeout(() => {
       navigationTimersRef.current.delete(timer);
+      scheduledAdvanceTokensRef.current.delete(token);
       if (sessionRef.current.token === token) callback();
     }, delay);
     navigationTimersRef.current.add(timer);
@@ -255,31 +273,57 @@ function PracticePanel() {
       if (currentDeck.positions.length === 0) return;
 
       const currentMode = currentStats.mode;
-      const remaining = currentStats.remainingPositions;
+      let remaining = currentStats.remainingPositions;
 
-      let c: (typeof currentDeck.positions)[0] | null | undefined;
+      let card: (typeof currentDeck.positions)[0] | null | undefined;
 
       if (currentMode === "full") {
-        if (remaining.length > 0) {
-          c = currentDeck.positions[remaining[0]];
-        } else {
-          c = null;
+        while (remaining.length > 0) {
+          card = currentDeck.positions.find(
+            (position) => getBoardState(position.fen) === remaining[0],
+          );
+          if (card) break;
+          remaining = remaining.slice(1);
+        }
+        if (remaining.length !== currentStats.remainingPositions.length) {
+          const nextStats = { ...currentStats, remainingPositions: remaining };
+          sessionStatsRef.current = nextStats;
+          setSessionStats(nextStats);
+          Object.assign(currentStats, nextStats);
         }
       } else {
-        c = getCardForReview(currentDeck.positions);
+        card = getCardForReview(currentDeck.positions);
       }
 
-      if (!c) {
+      if (!card) {
         completePracticeSession(currentStats);
         return;
       }
-      const path = findFen(c.fen, rootRef.current);
+      const path = findFen(card.fen, rootRef.current);
       if (!path) {
         setDeck({
           type: "sync",
-          positions: currentDeck.positions.filter((position) => position.fen !== c!.fen),
+          positions: currentDeck.positions.filter(
+            (position) => getBoardState(position.fen) !== getBoardState(card!.fen),
+          ),
         });
-        completePracticeSession(currentStats);
+        const nextStats =
+          currentMode === "full"
+            ? { ...currentStats, remainingPositions: remaining.slice(1) }
+            : currentStats;
+        sessionStatsRef.current = nextStats;
+        setSessionStats(nextStats);
+        setSession(
+          practiceSessionReducer(sessionRef.current, {
+            type: "advance",
+            token: sessionRef.current.token,
+          }),
+        );
+        scheduleForSession(
+          sessionRef.current.token,
+          () => newPractice(nextStats),
+          PRACTICE_ADVANCE_DELAY_MS,
+        );
         return;
       }
       goToMoveRef.current(path);
@@ -288,13 +332,12 @@ function PracticePanel() {
       setShowComments(false);
       setEvalOpen(false);
       setCardStartTime(Date.now());
-      const positionIndex = currentDeck.positions.indexOf(c);
       setSession(
         practiceSessionReducer(sessionRef.current, {
           type: "start",
           token: sessionRef.current.token + 1,
-          fen: c.fen,
-          positionIndex,
+          fen: card.fen,
+          positionKey: getBoardState(card.fen),
         }),
       );
     },
@@ -307,84 +350,121 @@ function PracticePanel() {
       setDeck,
       completePracticeSession,
       setSession,
+      setSessionStats,
+      scheduleForSession,
     ],
   );
 
-  useEffect(() => {
-    if (practiceState.phase === "correct") {
-      const token = sessionRef.current.token;
-      if (sessionStats.mode === "full") {
-        scheduleForSession(
-          token,
-          () => {
-            const latestStats = sessionStatsRef.current;
-            const remainingPositions = latestStats.remainingPositions.slice(1);
-            const nextStats = {
-              ...latestStats,
-              remainingPositions,
-              correct: latestStats.correct + 1,
-              streak: latestStats.streak + 1,
-              bestStreak: Math.max(latestStats.bestStreak, latestStats.streak + 1),
-            };
-            setSessionStats(nextStats);
-            newPractice(nextStats);
-          },
-          300,
-        );
-      } else if (practiceAutoDifficulty !== "none" && practiceState.positionIndex !== undefined) {
-        scheduleForSession(
-          token,
-          () => {
-            const positionIndex = sessionRef.current.positionIndex;
-            if (positionIndex === undefined) {
-              completePracticeSession();
-              return;
-            }
-            const card = deckRef.current.positions[positionIndex]?.card;
-            if (!card) {
-              completePracticeSession();
-              return;
-            }
-            const grade = Number(autoDifficultyRef.current) as 1 | 2 | 3 | 4;
-
-            rateCard(positionIndex, card, grade);
-            const latestStats = sessionStatsRef.current;
-            const nextStats = {
-              ...latestStats,
-              correct: latestStats.correct + 1,
-              streak: latestStats.streak + 1,
-              bestStreak: Math.max(latestStats.bestStreak, latestStats.streak + 1),
-            };
-            setSessionStats(nextStats);
-            newPractice(nextStats);
-          },
-          300,
-        );
+  const rateCurrentCard = useCallback(
+    (grade: 1 | 2 | 3 | 4) => {
+      const session = sessionRef.current;
+      const positionKey = session.positionKey;
+      if (session.phase !== "correct" || !positionKey || !rateCard(positionKey, grade)) {
+        return false;
       }
-    }
+      const latestStats = sessionStatsRef.current;
+      const nextStats = {
+        ...latestStats,
+        remainingPositions:
+          latestStats.mode === "full"
+            ? latestStats.remainingPositions.slice(1)
+            : latestStats.remainingPositions,
+        correct: latestStats.correct + 1,
+        streak: latestStats.streak + 1,
+        bestStreak: Math.max(latestStats.bestStreak, latestStats.streak + 1),
+      };
+      sessionStatsRef.current = nextStats;
+      setSessionStats(nextStats);
+      setSession(
+        practiceSessionReducer(session, {
+          type: "advance",
+          token: session.token,
+        }),
+      );
+      return true;
+    },
+    [rateCard, setSession, setSessionStats],
+  );
+
+  useEffect(() => {
+    if (practiceState.phase !== "correct") return;
+    const token = sessionRef.current.token;
+    if (sessionStatsRef.current.mode !== "full" && practiceAutoDifficulty === "none") return;
+    scheduleForSession(
+      token,
+      () => {
+        if (sessionRef.current.phase === "correct") {
+          if (sessionStatsRef.current.mode === "full") {
+            const latestStats = sessionStatsRef.current;
+            const nextStats = {
+              ...latestStats,
+              remainingPositions: latestStats.remainingPositions.slice(1),
+              correct: latestStats.correct + 1,
+              streak: latestStats.streak + 1,
+              bestStreak: Math.max(latestStats.bestStreak, latestStats.streak + 1),
+            };
+            sessionStatsRef.current = nextStats;
+            setSessionStats(nextStats);
+            setSession(
+              practiceSessionReducer(sessionRef.current, {
+                type: "advance",
+                token,
+              }),
+            );
+          } else {
+            const grade = Number(autoDifficultyRef.current) as 1 | 2 | 3 | 4;
+            if (!rateCurrentCard(grade)) {
+              setSession(
+                practiceSessionReducer(sessionRef.current, {
+                  type: "advance",
+                  token,
+                }),
+              );
+            }
+          }
+        }
+        newPractice(sessionStatsRef.current);
+      },
+      PRACTICE_ADVANCE_DELAY_MS,
+    );
   }, [
     practiceState.phase,
-    practiceState.positionIndex,
-    sessionStats,
     newPractice,
-    setSessionStats,
     practiceAutoDifficulty,
-    deck.positions,
-    setDeck,
-    rateCard,
+    rateCurrentCard,
     scheduleForSession,
-    completePracticeSession,
+    setSession,
+    setSessionStats,
   ]);
 
   const submitMove = useCallback(
     (san: string) => {
       const session = sessionRef.current;
       if (!canSubmitPracticeMove(session, currentFen)) return;
-      const positionIndex = session.positionIndex;
-      const card =
-        positionIndex === undefined ? undefined : deckRef.current.positions[positionIndex];
-      if (positionIndex === undefined || !card || card.fen !== session.currentFen) {
-        completePracticeSession();
+      const positionKey = session.positionKey;
+      const cardIndex = deckRef.current.positions.findIndex(
+        (position) => getBoardState(position.fen) === positionKey,
+      );
+      const card = cardIndex === -1 ? undefined : deckRef.current.positions[cardIndex];
+      if (!positionKey || !card || card.fen !== session.currentFen) {
+        const nextStats =
+          sessionStatsRef.current.mode === "full"
+            ? {
+                ...sessionStatsRef.current,
+                remainingPositions: sessionStatsRef.current.remainingPositions.filter(
+                  (key) => key !== positionKey,
+                ),
+              }
+            : sessionStatsRef.current;
+        sessionStatsRef.current = nextStats;
+        setSessionStats(nextStats);
+        setSession(
+          practiceSessionReducer(session, {
+            type: "advance",
+            token: session.token,
+          }),
+        );
+        scheduleForSession(session.token, () => newPractice(nextStats), PRACTICE_ADVANCE_DELAY_MS);
         return;
       }
       const timeTaken = Date.now() - cardStartTime;
@@ -400,7 +480,7 @@ function PracticePanel() {
         );
         return;
       }
-      if (sessionStatsRef.current.mode !== "full") rateCard(positionIndex, card.card, 1);
+      if (sessionStatsRef.current.mode !== "full") rateCard(positionKey, 1);
       setSession(
         practiceSessionReducer(session, {
           type: "incorrect",
@@ -410,17 +490,19 @@ function PracticePanel() {
           timeTaken,
         }),
       );
-      setSessionStats((previous) => ({
-        ...previous,
-        incorrect: previous.incorrect + 1,
+      const nextStats = {
+        ...sessionStatsRef.current,
+        incorrect: sessionStatsRef.current.incorrect + 1,
         streak: 0,
-      }));
-      scheduleForSession(session.token, () => goToNextRef.current(), 500);
+      };
+      sessionStatsRef.current = nextStats;
+      setSessionStats(nextStats);
+      scheduleForSession(session.token, () => goToNextRef.current(), PRACTICE_INCORRECT_DELAY_MS);
     },
     [
       cardStartTime,
       currentFen,
-      completePracticeSession,
+      newPractice,
       scheduleForSession,
       rateCard,
       setSession,
@@ -440,20 +522,21 @@ function PracticePanel() {
 
   function handleQualityRating(grade: 1 | 2 | 3 | 4) {
     if (practiceState.phase !== "correct") return;
-
-    const { positionIndex } = sessionRef.current;
-    if (positionIndex === undefined) return;
-    const card = deckRef.current.positions[positionIndex]?.card;
-    if (!card) return;
-
-    rateCard(positionIndex, card, grade);
-    setSessionStats((prev) => ({
-      ...prev,
-      correct: prev.correct + 1,
-      streak: prev.streak + 1,
-      bestStreak: Math.max(prev.bestStreak, prev.streak + 1),
-    }));
-    scheduleForSession(sessionRef.current.token, () => newPractice(), 300);
+    if (!rateCurrentCard(grade)) {
+      setSession(
+        practiceSessionReducer(sessionRef.current, {
+          type: "advance",
+          token: sessionRef.current.token,
+        }),
+      );
+    }
+    if (sessionStatsRef.current.mode !== "full") {
+      scheduleForSession(
+        sessionRef.current.token,
+        () => newPractice(sessionStatsRef.current),
+        PRACTICE_ADVANCE_DELAY_MS,
+      );
+    }
   }
 
   function startPractice() {
@@ -472,10 +555,10 @@ function PracticePanel() {
 
   function startFullPractice() {
     setCompletedSummary(null);
-    const indices = deckRef.current.positions.map((_, i) => i);
+    const positionKeys = deckRef.current.positions.map((position) => getBoardState(position.fen));
     const stats: Partial<PracticeSessionStats> = {
       mode: "full",
-      remainingPositions: indices,
+      remainingPositions: positionKeys,
       correct: 0,
       incorrect: 0,
       streak: 0,
@@ -489,8 +572,10 @@ function PracticePanel() {
     const latestStats = sessionStatsRef.current;
     if (latestStats.mode === "full" && latestStats.remainingPositions.length > 0) {
       const remainingPositions = latestStats.remainingPositions.slice(1);
-      setSessionStats((prev) => ({ ...prev, remainingPositions }));
-      newPractice({ remainingPositions });
+      const nextStats = { ...latestStats, remainingPositions };
+      sessionStatsRef.current = nextStats;
+      setSessionStats(nextStats);
+      newPractice(nextStats);
     } else {
       newPractice();
     }
@@ -557,9 +642,26 @@ function PracticePanel() {
                 title={t("Board.Practice.ReadFailed", { cause: deck.error?.message })}
               >
                 <Stack gap="xs">
-                  <Button variant="light" color="red" size="xs" onClick={() => toggleRepairModal()}>
-                    {t("Board.Practice.Repair")}
-                  </Button>
+                  <Group gap="xs">
+                    <Button
+                      variant="light"
+                      color="red"
+                      size="xs"
+                      onClick={() => setDeck({ type: "retry" })}
+                    >
+                      {t("Board.Practice.Retry")}
+                    </Button>
+                    {deck.repairable !== false && (
+                      <Button
+                        variant="light"
+                        color="red"
+                        size="xs"
+                        onClick={() => toggleRepairModal()}
+                      >
+                        {t("Board.Practice.Repair")}
+                      </Button>
+                    )}
+                  </Group>
                 </Stack>
               </Alert>
             )}
@@ -865,8 +967,11 @@ function PracticePanel() {
                       <QualityRatingPanel
                         onRate={handleQualityRating}
                         card={
-                          practiceState.positionIndex !== undefined
-                            ? deck.positions[practiceState.positionIndex].card
+                          practiceState.positionKey
+                            ? deck.positions.find(
+                                (position) =>
+                                  getBoardState(position.fen) === practiceState.positionKey,
+                              )?.card
                             : undefined
                         }
                         timeTaken={practiceState.timeTaken}
