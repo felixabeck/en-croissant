@@ -4,18 +4,21 @@
 //   pnpm verify:app                 run the checks
 //   pnpm verify:app --screenshot X  also write a PNG of the page to X
 //
-// It asserts thirty-three independently reported checks that no other gate in this repository can:
+// It asserts forty-seven independently reported checks that no other gate in this repository can:
 //   group | assertions
-//   startup | production authority, user-file safety, owned-image cleanup, real IPC bridge,
-//            document title
-//   image/CSP | retained-engine-portrait-render, retained-engine-data-url,
-//              retained-engine-WebKitGTK-decode, detached-blob-CSP-rejection
-//   native services | path capability refusal, live sound port and bundled sound bytes
-//   attachments | prepare, retire, live-session bytes/intent, titlebar cleanup
-//   native reads | mint, cancel, cancelled-ticket refusal, retained ticket, destroyed-window log
-//   Files | seeded-row-render, double-click-route, opened-game-notation
-//   titlebar/process | rendered controls, process-before-close, process-after-close
-//   shutdown | start, bounded completion, sound signal
+//   startup | 5: production authority, user-file safety, owned-image cleanup, real IPC bridge,
+//             document title
+//   practice durable storage | 14: seeded positions, paged reviews, migration, owner retention,
+//                                legacy-key preservation, renderer ratings, real sync, exact counts
+//   download destinations | 3: persisted destination, fresh-id refusal, database-root refusal
+//   image/CSP | 4: retained-engine-portrait-render, retained-engine-data-url,
+//                  retained-engine-WebKitGTK-decode, detached-blob-CSP-rejection
+//   native services | 3: path capability refusal, live sound port, bundled sound bytes
+//   attachments | 4: prepare, retire, live-session bytes/intent, titlebar cleanup
+//   native reads | 5: mint, cancel, cancelled-ticket refusal, retained ticket, destroyed-window log
+//   Files | 3: seeded-row-render, double-click-route, opened-game-notation
+//   titlebar/process | 3: rendered controls, process-before-close, process-after-close
+//   shutdown | 3: start, bounded completion, sound signal
 //
 // STAGED-FAILURE RECORD (push-review-policy §2), one row per assertion. The policy's fifth
 // condition is that an inherited artefact is a finding, not a licence: until every assertion here
@@ -142,6 +145,40 @@
 //                                           |   row shows its game — timed out waiting for the  |
 //                                           |   opened game's notation; expected 1.e4e52.d4d5   |
 
+// Staged-failure record for the practice checks (2026-09-23). Each break was made in the
+// release artifact, rebuilt, run inside the 4 GiB scope, and restored with a clean rebuild.
+// The sync assertion now records a failed wait through the assertion helper so its own FAIL line and the final
+// count FAIL line remain independently visible.
+//   break                                   | assertion/message                              | exit
+//   native positions snapshot drops one    | FAIL  the native practice read returns all     | 1
+//   seeded position                        |   12,000 seeded positions                      |
+//   review paging omits the oldest entry   | FAIL  native practice review paging returns    | 1
+//                                           |   every seeded entry and reaches the oldest    |
+//                                           |   review                                        |
+//   migration command refuses the legacy   | FAIL  the legacy practice deck is migrated    | 1
+//   document                               |   into the native store through real IPC       |
+//   renderer rating also writes a          | FAIL  renderer ratings create no new legacy   | 1
+//   deck-id-game key                        |   key and do not grow the existing key         |
+//   sync command acknowledges without      | FAIL  the real sync path stores 500 further    | 1
+//   writing                                |   repertoire positions; FAIL  final restart   |
+//                                           |   preserves exact native position and review   |
+//                                           |   counts for both decks                         |
+//   post-rating review page omits one      | FAIL  fifty renderer ratings land in the      | 1
+//   seeded entry at revision 100051         |   native practice review store                 |
+//   post-rating deck snapshot omits one    | FAIL  renderer ratings do not alter the       | 1
+//   position at revision 100051             |   large deck's 12,000 native positions         |
+//   panel maps Good (3) to Hard (2)         | FAIL  the 50 new native reviews record the    | 1
+//                                           |   panel's Good rating — ratings: [2, ...]      |
+//   loading/read-failed sync reset removed | FAIL  the real sync path stores 500 further    | 1
+//                                           |   repertoire positions; FAIL  final restart   |
+//                                           |   preserves exact native position and review   |
+//                                           |   counts for both decks                         |
+//
+// The native position/review/migration breaks were grouped once and aborted at the disabled
+// practice prerequisite after their own FAIL lines; the renderer-writer break reached its own
+// key assertion and then aborted in the extended-sync wait. Those observed aborts are listed
+// below rather than inferred as additional assertion evidence.
+
 // ARGUED, NOT STAGED. These assertions have no row because the only available break aborts before
 // their check (or requires editing this verifier):
 //   assertion                              | reason observed
@@ -169,11 +206,41 @@
 // the assertion session. A first image-cleanup break left all checks green because startup never
 // put the retained image through that cleanup path; it was restored and replaced by the staged
 // startup-retirement break above. None of these aborts is cited as assertion evidence.
+//
+// Practice staged-break aborts:
+//   assertion                              | reason observed
+//   migration capability retention         | The migration refusal left the final retained-owner
+//                                         | startup prerequisite unsatisfied before final
+//                                         | inventory/count checks; its direct migration FAIL
+//                                         | is recorded above.
+//   legacy-key untouched                   | No binary-only break can delete a browser key;
+//                                         | doing so would edit this verifier's WebDriver
+//                                         | fixture or stage the explicitly excluded key
+//                                         | deletion behavior.
+//   final native inventory and migrated   | The migration refusal aborts final practice
+//   counts                                 | retention startup before those checks; the sync
+//                                         | break independently reached and failed final
+//                                         | exact counts while inventory and migrated counts
+//                                         | remained green.
+//   legacy capability after key removal   | Dropping this exact id from the native inventory
+//                                         | contribution makes the app drop its owner after
+//                                         | the browser key is removed, but the kept
+//                                         | reopenAssertionSession wait aborts first at
+//                                         | "legacy-key removal startup to retain practice
+//                                         | capabilities" (exit 1), before the retention
+//                                         | assertion can print a FAIL line. Reaching the
+//                                         | assertion would require changing that kept
+//                                         | verifier wait, so no binary-only independent row
+//                                         | is possible.
 
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
+import { Chess, makeSquare } from "chessops";
+import { makeFen, parseFen } from "chessops/fen";
+import { makeSan } from "chessops/san";
+import { createEmptyCard } from "ts-fsrs";
 import {
   APP_BINARY,
   Session,
@@ -193,6 +260,9 @@ const BASE_DIRECTORY_APP_DATA = 14; // @tauri-apps/api BaseDirectory.AppData
 const IPC_PROBE_TIMEOUT_MS = 5_000;
 const CSP_PROBE_TIMEOUT_MS = 4_000;
 const FILES_PROBE_TIMEOUT_MS = 20_000;
+const PRACTICE_RENDERER_TIMEOUT_MS = 600_000;
+const PRACTICE_REVIEW_PAGE_LIMIT = 500; // Mirrors PRACTICE_READ_MAX_ENTRIES in practice.rs.
+const PRACTICE_MOVE_CLICK_DELAY_MS = 40;
 // Gap between the two clicks of the double-click. It must stay inside the platform double-click
 // interval, or WebKitGTK delivers two single clicks and the scenario proves nothing.
 const DOUBLE_CLICK_GAP_MS = 60;
@@ -235,6 +305,259 @@ const check = (condition, description, detail) => {
     if (detail) console.log(`      ${detail}`);
   }
 };
+
+const PRACTICE_STORAGE_VERSION = 1;
+const PRACTICE_SHARD_SEAL_BYTES = 128 * 1024;
+const practiceStateKey = (fen) => fen.split(" ").slice(0, 4).join(" ");
+const sha256 = (value) => createHash("sha256").update(value).digest("hex");
+const practiceDeckHash = (fileId, game) => sha256(`${fileId}\0${game}`);
+const practiceMoveUci = (move) =>
+  `${makeSquare(move.from)}${makeSquare(move.to)}${move.promotion ?? ""}`;
+
+function practiceLegalMoves(position) {
+  const moves = [];
+  for (const [from, destinations] of position.allDests()) {
+    if (destinations.isEmpty()) continue;
+    const piece = position.board.get(from);
+    for (const to of destinations) {
+      const move = { from, to };
+      if (piece?.role === "pawn" && (to >= 56 || to < 8)) move.promotion = "queen";
+      moves.push(move);
+    }
+  }
+  return moves;
+}
+
+function buildPracticeFixtureTree() {
+  let randomState = 0x4f1a2b3c;
+  const nextRandom = () => {
+    randomState = (Math.imul(randomState, 1664525) + 1013904223) >>> 0;
+    return randomState / 4294967296;
+  };
+  const movesFor = (position, seen) => {
+    const moves = practiceLegalMoves(position).filter((move) => !position.board.get(move.to));
+    moves.sort(() => nextRandom() - 0.5);
+    return moves.filter((move) => {
+      const next = position.clone();
+      next.play(move);
+      return !seen.has(practiceStateKey(makeFen(next.toSetup())));
+    });
+  };
+  const makeNode = (position, move) => {
+    const next = position.clone();
+    const san = makeSan(next, move);
+    next.play(move);
+    return { position: next, san, children: [] };
+  };
+  const setup = parseFen("7k/6rr/8/8/8/8/RR6/K7 w - - 0 1").unwrap();
+  const root = { position: Chess.fromSetup(setup).unwrap(), children: [] };
+  const seen = new Set([practiceStateKey(makeFen(root.position.toSetup()))]);
+  // buildFromTree excludes the root when the repertoire has no explicit start path.
+  const target = 12_501;
+  const whiteNodes = [root];
+  let cards = 0;
+  // Breadth-first keeps the RAV tree shallow enough for tab persistence. Each white node has one
+  // answer; each black node contributes at most two unseen replies (two is within the plan's
+  // four-reply ceiling and keeps the generated tree close to the measured 30k-node fixture).
+  for (let index = 0; index < whiteNodes.length && cards < target; index += 1) {
+    const whiteNode = whiteNodes[index];
+    const answer = movesFor(whiteNode.position, seen)[0];
+    if (!answer) continue;
+    const blackNode = makeNode(whiteNode.position, answer);
+    whiteNode.children = [blackNode];
+    const blackKey = practiceStateKey(makeFen(blackNode.position.toSetup()));
+    seen.add(blackKey);
+    cards += 1;
+    const replies = movesFor(blackNode.position, seen).slice(0, 2);
+    for (const reply of replies) {
+      const child = makeNode(blackNode.position, reply);
+      blackNode.children.push(child);
+      seen.add(practiceStateKey(makeFen(child.position.toSetup())));
+      whiteNodes.push(child);
+    }
+  }
+  if (cards !== target) throw new Error(`could not extend practice fixture to ${target} cards`);
+  return root;
+}
+
+function clonePracticeFixtureTree(node) {
+  const clone = {
+    position: node.position.clone(),
+    san: node.san,
+    children: [],
+  };
+  const pending = [[node, clone]];
+  while (pending.length > 0) {
+    const [source, target] = pending.pop();
+    for (const child of source.children) {
+      const childClone = { position: child.position.clone(), san: child.san, children: [] };
+      target.children.push(childClone);
+      pending.push([child, childClone]);
+    }
+  }
+  return clone;
+}
+
+function collectPracticePositions(root) {
+  // Independent oracle: keep expected fixture cards separate from the product's opening.ts logic.
+  const seen = new Set();
+  const positions = [];
+  const visit = (node) => {
+    const fen = makeFen(node.position.toSetup());
+    const key = practiceStateKey(fen);
+    if (
+      node !== root &&
+      node.children.length > 0 &&
+      node.position.turn === "white" &&
+      !seen.has(key)
+    ) {
+      seen.add(key);
+      const firstMove = node.children[0];
+      positions.push({
+        fen,
+        answer: firstMove.san,
+        uci: practiceMoveUciFromNodes(node, firstMove),
+      });
+    }
+    for (let index = node.children.length - 1; index >= 0; index -= 1) {
+      pending.push(node.children[index]);
+    }
+  };
+  const pending = [root];
+  while (pending.length > 0) visit(pending.pop());
+  return positions;
+}
+
+function practiceMoveUciFromNodes(parent, child) {
+  const move = practiceLegalMoves(parent.position).find(
+    (candidate) => makeSan(parent.position, candidate) === child.san,
+  );
+  if (!move) throw new Error(`could not resolve fixture move ${child.san}`);
+  return practiceMoveUci(move);
+}
+
+function prunePracticeFixtureTree(root, count) {
+  const orderedCards = [];
+  const seen = new Set();
+  const pending = [root];
+  while (pending.length > 0) {
+    const node = pending.pop();
+    const fen = makeFen(node.position.toSetup());
+    const key = practiceStateKey(fen);
+    if (
+      node !== root &&
+      node.children.length > 0 &&
+      node.position.turn === "white" &&
+      !seen.has(key)
+    ) {
+      seen.add(key);
+      orderedCards.push(node);
+    }
+    for (let index = node.children.length - 1; index >= 0; index -= 1) {
+      pending.push(node.children[index]);
+    }
+  }
+  const retainedCards = orderedCards.slice(0, count);
+  const kept = new Set(retainedCards);
+  const keep = new Map();
+  const postorder = [{ node: root, visited: false }];
+  while (postorder.length > 0) {
+    const frame = postorder.pop();
+    if (frame.visited) {
+      const retain = kept.has(frame.node) || frame.node.children.some((child) => keep.get(child));
+      keep.set(frame.node, retain);
+      frame.node.children = frame.node.children.filter(
+        (child, index) => (kept.has(frame.node) && index === 0) || keep.get(child),
+      );
+    } else {
+      postorder.push({ node: frame.node, visited: true });
+      for (const child of frame.node.children) postorder.push({ node: child, visited: false });
+    }
+  }
+  return retainedCards.map((node) => ({
+    fen: makeFen(node.position.toSetup()),
+    answer: node.children[0].san,
+    uci: practiceMoveUciFromNodes(node, node.children[0]),
+  }));
+}
+
+function practicePgn(root) {
+  const emit = (node) => {
+    if (node.children.length === 0) return "";
+    let result = ` ${node.children[0].san}`;
+    for (const alternative of node.children.slice(1)) result += ` (${emitLine(alternative)})`;
+    return result + emit(node.children[0]);
+  };
+  const emitLine = (node) => `${node.san}${emit(node)}`;
+  const fen = makeFen(root.position.toSetup());
+  return `[Event "verify:practice"]\n[Site "verify:app"]\n[SetUp "1"]\n[FEN "${fen}"]\n[Result "*"]\n\n${emit(root)} *\n`;
+}
+
+function emptyPracticeCard() {
+  return { ...createEmptyCard(), due: new Date("2026-01-01T00:00:00.000Z").toISOString() };
+}
+
+function practicePositionsDocument(positions) {
+  return positions.map(({ fen, answer }) => ({ fen, answer, card: emptyPracticeCard() }));
+}
+
+async function seedNativePracticeDeck(practiceDirectory, fileId, game, positions, reviewCount) {
+  const hash = practiceDeckHash(fileId, game);
+  const entries = Array.from({ length: reviewCount }, (_, index) => {
+    const entry = { index, kind: "seed" };
+    return { id: `seed-review-${String(index).padStart(6, "0")}`, rev: index + 1, entry };
+  });
+  const shards = [];
+  let current = {
+    version: PRACTICE_STORAGE_VERSION,
+    fileId,
+    game,
+    generation: 0,
+    ordinal: 0,
+    entries: [],
+  };
+  for (const entry of entries) {
+    const candidate = { ...current, entries: [...current.entries, entry] };
+    if (
+      current.entries.length > 0 &&
+      Buffer.byteLength(JSON.stringify(candidate)) > PRACTICE_SHARD_SEAL_BYTES
+    ) {
+      shards.push(current);
+      current = { ...current, ordinal: current.ordinal + 1, entries: [entry] };
+    } else {
+      current = candidate;
+    }
+  }
+  if (current.entries.length > 0) shards.push(current);
+  const positionValues = practicePositionsDocument(positions);
+  const lastEntry = entries.at(-1);
+  const envelope = {
+    version: PRACTICE_STORAGE_VERSION,
+    fileId,
+    game,
+    revision: reviewCount,
+    generation: 0,
+    lastEntryId: lastEntry.id,
+    lastEntryDigest: sha256(JSON.stringify(lastEntry.entry)),
+    appliedEntries: reviewCount,
+    orphanEntries: 0,
+    orphanAcknowledgedCount: 0,
+    legacySource: "none",
+    migratedAt: null,
+    migratedEntries: null,
+    migratedPositionsDigest: null,
+    positions: positionValues,
+  };
+  await mkdir(practiceDirectory, { recursive: true });
+  await writeFile(join(practiceDirectory, `${hash}-positions.json`), JSON.stringify(envelope));
+  for (const shard of shards) {
+    await writeFile(
+      join(practiceDirectory, `${hash}-g0-reviews-${shard.ordinal}.json`),
+      JSON.stringify(shard),
+    );
+  }
+  return { positions: positionValues, reviewIds: entries.map(({ id }) => id) };
+}
 
 async function closeApplicationThroughTitlebar(session, label) {
   await waitFor(`${label} window controls`, () =>
@@ -291,6 +614,236 @@ async function invokeAndWait(session, label, globalName, invokeExpression, succe
   ).catch((error) => ({ error: error.message }));
 }
 
+async function invokeJsonAndWait(session, label, globalName, invokeExpression) {
+  const result = await invokeAndWait(
+    session,
+    label,
+    globalName,
+    `(${invokeExpression}).then(value => JSON.stringify(value))`,
+    "json",
+  );
+  if (typeof result.json !== "string") return { result, value: undefined };
+  try {
+    return { result, value: JSON.parse(result.json) };
+  } catch (error) {
+    return { result, value: undefined, error: error.message };
+  }
+}
+
+async function loadPracticeDeckThroughIpc(session, fileId, game, globalName) {
+  return invokeJsonAndWait(
+    session,
+    `load_practice_deck for ${fileId} to settle`,
+    globalName,
+    `window.__TAURI_INTERNALS__.invoke("load_practice_deck", ${JSON.stringify({ fileId, game })})`,
+  );
+}
+
+async function loadAllPracticeReviews(session, fileId, game, globalPrefix) {
+  const ids = [];
+  const entries = [];
+  let cursor = null;
+  let page = 0;
+  do {
+    const loaded = await invokeJsonAndWait(
+      session,
+      `load_practice_reviews page ${page} for ${fileId} to settle`,
+      `${globalPrefix}${page}`,
+      `window.__TAURI_INTERNALS__.invoke("load_practice_reviews", ${JSON.stringify({
+        fileId,
+        game,
+        cursor,
+        limit: PRACTICE_REVIEW_PAGE_LIMIT,
+      })})`,
+    );
+    if (!loaded.value || !Array.isArray(loaded.value.entries)) {
+      return {
+        ids,
+        entries,
+        complete: false,
+        error: loaded.result.rejected ?? loaded.error ?? "practice review page was malformed",
+      };
+    }
+    entries.push(...loaded.value.entries);
+    ids.push(...loaded.value.entries.map(({ id }) => id));
+    cursor = loaded.value.nextCursor;
+    page += 1;
+  } while (cursor !== null);
+  return { ids, entries, complete: true, error: undefined };
+}
+
+/** True when the stored cards are exactly the expected fixture cards (FEN → answer), in any order. */
+function practiceCardsMatch(actual, expected) {
+  if (!Array.isArray(actual) || actual.length !== expected.length) return false;
+  const expectedAnswers = new Map(expected.map(({ fen, answer }) => [fen, answer]));
+  const seen = new Set();
+  return actual.every(({ fen, answer }) => {
+    if (seen.has(fen) || expectedAnswers.get(fen) !== answer) return false;
+    seen.add(fen);
+    return true;
+  });
+}
+
+function practicePositionsFromSnapshot(snapshot) {
+  try {
+    const positions = JSON.parse(snapshot?.positionsDocument ?? "null").positions;
+    return Array.isArray(positions) ? positions : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** One real left click at viewport coordinates through W3C pointer actions. */
+async function clickAt(session, x, y, id = "mouse") {
+  await session.call("POST", "/actions", {
+    actions: [
+      {
+        type: "pointer",
+        id,
+        parameters: { pointerType: "mouse" },
+        actions: [
+          { type: "pointerMove", duration: 0, x, y, origin: "viewport" },
+          { type: "pointerDown", button: 0 },
+          { type: "pointerUp", button: 0 },
+        ],
+      },
+    ],
+  });
+}
+
+async function filesRowCoordinates(session, name, timeoutMs = FILES_PROBE_TIMEOUT_MS) {
+  return waitFor(
+    `${name} Files row`,
+    async () => {
+      await session
+        .execute(
+          `const link = document.querySelector('a[href="/files"]');
+           if (link && location.pathname !== "/files") link.click();
+           return true`,
+        )
+        .catch(() => false);
+      return session
+        .execute(
+          `const row = document.querySelector('[role="treeitem"][aria-label=' + JSON.stringify(arguments[0]) + ']');
+           if (!row) return false;
+           const box = row.getBoundingClientRect();
+           return { x: Math.round(box.left + Math.min(60, box.width / 2)), y: Math.round(box.top + box.height / 2) };`,
+          [name],
+        )
+        .catch(() => false);
+    },
+    { timeoutMs },
+  );
+}
+
+async function openFilesEntry(session, name, timeoutMs = FILES_PROBE_TIMEOUT_MS) {
+  const row = await filesRowCoordinates(session, name, timeoutMs);
+  await clickAt(session, row.x, row.y);
+  try {
+    await waitFor(
+      `${name} game preview to load`,
+      () =>
+        session
+          .execute(
+            "return document.body.innerText.includes('verify:practice') && Boolean(document.querySelector('button[aria-label=\"Open\"]'))",
+          )
+          .catch(() => false),
+      { timeoutMs },
+    );
+  } catch (error) {
+    const state = await session
+      .execute(
+        "return { path: location.pathname, text: document.body.innerText.slice(0, 1000), boards: document.querySelectorAll('cg-board').length }",
+      )
+      .catch(() => ({ path: "unavailable", text: "unavailable", boards: "unavailable" }));
+    throw new Error(`${error.message}; renderer state: ${JSON.stringify(state)}`);
+  }
+  const openButton = await waitFor(
+    `${name} FileCard open control`,
+    () =>
+      session
+        .execute(
+          `const button = document.querySelector('button[aria-label="Open"]');
+           if (!button) return false;
+           const box = button.getBoundingClientRect();
+           return {
+             x: Math.round(box.left + box.width / 2),
+             y: Math.round(box.top + box.height / 2),
+             disabled: button.disabled,
+           };`,
+        )
+        .catch(() => false),
+    { timeoutMs },
+  );
+  await clickAt(session, openButton.x, openButton.y);
+  try {
+    await waitFor(
+      `${name} to open in the real renderer`,
+      () =>
+        session
+          .execute(
+            "return location.pathname === '/' && document.body.innerText.includes('Start Practice')",
+          )
+          .catch(() => false),
+      { timeoutMs },
+    );
+  } catch (error) {
+    const state = await session
+      .execute("return { path: location.pathname, text: document.body.innerText.slice(0, 1000) }")
+      .catch(() => ({ path: "unavailable", text: "unavailable" }));
+    throw new Error(`${error.message}; renderer state: ${JSON.stringify(state)}`);
+  }
+}
+
+async function closeRestoredAnalysisTab(session) {
+  const closeButton = await waitFor("the restored analysis tab close control", () =>
+    session
+      .execute(
+        "const button = [...document.querySelectorAll('button[aria-label=\"Close tab\"]')].reverse().find((candidate) => {\n" +
+          "  const box = candidate.getBoundingClientRect();\n" +
+          "  return box.width > 0 && box.height > 0;\n" +
+          "});\n" +
+          "if (!button) return false;\n" +
+          "const box = button.getBoundingClientRect();\n" +
+          "return { x: Math.round(box.left + box.width / 2), y: Math.round(box.top + box.height / 2) };",
+      )
+      .catch(() => false),
+  );
+  await clickAt(session, closeButton.x, closeButton.y, "close-restored-analysis-tab");
+  const closeOutcome = await waitFor("the restored practice tab to close or request discard", () =>
+    session
+      .execute(
+        `const tab = [...document.querySelectorAll('[role="tab"]')].find((candidate) => candidate.textContent?.includes("verify:practice"));
+         if (!tab) return { kind: "closed" };
+         const dialog = [...document.querySelectorAll('[role="dialog"]')].find((candidate) => candidate.textContent?.includes("Unsaved changes"));
+         const discard = dialog && [...dialog.querySelectorAll("button")].find((candidate) => candidate.textContent?.includes("Close without saving"));
+         if (!discard) return false;
+         const box = discard.getBoundingClientRect();
+         return { kind: "discard", x: Math.round(box.left + box.width / 2), y: Math.round(box.top + box.height / 2) };`,
+      )
+      .catch(() => false),
+  );
+  if (closeOutcome.kind === "discard") {
+    await clickAt(session, closeOutcome.x, closeOutcome.y, "discard-restored-practice-tab");
+    await waitFor("the restored practice tab discard to complete", () =>
+      session
+        .execute(
+          `return ![...document.querySelectorAll('[role="tab"]')].some((candidate) => candidate.textContent?.includes("verify:practice"));`,
+        )
+        .catch(() => false),
+    );
+  }
+  await waitFor("the restored analysis board and practice panel to close", () =>
+    session
+      .execute(
+        `return document.querySelectorAll('cg-board').length === 0 &&
+          ![...document.querySelectorAll('[role="tab"]')].some((candidate) => candidate.textContent?.includes("verify:practice")) &&
+          !document.body.innerText.includes("Start Practice");`,
+      )
+      .catch(() => false),
+  );
+}
+
 let cleanupSettled = false;
 process.on("exit", () => {
   if (!cleanupSettled) console.error("cleanup did not finish before process exit");
@@ -312,6 +865,38 @@ try {
 
   const { socket } = await startCompositor();
   const { profileDirectory } = await startDriver({ waylandDisplay: socket });
+  const practiceGame = 0;
+  const largePracticeId = "verify-practice-large-00000000-0000-4000-8000-000000000001";
+  const legacyPracticeId = "verify-practice-legacy-00000000-0000-4000-8000-000000000002";
+  const legacyPracticeKey = `deck-${legacyPracticeId}-${practiceGame}`;
+  const largePracticeName = "verify-practice-large";
+  const extendedPracticeTree = buildPracticeFixtureTree();
+  const oraclePracticePositions = collectPracticePositions(extendedPracticeTree);
+  const initialPracticeTree = clonePracticeFixtureTree(extendedPracticeTree);
+  const initialPracticePositions = prunePracticeFixtureTree(initialPracticeTree, 12_000);
+  const extendedPracticePositions = prunePracticeFixtureTree(extendedPracticeTree, 12_500);
+  if (
+    initialPracticePositions.length !== 12_000 ||
+    extendedPracticePositions.length !== 12_500 ||
+    JSON.stringify(initialPracticePositions) !==
+      JSON.stringify(oraclePracticePositions.slice(0, 12_000)) ||
+    JSON.stringify(extendedPracticePositions) !==
+      JSON.stringify(oraclePracticePositions.slice(0, 12_500))
+  ) {
+    throw new Error(
+      `practice fixture disagreed with its independent card oracle (${initialPracticePositions.length}/${extendedPracticePositions.length}; expected ${oraclePracticePositions.length})`,
+    );
+  }
+  const legacyPracticePositions = practicePositionsDocument(initialPracticePositions.slice(0, 3));
+  const legacyPracticeLogs = legacyPracticePositions.slice(0, 2).map((position, index) => ({
+    ...position.card,
+    fen: position.fen,
+    rating: index + 3,
+  }));
+  const legacyPracticeDocument = JSON.stringify({
+    positions: legacyPracticePositions,
+    logs: legacyPracticeLogs,
+  });
   // WebKit local storage belongs to the isolated profile, but it can only be initialized through
   // the real application origin. Seed valid durable image owners, close cleanly, and only then
   // install the registry fixture that the asserted startup must reconcile.
@@ -340,6 +925,7 @@ try {
      localStorage.setItem("file-workspace", arguments[1]);
      localStorage.setItem("file-workspace-display-name", arguments[2]);
      localStorage.setItem("download-destination-capability", arguments[3]);
+     localStorage.setItem(arguments[4], arguments[5]);
      return true`,
     [
       JSON.stringify([
@@ -349,6 +935,8 @@ try {
       JSON.stringify({ id: { id: filesWorkspaceId }, kind: "fileWorkspace" }),
       JSON.stringify("Files fixture"),
       JSON.stringify({ id: "verify-download-destination" }),
+      legacyPracticeKey,
+      legacyPracticeDocument,
     ],
   );
   const seedClose = await closeApplicationThroughTitlebar(seedSession, "seed");
@@ -373,10 +961,31 @@ try {
   const retiredImage = join(imageDirectory, retiredImageId);
   const orphanImage = join(imageDirectory, orphanImageId);
   const filesWorkspace = join(fixtureDirectory, "files-workspace");
+  const practiceDirectory = join(
+    profileDirectory,
+    ".local/share/com.chessriddle.encroissant/practice",
+  );
+  const largePracticePath = join(filesWorkspace, `${largePracticeName}.pgn`);
+  const largePracticeMetadataPath = join(filesWorkspace, `${largePracticeName}.info`);
+  const legacyPracticePath = join(fixtureDirectory, "legacy-practice-repertoire.pgn");
   await mkdir(ownedRoot, { recursive: true });
   await mkdir(downloadDestination, { recursive: true });
   await mkdir(filesWorkspace, { recursive: true });
   await writeFile(join(filesWorkspace, `${filesRowName}.pgn`), filesGamePgn);
+  await writeFile(largePracticePath, practicePgn(initialPracticeTree));
+  await writeFile(largePracticeMetadataPath, JSON.stringify({ type: "repertoire", tags: [] }));
+  await writeFile(
+    legacyPracticePath,
+    `[Event "legacy practice fixture"]\n[Result "*"]\n\n1. e4 *\n`,
+  );
+  const seededLargePractice = await seedNativePracticeDeck(
+    practiceDirectory,
+    largePracticeId,
+    practiceGame,
+    initialPracticePositions,
+    100_001,
+  );
+  const extendedLargePracticePgn = practicePgn(extendedPracticeTree);
   await mkdir(imageDirectory, { recursive: true });
   await writeFile(orphanFile, "do not delete registry fixture bytes");
   const retainedImageBytes = Buffer.from(retainedImageBase64, "base64");
@@ -465,6 +1074,22 @@ try {
           ["readPgn", "writePgn"],
           true,
         ),
+        await storedEntry(
+          largePracticeId,
+          "Large practice fixture",
+          largePracticePath,
+          "pgnFile",
+          ["readPgn", "writePgn"],
+          false,
+        ),
+        await storedEntry(
+          legacyPracticeId,
+          "Legacy practice fixture",
+          legacyPracticePath,
+          "pgnReadOnlyFile",
+          ["readPgn"],
+          false,
+        ),
       ],
       active_database_root: { id: "verify-owned-root" },
       active_puzzle_root: null,
@@ -542,6 +1167,427 @@ try {
   check(
     (await session.execute("return document.title")) === "ChessFable",
     "the real renderer exposes the ChessFable document title",
+  );
+
+  const waitForPracticeOwners = async (label) =>
+    waitFor(
+      label,
+      async () => {
+        const registry = JSON.parse(await readFile(registryFile, "utf8"));
+        return registry.entries.some(({ id }) => id.id === largePracticeId) &&
+          registry.entries.some(({ id }) => id.id === legacyPracticeId)
+          ? registry
+          : false;
+      },
+      { timeoutMs: IPC_PROBE_TIMEOUT_MS },
+    );
+  const armStartupReconciliationProbe = async () => {
+    const registry = JSON.parse(await readFile(registryFile, "utf8"));
+    const probeId = "verify-unowned-book";
+    registry.entries = registry.entries.filter(({ id }) => id.id !== probeId);
+    registry.entries.push(
+      await storedEntry(
+        probeId,
+        "Startup reconciliation probe",
+        orphanFile,
+        "openingBook",
+        ["openingBookRead"],
+        false,
+      ),
+    );
+    await writeFile(registryFile, JSON.stringify(registry));
+  };
+  const waitForCurrentStartupReconciliation = async (label) =>
+    waitFor(
+      label,
+      async () => {
+        const registry = JSON.parse(await readFile(registryFile, "utf8"));
+        return registry.entries.some(({ id }) => id.id === "verify-unowned-book")
+          ? false
+          : registry;
+      },
+      { timeoutMs: IPC_PROBE_TIMEOUT_MS },
+    );
+  const reopenAssertionSession = async (label) => {
+    const closed = await closeApplicationThroughTitlebar(session, label);
+    if (!closed.gone || closed.survivors.length > 0) {
+      throw new Error(`${label} processes survived close: ${closed.survivors.join(", ")}`);
+    }
+    await session.quit().catch(() => undefined);
+    await armStartupReconciliationProbe();
+    session = await Session.open(APP_BINARY);
+    const reconciledRegistry = await waitForCurrentStartupReconciliation(
+      `${label} startup reconciliation to remove the freshly seeded probe`,
+    );
+    await waitFor(`${label} renderer to expose Tauri`, () =>
+      session.execute("return typeof window.__TAURI_INTERNALS__ === 'object'").catch(() => false),
+    );
+    // The renderer's startup pass (tab restoration, practice migration) must settle before a step
+    // closes or opens tabs; the probe above proves only that the native reconciliation ran.
+    await waitForPracticeOwners(`${label} startup to retain practice capabilities`);
+    return reconciledRegistry;
+  };
+
+  const largeDeckSnapshot = await loadPracticeDeckThroughIpc(
+    session,
+    largePracticeId,
+    practiceGame,
+    "__verifyAppLargeDeckSnapshot",
+  );
+  const largePositions = practicePositionsFromSnapshot(largeDeckSnapshot.value);
+  check(
+    largeDeckSnapshot.result.rejected === undefined &&
+      Array.isArray(largePositions) &&
+      largePositions.length === initialPracticePositions.length,
+    "the native practice read returns all 12,000 seeded positions",
+    largeDeckSnapshot.result.rejected ?? largeDeckSnapshot.error,
+  );
+  const largeReviewPage = await loadAllPracticeReviews(
+    session,
+    largePracticeId,
+    practiceGame,
+    "__verifyAppLargeReviews",
+  );
+  const oldestFirstReviewIds = [...largeReviewPage.ids].reverse();
+  check(
+    largeReviewPage.complete &&
+      oldestFirstReviewIds.length === seededLargePractice.reviewIds.length &&
+      oldestFirstReviewIds.every((id, index) => id === seededLargePractice.reviewIds[index]) &&
+      largeReviewPage.ids.at(-1) === seededLargePractice.reviewIds[0],
+    "native practice review paging returns every seeded entry and reaches the oldest review",
+    largeReviewPage.error,
+  );
+
+  const migratedDeckSnapshot = await loadPracticeDeckThroughIpc(
+    session,
+    legacyPracticeId,
+    practiceGame,
+    "__verifyAppMigratedDeckSnapshot",
+  );
+  const migratedPositions = practicePositionsFromSnapshot(migratedDeckSnapshot.value);
+  const migratedReviews = await loadAllPracticeReviews(
+    session,
+    legacyPracticeId,
+    practiceGame,
+    "__verifyAppMigratedReviews",
+  );
+  check(
+    migratedDeckSnapshot.result.rejected === undefined &&
+      migratedDeckSnapshot.value?.migrated === true &&
+      migratedPositions?.length === legacyPracticePositions.length &&
+      migratedReviews.complete &&
+      migratedReviews.ids.length === legacyPracticeLogs.length,
+    "the legacy practice deck is migrated into the native store through real IPC",
+    migratedDeckSnapshot.result.rejected ?? migratedDeckSnapshot.error ?? migratedReviews.error,
+  );
+  const migratedRegistry = await waitForPracticeOwners("migrated practice capabilities");
+  check(
+    migratedRegistry.entries.some(({ id }) => id.id === legacyPracticeId),
+    "migration retains the legacy deck capability in path-authority.json",
+  );
+  const legacyValueBeforeWriter = await session.execute(
+    "return localStorage.getItem(arguments[0])",
+    [legacyPracticeKey],
+  );
+  check(
+    legacyValueBeforeWriter === legacyPracticeDocument,
+    "migration leaves the legacy practice localStorage key untouched",
+  );
+
+  await openFilesEntry(session, largePracticeName, PRACTICE_RENDERER_TIMEOUT_MS);
+  const firstFiftyPracticePositions = initialPracticePositions.slice(0, 50);
+  await waitFor(
+    "the large practice deck to hydrate before UI writing",
+    () =>
+      session
+        .execute(
+          "return document.body.innerText.includes('Start Practice') && !document.body.innerText.includes('Loading')",
+        )
+        .catch(() => false),
+    { timeoutMs: PRACTICE_RENDERER_TIMEOUT_MS },
+  );
+  const startPracticeButton = await waitFor(
+    "the rendered normal practice button",
+    () =>
+      session
+        .execute(
+          `const button = [...document.querySelectorAll('button')].find((candidate) =>
+             candidate.textContent?.includes('Start Practice')
+           );
+           if (!button) return false;
+           const box = button.getBoundingClientRect();
+           return {
+             x: Math.round(box.left + box.width / 2),
+             y: Math.round(box.top + box.height / 2),
+             disabled: button.disabled,
+           };`,
+        )
+        .catch(() => false),
+    { timeoutMs: PRACTICE_RENDERER_TIMEOUT_MS },
+  );
+  if (startPracticeButton.disabled) {
+    const state = await session
+      .execute("return { path: location.pathname, text: document.body.innerText.slice(0, 2000) }")
+      .catch(() => ({ path: "unavailable", text: "unavailable" }));
+    throw new Error(`normal practice remains disabled: ${JSON.stringify(state)}`);
+  }
+  await clickAt(session, startPracticeButton.x, startPracticeButton.y, "practice-start");
+  try {
+    await waitFor(
+      "the practice panel to enter its first move",
+      () =>
+        session
+          .execute("return document.body.innerText.includes('Make your move')")
+          .catch(() => false),
+      { timeoutMs: PRACTICE_RENDERER_TIMEOUT_MS },
+    );
+  } catch (error) {
+    const state = await session
+      .execute(
+        "return { path: location.pathname, text: document.body.innerText.slice(0, 2000), buttons: [...document.querySelectorAll('button')].map((button) => ({ text: button.textContent, disabled: button.disabled })).slice(-8) }",
+      )
+      .catch(() => ({ path: "unavailable", text: "unavailable", buttons: [] }));
+    throw new Error(`${error.message}; practice state: ${JSON.stringify(state)}`);
+  }
+  for (const [index, position] of firstFiftyPracticePositions.entries()) {
+    const move = position.uci;
+    const pointer = await session.execute(
+      `const board = document.querySelector('cg-board');
+       if (!board) return false;
+       const box = board.getBoundingClientRect();
+       const square = (name) => ({
+         x: Math.round(box.left + (name.charCodeAt(0) - 96.5) * box.width / 8),
+         y: Math.round(box.top + (8.5 - Number(name[1])) * box.height / 8),
+       });
+       return { from: square(arguments[0].slice(0, 2)), to: square(arguments[0].slice(2, 4)) };`,
+      [move],
+    );
+    if (!pointer) throw new Error(`practice board was not available for rating ${index + 1}`);
+    await session.call("POST", "/actions", {
+      actions: [
+        {
+          type: "pointer",
+          id: `practice-rating-${index}`,
+          parameters: { pointerType: "mouse" },
+          actions: [
+            {
+              type: "pointerMove",
+              duration: 0,
+              x: pointer.from.x,
+              y: pointer.from.y,
+              origin: "viewport",
+            },
+            { type: "pointerDown", button: 0 },
+            { type: "pointerUp", button: 0 },
+            { type: "pause", duration: PRACTICE_MOVE_CLICK_DELAY_MS },
+            {
+              type: "pointerMove",
+              duration: 0,
+              x: pointer.to.x,
+              y: pointer.to.y,
+              origin: "viewport",
+            },
+            { type: "pointerDown", button: 0 },
+            { type: "pointerUp", button: 0 },
+          ],
+        },
+      ],
+    });
+    const moveResult = await waitFor(`practice move ${index + 1} to resolve`, () =>
+      session
+        .execute(
+          `const text = document.body.innerText;
+           if (text.includes("How difficult was this?")) return "correct";
+           if (text.includes("The correct move was")) return "incorrect";
+           return false;`,
+        )
+        .catch(() => false),
+    ).catch(async (error) => {
+      const state = await session
+        .execute(
+          "return { path: location.pathname, text: document.body.innerText.slice(0, 1800), board: (() => { const e = document.querySelector('cg-board'); if (!e) return null; const r = e.getBoundingClientRect(); return { left: r.left, top: r.top, width: r.width, height: r.height }; })() }",
+        )
+        .catch(() => ({ path: "unavailable", text: "unavailable", board: null }));
+      throw new Error(`${error.message}; move ${move}; practice state: ${JSON.stringify(state)}`);
+    });
+    if (moveResult === "correct") {
+      await session.execute(
+        "document.dispatchEvent(new KeyboardEvent('keydown', { key: '3', bubbles: true })); return true",
+      );
+    }
+    await waitFor(`practice rating ${index + 1} to advance`, () =>
+      session
+        .execute(
+          `const text = document.body.innerText;
+           return text.includes("Make your move") && !text.includes("The correct move was");`,
+        )
+        .catch(() => false),
+    );
+  }
+  const writerSnapshot = await loadPracticeDeckThroughIpc(
+    session,
+    largePracticeId,
+    practiceGame,
+    "__verifyAppWriterSnapshot",
+  );
+  const writerPositions = practicePositionsFromSnapshot(writerSnapshot.value);
+  const writerReviews = await loadAllPracticeReviews(
+    session,
+    largePracticeId,
+    practiceGame,
+    "__verifyAppWriterReviews",
+  );
+  const deckKeysAfterWriter = await session.execute(
+    "return Object.keys(localStorage).filter((key) => key.startsWith('deck-')).sort()",
+  );
+  const legacyValueAfterWriter = await session.execute(
+    "return localStorage.getItem(arguments[0])",
+    [legacyPracticeKey],
+  );
+  const seededReviewIds = new Set(seededLargePractice.reviewIds);
+  const writerNewReviews = writerReviews.entries.filter(({ id }) => !seededReviewIds.has(id));
+  const writerNewRatings = writerNewReviews.map(({ entry }) => {
+    try {
+      return JSON.parse(entry).rating;
+    } catch {
+      return undefined;
+    }
+  });
+  check(
+    writerReviews.complete &&
+      writerReviews.ids.length === seededLargePractice.reviewIds.length + 50,
+    "fifty renderer ratings land in the native practice review store",
+    writerReviews.error,
+  );
+  check(
+    writerSnapshot.result.rejected === undefined && writerPositions?.length === 12_000,
+    "renderer ratings do not alter the large deck's 12,000 native positions",
+    writerSnapshot.result.rejected ?? writerSnapshot.error,
+  );
+  check(
+    writerNewRatings.length === 50 && writerNewRatings.every((rating) => rating === 3),
+    "the 50 new native reviews record the panel's Good rating",
+    `ratings: ${JSON.stringify(writerNewRatings)}`,
+  );
+  check(
+    deckKeysAfterWriter.length === 1 &&
+      deckKeysAfterWriter[0] === legacyPracticeKey &&
+      legacyValueAfterWriter === legacyPracticeDocument,
+    "renderer ratings create no new legacy key and do not grow the existing key",
+    deckKeysAfterWriter.join(", "),
+  );
+
+  await session.execute("localStorage.removeItem(arguments[0]); return true", [legacyPracticeKey]);
+  const retentionStartupRegistry = await reopenAssertionSession("legacy-key removal");
+  check(
+    (await session.execute("return localStorage.getItem(arguments[0])", [legacyPracticeKey])) ===
+      null && retentionStartupRegistry.entries.some(({ id }) => id.id === legacyPracticeId),
+    "list_practice_decks retains the legacy capability after its browser key is removed and fresh startup reconciliation",
+  );
+
+  await reopenAssertionSession("large-deck extension");
+  // Closing the restored tab isolates this sync proof from f-20260923-01: its restored tree remains
+  // persisted after the PGN changes on disk.
+  await closeRestoredAnalysisTab(session);
+  await writeFile(largePracticePath, extendedLargePracticePgn);
+  await openFilesEntry(session, largePracticeName, PRACTICE_RENDERER_TIMEOUT_MS);
+  let syncWaitError;
+  try {
+    await waitFor(
+      "the real sync path to add 500 large-deck positions",
+      async () => {
+        const loaded = await loadPracticeDeckThroughIpc(
+          session,
+          largePracticeId,
+          practiceGame,
+          "__verifyAppExtendedDeckSnapshot",
+        );
+        return practicePositionsFromSnapshot(loaded.value)?.length === 12_500;
+      },
+      { timeoutMs: PRACTICE_RENDERER_TIMEOUT_MS },
+    );
+  } catch (error) {
+    const state = await session
+      .execute(
+        "return { path: location.pathname, text: document.body.innerText.slice(0, 2200), sync: [...document.querySelectorAll('[title]')].map((element) => ({ title: element.getAttribute('title'), text: element.textContent })).filter(({ title }) => title?.toLowerCase().includes('sync')) }",
+      )
+      .catch(() => ({ path: "unavailable", text: "unavailable", sync: [] }));
+    syncWaitError = `${error.message}; extended sync state: ${JSON.stringify(state)}`;
+  }
+  const extendedSnapshot = await loadPracticeDeckThroughIpc(
+    session,
+    largePracticeId,
+    practiceGame,
+    "__verifyAppExtendedDeckSnapshotFinal",
+  );
+  const extendedPositions = practicePositionsFromSnapshot(extendedSnapshot.value);
+  check(
+    syncWaitError === undefined &&
+      extendedSnapshot.result.rejected === undefined &&
+      practiceCardsMatch(extendedPositions, extendedPracticePositions),
+    "the real sync path stores 500 further repertoire positions",
+    syncWaitError ?? extendedSnapshot.result.rejected ?? extendedSnapshot.error,
+  );
+
+  await reopenAssertionSession("final practice retention");
+  const finalLargeSnapshot = await loadPracticeDeckThroughIpc(
+    session,
+    largePracticeId,
+    practiceGame,
+    "__verifyAppFinalLargeSnapshot",
+  );
+  const finalLegacySnapshot = await loadPracticeDeckThroughIpc(
+    session,
+    legacyPracticeId,
+    practiceGame,
+    "__verifyAppFinalLegacySnapshot",
+  );
+  const finalLargeReviews = await loadAllPracticeReviews(
+    session,
+    largePracticeId,
+    practiceGame,
+    "__verifyAppFinalLargeReviews",
+  );
+  const finalLegacyReviews = await loadAllPracticeReviews(
+    session,
+    legacyPracticeId,
+    practiceGame,
+    "__verifyAppFinalLegacyReviews",
+  );
+  const finalInventory = await invokeJsonAndWait(
+    session,
+    "list_practice_decks final inventory to settle",
+    "__verifyAppFinalPracticeInventory",
+    `window.__TAURI_INTERNALS__.invoke("list_practice_decks")`,
+  );
+  const finalLargePositions = practicePositionsFromSnapshot(finalLargeSnapshot.value);
+  const finalLegacyPositionCount = practicePositionsFromSnapshot(finalLegacySnapshot.value)?.length;
+  check(
+    practiceCardsMatch(finalLargePositions, extendedPracticePositions) &&
+      finalLargeReviews.ids.length === seededLargePractice.reviewIds.length + 50 &&
+      finalLargeReviews.complete &&
+      finalLegacyPositionCount === legacyPracticePositions.length &&
+      finalLegacyReviews.complete &&
+      finalLegacyReviews.ids.length === legacyPracticeLogs.length,
+    "final restart preserves exact native position and review counts for both decks",
+    finalLargeSnapshot.result.rejected ?? finalLegacySnapshot.result.rejected,
+  );
+  check(
+    finalInventory.value?.anomalies?.length === 0 &&
+      finalInventory.value?.decks?.length === 2 &&
+      finalInventory.value.decks.some(
+        ({ fileId, game }) => fileId === largePracticeId && game === practiceGame,
+      ) &&
+      finalInventory.value.decks.some(
+        ({ fileId, game }) => fileId === legacyPracticeId && game === practiceGame,
+      ),
+    "final practice inventory contains no additional native deck",
+    finalInventory.result.rejected ?? finalInventory.error,
+  );
+  check(
+    finalLegacyPositionCount === legacyPracticePositions.length &&
+      finalLegacyReviews.ids.length === legacyPracticeLogs.length,
+    "final migrated-deck counts still equal the legacy value's counts",
   );
 
   const persistedDownloadDestination = await session.execute(`
@@ -844,28 +1890,10 @@ try {
   const filesRowCheck = "the seeded workspace file row renders on the Files page";
   const filesRouteCheck = "a real double-click on the unselected Files row navigates to /";
   const filesNotationCheck = "a real double-click on the unselected Files row shows its game";
-  const filesRow = await waitFor(
-    "the Files row",
-    async () => {
-      await session
-        .execute(
-          `const link = document.querySelector('a[href="/files"]');
-         if (link && location.pathname !== "/files") link.click();
-         return true`,
-        )
-        .catch(() => false);
-      return session
-        .execute(
-          `const row = document.querySelector('[role="treeitem"][aria-label=' + JSON.stringify(arguments[0]) + ']');
-         if (!row) return false;
-         const box = row.getBoundingClientRect();
-         return { x: Math.round(box.left + Math.min(60, box.width / 2)), y: Math.round(box.top + box.height / 2) };`,
-          [filesRowName],
-        )
-        .catch(() => false);
-    },
-    { timeoutMs: FILES_PROBE_TIMEOUT_MS },
-  ).catch((error) => ({ error: error.message }));
+  const filesRow = await filesRowCoordinates(session, filesRowName).then(
+    (coordinates) => ({ coordinates }),
+    (error) => ({ error: error.message }),
+  );
   check(!filesRow.error, filesRowCheck, filesRow.error);
   if (filesRow.error) {
     check(false, filesRouteCheck, "not attempted: the Files row never rendered");
@@ -882,8 +1910,8 @@ try {
               {
                 type: "pointerMove",
                 duration: 0,
-                x: filesRow.x,
-                y: filesRow.y,
+                x: filesRow.coordinates.x,
+                y: filesRow.coordinates.y,
                 origin: "viewport",
               },
               { type: "pointerDown", button: 0 },
@@ -993,6 +2021,9 @@ try {
   }
 } catch (error) {
   console.error(`\nverify:app could not run: ${error.message}`);
+  if (error.stack) console.error(error.stack);
+  const diagnostics = driverDiagnostics();
+  if (diagnostics) console.error(`  .. tauri-driver output:\n${diagnostics}`);
   process.exitCode = 1;
 } finally {
   try {
