@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: 8ad0863d376e83aa9def96779dd283a952d339e095dfc9f029f56b3dbcc609d6
+# agent-kit-sha256: 51c61f27df5573ca72c1a19d44dfec72ad21765bfb04964812baa1e0a2f16353
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -19,9 +19,11 @@ two, and removes the case where fixing the second undoes the first.
 
 The contract — field meanings, ranking, the decision discipline — is
 ``~/.claude/references/findings-ledger-contract.md``. **This script is deliberately
-identical across projects.** Everything project-specific is read from the ledger:
-the area vocabulary from its header, the governing decisions from the sibling
-``decisions.md``. Nothing project-specific may be added below.
+identical across projects.** Everything project-specific is read from the ledger
+or the project manifest: the area vocabulary from the markdown header, or — for a
+Controller-generated JSON export — from ``.project.json`` ``findings.areas``; the
+governing decisions from the sibling ``decisions.md``. Nothing project-specific
+may be added below.
 
 Subcommands
 -----------
@@ -167,6 +169,20 @@ CLAIM = (
     if REPO_ROOT is not None
     else Path("tasks") / "findings-inbox.claim"
 )
+# A Controller-enrolled checkout regenerates ``tasks/findings.md`` from its SQLite
+# ledger as a fenced JSON payload rather than the ``###`` entry contract. That
+# form is read-only here: the Controller owns every write to it.
+PROJECT_MANIFEST_NAME = ".project.json"
+CONTROLLER_EXPORT_MARKERS = (
+    "Generated from the authoritative SQLite ledger",
+    "findings-generation:",
+)
+# The markers are only honoured in the file's head, so a markdown finding that
+# quotes one of them further down cannot switch the parser.
+CONTROLLER_EXPORT_HEAD_CHARS = 4096
+# The section every Controller finding reports: the export has no ``## `` headings.
+CONTROLLER_EXPORT_SECTION = "controller-export"
+CONTROLLER_JSON_FENCE_RE = re.compile(r"```json[ \t]*\n(?P<body>.*?)```", re.S)
 # A filer publishes first and only then checks this lock. The environment override
 # keeps that branch testable without ever consulting the real drain lock.
 DRAIN_LOCK_ENV = "FINDINGS_DRAIN_LOCK"
@@ -388,6 +404,31 @@ _PLAN_ADOPTED_TOKEN_RE = re.compile(r"^r([1-9]\d*)=(\d+)$")
 NEXT_OUTCOME_CLUSTER = "cluster"
 NEXT_OUTCOME_EMPTY = "empty"
 NEXT_OUTCOME_BLOCKED_ONLY = "blocked-only"
+# Every CLI verb is classified once so plan-only mode cannot silently miss a
+# newly added writer. ``file`` is guarded except for its read-only ``--status``
+# form and its explicitly authorised planner spool form.
+COMMAND_CLASSIFICATION = {
+    "check": "read-only",
+    "drain-status": "read-only",
+    "list": "read-only",
+    "summary": "read-only",
+    "next": "read-only",
+    "related": "read-only",
+    "decisions": "read-only",
+    "file": "guarded",
+    "merge-inbox": "guarded",
+    "finalize-claims": "guarded",
+    "apply-answers": "guarded",
+    "answer": "guarded",
+    "commit-ledger": "guarded",
+    "set-header": "guarded",
+    "annotate": "guarded",
+    "record-decision": "guarded",
+    "set-trailer": "guarded",
+    "merge-driver": "guarded",
+}
+PLAN_ONLY_ENV = "DRAIN_PLAN_ONLY"
+PLAN_INBOX_ENV = "DRAIN_PLAN_INBOX"
 # `*`, `-` and `+` are all list bullets in Markdown. Detection and rendering
 # must agree on the accepted bullet class or a gated entry can be reported as
 # having no Sentry short-ID.
@@ -1208,6 +1249,15 @@ class Finding:
     body: list[str] = field(default_factory=list)
     body_fenced: list[bool] = field(default_factory=list)
     governed_by: set[str] = field(default_factory=set)
+    # Set only for a finding read from a Controller export: it has no source-byte
+    # slice of its own, so its ``list --raw`` identity is the digest of its
+    # canonical JSON object instead.
+    source_sha256: str | None = None
+
+    @property
+    def controller_export(self) -> bool:
+        """Controller blockers are opaque wait keys; validation branches on this."""
+        return self.source_sha256 is not None
 
     @property
     def pickable(self) -> bool:
@@ -1831,20 +1881,29 @@ def cmd_merge_driver(args: argparse.Namespace) -> int:
     """
     ledger_kind = MERGE_DRIVER_LEDGERS.get(Path(args.path).as_posix())
     reason: str
+    controller_export = False
     if ledger_kind is None:
         reason = f"{args.path} is not a ledger this driver merges"
     else:
         try:
-            merged = merge_appended_blocks(
-                args.base.read_text(encoding="utf-8"),
-                args.ours.read_text(encoding="utf-8"),
-                args.theirs.read_text(encoding="utf-8"),
-            )
+            sides = [
+                side.read_text(encoding="utf-8")
+                for side in (args.base, args.ours, args.theirs)
+            ]
         except (OSError, UnicodeDecodeError) as exc:
             merged = None
             reason = f"could not read the merge inputs: {exc}"
         else:
-            reason = "a side changed existing lines instead of appending"
+            controller_export = any(is_controller_export(side) for side in sides)
+            if controller_export:
+                # A block append after the JSON fence is invisible to the
+                # export parser, so it would validate and then be discarded at
+                # the Controller's next regeneration.
+                merged = None
+                reason = "a side is a Controller-generated export"
+            else:
+                merged = merge_appended_blocks(*sides)
+                reason = "a side changed existing lines instead of appending"
         if merged is not None:
             candidate: Path | None = None
             try:
@@ -1882,6 +1941,16 @@ def cmd_merge_driver(args: argparse.Namespace) -> int:
     if result.stderr.strip():
         for line in result.stderr.splitlines():
             print(f"merge-driver: git merge-file: {line}", file=sys.stderr)
+    if controller_export:
+        # Validation cannot vouch for this result: a markdown tail after the
+        # JSON fence is invisible to the export parser. The file is resolved by
+        # regenerating it from the Controller, never by a clean driver merge.
+        print(
+            f"merge-driver: {args.path} is a Controller-generated export; left "
+            "conflicted — regenerate it from the Controller",
+            file=sys.stderr,
+        )
+        return 1
     if result.returncode == 0:
         if ledger_kind is not None:
             try:
@@ -2286,8 +2355,256 @@ def load_tooling_areas_from_path(path: Path) -> frozenset[str]:
     return load_tooling_areas(lines, _fence_mask(lines))
 
 
+def load_vocabulary_from_project_manifest(manifest: Path) -> frozenset[str]:
+    """Read the closed area set from ``.project.json`` for a Controller export.
+
+    A Controller-generated ledger has no ``**Area vocabulary:**`` line; the
+    project manifest is the authority for the closed set, the same rule the
+    Controller's own filing path enforces. Still project data, never compiled in.
+    """
+    if not manifest.is_file():
+        raise LedgerError(
+            "Controller-generated ledger has no '**Area vocabulary:**' line and "
+            f"{manifest} is missing — Controller exports read the closed area set "
+            f"from {PROJECT_MANIFEST_NAME} findings.areas"
+        )
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise LedgerError(f"{manifest} is not valid JSON: {exc}") from exc
+    findings_config = data.get("findings") if isinstance(data, dict) else None
+    areas = (
+        findings_config.get("areas") if isinstance(findings_config, dict) else None
+    )
+    if not isinstance(areas, dict) or not areas:
+        raise LedgerError(
+            f"{manifest} findings.areas is missing or empty — Controller exports "
+            "read the closed area vocabulary from the project manifest"
+        )
+    vocabulary: set[str] = set()
+    for values in areas.values():
+        if not isinstance(values, list):
+            raise LedgerError(
+                f"{manifest} findings.areas values must be lists of area slugs"
+            )
+        for area in values:
+            if not isinstance(area, str) or not area.strip():
+                raise LedgerError(
+                    f"{manifest} findings.areas contains a non-string or empty area"
+                )
+            vocabulary.add(area)
+    return frozenset(vocabulary)
+
+
+def _controller_export_head(data: bytes) -> str:
+    """Decode just the head a marker is honoured in from raw ledger bytes.
+
+    UTF-8 needs at most four bytes per character; a character cut at the
+    boundary is dropped, which no ASCII marker can be part of.
+    """
+    return data[: CONTROLLER_EXPORT_HEAD_CHARS * 4].decode("utf-8", errors="ignore")
+
+
+def is_controller_export(text: str) -> bool:
+    """True when the file's head carries a Controller generated-ledger marker."""
+    head = text[:CONTROLLER_EXPORT_HEAD_CHARS]
+    return any(marker in head for marker in CONTROLLER_EXPORT_MARKERS)
+
+
+def _refuse_controller_export(path: Path, text: str, command: str) -> None:
+    """Refuse a write to a ledger the Controller regenerates from SQLite.
+
+    Every writer here appends or rewrites markdown entries. Against the fenced
+    JSON form that write would either fail late or, worse, validate — a markdown
+    tail is invisible to the JSON parser — and land outside the Controller's
+    authoritative store, to be discarded at its next regeneration.
+    """
+    if is_controller_export(text):
+        raise LedgerError(
+            f"{path} is a Controller-generated export; {command} works only on "
+            "the markdown ledger. The Controller owns this one: file and change "
+            "findings through its findings tools instead"
+        )
+
+
+def _refuse_controller_export_at(path: Path, command: str) -> None:
+    """``_refuse_controller_export`` for a writer that has not read the ledger yet.
+
+    Reads only the bounded head the markers are honoured in, so the check costs
+    nothing on a large ledger and leaves the writer's own full read, and its
+    compare-and-swap baseline, as the first read of the text it writes. An
+    unreadable ledger is left to that read, which already reports it in the
+    command's vocabulary.
+    """
+    try:
+        with path.open("rb") as handle:
+            head = _controller_export_head(
+                handle.read(CONTROLLER_EXPORT_HEAD_CHARS * 4)
+            )
+    except OSError:
+        return
+    _refuse_controller_export(path, head, command)
+
+
+def _controller_export_payload(text: str) -> dict[str, object] | None:
+    """Return the parsed JSON payload when ``text`` is a Controller export.
+
+    A marker without a usable ``json`` fence is a hard error: falling through to
+    the markdown parser would only fail later on the missing vocabulary line and
+    hide the real defect.
+    """
+    if not is_controller_export(text):
+        return None
+    match = CONTROLLER_JSON_FENCE_RE.search(text)
+    if match is None:
+        raise LedgerError(
+            "Controller-generated ledger is missing its fenced ```json payload"
+        )
+    try:
+        payload = json.loads(match.group("body"))
+    except json.JSONDecodeError as exc:
+        raise LedgerError(f"Controller-generated ledger JSON is invalid: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise LedgerError("Controller-generated ledger JSON must be an object")
+    if not isinstance(payload.get("findings"), list):
+        raise LedgerError("Controller-generated ledger JSON lacks a 'findings' array")
+    return cast(dict[str, object], payload)
+
+
+def _line_of_finding_id(text: str, finding_id: str) -> int:
+    """Best-effort 1-based line of a finding id inside the export text."""
+    match = re.search(rf'"id"\s*:\s*{re.escape(json.dumps(finding_id))}', text)
+    if match is None:
+        return 1
+    return text.count("\n", 0, match.start()) + 1
+
+
+def _optional_string_field(
+    raw: dict[str, object], key: str, default: str, where: str
+) -> str:
+    """Map a nullable Controller string onto the markdown ``-``/``none`` default.
+
+    Any non-empty string passes: a Controller blocker is an opaque wait key or
+    prose, not a slug, and the slug rule for roots stays with ``validate``.
+    """
+    value = raw.get(key)
+    if value is None:
+        return default
+    if isinstance(value, str) and value.strip():
+        return value
+    raise ValueError(f"{where}: {key} must be null or a non-empty string")
+
+
+def _finding_from_controller(raw: object, index: int, text: str) -> Finding | str:
+    """Map one Controller wire object to a Finding, or return a problem string.
+
+    ``index`` is the object's position in the ``findings`` array, the only
+    locator a problem has before an id is known.
+    """
+    if not isinstance(raw, dict):
+        return f"Controller findings[{index}] is not an object"
+    raw = cast(dict[str, object], raw)
+    finding_id = raw.get("id")
+    if not isinstance(finding_id, str) or not finding_id:
+        return f"Controller findings[{index}] is missing a string id"
+    line = _line_of_finding_id(text, finding_id)
+    where = f"{finding_id} (line {line})"
+
+    for key in ("status", "area", "entry", "title"):
+        value = raw.get(key)
+        if not isinstance(value, str) or not value:
+            return f"{where}: missing string field '{key}'"
+    try:
+        blocked = _optional_string_field(raw, "blocked", BLOCKER_NONE, where)
+        root = _optional_string_field(raw, "root", "-", where)
+    except ValueError as exc:
+        return str(exc)
+
+    body_lines: list[str] = []
+    body_text = raw.get("body")
+    if isinstance(body_text, str) and body_text.strip():
+        body_lines.append(body_text)
+
+    files = raw.get("files")
+    if files is None:
+        files = []
+    elif not isinstance(files, list):
+        return f"{where}: files must be an array"
+    for path in files:
+        if not isinstance(path, str) or not path.strip():
+            return f"{where}: files entries must be non-empty strings"
+        # Feed paths() / related the same backtick form the markdown ledger uses.
+        body_lines.append(f"* **Where:** `{path}`.")
+
+    brief = raw.get("decision_brief")
+    if isinstance(brief, dict):
+        for label, key in (
+            ("Decision", "question"),
+            ("Recommend", "recommend"),
+            ("Session", "session_id"),
+        ):
+            value = brief.get(key)
+            if isinstance(value, str) and value.strip():
+                body_lines.append(f"* **{label}:** {value}")
+
+    status = cast(str, raw["status"])
+    if status == "rejected" and not any(REJECTED_RE.search(item) for item in body_lines):
+        triage = raw.get("triage")
+        evidence = triage.get("evidence") if isinstance(triage, dict) else None
+        if isinstance(evidence, str) and evidence.strip():
+            reason = evidence
+        elif isinstance(body_text, str) and body_text.strip():
+            reason = body_text
+        else:
+            reason = "Controller triage rejected this finding"
+        body_lines.append(f"* **Why rejected:** {reason}")
+
+    if not body_lines:
+        return f"{where}: entry has no body and no files"
+
+    return Finding(
+        id=finding_id,
+        status=status,
+        area=cast(str, raw["area"]),
+        root=root,
+        entry=cast(str, raw["entry"]),
+        blocked=blocked,
+        title=cast(str, raw["title"]),
+        section=CONTROLLER_EXPORT_SECTION,
+        line=line,
+        body=body_lines,
+        body_fenced=[False] * len(body_lines),
+        source_sha256=_sha256_text(
+            json.dumps(raw, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        ),
+    )
+
+
+def parse_controller_export(
+    payload: dict[str, object], text: str, manifest: Path
+) -> tuple[list[Finding], list[str], frozenset[str]]:
+    """Parse a Controller-generated JSON ledger export."""
+    vocabulary = load_vocabulary_from_project_manifest(manifest)
+    findings: list[Finding] = []
+    problems: list[str] = []
+    for index, raw in enumerate(cast(list[object], payload["findings"])):
+        mapped = _finding_from_controller(raw, index, text)
+        if isinstance(mapped, str):
+            problems.append(mapped)
+        else:
+            findings.append(mapped)
+    return findings, problems, vocabulary
+
+
 def parse(path: Path = LEDGER) -> tuple[list[Finding], list[str], frozenset[str]]:
     text = path.read_text(encoding="utf-8")
+    controller = _controller_export_payload(text)
+    if controller is not None:
+        # The manifest sits beside ``tasks/``; derived from the ledger's own path
+        # so a scratch candidate next to the ledger resolves the same file.
+        return parse_controller_export(
+            controller, text, path.parent.parent / PROJECT_MANIFEST_NAME
+        )
     lines = text.splitlines()
     fence_states = _fence_mask(lines)
     vocabulary = load_vocabulary(lines, fence_states)
@@ -2425,7 +2742,11 @@ def validate(
             issues.append(f"{where}: root '{f.root}' must be a slug or '-'")
         if f.entry not in ENTRIES:
             issues.append(f"{where}: entry '{f.entry}' not in {sorted(ENTRIES)}")
-        if blocker_class != BLOCKER_NONE and not SLUG_RE.match(f.blocked):
+        if (
+            blocker_class != BLOCKER_NONE
+            and not f.controller_export
+            and not SLUG_RE.match(f.blocked)
+        ):
             issues.append(f"{where}: blocked '{f.blocked}' must be a slug or 'none'")
         if not f.body:
             issues.append(f"{where}: entry has a header but no body")
@@ -3169,7 +3490,9 @@ def _citation_resolution(
 
 
 def cmd_check(args: argparse.Namespace) -> int:
-    if ensure_merge_driver(cast(Path, REPO_ROOT)):
+    if os.environ.get(PLAN_ONLY_ENV) != "1" and ensure_merge_driver(
+        cast(Path, REPO_ROOT)
+    ):
         print(f"installed git merge driver {MERGE_DRIVER_NAME}", file=sys.stderr)
     findings, problems, vocabulary = parse(args.ledger)
     issues = validate(findings, problems, vocabulary)
@@ -3380,12 +3703,67 @@ def cmd_summary(args: argparse.Namespace) -> int:
     return 0
 
 
+def _raw_entry_records(path: Path, findings: list[Finding]) -> dict[int, dict[str, str]]:
+    """Hash each entry's exact source-byte slice and retain its section.
+
+    A Controller finding has no byte slice of its own (the export is one JSON
+    payload), so its record carries the digest of its canonical JSON object,
+    computed at parse time.
+
+    The parser intentionally works on decoded lines, but the planner digest is
+    a source identity. Re-encode the decoded ``splitlines(keepends=True)``
+    chunks only to recover their byte offsets; UTF-8 is round-tripping here, and
+    the hash itself is taken from the original bytes, including CRLF and spaces.
+    """
+    raw = path.read_bytes()
+    text = raw.decode("utf-8")
+    lines = text.splitlines()
+    chunks = text.splitlines(keepends=True)
+    if len(lines) != len(chunks):
+        raise LedgerError(f"could not map source lines in {path} to byte offsets")
+    offsets: list[int] = [0]
+    for chunk in chunks:
+        offsets.append(offsets[-1] + len(chunk.encode("utf-8")))
+    fence_states = _fence_mask(lines)
+    records: dict[int, dict[str, str]] = {}
+    for finding in findings:
+        if finding.source_sha256 is not None:
+            records[finding.line] = {
+                "entry_sha256": finding.source_sha256,
+                "section": finding.section,
+            }
+            continue
+        start_index = finding.line - 1
+        if start_index < 0 or start_index >= len(lines):
+            raise LedgerError(
+                f"could not locate entry {finding.id} in source bytes of {path}"
+            )
+        end_index = len(lines)
+        for index in range(start_index + 1, len(lines)):
+            if fence_states[index] is not FenceState.OUTSIDE:
+                continue
+            if lines[index].startswith(("### ", "## ")):
+                end_index = index
+                break
+        entry_bytes = raw[offsets[start_index] : offsets[end_index]]
+        records[finding.line] = {
+            "entry_sha256": _sha256_bytes(entry_bytes),
+            "section": finding.section,
+        }
+    return records
+
+
 def _list_json_records(
-    rows: list[Finding], tooling_areas: frozenset[str], *, include_body: bool = False
+    rows: list[Finding],
+    tooling_areas: frozenset[str],
+    *,
+    include_body: bool = False,
+    raw_records: dict[int, dict[str, str]] | None = None,
 ) -> list[dict[str, object]]:
     """One JSON object per finding; field values are the Finding attributes."""
-    return [
-        {
+    result: list[dict[str, object]] = []
+    for f in rows:
+        record: dict[str, object] = {
             "id": f.id,
             "status": f.status,
             "area": f.area,
@@ -3395,17 +3773,18 @@ def _list_json_records(
             "heading": f.title,
             "tooling": f.area in tooling_areas,
             "sentry_verification": f.sentry_verification,
-            **(
+        }
+        if include_body:
+            record.update(
                 {
                     "body": _unfenced_body(f),
                     "body_sha256": verified_body_sha256(f),
                 }
-                if include_body
-                else {}
-            ),
-        }
-        for f in rows
-    ]
+            )
+        if raw_records is not None:
+            record.update(raw_records[f.line])
+        result.append(record)
+    return result
 
 
 def cmd_list(args: argparse.Namespace) -> int:
@@ -3425,11 +3804,17 @@ def cmd_list(args: argparse.Namespace) -> int:
     if args.root:
         rows = [f for f in rows if f.root == args.root]
     if _json_requested(args):
+        raw_records = (
+            _raw_entry_records(args.ledger, findings)
+            if getattr(args, "raw", False)
+            else None
+        )
         return _print_json(
             _list_json_records(
                 rows,
                 load_tooling_areas_from_path(args.ledger),
                 include_body=getattr(args, "body", False),
+                raw_records=raw_records,
             )
         )
     if not rows:
@@ -3623,6 +4008,27 @@ def _cluster_entry_and_ids(members: list[Finding]) -> tuple[str, list[str]]:
     return entry, [f.id for f in members]
 
 
+def _next_exclusion_keys(values: list[str]) -> set[tuple[str, str]]:
+    """Parse repeatable cluster exclusions into canonical cluster keys."""
+    keys: set[tuple[str, str]] = set()
+    for value in values:
+        kind, separator, name = value.partition(":")
+        if not separator or kind not in {"root", "finding"} or not name:
+            raise ValueError(
+                "--exclude must be root:<slug> or finding:<id>, "
+                f"not {value!r}"
+            )
+        if (kind == "root" and SLUG_RE.fullmatch(name) is None) or (
+            kind == "finding" and ID_RE.fullmatch(name) is None
+        ):
+            raise ValueError(
+                "--exclude must use a valid root slug or finding id, "
+                f"not {value!r}"
+            )
+        keys.add((kind, name))
+    return keys
+
+
 def _next_json_payload(
     *,
     outcome: str,
@@ -3670,8 +4076,26 @@ def cmd_next(args: argparse.Namespace) -> int:
         key = chosen.cluster_key
         reason = f"pinned: {args.pin}"
     else:
+        try:
+            excluded = _next_exclusion_keys(
+                list(getattr(args, "exclude", None) or [])
+            )
+        except ValueError as exc:
+            print(f"invalid next filter: {exc}", file=sys.stderr)
+            return 1
+        requested_entry = getattr(args, "entry", None)
         clusters = rank(findings)
-        if not clusters:
+        remaining: list[tuple[tuple[str, str], list[Finding]]] = []
+        for candidate_key, candidate_members in clusters:
+            effective_entry, _candidate_ids = _cluster_entry_and_ids(
+                candidate_members
+            )
+            if candidate_key in excluded:
+                continue
+            if requested_entry is not None and effective_entry != requested_entry:
+                continue
+            remaining.append((candidate_key, candidate_members))
+        if not remaining:
             if _json_requested(args):
                 return _print_json(
                     _next_json_payload(
@@ -3690,7 +4114,7 @@ def cmd_next(args: argparse.Namespace) -> int:
             for fid, slug, title in waiting_rows:
                 print(f"  blocked: {fid} on {slug} — {title}")
             return 0
-        key, members = clusters[0]
+        key, members = remaining[0]
         kind, name = key
         reason = (
             f"root '{name}' ({len(members)} member(s)); roots first, then oldest ID"
@@ -4784,12 +5208,20 @@ def _write_if_unchanged(
     *,
     durable_directory: bool = False,
 ) -> None:
-    """Write ``candidate`` only if ``path`` still contains ``expected``."""
+    """Write ``candidate`` only if ``path`` still contains ``expected``.
+
+    An unchanged candidate still performs the compare, so a concurrent direct
+    edit refuses before the caller's ``post_commit`` callback runs, but it never
+    replaces the file: a replacement would register a commit attempt for a
+    write that changed nothing.
+    """
     current = path.read_text(encoding="utf-8")
     if current != expected:
         raise LedgerError(
             f"ledger {path} changed after it was read; refusing to overwrite it"
         )
+    if candidate == expected:
+        return
     _atomic_write(path, candidate, durable_directory=durable_directory)
 
 
@@ -4808,7 +5240,9 @@ def _ledger_mutation_scope(path: Path) -> Iterator[str]:
         )
     try:
         _sweep_scratch(path.parent, lambda target: target == path.name)
-        yield path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8")
+        _refuse_controller_export(path, text, "a ledger mutation")
+        yield text
     except LedgerError:
         raise
     except OSError as exc:
@@ -4846,8 +5280,7 @@ def _locked_ledger_mutation(
                 )
             if clear_announcement_ids is not None:
                 _prune_announcement_state_strict(path, clear_announcement_ids)
-            if candidate != original:
-                _write_if_unchanged(path, original, candidate)
+            _write_if_unchanged(path, original, candidate)
             if post_commit is not None:
                 post_commit()
 
@@ -5057,6 +5490,15 @@ def claim_spool(
         published.append(legacy)
     if not published:
         return []
+    # Every member lands in the claim under its bare name, and that name is how
+    # the merge tells the legacy inbox apart (it has no filing date to read).
+    # A spool file carrying it would be misdated, or overwritten on rename.
+    if legacy is not None and (spool / legacy.name).exists():
+        raise LedgerError(
+            f"{spool / legacy.name} is named like the legacy inbox {legacy}; "
+            "rename it to <YYYYMMDD-HHMMSS>-<suffix>.md by hand, then retry — "
+            "nothing was claimed"
+        )
 
     if into_existing:
         for source in published:
@@ -5186,15 +5628,46 @@ def _complete_claim(
     claim: Path,
     spool: Path,
     claimed: list[Path],
-    receipt_ids: dict[str, str | dict[str, str]],
+    receipt_ids: dict[str, str | dict[str, str]] | None,
+    proven_ids: Collection[str],
     *,
     publish_locked: bool,
 ) -> None:
-    """Write terminal receipts and release a claim after its entries are proven."""
-    if receipt_ids:
-        _write_merged_receipts(
-            spool, _receipt_records_from_intent(claim, receipt_ids)
+    """Write terminal receipts and release a claim after its entries are proven.
+
+    ``proven_ids`` are the intent ids the caller found in the ledger. A claimed
+    filing is released only if every entry it carries is among them and, unless
+    ``receipt_ids`` is None (an intent written before that mapping existed), a
+    receipt record names it. Anything else would be deleted with its receipt
+    still ``published``; the deferred reconciliation refuses it the same way.
+    """
+    records = (
+        _receipt_records_from_intent(claim, receipt_ids) if receipt_ids else []
+    )
+    recorded = {published for _receipt, published, _identifier in records}
+    unrecorded: list[str] = []
+    for path in claimed:
+        if receipt_ids is not None and path.name not in recorded:
+            unrecorded.append(path.name)
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            continue
+        except (OSError, UnicodeError) as exc:
+            raise LedgerError(
+                f"could not read {path} while releasing {claim}: {exc}"
+            ) from exc
+        carried = header_ids(text)
+        if not carried or not carried.issubset(proven_ids):
+            unrecorded.append(path.name)
+    if unrecorded:
+        raise LedgerError(
+            f"{', '.join(sorted(unrecorded))} in {claim} carries no recorded entry; "
+            f"the claim is kept — move it back to {spool} by hand, then retry"
         )
+    if records:
+        _write_merged_receipts(spool, records)
     release_spool(claim, spool, claimed, publish_locked=publish_locked)
 
 
@@ -5618,7 +6091,8 @@ def _recover_claim(
                     claim,
                     spool,
                     claimed,
-                    intent.receipt_ids,
+                    intent.receipt_ids if intent.has_receipt_ids else None,
+                    ids,
                     publish_locked=publish_locked,
                 )
                 print(
@@ -5630,11 +6104,29 @@ def _recover_claim(
 
     # Replay is deliberately ordered: the work returns to the spool first, then
     # the intent and claim disappear. A crash after any one step is restartable.
+    legacy = None if answers else spool.with_suffix(".md")
     spool.mkdir(parents=True, exist_ok=True)
     for path in claimed:
-        os.rename(path, spool / path.name)
+        _return_claimed_file(path, spool, legacy)
     _remove_claim_intent(claim)
     claim.rmdir()
+
+
+def _return_claimed_file(path: Path, spool: Path, legacy: Path | None) -> None:
+    """Move one claimed file back to where the next merge will claim it again.
+
+    The legacy inbox returns to its own path: in the spool its name would read
+    as a misnamed filing, which `claim_spool` refuses.
+    """
+    if legacy is None or path.name != legacy.name:
+        os.rename(path, spool / path.name)
+        return
+    if legacy.exists():
+        raise LedgerError(
+            f"cannot return {path} to {legacy}: a new legacy inbox exists there; "
+            f"merge the two by hand, then retry — {path.parent} is kept"
+        )
+    os.rename(path, legacy)
 
 
 def _release_spool_contents(claim: Path, spool: Path, claimed: list[Path]) -> None:
@@ -6456,6 +6948,15 @@ def _settle_pending_ledger_dirt(intent: LedgerCommitIntent) -> None:
 
     findings_bytes = findings.read_bytes() if findings in dirty_paths else None
     decisions_bytes = decisions.read_bytes() if decisions in dirty_paths else None
+    if findings_bytes is not None:
+        # Judged on the exact bytes the commit carries, which its postcondition
+        # verifies, so a Controller regeneration after the caller's own check
+        # cannot slip in: dirt in an export is a regeneration, not a mutation.
+        _refuse_controller_export(
+            findings,
+            _controller_export_head(findings_bytes),
+            "a deferred ledger commit",
+        )
     primary = findings if findings in dirty_paths else decisions
     companion = decisions if findings in dirty_paths and decisions in dirty_paths else None
     settle_intent = LedgerCommitIntent(
@@ -6667,7 +7168,8 @@ def _finalize_inbox_claim_locked(
         claim,
         inbox,
         list(intent.claimed),
-        intent.receipt_ids,
+        intent.receipt_ids if intent.has_receipt_ids else None,
+        intent.ids,
         publish_locked=True,
     )
     if claim.exists():
@@ -6845,6 +7347,9 @@ def merge_inbox(
     """Run one ledger-locked merge with one nested publication fence."""
     decisions = decisions or ledger.parent / "decisions.md"
     try:
+        # First, before the deferred preconditions: those settle pending ledger
+        # dirt by committing it, and dirt in an export is a regeneration.
+        _refuse_controller_export_at(ledger, "merge-inbox")
         mode = _claim_finalisation_mode(
             ledger, merge_without_intent=_ACTIVE_LEDGER_COMMIT is None
         )
@@ -6867,6 +7372,15 @@ def merge_inbox(
         return MergeResult(_report_ledger_lock_busy(lock, waited_seconds))
 
     try:
+        # Read under the lock, before anything is claimed, so a refusal leaves
+        # the spool untouched. The merge re-checks the text it actually appends
+        # to, because the Controller regenerates without taking this lock.
+        _refuse_controller_export_at(ledger, "merge-inbox")
+    except LedgerError as exc:
+        release_ledger_lock(lock)
+        print(f"FAIL {exc}", file=sys.stderr)
+        return MergeResult(1)
+    try:
         with _publish_lock(publish_lock_path(inbox)):
             try:
                 return _merge_inbox_publish_locked(
@@ -6877,6 +7391,45 @@ def merge_inbox(
                 return MergeResult(1)
     finally:
         release_ledger_lock(lock)
+
+
+def _note_folded_legacy(legacy: Path, claimed: bool) -> None:
+    if claimed:
+        print(f"NOTE folded legacy findings inbox {legacy}", file=sys.stderr)
+
+
+def _refuse_entryless_filings(inbox: Path, legacy: Path) -> None:
+    """Refuse the merge while a published filing carries no entry.
+
+    Such a filing gets no receipt record, so releasing its batch would delete it
+    while its receipt still reads ``published``. Checked before the claim, under
+    the publish lock every writer takes, so the refusal leaves the inbox as it
+    was. An empty legacy single-file inbox has no receipt and is removed.
+    """
+    try:
+        if legacy.exists() and not legacy.read_text(encoding="utf-8").strip():
+            legacy.unlink()
+    except (OSError, UnicodeError) as exc:
+        raise LedgerError(f"could not read legacy inbox {legacy}: {exc}") from exc
+    filings = sorted(inbox.glob("*.md"))
+    if legacy.exists():
+        filings.append(legacy)
+    entryless: list[str] = []
+    for path in filings:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            continue
+        except (OSError, UnicodeError) as exc:
+            raise LedgerError(f"could not read filing {path}: {exc}") from exc
+        if not _unfenced_header_matches(text)[1]:
+            entryless.append(str(path))
+    if entryless:
+        raise LedgerError(
+            f"published filings with no findings: {', '.join(entryless)}. The "
+            "inbox and receipts are unchanged; correct or remove each filing "
+            "and its receipt by hand, then merge again"
+        )
 
 
 def _merge_inbox_publish_locked(
@@ -6900,8 +7453,10 @@ def _merge_inbox_publish_locked(
     an unpublished file would instead commit a valid-looking partial prefix while
     the writer's remaining lines disappear into an unlinked inode.
 
-    **A refused batch is never destroyed.** It stays in the fixed claim directory,
-    whose path the error names. The directory records durable ownership of that
+    **A refused batch is never destroyed.** A published filing with no entry is
+    refused before anything is claimed, so it stays in the inbox; every later
+    refusal leaves the batch in the fixed claim directory, whose path the error
+    names. The directory records durable ownership of that
     batch; the ledger flock excludes concurrent ledger writers, while atomic
     ``mkdir`` prevents two consumers from claiming the same published files.
 
@@ -6949,6 +7504,7 @@ def _merge_inbox_publish_locked(
             file=sys.stderr,
         )
         return MergeResult(1)
+    _refuse_entryless_filings(inbox, legacy)
     if reconciliation is not None and claim.exists():
         adopted = list(reconciliation.absent)
         newly_claimed = claim_spool(
@@ -6976,11 +7532,12 @@ def _merge_inbox_publish_locked(
 
     # The legacy single-file inbox is claimed by name like any other member, so
     # its presence is read back from the claim rather than tracked separately.
-    if (claim / legacy.name).exists():
-        print(f"NOTE folded legacy findings inbox {legacy}", file=sys.stderr)
+    # Reported only on success, never before a refusal could keep it claimed.
+    legacy_claimed = (claim / legacy.name).exists()
 
     try:
         ledger_text = ledger.read_text(encoding="utf-8")
+        _refuse_controller_export(ledger, ledger_text, "merge-inbox")
         sources = _merge_sources(claimed, ledger)
         raw_sources = [
             claimed_path.read_text(encoding="utf-8") for claimed_path in claimed
@@ -7000,10 +7557,10 @@ def _merge_inbox_publish_locked(
             try:
                 inbox.mkdir(parents=True, exist_ok=True)
                 for claimed_path in claimed:
-                    os.rename(claimed_path, inbox / claimed_path.name)
+                    _return_claimed_file(claimed_path, inbox, legacy)
                 _remove_claim_intent(claim)
                 claim.rmdir()
-            except OSError as restore_exc:
+            except (OSError, LedgerError) as restore_exc:
                 print(
                     f"FAIL could not restore refused filing claim {claim}: {restore_exc}",
                     file=sys.stderr,
@@ -7055,13 +7612,11 @@ def _merge_inbox_publish_locked(
         return MergeResult(1)
     body = "\n\n".join(parts).strip()
     if not body:
-        if mode == "deferred":
-            raise LedgerError(
-                f"{claim} contains no findings; its published filing and receipt "
-                "are preserved for inspection"
-            )
-        release_spool(claim, inbox, claimed, publish_locked=True)
-        return MergeResult(0)
+        # Unreachable while _refuse_entryless_filings holds; never release here.
+        raise LedgerError(
+            f"{claim} contains no findings; its published filings and receipts "
+            "are preserved for inspection"
+        )
 
     # **Persist the allocation into the spool files before anything else.**
     # An id is handed out here and nowhere else, so it has to survive every
@@ -7224,6 +7779,7 @@ def _merge_inbox_publish_locked(
                 claim, inbox, ledger, decisions, "deferred"
             )
             active.provisional = tuple(assigned)
+        _note_folded_legacy(legacy, legacy_claimed)
         allocation = f": {' '.join(assigned)}" if assigned else ""
         print(f"merged {merged} finding(s) from the inbox{allocation}")
         return MergeResult(0, assigned_by_file)
@@ -7234,6 +7790,7 @@ def _merge_inbox_publish_locked(
     # `published` while the claim is still being released.
     _write_merged_receipts(inbox, receipt_records)
     release_spool(claim, inbox, claimed, publish_locked=True)
+    _note_folded_legacy(legacy, legacy_claimed)
     # Name the allocated ids: a drain-owned filing session cannot learn them,
     # so the merge output is the place that mapping is recorded.
     allocation = f": {' '.join(assigned)}" if assigned else ""
@@ -7348,8 +7905,57 @@ def _release_consumer_lock(args: argparse.Namespace) -> None:
     args._consumer_lock_fd = None
 
 
+def cmd_file_status(args: argparse.Namespace) -> int:
+    """Read the content-derived filing receipt without taking any lock."""
+    try:
+        _refuse_controller_export_at(args.ledger, "file --status")
+    except LedgerError as exc:
+        print(f"FAIL {exc}", file=sys.stderr)
+        return 1
+    entry, issues = _read_and_validate_entry(args.entry, args.ledger)
+    if issues:
+        for issue in issues:
+            print(f"FAIL {issue}", file=sys.stderr)
+        return 1
+    assert entry is not None
+    receipt_path = _receipt_path(args.inbox, entry)
+    receipt = _read_receipt(receipt_path)
+    if receipt is None:
+        print("none")
+        return 0
+
+    state = receipt["state"]
+    if state == "publishing":
+        published = args.inbox / receipt["published"]
+        try:
+            actual_digest = _sha256_bytes(published.read_bytes())
+        except FileNotFoundError:
+            print("none")
+            return 0
+        except OSError as exc:
+            raise LedgerError(
+                f"could not verify publishing receipt {receipt_path}: {exc}"
+            ) from exc
+        expected_digest = _sha256_text(entry)
+        if actual_digest != expected_digest:
+            raise LedgerError(
+                f"publishing receipt {receipt_path} names {published}, "
+                "but the linked inbox bytes do not match the entry digest"
+            )
+        print("published")
+        return 0
+
+    print(state)
+    return 0
+
+
 def cmd_file(args: argparse.Namespace) -> int:
     """Publish one pending finding, then merge it when no live drain owns the ledger."""
+    try:
+        _refuse_controller_export_at(args.ledger, "file")
+    except LedgerError as exc:
+        print(f"FAIL {exc}", file=sys.stderr)
+        return 1
     entry, issues = _read_and_validate_entry(args.entry, args.ledger)
     if issues:
         for issue in issues:
@@ -9009,6 +9615,8 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
     spool: Path = args.answers
     claim = spool.with_name(f"{spool.name}.claim")
     decisions = _args_decisions(args)
+    # Before the deferred preconditions, which commit pending ledger dirt.
+    _refuse_controller_export_at(args.ledger, "apply-answers")
     mode = _claim_finalisation_mode(
         args.ledger, merge_without_intent=_ACTIVE_LEDGER_COMMIT is None
     )
@@ -9454,6 +10062,36 @@ def _bind_repo_root(root: Path) -> None:
     CLAIM = root / "tasks" / "findings-inbox.claim"
     ANSWERS = root / "tasks" / "findings-answers"
     DEFAULT_DRAIN_LOCK = _lock_for_root(root)
+
+
+def _plan_only_file_exception(args: argparse.Namespace) -> bool:
+    """Allow only the exact planner spool filing or read-only status form."""
+    if args.command != "file":
+        return False
+    if bool(getattr(args, "status", False)):
+        return True
+    inbox = os.environ.get(PLAN_INBOX_ENV)
+    return bool(
+        getattr(args, "spool_only", False)
+        and getattr(args, "inbox", None) is not None
+        and inbox
+        and args.inbox == Path(inbox)
+    )
+
+
+def _plan_only_refuses(args: argparse.Namespace) -> bool:
+    """Refuse guarded verbs before any command-owned lock or write is touched."""
+    if os.environ.get(PLAN_ONLY_ENV) != "1":
+        return False
+    if COMMAND_CLASSIFICATION.get(args.command) != "guarded":
+        return False
+    if _plan_only_file_exception(args):
+        return False
+    print(
+        f"REFUSING: {PLAN_ONLY_ENV}=1 forbids {args.command}",
+        file=sys.stderr,
+    )
+    return True
 
 
 LEDGER_COMMIT_ENV = "FINDINGS_LEDGER_COMMIT"
@@ -10258,8 +10896,8 @@ def cmd_commit_ledger(args: argparse.Namespace) -> int:
         return 1
 
 
-def main(argv: list[str] | None = None) -> int:
-    global _ACTIVE_LEDGER_COMMIT
+def build_parser() -> argparse.ArgumentParser:
+    """The complete CLI; a test walks its subcommand table."""
     parser = argparse.ArgumentParser(
         description="Query and validate the findings ledger (tasks/findings.md)."
     )
@@ -10294,6 +10932,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="exit 1 without output when validation finds a problem",
     )
+    p_list.add_argument(
+        "--raw",
+        action="store_true",
+        help="include exact source-byte entry digests and section headings in JSON",
+    )
     p_list.set_defaults(func=cmd_list)
 
     p_summary = sub.add_parser(
@@ -10313,6 +10956,18 @@ def main(argv: list[str] | None = None) -> int:
         "--json",
         action="store_true",
         help="print a JSON object for the pick on stdout; warnings stay on stderr",
+    )
+    p_next.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        metavar="root:<slug>|finding:<id>",
+        help="exclude a cluster by its root slug or singleton finding id; repeatable",
+    )
+    p_next.add_argument(
+        "--entry",
+        choices=("build",),
+        help="select the first remaining cluster at the effective build tier",
     )
     p_next.set_defaults(func=cmd_next)
 
@@ -10338,6 +10993,11 @@ def main(argv: list[str] | None = None) -> int:
         "--spool-only",
         action="store_true",
         help="publish the entry without consulting the drain lock or merging",
+    )
+    p_file.add_argument(
+        "--status",
+        action="store_true",
+        help="print the content-derived filing receipt state without writing",
     )
     p_file.set_defaults(func=cmd_file)
 
@@ -10431,8 +11091,16 @@ def main(argv: list[str] | None = None) -> int:
     p_driver.add_argument("path")
     p_driver.set_defaults(func=cmd_merge_driver)
 
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    global _ACTIVE_LEDGER_COMMIT
+    parser = build_parser()
     args = parser.parse_args(argv)
     root = _require_git_toplevel()
+    if _plan_only_refuses(args):
+        return 3
     _bind_repo_root(root)
     if args.ledger is None:
         args.ledger = LEDGER
@@ -10446,6 +11114,12 @@ def main(argv: list[str] | None = None) -> int:
         args.inbox = INBOX
     if getattr(args, "answers", None) is None and hasattr(args, "answers"):
         args.answers = ANSWERS
+    if args.command == "file" and bool(getattr(args, "status", False)):
+        try:
+            return cmd_file_status(args)
+        except (LedgerError, OSError, UnicodeDecodeError) as exc:
+            print(f"FAIL {exc}", file=sys.stderr)
+            return 1
     if args.command == "set-header" and not any(
         value is not None
         for value in (args.status, args.blocked, args.root, args.entry)
