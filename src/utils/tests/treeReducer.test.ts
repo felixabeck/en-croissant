@@ -10,6 +10,7 @@ import {
     getGameName,
     getMemoizedBoardStateMap,
     getNodeAtPath,
+    getResolvedPathLength,
     normalizeTreeHalfMoves,
     rootHalfMoves,
     treeIterator,
@@ -163,6 +164,24 @@ test("path lookup stops at the last valid node instead of crossing a missing chi
     expect(getNodeAtPath(root, [0, 0])).toBe(reply);
     expect(getNodeAtPath(root, [0, 1])).toBe(first);
     expect(getNodeAtPath(root, [1])).toBe(root);
+});
+
+test.each([
+    { description: "a fully resolved path", path: [0, 0], expected: 2 },
+    { description: "an index equal to the child count", path: [2], expected: 0 },
+    { description: "an index past the child count", path: [3], expected: 0 },
+    { description: "a negative index", path: [-1], expected: 0 },
+    { description: "a fractional index", path: [1.5], expected: 0 },
+    { description: "a non-number index", path: ["0"], expected: 0 },
+    { description: "an empty path", path: [], expected: 0 },
+    { description: "an invalid index in the middle", path: [0, 1, 0], expected: 1 },
+])("counts resolved indices for $description", ({ path, expected }) => {
+    const root = defaultTree().root;
+    const first = child("first", 1);
+    first.children.push(child("reply", 2));
+    root.children.push(first, child("second", 1));
+
+    expect(getResolvedPathLength(root, path)).toBe(expected);
 });
 
 test("transposition maps retain duplicate paths and respect a non-root start path", () => {

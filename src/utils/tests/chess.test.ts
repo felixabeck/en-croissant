@@ -2,7 +2,7 @@ import { beforeEach, expect, test, vi } from "vitest";
 import type { Token } from "@/bindings";
 import { ANNOTATION_INFO, type Annotation, NAG_INFO } from "../annotation";
 import { getPGN, hasMorePriority, parsePGN, parseStartHeader } from "../chess";
-import { defaultTree } from "../treeReducer";
+import { defaultTree, type TreeNode } from "../treeReducer";
 
 const mocks = vi.hoisted(() => ({ lexPgn: vi.fn() }));
 
@@ -47,6 +47,34 @@ test("Start headers accept only bounded existing nonnegative paths", () => {
     expect(parseStartHeader([1], tree.root)).toEqual([]);
     expect(parseStartHeader("[0]", tree.root)).toEqual([]);
     expect(parseStartHeader(Array(513).fill(0), tree.root)).toEqual([]);
+});
+
+test("Start headers reject unresolvable nested paths without returning their valid prefix", () => {
+    const root = defaultTree().root;
+    root.children.push({ ...root, children: [] });
+
+    expect(parseStartHeader([0, 0], root)).toEqual([]);
+    expect(parseStartHeader([0, 1.5], root)).toEqual([]);
+});
+
+test("Start headers accept nested paths and enforce the bound on a deep enough tree", () => {
+    const root = defaultTree().root;
+    const first: TreeNode = { ...root, children: [] };
+    first.children.push({ ...first, children: [] }, { ...first, children: [] });
+    root.children.push(first);
+    expect(parseStartHeader([0, 1], root)).toEqual([0, 1]);
+
+    const deepRoot = defaultTree().root;
+    let node = deepRoot;
+    for (let depth = 0; depth < 513; depth += 1) {
+        const childNode: TreeNode = { ...node, children: [] };
+        node.children.push(childNode);
+        node = childNode;
+    }
+
+    const maximumPath = Array(512).fill(0);
+    expect(parseStartHeader(maximumPath, deepRoot)).toEqual(maximumPath);
+    expect(parseStartHeader(Array(513).fill(0), deepRoot)).toEqual([]);
 });
 
 test.each([

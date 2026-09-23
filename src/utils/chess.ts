@@ -13,6 +13,7 @@ import { formatScore, getAccuracy, getCPLoss, INITIAL_SCORE } from "./score";
 import {
     createNode,
     defaultTree,
+    getResolvedPathLength,
     type GameHeaders,
     type TreeNode,
     type TreeState,
@@ -481,14 +482,8 @@ export async function parsePGN(
  */
 export function parseStartHeader(start: unknown, root: TreeNode): number[] {
     if (!Array.isArray(start) || start.length > 512) return [];
-    let node = root;
-    const path: number[] = [];
-    for (const value of start) {
-        if (!Number.isSafeInteger(value) || value < 0 || value >= node.children.length) return [];
-        path.push(value);
-        node = node.children[value];
-    }
-    return path;
+    if (getResolvedPathLength(root, start) !== start.length) return [];
+    return start.filter((value): value is number => typeof value === "number");
 }
 
 function getPgnHeaders(tokens: Token[]): GameHeaders {

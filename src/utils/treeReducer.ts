@@ -201,6 +201,28 @@ export const getNodeAtPath = (node: TreeNode, path: number[]): TreeNode => {
     return currentNode;
 };
 
+type PathWalkNode = { readonly children: readonly PathWalkNode[] };
+
+// Number.isSafeInteger already rejects non-numbers; this only lets TypeScript see that.
+const isSafeIndex = (value: unknown): value is number => Number.isSafeInteger(value);
+
+/**
+ * Returns how many leading indices of an untrusted path resolve to nodes in this tree. Only the
+ * child links are read, so an in-memory tree and a freshly parsed persisted one both qualify.
+ */
+export function getResolvedPathLength(root: PathWalkNode, path: readonly unknown[]): number {
+    let currentNode = root;
+    let resolvedLength = 0;
+    for (const index of path) {
+        if (!isSafeIndex(index) || index < 0 || index >= currentNode.children.length) {
+            return resolvedLength;
+        }
+        currentNode = currentNode.children[index];
+        resolvedLength += 1;
+    }
+    return resolvedLength;
+}
+
 export function buildTranspositionMaps(root: TreeNode, startPath: number[] = []): BoardStateMap {
     const map: BoardStateMap = {};
     const startNode = getNodeAtPath(root, startPath);

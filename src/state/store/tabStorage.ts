@@ -1,5 +1,6 @@
 import { warn } from "@/platform/native";
 import { reportPersistError } from "@/state/persistError";
+import { getResolvedPathLength } from "@/utils/treeReducer";
 import { z } from "zod";
 import type { PersistStorage, StorageValue } from "zustand/middleware";
 import { decodeCompressedOrJson, serializeStorageValue } from "./debouncedStorage";
@@ -197,7 +198,22 @@ function parseTree(value: unknown): ValidatedStoredTree | null {
     const candidate = migrateTreeForStorage(value);
     if (!isBoundedTreeForStorage(candidate)) return null;
     const parsed = persistedTreeSchema.safeParse(candidate);
-    return parsed.success ? { version: TREE_STORAGE_VERSION, state: parsed.data } : null;
+    if (!parsed.success) return null;
+
+    // A stored path is repaired against the tree it was stored with: the cursor and the drill path
+    // clamp to their longest resolving prefix, and an unresolvable repertoire start is dropped.
+    const state = parsed.data;
+    state.position = state.position.slice(0, getResolvedPathLength(state.root, state.position));
+    const { start } = state.headers;
+    if (start !== undefined && getResolvedPathLength(state.root, start) !== start.length) {
+        delete state.headers.start;
+    }
+    const { practicePath } = state;
+    if (practicePath !== undefined && practicePath !== null) {
+        state.practicePath = practicePath.slice(0, getResolvedPathLength(state.root, practicePath));
+    }
+
+    return { version: TREE_STORAGE_VERSION, state };
 }
 
 export function createTabStorageQuotaError(cause: unknown): Error {

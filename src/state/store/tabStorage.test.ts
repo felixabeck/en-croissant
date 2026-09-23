@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { defaultTree } from "@/utils/treeReducer";
-import { deserializeStorageValue } from "./debouncedStorage";
+import { deserializeStorageValue, serializeStorageValue } from "./debouncedStorage";
 import {
     decodeLegacyOrCompressed,
     isBoundedTreeForStorage,
@@ -8,6 +8,7 @@ import {
     parseLegacyTreeJson,
     persistStorageWriteError,
     TabStorageRepository,
+    TREE_STORAGE_VERSION,
 } from "./tabStorage";
 
 const native = vi.hoisted(() => ({ warn: vi.fn() }));
@@ -31,6 +32,47 @@ function treeWith(value: (tree: ReturnType<typeof defaultTree>) => void) {
     const tree = structuredClone(defaultTree());
     value(tree);
     return tree;
+}
+
+type StoredTreeForTest = ReturnType<typeof defaultTree> & { practicePath?: number[] | null };
+
+function treeWithPaths(paths: {
+    position?: number[];
+    start?: number[];
+    practicePath?: number[] | null;
+}): StoredTreeForTest {
+    const tree: StoredTreeForTest = defaultTree();
+    const e4: typeof tree.root = {
+        ...tree.root,
+        fen: "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
+        san: "e4",
+        halfMoves: 1,
+        children: [],
+    };
+    e4.children.push({
+        ...e4,
+        fen: "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2",
+        san: "e5",
+        halfMoves: 2,
+        children: [],
+    });
+    const d4: typeof tree.root = {
+        ...tree.root,
+        fen: "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq d3 0 1",
+        san: "d4",
+        halfMoves: 1,
+        children: [],
+    };
+    tree.root.children.push(e4, d4);
+
+    if (paths.position !== undefined) tree.position = paths.position;
+    if (paths.start !== undefined) tree.headers.start = paths.start;
+    if ("practicePath" in paths) tree.practicePath = paths.practicePath;
+    return tree;
+}
+
+function persistTree(tabId: string, state: unknown) {
+    sessionStorage.setItem(tabId, serializeStorageValue({ version: TREE_STORAGE_VERSION, state }));
 }
 
 function expectSeedRejected(value: ReturnType<typeof defaultTree>) {
@@ -778,4 +820,80 @@ test("current envelopes do not rewrite, while empty raw keys stay untouched", ()
     expect(storage.read("empty")).toBeNull();
     expect(sessionStorage.getItem("empty")).toBe("");
     setItem.mockRestore();
+});
+
+test.each([
+    { position: [0, 0, 5], expected: [0, 0] },
+    { position: [2], expected: [] },
+])("read clamps unresolved position $position to its valid prefix", ({ position, expected }) => {
+    persistTree("stale-position", treeWithPaths({ position }));
+
+    expect(storage.read("stale-position")?.state).toMatchObject({ position: expected });
+});
+
+test("read removes an unresolved start header and retains a valid nested start", () => {
+    persistTree("stale-start", treeWithPaths({ start: [0, 5] }));
+    expect(storage.read("stale-start")?.state).not.toHaveProperty("headers.start");
+
+    persistTree("valid-start", treeWithPaths({ start: [0, 0] }));
+    expect(storage.read("valid-start")?.state).toMatchObject({ headers: { start: [0, 0] } });
+});
+
+test("read clamps practice paths and preserves null or absent practice state", () => {
+    persistTree("stale-practice", treeWithPaths({ practicePath: [1, 3] }));
+    expect(storage.read("stale-practice")?.state).toMatchObject({ practicePath: [1] });
+
+    persistTree("null-practice", treeWithPaths({ practicePath: null }));
+    expect(storage.read("null-practice")?.state).toMatchObject({ practicePath: null });
+
+    persistTree("absent-practice", treeWithPaths({}));
+    expect(storage.read("absent-practice")?.state).not.toHaveProperty("practicePath");
+});
+
+test("a healthy tree with three valid paths is unchanged and is not rewritten", () => {
+    const tree = treeWithPaths({
+        position: [0, 0],
+        start: [0, 0],
+        practicePath: [1],
+    });
+    storage.seed("healthy-paths", tree);
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+
+    try {
+        expect(storage.read("healthy-paths")?.state).toEqual(tree);
+        expect(setItem).not.toHaveBeenCalled();
+    } finally {
+        setItem.mockRestore();
+    }
+});
+
+test("read persists repaired paths back into the stored envelope", () => {
+    persistTree(
+        "repair-writeback",
+        treeWithPaths({ position: [0, 0, 5], start: [0, 5], practicePath: [1, 3] }),
+    );
+
+    storage.read("repair-writeback");
+
+    const raw = sessionStorage.getItem("repair-writeback");
+    expect(raw).not.toBeNull();
+    expect(deserializeStorageValue(raw!)).toMatchObject({
+        state: { position: [0, 0], practicePath: [1] },
+    });
+    expect(deserializeStorageValue(raw!)).not.toHaveProperty("state.headers.start");
+});
+
+test("seed and both clone routes store repaired start headers", () => {
+    const stale = treeWithPaths({ start: [0, 5] });
+
+    storage.seed("seed-repair", stale);
+    expect(storage.read("seed-repair")?.state).not.toHaveProperty("headers.start");
+
+    persistTree("clone-source-repair", stale);
+    storage.clone("clone-source-repair", "clone-target-repair");
+    expect(storage.read("clone-target-repair")?.state).not.toHaveProperty("headers.start");
+
+    persistTree("durable-source-repair", stale);
+    storage.cloneDurable("durable-source-repair", "durable-target-repair");
+    expect(storage.read("durable-target-repair")?.state).not.toHaveProperty("headers.start");
 });
