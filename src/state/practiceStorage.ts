@@ -138,14 +138,6 @@ class PracticeMigrationBlockedError extends Error {
     }
 }
 
-// Repair deletes the native deck, so it is offered only where the native store rejected its own
-// stored content. I/O failures and renderer-side failures (storage access, legacy JSON) are not
-// fixed by deleting native data.
-function practiceFailureRepairable(error: unknown): boolean {
-    const category = errorAsAppError(error).backendCategory;
-    return category === "invalid-input" || category === "parsing";
-}
-
 function reportMigrationFailures(
     failures: Array<{ identity?: PracticeDeckKey; label?: string }>,
     reasonKey:
@@ -214,9 +206,13 @@ export function reportPracticeInventoryAnomalies(inventory: PracticeDeckInventor
                 ),
                 backendCategory: anomaly.kind === "Unreadable" ? "io" : "invalid-input",
             };
+            // Repair deletes the native deck, so it is offered only where the inventory found this
+            // deck's stored content damaged. The inventory validates with the same read path as a
+            // load, so a load failure it did not classify is not damage it can prove: I/O, an
+            // authorization refusal, or a renderer-side failure. Retry reruns the inventory.
             practiceMigrationFailures.set(identityKey(identity), {
                 error,
-                repairable: practiceFailureRepairable(error),
+                repairable: anomaly.kind !== "Unreadable",
             });
         }
     }
@@ -410,7 +406,7 @@ async function migrationPass(): Promise<PracticeMigrationPassResult> {
             const appError = errorAsAppError(error);
             practiceMigrationFailures.set(identityKey(legacy.identity), {
                 error: appError,
-                repairable: practiceFailureRepairable(appError),
+                repairable: false,
             });
             outcomes.push({
                 key: legacy.key,
@@ -654,7 +650,7 @@ function failureState(current: PracticeDeckValue, error: unknown): PracticeDeckV
     return {
         ...current,
         status: "read-failed",
-        repairable: practiceError?.repairable ?? practiceFailureRepairable(normalized),
+        repairable: practiceError?.repairable ?? false,
         error: normalized,
     };
 }

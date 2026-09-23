@@ -247,11 +247,24 @@ describe("the real practice deck atom", () => {
         unsubscribe();
     });
 
-    test("a successful repair clears the write block and permits the rebuilt deck to sync", async () => {
+    test("a load refusal the inventory did not classify as damage offers no repair", async () => {
         native.load.mockRejectedValueOnce({
             tag: "backend-error",
             category: "invalid-input",
-            message: "damaged practice deck",
+            message: "file is not authorized for reading",
+        });
+        const { atom, store, unsubscribe } = mountDeck();
+        await vi.waitFor(() => expect(store.get(atom).status).toBe("read-failed"));
+        expect(store.get(atom).repairable).toBe(false);
+        unsubscribe();
+    });
+
+    test("a successful repair clears the write block and permits the rebuilt deck to sync", async () => {
+        native.list.mockResolvedValueOnce({
+            decks: [{ fileId: "file-a", game: 0 }],
+            anomalies: [
+                { kind: "DamagedDeck", leaf: "file-a-positions.json", fileId: "file-a", game: 0 },
+            ],
         });
         const { atom, store, unsubscribe } = mountDeck();
         await vi.waitFor(() => expect(store.get(atom).status).toBe("read-failed"));
