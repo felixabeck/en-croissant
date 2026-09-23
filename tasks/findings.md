@@ -7538,7 +7538,7 @@ Final review repair completed in 88c1b7bb (tab transitions), 3de47fe2 (ordinary 
 
 ### Practice positions and review history use unbounded raw localStorage
 
-* **ID:** f-20260906-23 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260906-23 · **Status:** handled · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** src/state/atoms.ts:731, deckAtomFamily/practiceDataSchema; practice producers in src/components/panels/practice.
 * **Defect:** positions and review-log arrays have no retention/admission bound and createZodStorage serializes raw JSON into the shared localStorage quota. Large repertoires or accumulated history can exhaust storage and lose durable practice progress. Root confirmed both unbounded arrays and raw writer.
 * **Design:** Define durable practice storage and migration/admission across deck contents and review history without truncating user repertoire or silently deleting learning history. Retention of user history is not the same policy as disposable expansion UI state; do not invent an arbitrary array cap to green a test.
