@@ -408,6 +408,7 @@ test("should handle setFen", () => {
         ...defaultTree(),
         dirty: true,
         root: newRoot,
+        headers: { ...defaultTree().headers, fen },
         boardStateMap: expectedMap(newRoot),
     });
 });

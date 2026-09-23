@@ -162,6 +162,16 @@ export function closeTreeStore(tab: string): void {
     closing?.decide(false);
 }
 
+function installRoot(state: Draft<TreeStoreState>, root: TreeNode): void {
+    state.root = root;
+    // A fresh object: setHeaders has just assigned the caller's headers into the draft, and a
+    // start path indexes the tree being replaced.
+    const { start: _start, ...headers } = state.headers;
+    state.headers = { ...headers, fen: root.fen };
+    state.practicePath = null;
+    state.position = [];
+}
+
 export const createTreeStore = (id?: string, initTree?: TreeState) => {
     if (id) {
         const existing = treeStores.get(id);
@@ -178,12 +188,12 @@ export const createTreeStore = (id?: string, initTree?: TreeState) => {
         setPracticePath: (path) => set({ practicePath: path }),
 
         setState: (state) => {
-            set(() => state);
+            set(() => ({ ...state, practicePath: null }));
         },
 
         reset: () =>
             set(() => {
-                return defaultTree();
+                return { ...defaultTree(), practicePath: null };
             }),
 
         save: () => {
@@ -197,8 +207,7 @@ export const createTreeStore = (id?: string, initTree?: TreeState) => {
             set(
                 produce((state) => {
                     state.dirty = true;
-                    state.root = defaultTree(fen).root;
-                    state.position = [];
+                    installRoot(state, defaultTree(fen).root);
                 }),
             ),
 
@@ -550,8 +559,7 @@ export const createTreeStore = (id?: string, initTree?: TreeState) => {
                     state.dirty = true;
                     state.headers = headers;
                     if (headers.fen && headers.fen !== state.root.fen) {
-                        state.root = defaultTree(headers.fen).root;
-                        state.position = [];
+                        installRoot(state, defaultTree(headers.fen).root);
                     }
                 }),
             ),
