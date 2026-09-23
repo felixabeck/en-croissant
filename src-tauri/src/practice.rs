@@ -4521,16 +4521,28 @@ mod tests {
         let (_temp, oversized_directory) = directory();
         let oversized_hash = hash_deck("oversized", 1);
         let oversized_leaf = positions_leaf(&oversized_hash);
-        let oversized_bytes = vec![b'x'; PRACTICE_POSITIONS_MAX_BYTES + 1];
+        let oversized_envelope = new_positions(
+            "oversized",
+            1,
+            vec![Value::String("x".repeat(PRACTICE_POSITIONS_MAX_BYTES))],
+        );
+        let oversized_bytes = serde_json::to_vec(&oversized_envelope).unwrap();
+        assert!(oversized_bytes.len() > PRACTICE_POSITIONS_MAX_BYTES);
+        assert!(serde_json::from_slice::<PositionsEnvelope>(&oversized_bytes).is_ok());
         fs::write(
             oversized_directory.path().join(&oversized_leaf),
             &oversized_bytes,
         )
         .unwrap();
-        assert!(matches!(
-            load_practice_deck_in(&oversized_directory, "oversized", 1),
-            Err(Error::InvalidInput(_))
-        ));
+        match load_practice_deck_in(&oversized_directory, "oversized", 1) {
+            Err(Error::InvalidInput(message)) => assert!(
+                message.contains("size limit"),
+                "expected size-limit refusal, got: {message}"
+            ),
+            Ok(Some(_)) => panic!("accepted a valid oversized positions envelope"),
+            Ok(None) => panic!("ignored a valid oversized positions envelope"),
+            Err(error) => panic!("expected size-limit refusal, got: {error}"),
+        }
         assert_eq!(
             leaf_bytes(&oversized_directory, &oversized_leaf),
             oversized_bytes
@@ -4830,6 +4842,7 @@ mod tests {
     #[test]
     fn missing_deck_operations_and_stale_writes_return_typed_errors_without_changes() {
         let (_temp, directory) = directory();
+        let before_missing_deck_calls = all_leaf_bytes(&directory);
         assert_eq!(
             load_practice_reviews_in(&directory, "missing", 1, None, 10).unwrap(),
             PracticeReviewPage {
@@ -4837,18 +4850,22 @@ mod tests {
                 next_cursor: None,
             }
         );
+        assert_eq!(all_leaf_bytes(&directory), before_missing_deck_calls);
         assert!(matches!(
             acknowledge_practice_orphans_in(&directory, "missing", 1, 0, 0),
             Err(Error::InvalidInput(_))
         ));
+        assert_eq!(all_leaf_bytes(&directory), before_missing_deck_calls);
         assert!(matches!(
             reset_practice_deck_in(&directory, "missing", 1, 0, 0, &positions()),
             Err(Error::InvalidInput(_))
         ));
+        assert_eq!(all_leaf_bytes(&directory), before_missing_deck_calls);
         assert!(matches!(
             sync_practice_positions_in(&directory, "missing", 1, 1, 0, &positions()),
             Err(Error::Conflict(_))
         ));
+        assert_eq!(all_leaf_bytes(&directory), before_missing_deck_calls);
 
         sync_practice_positions_in(&directory, "file", 1, 0, 0, &positions()).unwrap();
         let before = all_leaf_bytes(&directory);
@@ -4961,6 +4978,8 @@ mod tests {
         ));
         assert_eq!(all_leaf_bytes(&directory), before);
 
+        // An id whose only prior review is at or before base_revision is outside the retry span,
+        // so a different entry with that id is appended as a new review.
         assert_eq!(
             record_practice_review_in(
                 &directory,
@@ -4970,11 +4989,26 @@ mod tests {
                 4,
                 3,
                 &positions(),
+                &entry("new first outside retry span"),
+                "first"
+            )
+            .unwrap(),
+            5
+        );
+        assert_eq!(
+            record_practice_review_in(
+                &directory,
+                "file",
+                1,
+                0,
+                5,
+                4,
+                &positions(),
                 &entry("fourth"),
                 "fourth"
             )
             .unwrap(),
-            5
+            6
         );
         assert_eq!(
             load_practice_reviews_in(&directory, "file", 1, None, 10)
@@ -4983,7 +5017,7 @@ mod tests {
                 .into_iter()
                 .map(|review| review.id)
                 .collect::<Vec<_>>(),
-            ["fourth", "third", "second", "first"]
+            ["fourth", "first", "third", "second", "first"]
         );
     }
 
