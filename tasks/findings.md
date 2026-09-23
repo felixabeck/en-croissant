@@ -11055,7 +11055,7 @@ It matters more since 2026-09-22 than before: `buildCoverageReport` now merges r
 
 ### Prepending a mainline move shifts sibling indices without rebasing `headers.start`
 
-* **ID:** f-20260922-08 · **Status:** open · **Area:** chess-tree · **Root:** tree-path-rebasing · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260922-08 · **Status:** handled · **Area:** chess-tree · **Root:** tree-path-rebasing · **Entry:** lens · **Blocked:** none
 * **Where:** `src/state/store/tree.ts:745` (`makeMove`'s `moveNode.children.unshift(newMoveNode)` under
   `mainline: true`), reached from `src/components/boards/BoardGame.tsx:439` (`syncTreeWithMoves`) and
   `src/components/puzzles/PuzzleBoard.tsx:100` / `Puzzles.tsx:846` through `makeMoves`.
