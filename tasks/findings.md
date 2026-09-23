@@ -10857,7 +10857,7 @@ This is the second annotation in a row where a claim in this entry turned out to
 
 ### `syncDeck` keeps a card's stale full FEN, so an exact `findFen` lookup drops the card and hides its history
 
-* **ID:** f-20260922-02 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260922-02 · **Status:** handled · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `src/components/files/opening.ts:125-133` (`syncDeck`'s `existingByFen` map and
   `merged.push({ ...prev, answer: pos.answer })`), against the exact lookups at
   `src/components/panels/practice/PracticePanel.tsx:240`, `:990` and `:1064`
