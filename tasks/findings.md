@@ -11174,3 +11174,17 @@ Not yet root-caused: which layer decides "focus the existing tab" on open (`src/
 
 **2026-09-23, second stale-read path (traced, not reproduced):** the Files page has the same class of defect. `FileCard.tsx:48-68` reads the selected game's PGN when the card mounts or its page changes, and deliberately does not re-read on a relisting ("a relisting must not re-read the same file", `FileCard.tsx:29-30`). `openGame` (`FileCard.tsx:70-80`) passes that string to `openFile`, which skips its own `readGames` whenever `pgn` is provided (`src/utils/files.ts:74`). So if the file changes on disk while its card stays mounted, Open creates a tab from the old text. Tab ids are random (`workspaceTypes.ts:23-35`) and the Rust offset cache keys on size, mtime and ctime (`pgn.rs:38-49`), so neither is a second source. Any fix here should decide the same open question for both paths.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"62ef92f996e28014ce2fd223a362cfefbc29c96693df2d1032a404714e628461","input_sha256":"4dff70322a9df9255e8f255d3cf05762056c023d23fe673be2d70d6141236f23","kind":"mutation-receipt","operation":"7873f6d7a9f06db4df325d121eeb12fba552cdf2f2f8fd906b3a2a3115eef4d3","options":{"section":null},"request_id_sha256":null,"results":["f-20260923-01"],"target":"f-20260923-01","v":1} -->
+
+---
+
+## 2026-09-23 — filed through the inbox spool
+
+### verify:app's +500 practice sync check fails deterministically when the fixture prunes its source tree instead of a clone
+
+* **ID:** f-20260923-02 · **Status:** open · **Area:** gate-scripts · **Root:** none · **Entry:** lens · **Blocked:** none
+
+Measured on 2026-09-23 against one unchanged release binary (built from f9c90e45), each run inside `systemd-run --user --scope -p MemoryMax=4G -p MemorySwapMax=0`. In `scripts/verify-app.mjs`, the practice scenario builds one branching fixture tree and prunes it to a 12,000-card initial file and a 12,500-card extended file. Pruning two clones of an untouched source tree passed "the real sync path stores 500 further repertoire positions" in 5 of 5 runs. Pruning the source itself as the extended fixture and cloning once for the initial one, a review nit to save one clone, failed that check and the dependent final-count check in 6 of 6 runs. The failing runs showed the reopened tab's panel still at 12,000 positions after the 600 s wait. Scope memory peaked at 1.87 GiB with zero `high`/`max` events, so memory pressure is ruled out.
+
+Replicating the fixture block offline under both constructions produces byte-identical initial and extended PGNs (same SHA-256) and identical card lists. So the file contents do not differ, and the mechanism is unknown. A dependency on something other than the file's bytes (timing, object identity, or a product race that the extra clone happens to avoid) means the check is less deterministic than it looks. The two-clone construction is kept, with a comment pointing here.
+
+Start with a diagnostic run of the failing variant that records, at the failure point, the on-disk PGN size and hash, a `read_games` of the file through IPC, and the reopened tab's node count. Then decide whether this is a verifier race or a product race: compare `FileCard`'s mount-time preview read, annotated on `f-20260923-01`.
