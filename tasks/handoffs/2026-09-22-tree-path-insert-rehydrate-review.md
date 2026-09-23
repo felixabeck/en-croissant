@@ -1077,3 +1077,46 @@ adopted 16 (I1-I3, I5-I10, I14, I15, I19-I22, I24); rejected with evidence 5 (I4
 I23 with a clarifying O4 bullet); deferred and filed 3 issues into 2 findings (I12 + I13 →
 `f-20260922-13`; I16's pre-existing `void warn` half → `f-20260922-14`). Correction-introduced defects:
 I7 (from I5), I14 (from I10). Open at closure: 0.
+
+## Implementation and cumulative review (2026-09-23)
+
+**Source drift before implementation.** `88ad35ef` (f-20260906-23, landed after this plan closed)
+removed `boardStateMap` from stored state; the map is derived on demand by
+`getMemoizedBoardStateMap(root, headers.start ?? [])`. Phase 5's hydration row therefore asserts that
+derivation instead of a stored field. Arbiter note: same obligation and proof semantics, only the
+accessor changed, so no re-review round. The same drift makes O3's "the wrapper rebuilds the map"
+remark moot; nothing depends on it.
+
+**Phases** (executor codex, gpt-6-luna max, `--role sensitive`, one leaf each): 1 `57261fb0`,
+2 `911707f7`, 3 `a5c93d9f`, 4 `9e86b4f1`, 5 `e7c93180`. Orchestrator takeovers, all inline and small:
+Phase 1, a strict-equality test failed because `installRoot` wrote an explicit `start: undefined`
+key; fixed by rebuilding the headers without the key (which also stops a mutation of the caller's
+headers object in `setHeaders`). Phase 2, lint rejected the test table's `as const` tuples and
+conditional `expect`s; the table was typed and split into two `test.each` groups. Phase 4, one
+test asserted `toBe` on the insertion parent, which Immer clones (plan D4); changed to `san`.
+Phase 5, the walker was typed for `TreeNode` and did not accept the persisted node type (now a
+structural `PathWalkNode`), a test fixture inferred `never[]`, and two `if (length differs)` guards
+around `slice` were removed as equivalent mutants.
+
+**Cumulative review** over `4e638430..e7c93180`, 8 lenses on codex at `--role sensitive`:
+correctness, root-cause, tests, code-quality, minimalism, error-handling, chess-semantics,
+persisted-state. Raw verdicts: six APPROVED, chess-semantics and persisted-state REVISE.
+
+| Lens | Finding | Disposition |
+| --- | --- | --- |
+| chess-semantics | `parsePGN` kept the raw `Start` tag in `headers.start` after `parseStartHeader` rejected it | Fix `08067513`; test staged red without the fix |
+| persisted-state | writer and reader tree bounds differ | Skip, already filed as `f-20260922-11`, excluded by this plan |
+| persisted-state | tab close orphans the tree key | Skip, already filed as `f-20260922-09`, excluded by this plan |
+| tests | seed and `cloneDurable` repair checks read through the self-repairing `read` | Fix `af112d34`, raw stored value asserted |
+| tests | reset test did not seed `headers.start` | Fix `af112d34` |
+| code-quality | two comments described too little | Fix `af112d34` |
+| minimalism | inline the single-use `isSafeIndex` | Skip: an inline `typeof` check beside `Number.isSafeInteger` is an equivalent mutant in the mutated `tree-path` package |
+
+Closure round (chess-semantics and tests on `08067513..af112d34`, both REVISE). chess-semantics said
+`setState` trusts incoming paths: rejected with evidence, because both production callers build their
+tree with `parsePGN`, which now validates (recorded as `d-20260923-09`). tests said the `setState` case
+preserved paths that did not resolve: fixed in `0e14225c`. A third tests check closed that and asked
+for `reset`'s cursor to be asserted: fixed in `6a1c93b9`, staged red with a cursor-preserving
+`reset`, and closed by the arbiter without another lens round because the change is test-only.
+Decisions D1-D3 and D6-D11 are recorded as `d-20260923-04` to `-08`. Final-review rework per adopted
+issue: 5 fixes, 0 correction-introduced defects. Open at closure: 0.
