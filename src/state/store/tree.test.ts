@@ -30,6 +30,203 @@ function threeBranchStore() {
     return { store: createTreeStore(undefined, tree), deepA, deepB, deepC };
 }
 
+function nestedPracticePathStore() {
+    const grandchildren = (prefix: string) =>
+        Array.from({ length: 4 }, (_, index) => {
+            const grandchild = node(`${prefix}-${index}`);
+            const childCount = prefix === "a" && index === 2 ? 2 : 1;
+            grandchild.children = Array.from({ length: childCount }, (_, childIndex) =>
+                node(`${prefix}-${index}-${childIndex}`),
+            );
+            return grandchild;
+        });
+
+    const tree = defaultTree();
+    tree.root.children = [node("a", grandchildren("a")), node("b", grandchildren("b"))];
+    return createTreeStore(undefined, tree);
+}
+
+type PracticePathRebasingCase = {
+    name: string;
+    practicePath: number[];
+    mutation: "delete" | "promote";
+    mutationPath: number[];
+    expectedPath: number[];
+} & (
+    | { sameNode: true }
+    // The clamp and contract-anchor rows resolve to an ancestor on the mutated chain, which Immer
+    // clones, so they are checked by the resolved node's san instead of identity.
+    | { sameNode: false; expectedSan: string }
+);
+
+const practicePathRebasingCases: PracticePathRebasingCase[] = [
+    {
+        name: "deleting a later sibling leaves the earlier practice path unchanged",
+        practicePath: [0, 1, 0],
+        mutation: "delete",
+        mutationPath: [0, 2],
+        expectedPath: [0, 1, 0],
+        sameNode: true,
+    },
+    {
+        name: "deleting an earlier sibling shifts the practice path",
+        practicePath: [0, 3, 0],
+        mutation: "delete",
+        mutationPath: [0, 2],
+        expectedPath: [0, 2, 0],
+        sameNode: true,
+    },
+    {
+        name: "deleting the practiced subtree clamps the practice path to its parent",
+        practicePath: [0, 2, 0],
+        mutation: "delete",
+        mutationPath: [0, 2],
+        expectedPath: [0],
+        expectedSan: "a",
+        sameNode: false,
+    },
+    {
+        name: "promoting the practiced sibling moves its path to the mainline",
+        practicePath: [0, 2, 0],
+        mutation: "promote",
+        mutationPath: [0, 2],
+        expectedPath: [0, 0, 0],
+        sameNode: true,
+    },
+    {
+        name: "promoting a later sibling shifts the practice path right",
+        practicePath: [0, 1, 0],
+        mutation: "promote",
+        mutationPath: [0, 2],
+        expectedPath: [0, 2, 0],
+        sameNode: true,
+    },
+    {
+        name: "promoting an earlier sibling leaves the later practice path unchanged",
+        practicePath: [0, 3, 0],
+        mutation: "promote",
+        mutationPath: [0, 1],
+        expectedPath: [0, 3, 0],
+        sameNode: true,
+    },
+    {
+        name: "deleting under another branch leaves the practice path unchanged",
+        practicePath: [1, 3, 0],
+        mutation: "delete",
+        mutationPath: [0, 2],
+        expectedPath: [1, 3, 0],
+        sameNode: true,
+    },
+    {
+        name: "promoting under another branch leaves the practice path unchanged",
+        practicePath: [1, 2, 0],
+        mutation: "promote",
+        mutationPath: [0, 2],
+        expectedPath: [1, 2, 0],
+        sameNode: true,
+    },
+    {
+        name: "deleting a descendant keeps the practice path at its parent (contract anchor)",
+        practicePath: [0],
+        mutation: "delete",
+        mutationPath: [0, 2],
+        expectedPath: [0],
+        expectedSan: "a",
+        sameNode: false,
+    },
+    {
+        name: "promoting a descendant keeps the practice path at its parent (contract anchor)",
+        practicePath: [0],
+        mutation: "promote",
+        mutationPath: [0, 2],
+        expectedPath: [0],
+        expectedSan: "a",
+        sameNode: false,
+    },
+];
+
+function applyPracticePathCase(testCase: PracticePathRebasingCase) {
+    const store = nestedPracticePathStore();
+    store.getState().setPracticePath(testCase.practicePath);
+    const nodeBeforeMutation = getNodeAtPath(store.getState().root, testCase.practicePath);
+
+    if (testCase.mutation === "delete") store.getState().deleteMove(testCase.mutationPath);
+    else store.getState().promoteVariation(testCase.mutationPath);
+
+    const state = store.getState();
+    return {
+        practicePath: state.practicePath,
+        nodeBeforeMutation,
+        rebasedNode: getNodeAtPath(state.root, testCase.expectedPath),
+    };
+}
+
+test.each(practicePathRebasingCases.filter((testCase) => testCase.sameNode))(
+    "$name",
+    (testCase) => {
+        const result = applyPracticePathCase(testCase);
+        expect(result.practicePath).toEqual(testCase.expectedPath);
+        expect(result.rebasedNode).toBe(result.nodeBeforeMutation);
+    },
+);
+
+test.each(
+    practicePathRebasingCases.filter(
+        (testCase): testCase is Extract<PracticePathRebasingCase, { sameNode: false }> =>
+            !testCase.sameNode,
+    ),
+)("$name", (testCase) => {
+    const result = applyPracticePathCase(testCase);
+    expect(result.practicePath).toEqual(testCase.expectedPath);
+    expect(result.rebasedNode.san).toBe(testCase.expectedSan);
+});
+
+test("promoteToMainline rebases all tracked paths through multiple promotions", () => {
+    const store = nestedPracticePathStore();
+    const path = [0, 2, 1];
+    store.getState().goToMove(path);
+    store.getState().setStart(path);
+    store.getState().setPracticePath(path);
+    const nodeBeforePromotion = getNodeAtPath(store.getState().root, path);
+
+    store.getState().promoteToMainline(path);
+
+    const state = store.getState();
+    expect(state.position).toEqual([0, 0, 0]);
+    expect(state.headers.start).toEqual([0, 0, 0]);
+    expect(state.practicePath).toEqual([0, 0, 0]);
+    expect(getNodeAtPath(state.root, state.position)).toBe(nodeBeforePromotion);
+    expect(getNodeAtPath(state.root, state.headers.start!)).toBe(nodeBeforePromotion);
+    expect(getNodeAtPath(state.root, state.practicePath!)).toBe(nodeBeforePromotion);
+});
+
+test("deleting the practiced node clamps the path and prevents advancing", () => {
+    const store = nestedPracticePathStore();
+    store.getState().goToMove([0, 2, 0]);
+    store.getState().setPracticePath([0, 2, 0]);
+
+    store.getState().deleteMove([0, 2]);
+
+    expect(store.getState().practicePath).toEqual([0]);
+    expect(store.getState().position).toEqual([0]);
+    expect(getNodeAtPath(store.getState().root, [0]).san).toBe("a");
+    expect(getNodeAtPath(store.getState().root, [0]).children.length).toBeGreaterThan(0);
+
+    store.getState().goToNext();
+
+    expect(store.getState().position).toEqual([0]);
+});
+
+test.each(["delete", "promote"] as const)("a null practicePath stays null after %s", (mutation) => {
+    const store = nestedPracticePathStore();
+    store.getState().setPracticePath(null);
+
+    if (mutation === "delete") store.getState().deleteMove([0, 2]);
+    else store.getState().promoteVariation([0, 2]);
+
+    expect(store.getState().practicePath).toBeNull();
+});
+
 test("deleting a sibling rebases deep cursor and repertoire start to the same nodes", () => {
     const { store, deepB, deepC } = threeBranchStore();
     store.getState().goToMove([2, 0]);

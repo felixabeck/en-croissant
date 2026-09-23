@@ -787,7 +787,22 @@ function rebasePathAfterPromotion(target: number[], parent: number[], promotedIn
     return rebased;
 }
 
-function deleteMove(state: TreeState, path: number[]) {
+function rebaseTrackedPaths(
+    state: TreeStoreState,
+    rebase: (target: number[]) => number[] | undefined,
+    fallback: {
+        position: number[];
+        start: number[] | undefined;
+        practicePath: number[] | null;
+    },
+) {
+    state.position = rebase(state.position) ?? fallback.position;
+    if (state.headers.start) state.headers.start = rebase(state.headers.start) ?? fallback.start;
+    if (state.practicePath !== null)
+        state.practicePath = rebase(state.practicePath) ?? fallback.practicePath;
+}
+
+function deleteMove(state: TreeStoreState, path: number[]) {
     if (path.length === 0) return;
     const node = getNodeAtPath(state.root, path);
     if (!node) return;
@@ -796,11 +811,15 @@ function deleteMove(state: TreeState, path: number[]) {
     const index = parent.children.findIndex((n) => n === node);
     if (index < 0) return;
     parent.children.splice(index, 1);
-    state.position = rebasePathAfterDelete(state.position, path) ?? path.slice(0, -1);
-    if (state.headers.start) state.headers.start = rebasePathAfterDelete(state.headers.start, path);
+    const deletedParentPath = path.slice(0, -1);
+    rebaseTrackedPaths(state, (target) => rebasePathAfterDelete(target, path), {
+        position: deletedParentPath,
+        start: undefined,
+        practicePath: deletedParentPath,
+    });
 }
 
-function promoteVariation(state: TreeState, path: number[]): number[] {
+function promoteVariation(state: TreeStoreState, path: number[]): number[] {
     // get last element different from 0
     const i = path.findLastIndex((v) => v !== 0);
     if (i === -1) return path;
@@ -810,9 +829,11 @@ function promoteVariation(state: TreeState, path: number[]): number[] {
     const node = getNodeAtPath(state.root, promotablePath);
     if (!node) return path;
     node.children.unshift(node.children.splice(v, 1)[0]);
-    state.position = rebasePathAfterPromotion(state.position, promotablePath, v);
-    if (state.headers.start)
-        state.headers.start = rebasePathAfterPromotion(state.headers.start, promotablePath, v);
+    rebaseTrackedPaths(state, (target) => rebasePathAfterPromotion(target, promotablePath, v), {
+        position: state.position,
+        start: state.headers.start,
+        practicePath: state.practicePath,
+    });
     return rebasePathAfterPromotion(path, promotablePath, v);
 }
 
