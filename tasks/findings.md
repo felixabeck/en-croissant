@@ -7546,6 +7546,11 @@ Final review repair completed in 88c1b7bb (tab transitions), 3de47fe2 (ordinary 
 * **Relation:** f-20260831-18 handled engine metadata compression; this is a different owner and retention contract, no shared root asserted.
 * **Found by:** Luna Extra High persisted-state final lens, confidence 95, 2026-09-06.
 
+**Handled 2026-09-23.** Practice decks now live in a native app-data store, per machine, keyed per `(file, game)` and migrated from `localStorage` (Felix's product decisions of 2026-09-22), built from the frozen r27 plan in `tasks/plans/2026-09-22-practice-durable-storage.md`. Commits: native store `96377288`; IPC and renderer storage `3d551434`; atom and consumers `ae1bccf8`; migration, startup gate and path-owner continuity `4f0e8d82`. Fifth phase: `88ad35ef`, the notation renderer's O(tree) memory, found by this scenario (decision `d-20260923-01`). Review repairs run from `69727992` through `05f27e5b`, and the closure scenario is `e5080616`. The full record, with review rounds, skips and filings, is `tasks/handoffs/2026-09-22-practice-durable-storage-review.md` → *Implementation record*.
+
+Closure condition met: the new `pnpm verify:app` practice scenario (plan section E), run in the real window inside a 4 GiB memory cap, exited 0 with 47/47 checks. Its practice checks cover a 12,000-card branching repertoire with 100,001 seeded native reviews, legacy migration with key and capability retention, 50 Good ratings through the normal Start Practice path, retention after legacy-key removal, +500 positions through the real sync path with the exact card set, and exact counts across restarts. Staged-failure rows are recorded in the script's header.
+<!-- ledger-meta {"command":"annotate","effect_lines":3,"effect_sha256":"526f40645ab2cd8647bdc5f84f44680601d5e37ab1e73f4985f89ebbf37ffb55","input_sha256":"88e9da860a93dbbb7253e768d7cb6dc2a887b99507224052137d0c59fbaecbb7","kind":"mutation-receipt","operation":"1757892c3e8c2e710232400ef1971a386b16d5d0eedcb3e7e53c9d1dfe0d2459","options":{"section":null},"request_id_sha256":null,"results":["f-20260906-23"],"target":"f-20260906-23","v":1} -->
+
 ---
 
 ## 2026-09-06 — filed through the inbox spool
