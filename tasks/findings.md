@@ -11114,7 +11114,7 @@ A plan closing this entry together with `f-20260922-04` (and the other of `f-202
 
 ### Rehydration validates the shape of persisted tree paths but never that they resolve in the restored root
 
-* **ID:** f-20260922-10 · **Status:** open · **Area:** frontend-state · **Root:** tree-path-rebasing · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260922-10 · **Status:** handled · **Area:** frontend-state · **Root:** tree-path-rebasing · **Entry:** lens · **Blocked:** none
 * **Where:** `src/state/store/tree.ts:647-659` (`onRehydrateStorage` clears the report owner, normalises half-moves and rebuilds `boardStateMap`, and checks no path), `src/state/store/tabStorage.ts:139-160` (`pathSchema` validates `number[]` shape only, for both `position` and `practicePath`; `headers.start` the same).
 * **Defect:** a persisted `position`, `headers.start` or `practicePath` is restored verbatim and then trusted. `getNodeAtPath` truncates a path it cannot walk and returns the deepest node it reached, so a path that no longer resolves silently addresses an ancestor — usually the root — instead of failing. The one derived structure that *is* rebuilt (`boardStateMap`) is rebuilt **from** `state.headers.start || []`, so a stale start path also narrows the transposition map to the wrong subtree.
 * **Why it matters:** `.claude/rules/chess-tree-semantics.md` — a `number[]` path is re-derived after any mutation that can insert, delete, promote or reorder nodes; a rehydration is the one boundary where the path and the tree meet again without any mutation having happened in between, and it is the only one with no check. `.claude/rules/persisted-state.md`: hydration of corrupt or absent data.
