@@ -988,7 +988,7 @@ test("boardStateMap updates when start changes", () => {
     expect(state.boardStateMap[rootFen]).toBeUndefined();
 });
 
-test("practice mode: goToNext transposition fallback bypasses guard", () => {
+test("practice mode: goToNext does not jump to a transposition at the end of the drill", () => {
     const root = buildTranspositionTree();
     store.getState().setState({
         ...defaultTree(),
@@ -999,5 +999,89 @@ test("practice mode: goToNext transposition fallback bypasses guard", () => {
 
     store.getState().goToNext();
     const state = getNewState();
-    expect(state.position).toEqual([0, 0, 0, 0, 0]); // should jump to transposition child
+    expect(state.position).toEqual([1, 0, 0, 0]);
+});
+
+test("practice mode: goToNext does not advance from an off-path cursor", () => {
+    const root = buildTranspositionTree();
+    expect(root.children[0].children.length).toBeGreaterThan(0);
+
+    store.getState().setState({ ...defaultTree(), root, position: [0] });
+    store.getState().setPracticePath([1, 0]);
+
+    store.getState().goToNext();
+
+    expect(store.getState().position).toEqual([0]);
+});
+
+test("practice mode: goToNext does not use transposition fallback past the drill path", () => {
+    const sharedFen =
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1";
+    const target: TreeNode = {
+        ...defaultTree().root,
+        fen: sharedFen,
+        move: Nf3Move,
+        san: "Nf3",
+        children: [
+            {
+                ...defaultTree().root,
+                fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 1 2",
+                move: Nc6Move,
+                san: "Nc6",
+            },
+        ],
+    };
+    const root: TreeNode = {
+        ...defaultTree().root,
+        children: [
+            {
+                ...defaultTree().root,
+                move: e4Move,
+                san: "e4",
+                children: [{ ...target, children: [] }],
+            },
+            target,
+        ],
+    };
+    expect(root.children[0].children[0].children).toHaveLength(0);
+    expect(root.children[1].children.length).toBeGreaterThan(0);
+
+    store.getState().setState({ ...defaultTree(), root, position: [0, 0] });
+    store.getState().setPracticePath([1]);
+
+    store.getState().goToNext();
+
+    expect(store.getState().position).toEqual([0, 0]);
+});
+
+test("practice mode: goToNext follows the drill path and stops at its end", () => {
+    const navigationNode = (san: string, move: typeof e4Move, children: TreeNode[] = []) => ({
+        ...defaultTree().root,
+        move,
+        san,
+        children,
+    });
+    const root: TreeNode = {
+        ...defaultTree().root,
+        children: [
+            navigationNode("e4", e4Move),
+            navigationNode("Nf3", Nf3Move, [
+                navigationNode("e5", e5Move),
+                navigationNode("Nc6", Nc6Move, [navigationNode("Bb5", parseUci("f1b5")!)]),
+            ]),
+        ],
+    };
+    expect(root.children[1].children[1].children.length).toBeGreaterThan(0);
+
+    store.getState().setState({ ...defaultTree(), root });
+    store.getState().setPracticePath([1, 1]);
+
+    store.getState().goToNext();
+    expect(store.getState().position).toEqual([1]);
+
+    store.getState().goToNext();
+    expect(store.getState().position).toEqual([1, 1]);
+
+    store.getState().goToNext();
+    expect(store.getState().position).toEqual([1, 1]);
 });

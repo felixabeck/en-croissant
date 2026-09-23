@@ -214,15 +214,20 @@ export const createTreeStore = (id?: string, initTree?: TreeState) => {
         goToNext: () => {
             set((state) => {
                 const { practicePath } = state;
+                if (
+                    practicePath !== null &&
+                    (!isPrefix(state.position, practicePath) ||
+                        state.position.length >= practicePath.length)
+                )
+                    return {};
+
                 const node = getNodeAtPath(state.root, state.position);
                 if (!node) return {};
 
                 // Normal case: node has children
                 if (node.children.length > 0) {
-                    if (practicePath && state.position.length >= practicePath.length) {
-                        return {};
-                    }
-                    const childIndex = practicePath ? practicePath[state.position.length] : 0;
+                    const childIndex =
+                        practicePath === null ? 0 : practicePath[state.position.length];
                     if (!node.children[childIndex]?.move) return {};
                     const san = node.children[childIndex].san;
                     if (!san) return {};
@@ -231,18 +236,15 @@ export const createTreeStore = (id?: string, initTree?: TreeState) => {
                 }
 
                 // No children — try transposition fallback
+                if (practicePath !== null) return {};
+
                 const currentFen = getBoardState(node.fen);
                 const entries =
                     getMemoizedBoardStateMap(state.root, state.headers.start ?? [])[currentFen] ||
                     [];
                 const candidates = entries.filter((e) => e.node !== node);
 
-                if (candidates.length === 0) {
-                    if (practicePath && state.position.length >= practicePath.length) {
-                        return {};
-                    }
-                    return {};
-                }
+                if (candidates.length === 0) return {};
 
                 const { node: targetNode, path: targetPath } = candidates[0];
                 if (targetNode.children.length === 0) return {};
