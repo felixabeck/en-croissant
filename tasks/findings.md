@@ -10883,6 +10883,9 @@ This is the second annotation in a row where a claim in this entry turned out to
   `merged.push({ ...prev, answer: pos.answer })` at `opening.ts:133` and the exact `findFen`
   comparison at `treeReducer.ts:50`.
 
+**Handled 2026-09-23 in `b912b802`, during the f-20260906-23 build.** Folded in because the same function was being changed there: `syncDeck` now carries the rebuilt `pos.fen` forward and counts a changed FEN or answer as `updated`, and `999903c0` makes the panel persist updated cards. That is the finding's first candidate fix. The read side still compares exact strings (`findFen`), which is now consistent because the write side stores the tree's current FEN. Review-log entries written under an older FEN are still looked up exactly in the logs modal; that belongs to `f-20260922-03`.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"56d26f60b41e221560578bfaa5805cc93e713103d1b5a02e3c5095afd1aeea51","input_sha256":"bbac9a90f27b3063981d0367d7ae0cc8f859e3aa21cdcb1bf342f4d6eb2a145f","kind":"mutation-receipt","operation":"5507986bc5d3b83459e0031abb91c7fcf36fb07920d997d87a77dcf50d44892a","options":{"section":null},"request_id_sha256":null,"results":["f-20260922-02"],"target":"f-20260922-02","v":1} -->
+
 ---
 
 ## 2026-09-22 — filed through the inbox spool
