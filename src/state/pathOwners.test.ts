@@ -425,6 +425,27 @@ test("retains an orphan identity, distrusts practice data, and reports the anoma
     expect(persistError.report).toHaveBeenCalledOnce();
 });
 
+test("retains a damaged deck identity while distrusting practice data", async () => {
+    mocks.list.mockResolvedValue({
+        decks: [{ fileId: "damaged", game: 4 }],
+        anomalies: [
+            {
+                kind: "DamagedDeck",
+                leaf: "damaged-positions.json",
+                fileId: "damaged",
+                game: 4,
+            },
+        ],
+    });
+
+    await ensurePracticeMigration();
+    await initializePathOwners();
+
+    const owners = mocks.reconcile.mock.calls[0][0];
+    expect(owners.retainedIds).toContainEqual({ id: "damaged" });
+    expect(owners.trustedFamilies).not.toContain("practiceDeck");
+});
+
 test("does not retain an identity from an IdentityMismatch anomaly", async () => {
     mocks.list.mockResolvedValue({
         decks: [],

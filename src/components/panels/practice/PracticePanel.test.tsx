@@ -19,7 +19,21 @@ const fixtures = vi.hoisted(() => ({
   },
   deck: null as any,
   setDeck: vi.fn(),
+  practiceState: { phase: "idle" } as any,
+  setPracticeState: vi.fn(),
+  practiceStats: {
+    mode: "anki",
+    remainingPositions: [],
+    correct: 0,
+    incorrect: 0,
+    streak: 0,
+    bestStreak: 0,
+  } as any,
+  setPracticeStats: vi.fn(),
+  setPracticeMoveController: vi.fn(),
   buildFromTree: vi.fn(() => []),
+  getCardForReview: vi.fn(),
+  updateCardPerformance: vi.fn(),
   loadPracticeReviews: vi.fn(),
   tree: {
     currentNode: () => ({ fen: "root" }),
@@ -52,20 +66,13 @@ vi.mock("jotai", () => ({
     if (atom === fixtures.atoms.deck) return [fixtures.deck, fixtures.setDeck];
     if (atom === fixtures.atoms.currentPracticeTab) return ["train", vi.fn()];
     if (atom === fixtures.atoms.practiceState) {
-      return [{ phase: "idle" }, vi.fn()];
+      return [fixtures.practiceState, fixtures.setPracticeState];
     }
     if (atom === fixtures.atoms.practiceSessionStats) {
-      return [
-        {
-          mode: "anki",
-          remainingPositions: [],
-          correct: 0,
-          incorrect: 0,
-          streak: 0,
-          bestStreak: 0,
-        },
-        vi.fn(),
-      ];
+      return [fixtures.practiceStats, fixtures.setPracticeStats];
+    }
+    if (atom === fixtures.atoms.practiceMoveController) {
+      return [null, fixtures.setPracticeMoveController];
     }
     if (atom === fixtures.atoms.practiceCompletedSummary) return [null, vi.fn()];
     return [false, vi.fn()];
@@ -76,7 +83,8 @@ vi.mock("jotai", () => ({
     if (atom === fixtures.atoms.practiceCardStartTime) return 0;
     return false;
   },
-  useSetAtom: () => vi.fn(),
+  useSetAtom: (atom: symbol) =>
+    atom === fixtures.atoms.practiceMoveController ? fixtures.setPracticeMoveController : vi.fn(),
 }));
 vi.mock("zustand", () => ({
   useStore: (_store: unknown, selector: (value: typeof fixtures.tree) => unknown) =>
@@ -90,11 +98,11 @@ vi.mock("@/state/practiceStorage", () => ({
 vi.mock("@/components/files/opening", () => ({
   buildFromTree: fixtures.buildFromTree,
   formatReviewInterval: () => "",
-  getCardForReview: () => null,
+  getCardForReview: fixtures.getCardForReview,
   getNextReviewTimes: () => null,
   getStats: () => ({ due: 1, nextDue: null, practiced: 0, total: 1, unseen: 1 }),
   syncDeck: () => ({ added: 0, positions: [], removed: 0 }),
-  updateCardPerformance: vi.fn(),
+  updateCardPerformance: fixtures.updateCardPerformance,
 }));
 vi.mock("@/utils/tabs", () => ({
   getTabFile: () => ({ handle: { id: { id: "file-a" } }, name: "opening.pgn" }),
@@ -102,7 +110,7 @@ vi.mock("@/utils/tabs", () => ({
 }));
 vi.mock("@/utils/pathCapabilities", () => ({ fileWorkspaceKey: () => "file-a" }));
 vi.mock("@/utils/treeReducer", () => ({
-  findFen: (fen: string) => (fen === "in-repertoire" ? [0] : null),
+  findFen: (fen: string) => (fen.startsWith("in-repertoire") ? [0] : null),
   getNodeAtPath: () => ({ halfMoves: 0, san: "e4" }),
 }));
 vi.mock("@/components/common/AppModal", () => ({
@@ -118,13 +126,16 @@ vi.mock("@/components/common/AppModal", () => ({
     ) : null,
 }));
 vi.mock("@/components/common/ConfirmModal", () => ({
-  default: ({ opened, title, description, onConfirm }: any) =>
+  default: ({ opened, title, description, onConfirm, onClose }: any) =>
     opened ? (
       <div role="alertdialog">
         <div>{title}</div>
         <div>{description}</div>
         <button type="button" onClick={onConfirm}>
           confirm
+        </button>
+        <button type="button" onClick={onClose}>
+          cancel
         </button>
       </div>
     ) : null,
@@ -239,6 +250,24 @@ let container: HTMLDivElement | undefined;
 beforeEach(() => {
   vi.clearAllMocks();
   fixtures.deck = deck();
+  fixtures.getCardForReview.mockReset().mockReturnValue(null);
+  fixtures.updateCardPerformance.mockReset();
+  fixtures.practiceState = { phase: "idle" };
+  fixtures.practiceStats = {
+    mode: "anki",
+    remainingPositions: [],
+    correct: 0,
+    incorrect: 0,
+    streak: 0,
+    bestStreak: 0,
+  };
+  fixtures.setPracticeState.mockImplementation((next: any) => {
+    fixtures.practiceState = next;
+  });
+  fixtures.setPracticeStats.mockImplementation((next: any) => {
+    fixtures.practiceStats = typeof next === "function" ? next(fixtures.practiceStats) : next;
+  });
+  fixtures.setPracticeMoveController.mockImplementation(() => undefined);
   fixtures.loadPracticeReviews.mockResolvedValue({ entries: [], nextCursor: null });
   ({ root, container } = renderPanel());
 });
@@ -281,6 +310,35 @@ test("shows a read failure with repair, no empty deck, and blocked controls", as
   expect(container?.textContent).not.toContain("Board.Practice.StartPractice");
   expect(container?.textContent).not.toContain("Common.Reset");
   expect(fixtures.setDeck).not.toHaveBeenCalled();
+});
+
+test("dispatches repair only after confirmation", async () => {
+  fixtures.deck = deck({ positions: [], status: "read-failed", error: { message: "read failed" } });
+  await act(async () =>
+    root?.render(
+      <TreeStateContext.Provider value={fixtures.tree as any}>
+        <PracticePanel />
+      </TreeStateContext.Provider>,
+    ),
+  );
+
+  const repair = [...(container?.querySelectorAll("button") ?? [])].find((button) =>
+    button.textContent?.includes("Board.Practice.Repair"),
+  );
+  await act(async () => repair?.click());
+  const dialog = container?.querySelector('[role="alertdialog"]');
+  expect(dialog).toBeTruthy();
+  await act(async () => dialog?.querySelector<HTMLButtonElement>("button:last-child")?.click());
+  expect(fixtures.setDeck).not.toHaveBeenCalledWith({ type: "repair" });
+
+  const reopen = [...(container?.querySelectorAll("button") ?? [])].find((button) =>
+    button.textContent?.includes("Board.Practice.Repair"),
+  );
+  await act(async () => reopen?.click());
+  await act(async () =>
+    container?.querySelector<HTMLButtonElement>('[role="alertdialog"] button')?.click(),
+  );
+  expect(fixtures.setDeck).toHaveBeenCalledWith({ type: "repair" });
 });
 
 test("does not create a native deck when an empty tree yields no positions", async () => {
@@ -412,4 +470,151 @@ test("drops a late log page after the modal closes", async () => {
   });
   await act(async () => Promise.resolve());
   expect(container?.textContent).not.toContain("late");
+});
+
+test("drops a log page that started before the deck generation changed", async () => {
+  let release!: (value: { entries: any[]; nextCursor: null }) => void;
+  fixtures.loadPracticeReviews.mockImplementationOnce(
+    () => new Promise((resolve) => (release = resolve)),
+  );
+  const showLogs = [...(container?.querySelectorAll("button") ?? [])].find((button) =>
+    button.textContent?.includes("Board.Practice.ShowLogs"),
+  );
+  await act(async () => showLogs?.click());
+
+  fixtures.deck = deck({ generation: 1 });
+  await act(async () =>
+    root?.render(
+      <TreeStateContext.Provider value={fixtures.tree as any}>
+        <PracticePanel />
+      </TreeStateContext.Provider>,
+    ),
+  );
+  release({
+    entries: [{ id: "reset-late", entry: JSON.stringify({ due: "2026-09-22", fen: "gone" }) }],
+    nextCursor: null,
+  });
+  await act(async () => Promise.resolve());
+  expect(container?.textContent).not.toContain("reset-late");
+});
+
+function latestMoveController(): { submitMove: (san: string) => void } {
+  const value = [...fixtures.setPracticeMoveController.mock.calls]
+    .reverse()
+    .map(([controller]) => controller)
+    .find((controller) => controller !== null);
+  if (!value) throw new Error("practice move controller was not registered");
+  return value;
+}
+
+test("normal-mode rating selects the next card after the immutable deck update", async () => {
+  vi.useFakeTimers();
+  const first = position("in-repertoire-first");
+  const second = position("in-repertoire-second");
+  const rated = {
+    ...first,
+    card: { ...first.card, due: "2026-10-01T00:00:00.000Z", reps: 1 },
+  };
+  fixtures.deck = deck({ positions: [first, second] });
+  fixtures.getCardForReview.mockReturnValueOnce(first).mockReturnValueOnce(second);
+  fixtures.updateCardPerformance.mockReturnValue({
+    positions: [rated, second],
+    entry: { fen: first.fen, rating: 3 },
+    entryId: "rated-first",
+  });
+  await act(async () =>
+    root?.render(
+      <TreeStateContext.Provider value={fixtures.tree as any}>
+        <PracticePanel />
+      </TreeStateContext.Provider>,
+    ),
+  );
+
+  const start = [...(container?.querySelectorAll("button") ?? [])].find((button) =>
+    button.textContent?.includes("Board.Practice.StartPractice"),
+  );
+  await act(async () => start?.click());
+  fixtures.tree.currentNode = () => ({ fen: first.fen });
+  await act(async () =>
+    root?.render(
+      <TreeStateContext.Provider value={fixtures.tree as any}>
+        <PracticePanel />
+      </TreeStateContext.Provider>,
+    ),
+  );
+  await act(async () => latestMoveController().submitMove("e4"));
+  await act(async () =>
+    root?.render(
+      <TreeStateContext.Provider value={fixtures.tree as any}>
+        <PracticePanel />
+      </TreeStateContext.Provider>,
+    ),
+  );
+  const good = [...(container?.querySelectorAll("button") ?? [])].find((button) =>
+    button.textContent?.includes("Board.Practice.Good"),
+  );
+  await act(async () => good?.click());
+  await act(async () => vi.advanceTimersByTimeAsync(300));
+
+  expect(fixtures.practiceState.currentFen).toBe(second.fen);
+  vi.useRealTimers();
+});
+
+test("full-repertoire mode enters the first position and advances through the remaining positions", async () => {
+  vi.useFakeTimers();
+  const first = position("in-repertoire-first");
+  const second = position("in-repertoire-second");
+  fixtures.deck = deck({ positions: [first, second] });
+  await act(async () =>
+    root?.render(
+      <TreeStateContext.Provider value={fixtures.tree as any}>
+        <PracticePanel />
+      </TreeStateContext.Provider>,
+    ),
+  );
+
+  const start = [...(container?.querySelectorAll("button") ?? [])].find((button) =>
+    button.textContent?.includes("Board.Practice.PracticeFullRepertoire"),
+  );
+  await act(async () => start?.click());
+  expect(fixtures.practiceState.currentFen).toBe(first.fen);
+
+  fixtures.tree.currentNode = () => ({ fen: first.fen });
+  await act(async () =>
+    root?.render(
+      <TreeStateContext.Provider value={fixtures.tree as any}>
+        <PracticePanel />
+      </TreeStateContext.Provider>,
+    ),
+  );
+  await act(async () => latestMoveController().submitMove("e4"));
+  await act(async () =>
+    root?.render(
+      <TreeStateContext.Provider value={fixtures.tree as any}>
+        <PracticePanel />
+      </TreeStateContext.Provider>,
+    ),
+  );
+  await act(async () => vi.advanceTimersByTimeAsync(300));
+  expect(fixtures.practiceState.currentFen).toBe(second.fen);
+
+  fixtures.tree.currentNode = () => ({ fen: second.fen });
+  await act(async () =>
+    root?.render(
+      <TreeStateContext.Provider value={fixtures.tree as any}>
+        <PracticePanel />
+      </TreeStateContext.Provider>,
+    ),
+  );
+  await act(async () => latestMoveController().submitMove("e4"));
+  await act(async () =>
+    root?.render(
+      <TreeStateContext.Provider value={fixtures.tree as any}>
+        <PracticePanel />
+      </TreeStateContext.Provider>,
+    ),
+  );
+  await act(async () => vi.advanceTimersByTimeAsync(300));
+  expect(fixtures.practiceState.phase).toBe("idle");
+  vi.useRealTimers();
 });

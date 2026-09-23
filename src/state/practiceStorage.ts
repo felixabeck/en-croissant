@@ -16,12 +16,13 @@ import { pathRefSchema } from "@/utils/pathCapabilities";
 import { getBoardState } from "@/utils/treeReducer";
 import { reportPersistError } from "./persistError";
 
-export const PRACTICE_STORAGE_VERSION = 1;
 export const PRACTICE_SYNC_DEBOUNCE_MS = 250;
 export const PRACTICE_MAX_CONFLICT_RETRIES = 2;
 export const PRACTICE_LOG_PAGE_SIZE = 100;
+/** Mirrors the native u32::MAX refusal for optimistic practice revisions. */
+const PRACTICE_REVISION_MAX = 0xffffffff;
 
-/** The old browser shape is retained only as migration input for phase 4. */
+/** The old browser shape is retained only as migration input for startup migration. */
 export const reviewLogSchema = z
     .object({
         fen: z.string(),
@@ -416,11 +417,6 @@ export function resetPracticeMigrationForTests(): void {
     practiceDeckCreationGuard = migrateLegacyDeckInline;
 }
 
-/** Phase 4 registers the legacy-key recheck used immediately before first deck creation. */
-export function registerPracticeDeckCreationGuard(guard: PracticeDeckCreationGuard): void {
-    practiceDeckCreationGuard = guard;
-}
-
 const emptyDeck = (status: PracticeDeckStatus = "loading"): PracticeDeckValue => ({
     positions: [],
     revision: 0,
@@ -702,12 +698,18 @@ async function persistSync(
     if (committed.generation !== computedGeneration) {
         return readyState(committed, committed.positions);
     }
+    let effectiveCommitted = committed;
     if (committed.revision === 0 && committed.generation === 0) {
         await ensurePracticeMigration();
         await practiceDeckCreationGuard(identity);
+        const snapshot = await loadPracticeDeck(identity.file, identity.game);
+        if (snapshot) effectiveCommitted = deckFromSnapshot(snapshot);
     }
     const committedCards = new Map(
-        committed.positions.map((position) => [getBoardState(position.fen), position.card]),
+        effectiveCommitted.positions.map((position) => [
+            getBoardState(position.fen),
+            position.card,
+        ]),
     );
     const mergedPositions = positions.map((position) => {
         const committedCard = committedCards.get(getBoardState(position.fen));
@@ -716,11 +718,11 @@ async function persistSync(
     const revision = await syncPracticePositions(
         identity.file,
         identity.game,
-        committed.generation,
-        committed.revision,
+        effectiveCommitted.generation,
+        effectiveCommitted.revision,
         positionsDocument(mergedPositions),
     );
-    return readyState({ ...committed, revision }, mergedPositions);
+    return readyState({ ...effectiveCommitted, revision }, mergedPositions);
 }
 
 async function persistReset(
@@ -886,7 +888,7 @@ export function createPracticeDeckAtom(
                                     {
                                         ...pending,
                                         revision:
-                                            committed.revision === 0xffffffff
+                                            committed.revision === PRACTICE_REVISION_MAX
                                                 ? 1
                                                 : committed.revision + 1,
                                         generation: committed.generation + 1,
@@ -914,6 +916,7 @@ export function createPracticeDeckAtom(
                     allowWhenBlocked: true,
                     task: async () => {
                         await repairPracticeDeck(identity.file, identity.game);
+                        controller.writeBlocked = false;
                         return emptyDeck("ready");
                     },
                 });

@@ -226,7 +226,10 @@ export function initializePathOwners(): Promise<void> {
             const retainedIds = new Set(originalPathOwnersSnapshot.retainedIds.map(({ id }) => id));
             inventory?.decks.forEach(({ fileId }) => retainedIds.add(fileId));
             inventory?.anomalies.forEach((anomaly) => {
-                if (anomaly.kind === "OrphanShard" && anomaly.fileId) {
+                if (
+                    (anomaly.kind === "OrphanShard" || anomaly.kind === "DamagedDeck") &&
+                    anomaly.fileId
+                ) {
                     retainedIds.add(anomaly.fileId);
                 }
             });

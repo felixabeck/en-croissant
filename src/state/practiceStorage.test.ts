@@ -247,6 +247,29 @@ describe("the real practice deck atom", () => {
         unsubscribe();
     });
 
+    test("a successful repair clears the write block and permits the rebuilt deck to sync", async () => {
+        native.load.mockRejectedValueOnce({
+            tag: "backend-error",
+            category: "invalid-input",
+            message: "damaged practice deck",
+        });
+        const { atom, store, unsubscribe } = mountDeck();
+        await vi.waitFor(() => expect(store.get(atom).status).toBe("read-failed"));
+        native.load.mockResolvedValue(null);
+
+        await store.set(atom, { type: "repair" });
+        expect(native.repair).toHaveBeenCalledOnce();
+        expect(store.get(atom).status).toBe("ready");
+
+        vi.useFakeTimers();
+        const write = store.set(atom, { type: "sync", positions: [position()] });
+        await vi.advanceTimersByTimeAsync(PRACTICE_SYNC_DEBOUNCE_MS);
+        await write;
+        expect(store.get(atom).status).toBe("ready");
+        expect(native.sync).toHaveBeenCalledOnce();
+        unsubscribe();
+    });
+
     test("merges a committed rating into a later debounced sync", async () => {
         const source = position();
         const syncPosition = position(sameBoardDifferentFen);
@@ -640,7 +663,9 @@ describe("the eager legacy migration pass", () => {
     });
 
     test("rechecks and migrates a legacy key immediately before native creation", async () => {
-        native.load.mockResolvedValue(null);
+        native.load
+            .mockResolvedValueOnce(null)
+            .mockResolvedValueOnce(snapshot([position()], { revision: 9, generation: 2 }));
         native.list.mockResolvedValue({ decks: [], anomalies: [] });
         native.migrate.mockResolvedValue(migrationOutcome());
         const mounted = mountDeck("appeared", 0);
@@ -654,6 +679,8 @@ describe("the eager legacy migration pass", () => {
 
         expect(native.migrate).toHaveBeenCalledWith("appeared", 0, JSON.stringify(legacyData()));
         expect(native.sync).toHaveBeenCalledOnce();
+        expect(native.sync.mock.calls[0][2]).toBe(2);
+        expect(native.sync.mock.calls[0][3]).toBe(9);
         mounted.unsubscribe();
     });
 });

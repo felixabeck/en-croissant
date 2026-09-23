@@ -94,6 +94,7 @@ pub(crate) struct PracticeDeckIdentity {
 #[serde(rename_all = "PascalCase")]
 pub(crate) enum PracticeStoreAnomalyKind {
     OrphanShard,
+    DamagedDeck,
     IdentityMismatch,
     Unreadable,
     NotARegularFile,
@@ -190,6 +191,19 @@ struct ShardFile {
 struct Reconciliation {
     total_entries: u32,
     newly_orphaned: u32,
+}
+
+struct ValidatedDeck {
+    state: Option<MigrationStateEnvelope>,
+    positions: Option<PositionsEnvelope>,
+    shards: Vec<ShardFile>,
+    shard_leaves: Vec<ShardLeafRecord>,
+    reconciliation: Option<Reconciliation>,
+}
+
+struct DeckValidationFailure {
+    error: Error,
+    identity: Option<PracticeDeckIdentity>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -718,20 +732,79 @@ fn next_counter(value: u32, label: &str) -> Result<u32, Error> {
         .ok_or_else(|| Error::Conflict(format!("practice {label} reached its limit")))
 }
 
+fn read_validated_deck(
+    directory: &AuthorizedDir,
+    hash: &str,
+) -> Result<ValidatedDeck, DeckValidationFailure> {
+    let state_result = read_state(directory, hash);
+    let positions_result = read_positions(directory, hash);
+    let positions_identity = positions_result.as_ref().ok().and_then(|positions| {
+        positions.as_ref().map(|positions| PracticeDeckIdentity {
+            file_id: positions.file_id.clone(),
+            game: positions.game,
+        })
+    });
+    let state = state_result.map_err(|error| DeckValidationFailure {
+        error,
+        identity: positions_identity.clone(),
+    })?;
+    let state_identity = state.as_ref().map(|state| PracticeDeckIdentity {
+        file_id: state.file_id.clone(),
+        game: state.game,
+    });
+    let positions = positions_result.map_err(|error| DeckValidationFailure {
+        error,
+        identity: state_identity.clone(),
+    })?;
+    let Some(positions) = positions else {
+        let shard_leaves =
+            all_shard_leaves(directory, hash).map_err(|error| DeckValidationFailure {
+                error,
+                identity: state_identity.clone(),
+            })?;
+        return Ok(ValidatedDeck {
+            state,
+            positions: None,
+            shards: Vec::new(),
+            shard_leaves,
+            reconciliation: None,
+        });
+    };
+    let identity = Some(PracticeDeckIdentity {
+        file_id: positions.file_id.clone(),
+        game: positions.game,
+    });
+    let shards = read_shards(directory, hash, positions.generation).map_err(|error| {
+        DeckValidationFailure {
+            error,
+            identity: identity.clone(),
+        }
+    })?;
+    let reconciliation = reconcile(&positions, &shards, &positions_leaf(hash))
+        .map_err(|error| DeckValidationFailure { error, identity })?;
+    Ok(ValidatedDeck {
+        state,
+        positions: Some(positions),
+        shards,
+        shard_leaves: Vec::new(),
+        reconciliation: Some(reconciliation),
+    })
+}
+
 fn load_valid_deck(
     directory: &AuthorizedDir,
     hash: &str,
 ) -> Result<Option<(PositionsEnvelope, Vec<ShardFile>, Reconciliation)>, Error> {
-    let state = read_state(directory, hash)?;
-    let Some(positions) = read_positions(directory, hash)? else {
-        if state
+    let loaded = read_validated_deck(directory, hash).map_err(|failure| failure.error)?;
+    let Some(positions) = loaded.positions else {
+        if loaded
+            .state
             .as_ref()
             .is_some_and(|state| state.phase == MigrationPhase::Reset)
         {
             return Ok(None);
         }
-        let shards = all_shard_leaves(directory, hash)?;
-        if state.is_some() || !shards.is_empty() {
+        if loaded.state.is_some() || !loaded.shard_leaves.is_empty() {
             return Err(invalid_leaf(
                 &positions_leaf(hash),
                 "positions document is missing",
@@ -739,9 +812,10 @@ fn load_valid_deck(
         }
         return Ok(None);
     };
-    let shards = read_shards(directory, hash, positions.generation)?;
-    let reconciliation = reconcile(&positions, &shards, &positions_leaf(hash))?;
-    Ok(Some((positions, shards, reconciliation)))
+    let reconciliation = loaded
+        .reconciliation
+        .ok_or_else(|| invalid_leaf(&positions_leaf(hash), "practice reconciliation is missing"))?;
+    Ok(Some((positions, loaded.shards, reconciliation)))
 }
 
 fn snapshot_from(
@@ -797,6 +871,41 @@ fn shard_bytes(shard: &ReviewShardEnvelope) -> Result<Vec<u8>, Error> {
         .map_err(|_| Error::InvalidInput("practice review shard cannot be serialized".into()))
 }
 
+fn append_sealed_review(
+    shards: &mut Vec<ReviewShardEnvelope>,
+    file_id: &str,
+    game: i32,
+    generation: u32,
+    review: ReviewShardEntry,
+) -> Result<(), Error> {
+    let mut current = shards.pop().unwrap_or_else(|| ReviewShardEnvelope {
+        version: PRACTICE_STORAGE_VERSION,
+        file_id: file_id.to_owned(),
+        game,
+        generation,
+        ordinal: 0,
+        entries: Vec::new(),
+    });
+    let mut candidate = current.clone();
+    candidate.entries.push(review.clone());
+    if !current.entries.is_empty() && shard_bytes(&candidate)?.len() > PRACTICE_SHARD_SEAL_BYTES {
+        shards.push(current.clone());
+        current = ReviewShardEnvelope {
+            version: PRACTICE_STORAGE_VERSION,
+            file_id: file_id.to_owned(),
+            game,
+            generation,
+            ordinal: next_counter(current.ordinal, "shard ordinal")?,
+            entries: vec![review],
+        };
+    } else {
+        current = candidate;
+    }
+    shards.push(current);
+    Ok(())
+}
+
+// The appender carries the shard metadata and sealing policy, so rating and migration cannot diverge.
 #[allow(clippy::too_many_arguments)]
 fn append_review(
     directory: &AuthorizedDir,
@@ -814,31 +923,14 @@ fn append_review(
         rev: revision,
         entry: canonical_value(entry),
     };
-    let mut target = shards.last().map_or_else(
-        || ReviewShardEnvelope {
-            version: PRACTICE_STORAGE_VERSION,
-            file_id: file_id.to_owned(),
-            game,
-            generation,
-            ordinal: 0,
-            entries: Vec::new(),
-        },
-        |last| last.envelope.clone(),
-    );
-    let mut candidate = target.clone();
-    candidate.entries.push(review.clone());
-    if !target.entries.is_empty() && shard_bytes(&candidate)?.len() > PRACTICE_SHARD_SEAL_BYTES {
-        target = ReviewShardEnvelope {
-            version: PRACTICE_STORAGE_VERSION,
-            file_id: file_id.to_owned(),
-            game,
-            generation,
-            ordinal: next_counter(target.ordinal, "shard ordinal")?,
-            entries: vec![review],
-        };
-    } else {
-        target = candidate;
-    }
+    let mut next = shards
+        .iter()
+        .map(|shard| shard.envelope.clone())
+        .collect::<Vec<_>>();
+    append_sealed_review(&mut next, file_id, game, generation, review)?;
+    let target = next
+        .last()
+        .ok_or_else(|| Error::InvalidInput("practice review shard is empty".into()))?;
     let leaf = shard_leaf(hash, generation, target.ordinal);
     write_json(
         directory,
@@ -904,6 +996,7 @@ fn entry_position(shards: &[ShardFile], entry_id: &str) -> Option<u32> {
     None
 }
 
+// The command mirrors the stable IPC wire shape: one rating carries its optimistic snapshot and entry.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn record_practice_review_in(
     directory: &AuthorizedDir,
@@ -1135,9 +1228,23 @@ pub(crate) fn reset_practice_deck_in(
         envelope.orphan_acknowledged_count = 0;
         envelope.positions = positions_array(&positions_value)?;
         write_positions(directory, &hash, &envelope)?;
-        let old_shards = read_shards(directory, &hash, old_generation)?;
-        for shard in old_shards {
-            remove_leaf_if_present(directory, &shard.leaf)?;
+        // The reset has committed; from here on only the cleanup of the previous generation can
+        // fail. `PartialRemoval` reports exactly that (applied, cleanup incomplete) and its
+        // payload carries the cause's category only, never a path. The leftover shards belong to
+        // an older generation and are inert.
+        let old_shards = read_shards(directory, &hash, old_generation).map_err(|cause| {
+            Error::PartialRemoval {
+                removed_entries: 0,
+                cause: Box::new(cause),
+            }
+        })?;
+        for (removed_entries, shard) in old_shards.iter().enumerate() {
+            remove_leaf_if_present(directory, &shard.leaf).map_err(|cause| {
+                Error::PartialRemoval {
+                    removed_entries,
+                    cause: Box::new(cause),
+                }
+            })?;
         }
         Ok(envelope.revision)
     })
@@ -1293,7 +1400,7 @@ pub(crate) fn acknowledge_practice_orphans_in(
 ) -> Result<(), Error> {
     let hash = hash_deck(file_id, game);
     with_deck_lock(directory, &hash, || {
-        let Some((mut envelope, shards, reconciliation)) = load_valid_deck(directory, &hash)?
+        let Some((mut envelope, _shards, _reconciliation)) = load_valid_deck(directory, &hash)?
         else {
             return Err(invalid_leaf(
                 &positions_leaf(&hash),
@@ -1304,12 +1411,11 @@ pub(crate) fn acknowledge_practice_orphans_in(
             return Err(Error::Conflict("practice deck generation changed".into()));
         }
         envelope.orphan_acknowledged_count = acknowledged_count;
-        let _ = (shards, reconciliation);
         write_positions(directory, &hash, &envelope)
     })
 }
 
-fn parse_legacy_document(raw: &str) -> Result<(Vec<Value>, Vec<Value>), Error> {
+fn parse_legacy_document(raw: &str) -> Result<(Value, Vec<Value>, Vec<Value>), Error> {
     if raw.len() > PRACTICE_LEGACY_MAX_BYTES {
         return Err(Error::InvalidInput(
             "legacy practice document exceeds its size limit".into(),
@@ -1339,7 +1445,7 @@ fn parse_legacy_document(raw: &str) -> Result<(Vec<Value>, Vec<Value>), Error> {
             "legacy practice positions exceed their size limit".into(),
         ));
     }
-    Ok((positions, logs))
+    Ok((value, positions, logs))
 }
 
 fn migration_entries_digest(entries: &[ReviewShardEntry]) -> Result<String, Error> {
@@ -1361,14 +1467,6 @@ fn imported_shards(
     logs: &[Value],
 ) -> Result<Vec<ReviewShardEnvelope>, Error> {
     let mut result = Vec::new();
-    let mut current = ReviewShardEnvelope {
-        version: PRACTICE_STORAGE_VERSION,
-        file_id: file_id.to_owned(),
-        game,
-        generation: 0,
-        ordinal: 0,
-        entries: Vec::new(),
-    };
     for (index, entry) in logs.iter().enumerate() {
         let id = hash_migration_entry(file_id, game, index, entry)?;
         let rev = u32::try_from(index + 1)
@@ -1378,31 +1476,7 @@ fn imported_shards(
             rev,
             entry: canonical_value(entry),
         };
-        let mut candidate = current.clone();
-        candidate.entries.push(review.clone());
-        if !current.entries.is_empty() && shard_bytes(&candidate)?.len() > PRACTICE_SHARD_SEAL_BYTES
-        {
-            result.push(current);
-            let ordinal = next_counter(
-                result
-                    .last()
-                    .map_or(0, |shard: &ReviewShardEnvelope| shard.ordinal),
-                "shard ordinal",
-            )?;
-            current = ReviewShardEnvelope {
-                version: PRACTICE_STORAGE_VERSION,
-                file_id: file_id.to_owned(),
-                game,
-                generation: 0,
-                ordinal,
-                entries: vec![review],
-            };
-        } else {
-            current = candidate;
-        }
-    }
-    if !current.entries.is_empty() {
-        result.push(current);
+        append_sealed_review(&mut result, file_id, game, 0, review)?;
     }
     Ok(result)
 }
@@ -1432,7 +1506,8 @@ pub(crate) fn migrate_practice_deck_in(
 ) -> Result<PracticeMigrationOutcome, Error> {
     let hash = hash_deck(file_id, game);
     with_deck_lock(directory, &hash, || {
-        let state = read_state(directory, &hash)?;
+        let loaded = read_validated_deck(directory, &hash).map_err(|failure| failure.error)?;
+        let state = loaded.state;
         if state
             .as_ref()
             .is_some_and(|state| state.phase == MigrationPhase::Reset)
@@ -1444,9 +1519,11 @@ pub(crate) fn migrate_practice_deck_in(
                 String::new(),
             );
         }
-        if let Some(positions) = read_positions(directory, &hash)? {
-            let shards = read_shards(directory, &hash, positions.generation)?;
-            let reconciliation = reconcile(&positions, &shards, &positions_leaf(&hash))?;
+        if let Some(positions) = loaded.positions {
+            let shards = loaded.shards;
+            let reconciliation = loaded.reconciliation.ok_or_else(|| {
+                invalid_leaf(&positions_leaf(&hash), "practice reconciliation is missing")
+            })?;
             if let Some(state) = state {
                 if state.phase == MigrationPhase::Migrating {
                     let mut migrated = state;
@@ -1468,7 +1545,7 @@ pub(crate) fn migrate_practice_deck_in(
                 "positions".to_owned(),
                 Value::Array(positions.positions.clone()),
             )]));
-            let _ = reconciliation;
+            let _reconciliation = reconciliation;
             return migration_outcome(
                 PracticeMigrationStatus::AlreadyMigrated,
                 &all_entries,
@@ -1476,7 +1553,7 @@ pub(crate) fn migrate_practice_deck_in(
                 digest_value(&positions_value)?,
             );
         }
-        let existing_shards = all_shard_leaves(directory, &hash)?;
+        let existing_shards = loaded.shard_leaves;
         if state.is_none() && !existing_shards.is_empty() {
             return Err(Error::Conflict(
                 "practice shards exist without a positions document".into(),
@@ -1491,10 +1568,7 @@ pub(crate) fn migrate_practice_deck_in(
                 "migrated deck has no positions document",
             ));
         }
-        let (positions, logs) = parse_legacy_document(legacy_document)?;
-        let legacy_value: Value = serde_json::from_str(legacy_document).map_err(|_| {
-            Error::InvalidInput("legacy practice document is malformed JSON".into())
-        })?;
+        let (legacy_value, positions, logs) = parse_legacy_document(legacy_document)?;
         let legacy_digest = digest_value(&legacy_value)?;
         if state.as_ref().is_some_and(|state| {
             state.phase == MigrationPhase::Migrating
@@ -1611,24 +1685,59 @@ pub(crate) fn repair_practice_deck_in(
 ) -> Result<(), Error> {
     let hash = hash_deck(file_id, game);
     with_deck_lock(directory, &hash, || {
-        let state = read_state(directory, &hash)?;
-        remove_leaf_if_present(directory, &positions_leaf(&hash))?;
+        let (state, invalid_state) = match read_state(directory, &hash) {
+            Ok(state) => (state, false),
+            Err(Error::InvalidInput(_)) => (None, true),
+            Err(error) => return Err(error),
+        };
         let shards = all_shard_leaves(directory, &hash)?;
-        for (leaf, _, _, kind, _) in shards {
-            if kind != DirectoryEntryKind::RegularFile {
-                return Err(invalid_leaf(&leaf, "repair found a non-regular shard"));
+        let mut removed_entries = 0;
+        let mut remove = |leaf: &str| -> Result<(), Error> {
+            match remove_leaf_if_present(directory, leaf) {
+                Ok(()) => {
+                    removed_entries += 1;
+                    Ok(())
+                }
+                Err(error) if removed_entries > 0 => Err(Error::PartialRemoval {
+                    removed_entries,
+                    cause: Box::new(error),
+                }),
+                Err(error) => Err(error),
             }
-            remove_leaf_if_present(directory, &leaf)?;
+        };
+        remove(&positions_leaf(&hash))?;
+        for (leaf, _, _, kind, _) in &shards {
+            if *kind != DirectoryEntryKind::RegularFile {
+                let error = invalid_leaf(leaf, "repair found a non-regular shard");
+                if removed_entries > 0 {
+                    return Err(Error::PartialRemoval {
+                        removed_entries,
+                        cause: Box::new(error),
+                    });
+                }
+                return Err(error);
+            }
+            remove(leaf)?;
         }
-        if let Some(mut state) = state {
+        if invalid_state {
+            remove(&state_leaf(&hash))?;
+        } else if let Some(mut state) = state {
             state.phase = MigrationPhase::Reset;
-            write_json(
+            if let Err(error) = write_json(
                 directory,
                 &state_leaf(&hash),
                 &state,
                 DurabilityStage::PracticeState,
                 "reset migration state",
-            )?;
+            ) {
+                if removed_entries > 0 {
+                    return Err(Error::PartialRemoval {
+                        removed_entries,
+                        cause: Box::new(error),
+                    });
+                }
+                return Err(error);
+            }
         }
         Ok(())
     })
@@ -1657,8 +1766,9 @@ pub(crate) fn list_practice_decks_in(
     )?;
     let mut decks = BTreeMap::<String, PracticeDeckIdentity>::new();
     let mut anomalies = Vec::new();
-    let mut positions_hashes = std::collections::HashSet::new();
-    let mut orphan_candidates = Vec::new();
+    let mut candidate_hashes = std::collections::BTreeSet::new();
+    let mut shard_candidates = Vec::new();
+    let mut position_leaf_hashes = std::collections::HashSet::new();
     for entry in entries {
         let leaf = entry.name.to_string_lossy().into_owned();
         let Some(owned) = parse_owned_leaf(&leaf) else {
@@ -1669,7 +1779,7 @@ pub(crate) fn list_practice_decks_in(
             OwnedLeaf::Shard { hash, .. } => hash.clone(),
             OwnedLeaf::Lock(_) => continue,
         };
-        let is_shard = matches!(&owned, OwnedLeaf::Shard { .. });
+        candidate_hashes.insert(hash.clone());
         if entry.kind != DirectoryEntryKind::RegularFile {
             anomalies.push(anomaly(
                 PracticeStoreAnomalyKind::NotARegularFile,
@@ -1678,145 +1788,141 @@ pub(crate) fn list_practice_decks_in(
             ));
             continue;
         }
-        let identity = match owned {
-            OwnedLeaf::Positions(_) => {
-                let value = match read_json::<PositionsEnvelope>(
-                    directory,
-                    &leaf,
-                    PRACTICE_POSITIONS_MAX_BYTES,
-                    "inventory positions",
-                ) {
-                    Ok(Some(value)) => value,
-                    Ok(None) | Err(_) => {
-                        anomalies.push(anomaly(PracticeStoreAnomalyKind::Unreadable, leaf, None));
-                        continue;
-                    }
-                };
-                let identity = check_identity(&leaf, value.version, &value.file_id, value.game)
-                    .map(|_| (value.file_id, value.game));
-                if identity.is_ok() {
-                    match read_positions(directory, &hash) {
-                        Ok(Some(_)) => {
-                            positions_hashes.insert(hash.clone());
-                        }
-                        Ok(None) | Err(_) => {
-                            anomalies.push(anomaly(
-                                PracticeStoreAnomalyKind::Unreadable,
-                                leaf,
-                                None,
-                            ));
-                            continue;
-                        }
-                    }
-                }
-                identity
-            }
-            OwnedLeaf::State(_) => {
-                let value = match read_json::<MigrationStateEnvelope>(
-                    directory,
-                    &leaf,
-                    PRACTICE_LEGACY_MAX_BYTES,
-                    "inventory migration state",
-                ) {
-                    Ok(Some(value)) => value,
-                    Ok(None) | Err(_) => {
-                        anomalies.push(anomaly(PracticeStoreAnomalyKind::Unreadable, leaf, None));
-                        continue;
-                    }
-                };
-                let identity = check_identity(&leaf, value.version, &value.file_id, value.game)
-                    .map(|_| (value.file_id, value.game));
-                if identity.is_ok() && !matches!(read_state(directory, &hash), Ok(Some(_))) {
-                    anomalies.push(anomaly(PracticeStoreAnomalyKind::Unreadable, leaf, None));
+        if matches!(&owned, OwnedLeaf::Positions(_)) {
+            position_leaf_hashes.insert(hash.clone());
+        }
+        if let OwnedLeaf::Shard {
+            generation,
+            ordinal,
+            ..
+        } = owned
+        {
+            shard_candidates.push((hash, leaf, generation, ordinal));
+        }
+    }
+
+    let mut healthy_positions = std::collections::HashSet::new();
+    for hash in candidate_hashes {
+        match read_validated_deck(directory, &hash) {
+            Ok(loaded) => {
+                let identity = loaded
+                    .positions
+                    .as_ref()
+                    .map(|positions| PracticeDeckIdentity {
+                        file_id: positions.file_id.clone(),
+                        game: positions.game,
+                    })
+                    .or_else(|| {
+                        loaded.state.as_ref().map(|state| PracticeDeckIdentity {
+                            file_id: state.file_id.clone(),
+                            game: state.game,
+                        })
+                    });
+                let Some(identity) = identity else {
                     continue;
-                }
-                identity
-            }
-            OwnedLeaf::Shard {
-                generation,
-                ordinal,
-                ..
-            } => {
-                let value = match read_json::<ReviewShardEnvelope>(
-                    directory,
-                    &leaf,
-                    PRACTICE_LEGACY_MAX_BYTES,
-                    "inventory review shard",
-                ) {
-                    Ok(Some(value)) => value,
-                    Ok(None) | Err(_) => {
-                        anomalies.push(anomaly(PracticeStoreAnomalyKind::Unreadable, leaf, None));
-                        continue;
-                    }
                 };
-                if value.generation != generation || value.ordinal != ordinal {
+                decks
+                    .entry(hash.clone())
+                    .or_insert_with(|| identity.clone());
+                if loaded.positions.is_some() {
+                    healthy_positions.insert(hash.clone());
+                    if loaded
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| state.phase == MigrationPhase::Migrating)
+                    {
+                        anomalies.push(anomaly(
+                            PracticeStoreAnomalyKind::DamagedDeck,
+                            positions_leaf(&hash),
+                            Some((&identity.file_id, identity.game)),
+                        ));
+                    }
+                } else if loaded
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| state.phase != MigrationPhase::Reset)
+                {
                     anomalies.push(anomaly(
-                        PracticeStoreAnomalyKind::IdentityMismatch,
-                        leaf,
+                        PracticeStoreAnomalyKind::DamagedDeck,
+                        positions_leaf(&hash),
+                        Some((&identity.file_id, identity.game)),
+                    ));
+                    if loaded
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| state.phase == MigrationPhase::Migrating)
+                    {
+                        anomalies.push(anomaly(
+                            PracticeStoreAnomalyKind::StrandedMigration,
+                            state_leaf(&hash),
+                            Some((&identity.file_id, identity.game)),
+                        ));
+                    }
+                }
+            }
+            Err(failure) => {
+                if let Some(identity) = failure.identity {
+                    decks
+                        .entry(hash.clone())
+                        .or_insert_with(|| identity.clone());
+                    anomalies.push(anomaly(
+                        PracticeStoreAnomalyKind::DamagedDeck,
+                        positions_leaf(&hash),
+                        Some((&identity.file_id, identity.game)),
+                    ));
+                } else {
+                    anomalies.push(anomaly(
+                        PracticeStoreAnomalyKind::Unreadable,
+                        positions_leaf(&hash),
                         None,
                     ));
-                    continue;
                 }
-                if value.entries.is_empty()
-                    || value.entries.iter().any(|review| {
-                        review.id.is_empty()
-                            || review.id.len() > PRACTICE_ID_MAX_BYTES
-                            || review.rev == 0
-                    })
-                {
-                    anomalies.push(anomaly(PracticeStoreAnomalyKind::Unreadable, leaf, None));
-                    continue;
-                }
-                let identity = check_identity(&leaf, value.version, &value.file_id, value.game)
-                    .map(|_| (value.file_id, value.game));
-                if let Ok(identity) = &identity {
-                    orphan_candidates.push((hash.clone(), leaf.clone(), identity.clone()));
-                }
-                identity
             }
-            OwnedLeaf::Lock(_) => continue,
-        };
-        let identity = match identity {
-            Ok(identity) => identity,
-            Err(_) => {
-                anomalies.push(anomaly(
-                    PracticeStoreAnomalyKind::IdentityMismatch,
-                    leaf,
-                    None,
-                ));
+        }
+    }
+
+    for (hash, leaf, generation, ordinal) in shard_candidates {
+        if healthy_positions.contains(&hash) || position_leaf_hashes.contains(&hash) {
+            continue;
+        }
+        let value = match read_json::<ReviewShardEnvelope>(
+            directory,
+            &leaf,
+            PRACTICE_LEGACY_MAX_BYTES,
+            "inventory review shard",
+        ) {
+            Ok(Some(value)) => value,
+            Ok(None) | Err(_) => {
+                anomalies.push(anomaly(PracticeStoreAnomalyKind::Unreadable, leaf, None));
                 continue;
             }
         };
-        if !is_shard {
-            decks.entry(hash).or_insert_with(|| PracticeDeckIdentity {
-                file_id: identity.0,
-                game: identity.1,
-            });
-        }
-    }
-    for (hash, leaf, identity) in orphan_candidates {
-        if !positions_hashes.contains(&hash) {
+        if value.generation != generation
+            || value.ordinal != ordinal
+            || check_identity(&leaf, value.version, &value.file_id, value.game).is_err()
+        {
             anomalies.push(anomaly(
-                PracticeStoreAnomalyKind::OrphanShard,
+                PracticeStoreAnomalyKind::IdentityMismatch,
                 leaf,
-                Some((&identity.0, identity.1)),
+                None,
             ));
+            continue;
         }
-    }
-    for deck in decks.values() {
-        let hash = hash_deck(&deck.file_id, deck.game);
-        if let Ok(Some(state)) = read_state(directory, &hash) {
-            if state.phase == MigrationPhase::Migrating
-                && read_positions(directory, &hash).ok().flatten().is_none()
-            {
-                anomalies.push(anomaly(
-                    PracticeStoreAnomalyKind::StrandedMigration,
-                    state_leaf(&hash),
-                    Some((&deck.file_id, deck.game)),
-                ));
-            }
+        if value.entries.is_empty()
+            || value.entries.iter().any(|review| {
+                review.id.is_empty() || review.id.len() > PRACTICE_ID_MAX_BYTES || review.rev == 0
+            })
+        {
+            anomalies.push(anomaly(PracticeStoreAnomalyKind::Unreadable, leaf, None));
+            continue;
         }
+        anomalies.push(anomaly(
+            PracticeStoreAnomalyKind::OrphanShard,
+            leaf,
+            Some((&value.file_id, value.game)),
+        ));
     }
+
     Ok(PracticeDeckInventory {
         decks: decks.into_values().collect(),
         anomalies,
@@ -1933,6 +2039,7 @@ pub async fn load_practice_deck(
 
 #[tauri::command]
 #[specta::specta]
+// The command mirrors the stable IPC wire shape: one rating carries its optimistic snapshot and entry.
 #[allow(clippy::too_many_arguments)]
 pub async fn record_practice_review(
     file_id: String,
@@ -2636,6 +2743,25 @@ mod tests {
     }
 
     #[test]
+    fn reset_maps_post_commit_shard_read_failure_to_partial_removal() {
+        let (_temp, directory) = directory();
+        let hash = hash_deck("file", 1);
+        sync_practice_positions_in(&directory, "file", 1, 0, 0, &positions()).unwrap();
+        fs::write(directory.path().join(shard_leaf(&hash, 0, 0)), b"not-json").unwrap();
+
+        let result = reset_practice_deck_in(&directory, "file", 1, 0, 1, &positions());
+
+        assert!(matches!(result, Err(Error::PartialRemoval { .. })));
+        assert_eq!(
+            read_positions(&directory, &hash)
+                .unwrap()
+                .unwrap()
+                .generation,
+            1
+        );
+    }
+
+    #[test]
     fn record_interruption_then_intervening_commit_requires_reconciliation_retry() {
         let (_temp, directory) = directory();
         sync_practice_positions_in(&directory, "file", 1, 0, 0, &positions()).unwrap();
@@ -3126,6 +3252,15 @@ mod tests {
             migrate_practice_deck_in(&directory, "file", 1, "not-json"),
             Err(Error::InvalidInput(_))
         ));
+        assert!(list_practice_decks_in(&directory)
+            .unwrap()
+            .anomalies
+            .iter()
+            .any(|anomaly| {
+                anomaly.kind == PracticeStoreAnomalyKind::DamagedDeck
+                    && anomaly.file_id.as_deref() == Some("file")
+                    && anomaly.game == Some(1)
+            }));
         assert_eq!(
             state_before,
             fs::read(directory.path().join(&state_leaf_name)).unwrap()
@@ -3257,6 +3392,15 @@ mod tests {
             shard_before,
             leaf_bytes(&directory, &shard_leaf(&hash, 0, 0))
         );
+        assert!(list_practice_decks_in(&directory)
+            .unwrap()
+            .anomalies
+            .iter()
+            .any(|anomaly| {
+                anomaly.kind == PracticeStoreAnomalyKind::DamagedDeck
+                    && anomaly.file_id.as_deref() == Some("file")
+                    && anomaly.game == Some(1)
+            }));
     }
 
     #[test]
@@ -3271,6 +3415,15 @@ mod tests {
             MigrationPhase::Migrating,
             &"0".repeat(64),
         );
+        assert!(list_practice_decks_in(&directory)
+            .unwrap()
+            .anomalies
+            .iter()
+            .any(|anomaly| {
+                anomaly.kind == PracticeStoreAnomalyKind::DamagedDeck
+                    && anomaly.file_id.as_deref() == Some("file")
+                    && anomaly.game == Some(1)
+            }));
         assert_eq!(
             migrate_practice_deck_in(&directory, "file", 1, "not-json")
                 .unwrap()
@@ -3303,6 +3456,15 @@ mod tests {
             migrate_practice_deck_in(&directory, "file", 1, "not-json"),
             Err(Error::InvalidInput(_))
         ));
+        assert!(list_practice_decks_in(&directory)
+            .unwrap()
+            .anomalies
+            .iter()
+            .any(|anomaly| {
+                anomaly.kind == PracticeStoreAnomalyKind::DamagedDeck
+                    && anomaly.file_id.as_deref() == Some("file")
+                    && anomaly.game == Some(1)
+            }));
         assert_eq!(
             read_state(&directory, &hash).unwrap().unwrap().phase,
             MigrationPhase::Migrating
@@ -3436,6 +3598,15 @@ mod tests {
             migrate_practice_deck_in(&directory, "file", 1, "not-json"),
             Err(Error::InvalidInput(_))
         ));
+        assert!(list_practice_decks_in(&directory)
+            .unwrap()
+            .anomalies
+            .iter()
+            .any(|anomaly| {
+                anomaly.kind == PracticeStoreAnomalyKind::DamagedDeck
+                    && anomaly.file_id.as_deref() == Some("file")
+                    && anomaly.game == Some(1)
+            }));
     }
 
     #[test]
@@ -3964,6 +4135,38 @@ mod tests {
                 .phase,
             MigrationPhase::Reset
         );
+    }
+
+    #[test]
+    fn repair_maps_state_write_failure_after_deletions_to_partial_removal() {
+        let (_temp, directory) = directory();
+        let hash = hash_deck("file", 1);
+        sync_practice_positions_in(&directory, "file", 1, 0, 0, &positions()).unwrap();
+        write_test_state(
+            &directory,
+            "file",
+            1,
+            MigrationPhase::Migrating,
+            &"0".repeat(64),
+        );
+        write_test_shard(
+            &directory,
+            "file",
+            1,
+            0,
+            0,
+            vec![test_review("id", 1, serde_json::json!({"x": 1}))],
+        );
+        set_test_atomic_file_injector(Some(Arc::new(FailOnParentSync {
+            call: AtomicUsize::new(0),
+            fail_on: 1,
+        })));
+        let result = repair_practice_deck_in(&directory, "file", 1);
+        set_test_atomic_file_injector(None);
+
+        assert!(matches!(result, Err(Error::PartialRemoval { .. })));
+        assert!(!directory.path().join(positions_leaf(&hash)).exists());
+        assert!(!directory.path().join(shard_leaf(&hash, 0, 0)).exists());
     }
 
     #[test]

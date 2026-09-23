@@ -102,3 +102,42 @@ test("the production clear path refuses when inventory reports a damaged deck", 
   ).rejects.toThrow("damaged (2)");
   expect(clear).not.toHaveBeenCalled();
 });
+
+test("the production clear path waits for migration and runs a fresh pass before clearing", async () => {
+  const migration = deferred<void>();
+  const clear = vi.fn();
+  mocks.ensureMigration.mockReturnValueOnce(migration.promise);
+  mocks.runMigration.mockResolvedValueOnce({
+    outcomes: [],
+    inventory: { decks: [], anomalies: [] },
+    scanTrusted: true,
+    inventoryTrusted: true,
+  });
+
+  const clearing = clearSavedDataFromMenu({
+    ask: async () => true,
+    confirmMessage: "confirm",
+    title: "title",
+    clear: () =>
+      clearSavedDataAfterConfirmation({
+        blockedMessage: (decks) => `blocked: ${decks.join(", ")}`,
+        clear,
+      }),
+  });
+  await Promise.resolve();
+  expect(clear).not.toHaveBeenCalled();
+  expect(mocks.runMigration).not.toHaveBeenCalled();
+
+  migration.resolve();
+  await clearing;
+  expect(mocks.runMigration).toHaveBeenCalledOnce();
+  expect(clear).toHaveBeenCalledOnce();
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
