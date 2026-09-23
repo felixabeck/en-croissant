@@ -1,13 +1,13 @@
 import { parseUci } from "chessops";
 import { describe, expect, test } from "vitest";
 import {
-    buildTranspositionMaps,
     countMainPly,
     createNode,
     defaultTree,
     findFen,
     getBoardState,
     getGameName,
+    getMemoizedBoardStateMap,
     getNodeAtPath,
     normalizeTreeHalfMoves,
     rootHalfMoves,
@@ -86,7 +86,6 @@ test("defaultTree normalizes the root while preserving complete deterministic de
         dirty: false,
         position: [],
         report: { inProgress: false },
-        boardStateMap: {},
         headers: {
             id: 0,
             fen: fen.trim(),
@@ -173,11 +172,11 @@ test("transposition maps retain duplicate paths and respect a non-root start pat
     first.children.push(reply);
     root.children.push(first, duplicate);
 
-    const complete = buildTranspositionMaps(root);
+    const complete = getMemoizedBoardStateMap(root);
     expect(complete["same b - -"].map(({ path }) => path)).toEqual([[0], [1]]);
     expect(complete["root w - -"][0].path).toEqual([]);
 
-    const subtree = buildTranspositionMaps(root, [0]);
+    const subtree = getMemoizedBoardStateMap(root, [0]);
     expect(Object.keys(subtree).sort()).toEqual(["reply w - -", "same b - -"]);
     expect(subtree["same b - -"][0].path).toEqual([0]);
     expect(subtree["reply w - -"][0].path).toEqual([0, 0]);

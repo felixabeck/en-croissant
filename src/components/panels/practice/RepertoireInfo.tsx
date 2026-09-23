@@ -39,7 +39,12 @@ import {
   getStats,
   type PositionMove,
 } from "@/utils/repertoire";
-import { getBoardState, getNodeAtPath, type TreeNode } from "@/utils/treeReducer";
+import {
+  getBoardState,
+  getMemoizedBoardStateMap,
+  getNodeAtPath,
+  type TreeNode,
+} from "@/utils/treeReducer";
 import classes from "./RepertoireInfo.module.css";
 
 function formatMoveNotation(halfMoves: number, san: string): string {
@@ -62,7 +67,6 @@ function RepertoireInfo() {
   const makeMove = useStore(store, (s) => s.makeMove);
   const makeMoves = useStore(store, (s) => s.makeMoves);
   const setStart = useStore(store, (s) => s.setStart);
-  const boardStateMap = useStore(store, (s) => s.boardStateMap);
 
   const referenceDb = useAtomValue(referenceDbAtom);
   const currentTab = useAtomValue(currentTabAtom);
@@ -97,6 +101,7 @@ function RepertoireInfo() {
   );
 
   const startPath = useMemo(() => headers.start || [], [headers.start]);
+  const boardStateMap = useMemo(() => getMemoizedBoardStateMap(root, startPath), [root, startPath]);
   const hasStart = headers.start != null && headers.start.length > 0;
   const isBeforeStart =
     hasStart && position.length < startPath.length && isPrefix(position, startPath);

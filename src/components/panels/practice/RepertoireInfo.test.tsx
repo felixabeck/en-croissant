@@ -5,6 +5,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { TreeStateProvider } from "@/components/common/TreeStateContext";
 import { activeTabAtom, referenceDbAtom, tabsAtom } from "@/state/atoms";
+import { createNode, defaultTree, getBoardState } from "@/utils/treeReducer";
+import { parseUci } from "chessops";
 import RepertoireInfo from "./RepertoireInfo";
 
 const mocks = vi.hoisted(() => ({
@@ -79,7 +81,7 @@ afterEach(async () => {
   sessionStorage.clear();
 });
 
-async function renderRepertoireInfo() {
+async function renderRepertoireInfo(initial = defaultTree(), id = "repertoire-info-test") {
   const store = createStore();
   store.set(tabsAtom, [
     {
@@ -94,7 +96,7 @@ async function renderRepertoireInfo() {
     root.render(
       <MantineProvider>
         <Provider store={store}>
-          <TreeStateProvider id="repertoire-info-test">
+          <TreeStateProvider id={id} initial={initial}>
             <RepertoireInfo />
           </TreeStateProvider>
         </Provider>
@@ -104,6 +106,53 @@ async function renderRepertoireInfo() {
   });
   await act(async () => store.set(referenceDbAtom, database));
 }
+
+test("receives the complete memoized board-state map for transposed nodes", async () => {
+  const initial = defaultTree();
+  const first = createNode({
+    fen: "same w - - 0 1",
+    move: parseUci("e2e4")!,
+    san: "e4",
+    halfMoves: 1,
+  });
+  const second = createNode({
+    fen: "same w - - 0 1",
+    move: parseUci("d2d4")!,
+    san: "d4",
+    halfMoves: 1,
+  });
+  first.children = [
+    createNode({
+      fen: "after-e4 b - - 0 1",
+      move: parseUci("e7e5")!,
+      san: "e5",
+      halfMoves: 2,
+    }),
+  ];
+  second.children = [
+    createNode({
+      fen: "after-d4 b - - 0 1",
+      move: parseUci("d7d5")!,
+      san: "d5",
+      halfMoves: 2,
+    }),
+  ];
+  initial.root.children = [first, second];
+
+  await renderRepertoireInfo(initial, "repertoire-info-transpositions");
+  await vi.waitFor(() => expect(mocks.computeTreeCoverage).toHaveBeenCalled());
+
+  const stateMoves = mocks.computeTreeCoverage.mock.calls.at(-1)![5] as Map<
+    string,
+    Map<string, string>
+  >;
+  expect(stateMoves.get(getBoardState(first.fen))).toEqual(
+    new Map([
+      ["e5", getBoardState(first.children[0].fen)],
+      ["d5", getBoardState(second.children[0].fen)],
+    ]),
+  );
+});
 
 test("reports the current-position query failure", async () => {
   mocks.fetchPositionMoves.mockRejectedValue(new Error("position query failed"));

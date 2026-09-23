@@ -1,7 +1,7 @@
 import type { LocalOptions } from "@/components/panels/database/DatabasePanel";
 import type { DatabaseHandle } from "@/bindings";
 import { searchPosition } from "./db";
-import { getNodeAtPath, type TreeNode, treeIterator, getBoardState } from "./treeReducer";
+import { getNodeAtPath, type TreeNode, getBoardState } from "./treeReducer";
 import { TreeStoreState } from "@/state/store/tree";
 import { memoize } from "proxy-memoize";
 
@@ -364,16 +364,23 @@ export function findBiggestGap(
 }
 
 function getTreeStats(root: TreeNode) {
-    const iterator = treeIterator(root);
-    const tree = Array.from(iterator);
-    const total = tree.length - 1;
-    const leafs = tree.filter((item) => item.node.children.length === 0).length;
-    const depth = tree.reduce((acc, item) => {
-        if (item.position.length > acc) {
-            return item.position.length;
+    let total = 0;
+    let leafs = 0;
+    let depth = 0;
+    const stack: { node: TreeNode; depth: number }[] = [{ node: root, depth: 0 }];
+
+    while (stack.length > 0) {
+        const { node, depth: nodeDepth } = stack.pop()!;
+        depth = Math.max(depth, nodeDepth);
+        if (node.children.length === 0) {
+            leafs += 1;
+            continue;
         }
-        return acc;
-    }, 0);
+        total += node.children.length;
+        for (const child of node.children) {
+            stack.push({ node: child, depth: nodeDepth + 1 });
+        }
+    }
     return { total, leafs, depth };
 }
 

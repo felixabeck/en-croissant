@@ -10,8 +10,11 @@ export interface TreeState {
     position: number[];
     dirty: boolean;
     report: ReportState;
-    boardStateMap: Record<string, { node: TreeNode; path: number[] }[]>;
 }
+
+type BoardStateMap = Record<string, { node: TreeNode; path: number[] }[]>;
+
+const boardStateMapCache = new WeakMap<TreeNode, { startKey: string; map: BoardStateMap }>();
 
 export interface TreeNode {
     fen: string;
@@ -108,7 +111,6 @@ export function defaultTree(fen?: string): TreeState {
             inProgress: false,
             operationId: null,
         },
-        boardStateMap: {},
     };
 }
 
@@ -199,22 +201,45 @@ export const getNodeAtPath = (node: TreeNode, path: number[]): TreeNode => {
     return currentNode;
 };
 
-export function buildTranspositionMaps(
-    root: TreeNode,
-    startPath: number[] = [],
-): Record<string, { node: TreeNode; path: number[] }[]> {
-    const map: Record<string, { node: TreeNode; path: number[] }[]> = {};
+export function buildTranspositionMaps(root: TreeNode, startPath: number[] = []): BoardStateMap {
+    const map: BoardStateMap = {};
     const startNode = getNodeAtPath(root, startPath);
 
-    function traverse(node: TreeNode, path: number[]) {
+    const stack: { node: TreeNode; path: number[] }[] = [
+        {
+            node: startNode,
+            path: [...startPath],
+        },
+    ];
+    while (stack.length > 0) {
+        const { node, path } = stack.pop()!;
         const boardFen = getBoardState(node.fen);
         if (!map[boardFen]) map[boardFen] = [];
-        map[boardFen].push({ node, path: [...path] });
-        for (let i = 0; i < node.children.length; i++) {
-            traverse(node.children[i], [...path, i]);
+        map[boardFen].push({ node, path });
+        for (let i = node.children.length - 1; i >= 0; i -= 1) {
+            stack.push({ node: node.children[i], path: [...path, i] });
         }
     }
-    traverse(startNode, [...startPath]);
+    return map;
+}
+
+/** A small testable seam for the memoized derivation; callers should use getMemoizedBoardStateMap. */
+export const boardStateMapBuilder = {
+    build: (root: TreeNode, startPath: number[] = []): BoardStateMap =>
+        buildTranspositionMaps(root, startPath),
+};
+
+/**
+ * Lazily derives the repertoire map for the current root and start path. Roots are weakly keyed,
+ * so an edited tree releases its old map when the old Immer tree is no longer referenced.
+ */
+export function getMemoizedBoardStateMap(root: TreeNode, startPath: number[] = []): BoardStateMap {
+    const startKey = startPath.join(",");
+    const cached = boardStateMapCache.get(root);
+    if (cached?.startKey === startKey) return cached.map;
+
+    const map = boardStateMapBuilder.build(root, startPath);
+    boardStateMapCache.set(root, { startKey, map });
     return map;
 }
 

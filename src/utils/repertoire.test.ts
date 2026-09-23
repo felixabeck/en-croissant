@@ -2,21 +2,92 @@ import { describe, beforeEach, expect, test, vi } from "vitest";
 import type { DatabaseHandle } from "@/bindings";
 import { parseUci } from "chessops";
 import {
+    boardStateMapBuilder,
+    buildTranspositionMaps,
     createNode,
     defaultTree,
     getBoardState,
+    getMemoizedBoardStateMap,
     normalizeTreeHalfMoves,
     type TreeNode,
 } from "./treeReducer";
+import { createTreeStore, type TreeStoreState } from "@/state/store/tree";
 
 const mocks = vi.hoisted(() => ({ searchPosition: vi.fn() }));
 vi.mock("./db", () => ({ searchPosition: mocks.searchPosition }));
 
-import { computeTreeCoverage, fetchPositionMoves, findBiggestGap } from "./repertoire";
+import { computeTreeCoverage, fetchPositionMoves, findBiggestGap, getStats } from "./repertoire";
 
 const database: DatabaseHandle = { id: { id: "db" }, kind: "database" };
 
 beforeEach(() => vi.clearAllMocks());
+
+test("memoizes transposition content and does not rebuild it for an ordinary store set", () => {
+    const root = defaultTree().root;
+    const first = createNode({
+        fen: "same w - - 0 1",
+        move: parseUci("e2e4")!,
+        san: "e4",
+        halfMoves: 1,
+    });
+    const second = createNode({
+        fen: "same w - - 0 1",
+        move: parseUci("d2d4")!,
+        san: "d4",
+        halfMoves: 1,
+    });
+    root.children = [first, second];
+    const store = createTreeStore(undefined, { ...defaultTree(), root });
+    const builder = vi.spyOn(boardStateMapBuilder, "build");
+    const setComment = store.getState().setComment;
+    builder.mockClear();
+
+    setComment("memoized");
+    expect(builder).not.toHaveBeenCalled();
+
+    const map = getMemoizedBoardStateMap(store.getState().root, []);
+    expect(map).toEqual(buildTranspositionMaps(store.getState().root));
+    expect(map["same w - -"].map(({ node }) => node)).toEqual([first, second]);
+    expect(builder).toHaveBeenCalledTimes(1);
+    expect(getMemoizedBoardStateMap(store.getState().root, [])).toBe(map);
+});
+
+test("iterative tree stats match the previous varied-tree counts", () => {
+    const root = defaultTree().root;
+    const first = createNode({
+        fen: "first w - - 0 1",
+        move: parseUci("e2e4")!,
+        san: "e4",
+        halfMoves: 1,
+    });
+    const firstChild = createNode({
+        fen: "first-child b - - 0 1",
+        move: parseUci("e7e5")!,
+        san: "e5",
+        halfMoves: 2,
+    });
+    const firstLeaf = createNode({
+        fen: "first-leaf w - - 0 1",
+        move: parseUci("g1f3")!,
+        san: "Nf3",
+        halfMoves: 3,
+    });
+    const second = createNode({
+        fen: "second w - - 0 1",
+        move: parseUci("d2d4")!,
+        san: "d4",
+        halfMoves: 1,
+    });
+    firstChild.children = [firstLeaf];
+    first.children = [firstChild];
+    root.children = [first, second];
+
+    expect(getStats({ ...defaultTree(), root } as TreeStoreState)).toEqual({
+        total: 4,
+        leafs: 2,
+        depth: 3,
+    });
+});
 
 test("native cancellation propagates even when the renderer signal itself was not aborted", async () => {
     mocks.searchPosition.mockRejectedValue({

@@ -21,8 +21,8 @@ import {
     type TreeNode,
     type TreeState,
     treeIteratorMainLine,
-    buildTranspositionMaps,
     getBoardState,
+    getMemoizedBoardStateMap,
     normalizeTreeHalfMoves,
 } from "@/utils/treeReducer";
 
@@ -162,26 +162,6 @@ export function closeTreeStore(tab: string): void {
     closing?.decide(false);
 }
 
-// Defined as an outer function to avoid bloating git diff.
-const withTranspositionMaps =
-    (config: StateCreator<TreeStoreState>): StateCreator<TreeStoreState> =>
-    (set, get, api) => {
-        const wrappedSet: typeof set = (partial, _replace) => {
-            set(
-                produce((state: Draft<TreeStoreState>) => {
-                    const updates = typeof partial === "function" ? partial(state) : partial;
-                    Object.assign(state, updates);
-                    if (updates.root !== undefined || updates.headers?.start !== undefined) {
-                        const startPath = state.headers.start || [];
-                        state.boardStateMap = buildTranspositionMaps(state.root, startPath);
-                    }
-                }),
-                false,
-            );
-        };
-        return config(wrappedSet, get, api);
-    };
-
 export const createTreeStore = (id?: string, initTree?: TreeState) => {
     if (id) {
         const existing = treeStores.get(id);
@@ -190,7 +170,6 @@ export const createTreeStore = (id?: string, initTree?: TreeState) => {
     const initialTree = initTree ?? defaultTree();
     const stateCreator: StateCreator<TreeStoreState> = (set, get) => ({
         ...initialTree,
-        boardStateMap: buildTranspositionMaps(initialTree.root, initialTree.headers.start ?? []),
 
         currentNode: () => getNodeAtPath(get().root, get().position),
         getNode: (path: number[]) => getNodeAtPath(get().root, path),
@@ -244,7 +223,9 @@ export const createTreeStore = (id?: string, initTree?: TreeState) => {
 
                 // No children — try transposition fallback
                 const currentFen = getBoardState(node.fen);
-                const entries = state.boardStateMap[currentFen] || [];
+                const entries =
+                    getMemoizedBoardStateMap(state.root, state.headers.start ?? [])[currentFen] ||
+                    [];
                 const candidates = entries.filter((e) => e.node !== node);
 
                 if (candidates.length === 0) {
@@ -636,14 +617,10 @@ export const createTreeStore = (id?: string, initTree?: TreeState) => {
 
     if (id) {
         const store = createStore<TreeStoreState>()(
-            persist(withTranspositionMaps(stateCreator), {
+            persist(stateCreator, {
                 name: id,
                 version: TREE_STORAGE_VERSION,
                 storage: tabStorage.storageFor<TreeStoreState>(),
-                partialize: (state) => {
-                    const { boardStateMap: _boardStateMap, ...rest } = state;
-                    return rest as TreeStoreState;
-                },
                 onRehydrateStorage: () => (state, error) => {
                     if (!error && state) {
                         // A renderer reload cannot resume the JavaScript completion owner that
@@ -652,10 +629,6 @@ export const createTreeStore = (id?: string, initTree?: TreeState) => {
                         state.report.inProgress = false;
                         state.report.operationId = null;
                         normalizeTreeHalfMoves(state.root);
-                        state.boardStateMap = buildTranspositionMaps(
-                            state.root,
-                            state.headers.start || [],
-                        );
                     }
                 },
             }),
@@ -668,7 +641,7 @@ export const createTreeStore = (id?: string, initTree?: TreeState) => {
         return ownedStore;
     }
 
-    const store = createStore<TreeStoreState>()(withTranspositionMaps(stateCreator));
+    const store = createStore<TreeStoreState>()(stateCreator);
     return Object.assign(store, {
         dispose: () => undefined,
     });

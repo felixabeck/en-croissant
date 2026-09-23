@@ -328,6 +328,7 @@ test("scrubs legacy-only fields and supplies missing versioned tree fields befor
     delete legacy.dirty;
     delete legacy.position;
     legacy.legacyBoardState = { never: "persist this" };
+    legacy.boardStateMap = { legacy: [] };
     sessionStorage.setItem("legacy-scrub", JSON.stringify(legacy));
 
     expect(storage.read("legacy-scrub")?.state).toMatchObject({
@@ -337,6 +338,9 @@ test("scrubs legacy-only fields and supplies missing versioned tree fields befor
     });
     expect(deserializeStorageValue(sessionStorage.getItem("legacy-scrub")!)).not.toHaveProperty(
         "state.legacyBoardState",
+    );
+    expect(deserializeStorageValue(sessionStorage.getItem("legacy-scrub")!)).not.toHaveProperty(
+        "state.boardStateMap",
     );
 });
 

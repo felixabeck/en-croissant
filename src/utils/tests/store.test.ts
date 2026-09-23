@@ -1,7 +1,12 @@
 import { parseUci } from "chessops";
 import { beforeEach, expect, test } from "vitest";
 import { createTreeStore } from "@/state/store/tree";
-import { buildTranspositionMaps, defaultTree, TreeNode, type TreeState } from "@/utils/treeReducer";
+import {
+    defaultTree,
+    getMemoizedBoardStateMap,
+    TreeNode,
+    type TreeState,
+} from "@/utils/treeReducer";
 
 const store = createTreeStore();
 
@@ -133,13 +138,13 @@ const getNewState = () => {
             inProgress: false,
             operationId: null,
         },
-        boardStateMap: s.boardStateMap,
+        boardStateMap: getMemoizedBoardStateMap(s.root, s.headers.start ?? []),
     };
 };
 
-// Helper to compute the expected boardStateMap for a given root and start path
+// Helper to compute the derived boardStateMap for a given root and start path.
 function expectedMap(root: TreeState["root"], start: number[] = []) {
-    return buildTranspositionMaps(root, start);
+    return getMemoizedBoardStateMap(root, start);
 }
 
 test("should handle save", () => {
@@ -973,7 +978,7 @@ test("boardStateMap updates when start changes", () => {
     store.getState().setState(treeE4D5());
     store.getState().setStart([0]); // start at e4 node
     const state = getNewState();
-    // The map should now only contain nodes from e4 onward
+    // The derived map should now only contain nodes from e4 onward.
     const entries = Object.values(state.boardStateMap);
     // There should be at least one entry for the e4 node fen and its child
     expect(entries.length).toBeGreaterThan(0);

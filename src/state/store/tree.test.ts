@@ -1,6 +1,12 @@
 import { parseUci } from "chessops";
 import { expect, test } from "vitest";
-import { createNode, defaultTree, getNodeAtPath, type TreeNode } from "@/utils/treeReducer";
+import {
+    createNode,
+    defaultTree,
+    getMemoizedBoardStateMap,
+    getNodeAtPath,
+    type TreeNode,
+} from "@/utils/treeReducer";
 import { createTreeStore } from "./tree";
 
 function node(name: string, children: TreeNode[] = []): TreeNode {
@@ -20,7 +26,6 @@ function threeBranchStore() {
     const deepB = node("deep-b");
     const deepC = node("deep-c");
     tree.root.children = [node("a", [deepA]), node("b", [deepB]), node("c", [deepC])];
-    tree.boardStateMap = {};
     return { store: createTreeStore(undefined, tree), deepA, deepB, deepC };
 }
 
@@ -36,8 +41,9 @@ test("deleting a sibling rebases deep cursor and repertoire start to the same no
     expect(state.headers.start).toEqual([0, 0]);
     expect(getNodeAtPath(state.root, state.position)).toBe(deepC);
     expect(getNodeAtPath(state.root, state.headers.start!)).toBe(deepB);
-    expect(state.boardStateMap["deep-b w - -"][0].path).toEqual([0, 0]);
-    expect(state.boardStateMap["deep-c w - -"]).toBeUndefined();
+    const boardStateMap = getMemoizedBoardStateMap(state.root, state.headers.start ?? []);
+    expect(boardStateMap["deep-b w - -"][0].path).toEqual([0, 0]);
+    expect(boardStateMap["deep-c w - -"]).toBeUndefined();
 });
 
 test("deleting a target subtree clears only targets inside it", () => {
@@ -71,6 +77,7 @@ test("promoting a sibling rebases unrelated deep cursor and repertoire start by 
     expect(getNodeAtPath(state.root, state.position)).toBe(deepA);
     expect(getNodeAtPath(state.root, state.headers.start!)).toBe(deepB);
     expect(getNodeAtPath(state.root, [0, 0])).toBe(deepC);
-    expect(state.boardStateMap["deep-b w - -"][0].path).toEqual([2, 0]);
-    expect(state.boardStateMap["deep-a w - -"]).toBeUndefined();
+    const boardStateMap = getMemoizedBoardStateMap(state.root, state.headers.start ?? []);
+    expect(boardStateMap["deep-b w - -"][0].path).toEqual([2, 0]);
+    expect(boardStateMap["deep-a w - -"]).toBeUndefined();
 });

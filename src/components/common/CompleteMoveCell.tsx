@@ -10,66 +10,62 @@ import {
 } from "@tabler/icons-react";
 import equal from "fast-deep-equal";
 import { useAtomValue } from "jotai";
-import { memo, useContext, useState } from "react";
+import { memo, useContext, useMemo, useState, type MouseEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { useStore } from "zustand";
-import { useStoreWithEqualityFn } from "zustand/traditional";
 import Comment from "@/components/common/Comment";
 import IconAction from "@/components/common/IconAction";
 import { currentTabAtom } from "@/state/atoms";
 import type { Annotation } from "@/utils/annotation";
 import { hasMorePriority, stripClock } from "@/utils/chess";
 import { getTabFile } from "@/utils/tabs";
-import { type TreeNode, treeIterator } from "@/utils/treeReducer";
+import { getNodeAtPath, type TreeNode } from "@/utils/treeReducer";
+import type { NotationNodeIndex } from "./notationRows";
+import { pathForNotationNode } from "./notationRows";
 import MoveCell from "./MoveCell";
 import { TreeStateContext } from "./TreeStateContext";
 
-const transpositionCache = new WeakMap<TreeNode, Map<string, number[][]>>();
+const transpositionCache = new WeakMap<TreeNode, Map<string, TreeNode[]>>();
 
 function getTranspositionMap(root: TreeNode) {
-  if (transpositionCache.has(root)) {
-    return transpositionCache.get(root)!;
-  }
+  const cached = transpositionCache.get(root);
+  if (cached) return cached;
 
-  const map = new Map<string, number[][]>();
-  const iterator = treeIterator(root);
-
-  for (const item of iterator) {
-    const strippedFen = stripClock(item.node.fen);
-    if (!map.has(strippedFen)) {
-      map.set(strippedFen, []);
-    }
-    map.get(strippedFen)!.push(item.position);
+  const map = new Map<string, TreeNode[]>();
+  const stack: TreeNode[] = [root];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    const strippedFen = stripClock(node.fen);
+    const matchingNodes = map.get(strippedFen);
+    if (matchingNodes) matchingNodes.push(node);
+    else map.set(strippedFen, [node]);
+    for (const child of node.children) stack.push(child);
   }
 
   transpositionCache.set(root, map);
   return map;
 }
 
-function getTranspositions(fen: string, position: number[], root: TreeNode) {
-  if (position.length === 0 || position.every((v) => v === 0)) return [];
+function getTranspositions(
+  fen: string,
+  node: TreeNode,
+  position: number[],
+  root: TreeNode,
+  index: NotationNodeIndex,
+) {
+  if (position.length === 0 || position.every((value) => value === 0)) return [];
 
-  const map = getTranspositionMap(root);
-  const strippedFen = stripClock(fen);
-
-  const matchingPositions = map.get(strippedFen) || [];
-
-  return matchingPositions.filter((targetPosition) => !hasMorePriority(position, targetPosition));
+  const matchingNodes = getTranspositionMap(root).get(stripClock(fen)) || [];
+  const paths: number[][] = [];
+  for (const targetNode of matchingNodes) {
+    const targetPath = pathForNotationNode(index, targetNode);
+    if (targetPath && targetNode !== node && !hasMorePriority(position, targetPath)) {
+      paths.push(targetPath);
+    }
+  }
+  return paths;
 }
 
-function CompleteMoveCell({
-  movePath,
-  halfMoves,
-  move,
-  fen,
-  comment,
-  annotations,
-  showComments,
-  first,
-  targetRef,
-  tableLayout,
-  scoreText,
-}: {
+type CompleteMoveCellProps = {
   halfMoves: number;
   comment: string;
   annotations: Annotation[];
@@ -77,43 +73,83 @@ function CompleteMoveCell({
   move?: string | null;
   fen?: string;
   first?: boolean;
-  movePath: number[];
-  targetRef: React.RefObject<HTMLSpanElement | null>;
+  node?: TreeNode;
+  nodeIndex?: NotationNodeIndex;
+  /** Kept for callers outside the notation row renderer while they migrate to node identity. */
+  movePath?: number[];
+  targetRef?: React.RefObject<HTMLSpanElement | null>;
   tableLayout?: boolean;
   scoreText?: string;
-}) {
-  const store = useContext(TreeStateContext)!;
-  const isStart = useStore(store, (s) => equal(movePath, s.headers.start));
+  isStart?: boolean;
+  isCurrentVariation?: boolean;
+  root?: TreeNode;
+};
 
-  const isCurrentVariation = useStore(store, (s) => equal(s.position, movePath));
-  const transpositions = useStoreWithEqualityFn(
-    store,
-    (s) => (fen ? getTranspositions(fen, movePath, s.root) : []),
-    (a, b) => equal(a, b),
+function CompleteMoveCell({
+  halfMoves,
+  comment,
+  annotations,
+  showComments,
+  move,
+  fen,
+  first,
+  node: providedNode,
+  nodeIndex,
+  movePath,
+  tableLayout,
+  scoreText,
+  isStart: providedIsStart,
+  isCurrentVariation: providedIsCurrentVariation,
+  root: providedRoot,
+}: CompleteMoveCellProps) {
+  const store = useContext(TreeStateContext)!;
+  const state = store.getState();
+  const root = providedRoot ?? state.root;
+  const node = providedNode ?? (movePath ? getNodeAtPath(root, movePath) : root);
+  const path = useMemo(
+    () => (nodeIndex && node ? pathForNotationNode(nodeIndex, node) : (movePath ?? [])) ?? [],
+    [node, nodeIndex, movePath],
   );
-  const goToMove = useStore(store, (s) => s.goToMove);
-  const deleteMove = useStore(store, (s) => s.deleteMove);
-  const promoteVariation = useStore(store, (s) => s.promoteVariation);
-  const promoteToMainline = useStore(store, (s) => s.promoteToMainline);
-  const copyVariationPgn = useStore(store, (s) => s.copyVariationPgn);
-  const setStart = useStore(store, (s) => s.setStart);
+  const isCurrentVariation = providedIsCurrentVariation ?? node === state.currentNode();
+  const isStart = providedIsStart ?? equal(path, state.headers.start || []);
+  const transpositions = useMemo(
+    () => (fen && nodeIndex && node ? getTranspositions(fen, node, path, root, nodeIndex) : []),
+    [fen, node, nodeIndex, path, root],
+  );
+  const [open, setOpen] = useState(false);
 
   const moveNumber = Math.ceil(halfMoves / 2);
   const isWhite = halfMoves % 2 === 1;
   const hasNumber = !tableLayout && halfMoves > 0 && (first || isWhite);
-  const ref = useClickOutside(() => {
-    setOpen(false);
-  });
-  const [open, setOpen] = useState(false);
-  const currentTab = useAtomValue(currentTabAtom);
-  const tabFile = getTabFile(currentTab);
 
-  const { t } = useTranslation();
+  const onContextMenu = (event: MouseEvent) => {
+    event.preventDefault();
+    setOpen(true);
+  };
+
+  const rightAccessory =
+    tableLayout && scoreText ? (
+      <Text component="span" size="xs" c="dimmed">
+        {scoreText}
+      </Text>
+    ) : undefined;
+
+  const moveCell = move ? (
+    <MoveCell
+      move={move}
+      annotations={annotations}
+      isStart={isStart}
+      isCurrentVariation={isCurrentVariation}
+      onClick={() => store.getState().goToMove(path)}
+      onContextMenu={onContextMenu}
+      fullWidth={tableLayout}
+      rightAccessory={rightAccessory}
+    />
+  ) : null;
 
   return (
     <>
       <Box
-        ref={isCurrentVariation ? targetRef : undefined}
         component="span"
         style={{
           display: tableLayout ? "block" : "inline-block",
@@ -123,81 +159,23 @@ function CompleteMoveCell({
         }}
       >
         {hasNumber && `${moveNumber.toString()}${isWhite ? "." : "..."}`}
-        {move && (
-          <Menu opened={open} width={200}>
-            <Menu.Target>
-              <MoveCell
-                ref={ref}
-                move={move}
-                annotations={annotations}
-                isStart={isStart}
-                isCurrentVariation={isCurrentVariation}
-                onClick={() => goToMove(movePath)}
-                onContextMenu={(e: React.MouseEvent) => {
-                  setOpen((v) => !v);
-                  e.preventDefault();
-                }}
-                fullWidth={tableLayout}
-                rightAccessory={
-                  tableLayout && scoreText ? (
-                    <Text component="span" size="xs" c="dimmed">
-                      {scoreText}
-                    </Text>
-                  ) : undefined
-                }
-              />
-            </Menu.Target>
-
-            <Portal>
-              <Menu.Dropdown>
-                {tabFile?.metadata.type === "repertoire" && (
-                  <Menu.Item
-                    leftSection={<IconFlag size="0.875rem" />}
-                    onClick={() => setStart(movePath)}
-                  >
-                    {t("Menu.MarkAsStart")}
-                  </Menu.Item>
-                )}
-                <Menu.Item
-                  leftSection={<IconChevronsUp size="0.875rem" />}
-                  onClick={() => promoteToMainline(movePath)}
-                >
-                  {t("Menu.PromoteToMainLine")}
-                </Menu.Item>
-
-                <Menu.Item
-                  leftSection={<IconChevronUp size="0.875rem" />}
-                  onClick={() => promoteVariation(movePath)}
-                >
-                  {t("Menu.PromoteVariation")}
-                </Menu.Item>
-
-                <Menu.Item
-                  leftSection={<IconCopy size="0.875rem" />}
-                  onClick={() => copyVariationPgn(movePath)}
-                >
-                  {t("Menu.CopyVariationPGN")}
-                </Menu.Item>
-
-                <Menu.Item
-                  color="red"
-                  leftSection={<IconX size="0.875rem" />}
-                  onClick={() => deleteMove(movePath)}
-                >
-                  {t("Menu.DeleteMove")}
-                </Menu.Item>
-              </Menu.Dropdown>
-            </Portal>
-          </Menu>
+        {open && move ? (
+          <OpenMoveMenu
+            store={store}
+            path={path}
+            move={move}
+            annotations={annotations}
+            isStart={isStart}
+            isCurrentVariation={isCurrentVariation}
+            fullWidth={tableLayout}
+            rightAccessory={rightAccessory}
+            onClose={() => setOpen(false)}
+          />
+        ) : (
+          moveCell
         )}
         {transpositions.length > 0 && (
-          <IconAction
-            label={t("Notation.Transposition", { defaultValue: "Transposition" })}
-            size="xs"
-            onClick={() => goToMove(transpositions[0])}
-          >
-            <IconArrowsJoin size="0.875rem" />
-          </IconAction>
+          <TranspositionAction onClick={() => store.getState().goToMove(transpositions[0])} />
         )}
       </Box>
       {showComments && !tableLayout && comment && <Comment comment={comment} />}
@@ -205,8 +183,123 @@ function CompleteMoveCell({
   );
 }
 
+function TranspositionAction({ onClick }: { onClick: () => void }) {
+  const { t } = useTranslation();
+  return (
+    <IconAction
+      label={t("Notation.Transposition", { defaultValue: "Transposition" })}
+      size="xs"
+      onClick={onClick}
+    >
+      <IconArrowsJoin size="0.875rem" />
+    </IconAction>
+  );
+}
+
+function OpenMoveMenu({
+  store,
+  path,
+  move,
+  annotations,
+  isStart,
+  isCurrentVariation,
+  fullWidth,
+  rightAccessory,
+  onClose,
+}: {
+  store: NonNullable<React.ContextType<typeof TreeStateContext>>;
+  path: number[];
+  move: string;
+  annotations: Annotation[];
+  isStart: boolean;
+  isCurrentVariation: boolean;
+  fullWidth?: boolean;
+  rightAccessory?: React.ReactNode;
+  onClose: () => void;
+}) {
+  const ref = useClickOutside(onClose);
+  const currentTab = useAtomValue(currentTabAtom);
+  const tabFile = getTabFile(currentTab);
+  const { t } = useTranslation();
+  const actions = store.getState();
+
+  return (
+    <Menu opened width={200}>
+      <Menu.Target>
+        <MoveCell
+          ref={ref}
+          move={move}
+          annotations={annotations}
+          isStart={isStart}
+          isCurrentVariation={isCurrentVariation}
+          onClick={() => actions.goToMove(path)}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            onClose();
+          }}
+          fullWidth={fullWidth}
+          rightAccessory={rightAccessory}
+        />
+      </Menu.Target>
+      <Portal>
+        <Menu.Dropdown>
+          {tabFile?.metadata.type === "repertoire" && (
+            <Menu.Item
+              leftSection={<IconFlag size="0.875rem" />}
+              onClick={() => {
+                actions.setStart(path);
+                onClose();
+              }}
+            >
+              {t("Menu.MarkAsStart")}
+            </Menu.Item>
+          )}
+          <Menu.Item
+            leftSection={<IconChevronsUp size="0.875rem" />}
+            onClick={() => {
+              actions.promoteToMainline(path);
+              onClose();
+            }}
+          >
+            {t("Menu.PromoteToMainLine")}
+          </Menu.Item>
+          <Menu.Item
+            leftSection={<IconChevronUp size="0.875rem" />}
+            onClick={() => {
+              actions.promoteVariation(path);
+              onClose();
+            }}
+          >
+            {t("Menu.PromoteVariation")}
+          </Menu.Item>
+          <Menu.Item
+            leftSection={<IconCopy size="0.875rem" />}
+            onClick={() => {
+              actions.copyVariationPgn(path);
+              onClose();
+            }}
+          >
+            {t("Menu.CopyVariationPGN")}
+          </Menu.Item>
+          <Menu.Item
+            color="red"
+            leftSection={<IconX size="0.875rem" />}
+            onClick={() => {
+              actions.deleteMove(path);
+              onClose();
+            }}
+          >
+            {t("Menu.DeleteMove")}
+          </Menu.Item>
+        </Menu.Dropdown>
+      </Portal>
+    </Menu>
+  );
+}
+
 export default memo(CompleteMoveCell, (prev, next) => {
   return (
+    prev.node === next.node &&
     prev.move === next.move &&
     prev.fen === next.fen &&
     prev.comment === next.comment &&
@@ -216,6 +309,8 @@ export default memo(CompleteMoveCell, (prev, next) => {
     equal(prev.movePath, next.movePath) &&
     prev.halfMoves === next.halfMoves &&
     prev.tableLayout === next.tableLayout &&
-    prev.scoreText === next.scoreText
+    prev.scoreText === next.scoreText &&
+    prev.isStart === next.isStart &&
+    prev.isCurrentVariation === next.isCurrentVariation
   );
 });

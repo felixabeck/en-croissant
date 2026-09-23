@@ -1,0 +1,377 @@
+import type { TreeNode } from "@/utils/treeReducer";
+
+/** The largest run mounted as one notation row. */
+export const NOTATION_ROW_MAX_MOVES = 32;
+
+export type NotationMove = {
+    node: TreeNode;
+    first: boolean;
+};
+
+export type InlineNotationRow = {
+    type: "moves";
+    view: "inline";
+    depth: number;
+    moves: NotationMove[];
+    variationParent?: TreeNode;
+};
+
+export type TableNotationRow = {
+    type: "table";
+    view: "table";
+    moveNumber: number;
+    white: NotationMove | null;
+    black: NotationMove | null;
+    splitRow: boolean;
+};
+
+export type CommentNotationRow = {
+    type: "comment";
+    depth: number;
+    comment: string;
+};
+
+export type VariationNotationRow = {
+    type: "variation";
+    depth: number;
+    parent: TreeNode;
+    collapsed: boolean;
+};
+
+export type NotationRow =
+    | InlineNotationRow
+    | TableNotationRow
+    | CommentNotationRow
+    | VariationNotationRow;
+
+export type NodeLink = {
+    parent: TreeNode | null;
+    index: number;
+};
+
+/**
+ * The tree index deliberately stores links, not paths. A path is an ephemeral value derived only
+ * when a user invokes an action on a mounted move.
+ */
+export type NotationNodeIndex = {
+    root: TreeNode;
+    links: WeakMap<TreeNode, NodeLink>;
+};
+
+export type NotationRows = {
+    rows: NotationRow[];
+    index: NotationNodeIndex;
+    rowForNode: Map<TreeNode, number>;
+};
+
+export type NotationRowOptions = {
+    showVariations: boolean;
+    showComments: boolean;
+    tableView: boolean;
+    collapsedVariations?: ReadonlySet<TreeNode>;
+};
+
+type InlineTask = {
+    parent: TreeNode;
+    childIndex: number;
+    depth: number;
+    first: boolean;
+    variationParent?: TreeNode;
+};
+
+export function createNotationNodeIndex(root: TreeNode): NotationNodeIndex {
+    const links = new WeakMap<TreeNode, NodeLink>();
+    links.set(root, { parent: null, index: -1 });
+
+    const stack: { node: TreeNode; parent: TreeNode; index: number }[] = [];
+    for (let index = root.children.length - 1; index >= 0; index -= 1) {
+        stack.push({ node: root.children[index], parent: root, index });
+    }
+
+    while (stack.length > 0) {
+        const item = stack.pop()!;
+        links.set(item.node, { parent: item.parent, index: item.index });
+        for (let index = item.node.children.length - 1; index >= 0; index -= 1) {
+            stack.push({ node: item.node.children[index], parent: item.node, index });
+        }
+    }
+
+    return { root, links };
+}
+
+export function pathForNotationNode(
+    index: NotationNodeIndex,
+    node: TreeNode,
+): number[] | undefined {
+    if (node === index.root) return [];
+
+    const path: number[] = [];
+    let current: TreeNode | null = node;
+    while (current && current !== index.root) {
+        const link = index.links.get(current);
+        if (!link || link.parent === null) return undefined;
+        path.push(link.index);
+        current = link.parent;
+    }
+
+    if (current !== index.root) return undefined;
+    path.reverse();
+    return path;
+}
+
+function addRow(rows: NotationRow[], rowForNode: Map<TreeNode, number>, row: NotationRow): void {
+    const rowIndex = rows.length;
+    rows.push(row);
+
+    if (row.type === "moves") {
+        for (const move of row.moves) rowForNode.set(move.node, rowIndex);
+    } else if (row.type === "table") {
+        if (row.white) rowForNode.set(row.white.node, rowIndex);
+        if (row.black) rowForNode.set(row.black.node, rowIndex);
+    }
+}
+
+function addComment(
+    rows: NotationRow[],
+    rowForNode: Map<TreeNode, number>,
+    depth: number,
+    comment: string,
+): void {
+    addRow(rows, rowForNode, { type: "comment", depth, comment });
+}
+
+function addInlineVariationRows(
+    rows: NotationRow[],
+    rowForNode: Map<TreeNode, number>,
+    index: NotationNodeIndex,
+    parent: TreeNode,
+    depth: number,
+    options: NotationRowOptions,
+): void {
+    const stack: InlineTask[] = [];
+    queueVariationTasks(rows, rowForNode, parent, depth, options, stack);
+    appendInlineTasks(rows, rowForNode, index, stack, options);
+}
+
+function queueVariationTasks(
+    rows: NotationRow[],
+    rowForNode: Map<TreeNode, number>,
+    parent: TreeNode,
+    depth: number,
+    options: NotationRowOptions,
+    stack: InlineTask[],
+    continuation?: InlineTask,
+): void {
+    const collapsed = options.collapsedVariations?.has(parent) ?? false;
+    addRow(rows, rowForNode, {
+        type: "variation",
+        depth,
+        parent,
+        collapsed,
+    });
+    if (continuation) stack.push(continuation);
+    if (collapsed) return;
+    for (let childIndex = parent.children.length - 1; childIndex >= 1; childIndex -= 1) {
+        stack.push({
+            parent,
+            childIndex,
+            depth: depth + 1,
+            first: true,
+            variationParent: parent,
+        });
+    }
+}
+
+function appendInlineTasks(
+    rows: NotationRow[],
+    rowForNode: Map<TreeNode, number>,
+    _index: NotationNodeIndex,
+    stack: InlineTask[],
+    options: NotationRowOptions,
+): void {
+    while (stack.length > 0) {
+        const task = stack.pop()!;
+        let parent = task.parent;
+        let childIndex = task.childIndex;
+        let first = task.first;
+        const moves: NotationMove[] = [];
+
+        while (parent.children[childIndex]) {
+            const node = parent.children[childIndex];
+            moves.push({ node, first });
+            first = false;
+
+            const hasComment = options.showComments && node.comment.length > 0;
+            const variationParent = parent;
+            const hasVariations =
+                options.showVariations && childIndex === 0 && variationParent.children.length > 1;
+            const reachedLimit = moves.length >= NOTATION_ROW_MAX_MOVES;
+
+            if (hasComment || hasVariations || reachedLimit) {
+                addRow(rows, rowForNode, {
+                    type: "moves",
+                    view: "inline",
+                    depth: task.depth,
+                    moves: moves.splice(0),
+                    variationParent: task.variationParent,
+                });
+
+                if (hasVariations) {
+                    queueVariationTasks(
+                        rows,
+                        rowForNode,
+                        variationParent,
+                        task.depth,
+                        options,
+                        stack,
+                        {
+                            parent: node,
+                            childIndex: 0,
+                            depth: task.depth,
+                            first: false,
+                            variationParent: task.variationParent,
+                        },
+                    );
+                } else if (!hasComment && reachedLimit) {
+                    stack.push({
+                        parent: node,
+                        childIndex: 0,
+                        depth: task.depth,
+                        first: false,
+                        variationParent: task.variationParent,
+                    });
+                } else if (node.children.length > 0) {
+                    stack.push({
+                        parent: node,
+                        childIndex: 0,
+                        depth: task.depth,
+                        first: false,
+                        variationParent: task.variationParent,
+                    });
+                }
+                break;
+            }
+
+            if (node.children.length === 0) {
+                addRow(rows, rowForNode, {
+                    type: "moves",
+                    view: "inline",
+                    depth: task.depth,
+                    moves: moves.splice(0),
+                    variationParent: task.variationParent,
+                });
+                break;
+            }
+
+            parent = node;
+            childIndex = 0;
+        }
+    }
+}
+
+function appendMainlineInlineRows(
+    rows: NotationRow[],
+    rowForNode: Map<TreeNode, number>,
+    index: NotationNodeIndex,
+    root: TreeNode,
+    options: NotationRowOptions,
+): void {
+    appendInlineTasks(
+        rows,
+        rowForNode,
+        index,
+        [{ parent: root, childIndex: 0, depth: 0, first: true }],
+        options,
+    );
+}
+
+function addTableRow(
+    rows: NotationRow[],
+    rowForNode: Map<TreeNode, number>,
+    moveNumber: number,
+    white: TreeNode | null,
+    black: TreeNode | null,
+    splitRow: boolean,
+): void {
+    addRow(rows, rowForNode, {
+        type: "table",
+        view: "table",
+        moveNumber,
+        white: white ? { node: white, first: true } : null,
+        black: black ? { node: black, first: true } : null,
+        splitRow,
+    });
+}
+
+function appendTableRows(
+    rows: NotationRow[],
+    rowForNode: Map<TreeNode, number>,
+    index: NotationNodeIndex,
+    root: TreeNode,
+    options: NotationRowOptions,
+): void {
+    let current = root;
+
+    while (current.children.length > 0) {
+        const child = current.children[0];
+        const isWhite = child.halfMoves % 2 === 1;
+        const moveNumber = Math.ceil(child.halfMoves / 2);
+        const variations = current.children.slice(1);
+
+        if (!isWhite) {
+            const hasComment = options.showComments && child.comment.length > 0;
+            const hasVariations = options.showVariations && variations.length > 0;
+            addTableRow(rows, rowForNode, moveNumber, null, child, false);
+            if (hasComment) addComment(rows, rowForNode, 0, child.comment);
+            if (hasVariations) addInlineVariationRows(rows, rowForNode, index, current, 0, options);
+            current = child;
+            continue;
+        }
+
+        const black = child.children[0]?.halfMoves % 2 === 0 ? child.children[0] : null;
+        const blackVariations = black ? black.children.slice(1) : [];
+        const whiteHasComment = options.showComments && child.comment.length > 0;
+        const whiteHasVariations = options.showVariations && variations.length > 0;
+        const blackHasComment = !!black && options.showComments && black.comment.length > 0;
+        const blackHasVariations = options.showVariations && blackVariations.length > 0;
+        const whiteBoundary = whiteHasComment || whiteHasVariations;
+        if (whiteBoundary) {
+            addTableRow(rows, rowForNode, moveNumber, child, null, !!black);
+            if (whiteHasComment) addComment(rows, rowForNode, 0, child.comment);
+            if (whiteHasVariations)
+                addInlineVariationRows(rows, rowForNode, index, current, 0, options);
+
+            if (black) {
+                addTableRow(rows, rowForNode, moveNumber, null, black, false);
+                if (blackHasComment) addComment(rows, rowForNode, 0, black.comment);
+                if (blackHasVariations)
+                    addInlineVariationRows(rows, rowForNode, index, child, 0, options);
+            }
+        } else {
+            addTableRow(rows, rowForNode, moveNumber, child, black, false);
+            if (blackHasComment) addComment(rows, rowForNode, 0, black.comment);
+            if (blackHasVariations)
+                addInlineVariationRows(rows, rowForNode, index, child, 0, options);
+        }
+
+        current = black ?? child;
+    }
+}
+
+export function buildNotationRows(root: TreeNode, options: NotationRowOptions): NotationRows {
+    const rows: NotationRow[] = [];
+    const rowForNode = new Map<TreeNode, number>();
+    const index = createNotationNodeIndex(root);
+
+    if (options.showComments && root.comment.length > 0) {
+        addComment(rows, rowForNode, 0, root.comment);
+    }
+
+    if (options.tableView) {
+        appendTableRows(rows, rowForNode, index, root, options);
+    } else {
+        appendMainlineInlineRows(rows, rowForNode, index, root, options);
+    }
+
+    return { rows, index, rowForNode };
+}
