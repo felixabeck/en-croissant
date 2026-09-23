@@ -55,6 +55,7 @@
         "source": "backend",
         "paths": [
           "src-tauri/src/opening.rs",
+          "src-tauri/src/practice.rs",
           "src-tauri/src/progress.rs",
           "src-tauri/src/puzzle.rs"
         ]
