@@ -9027,7 +9027,7 @@ Code b7f52cd4, 285a96d4, 8d8e4274, 25636945. Windows runtime is rust-windows-tes
 
 ### Deleting or promoting a variation rebases the cursor and start header but not `practicePath`
 
-* **ID:** f-20260914-26 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260914-26 · **Status:** handled · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** src/state/store/tree.ts:818 (delete/promote rebase `state.position` and `headers.start` only)
 * **Defect:** If practice stands at `[0,0]` after `1.e4 e5` and `[0,0]` is deleted, the cursor rebases to `[0]` but `practicePath` still points at the deleted node; `goToNext` then follows the surviving sibling (for example `1...c5`) as the deleted card's continuation.
 * **Why it matters:** `number[]` paths must be rebased after every tree mutation (`.claude/rules/chess-tree-semantics.md`).
