@@ -32,7 +32,7 @@ const fixtures = vi.hoisted(() => ({
   setPracticeStats: vi.fn(),
   setPracticeMoveController: vi.fn(),
   buildFromTree: vi.fn(() => []),
-  syncDeck: vi.fn(() => ({ added: 0, positions: [] as unknown[], removed: 0 })),
+  syncDeck: vi.fn((..._args: unknown[]) => ({ added: 0, positions: [] as unknown[], removed: 0 })),
   getCardForReview: vi.fn(),
   updateCardPerformance: vi.fn(),
   loadPracticeReviews: vi.fn(),
@@ -40,7 +40,7 @@ const fixtures = vi.hoisted(() => ({
     currentNode: () => ({ fen: "root" }),
     goToMove: vi.fn(),
     goToNext: vi.fn(),
-    headers: { orientation: "white", start: [] },
+    headers: { orientation: "white", start: [] as number[] },
     makeMove: vi.fn(),
     root: {},
     setPracticePath: vi.fn(),
@@ -261,6 +261,7 @@ beforeEach(() => {
   fixtures.getCardForReview.mockReset().mockReturnValue(null);
   fixtures.updateCardPerformance.mockReset();
   fixtures.syncDeck.mockReset().mockReturnValue({ added: 0, positions: [], removed: 0 });
+  fixtures.tree.headers = { orientation: "white", start: [] };
   fixtures.practiceState = { phase: "idle" };
   fixtures.practiceStats = {
     mode: "anki",
@@ -367,6 +368,19 @@ test("re-diffs the same tree once a new hydration lands", async () => {
   expect(fixtures.setDeck).toHaveBeenCalledTimes(1);
   const update = fixtures.setDeck.mock.calls[0][0] as (value: unknown) => { positions: unknown };
   expect(update(fixtures.deck).positions).toBe(extended);
+});
+
+test("re-diffs an unchanged tree when the practised side or start changes", async () => {
+  fixtures.syncDeck.mockClear();
+  fixtures.tree.headers = { orientation: "black", start: [] };
+  await rerenderPracticePanel();
+  expect(fixtures.syncDeck).toHaveBeenCalledTimes(1);
+  expect(fixtures.syncDeck.mock.calls[0][2]).toBe("black");
+
+  fixtures.tree.headers = { orientation: "black", start: [0] };
+  await rerenderPracticePanel();
+  expect(fixtures.syncDeck).toHaveBeenCalledTimes(2);
+  expect(fixtures.syncDeck.mock.calls[1][3]).toEqual([0]);
 });
 
 test("a committed rating does not re-diff an unchanged tree", async () => {
