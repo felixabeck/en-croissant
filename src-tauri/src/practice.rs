@@ -1730,11 +1730,14 @@ pub(crate) fn repair_practice_deck_in(
             }
             remove(leaf)?;
         }
-        let migration_never_committed = state
+        let migration_unfinalized = state
             .as_ref()
             .is_some_and(|state| state.phase == MigrationPhase::Migrating);
-        if invalid_state || migration_never_committed {
-            // Retained legacy data remains eligible when this migration marker is removed.
+        if invalid_state || migration_unfinalized {
+            // Neither marker proves a Reset happened, so the deck returns to never-here and the
+            // retained legacy value migrates again. For a malformed marker that may re-import
+            // pre-Reset history; losing never-imported history is the worse outcome
+            // (d-20260923-02).
             remove(&state_leaf(&hash))?;
         } else if let Some(mut state) = state {
             state.phase = MigrationPhase::Reset;

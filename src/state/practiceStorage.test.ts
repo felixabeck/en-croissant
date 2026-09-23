@@ -255,6 +255,7 @@ describe("the real practice deck atom", () => {
         });
         const { atom, store, unsubscribe } = mountDeck();
         await vi.waitFor(() => expect(store.get(atom).status).toBe("read-failed"));
+        expect(store.get(atom).repairable).toBe(true);
         native.load.mockResolvedValue(null);
 
         await store.set(atom, { type: "repair" });
@@ -341,6 +342,12 @@ describe("the real practice deck atom", () => {
         const mounted = mountDeck("unreadable", 0);
         await vi.waitFor(() => expect(mounted.store.get(mounted.atom).status).toBe("read-failed"));
         expect(mounted.store.get(mounted.atom).repairable).toBe(false);
+        expect(mounted.store.get(mounted.atom).error?.message).toBe(
+            "Board.Practice.InventoryUnreadable",
+        );
+        expect(persistError.report.mock.calls.map(([error]) => error.message)).toEqual([
+            "Board.Practice.InventoryUnreadable",
+        ]);
 
         await mounted.store.set(mounted.atom, { type: "retry" });
         await waitForReady(mounted.store, mounted.atom);
@@ -375,6 +382,77 @@ describe("the real practice deck atom", () => {
         expect(result.outcomes[0]?.status).toBe("failed");
         expect(mounted.store.get(mounted.atom).repairable).toBe(false);
         expect(native.repair).not.toHaveBeenCalled();
+        mounted.unsubscribe();
+    });
+
+    test("R4-2 a localStorage read failure during migration is not repairable", async () => {
+        const key = "deck-storage-denied-0";
+        localStorage.setItem(key, JSON.stringify(legacyData()));
+        native.list.mockResolvedValue({ decks: [], anomalies: [] });
+        const originalGetItem = Storage.prototype.getItem;
+        const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (
+            this: Storage,
+            candidate: string,
+        ) {
+            if (candidate === key) throw new Error("localStorage read denied");
+            return originalGetItem.call(this, candidate);
+        });
+
+        try {
+            const result = await runPracticeMigrationPass();
+            const mounted = mountDeck("storage-denied", 0);
+            await vi.waitFor(() =>
+                expect(mounted.store.get(mounted.atom).status).toBe("read-failed"),
+            );
+
+            expect(result.outcomes[0]?.status).toBe("failed");
+            expect(mounted.store.get(mounted.atom).repairable).toBe(false);
+            expect(native.repair).not.toHaveBeenCalled();
+            mounted.unsubscribe();
+        } finally {
+            getItem.mockRestore();
+        }
+    });
+
+    test("R4-2 malformed legacy JSON is not repairable", async () => {
+        localStorage.setItem("deck-malformed-legacy-0", "{not-json");
+        native.list.mockResolvedValue({ decks: [], anomalies: [] });
+
+        const result = await runPracticeMigrationPass();
+        const mounted = mountDeck("malformed-legacy", 0);
+        await vi.waitFor(() => expect(mounted.store.get(mounted.atom).status).toBe("read-failed"));
+
+        expect(result.outcomes[0]?.status).toBe("failed");
+        expect(mounted.store.get(mounted.atom).repairable).toBe(false);
+        expect(native.repair).not.toHaveBeenCalled();
+        mounted.unsubscribe();
+    });
+
+    test("R4-2 a DamagedDeck stays repairable when its legacy migration fails", async () => {
+        localStorage.setItem("deck-damaged-migration-0", JSON.stringify(legacyData()));
+        native.list.mockResolvedValue({
+            decks: [{ fileId: "damaged-migration", game: 0 }],
+            anomalies: [
+                {
+                    kind: "DamagedDeck",
+                    leaf: "damaged-migration-positions.json",
+                    fileId: "damaged-migration",
+                    game: 0,
+                },
+            ],
+        });
+        native.migrate.mockRejectedValueOnce({
+            tag: "backend-error",
+            category: "io",
+            message: "migration storage unavailable",
+        });
+
+        const result = await runPracticeMigrationPass();
+        const mounted = mountDeck("damaged-migration", 0);
+        await vi.waitFor(() => expect(mounted.store.get(mounted.atom).status).toBe("read-failed"));
+
+        expect(result.outcomes[0]?.status).toBe("failed");
+        expect(mounted.store.get(mounted.atom).repairable).toBe(true);
         mounted.unsubscribe();
     });
 
@@ -708,6 +786,32 @@ describe("the real practice deck atom", () => {
         await Promise.resolve();
         expect(second.store.get(second.atom).positions[0]?.fen).toBe(sameBoardDifferentFen);
         second.unsubscribe();
+    });
+
+    test("R4-1 an older hydration rejection cannot block writes after retry succeeds", async () => {
+        const older = deferred<ReturnType<typeof snapshot>>();
+        native.load.mockImplementationOnce(() => older.promise);
+        native.load.mockResolvedValueOnce(snapshot([position(sameBoardDifferentFen)]));
+        const mounted = mountDeck();
+        await vi.waitFor(() => expect(native.load).toHaveBeenCalledOnce());
+
+        await mounted.store.set(mounted.atom, { type: "retry" });
+        await waitForReady(mounted.store, mounted.atom);
+        older.reject(new Error("superseded read failed"));
+        await older.promise.catch(() => undefined);
+        await Promise.resolve();
+
+        vi.useFakeTimers();
+        const write = mounted.store.set(mounted.atom, {
+            type: "sync",
+            positions: [position()],
+        });
+        await vi.advanceTimersByTimeAsync(PRACTICE_SYNC_DEBOUNCE_MS);
+        await write;
+
+        expect(native.sync).toHaveBeenCalledOnce();
+        expect(mounted.store.get(mounted.atom).status).toBe("ready");
+        mounted.unsubscribe();
     });
 });
 

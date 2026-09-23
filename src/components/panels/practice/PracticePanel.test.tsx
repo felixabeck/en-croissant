@@ -288,13 +288,7 @@ afterEach(async () => {
 
 test("shows loading without an empty deck, reset, or session start", async () => {
   fixtures.deck = deck({ positions: [], status: "loading" });
-  await act(async () =>
-    root?.render(
-      <TreeStateContext.Provider value={fixtures.tree as any}>
-        <PracticePanel />
-      </TreeStateContext.Provider>,
-    ),
-  );
+  await rerenderPracticePanel();
 
   expect(container?.textContent).toContain("Board.Practice.Loading");
   expect(container?.textContent).not.toContain("Board.Practice.StartPractice");
@@ -304,13 +298,7 @@ test("shows loading without an empty deck, reset, or session start", async () =>
 
 test("shows a read failure with repair, no empty deck, and blocked controls", async () => {
   fixtures.deck = deck({ positions: [], status: "read-failed", error: { message: "read failed" } });
-  await act(async () =>
-    root?.render(
-      <TreeStateContext.Provider value={fixtures.tree as any}>
-        <PracticePanel />
-      </TreeStateContext.Provider>,
-    ),
-  );
+  await rerenderPracticePanel();
 
   expect(container?.textContent).toContain("Board.Practice.ReadFailed");
   expect(container?.textContent).toContain("Board.Practice.Repair");
@@ -326,13 +314,7 @@ test("dispatches retry without repair for an unreadable deck", async () => {
     repairable: false,
     error: { message: "read failed" },
   });
-  await act(async () =>
-    root?.render(
-      <TreeStateContext.Provider value={fixtures.tree as any}>
-        <PracticePanel />
-      </TreeStateContext.Provider>,
-    ),
-  );
+  await rerenderPracticePanel();
 
   expect(container?.textContent).toContain("Board.Practice.Retry");
   expect(container?.textContent).not.toContain("Board.Practice.Repair");
@@ -346,13 +328,7 @@ test("dispatches retry without repair for an unreadable deck", async () => {
 
 test("dispatches repair only after confirmation", async () => {
   fixtures.deck = deck({ positions: [], status: "read-failed", error: { message: "read failed" } });
-  await act(async () =>
-    root?.render(
-      <TreeStateContext.Provider value={fixtures.tree as any}>
-        <PracticePanel />
-      </TreeStateContext.Provider>,
-    ),
-  );
+  await rerenderPracticePanel();
 
   const repair = [...(container?.querySelectorAll("button") ?? [])].find((button) =>
     button.textContent?.includes("Board.Practice.Repair"),
@@ -378,13 +354,7 @@ test("does not create a native deck when an empty tree yields no positions", asy
   fixtures.buildFromTree.mockClear();
   fixtures.deck = deck({ positions: [] });
   fixtures.tree.root = {};
-  await act(async () =>
-    root?.render(
-      <TreeStateContext.Provider value={fixtures.tree as any}>
-        <PracticePanel />
-      </TreeStateContext.Provider>,
-    ),
-  );
+  await rerenderPracticePanel();
 
   expect(fixtures.buildFromTree).toHaveBeenCalledOnce();
   expect(fixtures.setDeck).not.toHaveBeenCalled();
@@ -392,13 +362,7 @@ test("does not create a native deck when an empty tree yields no positions", asy
 
 test("renders and dismisses only unacknowledged unapplied reviews", async () => {
   fixtures.deck = deck({ unappliedReviews: 2, orphansAcknowledged: false });
-  await act(async () =>
-    root?.render(
-      <TreeStateContext.Provider value={fixtures.tree as any}>
-        <PracticePanel />
-      </TreeStateContext.Provider>,
-    ),
-  );
+  await rerenderPracticePanel();
   expect(container?.textContent).toContain("Board.Practice.UnappliedReviews:2");
   const dismiss = [...(container?.querySelectorAll("button") ?? [])].find((button) =>
     button.textContent?.includes("Board.Practice.DismissUnappliedReviews"),
@@ -407,13 +371,7 @@ test("renders and dismisses only unacknowledged unapplied reviews", async () => 
   expect(fixtures.setDeck).toHaveBeenCalledWith({ type: "acknowledge" });
 
   fixtures.deck = deck({ unappliedReviews: 0, orphansAcknowledged: false });
-  await act(async () =>
-    root?.render(
-      <TreeStateContext.Provider value={fixtures.tree as any}>
-        <PracticePanel />
-      </TreeStateContext.Provider>,
-    ),
-  );
+  await rerenderPracticePanel();
   expect(container?.textContent).not.toContain("Board.Practice.UnappliedReviews");
 });
 
@@ -515,13 +473,7 @@ test("drops a log page that started before the deck generation changed", async (
   await act(async () => showLogs?.click());
 
   fixtures.deck = deck({ generation: 1 });
-  await act(async () =>
-    root?.render(
-      <TreeStateContext.Provider value={fixtures.tree as any}>
-        <PracticePanel />
-      </TreeStateContext.Provider>,
-    ),
-  );
+  await rerenderPracticePanel();
   release({
     entries: [{ id: "reset-late", entry: JSON.stringify({ due: "2026-09-22", fen: "gone" }) }],
     nextCursor: null,
@@ -549,18 +501,31 @@ async function rerenderPracticePanel() {
   );
 }
 
-async function startFullSession(positions: ReturnType<typeof position>[]) {
+async function startPracticeSession(
+  positions: ReturnType<typeof position>[],
+  mode: "normal" | "full",
+) {
   fixtures.deck = deck({ positions });
   await rerenderPracticePanel();
+  const label =
+    mode === "full" ? "Board.Practice.PracticeFullRepertoire" : "Board.Practice.StartPractice";
   const start = [...(container?.querySelectorAll("button") ?? [])].find((button) =>
-    button.textContent?.includes("Board.Practice.PracticeFullRepertoire"),
+    button.textContent?.includes(label),
   );
   await act(async () => start?.click());
   const first = positions[0];
-  if (!first) throw new Error("full-practice test needs an initial position");
+  if (!first) throw new Error("practice session needs an initial position");
   fixtures.tree.currentNode = () => ({ fen: first.fen });
   await rerenderPracticePanel();
   return first;
+}
+
+async function startNormalSession(positions: ReturnType<typeof position>[]) {
+  return startPracticeSession(positions, "normal");
+}
+
+async function startFullSession(positions: ReturnType<typeof position>[]) {
+  return startPracticeSession(positions, "full");
 }
 
 async function submitCorrectMove(fen: string) {
@@ -637,7 +602,6 @@ test("normal-mode rating follows the board identity after a deck sync and ignore
     ...first,
     card: { ...first.card, due: "2026-10-01T00:00:00.000Z", reps: 1 },
   };
-  fixtures.deck = deck({ positions: [first, second] });
   fixtures.getCardForReview.mockImplementation(
     (positions: any[]) =>
       positions
@@ -649,42 +613,10 @@ test("normal-mode rating follows the board identity after a deck sync and ignore
     entry: { fen: first.fen, rating: 3 },
     entryId: "rated-first",
   });
-  await act(async () =>
-    root?.render(
-      <TreeStateContext.Provider value={fixtures.tree as any}>
-        <PracticePanel />
-      </TreeStateContext.Provider>,
-    ),
-  );
-
-  const start = [...(container?.querySelectorAll("button") ?? [])].find((button) =>
-    button.textContent?.includes("Board.Practice.StartPractice"),
-  );
-  await act(async () => start?.click());
-  fixtures.tree.currentNode = () => ({ fen: first.fen });
-  await act(async () =>
-    root?.render(
-      <TreeStateContext.Provider value={fixtures.tree as any}>
-        <PracticePanel />
-      </TreeStateContext.Provider>,
-    ),
-  );
-  await act(async () => latestMoveController().submitMove("e4"));
-  await act(async () =>
-    root?.render(
-      <TreeStateContext.Provider value={fixtures.tree as any}>
-        <PracticePanel />
-      </TreeStateContext.Provider>,
-    ),
-  );
+  await startNormalSession([first, second]);
+  await submitCorrectMove(first.fen);
   fixtures.deck = deck({ positions: [inserted, firstWithNewMoveCounters, second] });
-  await act(async () =>
-    root?.render(
-      <TreeStateContext.Provider value={fixtures.tree as any}>
-        <PracticePanel />
-      </TreeStateContext.Provider>,
-    ),
-  );
+  await rerenderPracticePanel();
   const good = [...(container?.querySelectorAll("button") ?? [])].find((button) =>
     button.textContent?.includes("Board.Practice.Good"),
   );
@@ -720,7 +652,6 @@ test("auto-difficulty rates the latest card after a deck sync", async () => {
     ...first,
     card: { ...first.card, due: "2026-10-01T00:00:00.000Z", reps: 1 },
   };
-  fixtures.deck = deck({ positions: [first, second] });
   fixtures.getCardForReview.mockImplementation(
     (positions: any[]) =>
       positions
@@ -732,35 +663,10 @@ test("auto-difficulty rates the latest card after a deck sync", async () => {
     entry: { fen: first.fen, rating: 3 },
     entryId: "rated-first",
   });
-  await act(async () =>
-    root?.render(
-      <TreeStateContext.Provider value={fixtures.tree as any}>
-        <PracticePanel />
-      </TreeStateContext.Provider>,
-    ),
-  );
-
-  const start = [...(container?.querySelectorAll("button") ?? [])].find((button) =>
-    button.textContent?.includes("Board.Practice.StartPractice"),
-  );
-  await act(async () => start?.click());
-  fixtures.tree.currentNode = () => ({ fen: first.fen });
-  await act(async () =>
-    root?.render(
-      <TreeStateContext.Provider value={fixtures.tree as any}>
-        <PracticePanel />
-      </TreeStateContext.Provider>,
-    ),
-  );
-  await act(async () => latestMoveController().submitMove("e4"));
+  await startNormalSession([first, second]);
+  await submitCorrectMove(first.fen);
   fixtures.deck = deck({ positions: [inserted, first, second] });
-  await act(async () =>
-    root?.render(
-      <TreeStateContext.Provider value={fixtures.tree as any}>
-        <PracticePanel />
-      </TreeStateContext.Provider>,
-    ),
-  );
+  await rerenderPracticePanel();
   await act(async () => vi.advanceTimersByTimeAsync(300));
 
   expect(fixtures.updateCardPerformance).toHaveBeenCalledOnce();
@@ -774,57 +680,16 @@ test("full-repertoire mode enters the first position and advances through the re
   const first = position("in-repertoire-first");
   const second = position("in-repertoire-second");
   const inserted = position("in-repertoire-inserted");
-  fixtures.deck = deck({ positions: [first, second] });
-  await act(async () =>
-    root?.render(
-      <TreeStateContext.Provider value={fixtures.tree as any}>
-        <PracticePanel />
-      </TreeStateContext.Provider>,
-    ),
-  );
-
-  const start = [...(container?.querySelectorAll("button") ?? [])].find((button) =>
-    button.textContent?.includes("Board.Practice.PracticeFullRepertoire"),
-  );
-  await act(async () => start?.click());
+  await startFullSession([first, second]);
   expect(fixtures.practiceState.currentFen).toBe(first.fen);
 
-  fixtures.tree.currentNode = () => ({ fen: first.fen });
-  await act(async () =>
-    root?.render(
-      <TreeStateContext.Provider value={fixtures.tree as any}>
-        <PracticePanel />
-      </TreeStateContext.Provider>,
-    ),
-  );
-  await act(async () => latestMoveController().submitMove("e4"));
+  await submitCorrectMove(first.fen);
   fixtures.deck = deck({ positions: [inserted, first, second] });
-  await act(async () =>
-    root?.render(
-      <TreeStateContext.Provider value={fixtures.tree as any}>
-        <PracticePanel />
-      </TreeStateContext.Provider>,
-    ),
-  );
+  await rerenderPracticePanel();
   await act(async () => vi.advanceTimersByTimeAsync(300));
   expect(fixtures.practiceState.currentFen).toBe(second.fen);
 
-  fixtures.tree.currentNode = () => ({ fen: second.fen });
-  await act(async () =>
-    root?.render(
-      <TreeStateContext.Provider value={fixtures.tree as any}>
-        <PracticePanel />
-      </TreeStateContext.Provider>,
-    ),
-  );
-  await act(async () => latestMoveController().submitMove("e4"));
-  await act(async () =>
-    root?.render(
-      <TreeStateContext.Provider value={fixtures.tree as any}>
-        <PracticePanel />
-      </TreeStateContext.Provider>,
-    ),
-  );
+  await submitCorrectMove(second.fen);
   await act(async () => vi.advanceTimersByTimeAsync(300));
   expect(fixtures.practiceState.phase).toBe("idle");
   vi.useRealTimers();

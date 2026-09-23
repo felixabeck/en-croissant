@@ -138,8 +138,12 @@ class PracticeMigrationBlockedError extends Error {
     }
 }
 
+// Repair deletes the native deck, so it is offered only where the native store rejected its own
+// stored content. I/O failures and renderer-side failures (storage access, legacy JSON) are not
+// fixed by deleting native data.
 function practiceFailureRepairable(error: unknown): boolean {
-    return errorAsAppError(error).backendCategory !== "io";
+    const category = errorAsAppError(error).backendCategory;
+    return category === "invalid-input" || category === "parsing";
 }
 
 function reportMigrationFailures(
@@ -348,9 +352,12 @@ async function migrateLegacyDeck(
         };
     } catch (error) {
         const appError = errorAsAppError(error);
+        // A failed migration is fixed by repair only when the inventory already found this deck's
+        // native data damaged; repair cannot change the legacy value the migration read.
+        const known = practiceMigrationFailures.get(identityKey(legacy.identity));
         practiceMigrationFailures.set(identityKey(legacy.identity), {
             error: appError,
-            repairable: practiceFailureRepairable(appError),
+            repairable: known?.repairable ?? false,
         });
         return { key: legacy.key, identity: legacy.identity, status: "failed", error: appError };
     }
@@ -908,18 +915,17 @@ export function createPracticeDeckAtom(
     ): Promise<void> =>
         run.then(
             (next) => {
+                // A superseded hydration must not touch the controller a newer one owns.
+                if (sequence !== controller.requestSequence) return;
                 controller.committed = next;
                 controller.writeBlocked = false;
-                if (controller.mounted && sequence === controller.requestSequence) {
-                    setState(next);
-                }
+                if (controller.mounted) setState(next);
             },
             (error) => {
+                if (sequence !== controller.requestSequence) return;
                 controller.committed = null;
                 controller.writeBlocked = true;
-                if (controller.mounted && sequence === controller.requestSequence) {
-                    setState(failureState(loading, error));
-                }
+                if (controller.mounted) setState(failureState(loading, error));
             },
         );
     const startHydration = (
