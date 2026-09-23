@@ -140,13 +140,13 @@ function PracticePanel() {
       if (newDeck.length > 0) setDeck({ type: "sync", positions: newDeck });
     } else {
       // Sync existing deck with tree changes
-      const { positions, added, removed, updated } = syncDeck(
+      const { positions, added, removed, updated, reordered } = syncDeck(
         deckPositionsRef.current,
         root,
         orientation,
         start,
       );
-      if (added > 0 || removed > 0 || updated > 0) {
+      if (added > 0 || removed > 0 || updated > 0 || reordered) {
         setDeck((prev) => ({ ...prev, positions }));
       }
       if (added > 0 || removed > 0) {

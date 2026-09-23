@@ -128,7 +128,7 @@ export function syncDeck(
     tree: TreeNode,
     color: "white" | "black",
     start: number[],
-): { positions: Position[]; added: number; removed: number; updated: number } {
+): { positions: Position[]; added: number; removed: number; updated: number; reordered: boolean } {
     const freshPositions = buildFromTree(tree, color, start);
 
     const existingByFen = new Map<string, Position>();
@@ -157,7 +157,13 @@ export function syncDeck(
     const freshFens = new Set(freshPositions.map((p) => getBoardState(p.fen)));
     const removed = existing.filter((p) => !freshFens.has(getBoardState(p.fen))).length;
 
-    return { positions: merged, added, removed, updated };
+    // The deck's order follows the tree's (full-repertoire order, due-date ties), so a reordering of
+    // the same cards is also a change to persist.
+    const reordered =
+        added === 0 &&
+        removed === 0 &&
+        merged.some((pos, index) => getBoardState(pos.fen) !== getBoardState(existing[index].fen));
+    return { positions: merged, added, removed, updated, reordered };
 }
 
 export function getNextReviewTimes(card: Card): Record<Grade, Date> {

@@ -62,3 +62,23 @@ test("deck synchronization reports a clock-only FEN change as an update", () => 
     expect(result).toMatchObject({ added: 0, removed: 0, updated: 1 });
     expect(result.positions[0].fen).toBe("8/8/8/8/8/8/4P3/K6k w - - 30 44");
 });
+
+test("deck synchronization reports a reordering of the same cards", () => {
+    const originalTree = defaultTree().root;
+    originalTree.children.push(
+        practiceNode("8/8/8/8/8/8/4P3/K6k w - - 0 12", "e5"),
+        practiceNode("8/8/8/8/8/8/3P4/K6k w - - 0 12", "d5"),
+    );
+    const existing = buildFromTree(originalTree, "white", []);
+
+    const reorderedTree = defaultTree().root;
+    reorderedTree.children.push(
+        practiceNode("8/8/8/8/8/8/3P4/K6k w - - 0 12", "d5"),
+        practiceNode("8/8/8/8/8/8/4P3/K6k w - - 0 12", "e5"),
+    );
+    const result = syncDeck(existing, reorderedTree, "white", []);
+
+    expect(result).toMatchObject({ added: 0, removed: 0, updated: 0, reordered: true });
+    expect(result.positions.map((card) => card.answer)).toEqual(["d5", "e5"]);
+    expect(syncDeck(existing, originalTree, "white", []).reordered).toBe(false);
+});
