@@ -8,6 +8,37 @@ import {
 } from "./session";
 
 describe("practiceSessionReducer", () => {
+    it("advances only a correctly answered card, and only to advancing", () => {
+        const waiting = practiceSessionReducer(idlePracticeSession(), {
+            type: "start",
+            token: 3,
+            fen: "fen-a",
+            positionKey: "board-a",
+        });
+        const correct = practiceSessionReducer(waiting, {
+            type: "correct",
+            token: 3,
+            answer: "e4",
+            timeTaken: 7,
+        });
+
+        expect(practiceSessionReducer(correct, { type: "advance", token: 3 })).toEqual({
+            ...correct,
+            phase: "advancing",
+        });
+        // A rating arriving while waiting or after a miss must not skip the card.
+        expect(practiceSessionReducer(waiting, { type: "advance", token: 3 })).toBe(waiting);
+        const incorrect = practiceSessionReducer(waiting, {
+            type: "incorrect",
+            token: 3,
+            answer: "e4",
+            playedMove: "d4",
+            timeTaken: 9,
+        });
+        expect(practiceSessionReducer(incorrect, { type: "advance", token: 3 })).toBe(incorrect);
+        expect(practiceSessionReducer(correct, { type: "advance", token: 4 })).toBe(correct);
+    });
+
     it("accepts exactly one answer while waiting", () => {
         const waiting = practiceSessionReducer(idlePracticeSession(), {
             type: "start",
