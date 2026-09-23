@@ -109,3 +109,19 @@ test.each([
         ).toContain(entry.notation);
     },
 );
+
+test.each([
+    { start: "[0,5]", expected: [] },
+    { start: "[0,0]", expected: [0, 0] },
+])("an imported Start header $start is stored only as the path that resolves", async (entry) => {
+    mocks.lexPgn.mockResolvedValueOnce([
+        { type: "Header", value: { tag: "Start", value: entry.start } },
+        { type: "San", value: "e4" },
+        { type: "San", value: "e5" },
+    ]);
+
+    const tree = await parsePGN("ignored by mocked lexer");
+
+    expect(tree.headers.start).toEqual(entry.expected);
+    expect(tree.position).toEqual(entry.expected);
+});

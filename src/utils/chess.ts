@@ -468,8 +468,10 @@ export async function parsePGN(
     const fen = initialFen?.trim() || headers.fen.trim();
 
     const tree = innerParsePGN(tokens, fen);
-    tree.headers = headers;
-    tree.position = parseStartHeader(headers.start, tree.root);
+    // The validated path replaces the raw tag, so an unresolvable Start never reaches the store.
+    const start = parseStartHeader(headers.start, tree.root);
+    tree.headers = { ...headers, start };
+    tree.position = start;
     if (options?.signal?.aborted) {
         throw cancellationError();
     }
