@@ -141,6 +141,16 @@ export function requirePrerequisites() {
   } catch {
     missing.push("kwin_wayland — install with: sudo apt install kwin-wayland");
   }
+  // `startDriver` silences the app by ranking `fakeaudiosink` first; without the element that
+  // ranking is a no-op and `autoaudiosink` falls back to the real output, so its absence is a
+  // missing prerequisite, not a degraded run. `--exists` exits 0/1 (measured 2026-09-23).
+  try {
+    execFileSync("gst-inspect-1.0", ["--exists", "fakeaudiosink"], { stdio: "ignore" });
+  } catch {
+    missing.push(
+      "GStreamer fakeaudiosink — install with: sudo apt install gstreamer1.0-plugins-bad gstreamer1.0-tools",
+    );
+  }
   if (!existsSync(APP_BINARY)) {
     missing.push(`${APP_BINARY} — build it with: pnpm build`);
   }

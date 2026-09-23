@@ -73,7 +73,10 @@ now does (proof 2 below).
 
    Prerequisites, both one-off and named in the failure message if missing:
    `sudo apt install webkit2gtk-driver` (must match the installed
-   `libwebkit2gtk-4.1-0`) and `cargo install tauri-driver --locked`. It needs
+   `libwebkit2gtk-4.1-0`), `cargo install tauri-driver --locked`, and
+   GStreamer's `fakeaudiosink` (`sudo apt install gstreamer1.0-plugins-bad
+   gstreamer1.0-tools`), which keeps the off-screen window's move sounds off
+   the desktop's audio output. It needs
    `pnpm build` first, because it drives the release binary. Not a push gate:
    CI has no compositor and it wants a release build.
 3. **Live product window:** `pnpm dev` opens the Tauri webview. This is still

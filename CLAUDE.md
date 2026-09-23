@@ -190,7 +190,8 @@ renderer **pixels** in Chromium against a mocked IPC surface. `pnpm verify:app` 
 in the actual product: it drives the real window off-screen through `kwin_wayland --virtual` →
 `tauri-driver` → `WebKitWebDriver` → the release binary, with the real Rust backend and real IPC
 (`scripts/app-driver.mjs`). Use it for lifecycle, IPC and process-teardown claims. It needs
-`webkit2gtk-driver` (apt) and `tauri-driver` (cargo), plus a `pnpm build`, and is not a push gate.
+`webkit2gtk-driver` and `gstreamer1.0-plugins-bad` (apt) and `tauri-driver` (cargo), plus a
+`pnpm build`, and is not a push gate.
 
 The daily desktop app is **not** `src-tauri/target/release/chessfable`: the application-menu
 entry runs `~/.local/opt/chessfable/current/bin/chessfable`, a versioned copy written only by
