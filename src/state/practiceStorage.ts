@@ -196,14 +196,9 @@ export function scanLegacyPracticeDeckKeys(storage?: Storage): PracticeLegacyDec
 }
 
 export function reportPracticeInventoryAnomalies(inventory: PracticeDeckInventory): void {
-    const newAnomalies = inventory.anomalies.filter((anomaly) => {
-        const key = `${anomaly.kind}\u0000${anomaly.leaf}`;
-        if (reportedInventoryAnomalies.has(key)) return false;
-        reportedInventoryAnomalies.add(key);
-        return true;
-    });
-    if (newAnomalies.length === 0) return;
-    for (const anomaly of newAnomalies) {
+    // Every inventory re-records each deck's classification, because a retry clears it; only the
+    // user notification is deduplicated.
+    for (const anomaly of inventory.anomalies) {
         if (anomaly.fileId !== null && anomaly.game !== null) {
             const identity = { file: anomaly.fileId, game: anomaly.game };
             const error: AppError = {
@@ -225,6 +220,12 @@ export function reportPracticeInventoryAnomalies(inventory: PracticeDeckInventor
             });
         }
     }
+    const newAnomalies = inventory.anomalies.filter((anomaly) => {
+        const key = `${anomaly.kind}\u0000${anomaly.leaf}`;
+        if (reportedInventoryAnomalies.has(key)) return false;
+        reportedInventoryAnomalies.add(key);
+        return true;
+    });
     const unreadable = newAnomalies.filter((anomaly) => anomaly.kind === "Unreadable");
     const damaged = newAnomalies.filter((anomaly) => anomaly.kind !== "Unreadable");
     for (const [anomalies, reasonKey] of [
