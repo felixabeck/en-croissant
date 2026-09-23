@@ -225,7 +225,7 @@ export function buildTranspositionMaps(root: TreeNode, startPath: number[] = [])
 
 /** A small testable seam for the memoized derivation; callers should use getMemoizedBoardStateMap. */
 export const boardStateMapBuilder = {
-    build: (root: TreeNode, startPath: number[] = []): BoardStateMap =>
+    build: (root: TreeNode, startPath: number[]): BoardStateMap =>
         buildTranspositionMaps(root, startPath),
 };
 

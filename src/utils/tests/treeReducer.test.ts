@@ -1,6 +1,7 @@
 import { parseUci } from "chessops";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import {
+    boardStateMapBuilder,
     countMainPly,
     createNode,
     defaultTree,
@@ -180,6 +181,22 @@ test("transposition maps retain duplicate paths and respect a non-root start pat
     expect(Object.keys(subtree).sort()).toEqual(["reply w - -", "same b - -"]);
     expect(subtree["same b - -"][0].path).toEqual([0]);
     expect(subtree["reply w - -"][0].path).toEqual([0, 0]);
+});
+
+test("the memoized map is keyed by the whole start path, not its concatenated digits", () => {
+    const root = defaultTree().root;
+    const build = vi
+        .spyOn(boardStateMapBuilder, "build")
+        .mockImplementation(() => ({}) as ReturnType<typeof boardStateMapBuilder.build>);
+    try {
+        const nested = getMemoizedBoardStateMap(root, [1, 1]);
+        const eleventh = getMemoizedBoardStateMap(root, [11]);
+
+        expect(eleventh).not.toBe(nested);
+        expect(build.mock.calls.map(([, start]) => start)).toEqual([[1, 1], [11]]);
+    } finally {
+        build.mockRestore();
+    }
 });
 
 test("board-state identity uses exactly the first four FEN fields", () => {
