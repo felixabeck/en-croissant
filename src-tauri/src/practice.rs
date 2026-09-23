@@ -1067,7 +1067,7 @@ pub(crate) fn record_practice_review_in(
             }
         }
         let next_revision = next_counter(envelope.revision, "revision")?;
-        // An entry this call already appended is not an orphan: it is applied now.
+        // An entry a previous attempt of this record appended is not an orphan: this retry applies it.
         let orphan_entries =
             if existing_position.is_some_and(|position| position >= envelope.applied_entries) {
                 reconciliation
