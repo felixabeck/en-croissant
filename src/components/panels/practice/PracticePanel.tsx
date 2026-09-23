@@ -112,12 +112,20 @@ function PracticePanel() {
   } | null>(null);
   const deckPositionsRef = useRef(deck.positions);
   deckPositionsRef.current = deck.positions;
+  // The root last diffed into the deck. A remount renders the atom's previous "ready" snapshot
+  // before hydration starts, and a sync diffed from it is dropped while the deck loads, so a new
+  // hydration (loading or read-failed) forgets the root and the hydrated deck is diffed again.
+  // Ratings do not reset it: re-diffing the whole tree after every rating would cost O(tree).
   const lastSyncedRootRef = useRef<typeof root | null>(null);
   const syncMessageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const deckCanWrite = deck.status === "ready";
 
   useEffect(() => {
+    if (deck.status === "loading" || deck.status === "read-failed") {
+      lastSyncedRootRef.current = null;
+      return;
+    }
     if (deck.status !== "ready" || deckIdentity.file === "") return;
     if (lastSyncedRootRef.current === root) return;
 

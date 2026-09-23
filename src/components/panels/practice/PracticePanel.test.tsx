@@ -32,6 +32,7 @@ const fixtures = vi.hoisted(() => ({
   setPracticeStats: vi.fn(),
   setPracticeMoveController: vi.fn(),
   buildFromTree: vi.fn(() => []),
+  syncDeck: vi.fn(() => ({ added: 0, positions: [] as unknown[], removed: 0 })),
   getCardForReview: vi.fn(),
   updateCardPerformance: vi.fn(),
   loadPracticeReviews: vi.fn(),
@@ -102,7 +103,7 @@ vi.mock("@/components/files/opening", () => ({
   getCardForReview: fixtures.getCardForReview,
   getNextReviewTimes: () => null,
   getStats: () => ({ due: 1, nextDue: null, practiced: 0, total: 1, unseen: 1 }),
-  syncDeck: () => ({ added: 0, positions: [], removed: 0 }),
+  syncDeck: fixtures.syncDeck,
   updateCardPerformance: fixtures.updateCardPerformance,
 }));
 vi.mock("@/utils/tabs", () => ({
@@ -259,6 +260,7 @@ beforeEach(() => {
   fixtures.autoDifficulty = "none";
   fixtures.getCardForReview.mockReset().mockReturnValue(null);
   fixtures.updateCardPerformance.mockReset();
+  fixtures.syncDeck.mockReset().mockReturnValue({ added: 0, positions: [], removed: 0 });
   fixtures.practiceState = { phase: "idle" };
   fixtures.practiceStats = {
     mode: "anki",
@@ -347,6 +349,34 @@ test("dispatches repair only after confirmation", async () => {
     container?.querySelector<HTMLButtonElement>('[role="alertdialog"] button')?.click(),
   );
   expect(fixtures.setDeck).toHaveBeenCalledWith({ type: "repair" });
+});
+
+test("re-diffs the same tree once a new hydration lands", async () => {
+  // A remount renders the atom's previous "ready" snapshot first (the mount in beforeEach diffed
+  // it); the sync diffed from it is dropped while the deck loads, so the hydrated deck must be
+  // diffed again against the same tree.
+  const extended = [position("in-repertoire"), position("added-by-the-new-tree")];
+  fixtures.syncDeck.mockReturnValue({ added: 1, positions: extended, removed: 0 });
+  fixtures.setDeck.mockClear();
+
+  fixtures.deck = deck({ positions: [], status: "loading" });
+  await rerenderPracticePanel();
+  fixtures.deck = deck({ positions: [position("in-repertoire")] });
+  await rerenderPracticePanel();
+
+  expect(fixtures.setDeck).toHaveBeenCalledTimes(1);
+  const update = fixtures.setDeck.mock.calls[0][0] as (value: unknown) => { positions: unknown };
+  expect(update(fixtures.deck).positions).toBe(extended);
+});
+
+test("a committed rating does not re-diff an unchanged tree", async () => {
+  fixtures.syncDeck.mockClear();
+  fixtures.deck = deck({ positions: [position("in-repertoire")], status: "write-pending" });
+  await rerenderPracticePanel();
+  fixtures.deck = deck({ positions: [position("in-repertoire", { due: "2026-09-30", reps: 1 })] });
+  await rerenderPracticePanel();
+
+  expect(fixtures.syncDeck).not.toHaveBeenCalled();
 });
 
 test("does not create a native deck when an empty tree yields no positions", async () => {
