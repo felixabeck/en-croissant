@@ -173,6 +173,11 @@ export async function startCompositor({ width = 1400, height = 900 } = {}) {
  * The app inherits this environment, so `HOME` decides which profile it reads and writes. It gets a
  * throwaway one: `tauri-plugin-window-state` persists geometry on exit, and a headless 1400x900 run
  * must not resize the window Felix actually uses. XDG overrides are removed so they cannot bypass it.
+ *
+ * The window is off-screen but its audio is not: WebKit plays every move sound through GStreamer's
+ * `autoaudiosink`, which lands on Felix's default output — a run clicked in his headset once per
+ * move for minutes on 2026-09-23. Ranking `fakeaudiosink` highest makes `autoaudiosink` pick it, so
+ * the media pipeline still runs to completion but nothing reaches PipeWire.
  */
 export async function startDriver({ waylandDisplay }) {
   const output = outputBuffer();
@@ -182,6 +187,7 @@ export async function startDriver({ waylandDisplay }) {
     WAYLAND_DISPLAY: waylandDisplay,
     LANG: "en_US.UTF-8",
     LC_ALL: "en_US.UTF-8",
+    GST_PLUGIN_FEATURE_RANK: "fakeaudiosink:MAX",
   };
 
   try {
