@@ -616,8 +616,11 @@ test("setHeaders with an unchanged FEN preserves tracked paths", () => {
 test("setState clears practicePath and keeps the supplied start path", () => {
     const store = createTreeStore();
     const tree = defaultTree();
-    tree.headers.start = [1, 2];
-    tree.position = [0, 1];
+    // Both paths resolve in the supplied tree, as parsePGN (every production caller's source)
+    // guarantees.
+    tree.root.children = [node("a", [node("a-0")]), node("b", [node("b-0"), node("b-1")])];
+    tree.headers.start = [1, 1];
+    tree.position = [0, 0];
     tree.dirty = true;
     store.getState().setPracticePath([0]);
 
@@ -625,7 +628,9 @@ test("setState clears practicePath and keeps the supplied start path", () => {
 
     const state = store.getState();
     expect(state.practicePath).toBeNull();
-    expect(state.headers.start).toEqual([1, 2]);
+    expect(state.headers.start).toEqual([1, 1]);
+    expect(getNodeAtPath(state.root, state.headers.start!).san).toBe("b-1");
+    expect(getNodeAtPath(state.root, state.position).san).toBe("a-0");
     expect(state.root).toBe(tree.root);
     expect(state.headers).toBe(tree.headers);
     expect(state.position).toEqual(tree.position);
