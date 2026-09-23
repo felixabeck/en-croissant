@@ -6,11 +6,7 @@
 
 use crate::{
     error::{DurabilityStage, Error},
-    infra::{
-        blocking::BLOCKING_GATEWAY,
-        fs::{self, DirectoryEntryKind},
-        path_authority::AuthorizedDir,
-    },
+    infra::{blocking::BLOCKING_GATEWAY, fs::DirectoryEntryKind, path_authority::AuthorizedDir},
 };
 use chrono::Utc;
 use parking_lot::{Mutex, MutexGuard};
@@ -25,7 +21,6 @@ use std::{
     path::Path,
     sync::{Arc, OnceLock},
 };
-use tokio_util::sync::CancellationToken;
 
 pub(crate) const PRACTICE_STORAGE_VERSION: u32 = 1;
 pub(crate) const PRACTICE_SHARD_SEAL_BYTES: usize = 128 * 1024;
@@ -433,7 +428,7 @@ fn read_leaf_bytes(
     if declared > max_bytes as u64 {
         return Err(invalid_leaf(leaf, "document exceeds its size limit"));
     }
-    fs::read_bounded_bytes(
+    crate::infra::fs::read_bounded_bytes(
         &mut file,
         declared,
         max_bytes,
@@ -473,7 +468,7 @@ fn write_json<T: Serialize>(
                 .map_err(|error| operation_io(operation, leaf, error))
         })
         .map_err(|error| operation_error(operation, leaf, error))?;
-    fs::require_durable(outcome, stage)
+    crate::infra::fs::require_durable(outcome, stage)
 }
 
 fn valid_hash(hash: &str) -> bool {
@@ -656,11 +651,7 @@ fn read_shards(
     hash: &str,
     generation: u32,
 ) -> Result<Vec<ShardFile>, Error> {
-    let entries = fs::read_directory_entries_at(
-        directory.directory_file(),
-        &CancellationToken::new(),
-        &mut |_| true,
-    )?;
+    let entries = directory.entries(&mut |_| true)?;
     let mut shards = Vec::new();
     for entry in entries {
         let name = entry.name.to_string_lossy().into_owned();
@@ -711,11 +702,7 @@ fn read_shards(
 type ShardLeafRecord = (String, u32, u32, DirectoryEntryKind, (u64, u64));
 
 fn all_shard_leaves(directory: &AuthorizedDir, hash: &str) -> Result<Vec<ShardLeafRecord>, Error> {
-    let entries = fs::read_directory_entries_at(
-        directory.directory_file(),
-        &CancellationToken::new(),
-        &mut |_| true,
-    )?;
+    let entries = directory.entries(&mut |_| true)?;
     Ok(entries
         .into_iter()
         .filter_map(|entry| {
@@ -1186,11 +1173,7 @@ pub(crate) fn sync_practice_positions_in(
 }
 
 fn remove_leaf_if_present(directory: &AuthorizedDir, leaf: &str) -> Result<(), Error> {
-    let entries = fs::read_directory_entries_at(
-        directory.directory_file(),
-        &CancellationToken::new(),
-        &mut |name| name == OsStr::new(leaf),
-    )?;
+    let entries = directory.entries(&mut |name| name == OsStr::new(leaf))?;
     let Some(entry) = entries.into_iter().next() else {
         return Ok(());
     };
@@ -1782,11 +1765,7 @@ fn validation_failure_kind(failure: &DeckValidationFailure) -> PracticeStoreAnom
 pub(crate) fn list_practice_decks_in(
     directory: &AuthorizedDir,
 ) -> Result<PracticeDeckInventory, Error> {
-    let entries = fs::read_directory_entries_at(
-        directory.directory_file(),
-        &CancellationToken::new(),
-        &mut |_| true,
-    )?;
+    let entries = directory.entries(&mut |_| true)?;
     let mut decks = BTreeMap::<String, PracticeDeckIdentity>::new();
     let mut anomalies = Vec::new();
     let mut candidate_hashes = std::collections::BTreeSet::new();
@@ -2682,12 +2661,9 @@ mod tests {
                 file.write_all(b"replacement").map_err(Error::from)
             })
             .is_err());
-        let listed = crate::infra::fs::read_directory_entries_at(
-            directory.directory_file(),
-            &CancellationToken::new(),
-            &mut |name| name == OsStr::new(&leaf),
-        )
-        .unwrap();
+        let listed = directory
+            .entries(&mut |name| name == OsStr::new(&leaf))
+            .unwrap();
         assert_eq!(listed[0].kind, DirectoryEntryKind::Other);
         assert!(directory
             .remove_leaf_identified_pair(OsStr::new(&leaf), listed[0].identity)

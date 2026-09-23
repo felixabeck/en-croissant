@@ -1083,8 +1083,17 @@ impl AuthorizedDir {
         &self.path
     }
 
-    pub(crate) fn directory_file(&self) -> &fs::File {
-        self.directory.as_file()
+    /// Snapshots this directory's entries through the retained descriptor, keeping the names
+    /// `keep` accepts. No pathname is resolved, so a caller outside `infra` needs no fs reach.
+    pub(crate) fn entries(
+        &self,
+        keep: &mut dyn FnMut(&OsStr) -> bool,
+    ) -> Result<Vec<crate::infra::fs::DirectoryEntry>, Error> {
+        crate::infra::fs::read_directory_entries_at(
+            self.directory.as_file(),
+            &CancellationToken::new(),
+            keep,
+        )
     }
 
     #[cfg(target_os = "macos")]
