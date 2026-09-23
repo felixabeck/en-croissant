@@ -10935,7 +10935,7 @@ This is the second annotation in a row where a claim in this entry turned out to
 
 ### Three tree-mutation paths leave the practice path and the custom start FEN stale — reported, not yet re-measured
 
-* **ID:** f-20260922-04 · **Status:** open · **Area:** chess-tree · **Root:** tree-path-rebasing · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260922-04 · **Status:** handled · **Area:** chess-tree · **Root:** tree-path-rebasing · **Entry:** lens · **Blocked:** none
 * **Where:** `src/state/store/tree.ts:818` (delete/promote rebasing `state.position` and
   `headers.start` but not `practicePath`), `:257` (the transposition fallback selecting
   `candidates[0]` then `children[0]`), `:217` (`setFen` replacing the root without updating
