@@ -832,6 +832,31 @@ describe("the real practice deck atom", () => {
         expect(mounted.store.get(mounted.atom).status).toBe("ready");
         mounted.unsubscribe();
     });
+
+    test("an older hydration success cannot replace the committed state a retry loaded", async () => {
+        const older = deferred<ReturnType<typeof snapshot>>();
+        native.load.mockImplementationOnce(() => older.promise);
+        native.load.mockResolvedValueOnce(snapshot([position()], { revision: 7 }));
+        const mounted = mountDeck();
+        await vi.waitFor(() => expect(native.load).toHaveBeenCalledOnce());
+
+        await mounted.store.set(mounted.atom, { type: "retry" });
+        await waitForReady(mounted.store, mounted.atom);
+        older.resolve(snapshot([position()], { revision: 1 }));
+        await older.promise;
+        await Promise.resolve();
+
+        vi.useFakeTimers();
+        const write = mounted.store.set(mounted.atom, {
+            type: "sync",
+            positions: [position(sameBoardDifferentFen)],
+        });
+        await vi.advanceTimersByTimeAsync(PRACTICE_SYNC_DEBOUNCE_MS);
+        await write;
+
+        expect(native.sync.mock.calls[0]?.[3]).toBe(7);
+        mounted.unsubscribe();
+    });
 });
 
 describe("the eager legacy migration pass", () => {
@@ -860,7 +885,11 @@ describe("the eager legacy migration pass", () => {
         localStorage.setItem("deck-later-1", JSON.stringify(legacyData()));
         native.list.mockResolvedValue({ decks: [], anomalies: [] });
         native.migrate
-            .mockRejectedValueOnce(new Error("first deck failed"))
+            .mockRejectedValueOnce({
+                tag: "backend-error",
+                category: "invalid-input",
+                message: "first deck failed",
+            })
             .mockResolvedValueOnce(migrationOutcome());
 
         const result = await runPracticeMigrationPass();
@@ -870,6 +899,8 @@ describe("the eager legacy migration pass", () => {
         expect(persistError.report).toHaveBeenCalledOnce();
         const blocked = mountDeck("first", 0);
         await vi.waitFor(() => expect(blocked.store.get(blocked.atom).status).toBe("read-failed"));
+        // Repair cannot change the legacy value the migration read, and nothing found native damage.
+        expect(blocked.store.get(blocked.atom).repairable).toBe(false);
         await blocked.store.set(blocked.atom, { type: "sync", positions: [position()] });
         expect(native.sync).not.toHaveBeenCalled();
         blocked.unsubscribe();

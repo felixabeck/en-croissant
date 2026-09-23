@@ -190,7 +190,9 @@ struct ShardFile {
 #[derive(Clone, Copy, Debug)]
 struct Reconciliation {
     total_entries: u32,
-    newly_orphaned: u32,
+    /// The envelope's orphan count plus the newly orphaned entries. Computed here, in the one
+    /// validation every read shares, so a deck the inventory accepts can also be loaded.
+    orphan_entries: u32,
 }
 
 struct ValidatedDeck {
@@ -747,9 +749,13 @@ fn reconcile(
     if total < envelope.applied_entries {
         return Err(invalid_leaf(leaf, "review history is missing entries"));
     }
+    let orphan_entries = envelope
+        .orphan_entries
+        .checked_add(total - envelope.applied_entries)
+        .ok_or_else(|| Error::Conflict("practice orphan count exceeded u32::MAX".into()))?;
     Ok(Reconciliation {
         total_entries: total,
-        newly_orphaned: total - envelope.applied_entries,
+        orphan_entries,
     })
 }
 
@@ -842,10 +848,7 @@ fn snapshot_from(
         "positions".to_owned(),
         Value::Array(envelope.positions.clone()),
     )]));
-    let orphan_entries = envelope
-        .orphan_entries
-        .checked_add(reconciliation.newly_orphaned)
-        .ok_or_else(|| Error::Conflict("practice orphan count exceeded u32::MAX".into()))?;
+    let orphan_entries = reconciliation.orphan_entries;
     Ok(PracticeDeckSnapshot {
         positions_document: positions_document(&positions)?,
         revision: envelope.revision,
@@ -1064,21 +1067,18 @@ pub(crate) fn record_practice_review_in(
             }
         }
         let next_revision = next_counter(envelope.revision, "revision")?;
-        let newly_orphaned =
+        // An entry this call already appended is not an orphan: it is applied now.
+        let orphan_entries =
             if existing_position.is_some_and(|position| position >= envelope.applied_entries) {
                 reconciliation
-                    .newly_orphaned
+                    .orphan_entries
                     .checked_sub(1)
                     .ok_or_else(|| {
                         Error::InvalidInput("practice reconciliation count is inconsistent".into())
                     })?
             } else {
-                reconciliation.newly_orphaned
+                reconciliation.orphan_entries
             };
-        let orphan_entries = envelope
-            .orphan_entries
-            .checked_add(newly_orphaned)
-            .ok_or_else(|| Error::Conflict("practice orphan count exceeded u32::MAX".into()))?;
         let incoming_positions = positions_array(&positions_value)?;
         let applied_entries = reconciliation
             .total_entries
@@ -1178,10 +1178,7 @@ pub(crate) fn sync_practice_positions_in(
         let reconciliation = reconcile(&envelope, &shards, &positions_leaf(&hash))?;
         envelope.revision = next_counter(envelope.revision, "revision")?;
         envelope.applied_entries = reconciliation.total_entries;
-        envelope.orphan_entries = envelope
-            .orphan_entries
-            .checked_add(reconciliation.newly_orphaned)
-            .ok_or_else(|| Error::Conflict("practice orphan count exceeded u32::MAX".into()))?;
+        envelope.orphan_entries = reconciliation.orphan_entries;
         envelope.positions = positions_array(&positions_value)?;
         write_positions(directory, &hash, &envelope)?;
         Ok(envelope.revision)
@@ -3470,6 +3467,32 @@ mod tests {
             shard_before,
             leaf_bytes(&directory, &shard_leaf(&hash, 0, 0))
         );
+        assert_damaged_identity(&list_practice_decks_in(&directory).unwrap(), "file", 1);
+    }
+
+    #[test]
+    fn orphan_count_overflow_is_reported_by_the_inventory_that_load_rejects() {
+        let (_temp, directory) = directory();
+        sync_practice_positions_in(&directory, "file", 1, 0, 0, &positions()).unwrap();
+        record_practice_review_in(
+            &directory,
+            "file",
+            1,
+            0,
+            1,
+            1,
+            &positions(),
+            &entry("a"),
+            "a",
+        )
+        .unwrap();
+        let hash = hash_deck("file", 1);
+        let mut envelope = read_positions(&directory, &hash).unwrap().unwrap();
+        envelope.applied_entries = 0;
+        envelope.orphan_entries = u32::MAX;
+        write_positions(&directory, &hash, &envelope).unwrap();
+
+        assert!(load_practice_deck_in(&directory, "file", 1).is_err());
         assert_damaged_identity(&list_practice_decks_in(&directory).unwrap(), "file", 1);
     }
 
