@@ -11155,3 +11155,19 @@ A plan closing this entry together with `f-20260922-04` (and the other of `f-202
 * **Defect (read, not reproduced at runtime):** `warn` is `@tauri-apps/plugin-log`'s, re-exported unchanged by `src/platform/native.ts:8`, and returns a promise that rejects when the log IPC fails. `void` discards the promise without handling it, so a logging failure inside a storage-failure path becomes an unhandled rejection. The three other fire-and-forget log calls in `src/` (`sound.ts:73`, `LocalImage.tsx:40`, `downloadJobs.ts:47`) all attach a `.catch`; these two are the only ones that do not.
 * **Why it matters:** `.claude/rules/async-resource-invariants.md` — every asynchronous operation has an error path. These fire precisely when storage is already failing (quota, a write rejected), which is the moment a second, unhandled failure is least useful. `f-20260906-10` (handled, `85ad4f67`) records why `.catch(() => undefined)` alone is not always right: there the `warn` was the only record of the failure; here each call already sits in a path that either retains the pending state for a retry or returns the decoded value, so the choice between a silent catch and a `console.warn` fallback is the fix's to make, citing that decision.
 * **Found by:** `review-error-handling` (should-fix, confidence 94) in round 3 of the plan review for `f-20260922-08`/`f-20260922-10`, 2026-09-22; the orchestrator grepped every `void warn|error|info` site before filing. Pre-existing and outside that plan's MANDATE (the plan adds no log call), so filed rather than folded in.
+
+---
+
+## 2026-09-23 — filed through the inbox spool
+
+### A restored tab keeps its persisted tree after its PGN file changed on disk
+
+* **ID:** f-20260923-01 · **Status:** open · **Area:** frontend-state · **Root:** none · **Entry:** build · **Blocked:** none
+
+Observed on 2026-09-23 while building the `pnpm verify:app` practice scenario for f-20260906-23 (release binary, real IPC). The scenario restarts the app with an analysis tab for a repertoire file restored from the previous session, rewrites that PGN on disk with 500 further positions, then opens the file from the Files page. Opening it focused the restored tab, which still showed the old tree, and the practice deck never received the new positions. Only after the verifier closed the restored tab first (`closeRestoredAnalysisTab` in `scripts/verify-app.mjs`) did the reopen load the file from disk and sync the 12,500 positions.
+
+Why it matters: the restored tab's tree comes from persisted renderer state, not from the file, and nothing compares the two. A file changed by another program, another ChessFable window, or a sync tool between sessions is shown stale. The practice deck is then synced from the stale tree, and saving the tab would write the stale tree back over the newer file.
+
+Not yet root-caused: which layer decides "focus the existing tab" on open (`src/utils/tabs.ts` / the Files page open path) and whether any file identity or modification stamp is recorded with the persisted tab (`src/state/**` tab persistence) is the first thing to trace. The `persisted-state.md` rule ("reconcile against native state at startup") is the governing invariant.
+
+* **Open question:** when a restored tab's file changed on disk, what is authoritative — reload from disk (discarding unsaved tab edits), keep the tab and warn, or detect via a stored file stamp and offer both — and does the same check apply to an already-open tab when the Files page reopens it?
