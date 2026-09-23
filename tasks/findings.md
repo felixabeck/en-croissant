@@ -9054,6 +9054,9 @@ Closed together with `f-20260922-04` and `f-20260914-27` by the plan recorded in
 Closed together with `f-20260922-04` and `f-20260914-26` by the plan recorded in `tasks/handoffs/2026-09-22-practice-path-rebasing-review.md` — approved by all nine lenses, **not yet implemented**. That plan also covers `setHeaders` itself, `setState` and `reset`, which the review measured to have the same gap.
 <!-- ledger-meta {"command":"annotate","effect_lines":3,"effect_sha256":"9b59d68122b74caf5e084fab48aac693958f725f9ba4d0e8b0cdfe4bf8fb81d0","input_sha256":"f55c6eb665c6d15812115af041ee415ebfba2b49912bb8ee31bda3f39d1629de","kind":"mutation-receipt","operation":"4cf8119c5e75c1ec30fffe37a79d45247e76eb8819f9d312c5fa2b2be2945d78","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-27"],"target":"f-20260914-27","v":1} -->
 
+* **Resolution (2026-09-23):** handled with its canonical finding `f-20260922-04`. The practice path is rebased by `deleteMove` and `promoteVariation` (`911707f7`), and `goToNext` no longer leaves the drill path (`a5c93d9f`). Decisions `d-20260923-04`, `-05`.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"b2977a9a98ddecf8e8b021b520657dcefe2f71fb48375adfa6bb88147ba38dfc","input_sha256":"c3c93cb6546c3844d13733f33d88d51be8da25273b65729cc5c6d861d33e0596","kind":"mutation-receipt","operation":"d99bf8b68f1c44c8e54d892c259f2bc10cf34d71a7b560d4de6575ed4bf300a3","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-27"],"target":"f-20260914-27","v":1} -->
+
 ### Threefold detection after `appendMove` walks the selected variation instead of the main line it appended to
 
 * **ID:** f-20260914-28 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
