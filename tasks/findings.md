@@ -7557,7 +7557,7 @@ Closure condition met: the new `pnpm verify:app` practice scenario (plan section
 
 ### Expanded-directory preferences accumulate without a session-storage budget
 
-* **ID:** f-20260906-24 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260906-24 · **Status:** handled · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** src/state/atoms.ts:115, expandedDirectoriesAtom; workspace expansion consumers.
 * **Defect:** An unbounded string array is persisted as raw JSON in sessionStorage, sharing capacity with tab trees. A sufficiently large expanded hierarchy can exhaust that quota and fail future persistence. Root confirmed schema/writer.
 * **Design:** Specify disposable expansion-state retention/admission and its workspace identity lifetime, with legacy read compatibility and truthful storage failure handling. This is not permission to prune tab trees or user practice history to fit UI cache state.
