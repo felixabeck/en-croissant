@@ -7565,6 +7565,9 @@ Closure condition met: the new `pnpm verify:app` practice scenario (plan section
 * **Relation:** f-20260831-16 is tab-tree flush reporting; no shared root asserted.
 * **Found by:** Luna Extra High persisted-state final lens, confidence 91, 2026-09-06.
 
+Closed by f8524f03 and 1add262d. Expansion preferences now use one workspace-scoped compressed record capped at 1,000 IDs and 64 KiB of UTF-8 JSON before compression. The original startup owner snapshot reads the same parser and bounded IDs; valid oversized records are repaired immediately afterward even when Files is never opened. Unscoped legacy arrays are recognized but discarded as disposable state because they cannot prove workspace ownership. Malformed bytes remain untouched and read/write/repair failures are reported; an oversized transient ID remains usable in memory without blocking later valid saves. The changes leave tab trees and practice history untouched. Seven cumulative review lenses completed; their actionable findings were repaired, with raw verdicts in tasks/handoffs/2026-09-25-f-20260906-24-review.md. Focused renderer tests (35), TypeScript, lint, and the release build passed. Real-app verification reached a separate stale-file timeout already tracked in f-20260924-06; it has no direct expansion-state assertion. Full frontend push gates follow this closure record.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"c3a831c560031bb16aff4bfba93b49d0a7e8b002d938d8a041cd713f477f2d18","input_sha256":"208fde5953cce773210a852ff46c3afb2b62e4c8a7a91c257c0dec3848fee17c","kind":"mutation-receipt","operation":"2b5710c307a3e908d198faa66e2333346a44131a4e35293e33f608ae4a88205b","options":{"section":null},"request_id_sha256":null,"results":["f-20260906-24"],"target":"f-20260906-24","v":1} -->
+
 ---
 
 ## 2026-09-06 — filed through the inbox spool
