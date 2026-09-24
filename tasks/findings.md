@@ -11255,6 +11255,9 @@ Outside that plan's MANDATE (stale file text), so filed rather than folded in. A
 * **Proof:** `pnpm lint:ci`, focused Vitest (58 passed), `pnpm exec tsc --noEmit`, `pnpm exec oxfmt --check` on changed files, and `git diff --check` passed after repair.
 <!-- ledger-meta {"command":"annotate","effect_lines":2,"effect_sha256":"a252de14ac9523777a33ce8b4ddd2c970ebeaad12c157457ef6fb6853f38b19c","input_sha256":"f7977752ad6e854699179f14a4ae1ed55615eccf55ae7e9f780cc13532f672af","kind":"mutation-receipt","operation":"98b103b8c2e0c05901986ee8da13a3a23005e6bdc7134a3de3ee585cb151a97d","options":{"section":null},"request_id_sha256":null,"results":["f-20260924-02"],"target":"f-20260924-02","v":1} -->
 
+* **Second review repair:** Commit `77a52046` now treats an absent workspace plus a valid stored tree as uncertain ownership, so a generated default cannot delete recoverable edits on the next load. It also tests unsupported version 2, shares the bounded tree scan, and names the general orphan sweep accurately. Focused Vitest passed (61 tests), as did `pnpm lint:ci` and `git diff --check`.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"116dc74d0dbf89cf715a356f333b1851f83e7b2f0d927a348db30c5b34040410","input_sha256":"2d6f2d0f87319d2420514a1d2d5265e08b9582f7935989ba99b83343fdb7872d","kind":"mutation-receipt","operation":"57d6623bc809c24ba03891769b31a9fcb70041f392426554409b2dcd8e622fc4","options":{"section":null},"request_id_sha256":null,"results":["f-20260924-02"],"target":"f-20260924-02","v":1} -->
+
 ### An undecodable persisted tree is replaced by a clean default tree, losing its unsaved edits without notice
 
 * **ID:** f-20260924-03 · **Status:** open · **Area:** frontend-state · **Root:** none · **Entry:** build · **Blocked:** none
