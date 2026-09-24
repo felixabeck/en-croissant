@@ -11185,7 +11185,7 @@ A plan closing this entry together with `f-20260922-04` (and the other of `f-202
 
 ### A restored tab keeps its persisted tree after its PGN file changed on disk
 
-* **ID:** f-20260923-01 · **Status:** open · **Area:** frontend-state · **Root:** none · **Entry:** build · **Blocked:** none
+* **ID:** f-20260923-01 · **Status:** handled · **Area:** frontend-state · **Root:** none · **Entry:** build · **Blocked:** none
 
 Observed on 2026-09-23 while building the `pnpm verify:app` practice scenario for f-20260906-23 (release binary, real IPC). The scenario restarts the app with an analysis tab for a repertoire file restored from the previous session, rewrites that PGN on disk with 500 further positions, then opens the file from the Files page. Opening it focused the restored tab, which still showed the old tree, and the practice deck never received the new positions. Only after the verifier closed the restored tab first (`closeRestoredAnalysisTab` in `scripts/verify-app.mjs`) did the reopen load the file from disk and sync the 12,500 positions.
 
