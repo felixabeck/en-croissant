@@ -11240,7 +11240,7 @@ Start with a diagnostic run of the failing variant that records, at the failure 
 
 ### A seeded tree key survives when tab admission fails and its rollback removal throws
 
-* **ID:** f-20260924-02 · **Status:** open · **Area:** frontend-state · **Root:** none · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260924-02 · **Status:** handled · **Area:** frontend-state · **Root:** none · **Entry:** lens · **Blocked:** none
 
 Found by `review-persisted-state` (should-fix, confidence 92) in round 5 of the plan review for `f-20260923-01`, 2026-09-24. `commitNewTab` (`src/utils/tabs.ts:40-80`) seeds the tree under the new tab id, and when `setTabs` refuses admission it calls `rollbackCreatedTree`, which reports but otherwise swallows a throwing `tabStorage.remove` (`src/utils/tabs.ts:83-89`); the existing test pins that report. The seeded key then stays in `sessionStorage` under an id no workspace tab names. `loadWorkspace` scrubs tree keys only for invalid tabs it still lists, so the orphan survives every reload and consumes the shared ~5 MB quota (`.claude/rules/persisted-state.md`, "Leave an orphaned entry behind").
 
