@@ -509,7 +509,6 @@
     "FileFreshness.AppendMayHaveBeenAdded": "La partie a peut-être déjà été ajoutée au fichier sélectionné. Rechargez depuis le disque pour effacer cet avertissement.",
     "FileFreshness.Changed": "Cette partie a été modifiée sur le disque pendant que vous la modifiiez.",
     "FileFreshness.CheckingFile": "Vérification du fichier de parties…",
-    "FileFreshness.CloseTab": "Fermer l’onglet",
     "FileFreshness.CouldNotPrepareAppend": "Impossible de préparer l’ajout en toute sécurité. Aucune partie n’a été ajoutée.",
     "FileFreshness.FileNotResponding": "Le fichier ne répond pas. Cette partie reste masquée jusqu’à ce qu’il puisse être vérifié.",
     "FileFreshness.GameNoLongerInFile": "Cette partie ne se trouve plus dans le fichier.",

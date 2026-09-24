@@ -516,7 +516,6 @@
     "FileFreshness.AppendMayHaveBeenAdded": "Можливо, партію вже додано до вибраного файлу. Перезавантажте дані з диска, щоб прибрати це попередження.",
     "FileFreshness.Changed": "Під час редагування партія змінилася на диску.",
     "FileFreshness.CheckingFile": "Перевірка файлу партії…",
-    "FileFreshness.CloseTab": "Закрити вкладку",
     "FileFreshness.CouldNotPrepareAppend": "Не вдалося безпечно підготувати партію. Партію не додано.",
     "FileFreshness.FileNotResponding": "Файл не відповідає. Партію приховано, доки її не вдасться перевірити.",
     "FileFreshness.GameNoLongerInFile": "Цієї партії більше немає у файлі.",

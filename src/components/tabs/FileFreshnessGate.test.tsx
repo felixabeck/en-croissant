@@ -436,7 +436,7 @@ test("an unavailable panel close request is routed through the tab close flow", 
   const closeTab = await setup({ dirty: true });
   await vi.waitFor(() => expect(getFileFreshness(tabId).state).toBe("unavailable"));
 
-  await act(async () => button("FileFreshness.CloseTab").click());
+  await act(async () => button("Tab.Close").click());
 
   expect(closeTab).toHaveBeenCalledWith(tabId);
   expect(treeStore.getState().dirty).toBe(true);

@@ -516,7 +516,6 @@
     "FileFreshness.AppendMayHaveBeenAdded": "Partia mogła już zostać dodana do wybranego pliku. Wczytaj ponownie z dysku, aby usunąć to ostrzeżenie.",
     "FileFreshness.Changed": "Ta partia zmieniła się na dysku podczas edycji.",
     "FileFreshness.CheckingFile": "Sprawdzanie pliku partii…",
-    "FileFreshness.CloseTab": "Zamknij kartę",
     "FileFreshness.CouldNotPrepareAppend": "Nie udało się bezpiecznie przygotować partii. Żadna partia nie została dodana.",
     "FileFreshness.FileNotResponding": "Plik nie odpowiada. Partia pozostanie ukryta, dopóki nie będzie można jej sprawdzić.",
     "FileFreshness.GameNoLongerInFile": "Tej partii nie ma już w pliku.",

@@ -502,7 +502,6 @@
     "FileFreshness.AppendMayHaveBeenAdded": "Oyun seçilen dosyaya zaten eklenmiş olabilir. Bu uyarıyı kaldırmak için diskten yeniden yükle.",
     "FileFreshness.Changed": "Sen düzenlerken bu oyun diskte değişti.",
     "FileFreshness.CheckingFile": "Oyun dosyası denetleniyor…",
-    "FileFreshness.CloseTab": "Sekmeyi kapat",
     "FileFreshness.CouldNotPrepareAppend": "Oyun güvenli biçimde hazırlanamadı. Hiçbir oyun eklenmedi.",
     "FileFreshness.FileNotResponding": "Dosya yanıt vermiyor. Denetlenene kadar bu oyun gizli kalacak.",
     "FileFreshness.GameNoLongerInFile": "Bu oyun artık dosyada yok.",

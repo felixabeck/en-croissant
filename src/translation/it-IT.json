@@ -509,7 +509,6 @@
     "FileFreshness.AppendMayHaveBeenAdded": "La partita potrebbe essere già stata aggiunta al file selezionato. Ricarica dal disco per rimuovere questo avviso.",
     "FileFreshness.Changed": "Questa partita è cambiata sul disco mentre la modificavi.",
     "FileFreshness.CheckingFile": "Controllo del file della partita…",
-    "FileFreshness.CloseTab": "Chiudi scheda",
     "FileFreshness.CouldNotPrepareAppend": "Impossibile preparare la partita in modo sicuro. Non è stata aggiunta alcuna partita.",
     "FileFreshness.FileNotResponding": "Il file non risponde. Questa partita resta nascosta finché non sarà possibile controllarlo.",
     "FileFreshness.GameNoLongerInFile": "Questa partita non è più nel file.",

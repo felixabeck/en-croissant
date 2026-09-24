@@ -446,7 +446,7 @@ function FileBackedGate({
         labels={{
           reload: t("FileFreshness.ReloadFromDisk"),
           append: t("FileFreshness.SaveAsNewGame"),
-          close: t("FileFreshness.CloseTab"),
+          close: t("Tab.Close"),
         }}
       />,
     );
@@ -467,7 +467,7 @@ function FileBackedGate({
       labels={{
         reload: t("FileFreshness.ReloadFromDisk"),
         append: t("FileFreshness.SaveAsNewGame"),
-        close: t("FileFreshness.CloseTab"),
+        close: t("Tab.Close"),
       }}
     />,
   );

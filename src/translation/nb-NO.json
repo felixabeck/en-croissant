@@ -502,7 +502,6 @@
     "FileFreshness.AppendMayHaveBeenAdded": "Partiet kan allerede ha blitt lagt til i den valgte filen. Last inn fra disken på nytt for å fjerne denne meldingen.",
     "FileFreshness.Changed": "Partiet ble endret på disken mens du redigerte det.",
     "FileFreshness.CheckingFile": "Kontrollerer partifilen…",
-    "FileFreshness.CloseTab": "Lukk fane",
     "FileFreshness.CouldNotPrepareAppend": "Kunne ikke klargjøre partiet trygt. Ingen partier ble lagt til.",
     "FileFreshness.FileNotResponding": "Filen svarer ikke. Partiet holdes skjult til det kan kontrolleres.",
     "FileFreshness.GameNoLongerInFile": "Dette partiet finnes ikke lenger i filen.",

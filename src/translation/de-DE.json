@@ -502,7 +502,6 @@
     "FileFreshness.AppendMayHaveBeenAdded": "Das Spiel wurde möglicherweise bereits zur ausgewählten Datei hinzugefügt. Lade von der Festplatte neu, um diesen Hinweis zu entfernen.",
     "FileFreshness.Changed": "Dieses Spiel wurde während deiner Bearbeitung auf der Festplatte geändert.",
     "FileFreshness.CheckingFile": "Spieldatei wird geprüft …",
-    "FileFreshness.CloseTab": "Tab schließen",
     "FileFreshness.CouldNotPrepareAppend": "Das Spiel konnte nicht sicher vorbereitet werden. Es wurde kein Spiel hinzugefügt.",
     "FileFreshness.FileNotResponding": "Die Datei reagiert nicht. Dieses Spiel bleibt ausgeblendet, bis sie geprüft werden kann.",
     "FileFreshness.GameNoLongerInFile": "Dieses Spiel ist nicht mehr in der Datei.",

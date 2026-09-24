@@ -479,6 +479,27 @@ test("legacy and invalid file metadata fail closed without rejecting the tree", 
     });
 });
 
+test.each([
+    ["an array holding a stamp", ["d".repeat(64)]],
+    ["a string that is not a stamp", "not-a-stamp"],
+    ["a stamp with a leading character", `x${"d".repeat(64)}`],
+    ["a stamp with a trailing character", `${"d".repeat(64)}x`],
+    ["an upper-case stamp", "D".repeat(64)],
+])("a stored source stamp that is %s hydrates as null with the tree kept", (_label, stamp) => {
+    const tree = treeWith((state) => {
+        state.dirty = true;
+        state.headers.event = "Keep my edits";
+    }) as unknown as Record<string, unknown>;
+    tree.sourceStamp = stamp;
+    expect(migrateTreeForStorage(tree)).toMatchObject({ sourceStamp: null, dirty: true });
+    sessionStorage.setItem("malformed-stamp", JSON.stringify(tree));
+    expect(storage.read("malformed-stamp")?.state).toMatchObject({
+        sourceStamp: null,
+        dirty: true,
+        headers: { event: "Keep my edits" },
+    });
+});
+
 test("report operationId survives a seed/read round trip", () => {
     const tree = treeWith((state) => {
         state.report = { inProgress: true, operationId: "report_tab_abc" };
