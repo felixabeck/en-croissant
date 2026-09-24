@@ -140,10 +140,6 @@ const treeNodeSchema: z.ZodType<PersistedTreeNode> = z.lazy(() =>
 /** A game stamp is the lowercase hex SHA-256 of the game's exact bytes (`read_game`). */
 const STAMP_PATTERN = /^[a-f0-9]{64}$/;
 
-function isStamp(value: unknown): value is string {
-    return typeof value === "string" && STAMP_PATTERN.test(value);
-}
-
 const persistedTreeSchema = z.object({
     root: treeNodeSchema,
     headers: headersSchema,
@@ -197,7 +193,10 @@ export function migrateTreeForStorage(value: unknown): unknown {
         ...value,
         position: Array.isArray(value.position) ? value.position : [],
         dirty: typeof value.dirty === "boolean" ? value.dirty : false,
-        sourceStamp: isStamp(value.sourceStamp) ? value.sourceStamp : null,
+        sourceStamp:
+            typeof value.sourceStamp === "string" && STAMP_PATTERN.test(value.sourceStamp)
+                ? value.sourceStamp
+                : null,
         appendAttempted:
             typeof value.appendAttempted === "boolean" ? value.appendAttempted : hasAppendAttempted,
         report: migrateReport(value.report),

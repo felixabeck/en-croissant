@@ -696,6 +696,58 @@ test("a failed Save-As leaves the tab origin and tree stamp untouched", async ()
     expect(fixture.store.getState()).toMatchObject({ dirty: true, sourceStamp: stampA });
 });
 
+test.each([
+    ["none", "missing-resource"],
+    ["none", "invalid-input"],
+    ["temp_file", "missing-resource"],
+    ["temp_file", "invalid-input"],
+] as const)(
+    "a %s tab whose Save-As destination write fails with %s is an ordinary failure, not an unavailable source",
+    async (kind, backendCategory) => {
+        const fixture = saveFixture({ kind });
+        mocks.pickPgnFile.mockResolvedValueOnce(targetFile());
+        if (kind === "temp_file") {
+            mocks.readFileGame
+                .mockResolvedValueOnce({
+                    stamp: stampA,
+                    pgn: "source",
+                    revision: "r1",
+                    present: true,
+                })
+                .mockResolvedValueOnce({
+                    stamp: stampA,
+                    pgn: "source",
+                    revision: "r1",
+                    present: true,
+                });
+        }
+        mocks.readFileGame.mockResolvedValueOnce({
+            stamp: stampC,
+            pgn: "destination game",
+            revision: "r2",
+            present: true,
+        });
+        mocks.writeGame.mockRejectedValueOnce({
+            tag: "backend-error",
+            category: backendCategory,
+            message: "The destination is gone",
+        });
+
+        const result = await saveToFile({
+            tab: fixture.tabs[0],
+            updateTab: fixture.updateTab,
+            getTab: fixture.getTab,
+            store: fixture.store,
+            isUserSave: true,
+        });
+
+        expect(result).toMatchObject({ status: "failed", error: { backendCategory } });
+        expect(getFileFreshness("save-test").state).not.toBe("unavailable");
+        expect(fixture.tabs[0].gameOrigin.kind).toBe(kind);
+        expect(fixture.store.getState()).toMatchObject({ dirty: true, sourceStamp: stampA });
+    },
+);
+
 test("a stale Save-As destination is a visible typed failure without changing the tab origin", async () => {
     const fixture = saveFixture({ id: "save-as-test", kind: "none" });
     mocks.pickPgnFile.mockResolvedValueOnce(targetFile());

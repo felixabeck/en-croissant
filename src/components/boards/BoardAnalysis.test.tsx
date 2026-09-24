@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createStore as createZustandStore } from "zustand/vanilla";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import { activeTabAtom, autoSaveAtom, currentTabAtom, tabsAtom } from "@/state/atoms";
+import { keyMapAtom } from "@/state/keybinds";
 import { getFileFreshness, removeFileFreshness, setFileFreshness } from "@/state/fileFreshness";
 import type { TreeStore } from "@/state/store/tree";
 import type { Tab } from "@/state/workspaceTypes";
@@ -502,6 +503,31 @@ describe("BoardAnalysis add game durability", () => {
     });
   });
 
+  function latestSaveHotkey(): () => void {
+    const keys = jotaiStore.get(keyMapAtom).SAVE_FILE.keys;
+    const hotkeys = vi.mocked(useHotkeys);
+    const binding = hotkeys.mock.calls
+      .flatMap(([bindings]) => bindings)
+      .findLast(([bound]) => bound === keys);
+    if (!binding) throw new Error("BoardAnalysis registered no Save hotkey");
+    return binding[1] as () => void;
+  }
+
+  test("a Save conflict on a file-backed tab leaves the notice to the freshness panel", async () => {
+    mocks.writeGame.mockResolvedValueOnce({ stamp: null, revision: null });
+
+    await act(async () => {
+      latestSaveHotkey()();
+      await vi.waitFor(() => expect(getFileFreshness(tabId).state).toBe("unverified"));
+    });
+
+    expect(jotaiStore.get(tabsAtom)[0]?.gameOrigin.kind).toBe("file");
+    expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalledWith("Common.Error", {
+      category: "applied-despite-error",
+      message: "Tab.SaveMayHaveBeenWritten",
+    });
+  });
+
   test("a toolbar Save As whose read-back fails on a tab without a file says the game may be written", async () => {
     const destination = { id: { id: "picked-token" }, kind: "fileWorkspace" } as const;
     mocks.issuePgnWorkspace.mockResolvedValueOnce({
@@ -518,11 +544,8 @@ describe("BoardAnalysis add game durability", () => {
     await act(async () => {
       jotaiStore.set(tabsAtom, [{ ...tab, gameOrigin: { kind: "none" } }], tabId);
     });
-    const saveBindings = vi.mocked(useHotkeys).mock.calls.at(-2)?.[0];
-    const userSave = saveBindings?.[0]?.[1] as (() => void) | undefined;
-
     await act(async () => {
-      userSave?.();
+      latestSaveHotkey()();
       await vi.waitFor(() => expect(mocks.notifyUnlessCancelled).toHaveBeenCalled());
     });
 

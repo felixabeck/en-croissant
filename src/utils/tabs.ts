@@ -237,6 +237,7 @@ export async function saveToFile({
     if (!tab) return failed(new Error("There is no active tab to save."));
     let currentFileOperation = false;
     let writingCurrentOrigin = false;
+    let writingSaveAsDestination = false;
     try {
         const tabId = tab.value;
         const currentOrigin = tab.gameOrigin;
@@ -308,6 +309,7 @@ export async function saveToFile({
         const gameNumber = fileOrigin?.gameNumber ?? 0;
         const destination = await readFileGame(selected.handle, gameNumber);
         currentFileOperation = true;
+        writingSaveAsDestination = true;
         const written = await writeFileGame(
             selected.handle,
             gameNumber,
@@ -352,9 +354,12 @@ export async function saveToFile({
             setFileFreshness(tab.value, "unverified", { errorMessage: normalized.message });
             return failed(error);
         }
+        // A Save-As destination that vanished or refused the slot was never written, and it is not
+        // the tab's game: that is an ordinary failure, not an unavailable source.
         if (
             tab &&
             currentFileOperation &&
+            !writingSaveAsDestination &&
             (normalized.backendCategory === "missing-resource" ||
                 normalized.backendCategory === "invalid-input")
         ) {
