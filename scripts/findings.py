@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: 51c61f27df5573ca72c1a19d44dfec72ad21765bfb04964812baa1e0a2f16353
+# agent-kit-sha256: 754af8dc9424489c9523fc8bcb39dc62f5c23ed0ea0692ddc373f9eb8e4ed1c7
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -2134,7 +2134,7 @@ def _answers_postcondition(
 
 def _answer_effect_state(
     text: str, record: dict[str, object]
-) -> Literal["complete", "untouched", "inconsistent", "missing"]:
+) -> Literal["complete", "untouched", "stale", "inconsistent", "missing"]:
     """Classify one recorded answer effect in a ledger text."""
     identifier = cast(str, record["id"])
     lines = text.splitlines()
@@ -2183,6 +2183,23 @@ def _answer_effect_state(
         return "complete"
     if header_untouched and evidence_untouched:
         return "untouched"
+    if evidence_untouched and not header_untouched and current_blocked != BLOCKER_NONE:
+        # The writer changes header and evidence in one replace, so untouched
+        # evidence means this answer never landed, and a header parked on
+        # another blocker or status means the entry was re-parked underneath the
+        # claim. An unblocked header without the evidence is a partial effect
+        # instead, and so is the writer's decision line re-marked `-` or `+` by
+        # hand: both stay inconsistent for manual repair.
+        decision_evidence = {
+            line[2:]
+            for line in evidence
+            if line.startswith("* ") and DECIDED_MARKER in line
+        }
+        if not any(
+            line.startswith(("- ", "+ ")) and line[2:] in decision_evidence
+            for line in body
+        ):
+            return "stale"
     return "inconsistent"
 
 
@@ -5058,7 +5075,8 @@ def _allocate_pending(
 
 def ledger_lock_path(ledger: Path) -> Path:
     """Return the lock file path associated with a ledger."""
-    return ledger.with_name(f"{ledger.name}.lock")
+    resolved = _resolved_repo_path(ledger)
+    return resolved.with_name(f"{resolved.name}.lock")
 
 
 # Open file descriptors for ledger locks this process currently holds, keyed by
@@ -5067,6 +5085,27 @@ def ledger_lock_path(ledger: Path) -> Path:
 # `acquire_ledger_lock`. Callers that need the fd (the drain's ledger-only
 # rebase) go through `held_ledger_lock_fd`, not this dict.
 _HELD_LEDGER_LOCKS: dict[str, int] = {}
+_DEFERRED_LEDGER_LOCKS: set[str] = set()
+
+
+def _unlock_ledger_lock(lock: Path) -> None:
+    """Close a held ledger lock and clear any deferred-release marker."""
+    key = str(lock)
+    _DEFERRED_LEDGER_LOCKS.discard(key)
+    fd = _HELD_LEDGER_LOCKS.pop(key, None)
+    if fd is None:
+        return
+    with suppress(OSError):
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    with suppress(OSError):
+        os.close(fd)
+
+
+def _release_deferred_ledger_lock(intent: LedgerCommitIntent) -> None:
+    """End one command's deferred release after its self-commit attempt."""
+    lock = ledger_lock_path(intent.ledger)
+    if str(lock) in _DEFERRED_LEDGER_LOCKS:
+        _unlock_ledger_lock(lock)
 
 
 def acquire_ledger_lock(
@@ -5096,6 +5135,11 @@ def acquire_ledger_lock(
     ``lsof`` on the lock file; that answer is authoritative where a self-reported
     PID was not.
     """
+    key = str(lock)
+    if key in _DEFERRED_LEDGER_LOCKS:
+        if key not in _HELD_LEDGER_LOCKS:
+            raise LedgerError(f"deferred ledger lock {lock} is no longer held")
+        return True, 0.0
     if wait_window_seconds is None:
         wait_window_seconds = LEDGER_LOCK_WAIT_SECONDS
     started = time.monotonic()
@@ -5181,7 +5225,7 @@ def held_ledger_lock_fd(lock: Path) -> int | None:
     return _HELD_LEDGER_LOCKS.get(str(lock))
 
 
-def release_ledger_lock(lock: Path) -> None:
+def release_ledger_lock(lock: Path, *, defer: bool = True) -> None:
     """Release the ledger-wide writer lock if this process holds it.
 
     **The lock file is deliberately left on disk.** Removing it is the classic
@@ -5191,14 +5235,22 @@ def release_ledger_lock(lock: Path) -> None:
     logical lock. Keeping the file makes the inode stable and the exclusion
     total. It costs one empty file beside the ledger, which `.gitignore` covers
     so it cannot dirty the tree a drain checks.
+
+    During ``main()`` a command's intent-ledger release is deferred until its
+    exact-byte self-commit attempt finishes. Calls outside ``main()`` retain
+    their ordinary immediate-release behavior.
     """
-    fd = _HELD_LEDGER_LOCKS.pop(str(lock), None)
-    if fd is None:
+    key = str(lock)
+    if key not in _HELD_LEDGER_LOCKS:
+        _DEFERRED_LEDGER_LOCKS.discard(key)
         return
-    with suppress(OSError):
-        fcntl.flock(fd, fcntl.LOCK_UN)
-    with suppress(OSError):
-        os.close(fd)
+    if defer and key in _DEFERRED_LEDGER_LOCKS:
+        return
+    intent = _ACTIVE_LEDGER_COMMIT
+    if defer and intent is not None and lock == ledger_lock_path(intent.ledger):
+        _DEFERRED_LEDGER_LOCKS.add(key)
+        return
+    _unlock_ledger_lock(lock)
 
 
 def _write_if_unchanged(
@@ -5228,6 +5280,7 @@ def _write_if_unchanged(
 @contextmanager
 def _ledger_mutation_scope(path: Path) -> Iterator[str]:
     """Own one ledger lock and translate its read/write failures consistently."""
+    path = _canonical_ledger_path(path)
     lock = ledger_lock_path(path)
     try:
         acquired, waited_seconds = acquire_ledger_lock(lock)
@@ -5268,6 +5321,7 @@ def _locked_ledger_mutation(
     candidate. The post-commit callback runs only after the ledger write
     succeeds and while every selected outer lock is still held.
     """
+    path = _canonical_ledger_path(path)
 
     def mutate() -> None:
         with _ledger_mutation_scope(path) as original:
@@ -5402,6 +5456,7 @@ def _locked_receipted_mutation(
     build: Callable[[str], tuple[str, list[str], list[str]]],
 ) -> list[str]:
     """Run or replay one receipt-bearing ledger mutation under its lock."""
+    path = _canonical_ledger_path(path)
     with _ledger_mutation_scope(path) as original:
         metadata = _validated_mutation_metadata(original, path)
         matching = [
@@ -5595,11 +5650,11 @@ def _quarantine_claim_files(
     try:
         if not refused.exists():
             refused.mkdir(parents=True)
-            _fsync_directory(refused.parent)
         elif not refused.is_dir():
             raise LedgerError(
                 f"cannot quarantine answers: {refused} exists but is not a directory"
             )
+        _fsync_directory(refused.parent)
         for name, reason in sorted(intent.quarantined.items()):
             source = claim / name
             destination = refused / name
@@ -6205,14 +6260,18 @@ def _report_refused_claim(
     return 1
 
 
+def _ledger_lock_busy_message(lock: Path, waited_seconds: float) -> str:
+    """Format the shared busy diagnostic for command and settle refusals."""
+    return (
+        f"ledger lock {lock}: another ledger writer still holds it after "
+        f"{waited_seconds:.2f}s of retries (window "
+        f"{LEDGER_LOCK_WAIT_SECONDS:.2f}s)."
+    )
+
+
 def _report_ledger_lock_busy(lock: Path, waited_seconds: float) -> int:
     """Report that another ledger writer still owns the shared lock."""
-    print(
-        f"FAIL ledger lock {lock}: another ledger writer still holds it after "
-        f"{waited_seconds:.2f}s of retries (window "
-        f"{LEDGER_LOCK_WAIT_SECONDS:.2f}s).",
-        file=sys.stderr,
-    )
+    print(f"FAIL {_ledger_lock_busy_message(lock, waited_seconds)}", file=sys.stderr)
     return 1
 
 
@@ -6321,6 +6380,22 @@ def _resolved_repo_path(path: Path) -> Path:
         return path.resolve()
     except (OSError, RuntimeError) as exc:
         raise LedgerError(f"could not resolve path {path}: {exc}") from exc
+
+
+def _canonical_ledger_path(path: Path) -> Path:
+    """Resolve one ledger path and refuse files with another hard-link name."""
+    resolved = _resolved_repo_path(path)
+    try:
+        details = resolved.stat()
+    except FileNotFoundError:
+        return resolved
+    except OSError as exc:
+        raise LedgerError(f"could not inspect ledger path {resolved}: {exc}") from exc
+    if stat.S_ISREG(details.st_mode) and details.st_nlink > 1:
+        raise LedgerError(
+            f"ledger {resolved} is a hard-linked alias; a ledger must have exactly one name"
+        )
+    return resolved
 
 
 def _repo_relative(path: Path, root: Path) -> str:
@@ -6922,68 +6997,87 @@ def _ledger_bytes_postcondition(
 
 def _settle_pending_ledger_dirt(intent: LedgerCommitIntent) -> None:
     """Commit valid pending ledger dirt before a deferred consumer mutation."""
-    root = cast(Path, REPO_ROOT).resolve()
-    findings = _resolved_repo_path(intent.findings)
-    decisions = _resolved_repo_path(intent.decisions)
-    dirty_paths: list[Path] = []
-    for path in (findings, decisions):
-        if path == decisions and not path.exists():
-            continue
-        relative = _repo_relative(path, root)
-        result = _git_for_ledger(root, "diff", "--quiet", "HEAD", "--", relative)
-        if result.returncode == 0:
-            continue
-        if result.returncode == 1:
-            dirty_paths.append(path)
-            continue
-        raise LedgerError(
-            f"pending ledger dirt could not be inspected ({_git_failure_detail(result)})"
-        )
-    if not dirty_paths:
-        return
-
-    valid, detail = _validate_ledger_paths(findings, decisions)
-    if not valid:
-        raise LedgerError(f"pending ledger dirt does not validate ({detail}); repair it before merging")
-
-    findings_bytes = findings.read_bytes() if findings in dirty_paths else None
-    decisions_bytes = decisions.read_bytes() if decisions in dirty_paths else None
-    if findings_bytes is not None:
-        # Judged on the exact bytes the commit carries, which its postcondition
-        # verifies, so a Controller regeneration after the caller's own check
-        # cannot slip in: dirt in an export is a regeneration, not a mutation.
-        _refuse_controller_export(
-            findings,
-            _controller_export_head(findings_bytes),
-            "a deferred ledger commit",
-        )
-    primary = findings if findings in dirty_paths else decisions
-    companion = decisions if findings in dirty_paths and decisions in dirty_paths else None
-    settle_intent = LedgerCommitIntent(
-        command=intent.command,
-        ledger=primary,
-        findings=findings,
-        decisions=decisions,
-        subject=f"docs(findings): commit pending ledger dirt before {intent.command}",
-        postcondition=_ledger_bytes_postcondition(findings_bytes, decisions_bytes),
-        replaced=True,
-        written_bytes=findings_bytes if findings_bytes is not None else decisions_bytes,
-        companion=companion,
-        companion_bytes=decisions_bytes if companion is not None else None,
-    )
-    result = _attempt_ledger_commit(settle_intent)
-    if not result.durable:
-        paths = " ".join(str(path) for path in dirty_paths)
-        if result.durable_head:
-            raise LedgerError(
-                f"pending ledger dirt produced durable commit {result.durable_head} "
-                f"but verification failed ({result.cause}); inspect git log for "
-                f"{paths}"
+    findings = _canonical_ledger_path(intent.findings)
+    decisions = _canonical_ledger_path(intent.decisions)
+    locks = (ledger_lock_path(decisions), ledger_lock_path(findings))
+    acquired_locks: list[Path] = []
+    try:
+        for lock in locks:
+            acquired, waited_seconds = acquire_ledger_lock(
+                lock, LEDGER_LOCK_WAIT_SECONDS
             )
-        raise LedgerError(
-            f"pending ledger dirt could not be committed ({result.cause}); check git "
-            f"status and git log, then commit it: git commit -- {paths}"
+            if not acquired:
+                raise LedgerError(
+                    _ledger_lock_busy_message(lock, waited_seconds)
+                )
+            acquired_locks.append(lock)
+
+        root = cast(Path, REPO_ROOT).resolve()
+        dirty_paths: list[Path] = []
+        for path in (findings, decisions):
+            if path == decisions and not path.exists():
+                continue
+            relative = _repo_relative(path, root)
+            result = _git_for_ledger(root, "diff", "--quiet", "HEAD", "--", relative)
+            if result.returncode == 0:
+                continue
+            if result.returncode == 1:
+                dirty_paths.append(path)
+                continue
+            raise LedgerError(
+                f"pending ledger dirt could not be inspected ({_git_failure_detail(result)})"
+            )
+        if not dirty_paths:
+            return
+
+        valid, detail = _validate_ledger_paths(findings, decisions)
+        if not valid:
+            raise LedgerError(
+                f"pending ledger dirt does not validate ({detail}); repair it before merging"
+            )
+
+        findings_bytes = findings.read_bytes() if findings in dirty_paths else None
+        decisions_bytes = decisions.read_bytes() if decisions in dirty_paths else None
+        if findings_bytes is not None:
+            # Judge the exact bytes the commit carries while both ledgers are
+            # locked, so a Controller regeneration cannot slip in afterward.
+            _refuse_controller_export(
+                findings,
+                _controller_export_head(findings_bytes),
+                "a deferred ledger commit",
+            )
+        primary = findings if findings in dirty_paths else decisions
+        companion = (
+            decisions if findings in dirty_paths and decisions in dirty_paths else None
         )
+        settle_intent = LedgerCommitIntent(
+            command=intent.command,
+            ledger=primary,
+            findings=findings,
+            decisions=decisions,
+            subject=f"docs(findings): commit pending ledger dirt before {intent.command}",
+            postcondition=_ledger_bytes_postcondition(findings_bytes, decisions_bytes),
+            replaced=True,
+            written_bytes=findings_bytes if findings_bytes is not None else decisions_bytes,
+            companion=companion,
+            companion_bytes=decisions_bytes if companion is not None else None,
+        )
+        result = _attempt_ledger_commit(settle_intent, lock_held=True)
+        if not result.durable:
+            paths = " ".join(str(path) for path in dirty_paths)
+            if result.durable_head:
+                raise LedgerError(
+                    f"pending ledger dirt produced durable commit {result.durable_head} "
+                    f"but verification failed ({result.cause}); inspect git log for "
+                    f"{paths}"
+                )
+            raise LedgerError(
+                f"pending ledger dirt could not be committed ({result.cause}); check git "
+                f"status and git log, then commit it: git commit -- {paths}"
+            )
+    finally:
+        for lock in reversed(acquired_locks):
+            release_ledger_lock(lock, defer=False)
 
 
 def _answers_legacy_intent_message(
@@ -7025,12 +7119,65 @@ def _reconcile_answers_claim(
     if intent.files is None:
         raise LedgerError(_answers_legacy_intent_message(claim, answers, ledger, mode))
     _quarantine_claim_files(claim, answers, intent)
+    intent = _read_claim_intent(claim)
+    if intent is None:
+        return Reconciliation([], {}, set(), False)
     records = {
         name: (claim / name, value)
         for name, value in intent.files.items()
         if name not in intent.quarantined
     }
     working_text = ledger.read_text(encoding="utf-8")
+
+    def quarantine_stale(head_text: str | None) -> None:
+        nonlocal intent, records
+        stale_names: set[str] = set()
+        for name, (_path, record) in records.items():
+            working_state = _answer_effect_state(working_text, record)
+            if head_text is None:
+                if working_state == "stale":
+                    stale_names.add(name)
+                continue
+
+            head_state = _answer_effect_state(head_text, record)
+            if head_state == "complete":
+                continue
+            if head_state not in {"untouched", "stale"} or working_state not in {
+                "complete",
+                "untouched",
+                "stale",
+            }:
+                continue
+            if head_state == "stale" or working_state == "stale":
+                stale_names.add(name)
+
+        if not stale_names:
+            return
+        quarantined = dict(intent.quarantined)
+        quarantined.update({name: "stale" for name in stale_names})
+        _write_claim_intent(
+            claim,
+            "prepared",
+            set(intent.ids),
+            cast(dict[str, dict[str, str]], intent.receipt_ids)
+            if intent.has_receipt_ids
+            else None,
+            fixed=intent.fixed if intent.has_fixed else None,
+            files=intent.files,
+            quarantined=quarantined,
+        )
+        intent = _read_claim_intent(claim)
+        if intent is None:
+            raise LedgerError(f"claim {claim} disappeared after recording stale answers")
+        _quarantine_claim_files(claim, answers, intent)
+        intent = _read_claim_intent(claim)
+        if intent is None:
+            raise LedgerError(f"claim {claim} disappeared while quarantining stale answers")
+        records = {
+            name: (claim / name, value)
+            for name, value in intent.files.items()
+            if name not in intent.quarantined
+        }
 
     def missing(path: Path, name: str) -> str:
         if (answers / name).exists():
@@ -7045,6 +7192,7 @@ def _reconcile_answers_claim(
         )
 
     if mode != "deferred":
+        quarantine_stale(None)
         claimed_by_name = {path.name: path for path in intent.claimed}
         for name, (path, _record) in records.items():
             if path not in intent.claimed:
@@ -7127,6 +7275,7 @@ def _reconcile_answers_claim(
                     f"HEAD does not validate: {snapshot.detail}; repair and commit the "
                     "ledgers first"
                 )
+            quarantine_stale(snapshot.findings_text)
             return run(snapshot)
     return run(None)
 
@@ -7217,6 +7366,8 @@ def _finalize_claim(
     locked_finalizer: Callable[[Path, Path, Path, Path, str], str],
 ) -> str:
     """Finalise one claim while holding the canonical ledger/publish lock order."""
+    ledger = _canonical_ledger_path(ledger)
+    decisions = _canonical_ledger_path(decisions)
     lock = ledger_lock_path(ledger)
     try:
         acquired, waited_seconds = acquire_ledger_lock(lock)
@@ -7261,10 +7412,12 @@ def _finalize_inbox_claim(
 
 def cmd_finalize_claims(args: argparse.Namespace) -> int:
     """Release only claims whose entries are proven in HEAD."""
-    decisions = _args_decisions(args)
     inbox_claim = args.inbox.with_name(f"{args.inbox.name}.claim")
     answers_claim = args.answers.with_name(f"{args.answers.name}.claim")
     try:
+        args.ledger = _canonical_ledger_path(args.ledger)
+        decisions = _args_decisions(args)
+        args.decisions = decisions
         mode = _claim_finalisation_mode(args.ledger, merge_without_intent=False)
         if mode == "deferred":
             _deferred_preconditions(args.ledger, decisions)
@@ -7345,8 +7498,11 @@ def merge_inbox(
     inbox: Path, ledger: Path, *, decisions: Path | None = None
 ) -> MergeResult:
     """Run one ledger-locked merge with one nested publication fence."""
-    decisions = decisions or ledger.parent / "decisions.md"
     try:
+        ledger = _canonical_ledger_path(ledger)
+        if decisions is None:
+            decisions = ledger.parent / "decisions.md"
+        decisions = _canonical_ledger_path(decisions)
         # First, before the deferred preconditions: those settle pending ledger
         # dirt by committing it, and dirt in an export is a regeneration.
         _refuse_controller_export_at(ledger, "merge-inbox")
@@ -7803,8 +7959,10 @@ def _args_decisions(args: argparse.Namespace) -> Path:
 
     Direct in-process callers pass namespaces without ``decisions``; the parser always sets it.
     """
+    ledger = _canonical_ledger_path(args.ledger)
     decisions = getattr(args, "decisions", None)
-    return decisions if decisions is not None else args.ledger.parent / "decisions.md"
+    target = decisions if decisions is not None else ledger.parent / "decisions.md"
+    return _canonical_ledger_path(target)
 
 
 def cmd_merge_inbox(args: argparse.Namespace) -> int:
@@ -9161,6 +9319,8 @@ def cmd_set_trailer(args: argparse.Namespace) -> int:
     An entry that predates the trailer requirement has the bullet ADDED rather
     than being refused; see the insertion branch for why it is added bare.
     """
+    args.ledger = _canonical_ledger_path(args.ledger)
+    args.decisions = _canonical_ledger_path(args.decisions)
     # `-` alone is the documented unsuperseded state, so a mistaken supersession
     # can be reverted through the same receipted write that made it.
     clearing = args.superseded_by in (["-"], ["`-`"])
@@ -11104,12 +11264,18 @@ def main(argv: list[str] | None = None) -> int:
     _bind_repo_root(root)
     if args.ledger is None:
         args.ledger = LEDGER
-    if args.decisions is None:
-        # The two ledgers are a pair: an explicit ``--ledger`` pairs with the
-        # decisions file beside it, never with the repository's own. Mixing a
-        # fixture findings ledger with the real decisions ledger made every
-        # cross-ledger citation check report the real ledger's ids as missing.
-        args.decisions = args.ledger.parent / "decisions.md"
+    try:
+        args.ledger = _canonical_ledger_path(args.ledger)
+        if args.decisions is None:
+            # The two ledgers are a pair: an explicit ``--ledger`` pairs with the
+            # decisions file beside it, never with the repository's own. Mixing a
+            # fixture findings ledger with the real decisions ledger made every
+            # cross-ledger citation check report the real ledger's ids as missing.
+            args.decisions = args.ledger.parent / "decisions.md"
+        args.decisions = _canonical_ledger_path(args.decisions)
+    except (LedgerError, OSError, UnicodeDecodeError) as exc:
+        print(f"FAIL {exc}", file=sys.stderr)
+        return 1
     if getattr(args, "inbox", None) is None and hasattr(args, "inbox"):
         args.inbox = INBOX
     if getattr(args, "answers", None) is None and hasattr(args, "answers"):
@@ -11157,88 +11323,106 @@ def main(argv: list[str] | None = None) -> int:
                 else 1
             )
     finally:
-        _ACTIVE_LEDGER_COMMIT = None
-        if intent is not None:
-            try:
-                commit_result = _attempt_ledger_commit(
-                    intent,
-                    warn=not (
+        commit_result: LedgerCommitResult | None = None
+        try:
+            if intent is not None:
+                try:
+                    commit_result = _attempt_ledger_commit(
+                        intent,
+                        warn=not (
+                            args.command == "apply-answers"
+                            and bool(getattr(args, "hold_consumer_lock", False))
+                        ),
+                    )
+                    if (
                         args.command == "apply-answers"
                         and bool(getattr(args, "hold_consumer_lock", False))
-                    ),
-                )
-                if (
-                    args.command == "apply-answers"
-                    and bool(getattr(args, "hold_consumer_lock", False))
-                    and intent.replaced
-                    and not commit_result.durable
-                    and os.environ.get(LEDGER_COMMIT_ENV) != "0"
-                ):
-                    if commit_result.durable_head:
-                        _warn_ledger_commit(
-                            intent,
-                            commit_result.cause,
-                            _save_ledger_commit_scratch(intent),
-                            durable_head=commit_result.durable_head,
-                        )
-                        command_result = 3
-                    else:
-                        retry = _attempt_ledger_commit(intent, warn=False)
-                        if retry.durable:
-                            commit_result = retry
-                        else:
+                        and intent.replaced
+                        and not commit_result.durable
+                        and os.environ.get(LEDGER_COMMIT_ENV) != "0"
+                    ):
+                        if commit_result.durable_head:
                             _warn_ledger_commit(
                                 intent,
-                                retry.cause or commit_result.cause,
+                                commit_result.cause,
                                 _save_ledger_commit_scratch(intent),
-                                durable_head=retry.durable_head,
+                                durable_head=commit_result.durable_head,
                             )
-                            if "worktree ledger differs" in (retry.cause or ""):
-                                command_result = 2
+                            command_result = 3
+                        else:
+                            retry = _attempt_ledger_commit(intent, warn=False)
+                            if retry.durable:
+                                commit_result = retry
                             else:
-                                print("ledger applied, commit failed", file=sys.stderr)
-                                command_result = 3
-                if (
-                    commit_result.durable
-                    and intent.finalize is not None
-                ):
-                    try:
-                        finalization = intent.finalize()
-                    except Exception as exc:  # noqa: BLE001
-                        finalization = f"exception: {exc}"
-                    if finalization not in {"finalized", "none"}:
-                        claim = _resolved_repo_path(intent.claim) if intent.claim else "(unknown claim)"
-                        ledger = _resolved_repo_path(intent.ledger)
-                        decisions = _resolved_repo_path(intent.decisions)
-                        spool = (
-                            claim.parent / intent.claim.name.removesuffix(".claim")
-                            if intent.claim
-                            else "(unknown spool)"
+                                _warn_ledger_commit(
+                                    intent,
+                                    retry.cause or commit_result.cause,
+                                    _save_ledger_commit_scratch(intent),
+                                    durable_head=retry.durable_head,
+                                )
+                                if "worktree ledger differs" in (retry.cause or ""):
+                                    command_result = 2
+                                else:
+                                    print("ledger applied, commit failed", file=sys.stderr)
+                                    command_result = 3
+                except Exception as exc:  # noqa: BLE001
+                    # This is the final status-transparency boundary: arbitrary
+                    # consumer hooks and diagnostics must never replace the command's
+                    # return value, SystemExit, or unexpected exception.
+                    with suppress(OSError, UnicodeError):
+                        _warn_ledger_commit(
+                            intent, f"unexpected commit helper failure: {exc}", None
                         )
-                        inbox = INBOX if intent.command == "apply-answers" else spool
-                        writer = Path(__file__).resolve()
-                        answers_option = (
-                            f" --answers {_resolved_repo_path(spool)}"
-                            if intent.command == "apply-answers"
-                            else ""
-                        )
-                        print(
-                            f"WARNING the ledger write for {ledger} after {intent.command} "
-                            f"is durable, but the claim at {claim} was not finalised: "
-                            f"{finalization}; run {writer} --ledger {ledger} "
-                            f"--decisions {decisions} finalize-claims --inbox {inbox}"
-                            f"{answers_option}",
-                            file=sys.stderr,
-                        )
-            except Exception as exc:  # noqa: BLE001
-                # This is the final status-transparency boundary: arbitrary
-                # consumer hooks and diagnostics must never replace the command's
-                # return value, SystemExit, or unexpected exception.
-                with suppress(OSError, UnicodeError):
+        finally:
+            try:
+                if intent is not None:
+                    _release_deferred_ledger_lock(intent)
+            finally:
+                _ACTIVE_LEDGER_COMMIT = None
+
+        try:
+            if (
+                intent is not None
+                and commit_result is not None
+                and commit_result.durable
+                and intent.finalize is not None
+            ):
+                try:
+                    finalization = intent.finalize()
+                except Exception as exc:  # noqa: BLE001
+                    finalization = f"exception: {exc}"
+                if finalization not in {"finalized", "none"}:
+                    claim = _resolved_repo_path(intent.claim) if intent.claim else "(unknown claim)"
+                    ledger = _resolved_repo_path(intent.ledger)
+                    decisions = _resolved_repo_path(intent.decisions)
+                    spool = (
+                        claim.parent / intent.claim.name.removesuffix(".claim")
+                        if intent.claim
+                        else "(unknown spool)"
+                    )
+                    inbox = INBOX if intent.command == "apply-answers" else spool
+                    writer = Path(__file__).resolve()
+                    answers_option = (
+                        f" --answers {_resolved_repo_path(spool)}"
+                        if intent.command == "apply-answers"
+                        else ""
+                    )
+                    print(
+                        f"WARNING the ledger write for {ledger} after {intent.command} "
+                        f"is durable, but the claim at {claim} was not finalised: "
+                        f"{finalization}; run {writer} --ledger {ledger} "
+                        f"--decisions {decisions} finalize-claims --inbox {inbox}"
+                        f"{answers_option}",
+                        file=sys.stderr,
+                    )
+        except Exception as exc:  # noqa: BLE001
+            with suppress(OSError, UnicodeError):
+                if intent is not None:
                     _warn_ledger_commit(
                         intent, f"unexpected commit helper failure: {exc}", None
                     )
-        _release_consumer_lock(args)
+        finally:
+            _release_consumer_lock(args)
     return command_result
 
 
