@@ -77,6 +77,8 @@ function FileBackedGate({
   const [reloadCount, setReloadCount] = useState(0);
   const [panelError, setPanelError] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<"reload" | "append" | null>(null);
+  const freshnessErrorMessageRef = useRef(freshness.errorMessage);
+  freshnessErrorMessageRef.current = freshness.errorMessage;
   const pendingActionRef = useRef(false);
   const actionControllerRef = useRef<AbortController | null>(null);
   const actionIdentity = { tabId, fileKey, gameNumber, store };
@@ -104,7 +106,7 @@ function FileBackedGate({
     const capturedEpoch = freshness.epoch;
     const capturedRoot = store.getState().root;
     const capturedStamp = store.getState().sourceStamp;
-    setPanelError(null);
+    setPanelError(freshnessErrorMessageRef.current);
     return requestFileReconcile(tabId, async (signal) => {
       const isObsolete = () =>
         signal.aborted ||
@@ -320,6 +322,7 @@ function FileBackedGate({
   useEffect(() => registerFileConflictSave(tabId, appendAsNewGame), [tabId, appendAsNewGame]);
 
   const state = freshness.state;
+  const errorMessage = panelError ?? freshness.errorMessage;
   const disabled = pendingAction !== null;
   const wrapper = (content: React.ReactNode) => (
     <div
@@ -343,9 +346,9 @@ function FileBackedGate({
   if (state === "unverified") {
     return wrapper(
       <Stack align="center" justify="center" h="100%" gap="sm">
-        {panelError ? (
+        {errorMessage ? (
           <>
-            <Text>{panelError}</Text>
+            <Text>{errorMessage}</Text>
             <Button onClick={() => setRetryCount((count) => count + 1)}>
               {t("FileFreshness.Retry")}
             </Button>
@@ -373,7 +376,7 @@ function FileBackedGate({
       <Stack className={classes.panel} align="center" justify="center" h="100%" gap="sm">
         <Text>{t("FileFreshness.Changed")}</Text>
         {uncertainMessage && <Text c="dimmed">{uncertainMessage}</Text>}
-        {panelError && <Text c="red">{panelError}</Text>}
+        {errorMessage && <Text c="red">{errorMessage}</Text>}
         <Group>
           <Button onClick={() => void reloadFromDisk()} disabled={disabled}>
             {t("FileFreshness.ReloadFromDisk")}
@@ -391,7 +394,7 @@ function FileBackedGate({
     <Stack className={classes.panel} align="center" justify="center" h="100%" gap="sm">
       <Text>{t("FileFreshness.Unavailable")}</Text>
       {uncertainMessage && <Text c="dimmed">{uncertainMessage}</Text>}
-      {panelError && <Text c="red">{panelError}</Text>}
+      {errorMessage && <Text c="red">{errorMessage}</Text>}
       <Group>
         {appendAttempted && (
           <Button onClick={() => void reloadFromDisk()} disabled={disabled}>

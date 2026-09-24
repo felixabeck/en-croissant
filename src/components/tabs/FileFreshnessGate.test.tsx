@@ -7,7 +7,12 @@ import { TreeStateContext } from "@/components/common/TreeStateContext";
 import { activeTabAtom, tabsAtom } from "@/state/atoms";
 import { closeTreeStore, createTreeStore, type TreeStore } from "@/state/store/tree";
 import { tabStorage } from "@/state/store/tabStorage";
-import { getFileFreshness, removeFileFreshness, setFileFreshness } from "@/state/fileFreshness";
+import {
+  getFileFreshness,
+  removeFileFreshness,
+  setFileFreshness,
+  startFileRevisionPoll,
+} from "@/state/fileFreshness";
 import { defaultTree } from "@/utils/treeReducer";
 import { serializeStoreTree } from "@/utils/tabs";
 import type { Tab } from "@/utils/tabs";
@@ -55,6 +60,7 @@ vi.mock("@mantine/core", () => ({
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 const tabId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const sharedTabId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const originalStamp = "a".repeat(64);
 const changedStamp = "b".repeat(64);
 const emptyStamp = "e".repeat(64);
@@ -116,6 +122,23 @@ function GateForTab({ tab, closeTab }: { tab: Tab; closeTab: (id: string) => voi
   );
 }
 
+function SharedGateHarness({ secondTab, secondStore }: { secondTab: Tab; secondStore: TreeStore }) {
+  return (
+    <>
+      <TreeStateContext.Provider value={treeStore}>
+        <FileFreshnessGate tab={fileTab} closeTab={() => undefined}>
+          <div data-testid="first-shared-board">first board</div>
+        </FileFreshnessGate>
+      </TreeStateContext.Provider>
+      <TreeStateContext.Provider value={secondStore}>
+        <FileFreshnessGate tab={secondTab} closeTab={() => undefined}>
+          <div data-testid="second-shared-board">second board</div>
+        </FileFreshnessGate>
+      </TreeStateContext.Provider>
+    </>
+  );
+}
+
 async function setup({
   treeStamp = originalStamp,
   dirty = false,
@@ -127,7 +150,7 @@ async function setup({
   treeStamp?: string | null;
   dirty?: boolean;
   appendAttempted?: boolean;
-  freshness?: "unverified" | "appending";
+  freshness?: "unverified" | "overdue" | "appending" | "verified";
   persisted?: boolean;
   readError?: Error;
 } = {}) {
@@ -176,11 +199,14 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   await act(async () => root?.unmount());
   host?.remove();
   tabStorage.flush();
   closeTreeStore(tabId);
+  closeTreeStore(sharedTabId);
   removeFileFreshness(tabId);
+  removeFileFreshness(sharedTabId);
   vi.restoreAllMocks();
 });
 
@@ -417,6 +443,232 @@ test("the appending state withholds children and starts no reconcile", async () 
   expect(host.querySelector('[data-testid="board-and-panels"]')).toBeNull();
   expect(host.textContent).toContain("FileFreshness.AddingGame");
   expect(mocks.readFileGame).not.toHaveBeenCalled();
+});
+
+test("a changed poll revision reconciles a mounted gate before restoring its board", async () => {
+  vi.useFakeTimers();
+  await setup({ freshness: "verified" });
+  mocks.readFileGame.mockResolvedValueOnce(
+    stampedGame(changedStamp, '[Event "Fresh from disk"]\n\n1. d4 *'),
+  );
+  const fileRevision = vi.fn(async () => "fresh-revision");
+  const stop = startFileRevisionPoll({
+    getTabs: () => jotaiStore.get(tabsAtom),
+    fileRevision,
+    subscribeFocus: () => () => undefined,
+  });
+
+  await act(async () => vi.advanceTimersByTimeAsync(2_000));
+
+  expect(fileRevision).toHaveBeenCalledOnce();
+  expect(mocks.readFileGame).toHaveBeenCalledOnce();
+  expect(getFileFreshness(tabId).state).toBe("verified");
+  expect(treeStore.getState().sourceStamp).toBe(changedStamp);
+  expect(treeStore.getState().headers.event).toBe("Fresh from disk");
+  expect(host.querySelector('[data-testid="board-and-panels"]')).not.toBeNull();
+  stop();
+});
+
+test("one changed shared handle reconciles every mounted tab that references it", async () => {
+  vi.useFakeTimers();
+  const secondTab: Tab = { ...fileTab, value: sharedTabId, name: "Shared game copy" };
+  const firstTree = defaultTree();
+  firstTree.sourceStamp = originalStamp;
+  const secondTree = defaultTree();
+  secondTree.sourceStamp = originalStamp;
+  treeStore = createTreeStore(undefined, firstTree);
+  const secondStore = createTreeStore(undefined, secondTree);
+  jotaiStore = createJotaiStore();
+  jotaiStore.set(tabsAtom, [fileTab, secondTab], tabId);
+  jotaiStore.set(activeTabAtom, tabId);
+  setFileFreshness(tabId, "verified", { verifiedRevision: "old-revision" });
+  setFileFreshness(sharedTabId, "verified", { verifiedRevision: "old-revision" });
+  mocks.readFileGame.mockResolvedValue(
+    stampedGame(changedStamp, '[Event "Shared fresh"]\n\n1. d4 *'),
+  );
+  host = document.createElement("div");
+  document.body.append(host);
+  root = createRoot(host);
+  await act(async () =>
+    root.render(
+      <Provider store={jotaiStore}>
+        <SharedGateHarness secondTab={secondTab} secondStore={secondStore} />
+      </Provider>,
+    ),
+  );
+  const fileRevision = vi.fn(async () => "new-revision");
+  const stop = startFileRevisionPoll({
+    getTabs: () => jotaiStore.get(tabsAtom),
+    fileRevision,
+    subscribeFocus: () => () => undefined,
+  });
+
+  await act(async () => vi.advanceTimersByTimeAsync(2_000));
+
+  expect(fileRevision).toHaveBeenCalledOnce();
+  expect(mocks.readFileGame).toHaveBeenCalledTimes(2);
+  expect(getFileFreshness(tabId).state).toBe("verified");
+  expect(getFileFreshness(sharedTabId).state).toBe("verified");
+  expect(treeStore.getState().sourceStamp).toBe(changedStamp);
+  expect(secondStore.getState().sourceStamp).toBe(changedStamp);
+  expect(host.querySelector('[data-testid="first-shared-board"]')).not.toBeNull();
+  expect(host.querySelector('[data-testid="second-shared-board"]')).not.toBeNull();
+  stop();
+});
+
+test("a poll result during a held append is deferred and starts no reconcile read", async () => {
+  vi.useFakeTimers();
+  await setup({ freshness: "appending" });
+  const append = deferred<void>();
+  const appendSettled = append.promise.then(() => setFileFreshness(tabId, "unverified"));
+  mocks.readFileGame.mockResolvedValueOnce(
+    stampedGame(changedStamp, '[Event "Fresh after append"]\n\n1. d4 *'),
+  );
+  const fileRevision = vi.fn(async () => "new-revision");
+  const stop = startFileRevisionPoll({
+    getTabs: () => jotaiStore.get(tabsAtom),
+    fileRevision,
+    subscribeFocus: () => () => undefined,
+  });
+
+  await act(async () => vi.advanceTimersByTimeAsync(2_000));
+  expect(fileRevision).toHaveBeenCalledOnce();
+  expect(getFileFreshness(tabId).state).toBe("appending");
+  expect(mocks.readFileGame).not.toHaveBeenCalled();
+  expect(host.querySelector('[data-testid="board-and-panels"]')).toBeNull();
+
+  await act(async () => {
+    append.resolve();
+    await appendSettled;
+    for (let turn = 0; turn < 8; turn += 1) await Promise.resolve();
+  });
+
+  expect(mocks.readFileGame).toHaveBeenCalledOnce();
+  expect(getFileFreshness(tabId).state).toBe("verified");
+  expect(treeStore.getState().sourceStamp).toBe(changedStamp);
+  expect(host.querySelector('[data-testid="board-and-panels"]')).not.toBeNull();
+  stop();
+});
+
+test("a generic poll rejection keeps the gate withheld with its message and Retry", async () => {
+  vi.useFakeTimers();
+  await setup({ freshness: "verified" });
+  const pendingRead = deferred<ReturnType<typeof stampedGame>>();
+  mocks.readFileGame.mockReturnValueOnce(pendingRead.promise);
+  const fileRevision = vi.fn(async () => {
+    throw {
+      tag: "backend-error",
+      category: "io",
+      message: "revision access failed",
+    };
+  });
+  const stop = startFileRevisionPoll({
+    getTabs: () => jotaiStore.get(tabsAtom),
+    fileRevision,
+    subscribeFocus: () => () => undefined,
+  });
+
+  await act(async () => vi.advanceTimersByTimeAsync(2_000));
+
+  expect(getFileFreshness(tabId)).toMatchObject({
+    state: "unverified",
+    errorMessage: "revision access failed",
+  });
+  expect(mocks.readFileGame).toHaveBeenCalledOnce();
+  expect(host.textContent).toContain("revision access failed");
+  expect(host.textContent).toContain("FileFreshness.Retry");
+  expect(host.querySelector('[data-testid="board-and-panels"]')).toBeNull();
+
+  stop();
+  await act(async () => {
+    pendingRead.reject(new Error("read settled after stop"));
+    for (let turn = 0; turn < 8; turn += 1) await Promise.resolve();
+  });
+});
+
+test("an unverified reconcile completes after five seconds of poll outcomes", async () => {
+  vi.useFakeTimers();
+  const pendingRead = deferred<ReturnType<typeof stampedGame>>();
+  mocks.readFileGame.mockReturnValueOnce(pendingRead.promise);
+  await setup({ freshness: "unverified" });
+  const initial = getFileFreshness(tabId);
+  const fileRevision = vi.fn().mockResolvedValueOnce("poll-revision-1").mockRejectedValueOnce({
+    tag: "backend-error",
+    category: "io",
+    message: "first poll failure",
+  });
+  const stop = startFileRevisionPoll({
+    getTabs: () => jotaiStore.get(tabsAtom),
+    fileRevision,
+    subscribeFocus: () => () => undefined,
+  });
+
+  await act(async () => vi.advanceTimersByTimeAsync(2_000));
+  expect(getFileFreshness(tabId)).toMatchObject({ state: "unverified", epoch: initial.epoch });
+  expect(mocks.readFileGame).toHaveBeenCalledOnce();
+
+  await act(async () => vi.advanceTimersByTimeAsync(2_000));
+  expect(getFileFreshness(tabId)).toMatchObject({
+    state: "unverified",
+    errorMessage: "first poll failure",
+    epoch: initial.epoch,
+  });
+  expect(mocks.readFileGame).toHaveBeenCalledOnce();
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1_000);
+    pendingRead.resolve(stampedGame(originalStamp));
+    for (let turn = 0; turn < 12; turn += 1) await Promise.resolve();
+  });
+
+  expect(getFileFreshness(tabId)).toMatchObject({
+    state: "verified",
+    verifiedRevision: "device:inode:revision",
+  });
+  expect(mocks.readFileGame).toHaveBeenCalledOnce();
+  expect(host.querySelector('[data-testid="board-and-panels"]')).not.toBeNull();
+  stop();
+});
+
+test("an overdue poll withholds without a gate read until a settled request gets a fresh answer", async () => {
+  vi.useFakeTimers();
+  await setup({ freshness: "verified" });
+  const first = deferred<string>();
+  const signals: AbortSignal[] = [];
+  const fileRevision = vi.fn((_handle, options: { signal: AbortSignal }) => {
+    signals.push(options.signal);
+    return signals.length === 1 ? first.promise : Promise.resolve("fresh-revision");
+  });
+  mocks.readFileGame.mockResolvedValueOnce(
+    stampedGame(changedStamp, '[Event "Fresh after timeout"]\n\n1. d4 *'),
+  );
+  const stop = startFileRevisionPoll({
+    getTabs: () => jotaiStore.get(tabsAtom),
+    fileRevision,
+    subscribeFocus: () => () => undefined,
+  });
+
+  await act(async () => vi.advanceTimersByTimeAsync(2_000));
+  await act(async () => vi.advanceTimersByTimeAsync(2_000));
+  expect(signals[0].aborted).toBe(true);
+  expect(fileRevision).toHaveBeenCalledOnce();
+  expect(getFileFreshness(tabId).state).toBe("overdue");
+  expect(host.textContent).toContain("FileFreshness.FileNotResponding");
+  expect(host.querySelector('[data-testid="board-and-panels"]')).toBeNull();
+  expect(mocks.readFileGame).not.toHaveBeenCalled();
+
+  await act(async () => {
+    first.reject(new Error("native cancellation settled"));
+    for (let turn = 0; turn < 12; turn += 1) await Promise.resolve();
+  });
+
+  expect(fileRevision).toHaveBeenCalledTimes(2);
+  expect(mocks.readFileGame).toHaveBeenCalledOnce();
+  expect(getFileFreshness(tabId).state).toBe("verified");
+  expect(treeStore.getState().sourceStamp).toBe(changedStamp);
+  expect(treeStore.getState().headers.event).toBe("Fresh after timeout");
+  expect(host.querySelector('[data-testid="board-and-panels"]')).not.toBeNull();
+  stop();
 });
 
 test("a pending reload disables append until the reload settles", async () => {

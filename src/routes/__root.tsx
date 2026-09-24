@@ -5,8 +5,8 @@ import { ask, Menu, MenuItem, PredefinedMenuItem, Submenu } from "@/platform/nat
 import { getCurrentWindow } from "@/platform/native";
 import { platform } from "@/platform/native";
 import { exit } from "@/platform/native";
-import { tauri } from "@/platform/tauri";
-import { useAtom, useAtomValue } from "jotai";
+import { tauri, tauriSubscriptions } from "@/platform/tauri";
+import { useAtom, useAtomValue, useStore as useJotaiStore } from "jotai";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
 import { useTranslation } from "react-i18next";
@@ -16,6 +16,7 @@ import { SideBar } from "@/components/Sidebar";
 import TopBar from "@/components/TopBar";
 import i18n from "@/i18n";
 import { nativeBarAtom, tabsAtom } from "@/state/atoms";
+import { startFileRevisionPoll } from "@/state/fileFreshness";
 import { keyMapAtom } from "@/state/keybinds";
 import {
   ensurePracticeMigration,
@@ -23,7 +24,7 @@ import {
   type PracticeMigrationPassResult,
 } from "@/state/practiceStorage";
 import { openFile, pickPgnFile } from "@/utils/files";
-import { createTab } from "@/utils/tabs";
+import { createTab, type Tab } from "@/utils/tabs";
 import {
   assembleNativeMenuResources,
   bindAppMenuCallbacks,
@@ -109,9 +110,18 @@ export const Route = createRootRouteWithContext<Record<string, never>>()({
   component: RootLayout,
 });
 
+export function startRootFileFreshnessPoll(getTabs: () => readonly Tab[]): () => void {
+  return startFileRevisionPoll({
+    getTabs,
+    fileRevision: (handle, options) => tauri.fileRevision(handle, options),
+    subscribeFocus: (callback) => tauriSubscriptions.windowFocus(callback),
+  });
+}
+
 function RootLayout() {
   const isNative = useAtomValue(nativeBarAtom);
   const navigate = useNavigate();
+  const jotaiStore = useJotaiStore();
 
   const [, setTabs] = useAtom(tabsAtom);
 
@@ -170,6 +180,8 @@ function RootLayout() {
   const [keyMap] = useAtom(keyMapAtom);
   const [opened, setOpened] = useState(false);
   const isMacOS = platform() === "macos";
+
+  useEffect(() => startRootFileFreshnessPoll(() => jotaiStore.get(tabsAtom)), [jotaiStore]);
 
   const menuCallbacks: AppMenuCallbacks = useMemo(
     () =>

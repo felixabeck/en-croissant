@@ -82,7 +82,7 @@ use crate::oauth::{
     authenticate, get_authentication_status, list_lichess_accounts, migrate_legacy_lichess_token,
     remove_lichess_account,
 };
-use crate::pgn::{count_pgn_games, delete_game, read_game, read_games, write_game};
+use crate::pgn::{count_pgn_games, delete_game, file_revision, read_game, read_games, write_game};
 use crate::practice::{
     acknowledge_practice_orphans, list_practice_decks, load_practice_deck, load_practice_reviews,
     migrate_practice_deck, record_practice_review, repair_practice_deck, reset_practice_deck,
@@ -2346,6 +2346,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             convert_pgn,
             get_player,
             count_pgn_games,
+            file_revision,
             read_game,
             read_games,
             lex_pgn,

@@ -627,6 +627,14 @@ async countPgnGames(file: FileWorkspaceHandle, ticket: string | null) : Promise<
     else return { status: "error", error: e  as any };
 }
 },
+async fileRevision(file: FileWorkspaceHandle, ticket: string | null) : Promise<Result<string, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("file_revision", { file, ticket }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async readGame(file: FileWorkspaceHandle, n: number, ticket: string | null) : Promise<Result<StampedGame, ErrorPayload>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("read_game", { file, n, ticket }) };

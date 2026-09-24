@@ -962,6 +962,39 @@ pub async fn read_games_core(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn file_revision(
+    file: crate::infra::path_authority::FileWorkspaceHandle,
+    ticket: Option<String>,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, Error> {
+    let operation = crate::native_read_operation(ticket, &window, &state, "file_revision")?;
+    let cancellation = operation.token();
+    let resolved = resolve_pgn(
+        &state,
+        &file,
+        crate::infra::path_authority::PathOperation::ReadPgn,
+    )?;
+    crate::infra::operations::run_native_operation(operation, "file_revision", async move {
+        file_revision_core(resolved, &cancellation).await
+    })
+    .await
+}
+
+pub async fn file_revision_core(
+    resolved: crate::infra::path_authority::ResolvedPath,
+    cancellation: &CancellationToken,
+) -> Result<String, Error> {
+    BLOCKING_GATEWAY
+        .spawn_cancellable(cancellation.clone(), move |_| {
+            let snapshot = resolved.pgn_snapshot()?;
+            Ok(revision_string(&snapshot_key(&snapshot)))
+        })
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn read_game(
     file: crate::infra::path_authority::FileWorkspaceHandle,
     n: i32,
@@ -1877,6 +1910,140 @@ mod tests {
         let app = tauri::test::mock_app();
         app.manage(AppState::default());
         app.handle().clone()
+    }
+
+    #[cfg(unix)]
+    async fn file_revision_through_capability(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        handle: &crate::infra::path_authority::FileWorkspaceHandle,
+    ) -> Result<String, Error> {
+        let resolved = {
+            let state = app.state::<AppState>();
+            resolve_pgn(
+                &state,
+                handle,
+                crate::infra::path_authority::PathOperation::ReadPgn,
+            )?
+        };
+        file_revision_core(resolved, &CancellationToken::new()).await
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn file_revision_tracks_external_and_app_writes_through_a_persistent_handle() {
+        use crate::infra::path_authority::PathAuthority;
+
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("revision.pgn");
+        let registry = directory.path().join("registry.json");
+        std::fs::write(&path, "[Event \"Initial\"]\n\n1. e4 *\n").expect("initial PGN");
+        let mut authority = PathAuthority::open(registry, vec![]).expect("path authority");
+        let handle = promote_pgn_file(&mut authority, &path);
+        let app = mock_app();
+        {
+            let state = app.state::<AppState>();
+            *state
+                .pgn_path_authority
+                .lock()
+                .expect("path authority lock") = Some(authority);
+        }
+
+        let initial = file_revision_through_capability(&app, &handle)
+            .await
+            .expect("initial revision");
+        std::fs::write(&path, "[Event \"External\"]\n\n1. d4 d5 *\n")
+            .expect("external in-place write");
+        let external = file_revision_through_capability(&app, &handle)
+            .await
+            .expect("revision after external write");
+        assert_ne!(external, initial);
+
+        write_through_capability(
+            &app,
+            &handle,
+            0,
+            "[Event \"Application\"]\n\n1. c4 e5 *\n".into(),
+        )
+        .await
+        .expect("application write");
+        let application = file_revision_through_capability(&app, &handle)
+            .await
+            .expect("revision after application write");
+        assert_ne!(application, external);
+
+        let (resolved, repository) = {
+            let state = app.state::<AppState>();
+            (
+                resolve_pgn(
+                    &state,
+                    &handle,
+                    crate::infra::path_authority::PathOperation::ReadPgn,
+                )
+                .expect("persistent handle remains usable"),
+                state.pgn_repository.clone(),
+            )
+        };
+        let games = read_games_core(resolved, 0, 0, &CancellationToken::new(), &repository)
+            .await
+            .expect("read through rebound persistent handle");
+        assert_eq!(games.len(), 1);
+        assert!(games[0].contains("[Event \"Application\"]"));
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn file_revision_reports_delete_and_external_rename_replace_categories() {
+        use crate::{error::ErrorCategory, infra::path_authority::PathAuthority};
+
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("deleted.pgn");
+        let registry = directory.path().join("deleted-registry.json");
+        std::fs::write(&path, "[Event \"Delete\"]\n\n1. e4 *\n").expect("initial PGN");
+        let mut authority = PathAuthority::open(registry, vec![]).expect("path authority");
+        let handle = promote_pgn_file(&mut authority, &path);
+        let app = mock_app();
+        {
+            let state = app.state::<AppState>();
+            *state
+                .pgn_path_authority
+                .lock()
+                .expect("path authority lock") = Some(authority);
+        }
+        file_revision_through_capability(&app, &handle)
+            .await
+            .expect("initial revision");
+        std::fs::remove_file(&path).expect("delete PGN");
+        let deleted = file_revision_through_capability(&app, &handle)
+            .await
+            .expect_err("deleted file must reject revision");
+        assert_eq!(deleted.category(), ErrorCategory::MissingResource);
+
+        let replace_dir = tempfile::tempdir().expect("replacement directory");
+        let replaced_path = replace_dir.path().join("replaced.pgn");
+        let replace_registry = replace_dir.path().join("replace-registry.json");
+        std::fs::write(&replaced_path, "[Event \"Before\"]\n\n1. e4 *\n")
+            .expect("initial replacement PGN");
+        let mut replace_authority =
+            PathAuthority::open(replace_registry, vec![]).expect("replace path authority");
+        let replace_handle = promote_pgn_file(&mut replace_authority, &replaced_path);
+        let replace_app = mock_app();
+        {
+            let state = replace_app.state::<AppState>();
+            *state
+                .pgn_path_authority
+                .lock()
+                .expect("path authority lock") = Some(replace_authority);
+        }
+        file_revision_through_capability(&replace_app, &replace_handle)
+            .await
+            .expect("initial revision before replacement");
+        let sibling = replace_dir.path().join("replacement.pgn");
+        std::fs::write(&sibling, "[Event \"After\"]\n\n1. d4 *\n").expect("replacement PGN");
+        std::fs::rename(&sibling, &replaced_path).expect("rename replacement over PGN");
+        let replaced = file_revision_through_capability(&replace_app, &replace_handle)
+            .await
+            .expect_err("replaced file identity must reject revision");
+        assert_eq!(replaced.category(), ErrorCategory::Conflict);
     }
 
     #[tokio::test]

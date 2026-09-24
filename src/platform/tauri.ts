@@ -11,7 +11,7 @@ import {
     type TimeControl,
 } from "@/bindings/generated";
 import { normalizeError } from "./errors";
-import { error as logError } from "./native";
+import { error as logError, getCurrentWindow } from "./native";
 
 const MAX_SAFE_COUNTER = BigInt(Number.MAX_SAFE_INTEGER);
 
@@ -110,6 +110,7 @@ type NativeReadCommandName =
     | "getPuzzleThemes"
     | "getThemesForPuzzle"
     | "countPgnGames"
+    | "fileRevision"
     | "readGame"
     | "readGames"
     | "lexPgn"
@@ -143,6 +144,7 @@ const NATIVE_READ_ARITY: Readonly<Record<NativeReadCommandName, number>> = {
     getPuzzleThemes: 1,
     getThemesForPuzzle: 2,
     countPgnGames: 1,
+    fileRevision: 1,
     readGame: 2,
     readGames: 3,
     lexPgn: 1,
@@ -369,6 +371,7 @@ export const tauri: TauriCommands = new Proxy(commands, {
 
 /** Typed event subscriptions owned by the same generated-binding boundary. */
 export const tauriSubscriptions = {
+    windowFocus: (callback: () => void) => getCurrentWindow().listen("tauri://focus", callback),
     bestMoves: (callback: Parameters<typeof events.bestMovesPayload.listen>[0]) =>
         events.bestMovesPayload.listen(callback),
     clockUpdate: gameEventSubscription(

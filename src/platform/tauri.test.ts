@@ -17,15 +17,18 @@ const mocks = vi.hoisted(() => ({
     cancelAnalysis: vi.fn(),
     getGames: vi.fn(),
     countPgnGames: vi.fn(),
+    fileRevision: vi.fn(),
     readGame: vi.fn(),
     readGames: vi.fn(),
     lexPgn: vi.fn(),
     listFileWorkspace: vi.fn(),
     logError: vi.fn(),
+    getCurrentWindow: vi.fn(),
+    windowListen: vi.fn(),
     listeners: new Map<string, (event: any) => void>(),
 }));
 
-vi.mock("./native", () => ({ error: mocks.logError }));
+vi.mock("./native", () => ({ error: mocks.logError, getCurrentWindow: mocks.getCurrentWindow }));
 
 vi.mock("@/bindings/generated", () => ({
     commands: {
@@ -45,6 +48,7 @@ vi.mock("@/bindings/generated", () => ({
         cancelAnalysis: mocks.cancelAnalysis,
         getGames: mocks.getGames,
         countPgnGames: mocks.countPgnGames,
+        fileRevision: mocks.fileRevision,
         readGame: mocks.readGame,
         readGames: mocks.readGames,
         lexPgn: mocks.lexPgn,
@@ -92,11 +96,14 @@ describe("tauri command facade", () => {
         mocks.cancelAnalysis.mockReset();
         mocks.getGames.mockReset();
         mocks.countPgnGames.mockReset();
+        mocks.fileRevision.mockReset();
         mocks.readGame.mockReset();
         mocks.readGames.mockReset();
         mocks.lexPgn.mockReset();
         mocks.listFileWorkspace.mockReset();
         mocks.logError.mockReset().mockResolvedValue(undefined);
+        mocks.windowListen.mockReset().mockResolvedValue(vi.fn());
+        mocks.getCurrentWindow.mockReset().mockReturnValue({ listen: mocks.windowListen });
     });
     test("a signal reserves a ticket and passes it outside positional arguments", async () => {
         mocks.prepareNativeRead.mockResolvedValue({ status: "ok", data: "ticket-1" });
@@ -133,6 +140,7 @@ describe("tauri command facade", () => {
     test("pgn and workspace reads reserve tickets and pass outside positional arguments", async () => {
         mocks.prepareNativeRead.mockResolvedValue({ status: "ok", data: "ticket-pgn" });
         mocks.countPgnGames.mockResolvedValue({ status: "ok", data: 42 });
+        mocks.fileRevision.mockResolvedValue({ status: "ok", data: "dev:ino:revision" });
         mocks.readGame.mockResolvedValue({
             status: "ok",
             data: { pgn: "game", stamp: "a".repeat(64), revision: "r1", present: true },
@@ -154,6 +162,9 @@ describe("tauri command facade", () => {
         await tauri.readGame(fileHandle, 2, { signal });
         expect(mocks.readGame).toHaveBeenCalledWith(fileHandle, 2, "ticket-pgn");
 
+        await tauri.fileRevision(fileHandle, { signal });
+        expect(mocks.fileRevision).toHaveBeenCalledWith(fileHandle, "ticket-pgn");
+
         await tauri.lexPgn("1. e4", { signal });
         expect(mocks.lexPgn).toHaveBeenCalledWith("1. e4", "ticket-pgn");
 
@@ -170,11 +181,26 @@ describe("tauri command facade", () => {
         await tauri.readGame(fileHandle, 2);
         expect(mocks.readGame).toHaveBeenCalledWith(fileHandle, 2, null);
 
+        await tauri.fileRevision(fileHandle);
+        expect(mocks.fileRevision).toHaveBeenCalledWith(fileHandle, null);
+
         await tauri.lexPgn("1. e4");
         expect(mocks.lexPgn).toHaveBeenCalledWith("1. e4", null);
 
         await tauri.listFileWorkspace(wsHandle);
         expect(mocks.listFileWorkspace).toHaveBeenCalledWith(wsHandle, null);
+    });
+
+    test("window focus subscriptions return the native listener cleanup", async () => {
+        const dispose = vi.fn();
+        const callback = vi.fn();
+        mocks.windowListen.mockResolvedValueOnce(dispose);
+
+        const unlisten = await tauriSubscriptions.windowFocus(callback);
+
+        expect(mocks.windowListen).toHaveBeenCalledWith("tauri://focus", callback);
+        unlisten();
+        expect(dispose).toHaveBeenCalledOnce();
     });
 
     test("abort before preparation rejects without native dispatch", async () => {
