@@ -611,7 +611,7 @@ impl ResolvedPath {
         &self,
         expected: &PgnSnapshot,
         write: F,
-    ) -> Result<AtomicFileOutcome, Error>
+    ) -> Result<AtomicInstalledFile, Error>
     where
         F: FnOnce(&mut fs::File, &mut fs::File) -> Result<(), Error>,
     {
@@ -630,7 +630,7 @@ impl ResolvedPath {
             .as_ref()
             .ok_or_else(|| Error::Conflict("PGN leaf descriptor is unavailable".into()))?;
         let mut source = expected.file.try_clone()?;
-        crate::infra::fs::atomic_replace_at_with_precommit(
+        crate::infra::fs::atomic_replace_at_identified_with_precommit(
             parent,
             leaf,
             || {
@@ -708,6 +708,12 @@ impl ResolvedPath {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct PgnSnapshotIdentity(super::Identity);
+impl PgnSnapshotIdentity {
+    pub(crate) fn pair(&self) -> (u64, u64) {
+        (self.0.a, self.0.b)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct PgnSnapshotRevision {
     pub size: u64,

@@ -2291,7 +2291,7 @@ mod tests {
                 file: "infra/path_authority/resolved.rs",
                 signature: "pub(crate) fn replace_pgn_atomic<F>(",
                 operation: "PGN atomic replacement",
-                effects: &["atomic_replace_at_with_precommit("],
+                effects: &["atomic_replace_at_identified_with_precommit("],
                 nested: false,
             },
             GuardRow {

@@ -29,6 +29,33 @@ fn resolve_pgn(
         .resolve(file.path_ref(), operation, &[])
 }
 
+#[derive(Clone)]
+pub(crate) struct PgnCapabilityRebind {
+    authority: Arc<std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>>,
+    path_ref: crate::infra::path_authority::PathRef,
+}
+
+impl PgnCapabilityRebind {
+    fn after_replace(
+        &self,
+        expected_identity: (u64, u64),
+        installed_identity: (u64, u64),
+    ) -> Result<(), Error> {
+        let mut authority = self
+            .authority
+            .lock()
+            .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
+        let authority = authority
+            .as_mut()
+            .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
+        authority.rebind_pgn_file_after_replace(
+            &self.path_ref,
+            expected_identity,
+            installed_identity,
+        )
+    }
+}
+
 const MAX_LINE_LEN: usize = 1024 * 1024;
 const MAX_PAGE_LEN: usize = 1_000;
 const MAX_PGN_BYTES: usize = 10 * 1024 * 1024;
@@ -683,11 +710,11 @@ fn edit_existing(
     target: GameRange,
     replacement: Option<Vec<u8>>,
     cancellation: &CancellationToken,
-) -> Result<(), Error> {
+) -> Result<crate::infra::fs::AtomicInstalledFile, Error> {
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
-    let outcome = resolved.replace_pgn_atomic(&snapshot, |source, temporary| {
+    resolved.replace_pgn_atomic(&snapshot, |source, temporary| {
         if cancellation.is_cancelled() {
             return Err(Error::Cancellation);
         }
@@ -726,8 +753,7 @@ fn edit_existing(
             cancellation,
         )?;
         Ok(())
-    })?;
-    crate::infra::fs::require_durable(outcome, crate::error::DurabilityStage::PgnEdit)
+    })
 }
 
 #[tauri::command]
@@ -845,15 +871,26 @@ pub async fn read_games_core(
         .await
 }
 
+struct PgnMutation {
+    target: GameRange,
+    replacement: Option<Vec<u8>>,
+    operation_name: &'static str,
+    rebind: Option<PgnCapabilityRebind>,
+}
+
 async fn commit_pgn_mutation(
     resolved: crate::infra::path_authority::ResolvedPath,
     key: CacheKey,
-    target: GameRange,
-    replacement: Option<Vec<u8>>,
+    mutation: PgnMutation,
     repository: &PgnRepository,
-    operation_name: &'static str,
     cancellation: &CancellationToken,
 ) -> Result<(), Error> {
+    let PgnMutation {
+        target,
+        replacement,
+        operation_name,
+        rebind,
+    } = mutation;
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
@@ -884,16 +921,39 @@ async fn commit_pgn_mutation(
                 }
                 InjectorGuard
             });
-            edit_existing(&resolved, key, commit_snapshot, target, replacement, token)
+            let installed = edit_existing(
+                &resolved,
+                key.clone(),
+                commit_snapshot,
+                target,
+                replacement,
+                token,
+            )?;
+            let rebind_result =
+                rebind.map(|rebind| rebind.after_replace(key.identity.pair(), installed.identity));
+            Ok((installed, rebind_result))
         })
         .await;
 
-    let edit_outcome = match edit_result {
-        Ok(()) => Ok(()),
-        Err(Error::CommittedDurabilityUncertain(stage)) => {
-            Err(Error::CommittedDurabilityUncertain(stage))
-        }
+    let (installed, rebind_result) = match edit_result {
+        Ok(result) => result,
         Err(err) => return Err(err),
+    };
+    let pgn_outcome = crate::infra::fs::require_durable(
+        installed.outcome,
+        crate::error::DurabilityStage::PgnEdit,
+    );
+    let rebind_outcome = match rebind_result {
+        Some(result) => result,
+        None => Ok(()),
+    };
+    let edit_outcome = match (pgn_outcome, rebind_outcome) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(primary), Err(cleanup)) => Err(Error::OperationAndCleanup {
+            primary: primary.to_string(),
+            cleanup: cleanup.to_string(),
+        }),
     };
 
     if let Err(invalidation_error) = repository.invalidate(&identity) {
@@ -921,7 +981,11 @@ pub async fn delete_game(
         crate::infra::path_authority::PathOperation::WritePgn,
     )?;
     let repository = state.pgn_repository.clone();
-    delete_game_core(lease, resolved, n, repository).await
+    let rebind = PgnCapabilityRebind {
+        authority: Arc::clone(&state.pgn_path_authority),
+        path_ref: file.path_ref().clone(),
+    };
+    delete_game_core(lease, resolved, n, repository, Some(rebind)).await
 }
 
 pub async fn delete_game_core(
@@ -929,6 +993,7 @@ pub async fn delete_game_core(
     resolved: crate::infra::path_authority::ResolvedPath,
     n: i32,
     repository: PgnRepository,
+    rebind: Option<PgnCapabilityRebind>,
 ) -> Result<(), Error> {
     let cancellation = lease.token();
     crate::infra::operations::run_native_operation(lease, "delete_game", async move {
@@ -953,10 +1018,13 @@ pub async fn delete_game_core(
         commit_pgn_mutation(
             resolved,
             key,
-            range,
-            None,
+            PgnMutation {
+                target: range,
+                replacement: None,
+                operation_name: "delete_game",
+                rebind,
+            },
             &repository,
-            "delete_game",
             &cancellation,
         )
         .await
@@ -980,7 +1048,11 @@ pub async fn write_game(
         crate::infra::path_authority::PathOperation::WritePgn,
     )?;
     let repository = state.pgn_repository.clone();
-    write_game_core(lease, resolved, n, pgn, repository).await
+    let rebind = PgnCapabilityRebind {
+        authority: Arc::clone(&state.pgn_path_authority),
+        path_ref: file.path_ref().clone(),
+    };
+    write_game_core(lease, resolved, n, pgn, repository, Some(rebind)).await
 }
 
 pub async fn write_game_core(
@@ -989,6 +1061,7 @@ pub async fn write_game_core(
     n: i32,
     pgn: String,
     repository: PgnRepository,
+    rebind: Option<PgnCapabilityRebind>,
 ) -> Result<(), Error> {
     let cancellation = lease.token();
     crate::infra::operations::run_native_operation(lease, "write_game", async move {
@@ -1026,10 +1099,13 @@ pub async fn write_game_core(
         commit_pgn_mutation(
             resolved,
             key,
-            target,
-            Some(replacement),
+            PgnMutation {
+                target,
+                replacement: Some(replacement),
+                operation_name: "write_game",
+                rebind,
+            },
             &repository,
-            "write_game",
             &cancellation,
         )
         .await
@@ -1153,6 +1229,151 @@ mod tests {
             .expect("resolve writable PGN")
     }
 
+    #[cfg(unix)]
+    fn promote_pgn_file(
+        authority: &mut crate::infra::path_authority::PathAuthority,
+        path: &Path,
+    ) -> crate::infra::path_authority::FileWorkspaceHandle {
+        use crate::infra::path_authority::{PathClass, PathOperation};
+
+        let operations = vec![PathOperation::ReadPgn, PathOperation::WritePgn];
+        let grant = authority
+            .grant_dialog_operations(
+                path,
+                "picked PGN",
+                PathClass::BoundedDialogGrant,
+                operations.clone(),
+                Duration::from_secs(60),
+                1,
+            )
+            .expect("grant picked PGN");
+        let committed = authority
+            .promote_dialog(&grant, PathClass::PersistentFile, "picked PGN", operations)
+            .expect("promote picked PGN");
+        crate::infra::path_authority::FileWorkspaceHandle::new(committed.id)
+    }
+
+    #[cfg(unix)]
+    fn promote_pgn_workspace(
+        authority: &mut crate::infra::path_authority::PathAuthority,
+        path: &Path,
+    ) -> crate::infra::path_authority::FileWorkspaceHandle {
+        use crate::infra::path_authority::{PathClass, PathOperation};
+
+        let operations = vec![PathOperation::ReadPgn, PathOperation::WritePgn];
+        let grant = authority
+            .grant_dialog_operations(
+                path,
+                "PGN workspace",
+                PathClass::BoundedDialogGrant,
+                operations.clone(),
+                Duration::from_secs(60),
+                1,
+            )
+            .expect("grant PGN workspace");
+        let committed = authority
+            .promote_dialog(
+                &grant,
+                PathClass::PersistentCustomRoot,
+                "PGN workspace",
+                operations,
+            )
+            .expect("promote PGN workspace");
+        crate::infra::path_authority::FileWorkspaceHandle::new(committed.id)
+    }
+
+    #[cfg(unix)]
+    fn fs_identity(path: &Path) -> (u64, u64) {
+        use std::os::unix::fs::MetadataExt;
+
+        let metadata = std::fs::metadata(path).expect("stat PGN fixture");
+        (metadata.dev(), metadata.ino())
+    }
+
+    #[cfg(unix)]
+    fn registry_identity(
+        registry_path: &Path,
+        id: &crate::infra::path_authority::PathRef,
+    ) -> (u64, u64) {
+        let bytes = std::fs::read(registry_path).expect("read path registry");
+        let registry: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("decode path registry");
+        let entries = registry
+            .get("entries")
+            .and_then(serde_json::Value::as_array)
+            .expect("registry entries");
+        let entry = entries
+            .iter()
+            .find(|entry| {
+                entry
+                    .get("id")
+                    .and_then(|id| id.get("id"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some(id.id.as_str())
+            })
+            .expect("capability registry entry");
+        let identity = entry.get("identity").expect("stored identity");
+        (
+            identity
+                .get("a")
+                .and_then(serde_json::Value::as_u64)
+                .expect("stored device identity"),
+            identity
+                .get("b")
+                .and_then(serde_json::Value::as_u64)
+                .expect("stored inode identity"),
+        )
+    }
+
+    #[cfg(unix)]
+    async fn write_through_capability(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        handle: &crate::infra::path_authority::FileWorkspaceHandle,
+        n: i32,
+        pgn: String,
+    ) -> Result<(), Error> {
+        let (lease, resolved, repository, rebind) = {
+            let state = app.state::<AppState>();
+            let lease = state.operations.accept("write_game")?;
+            let resolved = resolve_pgn(
+                &state,
+                handle,
+                crate::infra::path_authority::PathOperation::WritePgn,
+            )?;
+            let repository = state.pgn_repository.clone();
+            let rebind = PgnCapabilityRebind {
+                authority: Arc::clone(&state.pgn_path_authority),
+                path_ref: handle.path_ref().clone(),
+            };
+            (lease, resolved, repository, rebind)
+        };
+        write_game_core(lease, resolved, n, pgn, repository, Some(rebind)).await
+    }
+
+    #[cfg(unix)]
+    async fn delete_through_capability(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        handle: &crate::infra::path_authority::FileWorkspaceHandle,
+        n: i32,
+    ) -> Result<(), Error> {
+        let (lease, resolved, repository, rebind) = {
+            let state = app.state::<AppState>();
+            let lease = state.operations.accept("delete_game")?;
+            let resolved = resolve_pgn(
+                &state,
+                handle,
+                crate::infra::path_authority::PathOperation::WritePgn,
+            )?;
+            let repository = state.pgn_repository.clone();
+            let rebind = PgnCapabilityRebind {
+                authority: Arc::clone(&state.pgn_path_authority),
+                path_ref: handle.path_ref().clone(),
+            };
+            (lease, resolved, repository, rebind)
+        };
+        delete_game_core(lease, resolved, n, repository, Some(rebind)).await
+    }
+
     #[test]
     #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn edit_existing_keeps_the_replacement_and_reports_uncertain_pgn_edit() {
@@ -1179,7 +1400,10 @@ mod tests {
         );
         crate::infra::fs::set_test_atomic_file_injector(None);
         assert!(matches!(
-            result,
+            crate::infra::fs::require_durable(
+                result.expect("atomic replacement installed").outcome,
+                crate::error::DurabilityStage::PgnEdit,
+            ),
             Err(Error::CommittedDurabilityUncertain(
                 crate::error::DurabilityStage::PgnEdit
             ))
@@ -1187,6 +1411,208 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&path).expect("edited PGN"),
             "[Event \"after\"]\n\n1. d4 *\n"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn persistent_file_capability_survives_own_replacements_and_registry_reload() {
+        use crate::infra::path_authority::{PathAuthority, PathOperation};
+
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("picked.pgn");
+        let registry = directory.path().join("registry.json");
+        std::fs::write(
+            &path,
+            "[Event \"First\"]\n\n1. e4 *\n\n[Event \"Second\"]\n\n1. d4 *\n",
+        )
+        .expect("write PGN fixture");
+        let mut authority =
+            PathAuthority::open(registry.clone(), vec![]).expect("open path authority");
+        let handle = promote_pgn_file(&mut authority, &path);
+        let app = mock_app();
+        let authority_arc = {
+            let state = app.state::<AppState>();
+            let authority_arc = Arc::clone(&state.pgn_path_authority);
+            *authority_arc.lock().expect("path authority lock") = Some(authority);
+            authority_arc
+        };
+
+        let original_identity = fs_identity(&path);
+        write_through_capability(
+            &app,
+            &handle,
+            0,
+            "[Event \"First write\"]\n\n1. d4 *\n".into(),
+        )
+        .await
+        .expect("first capability write");
+        let first_identity = fs_identity(&path);
+        assert_ne!(first_identity, original_identity);
+        assert_eq!(
+            registry_identity(&registry, handle.path_ref()),
+            first_identity
+        );
+
+        write_through_capability(
+            &app,
+            &handle,
+            0,
+            "[Event \"Second write\"]\n\n1. c4 *\n".into(),
+        )
+        .await
+        .expect("second capability write");
+        let second_identity = fs_identity(&path);
+        assert_ne!(second_identity, first_identity);
+        assert_eq!(
+            registry_identity(&registry, handle.path_ref()),
+            second_identity
+        );
+
+        delete_through_capability(&app, &handle, 0)
+            .await
+            .expect("capability delete");
+        let deleted_identity = fs_identity(&path);
+        assert_ne!(deleted_identity, second_identity);
+        assert_eq!(
+            registry_identity(&registry, handle.path_ref()),
+            deleted_identity
+        );
+
+        let reloaded =
+            PathAuthority::open(registry.clone(), vec![]).expect("reload path authority");
+        *authority_arc.lock().expect("path authority lock") = Some(reloaded);
+        let (resolved, repository) = {
+            let state = app.state::<AppState>();
+            let resolved = resolve_pgn(&state, &handle, PathOperation::ReadPgn)
+                .expect("resolve capability after reload");
+            (resolved, state.pgn_repository.clone())
+        };
+        let games = read_games_core(resolved, 0, 0, &CancellationToken::new(), &repository)
+            .await
+            .expect("read games after reload");
+        assert_eq!(games.len(), 1);
+        assert!(games[0].contains("[Event \"Second\"]"));
+        assert_eq!(
+            registry_identity(&registry, handle.path_ref()),
+            deleted_identity
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn external_rename_replace_between_persistent_file_writes_stays_conflict() {
+        use crate::infra::path_authority::PathAuthority;
+
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("picked.pgn");
+        let registry = directory.path().join("registry.json");
+        std::fs::write(&path, "[Event \"Before\"]\n\n1. e4 *\n").expect("write PGN fixture");
+        let mut authority =
+            PathAuthority::open(registry.clone(), vec![]).expect("open path authority");
+        let handle = promote_pgn_file(&mut authority, &path);
+        let app = mock_app();
+        {
+            let state = app.state::<AppState>();
+            *state
+                .pgn_path_authority
+                .lock()
+                .expect("path authority lock") = Some(authority);
+        }
+
+        write_through_capability(
+            &app,
+            &handle,
+            0,
+            "[Event \"App write\"]\n\n1. d4 *\n".into(),
+        )
+        .await
+        .expect("first capability write");
+        let stored_identity = registry_identity(&registry, handle.path_ref());
+
+        let external = directory.path().join("external.pgn");
+        std::fs::write(&external, "[Event \"External\"]\n\n1. c4 *\n")
+            .expect("write external replacement");
+        std::fs::rename(&external, &path).expect("replace PGN from another writer");
+        assert_ne!(fs_identity(&path), stored_identity);
+
+        assert!(matches!(
+            write_through_capability(
+                &app,
+                &handle,
+                0,
+                "[Event \"Must not commit\"]\n\n1. Nf3 *\n".into(),
+            )
+            .await,
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(
+            registry_identity(&registry, handle.path_ref()),
+            stored_identity
+        );
+        assert!(std::fs::read_to_string(&path)
+            .expect("read external PGN")
+            .contains("[Event \"External\"]"));
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn pgn_write_rebind_does_not_change_directory_rooted_workspace_handle() {
+        use crate::infra::path_authority::{PathAuthority, PathOperation};
+        use std::ffi::OsString;
+
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let workspace_path = directory.path().join("workspace");
+        std::fs::create_dir(&workspace_path).expect("create workspace");
+        let path = workspace_path.join("study.pgn");
+        std::fs::write(&path, "[Event \"Before\"]\n\n1. e4 *\n").expect("write PGN fixture");
+        let registry = directory.path().join("registry.json");
+        let mut authority =
+            PathAuthority::open(registry.clone(), vec![]).expect("open path authority");
+        let workspace = promote_pgn_workspace(&mut authority, &workspace_path);
+        let child = authority
+            .register_workspace_child_observed(
+                &workspace,
+                &[OsString::from("study.pgn")],
+                "study.pgn",
+                fs_identity(&path),
+                false,
+                PathOperation::WritePgn,
+            )
+            .expect("register workspace PGN");
+        let root_identity = fs_identity(&workspace_path);
+        assert_eq!(
+            registry_identity(&registry, workspace.path_ref()),
+            root_identity
+        );
+
+        let app = mock_app();
+        let authority_arc = {
+            let state = app.state::<AppState>();
+            let authority_arc = Arc::clone(&state.pgn_path_authority);
+            *authority_arc.lock().expect("path authority lock") = Some(authority);
+            authority_arc
+        };
+        write_through_capability(&app, &child, 0, "[Event \"After\"]\n\n1. d4 *\n".into())
+            .await
+            .expect("write workspace PGN");
+
+        assert_eq!(fs_identity(&workspace_path), root_identity);
+        assert_eq!(
+            registry_identity(&registry, workspace.path_ref()),
+            root_identity
+        );
+        let resolved_root = authority_arc
+            .lock()
+            .expect("path authority lock")
+            .as_mut()
+            .expect("path authority initialized")
+            .workspace_root(&workspace, PathOperation::ReadPgn)
+            .expect("resolve unchanged workspace root");
+        assert_eq!(resolved_root, workspace_path);
+        assert_eq!(
+            registry_identity(&registry, child.path_ref()),
+            fs_identity(&path)
         );
     }
 
@@ -1777,6 +2203,7 @@ mod tests {
             0,
             replacement,
             repository.clone(),
+            None,
         ));
 
         // Wait until worker is actively inside the blocking edit task
@@ -1843,7 +2270,13 @@ mod tests {
             .expect("set edit hook");
 
         let lease = operations.accept("delete_game").unwrap();
-        let caller_task = tokio::spawn(delete_game_core(lease, resolved, 0, repository.clone()));
+        let caller_task = tokio::spawn(delete_game_core(
+            lease,
+            resolved,
+            0,
+            repository.clone(),
+            None,
+        ));
 
         // Wait until worker is actively inside the blocking edit task
         tokio::time::timeout(Duration::from_secs(5), entered)
@@ -1919,6 +2352,7 @@ mod tests {
             0,
             replacement,
             repository.clone(),
+            None,
         ));
 
         // Wait until worker is actively inside the blocking edit task
@@ -1988,9 +2422,16 @@ mod tests {
                 0,
                 "[Event \"Replacement\"]\n\n1. c4\n".into(),
                 repository.clone(),
+                None,
             ))
         } else {
-            tokio::spawn(delete_game_core(lease, resolved, 0, repository.clone()))
+            tokio::spawn(delete_game_core(
+                lease,
+                resolved,
+                0,
+                repository.clone(),
+                None,
+            ))
         };
         tokio::time::timeout(Duration::from_secs(5), waiting)
             .await

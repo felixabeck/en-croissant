@@ -6724,6 +6724,51 @@ impl PathAuthority {
         resolved
     }
 
+    pub(crate) fn rebind_pgn_file_after_replace(
+        &mut self,
+        id: &PathRef,
+        expected_identity: (u64, u64),
+        installed_identity: (u64, u64),
+    ) -> Result<(), Error> {
+        let Some(entry) = self.persistent.get(&id.id) else {
+            return Ok(());
+        };
+        if entry.stored.class != PathClass::PersistentFile || entry.stored.target_is_dir {
+            return Ok(());
+        }
+        if !entry.stored.operations.contains(&PathOperation::WritePgn) {
+            return Err(Error::Conflict(
+                "path capability no longer permits PGN writes".into(),
+            ));
+        }
+        if entry.stored.identity
+            != (Identity {
+                a: expected_identity.0,
+                b: expected_identity.1,
+            })
+        {
+            return Err(Error::Conflict(
+                "path capability changed before PGN authority rebind".into(),
+            ));
+        }
+        if expected_identity == installed_identity {
+            return Ok(());
+        }
+
+        let mut candidate = self.persistent.clone();
+        let Some(entry) = candidate.get_mut(&id.id) else {
+            return Err(Error::Conflict(
+                "path capability disappeared before PGN authority rebind".into(),
+            ));
+        };
+        entry.stored.identity = Identity {
+            a: installed_identity.0,
+            b: installed_identity.1,
+        };
+        entry.availability = PathAvailability::Available;
+        require_durable(self.commit_candidate(candidate, None)?)
+    }
+
     /// Renderer-safe display metadata for a capability.  This is deliberately
     /// a label, not a path or component list.
     pub(crate) fn display_name(&mut self, id: &PathRef) -> Result<String, Error> {
