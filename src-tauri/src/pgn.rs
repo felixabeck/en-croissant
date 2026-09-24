@@ -272,7 +272,7 @@ impl PgnRepository {
         Ok(self.inner()?.read_chunk_hook.clone())
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn set_post_commit_hook(&self, hook: Option<BoundedHook>) -> Result<(), Error> {
         self.inner()?.post_commit_hook = hook;
         Ok(())
@@ -2238,6 +2238,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn game_cas_at_end_of_empty_file_appends_and_returns_readback_stamp() {
         use crate::infra::path_authority::PathAuthority;
 
@@ -2345,6 +2346,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn append_expectation_succeeds_at_end_and_rejects_after_another_append() {
         use crate::infra::path_authority::PathAuthority;
 
