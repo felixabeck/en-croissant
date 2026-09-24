@@ -2811,7 +2811,7 @@ mod tests {
     /// D5b. `#[cfg_attr(not(unix), ignore)]` makes `rust-windows-test` print `ignored` and still
     /// exit 0, and the Linux run executes the test either way, so nothing goes red if a marker
     /// stays. This is the assertion that the eleven `f-20260914-08` markers are gone — and that
-    /// the four `f-20260914-10` ones, whose tests still reach the refusing `replace_pgn_atomic`,
+    /// the five `f-20260914-10` ones, whose tests still reach the refusing `replace_pgn_atomic`,
     /// were not removed with them.
     #[test]
     fn pgn_tests_carry_no_unported_marker_for_this_finding() {
@@ -2823,8 +2823,8 @@ mod tests {
         );
         assert_eq!(
             source.matches(&unported_marker("f-20260914-10")).count(),
-            4,
-            "replace_pgn_atomic still refuses, so its four markers stay"
+            5,
+            "replace_pgn_atomic still refuses, so its five markers stay"
         );
     }
 
