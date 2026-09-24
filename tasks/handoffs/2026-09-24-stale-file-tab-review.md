@@ -899,3 +899,35 @@ including the unchanged `3d0627ec` tree (control run), filed as an environment f
 
 Totals across code review: three passes, 22 distinct findings (R-01..R-15 + 7 re-review/closure),
 Fix 17, Skip 4, Defer 3 (filed).
+
+### Push-resume delta review (`88d82829..e641f628`, 6 lenses) and two closure rounds, 2026-09-24
+
+The first push attempt stopped on kit parity; the drain resumed the session after `e641f628`
+re-vendored the kit. The commits after the last review pass (`69d5c3b5` stamp pattern and
+`Tab.Close` reuse, `83108b9d` bundle ceiling, `6113e7cb`, ledger/handoff records) were reviewed;
+`scripts/findings.py` stays out of scope (kit-owned, byte parity proven by `findings:kit:check`).
+
+Delta raw verdicts: correctness REVISE, root-cause REVISE, tests APPROVED, persisted-state
+APPROVED, code-quality APPROVED, minimalism APPROVED. Dispositions: the 2 s window between an
+external edit and the next poll (root-cause) — Skip, settled bounded-latency reading (I-01,
+BOUNDED-POLL-OK); a Save-As destination's `missing-resource`/`invalid-input` marked the tab
+unavailable and claimed "may have been written" (correctness) — Fix, `f5975b94`; the
+`withFileWrite` rejection path (tests) — Skip, `files.test.ts` "writeFileGame tracks the write
+through rejection" already asserts the poll resumes; file-backed Save conflict notice unproven
+(tests), positional hotkey lookup (code-quality), one-caller `isStamp` (minimalism) — Fix,
+`f5975b94`.
+
+Closure 1 raw verdicts (`f5975b94`): correctness REVISE, tests REVISE, minimalism APPROVED,
+code-quality APPROVED. Both REVISEs were one defect: `commit_pgn_mutation` returned the
+capability rebind's raw error after the replacement was installed, so a registry `Io(NotFound)`
+surfaced as `missing-resource` for a written game — Fix, `9b69a11b`: every post-replacement
+failure (rebind, cache invalidation) is `CommittedDurabilityUncertain` with its own stage, and a
+save of the tab's own file then drops the stamp so the gate verifies by text.
+
+Closure 2 raw verdicts (`e641f628..9b69a11b`): correctness, root-cause, error-handling,
+ipc-contract, pgn-index APPROVED; tests REVISE (invalidation branch unproven) — Fix, `10893c3a`;
+error-handling should-fix (warnings lacked the file identity) — Fix, `10893c3a`. Closure 3
+(`10893c3a`): tests and error-handling APPROVED, both findings CLOSED.
+
+Totals for the resumed push: 9 distinct findings, Fix 7, Skip 2, Defer 0. All lenses Codex
+`gpt-6-luna`; the orchestrator (Claude) arbitrated.
