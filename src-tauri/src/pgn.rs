@@ -1150,13 +1150,19 @@ async fn commit_pgn_mutation(
     // as a committed-but-uncertain write: a raw rebind or cache error would tell the renderer the
     // game was not written, and a Save-As would then drop the "may have been written" notice.
     let rebind_outcome = rebind_result.unwrap_or(Ok(())).map_err(|error| {
-        log::warn!("{operation_name} capability rebind failed after the replacement: {error}");
+        log::warn!(
+            "{operation_name} capability rebind failed after replacing file {:?}: {error}",
+            identity.pair()
+        );
         Error::CommittedDurabilityUncertain(crate::error::DurabilityStage::PgnCapabilityRebind)
     });
     let edit_outcome = pgn_outcome.and(rebind_outcome);
 
     if let Err(invalidation_error) = repository.invalidate(&identity) {
-        log::warn!("{operation_name} cache invalidation failed: {invalidation_error}");
+        log::warn!(
+            "{operation_name} cache invalidation failed for file {:?}: {invalidation_error}",
+            identity.pair()
+        );
         if edit_outcome.is_ok() {
             return Err(Error::CommittedDurabilityUncertain(
                 crate::error::DurabilityStage::PgnCacheInvalidation,
@@ -3017,6 +3023,73 @@ mod tests {
         assert!(
             content.contains("[Event \"Updated\"]"),
             "file on disk must contain the updated game"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
+    async fn a_cache_invalidation_failure_after_the_replacement_reports_a_committed_write() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("invalidation.pgn");
+        std::fs::write(&path, b"[Event \"Initial\"]\n\n1. e4\n").expect("write PGN");
+        let app = mock_app();
+        let state = app.state::<AppState>();
+        let repository = state.pgn_repository.clone();
+        let expected_stamp = read_game_core(
+            writable_for(&directory, &path),
+            0,
+            &CancellationToken::new(),
+            &repository,
+        )
+        .await
+        .expect("read initial game")
+        .stamp;
+        let (hook, entered, release) = BoundedHook::new();
+        repository
+            .set_edit_worker_hook(Some(hook))
+            .expect("set edit hook");
+
+        let write = tokio::spawn(write_game_core(
+            state.operations.accept("write_game").expect("accept write"),
+            writable_for(&directory, &path),
+            0,
+            "[Event \"Updated\"]\n\n1. d4\n".to_string(),
+            WriteExpectation::Game {
+                stamp: expected_stamp,
+            },
+            repository.clone(),
+            None,
+        ));
+        tokio::time::timeout(Duration::from_secs(5), entered)
+            .await
+            .expect("timeout waiting for worker entry")
+            .expect("worker must enter blocking task");
+        // Poison the repository lock while the edit is held, so only the invalidation that
+        // follows the installed replacement can fail.
+        let inner = Arc::clone(&repository.inner);
+        let poisoner = std::thread::spawn(move || {
+            let _guard = inner.lock().expect("repository lock");
+            panic!("poison the PGN repository lock");
+        });
+        assert!(poisoner.join().is_err());
+        drop(release);
+
+        let error = write
+            .await
+            .expect("write task")
+            .expect_err("the cache cannot be invalidated");
+        assert!(
+            matches!(
+                error,
+                Error::CommittedDurabilityUncertain(
+                    crate::error::DurabilityStage::PgnCacheInvalidation
+                )
+            ),
+            "unexpected error: {error:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("replaced PGN"),
+            "[Event \"Updated\"]\n\n1. d4\n"
         );
     }
 
