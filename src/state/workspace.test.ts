@@ -198,6 +198,60 @@ test("does not rewrite an already matching compressed envelope", () => {
     setItem.mockRestore();
 });
 
+test("reclaims an orphaned durable tree while retaining tabs and unrelated UUID keys", () => {
+    sessionStorage.clear();
+    const retained = { ...legacyTab, value: crypto.randomUUID() };
+    const orphan = crypto.randomUUID();
+    const unrelated = crypto.randomUUID();
+    const tree = serializeStorageValue({ version: 1, state: defaultTree() });
+    const workspace = { version: 1, tabs: [retained], activeTab: retained.value };
+    sessionStorage.setItem(WORKSPACE_STORAGE_KEY, serializeStorageValue(workspace));
+    sessionStorage.setItem(retained.value, tree);
+    sessionStorage.setItem(orphan, tree);
+    sessionStorage.setItem(unrelated, serializeStorageValue({ other: true }));
+
+    expect(loadStoredWorkspace()).toEqual(workspace);
+    expect(sessionStorage.getItem(orphan)).toBeNull();
+    expect(sessionStorage.getItem(retained.value)).toBe(tree);
+    expect(sessionStorage.getItem(unrelated)).not.toBeNull();
+});
+
+test("retries orphan cleanup on the next load after storage refuses removal", () => {
+    sessionStorage.clear();
+    const retained = { ...legacyTab, value: crypto.randomUUID() };
+    const orphan = crypto.randomUUID();
+    const workspace = { version: 1, tabs: [retained], activeTab: retained.value };
+    sessionStorage.setItem(WORKSPACE_STORAGE_KEY, serializeStorageValue(workspace));
+    sessionStorage.setItem(orphan, serializeStorageValue({ version: 1, state: defaultTree() }));
+    const originalRemoveItem = Storage.prototype.removeItem;
+    const refused = vi
+        .spyOn(Storage.prototype, "removeItem")
+        .mockImplementation(function (this: Storage, key) {
+            if (key === orphan) throw new DOMException("denied", "SecurityError");
+            return originalRemoveItem.call(this, key);
+        });
+
+    expect(loadStoredWorkspace()).toEqual(workspace);
+    expect(sessionStorage.getItem(orphan)).not.toBeNull();
+    expect(persistError.reportPersistError).toHaveBeenCalledOnce();
+    refused.mockRestore();
+
+    expect(loadStoredWorkspace()).toEqual(workspace);
+    expect(sessionStorage.getItem(orphan)).toBeNull();
+});
+
+test("preserves valid tree keys if no valid workspace envelope establishes ownership", () => {
+    sessionStorage.clear();
+    const treeId = crypto.randomUUID();
+    const tree = serializeStorageValue({ version: 1, state: defaultTree() });
+    sessionStorage.setItem(WORKSPACE_STORAGE_KEY, "{broken");
+    sessionStorage.setItem(treeId, tree);
+
+    loadStoredWorkspace();
+
+    expect(sessionStorage.getItem(treeId)).toBe(tree);
+});
+
 test.each(["tabs", "activeTab"] as const)(
     "preserves the leftover %s key when cleanup cannot rewrite a matching envelope",
     (leftoverKey) => {

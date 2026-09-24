@@ -150,6 +150,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function loadWorkspace(storage: SyncStringStorage, key: string): Workspace {
     const storedWorkspace = storage.getItem(key);
     const current = readStoredWorkspaceValue(storage, key);
+    const hasAuthoritativeWorkspace = workspaceLiveSchema.safeParse(current).success;
     const legacy =
         current ??
         ({
@@ -183,6 +184,11 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
     }
 
     scrubInvalidLegacyTreeKeys(legacy, plan.workspace.tabs);
+    // A missing or damaged workspace cannot establish ownership of otherwise valid
+    // tree keys. Wait for a later load with a valid persisted envelope before sweeping.
+    if (hasAuthoritativeWorkspace) {
+        tabStorage.removeOrphanedTrees(new Set(plan.workspace.tabs.map((tab) => tab.value)));
+    }
     storage.removeItem("tabs");
     storage.removeItem("activeTab");
     return plan.workspace;
