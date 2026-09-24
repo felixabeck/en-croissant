@@ -4072,3 +4072,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Cumulative persisted-state review showed that d-20260924-06's migration could turn unknown legacy IDs into trusted owners of a different workspace. Source tracing also showed that Files may never mount, so startup must physically reclaim a valid legacy array without waiting for atom hydration. Reversal path: a provenance-bearing legacy format or an explicit backend validation that can safely attribute each ID.
 * **Decided by:** Codex drain df96e5f3-0928-4d01-8c96-356e430dceb7, cumulative review · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"f36d677657d813fd25bb57d504dd01ff5cc6b21414ecadee165783beec662606","input_sha256":"d37f9d5b405f2c98c24e899a7ca508fe617c713ec209a4377f738a6086e0bbd1","kind":"mutation-receipt","operation":"d81c8402c4746619dd930f62e3c99c72e8a191f8698b89bd226978201a070b07","options":{"section":null},"request_id_sha256":null,"results":["d-20260925-01"],"target":"decisions-ledger","v":1} -->
+
+### d-20260925-02 — When must expansion storage be repaired, and how are oversized UI IDs saved?
+
+* **Question:** When must expansion storage be repaired, and how are oversized UI IDs saved?
+* **Governs:** f-20260906-24
+* **Chosen:** Repair a valid over-budget versioned record at startup after the original owner snapshot, even when its workspace is inactive, and again on atom hydration if needed. Keep an individual oversized ID in transient UI state and report it once, but exclude it from the persisted bounded record so later valid additions can save.
+* **Rejected:** Wait for Files to mount before reclaiming storage, or let one oversized transient ID block all later valid saves; either leaves shared session quota or future preference durability hostage to a disposable entry.
+* **Reason:** The Files tree is not guaranteed to mount on startup, and cumulative correctness and error-handling review found that mismatched workspaces and one oversized ID could defeat the physical quota or later saves. Reversal path: a new storage architecture with independent quota and capability provenance.
+* **Decided by:** Codex drain df96e5f3-0928-4d01-8c96-356e430dceb7, cumulative review · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"882b14a2171ac6e6476d11d158c95a2b7babbe04655a42922fffd238796369bd","input_sha256":"24f179780491eb75e4842e74250877661e812661f4b5f8ab0b8e1f85ef8b510c","kind":"mutation-receipt","operation":"d3176488f026a9f146f0d9b484451d3f0443fd074498a0c5b30bba2b86146fe8","options":{"section":null},"request_id_sha256":null,"results":["d-20260925-02"],"target":"decisions-ledger","v":1} -->
