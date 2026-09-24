@@ -4082,3 +4082,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The Files tree is not guaranteed to mount on startup, and cumulative correctness and error-handling review found that mismatched workspaces and one oversized ID could defeat the physical quota or later saves. Reversal path: a new storage architecture with independent quota and capability provenance.
 * **Decided by:** Codex drain df96e5f3-0928-4d01-8c96-356e430dceb7, cumulative review · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"882b14a2171ac6e6476d11d158c95a2b7babbe04655a42922fffd238796369bd","input_sha256":"24f179780491eb75e4842e74250877661e812661f4b5f8ab0b8e1f85ef8b510c","kind":"mutation-receipt","operation":"d3176488f026a9f146f0d9b484451d3f0443fd074498a0c5b30bba2b86146fe8","options":{"section":null},"request_id_sha256":null,"results":["d-20260925-02"],"target":"decisions-ledger","v":1} -->
+
+### d-20260925-03 — When can startup delete an unreferenced tab-tree key?
+
+* **Question:** When can startup delete a tree-shaped session key whose tab is absent from the loaded workspace?
+* **Governs:** f-20260924-02
+* **Chosen:** Only after loading a valid persisted workspace envelope, remove unreferenced UUID keys that decode as persisted trees. Report removal failures and retry on later loads.
+* **Rejected:** Delete all unreferenced UUID keys, because other session values could use UUIDs; sweep when the workspace record is missing or damaged, because it cannot establish which trees still contain recoverable edits.
+* **Reason:** A refused tab admission can leave a durable tree when rollback removal throws. A valid workspace gives an authoritative retained-id set, and checking the value shape bounds deletion to the tree repository's own records. `src/state/workspace.ts` and `src/state/store/tabStorage.ts` own the reversal path.
+* **Decided by:** Codex drain df992edd-eb21-4f56-ae9e-982da76bfbbc · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"c261b756d4940f8b006f2e3c25d3c00b271f5bd3546f34330dad4bc927aaf5b1","input_sha256":"40ea768848f09f9aed4ad3dbcad7613d3a3b20033da8c66dfabe0ec9cc199d91","kind":"mutation-receipt","operation":"5cc22fb0867a97dd3e509b0677ac9a5ab5f6b757690cee4048545ad1986e34dd","options":{"section":null},"request_id_sha256":null,"results":["d-20260925-03"],"target":"decisions-ledger","v":1} -->
