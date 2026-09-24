@@ -35,6 +35,7 @@ const BACKEND_CATEGORY: Record<ErrorCategory, AppErrorCategory> = {
     "chess-data": "validation",
     database: "unexpected",
     "invalid-input": "validation",
+    "stale-game": "validation",
     "missing-resource": "not-found",
     conflict: "validation",
     "resource-limit": "validation",

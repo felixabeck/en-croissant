@@ -1,9 +1,11 @@
 import { MantineProvider } from "@mantine/core";
 import { Provider, createStore } from "jotai";
-import { act } from "react";
+import { act, useContext } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { TreeStateProvider } from "@/components/common/TreeStateContext";
+import { TreeStateContext } from "@/components/common/TreeStateContext";
+import type { TreeStore } from "@/state/store/tree";
 import { activeTabAtom, referenceDbAtom, tabsAtom } from "@/state/atoms";
 import { createNode, defaultTree, getBoardState } from "@/utils/treeReducer";
 import { parseUci } from "chessops";
@@ -81,7 +83,23 @@ afterEach(async () => {
   sessionStorage.clear();
 });
 
-async function renderRepertoireInfo(initial = defaultTree(), id = "repertoire-info-test") {
+function CaptureStore({
+  onStore,
+  children,
+}: {
+  onStore?: (store: TreeStore) => void;
+  children: React.ReactNode;
+}) {
+  const store = useContext(TreeStateContext)!;
+  onStore?.(store);
+  return children;
+}
+
+async function renderRepertoireInfo(
+  initial = defaultTree(),
+  id = "repertoire-info-test",
+  onStore?: (store: TreeStore) => void,
+) {
   const store = createStore();
   store.set(tabsAtom, [
     {
@@ -97,7 +115,9 @@ async function renderRepertoireInfo(initial = defaultTree(), id = "repertoire-in
       <MantineProvider>
         <Provider store={store}>
           <TreeStateProvider id={id} initial={initial}>
-            <RepertoireInfo />
+            <CaptureStore onStore={onStore}>
+              <RepertoireInfo />
+            </CaptureStore>
           </TreeStateProvider>
         </Provider>
       </MantineProvider>,
@@ -184,4 +204,18 @@ test("reports the current coverage query failure", async () => {
       color: "red",
     }),
   );
+});
+
+test("coverage completion leaves dirty edits dirty", async () => {
+  const initial = defaultTree();
+  initial.dirty = true;
+  initial.headers.event = "Unsaved user edit";
+  let store: TreeStore | undefined;
+  await renderRepertoireInfo(initial, "coverage-dirty-stays", (captured) => {
+    store = captured;
+  });
+  await vi.waitFor(() => expect(mocks.computeTreeCoverage).toHaveBeenCalledOnce());
+  await act(async () => Promise.resolve());
+
+  expect(store?.getState()).toMatchObject({ dirty: true, headers: { event: "Unsaved user edit" } });
 });

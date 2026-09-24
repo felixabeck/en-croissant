@@ -142,6 +142,11 @@ const persistedTreeSchema = z.object({
     headers: headersSchema,
     position: pathSchema,
     dirty: z.boolean(),
+    sourceStamp: z
+        .string()
+        .regex(/^[a-f0-9]{64}$/)
+        .nullable(),
+    appendAttempted: z.boolean(),
     report: z.object({
         inProgress: z.boolean(),
         operationId: z.string().nullable().optional(),
@@ -183,10 +188,17 @@ function migrateReport(report: unknown): { inProgress: boolean; operationId: str
 /** Adds fields that were absent before TreeState persistence was versioned. */
 export function migrateTreeForStorage(value: unknown): unknown {
     if (!isRecord(value)) return value;
+    const hasAppendAttempted = Object.prototype.hasOwnProperty.call(value, "appendAttempted");
     return {
         ...value,
         position: Array.isArray(value.position) ? value.position : [],
         dirty: typeof value.dirty === "boolean" ? value.dirty : false,
+        sourceStamp:
+            typeof value.sourceStamp === "string" && /^[a-f0-9]{64}$/.test(value.sourceStamp)
+                ? value.sourceStamp
+                : null,
+        appendAttempted:
+            typeof value.appendAttempted === "boolean" ? value.appendAttempted : hasAppendAttempted,
         report: migrateReport(value.report),
     };
 }

@@ -44,6 +44,7 @@ import { IconAction } from "../common/IconAction";
 import AppModal from "../common/AppModal";
 import ConfirmChangesModal from "./ConfirmChangesModal";
 import NewTabHome from "./NewTabHome";
+import FileFreshnessGate from "./FileFreshnessGate";
 
 import "react-mosaic-component/react-mosaic-component.css";
 
@@ -387,7 +388,7 @@ export default function BoardsPage() {
       </AppModal>
       {tabs.map((tab) => (
         <Tabs.Panel key={tab.value} value={tab.value} h="100%" w="100%" pb="sm" px="xs">
-          <TabSwitch tab={tab} />
+          <TabSwitch tab={tab} closeTab={(tabId) => void closeTab(tabId)} />
         </Tabs.Panel>
       ))}
       <ConfirmChangesModal
@@ -434,7 +435,7 @@ const windowsStateAtom = atomWithStorage(
   { getOnInit: true },
 );
 
-function TabSwitch({ tab }: { tab: Tab }) {
+function TabSwitch({ tab, closeTab }: { tab: Tab; closeTab: (tabId: string) => void }) {
   const [windowsState, setWindowsState] = useAtom(windowsStateAtom);
 
   return match(tab.type)
@@ -452,13 +453,15 @@ function TabSwitch({ tab }: { tab: Tab }) {
     ))
     .with("analysis", () => (
       <TreeStateProvider id={tab.value}>
-        <Mosaic<ViewId>
-          renderTile={(id) => fullLayout[id]}
-          value={windowsState.currentNode}
-          onChange={(currentNode) => setWindowsState({ currentNode })}
-          resize={{ minimumPaneSizePercentage: 0 }}
-        />
-        <BoardAnalysis />
+        <FileFreshnessGate tab={tab} closeTab={closeTab}>
+          <Mosaic<ViewId>
+            renderTile={(id) => fullLayout[id]}
+            value={windowsState.currentNode}
+            onChange={(currentNode) => setWindowsState({ currentNode })}
+            resize={{ minimumPaneSizePercentage: 0 }}
+          />
+          <BoardAnalysis />
+        </FileFreshnessGate>
       </TreeStateProvider>
     ))
     .with("puzzles", () => (

@@ -67,6 +67,7 @@ pub enum ErrorCategory {
     ChessData,
     Database,
     InvalidInput,
+    StaleGame,
     MissingResource,
     Conflict,
     ResourceLimit,
@@ -91,6 +92,7 @@ impl std::fmt::Display for ErrorCategory {
             Self::ChessData => "chess data failure",
             Self::Database => "database failure",
             Self::InvalidInput => "invalid input",
+            Self::StaleGame => "stale game",
             Self::MissingResource => "missing resource",
             Self::Conflict => "conflict",
             Self::ResourceLimit => "resource limit",
@@ -220,6 +222,9 @@ pub enum Error {
     #[error("Invalid input: {0}")]
     InvalidInput(String),
 
+    #[error("The game changed on disk")]
+    StaleGame,
+
     #[error("Conflict: {0}")]
     Conflict(String),
 
@@ -278,6 +283,7 @@ impl Error {
             Self::SystemTime(_) | Self::InvalidInput(_) | Self::InvalidColor(_) => {
                 ErrorCategory::InvalidInput
             }
+            Self::StaleGame => ErrorCategory::StaleGame,
             Self::NoStdin
             | Self::NoStdout
             | Self::NoMovesFound
@@ -828,6 +834,13 @@ mod tests {
             payload["message"],
             "Invalid input: no window labeled 'main' found"
         );
+    }
+
+    #[test]
+    fn stale_game_serializes_as_stale_game_category() {
+        let serialized = serde_json::to_string(&Error::StaleGame).expect("serialize stale game");
+        let payload = parsed_payload(&serialized);
+        assert_eq!(payload["category"], "stale-game");
     }
 
     #[test]

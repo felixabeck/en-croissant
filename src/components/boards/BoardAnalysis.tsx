@@ -1,4 +1,6 @@
 import { tauri } from "@/platform/tauri";
+import { normalizeError } from "@/platform/errors";
+import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { Paper, Portal, Stack, Tabs } from "@mantine/core";
 import { useHotkeys, useToggle } from "@mantine/hooks";
 import {
@@ -9,7 +11,7 @@ import {
   IconZoomCheck,
 } from "@tabler/icons-react";
 import type { Piece } from "chessops";
-import { useAtom, useAtomValue } from "jotai";
+import { useAtom, useAtomValue, useSetAtom, useStore as useJotaiStore } from "jotai";
 import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
@@ -24,10 +26,13 @@ import {
   enableAllAtom,
   practiceMoveControllerAtom,
   practiceStateAtom,
+  tabsAtom,
 } from "@/state/atoms";
 import { keyMapAtom } from "@/state/keybinds";
 import { defaultPGN } from "@/utils/chess";
-import { getTabFile, saveToFile } from "@/utils/tabs";
+import { getTabFile, saveToFile, updateTabById } from "@/utils/tabs";
+import { fileWorkspaceKey } from "@/utils/pathCapabilities";
+import { setFileFreshness } from "@/state/fileFreshness";
 import DetachedEval from "../common/DetachedEval";
 import GameNotation from "../common/GameNotation";
 import MoveControls from "../common/MoveControls";
@@ -41,13 +46,17 @@ import Board from "./Board";
 import BoardControls from "./BoardControls";
 import EditingCard from "./EditingCard";
 import EvalListener from "./EvalListener";
+import ConfirmChangesModal from "@/components/tabs/ConfirmChangesModal";
 
 function BoardAnalysis() {
   const { t } = useTranslation();
 
   const [editingMode, toggleEditingMode] = useToggle();
   const [selectedPiece, setSelectedPiece] = useState<Piece | null>(null);
-  const [currentTab, setCurrentTab] = useAtom(currentTabAtom);
+  const currentTab = useAtomValue(currentTabAtom);
+  const setTabs = useSetAtom(tabsAtom);
+  const jotaiStore = useJotaiStore();
+  const [addGameConfirm, setAddGameConfirm] = useState(false);
   const tabFile = getTabFile(currentTab);
   const hasPersistentOrigin = currentTab?.gameOrigin.kind !== "none";
   const autoSave = useAtomValue(autoSaveAtom);
@@ -57,53 +66,125 @@ function BoardAnalysis() {
 
   const dirty = useStore(store, (s) => s.dirty);
 
-  const reset = useStore(store, (s) => s.reset);
   const clearShapes = useStore(store, (s) => s.clearShapes);
   const setAnnotation = useStore(store, (s) => s.setAnnotation);
 
+  const updateTab = useCallback(
+    (tabId: string, update: Parameters<typeof updateTabById>[2]) =>
+      updateTabById(setTabs, tabId, update),
+    [setTabs],
+  );
+  const getTab = useCallback(
+    (tabId: string) => jotaiStore.get(tabsAtom).find((tab) => tab.value === tabId),
+    [jotaiStore],
+  );
+
   const saveFile = useCallback(async () => {
-    saveToFile({
-      setCurrentTab,
+    await saveToFile({
+      updateTab,
+      getTab,
       tab: currentTab,
       store,
     });
-  }, [setCurrentTab, currentTab, store]);
+  }, [updateTab, getTab, currentTab, store]);
   const userSaveFile = useCallback(async () => {
-    saveToFile({
-      setCurrentTab,
+    const result = await saveToFile({
+      updateTab,
+      getTab,
       tab: currentTab,
       store,
       isUserSave: true,
     });
-  }, [setCurrentTab, currentTab, store]);
+    if (typeof result === "object" && result.status === "failed") {
+      notifyUnlessCancelled(t("Common.Error"), result.error);
+    } else if (result === "superseded") {
+      notifyUnlessCancelled(t("Common.Error"), {
+        category: "validation",
+        message: t("Tab.SaveSuperseded"),
+      });
+    }
+  }, [updateTab, getTab, currentTab, store, t]);
   useEffect(() => {
     if (hasPersistentOrigin && autoSave && dirty) {
       saveFile();
     }
   }, [hasPersistentOrigin, saveFile, autoSave, dirty]);
 
-  const addGame = useCallback(() => {
-    if (!tabFile) return;
-    const saved = setCurrentTab((prev) => {
-      if (prev.gameOrigin.kind !== "file" && prev.gameOrigin.kind !== "temp_file") {
-        return prev;
-      }
-      return {
-        ...prev,
-        gameOrigin: {
-          ...prev.gameOrigin,
-          gameNumber: prev.gameOrigin.file.numGames,
-          file: {
-            ...prev.gameOrigin.file,
-            numGames: prev.gameOrigin.file.numGames + 1,
+  const appendGame = useCallback(async () => {
+    if (
+      !currentTab ||
+      (currentTab.gameOrigin.kind !== "file" && currentTab.gameOrigin.kind !== "temp_file")
+    ) {
+      return;
+    }
+    const tabId = currentTab.value;
+    const origin = currentTab.gameOrigin;
+    const gameNumber = origin.file.numGames;
+    setFileFreshness(tabId, "appending");
+    try {
+      await tauri.writeGame(origin.file.handle, gameNumber, defaultPGN(), { kind: "append" });
+      const latest = getTab(tabId);
+      if (
+        latest &&
+        (latest.gameOrigin.kind === "file" || latest.gameOrigin.kind === "temp_file") &&
+        latest.gameOrigin.gameNumber === origin.gameNumber &&
+        fileWorkspaceKey(latest.gameOrigin.file.handle) === fileWorkspaceKey(origin.file.handle)
+      ) {
+        updateTab(tabId, (previous) => ({
+          ...previous,
+          gameOrigin: {
+            kind: "file",
+            gameNumber,
+            file: { ...origin.file, numGames: gameNumber + 1 },
           },
-        },
-      };
-    });
-    if (!saved) return;
-    reset();
-    void tauri.writeGame(tabFile.handle, tabFile.numGames, defaultPGN());
-  }, [setCurrentTab, reset, tabFile]);
+        }));
+      }
+      if (getTab(tabId)) setFileFreshness(tabId, "unverified");
+    } catch (error) {
+      const normalized = normalizeError(error);
+      const latest = getTab(tabId);
+      if (latest && (latest.gameOrigin.kind === "file" || latest.gameOrigin.kind === "temp_file")) {
+        try {
+          const count = await tauri.countPgnGames(latest.gameOrigin.file.handle);
+          updateTab(tabId, (previous) => {
+            if (previous.gameOrigin.kind !== "file" && previous.gameOrigin.kind !== "temp_file") {
+              return previous;
+            }
+            return {
+              ...previous,
+              gameOrigin: {
+                ...previous.gameOrigin,
+                file: { ...previous.gameOrigin.file, numGames: count },
+              },
+            };
+          });
+        } catch {
+          // Preserve the typed write failure; a later listing refreshes the count.
+        }
+      }
+      if (getTab(tabId)) setFileFreshness(tabId, "unverified");
+      if (normalized.backendCategory === "stale-game") {
+        notifyUnlessCancelled(t("Common.Error"), {
+          category: "validation",
+          message: t("FileFreshness.AddGameChanged"),
+        });
+      } else {
+        notifyUnlessCancelled(t("Common.Error"), {
+          ...normalized,
+          message: `${t("FileFreshness.AddGameMayHaveBeenAdded")} ${normalized.message}`,
+        });
+      }
+    }
+  }, [currentTab, getTab, updateTab, t]);
+
+  const addGame = useCallback(() => {
+    if (!tabFile || !currentTab) return;
+    if (store.getState().dirty) {
+      setAddGameConfirm(true);
+      return;
+    }
+    void appendGame();
+  }, [tabFile, currentTab, store, appendGame]);
 
   const [, enable] = useAtom(enableAllAtom);
   const allEnabled = useAtomValue(allEnabledAtom);
@@ -168,6 +249,17 @@ function BoardAnalysis() {
 
   return (
     <>
+      <ConfirmChangesModal
+        opened={addGameConfirm}
+        toggle={() => setAddGameConfirm(false)}
+        tab={currentTab}
+        updateTab={updateTab}
+        preserveChanges
+        onSaved={() => {
+          setAddGameConfirm(false);
+          void appendGame();
+        }}
+      />
       <EvalListener />
       <Portal target="#left" style={{ height: "100%" }}>
         <Board

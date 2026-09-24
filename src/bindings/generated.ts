@@ -627,6 +627,14 @@ async countPgnGames(file: FileWorkspaceHandle, ticket: string | null) : Promise<
     else return { status: "error", error: e  as any };
 }
 },
+async readGame(file: FileWorkspaceHandle, n: number, ticket: string | null) : Promise<Result<StampedGame, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("read_game", { file, n, ticket }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async readGames(file: FileWorkspaceHandle, start: number, end: number, ticket: string | null) : Promise<Result<string[], ErrorPayload>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("read_games", { file, start, end, ticket }) };
@@ -797,9 +805,9 @@ async getPublicLichessJson(request: PublicLichessRequest) : Promise<Result<strin
     else return { status: "error", error: e  as any };
 }
 },
-async writeGame(file: FileWorkspaceHandle, n: number, pgn: string) : Promise<Result<null, ErrorPayload>> {
+async writeGame(file: FileWorkspaceHandle, n: number, pgn: string, expected: WriteExpectation) : Promise<Result<WriteStamp, ErrorPayload>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("write_game", { file, n, pgn }) };
+    return { status: "ok", data: await TAURI_INVOKE("write_game", { file, n, pgn, expected }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1169,7 +1177,7 @@ export type EngineResourceHandleKind = "file" | "directory"
  */
 export type EngineRootHandle = { id: PathRef; kind: EngineRootHandleKind }
 export type EngineRootHandleKind = "engineRoot"
-export type ErrorCategory = "io" | "parsing" | "platform" | "network" | "chess-data" | "database" | "invalid-input" | "missing-resource" | "conflict" | "resource-limit" | "authentication" | "credential" | "cancellation" | "durability" | "partial-removal" | "operation-and-cleanup" | "engine-timeout" | "permission" | "puzzle-themes-unavailable"
+export type ErrorCategory = "io" | "parsing" | "platform" | "network" | "chess-data" | "database" | "invalid-input" | "stale-game" | "missing-resource" | "conflict" | "resource-limit" | "authentication" | "credential" | "cancellation" | "durability" | "partial-removal" | "operation-and-cleanup" | "engine-timeout" | "permission" | "puzzle-themes-unavailable"
 export type ErrorPayload = { tag: ErrorPayloadTag; category: ErrorCategory; message: string }
 export type ErrorPayloadTag = "backend-error"
 export type Event = { id: number; name: string | null }
@@ -1266,6 +1274,7 @@ export type ScoreValue =
 export type Sides = "BlackWhite" | "WhiteBlack" | "Any"
 export type SiteStatsData = { site: string; player: string; data: StatsData[] }
 export type SortDirection = "asc" | "desc"
+export type StampedGame = { pgn: string; stamp: string; revision: string; present: boolean }
 export type StartupPathOwners = { retainedIds: PathRef[]; trustedFamilies: PathOwnerFamily[] }
 export type StatsData = { date: string; is_player_white: boolean; player_elo: number; result: GameOutcome; time_control: string; opening: string }
 export type TimeControl = { initialTime: bigint; increment: bigint }
@@ -1348,6 +1357,8 @@ export type WorkspaceEntry = { handle: FileWorkspaceHandle; kind: WorkspaceEntry
 export type WorkspaceEntryKind = "file" | "directory"
 export type WorkspaceFileType = "repertoire" | "game" | "tournament" | "puzzle" | "other"
 export type WorkspaceMetadata = { type: WorkspaceFileType; tags: string[] }
+export type WriteExpectation = { kind: "game"; stamp: string } | { kind: "append" }
+export type WriteStamp = { stamp: string | null }
 
 /** tauri-specta globals **/
 

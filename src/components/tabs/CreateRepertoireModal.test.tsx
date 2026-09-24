@@ -4,9 +4,10 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 const fixtures = vi.hoisted(() => ({
   createFile: vi.fn(),
-  createTab: vi.fn(),
   ensureFileWorkspace: vi.fn(),
   navigate: vi.fn(),
+  openFile: vi.fn(),
+  setTabs: vi.fn(),
   storeSet: vi.fn(),
 }));
 
@@ -23,11 +24,11 @@ vi.mock("@/utils/chess", () => ({ headersToPGN: () => '[Event "White"]\n\n*' }))
 vi.mock("@/utils/files", () => ({
   createFile: fixtures.createFile,
   ensureFileWorkspace: fixtures.ensureFileWorkspace,
+  openFile: fixtures.openFile,
 }));
-vi.mock("@/utils/tabs", () => ({ createTab: fixtures.createTab }));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => fixtures.navigate }));
 vi.mock("jotai", () => ({
-  useAtom: () => [[], vi.fn()],
+  useAtom: (atom: symbol) => (atom.description === "tabs" ? [[], fixtures.setTabs] : [[], vi.fn()]),
   useSetAtom: () => vi.fn(),
   useStore: () => ({ set: fixtures.storeSet }),
 }));
@@ -58,6 +59,11 @@ const setOpened = vi.fn();
 beforeEach(() => {
   vi.clearAllMocks();
   fixtures.ensureFileWorkspace.mockResolvedValue({ id: { id: "workspace" } });
+  fixtures.openFile.mockImplementation(async () => {
+    fixtures.storeSet();
+    fixtures.storeSet();
+    return "tab-id";
+  });
   fixtures.createFile.mockResolvedValue({
     isErr: false,
     value: {
@@ -94,11 +100,11 @@ async function submitRepertoire() {
       .querySelector("form")!
       .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
   });
-  await vi.waitFor(() => expect(fixtures.createTab).toHaveBeenCalledOnce());
+  await vi.waitFor(() => expect(fixtures.openFile).toHaveBeenCalledOnce());
 }
 
 test("keeps the modal state and metadata untouched when tab admission is refused", async () => {
-  fixtures.createTab.mockResolvedValueOnce(null);
+  fixtures.openFile.mockResolvedValueOnce(null);
 
   await submitRepertoire();
 
@@ -108,10 +114,13 @@ test("keeps the modal state and metadata untouched when tab admission is refused
 });
 
 test("acknowledges practice and recent metadata after successful admission", async () => {
-  fixtures.createTab.mockResolvedValueOnce("tab-id");
-
   await submitRepertoire();
 
+  expect(fixtures.openFile).toHaveBeenCalledWith(
+    expect.objectContaining({ metadata: { type: "repertoire", tags: [] } }),
+    fixtures.setTabs,
+    { tabName: "White" },
+  );
   expect(fixtures.storeSet).toHaveBeenCalledTimes(2);
   expect(fixtures.navigate).toHaveBeenCalledWith({ to: "/" });
   expect(setOpened).toHaveBeenCalledWith(false);

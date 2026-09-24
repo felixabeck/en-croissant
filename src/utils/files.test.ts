@@ -6,7 +6,9 @@ const mocks = vi.hoisted(() => ({
     listFileWorkspace: vi.fn(),
     issuePgnWorkspace: vi.fn(),
     countPgnGames: vi.fn(),
+    readGame: vi.fn(),
     issueFileWorkspace: vi.fn(),
+    parsePGN: vi.fn(),
     storeGet: vi.fn(),
     storeSet: vi.fn(),
 }));
@@ -27,6 +29,11 @@ vi.mock("jotai", async (importOriginal) => {
     };
 });
 
+vi.mock("@/utils/chess", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("@/utils/chess")>();
+    return { ...actual, parsePGN: mocks.parsePGN };
+});
+
 vi.mock("./tabs", () => ({ createTab: mocks.createTab }));
 
 import { TauriCommandError } from "@/platform/tauri";
@@ -36,6 +43,10 @@ import { createFile, ensureFileWorkspace, openFile, pickPgnFile } from "./files"
 afterEach(() => {
     vi.clearAllMocks();
 });
+
+const freshPgn =
+    '[Event "Fresh from disk"]\n[White "Fresh White"]\n[Black "Fresh Black"]\n\n1. e4 e5 *';
+const freshStamp = "a".repeat(64);
 
 describe("openFile tab admission", () => {
     const file = {
@@ -48,20 +59,63 @@ describe("openFile tab admission", () => {
     };
     const setTabs = vi.fn();
 
+    beforeEach(() => {
+        mocks.parsePGN.mockImplementation(async (pgn: string) => {
+            const tree = (await import("@/utils/treeReducer")).defaultTree();
+            tree.headers.event = pgn.match(/\[Event "([^"]+)"\]/)?.[1] ?? "";
+            return tree;
+        });
+        mocks.readGame.mockResolvedValue({
+            pgn: freshPgn,
+            stamp: freshStamp,
+            revision: "device:inode:revision",
+            present: true,
+        });
+    });
+
     test("does not acknowledge practice or recent metadata when admission is refused", async () => {
         mocks.createTab.mockResolvedValueOnce(null);
 
-        await expect(openFile(file, setTabs, { pgn: "" })).resolves.toBeNull();
+        await expect(openFile(file, setTabs)).resolves.toBeNull();
 
+        expect(mocks.readGame).toHaveBeenCalledWith(file.handle, 0, undefined);
         expect(mocks.storeSet).not.toHaveBeenCalled();
     });
 
     test("returns the admitted id and preserves practice and recent metadata updates", async () => {
         mocks.createTab.mockResolvedValueOnce("tab-id");
 
-        await expect(openFile(file, setTabs, { pgn: "" })).resolves.toBe("tab-id");
+        await expect(openFile(file, setTabs)).resolves.toBe("tab-id");
 
+        expect(mocks.createTab).toHaveBeenCalledWith(
+            expect.objectContaining({
+                initialTree: expect.objectContaining({ sourceStamp: freshStamp }),
+                gameOrigin: { kind: "file", file, gameNumber: 0 },
+            }),
+        );
         expect(mocks.storeSet).toHaveBeenCalledTimes(2);
+    });
+
+    test("loads current disk text rather than accepting a preview supplied by the caller", async () => {
+        mocks.readGame.mockResolvedValueOnce({
+            pgn: freshPgn,
+            stamp: freshStamp,
+            revision: "new-revision",
+            present: true,
+        });
+        mocks.createTab.mockResolvedValueOnce("tab-id");
+
+        await openFile(file, setTabs, { gameNumber: 0 });
+
+        expect(mocks.createTab).toHaveBeenCalledWith(
+            expect.objectContaining({
+                tab: { name: "Fresh from disk", type: "analysis" },
+                initialTree: expect.objectContaining({
+                    sourceStamp: freshStamp,
+                    headers: expect.objectContaining({ event: "Fresh from disk" }),
+                }),
+            }),
+        );
     });
 });
 

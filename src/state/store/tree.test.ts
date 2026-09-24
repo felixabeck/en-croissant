@@ -1,7 +1,7 @@
 import { parseUci } from "chessops";
 import { INITIAL_FEN, makeFen } from "chessops/fen";
 import { makeSan } from "chessops/san";
-import { expect, test } from "vitest";
+import { afterEach, expect, test } from "vitest";
 import {
     createNode,
     defaultTree,
@@ -10,7 +10,16 @@ import {
     type TreeNode,
 } from "@/utils/treeReducer";
 import { positionFromFen } from "@/utils/chessops";
-import { createTreeStore } from "./tree";
+import { closeTreeStore, createTreeStore } from "./tree";
+import { tabStorage } from "./tabStorage";
+
+const persistedIds: string[] = [];
+afterEach(() => {
+    for (const id of persistedIds.splice(0)) {
+        closeTreeStore(id);
+        tabStorage.remove(id);
+    }
+});
 
 function node(name: string, children: TreeNode[] = []): TreeNode {
     const result = createNode({
@@ -84,6 +93,30 @@ function mainlinePrependStore() {
 
     return createTreeStore(undefined, tree);
 }
+
+test("save writes the clean tree and its new source stamp together", () => {
+    const id = "tree-save-source-stamp";
+    persistedIds.push(id);
+    const tree = defaultTree();
+    tree.dirty = true;
+    tree.sourceStamp = "a".repeat(64);
+    tree.appendAttempted = true;
+    const store = createTreeStore(id, tree);
+
+    store.getState().save("b".repeat(64));
+    tabStorage.flush();
+
+    expect(store.getState()).toMatchObject({
+        dirty: false,
+        sourceStamp: "b".repeat(64),
+        appendAttempted: false,
+    });
+    expect(tabStorage.read(id)?.state).toMatchObject({
+        dirty: false,
+        sourceStamp: "b".repeat(64),
+        appendAttempted: false,
+    });
+});
 
 type PracticePathRebasingCase = {
     name: string;

@@ -1,6 +1,5 @@
 import { tauri } from "@/platform/tauri";
 import { Accordion, Box, Divider, Group, ScrollArea, Stack, Text } from "@mantine/core";
-import { useToggle } from "@mantine/hooks";
 import { IconPlus } from "@tabler/icons-react";
 import { errorUnlessCancelled } from "@/platform/errors";
 import { useAtom, useAtomValue, useSetAtom, useStore as useJotaiStore } from "jotai";
@@ -15,7 +14,6 @@ import { TreeStateContext } from "@/components/common/TreeStateContext";
 import ConfirmChangesModal from "@/components/tabs/ConfirmChangesModal";
 import { currentTabAtom, tabsAtom } from "@/state/atoms";
 import { keyMapAtom } from "@/state/keybinds";
-import { parsePGN } from "@/utils/chess";
 import { formatNumber } from "@/utils/format";
 import { getTabFile, getTabGameNumber } from "@/utils/tabs";
 import FenSearch from "./FenSearch";
@@ -32,6 +30,8 @@ import { useNavigate } from "@tanstack/react-router";
 import { useActiveDatabaseViewStore } from "@/state/store/database";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { fileWorkspaceKey } from "@/utils/pathCapabilities";
+import { loadFileGame } from "@/utils/files";
+import { setFileFreshness } from "@/state/fileFreshness";
 
 function InfoPanel({ addGame }: { addGame?: () => void }) {
   const store = use(TreeStateContext)!;
@@ -136,13 +136,13 @@ function GameSelectorAccordion({
   addGame?: () => void;
 }) {
   const store = use(TreeStateContext)!;
-  const dirty = useStore(store, (s) => s.dirty);
   const setState = useStore(store, (s) => s.setState);
   const [currentTab, setCurrentTab] = useAtom(currentTabAtom);
   const setTabs = useSetAtom(tabsAtom);
   const jotaiStore = useJotaiStore();
 
-  const [confirmChanges, toggleConfirmChanges] = useToggle();
+  const [confirmChanges, setConfirmChanges] = useState(false);
+  const toggleConfirmChanges = () => setConfirmChanges((opened) => !opened);
   const [tempPage, setTempPage] = useState(0);
 
   const tabFile = getTabFile(currentTab);
@@ -183,10 +183,10 @@ function GameSelectorAccordion({
   }, [tabId, fileKey, store]);
 
   async function setPage(page: number, forced?: boolean) {
-    if (!tabFile) return;
-    if (!forced && dirty) {
+    if (!tabFile || !currentTab || tabId === undefined || fileKey === null) return;
+    if (!forced && store.getState().dirty) {
       setTempPage(page);
-      toggleConfirmChanges();
+      setConfirmChanges(true);
       return;
     }
 
@@ -198,6 +198,7 @@ function GameSelectorAccordion({
     const activeFileKey = fileKey;
     const activeStore = store;
     const filePath = tabFile.handle;
+    const initialRoot = activeStore.getState().root;
 
     const isObsolete = () =>
       generation !== pageGenerationRef.current ||
@@ -207,12 +208,13 @@ function GameSelectorAccordion({
       currentIdentityRef.current.store !== activeStore;
 
     try {
-      const data = await tauri.readGames(filePath, page, page, { signal: controller.signal });
+      const loaded = await loadFileGame(filePath, page, controller.signal);
       if (isObsolete()) {
         return;
       }
-      const tree = await parsePGN(data[0], undefined, { signal: controller.signal });
-      if (isObsolete()) {
+      if (activeStore.getState().dirty || activeStore.getState().root !== initialRoot) {
+        setTempPage(page);
+        setConfirmChanges(true);
         return;
       }
       const saved = setCurrentTab((prev) => {
@@ -232,7 +234,11 @@ function GameSelectorAccordion({
         };
       });
       if (!saved) return;
-      setState(tree);
+      setFileFreshness(activeTabId, "unverified");
+      setState(loaded.tree);
+      if (!loaded.present && page < tabFile.numGames) {
+        setFileFreshness(activeTabId, "unavailable");
+      }
     } catch (error) {
       if (isObsolete()) {
         return;

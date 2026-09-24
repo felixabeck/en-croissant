@@ -1,14 +1,18 @@
 import { tauri } from "@/platform/tauri";
+import { normalizeError, type AppError } from "@/platform/errors";
 import type { StoreApi } from "zustand";
 import { startTransition } from "react";
 import type { FileMetadata } from "@/components/files/file";
+import type { WriteExpectation } from "@/bindings";
 import { persistStorageWriteError, tabStorage } from "@/state/store/tabStorage";
 import { reportPersistError } from "@/state/persistError";
 import { newWorkspaceId, tabSchema, type GameOrigin, type Tab } from "@/state/workspaceTypes";
 import type { TreeStoreState } from "@/state/store/tree";
 import { getPGN, parsePGN } from "./chess";
-import { pickPgnFile } from "./files";
-import type { GameHeaders } from "./treeReducer";
+import { pickPgnFile, readFileGame } from "./files";
+import type { GameHeaders, TreeState } from "./treeReducer";
+import { fileWorkspaceKey } from "./pathCapabilities";
+import { setFileFreshness } from "@/state/fileFreshness";
 export { tabSchema, type GameOrigin, type Tab };
 
 export function getTabFile(tab?: Tab | null): FileMetadata | undefined {
@@ -36,6 +40,19 @@ export const genID = newWorkspaceId;
 
 export type SetTabs = (update: Tab[] | ((tabs: Tab[]) => Tab[]), activeTab?: string) => boolean;
 export type SetCurrentTab = (update: React.SetStateAction<Tab>) => boolean;
+export type UpdateTab = (tabId: string, update: React.SetStateAction<Tab>) => boolean;
+
+export function updateTabById(setTabs: SetTabs, tabId: string, update: React.SetStateAction<Tab>) {
+    let found = false;
+    const committed = setTabs((tabs) =>
+        tabs.map((tab) => {
+            if (tab.value !== tabId) return tab;
+            found = true;
+            return typeof update === "function" ? update(tab) : update;
+        }),
+    );
+    return committed && found;
+}
 
 export function commitNewTab({
     tab,
@@ -115,6 +132,8 @@ export async function createTab({
     headers,
     gameOrigin,
     position,
+    initialTree,
+    sourceStamp,
     existingTabIds,
 }: {
     tab: Omit<Tab, "value" | "gameOrigin">;
@@ -123,11 +142,15 @@ export async function createTab({
     headers?: GameHeaders;
     gameOrigin?: GameOrigin;
     position?: number[];
+    initialTree?: TreeState;
+    sourceStamp?: string | null;
     existingTabIds?: Iterable<string>;
 }): Promise<string | null> {
-    let treeToSeed: Awaited<ReturnType<typeof parsePGN>> | undefined;
+    let treeToSeed: TreeState | undefined = initialTree;
 
-    if (pgn !== undefined) {
+    if (treeToSeed && sourceStamp !== undefined) {
+        treeToSeed = { ...treeToSeed, sourceStamp };
+    } else if (pgn !== undefined) {
         const tree = await parsePGN(pgn, headers?.fen);
         if (headers) {
             tree.headers = headers;
@@ -149,34 +172,84 @@ export async function createTab({
     });
 }
 
-export type SaveResult = "saved" | "cancelled" | "failed";
+export type SaveResult =
+    | "saved"
+    | "cancelled"
+    | "conflict"
+    | "superseded"
+    | { status: "failed"; error: AppError };
+
+export function serializeStoreTree(store: StoreApi<TreeStoreState>): string {
+    const state = store.getState();
+    return `${getPGN(state.root, {
+        headers: state.headers,
+        comments: true,
+        extraMarkups: true,
+        glyphs: true,
+        variations: true,
+    })}\n\n`;
+}
+
+function sameOrigin(left: GameOrigin, right: GameOrigin): boolean {
+    if (left.kind !== right.kind) return false;
+    if (left.kind === "file" || left.kind === "temp_file") {
+        return (
+            (right.kind === "file" || right.kind === "temp_file") &&
+            left.kind === right.kind &&
+            fileWorkspaceKey(left.file.handle) === fileWorkspaceKey(right.file.handle) &&
+            left.gameNumber === right.gameNumber
+        );
+    }
+    if (left.kind === "database") {
+        return right.kind === "database" && left.gameId === right.gameId;
+    }
+    return true;
+}
+
+function sourceChanged(tabId: string): SaveResult {
+    setFileFreshness(tabId, "conflict", { conflictReason: "save-refused" });
+    return "conflict";
+}
+
+function failed(error: unknown): SaveResult {
+    return { status: "failed", error: normalizeError(error) };
+}
+
+function writeExpectation(stamp: string): WriteExpectation {
+    return { kind: "game", stamp };
+}
 
 export async function saveToFile({
     tab,
-    setCurrentTab,
+    updateTab,
+    getTab,
     store,
     isUserSave,
 }: {
     tab: Tab | undefined;
-    setCurrentTab: SetCurrentTab;
+    updateTab: UpdateTab;
+    getTab: (tabId: string) => Tab | undefined;
     store: StoreApi<TreeStoreState>;
     isUserSave?: boolean;
 }): Promise<SaveResult> {
+    if (!tab) return failed(new Error("There is no active tab to save."));
+    let currentFileOperation = false;
+    let writingCurrentOrigin = false;
     try {
-        const currentOrigin = tab?.gameOrigin;
+        const tabId = tab.value;
+        const currentOrigin = tab.gameOrigin;
+        const currentTabAtStart = getTab(tabId);
+        if (!currentTabAtStart || !sameOrigin(currentTabAtStart.gameOrigin, currentOrigin)) {
+            return "superseded";
+        }
         const fileOrigin =
             currentOrigin?.kind === "file" || currentOrigin?.kind === "temp_file"
                 ? currentOrigin
                 : undefined;
         const databaseOrigin = currentOrigin?.kind === "database" ? currentOrigin : undefined;
         const isTempFile = currentOrigin?.kind === "temp_file";
-        const pgn = `${getPGN(store.getState().root, {
-            headers: store.getState().headers,
-            comments: true,
-            extraMarkups: true,
-            glyphs: true,
-            variations: true,
-        })}\n\n`;
+        const sourceStamp = store.getState().sourceStamp;
+        const pgn = serializeStoreTree(store);
 
         if (databaseOrigin) {
             await tauri.writeDbGame(databaseOrigin.database, databaseOrigin.gameId, pgn);
@@ -185,41 +258,100 @@ export async function saveToFile({
         }
 
         if (fileOrigin && !(isTempFile && isUserSave)) {
-            await tauri.writeGame(fileOrigin.file.handle, fileOrigin.gameNumber, pgn);
-            store.getState().save();
-            return "saved";
-        } else {
-            const selected = await pickPgnFile();
-            if (!selected) return "cancelled";
+            currentFileOperation = true;
+            writingCurrentOrigin = true;
+            if (sourceStamp === null) return sourceChanged(tabId);
+            const written = await tauri.writeGame(
+                fileOrigin.file.handle,
+                fileOrigin.gameNumber,
+                pgn,
+                writeExpectation(sourceStamp),
+            );
+            const currentTab = getTab(tabId);
+            if (!currentTab || !sameOrigin(currentTab.gameOrigin, currentOrigin))
+                return "superseded";
+            if (written.stamp === null) {
+                store.getState().setSourceStamp(null);
+                setFileFreshness(tabId, "unverified");
+                return "conflict";
+            }
+            if (serializeStoreTree(store) === pgn) {
+                store.getState().save(written.stamp);
+                return "saved";
+            }
+            store.getState().setSourceStamp(written.stamp);
+            return "superseded";
+        }
 
-            const numGames = isTempFile && fileOrigin ? fileOrigin.file.numGames : 1;
-            const gameNumber = fileOrigin?.gameNumber ?? 0;
-            const originSaved = setCurrentTab((prev) => {
-                return {
-                    ...prev,
-                    gameOrigin: {
-                        kind: "file",
-                        gameNumber,
-                        file: {
-                            type: "file",
-                            name: selected.name,
-                            handle: selected.handle,
-                            numGames,
-                            metadata: {
-                                tags: [],
-                                type: "game",
-                            },
-                            lastModified: Date.now(),
-                        },
-                    },
-                };
-            });
-            if (!originSaved) return "failed";
-            await tauri.writeGame(selected.handle, fileOrigin?.gameNumber ?? 0, pgn);
-            store.getState().save();
+        if (isTempFile && fileOrigin) {
+            if (sourceStamp === null) return sourceChanged(tabId);
+            currentFileOperation = true;
+            const source = await readFileGame(fileOrigin.file.handle, fileOrigin.gameNumber);
+            if (source.stamp !== sourceStamp) return sourceChanged(tabId);
+            currentFileOperation = false;
+        }
+
+        const selected = await pickPgnFile();
+        if (!selected) return "cancelled";
+
+        if (isTempFile && fileOrigin) {
+            currentFileOperation = true;
+            const source = await readFileGame(fileOrigin.file.handle, fileOrigin.gameNumber);
+            if (source.stamp !== sourceStamp) return sourceChanged(tabId);
+            currentFileOperation = false;
+        }
+
+        const gameNumber = fileOrigin?.gameNumber ?? 0;
+        const destination = await readFileGame(selected.handle, gameNumber);
+        const written = await tauri.writeGame(
+            selected.handle,
+            gameNumber,
+            pgn,
+            writeExpectation(destination.stamp),
+        );
+        const currentTab = getTab(tabId);
+        if (!currentTab || !sameOrigin(currentTab.gameOrigin, currentOrigin)) return "superseded";
+        if (written.stamp === null) {
+            store.getState().setSourceStamp(null);
+            setFileFreshness(tabId, "unverified");
+            return "conflict";
+        }
+
+        const savedOrigin = updateTab(tabId, (previous) => ({
+            ...previous,
+            gameOrigin: {
+                kind: "file",
+                gameNumber,
+                file: {
+                    ...selected,
+                    numGames: Math.max(selected.numGames, gameNumber + 1),
+                    metadata: { tags: [], type: "game" as const },
+                },
+            },
+        }));
+        if (!savedOrigin) return "superseded";
+        setFileFreshness(tabId, "unverified");
+        if (serializeStoreTree(store) === pgn) {
+            store.getState().save(written.stamp);
             return "saved";
         }
-    } catch {
-        return "failed";
+        store.getState().setSourceStamp(written.stamp);
+        return "superseded";
+    } catch (error) {
+        const normalized = normalizeError(error);
+        if (tab && normalized.backendCategory === "stale-game") {
+            return writingCurrentOrigin ? sourceChanged(tab.value) : failed(error);
+        }
+        if (
+            tab &&
+            currentFileOperation &&
+            (normalized.backendCategory === "conflict" ||
+                normalized.backendCategory === "missing-resource" ||
+                normalized.backendCategory === "invalid-input")
+        ) {
+            setFileFreshness(tab.value, "unavailable");
+            return "conflict";
+        }
+        return failed(error);
     }
 }

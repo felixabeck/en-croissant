@@ -5,6 +5,9 @@ use std::{
     sync::Arc,
 };
 
+use serde::Serialize;
+use sha2::{Digest, Sha256};
+use specta::Type;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -54,6 +57,43 @@ impl PgnCapabilityRebind {
             installed_identity,
         )
     }
+
+    fn resolve_read(&self) -> Result<crate::infra::path_authority::ResolvedPath, Error> {
+        let mut authority = self
+            .authority
+            .lock()
+            .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
+        authority
+            .as_mut()
+            .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
+            .resolve(
+                &self.path_ref,
+                crate::infra::path_authority::PathOperation::ReadPgn,
+                &[],
+            )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct StampedGame {
+    pub pgn: String,
+    pub stamp: String,
+    pub revision: String,
+    pub present: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, Serialize, Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum WriteExpectation {
+    Game { stamp: String },
+    Append,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct WriteStamp {
+    pub stamp: Option<String>,
 }
 
 const MAX_LINE_LEN: usize = 1024 * 1024;
@@ -191,6 +231,8 @@ struct PgnRepositoryInner {
     #[cfg(test)]
     count_hook: Option<BoundedHook>,
     #[cfg(test)]
+    post_commit_hook: Option<BoundedHook>,
+    #[cfg(test)]
     atomic_file_injector: Option<Arc<dyn crate::infra::fs::AtomicWriterInjector + Send + Sync>>,
 }
 
@@ -227,6 +269,17 @@ impl PgnRepository {
     #[cfg(test)]
     pub(crate) fn read_chunk_hook(&self) -> Result<Option<BoundedHook>, Error> {
         Ok(self.inner()?.read_chunk_hook.clone())
+    }
+
+    #[cfg(test)]
+    fn set_post_commit_hook(&self, hook: Option<BoundedHook>) -> Result<(), Error> {
+        self.inner()?.post_commit_hook = hook;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn post_commit_hook(&self) -> Result<Option<BoundedHook>, Error> {
+        Ok(self.inner()?.post_commit_hook.clone())
     }
 
     #[cfg(test)]
@@ -631,6 +684,38 @@ fn checked_range(start: i32, end: i32) -> Result<(usize, usize), Error> {
     Ok((start, count))
 }
 
+fn read_range_bytes(
+    file: &mut File,
+    range: GameRange,
+    cancellation: &CancellationToken,
+) -> Result<Vec<u8>, Error> {
+    let bytes = range
+        .end
+        .checked_sub(range.start)
+        .ok_or_else(|| Error::Conflict("invalid cached PGN byte range".into()))?;
+    let len =
+        usize::try_from(bytes).map_err(|_| Error::ResourceLimit("PGN game is too large".into()))?;
+    if len > MAX_PGN_BYTES {
+        return Err(Error::ResourceLimit("PGN game exceeds 10 MiB".into()));
+    }
+    file.seek(SeekFrom::Start(range.start))?;
+    let mut data = vec![0; len];
+    let mut offset = 0;
+    while offset < len {
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
+        let chunk = (len - offset).min(64 * 1024);
+        file.read_exact(&mut data[offset..offset + chunk])?;
+        offset += chunk;
+        #[cfg(test)]
+        if let Some(hook) = current_read_chunk_hook() {
+            hook.notify_and_wait();
+        }
+    }
+    Ok(data)
+}
+
 fn read_ranges(
     mut file: File,
     ranges: Vec<GameRange>,
@@ -641,36 +726,62 @@ fn read_ranges(
         if cancellation.is_cancelled() {
             return Err(Error::Cancellation);
         }
-        let bytes = range
-            .end
-            .checked_sub(range.start)
-            .ok_or_else(|| Error::Conflict("invalid cached PGN byte range".into()))?;
-        let len = usize::try_from(bytes)
-            .map_err(|_| Error::ResourceLimit("PGN game is too large".into()))?;
-        if len > MAX_PGN_BYTES {
-            return Err(Error::ResourceLimit("PGN game exceeds 10 MiB".into()));
-        }
-        file.seek(SeekFrom::Start(range.start))?;
-        let mut data = vec![0; len];
-        let mut offset = 0;
-        while offset < len {
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancellation);
-            }
-            let chunk = (len - offset).min(64 * 1024);
-            file.read_exact(&mut data[offset..offset + chunk])?;
-            offset += chunk;
-            #[cfg(test)]
-            if let Some(hook) = current_read_chunk_hook() {
-                hook.notify_and_wait();
-            }
-        }
+        let data = read_range_bytes(&mut file, range, cancellation)?;
         games.push(
             String::from_utf8(data)
                 .map_err(|error| malformed(&format!("invalid UTF-8 PGN: {error}")))?,
         );
     }
     Ok(games)
+}
+
+async fn scan_and_read_ranges<T>(
+    resolved: crate::infra::path_authority::ResolvedPath,
+    repository: &PgnRepository,
+    cancellation: &CancellationToken,
+    select: impl FnOnce(&CacheKey, &[GameRange]) -> Result<(T, Vec<GameRange>), Error>,
+) -> Result<(CacheKey, T, Vec<String>), Error> {
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
+    let snapshot = resolved.pgn_snapshot()?;
+    let read_file = snapshot.file.try_clone()?;
+    let (key, games) = scan_current(snapshot, repository, cancellation).await?;
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
+    let (selection, requested) = select(&key, &games)?;
+    #[cfg(test)]
+    let test_hook = repository.read_chunk_hook()?;
+    let values = BLOCKING_GATEWAY
+        .spawn_cancellable(cancellation.clone(), move |token| {
+            #[cfg(test)]
+            let _guard = test_hook.map(|hook| {
+                set_read_chunk_hook(Some(hook));
+                struct HookGuard;
+                impl Drop for HookGuard {
+                    fn drop(&mut self) {
+                        set_read_chunk_hook(None);
+                    }
+                }
+                HookGuard
+            });
+            read_ranges(read_file, requested, token)
+        })
+        .await?;
+    Ok((key, selection, values))
+}
+
+fn game_stamp(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn revision_string(key: &CacheKey) -> String {
+    let (device, inode) = key.identity.pair();
+    format!(
+        "{device}:{inode}:{}:{}:{}",
+        key.revision.size, key.revision.mtime_nanos, key.revision.ctime_nanos
+    )
 }
 
 fn copy_range(
@@ -830,50 +941,86 @@ pub async fn read_games_core(
     cancellation: &CancellationToken,
     repository: &PgnRepository,
 ) -> Result<Vec<String>, Error> {
-    if cancellation.is_cancelled() {
-        return Err(Error::Cancellation);
-    }
     let (start, count) = checked_range(start, end)?;
-    let snapshot = resolved.pgn_snapshot()?;
-    let read_file = snapshot.file.try_clone()?;
-    let (_key, games) = scan_current(snapshot, repository, cancellation).await?;
-    if cancellation.is_cancelled() {
-        return Err(Error::Cancellation);
-    }
-    let end = start
-        .checked_add(count)
-        .ok_or_else(|| Error::InvalidInput("game range overflows".into()))?;
-    let requested = if games.is_empty() && start == 0 && count == 1 {
-        Vec::new()
-    } else {
-        games
-            .get(start..end)
-            .ok_or_else(|| Error::InvalidInput("game index is out of bounds".into()))?
-            .to_vec()
-    };
-    #[cfg(test)]
-    let test_hook = repository.read_chunk_hook()?;
-    BLOCKING_GATEWAY
-        .spawn_cancellable(cancellation.clone(), move |token| {
-            #[cfg(test)]
-            let _guard = test_hook.map(|hook| {
-                set_read_chunk_hook(Some(hook));
-                struct HookGuard;
-                impl Drop for HookGuard {
-                    fn drop(&mut self) {
-                        set_read_chunk_hook(None);
-                    }
-                }
-                HookGuard
-            });
-            read_ranges(read_file, requested, token)
+    let (_, (), values) = scan_and_read_ranges(resolved, repository, cancellation, |_, games| {
+        let end = start
+            .checked_add(count)
+            .ok_or_else(|| Error::InvalidInput("game range overflows".into()))?;
+        let requested = if games.is_empty() && start == 0 && count == 1 {
+            Vec::new()
+        } else {
+            games
+                .get(start..end)
+                .ok_or_else(|| Error::InvalidInput("game index is out of bounds".into()))?
+                .to_vec()
+        };
+        Ok(((), requested))
+    })
+    .await?;
+    Ok(values)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn read_game(
+    file: crate::infra::path_authority::FileWorkspaceHandle,
+    n: i32,
+    ticket: Option<String>,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+) -> Result<StampedGame, Error> {
+    let operation = crate::native_read_operation(ticket, &window, &state, "read_game")?;
+    let cancellation = operation.token();
+    let repository = state.pgn_repository.clone();
+    let resolved = resolve_pgn(
+        &state,
+        &file,
+        crate::infra::path_authority::PathOperation::ReadPgn,
+    )?;
+    crate::infra::operations::run_native_operation(operation, "read_game", async move {
+        read_game_core(resolved, n, &cancellation, &repository).await
+    })
+    .await
+}
+
+async fn read_game_core(
+    resolved: crate::infra::path_authority::ResolvedPath,
+    n: i32,
+    cancellation: &CancellationToken,
+    repository: &PgnRepository,
+) -> Result<StampedGame, Error> {
+    let n = checked_index(n)?;
+    let (key, present, values) =
+        scan_and_read_ranges(resolved, repository, cancellation, |_key, games| {
+            if n < games.len() {
+                Ok((true, vec![games[n]]))
+            } else if n == games.len() {
+                Ok((false, Vec::new()))
+            } else {
+                Err(Error::InvalidInput("game index is out of bounds".into()))
+            }
         })
-        .await
+        .await?;
+    let pgn = if present {
+        values
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::Conflict("PGN read returned no selected game".into()))?
+    } else {
+        String::new()
+    };
+    Ok(StampedGame {
+        stamp: game_stamp(pgn.as_bytes()),
+        pgn,
+        revision: revision_string(&key),
+        present,
+    })
 }
 
 struct PgnMutation {
     target: GameRange,
     replacement: Option<Vec<u8>>,
+    expectation: Option<WriteExpectation>,
     operation_name: &'static str,
     rebind: Option<PgnCapabilityRebind>,
 }
@@ -888,6 +1035,7 @@ async fn commit_pgn_mutation(
     let PgnMutation {
         target,
         replacement,
+        expectation,
         operation_name,
         rebind,
     } = mutation;
@@ -897,6 +1045,27 @@ async fn commit_pgn_mutation(
     let commit_snapshot = resolved.pgn_snapshot()?;
     if snapshot_key(&commit_snapshot) != key {
         return Err(Error::Conflict("PGN changed after scan".into()));
+    }
+    if let Some(expectation) = expectation {
+        let matched = match expectation {
+            WriteExpectation::Append => {
+                target.start == key.revision.size && target.end == key.revision.size
+            }
+            WriteExpectation::Game { stamp } => {
+                let mut file = commit_snapshot.file.try_clone()?;
+                let range = target;
+                let actual = BLOCKING_GATEWAY
+                    .spawn_cancellable(cancellation.clone(), move |token| {
+                        let bytes = read_range_bytes(&mut file, range, token)?;
+                        Ok(game_stamp(&bytes))
+                    })
+                    .await?;
+                actual == stamp
+            }
+        };
+        if !matched {
+            return Err(Error::StaleGame);
+        }
     }
     let identity = key.identity.clone();
     #[cfg(test)]
@@ -1021,6 +1190,7 @@ pub async fn delete_game_core(
             PgnMutation {
                 target: range,
                 replacement: None,
+                expectation: None,
                 operation_name: "delete_game",
                 rebind,
             },
@@ -1038,8 +1208,9 @@ pub async fn write_game(
     file: crate::infra::path_authority::FileWorkspaceHandle,
     n: i32,
     pgn: String,
+    expected: WriteExpectation,
     state: tauri::State<'_, AppState>,
-) -> Result<(), Error> {
+) -> Result<WriteStamp, Error> {
     crate::infra::platform_support::off_unix_refusal("PGN atomic replacement", cfg!(unix))?;
     let lease = state.operations.accept("write_game")?;
     let resolved = resolve_pgn(
@@ -1052,7 +1223,7 @@ pub async fn write_game(
         authority: Arc::clone(&state.pgn_path_authority),
         path_ref: file.path_ref().clone(),
     };
-    write_game_core(lease, resolved, n, pgn, repository, Some(rebind)).await
+    write_game_core(lease, resolved, n, pgn, expected, repository, Some(rebind)).await
 }
 
 pub async fn write_game_core(
@@ -1060,11 +1231,13 @@ pub async fn write_game_core(
     resolved: crate::infra::path_authority::ResolvedPath,
     n: i32,
     pgn: String,
+    expected: WriteExpectation,
     repository: PgnRepository,
     rebind: Option<PgnCapabilityRebind>,
-) -> Result<(), Error> {
+) -> Result<WriteStamp, Error> {
     let cancellation = lease.token();
     crate::infra::operations::run_native_operation(lease, "write_game", async move {
+        let game_number = n;
         let n = checked_index(n)?;
         if pgn.len() > MAX_PGN_BYTES {
             return Err(Error::ResourceLimit(
@@ -1072,7 +1245,7 @@ pub async fn write_game_core(
             ));
         }
         // Validate text before creating a replacement; malformed UTF-8 cannot enter through String.
-        let replacement = pgn.into_bytes();
+        let replacement = pgn.as_bytes().to_vec();
         let scan_snapshot = resolved.pgn_snapshot()?;
         let identity = scan_snapshot.identity.clone();
         let lock = repository.edit_lock(identity.clone())?;
@@ -1096,19 +1269,40 @@ pub async fn write_game_core(
         } else {
             return Err(Error::InvalidInput("game index is out of bounds".into()));
         };
+        let readback_capability = rebind.clone();
         commit_pgn_mutation(
             resolved,
             key,
             PgnMutation {
                 target,
                 replacement: Some(replacement),
+                expectation: Some(expected),
                 operation_name: "write_game",
                 rebind,
             },
             &repository,
             &cancellation,
         )
-        .await
+        .await?;
+
+        #[cfg(test)]
+        if let Some(hook) = repository.post_commit_hook()? {
+            hook.notify_and_wait();
+        }
+
+        let stamp = if let Some(rebind) = readback_capability {
+            if let Ok(readback_path) = rebind.resolve_read() {
+                match read_game_core(readback_path, game_number, &cancellation, &repository).await {
+                    Ok(readback) if readback.pgn.trim() == pgn.trim() => Some(readback.stamp),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        Ok(WriteStamp { stamp })
     })
     .await
 }
@@ -1331,7 +1525,50 @@ mod tests {
         handle: &crate::infra::path_authority::FileWorkspaceHandle,
         n: i32,
         pgn: String,
-    ) -> Result<(), Error> {
+    ) -> Result<WriteStamp, Error> {
+        let (lease, resolved, readback_path, repository, rebind) = {
+            let state = app.state::<AppState>();
+            let lease = state.operations.accept("write_game")?;
+            let resolved = resolve_pgn(
+                &state,
+                handle,
+                crate::infra::path_authority::PathOperation::WritePgn,
+            )?;
+            let readback_path = resolve_pgn(
+                &state,
+                handle,
+                crate::infra::path_authority::PathOperation::ReadPgn,
+            )?;
+            let repository = state.pgn_repository.clone();
+            let rebind = PgnCapabilityRebind {
+                authority: Arc::clone(&state.pgn_path_authority),
+                path_ref: handle.path_ref().clone(),
+            };
+            (lease, resolved, readback_path, repository, rebind)
+        };
+        let current =
+            read_game_core(readback_path, n, &CancellationToken::new(), &repository).await?;
+        write_game_core(
+            lease,
+            resolved,
+            n,
+            pgn,
+            WriteExpectation::Game {
+                stamp: current.stamp,
+            },
+            repository,
+            Some(rebind),
+        )
+        .await
+    }
+
+    #[cfg(unix)]
+    async fn append_through_capability(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        handle: &crate::infra::path_authority::FileWorkspaceHandle,
+        n: i32,
+        pgn: String,
+    ) -> Result<WriteStamp, Error> {
         let (lease, resolved, repository, rebind) = {
             let state = app.state::<AppState>();
             let lease = state.operations.accept("write_game")?;
@@ -1347,7 +1584,16 @@ mod tests {
             };
             (lease, resolved, repository, rebind)
         };
-        write_game_core(lease, resolved, n, pgn, repository, Some(rebind)).await
+        write_game_core(
+            lease,
+            resolved,
+            n,
+            pgn,
+            WriteExpectation::Append,
+            repository,
+            Some(rebind),
+        )
+        .await
     }
 
     #[cfg(unix)]
@@ -1713,6 +1959,305 @@ mod tests {
             missing,
             Err(Error::InvalidInput(message)) if message == "game index is out of bounds"
         ));
+    }
+
+    #[tokio::test]
+    async fn read_game_stamps_exact_bom_prefixed_crlf_game_bytes() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("stamped-games.pgn");
+        let first = b"[Event \"A\"]\r\n\r\n1. e4 *\r\n";
+        let second = b"[Event \"B\"]\r\n\r\n1. d4 *\r\n";
+        let mut fixture = b"\xef\xbb\xbf".to_vec();
+        fixture.extend_from_slice(first);
+        fixture.extend_from_slice(second);
+        std::fs::write(&path, fixture).expect("write PGN fixture");
+        let app = mock_app();
+        let state = app.state::<AppState>();
+
+        let game = read_game_core(
+            resolved_for(&directory, &path),
+            1,
+            &CancellationToken::new(),
+            &state.pgn_repository,
+        )
+        .await
+        .expect("read second game with stamp");
+
+        assert_eq!(game.pgn.as_bytes(), second);
+        assert_eq!(game.stamp, game_stamp(second));
+        assert!(game.present);
+        assert!(!game.revision.is_empty());
+    }
+
+    #[tokio::test]
+    async fn read_game_returns_the_empty_end_slot_and_rejects_beyond_it() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("end-slot.pgn");
+        std::fs::write(&path, b"[Event \"A\"]\n\n1. e4 *\n").expect("write PGN fixture");
+        let app = mock_app();
+        let state = app.state::<AppState>();
+
+        let end = read_game_core(
+            resolved_for(&directory, &path),
+            1,
+            &CancellationToken::new(),
+            &state.pgn_repository,
+        )
+        .await
+        .expect("read the append slot");
+        assert_eq!(end.pgn, "");
+        assert_eq!(end.stamp, game_stamp(b""));
+        assert!(!end.present);
+
+        let beyond = read_game_core(
+            resolved_for(&directory, &path),
+            2,
+            &CancellationToken::new(),
+            &state.pgn_repository,
+        )
+        .await;
+        assert!(matches!(beyond, Err(Error::InvalidInput(_))));
+    }
+
+    #[tokio::test]
+    async fn game_cas_at_end_of_empty_file_appends_and_returns_readback_stamp() {
+        use crate::infra::path_authority::PathAuthority;
+
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("empty-capability.pgn");
+        let registry = directory.path().join("registry.json");
+        std::fs::write(&path, b"").expect("write empty PGN");
+        let mut authority = PathAuthority::open(registry, vec![]).expect("open authority");
+        let handle = promote_pgn_file(&mut authority, &path);
+        let app = mock_app();
+        {
+            let state = app.state::<AppState>();
+            *state
+                .pgn_path_authority
+                .lock()
+                .expect("path authority lock") = Some(authority);
+        }
+        let before = {
+            let state = app.state::<AppState>();
+            read_game_core(
+                resolve_pgn(
+                    &state,
+                    &handle,
+                    crate::infra::path_authority::PathOperation::ReadPgn,
+                )
+                .expect("resolve empty PGN"),
+                0,
+                &CancellationToken::new(),
+                &state.pgn_repository,
+            )
+            .await
+            .expect("read empty slot")
+        };
+        assert!(!before.present);
+        assert_eq!(before.stamp, game_stamp(b""));
+
+        let submitted = "[Event \"Created\"]\n\n1. e4 *\n";
+        let written = write_through_capability(&app, &handle, 0, submitted.into())
+            .await
+            .expect("CAS write into empty slot");
+        let after = {
+            let state = app.state::<AppState>();
+            read_game_core(
+                resolve_pgn(
+                    &state,
+                    &handle,
+                    crate::infra::path_authority::PathOperation::ReadPgn,
+                )
+                .expect("resolve written PGN"),
+                0,
+                &CancellationToken::new(),
+                &state.pgn_repository,
+            )
+            .await
+            .expect("read written game")
+        };
+        assert!(after.present);
+        assert_eq!(written.stamp.as_deref(), Some(after.stamp.as_str()));
+        assert_eq!(after.pgn.trim(), submitted.trim());
+    }
+
+    #[tokio::test]
+    async fn stale_game_cas_refuses_without_changing_file_bytes() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("stale-cas.pgn");
+        let original = b"[Event \"Before\"]\n\n1. e4 *\n";
+        std::fs::write(&path, original).expect("write initial PGN");
+        let app = mock_app();
+        let state = app.state::<AppState>();
+        let stale = read_game_core(
+            writable_for(&directory, &path),
+            0,
+            &CancellationToken::new(),
+            &state.pgn_repository,
+        )
+        .await
+        .expect("read original game");
+        let changed = b"[Event \"External\"]\n\n1. d4 d5 2. c4 *\n";
+        std::fs::write(&path, changed).expect("external in-place write");
+
+        let lease = state.operations.accept("write_game").expect("accept write");
+        let result = write_game_core(
+            lease,
+            writable_for(&directory, &path),
+            0,
+            "[Event \"Replacement\"]\n\n1. c4 *\n".into(),
+            WriteExpectation::Game { stamp: stale.stamp },
+            state.pgn_repository.clone(),
+            None,
+        )
+        .await;
+
+        assert!(matches!(result, Err(Error::StaleGame)));
+        assert_eq!(std::fs::read(&path).expect("read unchanged PGN"), changed);
+    }
+
+    #[tokio::test]
+    async fn append_expectation_succeeds_at_end_and_rejects_after_another_append() {
+        use crate::infra::path_authority::PathAuthority;
+
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("append-cas.pgn");
+        let registry = directory.path().join("registry.json");
+        std::fs::write(&path, b"[Event \"A\"]\n\n1. e4 *\n").expect("write initial PGN");
+        let mut authority = PathAuthority::open(registry, vec![]).expect("open authority");
+        let handle = promote_pgn_file(&mut authority, &path);
+        let app = mock_app();
+        let state = app.state::<AppState>();
+        *state
+            .pgn_path_authority
+            .lock()
+            .expect("path authority lock") = Some(authority);
+        let result = write_game_core(
+            state
+                .operations
+                .accept("write_game")
+                .expect("accept append"),
+            resolve_pgn(
+                &state,
+                &handle,
+                crate::infra::path_authority::PathOperation::WritePgn,
+            )
+            .expect("resolve writable PGN"),
+            1,
+            "[Event \"B\"]\n\n1. d4 *\n".into(),
+            WriteExpectation::Append,
+            state.pgn_repository.clone(),
+            Some(PgnCapabilityRebind {
+                authority: Arc::clone(&state.pgn_path_authority),
+                path_ref: handle.path_ref().clone(),
+            }),
+        )
+        .await
+        .expect("append at current end");
+        assert!(result.stamp.is_some());
+        let after_first = std::fs::read(&path).expect("read first append");
+        let stale = append_through_capability(
+            &app,
+            &handle,
+            1,
+            "[Event \"Wrong end\"]\n\n1. c4 *\n".into(),
+        )
+        .await;
+        assert!(matches!(stale, Err(Error::StaleGame)));
+        assert_eq!(
+            std::fs::read(&path).expect("read after stale append"),
+            after_first
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[cfg(unix)]
+    async fn committed_write_returns_no_stamp_if_post_commit_readback_differs() {
+        use crate::infra::path_authority::PathAuthority;
+
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("post-commit-change.pgn");
+        let registry = directory.path().join("registry.json");
+        std::fs::write(&path, b"[Event \"A\"]\n\n1. e4 *\n").expect("write initial PGN");
+        let mut authority = PathAuthority::open(registry, vec![]).expect("open authority");
+        let handle = promote_pgn_file(&mut authority, &path);
+        let app = mock_app();
+        let state = app.state::<AppState>();
+        *state
+            .pgn_path_authority
+            .lock()
+            .expect("path authority lock") = Some(authority);
+        let (hook, entered, release) = BoundedHook::new();
+        state
+            .pgn_repository
+            .set_post_commit_hook(Some(hook))
+            .expect("set post-commit hook");
+        let writer_app = app.clone();
+        let writer_handle = handle.clone();
+        let task = tokio::spawn(async move {
+            write_through_capability(
+                &writer_app,
+                &writer_handle,
+                0,
+                "[Event \"Written\"]\n\n1. d4 *\n".into(),
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), entered)
+            .await
+            .expect("post-commit hook entry timeout")
+            .expect("post-commit hook entry");
+        std::fs::write(&path, b"[Event \"External\"]\n\n1. c4 *\n")
+            .expect("external in-place write after commit");
+        drop(release);
+
+        let written = task.await.expect("join writer").expect("committed write");
+        assert_eq!(written.stamp, None);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[cfg(unix)]
+    async fn committed_write_returns_success_without_stamp_if_readback_fails() {
+        use crate::infra::path_authority::PathAuthority;
+
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("post-commit-read-failure.pgn");
+        let registry = directory.path().join("registry.json");
+        std::fs::write(&path, b"[Event \"A\"]\n\n1. e4 *\n").expect("write initial PGN");
+        let mut authority = PathAuthority::open(registry, vec![]).expect("open authority");
+        let handle = promote_pgn_file(&mut authority, &path);
+        let app = mock_app();
+        let state = app.state::<AppState>();
+        *state
+            .pgn_path_authority
+            .lock()
+            .expect("path authority lock") = Some(authority);
+        let (hook, entered, release) = BoundedHook::new();
+        state
+            .pgn_repository
+            .set_post_commit_hook(Some(hook))
+            .expect("set post-commit hook");
+        let writer_app = app.clone();
+        let writer_handle = handle.clone();
+        let task = tokio::spawn(async move {
+            write_through_capability(
+                &writer_app,
+                &writer_handle,
+                0,
+                "[Event \"Written\"]\n\n1. d4 *\n".into(),
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), entered)
+            .await
+            .expect("post-commit hook entry timeout")
+            .expect("post-commit hook entry");
+        std::fs::write(&path, b"[Event \"External\"]\n\n\xff\n")
+            .expect("replace bytes with invalid UTF-8 after commit");
+        drop(release);
+
+        let written = task.await.expect("join writer").expect("committed write");
+        assert_eq!(written.stamp, None);
     }
 
     #[tokio::test]
@@ -2197,11 +2742,23 @@ mod tests {
 
         let lease = operations.accept("write_game").unwrap();
         let replacement = "[Event \"Updated\"]\n\n1. d4 d5 1-0\n".to_string();
+        let expected_stamp = read_game_core(
+            writable_for(&directory, &path),
+            0,
+            &CancellationToken::new(),
+            &repository,
+        )
+        .await
+        .expect("read initial game")
+        .stamp;
         let caller_task = tokio::spawn(write_game_core(
             lease,
             resolved,
             0,
             replacement,
+            WriteExpectation::Game {
+                stamp: expected_stamp,
+            },
             repository.clone(),
             None,
         ));
@@ -2346,11 +2903,23 @@ mod tests {
 
         let lease = operations.accept("write_game").unwrap();
         let replacement = "[Event \"Updated\"]\n\n1. d4 d5 1-0\n".to_string();
+        let expected_stamp = read_game_core(
+            writable_for(&directory, &path),
+            0,
+            &CancellationToken::new(),
+            &repository,
+        )
+        .await
+        .expect("read initial game")
+        .stamp;
         let caller_task = tokio::spawn(write_game_core(
             lease,
             resolved,
             0,
             replacement,
+            WriteExpectation::Game {
+                stamp: expected_stamp,
+            },
             repository.clone(),
             None,
         ));
@@ -2412,18 +2981,41 @@ mod tests {
         let waiting = repository
             .observe_edit_lock_wait()
             .expect("observe edit wait");
+        let expected_stamp = if write {
+            Some(
+                read_game_core(
+                    writable_for(&directory, &path),
+                    0,
+                    &CancellationToken::new(),
+                    &repository,
+                )
+                .await
+                .expect("read game before queued write")
+                .stamp,
+            )
+        } else {
+            None
+        };
         let lease = operations
             .accept(if write { "write_game" } else { "delete_game" })
             .expect("accept edit");
         let task = if write {
-            tokio::spawn(write_game_core(
-                lease,
-                resolved,
-                0,
-                "[Event \"Replacement\"]\n\n1. c4\n".into(),
-                repository.clone(),
-                None,
-            ))
+            let write_repository = repository.clone();
+            tokio::spawn(async move {
+                write_game_core(
+                    lease,
+                    resolved,
+                    0,
+                    "[Event \"Replacement\"]\n\n1. c4\n".into(),
+                    WriteExpectation::Game {
+                        stamp: expected_stamp.unwrap_or_else(|| game_stamp(b"")),
+                    },
+                    write_repository,
+                    None,
+                )
+                .await
+                .map(|_| ())
+            })
         } else {
             tokio::spawn(delete_game_core(
                 lease,

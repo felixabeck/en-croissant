@@ -89,6 +89,14 @@ function RepertoireInfo() {
   const [coverageLoading, setCoverageLoading] = useState(false);
   const coverageVersionRef = useRef(0);
   const firstCoverageRun = useRef(true);
+  const lastCoverageInputRef = useRef<{
+    root: TreeNode;
+    orientation: "white" | "black";
+    referenceDb: NonNullable<typeof referenceDb>;
+    minGames: number;
+    startPath: number[];
+    startStateMoves: Map<string, Map<string, string>>;
+  } | null>(null);
   const positionRequest = useRef<AbortController | null>(null);
   const coverageRequest = useRef<AbortController | null>(null);
 
@@ -170,6 +178,18 @@ function RepertoireInfo() {
       return;
     }
 
+    const lastInput = lastCoverageInputRef.current;
+    if (
+      lastInput?.root === root &&
+      lastInput.orientation === orientation &&
+      lastInput.referenceDb === referenceDb &&
+      lastInput.minGames === minGames &&
+      lastInput.startPath === startPath &&
+      lastInput.startStateMoves === startStateMoves
+    ) {
+      return;
+    }
+
     const version = ++coverageVersionRef.current;
     coverageRequest.current?.abort();
     const controller = new AbortController();
@@ -193,7 +213,14 @@ function RepertoireInfo() {
           setMissingGamesMap(result.missingGamesMap);
           setDbMovesMap(result.dbMovesMap);
           setCoverageLoading(false);
-          store.getState().save(); // sets dirty to false
+          lastCoverageInputRef.current = {
+            root,
+            orientation,
+            referenceDb,
+            minGames,
+            startPath,
+            startStateMoves,
+          };
         }
       })
       .catch((error) => {

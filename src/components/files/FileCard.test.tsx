@@ -2,9 +2,11 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { cancellationError } from "@/platform/tauri";
+import { tabStorage } from "@/state/store/tabStorage";
 
 const mocks = vi.hoisted(() => ({
   readGames: vi.fn(),
+  readGame: vi.fn(),
   navigate: vi.fn(),
   notifyUnlessCancelled: vi.fn(),
 }));
@@ -16,6 +18,20 @@ vi.mock("@/platform/tauri", async () => {
     tauri: {
       ...actual.tauri,
       readGames: mocks.readGames,
+      readGame: mocks.readGame,
+    },
+  };
+});
+
+vi.mock("@/utils/chess", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/utils/chess")>();
+  return {
+    ...actual,
+    parsePGN: async (pgn: string) => {
+      const { defaultTree } = await import("@/utils/treeReducer");
+      const tree = defaultTree();
+      tree.headers.event = pgn.includes("Fresh from disk") ? "Fresh from disk" : "Preview";
+      return tree;
     },
   };
 });
@@ -239,5 +255,33 @@ describe("FileCard", () => {
     expect(container.querySelector('[aria-label="Files.EditMetadata"]')).toBeNull();
     expect(container.textContent).not.toContain("Files.EditMetadata");
     expect(container.querySelector('[aria-label="Common.Open"]')).not.toBeNull();
+  });
+
+  test("Open reads and seeds fresh game text instead of the preview", async () => {
+    const stamp = "f".repeat(64);
+    mocks.readGames.mockResolvedValue(['[Event "Old preview"]\n\n1. e4 *']);
+    mocks.readGame.mockResolvedValue({
+      pgn: '[Event "Fresh from disk"]\n\n1. d4 *',
+      stamp,
+      revision: "r-fresh",
+      present: true,
+    });
+    const seed = vi.spyOn(tabStorage, "seed");
+
+    await renderWithMantine(<FileCard selected={sampleFileA} />, root);
+    await vi.waitFor(() => expect(container.textContent).toContain("Old preview"));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[aria-label="Common.Open"]')!.click();
+    });
+    await vi.waitFor(() => expect(seed).toHaveBeenCalledOnce());
+
+    expect(mocks.readGame).toHaveBeenCalledWith(sampleFileA.handle, 0, undefined);
+    expect(seed).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        sourceStamp: stamp,
+        headers: expect.objectContaining({ event: "Fresh from disk" }),
+      }),
+    );
   });
 });

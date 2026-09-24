@@ -13,6 +13,7 @@ const fixtures = vi.hoisted(() => ({
   },
   countPgnGames: vi.fn(),
   createTab: vi.fn(),
+  openFile: vi.fn(),
   notify: vi.fn(),
   readGames: vi.fn(),
   recentFiles: [] as Array<{
@@ -73,6 +74,7 @@ vi.mock("@/components/files/opening", () => ({
   getStats: () => fixtures.dueStats,
 }));
 vi.mock("@/utils/tabs", () => ({ createTab: fixtures.createTab }));
+vi.mock("@/utils/files", () => ({ openFile: fixtures.openFile }));
 vi.mock("./CreateRepertoireModal", () => ({ default: () => null }));
 vi.mock("./ImportModal", () => ({ default: () => null }));
 vi.mock("../icons/Chessboard", () => ({ default: () => null }));
@@ -126,6 +128,10 @@ beforeEach(() => {
   ];
   fixtures.countPgnGames.mockResolvedValue(1);
   fixtures.createTab.mockResolvedValue("tab-id");
+  fixtures.openFile.mockImplementation(async () => {
+    fixtures.storeSet("recent-open");
+    return "tab-id";
+  });
   fixtures.readGames.mockResolvedValue(["*"]);
   fixtures.dueStats = { due: 0, unseen: 0 };
   fixtures.deckStatus = "ready";
@@ -171,7 +177,7 @@ test("does not let an obsolete recent-file check overwrite newer atom state", as
 });
 
 test("notifies when opening a recent file is denied without creating a tab", async () => {
-  fixtures.readGames.mockRejectedValueOnce(new Error("permission denied"));
+  fixtures.openFile.mockRejectedValueOnce(new Error("permission denied"));
 
   await act(async () => {
     root.render(<NewTabHome id="new-tab" />);
@@ -189,7 +195,7 @@ test("notifies when opening a recent file is denied without creating a tab", asy
     title: "Common.Error",
     message: "permission denied",
   });
-  expect(fixtures.createTab).not.toHaveBeenCalled();
+  expect(fixtures.openFile).toHaveBeenCalledOnce();
 });
 
 test("notifies when counting games for a recent file is denied without creating a tab", async () => {
@@ -210,11 +216,11 @@ test("notifies when counting games for a recent file is denied without creating 
     title: "Common.Error",
     message: "permission denied",
   });
-  expect(fixtures.createTab).not.toHaveBeenCalled();
+  expect(fixtures.openFile).not.toHaveBeenCalled();
 });
 
 test("keeps recent-file cancellation silent without creating a tab", async () => {
-  fixtures.readGames.mockRejectedValueOnce(new Error("Cancellation"));
+  fixtures.openFile.mockRejectedValueOnce(new Error("Cancellation"));
 
   await act(async () => {
     root.render(<NewTabHome id="new-tab" />);
@@ -228,7 +234,7 @@ test("keeps recent-file cancellation silent without creating a tab", async () =>
   });
 
   expect(fixtures.notify).not.toHaveBeenCalled();
-  expect(fixtures.createTab).not.toHaveBeenCalled();
+  expect(fixtures.openFile).toHaveBeenCalledOnce();
 });
 
 test("hides due practice counts when a repertoire is fully practiced", async () => {
@@ -290,7 +296,7 @@ test("opens a recent repertoire into the practice panel", async () => {
     recentFile.click();
   });
   await vi.waitFor(() => {
-    expect(fixtures.createTab).toHaveBeenCalledOnce();
+    expect(fixtures.openFile).toHaveBeenCalledOnce();
     expect(fixtures.storeSet).toHaveBeenCalled();
   });
 });
@@ -304,7 +310,7 @@ test("does not acknowledge recent or practice metadata when tab admission is ref
       lastOpened: 3,
     },
   ];
-  fixtures.createTab.mockResolvedValueOnce(null);
+  fixtures.openFile.mockResolvedValueOnce(null);
 
   await act(async () => {
     root.render(<NewTabHome id="new-tab" />);
@@ -316,7 +322,7 @@ test("does not acknowledge recent or practice metadata when tab admission is ref
     recentFile.click();
   });
 
-  await vi.waitFor(() => expect(fixtures.createTab).toHaveBeenCalledOnce());
+  await vi.waitFor(() => expect(fixtures.openFile).toHaveBeenCalledOnce());
   expect(fixtures.storeSet).not.toHaveBeenCalled();
 });
 
@@ -413,8 +419,6 @@ test("drops a recent file that is gone", async () => {
 });
 
 test("opens a recent file with an empty pgn as a blank analysis tab", async () => {
-  fixtures.readGames.mockResolvedValueOnce([]);
-
   await act(async () => {
     root.render(<NewTabHome id="new-tab" />);
   });
@@ -425,7 +429,11 @@ test("opens a recent file with an empty pgn as a blank analysis tab", async () =
     recentFile.click();
     await Promise.resolve();
   });
-  expect(fixtures.createTab).toHaveBeenCalledWith(expect.objectContaining({ pgn: "" }));
+  expect(fixtures.openFile).toHaveBeenCalledWith(
+    expect.objectContaining({ name: "stale.pgn", numGames: 1 }),
+    fixtures.setTabs,
+    { tabName: "stale.pgn" },
+  );
 });
 
 test("opens a recent file into a new analysis tab", async () => {
@@ -440,6 +448,6 @@ test("opens a recent file into a new analysis tab", async () => {
     await Promise.resolve();
   });
 
-  expect(fixtures.createTab).toHaveBeenCalledOnce();
+  expect(fixtures.openFile).toHaveBeenCalledOnce();
   expect(fixtures.notify).not.toHaveBeenCalled();
 });

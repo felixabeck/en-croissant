@@ -13,6 +13,7 @@ import { parseSanOrUci, positionFromFen } from "@/utils/chessops";
 import { isPrefix } from "@/utils/misc";
 import { getAnnotation } from "@/utils/score";
 import { playSound } from "@/utils/sound";
+import { removeFileFreshness } from "@/state/fileFreshness";
 import {
     createNode,
     defaultTree,
@@ -91,7 +92,9 @@ export interface TreeStoreState extends TreeState {
 
     setState: (state: TreeState) => void;
     reset: () => void;
-    save: () => void;
+    save: (stamp?: string) => void;
+    setSourceStamp: (stamp: string | null) => void;
+    setAppendAttempted: (value: boolean) => void;
 }
 
 export type TreeStore = StoreApi<TreeStoreState> & { dispose: () => void };
@@ -159,6 +162,7 @@ export function closeTreeStore(tab: string): void {
     closingReportOwners.delete(tab);
     treeStores.delete(tab);
     reportOwners.delete(tab);
+    removeFileFreshness(tab);
     closing?.decide(false);
 }
 
@@ -196,12 +200,17 @@ export const createTreeStore = (id?: string, initTree?: TreeState) => {
                 return { ...defaultTree(), practicePath: null };
             }),
 
-        save: () => {
+        save: (stamp) => {
             set((state) => ({
                 ...state,
                 dirty: false,
+                sourceStamp: stamp ?? state.sourceStamp,
+                appendAttempted: false,
             }));
         },
+
+        setAppendAttempted: (value) => set({ appendAttempted: value }),
+        setSourceStamp: (stamp) => set({ sourceStamp: stamp }),
 
         setFen: (fen) =>
             set(

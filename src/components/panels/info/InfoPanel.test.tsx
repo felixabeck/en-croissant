@@ -14,6 +14,7 @@ import InfoPanel from "./InfoPanel";
 const mocks = vi.hoisted(() => ({
   deleteGame: vi.fn(),
   deleteRejected: vi.fn(),
+  loadFileGame: vi.fn(),
   readGames: vi.fn(),
   parsePGN: vi.fn(),
   notify: vi.fn(),
@@ -60,6 +61,10 @@ vi.mock("@/utils/chess", async () => {
     parsePGN: mocks.parsePGN,
   };
 });
+vi.mock("@/utils/files", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/utils/files")>()),
+  loadFileGame: mocks.loadFileGame,
+}));
 
 vi.mock("./GameSelector", () => ({
   default: ({
@@ -190,12 +195,19 @@ describe("InfoPanel game loading and cancellation", () => {
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
-    treeStore = createTreeStore(tabAId);
+    treeStore = createTreeStore(undefined, defaultTree());
     jotaiStore = createJotaiStore();
     jotaiStore.set(tabsAtom, [tabA, tabB]);
     jotaiStore.set(activeTabAtom, tabAId);
 
     mocks.readGames.mockReset();
+    mocks.readGames.mockResolvedValue([]);
+    mocks.loadFileGame.mockReset();
+    mocks.loadFileGame.mockImplementation(async () => {
+      const tree = defaultTree();
+      tree.sourceStamp = "b".repeat(64);
+      return { pgn: "fresh", stamp: tree.sourceStamp, revision: "r1", present: true, tree };
+    });
     mocks.deleteGame.mockReset();
     mocks.deleteRejected.mockReset();
     mocks.parsePGN.mockReset();
@@ -247,9 +259,15 @@ describe("InfoPanel game loading and cancellation", () => {
   }
 
   test("successful setPage loads game and updates tab and tree state", async () => {
-    mocks.readGames.mockResolvedValueOnce(["1. e4 e5 *"]);
     const mockTree = defaultTree();
-    mocks.parsePGN.mockResolvedValueOnce(mockTree);
+    mockTree.sourceStamp = "b".repeat(64);
+    mocks.loadFileGame.mockResolvedValueOnce({
+      pgn: "1. e4 e5 *",
+      stamp: mockTree.sourceStamp,
+      revision: "r2",
+      present: true,
+      tree: mockTree,
+    });
 
     await act(async () => {
       root.render(renderPanel());
@@ -261,17 +279,7 @@ describe("InfoPanel game loading and cancellation", () => {
     });
 
     const fileAHandle = tabA.gameOrigin.kind === "file" ? tabA.gameOrigin.file.handle : null;
-    expect(mocks.readGames).toHaveBeenCalledWith(
-      fileAHandle,
-      1,
-      1,
-      expect.objectContaining({ signal: expect.any(AbortSignal) }),
-    );
-    expect(mocks.parsePGN).toHaveBeenCalledWith(
-      "1. e4 e5 *",
-      undefined,
-      expect.objectContaining({ signal: expect.any(AbortSignal) }),
-    );
+    expect(mocks.loadFileGame).toHaveBeenCalledWith(fileAHandle, 1, expect.any(AbortSignal));
 
     const updatedTab = jotaiStore.get(currentTabAtom);
     expect(updatedTab?.gameOrigin).toMatchObject({ kind: "file", gameNumber: 1 });
@@ -282,8 +290,14 @@ describe("InfoPanel game loading and cancellation", () => {
     const setState = vi.spyOn(treeStore.getState(), "setState");
     const nextTree = defaultTree();
     nextTree.headers.event = "Next tree";
-    mocks.readGames.mockResolvedValueOnce(["1. e4 e5 *"]);
-    mocks.parsePGN.mockResolvedValueOnce(nextTree);
+    nextTree.sourceStamp = "b".repeat(64);
+    mocks.loadFileGame.mockResolvedValueOnce({
+      pgn: "1. e4 e5 *",
+      stamp: nextTree.sourceStamp,
+      revision: "r2",
+      present: true,
+      tree: nextTree,
+    });
     refuseWorkspaceWrites();
     await act(async () => root.render(renderPanel()));
 
@@ -293,6 +307,46 @@ describe("InfoPanel game loading and cancellation", () => {
 
     expect(jotaiStore.get(currentTabAtom)?.gameOrigin).toMatchObject({ gameNumber: 0 });
     expect(setState).not.toHaveBeenCalled();
+  });
+
+  test("setPage does not replace an edit made while the fresh file read is pending", async () => {
+    let resolveLoad!: (value: {
+      pgn: string;
+      stamp: string;
+      revision: string;
+      present: boolean;
+      tree: ReturnType<typeof defaultTree>;
+    }) => void;
+    mocks.loadFileGame.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveLoad = resolve;
+      }),
+    );
+    await act(async () => root.render(renderPanel()));
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="set-page"]')!.click();
+    });
+    await act(async () => {
+      treeStore.getState().setComment("Edit made during file read");
+    });
+    const loadedTree = defaultTree();
+    loadedTree.headers.event = "Disk version";
+    const loadedStamp = "d".repeat(64);
+    loadedTree.sourceStamp = loadedStamp;
+    await act(async () => {
+      resolveLoad({
+        pgn: "fresh disk game",
+        stamp: loadedStamp,
+        revision: "r5",
+        present: true,
+        tree: loadedTree,
+      });
+    });
+
+    expect(jotaiStore.get(currentTabAtom)?.gameOrigin).toMatchObject({ gameNumber: 0 });
+    expect(treeStore.getState()).toMatchObject({ dirty: true, sourceStamp: null });
+    expect(treeStore.getState().root.comment).toBe("Edit made during file read");
   });
 
   test("delete refuses native mutation and cache clearing when metadata cannot be saved", async () => {
@@ -353,7 +407,7 @@ describe("InfoPanel game loading and cancellation", () => {
 
     await act(async () => {
       jotaiStore.set(tabsAtom, [tabB], tabBId);
-      root.render(renderPanel(createTreeStore(tabBId)));
+      root.render(renderPanel(createTreeStore(undefined, defaultTree())));
       rejectDelete(new Error("delete failed"));
       await Promise.resolve();
     });
@@ -386,7 +440,7 @@ describe("InfoPanel game loading and cancellation", () => {
     await act(async () => root.render(renderPanel()));
     await primeAndDelete();
 
-    const treeStoreB = createTreeStore(tabBId);
+    const treeStoreB = createTreeStore(undefined, defaultTree());
     await act(async () => {
       jotaiStore.set(activeTabAtom, tabBId);
       root.render(renderPanel(treeStoreB));
@@ -404,13 +458,13 @@ describe("InfoPanel game loading and cancellation", () => {
 
   test("rapid tab replacement while readGames is pending aborts signal and ignores stale resolve", async () => {
     let capturedSignal!: AbortSignal;
-    let resolveReadGames!: (data: string[]) => void;
+    let resolveLoad!: (data: Awaited<ReturnType<typeof mocks.loadFileGame>>) => void;
 
-    mocks.readGames.mockImplementation(
-      (_handle: unknown, _p1: number, _p2: number, options?: { signal?: AbortSignal }) => {
-        if (options?.signal) capturedSignal = options.signal;
+    mocks.loadFileGame.mockImplementation(
+      (_handle: unknown, _page: number, signal?: AbortSignal) => {
+        if (signal) capturedSignal = signal;
         return new Promise((resolve) => {
-          resolveReadGames = resolve;
+          resolveLoad = resolve;
         });
       },
     );
@@ -428,7 +482,7 @@ describe("InfoPanel game loading and cancellation", () => {
     expect(capturedSignal.aborted).toBe(false);
 
     // Switch active tab to tab B
-    const treeStoreB = createTreeStore(tabBId);
+    const treeStoreB = createTreeStore(undefined, defaultTree());
     await act(async () => {
       sessionStorage.setItem(
         "workspace",
@@ -441,13 +495,21 @@ describe("InfoPanel game loading and cancellation", () => {
     // The effect cleanup on [tabId, fileKey, store] must have aborted the in-flight read
     expect(capturedSignal.aborted).toBe(true);
 
-    // Resolve the stale readGames
+    // Resolve the stale loaded game
     await act(async () => {
-      resolveReadGames(["1. d4 d5 *"]);
+      const tree = defaultTree();
+      tree.headers.event = "Stale result";
+      tree.sourceStamp = "c".repeat(64);
+      resolveLoad({
+        pgn: "1. d4 d5 *",
+        stamp: tree.sourceStamp,
+        revision: "r3",
+        present: true,
+        tree,
+      });
     });
 
-    // parsePGN should not be invoked for obsolete generation, and tab A gameNumber should remain 0
-    expect(mocks.parsePGN).not.toHaveBeenCalled();
+    // The stale result is ignored and tab A gameNumber remains 0.
     const tabAState = jotaiStore.get(tabsAtom).find((t) => t.value === tabAId);
     expect(tabAState?.gameOrigin.kind === "file" && tabAState.gameOrigin.gameNumber).toBe(0);
     expect(mocks.notify).not.toHaveBeenCalled();
@@ -455,9 +517,9 @@ describe("InfoPanel game loading and cancellation", () => {
 
   test("shared peer survival: tab B page load succeeds independently after tab A was replaced", async () => {
     let signalA!: AbortSignal;
-    mocks.readGames.mockImplementationOnce(
-      (_handle: unknown, _p1: number, _p2: number, options?: { signal?: AbortSignal }) => {
-        if (options?.signal) signalA = options.signal;
+    mocks.loadFileGame.mockImplementationOnce(
+      (_handle: unknown, _page: number, signal?: AbortSignal) => {
+        if (signal) signalA = signal;
         return new Promise(() => {}); // never resolves
       },
     );
@@ -474,7 +536,7 @@ describe("InfoPanel game loading and cancellation", () => {
     expect(signalA.aborted).toBe(false);
 
     // Switch to tab B
-    const treeStoreB = createTreeStore(tabBId);
+    const treeStoreB = createTreeStore(undefined, defaultTree());
     await act(async () => {
       sessionStorage.setItem(
         "workspace",
@@ -489,13 +551,19 @@ describe("InfoPanel game loading and cancellation", () => {
     // Tab B now calls setPage
     let signalB!: AbortSignal;
     const mockTreeB = defaultTree();
-    mocks.readGames.mockImplementationOnce(
-      (_handle: unknown, _p1: number, _p2: number, options?: { signal?: AbortSignal }) => {
-        if (options?.signal) signalB = options.signal;
-        return Promise.resolve(["1. c4 e5 *"]);
+    mockTreeB.sourceStamp = "d".repeat(64);
+    mocks.loadFileGame.mockImplementationOnce(
+      (_handle: unknown, _page: number, signal?: AbortSignal) => {
+        if (signal) signalB = signal;
+        return Promise.resolve({
+          pgn: "1. c4 e5 *",
+          stamp: mockTreeB.sourceStamp,
+          revision: "r4",
+          present: true,
+          tree: mockTreeB,
+        });
       },
     );
-    mocks.parsePGN.mockResolvedValueOnce(mockTreeB);
 
     const setPageBtnB = container.querySelector<HTMLButtonElement>('[data-testid="set-page"]')!;
     await act(async () => {
@@ -505,17 +573,7 @@ describe("InfoPanel game loading and cancellation", () => {
     expect(signalB).toBeDefined();
     expect(signalB.aborted).toBe(false);
     const fileBHandle = tabB.gameOrigin.kind === "file" ? tabB.gameOrigin.file.handle : null;
-    expect(mocks.readGames).toHaveBeenCalledWith(
-      fileBHandle,
-      1,
-      1,
-      expect.objectContaining({ signal: signalB }),
-    );
-    expect(mocks.parsePGN).toHaveBeenCalledWith(
-      "1. c4 e5 *",
-      undefined,
-      expect.objectContaining({ signal: signalB }),
-    );
+    expect(mocks.loadFileGame).toHaveBeenCalledWith(fileBHandle, 1, signalB);
 
     const activeTab = jotaiStore.get(currentTabAtom);
     expect(activeTab?.value).toBe(tabBId);
@@ -523,14 +581,14 @@ describe("InfoPanel game loading and cancellation", () => {
     expect(mocks.notify).not.toHaveBeenCalled();
   });
 
-  test("unmount during pending readGames aborts signal and stays silent", async () => {
+  test("unmount during pending loadFileGame aborts signal and stays silent", async () => {
     let capturedSignal!: AbortSignal;
 
-    mocks.readGames.mockImplementation(
-      (_handle: unknown, _p1: number, _p2: number, options?: { signal?: AbortSignal }) => {
-        if (options?.signal) capturedSignal = options.signal;
+    mocks.loadFileGame.mockImplementation(
+      (_handle: unknown, _page: number, signal?: AbortSignal) => {
+        if (signal) capturedSignal = signal;
         return new Promise((_, reject) => {
-          options?.signal?.addEventListener("abort", () => {
+          signal?.addEventListener("abort", () => {
             reject(cancellationError());
           });
         });

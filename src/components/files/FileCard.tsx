@@ -72,7 +72,6 @@ function FileCard({ selected }: { selected: FileMetadata }) {
       create: () =>
         openFile(selected, setTabs, {
           gameNumber: page,
-          pgn: selectedGame || "",
         }),
       onSuccess: () => navigate({ to: "/" }),
       onError: (error) => notifyUnlessCancelled(t("Common.Error"), error),

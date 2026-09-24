@@ -9,6 +9,8 @@ export interface TreeState {
     headers: GameHeaders;
     position: number[];
     dirty: boolean;
+    sourceStamp: string | null;
+    appendAttempted: boolean;
     report: ReportState;
 }
 
@@ -85,6 +87,8 @@ export function defaultTree(fen?: string): TreeState {
 
     return {
         dirty: false,
+        sourceStamp: null,
+        appendAttempted: false,
         position: [],
         root: {
             fen: normalizedFen,

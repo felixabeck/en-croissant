@@ -22,7 +22,13 @@ import { tabStorage } from "@/state/store/tabStorage";
 import { parsePGN } from "@/utils/chess";
 import { getChesscomGame } from "@/utils/chess.com/api";
 import { chessopsError } from "@/utils/chessops";
-import { createFile, ensureFileWorkspace, openFile, pickPgnFile } from "@/utils/files";
+import {
+  createFile,
+  ensureFileWorkspace,
+  loadFileGame,
+  openFile,
+  pickPgnFile,
+} from "@/utils/files";
 import { getLichessGame } from "@/utils/lichess/api";
 import { type SetTabs } from "@/utils/tabs";
 import { defaultTree, getGameName } from "@/utils/treeReducer";
@@ -70,7 +76,7 @@ export default function ImportModal({
             const fileContent = (
               await tauri.readGames(file.handle, 0, Math.max(0, count - 1))
             ).join("\n\n");
-            const input = (await tauri.readGames(file.handle, 0, 0))[0];
+            let loaded = await loadFileGame(file.handle, 0);
             if (save) {
               const workspace = await ensureFileWorkspace();
               if (!workspace) return;
@@ -87,6 +93,7 @@ export default function ImportModal({
                 return;
               }
               fileInfo = newFile.value;
+              loaded = await loadFileGame(fileInfo.handle, 0);
             } else {
               fileInfo = {
                 type: "file",
@@ -100,7 +107,7 @@ export default function ImportModal({
                 },
               };
             }
-            const tree = await parsePGN(input);
+            const tree = loaded.tree;
             const originKind = "file";
             setCurrentTab((prev) => {
               tabStorage.seed(prev.value, tree);

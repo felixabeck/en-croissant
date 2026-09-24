@@ -1,10 +1,11 @@
 import { Button, Group, Stack, Text } from "@mantine/core";
-import { useAtom } from "jotai";
-import { type SetStateAction, useContext, useState } from "react";
+import { useAtom, useSetAtom, useStore as useJotaiStore } from "jotai";
+import { useContext, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { currentTabAtom } from "@/state/atoms";
+import { activeTabAtom, currentTabAtom, tabsAtom } from "@/state/atoms";
 import type { TreeStore } from "@/state/store/tree";
-import { saveToFile, type Tab } from "@/utils/tabs";
+import { saveToFile, updateTabById, type Tab, type UpdateTab } from "@/utils/tabs";
+import { saveFileConflictVersion, useFileFreshness } from "@/state/fileFreshness";
 import { TreeStateContext } from "../common/TreeStateContext";
 import AppModal from "../common/AppModal";
 
@@ -18,10 +19,11 @@ function ConfirmChangesModal({
   opened,
   toggle,
   closeTab,
+  preserveChanges = false,
 }: {
   pendingClose?: { tabId: string; store: TreeStore } | null;
   tab?: Tab;
-  updateTab?: (tabId: string, update: SetStateAction<Tab>) => boolean;
+  updateTab?: UpdateTab;
   onCancel?: () => void;
   onDiscard?: () => void;
   onSaved?: () => void;
@@ -29,14 +31,21 @@ function ConfirmChangesModal({
   opened?: boolean;
   toggle?: () => void;
   closeTab?: () => void;
+  /** Continue the current operation after saving, without closing or replacing the tab. */
+  preserveChanges?: boolean;
 }) {
   const { t } = useTranslation();
-  const [currentTab, setCurrentTab] = useAtom(currentTabAtom);
+  const [currentTab] = useAtom(currentTabAtom);
+  const [, setActiveTab] = useAtom(activeTabAtom);
+  const setTabs = useSetAtom(tabsAtom);
+  const jotaiStore = useJotaiStore();
   const contextStore = useContext(TreeStateContext);
-  const [saveFailed, setSaveFailed] = useState(false);
+  const [saveMessage, setSaveMessage] = useState<string | null>(null);
+  const [savePending, setSavePending] = useState(false);
   const targetTab = tab ?? currentTab;
   const targetStore = pendingClose?.store ?? contextStore;
   const modalOpen = pendingClose !== undefined ? pendingClose !== null : (opened ?? false);
+  const freshness = useFileFreshness(targetTab?.value ?? "");
 
   const cancel = () => {
     if (pendingClose !== undefined) onCancel?.();
@@ -44,6 +53,10 @@ function ConfirmChangesModal({
   };
 
   const discard = () => {
+    if (preserveChanges) {
+      cancel();
+      return;
+    }
     if (pendingClose !== undefined) onDiscard?.();
     else {
       closeTab?.();
@@ -53,26 +66,64 @@ function ConfirmChangesModal({
 
   async function save() {
     if (!targetTab || !targetStore) return;
-    setSaveFailed(false);
-    const result = await saveToFile({
-      setCurrentTab: (update) => {
-        if (pendingClose && updateTab) {
-          return updateTab(pendingClose.tabId, update);
+    if (savePending) return;
+    setSavePending(true);
+    setSaveMessage(null);
+    if (freshness.state === "unavailable") {
+      try {
+        const saved = await saveFileConflictVersion(targetTab.value);
+        if (saved) {
+          if (pendingClose !== undefined) onSaved?.();
+          else {
+            closeTab?.();
+            toggle?.();
+          }
+        } else {
+          setSaveMessage(t("FileFreshness.SaveAsNewGameFailed"));
         }
-        return setCurrentTab(update);
-      },
+      } finally {
+        setSavePending(false);
+      }
+      return;
+    }
+    const result = await saveToFile({
+      updateTab: updateTab ?? ((tabId, update) => updateTabById(setTabs, tabId, update)),
+      getTab: (tabId) => jotaiStore.get(tabsAtom).find((candidate) => candidate.value === tabId),
       tab: targetTab,
       store: targetStore,
       isUserSave: true,
     });
     if (result === "saved") {
-      if (pendingClose !== undefined) onSaved?.();
+      setSavePending(false);
+      if (preserveChanges) {
+        onSaved?.();
+        toggle?.();
+      } else if (pendingClose !== undefined) onSaved?.();
       else {
         closeTab?.();
         toggle?.();
       }
+      return;
     }
-    if (result === "failed") setSaveFailed(true);
+    if (result === "conflict") {
+      setSavePending(false);
+      if (pendingClose !== undefined) {
+        setActiveTab(targetTab.value);
+        onCancel?.();
+      } else {
+        toggle?.();
+      }
+      return;
+    }
+    if (result === "superseded") {
+      setSaveMessage(t("Tab.SaveSuperseded"));
+      setSavePending(false);
+      return;
+    }
+    if (typeof result === "object" && result.status === "failed") {
+      setSaveMessage(result.error.message);
+    }
+    setSavePending(false);
   }
 
   return (
@@ -83,14 +134,16 @@ function ConfirmChangesModal({
             {t("Tab.UnsavedChanges")}
           </Text>
           <Text>{t("Tab.UnsavedChangesConfirm")}</Text>
-          {saveFailed && <Text c="red">{t("Tab.SaveFailed")}</Text>}
+          {saveMessage && <Text c="red">{saveMessage}</Text>}
         </div>
 
         <Group justify="right">
-          <Button variant="default" onClick={discard}>
-            {t("Tab.CloseWithoutSaving")}
+          <Button variant="default" onClick={discard} disabled={savePending}>
+            {preserveChanges ? t("Common.Cancel") : t("Tab.CloseWithoutSaving")}
           </Button>
-          <Button onClick={() => void save()}>{t("Tab.SaveAndClose")}</Button>
+          <Button onClick={() => void save()} disabled={savePending}>
+            {preserveChanges ? t("Tab.SaveAndAddGame") : t("Tab.SaveAndClose")}
+          </Button>
         </Group>
       </Stack>
     </AppModal>

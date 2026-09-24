@@ -421,7 +421,61 @@ test("tree migration preserves valid values and repairs every invalid legacy fie
     ).toMatchObject({
         position: [],
         dirty: false,
+        sourceStamp: null,
+        appendAttempted: false,
         report: { inProgress: false, operationId: null },
+    });
+});
+
+test("file stamp and append uncertainty survive a storage write and rehydrate", () => {
+    const tree = treeWith((state) => {
+        state.dirty = true;
+        state.sourceStamp = "c".repeat(64);
+        state.appendAttempted = true;
+        state.headers.event = "Edited but not saved";
+    });
+    storage.write("stamped-tree", { version: TREE_STORAGE_VERSION, state: tree });
+    storage.flush();
+
+    const restored = new TabStorageRepository().read("stamped-tree")?.state;
+    expect(restored).toMatchObject({
+        dirty: true,
+        sourceStamp: "c".repeat(64),
+        appendAttempted: true,
+        headers: { event: "Edited but not saved" },
+    });
+});
+
+test("legacy and invalid file metadata fail closed without rejecting the tree", () => {
+    const base = structuredClone(defaultTree()) as unknown as Record<string, unknown>;
+    base.dirty = true;
+    base.headers = { ...(base.headers as object), event: "Keep my edits" };
+    delete base.sourceStamp;
+    delete base.appendAttempted;
+    expect(migrateTreeForStorage(base)).toMatchObject({
+        dirty: true,
+        sourceStamp: null,
+        appendAttempted: false,
+        headers: { event: "Keep my edits" },
+    });
+
+    const invalid = {
+        ...base,
+        sourceStamp: 42,
+        appendAttempted: "unknown",
+    };
+    expect(migrateTreeForStorage(invalid)).toMatchObject({
+        dirty: true,
+        sourceStamp: null,
+        appendAttempted: true,
+        headers: { event: "Keep my edits" },
+    });
+    storage.seed("invalid-source-stamp", invalid);
+    expect(storage.read("invalid-source-stamp")?.state).toMatchObject({
+        dirty: true,
+        sourceStamp: null,
+        appendAttempted: true,
+        headers: { event: "Keep my edits" },
     });
 });
 

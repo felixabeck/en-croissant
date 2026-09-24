@@ -209,6 +209,7 @@ describe("normalizeError", () => {
         ["durability", "native failed", "applied-despite-error"],
         ["engine-timeout", "timeout", "unexpected"],
         ["conflict", "Engine timeout: waiting for readyok", "validation"],
+        ["stale-game", "The game changed on disk", "validation"],
         ["cancellation", "connection aborted", "cancelled"],
         ["missing-resource", "I/O failure", "not-found"],
         ["permission", "I/O failure", "permission"],

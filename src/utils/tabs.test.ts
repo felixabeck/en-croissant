@@ -1,16 +1,30 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { tabStorage } from "@/state/store/tabStorage";
+import { closeTreeStore, createTreeStore } from "@/state/store/tree";
 import { defaultTree } from "./treeReducer";
 
 const mocks = vi.hoisted(() => ({
     parsePGN: vi.fn(),
     pickPgnFile: vi.fn(),
     reportPersistError: vi.fn(),
+    readFileGame: vi.fn(),
     writeGame: vi.fn(),
 }));
+
+function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => {
+        resolve = done;
+    });
+    return { promise, resolve };
+}
+
 vi.mock("@/platform/tauri", () => ({ tauri: { writeGame: mocks.writeGame } }));
 vi.mock("@/state/persistError", () => ({ reportPersistError: mocks.reportPersistError }));
-vi.mock("./files", () => ({ pickPgnFile: mocks.pickPgnFile }));
+vi.mock("./files", () => ({
+    pickPgnFile: mocks.pickPgnFile,
+    readFileGame: mocks.readFileGame,
+}));
 vi.mock("./chess", async (importOriginal) => ({
     ...(await importOriginal<typeof import("./chess")>()),
     parsePGN: mocks.parsePGN,
@@ -28,6 +42,8 @@ import {
 
 afterEach(() => {
     sessionStorage.clear();
+    closeTreeStore("save-test");
+    closeTreeStore("save-as-test");
     vi.clearAllMocks();
     vi.restoreAllMocks();
 });
@@ -210,27 +226,22 @@ test("keeps a refused creation unacknowledged when rollback removal is rejected"
 
 test("saveToFile refuses the native write when the selected origin was not durable", async () => {
     const save = vi.fn();
-    const tree = defaultTree();
-    mocks.pickPgnFile.mockResolvedValueOnce({
-        type: "file",
-        name: "saved",
-        handle: { id: { id: "saved" }, kind: "fileWorkspace" },
-        numGames: 1,
-        metadata: { type: "game", tags: [] },
-        lastModified: 1,
-    });
     const store = {
-        getState: () => ({ ...tree, save }),
+        getState: () => ({ ...defaultTree(), save }),
     } as never;
 
     await expect(
         saveToFile({
             tab: undefined,
-            setCurrentTab: () => false,
+            updateTab: () => false,
+            getTab: () => undefined,
             store,
             isUserSave: true,
         }),
-    ).resolves.toBe("failed");
+    ).resolves.toMatchObject({
+        status: "failed",
+        error: { message: "There is no active tab to save." },
+    });
     expect(mocks.writeGame).not.toHaveBeenCalled();
     expect(save).not.toHaveBeenCalled();
 });
@@ -259,4 +270,331 @@ test("concurrent parses commit against the latest tabs when they finish out of o
     await first;
 
     expect(tabs.map((tab) => tab.name)).toEqual(["Second", "First"]);
+});
+
+const fileHandle = { id: { id: "save-file" }, kind: "fileWorkspace" } as const;
+const destinationHandle = { id: { id: "save-destination" }, kind: "fileWorkspace" } as const;
+const stampA = "a".repeat(64);
+const stampB = "b".repeat(64);
+const stampC = "c".repeat(64);
+
+function saveFixture({
+    id = "save-test",
+    kind = "file",
+    stamp = stampA,
+}: {
+    id?: string;
+    kind?: "file" | "temp_file" | "none";
+    stamp?: string | null;
+} = {}) {
+    const tree = { ...defaultTree(), dirty: true, sourceStamp: stamp };
+    tree.headers.event = "Unsaved version";
+    const store = createTreeStore(undefined, tree);
+    let tabs: Tab[] = [
+        {
+            value: id,
+            name: "Save game",
+            type: "analysis",
+            gameOrigin:
+                kind === "none"
+                    ? { kind: "none" }
+                    : {
+                          kind,
+                          gameNumber: 2,
+                          file: {
+                              type: "file",
+                              handle: fileHandle,
+                              name: "source.pgn",
+                              numGames: 4,
+                              metadata: { type: "game", tags: [] },
+                              lastModified: 1,
+                          },
+                      },
+        } as Tab,
+    ];
+    const updateTab = (tabId: string, update: React.SetStateAction<Tab>) => {
+        const found = tabs.some((tab) => tab.value === tabId);
+        tabs = tabs.map((tab) =>
+            tab.value === tabId ? (typeof update === "function" ? update(tab) : update) : tab,
+        );
+        return found;
+    };
+    const getTab = (tabId: string) => tabs.find((tab) => tab.value === tabId);
+    return {
+        get tabs() {
+            return tabs;
+        },
+        getTab,
+        updateTab,
+        store,
+        tree,
+    };
+}
+
+function targetFile() {
+    return {
+        type: "file" as const,
+        handle: destinationHandle,
+        name: "destination.pgn",
+        numGames: 8,
+        metadata: { type: "game" as const, tags: [] },
+        lastModified: 1,
+    };
+}
+
+test("file saves send the source stamp as a required CAS and persist the returned stamp", async () => {
+    const fixture = saveFixture();
+    mocks.writeGame.mockResolvedValueOnce({ stamp: stampB });
+
+    await expect(
+        saveToFile({
+            tab: fixture.tabs[0],
+            updateTab: fixture.updateTab,
+            getTab: fixture.getTab,
+            store: fixture.store,
+        }),
+    ).resolves.toBe("saved");
+
+    expect(mocks.writeGame).toHaveBeenCalledWith(fileHandle, 2, expect.any(String), {
+        kind: "game",
+        stamp: stampA,
+    });
+    expect(fixture.store.getState()).toMatchObject({ dirty: false, sourceStamp: stampB });
+});
+
+test("file saves with a missing stamp conflict without calling the native writer", async () => {
+    const fixture = saveFixture({ stamp: null });
+
+    await expect(
+        saveToFile({
+            tab: fixture.tabs[0],
+            updateTab: fixture.updateTab,
+            getTab: fixture.getTab,
+            store: fixture.store,
+        }),
+    ).resolves.toBe("conflict");
+
+    expect(mocks.writeGame).not.toHaveBeenCalled();
+    expect(fixture.store.getState().dirty).toBe(true);
+});
+
+test("a stale-game rejection becomes a conflict without clearing edits", async () => {
+    const fixture = saveFixture();
+    const stale = Object.assign(new Error("The game changed on disk"), {
+        details: {
+            category: "validation",
+            backendCategory: "stale-game",
+            message: "The game changed on disk",
+        },
+    });
+    mocks.writeGame.mockRejectedValueOnce(stale);
+
+    await expect(
+        saveToFile({
+            tab: fixture.tabs[0],
+            updateTab: fixture.updateTab,
+            getTab: fixture.getTab,
+            store: fixture.store,
+        }),
+    ).resolves.toBe("conflict");
+
+    expect(fixture.store.getState()).toMatchObject({ dirty: true, sourceStamp: stampA });
+    expect((await import("@/state/fileFreshness")).getFileFreshness("save-test").state).toBe(
+        "conflict",
+    );
+});
+
+test.each(["header-only edit", "tree edit"] as const)(
+    "an in-flight save with a %s stores the new stamp but stays dirty",
+    async (edit) => {
+        const fixture = saveFixture();
+        let resolveWrite: (result: { stamp: string | null }) => void = () => undefined;
+        mocks.writeGame.mockReturnValueOnce(
+            new Promise((resolve) => {
+                resolveWrite = resolve;
+            }),
+        );
+        const pending = saveToFile({
+            tab: fixture.tabs[0],
+            updateTab: fixture.updateTab,
+            getTab: fixture.getTab,
+            store: fixture.store,
+        });
+        await Promise.resolve();
+        fixture.store.getState().setHeaders({
+            ...fixture.store.getState().headers,
+            event:
+                edit === "header-only edit" ? "Header changed during save" : "Changed during save",
+        });
+        if (edit === "tree edit") {
+            fixture.store.getState().setComment("Move comment changed during save");
+        }
+        resolveWrite({ stamp: stampB });
+
+        await expect(pending).resolves.toBe("superseded");
+        expect(fixture.store.getState()).toMatchObject({ dirty: true, sourceStamp: stampB });
+    },
+);
+
+test("a save completing after a game switch applies nothing and returns superseded", async () => {
+    const fixture = saveFixture();
+    let resolveWrite: (result: { stamp: string | null }) => void = () => undefined;
+    mocks.writeGame.mockReturnValueOnce(
+        new Promise((resolve) => {
+            resolveWrite = resolve;
+        }),
+    );
+    const pending = saveToFile({
+        tab: fixture.tabs[0],
+        updateTab: fixture.updateTab,
+        getTab: fixture.getTab,
+        store: fixture.store,
+    });
+    await Promise.resolve();
+    fixture.updateTab("save-test", (tab) => ({
+        ...tab,
+        gameOrigin:
+            tab.gameOrigin.kind === "file" ? { ...tab.gameOrigin, gameNumber: 3 } : tab.gameOrigin,
+    }));
+    resolveWrite({ stamp: stampB });
+
+    await expect(pending).resolves.toBe("superseded");
+    expect(fixture.tabs[0].gameOrigin).toMatchObject({ gameNumber: 3 });
+    expect(fixture.store.getState()).toMatchObject({ dirty: true, sourceStamp: stampA });
+});
+
+test("temp-file Save-As rechecks the source and CAS-writes the same target slot", async () => {
+    const fixture = saveFixture({ kind: "temp_file" });
+    mocks.pickPgnFile.mockResolvedValueOnce(targetFile());
+    mocks.readFileGame
+        .mockResolvedValueOnce({ stamp: stampA, pgn: "source", revision: "r1", present: true })
+        .mockResolvedValueOnce({ stamp: stampA, pgn: "source", revision: "r1", present: true })
+        .mockResolvedValueOnce({
+            stamp: stampC,
+            pgn: "existing destination",
+            revision: "r2",
+            present: true,
+        });
+    mocks.writeGame.mockResolvedValueOnce({ stamp: stampB });
+
+    await expect(
+        saveToFile({
+            tab: fixture.tabs[0],
+            updateTab: fixture.updateTab,
+            getTab: fixture.getTab,
+            store: fixture.store,
+            isUserSave: true,
+        }),
+    ).resolves.toBe("saved");
+
+    expect(mocks.writeGame).toHaveBeenCalledWith(destinationHandle, 2, expect.any(String), {
+        kind: "game",
+        stamp: stampC,
+    });
+    expect(fixture.tabs[0].gameOrigin).toMatchObject({
+        kind: "file",
+        gameNumber: 2,
+        file: { handle: destinationHandle },
+    });
+});
+
+test("temp-file user Save refuses a missing source stamp before opening the picker", async () => {
+    const fixture = saveFixture({ kind: "temp_file", stamp: null });
+
+    await expect(
+        saveToFile({
+            tab: fixture.tabs[0],
+            updateTab: fixture.updateTab,
+            getTab: fixture.getTab,
+            store: fixture.store,
+            isUserSave: true,
+        }),
+    ).resolves.toBe("conflict");
+
+    expect(mocks.pickPgnFile).not.toHaveBeenCalled();
+    expect(mocks.writeGame).not.toHaveBeenCalled();
+});
+
+test("a temp-file source changed while its Save-As picker was open is not written", async () => {
+    const fixture = saveFixture({ kind: "temp_file" });
+    const selected = deferred<ReturnType<typeof targetFile> | null>();
+    mocks.pickPgnFile.mockReturnValueOnce(selected.promise);
+    mocks.readFileGame
+        .mockResolvedValueOnce({ stamp: stampA, pgn: "source", revision: "r1", present: true })
+        .mockResolvedValueOnce({
+            stamp: stampB,
+            pgn: "changed source",
+            revision: "r2",
+            present: true,
+        });
+    const pending = saveToFile({
+        tab: fixture.tabs[0],
+        updateTab: fixture.updateTab,
+        getTab: fixture.getTab,
+        store: fixture.store,
+        isUserSave: true,
+    });
+    await Promise.resolve();
+    selected.resolve(targetFile());
+
+    await expect(pending).resolves.toBe("conflict");
+    expect(mocks.writeGame).not.toHaveBeenCalled();
+    expect(fixture.tabs[0].gameOrigin.kind).toBe("temp_file");
+});
+
+test("a failed Save-As leaves the tab origin and tree stamp untouched", async () => {
+    const fixture = saveFixture({ kind: "temp_file" });
+    mocks.pickPgnFile.mockResolvedValueOnce(targetFile());
+    mocks.readFileGame
+        .mockResolvedValueOnce({ stamp: stampA, pgn: "source", revision: "r1", present: true })
+        .mockResolvedValueOnce({ stamp: stampA, pgn: "source", revision: "r1", present: true })
+        .mockResolvedValueOnce({ stamp: stampC, pgn: "target", revision: "r2", present: true });
+    mocks.writeGame.mockRejectedValueOnce(new Error("write failed"));
+
+    const result = await saveToFile({
+        tab: fixture.tabs[0],
+        updateTab: fixture.updateTab,
+        getTab: fixture.getTab,
+        store: fixture.store,
+        isUserSave: true,
+    });
+
+    expect(result).toMatchObject({ status: "failed" });
+    expect(fixture.tabs[0].gameOrigin.kind).toBe("temp_file");
+    expect(fixture.store.getState()).toMatchObject({ dirty: true, sourceStamp: stampA });
+});
+
+test("a stale Save-As destination is a visible typed failure without changing the tab origin", async () => {
+    const fixture = saveFixture({ id: "save-as-test", kind: "none" });
+    mocks.pickPgnFile.mockResolvedValueOnce(targetFile());
+    mocks.readFileGame.mockResolvedValueOnce({
+        stamp: stampC,
+        pgn: "destination game",
+        revision: "r2",
+        present: true,
+    });
+    mocks.writeGame.mockRejectedValueOnce(
+        Object.assign(new Error("The game changed on disk"), {
+            details: {
+                category: "validation",
+                backendCategory: "stale-game",
+                message: "The game changed on disk",
+            },
+        }),
+    );
+
+    const result = await saveToFile({
+        tab: fixture.tabs[0],
+        updateTab: fixture.updateTab,
+        getTab: fixture.getTab,
+        store: fixture.store,
+        isUserSave: true,
+    });
+
+    expect(result).toMatchObject({
+        status: "failed",
+        error: { backendCategory: "stale-game", message: "The game changed on disk" },
+    });
+    expect(fixture.tabs[0].gameOrigin).toEqual({ kind: "none" });
+    expect(fixture.store.getState()).toMatchObject({ dirty: true, sourceStamp: stampA });
 });

@@ -14,18 +14,11 @@ import {
   Tooltip,
   UnstyledButton,
 } from "@mantine/core";
-import { useAtom, useStore } from "jotai";
+import { useAtom } from "jotai";
 import { useCallback, useEffect, useState } from "react";
-import {
-  addRecentFileAtom,
-  deckAtomFamily,
-  type RecentFile,
-  recentFilesAtom,
-  tabFamily,
-  tabsAtom,
-} from "@/state/atoms";
+import { deckAtomFamily, type RecentFile, recentFilesAtom, tabsAtom } from "@/state/atoms";
 import type { Tab } from "@/utils/tabs";
-import { createTab } from "@/utils/tabs";
+import { openFile } from "@/utils/files";
 import CreateRepertoireModal from "./CreateRepertoireModal";
 import ImportModal from "./ImportModal";
 import classes from "./NewTabHome.module.css";
@@ -120,7 +113,6 @@ export default function NewTabHome({ id }: { id: string }) {
   const [, setTabs] = useAtom(tabsAtom);
 
   const [recentFiles, setRecentFiles] = useAtom(recentFilesAtom);
-  const store = useStore();
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -152,45 +144,26 @@ export default function NewTabHome({ id }: { id: string }) {
   const openRecentFile = useCallback(
     async (file: RecentFile) => {
       try {
-        const [pgn, numGames] = await Promise.all([
-          tauri.readGames(file.handle, 0, 0),
-          tauri.countPgnGames(file.handle),
-        ]);
-        const tabId = await createTab({
-          tab: {
+        const numGames = await tauri.countPgnGames(file.handle);
+        const tabId = await openFile(
+          {
+            type: "file",
             name: file.name,
-            type: "analysis",
+            handle: file.handle,
+            numGames,
+            metadata: { type: file.type, tags: [] },
+            lastModified: Date.now(),
           },
           setTabs,
-          pgn: pgn[0] || "",
-          gameOrigin: {
-            kind: "file",
-            gameNumber: 0,
-            file: {
-              type: "file",
-              name: file.name,
-              handle: file.handle,
-              numGames,
-              metadata: { type: file.type, tags: [] },
-              lastModified: Math.floor(Date.now() / 1000),
-            },
-          },
-        });
+          { tabName: file.name },
+        );
         if (tabId === null) return;
-        if (file.type === "repertoire") {
-          store.set(tabFamily(tabId), "practice");
-        }
-        store.set(addRecentFileAtom, {
-          name: file.name,
-          handle: file.handle,
-          type: file.type,
-        });
         navigate({ to: "/" });
       } catch (cause) {
         notifyUnlessCancelled(t("Common.Error"), cause);
       }
     },
-    [setTabs, store, navigate, t],
+    [setTabs, navigate, t],
   );
 
   const cards = [

@@ -110,6 +110,7 @@ type NativeReadCommandName =
     | "getPuzzleThemes"
     | "getThemesForPuzzle"
     | "countPgnGames"
+    | "readGame"
     | "readGames"
     | "lexPgn"
     | "listFileWorkspace";
@@ -142,6 +143,7 @@ const NATIVE_READ_ARITY: Readonly<Record<NativeReadCommandName, number>> = {
     getPuzzleThemes: 1,
     getThemesForPuzzle: 2,
     countPgnGames: 1,
+    readGame: 2,
     readGames: 3,
     lexPgn: 1,
     listFileWorkspace: 1,

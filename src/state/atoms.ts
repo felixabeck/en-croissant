@@ -43,6 +43,7 @@ import { originalPathOwnersSnapshot } from "./pathOwners";
 import { createEngineOwnerStorage, type EngineOwnerSaveReceipt } from "./engineOwnerStorage";
 import { defaultPlayerSettings, opponentSettingsSchema } from "@/state/opponentSettings";
 import { createPracticeDeckAtom, type PracticeData } from "./practiceStorage";
+import { removeFileFreshness } from "./fileFreshness";
 
 export type { PracticeData } from "./practiceStorage";
 
@@ -110,6 +111,7 @@ export const closeWorkspaceTabAtom = atom(null, (get, set, tabId: string) => {
             ? workspace.activeTab
             : (tabs[index]?.value ?? tabs[index - 1]?.value ?? null);
     if (!set(commitWorkspaceAtom, { ...workspace, tabs, activeTab })) return false;
+    removeFileFreshness(tabId);
     let cleanupError: unknown;
     try {
         tabStorage.remove(tabId);

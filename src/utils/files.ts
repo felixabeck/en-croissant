@@ -13,6 +13,7 @@ import {
     fileWorkspaceDisplayNameAtom,
     tabFamily,
 } from "@/state/atoms";
+import { setFileFreshness } from "@/state/fileFreshness";
 import { parsePGN } from "./chess";
 import { createTab, type SetTabs } from "./tabs";
 import { getGameName } from "./treeReducer";
@@ -58,22 +59,40 @@ export async function ensureFileWorkspace(): Promise<FileWorkspaceHandle | null>
     }
 }
 
+export async function readFileGame(
+    handle: FileWorkspaceHandle,
+    gameNumber: number,
+    signal?: AbortSignal,
+) {
+    return tauri.readGame(handle, gameNumber, signal ? { signal } : undefined);
+}
+
+export async function loadFileGame(
+    handle: FileWorkspaceHandle,
+    gameNumber: number,
+    signal?: AbortSignal,
+) {
+    const game = await readFileGame(handle, gameNumber, signal);
+    const tree = await parsePGN(game.pgn, undefined, { signal });
+    tree.sourceStamp = game.stamp;
+    return { ...game, tree };
+}
+
 export async function openFile(
     file: FileMetadata,
     setTabs: SetTabs,
     options?: {
         gameNumber?: number;
-        pgn?: string;
+        tabName?: string;
     },
 ) {
     const store = getDefaultStore();
     const gameNumber = options?.gameNumber ?? 0;
-    let fileInfo: FileMetadata;
-    let pgn = options?.pgn;
-    fileInfo = file;
-    if (pgn === undefined) pgn = (await tauri.readGames(file.handle, gameNumber, gameNumber))[0];
-    let tabName = file.name || "Untitled";
-    if (pgn) tabName = getGameName((await parsePGN(pgn)).headers);
+    const loaded = await loadFileGame(file.handle, gameNumber);
+    let tabName = options?.tabName ?? file.name ?? "Untitled";
+    if (options?.tabName === undefined && loaded.pgn) {
+        tabName = getGameName(loaded.tree.headers);
+    }
 
     const id = await createTab({
         tab: {
@@ -81,23 +100,27 @@ export async function openFile(
             type: "analysis",
         },
         setTabs,
-        pgn: pgn || "",
+        initialTree: loaded.tree,
         gameOrigin: {
             kind: "file",
-            file: fileInfo,
+            file,
             gameNumber,
         },
     });
     if (id === null) return null;
 
-    if (fileInfo.metadata.type === "repertoire") {
+    if (!loaded.present && gameNumber < file.numGames) {
+        setFileFreshness(id, "unavailable");
+    }
+
+    if (file.metadata.type === "repertoire") {
         store.set(tabFamily(id), "practice");
     }
 
     store.set(addRecentFileAtom, {
         name: tabName,
-        handle: fileInfo.handle,
-        type: fileInfo.metadata.type,
+        handle: file.handle,
+        type: file.metadata.type,
     });
 
     return id;

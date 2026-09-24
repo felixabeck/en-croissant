@@ -134,6 +134,8 @@ const getNewState = () => {
         position: s.position,
         headers: s.headers,
         dirty: s.dirty,
+        sourceStamp: s.sourceStamp,
+        appendAttempted: s.appendAttempted,
         report: {
             inProgress: false,
             operationId: null,
