@@ -1258,24 +1258,27 @@ try {
     "migration leaves the legacy practice localStorage key untouched",
   );
 
-  await openFilesEntry(session, largePracticeName, PRACTICE_RENDERER_TIMEOUT_MS);
-  const firstFiftyPracticePositions = initialPracticePositions.slice(0, 50);
-  await waitFor(
-    "the large practice deck to hydrate before UI writing",
-    () =>
-      session
-        .execute(
-          "return document.body.innerText.includes('Start Practice') && !document.body.innerText.includes('Loading')",
-        )
-        .catch(() => false),
-    { timeoutMs: PRACTICE_RENDERER_TIMEOUT_MS },
-  );
-  const startPracticeButton = await waitFor(
-    "the rendered normal practice button",
-    () =>
-      session
-        .execute(
-          `const button = [...document.querySelectorAll('button')].find((candidate) =>
+  let ratingIndex = -1;
+  let practiceStage = "open the large practice file";
+  try {
+    await openFilesEntry(session, largePracticeName, PRACTICE_RENDERER_TIMEOUT_MS);
+    const firstFiftyPracticePositions = initialPracticePositions.slice(0, 50);
+    await waitFor(
+      "the large practice deck to hydrate before UI writing",
+      () =>
+        session
+          .execute(
+            "return document.body.innerText.includes('Start Practice') && !document.body.innerText.includes('Loading')",
+          )
+          .catch(() => false),
+      { timeoutMs: PRACTICE_RENDERER_TIMEOUT_MS },
+    );
+    const startPracticeButton = await waitFor(
+      "the rendered normal practice button",
+      () =>
+        session
+          .execute(
+            `const button = [...document.querySelectorAll('button')].find((candidate) =>
              candidate.textContent?.includes('Start Practice')
            );
            if (!button) return false;
@@ -1285,38 +1288,41 @@ try {
              y: Math.round(box.top + box.height / 2),
              disabled: button.disabled,
            };`,
-        )
-        .catch(() => false),
-    { timeoutMs: PRACTICE_RENDERER_TIMEOUT_MS },
-  );
-  if (startPracticeButton.disabled) {
-    const state = await session
-      .execute("return { path: location.pathname, text: document.body.innerText.slice(0, 2000) }")
-      .catch(() => ({ path: "unavailable", text: "unavailable" }));
-    throw new Error(`normal practice remains disabled: ${JSON.stringify(state)}`);
-  }
-  await clickAt(session, startPracticeButton.x, startPracticeButton.y, "practice-start");
-  try {
-    await waitFor(
-      "the practice panel to enter its first move",
-      () =>
-        session
-          .execute("return document.body.innerText.includes('Make your move')")
+          )
           .catch(() => false),
       { timeoutMs: PRACTICE_RENDERER_TIMEOUT_MS },
     );
-  } catch (error) {
-    const state = await session
-      .execute(
-        "return { path: location.pathname, text: document.body.innerText.slice(0, 2000), buttons: [...document.querySelectorAll('button')].map((button) => ({ text: button.textContent, disabled: button.disabled })).slice(-8) }",
-      )
-      .catch(() => ({ path: "unavailable", text: "unavailable", buttons: [] }));
-    throw new Error(`${error.message}; practice state: ${JSON.stringify(state)}`);
-  }
-  for (const [index, position] of firstFiftyPracticePositions.entries()) {
-    const move = position.uci;
-    const pointer = await session.execute(
-      `const board = document.querySelector('cg-board');
+    if (startPracticeButton.disabled) {
+      const state = await session
+        .execute("return { path: location.pathname, text: document.body.innerText.slice(0, 2000) }")
+        .catch(() => ({ path: "unavailable", text: "unavailable" }));
+      throw new Error(`normal practice remains disabled: ${JSON.stringify(state)}`);
+    }
+    practiceStage = "start practice";
+    await clickAt(session, startPracticeButton.x, startPracticeButton.y, "practice-start");
+    try {
+      await waitFor(
+        "the practice panel to enter its first move",
+        () =>
+          session
+            .execute("return document.body.innerText.includes('Make your move')")
+            .catch(() => false),
+        { timeoutMs: PRACTICE_RENDERER_TIMEOUT_MS },
+      );
+    } catch (error) {
+      const state = await session
+        .execute(
+          "return { path: location.pathname, text: document.body.innerText.slice(0, 2000), buttons: [...document.querySelectorAll('button')].map((button) => ({ text: button.textContent, disabled: button.disabled })).slice(-8) }",
+        )
+        .catch(() => ({ path: "unavailable", text: "unavailable", buttons: [] }));
+      throw new Error(`${error.message}; practice state: ${JSON.stringify(state)}`);
+    }
+    for (const [index, position] of firstFiftyPracticePositions.entries()) {
+      ratingIndex = index;
+      practiceStage = "rate practice cards";
+      const move = position.uci;
+      const pointer = await session.execute(
+        `const board = document.querySelector('cg-board');
        if (!board) return false;
        const box = board.getBoundingClientRect();
        const square = (name) => ({
@@ -1324,68 +1330,93 @@ try {
          y: Math.round(box.top + (8.5 - Number(name[1])) * box.height / 8),
        });
        return { from: square(arguments[0].slice(0, 2)), to: square(arguments[0].slice(2, 4)) };`,
-      [move],
-    );
-    if (!pointer) throw new Error(`practice board was not available for rating ${index + 1}`);
-    await session.call("POST", "/actions", {
-      actions: [
-        {
-          type: "pointer",
-          id: `practice-rating-${index}`,
-          parameters: { pointerType: "mouse" },
-          actions: [
-            {
-              type: "pointerMove",
-              duration: 0,
-              x: pointer.from.x,
-              y: pointer.from.y,
-              origin: "viewport",
-            },
-            { type: "pointerDown", button: 0 },
-            { type: "pointerUp", button: 0 },
-            { type: "pause", duration: PRACTICE_MOVE_CLICK_DELAY_MS },
-            {
-              type: "pointerMove",
-              duration: 0,
-              x: pointer.to.x,
-              y: pointer.to.y,
-              origin: "viewport",
-            },
-            { type: "pointerDown", button: 0 },
-            { type: "pointerUp", button: 0 },
-          ],
-        },
-      ],
-    });
-    const moveResult = await waitFor(`practice move ${index + 1} to resolve`, () =>
-      session
-        .execute(
-          `const text = document.body.innerText;
+        [move],
+      );
+      if (!pointer) throw new Error(`practice board was not available for rating ${index + 1}`);
+      await session.call("POST", "/actions", {
+        actions: [
+          {
+            type: "pointer",
+            id: `practice-rating-${index}`,
+            parameters: { pointerType: "mouse" },
+            actions: [
+              {
+                type: "pointerMove",
+                duration: 0,
+                x: pointer.from.x,
+                y: pointer.from.y,
+                origin: "viewport",
+              },
+              { type: "pointerDown", button: 0 },
+              { type: "pointerUp", button: 0 },
+              { type: "pause", duration: PRACTICE_MOVE_CLICK_DELAY_MS },
+              {
+                type: "pointerMove",
+                duration: 0,
+                x: pointer.to.x,
+                y: pointer.to.y,
+                origin: "viewport",
+              },
+              { type: "pointerDown", button: 0 },
+              { type: "pointerUp", button: 0 },
+            ],
+          },
+        ],
+      });
+      const moveResult = await waitFor(`practice move ${index + 1} to resolve`, () =>
+        session
+          .execute(
+            `const text = document.body.innerText;
            if (text.includes("How difficult was this?")) return "correct";
            if (text.includes("The correct move was")) return "incorrect";
            return false;`,
-        )
-        .catch(() => false),
-    ).catch(async (error) => {
-      const state = await session
-        .execute(
-          "return { path: location.pathname, text: document.body.innerText.slice(0, 1800), board: (() => { const e = document.querySelector('cg-board'); if (!e) return null; const r = e.getBoundingClientRect(); return { left: r.left, top: r.top, width: r.width, height: r.height }; })() }",
-        )
-        .catch(() => ({ path: "unavailable", text: "unavailable", board: null }));
-      throw new Error(`${error.message}; move ${move}; practice state: ${JSON.stringify(state)}`);
-    });
-    if (moveResult === "correct") {
-      await session.execute(
-        "document.dispatchEvent(new KeyboardEvent('keydown', { key: '3', bubbles: true })); return true",
+          )
+          .catch(() => false),
+      ).catch(async (error) => {
+        const state = await session
+          .execute(
+            "return { path: location.pathname, text: document.body.innerText.slice(0, 1800), board: (() => { const e = document.querySelector('cg-board'); if (!e) return null; const r = e.getBoundingClientRect(); return { left: r.left, top: r.top, width: r.width, height: r.height }; })() }",
+          )
+          .catch(() => ({ path: "unavailable", text: "unavailable", board: null }));
+        throw new Error(`${error.message}; move ${move}; practice state: ${JSON.stringify(state)}`);
+      });
+      if (moveResult === "correct") {
+        await session.execute(
+          "document.dispatchEvent(new KeyboardEvent('keydown', { key: '3', bubbles: true })); return true",
+        );
+      }
+      await waitFor(`practice rating ${index + 1} to advance`, () =>
+        session
+          .execute(
+            `const text = document.body.innerText;
+           return text.includes("Make your move") && !text.includes("The correct move was");`,
+          )
+          .catch(() => false),
       );
     }
-    await waitFor(`practice rating ${index + 1} to advance`, () =>
-      session
-        .execute(
-          `const text = document.body.innerText;
-           return text.includes("Make your move") && !text.includes("The correct move was");`,
-        )
-        .catch(() => false),
+  } catch (error) {
+    // A WebDriver request aborts when the renderer does not answer within the driver's fetch
+    // timeout; wait for it to answer again so the failure carries what the page was doing.
+    const recovered = await waitFor(
+      "the renderer to answer again after the practice rating failure",
+      () => session.execute("return true").catch(() => false),
+      { timeoutMs: 60_000 },
+    ).catch(() => false);
+    const state = recovered
+      ? await session
+          .execute(
+            `return {
+               path: location.pathname,
+               gates: [...document.querySelectorAll("[data-file-freshness]")].map((gate) =>
+                 gate.getAttribute("data-file-freshness"),
+               ),
+               text: document.body.innerText.slice(0, 1500),
+             };`,
+          )
+          .catch(() => "unavailable")
+      : "renderer did not answer within 60 s";
+    throw new Error(
+      `${error.message}; stage: ${practiceStage}; practice rating ${ratingIndex + 1}; renderer state: ${JSON.stringify(state)}`,
     );
   }
   const writerSnapshot = await loadPracticeDeckThroughIpc(
