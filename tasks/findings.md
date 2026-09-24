@@ -11221,3 +11221,77 @@ Start with a diagnostic run of the failing variant that records, at the failure 
 
 **Handled 2026-09-23 — the premise was wrong, the cause was a product race.** The fixture construction was never the variable. Four more bisect runs showed that reverting the verifier's startup probe, its rating loop or its tab-close helper each also changed the outcome, so any timing perturbation could flip the check. A diagnostic in the failure branch then decoded the reopened tab's persisted tree from sessionStorage: 25,002 nodes, exactly the extended fixture. The tab had the new tree, and the practice deck never synced from it. Mechanism: on remount, `PracticePanel` rendered the deck atom's previous "ready" snapshot before hydration started. The sync diffed from that snapshot was dropped while the deck loaded, and the effect had already recorded the tree as synced, so it never retried. The fix is `530149e3`: a new hydration forgets the synced tree. The clone-once fixture is back in `scripts/verify-app.mjs`, and the capped run is green on it.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"577f8915aeed319bc3c54886ad4d7bd030162338673acc2cacd8085a7b84ae4a","input_sha256":"a506c60289429320a3874975f4cb0a08659111556d3806b9433c7e2031019662","kind":"mutation-receipt","operation":"b46cc393a442d2270218b62db9e474ce5426bcf49728bf55a71b7f8c23fa1d5f","options":{"section":null},"request_id_sha256":null,"results":["f-20260923-02"],"target":"f-20260923-02","v":1} -->
+
+---
+
+## 2026-09-24 — filed through the inbox spool
+
+### Startup path-owner reconciliation counts unknown retained ids against its input limit, so stale renderer ids across families can skip cleanup
+
+* **ID:** f-20260924-01 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** src-tauri/src/infra/path_authority/mod.rs:6257-6269 (`reconcile_startup_owners`: the count check precedes the `persistent.contains_key` filter), :6362 (`authority_id_input_limit` = max(registry ids, `MAX_AUTHORITY_IDS` 4096)); src/state/pathOwners.ts:66-205 (union of every family's ids into one `retainedIds`); src/App.tsx:151 (a rejection is only `warn`ed).
+* **Defect:** The renderer sends the union of retained ids from every owner family, stale ones included (ids whose registry records are already gone). Native rejects the whole request with `ResourceLimit` when that raw count exceeds max(registry size, 4096), before it discards unknown ids. Enough stale ids from several families (for example, 3,100 from other families plus 1,000 stale expanded-directory keys against a small registry) therefore make startup skip reconciliation entirely, so no unowned capability is swept that session. Found during plan review of f-20260906-24 (lenses ipc-contract r3, confidence 94; pgn-index r3, confidence 93). That plan bounds the expanded-directory family to ≤ 1000 workspace-scoped ids, which reduces the input but does not solve the aggregate.
+* **Open question:** Should the native request bound apply to the ids after discarding unknown ones, with a separate hard cap on raw input size, or should the renderer prioritise and cap retained ids per family before the handoff, and which families may be truncated without losing a live capability?
+* **Relation:** f-20260830-35 (handled, native-fs, root unbounded-path-registry) raised the limit to max(registry, 4096) for the grandfathered-state case; this entry is the remaining aggregate case with stale ids. f-20260906-24 (expanded directories) caps one family.
+* **Found by:** plan review of f-20260906-24, drain session df596ef2-1534-47bd-a99c-f556a3cb1d90, 2026-09-24.
+
+### A seeded tree key survives when tab admission fails and its rollback removal throws
+
+* **ID:** f-20260924-02 · **Status:** open · **Area:** frontend-state · **Root:** none · **Entry:** lens · **Blocked:** none
+
+Found by `review-persisted-state` (should-fix, confidence 92) in round 5 of the plan review for `f-20260923-01`, 2026-09-24. `commitNewTab` (`src/utils/tabs.ts:40-80`) seeds the tree under the new tab id, and when `setTabs` refuses admission it calls `rollbackCreatedTree`, which reports but otherwise swallows a throwing `tabStorage.remove` (`src/utils/tabs.ts:83-89`); the existing test pins that report. The seeded key then stays in `sessionStorage` under an id no workspace tab names. `loadWorkspace` scrubs tree keys only for invalid tabs it still lists, so the orphan survives every reload and consumes the shared ~5 MB quota (`.claude/rules/persisted-state.md`, "Leave an orphaned entry behind").
+
+Outside that plan's MANDATE (stale file text), so filed rather than folded in. A fix needs an owner for tree keys with no workspace tab — for example a startup sweep of tree-shaped keys whose id is absent from the loaded workspace, bounded to the tree-storage key format.
+
+### An undecodable persisted tree is replaced by a clean default tree, losing its unsaved edits without notice
+
+* **ID:** f-20260924-03 · **Status:** open · **Area:** frontend-state · **Root:** none · **Entry:** build · **Blocked:** none
+
+Found by `review-persisted-state` (blocker, confidence 91) in round 12 of the plan review for `f-20260923-01`, 2026-09-24. `tabStorage.read()` deletes an entry it cannot decode and returns `null` (`src/state/store/tabStorage.ts:284-287`), and the tree store then starts from a clean default tree (`src/state/store/tree.ts:175-183`). A tab whose unsaved edits lived only in that blob loses them with no message; the tab reports clean. With `f-20260923-01`'s freshness gate a file-backed tab then reloads its game from disk, which is no worse than today's empty default, but the loss itself is pre-existing and not a stale-text path, so it was filed rather than folded into that plan's MANDATE.
+
+* **Open question:** what does hydration failure become — a typed "unreadable" tree state that the tab surfaces (and that blocks any clean-tree assumption such as reload-when-clean or close-without-prompt) until the user acknowledges it, or a quarantine copy of the raw blob kept beside the tab for recovery — and which quota budget does a quarantined blob get?
+
+### The file freshness recovery panels use text below WCAG AA contrast
+
+* **ID:** f-20260924-04 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src/components/tabs/FileFreshnessGate.tsx`, conflict and unavailable panels.
+* **Defect:** The recovery action labels render white text on `#228be6` at a 3.55:1 contrast ratio (Axe 4.12; 14px normal text, required 4.5:1). In the unavailable panel, the red inline failure text renders `#fa5252` on white at 3.28:1 (16px normal text). The Playwright `assertAccessible` check reports these as serious `color-contrast` violations.
+* **Why it matters:** The labels for Reload from disk and Save my version as a new game are the only recovery actions while the board is withheld. Low contrast also makes the unavailable error harder to read.
+* **Fix:** Choose foreground and background styles for the conflict and unavailable panels that retain their action and error hierarchy while meeting at least 4.5:1 contrast in the supported color schemes.
+* **Proof:** Restore `assertAccessible` coverage for both file freshness journeys and run `pnpm test:e2e:container`. The phase-3 captures were `artifacts/frontend-audit/test-results/file-freshness-file-freshn-757ab-edited-game-changed-on-disk-file-freshness/file-freshness-conflict.png` and `artifacts/frontend-audit/test-results/file-freshness-file-freshn-77646--the-source-file-disappears-file-freshness/file-freshness-unavailable.png`.
+* **Related:** `f-20260829-02` is same-area viewport clipping but has no evidenced shared cause; this contrast defect remains a singleton.
+* **Found by:** Codex during phase 3 of the stale-file-tab implementation, 2026-09-24. The assertion was omitted from this phase's spec because product source changes are out of scope.
+
+### delete_game removes whatever game is at index n, so a stale game list can delete the wrong game
+
+* **ID:** f-20260924-05 · **Status:** open · **Area:** pgn-import · **Root:** none · **Entry:** build · **Blocked:** none
+
+Found by `review-pgn-index` (blocker, confidence 94) in the cumulative review of the `f-20260923-01` build, 2026-09-24. Since that build every `write_game` is a compare-and-swap against the stamp of the game the renderer read (`src-tauri/src/pgn.rs`, `WriteExpectation`), but `delete_game` (`pgn.rs` `delete_game_core`) still selects the current `games[n]` with no expectation. The Files/Info game list (`src/components/panels/info/InfoPanel.tsx` `deleteGame`, `GameSelector.tsx`) is index-based and read at some earlier time: if another program inserts game X before A in a file holding A and B, deleting the displayed B at index 1 removes A. The native commit check only guards changes after its own scan.
+
+Outside that build's MANDATE (a tab's stale game text), so filed rather than folded in; the fix needs the list to carry what the user saw.
+
+* **Open question:** does the game list read a per-row stamp (read_games returning `{pgn, stamp}` pages, or a lighter native `game_stamps(file, start, end)`) so `delete_game` can take a required `{ kind: "game", stamp }` expectation like `write_game`, and what does the list show when the delete is refused as stale?
+
+### verify:app aborts at its first Files-row click on every build since 2026-09-24 ~17:00, including a tree that passed there earlier
+
+* **ID:** f-20260924-06 · **Status:** open · **Area:** gate-scripts · **Root:** none · **Entry:** build · **Blocked:** none
+
+Measured on tuxedo-atlas during the `f-20260923-01` build, 2026-09-24. `pnpm verify:app` passed every check up to and including the fifty practice ratings twice at 16:03-16:50 on the build of `3d0627ec`. From 17:36 on, nine consecutive runs aborted with "This operation was aborted" right after "migration leaves the legacy practice localStorage key untouched": the first Files-row `clickAt` in the large-practice step got no answer within `FETCH_TIMEOUT_MS` (5 s, `scripts/app-driver.mjs:35`). The stage-labelled diagnostic added in this build shows the renderer answering again afterwards on `/files` with "No file selected". A control build of the exact `3d0627ec` tree (only `tasks/decisions.md` differed) aborted at the same click, so the failure is not caused by the code under test. Ruled out: memory/CPU/IO pressure (all PSI ~0), disk space, leftover app/driver processes, a port or Wayland-socket collision, and the desktop accessibility bus (an `NO_AT_BRIDGE=1` run failed identically, and a passing run had the same `dbind-WARNING`). Present since ~16:57 and still running: a foreign session `/tmp/time-tracker-f05-*/run.sh` (dbus-run-session, `kwin_wayland --virtual --socket wl-time-f05` with `plasmashell`, accessibility forced on) — correlated in time, not proven.
+
+Consequence: the real-app proof of `f-20260923-01` (the freshness scenario in the large-deck extension step) and the staged-failure rows for its five new checks (`scripts/verify-app.mjs` header, marked pending) could not be produced; its pixel proof (`pnpm test:e2e:container`, new `file-freshness` project) and unit/IPC tests are green.
+
+* **Open question:** what makes the WebKitGTK window stop answering WebDriver at a plain click for >5 s on this machine now — the foreign virtual Plasma session, a host-level change after 16:50, or a latent race in the Files page that only timing exposes — and is the fix a hermetic verifier environment, a longer per-request timeout for known-heavy steps, or removing the cause? Once green, stage and record the five pending freshness rows.
+
+### The push gates never type-check the Windows target, so cfg-gating mistakes reach CI after the push
+
+* **ID:** f-20260924-07 · **Status:** open · **Area:** gate-scripts · **Root:** none · **Entry:** build · **Blocked:** none
+* **Found by:** f-20260923-01 push (drain session 767c276a-499c-41b8-8170-256aa14b7d5c), 2026-09-24.
+* **Files:** `.claude/skills/push/SKILL.md` (§2 Rust/Tauri backend), `scripts/gate-receipt.mjs`, `package.json`.
+
+**Observed.** `3f15c448` passed every final gate in `.claude/skills/push/SKILL.md` §2 and was pushed; CI run 36040727301 then went red on `rust-windows-test` and the `x86_64-pc-windows-msvc` `rust-platform` job with five `E0425` errors. Two tests from `490831c7` called `#[cfg(unix)]` helpers without being gated themselves. Repaired post-push in `c953ed08`; the local MinGW check (`d-20260916-07`) reproduced the errors and then passed, plus a Windows-only `dead_code` on `set_post_commit_hook` that Linux clippy cannot see.
+
+**This is a class, not an instance.** It is the third post-push Windows red of the same shape: `f-20260830-06` 2026-09-18 (`dead_code` on three test helpers under Windows clippy `-D warnings`), the f-20260906-23 push on 2026-09-23 (unused test imports on Windows MSVC, repaired in `b83d3720`), and this one. Each time the defect was a compile/lint difference the local cross toolchain catches in about 15 s: `cargo check` and `cargo clippy --target x86_64-pc-windows-gnu --all-targets --locked -- -D warnings` with `~/.local/opt/mingw/usr/bin` on `PATH`.
+
+**Why it is not already a gate.** `d-20260916-07` installed the toolchain as "a local verification instrument and no gate invokes it", and §4 of the push skill only reads the Windows jobs *before* pushing, from the previous run. Nothing checks the tree about to be pushed.
+
+* **Open question:** How to add a Windows compile gate that is honest on a machine without the toolchain: fail with a setup instruction, or record the gate as unavailable and refuse the push? And should it be a `gate:ensure` receipt gate, a contract-gate member, or only a line in §2? `d-20260916-07` is superseded in part by whichever answer is chosen; its reversal clause names `~/.local/opt/mingw`, so the gate must not silently assume the path.
