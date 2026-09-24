@@ -63,6 +63,11 @@ export default defineConfig({
             testMatch: /security-consent\.spec\.ts/,
             use: { ...chromium, viewport: { width: 320, height: 720 }, colorScheme: "dark" },
         },
+        {
+            name: "file-freshness",
+            testMatch: /file-freshness\.spec\.ts/,
+            use: { ...chromium, viewport: { width: 800, height: 720 }, colorScheme: "light" },
+        },
     ],
     webServer: {
         // Invoked through node_modules/.bin rather than `pnpm exec`, so the suite runs

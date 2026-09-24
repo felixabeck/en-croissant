@@ -37,6 +37,15 @@ export const filesWorkspaceFixture = {
     pgnGame: '[Event "E2E"]\n[White "Weiss"]\n[Black "Schwarz"]\n[Result "*"]\n\n1. e4 c5 *',
 } as const;
 
+const pgnGameStamp = "e2e-pgn-stamp";
+const pgnGameRevision = "e2e-pgn-revision";
+const stampedPgnGame = {
+    pgn: filesWorkspaceFixture.pgnGame,
+    stamp: pgnGameStamp,
+    revision: pgnGameRevision,
+    present: true,
+};
+
 /** Native answers for selecting `pgnFile`: the card and its game list read and lex the one game. */
 // The document-width assertion cannot see overflow that the Files page's own scroll container, or a
 // control with `overflow: hidden`, absorbs — a page that scrolled or cut its overflow away would
@@ -81,6 +90,8 @@ export async function selectFilesTreeRow(page: Page, name: string): Promise<Loca
 
 export const pgnFileCommands: NonNullable<MockScenario["commands"]> = {
     read_games: { result: [filesWorkspaceFixture.pgnGame] },
+    read_game: { result: stampedPgnGame },
+    file_revision: { result: pgnGameRevision },
     lex_pgn: {
         result: [
             { type: "Header", value: { tag: "Event", value: "E2E" } },
@@ -121,6 +132,7 @@ const fontScaleByProject: Record<string, number> = {
     "settings-responsive": 200,
     "async-errors": 200,
     "security-consent": 200,
+    "file-freshness": 100,
 };
 
 const localeByProject: Record<string, string> = {

@@ -795,55 +795,6 @@ async function openFilesEntry(session, name, timeoutMs = FILES_PROBE_TIMEOUT_MS)
   }
 }
 
-async function closeRestoredAnalysisTab(session) {
-  const closeButton = await waitFor("the restored analysis tab close control", () =>
-    session
-      .execute(
-        "const button = [...document.querySelectorAll('button[aria-label=\"Close tab\"]')].reverse().find((candidate) => {\n" +
-          "  const box = candidate.getBoundingClientRect();\n" +
-          "  return box.width > 0 && box.height > 0;\n" +
-          "});\n" +
-          "if (!button) return false;\n" +
-          "const box = button.getBoundingClientRect();\n" +
-          "return { x: Math.round(box.left + box.width / 2), y: Math.round(box.top + box.height / 2) };",
-      )
-      .catch(() => false),
-  );
-  await clickAt(session, closeButton.x, closeButton.y, "close-restored-analysis-tab");
-  const closeOutcome = await waitFor("the restored practice tab to close or request discard", () =>
-    session
-      .execute(
-        `const tab = [...document.querySelectorAll('[role="tab"]')].find((candidate) => candidate.textContent?.includes("verify:practice"));
-         if (!tab) return { kind: "closed" };
-         const dialog = [...document.querySelectorAll('[role="dialog"]')].find((candidate) => candidate.textContent?.includes("Unsaved changes"));
-         const discard = dialog && [...dialog.querySelectorAll("button")].find((candidate) => candidate.textContent?.includes("Close without saving"));
-         if (!discard) return false;
-         const box = discard.getBoundingClientRect();
-         return { kind: "discard", x: Math.round(box.left + box.width / 2), y: Math.round(box.top + box.height / 2) };`,
-      )
-      .catch(() => false),
-  );
-  if (closeOutcome.kind === "discard") {
-    await clickAt(session, closeOutcome.x, closeOutcome.y, "discard-restored-practice-tab");
-    await waitFor("the restored practice tab discard to complete", () =>
-      session
-        .execute(
-          `return ![...document.querySelectorAll('[role="tab"]')].some((candidate) => candidate.textContent?.includes("verify:practice"));`,
-        )
-        .catch(() => false),
-    );
-  }
-  await waitFor("the restored analysis board and practice panel to close", () =>
-    session
-      .execute(
-        `return document.querySelectorAll('cg-board').length === 0 &&
-          ![...document.querySelectorAll('[role="tab"]')].some((candidate) => candidate.textContent?.includes("verify:practice")) &&
-          !document.body.innerText.includes("Start Practice");`,
-      )
-      .catch(() => false),
-  );
-}
-
 let cleanupSettled = false;
 process.on("exit", () => {
   if (!cleanupSettled) console.error("cleanup did not finish before process exit");
@@ -1486,11 +1437,169 @@ try {
   );
 
   await reopenAssertionSession("large-deck extension");
-  // Closing the restored tab isolates this sync proof from f-20260923-01: its restored tree remains
-  // persisted after the PGN changes on disk.
-  await closeRestoredAnalysisTab(session);
+  const readRestoredPracticeFreshness = () =>
+    session
+      .execute(
+        `const tab = [...document.querySelectorAll('[role="tab"]')].find((candidate) =>
+           candidate.textContent?.includes("verify:practice")
+         );
+         const panelId = tab?.getAttribute("aria-controls");
+         const panel = panelId ? document.getElementById(panelId) : null;
+         const gate = panel?.querySelector("[data-file-freshness]");
+         if (!gate) return false;
+         const [state, countText] = (gate.getAttribute("data-file-freshness") || "").split(":");
+         const reloadCount = Number(countText);
+         return Number.isInteger(reloadCount) ? { state, reloadCount } : false;`,
+      )
+      .catch(() => false);
+  const restoredFreshnessBeforeWrite = await waitFor(
+    "the restored file-backed tab to verify before the external PGN write",
+    async () => {
+      const freshness = await readRestoredPracticeFreshness();
+      return freshness && freshness.state === "verified" ? freshness : false;
+    },
+    { timeoutMs: PRACTICE_RENDERER_TIMEOUT_MS },
+  );
+  const measurementReady = await session.execute(
+    `const expectedFileId = arguments[0];
+     const baselineReloadCount = arguments[1];
+     const tab = [...document.querySelectorAll('[role="tab"]')].find((candidate) =>
+       candidate.textContent?.includes("verify:practice")
+     );
+     const panelId = tab?.getAttribute("aria-controls");
+     const panel = panelId ? document.getElementById(panelId) : null;
+     const gate = panel?.querySelector("[data-file-freshness]");
+     const internals = window.__TAURI_INTERNALS__;
+     if (!gate || !internals || typeof internals.invoke !== "function") return false;
+     const state = {
+       startedAt: performance.now(),
+       baselineReloadCount,
+       readDurations: [],
+       terminal: null,
+     };
+     const invoke = internals.invoke.bind(internals);
+     state.originalInvoke = invoke;
+     internals.invoke = async (command, args) => {
+       if (command !== "read_game" || args?.file?.id?.id !== expectedFileId) {
+         return invoke(command, args);
+       }
+       const readStartedAt = performance.now();
+       try {
+         return await invoke(command, args);
+       } finally {
+         state.readDurations.push(performance.now() - readStartedAt);
+       }
+     };
+     const observeFreshness = () => {
+       const [freshnessState, countText] = (gate.getAttribute("data-file-freshness") || "").split(":");
+       const reloadCount = Number(countText);
+       if (
+         !state.terminal &&
+         (freshnessState === "conflict" ||
+           freshnessState === "unavailable" ||
+           (freshnessState === "verified" && reloadCount > baselineReloadCount))
+       ) {
+         state.terminal = { state: freshnessState, reloadCount, observedAt: performance.now() };
+       }
+     };
+     state.observer = new MutationObserver(observeFreshness);
+     state.observer.observe(gate, { attributes: true, attributeFilter: ["data-file-freshness"] });
+     window.__verifyAppFileFreshnessMeasurement = state;
+     return { startedAt: state.startedAt };`,
+    [largePracticeId, restoredFreshnessBeforeWrite.reloadCount],
+  );
+  if (!measurementReady) throw new Error("could not arm the restored tab freshness measurement");
+  const inodeBeforeRewrite = (await stat(largePracticePath)).ino;
+  const writeStartedAt = performance.now();
   await writeFile(largePracticePath, extendedLargePracticePgn);
-  await openFilesEntry(session, largePracticeName, PRACTICE_RENDERER_TIMEOUT_MS);
+  const rewriteDurationMs = performance.now() - writeStartedAt;
+  const inodeAfterRewrite = (await stat(largePracticePath)).ino;
+  check(
+    inodeAfterRewrite === inodeBeforeRewrite,
+    "the stale-file scenario rewrites the PGN in place",
+    `inode changed from ${inodeBeforeRewrite} to ${inodeAfterRewrite}`,
+  );
+  const freshnessTransition = await waitFor(
+    "the restored tab to reload the external PGN or show its conflict panel",
+    () =>
+      session
+        .execute("return window.__verifyAppFileFreshnessMeasurement?.terminal || false")
+        .catch(() => false),
+    { timeoutMs: 10_000, everyMs: 50 },
+  );
+  const freshnessMeasurement = await session.execute(
+    `const measurement = window.__verifyAppFileFreshnessMeasurement;
+     return {
+       readTimeMs: measurement.readDurations.at(-1) ?? null,
+       state: measurement.terminal?.state ?? null,
+       reloadCount: measurement.terminal?.reloadCount ?? null,
+       observedAt: measurement.terminal?.observedAt ?? null,
+     };`,
+  );
+  await session.execute(
+    "const measurement = window.__verifyAppFileFreshnessMeasurement; measurement.observer?.disconnect(); if (measurement.originalInvoke) window.__TAURI_INTERNALS__.invoke = measurement.originalInvoke; measurement.observer = null; measurement.originalInvoke = null; return true;",
+  );
+  const freshnessElapsedMs =
+    freshnessMeasurement.observedAt - measurementReady.startedAt - rewriteDurationMs;
+  const measuredReadTimeMs = freshnessMeasurement.readTimeMs;
+  const freshnessDeadlineMs =
+    2_000 + (Number.isFinite(measuredReadTimeMs) ? measuredReadTimeMs : 0);
+  const restoredTabReloaded =
+    freshnessTransition.state === "conflict" ||
+    (freshnessTransition.state === "verified" &&
+      freshnessTransition.reloadCount > restoredFreshnessBeforeWrite.reloadCount);
+  check(
+    restoredTabReloaded,
+    "the restored file-backed tab reloads or withholds the changed PGN",
+    `freshness state: ${freshnessTransition.state}`,
+  );
+  check(
+    Number.isFinite(measuredReadTimeMs) && measuredReadTimeMs >= 0,
+    "the file freshness transition includes a measured native read_game call",
+    `read_game duration: ${measuredReadTimeMs}`,
+  );
+  console.log(
+    `  info  restored file freshness: ${freshnessElapsedMs.toFixed(1)} ms after rewrite ` +
+      `(limit 2000 ms + read_game ${Number.isFinite(measuredReadTimeMs) ? measuredReadTimeMs.toFixed(1) : "unmeasured"} ms; ${freshnessTransition.state})`,
+  );
+  check(
+    Number.isFinite(freshnessElapsedMs) && freshnessElapsedMs <= freshnessDeadlineMs,
+    "the restored file-backed tab refreshes within one poll interval plus read time",
+    `${freshnessElapsedMs.toFixed(1)} ms > ${freshnessDeadlineMs.toFixed(1)} ms`,
+  );
+  if (freshnessTransition.state === "conflict") {
+    const reloadButton = await waitFor(
+      "the restored file freshness conflict panel reload button",
+      () =>
+        session
+          .execute(
+            `const button = [...document.querySelectorAll("button")].find((candidate) =>
+               candidate.textContent?.trim() === "Reload from disk"
+             );
+             if (!button) return false;
+             const box = button.getBoundingClientRect();
+             return { x: Math.round(box.left + box.width / 2), y: Math.round(box.top + box.height / 2) };`,
+          )
+          .catch(() => false),
+    );
+    await clickAt(session, reloadButton.x, reloadButton.y, "reload-restored-file-tab");
+    const reloadedFreshness = await waitFor(
+      "the restored file-backed tab to verify after Reload from disk",
+      async () => {
+        const freshness = await readRestoredPracticeFreshness();
+        return freshness &&
+          freshness.state === "verified" &&
+          freshness.reloadCount > freshnessTransition.reloadCount
+          ? freshness
+          : false;
+      },
+      { timeoutMs: PRACTICE_RENDERER_TIMEOUT_MS },
+    );
+    check(
+      reloadedFreshness.reloadCount > freshnessTransition.reloadCount,
+      "Reload from disk verifies the restored file-backed tab",
+    );
+  }
   let syncWaitError;
   try {
     await waitFor(
