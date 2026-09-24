@@ -4058,8 +4058,8 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Chosen:** Keep at most 1,000 recent IDs and 64 KiB of UTF-8 JSON before compression. Repair valid oversized legacy data on hydration. Leave malformed bytes intact and report read failure; reject a single oversized incoming ID before eviction, keep its UI state in memory, preserve the last good persisted record, and report save failure. Never delete tab trees or practice history for expansion state.
 * **Rejected:** Persist an unlimited raw array or free capacity by deleting tab trees or practice history; those consume the same quota and the latter two carry user work.
 * **Reason:** The old expansion writer has no budget and shares the roughly 5 MB session-storage quota with tab trees. The fixed caps bound disposable state, compression reduces its physical size, and truthful failure reporting avoids implying that unsaved expansion was durable.
-* **Decided by:** Codex drain df96e5f3-0928-4d01-8c96-356e430dceb7 · **Superseded-by:** -
-<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"8f2c94752cd1f7ff24290e29751e20238feb25223c9ddf846a9cd13cd0189c37","input_sha256":"df792b7d7fa26ed370909d9b0440259ab054891e954b83aba5ea9e7051a84789","kind":"mutation-receipt","operation":"5f5e3ab8deeb6ef4a2223cd6d9b31047856e0b06c0ebcd3b9873649622b517b4","options":{"section":null},"request_id_sha256":null,"results":["d-20260924-07"],"target":"decisions-ledger","v":1} -->
+* **Decided by:** Codex drain df96e5f3-0928-4d01-8c96-356e430dceb7 · **Superseded-by:** d-20260925-02
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"dc834a690fc4718cf6b42a1f3a981f57a6de53bc81a5ebf34e4fe71f274ab3b7","input_sha256":"df792b7d7fa26ed370909d9b0440259ab054891e954b83aba5ea9e7051a84789","kind":"mutation-receipt","operation":"5f5e3ab8deeb6ef4a2223cd6d9b31047856e0b06c0ebcd3b9873649622b517b4","options":{"section":null},"request_id_sha256":null,"results":["d-20260924-07"],"target":"decisions-ledger","v":1} -->
 
 ## 2026-09-25 — recorded through the decisions lock
 
