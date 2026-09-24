@@ -4,18 +4,16 @@ import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
 import { normalizeError } from "@/platform/errors";
-import { tauri } from "@/platform/tauri";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import { tabsAtom } from "@/state/atoms";
 import { tabStorage } from "@/state/store/tabStorage";
 import { parsePGN } from "@/utils/chess";
-import { loadFileGame, pickPgnFile, readFileGame } from "@/utils/files";
+import { loadFileGame, pickPgnFile, readFileGame, writeFileGame } from "@/utils/files";
 import { sameFileGameOrigin, serializeStoreTree, updateTabById } from "@/utils/tabs";
 import type { Tab } from "@/utils/tabs";
 import { fileWorkspaceKey } from "@/utils/pathCapabilities";
 import {
   getFileFreshness,
-  beginFileWrite,
   registerFileConflictSave,
   requestFileReconcile,
   setFileFreshness,
@@ -35,16 +33,6 @@ function isFileOrigin(
   return tab.gameOrigin.kind === "file" || tab.gameOrigin.kind === "temp_file";
 }
 
-function sameFileOrigin(left: Tab, right: Tab, fileKey: string, gameNumber: number): boolean {
-  return (
-    isFileOrigin(left) &&
-    isFileOrigin(right) &&
-    sameFileGameOrigin(left.gameOrigin, right.gameOrigin) &&
-    left.gameOrigin.gameNumber === gameNumber &&
-    fileWorkspaceKey(left.gameOrigin.file.handle) === fileKey
-  );
-}
-
 function FileResolutionPanel({
   title,
   uncertainMessage,
@@ -52,7 +40,6 @@ function FileResolutionPanel({
   disabled,
   appendDisabled,
   showReload,
-  showClose,
   onReload,
   onAppend,
   onClose,
@@ -64,7 +51,6 @@ function FileResolutionPanel({
   disabled: boolean;
   appendDisabled: boolean;
   showReload: boolean;
-  showClose: boolean;
   onReload: () => void;
   onAppend: () => void;
   onClose?: () => void;
@@ -88,7 +74,7 @@ function FileResolutionPanel({
         <Button onClick={onAppend} disabled={disabled || appendDisabled}>
           {labels.append}
         </Button>
-        {showClose && onClose && (
+        {onClose && (
           <Button variant="default" onClick={onClose} disabled={disabled}>
             {labels.close}
           </Button>
@@ -168,7 +154,7 @@ function FileBackedGate({
         actionIdentityRef.current.fileKey !== fileKey ||
         actionIdentityRef.current.gameNumber !== gameNumber ||
         actionIdentityRef.current.store !== store ||
-        !sameFileOrigin(getTab(tabId) ?? tab, tab, fileKey, gameNumber);
+        !sameFileGameOrigin((getTab(tabId) ?? tab).gameOrigin, tab.gameOrigin);
       try {
         const current = await readFileGame(handle, gameNumber, signal);
         if (isObsolete()) return;
@@ -268,7 +254,7 @@ function FileBackedGate({
         actionIdentityRef.current.gameNumber === gameNumber &&
         actionIdentityRef.current.store === store &&
         !!currentTab &&
-        sameFileOrigin(currentTab, tab, fileKey, gameNumber)
+        sameFileGameOrigin(currentTab.gameOrigin, tab.gameOrigin)
       );
     },
     [getTab, tabId, fileKey, gameNumber, store, tab],
@@ -343,15 +329,9 @@ function FileBackedGate({
         }
 
         const pgn = serializeStoreTree(store);
-        const endWrite = beginFileWrite(fileWorkspaceKey(selected.handle));
-        let written: Awaited<ReturnType<typeof tauri.writeGame>>;
-        try {
-          written = await tauri.writeGame(selected.handle, selected.numGames, pgn, {
-            kind: "append",
-          });
-        } finally {
-          endWrite();
-        }
+        const written = await writeFileGame(selected.handle, selected.numGames, pgn, {
+          kind: "append",
+        });
         if (!actionIsCurrent(controller) || written.stamp === null || written.revision === null) {
           setPanelError(t("FileFreshness.AppendMayHaveBeenAdded"));
           return false;
@@ -461,7 +441,6 @@ function FileBackedGate({
         disabled={disabled}
         appendDisabled={appendAttempted}
         showReload
-        showClose={false}
         onReload={() => void reloadFromDisk()}
         onAppend={() => void appendAsNewGame()}
         labels={{
@@ -482,7 +461,6 @@ function FileBackedGate({
       disabled={disabled}
       appendDisabled={appendAttempted}
       showReload={appendAttempted}
-      showClose
       onReload={() => void reloadFromDisk()}
       onAppend={() => void appendAsNewGame()}
       onClose={() => closeTab(tabId)}

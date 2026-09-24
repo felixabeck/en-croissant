@@ -234,10 +234,12 @@ function GameSelectorAccordion({
         };
       });
       if (!saved) return;
-      setFileFreshness(activeTabId, "unverified");
       setState(loaded.tree);
+      // The tree was just read from disk, so the gate need not read it a second time.
       if (!loaded.present && page < tabFile.numGames) {
         setFileFreshness(activeTabId, "unavailable");
+      } else {
+        setFileFreshness(activeTabId, "verified", { verifiedRevision: loaded.revision });
       }
     } catch (error) {
       if (isObsolete()) {

@@ -6,15 +6,16 @@ import { defaultGame, makePgn } from "chessops/pgn";
 import { getDefaultStore } from "jotai";
 import useSWR from "swr";
 import type { FileMetadata, FileType } from "@/components/files/file";
-import type { FileWorkspaceHandle } from "@/bindings";
+import type { FileWorkspaceHandle, WriteExpectation, WriteStamp } from "@/bindings";
 import {
     addRecentFileAtom,
     fileWorkspaceAtom,
     fileWorkspaceDisplayNameAtom,
     tabFamily,
 } from "@/state/atoms";
-import { setFileFreshness } from "@/state/fileFreshness";
+import { beginFileWrite, setFileFreshness } from "@/state/fileFreshness";
 import { parsePGN } from "./chess";
+import { fileWorkspaceKey } from "./pathCapabilities";
 import { createTab, type SetTabs } from "./tabs";
 import { getGameName } from "./treeReducer";
 
@@ -67,6 +68,20 @@ export async function readFileGame(
     return tauri.readGame(handle, gameNumber, signal ? { signal } : undefined);
 }
 
+export async function writeFileGame(
+    handle: FileWorkspaceHandle,
+    n: number,
+    pgn: string,
+    expectation: WriteExpectation,
+): Promise<WriteStamp> {
+    const endWrite = beginFileWrite(fileWorkspaceKey(handle));
+    try {
+        return await tauri.writeGame(handle, n, pgn, expectation);
+    } finally {
+        endWrite();
+    }
+}
+
 export async function loadFileGame(
     handle: FileWorkspaceHandle,
     gameNumber: number,
@@ -109,8 +124,11 @@ export async function openFile(
     });
     if (id === null) return null;
 
+    // The tree was just read from disk, so the gate need not read it a second time.
     if (!loaded.present && gameNumber < file.numGames) {
         setFileFreshness(id, "unavailable");
+    } else {
+        setFileFreshness(id, "verified", { verifiedRevision: loaded.revision });
     }
 
     if (file.metadata.type === "repertoire") {

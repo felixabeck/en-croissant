@@ -9,10 +9,10 @@ import { reportPersistError } from "@/state/persistError";
 import { newWorkspaceId, tabSchema, type GameOrigin, type Tab } from "@/state/workspaceTypes";
 import type { TreeStoreState } from "@/state/store/tree";
 import { getPGN, parsePGN } from "./chess";
-import { pickPgnFile, readFileGame } from "./files";
+import { pickPgnFile, readFileGame, writeFileGame } from "./files";
 import type { GameHeaders, TreeState } from "./treeReducer";
 import { fileWorkspaceKey } from "./pathCapabilities";
-import { beginFileWrite, setFileFreshness } from "@/state/fileFreshness";
+import { setFileFreshness } from "@/state/fileFreshness";
 export { tabSchema, type GameOrigin, type Tab };
 
 export function getTabFile(tab?: Tab | null): FileMetadata | undefined {
@@ -263,18 +263,12 @@ export async function saveToFile({
             currentFileOperation = true;
             writingCurrentOrigin = true;
             if (sourceStamp === null) return sourceChanged(tabId);
-            const endWrite = beginFileWrite(fileWorkspaceKey(fileOrigin.file.handle));
-            let written: Awaited<ReturnType<typeof tauri.writeGame>>;
-            try {
-                written = await tauri.writeGame(
-                    fileOrigin.file.handle,
-                    fileOrigin.gameNumber,
-                    pgn,
-                    writeExpectation(sourceStamp),
-                );
-            } finally {
-                endWrite();
-            }
+            const written = await writeFileGame(
+                fileOrigin.file.handle,
+                fileOrigin.gameNumber,
+                pgn,
+                writeExpectation(sourceStamp),
+            );
             const currentTab = getTab(tabId);
             if (!currentTab || !sameOrigin(currentTab.gameOrigin, currentOrigin))
                 return "superseded";
@@ -314,18 +308,12 @@ export async function saveToFile({
         const gameNumber = fileOrigin?.gameNumber ?? 0;
         const destination = await readFileGame(selected.handle, gameNumber);
         currentFileOperation = true;
-        const endWrite = beginFileWrite(fileWorkspaceKey(selected.handle));
-        let written: Awaited<ReturnType<typeof tauri.writeGame>>;
-        try {
-            written = await tauri.writeGame(
-                selected.handle,
-                gameNumber,
-                pgn,
-                writeExpectation(destination.stamp),
-            );
-        } finally {
-            endWrite();
-        }
+        const written = await writeFileGame(
+            selected.handle,
+            gameNumber,
+            pgn,
+            writeExpectation(destination.stamp),
+        );
         const currentTab = getTab(tabId);
         if (!currentTab || !sameOrigin(currentTab.gameOrigin, currentOrigin)) return "superseded";
         if (written.stamp === null || written.revision === null) {

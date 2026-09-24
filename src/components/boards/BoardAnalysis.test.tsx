@@ -1,11 +1,11 @@
-import { act, type ReactNode } from "react";
+import { act, useRef, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Provider as JotaiProvider, createStore as createJotaiStore } from "jotai";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createStore as createZustandStore } from "zustand/vanilla";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import { activeTabAtom, autoSaveAtom, currentTabAtom, tabsAtom } from "@/state/atoms";
-import { getFileFreshness } from "@/state/fileFreshness";
+import { getFileFreshness, removeFileFreshness, setFileFreshness } from "@/state/fileFreshness";
 import type { TreeStore } from "@/state/store/tree";
 import type { Tab } from "@/state/workspaceTypes";
 import { defaultPGN } from "@/utils/chess";
@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   notifyUnlessCancelled: vi.fn(),
   writeGame: vi.fn(),
   countPgnGames: vi.fn(),
+  parsePGN: vi.fn(),
 }));
 
 vi.mock("react-i18next", () => ({
@@ -70,6 +71,11 @@ vi.mock("@/platform/tauri", async () => {
   };
 });
 
+vi.mock("@/utils/chess", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/utils/chess")>()),
+  parsePGN: mocks.parsePGN,
+}));
+
 vi.mock("@/components/tabs/ConfirmChangesModal", () => ({
   default: ({
     opened,
@@ -79,17 +85,20 @@ vi.mock("@/components/tabs/ConfirmChangesModal", () => ({
     opened: boolean;
     toggle: () => void;
     onSaved: () => void;
-  }) =>
-    opened ? (
+  }) => {
+    const saved = useRef(onSaved);
+    if (!opened) saved.current = onSaved;
+    return opened ? (
       <div role="dialog">
         <button type="button" onClick={toggle}>
           Cancel
         </button>
-        <button type="button" onClick={onSaved}>
+        <button type="button" onClick={saved.current}>
           Save and add game
         </button>
       </div>
-    ) : null,
+    ) : null;
+  },
 }));
 
 vi.mock("../panels/info/InfoPanel", () => ({
@@ -149,6 +158,20 @@ describe("BoardAnalysis add game durability", () => {
     mocks.writeGame
       .mockReset()
       .mockResolvedValue({ stamp: "b".repeat(64), revision: "new-revision" });
+    mocks.parsePGN.mockReset().mockImplementation(async () => {
+      const tree = defaultTree();
+      tree.headers.event = "?";
+      tree.headers.site = "?";
+      tree.headers.date = "????.??.??";
+      tree.headers.round = "?";
+      tree.headers.white = "?";
+      tree.headers.black = "?";
+      tree.headers.start = [];
+      tree.headers.orientation = "white";
+      return tree;
+    });
+    removeFileFreshness(tabId);
+    setFileFreshness(tabId, "verified", { verifiedRevision: "original-revision" });
 
     jotaiStore = createJotaiStore();
     jotaiStore.set(tabsAtom, [tab], tabId);
@@ -185,6 +208,7 @@ describe("BoardAnalysis add game durability", () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+    removeFileFreshness(tabId);
     vi.restoreAllMocks();
   });
 
@@ -234,6 +258,7 @@ describe("BoardAnalysis add game durability", () => {
     });
 
     expect(mocks.writeGame).toHaveBeenCalledWith(fileHandle, 3, defaultPGN(), { kind: "append" });
+    expect(mocks.parsePGN).toHaveBeenCalledWith(defaultPGN());
     expect(jotaiStore.get(currentTabAtom)?.gameOrigin).toEqual(tab.gameOrigin);
     expect(reset).not.toHaveBeenCalled();
     expect(getFileFreshness(tabId).state).toBe("appending");
@@ -254,6 +279,49 @@ describe("BoardAnalysis add game durability", () => {
     expect(getFileFreshness(tabId)).toMatchObject({
       state: "verified",
       verifiedRevision: "new-revision",
+    });
+  });
+
+  test("Add Game stops when Save-As changed the captured temp-file origin", async () => {
+    const source = tab.gameOrigin;
+    if (source.kind !== "file") throw new Error("expected file-backed test tab");
+    const tempTab: Tab = {
+      ...tab,
+      gameOrigin: { kind: "temp_file", file: source.file, gameNumber: source.gameNumber },
+    };
+    const destinationTab: Tab = {
+      ...tempTab,
+      gameOrigin: {
+        kind: "file",
+        file: {
+          ...source.file,
+          handle: { id: { id: "save-as-destination" }, kind: "fileWorkspace" },
+        },
+        gameNumber: source.gameNumber,
+      },
+    };
+    await act(async () => jotaiStore.set(tabsAtom, [tempTab], tabId));
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="add-game"]')!.click();
+    });
+    await act(async () => {
+      jotaiStore.set(tabsAtom, [destinationTab], tabId);
+      setFileFreshness(tabId, "verified", { verifiedRevision: "save-as-revision" });
+    });
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === "Save and add game")!
+        .click();
+    });
+
+    expect(jotaiStore.get(currentTabAtom)?.gameOrigin).toEqual(destinationTab.gameOrigin);
+    expect(mocks.parsePGN).not.toHaveBeenCalled();
+    expect(mocks.writeGame).not.toHaveBeenCalled();
+    expect(mocks.countPgnGames).not.toHaveBeenCalled();
+    expect(getFileFreshness(tabId)).toMatchObject({
+      state: "verified",
+      verifiedRevision: "save-as-revision",
     });
   });
 
@@ -334,6 +402,39 @@ describe("BoardAnalysis add game durability", () => {
       message: "FileFreshness.AddGameMayHaveBeenAdded",
     });
     expect(getFileFreshness(tabId).state).toBe("unverified");
+  });
+
+  test("a null append stamp reports a failed game-count refresh", async () => {
+    mocks.writeGame.mockResolvedValueOnce({ stamp: null, revision: null });
+    mocks.countPgnGames.mockRejectedValueOnce({
+      tag: "backend-error",
+      category: "io",
+      message: "Could not refresh the PGN game count",
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="add-game"]')!.click();
+    });
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === "Save and add game")!
+        .click();
+    });
+
+    expect(jotaiStore.get(currentTabAtom)?.gameOrigin).toMatchObject({
+      kind: "file",
+      gameNumber: 1,
+      file: { numGames: 3 },
+    });
+    expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", {
+      category: "unexpected",
+      backendCategory: "io",
+      message: "Could not refresh the PGN game count",
+    });
+    expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalledWith("Common.Error", {
+      category: "applied-despite-error",
+      message: "FileFreshness.AddGameMayHaveBeenAdded",
+    });
   });
 
   test("a failed count refresh after StaleGame reports that typed error without changing count", async () => {

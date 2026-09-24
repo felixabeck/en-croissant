@@ -28,7 +28,8 @@ const mocks = vi.hoisted(() => ({
   translate: vi.fn((key: string) => key),
 }));
 
-vi.mock("@/utils/files", () => ({
+vi.mock("@/utils/files", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/utils/files")>()),
   loadFileGame: mocks.loadFileGame,
   pickPgnFile: mocks.pickPgnFile,
   readFileGame: mocks.readFileGame,

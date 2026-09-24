@@ -187,11 +187,17 @@ test("the two-second poll invalidates a changed file-backed tab without a Boards
     stop();
 });
 
-test.each(["during", "after"] as const)(
-    "a conflict poll outcome that overlaps a started file write is ignored (%s)",
-    async (writeEnd) => {
+test.each([
+    ["while the write is active", false],
+    ["after the write has ended", true],
+] as const)(
+    "a conflict poll outcome that arrives %s is ignored",
+    async (_timing, writeEndedBeforeOutcome) => {
         vi.useFakeTimers();
-        const tab = fileTab(`poll-write-${writeEnd}`, `file-write-${writeEnd}`);
+        const tab = fileTab(
+            `poll-write-${writeEndedBeforeOutcome}`,
+            `file-write-${writeEndedBeforeOutcome}`,
+        );
         setFileFreshness(tab.value, "verified", { verifiedRevision: "r1" });
         const first = deferred<string>();
         let revisionCalls = 0;
@@ -213,14 +219,14 @@ test.each(["during", "after"] as const)(
             throw new Error("expected a file-backed test tab");
         }
         const endWrite = beginFileWrite(fileWorkspaceKey(origin.file.handle));
-        if (writeEnd === "after") endWrite();
+        if (writeEndedBeforeOutcome) endWrite();
         first.reject({
             tag: "backend-error",
             category: "conflict",
             message: "path authority is unavailable because its object changed",
         });
         await flushPromises();
-        if (writeEnd === "during") endWrite();
+        if (!writeEndedBeforeOutcome) endWrite();
         await flushPromises();
 
         expect(revision).toHaveBeenCalledTimes(2);

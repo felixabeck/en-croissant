@@ -7,9 +7,14 @@ import { activeTabAtom, currentTabAtom, tabsAtom } from "@/state/atoms";
 import { closeTreeStore, createTreeStore, type TreeStore } from "@/state/store/tree";
 import type { Tab } from "@/state/workspaceTypes";
 import { TreeStateContext } from "../common/TreeStateContext";
-import { registerFileConflictSave, setFileFreshness } from "@/state/fileFreshness";
+import {
+  registerFileConflictSave,
+  removeFileFreshness,
+  setFileFreshness,
+} from "@/state/fileFreshness";
 import { defaultTree } from "@/utils/treeReducer";
 import ConfirmChangesModal from "./ConfirmChangesModal";
+import FileFreshnessGate from "./FileFreshnessGate";
 
 const mocks = vi.hoisted(() => ({
   pickPgnFile: vi.fn(),
@@ -87,12 +92,15 @@ afterEach(async () => {
   host.remove();
   closeTreeStore(currentTab.value);
   closeTreeStore(backgroundTab.value);
+  removeFileFreshness(currentTab.value);
+  removeFileFreshness(backgroundTab.value);
+  removeFileFreshness("unavailable-file-save");
   vi.restoreAllMocks();
 });
 
 async function saveAndClose() {
   await act(async () => {
-    host.querySelector<HTMLButtonElement>("button:last-of-type")!.click();
+    host.querySelector<HTMLButtonElement>('[role="dialog"] button:last-of-type')!.click();
     await Promise.resolve();
   });
 }
@@ -330,34 +338,52 @@ test("Save on an unavailable tab runs the registered append action", async () =>
   unregister();
 });
 
-test("Save shows a typed unavailable-tab append failure inside the modal", async () => {
-  registerFileConflictSave(backgroundTab.value, async () => {
-    throw {
-      tag: "backend-error",
-      category: "permission",
-      message: "The selected PGN cannot be written",
-    };
+test("Save shows the real Gate append failure inside the unavailable-tab modal", async () => {
+  const unavailableTab = fileBackedTab("unavailable-file-save");
+  jotaiStore.set(tabsAtom, [currentTab, unavailableTab], currentTab.value);
+  const unavailableStore = createTreeStore(unavailableTab.value);
+  const updateTab = (tabId: string, update: React.SetStateAction<Tab>) =>
+    jotaiStore.set(tabsAtom, (tabs) =>
+      tabs.map((tab) =>
+        tab.value === tabId ? (typeof update === "function" ? update(tab) : update) : tab,
+      ),
+    );
+  setFileFreshness(unavailableTab.value, "unavailable");
+  mocks.writeGame.mockRejectedValueOnce({
+    tag: "backend-error",
+    category: "permission",
+    message: "The selected PGN cannot be written",
   });
-  setFileFreshness(backgroundTab.value, "unavailable");
   const onSaved = vi.fn();
 
   await act(async () =>
     root.render(
       <Provider store={jotaiStore}>
-        <ConfirmChangesModal
-          pendingClose={{ tabId: backgroundTab.value, store: treeStore }}
-          tab={backgroundTab}
-          onCancel={vi.fn()}
-          onDiscard={vi.fn()}
-          onSaved={onSaved}
-        />
+        <TreeStateContext.Provider value={unavailableStore}>
+          <FileFreshnessGate tab={unavailableTab} closeTab={vi.fn()}>
+            <div>board</div>
+          </FileFreshnessGate>
+          <ConfirmChangesModal
+            pendingClose={{ tabId: unavailableTab.value, store: unavailableStore }}
+            tab={unavailableTab}
+            updateTab={updateTab}
+            onCancel={vi.fn()}
+            onDiscard={vi.fn()}
+            onSaved={onSaved}
+          />
+        </TreeStateContext.Provider>
       </Provider>,
     ),
   );
   await saveAndClose();
 
   expect(onSaved).not.toHaveBeenCalled();
-  expect(mocks.writeGame).not.toHaveBeenCalled();
+  expect(mocks.writeGame).toHaveBeenCalledWith(
+    expect.objectContaining({ id: { id: "saved" } }),
+    1,
+    expect.any(String),
+    { kind: "append" },
+  );
   expect(host.querySelector('[role="dialog"]')?.textContent).toContain(
     "The selected PGN cannot be written",
   );

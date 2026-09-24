@@ -1,7 +1,13 @@
 import { afterEach, expect, test, vi } from "vitest";
+import type { FileWorkspaceHandle } from "@/bindings";
 import { tabStorage } from "@/state/store/tabStorage";
 import { closeTreeStore, createTreeStore } from "@/state/store/tree";
-import { getFileFreshness, removeFileFreshness } from "@/state/fileFreshness";
+import {
+    getFileFreshness,
+    removeFileFreshness,
+    setFileFreshness,
+    startFileRevisionPoll,
+} from "@/state/fileFreshness";
 import { defaultTree } from "./treeReducer";
 
 const mocks = vi.hoisted(() => ({
@@ -14,15 +20,18 @@ const mocks = vi.hoisted(() => ({
 
 function deferred<T>() {
     let resolve!: (value: T) => void;
-    const promise = new Promise<T>((done) => {
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((done, fail) => {
         resolve = done;
+        reject = fail;
     });
-    return { promise, resolve };
+    return { promise, resolve, reject };
 }
 
 vi.mock("@/platform/tauri", () => ({ tauri: { writeGame: mocks.writeGame } }));
 vi.mock("@/state/persistError", () => ({ reportPersistError: mocks.reportPersistError }));
-vi.mock("./files", () => ({
+vi.mock("./files", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("./files")>()),
     pickPgnFile: mocks.pickPgnFile,
     readFileGame: mocks.readFileGame,
 }));
@@ -49,6 +58,7 @@ afterEach(() => {
     removeFileFreshness("save-as-test");
     vi.clearAllMocks();
     vi.restoreAllMocks();
+    vi.useRealTimers();
 });
 
 const fileTab = {
@@ -367,6 +377,67 @@ test("file saves send the source stamp as a required CAS and persist the returne
         state: "verified",
         verifiedRevision: "r-new",
     });
+});
+
+test("a save ignores a conflicting poll outcome that resolves during its write", async () => {
+    vi.useFakeTimers();
+    const fixture = saveFixture();
+    setFileFreshness("save-test", "verified", { verifiedRevision: "r-old" });
+    const epoch = getFileFreshness("save-test").epoch;
+    const pollOutcome = deferred<string>();
+    const pendingWrite = deferred<{ stamp: string | null; revision: string | null }>();
+    let revisionCalls = 0;
+    const fileRevision = vi.fn((_handle: FileWorkspaceHandle, _options: { signal: AbortSignal }) =>
+        ++revisionCalls === 1 ? pollOutcome.promise : Promise.resolve("r-written"),
+    );
+    let focus!: () => void;
+    const stop = startFileRevisionPoll({
+        getTabs: () => fixture.tabs,
+        fileRevision,
+        subscribeFocus: (callback) => {
+            focus = callback;
+            return () => undefined;
+        },
+    });
+
+    try {
+        focus();
+        for (let turn = 0; turn < 10; turn += 1) await Promise.resolve();
+        expect(fileRevision).toHaveBeenCalledOnce();
+
+        mocks.writeGame.mockReturnValueOnce(pendingWrite.promise);
+        const saving = saveToFile({
+            tab: fixture.tabs[0],
+            updateTab: fixture.updateTab,
+            getTab: fixture.getTab,
+            store: fixture.store,
+        });
+        await Promise.resolve();
+        pollOutcome.reject({
+            tag: "backend-error",
+            category: "conflict",
+            message: "path authority changed during the poll",
+        });
+        for (let turn = 0; turn < 10; turn += 1) await Promise.resolve();
+
+        expect(getFileFreshness("save-test")).toMatchObject({
+            state: "verified",
+            verifiedRevision: "r-old",
+            epoch,
+        });
+
+        pendingWrite.resolve({ stamp: stampB, revision: "r-written" });
+        await expect(saving).resolves.toBe("saved");
+        for (let turn = 0; turn < 10; turn += 1) await Promise.resolve();
+
+        expect(fileRevision).toHaveBeenCalledTimes(2);
+        expect(getFileFreshness("save-test")).toMatchObject({
+            state: "verified",
+            verifiedRevision: "r-written",
+        });
+    } finally {
+        stop();
+    }
 });
 
 test("a save without a read-back stamp stays unverified", async () => {

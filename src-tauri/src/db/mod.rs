@@ -2876,7 +2876,7 @@ fn export_to_pgn_blocking(
     let mut database_connection = get_db_or_create(repository, &target, None)?;
     let db = &mut *database_connection;
 
-    let outcome = resolved.replace_pgn_atomic(&snapshot, |_, temporary| {
+    let installed = resolved.replace_pgn_atomic(&snapshot, |_, temporary| {
         let (white_players, black_players) = diesel::alias!(players as white, players as black);
         let rows = games::table
             .inner_join(white_players.on(games::white_id.eq(white_players.field(players::id))))
@@ -2887,7 +2887,7 @@ fn export_to_pgn_blocking(
         write_pgn_rows(temporary, rows)
     })?;
     crate::infra::fs::require_durable(
-        outcome.outcome,
+        installed.outcome,
         crate::error::DurabilityStage::DatabasePgnReplacement,
     )
 }

@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
     issuePgnWorkspace: vi.fn(),
     countPgnGames: vi.fn(),
     readGame: vi.fn(),
+    writeGame: vi.fn(),
     issueFileWorkspace: vi.fn(),
     parsePGN: vi.fn(),
     storeGet: vi.fn(),
@@ -37,12 +38,36 @@ vi.mock("@/utils/chess", async (importOriginal) => {
 vi.mock("./tabs", () => ({ createTab: mocks.createTab }));
 
 import { TauriCommandError } from "@/platform/tauri";
+import type { FileWorkspaceHandle, WriteStamp } from "@/bindings";
 import { fileWorkspaceAtom, fileWorkspaceDisplayNameAtom } from "@/state/atoms";
-import { createFile, ensureFileWorkspace, openFile, pickPgnFile } from "./files";
+import {
+    getFileFreshness,
+    removeFileFreshness,
+    setFileFreshness,
+    startFileRevisionPoll,
+} from "@/state/fileFreshness";
+import type { Tab } from "@/utils/tabs";
+import { createFile, ensureFileWorkspace, openFile, pickPgnFile, writeFileGame } from "./files";
 
 afterEach(() => {
     vi.clearAllMocks();
+    vi.useRealTimers();
+    removeFileFreshness("files-write-helper");
 });
+
+function deferred<T>() {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((done, fail) => {
+        resolve = done;
+        reject = fail;
+    });
+    return { promise, resolve, reject };
+}
+
+async function flushPromises() {
+    for (let turn = 0; turn < 10; turn += 1) await Promise.resolve();
+}
 
 const freshPgn =
     '[Event "Fresh from disk"]\n[White "Fresh White"]\n[Black "Fresh Black"]\n\n1. e4 e5 *';
@@ -116,6 +141,11 @@ describe("openFile tab admission", () => {
                 }),
             }),
         );
+        // The tab starts verified at the revision it was read at, so the gate does not re-read it.
+        expect(getFileFreshness("tab-id")).toMatchObject({
+            state: "verified",
+            verifiedRevision: "new-revision",
+        });
     });
 });
 
@@ -215,6 +245,67 @@ describe("pickPgnFile", () => {
         expect(mocks.countPgnGames).toHaveBeenCalledWith(handle);
     });
 });
+
+test.each(["success", "rejection"] as const)(
+    "writeFileGame tracks the write through %s and releases it afterward",
+    async (outcome) => {
+        const handle: FileWorkspaceHandle = {
+            id: { id: "files-write-helper-handle" },
+            kind: "fileWorkspace",
+        };
+        const tab: Tab = {
+            value: "files-write-helper",
+            name: "Write helper",
+            type: "analysis",
+            gameOrigin: { kind: "file", file: { handle }, gameNumber: 0 },
+        } as Tab;
+        setFileFreshness(tab.value, "verified", { verifiedRevision: "r1" });
+        const pendingWrite = deferred<WriteStamp>();
+        mocks.writeGame.mockReturnValueOnce(pendingWrite.promise);
+        const fileRevision = vi.fn(async () => "r1");
+        let focus: () => void = () => undefined;
+        const stop = startFileRevisionPoll({
+            getTabs: () => [tab],
+            fileRevision,
+            subscribeFocus: (callback) => {
+                focus = callback;
+                return () => undefined;
+            },
+        });
+
+        try {
+            const write = writeFileGame(handle, 0, "game", { kind: "append" });
+            const failure = new Error("write failed");
+            const observedWrite = write.then(
+                (result) => ({ status: "resolved" as const, result }),
+                (error: unknown) => ({ status: "rejected" as const, error }),
+            );
+            focus();
+            await flushPromises();
+            expect(mocks.writeGame).toHaveBeenCalledOnce();
+            expect(fileRevision).not.toHaveBeenCalled();
+
+            let expectedOutcome:
+                | { status: "resolved"; result: WriteStamp }
+                | { status: "rejected"; error: Error };
+            if (outcome === "success") {
+                const written = { stamp: "a".repeat(64), revision: "r1" };
+                pendingWrite.resolve(written);
+                expectedOutcome = { status: "resolved", result: written };
+            } else {
+                pendingWrite.reject(failure);
+                expectedOutcome = { status: "rejected", error: failure };
+            }
+            await expect(observedWrite).resolves.toEqual(expectedOutcome);
+            await flushPromises();
+
+            expect(fileRevision).toHaveBeenCalledOnce();
+            expect(getFileFreshness(tab.value).state).toBe("verified");
+        } finally {
+            stop();
+        }
+    },
+);
 
 describe("ensureFileWorkspace", () => {
     const handle = { id: { id: "workspace" }, kind: "fileWorkspace" } as const;
