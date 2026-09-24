@@ -49,6 +49,7 @@ test("default workspace is a complete, current envelope with one active new tab"
     });
     expect(workspace.tabs).toHaveLength(1);
     expect(workspace.tabs[0].value).toMatch(/^[0-9a-f]{8}-/i);
+    expect(workspace).not.toHaveProperty("treeOwnershipUncertain");
 });
 
 test("evaluates the complete static workspace schema on a fresh ESM module instance", async () => {
@@ -100,6 +101,61 @@ test("migrates separate legacy keys, repairs IDs, and keeps tree state", () => {
     expect(sessionStorage.getItem("42")).toBeNull();
     expect(workspace.tabs.every((tab) => sessionStorage.getItem(tab.value) !== null)).toBe(true);
     expect(readStoredWorkspace()).toEqual(workspace);
+});
+
+test("sweeps valid orphan trees during the first successful legacy migration", () => {
+    sessionStorage.clear();
+    sessionStorage.setItem("tabs", JSON.stringify([legacyTab]));
+    sessionStorage.setItem("activeTab", JSON.stringify(legacyTab.value));
+    sessionStorage.setItem(
+        legacyTab.value,
+        serializeStorageValue({ version: 0, state: defaultTree() }),
+    );
+    const orphanTreeKey = "unowned-legacy-tree";
+    const unrelatedKey = "app-preference";
+    sessionStorage.setItem(
+        orphanTreeKey,
+        serializeStorageValue({ version: 1, state: defaultTree() }),
+    );
+    sessionStorage.setItem(unrelatedKey, "keep this value");
+
+    const workspace = loadStoredWorkspace();
+
+    expect(workspace.tabs[0]!.value).not.toBe(legacyTab.value);
+    expect(sessionStorage.getItem(legacyTab.value)).toBeNull();
+    expect(sessionStorage.getItem(orphanTreeKey)).toBeNull();
+    expect(sessionStorage.getItem(unrelatedKey)).toBe("keep this value");
+    expect(sessionStorage.getItem(workspace.tabs[0]!.value)).not.toBeNull();
+});
+
+test("a failed removal of a legacy non-UUID tree does not abort startup and retries", () => {
+    sessionStorage.clear();
+    sessionStorage.setItem("tabs", JSON.stringify([legacyTab]));
+    sessionStorage.setItem("activeTab", JSON.stringify(legacyTab.value));
+    sessionStorage.setItem(
+        legacyTab.value,
+        serializeStorageValue({ version: 0, state: defaultTree() }),
+    );
+    const originalRemoveItem = Storage.prototype.removeItem;
+    const refused = vi
+        .spyOn(Storage.prototype, "removeItem")
+        .mockImplementation(function (this: Storage, key) {
+            if (key === legacyTab.value) throw new DOMException("denied", "SecurityError");
+            return originalRemoveItem.call(this, key);
+        });
+
+    let migrated: ReturnType<typeof loadStoredWorkspace> | undefined;
+    expect(() => {
+        migrated = loadStoredWorkspace();
+    }).not.toThrow();
+    expect(migrated?.tabs[0]!.value).not.toBe(legacyTab.value);
+    expect(sessionStorage.getItem(legacyTab.value)).not.toBeNull();
+    expect(persistError.reportPersistError).toHaveBeenCalledOnce();
+    refused.mockRestore();
+
+    loadStoredWorkspace();
+
+    expect(sessionStorage.getItem(legacyTab.value)).toBeNull();
 });
 
 test("rolls back staged clones and preserves legacy storage when the envelope write fails", () => {
@@ -240,14 +296,27 @@ test("retries orphan cleanup on the next load after storage refuses removal", ()
     expect(sessionStorage.getItem(orphan)).toBeNull();
 });
 
-test("preserves valid tree keys if no valid workspace envelope establishes ownership", () => {
+test("preserves valid tree keys through repair, a second load, and a subsequent save", () => {
     sessionStorage.clear();
     const treeId = crypto.randomUUID();
     const tree = serializeStorageValue({ version: 1, state: defaultTree() });
     sessionStorage.setItem(WORKSPACE_STORAGE_KEY, "{broken");
     sessionStorage.setItem(treeId, tree);
 
-    loadStoredWorkspace();
+    const repaired = loadStoredWorkspace();
+    expect(repaired.treeOwnershipUncertain).toBe(true);
+    expect(sessionStorage.getItem(treeId)).toBe(tree);
+
+    const secondLoad = loadStoredWorkspace();
+    expect(secondLoad.treeOwnershipUncertain).toBe(true);
+    expect(sessionStorage.getItem(treeId)).toBe(tree);
+
+    const saved = saveWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY, {
+        ...secondLoad,
+        activeTab: secondLoad.tabs[0]!.value,
+    });
+    expect(saved?.treeOwnershipUncertain).toBe(true);
+    expect(loadStoredWorkspace().treeOwnershipUncertain).toBe(true);
 
     expect(sessionStorage.getItem(treeId)).toBe(tree);
 });
@@ -437,7 +506,9 @@ test("workspace JSON parsing and legacy-tree scrubbing distinguish malformed val
     const orphan = "orphan";
     const nonStringValue = 42;
     sessionStorage.setItem(retained.value, "retained");
-    sessionStorage.setItem(orphan, "orphan");
+    sessionStorage.setItem(orphan, serializeStorageValue({ version: 0, state: defaultTree() }));
+    const unrelated = "not-a-tree";
+    sessionStorage.setItem(unrelated, "orphan");
     sessionStorage.setItem(String(nonStringValue), "must-remain");
     scrubInvalidLegacyTreeKeys(
         {
@@ -454,6 +525,7 @@ test("workspace JSON parsing and legacy-tree scrubbing distinguish malformed val
     );
     expect(sessionStorage.getItem(retained.value)).toBe("retained");
     expect(sessionStorage.getItem(orphan)).toBeNull();
+    expect(sessionStorage.getItem(unrelated)).toBe("orphan");
     expect(sessionStorage.getItem(String(nonStringValue))).toBe("must-remain");
     expect(() => scrubInvalidLegacyTreeKeys(null, [retained])).not.toThrow();
     const nonRecordWithThrowingTabs = Object.defineProperty(() => undefined, "tabs", {

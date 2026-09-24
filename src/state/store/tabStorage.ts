@@ -348,20 +348,13 @@ export class TabStorageRepository {
         sessionStorage.removeItem(tabId);
     }
 
-    /** Reclaim durable trees left by a refused tab admission. Only UUID keys with
-     * a decodable tree belong to this sweep; other session keys are untouched. */
+    /** Reclaim durable trees absent from the retained workspace; other session values stay untouched. */
     removeOrphanedTrees(retainedIds: ReadonlySet<string>) {
         const keys = Array.from({ length: sessionStorage.length }, (_, index) =>
             sessionStorage.key(index),
         );
         for (const key of keys) {
-            if (
-                !key ||
-                retainedIds.has(key) ||
-                !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(key)
-            ) {
-                continue;
-            }
+            if (!key || retainedIds.has(key)) continue;
             const raw = sessionStorage.getItem(key);
             if (!raw || !decodeLegacyOrCompressed(raw)) continue;
             try {

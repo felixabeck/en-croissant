@@ -13,6 +13,7 @@ export type Workspace = {
     version: typeof WORKSPACE_VERSION;
     tabs: Tab[];
     activeTab: string | null;
+    treeOwnershipUncertain?: true;
 };
 
 export const MAX_WORKSPACE_TABS = 100;
@@ -31,6 +32,7 @@ const workspaceLiveSchema = z.object({
     version: z.literal(WORKSPACE_VERSION),
     tabs: liveTabsSchema,
     activeTab: z.string().max(128).nullable(),
+    treeOwnershipUncertain: z.literal(true).optional(),
 });
 
 function newTab(used: Iterable<string>): Tab {
@@ -101,11 +103,9 @@ function planWorkspaceRepair(input: unknown): WorkspaceRepairPlan {
 
 export function scrubInvalidLegacyTreeKeys(input: unknown, retainedTabs: readonly Tab[]) {
     if (!isRecord(input) || !Array.isArray(input.tabs)) return;
-    const retainedIds = new Set(retainedTabs.map((tab) => tab.value));
-    for (const tab of input.tabs) {
-        if (!isRecord(tab) || typeof tab.value !== "string" || retainedIds.has(tab.value)) continue;
-        tabStorage.remove(tab.value);
-    }
+    // Let the shared sweep validate stored trees before removing anything. The
+    // legacy metadata alone is not evidence that a storage key contains a tree.
+    tabStorage.removeOrphanedTrees(new Set(retainedTabs.map((tab) => tab.value)));
 }
 
 export function readStoredWorkspaceValue(storage: SyncStringStorage, key: string): unknown | null {
@@ -116,10 +116,22 @@ function workspaceFromValue(value: unknown): Workspace | null {
     const parsed = workspaceLiveSchema.safeParse(value);
     if (!parsed.success) return null;
     const tabs = parsed.data.tabs;
-    if (tabs.length === 0) return { version: WORKSPACE_VERSION, tabs: [], activeTab: null };
+    if (tabs.length === 0) {
+        return {
+            version: WORKSPACE_VERSION,
+            tabs: [],
+            activeTab: null,
+            ...(parsed.data.treeOwnershipUncertain ? { treeOwnershipUncertain: true } : {}),
+        };
+    }
     const legacyActive = parsed.data.activeTab;
     const activeTab = resolveActiveTab(tabs, legacyActive);
-    return { version: WORKSPACE_VERSION, tabs, activeTab };
+    return {
+        version: WORKSPACE_VERSION,
+        tabs,
+        activeTab,
+        ...(parsed.data.treeOwnershipUncertain ? { treeOwnershipUncertain: true } : {}),
+    };
 }
 
 /** Saves and returns the exact canonical workspace acknowledged by synchronous storage. */
@@ -146,6 +158,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function isValidLegacyWorkspace(value: unknown): boolean {
+    if (!isRecord(value)) return false;
+    const version = value.version;
+    if (version !== undefined && version !== 0) return false;
+    return workspaceInputSchema.safeParse(value).success;
+}
+
+function hasUncertainTreeOwnership(value: unknown): boolean {
+    return isRecord(value) && value.treeOwnershipUncertain === true;
+}
+
 /** Migrates separate legacy tabs/activeTab keys into one repairable envelope. */
 export function loadWorkspace(storage: SyncStringStorage, key: string): Workspace {
     const storedWorkspace = storage.getItem(key);
@@ -157,7 +180,17 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
             tabs: readStoredWorkspaceValue(storage, "tabs"),
             activeTab: readStoredWorkspaceValue(storage, "activeTab"),
         } as const);
+    const validMigrationSource = isValidLegacyWorkspace(
+        storedWorkspace === null ? legacy : current,
+    );
+    const treeOwnershipUncertain =
+        hasUncertainTreeOwnership(current) ||
+        (storedWorkspace !== null && !hasAuthoritativeWorkspace && !validMigrationSource);
     const plan = planWorkspaceRepair(legacy);
+    if (treeOwnershipUncertain) {
+        plan.workspace.treeOwnershipUncertain = true;
+        plan.unrepairedWorkspace.treeOwnershipUncertain = true;
+    }
     const stagedCloneIds = plan.cloneTargets.map(({ targetId }) => targetId);
     for (const { sourceId, targetId } of plan.cloneTargets) {
         tabStorage.clone(sourceId, targetId);
@@ -183,11 +216,10 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
         }
     }
 
-    scrubInvalidLegacyTreeKeys(legacy, plan.workspace.tabs);
-    // A missing or damaged workspace cannot establish ownership of otherwise valid
-    // tree keys. Wait for a later load with a valid persisted envelope before sweeping.
-    if (hasAuthoritativeWorkspace) {
-        tabStorage.removeOrphanedTrees(new Set(plan.workspace.tabs.map((tab) => tab.value)));
+    // A damaged persisted envelope cannot establish ownership of otherwise valid
+    // tree keys. A sound legacy migration can sweep as soon as its new envelope is durable.
+    if (!treeOwnershipUncertain && (hasAuthoritativeWorkspace || validMigrationSource)) {
+        scrubInvalidLegacyTreeKeys(legacy, plan.workspace.tabs);
     }
     storage.removeItem("tabs");
     storage.removeItem("activeTab");
