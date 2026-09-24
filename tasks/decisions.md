@@ -4010,3 +4010,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** per-game, exact, checkable atomically where the write happens, and cheap to poll. Residual stated in the plan: the native check and the atomic rename are not atomic against another process (no cross-process lock exists). Reversal path: `FILE_REVISION_INTERVAL_MS` in `src/state/fileFreshness.ts` for the bound; the stamp definition lives in `src-tauri/src/pgn.rs`.
 * **Decided by:** Claude Code (orchestrator), f-20260923-01 build (drain, full auto) · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"630c57aa38723c7397525666feb8db370d4b45f3d812e81233b3853c8cfb8f7e","input_sha256":"218b63ee6ea6236bacc180ce7c9a049d840d848199a63a4858d4f9b0f19b89e4","kind":"mutation-receipt","operation":"5d9bec092ea4120a26dac7dbe071e8400fa0154f7975a0f3161d970fd457fa6d","options":{"section":null},"request_id_sha256":null,"results":["d-20260924-02"],"target":"decisions-ledger","v":1} -->
+
+### d-20260924-03 — Where does "Save my version" put the user's text, and what does ordinary Save-As overwrite?
+
+* **Question:** with every native write a compare-and-swap, how are the conflict panel's "keep my edits" and the ordinary Save-As expressed?
+* **Governs:** f-20260923-01
+* **Chosen:** the conflict and unavailable panels offer "Save my version as a new game…": the tree is appended to a picked file (append CAS at its current count), never overwriting any game, even when the original file is picked; an uncertain outcome disables the action, persistently, so it cannot append twice. Ordinary Save-As keeps its existing target slot, now as read-then-CAS.
+* **Rejected:** an unconditional `replace` write kind (reachable with any WritePgn handle, so a stale tree could overwrite its own changed source — plan round 5); changing every Save-As to append (a user-visible change outside the finding — plan round 6).
+* **Reason:** the user's edits stay file-backed without destroying the newer disk version, and ordinary Save-As behaves as before. Reversal path: the append action in `FileFreshnessGate.tsx`; the Save-As branch of `saveToFile` in `src/utils/tabs.ts`.
+* **Decided by:** Claude Code (orchestrator), f-20260923-01 build (drain, full auto) · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"3cfeb4b596a47a2f2fc70be7899af2639f2ffe95dd7645ce8f99ea7406bf22c9","input_sha256":"fde5d182af99d757e11b7840e2bfdbbfc0c9abdb847e18b17bf043e3a8da23f9","kind":"mutation-receipt","operation":"d01957cb867bb753ed95499be58374cacfc7fc4e0ce4a09ea1301ef23c0d5b2d","options":{"section":null},"request_id_sha256":null,"results":["d-20260924-03"],"target":"decisions-ledger","v":1} -->
