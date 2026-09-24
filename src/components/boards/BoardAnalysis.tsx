@@ -103,6 +103,13 @@ function BoardAnalysis() {
         category: "validation",
         message: t("Tab.SaveSuperseded"),
       });
+    } else if (result === "conflict" && currentTab && !getTabFile(getTab(currentTab.value))) {
+      // A Save As whose read-back failed leaves the tab without a file, so no freshness panel
+      // can show the state; the destination may already hold the game.
+      notifyUnlessCancelled(t("Common.Error"), {
+        category: "applied-despite-error",
+        message: t("Tab.SaveMayHaveBeenWritten"),
+      });
     }
   }, [updateTab, getTab, currentTab, store, t]);
   useEffect(() => {
@@ -193,12 +200,11 @@ function BoardAnalysis() {
       if (written.stamp === null || written.revision === null) {
         const countRefresh = await refreshFileCount();
         if (getTab(tabId)) setFileFreshness(tabId, "unverified");
-        if (countRefresh.ok) {
-          notifyUnlessCancelled(t("Common.Error"), {
-            category: "applied-despite-error",
-            message: t("FileFreshness.AddGameMayHaveBeenAdded"),
-          });
-        } else {
+        notifyUnlessCancelled(t("Common.Error"), {
+          category: "applied-despite-error",
+          message: t("FileFreshness.AddGameMayHaveBeenAdded"),
+        });
+        if (!countRefresh.ok) {
           notifyUnlessCancelled(t("Common.Error"), normalizeError(countRefresh.error));
         }
         return;

@@ -871,6 +871,7 @@
     "Tab.Rename": "Rinomina scheda",
     "Tab.SaveAndAddGame": "Salva e aggiungi partita",
     "Tab.SaveAndClose": "Salva e chiudi",
+    "Tab.SaveMayHaveBeenWritten": "La partita è stata scritta, ma in seguito non è stato possibile verificare il file. Apri il file per controllarlo prima di salvare di nuovo.",
     "Tab.SaveSuperseded": "La partita è cambiata durante il salvataggio. Le tue ultime modifiche restano aperte; salva di nuovo per includerle.",
     "Tab.UnsavedChanges": "Modifiche non salvate",
     "Tab.UnsavedChangesConfirm": "Hai modifiche non salvate. Vuoi salvarle prima di chiudere?",

@@ -862,6 +862,7 @@
     "Tab.Rename": "Sekmeyi yeniden adlandır",
     "Tab.SaveAndAddGame": "Kaydet ve oyun ekle",
     "Tab.SaveAndClose": "Kaydet ve kapat",
+    "Tab.SaveMayHaveBeenWritten": "Oyun yazıldı ancak dosya daha sonra doğrulanamadı. Yeniden kaydetmeden önce dosyayı açıp kontrol edin.",
     "Tab.SaveSuperseded": "Kaydederken oyun değişti. Son düzenlemelerin açık kaldı; onları eklemek için yeniden kaydet.",
     "Tab.UnsavedChanges": "Kaydedilmemiş değişiklikler",
     "Tab.UnsavedChangesConfirm": "Kaydedilmemiş değişiklikleriniz var. Kapatmadan önce kaydetmek ister misiniz?",

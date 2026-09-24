@@ -862,6 +862,7 @@
     "Tab.Rename": "Gi fanen nytt navn",
     "Tab.SaveAndAddGame": "Lagre og legg til parti",
     "Tab.SaveAndClose": "Lagre og lukk",
+    "Tab.SaveMayHaveBeenWritten": "Partiet ble skrevet, men filen kunne ikke kontrolleres etterpå. Åpne filen for å bekrefte før du lagrer igjen.",
     "Tab.SaveSuperseded": "Partiet ble endret under lagringen. De siste endringene dine er fortsatt åpne; lagre på nytt for å ta dem med.",
     "Tab.UnsavedChanges": "Ulagrede endringer",
     "Tab.UnsavedChangesConfirm": "Du har ulagrede endringer. Vil du lagre dem før du lukker?",

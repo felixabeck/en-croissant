@@ -68,18 +68,27 @@ export async function readFileGame(
     return tauri.readGame(handle, gameNumber, signal ? { signal } : undefined);
 }
 
-export async function writeFileGame(
+/** Marks the file as being written by the app for the duration of `mutation`, so the freshness
+ * poll never classifies the app's own atomic replacement as another program's. */
+export async function withFileWrite<T>(
     handle: FileWorkspaceHandle,
-    n: number,
-    pgn: string,
-    expectation: WriteExpectation,
-): Promise<WriteStamp> {
+    mutation: () => Promise<T>,
+): Promise<T> {
     const endWrite = beginFileWrite(fileWorkspaceKey(handle));
     try {
-        return await tauri.writeGame(handle, n, pgn, expectation);
+        return await mutation();
     } finally {
         endWrite();
     }
+}
+
+export async function writeFileGame(
+    handle: FileWorkspaceHandle,
+    gameNumber: number,
+    pgn: string,
+    expectation: WriteExpectation,
+): Promise<WriteStamp> {
+    return withFileWrite(handle, () => tauri.writeGame(handle, gameNumber, pgn, expectation));
 }
 
 export async function loadFileGame(

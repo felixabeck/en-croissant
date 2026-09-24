@@ -274,6 +274,8 @@ const FILES_PROBE_TIMEOUT_MS = 20_000;
 const PRACTICE_RENDERER_TIMEOUT_MS = 600_000;
 // Keep aligned with FILE_REVISION_INTERVAL_MS in src/state/fileFreshness.ts.
 const FILE_FRESHNESS_POLL_INTERVAL_MS = 2_000;
+// How long a practice-step failure waits for a stalled renderer to answer before dumping its state.
+const RENDERER_RECOVERY_TIMEOUT_MS = 60_000;
 const PRACTICE_REVIEW_PAGE_LIMIT = 500; // Mirrors PRACTICE_READ_MAX_ENTRIES in practice.rs.
 const PRACTICE_MOVE_CLICK_DELAY_MS = 40;
 // Gap between the two clicks of the double-click. It must stay inside the platform double-click
@@ -1398,9 +1400,9 @@ try {
     // A WebDriver request aborts when the renderer does not answer within the driver's fetch
     // timeout; wait for it to answer again so the failure carries what the page was doing.
     const recovered = await waitFor(
-      "the renderer to answer again after the practice rating failure",
+      "the renderer to answer again after the practice-step failure",
       () => session.execute("return true").catch(() => false),
-      { timeoutMs: 60_000 },
+      { timeoutMs: RENDERER_RECOVERY_TIMEOUT_MS },
     ).catch(() => false);
     const state = recovered
       ? await session
@@ -1414,9 +1416,9 @@ try {
              };`,
           )
           .catch(() => "unavailable")
-      : "renderer did not answer within 60 s";
+      : `renderer did not answer within ${RENDERER_RECOVERY_TIMEOUT_MS / 1000} s`;
     throw new Error(
-      `${error.message}; stage: ${practiceStage}; practice rating ${ratingIndex + 1}; renderer state: ${JSON.stringify(state)}`,
+      `${error.message}; stage: ${practiceStage}${ratingIndex >= 0 ? ` (rating ${ratingIndex + 1})` : ""}; renderer state: ${JSON.stringify(state)}`,
     );
   }
   const writerSnapshot = await loadPracticeDeckThroughIpc(

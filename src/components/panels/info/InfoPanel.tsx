@@ -30,8 +30,8 @@ import { useNavigate } from "@tanstack/react-router";
 import { useActiveDatabaseViewStore } from "@/state/store/database";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { fileWorkspaceKey } from "@/utils/pathCapabilities";
-import { loadFileGame } from "@/utils/files";
-import { beginFileWrite, setFileFreshness } from "@/state/fileFreshness";
+import { loadFileGame, withFileWrite } from "@/utils/files";
+import { setFileFreshness } from "@/state/fileFreshness";
 
 function InfoPanel({ addGame }: { addGame?: () => void }) {
   const store = use(TreeStateContext)!;
@@ -282,12 +282,7 @@ function GameSelectorAccordion({
     );
     if (!saved) return;
     try {
-      const endWrite = beginFileWrite(fileKey);
-      try {
-        await tauri.deleteGame(filePath, index);
-      } finally {
-        endWrite();
-      }
+      await withFileWrite(filePath, () => tauri.deleteGame(filePath, index));
       if (
         currentIdentityRef.current.tabId === ownerId &&
         currentIdentityRef.current.fileKey === fileKey &&

@@ -880,6 +880,7 @@
     "Tab.Rename": "Zmień nazwę karty",
     "Tab.SaveAndAddGame": "Zapisz i dodaj partię",
     "Tab.SaveAndClose": "Zapisz i zamknij",
+    "Tab.SaveMayHaveBeenWritten": "Partia została zapisana, ale nie udało się potem sprawdzić pliku. Otwórz plik, aby to potwierdzić, zanim zapiszesz ponownie.",
     "Tab.SaveSuperseded": "Partia zmieniła się podczas zapisywania. Twoje najnowsze zmiany nadal są otwarte; zapisz ponownie, aby je uwzględnić.",
     "Tab.UnsavedChanges": "Niezapisane zmiany",
     "Tab.UnsavedChangesConfirm": "Masz niezapisane zmiany. Czy chcesz je zapisać przed zamknięciem?",

@@ -1,3 +1,4 @@
+import { getFileFreshness } from "@/state/fileFreshness";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -284,6 +285,11 @@ describe("InfoPanel game loading and cancellation", () => {
     const updatedTab = jotaiStore.get(currentTabAtom);
     expect(updatedTab?.gameOrigin).toMatchObject({ kind: "file", gameNumber: 1 });
     expect(mocks.notify).not.toHaveBeenCalled();
+    // The page was just read, so the tab starts verified at that revision without a second read.
+    expect(getFileFreshness(tabA.value)).toMatchObject({
+      state: "verified",
+      verifiedRevision: "r2",
+    });
   });
 
   test("setPage leaves metadata and tree unchanged when the workspace write is refused", async () => {

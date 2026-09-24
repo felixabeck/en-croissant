@@ -853,6 +853,7 @@
     "Tab.Rename": "重命名标签页",
     "Tab.SaveAndAddGame": "保存并添加棋局",
     "Tab.SaveAndClose": "保存并关闭",
+    "Tab.SaveMayHaveBeenWritten": "对局已写入，但之后无法校验该文件。请在再次保存前打开文件确认。",
     "Tab.SaveSuperseded": "保存期间棋局发生了更改。你的最新编辑仍处于打开状态；再次保存即可包含这些更改。",
     "Tab.UnsavedChanges": "未保存的更改",
     "Tab.UnsavedChangesConfirm": "你有未保存的更改，要在关闭前保存吗？",

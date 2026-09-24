@@ -10,6 +10,7 @@ import type { TreeStore } from "@/state/store/tree";
 import type { Tab } from "@/state/workspaceTypes";
 import { defaultPGN } from "@/utils/chess";
 import { defaultTree } from "@/utils/treeReducer";
+import { useHotkeys } from "@mantine/hooks";
 import BoardAnalysis from "./BoardAnalysis";
 
 const mocks = vi.hoisted(() => ({
@@ -17,6 +18,8 @@ const mocks = vi.hoisted(() => ({
   writeGame: vi.fn(),
   countPgnGames: vi.fn(),
   parsePGN: vi.fn(),
+  issuePgnWorkspace: vi.fn(),
+  readGame: vi.fn(),
 }));
 
 vi.mock("react-i18next", () => ({
@@ -67,6 +70,8 @@ vi.mock("@/platform/tauri", async () => {
       ...actual.tauri,
       countPgnGames: mocks.countPgnGames,
       writeGame: mocks.writeGame,
+      issuePgnWorkspace: mocks.issuePgnWorkspace,
+      readGame: mocks.readGame,
     },
   };
 });
@@ -189,6 +194,7 @@ describe("BoardAnalysis add game durability", () => {
       reset,
       setAnnotation: vi.fn(),
       setPracticePath: vi.fn(),
+      setSourceStamp: vi.fn(),
     })) as unknown as TreeStore;
 
     container = document.createElement("div");
@@ -431,7 +437,7 @@ describe("BoardAnalysis add game durability", () => {
       backendCategory: "io",
       message: "Could not refresh the PGN game count",
     });
-    expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalledWith("Common.Error", {
+    expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", {
       category: "applied-despite-error",
       message: "FileFreshness.AddGameMayHaveBeenAdded",
     });
@@ -494,5 +500,40 @@ describe("BoardAnalysis add game durability", () => {
       category: "unexpected",
       message: "FileFreshness.AddGameMayHaveBeenAdded durability uncertain",
     });
+  });
+
+  test("a toolbar Save As whose read-back fails on a tab without a file says the game may be written", async () => {
+    const destination = { id: { id: "picked-token" }, kind: "fileWorkspace" } as const;
+    mocks.issuePgnWorkspace.mockResolvedValueOnce({
+      handle: destination,
+      displayName: "picked.pgn",
+    });
+    mocks.readGame.mockResolvedValueOnce({
+      pgn: "",
+      stamp: "c".repeat(64),
+      revision: "r0",
+      present: false,
+    });
+    mocks.writeGame.mockResolvedValueOnce({ stamp: null, revision: null });
+    await act(async () => {
+      jotaiStore.set(tabsAtom, [{ ...tab, gameOrigin: { kind: "none" } }], tabId);
+    });
+    const saveBindings = vi.mocked(useHotkeys).mock.calls.at(-2)?.[0];
+    const userSave = saveBindings?.[0]?.[1] as (() => void) | undefined;
+
+    await act(async () => {
+      userSave?.();
+      await vi.waitFor(() => expect(mocks.notifyUnlessCancelled).toHaveBeenCalled());
+    });
+
+    expect(mocks.writeGame).toHaveBeenCalledWith(destination, 0, expect.any(String), {
+      kind: "game",
+      stamp: "c".repeat(64),
+    });
+    expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", {
+      category: "applied-despite-error",
+      message: "Tab.SaveMayHaveBeenWritten",
+    });
+    expect(jotaiStore.get(tabsAtom)[0]?.gameOrigin).toEqual({ kind: "none" });
   });
 });

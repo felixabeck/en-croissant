@@ -871,6 +871,7 @@
     "Tab.Rename": "Renombrar pestaña",
     "Tab.SaveAndAddGame": "Guardar y añadir partida",
     "Tab.SaveAndClose": "Guardar y cerrar",
+    "Tab.SaveMayHaveBeenWritten": "La partida se escribió, pero después no se pudo comprobar el archivo. Abre el archivo para confirmarlo antes de volver a guardar.",
     "Tab.SaveSuperseded": "La partida cambió durante el guardado. Tus últimos cambios siguen abiertos; vuelve a guardar para incluirlos.",
     "Tab.UnsavedChanges": "Cambios sin guardar",
     "Tab.UnsavedChangesConfirm": "Tienes cambios sin guardar. ¿Quieres guardarlos antes de cerrar?",
