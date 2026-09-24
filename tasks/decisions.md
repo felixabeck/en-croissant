@@ -4090,8 +4090,8 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Chosen:** Only after loading a valid persisted workspace envelope, remove unreferenced UUID keys that decode as persisted trees. Report removal failures and retry on later loads.
 * **Rejected:** Delete all unreferenced UUID keys, because other session values could use UUIDs; sweep when the workspace record is missing or damaged, because it cannot establish which trees still contain recoverable edits.
 * **Reason:** A refused tab admission can leave a durable tree when rollback removal throws. A valid workspace gives an authoritative retained-id set, and checking the value shape bounds deletion to the tree repository's own records. `src/state/workspace.ts` and `src/state/store/tabStorage.ts` own the reversal path.
-* **Decided by:** Codex drain df992edd-eb21-4f56-ae9e-982da76bfbbc · **Superseded-by:** -
-<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"c261b756d4940f8b006f2e3c25d3c00b271f5bd3546f34330dad4bc927aaf5b1","input_sha256":"40ea768848f09f9aed4ad3dbcad7613d3a3b20033da8c66dfabe0ec9cc199d91","kind":"mutation-receipt","operation":"5cc22fb0867a97dd3e509b0677ac9a5ab5f6b757690cee4048545ad1986e34dd","options":{"section":null},"request_id_sha256":null,"results":["d-20260925-03"],"target":"decisions-ledger","v":1} -->
+* **Decided by:** Codex drain df992edd-eb21-4f56-ae9e-982da76bfbbc · **Superseded-by:** d-20260925-04
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"ba0519c47dc01f00ddbc5330259c4287dfd22c206de67cc6cff2734204130a14","input_sha256":"40ea768848f09f9aed4ad3dbcad7613d3a3b20033da8c66dfabe0ec9cc199d91","kind":"mutation-receipt","operation":"5cc22fb0867a97dd3e509b0677ac9a5ab5f6b757690cee4048545ad1986e34dd","options":{"section":null},"request_id_sha256":null,"results":["d-20260925-03"],"target":"decisions-ledger","v":1} -->
 
 ### d-20260925-04 — When may startup reclaim an unreferenced persisted tree after workspace repair?
 
