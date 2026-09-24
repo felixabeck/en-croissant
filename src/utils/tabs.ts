@@ -350,6 +350,16 @@ export async function saveToFile({
         if (tab && normalized.backendCategory === "stale-game") {
             return writingCurrentOrigin ? sourceChanged(tab.value) : failed(error);
         }
+        if (tab && writingCurrentOrigin && normalized.category === "applied-despite-error") {
+            // The game reached the file but its stamp is unknown: verify it by text, as after a
+            // write whose read-back failed.
+            const currentTab = getTab(tab.value);
+            if (currentTab && sameOrigin(currentTab.gameOrigin, tab.gameOrigin)) {
+                store.getState().setSourceStamp(null);
+                setFileFreshness(tab.value, "unverified");
+            }
+            return failed(error);
+        }
         if (tab && currentFileOperation && normalized.backendCategory === "conflict") {
             setFileFreshness(tab.value, "unverified", { errorMessage: normalized.message });
             return failed(error);

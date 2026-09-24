@@ -499,6 +499,31 @@ test("a stale-game rejection becomes a conflict without clearing edits", async (
     );
 });
 
+test("a committed save whose follow-up failed is verified by text instead of by its old stamp", async () => {
+    const fixture = saveFixture();
+    setFileFreshness("save-test", "verified", { verifiedRevision: "r1" });
+    mocks.writeGame.mockRejectedValueOnce({
+        tag: "backend-error",
+        category: "durability",
+        message:
+            "Committed but durability uncertain: PGN file capability rebind after a committed edit",
+    });
+
+    const result = await saveToFile({
+        tab: fixture.tabs[0],
+        updateTab: fixture.updateTab,
+        getTab: fixture.getTab,
+        store: fixture.store,
+    });
+
+    expect(result).toMatchObject({
+        status: "failed",
+        error: { category: "applied-despite-error", backendCategory: "durability" },
+    });
+    expect(fixture.store.getState()).toMatchObject({ dirty: true, sourceStamp: null });
+    expect(getFileFreshness("save-test").state).toBe("unverified");
+});
+
 test("a generic native conflict stays unverified and returns its typed save failure", async () => {
     const fixture = saveFixture();
     mocks.writeGame.mockRejectedValueOnce({

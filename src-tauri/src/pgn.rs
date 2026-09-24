@@ -1146,23 +1146,21 @@ async fn commit_pgn_mutation(
         installed.outcome,
         crate::error::DurabilityStage::PgnEdit,
     );
-    let rebind_outcome = match rebind_result {
-        Some(result) => result,
-        None => Ok(()),
-    };
-    let edit_outcome = match (pgn_outcome, rebind_outcome) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-        (Err(primary), Err(cleanup)) => Err(Error::OperationAndCleanup {
-            primary: primary.to_string(),
-            cleanup: cleanup.to_string(),
-        }),
-    };
+    // Every failure from here on happens after the replacement was installed, so it is reported
+    // as a committed-but-uncertain write: a raw rebind or cache error would tell the renderer the
+    // game was not written, and a Save-As would then drop the "may have been written" notice.
+    let rebind_outcome = rebind_result.unwrap_or(Ok(())).map_err(|error| {
+        log::warn!("{operation_name} capability rebind failed after the replacement: {error}");
+        Error::CommittedDurabilityUncertain(crate::error::DurabilityStage::PgnCapabilityRebind)
+    });
+    let edit_outcome = pgn_outcome.and(rebind_outcome);
 
     if let Err(invalidation_error) = repository.invalidate(&identity) {
         log::warn!("{operation_name} cache invalidation failed: {invalidation_error}");
         if edit_outcome.is_ok() {
-            return Err(invalidation_error);
+            return Err(Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::PgnCacheInvalidation,
+            ));
         }
     }
 
@@ -1778,6 +1776,50 @@ mod tests {
         assert_eq!(
             registry_identity(&registry, handle.path_ref()),
             deleted_identity
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn a_rebind_failure_after_the_replacement_reports_a_committed_write() {
+        use crate::infra::path_authority::PathAuthority;
+
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("picked.pgn");
+        let registry_directory = directory.path().join("registry");
+        std::fs::create_dir(&registry_directory).expect("registry directory");
+        let registry = registry_directory.join("registry.json");
+        std::fs::write(&path, "[Event \"Before\"]\n\n1. e4 *\n").expect("write PGN fixture");
+        let mut authority =
+            PathAuthority::open(registry.clone(), vec![]).expect("open path authority");
+        let handle = promote_pgn_file(&mut authority, &path);
+        let app = mock_app();
+        *app.state::<AppState>()
+            .pgn_path_authority
+            .lock()
+            .expect("path authority lock") = Some(authority);
+        // The registry cannot be replaced any more, so the rebind that follows the PGN
+        // replacement fails with a raw NotFound after the game is already on disk.
+        std::fs::remove_dir_all(&registry_directory).expect("remove registry directory");
+
+        let error =
+            write_through_capability(&app, &handle, 0, "[Event \"After\"]\n\n1. d4 *\n".into())
+                .await
+                .expect_err("the rebind cannot be persisted");
+
+        assert!(
+            matches!(
+                error,
+                Error::CommittedDurabilityUncertain(
+                    crate::error::DurabilityStage::PgnCapabilityRebind
+                )
+            ),
+            "unexpected error: {error:?}"
+        );
+        assert_eq!(error.category(), crate::error::ErrorCategory::Durability);
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("replaced PGN"),
+            "[Event \"After\"]\n\n1. d4 *\n"
         );
     }
 

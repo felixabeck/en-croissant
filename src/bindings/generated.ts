@@ -1140,7 +1140,7 @@ export type DatabaseInfo = { title: string; description: string; player_count: n
 export type DatabaseRootHandle = { id: PathRef; kind: DatabaseRootHandleKind }
 export type DatabaseRootHandleKind = "databaseRoot"
 export type DrawReason = "stalemate" | "insufficientMaterial" | "threefoldRepetition" | "fiftyMoveRule" | "agreement"
-export type DurabilityStage = "ArchiveCommitMarker" | "ArchiveFileReplacement" | "ArchiveReservationJournal" | "DatabasePgnReplacement" | "DirectoryInstall" | "DownloadTargetReplacement" | "GzipFileReplacement" | "NativeExport" | "OldDirectoryCleanup" | "OldDirectoryCleanupSync" | "PgnEdit" | "RegistryReplacement" | "SearchIndexReplacement" | "WorkspacePgnCreation" | "WorkspaceRemoval" | "WorkspaceSidecarCreation" | "WorkspaceSidecarReplacement" | "PracticePositions" | "PracticeReviewShard" | "PracticeState"
+export type DurabilityStage = "ArchiveCommitMarker" | "ArchiveFileReplacement" | "ArchiveReservationJournal" | "DatabasePgnReplacement" | "DirectoryInstall" | "DownloadTargetReplacement" | "GzipFileReplacement" | "NativeExport" | "OldDirectoryCleanup" | "OldDirectoryCleanupSync" | "PgnEdit" | "PgnCacheInvalidation" | "PgnCapabilityRebind" | "RegistryReplacement" | "SearchIndexReplacement" | "WorkspacePgnCreation" | "WorkspaceRemoval" | "WorkspaceSidecarCreation" | "WorkspaceSidecarReplacement" | "PracticePositions" | "PracticeReviewShard" | "PracticeState"
 /**
  * Prepare marks the supplied current-session attachments as prepared without retiring omitted
  * IDs; an empty list is an explicit prepare with no retained attachments.
