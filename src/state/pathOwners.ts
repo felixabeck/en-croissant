@@ -6,11 +6,14 @@ import { decodeCompressedOrJson } from "./store/debouncedStorage";
 import {
     EXPANDED_DIRECTORIES_STORAGE_KEY,
     parseExpandedDirectoriesValue,
+    repairExpandedDirectoriesAtStartup,
 } from "./expandedDirectories";
 import { tabSchema } from "./workspaceTypes";
+import { reportPreferenceStorageFailure } from "./utils";
 import {
     databaseHandleSchema,
     fileWorkspaceHandleSchema,
+    fileWorkspaceKey,
     pathRefKey,
     pathRefSchema,
 } from "@/utils/pathCapabilities";
@@ -98,7 +101,7 @@ function collectOriginalSnapshots(local?: Storage, session?: Storage): OriginalO
         fileWorkspaceHandleSchema.nullable(),
         (value) => {
             if (!value) return;
-            currentWorkspaceId = value.id.id;
+            currentWorkspaceId = fileWorkspaceKey(value);
             ids.add(pathRefKey(value.id));
         },
     );
@@ -225,6 +228,11 @@ export function collectOriginalPathOwners(local?: Storage, session?: Storage): S
 const originalSnapshots = collectOriginalSnapshots();
 export const originalPathOwnersSnapshot = originalSnapshots.pathOwners;
 export const originalEngineAttachmentIds = originalSnapshots.engineAttachmentIds;
+try {
+    repairExpandedDirectoriesAtStartup(globalThis.sessionStorage);
+} catch (cause) {
+    reportPreferenceStorageFailure("read", cause);
+}
 
 let initialization: Promise<void> | undefined;
 export function initializePathOwners(): Promise<void> {

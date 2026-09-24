@@ -9,8 +9,9 @@ import { reportPreferenceStorageFailure } from "./utils";
 export const EXPANDED_DIRECTORIES_STORAGE_KEY = "expanded-directories";
 export const MAX_EXPANDED_DIRECTORY_IDS = 1_000;
 export const MAX_EXPANDED_DIRECTORY_JSON_BYTES = 65_536;
+const EXPANDED_DIRECTORIES_VERSION = 1;
 
-export type ExpandedDirectoriesRecord = {
+type ExpandedDirectoriesRecord = {
     version: 1;
     workspaceId: string;
     ids: string[];
@@ -38,7 +39,7 @@ const attemptedRepairs = new WeakMap<object, Set<string>>();
 const readFailureMarker = Symbol("expanded-directory-read-failure");
 
 function recordFor(workspaceId: string, ids: string[]): ExpandedDirectoriesRecord {
-    return { version: 1, workspaceId, ids };
+    return { version: EXPANDED_DIRECTORIES_VERSION, workspaceId, ids };
 }
 
 function jsonByteLength(value: unknown): number {
@@ -59,10 +60,7 @@ function uniqueInRecencyOrder(values: readonly unknown[]): string[] {
 }
 
 /** Normalizes to most-recent-last order, keeping both persisted budgets. */
-export function normalizeExpandedDirectoryIds(
-    values: readonly unknown[],
-    workspaceId: string,
-): string[] {
+function normalizeExpandedDirectoryIds(values: readonly unknown[], workspaceId: string): string[] {
     const ids = uniqueInRecencyOrder(values);
     let first = 0;
     let jsonBytes = jsonByteLength(recordFor(workspaceId, ids));
@@ -80,7 +78,7 @@ export function normalizeExpandedDirectoryIds(
     return ids.slice(first);
 }
 
-export function expandedDirectoryRecordJsonBytes(record: ExpandedDirectoriesRecord): number {
+function expandedDirectoryRecordJsonBytes(record: ExpandedDirectoriesRecord): number {
     return jsonByteLength(record);
 }
 
@@ -94,7 +92,7 @@ export function parseExpandedDirectoriesValue(value: unknown): ParsedExpandedDir
     }
     const candidate = value as Record<string, unknown>;
     if (
-        candidate.version !== 1 ||
+        candidate.version !== EXPANDED_DIRECTORIES_VERSION ||
         typeof candidate.workspaceId !== "string" ||
         candidate.workspaceId.length === 0 ||
         !Array.isArray(candidate.ids) ||
@@ -168,6 +166,12 @@ function markRepairAttempt(snapshot: StoredSnapshot, workspaceId: string): boole
     return true;
 }
 
+function oversizedRecordError(jsonBytes: number): RangeError {
+    return new RangeError(
+        `Expanded directory record is ${jsonBytes} UTF-8 JSON bytes; maximum is ${MAX_EXPANDED_DIRECTORY_JSON_BYTES}`,
+    );
+}
+
 function persistRecord(
     storage: SyncStringStorage,
     record: ExpandedDirectoriesRecord,
@@ -176,12 +180,7 @@ function persistRecord(
 ): boolean {
     const jsonBytes = expandedDirectoryRecordJsonBytes(record);
     if (jsonBytes > MAX_EXPANDED_DIRECTORY_JSON_BYTES) {
-        reportPreferenceStorageFailure(
-            operation,
-            new RangeError(
-                `Expanded directory record is ${jsonBytes} UTF-8 JSON bytes; maximum is ${MAX_EXPANDED_DIRECTORY_JSON_BYTES}`,
-            ),
-        );
+        reportPreferenceStorageFailure(operation, oversizedRecordError(jsonBytes));
         return false;
     }
     const encoded = serializeStorageValue(record);
@@ -192,6 +191,40 @@ function persistRecord(
     } catch (cause) {
         reportPreferenceStorageFailure(operation, cause);
         return false;
+    }
+}
+
+/** Reclaim disposable bytes after the original owner snapshot, even if Files is never opened. */
+export function repairExpandedDirectoriesAtStartup(storage: SyncStringStorage): void {
+    let raw: string | null;
+    try {
+        raw = storage.getItem(EXPANDED_DIRECTORIES_STORAGE_KEY);
+    } catch (cause) {
+        reportPreferenceStorageFailure("read", cause);
+        return;
+    }
+    if (raw === null) return;
+    const value = decodeCompressedOrJson(raw);
+    if (value === null) return; // Preserve unreadable bytes for diagnosis.
+    const parsed = parseExpandedDirectoriesValue(value);
+    if (parsed.kind === "invalid") return;
+    if (parsed.kind === "legacy") {
+        // An unscoped array has no provable workspace owner. Drop this disposable
+        // preference rather than attributing capabilities to whichever root is active.
+        try {
+            storage.removeItem(EXPANDED_DIRECTORIES_STORAGE_KEY);
+        } catch (cause) {
+            reportPreferenceStorageFailure("repair", cause);
+        }
+        return;
+    }
+    if (parsed.needsRepair) {
+        persistRecord(
+            storage,
+            recordFor(parsed.record.workspaceId, parsed.ids),
+            "repair",
+            () => {},
+        );
     }
 }
 
@@ -214,18 +247,22 @@ function snapshotIds(
     }
 
     if (parsed.kind === "legacy") {
-        const ids = normalizeExpandedDirectoryIds(parsed.ids, workspaceId);
+        // A legacy entry has no workspace provenance, so no ID can be trusted.
         if (markRepairAttempt(snapshot, workspaceId)) {
-            persistRecord(storage, recordFor(workspaceId, ids), "repair", noteWrite);
+            persistRecord(storage, recordFor(workspaceId, []), "repair", noteWrite);
         }
-        return ids;
+        return [];
     }
 
-    if (parsed.record.workspaceId !== workspaceId) return [];
-    if (parsed.needsRepair && markRepairAttempt(snapshot, workspaceId)) {
-        persistRecord(storage, recordFor(workspaceId, parsed.ids), "repair", noteWrite);
+    if (parsed.needsRepair && markRepairAttempt(snapshot, parsed.record.workspaceId)) {
+        persistRecord(
+            storage,
+            recordFor(parsed.record.workspaceId, parsed.ids),
+            "repair",
+            noteWrite,
+        );
     }
-    return parsed.ids;
+    return parsed.record.workspaceId === workspaceId ? parsed.ids : [];
 }
 
 function tooLargeAsSingleId(workspaceId: string, id: string): boolean {
@@ -241,6 +278,7 @@ export function createExpandedDirectoriesAtom(
 ) {
     const readSnapshot = createSnapshotReader(storage);
     const memoryAtom = atom<ExpandedMemory>(null);
+    const reportedOversizedIds = new Set<string>();
 
     return atom(
         (get) => {
@@ -264,23 +302,22 @@ export function createExpandedDirectoriesAtom(
             const requested = typeof update === "function" ? update(previous) : update;
             const ids = uniqueInRecencyOrder(requested);
 
-            const oversizedId = ids.find((id) => tooLargeAsSingleId(workspaceId, id));
-            if (oversizedId !== undefined) {
-                set(memoryAtom, { workspaceId, ids });
+            const oversizedIds = ids.filter((id) => tooLargeAsSingleId(workspaceId, id));
+            const oversizedSet = new Set(oversizedIds);
+            for (const oversizedId of oversizedIds) {
+                if (reportedOversizedIds.has(oversizedId)) continue;
+                reportedOversizedIds.add(oversizedId);
                 const size = expandedDirectoryRecordJsonBytes(
                     recordFor(workspaceId, [oversizedId]),
                 );
-                reportPreferenceStorageFailure(
-                    "save",
-                    new RangeError(
-                        `Expanded directory record is ${size} UTF-8 JSON bytes; maximum is ${MAX_EXPANDED_DIRECTORY_JSON_BYTES}`,
-                    ),
-                );
-                return;
+                reportPreferenceStorageFailure("save", oversizedRecordError(size));
             }
 
-            const boundedIds = normalizeExpandedDirectoryIds(ids, workspaceId);
-            set(memoryAtom, { workspaceId, ids: boundedIds });
+            const boundedIds = normalizeExpandedDirectoryIds(
+                ids.filter((id) => !oversizedSet.has(id)),
+                workspaceId,
+            );
+            set(memoryAtom, { workspaceId, ids: oversizedIds.length ? ids : boundedIds });
 
             // Invalid bytes stay intact. They cannot safely be replaced by a renderer guess.
             const currentSnapshot = readSnapshot.read();

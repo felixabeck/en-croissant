@@ -278,6 +278,42 @@ describe("collectOriginalPathOwners", () => {
         expect(mismatched.retainedIds).not.toContainEqual({ id: "stored-directory" });
     });
 
+    test("repairs a valid oversized record at startup before Files mounts", async () => {
+        const ids = Array.from(
+            { length: MAX_EXPANDED_DIRECTORY_IDS + 5 },
+            (_, index) => `startup-${index}`,
+        );
+        sessionStorage.setItem(
+            EXPANDED_DIRECTORIES_STORAGE_KEY,
+            serializeStorageValue({ version: 1, workspaceId: "inactive-workspace", ids }),
+        );
+        vi.resetModules();
+        await import("./pathOwners");
+        const repaired = deserializeStorageValue<{ workspaceId: string; ids: string[] }>(
+            sessionStorage.getItem(EXPANDED_DIRECTORIES_STORAGE_KEY)!,
+        );
+        expect(repaired).toEqual({
+            version: 1,
+            workspaceId: "inactive-workspace",
+            ids: ids.slice(-MAX_EXPANDED_DIRECTORY_IDS),
+        });
+    });
+
+    test("drops an unscoped legacy preference at startup after taking the owner snapshot", async () => {
+        setJson(localStorage, "file-workspace", fileHandle("current-workspace"));
+        sessionStorage.setItem(
+            EXPANDED_DIRECTORIES_STORAGE_KEY,
+            JSON.stringify(["unknown-directory"]),
+        );
+        vi.resetModules();
+        const { originalPathOwnersSnapshot } = await import("./pathOwners");
+        expect(originalPathOwnersSnapshot.retainedIds).not.toContainEqual(
+            path("unknown-directory"),
+        );
+        expect(originalPathOwnersSnapshot.trustedFamilies).not.toContain("expandedDirectories");
+        expect(sessionStorage.getItem(EXPANDED_DIRECTORIES_STORAGE_KEY)).toBeNull();
+    });
+
     test("distinguishes confirmed absence from malformed and throwing storage", () => {
         setJson(localStorage, "download-destination-capability", { id: "" });
         const owners = collectOriginalPathOwners(localStorage, sessionStorage);
@@ -293,6 +329,21 @@ describe("collectOriginalPathOwners", () => {
         expect(collectOriginalPathOwners(throwing, sessionStorage).trustedFamilies).not.toContain(
             "engines",
         );
+
+        setJson(localStorage, "file-workspace", { id: { id: "" }, kind: "fileWorkspace" });
+        expect(
+            collectOriginalPathOwners(localStorage, sessionStorage).trustedFamilies,
+        ).not.toContain("fileWorkspace");
+        const workspaceThrowing = Object.create(localStorage) as Storage;
+        Object.defineProperty(workspaceThrowing, "getItem", {
+            value: (key: string) => {
+                if (key === "file-workspace") throw new Error("workspace read denied");
+                return localStorage.getItem(key);
+            },
+        });
+        expect(
+            collectOriginalPathOwners(workspaceThrowing, sessionStorage).trustedFamilies,
+        ).not.toContain("fileWorkspace");
     });
 
     test("unions valid sibling evidence while failed shared-family records withhold trust", () => {

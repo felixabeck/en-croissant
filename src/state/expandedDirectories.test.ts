@@ -32,6 +32,20 @@ function readPhysicalRecord() {
     }>(bytes!);
 }
 
+function refuseExpansionWrite(message: string) {
+    const originalSetItem = Storage.prototype.setItem;
+    return vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (
+        this: Storage,
+        key: string,
+        value: string,
+    ) {
+        if (this === sessionStorage && key === EXPANDED_DIRECTORIES_STORAGE_KEY) {
+            throw new Error(message);
+        }
+        return originalSetItem.call(this, key, value);
+    });
+}
+
 beforeEach(() => {
     localStorage.clear();
     sessionStorage.clear();
@@ -45,7 +59,7 @@ afterEach(() => {
     persistError.report.mockReset();
 });
 
-test("keeps legacy bytes without a workspace and migrates them once a workspace is active", () => {
+test("keeps legacy bytes without a workspace and discards unscoped IDs on activation", () => {
     const legacy = JSON.stringify(["legacy-one", "", "legacy-two", "legacy-one"]);
     sessionStorage.setItem(EXPANDED_DIRECTORIES_STORAGE_KEY, legacy);
     const store = createStore();
@@ -56,11 +70,11 @@ test("keeps legacy bytes without a workspace and migrates them once a workspace 
     expect(persistError.report).not.toHaveBeenCalled();
 
     store.set(fileWorkspaceAtom, workspace("legacy-workspace"));
-    expect(store.get(expandedDirectoriesAtom)).toEqual(["legacy-two", "legacy-one"]);
+    expect(store.get(expandedDirectoriesAtom)).toEqual([]);
     expect(readPhysicalRecord()).toEqual({
         version: 1,
         workspaceId: "legacy-workspace",
-        ids: ["legacy-two", "legacy-one"],
+        ids: [],
     });
     expect(persistError.report).not.toHaveBeenCalled();
     unsubscribe();
@@ -159,6 +173,26 @@ test("repairs a valid oversized stored record during atom hydration", () => {
     unsubscribe();
 });
 
+test("repairs an oversized record even when another workspace is active", () => {
+    const ids = Array.from(
+        { length: MAX_EXPANDED_DIRECTORY_IDS + 2 },
+        (_, index) => `inactive-${index}`,
+    );
+    sessionStorage.setItem(
+        EXPANDED_DIRECTORIES_STORAGE_KEY,
+        serializeStorageValue({ version: 1, workspaceId: "inactive-workspace", ids }),
+    );
+    const store = createStore();
+    const unsubscribe = activate(store, "active-workspace");
+    expect(store.get(expandedDirectoriesAtom)).toEqual([]);
+    expect(readPhysicalRecord()).toEqual({
+        version: 1,
+        workspaceId: "inactive-workspace",
+        ids: ids.slice(-MAX_EXPANDED_DIRECTORY_IDS),
+    });
+    unsubscribe();
+});
+
 test("rejects an oversized incoming id before evicting prior entries", () => {
     const stored = serializeStorageValue({
         version: 1,
@@ -176,7 +210,17 @@ test("rejects an oversized incoming id before evicting prior entries", () => {
     expect(sessionStorage.getItem(EXPANDED_DIRECTORIES_STORAGE_KEY)).toBe(stored);
     expect(persistError.report).toHaveBeenCalledOnce();
     const failure = persistError.report.mock.calls[0]?.[0] as Error;
-    expect((failure.cause as Error).message).toContain("maximum is 65536");
+    expect((failure.cause as Error).message).toContain(
+        `maximum is ${MAX_EXPANDED_DIRECTORY_JSON_BYTES}`,
+    );
+    store.set(expandedDirectoriesAtom, (ids) => [...ids, "later-valid"]);
+    expect(store.get(expandedDirectoriesAtom)).toEqual([
+        "prior-one",
+        "prior-two",
+        oversizedId,
+        "later-valid",
+    ]);
+    expect(readPhysicalRecord()?.ids).toEqual(["prior-one", "prior-two", "later-valid"]);
     unsubscribe();
 });
 
@@ -195,6 +239,39 @@ test("preserves malformed bytes, reports the read failure, and keeps later expan
     unsubscribe();
 });
 
+test("preserves a valid JSON value with the wrong record version", () => {
+    const invalid = JSON.stringify({ version: 2, workspaceId: "workspace", ids: ["old"] });
+    sessionStorage.setItem(EXPANDED_DIRECTORIES_STORAGE_KEY, invalid);
+    const store = createStore();
+    const unsubscribe = activate(store, "workspace");
+    expect(store.get(expandedDirectoriesAtom)).toEqual([]);
+    store.set(expandedDirectoriesAtom, ["new"]);
+    expect(sessionStorage.getItem(EXPANDED_DIRECTORIES_STORAGE_KEY)).toBe(invalid);
+    expect(persistError.report).toHaveBeenCalledOnce();
+    unsubscribe();
+});
+
+test("reports a storage read exception and keeps updates in memory", () => {
+    const originalGetItem = Storage.prototype.getItem;
+    const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (
+        this: Storage,
+        key: string,
+    ) {
+        if (this === sessionStorage && key === EXPANDED_DIRECTORIES_STORAGE_KEY) {
+            throw new Error("storage read refused");
+        }
+        return originalGetItem.call(this, key);
+    });
+    const store = createStore();
+    const unsubscribe = activate(store, "unreadable-workspace");
+    expect(store.get(expandedDirectoriesAtom)).toEqual([]);
+    store.set(expandedDirectoriesAtom, ["memory-only"]);
+    expect(store.get(expandedDirectoriesAtom)).toEqual(["memory-only"]);
+    expect(persistError.report).toHaveBeenCalledOnce();
+    getItem.mockRestore();
+    unsubscribe();
+});
+
 test("keeps the last good record when a save fails", () => {
     const stored = serializeStorageValue({
         version: 1,
@@ -202,17 +279,7 @@ test("keeps the last good record when a save fails", () => {
         ids: ["durable"],
     });
     sessionStorage.setItem(EXPANDED_DIRECTORIES_STORAGE_KEY, stored);
-    const originalSetItem = Storage.prototype.setItem;
-    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (
-        this: Storage,
-        key: string,
-        value: string,
-    ) {
-        if (this === sessionStorage && key === EXPANDED_DIRECTORIES_STORAGE_KEY) {
-            throw new Error("storage write refused");
-        }
-        return originalSetItem.call(this, key, value);
-    });
+    const setItem = refuseExpansionWrite("storage write refused");
     const store = createStore();
     const unsubscribe = activate(store, "failed-save-workspace");
 
@@ -230,21 +297,11 @@ test("keeps the last good record when a save fails", () => {
 test("keeps legacy bytes when hydration repair fails", () => {
     const legacy = JSON.stringify(["repair-me"]);
     sessionStorage.setItem(EXPANDED_DIRECTORIES_STORAGE_KEY, legacy);
-    const originalSetItem = Storage.prototype.setItem;
-    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (
-        this: Storage,
-        key: string,
-        value: string,
-    ) {
-        if (this === sessionStorage && key === EXPANDED_DIRECTORIES_STORAGE_KEY) {
-            throw new Error("repair write refused");
-        }
-        return originalSetItem.call(this, key, value);
-    });
+    const setItem = refuseExpansionWrite("repair write refused");
     const store = createStore();
     const unsubscribe = activate(store, "failed-repair-workspace");
 
-    expect(store.get(expandedDirectoriesAtom)).toEqual(["repair-me"]);
+    expect(store.get(expandedDirectoriesAtom)).toEqual([]);
 
     setItem.mockRestore();
     expect(sessionStorage.getItem(EXPANDED_DIRECTORIES_STORAGE_KEY)).toBe(legacy);
