@@ -1,4 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
+import { denyStorageRemoval } from "@/utils/tests/storageMocks";
 import { defaultTree } from "@/utils/treeReducer";
 import { deserializeStorageValue, serializeStorageValue } from "./store/debouncedStorage";
 import { tabStorage } from "./store/tabStorage";
@@ -7,7 +8,7 @@ import {
     loadWorkspace,
     readStoredWorkspaceValue,
     saveWorkspace,
-    scrubInvalidLegacyTreeKeys,
+    sweepOrphanedTreeKeys,
     WORKSPACE_STORAGE_KEY,
 } from "./workspace";
 
@@ -30,6 +31,16 @@ function loadStoredWorkspace() {
 function readStoredWorkspace() {
     const raw = sessionStorage.getItem(WORKSPACE_STORAGE_KEY)!;
     return deserializeStorageValue<unknown>(raw) ?? JSON.parse(raw);
+}
+
+function storeUnownedDirtyTree() {
+    const treeId = crypto.randomUUID();
+    const tree = defaultTree();
+    tree.dirty = true;
+    tree.headers.event = "Recoverable edits";
+    const storedTree = serializeStorageValue({ version: 1, state: tree });
+    sessionStorage.setItem(treeId, storedTree);
+    return { treeId, storedTree };
 }
 
 afterEach(() => {
@@ -136,13 +147,7 @@ test("a failed removal of a legacy non-UUID tree does not abort startup and retr
         legacyTab.value,
         serializeStorageValue({ version: 0, state: defaultTree() }),
     );
-    const originalRemoveItem = Storage.prototype.removeItem;
-    const refused = vi
-        .spyOn(Storage.prototype, "removeItem")
-        .mockImplementation(function (this: Storage, key) {
-            if (key === legacyTab.value) throw new DOMException("denied", "SecurityError");
-            return originalRemoveItem.call(this, key);
-        });
+    const refused = denyStorageRemoval(legacyTab.value);
 
     let migrated: ReturnType<typeof loadStoredWorkspace> | undefined;
     expect(() => {
@@ -279,13 +284,7 @@ test("retries orphan cleanup on the next load after storage refuses removal", ()
     const workspace = { version: 1, tabs: [retained], activeTab: retained.value };
     sessionStorage.setItem(WORKSPACE_STORAGE_KEY, serializeStorageValue(workspace));
     sessionStorage.setItem(orphan, serializeStorageValue({ version: 1, state: defaultTree() }));
-    const originalRemoveItem = Storage.prototype.removeItem;
-    const refused = vi
-        .spyOn(Storage.prototype, "removeItem")
-        .mockImplementation(function (this: Storage, key) {
-            if (key === orphan) throw new DOMException("denied", "SecurityError");
-            return originalRemoveItem.call(this, key);
-        });
+    const refused = denyStorageRemoval(orphan);
 
     expect(loadStoredWorkspace()).toEqual(workspace);
     expect(sessionStorage.getItem(orphan)).not.toBeNull();
@@ -319,6 +318,57 @@ test("preserves valid tree keys through repair, a second load, and a subsequent 
     expect(loadStoredWorkspace().treeOwnershipUncertain).toBe(true);
 
     expect(sessionStorage.getItem(treeId)).toBe(tree);
+});
+
+test("preserves unowned stored trees across loads when the workspace key is absent", () => {
+    sessionStorage.clear();
+    const { treeId } = storeUnownedDirtyTree();
+
+    const firstLoad = loadStoredWorkspace();
+    expect(firstLoad.treeOwnershipUncertain).toBe(true);
+    expect(readStoredWorkspace()).toMatchObject({ treeOwnershipUncertain: true });
+    expect(tabStorage.read(treeId)?.state).toMatchObject({
+        dirty: true,
+        headers: { event: "Recoverable edits" },
+    });
+    const recoveredTree = sessionStorage.getItem(treeId);
+    expect(recoveredTree).not.toBeNull();
+
+    const secondLoad = loadStoredWorkspace();
+    expect(secondLoad.treeOwnershipUncertain).toBe(true);
+    expect(sessionStorage.getItem(treeId)).toBe(recoveredTree);
+});
+
+test("preserves unowned stored trees across loads for a parseable unsupported version", () => {
+    sessionStorage.clear();
+    const { treeId, storedTree } = storeUnownedDirtyTree();
+    sessionStorage.setItem(
+        WORKSPACE_STORAGE_KEY,
+        serializeStorageValue({ version: 2, tabs: [], activeTab: null }),
+    );
+    expect(readStoredWorkspaceValue(sessionStorage, WORKSPACE_STORAGE_KEY)).toEqual({
+        version: 2,
+        tabs: [],
+        activeTab: null,
+    });
+
+    const firstLoad = loadStoredWorkspace();
+    expect(firstLoad.treeOwnershipUncertain).toBe(true);
+    expect(readStoredWorkspace()).toMatchObject({ treeOwnershipUncertain: true });
+    expect(sessionStorage.getItem(treeId)).toBe(storedTree);
+
+    const secondLoad = loadStoredWorkspace();
+    expect(secondLoad.treeOwnershipUncertain).toBe(true);
+    expect(sessionStorage.getItem(treeId)).toBe(storedTree);
+});
+
+test("leaves a genuinely empty first workspace load without an ownership marker", () => {
+    sessionStorage.clear();
+
+    const workspace = loadStoredWorkspace();
+
+    expect(workspace).not.toHaveProperty("treeOwnershipUncertain");
+    expect(readStoredWorkspace()).not.toHaveProperty("treeOwnershipUncertain");
 });
 
 test.each(["tabs", "activeTab"] as const)(
@@ -494,7 +544,7 @@ test("does not flush a workspace that needs no tab-ID migration", () => {
     flush.mockRestore();
 });
 
-test("workspace JSON parsing and legacy-tree scrubbing distinguish malformed values", () => {
+test("workspace JSON parsing and orphan-tree sweeping distinguish malformed values", () => {
     sessionStorage.clear();
     sessionStorage.setItem("valid", JSON.stringify({ ok: true }));
     sessionStorage.setItem("invalid", "{");
@@ -510,30 +560,11 @@ test("workspace JSON parsing and legacy-tree scrubbing distinguish malformed val
     const unrelated = "not-a-tree";
     sessionStorage.setItem(unrelated, "orphan");
     sessionStorage.setItem(String(nonStringValue), "must-remain");
-    scrubInvalidLegacyTreeKeys(
-        {
-            tabs: [
-                null,
-                "not-an-object",
-                { value: retained.value },
-                { value: orphan },
-                { value: nonStringValue },
-                {},
-            ],
-        },
-        [retained],
-    );
+    sweepOrphanedTreeKeys([retained]);
     expect(sessionStorage.getItem(retained.value)).toBe("retained");
     expect(sessionStorage.getItem(orphan)).toBeNull();
     expect(sessionStorage.getItem(unrelated)).toBe("orphan");
     expect(sessionStorage.getItem(String(nonStringValue))).toBe("must-remain");
-    expect(() => scrubInvalidLegacyTreeKeys(null, [retained])).not.toThrow();
-    const nonRecordWithThrowingTabs = Object.defineProperty(() => undefined, "tabs", {
-        get: () => {
-            throw new Error("non-record inputs must be ignored before property access");
-        },
-    });
-    expect(() => scrubInvalidLegacyTreeKeys(nonRecordWithThrowingTabs, [retained])).not.toThrow();
 });
 
 test("saveWorkspace preserves tab IDs so a failed load migration can retry", () => {

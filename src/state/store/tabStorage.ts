@@ -350,18 +350,28 @@ export class TabStorageRepository {
 
     /** Reclaim durable trees absent from the retained workspace; other session values stay untouched. */
     removeOrphanedTrees(retainedIds: ReadonlySet<string>) {
-        const keys = Array.from({ length: sessionStorage.length }, (_, index) =>
-            sessionStorage.key(index),
-        );
-        for (const key of keys) {
-            if (!key || retainedIds.has(key)) continue;
-            const raw = sessionStorage.getItem(key);
-            if (!raw || !decodeLegacyOrCompressed(raw)) continue;
+        for (const key of this.storedTreeKeys(retainedIds)) {
             try {
                 this.remove(key);
             } catch (error) {
                 reportPersistError(persistStorageWriteError(error));
             }
+        }
+    }
+
+    hasStoredTrees() {
+        return !this.storedTreeKeys().next().done;
+    }
+
+    private *storedTreeKeys(excludedKeys?: ReadonlySet<string>): Generator<string> {
+        const keys = Array.from({ length: sessionStorage.length }, (_, index) =>
+            sessionStorage.key(index),
+        );
+        for (const key of keys) {
+            if (!key || excludedKeys?.has(key)) continue;
+            const raw = sessionStorage.getItem(key);
+            if (!raw || !decodeLegacyOrCompressed(raw)) continue;
+            yield key;
         }
     }
 

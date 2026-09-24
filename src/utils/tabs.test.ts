@@ -1,4 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
+import { denyStorageRemoval } from "@/utils/tests/storageMocks";
 import type { FileWorkspaceHandle } from "@/bindings";
 import { tabStorage } from "@/state/store/tabStorage";
 import { closeTreeStore, createTreeStore } from "@/state/store/tree";
@@ -212,13 +213,7 @@ test("refused duplicate preserves its pending source and removes the durable tar
 
 test("keeps a refused creation unacknowledged when rollback removal is rejected", () => {
     let stagedId = "";
-    const originalRemoveItem = Storage.prototype.removeItem;
-    const removeItem = vi
-        .spyOn(Storage.prototype, "removeItem")
-        .mockImplementation(function (this: Storage, key) {
-            if (key === stagedId) throw new DOMException("denied", "SecurityError");
-            return originalRemoveItem.call(this, key);
-        });
+    const removeItem = denyStorageRemoval(() => stagedId);
 
     const result = commitNewTab({
         tab: { name: "Refused", type: "analysis", gameOrigin: { kind: "none" } },
