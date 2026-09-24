@@ -4102,3 +4102,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Push review of commit `9d6efe5d` found a concrete two-load data-loss case and a legacy migration retry gap that the prior decision did not consider. `workspace.ts` owns the durable uncertainty marker and migration gate; `tabStorage.ts` validates tree payloads before deletion. Reversal path: change those boundaries with a recovery mechanism that can establish ownership after corruption.
 * **Decided by:** Codex drain df992edd-eb21-4f56-ae9e-982da76bfbbc, push review repair · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"bcccb05675d5a05ca61cdc962c0d7b8baca5f0b6c05b31b0af2f5bb5151ba4eb","input_sha256":"e875da0eabfe42c7f51e8ce0b5aa35fb108ecc11ffe31cd835f6c03be33bd70f","kind":"mutation-receipt","operation":"108579e2a3e72e08be71215966e922c335aa6258b144da2a67cd0d9f6043ccc1","options":{"section":null},"request_id_sha256":null,"results":["d-20260925-04"],"target":"decisions-ledger","v":1} -->
+
+### d-20260925-05 — What happens to a stored tree when workspace metadata is absent?
+
+* **Question:** How does startup handle valid persisted trees when no workspace key or valid legacy workspace exists?
+* **Governs:** f-20260924-02
+* **Chosen:** Probe for any decodable tree through the same bounded scan used by orphan cleanup; if one exists, persist `treeOwnershipUncertain` with the generated workspace before any later sweep. A genuinely empty first launch remains unmarked.
+* **Rejected:** Treating absence as a fresh install unconditionally. A failed rollback or interrupted workspace write can leave a recoverable tree without workspace metadata, and a second load would otherwise delete it.
+* **Reason:** The second push review found a missing-key two-load counterexample to the narrower corruption rule in d-20260925-04. This adds the absent-metadata case without reversing that rule. Reversal path: `loadWorkspace` in `src/state/workspace.ts` and `storedTreeKeys` in `src/state/store/tabStorage.ts`.
+* **Decided by:** Codex drain df992edd-eb21-4f56-ae9e-982da76bfbbc, second push review repair · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"aff8e50e1ba799d104e97be384a103155de512017d19c0309fa0faee828d9d73","input_sha256":"98666e09d02c79473a4abd4de83e85bb1d8282d831fc28c68f6ec337b89254c7","kind":"mutation-receipt","operation":"ac0076e1cbad79f4d29fb1de5c268c0a77f7c7aa82834ed9854bd54ee122f94d","options":{"section":null},"request_id_sha256":null,"results":["d-20260925-05"],"target":"decisions-ledger","v":1} -->
