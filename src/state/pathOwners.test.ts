@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { serializeStorageValue } from "./store/debouncedStorage";
+import { deserializeStorageValue, serializeStorageValue } from "./store/debouncedStorage";
+import {
+    EXPANDED_DIRECTORIES_STORAGE_KEY,
+    MAX_EXPANDED_DIRECTORY_IDS,
+} from "./expandedDirectories";
 
 const persistError = vi.hoisted(() => ({ report: vi.fn() }));
 const mocks = vi.hoisted(() => ({
@@ -197,7 +201,7 @@ describe("collectOriginalPathOwners", () => {
                 },
             ]),
         );
-        setJson(sessionStorage, "expanded-directories", ["expanded"]);
+        setJson(sessionStorage, EXPANDED_DIRECTORIES_STORAGE_KEY, ["expanded"]);
         setJson(sessionStorage, "database-view", {
             state: { database: { file: databaseHandle("database-view") } },
         });
@@ -205,7 +209,7 @@ describe("collectOriginalPathOwners", () => {
 
         const owners = collectOriginalPathOwners(localStorage, sessionStorage);
 
-        expect(owners.trustedFamilies).toHaveLength(11);
+        expect(owners.trustedFamilies).toHaveLength(10);
         expect(owners.retainedIds.map(({ id }) => id)).toEqual(
             expect.arrayContaining([
                 "download",
@@ -220,11 +224,58 @@ describe("collectOriginalPathOwners", () => {
                 "player-resource",
                 "tab-file",
                 "legacy-database",
-                "expanded",
                 "database-view",
                 "deck-file",
             ]),
         );
+        expect(owners.trustedFamilies).not.toContain("expandedDirectories");
+        expect(owners.retainedIds).not.toContainEqual({ id: "expanded" });
+    });
+
+    test("trusts and bounds a valid oversized directory record without rewriting the snapshot", () => {
+        const ids = Array.from(
+            { length: MAX_EXPANDED_DIRECTORY_IDS + 5 },
+            (_, index) => `directory-${index}`,
+        );
+        setJson(localStorage, "file-workspace", fileHandle("active-workspace"));
+        const raw = serializeStorageValue({
+            version: 1,
+            workspaceId: "active-workspace",
+            ids,
+        });
+        sessionStorage.setItem(EXPANDED_DIRECTORIES_STORAGE_KEY, raw);
+
+        const owners = collectOriginalPathOwners(localStorage, sessionStorage);
+        const retained = new Set(owners.retainedIds.map(({ id }) => id));
+
+        expect(owners.trustedFamilies).toContain("expandedDirectories");
+        expect(retained.has("directory-0")).toBe(false);
+        expect(retained.has(`directory-${MAX_EXPANDED_DIRECTORY_IDS + 4}`)).toBe(true);
+        expect([...retained].filter((id) => id.startsWith("directory-")).length).toBe(
+            MAX_EXPANDED_DIRECTORY_IDS,
+        );
+        expect(sessionStorage.getItem(EXPANDED_DIRECTORIES_STORAGE_KEY)).toBe(raw);
+        expect(deserializeStorageValue<{ version: number; ids: string[] }>(raw)?.ids).toHaveLength(
+            MAX_EXPANDED_DIRECTORY_IDS + 5,
+        );
+    });
+
+    test("trusts valid records for absent or mismatched workspaces without retaining ids", () => {
+        const record = {
+            version: 1,
+            workspaceId: "stored-workspace",
+            ids: ["stored-directory"],
+        };
+        sessionStorage.setItem(EXPANDED_DIRECTORIES_STORAGE_KEY, serializeStorageValue(record));
+
+        const absent = collectOriginalPathOwners(localStorage, sessionStorage);
+        expect(absent.trustedFamilies).toContain("expandedDirectories");
+        expect(absent.retainedIds).not.toContainEqual({ id: "stored-directory" });
+
+        setJson(localStorage, "file-workspace", fileHandle("other-workspace"));
+        const mismatched = collectOriginalPathOwners(localStorage, sessionStorage);
+        expect(mismatched.trustedFamilies).toContain("expandedDirectories");
+        expect(mismatched.retainedIds).not.toContainEqual({ id: "stored-directory" });
     });
 
     test("distinguishes confirmed absence from malformed and throwing storage", () => {

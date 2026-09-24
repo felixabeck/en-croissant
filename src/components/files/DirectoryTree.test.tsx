@@ -2,7 +2,7 @@ import { act, forwardRef, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Provider, createStore } from "jotai";
 import { afterEach, expect, test, vi } from "vitest";
-import { activeTabAtom, expandedDirectoriesAtom, tabsAtom } from "@/state/atoms";
+import { activeTabAtom, expandedDirectoriesAtom, fileWorkspaceAtom, tabsAtom } from "@/state/atoms";
 import type { Entry } from "./file";
 import DirectoryTree from "./DirectoryTree";
 
@@ -106,6 +106,7 @@ afterEach(async () => {
 
 test("supports ARIA-tree roving focus, keyboard expansion, selection, and opaque handles", async () => {
   const store = createStore();
+  store.set(fileWorkspaceAtom, handle("tree-workspace-one"));
   store.set(expandedDirectoriesAtom, []);
   store.set(tabsAtom, []);
   store.set(activeTabAtom, null);
@@ -186,6 +187,7 @@ test("supports ARIA-tree roving focus, keyboard expansion, selection, and opaque
 
 test("filters the visible navigation model and opens a filtered file with Enter", async () => {
   const store = createStore();
+  store.set(fileWorkspaceAtom, handle("tree-workspace-two"));
   store.set(expandedDirectoriesAtom, []);
   store.set(tabsAtom, []);
   store.set(activeTabAtom, null);

@@ -36,6 +36,7 @@ import {
 } from "../utils/pathCapabilities";
 import { sessionsSchema, type Session } from "../utils/session";
 import { createPreferenceStorage, createZodStorage } from "./utils";
+import { createExpandedDirectoriesAtom } from "./expandedDirectories";
 import { WORKSPACE_STORAGE_KEY, loadWorkspace, saveWorkspace, type Workspace } from "./workspace";
 import { persistStorageWriteError, tabStorage } from "./store/tabStorage";
 import { reportPersistError } from "./persistError";
@@ -129,12 +130,6 @@ export const closeWorkspaceTabAtom = atom(null, (get, set, tabId: string) => {
     return true;
 });
 
-export const expandedDirectoriesAtom = atomWithStorage<string[]>(
-    "expanded-directories",
-    [],
-    createZodStorage(z.array(z.string()), sessionStorage),
-);
-
 export const currentTabAtom = atom(
     (get) => {
         const tabs = get(tabsAtom);
@@ -173,6 +168,10 @@ export const fileWorkspaceAtom = atomWithStorage<FileWorkspaceHandle | null>(
     "file-workspace",
     null,
     createZodStorage(fileWorkspaceHandleSchema.nullable(), localStorage),
+);
+export const expandedDirectoriesAtom = createExpandedDirectoriesAtom(
+    fileWorkspaceAtom,
+    sessionStorage,
 );
 /** Display metadata only; authority remains exclusively in fileWorkspaceAtom. */
 export const fileWorkspaceDisplayNameAtom = atomWithStorage<string>(

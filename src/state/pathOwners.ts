@@ -3,6 +3,10 @@ import { z } from "zod";
 import type { PathOwnerFamily, PathRef, StartupPathOwners } from "@/bindings";
 import { tauri } from "@/platform/tauri";
 import { decodeCompressedOrJson } from "./store/debouncedStorage";
+import {
+    EXPANDED_DIRECTORIES_STORAGE_KEY,
+    parseExpandedDirectoriesValue,
+} from "./expandedDirectories";
 import { tabSchema } from "./workspaceTypes";
 import {
     databaseHandleSchema,
@@ -88,14 +92,17 @@ function collectOriginalSnapshots(local?: Storage, session?: Storage): OriginalO
             (value) => value && ids.add(pathRefKey(value)),
         ),
     );
-    trust(
-        "fileWorkspace",
-        collectOne(
-            readJson(local, "file-workspace"),
-            fileWorkspaceHandleSchema.nullable(),
-            (value) => value && ids.add(pathRefKey(value.id)),
-        ),
+    let currentWorkspaceId: string | null = null;
+    const fileWorkspaceReadable = collectOne(
+        readJson(local, "file-workspace"),
+        fileWorkspaceHandleSchema.nullable(),
+        (value) => {
+            if (!value) return;
+            currentWorkspaceId = value.id.id;
+            ids.add(pathRefKey(value.id));
+        },
     );
+    trust("fileWorkspace", fileWorkspaceReadable);
     trust(
         "recentFiles",
         collectOne(
@@ -153,14 +160,25 @@ function collectOriginalSnapshots(local?: Storage, session?: Storage): OriginalO
         collectOne(readCompressed(session, "tabs"), tabsSchema, consumeTabs) && workspaceTrusted;
     trust("sessionWorkspace", workspaceTrusted);
 
-    trust(
-        "expandedDirectories",
-        collectOne(
-            readJson(session, "expanded-directories"),
-            z.array(z.string().min(1)),
-            (values) => values.forEach((id) => ids.add(id)),
-        ),
-    );
+    const expandedDirectoriesRead = readCompressed(session, EXPANDED_DIRECTORIES_STORAGE_KEY);
+    let expandedDirectoriesTrusted = false;
+    if (fileWorkspaceReadable && !("failed" in expandedDirectoriesRead)) {
+        if (!expandedDirectoriesRead.present) {
+            expandedDirectoriesTrusted = true;
+        } else {
+            const parsed = parseExpandedDirectoriesValue(expandedDirectoriesRead.value);
+            if (parsed.kind === "record") {
+                expandedDirectoriesTrusted = true;
+                if (
+                    currentWorkspaceId !== null &&
+                    parsed.record.workspaceId === currentWorkspaceId
+                ) {
+                    parsed.ids.forEach((id) => ids.add(id));
+                }
+            }
+        }
+    }
+    trust("expandedDirectories", expandedDirectoriesTrusted);
     trust(
         "databaseView",
         collectOne(

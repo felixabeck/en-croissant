@@ -16,7 +16,10 @@ import {
 import { reportPersistError } from "./persistError";
 import { storageErrorCause } from "./storageError";
 
-function reportPreferenceStorageFailure(operation: "read" | "repair" | "save", cause: unknown) {
+export function reportPreferenceStorageFailure(
+    operation: "read" | "repair" | "save",
+    cause: unknown,
+) {
     const safeCause = storageErrorCause(cause);
     const message =
         operation === "read"
