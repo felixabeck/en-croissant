@@ -11251,6 +11251,10 @@ Outside that plan's MANDATE (stale file text), so filed rather than folded in. A
 * **Rejected:** Deleting every unreferenced UUID key without confirming a tree value would risk unrelated session data; sweeping from a missing or damaged workspace would lack reliable tab ownership.
 <!-- ledger-meta {"command":"annotate","effect_lines":3,"effect_sha256":"7e4a1d4d582b9082fdcf492d2be1f8cad97fd49016b45de0a56ea85ce869f532","input_sha256":"94b42e0fd7350318f766838e601815723d99a05fd3ca96e4aef4ec0d3805352b","kind":"mutation-receipt","operation":"67bd01f463048722cf0311172a704d3e5657df1e874996638796da85244c3171","options":{"section":null},"request_id_sha256":null,"results":["f-20260924-02"],"target":"f-20260924-02","v":1} -->
 
+* **Review repair:** Commit `e76c9244` preserves uncertain tree ownership through corrupt-workspace repair, reload, and save; sweeps validated orphan trees on the first sound legacy migration; and retries old-key removal failures without aborting startup. Review found the initial cleanup could delete recoverable trees after a second load. The first implementation commit is `9d6efe5d`.
+* **Proof:** `pnpm lint:ci`, focused Vitest (58 passed), `pnpm exec tsc --noEmit`, `pnpm exec oxfmt --check` on changed files, and `git diff --check` passed after repair.
+<!-- ledger-meta {"command":"annotate","effect_lines":2,"effect_sha256":"a252de14ac9523777a33ce8b4ddd2c970ebeaad12c157457ef6fb6853f38b19c","input_sha256":"f7977752ad6e854699179f14a4ae1ed55615eccf55ae7e9f780cc13532f672af","kind":"mutation-receipt","operation":"98b103b8c2e0c05901986ee8da13a3a23005e6bdc7134a3de3ee585cb151a97d","options":{"section":null},"request_id_sha256":null,"results":["f-20260924-02"],"target":"f-20260924-02","v":1} -->
+
 ### An undecodable persisted tree is replaced by a clean default tree, losing its unsaved edits without notice
 
 * **ID:** f-20260924-03 · **Status:** open · **Area:** frontend-state · **Root:** none · **Entry:** build · **Blocked:** none
