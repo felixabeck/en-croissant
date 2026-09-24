@@ -30,9 +30,10 @@ import {
 } from "@/state/atoms";
 import { keyMapAtom } from "@/state/keybinds";
 import { defaultPGN } from "@/utils/chess";
-import { getTabFile, saveToFile, updateTabById } from "@/utils/tabs";
+import { defaultTree } from "@/utils/treeReducer";
+import { getTabFile, sameFileGameOrigin, saveToFile, updateTabById } from "@/utils/tabs";
 import { fileWorkspaceKey } from "@/utils/pathCapabilities";
-import { setFileFreshness } from "@/state/fileFreshness";
+import { beginFileWrite, setFileFreshness } from "@/state/fileFreshness";
 import DetachedEval from "../common/DetachedEval";
 import GameNotation from "../common/GameNotation";
 import MoveControls from "../common/MoveControls";
@@ -120,17 +121,64 @@ function BoardAnalysis() {
     const tabId = currentTab.value;
     const origin = currentTab.gameOrigin;
     const gameNumber = origin.file.numGames;
+    const refreshFileCount = async (): Promise<{ ok: true } | { ok: false; error: unknown }> => {
+      const latest = getTab(tabId);
+      if (
+        !latest ||
+        (latest.gameOrigin.kind !== "file" && latest.gameOrigin.kind !== "temp_file") ||
+        !sameFileGameOrigin(latest.gameOrigin, origin)
+      ) {
+        return { ok: true };
+      }
+      try {
+        const count = await tauri.countPgnGames(latest.gameOrigin.file.handle);
+        updateTab(tabId, (previous) => {
+          if (
+            (previous.gameOrigin.kind !== "file" && previous.gameOrigin.kind !== "temp_file") ||
+            !sameFileGameOrigin(previous.gameOrigin, origin)
+          ) {
+            return previous;
+          }
+          return {
+            ...previous,
+            gameOrigin: {
+              ...previous.gameOrigin,
+              file: { ...previous.gameOrigin.file, numGames: count },
+            },
+          };
+        });
+        return { ok: true };
+      } catch (error) {
+        return { ok: false, error };
+      }
+    };
     setFileFreshness(tabId, "appending");
     try {
-      await tauri.writeGame(origin.file.handle, gameNumber, defaultPGN(), { kind: "append" });
+      const endWrite = beginFileWrite(fileWorkspaceKey(origin.file.handle));
+      let written: Awaited<ReturnType<typeof tauri.writeGame>>;
+      try {
+        written = await tauri.writeGame(origin.file.handle, gameNumber, defaultPGN(), {
+          kind: "append",
+        });
+      } finally {
+        endWrite();
+      }
+      if (written.stamp === null || written.revision === null) {
+        await refreshFileCount();
+        if (getTab(tabId)) setFileFreshness(tabId, "unverified");
+        notifyUnlessCancelled(t("Common.Error"), {
+          category: "applied-despite-error",
+          message: t("FileFreshness.AddGameMayHaveBeenAdded"),
+        });
+        return;
+      }
       const latest = getTab(tabId);
       if (
         latest &&
         (latest.gameOrigin.kind === "file" || latest.gameOrigin.kind === "temp_file") &&
-        latest.gameOrigin.gameNumber === origin.gameNumber &&
-        fileWorkspaceKey(latest.gameOrigin.file.handle) === fileWorkspaceKey(origin.file.handle)
+        sameFileGameOrigin(latest.gameOrigin, origin)
       ) {
-        updateTab(tabId, (previous) => ({
+        const originSaved = updateTab(tabId, (previous) => ({
           ...previous,
           gameOrigin: {
             kind: "file",
@@ -138,36 +186,40 @@ function BoardAnalysis() {
             file: { ...origin.file, numGames: gameNumber + 1 },
           },
         }));
-      }
-      if (getTab(tabId)) setFileFreshness(tabId, "unverified");
-    } catch (error) {
-      const normalized = normalizeError(error);
-      const latest = getTab(tabId);
-      if (latest && (latest.gameOrigin.kind === "file" || latest.gameOrigin.kind === "temp_file")) {
-        try {
-          const count = await tauri.countPgnGames(latest.gameOrigin.file.handle);
-          updateTab(tabId, (previous) => {
-            if (previous.gameOrigin.kind !== "file" && previous.gameOrigin.kind !== "temp_file") {
-              return previous;
-            }
-            return {
-              ...previous,
-              gameOrigin: {
-                ...previous.gameOrigin,
-                file: { ...previous.gameOrigin.file, numGames: count },
-              },
-            };
+        if (originSaved) {
+          const newGame = defaultTree();
+          newGame.headers = {
+            ...newGame.headers,
+            event: "?",
+            site: "?",
+            date: "????.??.??",
+            round: "?",
+            white: "?",
+            black: "?",
+            start: [],
+            orientation: "white",
+          };
+          store.setState({
+            ...newGame,
+            sourceStamp: written.stamp,
+            practicePath: null,
           });
-        } catch {
-          // Preserve the typed write failure; a later listing refreshes the count.
+          setFileFreshness(tabId, "verified", { verifiedRevision: written.revision });
         }
       }
+    } catch (error) {
+      const normalized = normalizeError(error);
+      const countRefresh = await refreshFileCount();
       if (getTab(tabId)) setFileFreshness(tabId, "unverified");
       if (normalized.backendCategory === "stale-game") {
-        notifyUnlessCancelled(t("Common.Error"), {
-          category: "validation",
-          message: t("FileFreshness.AddGameChanged"),
-        });
+        if (countRefresh.ok) {
+          notifyUnlessCancelled(t("Common.Error"), {
+            category: "validation",
+            message: t("FileFreshness.AddGameChanged"),
+          });
+        } else {
+          notifyUnlessCancelled(t("Common.Error"), normalizeError(countRefresh.error));
+        }
       } else {
         notifyUnlessCancelled(t("Common.Error"), {
           ...normalized,
@@ -175,7 +227,7 @@ function BoardAnalysis() {
         });
       }
     }
-  }, [currentTab, getTab, updateTab, t]);
+  }, [currentTab, getTab, updateTab, store, t]);
 
   const addGame = useCallback(() => {
     if (!tabFile || !currentTab) return;

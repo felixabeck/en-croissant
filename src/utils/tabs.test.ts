@@ -1,6 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { tabStorage } from "@/state/store/tabStorage";
 import { closeTreeStore, createTreeStore } from "@/state/store/tree";
+import { getFileFreshness, removeFileFreshness } from "@/state/fileFreshness";
 import { defaultTree } from "./treeReducer";
 
 const mocks = vi.hoisted(() => ({
@@ -44,6 +45,8 @@ afterEach(() => {
     sessionStorage.clear();
     closeTreeStore("save-test");
     closeTreeStore("save-as-test");
+    removeFileFreshness("save-test");
+    removeFileFreshness("save-as-test");
     vi.clearAllMocks();
     vi.restoreAllMocks();
 });
@@ -344,7 +347,7 @@ function targetFile() {
 
 test("file saves send the source stamp as a required CAS and persist the returned stamp", async () => {
     const fixture = saveFixture();
-    mocks.writeGame.mockResolvedValueOnce({ stamp: stampB });
+    mocks.writeGame.mockResolvedValueOnce({ stamp: stampB, revision: "r-new" });
 
     await expect(
         saveToFile({
@@ -360,6 +363,27 @@ test("file saves send the source stamp as a required CAS and persist the returne
         stamp: stampA,
     });
     expect(fixture.store.getState()).toMatchObject({ dirty: false, sourceStamp: stampB });
+    expect(getFileFreshness("save-test")).toMatchObject({
+        state: "verified",
+        verifiedRevision: "r-new",
+    });
+});
+
+test("a save without a read-back stamp stays unverified", async () => {
+    const fixture = saveFixture();
+    mocks.writeGame.mockResolvedValueOnce({ stamp: null, revision: null });
+
+    await expect(
+        saveToFile({
+            tab: fixture.tabs[0],
+            updateTab: fixture.updateTab,
+            getTab: fixture.getTab,
+            store: fixture.store,
+        }),
+    ).resolves.toBe("conflict");
+
+    expect(fixture.store.getState()).toMatchObject({ dirty: true, sourceStamp: null });
+    expect(getFileFreshness("save-test").state).toBe("unverified");
 });
 
 test("file saves with a missing stamp conflict without calling the native writer", async () => {
@@ -404,11 +428,43 @@ test("a stale-game rejection becomes a conflict without clearing edits", async (
     );
 });
 
+test("a generic native conflict stays unverified and returns its typed save failure", async () => {
+    const fixture = saveFixture();
+    mocks.writeGame.mockRejectedValueOnce({
+        tag: "backend-error",
+        category: "conflict",
+        message: "Conflict: PGN changed after scan",
+    });
+
+    const result = await saveToFile({
+        tab: fixture.tabs[0],
+        updateTab: fixture.updateTab,
+        getTab: fixture.getTab,
+        store: fixture.store,
+    });
+
+    expect(result).toMatchObject({
+        status: "failed",
+        error: {
+            backendCategory: "conflict",
+            message: "Conflict: PGN changed after scan",
+        },
+    });
+    expect((await import("@/state/fileFreshness")).getFileFreshness("save-test")).toMatchObject({
+        state: "unverified",
+        errorMessage: "Conflict: PGN changed after scan",
+    });
+    expect(fixture.store.getState()).toMatchObject({ dirty: true, sourceStamp: stampA });
+});
+
 test.each(["header-only edit", "tree edit"] as const)(
     "an in-flight save with a %s stores the new stamp but stays dirty",
     async (edit) => {
         const fixture = saveFixture();
-        let resolveWrite: (result: { stamp: string | null }) => void = () => undefined;
+        let resolveWrite: (result: {
+            stamp: string | null;
+            revision: string | null;
+        }) => void = () => undefined;
         mocks.writeGame.mockReturnValueOnce(
             new Promise((resolve) => {
                 resolveWrite = resolve;
@@ -429,7 +485,7 @@ test.each(["header-only edit", "tree edit"] as const)(
         if (edit === "tree edit") {
             fixture.store.getState().setComment("Move comment changed during save");
         }
-        resolveWrite({ stamp: stampB });
+        resolveWrite({ stamp: stampB, revision: "r-new" });
 
         await expect(pending).resolves.toBe("superseded");
         expect(fixture.store.getState()).toMatchObject({ dirty: true, sourceStamp: stampB });
@@ -438,7 +494,8 @@ test.each(["header-only edit", "tree edit"] as const)(
 
 test("a save completing after a game switch applies nothing and returns superseded", async () => {
     const fixture = saveFixture();
-    let resolveWrite: (result: { stamp: string | null }) => void = () => undefined;
+    let resolveWrite: (result: { stamp: string | null; revision: string | null }) => void = () =>
+        undefined;
     mocks.writeGame.mockReturnValueOnce(
         new Promise((resolve) => {
             resolveWrite = resolve;
@@ -456,7 +513,7 @@ test("a save completing after a game switch applies nothing and returns supersed
         gameOrigin:
             tab.gameOrigin.kind === "file" ? { ...tab.gameOrigin, gameNumber: 3 } : tab.gameOrigin,
     }));
-    resolveWrite({ stamp: stampB });
+    resolveWrite({ stamp: stampB, revision: "r-new" });
 
     await expect(pending).resolves.toBe("superseded");
     expect(fixture.tabs[0].gameOrigin).toMatchObject({ gameNumber: 3 });
@@ -475,7 +532,7 @@ test("temp-file Save-As rechecks the source and CAS-writes the same target slot"
             revision: "r2",
             present: true,
         });
-    mocks.writeGame.mockResolvedValueOnce({ stamp: stampB });
+    mocks.writeGame.mockResolvedValueOnce({ stamp: stampB, revision: "r-new" });
 
     await expect(
         saveToFile({
@@ -495,6 +552,10 @@ test("temp-file Save-As rechecks the source and CAS-writes the same target slot"
         kind: "file",
         gameNumber: 2,
         file: { handle: destinationHandle },
+    });
+    expect(getFileFreshness("save-test")).toMatchObject({
+        state: "verified",
+        verifiedRevision: "r-new",
     });
 });
 

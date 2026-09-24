@@ -13,7 +13,7 @@ const { pgnFile } = filesWorkspaceFixture;
 
 const openedGame = {
     pgn: filesWorkspaceFixture.pgnGame,
-    stamp: "e2e-pgn-stamp",
+    stamp: "e".repeat(64),
     revision: "e2e-pgn-revision",
     present: true,
 };
@@ -61,7 +61,7 @@ test("file-freshness: shows the conflict panel for an edited game changed on dis
     const changedGame = {
         ...openedGame,
         pgn: filesWorkspaceFixture.pgnGame.replace('[Result "*"]', '[Result "1-0"]'),
-        stamp: "e2e-pgn-stamp-changed",
+        stamp: "f".repeat(64),
         revision: "e2e-pgn-revision-changed",
     };
     await page.evaluate((readGame) => {

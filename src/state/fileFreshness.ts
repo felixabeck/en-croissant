@@ -45,11 +45,80 @@ type FilePollOutcome =
 
 const pendingPollOutcomes = new Map<string, FilePollOutcome>();
 
+type FileWriteState = {
+    active: number;
+    generation: number;
+    observers: number;
+};
+
+const fileWrites = new Map<string, FileWriteState>();
+const fileWriteSubscribers = new Set<(key: string) => void>();
+
 const FILE_REVISION_INTERVAL_MS = 2_000;
 const FILE_REVISION_DEADLINE_MS = 2_000;
 
 export function getFileFreshness(tabId: string): FileFreshnessEntry {
     return entries.get(tabId) ?? initialEntry;
+}
+
+function getFileWriteState(key: string): FileWriteState {
+    let state = fileWrites.get(key);
+    if (!state) {
+        state = { active: 0, generation: 0, observers: 0 };
+        fileWrites.set(key, state);
+    }
+    return state;
+}
+
+function notifyFileWriteChange(key: string): void {
+    for (const listener of fileWriteSubscribers) listener(key);
+}
+
+function releaseFileWriteState(key: string, state: FileWriteState): void {
+    if (state.active === 0 && state.observers === 0 && fileWrites.get(key) === state) {
+        fileWrites.delete(key);
+    }
+}
+
+/** Marks a file-key write so revision polls cannot classify the app's own atomic replacement. */
+export function beginFileWrite(key: string): () => void {
+    const state = getFileWriteState(key);
+    state.active += 1;
+    state.generation += 1;
+    notifyFileWriteChange(key);
+
+    let ended = false;
+    return () => {
+        if (ended) return;
+        ended = true;
+        const current = fileWrites.get(key);
+        if (current !== state) return;
+        current.active -= 1;
+        notifyFileWriteChange(key);
+        releaseFileWriteState(key, current);
+    };
+}
+
+function fileWriteIsActive(key: string): boolean {
+    return (fileWrites.get(key)?.active ?? 0) > 0;
+}
+
+function fileWriteGeneration(key: string): number {
+    return fileWrites.get(key)?.generation ?? 0;
+}
+
+function retainFileWriteState(key: string): () => void {
+    const state = getFileWriteState(key);
+    state.observers += 1;
+    return () => {
+        state.observers -= 1;
+        releaseFileWriteState(key, state);
+    };
+}
+
+function subscribeFileWriteChanges(listener: (key: string) => void): () => void {
+    fileWriteSubscribers.add(listener);
+    return () => fileWriteSubscribers.delete(listener);
 }
 
 export function subscribeFileFreshness(tabId: string, listener: () => void): () => void {
@@ -200,6 +269,8 @@ type FileRevisionFlight = {
     deadline: ReturnType<typeof setTimeout> | null;
     rerunAfterSettle: boolean;
     timedOut: boolean;
+    writeGeneration: number;
+    releaseWriteState: () => void;
 };
 
 /** Starts the one app-level file revision poll. The returned owner clears every timer and
@@ -236,30 +307,43 @@ export function startFileRevisionPoll(dependencies: FileRevisionPollDependencies
             existing.rerunAfterSettle = true;
             return;
         }
+        if (fileWriteIsActive(key)) return;
+        const releaseWriteState = retainFileWriteState(key);
         const flight: FileRevisionFlight = {
             controller: new AbortController(),
             deadline: null,
             rerunAfterSettle: false,
             timedOut: false,
+            writeGeneration: fileWriteGeneration(key),
+            releaseWriteState,
         };
         flights.set(key, flight);
+        const applyIfCurrent = (outcome: FilePollOutcome) => {
+            if (fileWriteGeneration(key) !== flight.writeGeneration) {
+                flight.rerunAfterSettle = true;
+                return;
+            }
+            applyOutcome(key, outcome);
+        };
         flight.deadline = setTimeout(() => {
             if (!running || flights.get(key) !== flight || flight.timedOut) return;
             flight.timedOut = true;
             flight.controller.abort();
             flight.deadline = null;
-            applyOutcome(key, { kind: "overdue" });
+            applyIfCurrent({ kind: "overdue" });
         }, FILE_REVISION_DEADLINE_MS);
 
         void Promise.resolve()
             .then(() => dependencies.fileRevision(handle, { signal: flight.controller.signal }))
             .then((revision) => {
-                if (!flight.timedOut) applyOutcome(key, { kind: "revision", revision });
+                if (!flight.timedOut && running) {
+                    applyIfCurrent({ kind: "revision", revision });
+                }
             })
             .catch((error: unknown) => {
-                if (flight.timedOut) return;
+                if (flight.timedOut || !running) return;
                 const normalized = normalizeError(error);
-                applyOutcome(key, {
+                applyIfCurrent({
                     kind: "rejected",
                     unavailable:
                         normalized.backendCategory === "missing-resource" ||
@@ -270,6 +354,7 @@ export function startFileRevisionPoll(dependencies: FileRevisionPollDependencies
             .finally(() => {
                 if (flight.deadline !== null) clearTimeout(flight.deadline);
                 if (flights.get(key) === flight) flights.delete(key);
+                flight.releaseWriteState();
                 if (!running || (!flight.timedOut && !flight.rerunAfterSettle)) return;
                 const nextHandle = fileTabs().find((tab) => tab.key === key)?.handle;
                 if (nextHandle) runForHandle(key, nextHandle);
@@ -284,6 +369,10 @@ export function startFileRevisionPoll(dependencies: FileRevisionPollDependencies
     };
 
     const interval = setInterval(tick, FILE_REVISION_INTERVAL_MS);
+    const unsubscribeWrites = subscribeFileWriteChanges((key) => {
+        const handle = fileTabs().find((tab) => tab.key === key)?.handle;
+        if (handle) runForHandle(key, handle);
+    });
     try {
         void Promise.resolve(dependencies.subscribeFocus(tick))
             .then((unsubscribe) => {
@@ -301,6 +390,7 @@ export function startFileRevisionPoll(dependencies: FileRevisionPollDependencies
         if (!running) return;
         running = false;
         clearInterval(interval);
+        unsubscribeWrites();
         focusCleanup?.();
         focusCleanup = null;
         for (const flight of flights.values()) {

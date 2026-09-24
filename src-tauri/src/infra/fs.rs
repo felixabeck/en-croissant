@@ -291,10 +291,10 @@ pub(crate) fn map_atomic_file_outcome(
 /// landed either way, so the state is kept and uncertain durability is reported as
 /// `Error::CommittedDurabilityUncertain(stage)` after logging the cause.
 pub(crate) fn require_durable(
-    outcome: impl Into<AtomicFileOutcome>,
+    outcome: AtomicFileOutcome,
     stage: crate::error::DurabilityStage,
 ) -> Result<(), Error> {
-    match map_atomic_file_outcome(outcome.into(), stage, |error| {
+    match map_atomic_file_outcome(outcome, stage, |error| {
         log::warn!("{stage} parent sync failed: {error}");
     }) {
         None => Ok(()),
@@ -307,12 +307,6 @@ pub struct AtomicInstalledFile {
     pub outcome: AtomicFileOutcome,
     pub identity: (u64, u64),
     pub ctime_nanos: i128,
-}
-
-impl From<AtomicInstalledFile> for AtomicFileOutcome {
-    fn from(installed: AtomicInstalledFile) -> Self {
-        installed.outcome
-    }
 }
 
 #[cfg(test)]

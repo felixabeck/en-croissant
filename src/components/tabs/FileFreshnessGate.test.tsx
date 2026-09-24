@@ -14,7 +14,7 @@ import {
   startFileRevisionPoll,
 } from "@/state/fileFreshness";
 import { defaultTree } from "@/utils/treeReducer";
-import { serializeStoreTree } from "@/utils/tabs";
+import { saveToFile, serializeStoreTree } from "@/utils/tabs";
 import type { Tab } from "@/utils/tabs";
 import FileFreshnessGate from "./FileFreshnessGate";
 
@@ -146,6 +146,8 @@ async function setup({
   freshness = "unverified",
   persisted = false,
   readError,
+  readResult,
+  tab = fileTab,
 }: {
   treeStamp?: string | null;
   dirty?: boolean;
@@ -153,6 +155,8 @@ async function setup({
   freshness?: "unverified" | "overdue" | "appending" | "verified";
   persisted?: boolean;
   readError?: Error;
+  readResult?: (store: TreeStore) => ReturnType<typeof stampedGame>;
+  tab?: Tab;
 } = {}) {
   const tree = defaultTree();
   tree.sourceStamp = treeStamp;
@@ -161,17 +165,19 @@ async function setup({
   if (dirty) tree.headers.event = "Unsaved edit";
   treeStore = createTreeStore(persisted ? tabId : undefined, tree);
   jotaiStore = createJotaiStore();
-  jotaiStore.set(tabsAtom, [fileTab], tabId);
+  jotaiStore.set(tabsAtom, [tab], tabId);
   jotaiStore.set(activeTabAtom, tabId);
   setFileFreshness(tabId, freshness);
-  if (readError) mocks.readFileGame.mockRejectedValue(readError);
+  if (readResult)
+    mocks.readFileGame.mockImplementation(() => Promise.resolve(readResult(treeStore)));
+  else if (readError) mocks.readFileGame.mockRejectedValue(readError);
   else mocks.readFileGame.mockResolvedValue(stampedGame(treeStamp ?? originalStamp));
   mocks.loadFileGame.mockResolvedValue({
     ...stampedGame(changedStamp),
     tree: { ...defaultTree(), sourceStamp: changedStamp },
   });
   mocks.pickPgnFile.mockResolvedValue({ ...file, numGames: 7 });
-  mocks.writeGame.mockResolvedValue({ stamp: changedStamp });
+  mocks.writeGame.mockResolvedValue({ stamp: changedStamp, revision: "new-revision" });
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -228,9 +234,9 @@ test("unverified files withhold the board until an equal stamp verifies", async 
   expect(treeStore.getState().sourceStamp).toBe(originalStamp);
 });
 
-test("clean changed files reload from disk before rendering and clean stampless trees reconcile", async () => {
+test("clean stamped files reload from disk before rendering", async () => {
   mocks.readFileGame.mockResolvedValueOnce(stampedGame(changedStamp, '[Event "Fresh"]\n\n1. d4 *'));
-  await setup({ treeStamp: null });
+  await setup();
 
   await vi.waitFor(() =>
     expect(host.querySelector('[data-testid="board-and-panels"]')).not.toBeNull(),
@@ -238,6 +244,65 @@ test("clean changed files reload from disk before rendering and clean stampless 
   expect(treeStore.getState().sourceStamp).toBe(changedStamp);
   expect(treeStore.getState().headers.event).toBe("Fresh");
   expect(host.querySelector('[data-file-freshness="verified:1"]')).not.toBeNull();
+});
+
+test("a stampless tree matching the present disk text adopts its stamp without clearing dirty", async () => {
+  await setup({
+    treeStamp: null,
+    dirty: true,
+    readResult: (store) => stampedGame(changedStamp, serializeStoreTree(store)),
+  });
+
+  await vi.waitFor(() => expect(getFileFreshness(tabId).state).toBe("verified"));
+
+  expect(treeStore.getState()).toMatchObject({ dirty: true, sourceStamp: changedStamp });
+  expect(host.querySelector('[data-testid="board-and-panels"]')).not.toBeNull();
+});
+
+test("a clean stampless tree with different disk text conflicts without replacing the tree", async () => {
+  await setup({
+    treeStamp: null,
+    readResult: () => stampedGame(changedStamp, '[Event "Different on disk"]\n\n1. d4 *'),
+  });
+  const rootBefore = treeStore.getState().root;
+
+  await vi.waitFor(() => expect(getFileFreshness(tabId).state).toBe("conflict"));
+
+  expect(treeStore.getState().root).toBe(rootBefore);
+  expect(treeStore.getState().headers.event).not.toBe("Different on disk");
+  expect(host.querySelector('[data-testid="board-and-panels"]')).toBeNull();
+});
+
+test("a reopened file tab reconciles the appended game at its refreshed end index", async () => {
+  const appendedTab: Tab = {
+    ...fileTab,
+    gameOrigin: { kind: "file", file: { ...file, numGames: 5 }, gameNumber: 4 },
+  };
+  await setup({
+    freshness: "unverified",
+    tab: appendedTab,
+    readResult: () => stampedGame(changedStamp, '[Event "New appended game"]\n\n*'),
+  });
+
+  await vi.waitFor(() => expect(getFileFreshness(tabId).state).toBe("verified"));
+
+  expect(mocks.readFileGame).toHaveBeenCalledWith(file.handle, 4, expect.any(AbortSignal));
+  expect(treeStore.getState()).toMatchObject({
+    sourceStamp: changedStamp,
+    headers: { event: "New appended game" },
+  });
+});
+
+test("a stampless tree whose disk game is absent conflicts instead of adopting an empty slot", async () => {
+  await setup({
+    treeStamp: null,
+    readResult: () => stampedGame(emptyStamp, "", false),
+  });
+
+  await vi.waitFor(() => expect(getFileFreshness(tabId).state).toBe("conflict"));
+
+  expect(host.textContent).toContain("FileFreshness.Changed");
+  expect(host.querySelector('[data-testid="board-and-panels"]')).toBeNull();
 });
 
 test("equal stamps render without replacing tree state", async () => {
@@ -249,6 +314,54 @@ test("equal stamps render without replacing tree state", async () => {
   );
 
   expect(setState).not.toHaveBeenCalled();
+});
+
+test("a save seeds the poll revision without unmounting the verified board", async () => {
+  vi.useFakeTimers();
+  await setup({ freshness: "verified" });
+  setFileFreshness(tabId, "verified", { verifiedRevision: "old-revision" });
+  mocks.writeGame.mockResolvedValueOnce({ stamp: changedStamp, revision: "new-revision" });
+
+  const updateTab = (id: string, update: Tab | ((tab: Tab) => Tab)) => {
+    let found = false;
+    const committed = jotaiStore.set(
+      tabsAtom,
+      (tabs) =>
+        tabs.map((tab) => {
+          if (tab.value !== id) return tab;
+          found = true;
+          return typeof update === "function" ? update(tab) : update;
+        }),
+      tabId,
+    );
+    return committed && found;
+  };
+  const board = host.querySelector('[data-testid="board-and-panels"]');
+  const result = await saveToFile({
+    tab: fileTab,
+    updateTab,
+    getTab: (id) => jotaiStore.get(tabsAtom).find((tab) => tab.value === id),
+    store: treeStore,
+  });
+  const afterSave = getFileFreshness(tabId);
+  expect(result).toBe("saved");
+  expect(afterSave).toMatchObject({ state: "verified", verifiedRevision: "new-revision" });
+
+  const fileRevision = vi.fn(async () => "new-revision");
+  const stop = startFileRevisionPoll({
+    getTabs: () => jotaiStore.get(tabsAtom),
+    fileRevision,
+    subscribeFocus: () => () => undefined,
+  });
+  await act(async () => vi.advanceTimersByTimeAsync(2_000));
+
+  expect(fileRevision).toHaveBeenCalledOnce();
+  expect(getFileFreshness(tabId)).toBe(afterSave);
+  expect(getFileFreshness(tabId).epoch).toBe(afterSave.epoch);
+  expect(host.querySelector('[data-testid="board-and-panels"]')).toBe(board);
+  expect(host.textContent).not.toContain("loader");
+  expect(mocks.readFileGame).not.toHaveBeenCalled();
+  stop();
 });
 
 test("dirty changed trees show conflict without mounting board or practice children", async () => {
@@ -345,7 +458,7 @@ test("append resolution flushes uncertainty first and moves the tab only after a
   await setup({ dirty: true, persisted: true });
   await vi.waitFor(() => expect(getFileFreshness(tabId).state).toBe("conflict"));
   const serializedTree = serializeStoreTree(treeStore);
-  const pending = deferred<{ stamp: string | null }>();
+  const pending = deferred<{ stamp: string | null; revision: string | null }>();
   mocks.writeGame.mockImplementationOnce(async () => {
     expect(tabStorage.read(tabId)?.state).toMatchObject({ appendAttempted: true });
     return pending.promise;
@@ -359,7 +472,7 @@ test("append resolution flushes uncertainty first and moves the tab only after a
   expect(mocks.writeGame.mock.calls[0][2]).toBe(serializedTree);
   await vi.waitFor(() => expect(button("FileFreshness.ReloadFromDisk").disabled).toBe(true));
   expect(button("FileFreshness.SaveAsNewGame").disabled).toBe(true);
-  await act(async () => pending.resolve({ stamp: changedStamp }));
+  await act(async () => pending.resolve({ stamp: changedStamp, revision: "appended-revision" }));
 
   expect(jotaiStore.get(tabsAtom)[0].gameOrigin).toMatchObject({
     kind: "file",
@@ -372,13 +485,35 @@ test("append resolution flushes uncertainty first and moves the tab only after a
     appendAttempted: false,
   });
   expect(getFileFreshness(tabId).state).toBe("verified");
+  expect(getFileFreshness(tabId).verifiedRevision).toBe("appended-revision");
+});
+
+test("a failed storage flush aborts append, clears its marker, and reports persistence failure", async () => {
+  mocks.readFileGame.mockResolvedValueOnce(stampedGame(changedStamp));
+  await setup({ dirty: true, persisted: true });
+  await vi.waitFor(() => expect(getFileFreshness(tabId).state).toBe("conflict"));
+  const storageError = new Error("session storage quota exceeded");
+  const flush = vi.spyOn(tabStorage, "flush").mockImplementation(({ notify = false } = {}) => {
+    if (notify) mocks.reportPersistError(storageError);
+    return [tabId];
+  });
+
+  await act(async () => button("FileFreshness.SaveAsNewGame").click());
+
+  expect(mocks.writeGame).not.toHaveBeenCalled();
+  expect(treeStore.getState().appendAttempted).toBe(false);
+  expect(flush.mock.calls[1]?.[0]).toEqual({ notify: true });
+  expect(mocks.reportPersistError).toHaveBeenCalledWith(storageError);
+  expect(host.textContent).toContain("FileFreshness.CouldNotPrepareAppend");
+  flush.mockRestore();
+  tabStorage.flush();
 });
 
 test("an uncertain append stays disabled across a persisted restart marker", async () => {
   mocks.readFileGame.mockResolvedValueOnce(stampedGame(changedStamp));
   await setup({ dirty: true, persisted: true });
   await vi.waitFor(() => expect(getFileFreshness(tabId).state).toBe("conflict"));
-  mocks.writeGame.mockResolvedValueOnce({ stamp: null });
+  mocks.writeGame.mockResolvedValueOnce({ stamp: null, revision: null });
 
   await act(async () => button("FileFreshness.SaveAsNewGame").click());
 
@@ -437,6 +572,34 @@ test("cancelled and stale appends leave the conflicting tree available for retry
   expect(button("FileFreshness.SaveAsNewGame").disabled).toBe(false);
   expect(host.textContent).toContain("FileFreshness.AppendChanged");
 });
+
+test.each([
+  ["reload", "invalid-input", "unavailable"],
+  ["append", "invalid-input", "unavailable"],
+  ["reload", "io", "conflict"],
+  ["append", "io", "conflict"],
+] as const)(
+  "%s action failures with %s keep the expected freshness panel",
+  async (action, category, state) => {
+    mocks.readFileGame.mockResolvedValueOnce(stampedGame(changedStamp));
+    await setup({ dirty: true });
+    await vi.waitFor(() => expect(getFileFreshness(tabId).state).toBe("conflict"));
+    const message = `${action} ${category} failure`;
+    const failure = { tag: "backend-error", category, message };
+    if (action === "reload") mocks.loadFileGame.mockRejectedValueOnce(failure);
+    else mocks.writeGame.mockRejectedValueOnce(failure);
+
+    await act(async () =>
+      button(
+        action === "reload" ? "FileFreshness.ReloadFromDisk" : "FileFreshness.SaveAsNewGame",
+      ).click(),
+    );
+
+    await vi.waitFor(() => expect(getFileFreshness(tabId).state).toBe(state));
+    expect(host.textContent).toContain(message);
+    expect(host.querySelector('[data-testid="board-and-panels"]')).toBeNull();
+  },
+);
 
 test("the appending state withholds children and starts no reconcile", async () => {
   await setup({ freshness: "appending" });

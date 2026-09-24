@@ -100,6 +100,9 @@ function PgnInput() {
     if (deepEqual(tree.root, root) && deepEqual(tree.headers, headers)) {
       setTmp(pgn);
     } else {
+      const currentTree = store.getState();
+      tree.sourceStamp = currentTree.sourceStamp;
+      tree.appendAttempted = currentTree.appendAttempted;
       setState(tree);
     }
   }

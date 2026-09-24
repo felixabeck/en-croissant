@@ -146,7 +146,9 @@ describe("BoardAnalysis add game durability", () => {
     localStorage.clear();
     mocks.notifyUnlessCancelled.mockReset();
     mocks.countPgnGames.mockReset().mockResolvedValue(4);
-    mocks.writeGame.mockReset().mockResolvedValue({ stamp: "b".repeat(64) });
+    mocks.writeGame
+      .mockReset()
+      .mockResolvedValue({ stamp: "b".repeat(64), revision: "new-revision" });
 
     jotaiStore = createJotaiStore();
     jotaiStore.set(tabsAtom, [tab], tabId);
@@ -214,7 +216,8 @@ describe("BoardAnalysis add game durability", () => {
   });
 
   test("Add Game withholds the board during append and moves the origin only after success", async () => {
-    let resolveWrite: (value: { stamp: string | null }) => void = () => undefined;
+    let resolveWrite: (value: { stamp: string | null; revision: string | null }) => void = () =>
+      undefined;
     mocks.writeGame.mockReturnValueOnce(
       new Promise((resolve) => {
         resolveWrite = resolve;
@@ -235,7 +238,7 @@ describe("BoardAnalysis add game durability", () => {
     expect(reset).not.toHaveBeenCalled();
     expect(getFileFreshness(tabId).state).toBe("appending");
 
-    await act(async () => resolveWrite({ stamp: "b".repeat(64) }));
+    await act(async () => resolveWrite({ stamp: "b".repeat(64), revision: "new-revision" }));
 
     expect(jotaiStore.get(currentTabAtom)?.gameOrigin).toMatchObject({
       kind: "file",
@@ -243,10 +246,18 @@ describe("BoardAnalysis add game durability", () => {
       file: { numGames: 4 },
     });
     expect(reset).not.toHaveBeenCalled();
-    expect(getFileFreshness(tabId).state).toBe("unverified");
+    expect(treeStore.getState()).toMatchObject({
+      sourceStamp: "b".repeat(64),
+      dirty: false,
+      headers: { event: "?" },
+    });
+    expect(getFileFreshness(tabId)).toMatchObject({
+      state: "verified",
+      verifiedRevision: "new-revision",
+    });
   });
 
-  test("Add Game stale failure refreshes count and leaves the old origin", async () => {
+  test("Add Game refreshes a stale count and retries at the new end", async () => {
     mocks.writeGame.mockRejectedValueOnce({
       tag: "backend-error",
       category: "stale-game",
@@ -268,6 +279,95 @@ describe("BoardAnalysis add game durability", () => {
       file: { numGames: 4 },
     });
     expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", {
+      category: "validation",
+      message: "FileFreshness.AddGameChanged",
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="add-game"]')!.click();
+    });
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === "Save and add game")!
+        .click();
+    });
+
+    expect(mocks.writeGame).toHaveBeenNthCalledWith(2, fileHandle, 4, defaultPGN(), {
+      kind: "append",
+    });
+    expect(jotaiStore.get(currentTabAtom)?.gameOrigin).toMatchObject({
+      kind: "file",
+      gameNumber: 4,
+      file: { numGames: 5 },
+    });
+    expect(getFileFreshness(tabId)).toMatchObject({
+      state: "verified",
+      verifiedRevision: "new-revision",
+    });
+    expect(treeStore.getState()).toMatchObject({
+      sourceStamp: "b".repeat(64),
+      dirty: false,
+      headers: { event: "?" },
+    });
+  });
+
+  test("a null append stamp keeps the old origin and refreshes its game count", async () => {
+    mocks.writeGame.mockResolvedValueOnce({ stamp: null, revision: null });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="add-game"]')!.click();
+    });
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === "Save and add game")!
+        .click();
+    });
+
+    expect(mocks.countPgnGames).toHaveBeenCalledWith(fileHandle);
+    expect(jotaiStore.get(currentTabAtom)?.gameOrigin).toMatchObject({
+      kind: "file",
+      gameNumber: 1,
+      file: { numGames: 4 },
+    });
+    expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", {
+      category: "applied-despite-error",
+      message: "FileFreshness.AddGameMayHaveBeenAdded",
+    });
+    expect(getFileFreshness(tabId).state).toBe("unverified");
+  });
+
+  test("a failed count refresh after StaleGame reports that typed error without changing count", async () => {
+    mocks.writeGame.mockRejectedValueOnce({
+      tag: "backend-error",
+      category: "stale-game",
+      message: "The game changed on disk",
+    });
+    mocks.countPgnGames.mockRejectedValueOnce({
+      tag: "backend-error",
+      category: "io",
+      message: "Could not refresh the PGN game count",
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="add-game"]')!.click();
+    });
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === "Save and add game")!
+        .click();
+    });
+
+    expect(jotaiStore.get(currentTabAtom)?.gameOrigin).toMatchObject({
+      kind: "file",
+      gameNumber: 1,
+      file: { numGames: 3 },
+    });
+    expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", {
+      category: "unexpected",
+      backendCategory: "io",
+      message: "Could not refresh the PGN game count",
+    });
+    expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalledWith("Common.Error", {
       category: "validation",
       message: "FileFreshness.AddGameChanged",
     });

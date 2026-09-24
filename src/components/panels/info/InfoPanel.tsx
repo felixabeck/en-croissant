@@ -31,7 +31,7 @@ import { useActiveDatabaseViewStore } from "@/state/store/database";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { fileWorkspaceKey } from "@/utils/pathCapabilities";
 import { loadFileGame } from "@/utils/files";
-import { setFileFreshness } from "@/state/fileFreshness";
+import { beginFileWrite, setFileFreshness } from "@/state/fileFreshness";
 
 function InfoPanel({ addGame }: { addGame?: () => void }) {
   const store = use(TreeStateContext)!;
@@ -280,7 +280,12 @@ function GameSelectorAccordion({
     );
     if (!saved) return;
     try {
-      await tauri.deleteGame(filePath, index);
+      const endWrite = beginFileWrite(fileKey);
+      try {
+        await tauri.deleteGame(filePath, index);
+      } finally {
+        endWrite();
+      }
       if (
         currentIdentityRef.current.tabId === ownerId &&
         currentIdentityRef.current.fileKey === fileKey &&

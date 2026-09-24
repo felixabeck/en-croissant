@@ -12,7 +12,7 @@ import { getPGN, parsePGN } from "./chess";
 import { pickPgnFile, readFileGame } from "./files";
 import type { GameHeaders, TreeState } from "./treeReducer";
 import { fileWorkspaceKey } from "./pathCapabilities";
-import { setFileFreshness } from "@/state/fileFreshness";
+import { beginFileWrite, setFileFreshness } from "@/state/fileFreshness";
 export { tabSchema, type GameOrigin, type Tab };
 
 export function getTabFile(tab?: Tab | null): FileMetadata | undefined {
@@ -133,7 +133,6 @@ export async function createTab({
     gameOrigin,
     position,
     initialTree,
-    sourceStamp,
     existingTabIds,
 }: {
     tab: Omit<Tab, "value" | "gameOrigin">;
@@ -143,14 +142,11 @@ export async function createTab({
     gameOrigin?: GameOrigin;
     position?: number[];
     initialTree?: TreeState;
-    sourceStamp?: string | null;
     existingTabIds?: Iterable<string>;
 }): Promise<string | null> {
     let treeToSeed: TreeState | undefined = initialTree;
 
-    if (treeToSeed && sourceStamp !== undefined) {
-        treeToSeed = { ...treeToSeed, sourceStamp };
-    } else if (pgn !== undefined) {
+    if (!treeToSeed && pgn !== undefined) {
         const tree = await parsePGN(pgn, headers?.fen);
         if (headers) {
             tree.headers = headers;
@@ -190,15 +186,21 @@ export function serializeStoreTree(store: StoreApi<TreeStoreState>): string {
     })}\n\n`;
 }
 
-function sameOrigin(left: GameOrigin, right: GameOrigin): boolean {
-    if (left.kind !== right.kind) return false;
+export function sameFileGameOrigin(left: GameOrigin, right: GameOrigin): boolean {
     if (left.kind === "file" || left.kind === "temp_file") {
         return (
             (right.kind === "file" || right.kind === "temp_file") &&
-            left.kind === right.kind &&
             fileWorkspaceKey(left.file.handle) === fileWorkspaceKey(right.file.handle) &&
             left.gameNumber === right.gameNumber
         );
+    }
+    return false;
+}
+
+function sameOrigin(left: GameOrigin, right: GameOrigin): boolean {
+    if (left.kind !== right.kind) return false;
+    if (left.kind === "file" || left.kind === "temp_file") {
+        return sameFileGameOrigin(left, right);
     }
     if (left.kind === "database") {
         return right.kind === "database" && left.gameId === right.gameId;
@@ -261,26 +263,34 @@ export async function saveToFile({
             currentFileOperation = true;
             writingCurrentOrigin = true;
             if (sourceStamp === null) return sourceChanged(tabId);
-            const written = await tauri.writeGame(
-                fileOrigin.file.handle,
-                fileOrigin.gameNumber,
-                pgn,
-                writeExpectation(sourceStamp),
-            );
+            const endWrite = beginFileWrite(fileWorkspaceKey(fileOrigin.file.handle));
+            let written: Awaited<ReturnType<typeof tauri.writeGame>>;
+            try {
+                written = await tauri.writeGame(
+                    fileOrigin.file.handle,
+                    fileOrigin.gameNumber,
+                    pgn,
+                    writeExpectation(sourceStamp),
+                );
+            } finally {
+                endWrite();
+            }
             const currentTab = getTab(tabId);
             if (!currentTab || !sameOrigin(currentTab.gameOrigin, currentOrigin))
                 return "superseded";
-            if (written.stamp === null) {
-                store.getState().setSourceStamp(null);
+            if (written.stamp === null || written.revision === null) {
+                if (written.stamp === null) store.getState().setSourceStamp(null);
                 setFileFreshness(tabId, "unverified");
                 return "conflict";
             }
-            if (serializeStoreTree(store) === pgn) {
+            const unchanged = serializeStoreTree(store) === pgn;
+            if (unchanged) {
                 store.getState().save(written.stamp);
-                return "saved";
+            } else {
+                store.getState().setSourceStamp(written.stamp);
             }
-            store.getState().setSourceStamp(written.stamp);
-            return "superseded";
+            setFileFreshness(tabId, "verified", { verifiedRevision: written.revision });
+            return unchanged ? "saved" : "superseded";
         }
 
         if (isTempFile && fileOrigin) {
@@ -303,16 +313,23 @@ export async function saveToFile({
 
         const gameNumber = fileOrigin?.gameNumber ?? 0;
         const destination = await readFileGame(selected.handle, gameNumber);
-        const written = await tauri.writeGame(
-            selected.handle,
-            gameNumber,
-            pgn,
-            writeExpectation(destination.stamp),
-        );
+        currentFileOperation = true;
+        const endWrite = beginFileWrite(fileWorkspaceKey(selected.handle));
+        let written: Awaited<ReturnType<typeof tauri.writeGame>>;
+        try {
+            written = await tauri.writeGame(
+                selected.handle,
+                gameNumber,
+                pgn,
+                writeExpectation(destination.stamp),
+            );
+        } finally {
+            endWrite();
+        }
         const currentTab = getTab(tabId);
         if (!currentTab || !sameOrigin(currentTab.gameOrigin, currentOrigin)) return "superseded";
-        if (written.stamp === null) {
-            store.getState().setSourceStamp(null);
+        if (written.stamp === null || written.revision === null) {
+            if (written.stamp === null) store.getState().setSourceStamp(null);
             setFileFreshness(tabId, "unverified");
             return "conflict";
         }
@@ -330,23 +347,27 @@ export async function saveToFile({
             },
         }));
         if (!savedOrigin) return "superseded";
-        setFileFreshness(tabId, "unverified");
-        if (serializeStoreTree(store) === pgn) {
+        const unchanged = serializeStoreTree(store) === pgn;
+        if (unchanged) {
             store.getState().save(written.stamp);
-            return "saved";
+        } else {
+            store.getState().setSourceStamp(written.stamp);
         }
-        store.getState().setSourceStamp(written.stamp);
-        return "superseded";
+        setFileFreshness(tabId, "verified", { verifiedRevision: written.revision });
+        return unchanged ? "saved" : "superseded";
     } catch (error) {
         const normalized = normalizeError(error);
         if (tab && normalized.backendCategory === "stale-game") {
             return writingCurrentOrigin ? sourceChanged(tab.value) : failed(error);
         }
+        if (tab && currentFileOperation && normalized.backendCategory === "conflict") {
+            setFileFreshness(tab.value, "unverified", { errorMessage: normalized.message });
+            return failed(error);
+        }
         if (
             tab &&
             currentFileOperation &&
-            (normalized.backendCategory === "conflict" ||
-                normalized.backendCategory === "missing-resource" ||
+            (normalized.backendCategory === "missing-resource" ||
                 normalized.backendCategory === "invalid-input")
         ) {
             setFileFreshness(tab.value, "unavailable");

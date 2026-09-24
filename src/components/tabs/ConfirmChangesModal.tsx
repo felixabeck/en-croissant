@@ -3,6 +3,7 @@ import { useAtom, useSetAtom, useStore as useJotaiStore } from "jotai";
 import { useContext, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { activeTabAtom, currentTabAtom, tabsAtom } from "@/state/atoms";
+import { normalizeError } from "@/platform/errors";
 import type { TreeStore } from "@/state/store/tree";
 import { saveToFile, updateTabById, type Tab, type UpdateTab } from "@/utils/tabs";
 import { saveFileConflictVersion, useFileFreshness } from "@/state/fileFreshness";
@@ -81,6 +82,8 @@ function ConfirmChangesModal({
         } else {
           setSaveMessage(t("FileFreshness.SaveAsNewGameFailed"));
         }
+      } catch (error) {
+        setSaveMessage(normalizeError(error).message);
       } finally {
         setSavePending(false);
       }

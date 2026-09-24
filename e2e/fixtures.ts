@@ -37,7 +37,7 @@ export const filesWorkspaceFixture = {
     pgnGame: '[Event "E2E"]\n[White "Weiss"]\n[Black "Schwarz"]\n[Result "*"]\n\n1. e4 c5 *',
 } as const;
 
-const pgnGameStamp = "e2e-pgn-stamp";
+const pgnGameStamp = "e".repeat(64);
 const pgnGameRevision = "e2e-pgn-revision";
 const stampedPgnGame = {
     pgn: filesWorkspaceFixture.pgnGame,

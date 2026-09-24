@@ -1,6 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 import {
     getFileFreshness,
+    beginFileWrite,
     pendingFileReconcileCount,
     registerFileConflictSave,
     removeFileFreshness,
@@ -11,6 +12,7 @@ import {
 } from "./fileFreshness";
 import type { FileWorkspaceHandle } from "@/bindings";
 import type { Tab } from "@/utils/tabs";
+import { fileWorkspaceKey } from "@/utils/pathCapabilities";
 
 const ids = ["freshness-a", "freshness-b"];
 
@@ -182,6 +184,80 @@ test("the two-second poll invalidates a changed file-backed tab without a Boards
 
     expect(revision).toHaveBeenCalledOnce();
     expect(getFileFreshness(tab.value).state).toBe("unverified");
+    stop();
+});
+
+test.each(["during", "after"] as const)(
+    "a conflict poll outcome that overlaps a started file write is ignored (%s)",
+    async (writeEnd) => {
+        vi.useFakeTimers();
+        const tab = fileTab(`poll-write-${writeEnd}`, `file-write-${writeEnd}`);
+        setFileFreshness(tab.value, "verified", { verifiedRevision: "r1" });
+        const first = deferred<string>();
+        let revisionCalls = 0;
+        const revision = vi.fn((_handle: FileWorkspaceHandle, _options: { signal: AbortSignal }) =>
+            ++revisionCalls === 1 ? first.promise : Promise.resolve("r1"),
+        );
+        const focus = focusSubscription();
+        const stop = startFileRevisionPoll({
+            getTabs: () => [tab],
+            fileRevision: revision,
+            subscribeFocus: focus.subscribe,
+        });
+
+        focus.focus();
+        await flushPromises();
+        expect(revision).toHaveBeenCalledOnce();
+        const origin = tab.gameOrigin;
+        if (origin.kind !== "file" && origin.kind !== "temp_file") {
+            throw new Error("expected a file-backed test tab");
+        }
+        const endWrite = beginFileWrite(fileWorkspaceKey(origin.file.handle));
+        if (writeEnd === "after") endWrite();
+        first.reject({
+            tag: "backend-error",
+            category: "conflict",
+            message: "path authority is unavailable because its object changed",
+        });
+        await flushPromises();
+        if (writeEnd === "during") endWrite();
+        await flushPromises();
+
+        expect(revision).toHaveBeenCalledTimes(2);
+        expect(getFileFreshness(tab.value)).toMatchObject({
+            state: "verified",
+            verifiedRevision: "r1",
+        });
+        stop();
+    },
+);
+
+test("a revision poll waits for an active file write and runs when it ends", async () => {
+    vi.useFakeTimers();
+    const tab = fileTab("poll-write-active", "file-write-active");
+    setFileFreshness(tab.value, "verified", { verifiedRevision: "r1" });
+    const origin = tab.gameOrigin;
+    if (origin.kind !== "file" && origin.kind !== "temp_file") {
+        throw new Error("expected a file-backed test tab");
+    }
+    const endWrite = beginFileWrite(fileWorkspaceKey(origin.file.handle));
+    const revision = vi.fn(async () => "r1");
+    const focus = focusSubscription();
+    const stop = startFileRevisionPoll({
+        getTabs: () => [tab],
+        fileRevision: revision,
+        subscribeFocus: focus.subscribe,
+    });
+
+    focus.focus();
+    await flushPromises();
+    expect(revision).not.toHaveBeenCalled();
+
+    endWrite();
+    await flushPromises();
+
+    expect(revision).toHaveBeenCalledOnce();
+    expect(getFileFreshness(tab.value).state).toBe("verified");
     stop();
 });
 

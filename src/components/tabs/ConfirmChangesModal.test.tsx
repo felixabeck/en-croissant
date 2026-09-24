@@ -79,7 +79,7 @@ beforeEach(() => {
     revision: "r1",
     present: true,
   });
-  mocks.writeGame.mockResolvedValue({ stamp: "b".repeat(64) });
+  mocks.writeGame.mockResolvedValue({ stamp: "b".repeat(64), revision: "new-revision" });
 });
 
 afterEach(async () => {
@@ -328,4 +328,37 @@ test("Save on an unavailable tab runs the registered append action", async () =>
   expect(onSaved).toHaveBeenCalledOnce();
   expect(mocks.writeGame).not.toHaveBeenCalled();
   unregister();
+});
+
+test("Save shows a typed unavailable-tab append failure inside the modal", async () => {
+  registerFileConflictSave(backgroundTab.value, async () => {
+    throw {
+      tag: "backend-error",
+      category: "permission",
+      message: "The selected PGN cannot be written",
+    };
+  });
+  setFileFreshness(backgroundTab.value, "unavailable");
+  const onSaved = vi.fn();
+
+  await act(async () =>
+    root.render(
+      <Provider store={jotaiStore}>
+        <ConfirmChangesModal
+          pendingClose={{ tabId: backgroundTab.value, store: treeStore }}
+          tab={backgroundTab}
+          onCancel={vi.fn()}
+          onDiscard={vi.fn()}
+          onSaved={onSaved}
+        />
+      </Provider>,
+    ),
+  );
+  await saveAndClose();
+
+  expect(onSaved).not.toHaveBeenCalled();
+  expect(mocks.writeGame).not.toHaveBeenCalled();
+  expect(host.querySelector('[role="dialog"]')?.textContent).toContain(
+    "The selected PGN cannot be written",
+  );
 });

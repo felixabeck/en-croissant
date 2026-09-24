@@ -1366,7 +1366,7 @@ export type WorkspaceEntryKind = "file" | "directory"
 export type WorkspaceFileType = "repertoire" | "game" | "tournament" | "puzzle" | "other"
 export type WorkspaceMetadata = { type: WorkspaceFileType; tags: string[] }
 export type WriteExpectation = { kind: "game"; stamp: string } | { kind: "append" }
-export type WriteStamp = { stamp: string | null }
+export type WriteStamp = { stamp: string | null; revision: string | null }
 
 /** tauri-specta globals **/
 

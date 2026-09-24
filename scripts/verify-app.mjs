@@ -4,7 +4,7 @@
 //   pnpm verify:app                 run the checks
 //   pnpm verify:app --screenshot X  also write a PNG of the page to X
 //
-// It asserts forty-seven independently reported checks that no other gate in this repository can:
+// It asserts fifty-one independently reported checks, plus one conditional reload check, that no other gate in this repository can:
 //   group | assertions
 //   startup | 5: production authority, user-file safety, owned-image cleanup, real IPC bridge,
 //             document title
@@ -17,6 +17,8 @@
 //   attachments | 4: prepare, retire, live-session bytes/intent, titlebar cleanup
 //   native reads | 5: mint, cancel, cancelled-ticket refusal, retained ticket, destroyed-window log
 //   Files | 3: seeded-row-render, double-click-route, opened-game-notation
+//   file freshness | 4: in-place rewrite, open-tab reload/withhold, native-read timing,
+//                      one-poll-interval freshness budget; +1 conditional Reload-from-disk check
 //   titlebar/process | 3: rendered controls, process-before-close, process-after-close
 //   shutdown | 3: start, bounded completion, sound signal
 //
@@ -145,6 +147,15 @@
 //                                           |   row shows its game — timed out waiting for the  |
 //                                           |   opened game's notation; expected 1.e4e52.d4d5   |
 
+// Staged-failure evidence for the file-freshness checks is pending; the orchestrator stages and
+// records it.
+//   check                                   | staged-failure evidence | exit
+//   stale-file in-place rewrite             | pending                 | pending
+//   open-tab reload or withhold              | pending                 | pending
+//   measured native read_game call           | pending                 | pending
+//   one-poll-interval freshness budget       | pending                 | pending
+//   conditional Reload from disk             | pending                 | pending
+
 // Staged-failure record for the practice checks (2026-09-23). Each break was made in the
 // release artifact, rebuilt, run inside the 4 GiB scope, and restored with a clean rebuild.
 // The sync assertion now records a failed wait through the assertion helper so its own FAIL line and the final
@@ -261,6 +272,8 @@ const IPC_PROBE_TIMEOUT_MS = 5_000;
 const CSP_PROBE_TIMEOUT_MS = 4_000;
 const FILES_PROBE_TIMEOUT_MS = 20_000;
 const PRACTICE_RENDERER_TIMEOUT_MS = 600_000;
+// Keep aligned with FILE_REVISION_INTERVAL_MS in src/state/fileFreshness.ts.
+const FILE_FRESHNESS_POLL_INTERVAL_MS = 2_000;
 const PRACTICE_REVIEW_PAGE_LIMIT = 500; // Mirrors PRACTICE_READ_MAX_ENTRIES in practice.rs.
 const PRACTICE_MOVE_CLICK_DELAY_MS = 40;
 // Gap between the two clicks of the double-click. It must stay inside the platform double-click
@@ -1173,8 +1186,8 @@ try {
     await waitFor(`${label} renderer to expose Tauri`, () =>
       session.execute("return typeof window.__TAURI_INTERNALS__ === 'object'").catch(() => false),
     );
-    // The renderer's startup pass (tab restoration, practice migration) must settle before a step
-    // closes or opens tabs; the probe above proves only that the native reconciliation ran.
+    // The renderer's workspace initialization and practice migration must settle before a step
+    // closes or opens tabs; the probe above proves only that native reconciliation ran.
     await waitForPracticeOwners(`${label} startup to retain practice capabilities`);
     return reconciledRegistry;
   };
@@ -1437,7 +1450,8 @@ try {
   );
 
   await reopenAssertionSession("large-deck extension");
-  const readRestoredPracticeFreshness = () =>
+  await openFilesEntry(session, largePracticeName, PRACTICE_RENDERER_TIMEOUT_MS);
+  const readOpenPracticeFreshness = () =>
     session
       .execute(
         `const tab = [...document.querySelectorAll('[role="tab"]')].find((candidate) =>
@@ -1452,14 +1466,35 @@ try {
          return Number.isInteger(reloadCount) ? { state, reloadCount } : false;`,
       )
       .catch(() => false);
-  const restoredFreshnessBeforeWrite = await waitFor(
-    "the restored file-backed tab to verify before the external PGN write",
-    async () => {
-      const freshness = await readRestoredPracticeFreshness();
-      return freshness && freshness.state === "verified" ? freshness : false;
-    },
-    { timeoutMs: PRACTICE_RENDERER_TIMEOUT_MS },
-  );
+  let openFreshnessBeforeWrite;
+  try {
+    openFreshnessBeforeWrite = await waitFor(
+      "the open file-backed tab to verify before the external PGN write",
+      async () => {
+        const freshness = await readOpenPracticeFreshness();
+        return freshness && freshness.state === "verified" ? freshness : false;
+      },
+      { timeoutMs: PRACTICE_RENDERER_TIMEOUT_MS },
+    );
+  } catch (error) {
+    const state = await session
+      .execute(
+        `return {
+           path: location.pathname,
+           tabs: [...document.querySelectorAll('[role="tab"]')].map((tab) => ({
+             text: tab.textContent,
+             selected: tab.getAttribute("aria-selected"),
+             controls: tab.getAttribute("aria-controls"),
+           })),
+           gates: [...document.querySelectorAll("[data-file-freshness]")].map((gate) =>
+             gate.getAttribute("data-file-freshness"),
+           ),
+           text: document.body.innerText.slice(0, 1200),
+         };`,
+      )
+      .catch(() => "unavailable");
+    throw new Error(`${error.message}; renderer state: ${JSON.stringify(state)}`);
+  }
   const measurementReady = await session.execute(
     `const expectedFileId = arguments[0];
      const baselineReloadCount = arguments[1];
@@ -1479,7 +1514,7 @@ try {
      };
      const invoke = internals.invoke.bind(internals);
      state.originalInvoke = invoke;
-     internals.invoke = async (command, args) => {
+    internals.invoke = async (command, args) => {
        if (command !== "read_game" || args?.file?.id?.id !== expectedFileId) {
          return invoke(command, args);
        }
@@ -1506,9 +1541,9 @@ try {
      state.observer.observe(gate, { attributes: true, attributeFilter: ["data-file-freshness"] });
      window.__verifyAppFileFreshnessMeasurement = state;
      return { startedAt: state.startedAt };`,
-    [largePracticeId, restoredFreshnessBeforeWrite.reloadCount],
+    [largePracticeId, openFreshnessBeforeWrite.reloadCount],
   );
-  if (!measurementReady) throw new Error("could not arm the restored tab freshness measurement");
+  if (!measurementReady) throw new Error("could not arm the open tab freshness measurement");
   const inodeBeforeRewrite = (await stat(largePracticePath)).ino;
   const writeStartedAt = performance.now();
   await writeFile(largePracticePath, extendedLargePracticePgn);
@@ -1520,7 +1555,7 @@ try {
     `inode changed from ${inodeBeforeRewrite} to ${inodeAfterRewrite}`,
   );
   const freshnessTransition = await waitFor(
-    "the restored tab to reload the external PGN or show its conflict panel",
+    "the open tab to reload the external PGN or show its conflict panel",
     () =>
       session
         .execute("return window.__verifyAppFileFreshnessMeasurement?.terminal || false")
@@ -1543,14 +1578,15 @@ try {
     freshnessMeasurement.observedAt - measurementReady.startedAt - rewriteDurationMs;
   const measuredReadTimeMs = freshnessMeasurement.readTimeMs;
   const freshnessDeadlineMs =
-    2_000 + (Number.isFinite(measuredReadTimeMs) ? measuredReadTimeMs : 0);
-  const restoredTabReloaded =
+    FILE_FRESHNESS_POLL_INTERVAL_MS +
+    (Number.isFinite(measuredReadTimeMs) ? measuredReadTimeMs : 0);
+  const openTabReloaded =
     freshnessTransition.state === "conflict" ||
     (freshnessTransition.state === "verified" &&
-      freshnessTransition.reloadCount > restoredFreshnessBeforeWrite.reloadCount);
+      freshnessTransition.reloadCount > openFreshnessBeforeWrite.reloadCount);
   check(
-    restoredTabReloaded,
-    "the restored file-backed tab reloads or withholds the changed PGN",
+    openTabReloaded,
+    "the open file-backed tab reloads or withholds the changed PGN",
     `freshness state: ${freshnessTransition.state}`,
   );
   check(
@@ -1559,34 +1595,32 @@ try {
     `read_game duration: ${measuredReadTimeMs}`,
   );
   console.log(
-    `  info  restored file freshness: ${freshnessElapsedMs.toFixed(1)} ms after rewrite ` +
-      `(limit 2000 ms + read_game ${Number.isFinite(measuredReadTimeMs) ? measuredReadTimeMs.toFixed(1) : "unmeasured"} ms; ${freshnessTransition.state})`,
+    `  info  open file freshness: ${freshnessElapsedMs.toFixed(1)} ms after rewrite ` +
+      `(limit ${FILE_FRESHNESS_POLL_INTERVAL_MS} ms + read_game ${Number.isFinite(measuredReadTimeMs) ? measuredReadTimeMs.toFixed(1) : "unmeasured"} ms; ${freshnessTransition.state})`,
   );
   check(
     Number.isFinite(freshnessElapsedMs) && freshnessElapsedMs <= freshnessDeadlineMs,
-    "the restored file-backed tab refreshes within one poll interval plus read time",
+    "the open file-backed tab refreshes within one poll interval plus read time",
     `${freshnessElapsedMs.toFixed(1)} ms > ${freshnessDeadlineMs.toFixed(1)} ms`,
   );
   if (freshnessTransition.state === "conflict") {
-    const reloadButton = await waitFor(
-      "the restored file freshness conflict panel reload button",
-      () =>
-        session
-          .execute(
-            `const button = [...document.querySelectorAll("button")].find((candidate) =>
+    const reloadButton = await waitFor("the open file freshness conflict panel reload button", () =>
+      session
+        .execute(
+          `const button = [...document.querySelectorAll("button")].find((candidate) =>
                candidate.textContent?.trim() === "Reload from disk"
              );
              if (!button) return false;
              const box = button.getBoundingClientRect();
              return { x: Math.round(box.left + box.width / 2), y: Math.round(box.top + box.height / 2) };`,
-          )
-          .catch(() => false),
+        )
+        .catch(() => false),
     );
-    await clickAt(session, reloadButton.x, reloadButton.y, "reload-restored-file-tab");
+    await clickAt(session, reloadButton.x, reloadButton.y, "reload-open-file-tab");
     const reloadedFreshness = await waitFor(
-      "the restored file-backed tab to verify after Reload from disk",
+      "the open file-backed tab to verify after Reload from disk",
       async () => {
-        const freshness = await readRestoredPracticeFreshness();
+        const freshness = await readOpenPracticeFreshness();
         return freshness &&
           freshness.state === "verified" &&
           freshness.reloadCount > freshnessTransition.reloadCount
@@ -1597,7 +1631,7 @@ try {
     );
     check(
       reloadedFreshness.reloadCount > freshnessTransition.reloadCount,
-      "Reload from disk verifies the restored file-backed tab",
+      "Reload from disk verifies the open file-backed tab",
     );
   }
   let syncWaitError;

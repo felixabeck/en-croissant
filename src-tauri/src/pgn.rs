@@ -94,6 +94,7 @@ pub enum WriteExpectation {
 #[serde(rename_all = "camelCase")]
 pub struct WriteStamp {
     pub stamp: Option<String>,
+    pub revision: Option<String>,
 }
 
 const MAX_LINE_LEN: usize = 1024 * 1024;
@@ -1323,19 +1324,21 @@ pub async fn write_game_core(
             hook.notify_and_wait();
         }
 
-        let stamp = if let Some(rebind) = readback_capability {
+        let (stamp, revision) = if let Some(rebind) = readback_capability {
             if let Ok(readback_path) = rebind.resolve_read() {
                 match read_game_core(readback_path, game_number, &cancellation, &repository).await {
-                    Ok(readback) if readback.pgn.trim() == pgn.trim() => Some(readback.stamp),
-                    _ => None,
+                    Ok(readback) if readback.pgn.trim() == pgn.trim() => {
+                        (Some(readback.stamp), Some(readback.revision))
+                    }
+                    _ => (None, None),
                 }
             } else {
-                None
+                (None, None)
             }
         } else {
-            None
+            (None, None)
         };
-        Ok(WriteStamp { stamp })
+        Ok(WriteStamp { stamp, revision })
     })
     .await
 }
@@ -2245,6 +2248,16 @@ mod tests {
         };
         assert!(after.present);
         assert_eq!(written.stamp.as_deref(), Some(after.stamp.as_str()));
+        assert_eq!(written.revision.as_deref(), Some(after.revision.as_str()));
+        assert_eq!(
+            written.revision.as_deref(),
+            Some(
+                file_revision_through_capability(&app, &handle)
+                    .await
+                    .expect("revision after write")
+                    .as_str()
+            )
+        );
         assert_eq!(after.pgn.trim(), submitted.trim());
     }
 
@@ -2380,6 +2393,7 @@ mod tests {
 
         let written = task.await.expect("join writer").expect("committed write");
         assert_eq!(written.stamp, None);
+        assert_eq!(written.revision, None);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2425,6 +2439,7 @@ mod tests {
 
         let written = task.await.expect("join writer").expect("committed write");
         assert_eq!(written.stamp, None);
+        assert_eq!(written.revision, None);
     }
 
     #[tokio::test]

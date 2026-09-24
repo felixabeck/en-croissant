@@ -2887,7 +2887,7 @@ fn export_to_pgn_blocking(
         write_pgn_rows(temporary, rows)
     })?;
     crate::infra::fs::require_durable(
-        outcome,
+        outcome.outcome,
         crate::error::DurabilityStage::DatabasePgnReplacement,
     )
 }
