@@ -4050,3 +4050,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** `DirectoryTree` stores native capability IDs in a global array while `fileWorkspaceAtom` can change. The startup owner snapshot reads the array before atom hydration. Scoping and migration on those two paths prevents cross-workspace retention while preserving existing preferences.
 * **Decided by:** Codex drain df96e5f3-0928-4d01-8c96-356e430dceb7 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"62f24d5b9b90a28dc5f4ca02b76a07104b82a4fef5cb2630dfe0d638732e4c2a","input_sha256":"8d482f7caf6191ac10e306e77d6c1f146626d35c65f678b7a01cf985a2c9999b","kind":"mutation-receipt","operation":"97e6fee4e014676464b5ae7b83d88e742e097f0f026dafef8d40f7c372a0178d","options":{"section":null},"request_id_sha256":null,"results":["d-20260924-06"],"target":"decisions-ledger","v":1} -->
+
+### d-20260924-07 — What storage budget and failure policy applies to directory expansion?
+
+* **Question:** What storage budget and failure policy applies to directory expansion?
+* **Governs:** f-20260906-24
+* **Chosen:** Keep at most 1,000 recent IDs and 64 KiB of UTF-8 JSON before compression. Repair valid oversized legacy data on hydration. Leave malformed bytes intact and report read failure; reject a single oversized incoming ID before eviction, keep its UI state in memory, preserve the last good persisted record, and report save failure. Never delete tab trees or practice history for expansion state.
+* **Rejected:** Persist an unlimited raw array or free capacity by deleting tab trees or practice history; those consume the same quota and the latter two carry user work.
+* **Reason:** The old expansion writer has no budget and shares the roughly 5 MB session-storage quota with tab trees. The fixed caps bound disposable state, compression reduces its physical size, and truthful failure reporting avoids implying that unsaved expansion was durable.
+* **Decided by:** Codex drain df96e5f3-0928-4d01-8c96-356e430dceb7 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"8f2c94752cd1f7ff24290e29751e20238feb25223c9ddf846a9cd13cd0189c37","input_sha256":"df792b7d7fa26ed370909d9b0440259ab054891e954b83aba5ea9e7051a84789","kind":"mutation-receipt","operation":"5f5e3ab8deeb6ef4a2223cd6d9b31047856e0b06c0ebcd3b9873649622b517b4","options":{"section":null},"request_id_sha256":null,"results":["d-20260924-07"],"target":"decisions-ledger","v":1} -->
