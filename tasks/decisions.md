@@ -4060,3 +4060,15 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The old expansion writer has no budget and shares the roughly 5 MB session-storage quota with tab trees. The fixed caps bound disposable state, compression reduces its physical size, and truthful failure reporting avoids implying that unsaved expansion was durable.
 * **Decided by:** Codex drain df96e5f3-0928-4d01-8c96-356e430dceb7 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"8f2c94752cd1f7ff24290e29751e20238feb25223c9ddf846a9cd13cd0189c37","input_sha256":"df792b7d7fa26ed370909d9b0440259ab054891e954b83aba5ea9e7051a84789","kind":"mutation-receipt","operation":"5f5e3ab8deeb6ef4a2223cd6d9b31047856e0b06c0ebcd3b9873649622b517b4","options":{"section":null},"request_id_sha256":null,"results":["d-20260924-07"],"target":"decisions-ledger","v":1} -->
+
+## 2026-09-25 — recorded through the decisions lock
+
+### d-20260925-01 — How should unscoped legacy expansion IDs be handled after a workspace changes?
+
+* **Question:** How should unscoped legacy expansion IDs be handled after a workspace changes?
+* **Governs:** f-20260906-24
+* **Chosen:** Parse the legacy array for compatibility, but discard its disposable IDs at startup after the original owner snapshot. A standalone atom hydration also replaces a legacy array with an empty record for the active workspace. Only versioned records whose opaque workspace ID matches the active workspace can retain expansion capability IDs.
+* **Rejected:** Tag the old array with whichever workspace happens to be active at hydration; the old array has no provenance and a later restart would trust those IDs as native capability owners.
+* **Reason:** Cumulative persisted-state review showed that d-20260924-06's migration could turn unknown legacy IDs into trusted owners of a different workspace. Source tracing also showed that Files may never mount, so startup must physically reclaim a valid legacy array without waiting for atom hydration. Reversal path: a provenance-bearing legacy format or an explicit backend validation that can safely attribute each ID.
+* **Decided by:** Codex drain df96e5f3-0928-4d01-8c96-356e430dceb7, cumulative review · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"f36d677657d813fd25bb57d504dd01ff5cc6b21414ecadee165783beec662606","input_sha256":"d37f9d5b405f2c98c24e899a7ca508fe617c713ec209a4377f738a6086e0bbd1","kind":"mutation-receipt","operation":"d81c8402c4746619dd930f62e3c99c72e8a191f8698b89bd226978201a070b07","options":{"section":null},"request_id_sha256":null,"results":["d-20260925-01"],"target":"decisions-ledger","v":1} -->
