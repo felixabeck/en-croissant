@@ -4040,3 +4040,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** the growth is feature code and required strings with nothing dead to cut, which is exactly the case `docs/bundle-budgets.md` and `d-20260923-03` allow a measured raise for. Reversal path: lower `limits.total` in `bundle-budgets.json` once something is cut.
 * **Decided by:** Claude Code (orchestrator), f-20260923-01 build (drain, full auto), final gates · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"a2875c4016e38e3c954a14170e938bb0f0cc55f7c36a2e535cdf7d7c738d9cd0","input_sha256":"3c1ecf03021926e5731a7c798eebefda33dbd539858a21ddf50d9db3576b8e6f","kind":"mutation-receipt","operation":"3d1e1f9756fdf9047aff9a4f2604f5a2dba142ae21ef32deb2bb224e70e22238","options":{"section":null},"request_id_sha256":null,"results":["d-20260924-05"],"target":"decisions-ledger","v":1} -->
+
+### d-20260924-06 — How long do file-workspace expansion preferences remain applicable?
+
+* **Question:** How long do file-workspace expansion preferences remain applicable?
+* **Governs:** f-20260906-24
+* **Chosen:** Bind the compressed, bounded expansion record to the active opaque file-workspace ID. A workspace change makes the prior record inactive and its in-memory IDs cannot enter the new record. Legacy arrays are read for compatibility and migrated after the startup owner snapshot; unscoped legacy data remains untrusted to that snapshot.
+* **Rejected:** Carry expansion IDs across workspaces or key them by display name or path spelling; those IDs are native capabilities in another workspace context and names can change.
+* **Reason:** `DirectoryTree` stores native capability IDs in a global array while `fileWorkspaceAtom` can change. The startup owner snapshot reads the array before atom hydration. Scoping and migration on those two paths prevents cross-workspace retention while preserving existing preferences.
+* **Decided by:** Codex drain df96e5f3-0928-4d01-8c96-356e430dceb7 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"62f24d5b9b90a28dc5f4ca02b76a07104b82a4fef5cb2630dfe0d638732e4c2a","input_sha256":"8d482f7caf6191ac10e306e77d6c1f146626d35c65f678b7a01cf985a2c9999b","kind":"mutation-receipt","operation":"97e6fee4e014676464b5ae7b83d88e742e097f0f026dafef8d40f7c372a0178d","options":{"section":null},"request_id_sha256":null,"results":["d-20260924-06"],"target":"decisions-ledger","v":1} -->
