@@ -11246,6 +11246,11 @@ Found by `review-persisted-state` (should-fix, confidence 92) in round 5 of the 
 
 Outside that plan's MANDATE (stale file text), so filed rather than folded in. A fix needs an owner for tree keys with no workspace tab — for example a startup sweep of tree-shaped keys whose id is absent from the loaded workspace, bounded to the tree-storage key format.
 
+* **Handled:** Commit `9d6efe5d` adds a startup sweep for decodable UUID tree keys absent from a valid persisted workspace. Removal errors are reported and retried on the next load; retained tabs and unrelated UUID keys remain untouched. A missing or damaged workspace is not used as deletion authority.
+* **Proof:** `pnpm exec vitest run src/state/workspace.test.ts src/utils/tabs.test.ts` (56 passed), `pnpm exec tsc --noEmit`, `pnpm lint:ci`, `git diff --check`; persisted-state lens approved.
+* **Rejected:** Deleting every unreferenced UUID key without confirming a tree value would risk unrelated session data; sweeping from a missing or damaged workspace would lack reliable tab ownership.
+<!-- ledger-meta {"command":"annotate","effect_lines":3,"effect_sha256":"7e4a1d4d582b9082fdcf492d2be1f8cad97fd49016b45de0a56ea85ce869f532","input_sha256":"94b42e0fd7350318f766838e601815723d99a05fd3ca96e4aef4ec0d3805352b","kind":"mutation-receipt","operation":"67bd01f463048722cf0311172a704d3e5657df1e874996638796da85244c3171","options":{"section":null},"request_id_sha256":null,"results":["f-20260924-02"],"target":"f-20260924-02","v":1} -->
+
 ### An undecodable persisted tree is replaced by a clean default tree, losing its unsaved edits without notice
 
 * **ID:** f-20260924-03 · **Status:** open · **Area:** frontend-state · **Root:** none · **Entry:** build · **Blocked:** none
