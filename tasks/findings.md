@@ -11270,7 +11270,7 @@ Outside that plan's MANDATE (stale file text), so filed rather than folded in. A
 
 ### An undecodable persisted tree is replaced by a clean default tree, losing its unsaved edits without notice
 
-* **ID:** f-20260924-03 · **Status:** open · **Area:** frontend-state · **Root:** none · **Entry:** build · **Blocked:** none
+* **ID:** f-20260924-03 · **Status:** handled · **Area:** frontend-state · **Root:** none · **Entry:** build · **Blocked:** none
 
 Found by `review-persisted-state` (blocker, confidence 91) in round 12 of the plan review for `f-20260923-01`, 2026-09-24. `tabStorage.read()` deletes an entry it cannot decode and returns `null` (`src/state/store/tabStorage.ts:284-287`), and the tree store then starts from a clean default tree (`src/state/store/tree.ts:175-183`). A tab whose unsaved edits lived only in that blob loses them with no message; the tab reports clean. With `f-20260923-01`'s freshness gate a file-backed tab then reloads its game from disk, which is no worse than today's empty default, but the loss itself is pre-existing and not a stale-text path, so it was filed rather than folded into that plan's MANDATE.
 
