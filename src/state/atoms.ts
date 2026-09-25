@@ -37,7 +37,13 @@ import {
 import { sessionsSchema, type Session } from "../utils/session";
 import { createPreferenceStorage, createZodStorage } from "./utils";
 import { createExpandedDirectoriesAtom } from "./expandedDirectories";
-import { WORKSPACE_STORAGE_KEY, loadWorkspace, saveWorkspace, type Workspace } from "./workspace";
+import {
+    MAX_PENDING_TREE_REMOVALS,
+    WORKSPACE_STORAGE_KEY,
+    loadWorkspace,
+    saveWorkspace,
+    type Workspace,
+} from "./workspace";
 import { persistStorageWriteError, tabStorage } from "./store/tabStorage";
 import { reportPersistError } from "./persistError";
 import { originalPathOwnersSnapshot } from "./pathOwners";
@@ -73,14 +79,14 @@ const commitWorkspaceAtom = atom(null, (get, set, workspace: Workspace) => {
         previous.tabs.filter((tab) => !retainedIds.has(tab.value)).map((tab) => tab.value),
     );
     const protectedIds = workspace.treeOwnershipProtectedIds?.filter((id) => !closedIds.has(id));
-    const pendingRemovalIds = [
-        ...new Set([
-            ...(workspace.treeOwnershipPendingRemovalIds ?? []).filter((id) =>
-                tabStorage.isStoredTree(id),
-            ),
-            ...closedIds,
-        ]),
-    ];
+    let priorPending = (workspace.treeOwnershipPendingRemovalIds ?? []).filter(
+        (id) => !retainedIds.has(id) && tabStorage.isStoredTree(id),
+    );
+    if (new Set([...priorPending, ...closedIds]).size > MAX_PENDING_TREE_REMOVALS) {
+        const failed = tabStorage.removeKnownTreesSafely(priorPending);
+        priorPending = priorPending.filter((id) => failed.has(id));
+    }
+    const pendingRemovalIds = [...new Set([...priorPending, ...closedIds])];
     const canonical = {
         ...workspace,
         ...(protectedIds === undefined ? {} : { treeOwnershipProtectedIds: protectedIds }),

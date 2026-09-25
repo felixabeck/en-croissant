@@ -19,6 +19,7 @@ import { tabStorage } from "./store/tabStorage";
 import { commitNewTab, createTab } from "@/utils/tabs";
 import {
     loadWorkspace,
+    MAX_PENDING_TREE_REMOVALS,
     MAX_PROTECTED_TREE_KEYS,
     readStoredWorkspaceValue,
     WORKSPACE_STORAGE_KEY,
@@ -395,6 +396,53 @@ test("a failed close removal retries even when the ownership snapshot overflows"
     expect(reloaded).not.toHaveProperty("treeOwnershipProtectedIds");
     expect(reloaded.treeOwnershipPendingRemovalIds).toContain(tabId);
     expect(sessionStorage.getItem(tabId)).toBeNull();
+});
+
+test("closing a tab frees capacity from completed removal intents", async () => {
+    sessionStorage.clear();
+    const tabId = crypto.randomUUID();
+    const tab = {
+        name: "Close",
+        value: tabId,
+        type: "analysis" as const,
+        gameOrigin: { kind: "none" as const },
+    };
+    const tree = serializeStorageValue({ version: 1, state: defaultTree() });
+    const pendingIds = Array.from(
+        { length: MAX_PENDING_TREE_REMOVALS },
+        (_, index) => `pending-tree-${index}`,
+    );
+    for (const id of pendingIds) sessionStorage.setItem(id, tree);
+    sessionStorage.setItem(tabId, tree);
+    sessionStorage.setItem(
+        WORKSPACE_STORAGE_KEY,
+        serializeStorageValue({
+            version: 1,
+            tabs: [tab],
+            activeTab: tabId,
+            treeOwnershipUncertain: true,
+            treeOwnershipProtectedIds: [],
+            treeOwnershipPendingRemovalIds: pendingIds,
+        }),
+    );
+    const originalRemoveItem = Storage.prototype.removeItem;
+    const deny = vi
+        .spyOn(Storage.prototype, "removeItem")
+        .mockImplementation(function (this: Storage, id) {
+            if (id.startsWith("pending-tree-")) throw new DOMException("denied", "SecurityError");
+            return originalRemoveItem.call(this, id);
+        });
+    vi.resetModules();
+    const freshAtoms = await import("./atoms");
+    deny.mockRestore();
+    const store = createStore();
+
+    expect(store.set(freshAtoms.closeWorkspaceTabAtom, tabId)).toBe(true);
+    expect(store.get(freshAtoms.tabsAtom)).toEqual([]);
+    expect(sessionStorage.getItem(pendingIds[0]!)).toBeNull();
+    expect(readStoredWorkspaceValue(sessionStorage, WORKSPACE_STORAGE_KEY)).toMatchObject({
+        treeOwnershipPendingRemovalIds: [tabId],
+    });
 });
 
 test("closes inactive, active, and last tabs and ignores a stale close id", () => {

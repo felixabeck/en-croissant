@@ -263,7 +263,7 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
     if (stagedCloneIds.length > 0) {
         const failedIds = new Set(tabStorage.flush({ notify: true }));
         if (stagedCloneIds.some((id) => failedIds.has(id))) {
-            for (const id of stagedCloneIds) tabStorage.removeTreeSafely(id);
+            tabStorage.removeKnownTreesSafely(stagedCloneIds);
             return plan.unrepairedWorkspace;
         }
     }
@@ -290,7 +290,7 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
         }
         if (pendingRemovalIds.size > MAX_PENDING_TREE_REMOVALS) {
             reportPersistError(persistStorageWriteError({}));
-            for (const id of stagedCloneIds) tabStorage.removeTreeSafely(id);
+            tabStorage.removeKnownTreesSafely(stagedCloneIds);
             return plan.unrepairedWorkspace;
         }
     }
@@ -309,7 +309,7 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
             storage.setItem(key, payload);
         } catch (error) {
             reportPersistError(persistStorageWriteError(error));
-            for (const id of stagedCloneIds) tabStorage.removeTreeSafely(id);
+            tabStorage.removeKnownTreesSafely(stagedCloneIds);
             return plan.unrepairedWorkspace;
         }
     }
