@@ -742,15 +742,9 @@ export class TabStorageRepository {
         const currentDetail =
             current.kind === "unreadable"
                 ? current.rawValue
-                : current.kind === "unavailable"
-                  ? current.error
-                  : undefined;
+                : (current as { error?: unknown }).error;
         const nextDetail =
-            next.kind === "unreadable"
-                ? next.rawValue
-                : next.kind === "unavailable"
-                  ? next.error
-                  : undefined;
+            next.kind === "unreadable" ? next.rawValue : (next as { error?: unknown }).error;
         const unchanged = current.kind === next.kind && currentDetail === nextDetail;
         if (unchanged) return;
         if (next.kind === "not-read") this.readStatuses.delete(tabId);
