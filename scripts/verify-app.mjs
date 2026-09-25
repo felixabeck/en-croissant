@@ -1570,10 +1570,14 @@ try {
        baselineReloadCount,
        readDurations: [],
        lastReadFinishedAt: null,
+       fileId: null,
        terminal: null,
      };
      // The sealed IPC invoke cannot be wrapped, so the platform records this read.
-     window.__verifyAppRecordReadGame = (durationMs) => {
+     window.__verifyAppRecordReadGame = (durationMs, fileId) => {
+       if (state.terminal) return;
+       if (state.fileId == null) state.fileId = fileId ?? null;
+       if (fileId !== state.fileId) return;
        state.readDurations.push(durationMs);
        state.lastReadFinishedAt = performance.now();
      };

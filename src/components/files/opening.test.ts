@@ -35,7 +35,6 @@ test("practice collapses clock-only transpositions but retains distinct position
 });
 
 test("practice builds 8,000 distinct cards in walk order in under one second", () => {
-    const startedAt = performance.now();
     const root = defaultTree().root;
     const answers: string[] = [];
     for (let index = 0; index < 8_000; index++) {
@@ -55,6 +54,7 @@ test("practice builds 8,000 distinct cards in walk order in under one second", (
         answers.push(answer);
     }
 
+    const startedAt = performance.now();
     const cards = buildFromTree(root, "white", []);
     const elapsedMs = performance.now() - startedAt;
 

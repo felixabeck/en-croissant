@@ -343,6 +343,10 @@ export const tauri: TauriCommands = new Proxy(commands, {
             // WebKit seals `__TAURI_INTERNALS__.invoke` (non-writable, non-configurable;
             // measured 2026-09-25). verify:app times read_game through this optional hook.
             const readStartedAt = property === "readGame" ? performance.now() : 0;
+            const readFileId =
+                property === "readGame"
+                    ? (args[0] as { id?: { id?: string } } | undefined)?.id?.id
+                    : undefined;
             try {
                 if (property === "prepareAnalysis") {
                     return await prepareAnalysis(
@@ -369,10 +373,12 @@ export const tauri: TauriCommands = new Proxy(commands, {
                 throw new TauriCommandError(error);
             } finally {
                 const mark = (
-                    globalThis as { __verifyAppRecordReadGame?: (durationMs: number) => void }
+                    globalThis as {
+                        __verifyAppRecordReadGame?: (durationMs: number, fileId?: string) => void;
+                    }
                 ).__verifyAppRecordReadGame;
                 if (property === "readGame" && typeof mark === "function") {
-                    mark(performance.now() - readStartedAt);
+                    mark(performance.now() - readStartedAt, readFileId);
                 }
             }
         };
