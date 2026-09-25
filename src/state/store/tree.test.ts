@@ -142,13 +142,12 @@ test("a failed initial read stays gated until retry rehydrates the cached store"
     persistedIds.push(id);
     const failure = new Error("storage refused the read");
     const originalGetItem = Storage.prototype.getItem;
-    const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (
-        this: Storage,
-        key,
-    ) {
-        if (key === id) throw failure;
-        return originalGetItem.call(this, key);
-    });
+    const getItem = vi
+        .spyOn(Storage.prototype, "getItem")
+        .mockImplementation(function (this: Storage, key) {
+            if (key === id) throw failure;
+            return originalGetItem.call(this, key);
+        });
 
     const store = createTreeStore(id);
     expect(tabStorage.getStatus(id)).toEqual({ kind: "unavailable", error: failure });
@@ -171,13 +170,12 @@ test("a refused read and failed retry can recover to an absent editable tree", a
     const failure = new Error("storage refused the read");
     const originalGetItem = Storage.prototype.getItem;
     let refused = true;
-    const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (
-        this: Storage,
-        key,
-    ) {
-        if (key === id && refused) throw failure;
-        return originalGetItem.call(this, key);
-    });
+    const getItem = vi
+        .spyOn(Storage.prototype, "getItem")
+        .mockImplementation(function (this: Storage, key) {
+            if (key === id && refused) throw failure;
+            return originalGetItem.call(this, key);
+        });
 
     const store = createTreeStore(id);
     expect(tabStorage.getStatus(id)).toEqual({ kind: "unavailable", error: failure });

@@ -944,13 +944,12 @@ test("read refusal stays unavailable and a successful retry can load the exact k
     sessionStorage.setItem(id, stored);
     const failure = new DOMException("storage refused the read", "SecurityError");
     const originalGetItem = Storage.prototype.getItem;
-    const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (
-        this: Storage,
-        key,
-    ) {
-        if (key === id) throw failure;
-        return originalGetItem.call(this, key);
-    });
+    const getItem = vi
+        .spyOn(Storage.prototype, "getItem")
+        .mockImplementation(function (this: Storage, key) {
+            if (key === id) throw failure;
+            return originalGetItem.call(this, key);
+        });
 
     expect(storage.read(id)).toBeNull();
     expect(storage.getStatus(id)).toEqual({ kind: "unavailable", error: failure });
@@ -1014,13 +1013,12 @@ test("failed discard retains the unreadable gate and reports its storage error",
     sessionStorage.setItem("discard-refused", "corrupt bytes");
     storage.read("discard-refused");
     const failure = new DOMException("storage refused removal", "SecurityError");
-    const removeItem = vi.spyOn(Storage.prototype, "removeItem").mockImplementation(function (
-        this: Storage,
-        key,
-    ) {
-        if (key === "discard-refused") throw failure;
-        return Storage.prototype.removeItem.call(this, key);
-    });
+    const removeItem = vi
+        .spyOn(Storage.prototype, "removeItem")
+        .mockImplementation(function (this: Storage, key) {
+            if (key === "discard-refused") throw failure;
+            return Storage.prototype.removeItem.call(this, key);
+        });
 
     expect(() => storage.discardUnreadable("discard-refused")).toThrow(failure);
     expect(storage.getStatus("discard-refused")).toEqual({

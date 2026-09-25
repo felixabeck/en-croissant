@@ -45,6 +45,7 @@ import AppModal from "../common/AppModal";
 import ConfirmChangesModal from "./ConfirmChangesModal";
 import NewTabHome from "./NewTabHome";
 import FileFreshnessGate from "./FileFreshnessGate";
+import TreeRecoveryGate from "./TreeRecoveryGate";
 
 import "react-mosaic-component/react-mosaic-component.css";
 
@@ -103,6 +104,13 @@ export default function BoardsPage() {
         const jotaiStore = getDefaultStore();
         if (jotaiStore.get(closingTabsAtom).has(value)) return;
         const store = createTreeStore(value);
+        if (
+          (closedTab.type === "play" ||
+            closedTab.type === "analysis" ||
+            closedTab.type === "puzzles") &&
+          ["not-read", "unreadable", "unavailable"].includes(tabStorage.getStatus(value).kind)
+        )
+          return;
         if (isPersistentGameOrigin(closedTab) && store.getState().dirty && !discard) {
           setPendingClose({ tabId: value, store });
           return;
@@ -442,37 +450,43 @@ function TabSwitch({ tab, closeTab }: { tab: Tab; closeTab: (tabId: string) => v
     .with("new", () => <NewTabHome id={tab.value} />)
     .with("play", () => (
       <TreeStateProvider id={tab.value}>
-        <Mosaic<ViewId>
-          renderTile={(id) => fullLayout[id]}
-          value={windowsState.currentNode}
-          onChange={(currentNode) => setWindowsState({ currentNode })}
-          resize={{ minimumPaneSizePercentage: 0 }}
-        />
-        <BoardGame tabId={tab.value} />
-      </TreeStateProvider>
-    ))
-    .with("analysis", () => (
-      <TreeStateProvider id={tab.value}>
-        <FileFreshnessGate tab={tab} closeTab={closeTab}>
+        <TreeRecoveryGate tabId={tab.value}>
           <Mosaic<ViewId>
             renderTile={(id) => fullLayout[id]}
             value={windowsState.currentNode}
             onChange={(currentNode) => setWindowsState({ currentNode })}
             resize={{ minimumPaneSizePercentage: 0 }}
           />
-          <BoardAnalysis />
-        </FileFreshnessGate>
+          <BoardGame tabId={tab.value} />
+        </TreeRecoveryGate>
+      </TreeStateProvider>
+    ))
+    .with("analysis", () => (
+      <TreeStateProvider id={tab.value}>
+        <TreeRecoveryGate tabId={tab.value}>
+          <FileFreshnessGate tab={tab} closeTab={closeTab}>
+            <Mosaic<ViewId>
+              renderTile={(id) => fullLayout[id]}
+              value={windowsState.currentNode}
+              onChange={(currentNode) => setWindowsState({ currentNode })}
+              resize={{ minimumPaneSizePercentage: 0 }}
+            />
+            <BoardAnalysis />
+          </FileFreshnessGate>
+        </TreeRecoveryGate>
       </TreeStateProvider>
     ))
     .with("puzzles", () => (
       <TreeStateProvider id={tab.value}>
-        <Mosaic<ViewId>
-          renderTile={(id) => fullLayout[id]}
-          value={windowsState.currentNode}
-          onChange={(currentNode) => setWindowsState({ currentNode })}
-          resize={{ minimumPaneSizePercentage: 0 }}
-        />
-        <Puzzles id={tab.value} />
+        <TreeRecoveryGate tabId={tab.value}>
+          <Mosaic<ViewId>
+            renderTile={(id) => fullLayout[id]}
+            value={windowsState.currentNode}
+            onChange={(currentNode) => setWindowsState({ currentNode })}
+            resize={{ minimumPaneSizePercentage: 0 }}
+          />
+          <Puzzles id={tab.value} />
+        </TreeRecoveryGate>
       </TreeStateProvider>
     ))
     .exhaustive();

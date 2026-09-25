@@ -133,6 +133,7 @@ const fontScaleByProject: Record<string, number> = {
     "async-errors": 200,
     "security-consent": 200,
     "file-freshness": 100,
+    "tree-recovery": 100,
 };
 
 const localeByProject: Record<string, string> = {
@@ -295,11 +296,16 @@ export const test = base.extend<{
         await page.addInitScript(tauriBootstrap);
         await page.addInitScript(
             ({ scale, scheme, locale }) => {
-                localStorage.clear();
-                sessionStorage.clear();
-                localStorage.setItem("i18nextLng", locale);
-                localStorage.setItem("font-size", JSON.stringify(scale));
-                localStorage.setItem("mantine-color-scheme", scheme);
+                const preserveStorageOnce =
+                    sessionStorage.getItem("__E2E_PRESERVE_STORAGE_ONCE__") === "1";
+                sessionStorage.removeItem("__E2E_PRESERVE_STORAGE_ONCE__");
+                if (!preserveStorageOnce) {
+                    localStorage.clear();
+                    sessionStorage.clear();
+                    localStorage.setItem("i18nextLng", locale);
+                    localStorage.setItem("font-size", JSON.stringify(scale));
+                    localStorage.setItem("mantine-color-scheme", scheme);
+                }
             },
             { scale: fontScale, scheme: colorScheme, locale },
         );

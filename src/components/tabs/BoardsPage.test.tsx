@@ -22,6 +22,10 @@ const fixtures = vi.hoisted(() => ({
   })),
   createTab: vi.fn(),
   cloneDurable: vi.fn(),
+  retryTreeStoreStorage: vi.fn(),
+  discardTreeStoreStorage: vi.fn(),
+  treeStatus: { kind: "available" } as any,
+  treeStatusListeners: new Set<() => void>(),
   dispose: vi.fn(),
   dirty: false,
   closeHandler: null as (() => unknown) | null,
@@ -48,9 +52,14 @@ const fixtures = vi.hoisted(() => ({
 type TabFixture = {
   gameOrigin: { kind: "none" };
   name: string;
-  type: "new";
+  type: "new" | "play" | "analysis" | "puzzles";
   value: string;
 };
+
+function setTreeStatus(status: any) {
+  fixtures.treeStatus = status;
+  for (const listener of fixtures.treeStatusListeners) listener();
+}
 
 const TabsContext = createContext<string | null>(null);
 
@@ -104,11 +113,24 @@ vi.mock("@/platform/tauri", () => ({
 vi.mock("@/state/store/tree", () => ({
   closeTreeStore: fixtures.closeTreeStore,
   createTreeStore: fixtures.createTreeStore,
+  retryTreeStoreStorage: fixtures.retryTreeStoreStorage,
+  discardTreeStoreStorage: fixtures.discardTreeStoreStorage,
   invalidateReportOwner: fixtures.invalidateReportOwner,
   restoreReportOwner: fixtures.restoreReportOwner,
 }));
 vi.mock("@/state/store/tabStorage", () => ({
-  tabStorage: { cloneDurable: fixtures.cloneDurable },
+  tabStorage: {
+    cloneDurable: fixtures.cloneDurable,
+    getStatus: () => fixtures.treeStatus,
+    readRawValueForRecovery: () => {
+      if (fixtures.treeStatus.kind !== "unreadable") throw new Error("No unreadable value");
+      return fixtures.treeStatus.rawValue;
+    },
+    subscribeStatus: (_tabId: string, listener: () => void) => {
+      fixtures.treeStatusListeners.add(listener);
+      return () => fixtures.treeStatusListeners.delete(listener);
+    },
+  },
 }));
 vi.mock("@/utils/tabs", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/utils/tabs")>()),
@@ -168,7 +190,11 @@ vi.mock("@mantine/core", () => {
 
   const passthrough = ({ children }: { children: ReactNode }) => <div>{children}</div>;
   return {
-    Button: passthrough,
+    Button: ({ children, disabled, onClick }: any) => (
+      <button type="button" disabled={disabled} onClick={onClick}>
+        {children}
+      </button>
+    ),
     Group: passthrough,
     Menu: Object.assign(passthrough, {
       Dropdown: passthrough,
@@ -191,8 +217,10 @@ vi.mock("@tabler/icons-react", () => ({
   IconPlus: () => null,
   IconX: () => null,
 }));
-vi.mock("../boards/BoardAnalysis", () => ({ default: () => null }));
-vi.mock("../boards/BoardGame", () => ({ default: () => null }));
+vi.mock("../boards/BoardAnalysis", () => ({
+  default: () => <div data-testid="board-analysis-child" />,
+}));
+vi.mock("../boards/BoardGame", () => ({ default: () => <div data-testid="board-game-child" /> }));
 vi.mock("../common/AppModal", () => ({ default: () => null }));
 vi.mock("../common/IconAction", () => ({
   IconAction: ({ children, disabled, label, onClick }: any) => {
@@ -204,10 +232,7 @@ vi.mock("../common/IconAction", () => ({
     );
   },
 }));
-vi.mock("../common/TreeStateContext", () => ({
-  TreeStateProvider: ({ children }: any) => children,
-}));
-vi.mock("../puzzles/Puzzles", () => ({ default: () => null }));
+vi.mock("../puzzles/Puzzles", () => ({ default: () => <div data-testid="puzzles-child" /> }));
 vi.mock("./BoardTab", () => ({
   BoardTab: ({ tab, setActiveTab }: { tab: TabFixture; setActiveTab: (value: string) => void }) => (
     <button type="button" data-testid={`tab-${tab.value}`} onClick={() => setActiveTab(tab.value)}>
@@ -276,6 +301,7 @@ beforeEach(() => {
     { value: "current", name: "Current", type: "new", gameOrigin: { kind: "none" } },
     { value: "next", name: "Next", type: "new", gameOrigin: { kind: "none" } },
   ];
+  setTreeStatus({ kind: "available" });
   store.set(tabsAtom, fixtures.tabs);
   store.set(activeTabAtom, "current");
   store.set(closingTabsAtom, new Set());
@@ -293,6 +319,13 @@ beforeEach(() => {
   fixtures.commitReceipt = true;
   fixtures.createTab.mockResolvedValue("created");
   fixtures.cloneDurable.mockReset();
+  fixtures.retryTreeStoreStorage.mockReset();
+  fixtures.retryTreeStoreStorage.mockImplementation(async () => fixtures.treeStatus);
+  fixtures.discardTreeStoreStorage.mockReset();
+  fixtures.discardTreeStoreStorage.mockImplementation(() => {
+    setTreeStatus({ kind: "absent" });
+    return true;
+  });
   fixtures.hotkeyBindings = null;
   fixtures.notifyUnlessCancelled.mockReset();
   fixtures.tabsOnChange = null;
@@ -622,3 +655,63 @@ test("dirty confirmation leaves analysis eligible until discard establishes clos
   expect(store.get(closingTabsAtom).has("current")).toBe(false);
   expect(store.get(tabsAtom).some((candidate) => candidate.value === "current")).toBe(false);
 });
+
+const recoveryRoutes = [
+  { type: "play", child: "board-game-child" },
+  { type: "analysis", child: "board-analysis-child" },
+  { type: "puzzles", child: "puzzles-child" },
+] as const;
+
+test.each(recoveryRoutes)(
+  "withholds the $type route behind the unreadable-tree gate and keeps its workspace owner",
+  async ({ type, child }) => {
+    fixtures.tabs = [
+      { value: "current", name: "Current", type, gameOrigin: { kind: "none" } },
+      { value: "next", name: "Next", type: "new", gameOrigin: { kind: "none" } },
+    ];
+    store.set(tabsAtom, fixtures.tabs);
+    store.set(activeTabAtom, "current");
+    setTreeStatus({ kind: "unreadable", rawValue: "exact raw tree value" });
+    await renderPage();
+
+    expect(container.querySelector('[data-tree-recovery="unreadable"]')).not.toBeNull();
+    expect(container.querySelector(`[data-testid="${child}"]`)).toBeNull();
+
+    await act(async () => {
+      await fixtures.closeHandler!();
+      invokeHotkey("mod+w");
+      await Promise.resolve();
+    });
+    expect(fixtures.closeWorkspaceTab).not.toHaveBeenCalled();
+    expect(store.get(tabsAtom).some((tab) => tab.value === "current")).toBe(true);
+
+    await act(async () => root.render(null));
+    await renderPage();
+    expect(container.querySelector('[data-tree-recovery="unreadable"]')).not.toBeNull();
+    expect(container.querySelector(`[data-testid="${child}"]`)).toBeNull();
+    expect(store.get(tabsAtom).some((tab) => tab.value === "current")).toBe(true);
+  },
+);
+
+test.each(recoveryRoutes)(
+  "keeps the $type route gated when tree storage is unavailable",
+  async ({ type, child }) => {
+    fixtures.tabs = [
+      { value: "current", name: "Current", type, gameOrigin: { kind: "none" } },
+      { value: "next", name: "Next", type: "new", gameOrigin: { kind: "none" } },
+    ];
+    store.set(tabsAtom, fixtures.tabs);
+    store.set(activeTabAtom, "current");
+    setTreeStatus({ kind: "unavailable", error: new Error("storage refused") });
+    await renderPage();
+
+    expect(container.querySelector('[data-tree-recovery="unavailable"]')).not.toBeNull();
+    expect(container.querySelector(`[data-testid="${child}"]`)).toBeNull();
+    await act(async () => {
+      await fixtures.closeHandler!();
+      invokeHotkey("mod+w");
+    });
+    expect(fixtures.closeWorkspaceTab).not.toHaveBeenCalled();
+    expect(store.get(tabsAtom).some((tab) => tab.value === "current")).toBe(true);
+  },
+);

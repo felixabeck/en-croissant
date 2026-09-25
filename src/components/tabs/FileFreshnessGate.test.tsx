@@ -17,6 +17,7 @@ import { defaultTree } from "@/utils/treeReducer";
 import { saveToFile, serializeStoreTree } from "@/utils/tabs";
 import type { Tab } from "@/utils/tabs";
 import FileFreshnessGate from "./FileFreshnessGate";
+import TreeRecoveryGate from "./TreeRecoveryGate";
 
 const mocks = vi.hoisted(() => ({
   loadFileGame: vi.fn(),
@@ -116,9 +117,11 @@ function Harness({ closeTab }: { closeTab: (id: string) => void }) {
 function GateForTab({ tab, closeTab }: { tab: Tab; closeTab: (id: string) => void }) {
   return (
     <TreeStateContext.Provider value={treeStore}>
-      <FileFreshnessGate tab={tab} closeTab={closeTab}>
-        <div data-testid="board-and-panels">board and panels</div>
-      </FileFreshnessGate>
+      <TreeRecoveryGate tabId={tab.value}>
+        <FileFreshnessGate tab={tab} closeTab={closeTab}>
+          <div data-testid="board-and-panels">board and panels</div>
+        </FileFreshnessGate>
+      </TreeRecoveryGate>
     </TreeStateContext.Provider>
   );
 }
@@ -165,6 +168,7 @@ async function setup({
   tree.appendAttempted = appendAttempted;
   if (dirty) tree.headers.event = "Unsaved edit";
   treeStore = createTreeStore(persisted ? tabId : undefined, tree);
+  tabStorage.readTree(tabId);
   jotaiStore = createJotaiStore();
   jotaiStore.set(tabsAtom, [tab], tabId);
   jotaiStore.set(activeTabAtom, tabId);
@@ -233,6 +237,24 @@ test("unverified files withhold the board until an equal stamp verifies", async 
     verifiedRevision: "device:inode:revision",
   });
   expect(treeStore.getState().sourceStamp).toBe(originalStamp);
+});
+
+test("file-backed analysis enters normal freshness reconciliation after tree discard", async () => {
+  sessionStorage.setItem(tabId, "unreadable file-backed tree");
+  tabStorage.readTree(tabId);
+  await setup({ persisted: true });
+
+  expect(host.querySelector('[data-tree-recovery="unreadable"]')).not.toBeNull();
+  expect(host.querySelector("[data-file-freshness]")).toBeNull();
+  expect(mocks.readFileGame).not.toHaveBeenCalled();
+
+  await act(async () => button("TreeRecovery.DiscardValue").click());
+  await vi.waitFor(() => expect(mocks.readFileGame).toHaveBeenCalledOnce());
+  await vi.waitFor(() => expect(getFileFreshness(tabId).state).toBe("conflict"));
+
+  expect(host.querySelector("[data-tree-recovery]")).toBeNull();
+  expect(host.querySelector('[data-file-freshness^="conflict:"]')).not.toBeNull();
+  expect(host.querySelector('[data-testid="board-and-panels"]')).toBeNull();
 });
 
 test("clean stamped files reload from disk before rendering", async () => {

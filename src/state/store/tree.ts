@@ -168,9 +168,7 @@ export function closeTreeStore(tab: string): void {
 }
 
 /** Rehydrates the existing cached store after storage refused its initial tree read. */
-export async function retryTreeStoreStorage(
-    tab: string,
-): Promise<TabTreeStorageStatus | null> {
+export async function retryTreeStoreStorage(tab: string): Promise<TabTreeStorageStatus | null> {
     const store = treeStores.get(tab);
     if (!store) throw new Error("The tab has no cached tree store to retry.");
     await store.persist.rehydrate();

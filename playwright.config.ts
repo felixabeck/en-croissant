@@ -68,6 +68,11 @@ export default defineConfig({
             testMatch: /file-freshness\.spec\.ts/,
             use: { ...chromium, viewport: { width: 800, height: 720 }, colorScheme: "light" },
         },
+        {
+            name: "tree-recovery",
+            testMatch: /tree-recovery\.spec\.ts/,
+            use: { ...chromium, viewport: { width: 800, height: 720 }, colorScheme: "light" },
+        },
     ],
     webServer: {
         // Invoked through node_modules/.bin rather than `pnpm exec`, so the suite runs

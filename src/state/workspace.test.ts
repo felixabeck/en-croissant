@@ -1275,13 +1275,12 @@ test("source read refusal keeps legacy metadata and its original recovery owner"
     sessionStorage.setItem(legacyTab.value, raw);
     const failure = new DOMException("source key refused a read", "SecurityError");
     const originalGetItem = Storage.prototype.getItem;
-    const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (
-        this: Storage,
-        key,
-    ) {
-        if (key === legacyTab.value) throw failure;
-        return originalGetItem.call(this, key);
-    });
+    const getItem = vi
+        .spyOn(Storage.prototype, "getItem")
+        .mockImplementation(function (this: Storage, key) {
+            if (key === legacyTab.value) throw failure;
+            return originalGetItem.call(this, key);
+        });
 
     const workspace = loadStoredWorkspace();
 
@@ -1303,17 +1302,15 @@ test("destination copy refusal keeps the unrepaired workspace and original unrea
     const failure = new DOMException("destination refused a write", "QuotaExceededError");
     const originalSetItem = Storage.prototype.setItem;
     let refusedTarget: string | undefined;
-    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (
-        this: Storage,
-        key,
-        value,
-    ) {
-        if (key !== legacyTab.value && key !== "tabs" && key !== "activeTab") {
-            refusedTarget = key;
-            throw failure;
-        }
-        return originalSetItem.call(this, key, value);
-    });
+    const setItem = vi
+        .spyOn(Storage.prototype, "setItem")
+        .mockImplementation(function (this: Storage, key, value) {
+            if (key !== legacyTab.value && key !== "tabs" && key !== "activeTab") {
+                refusedTarget = key;
+                throw failure;
+            }
+            return originalSetItem.call(this, key, value);
+        });
 
     const workspace = loadStoredWorkspace();
 
