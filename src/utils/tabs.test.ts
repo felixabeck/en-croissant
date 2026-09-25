@@ -248,7 +248,7 @@ test("keeps a refused creation unacknowledged when rollback removal is rejected"
 test("retries a refused seed rollback through snapshot overflow", () => {
     sessionStorage.setItem(WORKSPACE_STORAGE_KEY, "{broken");
     const tree = serializeStorageValue({ version: 1, state: defaultTree() });
-    for (let index = 0; index < MAX_PROTECTED_TREE_KEYS; index++) {
+    for (let index = 0; index <= MAX_PROTECTED_TREE_KEYS; index++) {
         sessionStorage.setItem(`older-tree-${index}`, tree);
     }
     let stagedId = "";
@@ -270,8 +270,7 @@ test("retries a refused seed rollback through snapshot overflow", () => {
     mocks.reportPersistError.mockClear();
     const first = loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY);
     expect(first.treeOwnershipUncertain).toBe(true);
-    expect(first.treeOwnershipProtectedIds).toHaveLength(MAX_PROTECTED_TREE_KEYS);
-    expect(first.treeOwnershipProtectedIds).not.toContain(stagedId);
+    expect(first.treeOwnershipProtectedIds).toBeUndefined();
     expect(mocks.reportPersistError).toHaveBeenCalledOnce();
     expect(sessionStorage.getItem(stagedId)).not.toBeNull();
     expect(sessionStorage.getItem(marker)).toBe("1");
@@ -285,7 +284,6 @@ test("retries a refused seed rollback through snapshot overflow", () => {
 
 test("a throwing admission can have committed, so its failed rollback is not journaled", () => {
     let stagedId = "";
-    const deny = denyStorageRemoval(() => stagedId);
     const dispatchError = new Error("listener failed after commit");
 
     expect(() =>
@@ -307,7 +305,6 @@ test("a throwing admission can have committed, so its failed rollback is not jou
     ).toThrow(dispatchError);
 
     expect(sessionStorage.getItem(`chessfable:failed-tab-admission:${stagedId}`)).toBeNull();
-    deny.mockRestore();
     expect(loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY).tabs[0]!.value).toBe(stagedId);
     expect(sessionStorage.getItem(stagedId)).not.toBeNull();
 });

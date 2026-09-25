@@ -376,28 +376,49 @@ export class TabStorageRepository {
             const validMarkers: Array<{ key: string; tabId: string }> = [];
             const invalidMarkers: string[] = [];
             const removable = new Set<string>();
+            let markerReadError: unknown;
             for (const marker of markers) {
                 const tabId = marker.slice(FAILED_ADMISSION_PREFIX.length);
-                if (
-                    !tabIdSchema.safeParse(tabId).success ||
-                    sessionStorage.getItem(marker) !== FAILED_ADMISSION_VALUE
-                ) {
+                if (!tabIdSchema.safeParse(tabId).success) {
+                    invalidMarkers.push(marker);
+                    continue;
+                }
+                let value: string | null;
+                try {
+                    value = sessionStorage.getItem(marker);
+                } catch (error) {
+                    // Keep an unread marker's tree out of the sweep until its intent is known.
+                    markedIds.add(tabId);
+                    failedIds.add(tabId);
+                    markerReadError ??= error;
+                    continue;
+                }
+                if (value !== FAILED_ADMISSION_VALUE) {
                     invalidMarkers.push(marker);
                     continue;
                 }
                 validMarkers.push({ key: marker, tabId });
                 if (!retainedIds.has(tabId)) {
                     markedIds.add(tabId);
-                    if (this.isStoredTree(tabId)) removable.add(tabId);
+                    try {
+                        if (this.isStoredTree(tabId)) removable.add(tabId);
+                    } catch (error) {
+                        failedIds.add(tabId);
+                        markerReadError ??= error;
+                    }
                 }
             }
+            if (markerReadError !== undefined)
+                reportPersistError(persistStorageWriteError(markerReadError));
             const failed = this.removeKnownTreesSafely(removable);
             for (const id of failed) failedIds.add(id);
             let markerError: unknown;
             let markerRemovalFailed = false;
             const markersToClear = [
                 ...invalidMarkers,
-                ...validMarkers.filter(({ tabId }) => !failed.has(tabId)).map(({ key }) => key),
+                ...validMarkers
+                    .filter(({ tabId }) => !failed.has(tabId) && !failedIds.has(tabId))
+                    .map(({ key }) => key),
             ];
             for (const key of markersToClear) {
                 try {
@@ -472,7 +493,7 @@ export class TabStorageRepository {
             sessionStorage.key(index),
         );
         for (const key of keys) {
-            if (!key || excludedKeys?.has(key)) continue;
+            if (!key || key.startsWith(FAILED_ADMISSION_PREFIX) || excludedKeys?.has(key)) continue;
             if (!this.isStoredTree(key)) continue;
             yield key;
         }

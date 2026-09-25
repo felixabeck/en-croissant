@@ -40,6 +40,7 @@ import { createExpandedDirectoriesAtom } from "./expandedDirectories";
 import {
     WORKSPACE_STORAGE_KEY,
     loadWorkspace,
+    pendingTreeRemovalCapacityError,
     reconcilePendingTreeRemovals,
     saveWorkspace,
     type Workspace,
@@ -85,7 +86,11 @@ const commitWorkspaceAtom = atom(null, (get, set, workspace: Workspace) => {
         retainedIds,
     );
     if (pendingRemovalIds === null) {
-        reportPersistError(persistStorageWriteError({}));
+        reportPersistError(
+            pendingTreeRemovalCapacityError(
+                new Set([...(workspace.treeOwnershipPendingRemovalIds ?? []), ...closedIds]).size,
+            ),
+        );
         return false;
     }
     const canonical = {

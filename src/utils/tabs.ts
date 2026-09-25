@@ -105,9 +105,10 @@ export function commitNewTab({
 }
 
 function rollbackCreatedTree(id: string, admissionKnownAbsent: boolean) {
-    // A throwing setter may have committed before notifying listeners; only a definite refusal
-    // authorizes later deletion of this tree.
-    if (!tabStorage.removeTreeSafely(id) && admissionKnownAbsent) {
+    // A throwing setter may have committed before notifying listeners. Only seed failure or
+    // a returned refusal proves that deleting the staged tree is safe.
+    if (!admissionKnownAbsent) return;
+    if (!tabStorage.removeTreeSafely(id)) {
         tabStorage.recordFailedAdmission(id);
     }
 }

@@ -373,6 +373,72 @@ test("one refused marker cleanup failure does not block later markers", () => {
     expect(persistError.reportPersistError).toHaveBeenCalledOnce();
 });
 
+test("one refused marker read failure preserves its tree and replays later markers", () => {
+    sessionStorage.clear();
+    const retained = { ...legacyTab, value: crypto.randomUUID() };
+    const firstId = crypto.randomUUID();
+    const secondId = crypto.randomUUID();
+    const firstMarker = `chessfable:failed-tab-admission:${firstId}`;
+    const secondMarker = `chessfable:failed-tab-admission:${secondId}`;
+    const tree = serializeStorageValue({ version: 1, state: defaultTree() });
+    sessionStorage.setItem(
+        WORKSPACE_STORAGE_KEY,
+        serializeStorageValue({ version: 1, tabs: [retained], activeTab: retained.value }),
+    );
+    sessionStorage.setItem(firstId, tree);
+    sessionStorage.setItem(secondId, tree);
+    sessionStorage.setItem(firstMarker, "1");
+    sessionStorage.setItem(secondMarker, "1");
+    const originalGetItem = Storage.prototype.getItem;
+    const deny = vi
+        .spyOn(Storage.prototype, "getItem")
+        .mockImplementation(function (this: Storage, key) {
+            if (key === firstMarker) throw new Error("marker unavailable");
+            return originalGetItem.call(this, key);
+        });
+
+    loadStoredWorkspace();
+
+    deny.mockRestore();
+    expect(sessionStorage.getItem(firstId)).toBe(tree);
+    expect(sessionStorage.getItem(firstMarker)).toBe("1");
+    expect(sessionStorage.getItem(secondId)).toBeNull();
+    expect(sessionStorage.getItem(secondMarker)).toBeNull();
+    expect(persistError.reportPersistError).toHaveBeenCalledOnce();
+});
+
+test("a failed refused-tree removal is not retried by the same load's orphan sweep", () => {
+    sessionStorage.clear();
+    const retained = { ...legacyTab, value: crypto.randomUUID() };
+    const refusedId = crypto.randomUUID();
+    const marker = `chessfable:failed-tab-admission:${refusedId}`;
+    const tree = serializeStorageValue({ version: 1, state: defaultTree() });
+    sessionStorage.setItem(
+        WORKSPACE_STORAGE_KEY,
+        serializeStorageValue({ version: 1, tabs: [retained], activeTab: retained.value }),
+    );
+    sessionStorage.setItem(refusedId, tree);
+    sessionStorage.setItem(marker, "1");
+    const originalRemoveItem = Storage.prototype.removeItem;
+    let refusedRemovalAttempts = 0;
+    const deny = vi
+        .spyOn(Storage.prototype, "removeItem")
+        .mockImplementation(function (this: Storage, key) {
+            if (key === refusedId) {
+                refusedRemovalAttempts++;
+                throw new Error("removal denied");
+            }
+            return originalRemoveItem.call(this, key);
+        });
+
+    loadStoredWorkspace();
+
+    deny.mockRestore();
+    expect(refusedRemovalAttempts).toBe(1);
+    expect(sessionStorage.getItem(refusedId)).toBe(tree);
+    expect(sessionStorage.getItem(marker)).toBe("1");
+});
+
 test("malformed refused-admission markers are removed without touching session values", () => {
     sessionStorage.clear();
     const retained = { ...legacyTab, value: crypto.randomUUID() };

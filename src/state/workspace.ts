@@ -1,5 +1,6 @@
 import type { SyncStringStorage } from "jotai/vanilla/utils/atomWithStorage";
 import { z } from "zod";
+import i18n from "@/i18n";
 import { decodeCompressedOrJson, serializeStorageValue } from "./store/debouncedStorage";
 import { persistStorageWriteError, tabStorage } from "./store/tabStorage";
 import { reportPersistError } from "./persistError";
@@ -122,6 +123,7 @@ function planWorkspaceRepair(input: unknown): WorkspaceRepairPlan {
     };
 }
 
+/** Failed removals remain excluded from this load's sweep so they are not retried twice. */
 export function sweepOrphanedTreeKeys(
     retainedTabs: readonly Tab[],
     protectedTreeIds: readonly string[] = [],
@@ -150,6 +152,12 @@ export function reconcilePendingTreeRemovals(
         pending = new Set([...prior, ...additions]);
     }
     return pending.size <= MAX_PENDING_TREE_REMOVALS ? [...pending] : null;
+}
+
+export function pendingTreeRemovalCapacityError(count: number): Error {
+    return new Error(i18n.t("Common.ConfirmationError.unexpected"), {
+        cause: new Error(`Pending tree removals exceeded ${MAX_PENDING_TREE_REMOVALS}: ${count}`),
+    });
 }
 
 export function readStoredWorkspaceValue(storage: SyncStringStorage, key: string): unknown | null {
@@ -185,7 +193,11 @@ export function saveWorkspace(
 ): Workspace | null {
     const workspace = workspaceFromValue(value);
     if (!workspace) {
-        reportPersistError(persistStorageWriteError({}));
+        reportPersistError(
+            new Error(i18n.t("Common.ConfirmationError.unexpected"), {
+                cause: new Error("Workspace failed live schema validation"),
+            }),
+        );
         return null;
     }
     try {
@@ -292,10 +304,9 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
         }
     }
 
-    const retainedIds = repairedRetainedIds;
     const durableMigratedSources = new Set<string>();
     for (const sourceId of new Set(plan.cloneTargets.map(({ sourceId }) => sourceId))) {
-        if (retainedIds.has(sourceId)) continue;
+        if (repairedRetainedIds.has(sourceId)) continue;
         const sourceTargets = plan.cloneTargets.filter((target) => target.sourceId === sourceId);
         if (
             sourceTargets.length > 0 &&
@@ -307,10 +318,14 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
     const pendingRemovalIds = reconcilePendingTreeRemovals(
         persistedPendingRemovals,
         durableMigratedSources,
-        retainedIds,
+        repairedRetainedIds,
     );
     if (pendingRemovalIds === null) {
-        reportPersistError(persistStorageWriteError({}));
+        reportPersistError(
+            pendingTreeRemovalCapacityError(
+                new Set([...persistedPendingRemovals, ...durableMigratedSources]).size,
+            ),
+        );
         tabStorage.removeKnownTreesSafely(stagedCloneIds);
         return plan.unrepairedWorkspace;
     }
