@@ -1318,6 +1318,68 @@ test("keeps the legacy owner when a readable clone fails verification", () => {
     expect(persistError.reportPersistError).toHaveBeenCalledWith(verificationError);
 });
 
+test.each([
+    { scenario: "absent", readback: { kind: "absent" as const } },
+    {
+        scenario: "unreadable",
+        readback: { kind: "unreadable" as const, rawValue: "unreadable clone bytes" },
+    },
+])(
+    "reports synthesized verification failure and rolls back a readable clone with $scenario readback",
+    ({ readback }) => {
+        sessionStorage.clear();
+        const sourceTree = serializeStorageValue({ version: 0, state: defaultTree() });
+        sessionStorage.setItem("tabs", serializeStorageValue([legacyTab]));
+        sessionStorage.setItem("activeTab", serializeStorageValue(legacyTab.value));
+        sessionStorage.setItem(legacyTab.value, sourceTree);
+
+        const originalClone = tabStorage.clone.bind(tabStorage);
+        const originalReadTree = tabStorage.readTree.bind(tabStorage);
+        const originalSetItem = Storage.prototype.setItem;
+        let targetId: string | undefined;
+        let targetWritten = false;
+        const clone = vi.spyOn(tabStorage, "clone").mockImplementation((source, target) => {
+            targetId = target;
+            return originalClone(source, target);
+        });
+        const readTree = vi.spyOn(tabStorage, "readTree").mockImplementation((tabId) => {
+            if (tabId === targetId && targetWritten) return readback;
+            return originalReadTree(tabId);
+        });
+        const setItem = vi
+            .spyOn(Storage.prototype, "setItem")
+            .mockImplementation(function (this: Storage, key, value) {
+                originalSetItem.call(this, key, value);
+                if (key === targetId) targetWritten = true;
+            });
+
+        let workspace: ReturnType<typeof loadWorkspace>;
+        try {
+            workspace = loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY);
+        } finally {
+            setItem.mockRestore();
+            readTree.mockRestore();
+            clone.mockRestore();
+        }
+
+        expect(targetId).toBeDefined();
+        expect(targetWritten).toBe(true);
+        expect(workspace!.tabs).toEqual([legacyTab]);
+        expect(workspace!.activeTab).toBe(legacyTab.value);
+        expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBeNull();
+        expect(sessionStorage.getItem("tabs")).not.toBeNull();
+        expect(sessionStorage.getItem("activeTab")).not.toBeNull();
+        expect(tabStorage.read(legacyTab.value)?.state).toMatchObject({ root: defaultTree().root });
+        expect(sessionStorage.getItem(targetId!)).toBeNull();
+        expect(persistError.reportPersistError).toHaveBeenCalledOnce();
+        expect(persistError.reportPersistError).toHaveBeenCalledWith(
+            expect.objectContaining({
+                message: `Could not verify the migrated tree at ${targetId}.`,
+            }),
+        );
+    },
+);
+
 test("legacy ID repair reclaims unreadable bytes after publishing the verified copy", () => {
     sessionStorage.clear();
     const raw = "legacy tree bytes that cannot be decoded";
