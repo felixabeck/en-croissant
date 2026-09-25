@@ -11300,6 +11300,12 @@ Outside that build's MANDATE (a tab's stale game text), so filed rather than fol
 
 * **Open question:** does the game list read a per-row stamp (read_games returning `{pgn, stamp}` pages, or a lighter native `game_stamps(file, start, end)`) so `delete_game` can take a required `{ kind: "game", stamp }` expectation like `write_game`, and what does the list show when the delete is refused as stale?
 
+* **Resolution (2026-09-25):** `read_games` now returns each visible PGN with its exact game-byte stamp and file revision from one scan. `delete_game` requires both, refuses shifted, edited, missing, or scan-to-commit changed selections with typed `StaleGame`, and leaves the file intact. The selector freezes identity when confirmation opens; the Info panel rolls back, clears stale rows, notifies, and refreshes count on refusal. Successful deletion adjusts matching same-file tab counts and shifted game indices under guarded persisted writes.
+* **Decision:** d-20260925-10 chooses stamp plus revision over stamp alone or a separate stamp fetch. Reversal requires new evidence under the decisions ledger contract.
+* **Proof:** 55 native PGN tests and 76 focused renderer/freshness tests passed; `pnpm test:e2e:container` passed 19/19 with no snapshot changes; `pnpm build` passed. `pnpm verify:app` passed startup and real IPC checks, then reproduced the separate known stale-file timing timeout f-20260924-06. The complete plan-review history is in `tasks/handoffs/2026-09-25-stale-game-delete-review.md` (P1-P9; no inherited successor obligations).
+* **Commits:** 630b04be, c6b0e6e6, 841188cb. Plan authorship and arbitration shared one Codex context; detection ran on Gemini, a different model family from the Codex code.
+<!-- ledger-meta {"command":"annotate","effect_lines":5,"effect_sha256":"19f7ba81dd47fe69c807be19f483a7e185640d6df71478944f489495aae9eb22","input_sha256":"529116cc995ee9da91363719161f1baab9215bd05aa71787ddcea142466981f9","kind":"mutation-receipt","operation":"cb5c09993bba7f099b13ed50e15dd736c1e4574cd7450e198c5f32acb71a28b8","options":{"section":null},"request_id_sha256":null,"results":["f-20260924-05"],"target":"f-20260924-05","v":1} -->
+
 ### verify:app aborts at its first Files-row click on every build since 2026-09-24 ~17:00, including a tree that passed there earlier
 
 * **ID:** f-20260924-06 · **Status:** open · **Area:** gate-scripts · **Root:** none · **Entry:** build · **Blocked:** none
