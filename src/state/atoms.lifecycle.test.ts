@@ -324,6 +324,40 @@ test("a failed close removal is retried after uncertain workspace ownership", as
     expect(sessionStorage.getItem(tabId)).toBeNull();
 });
 
+test("a refused close save preserves protected ownership through reload", async () => {
+    sessionStorage.clear();
+    const tabId = crypto.randomUUID();
+    const tab = {
+        name: "Protected",
+        value: tabId,
+        type: "analysis" as const,
+        gameOrigin: { kind: "none" as const },
+    };
+    sessionStorage.setItem(
+        WORKSPACE_STORAGE_KEY,
+        serializeStorageValue({
+            version: 1,
+            tabs: [tab],
+            activeTab: tabId,
+            treeOwnershipUncertain: true,
+            treeOwnershipProtectedIds: [tabId],
+        }),
+    );
+    tabStorage.seed(tabId, defaultTree());
+    vi.resetModules();
+    const freshAtoms = await import("./atoms");
+    const store = createStore();
+    const deny = refuseWorkspaceWrites();
+
+    expect(store.set(freshAtoms.closeWorkspaceTabAtom, tabId)).toBe(false);
+
+    deny.mockRestore();
+    const reloaded = loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY);
+    expect(reloaded.tabs).toEqual([tab]);
+    expect(reloaded.treeOwnershipProtectedIds).toContain(tabId);
+    expect(sessionStorage.getItem(tabId)).not.toBeNull();
+});
+
 test("a failed close removal retries even when the ownership snapshot overflows", async () => {
     sessionStorage.clear();
     const tabId = crypto.randomUUID();

@@ -661,6 +661,9 @@ test("fails closed when the protected tree snapshot exceeds its documented bound
     expect(workspace).not.toHaveProperty("treeOwnershipProtectedIds");
     expect(sessionStorage.getItem(treeIds[0]!)).toBe(tree);
     expect(sessionStorage.getItem(treeIds.at(-1)!)).toBe(tree);
+    expect(readStoredWorkspace()).toMatchObject({ treeOwnershipUncertain: true });
+    expect(loadStoredWorkspace().treeOwnershipUncertain).toBe(true);
+    expect(sessionStorage.getItem(treeIds[0]!)).toBe(tree);
 });
 
 test("fails closed when a protected tree key exceeds the length bound", () => {
@@ -674,6 +677,9 @@ test("fails closed when a protected tree key exceeds the length bound", () => {
 
     expect(workspace.treeOwnershipUncertain).toBe(true);
     expect(workspace).not.toHaveProperty("treeOwnershipProtectedIds");
+    expect(sessionStorage.getItem(longId)).toBe(tree);
+    expect(readStoredWorkspace()).toMatchObject({ treeOwnershipUncertain: true });
+    expect(loadStoredWorkspace().treeOwnershipUncertain).toBe(true);
     expect(sessionStorage.getItem(longId)).toBe(tree);
 });
 
@@ -693,6 +699,9 @@ test("fails closed when stored tree enumeration throws", () => {
     expect(workspace).not.toHaveProperty("treeOwnershipProtectedIds");
     expect(sessionStorage.getItem(treeId)).toBe(storedTree);
     expect(persistError.reportPersistError).toHaveBeenCalledWith(scanError);
+    expect(readStoredWorkspace()).toMatchObject({ treeOwnershipUncertain: true });
+    expect(loadStoredWorkspace().treeOwnershipUncertain).toBe(true);
+    expect(sessionStorage.getItem(treeId)).toBe(storedTree);
 });
 
 test("keeps a valid current active ID, repairs stale IDs, and never scrubs retained trees", () => {
