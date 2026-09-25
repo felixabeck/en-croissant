@@ -248,7 +248,7 @@ test("keeps a refused creation unacknowledged when rollback removal is rejected"
 test("retries a refused seed rollback through snapshot overflow", () => {
     sessionStorage.setItem(WORKSPACE_STORAGE_KEY, "{broken");
     const tree = serializeStorageValue({ version: 1, state: defaultTree() });
-    for (let index = 0; index <= MAX_PROTECTED_TREE_KEYS; index++) {
+    for (let index = 0; index < MAX_PROTECTED_TREE_KEYS; index++) {
         sessionStorage.setItem(`older-tree-${index}`, tree);
     }
     let stagedId = "";
@@ -267,7 +267,12 @@ test("retries a refused seed rollback through snapshot overflow", () => {
     const marker = `chessfable:failed-tab-admission:${stagedId}`;
     expect(sessionStorage.getItem(marker)).toBe("1");
 
-    expect(loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY).treeOwnershipUncertain).toBe(true);
+    mocks.reportPersistError.mockClear();
+    const first = loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY);
+    expect(first.treeOwnershipUncertain).toBe(true);
+    expect(first.treeOwnershipProtectedIds).toHaveLength(MAX_PROTECTED_TREE_KEYS);
+    expect(first.treeOwnershipProtectedIds).not.toContain(stagedId);
+    expect(mocks.reportPersistError).toHaveBeenCalledOnce();
     expect(sessionStorage.getItem(stagedId)).not.toBeNull();
     expect(sessionStorage.getItem(marker)).toBe("1");
     deny.mockRestore();
@@ -276,6 +281,67 @@ test("retries a refused seed rollback through snapshot overflow", () => {
     expect(sessionStorage.getItem(stagedId)).toBeNull();
     expect(sessionStorage.getItem(marker)).toBeNull();
     expect(sessionStorage.getItem("older-tree-0")).toBe(tree);
+});
+
+test("a throwing admission can have committed, so its failed rollback is not journaled", () => {
+    let stagedId = "";
+    const deny = denyStorageRemoval(() => stagedId);
+    const dispatchError = new Error("listener failed after commit");
+
+    expect(() =>
+        commitNewTab({
+            tab: { name: "Committed", type: "analysis", gameOrigin: { kind: "none" } },
+            seed: (id) => {
+                stagedId = id;
+                tabStorage.seed(id, defaultTree());
+            },
+            setTabs: (update) => {
+                const tabs = typeof update === "function" ? update([]) : update;
+                sessionStorage.setItem(
+                    WORKSPACE_STORAGE_KEY,
+                    serializeStorageValue({ version: 1, tabs, activeTab: stagedId }),
+                );
+                throw dispatchError;
+            },
+        }),
+    ).toThrow(dispatchError);
+
+    expect(sessionStorage.getItem(`chessfable:failed-tab-admission:${stagedId}`)).toBeNull();
+    deny.mockRestore();
+    expect(loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY).tabs[0]!.value).toBe(stagedId);
+    expect(sessionStorage.getItem(stagedId)).not.toBeNull();
+});
+
+test("a full storage origin reports that a failed rollback marker could not be written", () => {
+    let stagedId = "";
+    const deny = denyStorageRemoval(() => stagedId);
+    const originalSetItem = Storage.prototype.setItem;
+    const quota = new DOMException("full", "QuotaExceededError");
+    const setItem = vi
+        .spyOn(Storage.prototype, "setItem")
+        .mockImplementation(function (this: Storage, key, value) {
+            if (key.startsWith("chessfable:failed-tab-admission:")) throw quota;
+            return originalSetItem.call(this, key, value);
+        });
+
+    expect(
+        commitNewTab({
+            tab: { name: "Refused", type: "analysis", gameOrigin: { kind: "none" } },
+            seed: (id) => {
+                stagedId = id;
+                tabStorage.seed(id, defaultTree());
+            },
+            setTabs: () => false,
+        }),
+    ).toBeNull();
+
+    setItem.mockRestore();
+    deny.mockRestore();
+    expect(sessionStorage.getItem(`chessfable:failed-tab-admission:${stagedId}`)).toBeNull();
+    expect(sessionStorage.getItem(stagedId)).not.toBeNull();
+    expect(mocks.reportPersistError).toHaveBeenCalledWith(
+        expect.objectContaining({ cause: quota }),
+    );
 });
 
 test("saveToFile refuses the native write when the selected origin was not durable", async () => {

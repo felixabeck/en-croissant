@@ -429,9 +429,11 @@ test("closing a tab frees capacity from completed removal intents", async () => 
     vi.resetModules();
     const freshAtoms = await import("./atoms");
     const store = createStore();
+    persistError.reportPersistError.mockClear();
 
     expect(store.set(freshAtoms.closeWorkspaceTabAtom, tabId)).toBe(false);
     expect(store.get(freshAtoms.tabsAtom)).toEqual([tab]);
+    expect(persistError.reportPersistError).toHaveBeenCalled();
     expect(readStoredWorkspaceValue(sessionStorage, WORKSPACE_STORAGE_KEY)).toMatchObject({
         treeOwnershipPendingRemovalIds: pendingIds,
     });

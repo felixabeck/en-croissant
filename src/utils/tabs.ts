@@ -77,8 +77,10 @@ export function commitNewTab({
     }
 
     let admitted = false;
-    try {
-        startTransition(() => {
+    let admissionThrew = false;
+    let admissionError: unknown;
+    startTransition(() => {
+        try {
             admitted = setTabs((prev) => {
                 const nextTab = { ...tab, value: id };
                 return prev.length === 0 ||
@@ -86,10 +88,14 @@ export function commitNewTab({
                     ? [nextTab]
                     : [...prev, nextTab];
             }, id);
-        });
-    } catch (error) {
+        } catch (error) {
+            admissionThrew = true;
+            admissionError = error;
+        }
+    });
+    if (admissionThrew) {
         if (seed) rollbackCreatedTree(id, false);
-        throw error;
+        throw admissionError;
     }
     if (!admitted) {
         if (seed) rollbackCreatedTree(id, true);
@@ -98,8 +104,10 @@ export function commitNewTab({
     return id;
 }
 
-function rollbackCreatedTree(id: string, admissionRefused: boolean) {
-    if (!tabStorage.removeTreeSafely(id) && admissionRefused) {
+function rollbackCreatedTree(id: string, admissionKnownAbsent: boolean) {
+    // A throwing setter may have committed before notifying listeners; only a definite refusal
+    // authorizes later deletion of this tree.
+    if (!tabStorage.removeTreeSafely(id) && admissionKnownAbsent) {
         tabStorage.recordFailedAdmission(id);
     }
 }

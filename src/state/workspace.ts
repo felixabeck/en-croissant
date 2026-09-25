@@ -234,12 +234,14 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
     const legacyStoragePresent =
         storage.getItem("tabs") !== null || storage.getItem("activeTab") !== null;
     const plan = planWorkspaceRepair(legacy);
-    tabStorage.replayFailedAdmissions(new Set(plan.workspace.tabs.map((tab) => tab.value)));
+    const repairedRetainedIds = new Set(plan.workspace.tabs.map((tab) => tab.value));
+    const failedAdmissions = tabStorage.replayFailedAdmissions(repairedRetainedIds);
     const missingWorkspaceTreeSnapshot =
         storedWorkspace === null && !validMigrationSource
             ? tabStorage.snapshotStoredTreeKeys(
                   MAX_PROTECTED_TREE_KEYS,
                   MAX_PROTECTED_TREE_KEY_LENGTH,
+                  failedAdmissions.markedIds,
               )
             : undefined;
     const treeOwnershipUncertain =
@@ -265,11 +267,17 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
                 : tabStorage.snapshotStoredTreeKeys(
                       MAX_PROTECTED_TREE_KEYS,
                       MAX_PROTECTED_TREE_KEY_LENGTH,
+                      failedAdmissions.markedIds,
                   )) ??
             undefined;
         if (protectedTreeIds !== undefined) {
-            plan.workspace.treeOwnershipProtectedIds = [...protectedTreeIds];
-            plan.unrepairedWorkspace.treeOwnershipProtectedIds = [...protectedTreeIds];
+            const protectedWithoutFailedAdmissions = protectedTreeIds.filter(
+                (id) => !failedAdmissions.markedIds.has(id),
+            );
+            plan.workspace.treeOwnershipProtectedIds = [...protectedWithoutFailedAdmissions];
+            plan.unrepairedWorkspace.treeOwnershipProtectedIds = [
+                ...protectedWithoutFailedAdmissions,
+            ];
         }
     }
     const stagedCloneIds = plan.cloneTargets.map(({ targetId }) => targetId);
@@ -284,7 +292,7 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
         }
     }
 
-    const retainedIds = new Set(plan.workspace.tabs.map((tab) => tab.value));
+    const retainedIds = repairedRetainedIds;
     const durableMigratedSources = new Set<string>();
     for (const sourceId of new Set(plan.cloneTargets.map(({ sourceId }) => sourceId))) {
         if (retainedIds.has(sourceId)) continue;
@@ -327,12 +335,12 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
     }
 
     const failedKnownRemovals = tabStorage.removeKnownTreesSafely(pendingRemovalIds);
+    for (const id of failedAdmissions.failedIds) failedKnownRemovals.add(id);
 
-    // A representable fresh snapshot protects every valid tree from before clone staging. Later
-    // loads sweep against that durable set; known migrated sources are reclaimed explicitly above.
     if (!treeOwnershipUncertain && (hasAuthoritativeWorkspace || validMigrationSource)) {
         sweepOrphanedTreeKeys(plan.workspace.tabs, [], failedKnownRemovals);
     } else if (treeOwnershipUncertain && !takingFreshOwnershipSnapshot) {
+        // The first snapshot protects prior trees; later loads sweep only outside that set.
         const protectedTreeIds = plan.workspace.treeOwnershipProtectedIds;
         if (protectedTreeIds !== undefined) {
             sweepOrphanedTreeKeys(plan.workspace.tabs, protectedTreeIds, failedKnownRemovals);

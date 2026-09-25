@@ -334,6 +334,66 @@ test("a stale refused-admission marker never deletes a retained tab tree", () =>
     expect(sessionStorage.getItem(marker)).toBeNull();
 });
 
+test("a refused-admission marker cannot delete a non-tree session value", () => {
+    sessionStorage.clear();
+    const retained = { ...legacyTab, value: crypto.randomUUID() };
+    const unrelatedId = crypto.randomUUID();
+    const marker = `chessfable:failed-tab-admission:${unrelatedId}`;
+    sessionStorage.setItem(
+        WORKSPACE_STORAGE_KEY,
+        serializeStorageValue({ version: 1, tabs: [retained], activeTab: retained.value }),
+    );
+    sessionStorage.setItem(unrelatedId, "keep me");
+    sessionStorage.setItem(marker, "1");
+
+    loadStoredWorkspace();
+
+    expect(sessionStorage.getItem(unrelatedId)).toBe("keep me");
+    expect(sessionStorage.getItem(marker)).toBeNull();
+});
+
+test("one refused marker cleanup failure does not block later markers", () => {
+    sessionStorage.clear();
+    const retained = { ...legacyTab, value: crypto.randomUUID() };
+    const firstMarker = `chessfable:failed-tab-admission:${crypto.randomUUID()}`;
+    const secondMarker = `chessfable:failed-tab-admission:${crypto.randomUUID()}`;
+    sessionStorage.setItem(
+        WORKSPACE_STORAGE_KEY,
+        serializeStorageValue({ version: 1, tabs: [retained], activeTab: retained.value }),
+    );
+    sessionStorage.setItem(firstMarker, "1");
+    sessionStorage.setItem(secondMarker, "1");
+    const deny = denyStorageRemoval(firstMarker);
+
+    loadStoredWorkspace();
+
+    deny.mockRestore();
+    expect(sessionStorage.getItem(firstMarker)).toBe("1");
+    expect(sessionStorage.getItem(secondMarker)).toBeNull();
+    expect(persistError.reportPersistError).toHaveBeenCalledOnce();
+});
+
+test("malformed refused-admission markers are removed without touching session values", () => {
+    sessionStorage.clear();
+    const retained = { ...legacyTab, value: crypto.randomUUID() };
+    const unrelatedId = crypto.randomUUID();
+    const badIdMarker = "chessfable:failed-tab-admission:not-a-uuid";
+    const badValueMarker = `chessfable:failed-tab-admission:${unrelatedId}`;
+    sessionStorage.setItem(
+        WORKSPACE_STORAGE_KEY,
+        serializeStorageValue({ version: 1, tabs: [retained], activeTab: retained.value }),
+    );
+    sessionStorage.setItem(unrelatedId, "keep me");
+    sessionStorage.setItem(badIdMarker, "1");
+    sessionStorage.setItem(badValueMarker, "unexpected");
+
+    loadStoredWorkspace();
+
+    expect(sessionStorage.getItem(unrelatedId)).toBe("keep me");
+    expect(sessionStorage.getItem(badIdMarker)).toBeNull();
+    expect(sessionStorage.getItem(badValueMarker)).toBeNull();
+});
+
 test("retries orphan cleanup on the next load after storage refuses removal", () => {
     sessionStorage.clear();
     const retained = { ...legacyTab, value: crypto.randomUUID() };
@@ -682,6 +742,7 @@ test("does not persist an over-capacity retry list during legacy ID migration", 
     expect(first.tabs[0]!.value).toBe(legacyTab.value);
     expect(first.treeOwnershipPendingRemovalIds).toEqual(pendingIds);
     expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(originalEnvelope);
+    expect(persistError.reportPersistError).toHaveBeenCalled();
     deny.mockRestore();
 
     const repaired = loadStoredWorkspace();

@@ -8,6 +8,7 @@ import { decodeCompressedOrJson, serializeStorageValue } from "./debouncedStorag
 export const TREE_STORAGE_VERSION = 1;
 const DEBOUNCE_MS = 300;
 const FAILED_ADMISSION_PREFIX = "chessfable:failed-tab-admission:";
+const FAILED_ADMISSION_VALUE = "1";
 const tabIdSchema = z.string().uuid();
 const MAX_TREE_NODES = 100_000;
 const MAX_TREE_DEPTH = 512;
@@ -358,7 +359,7 @@ export class TabStorageRepository {
     /** A refused admission records the exact tree to retry when rollback removal failed. */
     recordFailedAdmission(tabId: string) {
         try {
-            sessionStorage.setItem(`${FAILED_ADMISSION_PREFIX}${tabId}`, "1");
+            sessionStorage.setItem(`${FAILED_ADMISSION_PREFIX}${tabId}`, FAILED_ADMISSION_VALUE);
         } catch (error) {
             reportPersistError(persistStorageWriteError(error));
         }
@@ -366,35 +367,51 @@ export class TabStorageRepository {
 
     /** Replay only explicit refused-admission markers, independent of ownership snapshots. */
     replayFailedAdmissions(retainedIds: ReadonlySet<string>) {
+        const markedIds = new Set<string>();
+        const failedIds = new Set<string>();
         try {
             const markers = Array.from({ length: sessionStorage.length }, (_, index) =>
                 sessionStorage.key(index),
             ).filter((key): key is string => key?.startsWith(FAILED_ADMISSION_PREFIX) ?? false);
+            const validMarkers: Array<{ key: string; tabId: string }> = [];
+            const invalidMarkers: string[] = [];
             const removable = new Set<string>();
             for (const marker of markers) {
                 const tabId = marker.slice(FAILED_ADMISSION_PREFIX.length);
                 if (
                     !tabIdSchema.safeParse(tabId).success ||
-                    sessionStorage.getItem(marker) !== "1"
+                    sessionStorage.getItem(marker) !== FAILED_ADMISSION_VALUE
                 ) {
+                    invalidMarkers.push(marker);
                     continue;
                 }
-                if (!retainedIds.has(tabId) && this.isStoredTree(tabId)) removable.add(tabId);
-            }
-            const failed = this.removeKnownTreesSafely(removable);
-            for (const marker of markers) {
-                const tabId = marker.slice(FAILED_ADMISSION_PREFIX.length);
-                if (failed.has(tabId)) continue;
-                if (
-                    tabIdSchema.safeParse(tabId).success &&
-                    sessionStorage.getItem(marker) === "1"
-                ) {
-                    sessionStorage.removeItem(marker);
+                validMarkers.push({ key: marker, tabId });
+                if (!retainedIds.has(tabId)) {
+                    markedIds.add(tabId);
+                    if (this.isStoredTree(tabId)) removable.add(tabId);
                 }
             }
+            const failed = this.removeKnownTreesSafely(removable);
+            for (const id of failed) failedIds.add(id);
+            let markerError: unknown;
+            let markerRemovalFailed = false;
+            const markersToClear = [
+                ...invalidMarkers,
+                ...validMarkers.filter(({ tabId }) => !failed.has(tabId)).map(({ key }) => key),
+            ];
+            for (const key of markersToClear) {
+                try {
+                    sessionStorage.removeItem(key);
+                } catch (error) {
+                    markerRemovalFailed = true;
+                    markerError ??= error;
+                }
+            }
+            if (markerRemovalFailed) reportPersistError(persistStorageWriteError(markerError));
         } catch (error) {
             reportPersistError(persistStorageWriteError(error));
         }
+        return { markedIds, failedIds };
     }
 
     /** Remove a known set and report one failure while retaining every refused ID for retry. */
@@ -420,7 +437,7 @@ export class TabStorageRepository {
         return failed;
     }
 
-    /** A persisted retry ID only authorizes removal while it still names a tree. */
+    /** Check whether a session key still contains a decodable tree. */
     isStoredTree(tabId: string) {
         const raw = sessionStorage.getItem(tabId);
         return raw !== null && decodeLegacyOrCompressed(raw) !== null;
@@ -432,10 +449,14 @@ export class TabStorageRepository {
     }
 
     /** Snapshot valid stored tree keys through the same bounded validator used by orphan cleanup. */
-    snapshotStoredTreeKeys(maxTreeKeys: number, maxKeyLength: number): string[] | null {
+    snapshotStoredTreeKeys(
+        maxTreeKeys: number,
+        maxKeyLength: number,
+        excludedKeys?: ReadonlySet<string>,
+    ): string[] | null {
         const keys: string[] = [];
         try {
-            for (const key of this.storedTreeKeys()) {
+            for (const key of this.storedTreeKeys(excludedKeys)) {
                 if (key.length > maxKeyLength || keys.length === maxTreeKeys) return null;
                 keys.push(key);
             }
