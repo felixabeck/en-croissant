@@ -403,8 +403,7 @@ export class TabStorageRepository {
         );
         for (const key of keys) {
             if (!key || excludedKeys?.has(key)) continue;
-            const raw = sessionStorage.getItem(key);
-            if (!raw || !decodeLegacyOrCompressed(raw)) continue;
+            if (!this.isStoredTree(key)) continue;
             yield key;
         }
     }

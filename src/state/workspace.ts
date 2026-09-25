@@ -121,12 +121,12 @@ function planWorkspaceRepair(input: unknown): WorkspaceRepairPlan {
 export function sweepOrphanedTreeKeys(
     retainedTabs: readonly Tab[],
     protectedTreeIds: readonly string[] = [],
-    failedSourceRemovals: ReadonlySet<string> = new Set(),
+    failedKnownRemovals: ReadonlySet<string> = new Set(),
 ) {
     const retainedIds = new Set([
         ...retainedTabs.map((tab) => tab.value),
         ...protectedTreeIds,
-        ...failedSourceRemovals,
+        ...failedKnownRemovals,
     ]);
     tabStorage.removeOrphanedTrees(retainedIds);
 }
@@ -198,7 +198,7 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
         currentResult.success && currentResult.data.treeOwnershipUncertain
             ? currentResult.data.treeOwnershipProtectedIds
             : undefined;
-    const pendingSourceRemovals = currentResult.success
+    const persistedPendingRemovals = currentResult.success
         ? (currentResult.data.treeOwnershipPendingRemovalIds ?? []).filter((id) =>
               tabStorage.isStoredTree(id),
           )
@@ -273,7 +273,7 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
             durableMigratedSources.add(sourceId);
         }
     }
-    const pendingRemovalIds = new Set([...pendingSourceRemovals, ...durableMigratedSources]);
+    const pendingRemovalIds = new Set([...persistedPendingRemovals, ...durableMigratedSources]);
     for (const retainedId of retainedIds) pendingRemovalIds.delete(retainedId);
     if (pendingRemovalIds.size > 0) {
         plan.workspace.treeOwnershipPendingRemovalIds = [...pendingRemovalIds];
@@ -285,9 +285,7 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
     }
 
     const payload = serializeStorageValue(plan.workspace);
-    const cleanupPending =
-        storage.getItem("tabs") !== null || storage.getItem("activeTab") !== null;
-    if (storedWorkspace !== payload || cleanupPending) {
+    if (storedWorkspace !== payload || legacyStoragePresent) {
         try {
             storage.setItem(key, payload);
         } catch (error) {
@@ -297,19 +295,19 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
         }
     }
 
-    const failedSourceRemovals = new Set<string>();
-    for (const sourceId of pendingRemovalIds) {
-        if (!tabStorage.removeTreeSafely(sourceId)) failedSourceRemovals.add(sourceId);
+    const failedKnownRemovals = new Set<string>();
+    for (const treeId of pendingRemovalIds) {
+        if (!tabStorage.removeTreeSafely(treeId)) failedKnownRemovals.add(treeId);
     }
 
     // A representable fresh snapshot protects every valid tree from before clone staging. Later
     // loads sweep against that durable set; known migrated sources are reclaimed explicitly above.
     if (!treeOwnershipUncertain && (hasAuthoritativeWorkspace || validMigrationSource)) {
-        sweepOrphanedTreeKeys(plan.workspace.tabs, [], failedSourceRemovals);
+        sweepOrphanedTreeKeys(plan.workspace.tabs, [], failedKnownRemovals);
     } else if (treeOwnershipUncertain && !takingFreshOwnershipSnapshot) {
         const protectedTreeIds = plan.workspace.treeOwnershipProtectedIds;
         if (protectedTreeIds !== undefined) {
-            sweepOrphanedTreeKeys(plan.workspace.tabs, protectedTreeIds, failedSourceRemovals);
+            sweepOrphanedTreeKeys(plan.workspace.tabs, protectedTreeIds, failedKnownRemovals);
         }
     }
     for (const legacyKey of ["tabs", "activeTab"]) {
