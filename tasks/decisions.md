@@ -4162,3 +4162,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** One page read binds the displayed text, stamp, and file revision to the same scan. The revision prevents a shifted equal-text duplicate from being deleted. An unrelated edit can cause a safe refusal and refresh, which is preferable to deleting the wrong game.
 * **Decided by:** Codex, autonomously in the 2026-09-25 full-auto run · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"ab86202f26a970eafe5dd732563ae454d92dd499d4ea0774d2363785c141a0db","input_sha256":"2c63f12cc35021c1099e6e7757bbf44440d84cb9f95f680bcaafccc9d8baa78c","kind":"mutation-receipt","operation":"8d1089e8373451713affc5eb27f24b95147c625199697b779943c13ad568cc5e","options":{"section":null},"request_id_sha256":null,"results":["d-20260925-10"],"target":"decisions-ledger","v":1} -->
+
+### d-20260925-11 — What makes verify:app stop answering during the stale-file rewrite?
+
+* **Question:** `pnpm verify:app` dies while waiting for an open repertoire to notice an in-place PGN rewrite. Is the cause a foreign compositor, a short WebDriver timeout, or the reload itself?
+* **Governs:** f-20260924-06
+* **Chosen:** remove the quadratic card scan in `buildFromTree`. It dedups with a `Set` of `getBoardState` keys. The harness times `read_game` through a platform hook, because WebKit seals `__TAURI_INTERNALS__.invoke`, and requires the main-thread apply after that read to finish within 1,000 ms.
+* **Rejected:** raising `FETCH_TIMEOUT_MS` or the 10 s wait. The reload was taking about 36 s, so a longer wait would still miss the one-poll budget. Also rejected: treating the foreign virtual Plasma session as the cause. It was not running, and the stall reproduced without it. Also rejected: a full-FEN dedup key, which would keep two cards for one position.
+* **Reason:** On the release binary the native read was 9 ms and `parsePGN` 160 ms, while `syncDeck` took 36.5 s. The same `cards.find` loop takes 6.0 s in Node for 12,500 FENs and 3 ms with a `Set`. After the change, `pnpm verify:app` passed: 2,268 ms from the rewrite, read 9.0 ms, apply 486 ms. Reversal: put the `cards.find` scan back and drop the 1,000 ms ceiling.
+* **Decided by:** Grok, autonomously under full auto · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"323d994560993b0108876e125ca81e3a24173d527dfcf1d0905e66340655c65d","input_sha256":"777caecec592d005bd469cfd658cc58525dfed169c7e8bad1923b64fd3d775ea","kind":"mutation-receipt","operation":"b44618b5605784845e6599be1a0803a91508c5688b5de2a061183d063f4dce82","options":{"section":null},"request_id_sha256":null,"results":["d-20260925-11"],"target":"decisions-ledger","v":1} -->
