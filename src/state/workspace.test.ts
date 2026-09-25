@@ -5,10 +5,12 @@ import { deserializeStorageValue, serializeStorageValue } from "./store/debounce
 import { tabStorage } from "./store/tabStorage";
 import {
     defaultWorkspace,
+    LEGACY_WORKSPACE_VERSION,
     loadWorkspace,
     readStoredWorkspaceValue,
     saveWorkspace,
     sweepOrphanedTreeKeys,
+    MAX_PROTECTED_TREE_KEYS,
     WORKSPACE_STORAGE_KEY,
 } from "./workspace";
 
@@ -320,6 +322,66 @@ test("preserves valid tree keys through repair, a second load, and a subsequent 
     expect(sessionStorage.getItem(treeId)).toBe(tree);
 });
 
+test("preserves a protected old tree and reclaims a later orphan", () => {
+    sessionStorage.clear();
+    const retained = { ...legacyTab, value: crypto.randomUUID() };
+    sessionStorage.setItem(
+        WORKSPACE_STORAGE_KEY,
+        serializeStorageValue({
+            version: 1,
+            tabs: [retained],
+            activeTab: retained.value,
+            treeOwnershipUncertain: true,
+        }),
+    );
+    const { treeId, storedTree } = storeUnownedDirtyTree();
+
+    const firstLoad = loadStoredWorkspace();
+    expect(firstLoad.treeOwnershipUncertain).toBe(true);
+    expect(firstLoad.treeOwnershipProtectedIds).toContain(treeId);
+
+    const laterOrphanId = crypto.randomUUID();
+    const laterOrphan = serializeStorageValue({ version: 1, state: defaultTree() });
+    sessionStorage.setItem(laterOrphanId, laterOrphan);
+
+    const secondLoad = loadStoredWorkspace();
+
+    expect(secondLoad.treeOwnershipUncertain).toBe(true);
+    expect(secondLoad.treeOwnershipProtectedIds).toContain(treeId);
+    expect(sessionStorage.getItem(treeId)).toBe(storedTree);
+    expect(sessionStorage.getItem(laterOrphanId)).toBeNull();
+});
+
+test("persists an ownership snapshot after an envelope repair write fails", () => {
+    sessionStorage.clear();
+    sessionStorage.setItem(WORKSPACE_STORAGE_KEY, "{broken");
+    const { treeId, storedTree } = storeUnownedDirtyTree();
+    const writeError = new DOMException("denied", "SecurityError");
+    const originalSetItem = Storage.prototype.setItem;
+    const setItem = vi
+        .spyOn(Storage.prototype, "setItem")
+        .mockImplementationOnce(function (this: Storage, key, value) {
+            if (key === WORKSPACE_STORAGE_KEY) throw writeError;
+            return originalSetItem.call(this, key, value);
+        });
+
+    const repaired = loadStoredWorkspace();
+
+    setItem.mockRestore();
+    expect(repaired.treeOwnershipUncertain).toBe(true);
+    expect(repaired.treeOwnershipProtectedIds).toContain(treeId);
+    expect(saveWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY, repaired)).toMatchObject({
+        treeOwnershipUncertain: true,
+        treeOwnershipProtectedIds: [treeId],
+    });
+
+    const reloaded = loadStoredWorkspace();
+    expect(reloaded.treeOwnershipUncertain).toBe(true);
+    expect(reloaded.treeOwnershipProtectedIds).toContain(treeId);
+    expect(sessionStorage.getItem(treeId)).toBe(storedTree);
+    expect(persistError.reportPersistError).toHaveBeenCalledWith(writeError);
+});
+
 test("preserves unowned stored trees across loads when the workspace key is absent", () => {
     sessionStorage.clear();
     const { treeId } = storeUnownedDirtyTree();
@@ -426,32 +488,73 @@ test("corrupt workspace storage recovers to a valid single-tab envelope", () => 
     expect(clone).not.toHaveBeenCalled();
 });
 
-test("scrubs corrupt legacy tab entries without discarding valid neighbouring tabs", () => {
+test("salvages valid version-0 tabs while retaining a dirty tree from a malformed row", () => {
     sessionStorage.clear();
     const validTab = { ...legacyTab, value: crypto.randomUUID() };
+    const dirtyTree = defaultTree();
+    dirtyTree.dirty = true;
+    dirtyTree.headers.event = "Recoverable edits";
+    const storedTree = serializeStorageValue({ version: 0, state: dirtyTree });
     sessionStorage.setItem(
-        "workspace",
-        JSON.stringify({
-            version: 0,
+        WORKSPACE_STORAGE_KEY,
+        serializeStorageValue({
+            version: LEGACY_WORKSPACE_VERSION,
             tabs: [validTab, { value: "orphan-tree", name: 42 }],
             activeTab: "orphan-tree",
         }),
     );
-    sessionStorage.setItem(
-        "orphan-tree",
-        serializeStorageValue({ version: 0, state: defaultTree() }),
-    );
+    sessionStorage.setItem("orphan-tree", storedTree);
 
     const workspace = loadStoredWorkspace();
 
     expect(workspace.tabs).toEqual([validTab]);
     expect(workspace.activeTab).toBe(validTab.value);
-    expect(sessionStorage.getItem("orphan-tree")).toBeNull();
-    expect(readStoredWorkspace()).toEqual({
-        version: 1,
-        tabs: [validTab],
-        activeTab: validTab.value,
+    expect(workspace.treeOwnershipUncertain).toBe(true);
+    expect(workspace.treeOwnershipProtectedIds).toContain("orphan-tree");
+    expect(tabStorage.read("orphan-tree")?.state).toMatchObject({
+        dirty: true,
+        headers: { event: "Recoverable edits" },
     });
+    expect(sessionStorage.getItem("orphan-tree")).not.toBeNull();
+    expect(readStoredWorkspace()).toEqual(workspace);
+});
+
+test("reclaims a migrated source tree after its copy and uncertain envelope are durable", () => {
+    sessionStorage.clear();
+    sessionStorage.setItem(WORKSPACE_STORAGE_KEY, "{broken");
+    sessionStorage.setItem("tabs", serializeStorageValue([legacyTab]));
+    sessionStorage.setItem("activeTab", serializeStorageValue(legacyTab.value));
+    const sourceTree = serializeStorageValue({ version: 0, state: defaultTree() });
+    sessionStorage.setItem(legacyTab.value, sourceTree);
+    const { treeId: recoverableId, storedTree: recoverableTree } = storeUnownedDirtyTree();
+
+    const workspace = loadStoredWorkspace();
+
+    expect(workspace.treeOwnershipUncertain).toBe(true);
+    expect(workspace.tabs[0]!.value).not.toBe(legacyTab.value);
+    expect(tabStorage.read(workspace.tabs[0]!.value)).not.toBeNull();
+    expect(sessionStorage.getItem(legacyTab.value)).toBeNull();
+    expect(workspace.treeOwnershipProtectedIds).not.toContain(legacyTab.value);
+    expect(workspace.treeOwnershipProtectedIds).toContain(recoverableId);
+    expect(sessionStorage.getItem(recoverableId)).toBe(recoverableTree);
+});
+
+test("fails closed when the protected tree snapshot exceeds its documented bound", () => {
+    sessionStorage.clear();
+    sessionStorage.setItem(WORKSPACE_STORAGE_KEY, "{broken");
+    const tree = serializeStorageValue({ version: 1, state: defaultTree() });
+    const treeIds = Array.from(
+        { length: MAX_PROTECTED_TREE_KEYS + 1 },
+        (_, index) => `tree-${index}`,
+    );
+    for (const treeId of treeIds) sessionStorage.setItem(treeId, tree);
+
+    const workspace = loadStoredWorkspace();
+
+    expect(workspace.treeOwnershipUncertain).toBe(true);
+    expect(workspace).not.toHaveProperty("treeOwnershipProtectedIds");
+    expect(sessionStorage.getItem(treeIds[0]!)).toBe(tree);
+    expect(sessionStorage.getItem(treeIds.at(-1)!)).toBe(tree);
 });
 
 test("keeps a valid current active ID, repairs stale IDs, and never scrubs retained trees", () => {
@@ -710,6 +813,83 @@ test("rolls back staged clones when clone flush fails and leaves legacy trees", 
             }),
         );
     } finally {
+        setItem.mockRestore();
+    }
+});
+
+test("reports clone persistence while a failed rollback removal leaves startup running", () => {
+    sessionStorage.clear();
+    sessionStorage.setItem("tabs", serializeStorageValue([legacyTab]));
+    sessionStorage.setItem("activeTab", serializeStorageValue(legacyTab.value));
+    sessionStorage.setItem(
+        legacyTab.value,
+        serializeStorageValue({ version: 0, state: defaultTree() }),
+    );
+    const cloneWriteError = new DOMException("quota", "QuotaExceededError");
+    const stagedCloneIds: string[] = [];
+    const originalSetItem = Storage.prototype.setItem;
+    const setItem = vi
+        .spyOn(Storage.prototype, "setItem")
+        .mockImplementation(function (this: Storage, key, value) {
+            if (key !== legacyTab.value && key !== "tabs" && key !== "activeTab") {
+                stagedCloneIds.push(key);
+                throw cloneWriteError;
+            }
+            return originalSetItem.call(this, key, value);
+        });
+    const refused = denyStorageRemoval(() => stagedCloneIds[0] ?? "");
+
+    try {
+        expect(() => loadStoredWorkspace()).not.toThrow();
+        expect(stagedCloneIds).toHaveLength(1);
+        expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBeNull();
+        expect(persistError.reportPersistError).toHaveBeenCalledWith(
+            expect.objectContaining({ cause: cloneWriteError }),
+        );
+        expect(persistError.reportPersistError).toHaveBeenCalledWith(
+            expect.objectContaining({ name: "SecurityError" }),
+        );
+    } finally {
+        refused.mockRestore();
+        setItem.mockRestore();
+    }
+});
+
+test("reports an envelope failure before a denied staged-clone rollback", () => {
+    sessionStorage.clear();
+    sessionStorage.setItem("tabs", serializeStorageValue([legacyTab]));
+    sessionStorage.setItem("activeTab", serializeStorageValue(legacyTab.value));
+    sessionStorage.setItem(
+        legacyTab.value,
+        serializeStorageValue({ version: 0, state: defaultTree() }),
+    );
+    const envelopeWriteError = new DOMException("quota", "QuotaExceededError");
+    const stagedCloneIds: string[] = [];
+    const originalSetItem = Storage.prototype.setItem;
+    const setItem = vi
+        .spyOn(Storage.prototype, "setItem")
+        .mockImplementation(function (this: Storage, key, value) {
+            if (key === WORKSPACE_STORAGE_KEY) throw envelopeWriteError;
+            if (key !== legacyTab.value && key !== "tabs" && key !== "activeTab") {
+                stagedCloneIds.push(key);
+            }
+            return originalSetItem.call(this, key, value);
+        });
+    const refused = denyStorageRemoval(() => stagedCloneIds[0] ?? "");
+
+    try {
+        expect(() => loadStoredWorkspace()).not.toThrow();
+        expect(stagedCloneIds).toHaveLength(1);
+        expect(sessionStorage.getItem(stagedCloneIds[0]!)).not.toBeNull();
+        expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBeNull();
+        expect(persistError.reportPersistError).toHaveBeenCalledWith(
+            expect.objectContaining({ cause: envelopeWriteError }),
+        );
+        expect(persistError.reportPersistError).toHaveBeenCalledWith(
+            expect.objectContaining({ name: "SecurityError" }),
+        );
+    } finally {
+        refused.mockRestore();
         setItem.mockRestore();
     }
 });

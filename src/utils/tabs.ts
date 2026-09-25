@@ -98,11 +98,7 @@ export function commitNewTab({
 }
 
 function rollbackCreatedTree(id: string) {
-    try {
-        tabStorage.remove(id);
-    } catch (error) {
-        reportPersistError(persistStorageWriteError(error));
-    }
+    tabStorage.removeTreeSafely(id);
 }
 
 export async function runTabCreation({

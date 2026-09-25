@@ -348,15 +348,37 @@ export class TabStorageRepository {
         sessionStorage.removeItem(tabId);
     }
 
+    /** Removes a known tree without letting cleanup failures abort its owning operation. */
+    removeTreeSafely(tabId: string) {
+        try {
+            this.remove(tabId);
+            return true;
+        } catch (error) {
+            reportPersistError(persistStorageWriteError(error));
+            return false;
+        }
+    }
+
     /** Reclaim durable trees absent from the retained workspace; other session values stay untouched. */
     removeOrphanedTrees(retainedIds: ReadonlySet<string>) {
         for (const key of this.storedTreeKeys(retainedIds)) {
-            try {
-                this.remove(key);
-            } catch (error) {
-                reportPersistError(persistStorageWriteError(error));
-            }
+            this.removeTreeSafely(key);
         }
+    }
+
+    /** Snapshot valid stored tree keys through the same bounded validator used by orphan cleanup. */
+    snapshotStoredTreeKeys(maxTreeKeys: number, maxKeyLength: number): string[] | null {
+        const keys: string[] = [];
+        try {
+            for (const key of this.storedTreeKeys()) {
+                if (key.length > maxKeyLength || keys.length === maxTreeKeys) return null;
+                keys.push(key);
+            }
+        } catch (error) {
+            reportPersistError(persistStorageWriteError(error));
+            return null;
+        }
+        return keys;
     }
 
     hasStoredTrees() {

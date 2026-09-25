@@ -1,6 +1,7 @@
 import { createStore, getDefaultStore } from "jotai";
 import { afterEach, expect, test, vi } from "vitest";
 import { defaultTree } from "@/utils/treeReducer";
+import { denyStorageRemoval } from "@/utils/tests/storageMocks";
 import {
     activeTabAtom,
     closeWorkspaceTabAtom,
@@ -271,13 +272,7 @@ test("keeps committed close metadata and attempts atom cleanup when tree removal
     tabStorage.seed(tabId, defaultTree());
     store.set(tabFamily(tabId), "practice");
     expect(store.set(tabsAtom, [tab], tabId)).toBe(true);
-    const originalRemoveItem = Storage.prototype.removeItem;
-    const removeItem = vi
-        .spyOn(Storage.prototype, "removeItem")
-        .mockImplementation(function (this: Storage, key) {
-            if (key === tabId) throw new DOMException("denied", "SecurityError");
-            return originalRemoveItem.call(this, key);
-        });
+    const removeItem = denyStorageRemoval(tabId);
 
     expect(store.set(closeWorkspaceTabAtom, tabId)).toBe(true);
     expect(store.get(tabsAtom)).toEqual([]);
