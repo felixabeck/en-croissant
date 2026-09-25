@@ -17,6 +17,7 @@ import { removeFileFreshness } from "@/state/fileFreshness";
 import {
     createNode,
     defaultTree,
+    countMainPly,
     type GameHeaders,
     getNodeAtPath,
     type TreeNode,
@@ -292,13 +293,15 @@ export const createTreeStore = (id?: string, initTree?: TreeState) => {
                 produce((state) => {
                     const colorN = color === "white" ? 1 : 0;
 
-                    let p: number[] = state.position;
+                    let p: number[] = [...state.position];
                     let node = getNodeAtPath(state.root, p);
-                    while (true) {
+                    const searchLimit = countMainPly(node) + countMainPly(state.root) + 1;
+                    for (let i = 0; i < searchLimit; i++) {
+                        node = getNodeAtPath(state.root, p);
                         if (node.children.length === 0) {
                             p = [];
                         } else {
-                            p.push(0);
+                            p = [...p, 0];
                         }
 
                         node = getNodeAtPath(state.root, p);
@@ -307,11 +310,10 @@ export const createTreeStore = (id?: string, initTree?: TreeState) => {
                             node.annotations.includes(annotation) &&
                             node.halfMoves % 2 === colorN
                         ) {
+                            state.position = p;
                             break;
                         }
                     }
-
-                    state.position = p;
                 }),
             ),
 
@@ -725,7 +727,7 @@ function makeMove({
 
     const newFen = makeFen(pos.toSetup());
 
-    if ((changeHeaders && isThreeFoldRepetition(state, newFen)) || is50MoveRule(newFen)) {
+    if (changeHeaders && (isThreeFoldRepetition(state, newFen, position) || is50MoveRule(newFen))) {
         state.headers.result = "1/2-1/2";
     }
 
@@ -771,7 +773,7 @@ function makeMove({
     }
 }
 
-function isThreeFoldRepetition(state: TreeState, fen: string): boolean {
+function isThreeFoldRepetition(state: TreeState, fen: string, position: number[]): boolean {
     const targetState = getBoardState(fen);
     let matchCount = 0;
 
@@ -780,7 +782,7 @@ function isThreeFoldRepetition(state: TreeState, fen: string): boolean {
     }
 
     let node = state.root;
-    for (const i of state.position) {
+    for (const i of position) {
         node = node.children[i];
         if (getBoardState(node.fen) === targetState) {
             matchCount++;

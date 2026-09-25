@@ -1,8 +1,16 @@
 import { beforeEach, expect, test, vi } from "vitest";
+import { parseUci } from "chessops";
+import { INITIAL_FEN } from "chessops/fen";
 import type { Token } from "@/bindings";
 import { ANNOTATION_INFO, type Annotation, NAG_INFO } from "../annotation";
-import { getPGN, hasMorePriority, parsePGN, parseStartHeader } from "../chess";
-import { defaultTree, type TreeNode } from "../treeReducer";
+import {
+    getLastMainlinePosition,
+    getPGN,
+    hasMorePriority,
+    parsePGN,
+    parseStartHeader,
+} from "../chess";
+import { createNode, defaultTree, type TreeNode } from "../treeReducer";
 
 const mocks = vi.hoisted(() => ({ lexPgn: vi.fn() }));
 
@@ -19,6 +27,53 @@ function tokens(fen: string, san: string): Token[] {
 }
 
 beforeEach(() => mocks.lexPgn.mockReset());
+
+function addMainlineMove(parent: TreeNode, san: string): TreeNode {
+    const child = createNode({
+        fen: parent.fen,
+        move: parseUci("e2e4")!,
+        san,
+        halfMoves: parent.halfMoves + 1,
+    });
+    parent.children.push(child);
+    return child;
+}
+
+test.each([
+    { plies: 0, expected: [] },
+    { plies: 1, expected: [0] },
+    { plies: 3, expected: [0, 0, 0] },
+])("last mainline position resolves the leaf after $plies plies", ({ plies, expected }) => {
+    const root = defaultTree().root;
+    let node = root;
+    for (let i = 0; i < plies; i++) {
+        node = addMainlineMove(node, `move-${i}`);
+    }
+
+    expect(getLastMainlinePosition(root)).toEqual(expected);
+});
+
+test("PGN renders each basic and non-basic annotation once", () => {
+    const root = defaultTree().root;
+    const move = createNode({
+        fen: INITIAL_FEN,
+        move: parseUci("e2e4")!,
+        san: "e4",
+        halfMoves: 1,
+    });
+    move.annotations = ["!", "??", "∞"];
+    root.children.push(move);
+
+    expect(
+        getPGN(root, {
+            headers: null,
+            glyphs: true,
+            comments: false,
+            variations: false,
+            extraMarkups: false,
+        }),
+    ).toBe("1. e4!?? $13");
+});
 
 test("NAGs are consistent", () => {
     for (const k of Object.keys(ANNOTATION_INFO)) {

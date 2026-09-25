@@ -72,7 +72,7 @@ export function getMoveText(
             for (const annotation of tree.annotations) {
                 if (annotation === "") continue;
                 moveText += isBasicAnnotation(annotation)
-                    ? tree.annotations
+                    ? annotation
                     : ` $${ANNOTATION_INFO[annotation].nag}`;
             }
         }
@@ -130,9 +130,7 @@ export function getMoveText(
 export function getLastMainlinePosition(root: TreeNode): number[] {
     const position = [];
     for (let node = root; node.children.length > 0; node = node.children[0]) {
-        if (node.move) {
-            position.push(0);
-        }
+        position.push(0);
     }
     return position;
 }

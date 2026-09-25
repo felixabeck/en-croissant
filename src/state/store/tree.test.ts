@@ -100,6 +100,54 @@ function mainlinePrependStore() {
     return createTreeStore(undefined, tree);
 }
 
+test("goToAnnotation leaves the cursor unchanged when the annotation is only on a variation", () => {
+    const tree = defaultTree();
+    const variation = node("variation");
+    variation.annotations = ["!"];
+    tree.root.children = [node("mainline", [node("continuation")]), variation];
+    const store = createTreeStore(undefined, tree);
+
+    store.getState().goToAnnotation("!", "white");
+
+    expect(store.getState().position).toEqual([]);
+});
+
+test("goToAnnotation finds annotations while continuing from a variation", () => {
+    const tree = defaultTree();
+    const continuation = node("variation-continuation");
+    continuation.annotations = ["!"];
+    const variation = node("variation", [continuation]);
+    tree.root.children = [node("mainline", [node("mainline-continuation"), variation])];
+    tree.position = [0, 1];
+    const store = createTreeStore(undefined, tree);
+
+    store.getState().goToAnnotation("!", "white");
+
+    expect(store.getState().position).toEqual([0, 1, 0]);
+});
+
+test("appendMove checks repetition along the mainline append path", () => {
+    const store = createTreeStore();
+    for (const uci of ["g1f3", "g8f6", "f3g1", "f6g8", "g1f3", "g8f6", "f3g1"]) {
+        store.getState().appendMove({ payload: parseUci(uci)! });
+    }
+
+    store.getState().goToStart();
+    store.getState().appendMove({ payload: parseUci("f6g8")! });
+
+    expect(store.getState().headers.result).toBe("1/2-1/2");
+});
+
+test("makeMove does not apply the 50-move result when header changes are disabled", () => {
+    const tree = defaultTree("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 99 1");
+    tree.headers.result = "1-0";
+    const store = createTreeStore(undefined, tree);
+
+    store.getState().makeMove({ payload: parseUci("g1f3")!, changeHeaders: false });
+
+    expect(store.getState().headers.result).toBe("1-0");
+});
+
 test("unreadable tree bytes survive hydration and incidental store updates", () => {
     const id = "unreadable-tree-hydration";
     const raw = "not a serialized game tree";
