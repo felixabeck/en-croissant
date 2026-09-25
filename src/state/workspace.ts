@@ -341,6 +341,7 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
     }
 
     const durableMigratedSources = new Set<string>();
+    const durableUnreadableSources = new Set<string>();
     for (const sourceId of new Set(plan.cloneTargets.map(({ sourceId }) => sourceId))) {
         const sourceTargets = plan.cloneTargets.filter((target) => target.sourceId === sourceId);
         const copiedReadableTargets = sourceTargets.filter(
@@ -357,8 +358,19 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
             tabStorage.removeKnownTreesSafely(stagedCloneIds);
             return plan.unrepairedWorkspace;
         }
-        if (copiedReadableTargets.length === sourceTargets.length) {
+        const allTargetsCopied = sourceTargets.every(({ targetId }) => {
+            const kind = cloneKinds.get(targetId);
+            return kind === "copied" || kind === "copied-unreadable";
+        });
+        if (allTargetsCopied) {
             durableMigratedSources.add(sourceId);
+            if (
+                sourceTargets.some(
+                    ({ targetId }) => cloneKinds.get(targetId) === "copied-unreadable",
+                )
+            ) {
+                durableUnreadableSources.add(sourceId);
+            }
         }
     }
     const pendingRemovalResult = reconcilePendingTreeRemovals(
@@ -392,7 +404,15 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
         }
     }
 
-    const failedKnownRemovals = tabStorage.removeKnownTreesSafely(pendingRemovalIds);
+    // Unreadable values do not appear in orphan sweeps. Reclaim only old IDs whose exact bytes
+    // were copied and verified above, after the repaired workspace durably owns the new IDs.
+    const unreadableSourcesToReclaim = [...durableUnreadableSources].filter(
+        (id) => !repairedRetainedIds.has(id),
+    );
+    const failedKnownRemovals = tabStorage.removeKnownTreesSafely([
+        ...pendingRemovalIds,
+        ...unreadableSourcesToReclaim,
+    ]);
     for (const id of failedAdmissions.failedIds) failedKnownRemovals.add(id);
 
     // A direct true fault deletes the unowned tree in the fresh-module workspace test.

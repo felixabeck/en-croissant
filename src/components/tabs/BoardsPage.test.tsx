@@ -2,6 +2,7 @@ import { act, createContext, Suspense, useContext, type ReactNode } from "react"
 import { createRoot, type Root } from "react-dom/client";
 import { getDefaultStore } from "jotai";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import type { TabTreeStorageStatus } from "@/state/store/tabStorage";
 
 const fixtures = vi.hoisted(() => ({
   abortGame: vi.fn(),
@@ -22,9 +23,12 @@ const fixtures = vi.hoisted(() => ({
   })),
   createTab: vi.fn(),
   cloneDurable: vi.fn(),
+  removeTreeSafely: vi.fn(() => true),
+  recordFailedAdmission: vi.fn(),
+  reportPersistError: vi.fn(),
   retryTreeStoreStorage: vi.fn(),
   discardTreeStoreStorage: vi.fn(),
-  treeStatus: { kind: "available" } as any,
+  treeStatus: { kind: "available" } as TabTreeStorageStatus,
   treeStatusListeners: new Set<() => void>(),
   dispose: vi.fn(),
   dirty: false,
@@ -56,7 +60,7 @@ type TabFixture = {
   value: string;
 };
 
-function setTreeStatus(status: any) {
+function setTreeStatus(status: TabTreeStorageStatus) {
   fixtures.treeStatus = status;
   for (const listener of fixtures.treeStatusListeners) listener();
 }
@@ -119,8 +123,11 @@ vi.mock("@/state/store/tree", () => ({
   restoreReportOwner: fixtures.restoreReportOwner,
 }));
 vi.mock("@/state/store/tabStorage", () => ({
+  persistStorageWriteError: (cause: unknown) => cause,
   tabStorage: {
     cloneDurable: fixtures.cloneDurable,
+    removeTreeSafely: fixtures.removeTreeSafely,
+    recordFailedAdmission: fixtures.recordFailedAdmission,
     getStatus: () => fixtures.treeStatus,
     readRawValueForRecovery: () => {
       if (fixtures.treeStatus.kind !== "unreadable") throw new Error("No unreadable value");
@@ -132,6 +139,7 @@ vi.mock("@/state/store/tabStorage", () => ({
     },
   },
 }));
+vi.mock("@/state/persistError", () => ({ reportPersistError: fixtures.reportPersistError }));
 vi.mock("@/utils/tabs", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/utils/tabs")>()),
   createTab: fixtures.createTab,
@@ -319,6 +327,10 @@ beforeEach(() => {
   fixtures.commitReceipt = true;
   fixtures.createTab.mockResolvedValue("created");
   fixtures.cloneDurable.mockReset();
+  fixtures.removeTreeSafely.mockReset();
+  fixtures.removeTreeSafely.mockReturnValue(true);
+  fixtures.recordFailedAdmission.mockReset();
+  fixtures.reportPersistError.mockReset();
   fixtures.retryTreeStoreStorage.mockReset();
   fixtures.retryTreeStoreStorage.mockImplementation(async () => fixtures.treeStatus);
   fixtures.discardTreeStoreStorage.mockReset();
@@ -435,6 +447,51 @@ test("duplicate clones the requested tab and preserves metadata and selection on
   expect(fixtures.cloneDurable.mock.calls[0]![1]).not.toBe("current");
   expect(store.get(tabsAtom)).toEqual(before);
   expect(store.get(activeTabAtom)).toBe("current");
+});
+
+test("reports a tree-copy failure without admitting a duplicate tab", async () => {
+  const failure = new Error("source storage is unavailable");
+  fixtures.cloneDurable.mockImplementationOnce(() => {
+    throw failure;
+  });
+  await renderPage();
+  const before = store.get(tabsAtom);
+  const duplicate = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+    (button) => button.textContent === "Tab.Duplicate",
+  )!;
+
+  await act(async () => {
+    duplicate.click();
+    await Promise.resolve();
+  });
+
+  expect(fixtures.cloneDurable).toHaveBeenCalledOnce();
+  expect(store.get(tabsAtom)).toEqual(before);
+  expect(fixtures.reportPersistError).toHaveBeenCalledOnce();
+  expect(fixtures.reportPersistError).toHaveBeenCalledWith(failure);
+  expect(fixtures.removeTreeSafely).toHaveBeenCalledOnce();
+});
+
+test("keeps a gated game tab open and allows close after its tree recovers", async () => {
+  fixtures.tabs = fixtures.tabs.map((tab) =>
+    tab.value === "current" ? { ...tab, type: "analysis" } : tab,
+  );
+  store.set(tabsAtom, fixtures.tabs);
+  setTreeStatus({ kind: "unavailable", error: new Error("storage read refused") });
+  await renderPage();
+
+  await act(async () => {
+    await fixtures.closeHandler!();
+  });
+  expect(fixtures.closeWorkspaceTab).not.toHaveBeenCalled();
+
+  setTreeStatus({ kind: "available" });
+  await act(async () => {
+    await fixtures.closeHandler!();
+  });
+
+  expect(fixtures.closeWorkspaceTab).toHaveBeenCalledWith("current");
+  expect(fixtures.closeTreeStore).toHaveBeenCalledWith("current");
 });
 
 const suspendedNavigationCases = [

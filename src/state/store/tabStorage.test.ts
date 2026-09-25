@@ -5,7 +5,6 @@ import {
     decodeLegacyOrCompressed,
     isBoundedTreeForStorage,
     migrateTreeForStorage,
-    parseLegacyTreeJson,
     persistStorageWriteError,
     TabStorageRepository,
     TREE_STORAGE_VERSION,
@@ -578,6 +577,54 @@ test("cloneDurable treats a legitimate tab without tree storage as an empty clon
     setItem.mockRestore();
 });
 
+test("cloneDurable refuses to duplicate an unreadable source as a clean tab", () => {
+    const raw = "unreadable source tree";
+    sessionStorage.setItem("source", raw);
+
+    expect(() => storage.cloneDurable("source", "target")).toThrow(/unreadable/);
+
+    expect(storage.getStatus("source")).toEqual({ kind: "unreadable", rawValue: raw });
+    expect(sessionStorage.getItem("source")).toBe(raw);
+    expect(sessionStorage.getItem("target")).toBeNull();
+});
+
+test("cloneDurable refuses to duplicate a source whose storage read is unavailable", () => {
+    const stored = serializeStorageValue({ version: TREE_STORAGE_VERSION, state: defaultTree() });
+    sessionStorage.setItem("source", stored);
+    const failure = new DOMException("source read refused", "SecurityError");
+    const originalGetItem = Storage.prototype.getItem;
+    const getItem = vi
+        .spyOn(Storage.prototype, "getItem")
+        .mockImplementation(function (this: Storage, key) {
+            if (key === "source") throw failure;
+            return originalGetItem.call(this, key);
+        });
+
+    let cloneError: unknown;
+    try {
+        storage.cloneDurable("source", "target");
+    } catch (error) {
+        cloneError = error;
+    }
+
+    getItem.mockRestore();
+    expect(cloneError).toMatchObject({ cause: failure });
+    expect(storage.getStatus("source")).toEqual({ kind: "unavailable", error: failure });
+    expect(sessionStorage.getItem("source")).toBe(stored);
+    expect(sessionStorage.getItem("target")).toBeNull();
+});
+
+test("cloneDurable rejects a pending source that fails storage validation", () => {
+    storage.write("invalid-pending-source", { version: 0, state: { invalid: true } });
+
+    expect(() => storage.cloneDurable("invalid-pending-source", "target")).toThrow(
+        /validate the source tree/,
+    );
+
+    expect(sessionStorage.getItem("target")).toBeNull();
+    expect(storage.pendingCount()).toBe(1);
+});
+
 test("cloning a legacy ID that belongs to another store preserves that store", () => {
     const databaseView = JSON.stringify({
         state: { database: { activeTab: "games" } },
@@ -635,6 +682,66 @@ test("cloneDurable propagates a normalized target write failure without changing
     setItem.mockRestore();
 });
 
+test.each(["unreadable", "unavailable"] as const)(
+    "cloneDurable preserves an %s target instead of replacing it",
+    (kind) => {
+        const source = serializeStorageValue({
+            version: TREE_STORAGE_VERSION,
+            state: defaultTree(),
+        });
+        const target =
+            kind === "unreadable"
+                ? "target bytes cannot be decoded"
+                : serializeStorageValue({ version: TREE_STORAGE_VERSION, state: defaultTree() });
+        sessionStorage.setItem("source", source);
+        sessionStorage.setItem("target", target);
+        const failure = new DOMException("target read refused", "SecurityError");
+        const originalGetItem = Storage.prototype.getItem;
+        const getItem =
+            kind === "unavailable"
+                ? vi
+                      .spyOn(Storage.prototype, "getItem")
+                      .mockImplementation(function (this: Storage, key) {
+                          if (key === "target") throw failure;
+                          return originalGetItem.call(this, key);
+                      })
+                : null;
+
+        expect(() => storage.cloneDurable("source", "target")).toThrow(/Cannot replace a tab tree/);
+
+        getItem?.mockRestore();
+        expect(storage.read("source")?.state).toMatchObject({ root: defaultTree().root });
+        expect(sessionStorage.getItem("target")).toBe(target);
+    },
+);
+
+test.each(["unreadable", "unavailable"] as const)(
+    "seed preserves an %s destination instead of replacing it",
+    (kind) => {
+        const target =
+            kind === "unreadable"
+                ? "target bytes cannot be decoded"
+                : serializeStorageValue({ version: TREE_STORAGE_VERSION, state: defaultTree() });
+        sessionStorage.setItem("target", target);
+        const failure = new DOMException("target read refused", "SecurityError");
+        const originalGetItem = Storage.prototype.getItem;
+        const getItem =
+            kind === "unavailable"
+                ? vi
+                      .spyOn(Storage.prototype, "getItem")
+                      .mockImplementation(function (this: Storage, key) {
+                          if (key === "target") throw failure;
+                          return originalGetItem.call(this, key);
+                      })
+                : null;
+
+        expect(() => storage.seed("target", defaultTree())).toThrow(/Cannot replace a tab tree/);
+
+        getItem?.mockRestore();
+        expect(sessionStorage.getItem("target")).toBe(target);
+    },
+);
+
 test("clone of a pending write carrying store actions succeeds without inheriting the report lease", () => {
     const tree = treeWith((state) => {
         state.dirty = true;
@@ -670,7 +777,70 @@ test("preserves undecodable tree bytes and exposes them for recovery", () => {
     expect(storage.getStatus("broken")).toEqual({ kind: "unreadable", rawValue: "not a tree" });
     expect(storage.readRawValueForRecovery("broken")).toBe("not a tree");
     expect(decodeLegacyOrCompressed("not a tree")).toBeNull();
-    expect(parseLegacyTreeJson("not a tree")).toBeNull();
+});
+
+test("raw recovery requires a value already known to be unreadable", () => {
+    expect(() => storage.readRawValueForRecovery("not-read")).toThrow(/no readable undecodable/);
+    storage.readTree("absent");
+    expect(() => storage.readRawValueForRecovery("absent")).toThrow(/no readable undecodable/);
+
+    const failure = new DOMException("storage refused the read", "SecurityError");
+    const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation((key) => {
+        if (key === "unavailable") throw failure;
+        return null;
+    });
+    storage.readTree("unavailable");
+    expect(() => storage.readRawValueForRecovery("unavailable")).toThrow(/no readable undecodable/);
+    getItem.mockRestore();
+});
+
+test("unreadable workspace copies refuse occupied and reserved session keys", () => {
+    const raw = "bytes preserved for workspace repair";
+    const occupied = "an unrelated value";
+    const workspaceMetadata = JSON.stringify({ version: 1, tabs: [] });
+    sessionStorage.setItem("occupied-target", occupied);
+    sessionStorage.setItem("workspace", workspaceMetadata);
+
+    expect(() => storage.copyUnreadableForWorkspaceRepair("occupied-target", raw)).toThrow(
+        /already in use/,
+    );
+    expect(() => storage.copyUnreadableForWorkspaceRepair("workspace", raw)).toThrow(
+        /another session store/,
+    );
+
+    expect(sessionStorage.getItem("occupied-target")).toBe(occupied);
+    expect(sessionStorage.getItem("workspace")).toBe(workspaceMetadata);
+});
+
+test("unreadable workspace copy rolls back its target when exact-byte readback fails", () => {
+    const targetId = "copy-target";
+    const raw = "bytes preserved for workspace repair";
+    const originalGetItem = Storage.prototype.getItem;
+    const originalSetItem = Storage.prototype.setItem;
+    let targetWritten = false;
+    let returnedMismatch = false;
+    const setItem = vi
+        .spyOn(Storage.prototype, "setItem")
+        .mockImplementation(function (this: Storage, key, value) {
+            originalSetItem.call(this, key, value);
+            if (key === targetId) targetWritten = true;
+        });
+    const getItem = vi
+        .spyOn(Storage.prototype, "getItem")
+        .mockImplementation(function (this: Storage, key) {
+            if (key === targetId && targetWritten && !returnedMismatch) {
+                returnedMismatch = true;
+                return "different bytes";
+            }
+            return originalGetItem.call(this, key);
+        });
+
+    expect(() => storage.copyUnreadableForWorkspaceRepair(targetId, raw)).toThrow(/verify/);
+
+    getItem.mockRestore();
+    setItem.mockRestore();
+    expect(sessionStorage.getItem(targetId)).toBeNull();
+    expect(storage.getStatus(targetId).kind).toBe("unavailable");
 });
 
 test("rejects excessive recursive nesting before schema hydration", () => {
@@ -958,7 +1128,7 @@ test("read refusal stays unavailable and a successful retry can load the exact k
     expect(storage.pendingCount()).toBe(0);
 
     getItem.mockRestore();
-    expect(storage.retryRead(id)).toMatchObject({
+    expect(storage.readTree(id)).toMatchObject({
         kind: "available",
         value: { state: { headers: { event: "Recovered after retry" } } },
     });
@@ -977,7 +1147,7 @@ test("a failed retry remains unavailable and does not authorize a default write"
     });
 
     expect(storage.read(id)).toBeNull();
-    expect(storage.retryRead(id)).toEqual({ kind: "unavailable", error: failure });
+    expect(storage.readTree(id)).toEqual({ kind: "unavailable", error: failure });
     storage.write(id, { version: TREE_STORAGE_VERSION, state: defaultTree() });
     storage.flush();
 

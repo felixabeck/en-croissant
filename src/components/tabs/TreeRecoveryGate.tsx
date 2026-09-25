@@ -19,7 +19,7 @@ export default function TreeRecoveryGate({ tabId, children }: Props) {
   const getSnapshot = useCallback(() => tabStorage.getStatus(tabId), [tabId]);
   const status = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   const [pending, setPending] = useState<"copy" | "discard" | "retry" | null>(null);
-  const [actionError, setActionError] = useState<"copy" | "storage" | "retry" | null>(null);
+  const [actionError, setActionError] = useState<"copy" | "discard" | "retry" | null>(null);
   const [copied, setCopied] = useState(false);
 
   const copySavedValue = async () => {
@@ -45,7 +45,7 @@ export default function TreeRecoveryGate({ tabId, children }: Props) {
       if (!discardTreeStoreStorage(tabId)) throw new Error("The saved value was not discarded.");
       setCopied(false);
     } catch {
-      setActionError("storage");
+      setActionError("discard");
     } finally {
       setPending(null);
     }
@@ -73,7 +73,7 @@ export default function TreeRecoveryGate({ tabId, children }: Props) {
   const errorMessage =
     actionError === "copy"
       ? t("TreeRecovery.CopyFailed")
-      : actionError === "storage"
+      : actionError === "discard"
         ? t("TreeRecovery.DiscardFailed")
         : actionError === "retry"
           ? t("TreeRecovery.RetryFailed")

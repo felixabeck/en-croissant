@@ -280,14 +280,6 @@ export function persistStorageWriteError(cause: unknown): Error {
     return new Error("Could not save this game. Session storage rejected the write.", { cause });
 }
 
-export function parseLegacyTreeJson(value: string): unknown | null {
-    try {
-        return JSON.parse(value) as unknown;
-    } catch {
-        return null;
-    }
-}
-
 export function decodeLegacyOrCompressed(value: string): ValidatedStoredTree | null {
     const decoded = decodeCompressedOrJson(value);
     const envelope = z
@@ -373,11 +365,6 @@ export class TabStorageRepository {
         return { kind: "available", value: decoded };
     }
 
-    /** Re-reads the exact key after a storage refusal; pending valid edits remain authoritative. */
-    retryRead(tabId: string): TabTreeReadResult {
-        return this.readTree(tabId);
-    }
-
     getStatus(tabId: string): TabTreeStorageStatus {
         return this.readStatuses.get(tabId) ?? NOT_READ_STATUS;
     }
@@ -395,7 +382,7 @@ export class TabStorageRepository {
         };
     }
 
-    /** Returns the exact undecodable bytes captured during hydration for phase-2 recovery copy. */
+    /** Returns the exact undecodable bytes captured during hydration for explicit recovery. */
     readRawValueForRecovery(tabId: string): string {
         const status = this.getStatus(tabId);
         if (status.kind !== "unreadable") {
@@ -476,6 +463,9 @@ export class TabStorageRepository {
 
     /** Copies exact unreadable bytes to a fresh migration ID and verifies the durable target. */
     copyUnreadableForWorkspaceRepair(targetTabId: string, rawValue: string): void {
+        if (NON_TREE_SESSION_KEYS.has(targetTabId)) {
+            throw new Error("The destination key belongs to another session store.");
+        }
         const target = this.readTree(targetTabId);
         if (target.kind !== "absent") {
             throw target.kind === "unavailable"
@@ -501,7 +491,6 @@ export class TabStorageRepository {
                         sessionStorage.removeItem(targetTabId);
                     }
                 } catch (cleanupError) {
-                    reportPersistError(persistStorageWriteError(cleanupError));
                     failure = cleanupError;
                 }
             }
@@ -513,9 +502,17 @@ export class TabStorageRepository {
     /** Creates an immediately durable clone without flushing any unrelated pending tree. */
     cloneDurable(sourceTabId: string, targetTabId: string) {
         const source = this.readTree(sourceTabId);
-        if (source.kind !== "available") return;
+        if (source.kind === "absent") return;
+        if (source.kind === "unavailable") {
+            throw new Error("Could not read the source tree for duplication.", {
+                cause: source.error,
+            });
+        }
+        if (source.kind === "unreadable") {
+            throw new Error("Cannot duplicate a tab whose saved tree is unreadable.");
+        }
         const copy = this.validatedClone(source.value);
-        if (!copy) return;
+        if (!copy) throw new Error("Could not validate the source tree for duplication.");
         const blocker = this.writeBlocker(targetTabId);
         if (blocker) {
             throw new Error(
