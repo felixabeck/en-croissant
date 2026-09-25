@@ -11308,7 +11308,7 @@ Outside that build's MANDATE (a tab's stale game text), so filed rather than fol
 
 ### verify:app aborts at its first Files-row click on every build since 2026-09-24 ~17:00, including a tree that passed there earlier
 
-* **ID:** f-20260924-06 · **Status:** open · **Area:** gate-scripts · **Root:** none · **Entry:** build · **Blocked:** none
+* **ID:** f-20260924-06 · **Status:** handled · **Area:** gate-scripts · **Root:** none · **Entry:** build · **Blocked:** none
 
 Measured on tuxedo-atlas during the `f-20260923-01` build, 2026-09-24. `pnpm verify:app` passed every check up to and including the fifty practice ratings twice at 16:03-16:50 on the build of `3d0627ec`. From 17:36 on, nine consecutive runs aborted with "This operation was aborted" right after "migration leaves the legacy practice localStorage key untouched": the first Files-row `clickAt` in the large-practice step got no answer within `FETCH_TIMEOUT_MS` (5 s, `scripts/app-driver.mjs:35`). The stage-labelled diagnostic added in this build shows the renderer answering again afterwards on `/files` with "No file selected". A control build of the exact `3d0627ec` tree (only `tasks/decisions.md` differed) aborted at the same click, so the failure is not caused by the code under test. Ruled out: memory/CPU/IO pressure (all PSI ~0), disk space, leftover app/driver processes, a port or Wayland-socket collision, and the desktop accessibility bus (an `NO_AT_BRIDGE=1` run failed identically, and a passing run had the same `dbind-WARNING`). Present since ~16:57 and still running: a foreign session `/tmp/time-tracker-f05-*/run.sh` (dbus-run-session, `kwin_wayland --virtual --socket wl-time-f05` with `plasmashell`, accessibility forced on) — correlated in time, not proven.
 
