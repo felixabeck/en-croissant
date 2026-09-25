@@ -28,20 +28,23 @@ export type Position = {
 
 export function buildFromTree(tree: TreeNode, color: "white" | "black", start: number[]) {
     const cards: Position[] = [];
+    const seenBoardStates = new Set<string>();
     const iterator = treeIterator(tree);
     for (const item of iterator) {
         if (
             item.node.children.length === 0 ||
             isPrefix(item.position, start) ||
-            !item.node.children[0].san ||
-            cards.find((c) => getBoardState(c.fen) === getBoardState(item.node.fen))
+            !item.node.children[0].san
         ) {
             continue;
         }
+        const boardState = getBoardState(item.node.fen);
+        if (seenBoardStates.has(boardState)) continue;
         if (
             (color === "white" && item.node.halfMoves % 2 === 0) ||
             (color === "black" && item.node.halfMoves % 2 === 1)
         ) {
+            seenBoardStates.add(boardState);
             cards.push({
                 fen: item.node.fen,
                 answer: item.node.children[0].san,
