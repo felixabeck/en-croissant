@@ -1,12 +1,19 @@
 import { vi } from "vitest";
 
-export function denyStorageRemoval(key: string | (() => string)) {
+export function denyStorageRemoval(
+    key: string | (() => string) | ((candidate: string) => boolean),
+) {
     const originalRemoveItem = Storage.prototype.removeItem;
     return vi
         .spyOn(Storage.prototype, "removeItem")
         .mockImplementation(function (this: Storage, candidate) {
-            const deniedKey = typeof key === "function" ? key() : key;
-            if (candidate === deniedKey) throw new DOMException("denied", "SecurityError");
+            const match =
+                typeof key === "function"
+                    ? (key as (candidate: string) => string | boolean)(candidate)
+                    : key;
+            if (typeof match === "boolean" ? match : candidate === match) {
+                throw new DOMException("denied", "SecurityError");
+            }
             return originalRemoveItem.call(this, candidate);
         });
 }

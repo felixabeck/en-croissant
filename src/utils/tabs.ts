@@ -71,6 +71,7 @@ export function commitNewTab({
             seed(id);
         } catch (error) {
             reportPersistError(persistStorageWriteError(error));
+            rollbackCreatedTree(id, true);
             return null;
         }
     }
@@ -87,18 +88,20 @@ export function commitNewTab({
             }, id);
         });
     } catch (error) {
-        if (seed) rollbackCreatedTree(id);
+        if (seed) rollbackCreatedTree(id, false);
         throw error;
     }
     if (!admitted) {
-        if (seed) rollbackCreatedTree(id);
+        if (seed) rollbackCreatedTree(id, true);
         return null;
     }
     return id;
 }
 
-function rollbackCreatedTree(id: string) {
-    tabStorage.removeTreeSafely(id);
+function rollbackCreatedTree(id: string, admissionRefused: boolean) {
+    if (!tabStorage.removeTreeSafely(id) && admissionRefused) {
+        tabStorage.recordFailedAdmission(id);
+    }
 }
 
 export async function runTabCreation({

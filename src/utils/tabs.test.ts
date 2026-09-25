@@ -3,7 +3,7 @@ import { denyStorageRemoval } from "@/utils/tests/storageMocks";
 import type { FileWorkspaceHandle } from "@/bindings";
 import { tabStorage } from "@/state/store/tabStorage";
 import { serializeStorageValue } from "@/state/store/debouncedStorage";
-import { loadWorkspace, WORKSPACE_STORAGE_KEY } from "@/state/workspace";
+import { loadWorkspace, MAX_PROTECTED_TREE_KEYS, WORKSPACE_STORAGE_KEY } from "@/state/workspace";
 import { closeTreeStore, createTreeStore } from "@/state/store/tree";
 import {
     getFileFreshness,
@@ -243,6 +243,39 @@ test("keeps a refused creation unacknowledged when rollback removal is rejected"
     removeItem.mockRestore();
     expect(loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY).tabs).toEqual([retained]);
     expect(sessionStorage.getItem(stagedId)).toBeNull();
+});
+
+test("retries a refused seed rollback through snapshot overflow", () => {
+    sessionStorage.setItem(WORKSPACE_STORAGE_KEY, "{broken");
+    const tree = serializeStorageValue({ version: 1, state: defaultTree() });
+    for (let index = 0; index <= MAX_PROTECTED_TREE_KEYS; index++) {
+        sessionStorage.setItem(`older-tree-${index}`, tree);
+    }
+    let stagedId = "";
+    const deny = denyStorageRemoval(() => stagedId);
+
+    expect(
+        commitNewTab({
+            tab: { name: "Refused", type: "analysis", gameOrigin: { kind: "none" } },
+            seed: (id) => {
+                stagedId = id;
+                tabStorage.seed(id, defaultTree());
+            },
+            setTabs: () => false,
+        }),
+    ).toBeNull();
+    const marker = `chessfable:failed-tab-admission:${stagedId}`;
+    expect(sessionStorage.getItem(marker)).toBe("1");
+
+    expect(loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY).treeOwnershipUncertain).toBe(true);
+    expect(sessionStorage.getItem(stagedId)).not.toBeNull();
+    expect(sessionStorage.getItem(marker)).toBe("1");
+    deny.mockRestore();
+
+    expect(loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY).treeOwnershipUncertain).toBe(true);
+    expect(sessionStorage.getItem(stagedId)).toBeNull();
+    expect(sessionStorage.getItem(marker)).toBeNull();
+    expect(sessionStorage.getItem("older-tree-0")).toBe(tree);
 });
 
 test("saveToFile refuses the native write when the selected origin was not durable", async () => {

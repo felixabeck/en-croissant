@@ -425,17 +425,17 @@ test("closing a tab frees capacity from completed removal intents", async () => 
             treeOwnershipPendingRemovalIds: pendingIds,
         }),
     );
-    const originalRemoveItem = Storage.prototype.removeItem;
-    const deny = vi
-        .spyOn(Storage.prototype, "removeItem")
-        .mockImplementation(function (this: Storage, id) {
-            if (id.startsWith("pending-tree-")) throw new DOMException("denied", "SecurityError");
-            return originalRemoveItem.call(this, id);
-        });
+    const deny = denyStorageRemoval((id) => id.startsWith("pending-tree-"));
     vi.resetModules();
     const freshAtoms = await import("./atoms");
-    deny.mockRestore();
     const store = createStore();
+
+    expect(store.set(freshAtoms.closeWorkspaceTabAtom, tabId)).toBe(false);
+    expect(store.get(freshAtoms.tabsAtom)).toEqual([tab]);
+    expect(readStoredWorkspaceValue(sessionStorage, WORKSPACE_STORAGE_KEY)).toMatchObject({
+        treeOwnershipPendingRemovalIds: pendingIds,
+    });
+    deny.mockRestore();
 
     expect(store.set(freshAtoms.closeWorkspaceTabAtom, tabId)).toBe(true);
     expect(store.get(freshAtoms.tabsAtom)).toEqual([]);

@@ -135,6 +135,23 @@ export function sweepOrphanedTreeKeys(
     tabStorage.removeOrphanedTrees(retainedIds);
 }
 
+/** Reconcile durable deletion intents before a workspace write can exceed its schema bound. */
+export function reconcilePendingTreeRemovals(
+    priorIds: readonly string[],
+    newIds: Iterable<string>,
+    retainedIds: ReadonlySet<string>,
+): string[] | null {
+    let prior = priorIds.filter((id) => !retainedIds.has(id) && tabStorage.isStoredTree(id));
+    const additions = [...newIds].filter((id) => !retainedIds.has(id));
+    let pending = new Set([...prior, ...additions]);
+    if (pending.size > MAX_PENDING_TREE_REMOVALS) {
+        const failedPriorRemovals = tabStorage.removeKnownTreesSafely(prior);
+        prior = prior.filter((id) => failedPriorRemovals.has(id));
+        pending = new Set([...prior, ...additions]);
+    }
+    return pending.size <= MAX_PENDING_TREE_REMOVALS ? [...pending] : null;
+}
+
 export function readStoredWorkspaceValue(storage: SyncStringStorage, key: string): unknown | null {
     return decodeCompressedOrJson(storage.getItem(key));
 }
@@ -203,9 +220,7 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
             ? currentResult.data.treeOwnershipProtectedIds
             : undefined;
     const persistedPendingRemovals = currentResult.success
-        ? (currentResult.data.treeOwnershipPendingRemovalIds ?? []).filter((id) =>
-              tabStorage.isStoredTree(id),
-          )
+        ? (currentResult.data.treeOwnershipPendingRemovalIds ?? [])
         : [];
     const legacy =
         current ??
@@ -218,6 +233,8 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
     );
     const legacyStoragePresent =
         storage.getItem("tabs") !== null || storage.getItem("activeTab") !== null;
+    const plan = planWorkspaceRepair(legacy);
+    tabStorage.replayFailedAdmissions(new Set(plan.workspace.tabs.map((tab) => tab.value)));
     const missingWorkspaceTreeSnapshot =
         storedWorkspace === null && !validMigrationSource
             ? tabStorage.snapshotStoredTreeKeys(
@@ -233,7 +250,6 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
             (legacyStoragePresent ||
                 missingWorkspaceTreeSnapshot === null ||
                 (missingWorkspaceTreeSnapshot?.length ?? 0) > 0));
-    const plan = planWorkspaceRepair(legacy);
     if (persistedPendingRemovals.length > 0) {
         plan.unrepairedWorkspace.treeOwnershipPendingRemovalIds = [...persistedPendingRemovals];
     }
@@ -280,22 +296,18 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
             durableMigratedSources.add(sourceId);
         }
     }
-    const pendingRemovalIds = new Set([...persistedPendingRemovals, ...durableMigratedSources]);
-    for (const retainedId of retainedIds) pendingRemovalIds.delete(retainedId);
-    if (pendingRemovalIds.size > MAX_PENDING_TREE_REMOVALS) {
-        const retryablePriorIds = persistedPendingRemovals.filter((id) => !retainedIds.has(id));
-        const failedPriorIds = tabStorage.removeKnownTreesSafely(retryablePriorIds);
-        for (const id of retryablePriorIds) {
-            if (!failedPriorIds.has(id)) pendingRemovalIds.delete(id);
-        }
-        if (pendingRemovalIds.size > MAX_PENDING_TREE_REMOVALS) {
-            reportPersistError(persistStorageWriteError({}));
-            tabStorage.removeKnownTreesSafely(stagedCloneIds);
-            return plan.unrepairedWorkspace;
-        }
+    const pendingRemovalIds = reconcilePendingTreeRemovals(
+        persistedPendingRemovals,
+        durableMigratedSources,
+        retainedIds,
+    );
+    if (pendingRemovalIds === null) {
+        reportPersistError(persistStorageWriteError({}));
+        tabStorage.removeKnownTreesSafely(stagedCloneIds);
+        return plan.unrepairedWorkspace;
     }
-    if (pendingRemovalIds.size > 0) {
-        plan.workspace.treeOwnershipPendingRemovalIds = [...pendingRemovalIds];
+    if (pendingRemovalIds.length > 0) {
+        plan.workspace.treeOwnershipPendingRemovalIds = pendingRemovalIds;
     }
     if (plan.workspace.treeOwnershipProtectedIds) {
         plan.workspace.treeOwnershipProtectedIds = plan.workspace.treeOwnershipProtectedIds.filter(

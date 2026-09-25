@@ -118,6 +118,22 @@ test("migrates separate legacy keys, repairs IDs, and keeps tree state", () => {
     expect(readStoredWorkspace()).toEqual(workspace);
 });
 
+test("a denied corrupt legacy-tree removal does not abort workspace loading", () => {
+    sessionStorage.clear();
+    sessionStorage.setItem("tabs", serializeStorageValue([legacyTab]));
+    sessionStorage.setItem("activeTab", serializeStorageValue(legacyTab.value));
+    sessionStorage.setItem(legacyTab.value, "{broken");
+    const deny = denyStorageRemoval(legacyTab.value);
+
+    const workspace = loadStoredWorkspace();
+
+    deny.mockRestore();
+    expect(workspace.tabs).toHaveLength(1);
+    expect(workspace.tabs[0]!.value).not.toBe(legacyTab.value);
+    expect(sessionStorage.getItem(legacyTab.value)).toBe("{broken");
+    expect(persistError.reportPersistError).toHaveBeenCalled();
+});
+
 test("keeps the active tab selected when its legacy ID is migrated", () => {
     sessionStorage.clear();
     const first = { ...legacyTab, value: crypto.randomUUID() };
@@ -299,6 +315,23 @@ test("reclaims an orphaned durable tree while retaining tabs and unrelated UUID 
     expect(sessionStorage.getItem(orphan)).toBeNull();
     expect(sessionStorage.getItem(retained.value)).toBe(tree);
     expect(sessionStorage.getItem(unrelated)).not.toBeNull();
+});
+
+test("a stale refused-admission marker never deletes a retained tab tree", () => {
+    sessionStorage.clear();
+    const retained = { ...legacyTab, value: crypto.randomUUID() };
+    const tree = serializeStorageValue({ version: 1, state: defaultTree() });
+    const marker = `chessfable:failed-tab-admission:${retained.value}`;
+    sessionStorage.setItem(
+        WORKSPACE_STORAGE_KEY,
+        serializeStorageValue({ version: 1, tabs: [retained], activeTab: retained.value }),
+    );
+    sessionStorage.setItem(retained.value, tree);
+    sessionStorage.setItem(marker, "1");
+
+    expect(loadStoredWorkspace().tabs).toEqual([retained]);
+    expect(sessionStorage.getItem(retained.value)).toBe(tree);
+    expect(sessionStorage.getItem(marker)).toBeNull();
 });
 
 test("retries orphan cleanup on the next load after storage refuses removal", () => {
@@ -642,13 +675,7 @@ test("does not persist an over-capacity retry list during legacy ID migration", 
         treeOwnershipPendingRemovalIds: pendingIds,
     });
     sessionStorage.setItem(WORKSPACE_STORAGE_KEY, originalEnvelope);
-    const originalRemoveItem = Storage.prototype.removeItem;
-    const deny = vi
-        .spyOn(Storage.prototype, "removeItem")
-        .mockImplementation(function (this: Storage, id) {
-            if (id.startsWith("pending-tree-")) throw new DOMException("denied", "SecurityError");
-            return originalRemoveItem.call(this, id);
-        });
+    const deny = denyStorageRemoval((id) => id.startsWith("pending-tree-"));
 
     const first = loadStoredWorkspace();
 
@@ -875,24 +902,18 @@ test("a stored-key enumeration failure does not abort authoritative workspace lo
     expect(persistError.reportPersistError).toHaveBeenCalledWith(scanError);
 });
 
-test("orphan sweeping reports one failure for multiple denied removals", () => {
+test("orphan sweeping continues after a denied removal and reports once", () => {
     sessionStorage.clear();
     const tree = serializeStorageValue({ version: 1, state: defaultTree() });
     sessionStorage.setItem("orphan-one", tree);
     sessionStorage.setItem("orphan-two", tree);
-    const originalRemoveItem = Storage.prototype.removeItem;
-    const remove = vi
-        .spyOn(Storage.prototype, "removeItem")
-        .mockImplementation(function (this: Storage, key) {
-            if (key.startsWith("orphan-")) throw new DOMException("denied", "SecurityError");
-            return originalRemoveItem.call(this, key);
-        });
+    const remove = denyStorageRemoval("orphan-one");
 
     sweepOrphanedTreeKeys([]);
 
     remove.mockRestore();
     expect(sessionStorage.getItem("orphan-one")).toBe(tree);
-    expect(sessionStorage.getItem("orphan-two")).toBe(tree);
+    expect(sessionStorage.getItem("orphan-two")).toBeNull();
     expect(persistError.reportPersistError).toHaveBeenCalledOnce();
 });
 

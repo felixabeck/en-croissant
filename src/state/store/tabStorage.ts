@@ -7,6 +7,8 @@ import { decodeCompressedOrJson, serializeStorageValue } from "./debouncedStorag
 
 export const TREE_STORAGE_VERSION = 1;
 const DEBOUNCE_MS = 300;
+const FAILED_ADMISSION_PREFIX = "chessfable:failed-tab-admission:";
+const tabIdSchema = z.string().uuid();
 const MAX_TREE_NODES = 100_000;
 const MAX_TREE_DEPTH = 512;
 const boundedText = z.string().max(100_000);
@@ -295,7 +297,7 @@ export class TabStorageRepository {
 
         const decoded = decodeLegacyOrCompressed(raw);
         if (!decoded) {
-            sessionStorage.removeItem(tabId);
+            this.removeTreeSafely(tabId);
             return null;
         }
 
@@ -350,12 +352,48 @@ export class TabStorageRepository {
 
     /** Removes a known tree without letting cleanup failures abort its owning operation. */
     removeTreeSafely(tabId: string) {
+        return !this.removeKnownTreesSafely([tabId]).has(tabId);
+    }
+
+    /** A refused admission records the exact tree to retry when rollback removal failed. */
+    recordFailedAdmission(tabId: string) {
         try {
-            this.remove(tabId);
-            return true;
+            sessionStorage.setItem(`${FAILED_ADMISSION_PREFIX}${tabId}`, "1");
         } catch (error) {
             reportPersistError(persistStorageWriteError(error));
-            return false;
+        }
+    }
+
+    /** Replay only explicit refused-admission markers, independent of ownership snapshots. */
+    replayFailedAdmissions(retainedIds: ReadonlySet<string>) {
+        try {
+            const markers = Array.from({ length: sessionStorage.length }, (_, index) =>
+                sessionStorage.key(index),
+            ).filter((key): key is string => key?.startsWith(FAILED_ADMISSION_PREFIX) ?? false);
+            const removable = new Set<string>();
+            for (const marker of markers) {
+                const tabId = marker.slice(FAILED_ADMISSION_PREFIX.length);
+                if (
+                    !tabIdSchema.safeParse(tabId).success ||
+                    sessionStorage.getItem(marker) !== "1"
+                ) {
+                    continue;
+                }
+                if (!retainedIds.has(tabId) && this.isStoredTree(tabId)) removable.add(tabId);
+            }
+            const failed = this.removeKnownTreesSafely(removable);
+            for (const marker of markers) {
+                const tabId = marker.slice(FAILED_ADMISSION_PREFIX.length);
+                if (failed.has(tabId)) continue;
+                if (
+                    tabIdSchema.safeParse(tabId).success &&
+                    sessionStorage.getItem(marker) === "1"
+                ) {
+                    sessionStorage.removeItem(marker);
+                }
+            }
+        } catch (error) {
+            reportPersistError(persistStorageWriteError(error));
         }
     }
 
