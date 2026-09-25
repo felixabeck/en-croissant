@@ -11111,6 +11111,9 @@ A plan closing this entry together with `f-20260922-04` (and the other of `f-202
 * **Open question:** whether the fix is to delete the tree key **before** committing the workspace (making a failed delete abort the close, at the cost of a tab that refuses to close), or to record the orphan in workspace metadata so startup cleanup can find it later. The first is simpler and fails loudly; the second keeps the close working. Whichever is chosen decides whether `remove` must become fallible in its signature.
 * **Found by:** `review-persisted-state` (should-fix, confidence 96) in round 1 of the plan review for `f-20260922-04`, 2026-09-22; the orchestrator confirmed the ordering and the swallowed error by reading both files before filing. Outside that plan's MANDATE (tree-path rebasing), so filed rather than folded in.
 
+* **Handled with f-20260924-02:** Commits `175db231`, `00e05199`, and `0e8eb0f7` record closed-tab tree removal intent in the workspace before deletion, retry failed removal on startup, and make retry capacity bounded with an exact post-cleanup count. Tests in `src/state/atoms.lifecycle.test.ts` and `src/state/workspace.test.ts` cover a failed close, reload, retry, and capacity refusal. Plan authorship and arbitration shared one Codex context; some detection ran on the same model family as the code after the executor quota fallback.
+<!-- ledger-meta {"command":"annotate","effect_lines":2,"effect_sha256":"10d7788f245f4a2eaafb2b9485b02c1a77773c6c657a132a75f4f014e45d673a","input_sha256":"4f5dc7c88700863c69261269e1f93baf6e085c6612102f944db2fea7bc242760","kind":"mutation-receipt","operation":"a67f52569d7ee4c534e3e5a303082b425cd46a4ca9ba93859a536f8570a4a17a","options":{"section":null},"request_id_sha256":null,"results":["f-20260922-09"],"target":"f-20260922-09","v":1} -->
+
 ---
 
 ## 2026-09-22 — filed through the inbox spool
