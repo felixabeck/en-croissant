@@ -625,6 +625,26 @@ test("retries a failed migrated-source removal even when the ownership snapshot 
     expect(loadStoredWorkspace()).not.toHaveProperty("treeOwnershipPendingRemovalIds");
 });
 
+test("does not delete a non-tree session value named by a persisted retry", () => {
+    sessionStorage.clear();
+    const validTab = { ...legacyTab, value: crypto.randomUUID() };
+    sessionStorage.setItem("other-session-value", "keep me");
+    sessionStorage.setItem(
+        WORKSPACE_STORAGE_KEY,
+        serializeStorageValue({
+            version: 1,
+            tabs: [validTab],
+            activeTab: validTab.value,
+            treeOwnershipPendingRemovalIds: ["other-session-value"],
+        }),
+    );
+
+    const workspace = loadStoredWorkspace();
+
+    expect(sessionStorage.getItem("other-session-value")).toBe("keep me");
+    expect(workspace).not.toHaveProperty("treeOwnershipPendingRemovalIds");
+});
+
 test("fails closed when the protected tree snapshot exceeds its documented bound", () => {
     sessionStorage.clear();
     sessionStorage.setItem(WORKSPACE_STORAGE_KEY, "{broken");

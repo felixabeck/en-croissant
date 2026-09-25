@@ -359,6 +359,12 @@ export class TabStorageRepository {
         }
     }
 
+    /** A persisted retry ID only authorizes removal while it still names a tree. */
+    isStoredTree(tabId: string) {
+        const raw = sessionStorage.getItem(tabId);
+        return raw !== null && decodeLegacyOrCompressed(raw) !== null;
+    }
+
     /** Reclaim durable trees absent from the retained workspace; other session values stay untouched. */
     removeOrphanedTrees(retainedIds: ReadonlySet<string>) {
         for (const key of this.storedTreeKeys(retainedIds)) {

@@ -199,8 +199,8 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
             ? currentResult.data.treeOwnershipProtectedIds
             : undefined;
     const pendingSourceRemovals = currentResult.success
-        ? (currentResult.data.treeOwnershipPendingRemovalIds ?? []).filter(
-              (id) => sessionStorage.getItem(id) !== null,
+        ? (currentResult.data.treeOwnershipPendingRemovalIds ?? []).filter((id) =>
+              tabStorage.isStoredTree(id),
           )
         : [];
     const legacy =
