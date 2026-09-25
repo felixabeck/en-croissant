@@ -594,6 +594,21 @@ test("cloning a legacy ID that belongs to another store preserves that store", (
     expect(storage.pendingCount()).toBe(0);
 });
 
+test("legacy tab cloning preserves every reserved non-tree session key", () => {
+    const reservedValues = new Map([
+        ["workspace", JSON.stringify({ version: 1, tabs: [] })],
+        ["tabs", JSON.stringify([{ name: "Other tab" }])],
+        ["activeTab", JSON.stringify("other-tab")],
+        ["expanded-directories", JSON.stringify({ expanded: ["/games"] })],
+    ]);
+    for (const [key, value] of reservedValues) {
+        sessionStorage.setItem(key, value);
+        storage.clone(key, `clone-${key}`);
+        expect(sessionStorage.getItem(key)).toBe(value);
+        expect(sessionStorage.getItem(`clone-${key}`)).toBeNull();
+    }
+});
+
 test("cloneDurable propagates a normalized target write failure without changing its source", () => {
     const source = treeWith((state) => {
         state.dirty = true;
