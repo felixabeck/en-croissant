@@ -12,6 +12,7 @@ import {
     sweepOrphanedTreeKeys,
     MAX_PROTECTED_TREE_KEYS,
     MAX_PROTECTED_TREE_KEY_LENGTH,
+    MAX_PENDING_TREE_REMOVALS,
     WORKSPACE_STORAGE_KEY,
 } from "./workspace";
 
@@ -623,6 +624,43 @@ test("retries a failed migrated-source removal even when the ownership snapshot 
     expect(sessionStorage.getItem(legacyTab.value)).toBeNull();
     expect(second.treeOwnershipPendingRemovalIds).toContain(legacyTab.value);
     expect(loadStoredWorkspace()).not.toHaveProperty("treeOwnershipPendingRemovalIds");
+});
+
+test("does not persist an over-capacity retry list during legacy ID migration", () => {
+    sessionStorage.clear();
+    const tree = serializeStorageValue({ version: 1, state: defaultTree() });
+    const pendingIds = Array.from(
+        { length: MAX_PENDING_TREE_REMOVALS },
+        (_, index) => `pending-tree-${index}`,
+    );
+    for (const id of pendingIds) sessionStorage.setItem(id, tree);
+    sessionStorage.setItem(legacyTab.value, tree);
+    const originalEnvelope = serializeStorageValue({
+        version: 1,
+        tabs: [legacyTab],
+        activeTab: legacyTab.value,
+        treeOwnershipPendingRemovalIds: pendingIds,
+    });
+    sessionStorage.setItem(WORKSPACE_STORAGE_KEY, originalEnvelope);
+    const originalRemoveItem = Storage.prototype.removeItem;
+    const deny = vi
+        .spyOn(Storage.prototype, "removeItem")
+        .mockImplementation(function (this: Storage, id) {
+            if (id.startsWith("pending-tree-")) throw new DOMException("denied", "SecurityError");
+            return originalRemoveItem.call(this, id);
+        });
+
+    const first = loadStoredWorkspace();
+
+    expect(first.tabs[0]!.value).toBe(legacyTab.value);
+    expect(first.treeOwnershipPendingRemovalIds).toEqual(pendingIds);
+    expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(originalEnvelope);
+    deny.mockRestore();
+
+    const repaired = loadStoredWorkspace();
+    expect(repaired.tabs[0]!.value).not.toBe(legacyTab.value);
+    expect(sessionStorage.getItem(pendingIds[0]!)).toBeNull();
+    expect(loadStoredWorkspace().treeOwnershipPendingRemovalIds).toBeUndefined();
 });
 
 test("does not delete a non-tree session value named by a persisted retry", () => {

@@ -31,6 +31,7 @@ export type Workspace = {
 };
 
 export const MAX_WORKSPACE_TABS = 100;
+export const MAX_PENDING_TREE_REMOVALS = 100;
 const workspaceInputSchema = z.object({
     version: z.number().int().nonnegative().optional().catch(undefined),
     // Scrub individual legacy/corrupt tabs while keeping every independently
@@ -48,7 +49,10 @@ const workspaceLiveSchema = z.object({
     activeTab: z.string().max(128).nullable(),
     treeOwnershipUncertain: z.literal(true).optional(),
     treeOwnershipProtectedIds: protectedTreeKeysSchema,
-    treeOwnershipPendingRemovalIds: z.array(z.string().min(1)).max(MAX_WORKSPACE_TABS).optional(),
+    treeOwnershipPendingRemovalIds: z
+        .array(z.string().min(1))
+        .max(MAX_PENDING_TREE_REMOVALS)
+        .optional(),
 });
 
 function newTab(used: Iterable<string>): Tab {
@@ -230,6 +234,9 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
                 missingWorkspaceTreeSnapshot === null ||
                 (missingWorkspaceTreeSnapshot?.length ?? 0) > 0));
     const plan = planWorkspaceRepair(legacy);
+    if (persistedPendingRemovals.length > 0) {
+        plan.unrepairedWorkspace.treeOwnershipPendingRemovalIds = [...persistedPendingRemovals];
+    }
     const takingFreshOwnershipSnapshot =
         treeOwnershipUncertain && persistedProtectedTreeIds === undefined;
     if (treeOwnershipUncertain) {
@@ -275,6 +282,18 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
     }
     const pendingRemovalIds = new Set([...persistedPendingRemovals, ...durableMigratedSources]);
     for (const retainedId of retainedIds) pendingRemovalIds.delete(retainedId);
+    if (pendingRemovalIds.size > MAX_PENDING_TREE_REMOVALS) {
+        const retryablePriorIds = persistedPendingRemovals.filter((id) => !retainedIds.has(id));
+        const failedPriorIds = tabStorage.removeKnownTreesSafely(retryablePriorIds);
+        for (const id of retryablePriorIds) {
+            if (!failedPriorIds.has(id)) pendingRemovalIds.delete(id);
+        }
+        if (pendingRemovalIds.size > MAX_PENDING_TREE_REMOVALS) {
+            reportPersistError(persistStorageWriteError({}));
+            for (const id of stagedCloneIds) tabStorage.removeTreeSafely(id);
+            return plan.unrepairedWorkspace;
+        }
+    }
     if (pendingRemovalIds.size > 0) {
         plan.workspace.treeOwnershipPendingRemovalIds = [...pendingRemovalIds];
     }
@@ -295,10 +314,7 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
         }
     }
 
-    const failedKnownRemovals = new Set<string>();
-    for (const treeId of pendingRemovalIds) {
-        if (!tabStorage.removeTreeSafely(treeId)) failedKnownRemovals.add(treeId);
-    }
+    const failedKnownRemovals = tabStorage.removeKnownTreesSafely(pendingRemovalIds);
 
     // A representable fresh snapshot protects every valid tree from before clone staging. Later
     // loads sweep against that durable set; known migrated sources are reclaimed explicitly above.

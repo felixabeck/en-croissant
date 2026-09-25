@@ -359,6 +359,29 @@ export class TabStorageRepository {
         }
     }
 
+    /** Remove a known set and report one failure while retaining every refused ID for retry. */
+    removeKnownTreesSafely(tabIds: Iterable<string>): Set<string> {
+        const failed = new Set<string>();
+        let firstError: unknown;
+        let hadError = false;
+        try {
+            for (const tabId of tabIds) {
+                try {
+                    this.remove(tabId);
+                } catch (error) {
+                    failed.add(tabId);
+                    hadError = true;
+                    firstError ??= error;
+                }
+            }
+        } catch (error) {
+            hadError = true;
+            firstError ??= error;
+        }
+        if (hadError) reportPersistError(persistStorageWriteError(firstError));
+        return failed;
+    }
+
     /** A persisted retry ID only authorizes removal while it still names a tree. */
     isStoredTree(tabId: string) {
         const raw = sessionStorage.getItem(tabId);
@@ -367,19 +390,7 @@ export class TabStorageRepository {
 
     /** Reclaim durable trees absent from the retained workspace; other session values stay untouched. */
     removeOrphanedTrees(retainedIds: ReadonlySet<string>) {
-        let firstError: unknown;
-        try {
-            for (const key of this.storedTreeKeys(retainedIds)) {
-                try {
-                    this.remove(key);
-                } catch (error) {
-                    firstError ??= error;
-                }
-            }
-        } catch (error) {
-            firstError ??= error;
-        }
-        if (firstError !== undefined) reportPersistError(persistStorageWriteError(firstError));
+        this.removeKnownTreesSafely(this.storedTreeKeys(retainedIds));
     }
 
     /** Snapshot valid stored tree keys through the same bounded validator used by orphan cleanup. */
