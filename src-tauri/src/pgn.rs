@@ -2360,7 +2360,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_game_refuses_a_missing_selected_row_as_stale() {
+    async fn delete_game_refuses_an_out_of_range_row_as_stale_with_current_revision() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("missing-delete.pgn");
         let original = b"[Event \"Before\"]\n\n1. e4 *\n";
@@ -2375,12 +2375,58 @@ mod tests {
         )
         .await
         .expect("read selected game");
-        std::fs::write(&path, b"").expect("remove all games externally");
 
-        let result = delete_with_snapshot(&directory, &path, 0, selected).await;
+        let result = delete_with_snapshot(&directory, &path, 1, selected).await;
 
         assert!(matches!(result, Err(Error::StaleGame)));
-        assert_eq!(std::fs::read(&path).expect("read unchanged empty PGN"), b"");
+        assert_eq!(std::fs::read(&path).expect("read unchanged PGN"), original);
+    }
+
+    #[tokio::test]
+    async fn delete_game_rejects_a_changed_commit_snapshot_without_mutating_it() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("changed-commit-snapshot.pgn");
+        let original = b"[Event \"Before\"]\n\n1. e4 *\n";
+        std::fs::write(&path, original).expect("write PGN");
+        let app = mock_app();
+        let state = app.state::<AppState>();
+        let repository = state.pgn_repository.clone();
+        let resolved = writable_for(&directory, &path);
+        let cancellation = CancellationToken::new();
+        let (key, games) = scan_current(
+            resolved.pgn_snapshot().expect("scan snapshot"),
+            &repository,
+            &cancellation,
+        )
+        .await
+        .expect("scan current PGN");
+        let target = games[0];
+        let changed = b"[Event \"Changed externally\"]\n\n1. d4 d5 *\n";
+        std::fs::write(&path, changed).expect("change PGN after scan");
+
+        let result = commit_pgn_mutation(
+            resolved,
+            key,
+            PgnMutation {
+                target,
+                replacement: None,
+                expectation: Some(WriteExpectation::Game {
+                    stamp: game_stamp(original),
+                }),
+                stale_on_snapshot_change: true,
+                operation_name: "delete_game",
+                rebind: None,
+            },
+            &repository,
+            &cancellation,
+        )
+        .await;
+
+        assert!(matches!(result, Err(Error::StaleGame)));
+        assert_eq!(
+            std::fs::read(&path).expect("read unchanged changed PGN"),
+            changed
+        );
     }
 
     #[tokio::test]
