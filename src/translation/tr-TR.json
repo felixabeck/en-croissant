@@ -541,6 +541,7 @@
     "Files.Reload": "Yeniden yükle",
     "Files.RemoveGame": "Oyunu kaldır",
     "Files.RemoveGameConfirm": "Bu oyunu kaldırmak istediğinizden emin misiniz?",
+    "Files.RemoveGameStale": "Dosya değişti, bu yüzden hiçbir oyun silinmedi. Silmeden önce oyun listesini yenileyin.",
     "Files.Rename": "Yeniden adlandır",
     "Files.RenameFile": "Dosyayı yeniden adlandır",
     "Files.Restore": "Geri yükle",

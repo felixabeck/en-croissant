@@ -1,4 +1,3 @@
-import { tauri } from "@/platform/tauri";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { Code, Divider, Group, Text, Tooltip } from "@mantine/core";
 import { IconReload } from "@tabler/icons-react";
@@ -10,11 +9,13 @@ import { IconAction } from "@/components/common/IconAction";
 import { formatNumber } from "@/utils/format";
 import { getTabFile } from "@/utils/tabs";
 import { fileWorkspaceKey } from "@/utils/pathCapabilities";
+import { refreshFileGameCount } from "@/utils/files";
+import type { GameSelectorRow } from "./GameSelector";
 
 function FileInfo({
   setGames,
 }: {
-  setGames: React.Dispatch<React.SetStateAction<Map<number, string>>>;
+  setGames: React.Dispatch<React.SetStateAction<Map<number, GameSelectorRow>>>;
 }) {
   const { t } = useTranslation();
   const [tab, setCurrentTab] = useAtom(currentTabAtom);
@@ -47,27 +48,31 @@ function FileInfo({
     const currentTabId = activeTab.value;
     const handle = activeFile.handle;
     try {
-      const numGames = await tauri.countPgnGames(handle, { signal: controller.signal });
-      if (identityRef.current !== activeIdentity || controller.signal.aborted) return;
-      const saved = setCurrentTab((prev) => {
-        if (prev.value !== currentTabId) return prev;
-        if (prev.gameOrigin.kind !== "file" && prev.gameOrigin.kind !== "temp_file") {
-          return prev;
-        }
-        if (fileWorkspaceKey(prev.gameOrigin.file.handle) !== activeFileKey) return prev;
-        return {
-          ...prev,
-          gameOrigin: {
-            ...prev.gameOrigin,
-            file: {
-              ...prev.gameOrigin.file,
-              numGames,
-            },
-          },
-        };
+      await refreshFileGameCount(handle, {
+        signal: controller.signal,
+        isCurrent: () => identityRef.current === activeIdentity && !controller.signal.aborted,
+        updateCount: (numGames) => {
+          const saved = setCurrentTab((prev) => {
+            if (prev.value !== currentTabId) return prev;
+            if (prev.gameOrigin.kind !== "file" && prev.gameOrigin.kind !== "temp_file") {
+              return prev;
+            }
+            if (fileWorkspaceKey(prev.gameOrigin.file.handle) !== activeFileKey) return prev;
+            return {
+              ...prev,
+              gameOrigin: {
+                ...prev.gameOrigin,
+                file: {
+                  ...prev.gameOrigin.file,
+                  numGames,
+                },
+              },
+            };
+          });
+          if (saved) setGames(new Map());
+          return saved;
+        },
       });
-      if (!saved) return;
-      setGames(new Map());
     } catch (cause) {
       if (identityRef.current !== activeIdentity || controller.signal.aborted) return;
       notifyUnlessCancelled(t("Common.Error"), cause);

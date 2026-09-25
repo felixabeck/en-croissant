@@ -533,6 +533,7 @@
     "Files.Reload": "重新加载文件",
     "Files.RemoveGame": "移除對局",
     "Files.RemoveGameConfirm": "確定要刪除這盤對局嗎？",
+    "Files.RemoveGameStale": "檔案已變更，因此沒有刪除任何棋局。請重新整理棋局清單後再刪除。",
     "Files.Rename": "重新命名",
     "Files.RenameFile": "重新命名檔案",
     "Files.Restore": "還原",

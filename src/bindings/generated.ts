@@ -643,7 +643,7 @@ async readGame(file: FileWorkspaceHandle, n: number, ticket: string | null) : Pr
     else return { status: "error", error: e  as any };
 }
 },
-async readGames(file: FileWorkspaceHandle, start: number, end: number, ticket: string | null) : Promise<Result<string[], ErrorPayload>> {
+async readGames(file: FileWorkspaceHandle, start: number, end: number, ticket: string | null) : Promise<Result<StampedGame[], ErrorPayload>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("read_games", { file, start, end, ticket }) };
 } catch (e) {
@@ -662,9 +662,9 @@ async lexPgn(pgn: string, ticket: string | null) : Promise<Result<Token[], Error
 async isBmi2Compatible() : Promise<boolean> {
     return await TAURI_INVOKE("is_bmi2_compatible");
 },
-async deleteGame(file: FileWorkspaceHandle, n: number) : Promise<Result<null, ErrorPayload>> {
+async deleteGame(file: FileWorkspaceHandle, n: number, stamp: string, revision: string) : Promise<Result<null, ErrorPayload>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("delete_game", { file, n }) };
+    return { status: "ok", data: await TAURI_INVOKE("delete_game", { file, n, stamp, revision }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };

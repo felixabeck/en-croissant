@@ -549,6 +549,7 @@
     "Files.Reload": "Recarregar ficheiro",
     "Files.RemoveGame": "Remover partida",
     "Files.RemoveGameConfirm": "Tem a certeza de que pretende remover esta partida?",
+    "Files.RemoveGameStale": "O ficheiro foi alterado, por isso não foi removida nenhuma partida. Atualize a lista de partidas antes de eliminar.",
     "Files.Rename": "Mudar o nome",
     "Files.RenameFile": "Mudar o nome do ficheiro",
     "Files.Restore": "Restaurar",

@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { SWRConfig } from "swr";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { cancellationError } from "@/platform/tauri";
+import type { StampedGame } from "@/bindings";
 
 const mocks = vi.hoisted(() => ({
   lexPgn: vi.fn(),
@@ -165,7 +166,13 @@ describe("GamePreviewWrapper", () => {
 
   test("cancel after readGames completed while lexer is held parsing: worker exits and neither data nor failure is published", async () => {
     const controller = new AbortController();
-    mocks.readGames.mockResolvedValueOnce(["1. e4 e5 2. Nf3"]);
+    const game: StampedGame = {
+      pgn: "1. e4 e5 2. Nf3",
+      stamp: "preview-stamp",
+      revision: "preview-revision",
+      present: true,
+    };
+    mocks.readGames.mockResolvedValueOnce([game]);
 
     let lexSignal!: AbortSignal;
     let rejectLex!: (reason?: unknown) => void;
@@ -181,11 +188,11 @@ describe("GamePreviewWrapper", () => {
 
     // Simulate pipeline: readGames completes, then lexPgn is held
     const games = await mocks.readGames("file.pgn", 0, 0, { signal: controller.signal });
-    expect(games).toEqual(["1. e4 e5 2. Nf3"]);
+    expect(games).toEqual([game]);
 
     // Component starts preview
     await act(async () => {
-      root.render(<Tree pgn={games[0]} sub1={true} sub2={false} />);
+      root.render(<Tree pgn={games[0].pgn} sub1={true} sub2={false} />);
     });
     await vi.waitFor(() => expect(mocks.lexPgn).toHaveBeenCalledOnce());
     expect(lexSignal).toBeDefined();
@@ -193,7 +200,7 @@ describe("GamePreviewWrapper", () => {
 
     // Unmount before lexer finishes
     await act(async () => {
-      root.render(<Tree pgn={games[0]} sub1={false} sub2={false} />);
+      root.render(<Tree pgn={games[0].pgn} sub1={false} sub2={false} />);
     });
     await vi.waitFor(() => expect(lexSignal.aborted).toBe(true));
 

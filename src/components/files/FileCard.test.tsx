@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { cancellationError } from "@/platform/tauri";
 import { tabStorage } from "@/state/store/tabStorage";
+import type { StampedGame } from "@/bindings";
 
 const mocks = vi.hoisted(() => ({
   readGames: vi.fn(),
@@ -95,6 +96,10 @@ describe("FileCard", () => {
   let container: HTMLDivElement;
   let root: Root;
 
+  function stampedGame(pgn: string, revision = "revision"): StampedGame {
+    return { pgn, stamp: `stamp-${revision}`, revision, present: true };
+  }
+
   const sampleFileA: FileMetadata = {
     type: "file",
     handle: { id: { id: "token-a" }, kind: "fileWorkspace" },
@@ -127,12 +132,12 @@ describe("FileCard", () => {
 
   test("rapid file replacement aborts previous signal and prevents stale publication", async () => {
     const signals: AbortSignal[] = [];
-    const resolvers: Array<(val: string[]) => void> = [];
+    const resolvers: Array<(val: StampedGame[]) => void> = [];
 
     mocks.readGames.mockImplementation(
       (_handle: unknown, _start: number, _end: number, options?: { signal?: AbortSignal }) => {
         if (options?.signal) signals.push(options.signal);
-        return new Promise<string[]>((resolve) => {
+        return new Promise<StampedGame[]>((resolve) => {
           resolvers.push(resolve);
         });
       },
@@ -152,14 +157,14 @@ describe("FileCard", () => {
 
     // Resolve stale request from file A
     await act(async () => {
-      resolvers[0](["pgn-from-file-A"]);
+      resolvers[0]([stampedGame("pgn-from-file-A", "a")]);
     });
     // Stale result should NOT be published
     expect(container.querySelector("[data-testid='game-preview']")).toBeNull();
 
     // Resolve request from file B
     await act(async () => {
-      resolvers[1](["pgn-from-file-B"]);
+      resolvers[1]([stampedGame("pgn-from-file-B", "b")]);
     });
     expect(container.querySelector("[data-testid='game-preview']")?.textContent).toBe(
       "pgn-from-file-B",
@@ -217,7 +222,7 @@ describe("FileCard", () => {
     await renderWithMantine(<FileCard selected={sampleFileA} />, root);
 
     // Switch to file B before A fails
-    mocks.readGames.mockResolvedValueOnce(["pgn-b"]);
+    mocks.readGames.mockResolvedValueOnce([stampedGame("pgn-b", "b")]);
     await renderWithMantine(<FileCard selected={sampleFileB} />, root);
 
     // Now A fails late
@@ -230,7 +235,7 @@ describe("FileCard", () => {
   });
 
   test("a relisted copy of the same file keeps the page and reads no games again", async () => {
-    mocks.readGames.mockResolvedValue(["pgn-a"]);
+    mocks.readGames.mockResolvedValue([stampedGame("pgn-a", "a")]);
 
     await renderWithMantine(<FileCard selected={sampleFileA} />, root);
     expect(mocks.readGames).toHaveBeenCalledTimes(1);
@@ -248,7 +253,7 @@ describe("FileCard", () => {
   });
 
   test("renders no metadata-edit control", async () => {
-    mocks.readGames.mockResolvedValue(["pgn-a"]);
+    mocks.readGames.mockResolvedValue([stampedGame("pgn-a", "a")]);
 
     await renderWithMantine(<FileCard selected={sampleFileA} />, root);
 
@@ -259,7 +264,7 @@ describe("FileCard", () => {
 
   test("Open reads and seeds fresh game text instead of the preview", async () => {
     const stamp = "f".repeat(64);
-    mocks.readGames.mockResolvedValue(['[Event "Old preview"]\n\n1. e4 *']);
+    mocks.readGames.mockResolvedValue([stampedGame('[Event "Old preview"]\n\n1. e4 *')]);
     mocks.readGame.mockResolvedValue({
       pgn: '[Event "Fresh from disk"]\n\n1. d4 *',
       stamp,

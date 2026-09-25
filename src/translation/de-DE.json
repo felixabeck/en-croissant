@@ -541,6 +541,7 @@
     "Files.Reload": "Erneut laden",
     "Files.RemoveGame": "Partie entfernen",
     "Files.RemoveGameConfirm": "Möchtest du dieses Spiel wirklich entfernen?",
+    "Files.RemoveGameStale": "Die Datei wurde geändert. Es wurde keine Partie entfernt. Lade die Partienliste neu, bevor du eine Partie löschst.",
     "Files.Rename": "Umbenennen",
     "Files.RenameFile": "Datei umbenennen",
     "Files.Restore": "Wiederherstellen",

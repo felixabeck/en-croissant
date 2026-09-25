@@ -920,7 +920,7 @@ pub async fn read_games(
     ticket: Option<String>,
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
-) -> Result<Vec<String>, Error> {
+) -> Result<Vec<StampedGame>, Error> {
     let operation = crate::native_read_operation(ticket, &window, &state, "read_games")?;
     let cancellation = operation.token();
     let repository = state.pgn_repository.clone();
@@ -941,9 +941,9 @@ pub async fn read_games_core(
     end: i32,
     cancellation: &CancellationToken,
     repository: &PgnRepository,
-) -> Result<Vec<String>, Error> {
+) -> Result<Vec<StampedGame>, Error> {
     let (start, count) = checked_range(start, end)?;
-    let (_, (), values) = scan_and_read_ranges(resolved, repository, cancellation, |_, games| {
+    let (key, (), values) = scan_and_read_ranges(resolved, repository, cancellation, |_, games| {
         let end = start
             .checked_add(count)
             .ok_or_else(|| Error::InvalidInput("game range overflows".into()))?;
@@ -958,7 +958,16 @@ pub async fn read_games_core(
         Ok(((), requested))
     })
     .await?;
-    Ok(values)
+    let revision = revision_string(&key);
+    Ok(values
+        .into_iter()
+        .map(|pgn| StampedGame {
+            stamp: game_stamp(pgn.as_bytes()),
+            pgn,
+            revision: revision.clone(),
+            present: true,
+        })
+        .collect())
 }
 
 #[tauri::command]
@@ -1055,6 +1064,7 @@ struct PgnMutation {
     target: GameRange,
     replacement: Option<Vec<u8>>,
     expectation: Option<WriteExpectation>,
+    stale_on_snapshot_change: bool,
     operation_name: &'static str,
     rebind: Option<PgnCapabilityRebind>,
 }
@@ -1070,6 +1080,7 @@ async fn commit_pgn_mutation(
         target,
         replacement,
         expectation,
+        stale_on_snapshot_change,
         operation_name,
         rebind,
     } = mutation;
@@ -1078,7 +1089,11 @@ async fn commit_pgn_mutation(
     }
     let commit_snapshot = resolved.pgn_snapshot()?;
     if snapshot_key(&commit_snapshot) != key {
-        return Err(Error::Conflict("PGN changed after scan".into()));
+        return Err(if stale_on_snapshot_change {
+            Error::StaleGame
+        } else {
+            Error::Conflict("PGN changed after scan".into())
+        });
     }
     if let Some(expectation) = expectation {
         let matched = match expectation {
@@ -1178,6 +1193,8 @@ async fn commit_pgn_mutation(
 pub async fn delete_game(
     file: crate::infra::path_authority::FileWorkspaceHandle,
     n: i32,
+    stamp: String,
+    revision: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
     crate::infra::platform_support::off_unix_refusal("PGN atomic replacement", cfg!(unix))?;
@@ -1192,13 +1209,24 @@ pub async fn delete_game(
         authority: Arc::clone(&state.pgn_path_authority),
         path_ref: file.path_ref().clone(),
     };
-    delete_game_core(lease, resolved, n, repository, Some(rebind)).await
+    delete_game_core(
+        lease,
+        resolved,
+        n,
+        stamp,
+        revision,
+        repository,
+        Some(rebind),
+    )
+    .await
 }
 
 pub async fn delete_game_core(
     lease: OperationLease,
     resolved: crate::infra::path_authority::ResolvedPath,
     n: i32,
+    expected_stamp: String,
+    expected_revision: String,
     repository: PgnRepository,
     rebind: Option<PgnCapabilityRebind>,
 ) -> Result<(), Error> {
@@ -1218,17 +1246,20 @@ pub async fn delete_game_core(
             return Err(Error::Cancellation);
         }
         let (key, games) = scan_current(scan_snapshot, &repository, &cancellation).await?;
-        let range = games
-            .get(n)
-            .cloned()
-            .ok_or_else(|| Error::InvalidInput("game index is out of bounds".into()))?;
+        if revision_string(&key) != expected_revision {
+            return Err(Error::StaleGame);
+        }
+        let range = games.get(n).cloned().ok_or(Error::StaleGame)?;
         commit_pgn_mutation(
             resolved,
             key,
             PgnMutation {
                 target: range,
                 replacement: None,
-                expectation: None,
+                expectation: Some(WriteExpectation::Game {
+                    stamp: expected_stamp,
+                }),
+                stale_on_snapshot_change: true,
                 operation_name: "delete_game",
                 rebind,
             },
@@ -1315,6 +1346,7 @@ pub async fn write_game_core(
                 target,
                 replacement: Some(replacement),
                 expectation: Some(expected),
+                stale_on_snapshot_change: false,
                 operation_name: "write_game",
                 rebind,
             },
@@ -1461,6 +1493,27 @@ mod tests {
                 &[],
             )
             .expect("resolve writable PGN")
+    }
+
+    async fn delete_with_snapshot(
+        directory: &tempfile::TempDir,
+        path: &Path,
+        n: i32,
+        selected: StampedGame,
+    ) -> Result<(), Error> {
+        let app = mock_app();
+        let state = app.state::<AppState>();
+        let lease = state.operations.accept("delete_game")?;
+        delete_game_core(
+            lease,
+            writable_for(directory, path),
+            n,
+            selected.stamp,
+            selected.revision,
+            state.pgn_repository.clone(),
+            None,
+        )
+        .await
     }
 
     #[cfg(unix)]
@@ -1641,6 +1694,8 @@ mod tests {
         app: &tauri::AppHandle<tauri::test::MockRuntime>,
         handle: &crate::infra::path_authority::FileWorkspaceHandle,
         n: i32,
+        expected_stamp: String,
+        expected_revision: String,
     ) -> Result<(), Error> {
         let (lease, resolved, repository, rebind) = {
             let state = app.state::<AppState>();
@@ -1657,7 +1712,16 @@ mod tests {
             };
             (lease, resolved, repository, rebind)
         };
-        delete_game_core(lease, resolved, n, repository, Some(rebind)).await
+        delete_game_core(
+            lease,
+            resolved,
+            n,
+            expected_stamp,
+            expected_revision,
+            repository,
+            Some(rebind),
+        )
+        .await
     }
 
     #[test]
@@ -1755,7 +1819,18 @@ mod tests {
             second_identity
         );
 
-        delete_through_capability(&app, &handle, 0)
+        let current = {
+            let state = app.state::<AppState>();
+            read_game_core(
+                resolve_pgn(&state, &handle, PathOperation::ReadPgn).expect("resolve game"),
+                0,
+                &CancellationToken::new(),
+                &state.pgn_repository,
+            )
+            .await
+            .expect("read current game before delete")
+        };
+        delete_through_capability(&app, &handle, 0, current.stamp, current.revision)
             .await
             .expect("capability delete");
         let deleted_identity = fs_identity(&path);
@@ -1778,7 +1853,7 @@ mod tests {
             .await
             .expect("read games after reload");
         assert_eq!(games.len(), 1);
-        assert!(games[0].contains("[Event \"Second\"]"));
+        assert!(games[0].pgn.contains("[Event \"Second\"]"));
         assert_eq!(
             registry_identity(&registry, handle.path_ref()),
             deleted_identity
@@ -2038,7 +2113,7 @@ mod tests {
             .await
             .expect("read through rebound persistent handle");
         assert_eq!(games.len(), 1);
-        assert!(games[0].contains("[Event \"Application\"]"));
+        assert!(games[0].pgn.contains("[Event \"Application\"]"));
     }
 
     #[tokio::test]
@@ -2116,8 +2191,12 @@ mod tests {
         .await
         .expect("read complete two-game page");
         assert_eq!(page.len(), 2);
-        assert!(page[0].starts_with("[Event \"A\"]"));
-        assert!(page[1].starts_with("[Event \"B\"]"));
+        assert!(page[0].pgn.starts_with("[Event \"A\"]"));
+        assert!(page[1].pgn.starts_with("[Event \"B\"]"));
+        assert!(page.iter().all(|game| game.present));
+        assert_eq!(page[0].revision, page[1].revision);
+        assert_eq!(page[0].stamp, game_stamp(b"[Event \"A\"]\n\n1. e4\n"));
+        assert_eq!(page[1].stamp, game_stamp(b"[Event \"B\"]\n\n1. d4\n"));
 
         let partial = read_games_core(
             resolved_for(&directory, &path),
@@ -2177,6 +2256,160 @@ mod tests {
             missing,
             Err(Error::InvalidInput(message)) if message == "game index is out of bounds"
         ));
+    }
+
+    #[tokio::test]
+    async fn delete_game_refuses_when_an_external_insertion_shifts_the_selected_row() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("insert-before-delete.pgn");
+        let original = b"[Event \"A\"]\n\n1. e4 *\n\n[Event \"B\"]\n\n1. d4 *\n";
+        std::fs::write(&path, original).expect("write initial PGN");
+        let app = mock_app();
+        let state = app.state::<AppState>();
+        let selected = read_game_core(
+            writable_for(&directory, &path),
+            1,
+            &CancellationToken::new(),
+            &state.pgn_repository,
+        )
+        .await
+        .expect("read selected game");
+        let changed = b"[Event \"Inserted\"]\n\n1. c4 *\n\n[Event \"A\"]\n\n1. e4 *\n\n[Event \"B\"]\n\n1. d4 *\n";
+        std::fs::write(&path, changed).expect("insert game before selected row");
+
+        let result = delete_with_snapshot(&directory, &path, 1, selected).await;
+
+        assert!(matches!(result, Err(Error::StaleGame)));
+        assert_eq!(std::fs::read(&path).expect("read unchanged PGN"), changed);
+    }
+
+    #[tokio::test]
+    async fn delete_game_uses_revision_to_distinguish_moved_equal_text_duplicates() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("duplicate-delete.pgn");
+        let duplicate = b"[Event \"Same\"]\n\n1. e4 *\n";
+        let original = [duplicate.as_slice(), b"\n", duplicate.as_slice()].concat();
+        std::fs::write(&path, &original).expect("write duplicate PGNs");
+        let app = mock_app();
+        let state = app.state::<AppState>();
+        let selected = read_game_core(
+            writable_for(&directory, &path),
+            1,
+            &CancellationToken::new(),
+            &state.pgn_repository,
+        )
+        .await
+        .expect("read second duplicate");
+        assert_eq!(selected.stamp, game_stamp(duplicate));
+        let inserted = b"[Event \"Inserted\"]\n\n1. c4 *\n\n";
+        let changed = [inserted.as_slice(), original.as_slice()].concat();
+        std::fs::write(&path, &changed).expect("shift duplicate rows");
+
+        let result = delete_with_snapshot(&directory, &path, 1, selected).await;
+
+        assert!(matches!(result, Err(Error::StaleGame)));
+        assert_eq!(std::fs::read(&path).expect("read unchanged PGN"), changed);
+    }
+
+    #[tokio::test]
+    async fn delete_game_refuses_when_the_selected_game_was_edited() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("edited-delete.pgn");
+        std::fs::write(&path, b"[Event \"Before\"]\n\n1. e4 *\n").expect("write PGN");
+        let app = mock_app();
+        let state = app.state::<AppState>();
+        let selected = read_game_core(
+            writable_for(&directory, &path),
+            0,
+            &CancellationToken::new(),
+            &state.pgn_repository,
+        )
+        .await
+        .expect("read selected game");
+        let changed = b"[Event \"Changed after display\"]\n\n1. d4 d5 *\n";
+        std::fs::write(&path, changed).expect("edit selected game");
+
+        let result = delete_with_snapshot(&directory, &path, 0, selected).await;
+
+        assert!(matches!(result, Err(Error::StaleGame)));
+        assert_eq!(std::fs::read(&path).expect("read unchanged PGN"), changed);
+    }
+
+    #[tokio::test]
+    async fn delete_game_requires_the_selected_game_stamp_at_the_expected_revision() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("wrong-stamp-delete.pgn");
+        let original = b"[Event \"Current\"]\n\n1. e4 *\n";
+        std::fs::write(&path, original).expect("write PGN");
+        let app = mock_app();
+        let state = app.state::<AppState>();
+        let mut selected = read_game_core(
+            writable_for(&directory, &path),
+            0,
+            &CancellationToken::new(),
+            &state.pgn_repository,
+        )
+        .await
+        .expect("read selected game");
+        selected.stamp = "different-game-stamp".into();
+
+        let result = delete_with_snapshot(&directory, &path, 0, selected).await;
+
+        assert!(matches!(result, Err(Error::StaleGame)));
+        assert_eq!(std::fs::read(&path).expect("read unchanged PGN"), original);
+    }
+
+    #[tokio::test]
+    async fn delete_game_refuses_a_missing_selected_row_as_stale() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("missing-delete.pgn");
+        let original = b"[Event \"Before\"]\n\n1. e4 *\n";
+        std::fs::write(&path, original).expect("write PGN");
+        let app = mock_app();
+        let state = app.state::<AppState>();
+        let selected = read_game_core(
+            writable_for(&directory, &path),
+            0,
+            &CancellationToken::new(),
+            &state.pgn_repository,
+        )
+        .await
+        .expect("read selected game");
+        std::fs::write(&path, b"").expect("remove all games externally");
+
+        let result = delete_with_snapshot(&directory, &path, 0, selected).await;
+
+        assert!(matches!(result, Err(Error::StaleGame)));
+        assert_eq!(std::fs::read(&path).expect("read unchanged empty PGN"), b"");
+    }
+
+    #[tokio::test]
+    async fn delete_game_succeeds_when_the_selected_snapshot_is_unchanged() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("current-delete.pgn");
+        let first = b"[Event \"First\"]\n\n1. e4 *\n";
+        let second = b"[Event \"Second\"]\n\n1. d4 *\n";
+        std::fs::write(&path, [first.as_slice(), b"\n", second.as_slice()].concat())
+            .expect("write PGN");
+        let app = mock_app();
+        let state = app.state::<AppState>();
+        let selected = read_game_core(
+            writable_for(&directory, &path),
+            1,
+            &CancellationToken::new(),
+            &state.pgn_repository,
+        )
+        .await
+        .expect("read selected game");
+
+        delete_with_snapshot(&directory, &path, 1, selected)
+            .await
+            .expect("delete current row");
+
+        assert_eq!(
+            std::fs::read(&path).expect("read edited PGN"),
+            [first.as_slice(), b"\n"].concat()
+        );
     }
 
     #[tokio::test]
@@ -2965,7 +3198,6 @@ mod tests {
             .await
             .expect("warm cache");
         assert!(repository.get(&old_key).unwrap().is_some());
-
         // Install bounded hook on the worker
         let (hook, entered, release) = BoundedHook::new();
         repository
@@ -3118,6 +3350,14 @@ mod tests {
             .await
             .expect("warm cache");
         assert!(repository.get(&old_key).unwrap().is_some());
+        let expected = read_game_core(
+            writable_for(&directory, &path),
+            0,
+            &CancellationToken::new(),
+            &repository,
+        )
+        .await
+        .expect("read game selected for delete");
 
         // Install bounded hook on the worker
         let (hook, entered, release) = BoundedHook::new();
@@ -3130,6 +3370,8 @@ mod tests {
             lease,
             resolved,
             0,
+            expected.stamp,
+            expected.revision,
             repository.clone(),
             None,
         ));
@@ -3280,21 +3522,14 @@ mod tests {
         let waiting = repository
             .observe_edit_lock_wait()
             .expect("observe edit wait");
-        let expected_stamp = if write {
-            Some(
-                read_game_core(
-                    writable_for(&directory, &path),
-                    0,
-                    &CancellationToken::new(),
-                    &repository,
-                )
-                .await
-                .expect("read game before queued write")
-                .stamp,
-            )
-        } else {
-            None
-        };
+        let expected = read_game_core(
+            writable_for(&directory, &path),
+            0,
+            &CancellationToken::new(),
+            &repository,
+        )
+        .await
+        .expect("read game before queued edit");
         let lease = operations
             .accept(if write { "write_game" } else { "delete_game" })
             .expect("accept edit");
@@ -3307,7 +3542,7 @@ mod tests {
                     0,
                     "[Event \"Replacement\"]\n\n1. c4\n".into(),
                     WriteExpectation::Game {
-                        stamp: expected_stamp.unwrap_or_else(|| game_stamp(b"")),
+                        stamp: expected.stamp.clone(),
                     },
                     write_repository,
                     None,
@@ -3320,6 +3555,8 @@ mod tests {
                 lease,
                 resolved,
                 0,
+                expected.stamp,
+                expected.revision,
                 repository.clone(),
                 None,
             ))

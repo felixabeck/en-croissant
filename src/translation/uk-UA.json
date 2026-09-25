@@ -557,6 +557,7 @@
     "Files.Reload": "Перезавантажити файл",
     "Files.RemoveGame": "Видалити гру",
     "Files.RemoveGameConfirm": "Ви впевнені, що хочете видалити цю гру?",
+    "Files.RemoveGameStale": "Файл змінився, тому жодну партію не видалено. Оновіть список партій перед видаленням.",
     "Files.Rename": "Перейменувати",
     "Files.RenameFile": "Перейменувати файл",
     "Files.Restore": "Відновити",

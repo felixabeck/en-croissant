@@ -557,6 +557,7 @@
     "Files.Reload": "Wczytaj plik ponownie",
     "Files.RemoveGame": "Usuń partię",
     "Files.RemoveGameConfirm": "Czy na pewno chcesz usunąć tę partię?",
+    "Files.RemoveGameStale": "Plik uległ zmianie, więc żadna partia nie została usunięta. Odśwież listę partii przed usunięciem.",
     "Files.Rename": "Zmień nazwę",
     "Files.RenameFile": "Zmień nazwę pliku",
     "Files.Restore": "Przywróć",

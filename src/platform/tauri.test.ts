@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
     fileRevision: vi.fn(),
     readGame: vi.fn(),
     readGames: vi.fn(),
+    deleteGame: vi.fn(),
     lexPgn: vi.fn(),
     listFileWorkspace: vi.fn(),
     logError: vi.fn(),
@@ -51,6 +52,7 @@ vi.mock("@/bindings/generated", () => ({
         fileRevision: mocks.fileRevision,
         readGame: mocks.readGame,
         readGames: mocks.readGames,
+        deleteGame: mocks.deleteGame,
         lexPgn: mocks.lexPgn,
         listFileWorkspace: mocks.listFileWorkspace,
     },
@@ -99,6 +101,7 @@ describe("tauri command facade", () => {
         mocks.fileRevision.mockReset();
         mocks.readGame.mockReset();
         mocks.readGames.mockReset();
+        mocks.deleteGame.mockReset();
         mocks.lexPgn.mockReset();
         mocks.listFileWorkspace.mockReset();
         mocks.logError.mockReset().mockResolvedValue(undefined);
@@ -145,7 +148,16 @@ describe("tauri command facade", () => {
             status: "ok",
             data: { pgn: "game", stamp: "a".repeat(64), revision: "r1", present: true },
         });
-        mocks.readGames.mockResolvedValue({ status: "ok", data: ['[Event "A"]'] });
+        const page = [
+            {
+                pgn: '[Event "A"]',
+                stamp: "a".repeat(64),
+                revision: "r1",
+                present: true,
+            },
+        ];
+        mocks.readGames.mockResolvedValue({ status: "ok", data: page });
+        mocks.deleteGame.mockResolvedValue({ status: "ok", data: null });
         mocks.lexPgn.mockResolvedValue({ status: "ok", data: [] });
         mocks.listFileWorkspace.mockResolvedValue({ status: "ok", data: [] });
 
@@ -156,8 +168,16 @@ describe("tauri command facade", () => {
         await tauri.countPgnGames(fileHandle, { signal });
         expect(mocks.countPgnGames).toHaveBeenCalledWith(fileHandle, "ticket-pgn");
 
-        await tauri.readGames(fileHandle, 0, 10, { signal });
+        await expect(tauri.readGames(fileHandle, 0, 10, { signal })).resolves.toEqual(page);
         expect(mocks.readGames).toHaveBeenCalledWith(fileHandle, 0, 10, "ticket-pgn");
+
+        await tauri.deleteGame(fileHandle, 0, page[0].stamp, page[0].revision);
+        expect(mocks.deleteGame).toHaveBeenCalledWith(
+            fileHandle,
+            0,
+            page[0].stamp,
+            page[0].revision,
+        );
 
         await tauri.readGame(fileHandle, 2, { signal });
         expect(mocks.readGame).toHaveBeenCalledWith(fileHandle, 2, "ticket-pgn");

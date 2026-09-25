@@ -541,6 +541,7 @@
     "Files.Reload": "Reload file",
     "Files.RemoveGame": "Remove game",
     "Files.RemoveGameConfirm": "Are you sure you want to remove this game?",
+    "Files.RemoveGameStale": "The file has changed, so no game was removed. Refresh the game list before deleting.",
     "Files.Rename": "Rename",
     "Files.RenameFile": "Rename file",
     "Files.Restore": "Restore",

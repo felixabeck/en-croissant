@@ -5,9 +5,9 @@ import { IconX } from "@tabler/icons-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import cx from "clsx";
 import { useAtomValue } from "jotai";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import type { FileWorkspaceHandle } from "@/bindings";
+import type { FileWorkspaceHandle, StampedGame } from "@/bindings";
 import ConfirmModal from "@/components/common/ConfirmModal";
 import { IconAction } from "@/components/common/IconAction";
 import { useVirtualPageLoader } from "@/hooks/useVirtualPageLoader";
@@ -17,7 +17,14 @@ import { formatNumber } from "@/utils/format";
 import { getGameName } from "@/utils/treeReducer";
 import classes from "./GameSelector.module.css";
 
-type DeleteGame = (index: number) => void | Promise<void>;
+export type GameSelectorRow = {
+  name: string;
+  identity?: Pick<StampedGame, "stamp" | "revision">;
+};
+
+export type DeleteGameSnapshot = { index: number; stamp: string; revision: string };
+
+type DeleteGame = (snapshot: DeleteGameSnapshot) => void | Promise<void>;
 
 export default function GameSelector({
   games,
@@ -28,8 +35,8 @@ export default function GameSelector({
   activePage,
   deleteGame,
 }: {
-  games: Map<number, string>;
-  setGames: React.Dispatch<React.SetStateAction<Map<number, string>>>;
+  games: Map<number, GameSelectorRow>;
+  setGames: React.Dispatch<React.SetStateAction<Map<number, GameSelectorRow>>>;
   setPage: (v: number) => void;
   total: number;
   path: FileWorkspaceHandle;
@@ -41,8 +48,14 @@ export default function GameSelector({
       const data = await tauri.readGames(path, startIndex, stopIndex, options);
       return await Promise.all(
         data.map(async (game, index) => {
-          const { headers } = await parsePGN(game, undefined, options);
-          return [startIndex + index, getGameName(headers)] as const;
+          const { headers } = await parsePGN(game.pgn, undefined, options);
+          return [
+            startIndex + index,
+            {
+              name: getGameName(headers),
+              identity: game.present ? { stamp: game.stamp, revision: game.revision } : undefined,
+            },
+          ] as const;
         }),
       );
     },
@@ -131,8 +144,8 @@ function GameRow({
 }: {
   style?: React.CSSProperties;
   index: number;
-  game: string | undefined;
-  setGames: (v: Map<number, string>) => void;
+  game: GameSelectorRow | undefined;
+  setGames: (v: Map<number, GameSelectorRow>) => void;
   setPage: (v: number) => void;
   path: FileWorkspaceHandle;
   total: number;
@@ -141,6 +154,8 @@ function GameRow({
 }) {
   const { t } = useTranslation();
   const [deleteModal, toggleDelete] = useToggle();
+  const [deleteSnapshot, setDeleteSnapshot] = useState<DeleteGameSnapshot | null>(null);
+  const canDelete = !!game?.identity?.stamp && !!game.identity.revision;
 
   return (
     <>
@@ -149,8 +164,11 @@ function GameRow({
           title={t("Files.RemoveGame")}
           description={t("Files.RemoveGameConfirm")}
           opened={deleteModal}
-          onClose={() => toggleDelete(false)}
-          onConfirm={() => deleteGame(index)}
+          onClose={() => {
+            toggleDelete(false);
+            setDeleteSnapshot(null);
+          }}
+          onConfirm={() => (deleteSnapshot ? deleteGame(deleteSnapshot) : undefined)}
         />
       )}
       <Group
@@ -169,14 +187,17 @@ function GameRow({
           {formatNumber(index + 1)}
         </Text>
         <Text fz="sm" truncate flex={1} lh="sm">
-          {game || "..."}
+          {game?.name || "..."}
         </Text>
         {deleteGame && (
           <IconAction
             label={t("Files.RemoveGame")}
-            onClick={(e) => {
-              e.stopPropagation();
-              toggleDelete();
+            disabled={!canDelete}
+            onClick={(event) => {
+              event.stopPropagation();
+              if (!game?.identity) return;
+              setDeleteSnapshot({ index, ...game.identity });
+              toggleDelete(true);
             }}
             variant="subtle"
             color="red"

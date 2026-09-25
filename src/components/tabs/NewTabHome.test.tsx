@@ -132,7 +132,9 @@ beforeEach(() => {
     fixtures.storeSet("recent-open");
     return "tab-id";
   });
-  fixtures.readGames.mockResolvedValue(["*"]);
+  fixtures.readGames.mockResolvedValue([
+    { pgn: "*", stamp: "new-tab-stamp", revision: "new-tab-revision", present: true },
+  ]);
   fixtures.dueStats = { due: 0, unseen: 0 };
   fixtures.deckStatus = "ready";
   container = document.createElement("div");

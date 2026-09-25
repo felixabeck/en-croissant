@@ -533,6 +533,7 @@
     "Files.Reload": "重新加载文件",
     "Files.RemoveGame": "删除对局",
     "Files.RemoveGameConfirm": "确定要删除这盘对局吗？",
+    "Files.RemoveGameStale": "文件已更改，因此未删除任何对局。请刷新对局列表后再删除。",
     "Files.Rename": "重命名",
     "Files.RenameFile": "重命名文件",
     "Files.Restore": "还原",

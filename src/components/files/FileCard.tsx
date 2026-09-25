@@ -15,7 +15,7 @@ import { runTabCreation } from "@/utils/tabs";
 import { capitalize, formatNumber } from "@/utils/format";
 import { fileWorkspaceKey } from "@/utils/pathCapabilities";
 import GamePreview from "../databases/GamePreview";
-import GameSelector from "../panels/info/GameSelector";
+import GameSelector, { type GameSelectorRow } from "../panels/info/GameSelector";
 import type { FileMetadata } from "./file";
 
 // Below this card width the preview's move list has no room beside the board. In rem, because the
@@ -36,7 +36,7 @@ function FileCard({ selected }: { selected: FileMetadata }) {
 
   const [selectedGame, setSelectedGame] = useState<string | null>(null);
   const [page, setPage] = useState(0);
-  const [games, setGames] = useState<Map<number, string>>(new Map());
+  const [games, setGames] = useState<Map<number, GameSelectorRow>>(new Map());
   // Two handles with the same key are the same file, so a new handle object must not retrigger the read.
   const handleRef = useRef(selected.handle);
   handleRef.current = selected.handle;
@@ -53,7 +53,7 @@ function FileCard({ selected }: { selected: FileMetadata }) {
           signal: controller.signal,
         });
         if (!controller.signal.aborted) {
-          setSelectedGame(data[0]);
+          setSelectedGame(data[0]?.pgn ?? null);
         }
       } catch (error) {
         if (controller.signal.aborted) return;

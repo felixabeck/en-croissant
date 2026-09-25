@@ -541,6 +541,7 @@
     "Files.Reload": "Last inn filen på nytt",
     "Files.RemoveGame": "Fjern parti",
     "Files.RemoveGameConfirm": "Er du sikker på at du vil fjerne dette partiet?",
+    "Files.RemoveGameStale": "Filen er endret, så ingen partier ble fjernet. Oppdater partilisten før du sletter.",
     "Files.Rename": "Gi nytt navn",
     "Files.RenameFile": "Gi fil nytt navn",
     "Files.Restore": "Gjenopprett",

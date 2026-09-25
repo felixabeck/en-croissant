@@ -1,13 +1,14 @@
 import { tauri } from "@/platform/tauri";
+import { notifications } from "@mantine/notifications";
 import { Accordion, Box, Divider, Group, ScrollArea, Stack, Text } from "@mantine/core";
 import { IconPlus } from "@tabler/icons-react";
-import { errorUnlessCancelled } from "@/platform/errors";
+import { errorUnlessCancelled, normalizeError } from "@/platform/errors";
 import { useAtom, useAtomValue, useSetAtom, useStore as useJotaiStore } from "jotai";
 import { use, useEffect, useRef, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
-import { type DatabaseHandle } from "@/bindings";
+import { type DatabaseHandle, type FileWorkspaceHandle } from "@/bindings";
 import GameInfo from "@/components/common/GameInfo";
 import { IconAction } from "@/components/common/IconAction";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
@@ -18,7 +19,7 @@ import { formatNumber } from "@/utils/format";
 import { getTabFile, getTabGameNumber } from "@/utils/tabs";
 import FenSearch from "./FenSearch";
 import FileInfo from "./FileInfo";
-import GameSelector from "./GameSelector";
+import GameSelector, { type DeleteGameSnapshot, type GameSelectorRow } from "./GameSelector";
 import classes from "./InfoPanel.module.css";
 import PgnInput from "./PgnInput";
 import { getStats } from "@/utils/repertoire";
@@ -30,14 +31,14 @@ import { useNavigate } from "@tanstack/react-router";
 import { useActiveDatabaseViewStore } from "@/state/store/database";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { fileWorkspaceKey } from "@/utils/pathCapabilities";
-import { loadFileGame, withFileWrite } from "@/utils/files";
+import { loadFileGame, refreshFileGameCount, withFileWrite } from "@/utils/files";
 import { setFileFreshness } from "@/state/fileFreshness";
 
 function InfoPanel({ addGame }: { addGame?: () => void }) {
   const store = use(TreeStateContext)!;
   const stats = useStore(store, getStats);
   const headers = useStore(store, (s) => s.headers);
-  const [games, setGames] = useState<Map<number, string>>(new Map());
+  const [games, setGames] = useState<Map<number, GameSelectorRow>>(new Map());
   const currentTab = useAtomValue(currentTabAtom);
   const tabFile = getTabFile(currentTab);
   const gameNumber = getTabGameNumber(currentTab);
@@ -60,7 +61,7 @@ function InfoPanel({ addGame }: { addGame?: () => void }) {
             changeTitle={(title: string) => {
               setGames((prev) => {
                 const newGames = new Map(prev);
-                newGames.set(gameNumber, title);
+                newGames.set(gameNumber, { ...newGames.get(gameNumber), name: title });
                 return newGames;
               });
             }}
@@ -131,8 +132,8 @@ function GameSelectorAccordion({
   setGames,
   addGame,
 }: {
-  games: Map<number, string>;
-  setGames: React.Dispatch<React.SetStateAction<Map<number, string>>>;
+  games: Map<number, GameSelectorRow>;
+  setGames: React.Dispatch<React.SetStateAction<Map<number, GameSelectorRow>>>;
   addGame?: () => void;
 }) {
   const store = use(TreeStateContext)!;
@@ -147,7 +148,7 @@ function GameSelectorAccordion({
 
   const tabFile = getTabFile(currentTab);
   const gameNumber = getTabGameNumber(currentTab);
-  const currentName = games.get(gameNumber) || "Untitled";
+  const currentName = games.get(gameNumber)?.name || "Untitled";
 
   const keyMap = useAtomValue(keyMapAtom);
   const { t } = useTranslation();
@@ -171,6 +172,8 @@ function GameSelectorAccordion({
   const fileKey = tabFile ? fileWorkspaceKey(tabFile.handle) : null;
   const pageAbortRef = useRef<AbortController | null>(null);
   const pageGenerationRef = useRef(0);
+  const countRefreshAbortRef = useRef<AbortController | null>(null);
+  const countRefreshGenerationRef = useRef(0);
   const currentIdentityRef = useRef({ tabId, fileKey, store });
   currentIdentityRef.current = { tabId, fileKey, store };
 
@@ -179,8 +182,97 @@ function GameSelectorAccordion({
       pageGenerationRef.current += 1;
       pageAbortRef.current?.abort();
       pageAbortRef.current = null;
+      countRefreshGenerationRef.current += 1;
+      countRefreshAbortRef.current?.abort();
+      countRefreshAbortRef.current = null;
     };
   }, [tabId, fileKey, store]);
+
+  function isCurrentOwner(ownerId: string, ownerFileKey: string, ownerStore: typeof store) {
+    const identity = currentIdentityRef.current;
+    if (
+      identity.tabId !== ownerId ||
+      identity.fileKey !== ownerFileKey ||
+      identity.store !== ownerStore
+    ) {
+      return false;
+    }
+    const active = jotaiStore.get(currentTabAtom);
+    const activeFile = active && getTabFile(active);
+    if (
+      active?.value !== ownerId ||
+      !activeFile ||
+      fileWorkspaceKey(activeFile.handle) !== ownerFileKey
+    ) {
+      return false;
+    }
+    const owner = jotaiStore.get(tabsAtom).find((tab) => tab.value === ownerId);
+    return (
+      !!owner &&
+      (owner.gameOrigin.kind === "file" || owner.gameOrigin.kind === "temp_file") &&
+      fileWorkspaceKey(owner.gameOrigin.file.handle) === ownerFileKey
+    );
+  }
+
+  function refreshOwnerCount(
+    ownerId: string,
+    handle: FileWorkspaceHandle,
+    ownerFileKey: string,
+    ownerStore: typeof store,
+    expectedCount: number,
+  ) {
+    countRefreshAbortRef.current?.abort();
+    const controller = new AbortController();
+    countRefreshAbortRef.current = controller;
+    const generation = ++countRefreshGenerationRef.current;
+    void refreshFileGameCount(handle, {
+      signal: controller.signal,
+      isCurrent: () =>
+        generation === countRefreshGenerationRef.current &&
+        isCurrentOwner(ownerId, ownerFileKey, ownerStore),
+      updateCount: (numGames) => {
+        const currentTabs = jotaiStore.get(tabsAtom);
+        const owner = currentTabs.find((tab) => tab.value === ownerId);
+        if (
+          !owner ||
+          (owner.gameOrigin.kind !== "file" && owner.gameOrigin.kind !== "temp_file") ||
+          fileWorkspaceKey(owner.gameOrigin.file.handle) !== ownerFileKey ||
+          owner.gameOrigin.file.numGames !== expectedCount
+        ) {
+          return false;
+        }
+        return setTabs((tabs) =>
+          tabs.map((tab) => {
+            if (tab.value !== ownerId) return tab;
+            if (
+              (tab.gameOrigin.kind !== "file" && tab.gameOrigin.kind !== "temp_file") ||
+              fileWorkspaceKey(tab.gameOrigin.file.handle) !== ownerFileKey ||
+              tab.gameOrigin.file.numGames !== expectedCount
+            ) {
+              return tab;
+            }
+            return {
+              ...tab,
+              gameOrigin: {
+                ...tab.gameOrigin,
+                file: { ...tab.gameOrigin.file, numGames },
+              },
+            };
+          }),
+        );
+      },
+    }).catch((error) => {
+      if (
+        controller.signal.aborted ||
+        generation !== countRefreshGenerationRef.current ||
+        !isCurrentOwner(ownerId, ownerFileKey, ownerStore) ||
+        errorUnlessCancelled(error) === null
+      ) {
+        return;
+      }
+      notifyUnlessCancelled(t("Common.Error"), error);
+    });
+  }
 
   async function setPage(page: number, forced?: boolean) {
     if (!tabFile || !currentTab || tabId === undefined || fileKey === null) return;
@@ -250,11 +342,15 @@ function GameSelectorAccordion({
     }
   }
 
-  async function deleteGame(index: number) {
+  async function deleteGame(snapshot: DeleteGameSnapshot) {
     if (!tabFile || !currentTab) return;
+    const { index, stamp, revision } = snapshot;
     const ownerId = currentTab.value;
     const filePath = tabFile.handle;
     const fileKey = fileWorkspaceKey(filePath);
+    countRefreshGenerationRef.current += 1;
+    countRefreshAbortRef.current?.abort();
+    countRefreshAbortRef.current = null;
     const originalCount = tabFile.numGames;
     const predictedCount = originalCount - 1;
     const workspaceTabs = jotaiStore.get(tabsAtom);
@@ -268,48 +364,76 @@ function GameSelectorAccordion({
     ) {
       return;
     }
-    const saved = setTabs(
-      workspaceTabs.map((tab) => {
+    const saved = setTabs((tabs) =>
+      tabs.map((tab) => {
         if (tab.value !== ownerId) return tab;
+        if (
+          (tab.gameOrigin.kind !== "file" && tab.gameOrigin.kind !== "temp_file") ||
+          fileWorkspaceKey(tab.gameOrigin.file.handle) !== fileKey ||
+          tab.gameOrigin.file.numGames !== originalCount
+        ) {
+          return tab;
+        }
         return {
-          ...owner,
+          ...tab,
           gameOrigin: {
-            ...ownerOrigin,
-            file: { ...ownerOrigin.file, numGames: predictedCount },
+            ...tab.gameOrigin,
+            file: { ...tab.gameOrigin.file, numGames: predictedCount },
           },
         };
       }),
     );
     if (!saved) return;
     try {
-      await withFileWrite(filePath, () => tauri.deleteGame(filePath, index));
-      if (
-        currentIdentityRef.current.tabId === ownerId &&
-        currentIdentityRef.current.fileKey === fileKey &&
-        currentIdentityRef.current.store === store
-      ) {
+      await withFileWrite(filePath, () => tauri.deleteGame(filePath, index, stamp, revision));
+      if (isCurrentOwner(ownerId, fileKey, store)) {
         setGames(new Map());
       }
     } catch (error) {
-      setTabs((tabs) =>
-        tabs.map((tab) => {
-          if (tab.value !== ownerId) return tab;
-          if (tab.gameOrigin.kind !== "file" && tab.gameOrigin.kind !== "temp_file") return tab;
-          if (
-            fileWorkspaceKey(tab.gameOrigin.file.handle) !== fileKey ||
-            tab.gameOrigin.file.numGames !== predictedCount
-          ) {
-            return tab;
-          }
-          return {
-            ...tab,
-            gameOrigin: {
-              ...tab.gameOrigin,
-              file: { ...tab.gameOrigin.file, numGames: originalCount },
-            },
-          };
-        }),
-      );
+      const errorDetails = normalizeError(error);
+      const rollbackCount = () =>
+        setTabs((tabs) =>
+          tabs.map((tab) => {
+            if (tab.value !== ownerId) return tab;
+            if (
+              (tab.gameOrigin.kind !== "file" && tab.gameOrigin.kind !== "temp_file") ||
+              fileWorkspaceKey(tab.gameOrigin.file.handle) !== fileKey ||
+              tab.gameOrigin.file.numGames !== predictedCount
+            ) {
+              return tab;
+            }
+            return {
+              ...tab,
+              gameOrigin: {
+                ...tab.gameOrigin,
+                file: { ...tab.gameOrigin.file, numGames: originalCount },
+              },
+            };
+          }),
+        );
+
+      if (errorDetails.backendCategory === "stale-game") {
+        rollbackCount();
+        if (isCurrentOwner(ownerId, fileKey, store)) setGames(new Map());
+        notifications.show({
+          color: "red",
+          title: t("Common.Error"),
+          message: t("Files.RemoveGameStale", {
+            defaultValue:
+              "The file changed, so no game was removed. Refresh the game list before deleting.",
+          }),
+        });
+        refreshOwnerCount(ownerId, filePath, fileKey, store, originalCount);
+        return;
+      }
+
+      if (errorDetails.category === "applied-despite-error") {
+        if (isCurrentOwner(ownerId, fileKey, store)) setGames(new Map());
+        refreshOwnerCount(ownerId, filePath, fileKey, store, predictedCount);
+        throw error;
+      }
+
+      rollbackCount();
       throw error;
     }
   }

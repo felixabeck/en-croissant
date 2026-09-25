@@ -549,6 +549,7 @@
     "Files.Reload": "Recharger le fichier",
     "Files.RemoveGame": "Supprimer la partie",
     "Files.RemoveGameConfirm": "Voulez-vous vraiment supprimer cette partie ?",
+    "Files.RemoveGameStale": "Le fichier a changé : aucune partie n’a été supprimée. Actualisez la liste des parties avant d’en supprimer une.",
     "Files.Rename": "Renommer",
     "Files.RenameFile": "Renommer le fichier",
     "Files.Restore": "Restaurer",

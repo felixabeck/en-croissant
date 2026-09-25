@@ -549,6 +549,7 @@
     "Files.Reload": "Aggiorna file",
     "Files.RemoveGame": "Rimuovi partita",
     "Files.RemoveGameConfirm": "Sei sicuro di voler rimuovere questa partita?",
+    "Files.RemoveGameStale": "Il file è cambiato, quindi non è stata rimossa nessuna partita. Aggiorna l’elenco delle partite prima di eliminarne una.",
     "Files.Rename": "Rinomina",
     "Files.RenameFile": "Rinomina file",
     "Files.Restore": "Ripristina",

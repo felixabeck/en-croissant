@@ -73,9 +73,9 @@ export default function ImportModal({
           if (file) {
             let fileInfo: FileMetadata | undefined;
             const count = file.numGames;
-            const fileContent = (
-              await tauri.readGames(file.handle, 0, Math.max(0, count - 1))
-            ).join("\n\n");
+            const fileContent = (await tauri.readGames(file.handle, 0, Math.max(0, count - 1)))
+              .map((game) => game.pgn)
+              .join("\n\n");
             let loaded = await loadFileGame(file.handle, 0);
             if (save) {
               const workspace = await ensureFileWorkspace();

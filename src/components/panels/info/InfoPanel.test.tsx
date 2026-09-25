@@ -7,7 +7,7 @@ import { MantineProvider } from "@mantine/core";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import { closeTreeStore, createTreeStore, type TreeStore } from "@/state/store/tree";
 import { activeTabAtom, currentTabAtom, tabsAtom } from "@/state/atoms";
-import { cancellationError } from "@/platform/tauri";
+import { cancellationError, TauriCommandError } from "@/platform/tauri";
 import type { Tab } from "@/state/workspaceTypes";
 import { defaultTree } from "@/utils/treeReducer";
 import InfoPanel from "./InfoPanel";
@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   deleteRejected: vi.fn(),
   loadFileGame: vi.fn(),
   readGames: vi.fn(),
+  countPgnGames: vi.fn(),
   parsePGN: vi.fn(),
   notify: vi.fn(),
   logError: vi.fn(),
@@ -51,6 +52,7 @@ vi.mock("@/platform/tauri", async () => {
       ...actual.tauri,
       deleteGame: mocks.deleteGame,
       readGames: mocks.readGames,
+      countPgnGames: mocks.countPgnGames,
     },
   };
 });
@@ -74,10 +76,12 @@ vi.mock("./GameSelector", () => ({
     setPage,
     deleteGame,
   }: {
-    games: Map<number, string>;
-    setGames: (games: Map<number, string>) => void;
+    games: Map<number, { name: string; identity?: { stamp: string; revision: string } }>;
+    setGames: (
+      games: Map<number, { name: string; identity?: { stamp: string; revision: string } }>,
+    ) => void;
     setPage: (page: number) => Promise<void>;
-    deleteGame: (index: number) => Promise<void>;
+    deleteGame: (snapshot: { index: number; stamp: string; revision: string }) => Promise<void>;
   }) => (
     <>
       <span data-testid="game-cache-size">{games.size}</span>
@@ -87,14 +91,32 @@ vi.mock("./GameSelector", () => ({
       <button
         type="button"
         data-testid="prime-games"
-        onClick={() => setGames(new Map([[0, "Cached"]]))}
+        onClick={() =>
+          setGames(
+            new Map([
+              [
+                1,
+                {
+                  name: "Cached",
+                  identity: { stamp: "selected-stamp", revision: "selected-revision" },
+                },
+              ],
+            ]),
+          )
+        }
       >
         Prime games
       </button>
       <button
         type="button"
         data-testid="delete-game"
-        onClick={() => void deleteGame(1).catch(mocks.deleteRejected)}
+        onClick={() =>
+          void deleteGame({
+            index: 1,
+            stamp: "selected-stamp",
+            revision: "selected-revision",
+          }).catch(mocks.deleteRejected)
+        }
       >
         Delete game
       </button>
@@ -203,6 +225,7 @@ describe("InfoPanel game loading and cancellation", () => {
 
     mocks.readGames.mockReset();
     mocks.readGames.mockResolvedValue([]);
+    mocks.countPgnGames.mockReset().mockResolvedValue(5);
     mocks.loadFileGame.mockReset();
     mocks.loadFileGame.mockImplementation(async () => {
       const tree = defaultTree();
@@ -399,6 +422,115 @@ describe("InfoPanel game loading and cancellation", () => {
     });
     expect(container.querySelector('[data-testid="game-cache-size"]')?.textContent).toBe("1");
     expect(mocks.deleteRejected).toHaveBeenCalledWith(failure);
+  });
+
+  test("typed stale delete refusal rolls back, clears rows, notifies, and refreshes the count", async () => {
+    const stale = new TauriCommandError({
+      tag: "backend-error",
+      category: "stale-game",
+      message: "stale game",
+    });
+    mocks.deleteGame.mockRejectedValueOnce(stale);
+    mocks.countPgnGames.mockImplementationOnce(async () => {
+      expect(jotaiStore.get(currentTabAtom)?.gameOrigin).toMatchObject({
+        file: { numGames: 5 },
+      });
+      return 6;
+    });
+    await act(async () => root.render(renderPanel()));
+
+    await primeAndDelete();
+    await act(async () => Promise.resolve());
+
+    const handle = tabA.gameOrigin.kind === "file" ? tabA.gameOrigin.file.handle : null;
+    expect(mocks.deleteGame).toHaveBeenCalledWith(handle, 1, "selected-stamp", "selected-revision");
+    expect(mocks.deleteRejected).not.toHaveBeenCalled();
+    expect(jotaiStore.get(currentTabAtom)?.gameOrigin).toMatchObject({
+      file: { numGames: 6 },
+    });
+    expect(container.querySelector('[data-testid="game-cache-size"]')?.textContent).toBe("0");
+    expect(mocks.notify).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Common.Error", message: "Files.RemoveGameStale" }),
+    );
+  });
+
+  test("failed stale count refresh keeps the rollback count and reports its error", async () => {
+    const stale = new TauriCommandError({
+      tag: "backend-error",
+      category: "stale-game",
+      message: "stale game",
+    });
+    mocks.deleteGame.mockRejectedValueOnce(stale);
+    mocks.countPgnGames.mockRejectedValueOnce(new Error("count refresh failed"));
+    await act(async () => root.render(renderPanel()));
+
+    await primeAndDelete();
+    await vi.waitFor(() => expect(mocks.notify).toHaveBeenCalledTimes(2));
+
+    expect(jotaiStore.get(currentTabAtom)?.gameOrigin).toMatchObject({
+      file: { numGames: 5 },
+    });
+    expect(mocks.notify).toHaveBeenLastCalledWith(
+      expect.objectContaining({ title: "Common.Error", message: "count refresh failed" }),
+    );
+    expect(mocks.deleteRejected).not.toHaveBeenCalled();
+  });
+
+  test("committed but uncertain deletion keeps the predicted count and refreshes without hiding the error", async () => {
+    const uncertain = new TauriCommandError({
+      tag: "backend-error",
+      category: "durability",
+      message: "Committed but durability uncertain: PGN edit",
+    });
+    mocks.deleteGame.mockRejectedValueOnce(uncertain);
+    mocks.countPgnGames.mockResolvedValueOnce(4);
+    await act(async () => root.render(renderPanel()));
+
+    await primeAndDelete();
+    await vi.waitFor(() =>
+      expect(jotaiStore.get(currentTabAtom)?.gameOrigin).toMatchObject({
+        file: { numGames: 4 },
+      }),
+    );
+
+    expect(container.querySelector('[data-testid="game-cache-size"]')?.textContent).toBe("0");
+    expect(mocks.deleteRejected).toHaveBeenCalledWith(uncertain);
+  });
+
+  test("stale count refresh cannot update an owner after switching tabs", async () => {
+    const stale = new TauriCommandError({
+      tag: "backend-error",
+      category: "stale-game",
+      message: "stale game",
+    });
+    let resolveCount!: (count: number) => void;
+    mocks.deleteGame.mockRejectedValueOnce(stale);
+    mocks.countPgnGames.mockImplementationOnce(
+      (_handle: unknown, options?: { signal?: AbortSignal }) => {
+        return new Promise<number>((resolve) => {
+          resolveCount = resolve;
+          expect(options?.signal).toBeInstanceOf(AbortSignal);
+        });
+      },
+    );
+    await act(async () => root.render(renderPanel()));
+    await primeAndDelete();
+
+    const treeStoreB = createTreeStore(undefined, defaultTree());
+    await act(async () => {
+      jotaiStore.set(activeTabAtom, tabBId);
+      root.render(renderPanel(treeStoreB));
+    });
+    await act(async () => {
+      resolveCount(99);
+      await Promise.resolve();
+    });
+
+    expect(jotaiStore.get(tabsAtom)).toMatchObject([
+      { value: tabAId, gameOrigin: { file: { numGames: 5 } } },
+      { value: tabBId, gameOrigin: { file: { numGames: 5 } } },
+    ]);
+    expect(jotaiStore.get(activeTabAtom)).toBe(tabBId);
   });
 
   test("delete does not resurrect a captured owner closed before native rejection", async () => {
