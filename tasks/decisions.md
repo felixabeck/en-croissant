@@ -4152,3 +4152,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The original key is the only durable copy of unsaved edits. Preserving it in place avoids quota amplification and lets the workspace keep an exact recovery owner. Reversal path: a proven backup store with independent capacity and migration semantics, plus a tested user recovery flow.
 * **Decided by:** Codex drain 2049a568-6411-42a1-b116-cb0ad1230e55 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"f1690bf0db3c17ff165e1f4224ba2c1f38896f8a02131c2d07fcfaabfd5533a8","input_sha256":"292c0c08754bf8bc6f81a1aa8ab83a6e383396a9faa875960164ae90486d608b","kind":"mutation-receipt","operation":"f83f5e5330bad27c3e59ae25b51ceb43550217b93b80cdbc0f48a6805f7b1a79","options":{"section":null},"request_id_sha256":null,"results":["d-20260925-09"],"target":"decisions-ledger","v":1} -->
+
+### d-20260925-10 — How should PGN deletion identify the selected game after the file changes?
+
+* **Question:** How should PGN deletion identify the selected game after the file changes?
+* **Governs:** f-20260924-05
+* **Chosen:** Require the exact game-byte stamp and the scanned file revision captured with the visible row, then reject a changed revision or selected stamp as `StaleGame` before deletion.
+* **Rejected:** A game stamp alone, which cannot distinguish equal-text duplicate rows after insertion or reordering; and a separate stamp-fetch command, which can observe a different file snapshot from the displayed game text.
+* **Reason:** One page read binds the displayed text, stamp, and file revision to the same scan. The revision prevents a shifted equal-text duplicate from being deleted. An unrelated edit can cause a safe refusal and refresh, which is preferable to deleting the wrong game.
+* **Decided by:** Codex, autonomously in the 2026-09-25 full-auto run · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"ab86202f26a970eafe5dd732563ae454d92dd499d4ea0774d2363785c141a0db","input_sha256":"2c63f12cc35021c1099e6e7757bbf44440d84cb9f95f680bcaafccc9d8baa78c","kind":"mutation-receipt","operation":"8d1089e8373451713affc5eb27f24b95147c625199697b779943c13ad568cc5e","options":{"section":null},"request_id_sha256":null,"results":["d-20260925-10"],"target":"decisions-ledger","v":1} -->
