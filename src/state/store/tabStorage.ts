@@ -459,6 +459,8 @@ export class TabStorageRepository {
     /** Check whether a session key still contains a decodable tree. */
     isStoredTree(tabId: string) {
         const raw = sessionStorage.getItem(tabId);
+        // A null value also decodes to null; this guard keeps it out of the string-only API.
+        // Stryker disable next-line ConditionalExpression: both branches return false for null.
         return raw !== null && decodeLegacyOrCompressed(raw) !== null;
     }
 

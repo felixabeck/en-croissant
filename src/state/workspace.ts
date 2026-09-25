@@ -1,6 +1,7 @@
 import type { SyncStringStorage } from "jotai/vanilla/utils/atomWithStorage";
 import { z } from "zod";
 import i18n from "@/i18n";
+import enUSCatalogue from "@/translation/en-US.json";
 import { decodeCompressedOrJson, serializeStorageValue } from "./store/debouncedStorage";
 import { persistStorageWriteError, tabStorage } from "./store/tabStorage";
 import { reportPersistError } from "./persistError";
@@ -156,10 +157,19 @@ export function reconcilePendingTreeRemovals(
         : { ids: null, overflowCount: pending.size };
 }
 
-export function pendingTreeRemovalCapacityError(count: number): Error {
-    return new Error(i18n.t("Common.ConfirmationError.unexpected"), {
-        cause: new Error(`Pending tree removals exceeded ${MAX_PENDING_TREE_REMOVALS}: ${count}`),
+const workspaceErrorKey = "Common.ConfirmationError.unexpected";
+
+function workspaceActionError(cause: Error): Error {
+    // Workspace hydration can report an error before index.tsx initializes i18next.
+    return new Error(i18n.t(workspaceErrorKey) || enUSCatalogue.translation[workspaceErrorKey], {
+        cause,
     });
+}
+
+export function pendingTreeRemovalCapacityError(count: number): Error {
+    return workspaceActionError(
+        new Error(`Pending tree removals exceeded ${MAX_PENDING_TREE_REMOVALS}: ${count}`),
+    );
 }
 
 export function readStoredWorkspaceValue(storage: SyncStringStorage, key: string): unknown | null {
@@ -196,9 +206,7 @@ export function saveWorkspace(
     const workspace = workspaceFromValue(value);
     if (!workspace) {
         reportPersistError(
-            new Error(i18n.t("Common.ConfirmationError.unexpected"), {
-                cause: new Error("Workspace failed live schema validation"),
-            }),
+            workspaceActionError(new Error("Workspace failed live schema validation")),
         );
         return null;
     }
@@ -212,6 +220,8 @@ export function saveWorkspace(
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
+    // A direct true fault makes the fresh-module workspace test fail on null metadata.
+    // Stryker disable next-line ConditionalExpression: static mutant is not activated.
     return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -265,7 +275,7 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
             !validMigrationSource &&
             (legacyStoragePresent ||
                 missingWorkspaceTreeSnapshot === null ||
-                (missingWorkspaceTreeSnapshot?.length ?? 0) > 0));
+                missingWorkspaceTreeSnapshot!.length > 0));
     if (persistedPendingRemovals.length > 0) {
         plan.unrepairedWorkspace.treeOwnershipPendingRemovalIds = [...persistedPendingRemovals];
     }
@@ -308,12 +318,8 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
 
     const durableMigratedSources = new Set<string>();
     for (const sourceId of new Set(plan.cloneTargets.map(({ sourceId }) => sourceId))) {
-        if (repairedRetainedIds.has(sourceId)) continue;
         const sourceTargets = plan.cloneTargets.filter((target) => target.sourceId === sourceId);
-        if (
-            sourceTargets.length > 0 &&
-            sourceTargets.every(({ targetId }) => tabStorage.read(targetId))
-        ) {
+        if (sourceTargets.every(({ targetId }) => tabStorage.read(targetId))) {
             durableMigratedSources.add(sourceId);
         }
     }
@@ -351,14 +357,18 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
     const failedKnownRemovals = tabStorage.removeKnownTreesSafely(pendingRemovalIds);
     for (const id of failedAdmissions.failedIds) failedKnownRemovals.add(id);
 
+    // A direct true fault deletes the unowned tree in the fresh-module workspace test.
+    // Stryker disable next-line ConditionalExpression: static mutant is not activated.
     if (!treeOwnershipUncertain && (hasAuthoritativeWorkspace || validMigrationSource)) {
         sweepOrphanedTreeKeys(plan.workspace.tabs, [], failedKnownRemovals);
     } else if (treeOwnershipUncertain && !takingFreshOwnershipSnapshot) {
         // The first snapshot protects prior trees; later loads sweep only outside that set.
-        const protectedTreeIds = plan.workspace.treeOwnershipProtectedIds;
-        if (protectedTreeIds !== undefined) {
-            sweepOrphanedTreeKeys(plan.workspace.tabs, protectedTreeIds, failedKnownRemovals);
-        }
+        // A non-fresh uncertain load has a persisted protected set by construction.
+        sweepOrphanedTreeKeys(
+            plan.workspace.tabs,
+            plan.workspace.treeOwnershipProtectedIds!,
+            failedKnownRemovals,
+        );
     }
     for (const legacyKey of ["tabs", "activeTab"]) {
         try {

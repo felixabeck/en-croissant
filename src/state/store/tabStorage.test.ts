@@ -978,3 +978,162 @@ test("seed and both clone routes store repaired start headers", () => {
         deserializeStorageValue(sessionStorage.getItem("durable-target-repair")!),
     ).not.toHaveProperty("state.headers.start");
 });
+
+test("failed-admission replay ignores malformed markers without touching their trees or unrelated keys", () => {
+    const invalidId = "not-a-uuid";
+    const invalidValueId = crypto.randomUUID();
+    const validId = crypto.randomUUID();
+    for (const id of [invalidId, invalidValueId, validId]) persistTree(id, defaultTree());
+    const marker = (id: string) => `chessfable:failed-tab-admission:${id}`;
+    sessionStorage.setItem(marker(invalidId), "1");
+    sessionStorage.setItem(marker(invalidValueId), "unexpected");
+    sessionStorage.setItem(marker(validId), "1");
+    sessionStorage.setItem("Stryker was here", "keep");
+    sessionStorage.setItem("undefined", "keep");
+
+    const replay = storage.replayFailedAdmissions(new Set());
+
+    expect(replay.markedIds).toEqual(new Set([validId]));
+    expect(replay.failedIds.size).toBe(0);
+    expect(sessionStorage.getItem(invalidId)).not.toBeNull();
+    expect(sessionStorage.getItem(invalidValueId)).not.toBeNull();
+    expect(sessionStorage.getItem(validId)).toBeNull();
+    for (const id of [invalidId, invalidValueId, validId]) {
+        expect(sessionStorage.getItem(marker(id))).toBeNull();
+    }
+    expect(sessionStorage.getItem("Stryker was here")).toBe("keep");
+    expect(sessionStorage.getItem("undefined")).toBe("keep");
+});
+
+test("failed-admission replay skips a null storage-key slot and processes later markers", () => {
+    const id = crypto.randomUUID();
+    const marker = `chessfable:failed-tab-admission:${id}`;
+    sessionStorage.setItem("unrelated", "keep");
+    persistTree(id, defaultTree());
+    sessionStorage.setItem(marker, "1");
+    const originalKey = Storage.prototype.key;
+    const key = vi
+        .spyOn(Storage.prototype, "key")
+        .mockImplementation(function (this: Storage, index) {
+            if (index === 0) return null;
+            return originalKey.call(this, index);
+        });
+
+    const replay = storage.replayFailedAdmissions(new Set());
+
+    key.mockRestore();
+    expect(replay.markedIds).toEqual(new Set([id]));
+    expect(sessionStorage.getItem(id)).toBeNull();
+    expect(sessionStorage.getItem(marker)).toBeNull();
+    expect(sessionStorage.getItem("unrelated")).toBe("keep");
+    expect(persistError.reportPersistError).not.toHaveBeenCalled();
+});
+
+test("failed-admission replay reports a storage-key enumeration failure", () => {
+    const failure = new DOMException("key enumeration denied", "SecurityError");
+    sessionStorage.setItem("unrelated", "keep");
+    const key = vi.spyOn(Storage.prototype, "key").mockImplementation(() => {
+        throw failure;
+    });
+
+    expect(storage.replayFailedAdmissions(new Set())).toEqual({
+        markedIds: new Set(),
+        failedIds: new Set(),
+    });
+
+    key.mockRestore();
+    expect(persistError.reportPersistError).toHaveBeenCalledOnce();
+    expect(persistError.reportPersistError).toHaveBeenCalledWith(failure);
+});
+
+test("failed-admission replay keeps a marker if its tree cannot be read and continues", () => {
+    const unreadableId = crypto.randomUUID();
+    const removableId = crypto.randomUUID();
+    const marker = (id: string) => `chessfable:failed-tab-admission:${id}`;
+    for (const id of [unreadableId, removableId]) {
+        persistTree(id, defaultTree());
+        sessionStorage.setItem(marker(id), "1");
+    }
+    const failure = new DOMException("tree read denied", "SecurityError");
+    const originalGetItem = Storage.prototype.getItem;
+    const getItem = vi
+        .spyOn(Storage.prototype, "getItem")
+        .mockImplementation(function (this: Storage, key) {
+            if (key === unreadableId) throw failure;
+            return originalGetItem.call(this, key);
+        });
+
+    const replay = storage.replayFailedAdmissions(new Set());
+
+    getItem.mockRestore();
+    expect(replay.markedIds).toEqual(new Set([unreadableId, removableId]));
+    expect(replay.failedIds).toEqual(new Set([unreadableId]));
+    expect(sessionStorage.getItem(unreadableId)).not.toBeNull();
+    expect(sessionStorage.getItem(marker(unreadableId))).toBe("1");
+    expect(sessionStorage.getItem(removableId)).toBeNull();
+    expect(sessionStorage.getItem(marker(removableId))).toBeNull();
+    expect(persistError.reportPersistError).toHaveBeenCalledWith(failure);
+});
+
+test("failed-admission replay reports the first marker cleanup error and preserves both markers", () => {
+    const ids = [crypto.randomUUID(), crypto.randomUUID()];
+    const markers = ids.map((id) => `chessfable:failed-tab-admission:${id}`);
+    for (const key of markers) sessionStorage.setItem(key, "1");
+    const firstError = new DOMException("first marker denied", "SecurityError");
+    const secondError = new DOMException("second marker denied", "SecurityError");
+    const originalRemoveItem = Storage.prototype.removeItem;
+    const removeItem = vi
+        .spyOn(Storage.prototype, "removeItem")
+        .mockImplementation(function (this: Storage, key) {
+            if (key === markers[0]) throw firstError;
+            if (key === markers[1]) throw secondError;
+            return originalRemoveItem.call(this, key);
+        });
+
+    storage.replayFailedAdmissions(new Set());
+
+    removeItem.mockRestore();
+    expect(sessionStorage.getItem(markers[0]!)).toBe("1");
+    expect(sessionStorage.getItem(markers[1]!)).toBe("1");
+    expect(persistError.reportPersistError).toHaveBeenCalledOnce();
+    expect(persistError.reportPersistError).toHaveBeenCalledWith(firstError);
+});
+
+test("known-tree batch removal reports its first failure and survives a throwing iterator", () => {
+    const ids = [crypto.randomUUID(), crypto.randomUUID()];
+    for (const id of ids) persistTree(id, defaultTree());
+    const firstError = new DOMException("first removal denied", "SecurityError");
+    const secondError = new DOMException("second removal denied", "SecurityError");
+    const originalRemoveItem = Storage.prototype.removeItem;
+    const removeItem = vi
+        .spyOn(Storage.prototype, "removeItem")
+        .mockImplementation(function (this: Storage, key) {
+            if (key === ids[0]) throw firstError;
+            if (key === ids[1]) throw secondError;
+            return originalRemoveItem.call(this, key);
+        });
+
+    expect(storage.removeKnownTreesSafely(ids)).toEqual(new Set(ids));
+    expect(persistError.reportPersistError).toHaveBeenCalledOnce();
+    expect(persistError.reportPersistError).toHaveBeenCalledWith(firstError);
+    removeItem.mockRestore();
+    persistError.reportPersistError.mockClear();
+    const iteratorFailure = new Error("enumeration failed");
+    function* brokenIds() {
+        yield ids[0]!;
+        throw iteratorFailure;
+    }
+    expect(storage.removeKnownTreesSafely(brokenIds())).toEqual(new Set());
+    expect(sessionStorage.getItem(ids[0]!)).toBeNull();
+    expect(persistError.reportPersistError).toHaveBeenCalledWith(iteratorFailure);
+});
+
+test("tree-key snapshot accepts the exact length bound and supports omitted exclusions", () => {
+    const boundaryKey = "a".repeat(128);
+    const oversizedKey = "b".repeat(129);
+    persistTree(boundaryKey, defaultTree());
+    expect(storage.snapshotStoredTreeKeys(1, 128)).toEqual([boundaryKey]);
+    expect(storage.snapshotStoredTreeKeys(1, 128, new Set([boundaryKey]))).toEqual([]);
+    persistTree(oversizedKey, defaultTree());
+    expect(storage.snapshotStoredTreeKeys(2, 128)).toBeNull();
+});
