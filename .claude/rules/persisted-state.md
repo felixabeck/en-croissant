@@ -67,8 +67,13 @@ inside a `try` that produces a comprehensible error rather than an unhandled thr
 * Re-validate a persisted value that names something contextual (engine, theme, database, file, tab)
   on read, and correct it with a derived effective value rather than a destructive reset.
 * Keep the `beforeunload`/`pagehide` flush correct when changing anything about the debounce.
-* Fall back to a default for absent, truncated, corrupt or older-shape values. A version field that
-  nothing migrates is not migration.
+* Fall back to a default for absent, truncated, corrupt or older-shape values, except for tab-tree
+  storage: a present undecodable tab-tree value (including an empty string) or a failed tree read
+  remains gated and cannot be overwritten by a clean default. Keep undecodable bytes in place and
+  expose the tree as unreadable; keep a refused read unavailable until an explicit retry succeeds.
+  Workspace ID repair may copy those exact bytes to a new key only after verifying the copy and
+  before publishing repaired metadata. Only an explicit successful discard may remove the last
+  workspace-owned unreadable value. A version field that nothing migrates is not migration.
 
 ## DO NOT
 

@@ -136,7 +136,7 @@ test("migrates separate legacy keys, repairs IDs, and keeps tree state", () => {
     expect(readStoredWorkspace()).toEqual(workspace);
 });
 
-test("a denied corrupt legacy-tree removal does not abort workspace loading", () => {
+test("unreadable legacy-tree migration preserves the original bytes without cleanup", () => {
     sessionStorage.clear();
     sessionStorage.setItem("tabs", serializeStorageValue([legacyTab]));
     sessionStorage.setItem("activeTab", serializeStorageValue(legacyTab.value));
@@ -149,7 +149,12 @@ test("a denied corrupt legacy-tree removal does not abort workspace loading", ()
     expect(workspace.tabs).toHaveLength(1);
     expect(workspace.tabs[0]!.value).not.toBe(legacyTab.value);
     expect(sessionStorage.getItem(legacyTab.value)).toBe("{broken");
-    expect(persistError.reportPersistError).toHaveBeenCalled();
+    expect(sessionStorage.getItem(workspace.tabs[0]!.value)).toBe("{broken");
+    expect(tabStorage.getStatus(workspace.tabs[0]!.value)).toEqual({
+        kind: "unreadable",
+        rawValue: "{broken",
+    });
+    expect(persistError.reportPersistError).not.toHaveBeenCalled();
 });
 
 test("keeps the active tab selected when its legacy ID is migrated", () => {
@@ -892,7 +897,7 @@ test("uncertain migration reclaims only sources whose own clone is durable", () 
     expect(sessionStorage.getItem(goodSource)).toBeNull();
 });
 
-test("uncertain migration retains a source until all duplicate tabs have durable clones", () => {
+test("failed duplicate clone keeps the unrepaired workspace and source owner", () => {
     sessionStorage.clear();
     const sourceId = "legacy-shared-source";
     const tree = serializeStorageValue({ version: 1, state: defaultTree() });
@@ -911,16 +916,17 @@ test("uncertain migration retains a source until all duplicate tabs have durable
     const originalClone = tabStorage.clone.bind(tabStorage);
     let cloneCount = 0;
     const clone = vi.spyOn(tabStorage, "clone").mockImplementation((source, target) => {
-        if (++cloneCount === 1) originalClone(source, target);
+        if (++cloneCount === 1) return originalClone(source, target);
+        return { kind: "copy-failed", error: new Error("destination copy refused") };
     });
 
     const workspace = loadStoredWorkspace();
 
     clone.mockRestore();
     expect(workspace.treeOwnershipUncertain).toBe(true);
-    expect(tabStorage.read(workspace.tabs[0]!.value)).not.toBeNull();
-    expect(tabStorage.read(workspace.tabs[1]!.value)).toBeNull();
+    expect(workspace.tabs.map((tab) => tab.value)).toEqual([sourceId, sourceId]);
     expect(tabStorage.read(sourceId)).not.toBeNull();
+    expect(tabStorage.isStoredTree(sourceId)).toBe(true);
     expect(workspace.treeOwnershipProtectedIds).toContain(sourceId);
 });
 
@@ -1222,6 +1228,105 @@ test("duplicate UUID migration retains the original tree and creates a copied tr
     expect(workspace.tabs[0].value).toBe(duplicate.value);
     expect(sessionStorage.getItem(duplicate.value)).not.toBeNull();
     expect(tabStorage.read(workspace.tabs[1].value)).not.toBeNull();
+});
+
+test("legacy ID repair durably carries exact unreadable bytes before publishing the new owner", () => {
+    sessionStorage.clear();
+    const raw = "legacy tree bytes that cannot be decoded";
+    sessionStorage.setItem("tabs", serializeStorageValue([legacyTab]));
+    sessionStorage.setItem("activeTab", serializeStorageValue(legacyTab.value));
+    sessionStorage.setItem(legacyTab.value, raw);
+
+    const workspace = loadStoredWorkspace();
+    const repairedId = workspace.tabs[0]!.value;
+
+    expect(repairedId).not.toBe(legacyTab.value);
+    expect(sessionStorage.getItem(legacyTab.value)).toBe(raw);
+    expect(sessionStorage.getItem(repairedId)).toBe(raw);
+    expect(workspace.tabs[0]!.value).toBe(readStoredWorkspace().tabs[0]!.value);
+    expect(tabStorage.getStatus(repairedId)).toEqual({ kind: "unreadable", rawValue: raw });
+});
+
+test("duplicate UUID repair copies undecodable bytes to the repaired tab before publishing", () => {
+    sessionStorage.clear();
+    const duplicate = { ...legacyTab, value: crypto.randomUUID() };
+    const raw = "duplicate tab tree bytes";
+    sessionStorage.setItem(duplicate.value, raw);
+    sessionStorage.setItem(
+        WORKSPACE_STORAGE_KEY,
+        JSON.stringify({ version: 1, tabs: [duplicate, duplicate], activeTab: duplicate.value }),
+    );
+
+    const workspace = loadStoredWorkspace();
+    const repairedId = workspace.tabs[1]!.value;
+
+    expect(repairedId).not.toBe(duplicate.value);
+    expect(sessionStorage.getItem(duplicate.value)).toBe(raw);
+    expect(sessionStorage.getItem(repairedId)).toBe(raw);
+    expect(readStoredWorkspace().tabs[1]!.value).toBe(repairedId);
+    expect(tabStorage.getStatus(repairedId)).toEqual({ kind: "unreadable", rawValue: raw });
+});
+
+test("source read refusal keeps legacy metadata and its original recovery owner", () => {
+    sessionStorage.clear();
+    const raw = "unreadable source bytes";
+    sessionStorage.setItem("tabs", serializeStorageValue([legacyTab]));
+    sessionStorage.setItem("activeTab", serializeStorageValue(legacyTab.value));
+    sessionStorage.setItem(legacyTab.value, raw);
+    const failure = new DOMException("source key refused a read", "SecurityError");
+    const originalGetItem = Storage.prototype.getItem;
+    const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (
+        this: Storage,
+        key,
+    ) {
+        if (key === legacyTab.value) throw failure;
+        return originalGetItem.call(this, key);
+    });
+
+    const workspace = loadStoredWorkspace();
+
+    getItem.mockRestore();
+    expect(workspace.tabs).toEqual([legacyTab]);
+    expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBeNull();
+    expect(sessionStorage.getItem("tabs")).not.toBeNull();
+    expect(sessionStorage.getItem(legacyTab.value)).toBe(raw);
+    expect(tabStorage.getStatus(legacyTab.value)).toEqual({ kind: "unavailable", error: failure });
+    expect(persistError.reportPersistError).toHaveBeenCalledWith(failure);
+});
+
+test("destination copy refusal keeps the unrepaired workspace and original unreadable bytes", () => {
+    sessionStorage.clear();
+    const raw = "source tree cannot be decoded";
+    sessionStorage.setItem("tabs", serializeStorageValue([legacyTab]));
+    sessionStorage.setItem("activeTab", serializeStorageValue(legacyTab.value));
+    sessionStorage.setItem(legacyTab.value, raw);
+    const failure = new DOMException("destination refused a write", "QuotaExceededError");
+    const originalSetItem = Storage.prototype.setItem;
+    let refusedTarget: string | undefined;
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (
+        this: Storage,
+        key,
+        value,
+    ) {
+        if (key !== legacyTab.value && key !== "tabs" && key !== "activeTab") {
+            refusedTarget = key;
+            throw failure;
+        }
+        return originalSetItem.call(this, key, value);
+    });
+
+    const workspace = loadStoredWorkspace();
+
+    setItem.mockRestore();
+    expect(workspace.tabs).toEqual([legacyTab]);
+    expect(refusedTarget).toBeDefined();
+    expect(sessionStorage.getItem(refusedTarget!)).toBeNull();
+    expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBeNull();
+    expect(sessionStorage.getItem("tabs")).not.toBeNull();
+    expect(sessionStorage.getItem(legacyTab.value)).toBe(raw);
+    expect(persistError.reportPersistError).toHaveBeenCalledWith(
+        expect.objectContaining({ cause: failure }),
+    );
 });
 
 test("bounds and scrubs malformed workspace shapes without throwing", () => {
@@ -1587,7 +1692,7 @@ test("reports an envelope failure before a denied staged-clone rollback", () => 
         .mockImplementation(function (this: Storage, key, value) {
             if (key === WORKSPACE_STORAGE_KEY) throw envelopeWriteError;
             if (key !== legacyTab.value && key !== "tabs" && key !== "activeTab") {
-                stagedCloneIds.push(key);
+                if (!stagedCloneIds.includes(key)) stagedCloneIds.push(key);
             }
             return originalSetItem.call(this, key, value);
         });

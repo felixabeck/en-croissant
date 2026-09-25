@@ -304,9 +304,33 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
             ];
         }
     }
-    const stagedCloneIds = plan.cloneTargets.map(({ targetId }) => targetId);
+    const stagedCloneIds: string[] = [];
+    const cloneKinds = new Map<string, "copied" | "copied-unreadable" | "absent">();
     for (const { sourceId, targetId } of plan.cloneTargets) {
-        tabStorage.clone(sourceId, targetId);
+        const result = tabStorage.clone(sourceId, targetId);
+        if (result.kind === "unavailable" || result.kind === "copy-failed") {
+            reportPersistError(persistStorageWriteError(result.error));
+            tabStorage.removeKnownTreesSafely(stagedCloneIds);
+            return plan.unrepairedWorkspace;
+        }
+        if (result.kind === "unreadable") {
+            try {
+                tabStorage.copyUnreadableForWorkspaceRepair(targetId, result.rawValue);
+            } catch (error) {
+                reportPersistError(persistStorageWriteError(error));
+                tabStorage.removeKnownTreesSafely(stagedCloneIds);
+                return plan.unrepairedWorkspace;
+            }
+            stagedCloneIds.push(targetId);
+            cloneKinds.set(targetId, "copied-unreadable");
+            continue;
+        }
+        if (result.kind === "copied") {
+            stagedCloneIds.push(targetId);
+            cloneKinds.set(targetId, "copied");
+        } else {
+            cloneKinds.set(targetId, "absent");
+        }
     }
     if (stagedCloneIds.length > 0) {
         const failedIds = new Set(tabStorage.flush({ notify: true }));
@@ -319,7 +343,21 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
     const durableMigratedSources = new Set<string>();
     for (const sourceId of new Set(plan.cloneTargets.map(({ sourceId }) => sourceId))) {
         const sourceTargets = plan.cloneTargets.filter((target) => target.sourceId === sourceId);
-        if (sourceTargets.every(({ targetId }) => tabStorage.read(targetId))) {
+        const copiedReadableTargets = sourceTargets.filter(
+            ({ targetId }) => cloneKinds.get(targetId) === "copied",
+        );
+        for (const { targetId } of copiedReadableTargets) {
+            const result = tabStorage.readTree(targetId);
+            if (result.kind === "available") continue;
+            const error =
+                result.kind === "unavailable"
+                    ? result.error
+                    : new Error(`Could not verify the migrated tree at ${targetId}.`);
+            reportPersistError(persistStorageWriteError(error));
+            tabStorage.removeKnownTreesSafely(stagedCloneIds);
+            return plan.unrepairedWorkspace;
+        }
+        if (copiedReadableTargets.length === sourceTargets.length) {
             durableMigratedSources.add(sourceId);
         }
     }

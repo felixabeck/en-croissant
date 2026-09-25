@@ -217,6 +217,26 @@ export function migrateTreeForStorage(value: unknown): unknown {
 type StoredTree = StorageValue<unknown>;
 type ValidatedStoredTree = StorageValue<z.infer<typeof persistedTreeSchema>>;
 
+export type TabTreeStorageStatus =
+    | { kind: "not-read" }
+    | { kind: "absent" }
+    | { kind: "available" }
+    | { kind: "unreadable"; rawValue: string }
+    | { kind: "unavailable"; error: unknown };
+
+export type TabTreeReadResult =
+    | { kind: "absent" }
+    | { kind: "available"; value: StoredTree }
+    | { kind: "unreadable"; rawValue: string }
+    | { kind: "unavailable"; error: unknown };
+
+export type TabTreeCloneResult =
+    | { kind: "copied" }
+    | Exclude<TabTreeReadResult, { kind: "available" }>
+    | { kind: "copy-failed"; error: unknown };
+
+const NOT_READ_STATUS: TabTreeStorageStatus = { kind: "not-read" };
+
 function parseTree(value: unknown): ValidatedStoredTree | null {
     const candidate = migrateTreeForStorage(value);
     if (!isBoundedTreeForStorage(candidate)) return null;
@@ -277,7 +297,7 @@ export function decodeLegacyOrCompressed(value: string): ValidatedStoredTree | n
 
     // The earliest sessions stored TreeState itself as plain JSON, without the
     // zustand envelope or compression. Keep that recovery path deliberately
-    // narrow so corrupt blobs are discarded rather than trusted.
+    // narrow so corrupt blobs are retained for explicit recovery rather than trusted.
     return parseTree(decoded);
 }
 
@@ -287,27 +307,57 @@ export function decodeLegacyOrCompressed(value: string): ValidatedStoredTree | n
  */
 export class TabStorageRepository {
     private readonly pending = new Map<string, StoredTree>();
+    private readonly readStatuses = new Map<string, TabTreeStorageStatus>();
+    private readonly statusListeners = new Map<string, Set<() => void>>();
     private flushTimeout: ReturnType<typeof setTimeout> | null = null;
     private handlersBound = false;
 
     storageFor<S>(): PersistStorage<S> {
         return {
             getItem: (name) => this.read<S>(name),
-            setItem: (name, value) => this.write(name, value),
+            setItem: (name, value) => {
+                this.write(name, value);
+            },
             removeItem: (name) => this.remove(name),
         };
     }
 
     read<S>(tabId: string): StorageValue<S> | null {
+        const result = this.readTree(tabId);
+        return result.kind === "available" ? (result.value as StorageValue<S>) : null;
+    }
+
+    /** Read the exact tab key while keeping unreadable and refused reads distinct from absence. */
+    readTree(tabId: string): TabTreeReadResult {
         const pending = this.pending.get(tabId);
-        if (pending) return pending as StorageValue<S>;
-        const raw = sessionStorage.getItem(tabId);
-        if (!raw) return null;
+        if (pending) {
+            this.setReadStatus(tabId, { kind: "available" });
+            return { kind: "available", value: pending };
+        }
+        if (NON_TREE_SESSION_KEYS.has(tabId)) {
+            this.setReadStatus(tabId, { kind: "absent" });
+            return { kind: "absent" };
+        }
+
+        let raw: string | null;
+        try {
+            raw = sessionStorage.getItem(tabId);
+        } catch (error) {
+            const result: TabTreeReadResult = { kind: "unavailable", error };
+            this.setReadStatus(tabId, result);
+            return result;
+        }
+        if (raw === null) {
+            const result: TabTreeReadResult = { kind: "absent" };
+            this.setReadStatus(tabId, result);
+            return result;
+        }
 
         const decoded = decodeLegacyOrCompressed(raw);
         if (!decoded) {
-            if (!NON_TREE_SESSION_KEYS.has(tabId)) this.removeTreeSafely(tabId);
-            return null;
+            const result: TabTreeReadResult = { kind: "unreadable", rawValue: raw };
+            this.setReadStatus(tabId, result);
+            return result;
         }
 
         // Both an old uncompressed JSON payload and a former v0 envelope are
@@ -319,36 +369,163 @@ export class TabStorageRepository {
                 void warn(`Could not migrate tree storage ${tabId}: ${String(error)}`);
             }
         }
-        return decoded as StorageValue<S>;
+        this.setReadStatus(tabId, { kind: "available" });
+        return { kind: "available", value: decoded };
+    }
+
+    /** Re-reads the exact key after a storage refusal; pending valid edits remain authoritative. */
+    retryRead(tabId: string): TabTreeReadResult {
+        return this.readTree(tabId);
+    }
+
+    getStatus(tabId: string): TabTreeStorageStatus {
+        return this.readStatuses.get(tabId) ?? NOT_READ_STATUS;
+    }
+
+    subscribeStatus(tabId: string, listener: () => void): () => void {
+        let listeners = this.statusListeners.get(tabId);
+        if (!listeners) {
+            listeners = new Set();
+            this.statusListeners.set(tabId, listeners);
+        }
+        listeners.add(listener);
+        return () => {
+            listeners?.delete(listener);
+            if (listeners?.size === 0) this.statusListeners.delete(tabId);
+        };
+    }
+
+    /** Returns the exact undecodable bytes captured during hydration for phase-2 recovery copy. */
+    readRawValueForRecovery(tabId: string): string {
+        const status = this.getStatus(tabId);
+        if (status.kind !== "unreadable") {
+            throw new Error("This tab has no readable undecodable tree value to copy.");
+        }
+        return status.rawValue;
+    }
+
+    /** Removes only a known undecodable value, clearing its write gate after verified removal. */
+    discardUnreadable(tabId: string): boolean {
+        const status = this.getStatus(tabId);
+        if (status.kind !== "unreadable") return false;
+        try {
+            sessionStorage.removeItem(tabId);
+            if (sessionStorage.getItem(tabId) !== null) {
+                throw new Error("Session storage retained the unreadable tree after removal.");
+            }
+        } catch (error) {
+            const reported = persistStorageWriteError(error);
+            reportPersistError(reported);
+            throw reported;
+        }
+        this.pending.delete(tabId);
+        this.setReadStatus(tabId, { kind: "absent" });
+        return true;
     }
 
     write<S>(tabId: string, value: StorageValue<S>) {
+        if (this.writeBlocker(tabId)) return;
         this.pending.set(tabId, { version: TREE_STORAGE_VERSION, state: value.state });
+        this.setReadStatus(tabId, { kind: "available" });
         this.scheduleFlush();
     }
 
     seed(tabId: string, state: unknown) {
         const value = parseTree(state);
         if (!value) throw new Error("Cannot persist an invalid game tree.");
+        const blocker = this.writeBlocker(tabId);
+        if (blocker) {
+            throw new Error(
+                "Cannot replace a tab tree while its storage is unreadable or unavailable.",
+                { cause: blocker.kind === "unavailable" ? blocker.error : blocker },
+            );
+        }
         try {
             sessionStorage.setItem(tabId, serializeStorageValue(value));
+            this.setReadStatus(tabId, { kind: "available" });
         } catch (error) {
             throw persistStorageWriteError(error);
         }
     }
 
-    clone(sourceTabId: string, targetTabId: string) {
-        const copy = this.validatedClone(sourceTabId);
-        if (!copy) return;
-        this.write(targetTabId, copy);
+    clone(sourceTabId: string, targetTabId: string): TabTreeCloneResult {
+        const source = this.readTree(sourceTabId);
+        if (source.kind !== "available") return source;
+        const copy = this.validatedClone(source.value);
+        if (!copy) {
+            return {
+                kind: "copy-failed",
+                error: new Error("Could not validate the source tree."),
+            };
+        }
+        const blocker = this.writeBlocker(targetTabId);
+        if (blocker) {
+            return {
+                kind: "copy-failed",
+                error:
+                    blocker.kind === "unavailable"
+                        ? blocker.error
+                        : new Error("The destination tree key cannot be replaced."),
+            };
+        }
+        this.pending.set(targetTabId, copy);
+        this.setReadStatus(targetTabId, { kind: "available" });
+        this.scheduleFlush();
+        return { kind: "copied" };
+    }
+
+    /** Copies exact unreadable bytes to a fresh migration ID and verifies the durable target. */
+    copyUnreadableForWorkspaceRepair(targetTabId: string, rawValue: string): void {
+        const target = this.readTree(targetTabId);
+        if (target.kind !== "absent") {
+            throw target.kind === "unavailable"
+                ? target.error
+                : new Error("The destination tree key is already in use.");
+        }
+
+        let attemptedWrite = false;
+        try {
+            attemptedWrite = true;
+            sessionStorage.setItem(targetTabId, rawValue);
+            if (sessionStorage.getItem(targetTabId) !== rawValue) {
+                throw new Error("Could not verify the copied unreadable tree value.");
+            }
+            this.setReadStatus(targetTabId, { kind: "unreadable", rawValue });
+        } catch (error) {
+            // The target was verified absent immediately before this write. Remove only bytes
+            // produced by this copy; the original source remains the workspace's owner.
+            let failure = error;
+            if (attemptedWrite) {
+                try {
+                    if (sessionStorage.getItem(targetTabId) === rawValue) {
+                        sessionStorage.removeItem(targetTabId);
+                    }
+                } catch (cleanupError) {
+                    reportPersistError(persistStorageWriteError(cleanupError));
+                    failure = cleanupError;
+                }
+            }
+            this.setReadStatus(targetTabId, { kind: "unavailable", error: failure });
+            throw failure;
+        }
     }
 
     /** Creates an immediately durable clone without flushing any unrelated pending tree. */
     cloneDurable(sourceTabId: string, targetTabId: string) {
-        const copy = this.validatedClone(sourceTabId);
+        const source = this.readTree(sourceTabId);
+        if (source.kind !== "available") return;
+        const copy = this.validatedClone(source.value);
         if (!copy) return;
+        const blocker = this.writeBlocker(targetTabId);
+        if (blocker) {
+            throw new Error(
+                "Cannot replace a tab tree while its storage is unreadable or unavailable.",
+                { cause: blocker.kind === "unavailable" ? blocker.error : blocker },
+            );
+        }
         try {
             sessionStorage.setItem(targetTabId, serializeStorageValue(copy));
+            this.setReadStatus(targetTabId, { kind: "available" });
         } catch (error) {
             throw persistStorageWriteError(error);
         }
@@ -357,6 +534,7 @@ export class TabStorageRepository {
     remove(tabId: string) {
         this.pending.delete(tabId);
         sessionStorage.removeItem(tabId);
+        this.setReadStatus(tabId, NOT_READ_STATUS);
     }
 
     /** Removes a known tree without letting cleanup failures abort its owning operation. */
@@ -515,9 +693,19 @@ export class TabStorageRepository {
         const failedTabIds: string[] = [];
         let notifyError: unknown;
         for (const [tabId, value] of this.pending) {
+            const blocker = this.writeBlocker(tabId);
+            if (blocker) {
+                failedTabIds.push(tabId);
+                notifyError ??=
+                    blocker.kind === "unavailable"
+                        ? blocker.error
+                        : new Error("Cannot persist a tab tree while its storage is unreadable.");
+                continue;
+            }
             try {
                 sessionStorage.setItem(tabId, serializeStorageValue(value));
                 this.pending.delete(tabId);
+                this.setReadStatus(tabId, { kind: "available" });
             } catch (error) {
                 failedTabIds.push(tabId);
                 void warn(`Could not persist tree storage ${tabId}: ${String(error)}`);
@@ -543,10 +731,47 @@ export class TabStorageRepository {
         }, DEBOUNCE_MS);
     }
 
-    private validatedClone(sourceTabId: string): ValidatedStoredTree | null {
+    private writeBlocker(tabId: string): TabTreeStorageStatus | null {
+        if (NON_TREE_SESSION_KEYS.has(tabId)) {
+            return {
+                kind: "unavailable",
+                error: new Error("The key belongs to another session store."),
+            };
+        }
+        let status = this.getStatus(tabId);
+        if (status.kind === "not-read") {
+            this.readTree(tabId);
+            status = this.getStatus(tabId);
+        }
+        return status.kind === "unreadable" || status.kind === "unavailable" ? status : null;
+    }
+
+    private setReadStatus(tabId: string, status: TabTreeStorageStatus | TabTreeReadResult) {
+        const next: TabTreeStorageStatus =
+            status.kind === "available"
+                ? { kind: "available" }
+                : status.kind === "unreadable"
+                  ? { kind: "unreadable", rawValue: status.rawValue }
+                  : status.kind === "unavailable"
+                    ? { kind: "unavailable", error: status.error }
+                    : status;
+        const current = this.getStatus(tabId);
+        const unchanged =
+            current.kind === next.kind &&
+            (current.kind !== "unreadable" ||
+                (next.kind === "unreadable" && current.rawValue === next.rawValue)) &&
+            (current.kind !== "unavailable" ||
+                (next.kind === "unavailable" && current.error === next.error));
+        if (unchanged) return;
+        if (next.kind === "not-read") this.readStatuses.delete(tabId);
+        else this.readStatuses.set(tabId, next);
+        for (const listener of this.statusListeners.get(tabId) ?? []) listener();
+    }
+
+    private validatedClone(source: StorageValue<unknown>): ValidatedStoredTree | null {
         // Round-trip through serialize/parse so a pending partialized store
         // (which still carries action functions) cannot reach structuredClone.
-        const copy = decodeLegacyOrCompressed(serializeStorageValue(this.read(sourceTabId)));
+        const copy = decodeLegacyOrCompressed(serializeStorageValue(source));
         if (!copy) return null;
         // A duplicate tab must not share a live analysis lease.
         copy.state.report = { ...copy.state.report, inProgress: false, operationId: null };

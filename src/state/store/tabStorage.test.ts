@@ -662,11 +662,13 @@ test("clone of a pending write carrying store actions succeeds without inheritin
     expect(storage.read("copy-pending-actions")?.state).not.toHaveProperty("setReportOperationId");
 });
 
-test("drops corrupt trees rather than letting hydration crash", () => {
+test("preserves undecodable tree bytes and exposes them for recovery", () => {
     sessionStorage.setItem("broken", "not a tree");
 
     expect(storage.read("broken")).toBeNull();
-    expect(sessionStorage.getItem("broken")).toBeNull();
+    expect(sessionStorage.getItem("broken")).toBe("not a tree");
+    expect(storage.getStatus("broken")).toEqual({ kind: "unreadable", rawValue: "not a tree" });
+    expect(storage.readRawValueForRecovery("broken")).toBe("not a tree");
     expect(decodeLegacyOrCompressed("not a tree")).toBeNull();
     expect(parseLegacyTreeJson("not a tree")).toBeNull();
 });
@@ -679,7 +681,8 @@ test("rejects excessive recursive nesting before schema hydration", () => {
     sessionStorage.setItem("too-deep", JSON.stringify(tree));
 
     expect(storage.read("too-deep")).toBeNull();
-    expect(sessionStorage.getItem("too-deep")).toBeNull();
+    expect(sessionStorage.getItem("too-deep")).toBe(JSON.stringify(tree));
+    expect(storage.getStatus("too-deep").kind).toBe("unreadable");
 });
 
 test("accepts the maximum recursive depth and rejects its first overflow", () => {
@@ -924,8 +927,119 @@ test("current envelopes do not rewrite, while empty raw keys stay untouched", ()
     expect(setItem).not.toHaveBeenCalled();
     sessionStorage.setItem("empty", "");
     expect(storage.read("empty")).toBeNull();
+    expect(storage.getStatus("empty")).toEqual({ kind: "unreadable", rawValue: "" });
+    expect(storage.readRawValueForRecovery("empty")).toBe("");
     expect(sessionStorage.getItem("empty")).toBe("");
     setItem.mockRestore();
+});
+
+test("read refusal stays unavailable and a successful retry can load the exact key", () => {
+    const id = "temporarily-unavailable";
+    const stored = serializeStorageValue({
+        version: TREE_STORAGE_VERSION,
+        state: treeWith((tree) => {
+            tree.headers.event = "Recovered after retry";
+        }),
+    });
+    sessionStorage.setItem(id, stored);
+    const failure = new DOMException("storage refused the read", "SecurityError");
+    const originalGetItem = Storage.prototype.getItem;
+    const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (
+        this: Storage,
+        key,
+    ) {
+        if (key === id) throw failure;
+        return originalGetItem.call(this, key);
+    });
+
+    expect(storage.read(id)).toBeNull();
+    expect(storage.getStatus(id)).toEqual({ kind: "unavailable", error: failure });
+    storage.write(id, { version: TREE_STORAGE_VERSION, state: defaultTree() });
+    storage.flush();
+    expect(storage.pendingCount()).toBe(0);
+
+    getItem.mockRestore();
+    expect(storage.retryRead(id)).toMatchObject({
+        kind: "available",
+        value: { state: { headers: { event: "Recovered after retry" } } },
+    });
+    expect(storage.getStatus(id)).toEqual({ kind: "available" });
+    expect(storage.read(id)?.state).toMatchObject({
+        headers: { event: "Recovered after retry" },
+    });
+});
+
+test("a failed retry remains unavailable and does not authorize a default write", () => {
+    const id = "retry-still-refused";
+    const failure = new DOMException("storage refused the read", "SecurityError");
+    const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation((key) => {
+        if (key === id) throw failure;
+        return null;
+    });
+
+    expect(storage.read(id)).toBeNull();
+    expect(storage.retryRead(id)).toEqual({ kind: "unavailable", error: failure });
+    storage.write(id, { version: TREE_STORAGE_VERSION, state: defaultTree() });
+    storage.flush();
+
+    expect(storage.getStatus(id)).toEqual({ kind: "unavailable", error: failure });
+    expect(storage.pendingCount()).toBe(0);
+    expect(getItem).toHaveBeenCalledWith(id);
+    getItem.mockRestore();
+});
+
+test("pending edits remain authoritative without consulting refused storage", () => {
+    const tree = treeWith((state) => {
+        state.dirty = true;
+        state.headers.event = "Latest pending edit";
+    });
+    storage.write("pending-authoritative", {
+        version: TREE_STORAGE_VERSION,
+        state: tree,
+    });
+    const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+        throw new DOMException("storage refused the read", "SecurityError");
+    });
+
+    expect(storage.read("pending-authoritative")?.state).toMatchObject({
+        dirty: true,
+        headers: { event: "Latest pending edit" },
+    });
+    expect(getItem).not.toHaveBeenCalled();
+    expect(storage.getStatus("pending-authoritative")).toEqual({ kind: "available" });
+    getItem.mockRestore();
+});
+
+test("failed discard retains the unreadable gate and reports its storage error", () => {
+    sessionStorage.setItem("discard-refused", "corrupt bytes");
+    storage.read("discard-refused");
+    const failure = new DOMException("storage refused removal", "SecurityError");
+    const removeItem = vi.spyOn(Storage.prototype, "removeItem").mockImplementation(function (
+        this: Storage,
+        key,
+    ) {
+        if (key === "discard-refused") throw failure;
+        return Storage.prototype.removeItem.call(this, key);
+    });
+
+    expect(() => storage.discardUnreadable("discard-refused")).toThrow(failure);
+    expect(storage.getStatus("discard-refused")).toEqual({
+        kind: "unreadable",
+        rawValue: "corrupt bytes",
+    });
+    expect(sessionStorage.getItem("discard-refused")).toBe("corrupt bytes");
+    expect(persistError.reportPersistError).toHaveBeenCalledWith(failure);
+    removeItem.mockRestore();
+});
+
+test("successful discard clears only a readable unreadable gate", () => {
+    sessionStorage.setItem("discard-success", "corrupt bytes");
+    storage.read("discard-success");
+
+    expect(storage.discardUnreadable("discard-success")).toBe(true);
+    expect(sessionStorage.getItem("discard-success")).toBeNull();
+    expect(storage.getStatus("discard-success")).toEqual({ kind: "absent" });
+    expect(storage.discardUnreadable("discard-success")).toBe(false);
 });
 
 test.each([

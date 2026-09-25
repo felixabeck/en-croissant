@@ -6,7 +6,7 @@ import { type Draft, produce } from "immer";
 import { createStore, type StateCreator, type StoreApi } from "zustand";
 import { persist } from "zustand/middleware";
 import type { BestMoves, Outcome, Score } from "@/bindings";
-import { tabStorage, TREE_STORAGE_VERSION } from "./tabStorage";
+import { tabStorage, TREE_STORAGE_VERSION, type TabTreeStorageStatus } from "./tabStorage";
 import { ANNOTATION_INFO, type Annotation } from "@/utils/annotation";
 import { getPGN } from "@/utils/chess";
 import { parseSanOrUci, positionFromFen } from "@/utils/chessops";
@@ -98,9 +98,10 @@ export interface TreeStoreState extends TreeState {
 }
 
 export type TreeStore = StoreApi<TreeStoreState> & { dispose: () => void };
+type PersistedTreeStore = TreeStore & { persist: { rehydrate: () => Promise<void> | void } };
 
 const reportOwners = new Map<string, object>();
-const treeStores = new Map<string, TreeStore>();
+const treeStores = new Map<string, PersistedTreeStore>();
 const closingReportOwners = new Map<string, ReportOwnerInvalidation>();
 
 export type ReportOwnerInvalidation = {
@@ -164,6 +165,24 @@ export function closeTreeStore(tab: string): void {
     reportOwners.delete(tab);
     removeFileFreshness(tab);
     closing?.decide(false);
+}
+
+/** Rehydrates the existing cached store after storage refused its initial tree read. */
+export async function retryTreeStoreStorage(
+    tab: string,
+): Promise<TabTreeStorageStatus | null> {
+    const store = treeStores.get(tab);
+    if (!store) throw new Error("The tab has no cached tree store to retry.");
+    await store.persist.rehydrate();
+    if (treeStores.get(tab) !== store) return null;
+    return tabStorage.getStatus(tab);
+}
+
+/** Discards an undecodable value and resets its cached store only after storage confirms removal. */
+export function discardTreeStoreStorage(tab: string): boolean {
+    if (!tabStorage.discardUnreadable(tab)) return false;
+    treeStores.get(tab)?.getState().reset();
+    return true;
 }
 
 function installRoot(state: Draft<TreeStoreState>, root: TreeNode): void {

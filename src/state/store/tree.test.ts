@@ -1,7 +1,7 @@
 import { parseUci } from "chessops";
 import { INITIAL_FEN, makeFen } from "chessops/fen";
 import { makeSan } from "chessops/san";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import {
     createNode,
     defaultTree,
@@ -10,8 +10,14 @@ import {
     type TreeNode,
 } from "@/utils/treeReducer";
 import { positionFromFen } from "@/utils/chessops";
-import { closeTreeStore, createTreeStore } from "./tree";
+import {
+    closeTreeStore,
+    createTreeStore,
+    discardTreeStoreStorage,
+    retryTreeStoreStorage,
+} from "./tree";
 import { tabStorage } from "./tabStorage";
+import { serializeStorageValue } from "./debouncedStorage";
 
 const persistedIds: string[] = [];
 afterEach(() => {
@@ -93,6 +99,106 @@ function mainlinePrependStore() {
 
     return createTreeStore(undefined, tree);
 }
+
+test("unreadable tree bytes survive hydration and incidental store updates", () => {
+    const id = "unreadable-tree-hydration";
+    const raw = "not a serialized game tree";
+    persistedIds.push(id);
+    sessionStorage.setItem(id, raw);
+
+    const store = createTreeStore(id);
+    expect(tabStorage.getStatus(id)).toEqual({ kind: "unreadable", rawValue: raw });
+    expect(sessionStorage.getItem(id)).toBe(raw);
+
+    store.getState().setComment("An unrelated in-memory update");
+    tabStorage.flush();
+
+    expect(tabStorage.pendingCount()).toBe(0);
+    expect(sessionStorage.getItem(id)).toBe(raw);
+});
+
+test("successful discard clears unreadable bytes and resets the cached tree", () => {
+    const id = "discard-tree-hydration";
+    const raw = "undecodable tree data";
+    persistedIds.push(id);
+    sessionStorage.setItem(id, raw);
+    const store = createTreeStore(id);
+    store.getState().setComment("An incidental in-memory update");
+
+    expect(discardTreeStoreStorage(id)).toBe(true);
+    expect(tabStorage.getStatus(id).kind).toBe("available");
+    expect(sessionStorage.getItem(id)).toBeNull();
+    expect(store.getState().root.comment).toBe("");
+    tabStorage.flush();
+    expect(tabStorage.read(id)?.state).toMatchObject({ root: { comment: "" } });
+});
+
+test("a failed initial read stays gated until retry rehydrates the cached store", async () => {
+    const id = "retry-valid-tree-hydration";
+    const tree = defaultTree();
+    tree.headers.event = "Saved tree after retry";
+    const raw = serializeStorageValue({ version: 1, state: tree });
+    sessionStorage.setItem(id, raw);
+    persistedIds.push(id);
+    const failure = new Error("storage refused the read");
+    const originalGetItem = Storage.prototype.getItem;
+    const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (
+        this: Storage,
+        key,
+    ) {
+        if (key === id) throw failure;
+        return originalGetItem.call(this, key);
+    });
+
+    const store = createTreeStore(id);
+    expect(tabStorage.getStatus(id)).toEqual({ kind: "unavailable", error: failure });
+    store.getState().setComment("Must not replace unread storage");
+    tabStorage.flush();
+    getItem.mockRestore();
+    expect(sessionStorage.getItem(id)).toBe(raw);
+
+    await expect(retryTreeStoreStorage(id)).resolves.toEqual({ kind: "available" });
+    expect(createTreeStore(id)).toBe(store);
+    expect(store.getState().headers.event).toBe("Saved tree after retry");
+    expect(tabStorage.read(id)?.state).toMatchObject({
+        headers: { event: "Saved tree after retry" },
+    });
+});
+
+test("a refused read and failed retry can recover to an absent editable tree", async () => {
+    const id = "retry-absent-tree-hydration";
+    persistedIds.push(id);
+    const failure = new Error("storage refused the read");
+    const originalGetItem = Storage.prototype.getItem;
+    let refused = true;
+    const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (
+        this: Storage,
+        key,
+    ) {
+        if (key === id && refused) throw failure;
+        return originalGetItem.call(this, key);
+    });
+
+    const store = createTreeStore(id);
+    expect(tabStorage.getStatus(id)).toEqual({ kind: "unavailable", error: failure });
+    await expect(retryTreeStoreStorage(id)).resolves.toEqual({
+        kind: "unavailable",
+        error: failure,
+    });
+    expect(originalGetItem.call(sessionStorage, id)).toBeNull();
+
+    refused = false;
+    await expect(retryTreeStoreStorage(id)).resolves.toEqual({ kind: "absent" });
+    getItem.mockRestore();
+
+    expect(createTreeStore(id)).toBe(store);
+    expect(store.getState().headers.event).toBe(defaultTree().headers.event);
+    store.getState().setComment("Editable after absent-key retry");
+    tabStorage.flush();
+    expect(tabStorage.read(id)?.state).toMatchObject({
+        root: { comment: "Editable after absent-key retry" },
+    });
+});
 
 test("save writes the clean tree and its new source stamp together", () => {
     const id = "tree-save-source-stamp";
