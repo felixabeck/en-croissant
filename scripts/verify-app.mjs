@@ -4,7 +4,7 @@
 //   pnpm verify:app                 run the checks
 //   pnpm verify:app --screenshot X  also write a PNG of the page to X
 //
-// It asserts fifty-one independently reported checks, plus one conditional reload check, that no other gate in this repository can:
+// It asserts fifty-two independently reported checks, plus one conditional reload check, that no other gate in this repository can:
 //   group | assertions
 //   startup | 5: production authority, user-file safety, owned-image cleanup, real IPC bridge,
 //             document title
@@ -17,8 +17,9 @@
 //   attachments | 4: prepare, retire, live-session bytes/intent, titlebar cleanup
 //   native reads | 5: mint, cancel, cancelled-ticket refusal, retained ticket, destroyed-window log
 //   Files | 3: seeded-row-render, double-click-route, opened-game-notation
-//   file freshness | 4: in-place rewrite, open-tab reload/withhold, native-read timing,
-//                      one-poll-interval freshness budget; +1 conditional Reload-from-disk check
+//   file freshness | 5: in-place rewrite, open-tab reload/withhold, native-read timing,
+//                      main-thread apply budget, one-poll-interval freshness budget;
+//                      +1 conditional Reload-from-disk check
 //   titlebar/process | 3: rendered controls, process-before-close, process-after-close
 //   shutdown | 3: start, bounded completion, sound signal
 //
@@ -274,6 +275,7 @@ const FILES_PROBE_TIMEOUT_MS = 20_000;
 const PRACTICE_RENDERER_TIMEOUT_MS = 600_000;
 // Keep aligned with FILE_REVISION_INTERVAL_MS in src/state/fileFreshness.ts.
 const FILE_FRESHNESS_POLL_INTERVAL_MS = 2_000;
+const FILE_FRESHNESS_APPLY_BUDGET_MS = 1_000;
 // How long a practice-step failure waits for a stalled renderer to answer before dumping its state.
 const RENDERER_RECOVERY_TIMEOUT_MS = 60_000;
 const PRACTICE_REVIEW_PAGE_LIMIT = 500; // Mirrors PRACTICE_READ_MAX_ENTRIES in practice.rs.
@@ -938,7 +940,8 @@ try {
   await mkdir(downloadDestination, { recursive: true });
   await mkdir(filesWorkspace, { recursive: true });
   await writeFile(join(filesWorkspace, `${filesRowName}.pgn`), filesGamePgn);
-  await writeFile(largePracticePath, practicePgn(initialPracticeTree));
+  const initialLargePracticePgn = practicePgn(initialPracticeTree);
+  await writeFile(largePracticePath, initialLargePracticePgn);
   await writeFile(largePracticeMetadataPath, JSON.stringify({ type: "repertoire", tags: [] }));
   await writeFile(
     legacyPracticePath,
@@ -952,6 +955,21 @@ try {
     100_001,
   );
   const extendedLargePracticePgn = practicePgn(extendedPracticeTree);
+  const rewrittenOnlyMoveSan = extendedPracticePositions
+    .slice(initialPracticePositions.length)
+    .map(({ answer }) => answer)
+    .find(
+      (san) =>
+        extendedLargePracticePgn.includes(san) && !initialLargePracticePgn.includes(san),
+    );
+  if (!rewrittenOnlyMoveSan) {
+    throw new Error("the rewritten practice PGN has no move absent from its initial PGN");
+  }
+  const rewrittenOnlyMoveFigurine = rewrittenOnlyMoveSan.replace(
+    /^[KQRBN]/,
+    (piece) => ({ K: "♔", Q: "♕", R: "♖", B: "♗", N: "♘" })[piece],
+  );
+  const rewrittenOnlyMoveForms = [...new Set([rewrittenOnlyMoveSan, rewrittenOnlyMoveFigurine])];
   await mkdir(imageDirectory, { recursive: true });
   await writeFile(orphanFile, "do not delete registry fixture bytes");
   const retainedImageBytes = Buffer.from(retainedImageBase64, "base64");
@@ -1529,34 +1547,25 @@ try {
     throw new Error(`${error.message}; renderer state: ${JSON.stringify(state)}`);
   }
   const measurementReady = await session.execute(
-    `const expectedFileId = arguments[0];
-     const baselineReloadCount = arguments[1];
+    `const baselineReloadCount = arguments[0];
      const tab = [...document.querySelectorAll('[role="tab"]')].find((candidate) =>
        candidate.textContent?.includes("verify:practice")
      );
      const panelId = tab?.getAttribute("aria-controls");
      const panel = panelId ? document.getElementById(panelId) : null;
      const gate = panel?.querySelector("[data-file-freshness]");
-     const internals = window.__TAURI_INTERNALS__;
-     if (!gate || !internals || typeof internals.invoke !== "function") return false;
+     if (!gate) return false;
      const state = {
        startedAt: performance.now(),
        baselineReloadCount,
        readDurations: [],
+       lastReadFinishedAt: null,
        terminal: null,
      };
-     const invoke = internals.invoke.bind(internals);
-     state.originalInvoke = invoke;
-    internals.invoke = async (command, args) => {
-       if (command !== "read_game" || args?.file?.id?.id !== expectedFileId) {
-         return invoke(command, args);
-       }
-       const readStartedAt = performance.now();
-       try {
-         return await invoke(command, args);
-       } finally {
-         state.readDurations.push(performance.now() - readStartedAt);
-       }
+     // The sealed IPC invoke cannot be wrapped, so the platform records this read.
+     window.__verifyAppRecordReadGame = (durationMs) => {
+       state.readDurations.push(durationMs);
+       state.lastReadFinishedAt = performance.now();
      };
      const observeFreshness = () => {
        const [freshnessState, countText] = (gate.getAttribute("data-file-freshness") || "").split(":");
@@ -1567,14 +1576,19 @@ try {
            freshnessState === "unavailable" ||
            (freshnessState === "verified" && reloadCount > baselineReloadCount))
        ) {
-         state.terminal = { state: freshnessState, reloadCount, observedAt: performance.now() };
+         state.terminal = {
+           state: freshnessState,
+           reloadCount,
+           observedAt: performance.now(),
+           readFinishedAt: state.lastReadFinishedAt,
+         };
        }
      };
      state.observer = new MutationObserver(observeFreshness);
      state.observer.observe(gate, { attributes: true, attributeFilter: ["data-file-freshness"] });
      window.__verifyAppFileFreshnessMeasurement = state;
      return { startedAt: state.startedAt };`,
-    [largePracticeId, openFreshnessBeforeWrite.reloadCount],
+    [openFreshnessBeforeWrite.reloadCount],
   );
   if (!measurementReady) throw new Error("could not arm the open tab freshness measurement");
   const inodeBeforeRewrite = (await stat(largePracticePath)).ino;
@@ -1602,17 +1616,24 @@ try {
        state: measurement.terminal?.state ?? null,
        reloadCount: measurement.terminal?.reloadCount ?? null,
        observedAt: measurement.terminal?.observedAt ?? null,
+       readFinishedAt: measurement.terminal?.readFinishedAt ?? null,
      };`,
   );
   await session.execute(
-    "const measurement = window.__verifyAppFileFreshnessMeasurement; measurement.observer?.disconnect(); if (measurement.originalInvoke) window.__TAURI_INTERNALS__.invoke = measurement.originalInvoke; measurement.observer = null; measurement.originalInvoke = null; return true;",
+    "const measurement = window.__verifyAppFileFreshnessMeasurement; measurement.observer?.disconnect(); delete window.__verifyAppRecordReadGame; measurement.observer = null; return true;",
   );
   const freshnessElapsedMs =
     freshnessMeasurement.observedAt - measurementReady.startedAt - rewriteDurationMs;
   const measuredReadTimeMs = freshnessMeasurement.readTimeMs;
+  const freshnessApplyMs =
+    Number.isFinite(freshnessMeasurement.observedAt) &&
+    Number.isFinite(freshnessMeasurement.readFinishedAt)
+      ? freshnessMeasurement.observedAt - freshnessMeasurement.readFinishedAt
+      : Number.NaN;
   const freshnessDeadlineMs =
-    FILE_FRESHNESS_POLL_INTERVAL_MS +
-    (Number.isFinite(measuredReadTimeMs) ? measuredReadTimeMs : 0);
+    Number.isFinite(measuredReadTimeMs) && Number.isFinite(freshnessApplyMs)
+      ? FILE_FRESHNESS_POLL_INTERVAL_MS + measuredReadTimeMs + freshnessApplyMs
+      : Number.NaN;
   const openTabReloaded =
     freshnessTransition.state === "conflict" ||
     (freshnessTransition.state === "verified" &&
@@ -1627,14 +1648,23 @@ try {
     "the file freshness transition includes a measured native read_game call",
     `read_game duration: ${measuredReadTimeMs}`,
   );
+  check(
+    Number.isFinite(measuredReadTimeMs) &&
+      Number.isFinite(freshnessApplyMs) &&
+      freshnessApplyMs >= 0 &&
+      freshnessApplyMs <= FILE_FRESHNESS_APPLY_BUDGET_MS,
+    `the freshness transition applies within ${FILE_FRESHNESS_APPLY_BUDGET_MS} ms of the measured read`,
+    `apply duration: ${Number.isFinite(freshnessApplyMs) ? `${freshnessApplyMs.toFixed(1)} ms` : "unmeasured"}; ` +
+      `read_game duration: ${Number.isFinite(measuredReadTimeMs) ? `${measuredReadTimeMs.toFixed(1)} ms` : "unmeasured"}`,
+  );
   console.log(
     `  info  open file freshness: ${freshnessElapsedMs.toFixed(1)} ms after rewrite ` +
-      `(limit ${FILE_FRESHNESS_POLL_INTERVAL_MS} ms + read_game ${Number.isFinite(measuredReadTimeMs) ? measuredReadTimeMs.toFixed(1) : "unmeasured"} ms; ${freshnessTransition.state})`,
+      `(limit ${FILE_FRESHNESS_POLL_INTERVAL_MS} ms + read_game ${Number.isFinite(measuredReadTimeMs) ? measuredReadTimeMs.toFixed(1) : "unmeasured"} ms + apply ${Number.isFinite(freshnessApplyMs) ? freshnessApplyMs.toFixed(1) : "unmeasured"} ms; ${freshnessTransition.state})`,
   );
   check(
     Number.isFinite(freshnessElapsedMs) && freshnessElapsedMs <= freshnessDeadlineMs,
-    "the open file-backed tab refreshes within one poll interval plus read time",
-    `${freshnessElapsedMs.toFixed(1)} ms > ${freshnessDeadlineMs.toFixed(1)} ms`,
+    "the open file-backed tab refreshes within one poll interval plus measured read and apply",
+    `${freshnessElapsedMs.toFixed(1)} ms > ${Number.isFinite(freshnessDeadlineMs) ? `${freshnessDeadlineMs.toFixed(1)} ms` : "unmeasured deadline"}`,
   );
   if (freshnessTransition.state === "conflict") {
     const reloadButton = await waitFor("the open file freshness conflict panel reload button", () =>
@@ -1650,7 +1680,8 @@ try {
         .catch(() => false),
     );
     await clickAt(session, reloadButton.x, reloadButton.y, "reload-open-file-tab");
-    const reloadedFreshness = await waitFor(
+    let reloadWaitError;
+    await waitFor(
       "the open file-backed tab to verify after Reload from disk",
       async () => {
         const freshness = await readOpenPracticeFreshness();
@@ -1661,10 +1692,25 @@ try {
           : false;
       },
       { timeoutMs: PRACTICE_RENDERER_TIMEOUT_MS },
-    );
+    ).catch((error) => {
+      reloadWaitError = error.message;
+    });
+    const reloadedFreshness = await readOpenPracticeFreshness();
+    const rewrittenOnlyMoveVisible = await session
+      .execute(
+        `const pageText = document.body.innerText.replace(/\\s+/g, "");
+         return arguments[0].some((move) => pageText.includes(move));`,
+        [rewrittenOnlyMoveForms],
+      )
+      .catch(() => false);
+    const reloadCheckPassed =
+      reloadedFreshness?.state === "verified" &&
+      reloadedFreshness.reloadCount > freshnessTransition.reloadCount &&
+      rewrittenOnlyMoveVisible;
     check(
-      reloadedFreshness.reloadCount > freshnessTransition.reloadCount,
-      "Reload from disk verifies the open file-backed tab",
+      reloadCheckPassed,
+      "Reload from disk verifies the tab and shows a move unique to the rewritten PGN",
+      `wait: ${reloadWaitError ?? "verified"}; freshness: ${reloadedFreshness?.state ?? "unavailable"}:${reloadedFreshness?.reloadCount ?? "unavailable"} (expected count > ${freshnessTransition.reloadCount}); ${rewrittenOnlyMoveSan}/${rewrittenOnlyMoveFigurine} visible: ${rewrittenOnlyMoveVisible}`,
     );
   }
   let syncWaitError;
