@@ -113,12 +113,9 @@ export default function GameSelector({
             key={virtualRow.index}
             index={virtualRow.index}
             game={games.get(virtualRow.index)}
-            setGames={setGames}
             setPage={setPage}
             deleteGame={deleteGame}
             activePage={activePage}
-            path={path}
-            total={total}
             style={{
               position: "absolute",
               top: 0,
@@ -145,10 +142,7 @@ function GameRow({
   style?: React.CSSProperties;
   index: number;
   game: GameSelectorRow | undefined;
-  setGames: (v: Map<number, GameSelectorRow>) => void;
   setPage: (v: number) => void;
-  path: FileWorkspaceHandle;
-  total: number;
   activePage: number;
   deleteGame?: DeleteGame;
 }) {
@@ -168,7 +162,10 @@ function GameRow({
             toggleDelete(false);
             setDeleteSnapshot(null);
           }}
-          onConfirm={() => (deleteSnapshot ? deleteGame(deleteSnapshot) : undefined)}
+          onConfirm={() => {
+            if (!deleteSnapshot) throw new Error("Deletion confirmation has no game snapshot");
+            return deleteGame(deleteSnapshot);
+          }}
         />
       )}
       <Group

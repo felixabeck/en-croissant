@@ -82,23 +82,6 @@ export async function withFileWrite<T>(
     }
 }
 
-export async function refreshFileGameCount(
-    handle: FileWorkspaceHandle,
-    {
-        signal,
-        isCurrent,
-        updateCount,
-    }: {
-        signal: AbortSignal;
-        isCurrent: () => boolean;
-        updateCount: (count: number) => boolean;
-    },
-): Promise<boolean> {
-    const count = await tauri.countPgnGames(handle, { signal });
-    if (signal.aborted || !isCurrent()) return false;
-    return updateCount(count);
-}
-
 export async function writeFileGame(
     handle: FileWorkspaceHandle,
     gameNumber: number,

@@ -9,7 +9,7 @@ import { IconAction } from "@/components/common/IconAction";
 import { formatNumber } from "@/utils/format";
 import { getTabFile } from "@/utils/tabs";
 import { fileWorkspaceKey } from "@/utils/pathCapabilities";
-import { refreshFileGameCount } from "@/utils/files";
+import { tauri } from "@/platform/tauri";
 import type { GameSelectorRow } from "./GameSelector";
 
 function FileInfo({
@@ -48,31 +48,28 @@ function FileInfo({
     const currentTabId = activeTab.value;
     const handle = activeFile.handle;
     try {
-      await refreshFileGameCount(handle, {
-        signal: controller.signal,
-        isCurrent: () => identityRef.current === activeIdentity && !controller.signal.aborted,
-        updateCount: (numGames) => {
-          const saved = setCurrentTab((prev) => {
-            if (prev.value !== currentTabId) return prev;
-            if (prev.gameOrigin.kind !== "file" && prev.gameOrigin.kind !== "temp_file") {
-              return prev;
-            }
-            if (fileWorkspaceKey(prev.gameOrigin.file.handle) !== activeFileKey) return prev;
-            return {
-              ...prev,
-              gameOrigin: {
-                ...prev.gameOrigin,
-                file: {
-                  ...prev.gameOrigin.file,
-                  numGames,
-                },
-              },
-            };
-          });
-          if (saved) setGames(new Map());
-          return saved;
-        },
+      const numGames = await tauri.countPgnGames(handle, { signal: controller.signal });
+      if (controller.signal.aborted || identityRef.current !== activeIdentity) return;
+      let matched = false;
+      const saved = setCurrentTab((prev) => {
+        if (prev.value !== currentTabId) return prev;
+        if (prev.gameOrigin.kind !== "file" && prev.gameOrigin.kind !== "temp_file") {
+          return prev;
+        }
+        if (fileWorkspaceKey(prev.gameOrigin.file.handle) !== activeFileKey) return prev;
+        matched = true;
+        return {
+          ...prev,
+          gameOrigin: {
+            ...prev.gameOrigin,
+            file: {
+              ...prev.gameOrigin.file,
+              numGames,
+            },
+          },
+        };
       });
+      if (saved && matched) setGames(new Map());
     } catch (cause) {
       if (identityRef.current !== activeIdentity || controller.signal.aborted) return;
       notifyUnlessCancelled(t("Common.Error"), cause);

@@ -86,6 +86,12 @@ beforeEach(async () => {
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
+  mocks.setCurrentTab.mockImplementation(
+    (update: (tab: typeof currentTab) => typeof currentTab) => {
+      update(currentTab);
+      return true;
+    },
+  );
 
   await act(async () => root.render(<FileInfo setGames={mocks.setGames} />));
 });
@@ -120,6 +126,9 @@ test("reloads the game count after a successful native count", async () => {
   mocks.countPgnGames.mockResolvedValueOnce(7);
   await clickReload();
 
+  expect(mocks.countPgnGames).toHaveBeenCalledWith(currentTab.gameOrigin.file.handle, {
+    signal: expect.any(AbortSignal),
+  });
   expect(mocks.setGames).toHaveBeenCalledWith(new Map());
   expect(mocks.setCurrentTab).toHaveBeenCalledOnce();
   expect(mocks.notify).not.toHaveBeenCalled();
@@ -127,7 +136,15 @@ test("reloads the game count after a successful native count", async () => {
 
 test("keeps cached games when count metadata is refused and clears them after retry", async () => {
   mocks.countPgnGames.mockResolvedValue(7);
-  mocks.setCurrentTab.mockReturnValueOnce(false).mockReturnValueOnce(true);
+  mocks.setCurrentTab
+    .mockImplementationOnce((update: (tab: typeof currentTab) => typeof currentTab) => {
+      update(currentTab);
+      return false;
+    })
+    .mockImplementationOnce((update: (tab: typeof currentTab) => typeof currentTab) => {
+      update(currentTab);
+      return true;
+    });
 
   await clickReload();
   expect(mocks.setGames).not.toHaveBeenCalled();

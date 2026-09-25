@@ -31,8 +31,18 @@ import { useNavigate } from "@tanstack/react-router";
 import { useActiveDatabaseViewStore } from "@/state/store/database";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { fileWorkspaceKey } from "@/utils/pathCapabilities";
-import { loadFileGame, refreshFileGameCount, withFileWrite } from "@/utils/files";
+import { loadFileGame, withFileWrite } from "@/utils/files";
 import { setFileFreshness } from "@/state/fileFreshness";
+import type { Tab } from "@/state/workspaceTypes";
+
+type FileBackedTab = Tab & {
+  gameOrigin: Extract<Tab["gameOrigin"], { kind: "file" | "temp_file" }>;
+};
+
+type FileTabUpdateResult = {
+  saved: boolean;
+  matched: boolean;
+};
 
 function InfoPanel({ addGame }: { addGame?: () => void }) {
   const store = use(TreeStateContext)!;
@@ -214,64 +224,147 @@ function GameSelectorAccordion({
     );
   }
 
-  function refreshOwnerCount(
+  function isFileBackedTab(tab: Tab | undefined): tab is FileBackedTab {
+    return !!tab && (tab.gameOrigin.kind === "file" || tab.gameOrigin.kind === "temp_file");
+  }
+
+  function updateFileTabs(
+    ownerFileKey: string,
+    updateTab: (tab: FileBackedTab) => FileBackedTab | null,
+    ownerCountPrecondition?: { id: string; count: number },
+  ): FileTabUpdateResult {
+    let matched = false;
+    const saved = setTabs((tabs) => {
+      if (ownerCountPrecondition) {
+        const owner = tabs.find((tab) => tab.value === ownerCountPrecondition.id);
+        const ownerMatched =
+          isFileBackedTab(owner) &&
+          fileWorkspaceKey(owner.gameOrigin.file.handle) === ownerFileKey &&
+          owner.gameOrigin.file.numGames === ownerCountPrecondition.count;
+        if (!ownerMatched) return tabs;
+      }
+
+      return tabs.map((tab) => {
+        if (
+          !isFileBackedTab(tab) ||
+          fileWorkspaceKey(tab.gameOrigin.file.handle) !== ownerFileKey
+        ) {
+          return tab;
+        }
+        const updated = updateTab(tab);
+        if (updated === null) return tab;
+        matched = true;
+        return updated;
+      });
+    });
+    return { saved, matched };
+  }
+
+  function updateOwnerCount(
+    ownerId: string,
+    ownerFileKey: string,
+    ownerCountPrecondition: number,
+    numGames: number,
+  ) {
+    return updateFileTabs(
+      ownerFileKey,
+      (tab) => {
+        if (tab.value !== ownerId || tab.gameOrigin.file.numGames !== ownerCountPrecondition) {
+          return null;
+        }
+        return {
+          ...tab,
+          gameOrigin: {
+            ...tab.gameOrigin,
+            file: { ...tab.gameOrigin.file, numGames },
+          },
+        };
+      },
+      { id: ownerId, count: ownerCountPrecondition },
+    );
+  }
+
+  function workspaceWriteRefusedError() {
+    return new Error("Workspace file metadata could not be saved");
+  }
+
+  async function refreshOwnerCount(
     ownerId: string,
     handle: FileWorkspaceHandle,
     ownerFileKey: string,
     ownerStore: typeof store,
-    expectedCount: number,
-  ) {
+    ownerCountPrecondition: number,
+  ): Promise<"updated" | "superseded" | "refused" | "failed"> {
     countRefreshAbortRef.current?.abort();
     const controller = new AbortController();
     countRefreshAbortRef.current = controller;
     const generation = ++countRefreshGenerationRef.current;
-    void refreshFileGameCount(handle, {
-      signal: controller.signal,
-      isCurrent: () =>
-        generation === countRefreshGenerationRef.current &&
-        isCurrentOwner(ownerId, ownerFileKey, ownerStore),
-      updateCount: (numGames) => {
-        const currentTabs = jotaiStore.get(tabsAtom);
-        const owner = currentTabs.find((tab) => tab.value === ownerId);
-        if (
-          !owner ||
-          (owner.gameOrigin.kind !== "file" && owner.gameOrigin.kind !== "temp_file") ||
-          fileWorkspaceKey(owner.gameOrigin.file.handle) !== ownerFileKey ||
-          owner.gameOrigin.file.numGames !== expectedCount
-        ) {
-          return false;
-        }
-        return setTabs((tabs) =>
-          tabs.map((tab) => {
-            if (tab.value !== ownerId) return tab;
-            if (
-              (tab.gameOrigin.kind !== "file" && tab.gameOrigin.kind !== "temp_file") ||
-              fileWorkspaceKey(tab.gameOrigin.file.handle) !== ownerFileKey ||
-              tab.gameOrigin.file.numGames !== expectedCount
-            ) {
-              return tab;
-            }
-            return {
-              ...tab,
-              gameOrigin: {
-                ...tab.gameOrigin,
-                file: { ...tab.gameOrigin.file, numGames },
-              },
-            };
-          }),
-        );
-      },
-    }).catch((error) => {
+    const initialTabs = jotaiStore.get(tabsAtom);
+    const owner = initialTabs.find((tab) => tab.value === ownerId);
+    if (
+      !isFileBackedTab(owner) ||
+      fileWorkspaceKey(owner.gameOrigin.file.handle) !== ownerFileKey ||
+      owner.gameOrigin.file.numGames !== ownerCountPrecondition ||
+      !isCurrentOwner(ownerId, ownerFileKey, ownerStore)
+    ) {
+      if (countRefreshAbortRef.current === controller) countRefreshAbortRef.current = null;
+      return "superseded";
+    }
+    const countPreconditions = new Map(
+      initialTabs
+        .filter(
+          (tab): tab is FileBackedTab =>
+            isFileBackedTab(tab) && fileWorkspaceKey(tab.gameOrigin.file.handle) === ownerFileKey,
+        )
+        .map((tab) => [tab.value, tab.gameOrigin.file.numGames]),
+    );
+
+    try {
+      const numGames = await tauri.countPgnGames(handle, { signal: controller.signal });
+      if (
+        controller.signal.aborted ||
+        generation !== countRefreshGenerationRef.current ||
+        !isCurrentOwner(ownerId, ownerFileKey, ownerStore)
+      ) {
+        return "superseded";
+      }
+
+      const update = updateFileTabs(
+        ownerFileKey,
+        (tab) => {
+          const countPrecondition = countPreconditions.get(tab.value);
+          if (
+            !countPreconditions.has(tab.value) ||
+            tab.gameOrigin.file.numGames !== countPrecondition
+          ) {
+            return null;
+          }
+          return {
+            ...tab,
+            gameOrigin: {
+              ...tab.gameOrigin,
+              file: { ...tab.gameOrigin.file, numGames },
+            },
+          };
+        },
+        { id: ownerId, count: ownerCountPrecondition },
+      );
+      if (!update.matched) return "superseded";
+      return update.saved ? "updated" : "refused";
+    } catch (error) {
       if (
         controller.signal.aborted ||
         generation !== countRefreshGenerationRef.current ||
         !isCurrentOwner(ownerId, ownerFileKey, ownerStore) ||
         errorUnlessCancelled(error) === null
       ) {
-        return;
+        return "superseded";
       }
       notifyUnlessCancelled(t("Common.Error"), error);
-    });
+      return "failed";
+    } finally {
+      if (countRefreshAbortRef.current === controller) countRefreshAbortRef.current = null;
+    }
   }
 
   async function setPage(page: number, forced?: boolean) {
@@ -348,6 +441,7 @@ function GameSelectorAccordion({
     const ownerId = currentTab.value;
     const filePath = tabFile.handle;
     const fileKey = fileWorkspaceKey(filePath);
+    const ownerStore = store;
     countRefreshGenerationRef.current += 1;
     countRefreshAbortRef.current?.abort();
     countRefreshAbortRef.current = null;
@@ -355,85 +449,164 @@ function GameSelectorAccordion({
     const predictedCount = originalCount - 1;
     const workspaceTabs = jotaiStore.get(tabsAtom);
     const owner = workspaceTabs.find((tab) => tab.value === ownerId);
-    if (!owner) return;
-    if (owner.gameOrigin.kind !== "file" && owner.gameOrigin.kind !== "temp_file") return;
-    const ownerOrigin = owner.gameOrigin;
+    if (!isCurrentOwner(ownerId, fileKey, ownerStore) || !isFileBackedTab(owner)) return;
+
+    const showStaleRefusal = () => {
+      if (!isCurrentOwner(ownerId, fileKey, ownerStore)) return;
+      setGames(new Map());
+      notifications.show({
+        color: "red",
+        title: t("Common.Error"),
+        message: t("Files.RemoveGameStale", {
+          defaultValue:
+            "The file changed, so no game was removed. Refresh the game list before deleting.",
+        }),
+      });
+    };
+
     if (
-      fileWorkspaceKey(ownerOrigin.file.handle) !== fileKey ||
-      ownerOrigin.file.numGames !== originalCount
+      fileWorkspaceKey(owner.gameOrigin.file.handle) !== fileKey ||
+      owner.gameOrigin.file.numGames !== originalCount ||
+      !Number.isInteger(index) ||
+      index < 0 ||
+      index >= owner.gameOrigin.file.numGames
     ) {
+      showStaleRefusal();
+      const refresh = await refreshOwnerCount(
+        ownerId,
+        filePath,
+        fileKey,
+        ownerStore,
+        owner.gameOrigin.file.numGames,
+      );
+      if (refresh === "refused") throw workspaceWriteRefusedError();
       return;
     }
-    const saved = setTabs((tabs) =>
-      tabs.map((tab) => {
-        if (tab.value !== ownerId) return tab;
-        if (
-          (tab.gameOrigin.kind !== "file" && tab.gameOrigin.kind !== "temp_file") ||
-          fileWorkspaceKey(tab.gameOrigin.file.handle) !== fileKey ||
-          tab.gameOrigin.file.numGames !== originalCount
-        ) {
+
+    const initialTabMetadata = new Map(
+      workspaceTabs
+        .filter(
+          (tab): tab is FileBackedTab =>
+            isFileBackedTab(tab) && fileWorkspaceKey(tab.gameOrigin.file.handle) === fileKey,
+        )
+        .map((tab) => [
+          tab.value,
+          {
+            numGames: tab.gameOrigin.file.numGames,
+            gameNumber: tab.gameOrigin.gameNumber,
+          },
+        ]),
+    );
+    const optimistic = updateOwnerCount(ownerId, fileKey, originalCount, predictedCount);
+    if (!optimistic.matched) {
+      const currentOwner = jotaiStore.get(tabsAtom).find((tab) => tab.value === ownerId);
+      if (isFileBackedTab(currentOwner) && isCurrentOwner(ownerId, fileKey, ownerStore)) {
+        showStaleRefusal();
+        const refresh = await refreshOwnerCount(
+          ownerId,
+          filePath,
+          fileKey,
+          ownerStore,
+          currentOwner.gameOrigin.file.numGames,
+        );
+        if (refresh === "refused") throw workspaceWriteRefusedError();
+      }
+      return;
+    }
+    if (!optimistic.saved) throw workspaceWriteRefusedError();
+
+    let nativeMutationSucceeded = false;
+    try {
+      await withFileWrite(filePath, () => tauri.deleteGame(filePath, index, stamp, revision));
+      nativeMutationSucceeded = true;
+
+      const update = updateFileTabs(fileKey, (tab) => {
+        const currentCount = tab.gameOrigin.file.numGames;
+        const startingMetadata = initialTabMetadata.get(tab.value);
+        const metadataCanFollowDelete =
+          startingMetadata !== undefined &&
+          startingMetadata.numGames === originalCount &&
+          tab.gameOrigin.gameNumber === startingMetadata.gameNumber &&
+          (tab.value === ownerId
+            ? currentCount === predictedCount
+            : currentCount === startingMetadata.numGames);
+        if (!metadataCanFollowDelete) return null;
+
+        const nextGameNumber =
+          tab.gameOrigin.gameNumber > index
+            ? tab.gameOrigin.gameNumber - 1
+            : tab.gameOrigin.gameNumber;
+        if (predictedCount === currentCount && nextGameNumber === tab.gameOrigin.gameNumber) {
           return tab;
         }
         return {
           ...tab,
           gameOrigin: {
             ...tab.gameOrigin,
+            gameNumber: nextGameNumber,
             file: { ...tab.gameOrigin.file, numGames: predictedCount },
           },
         };
-      }),
-    );
-    if (!saved) return;
-    try {
-      await withFileWrite(filePath, () => tauri.deleteGame(filePath, index, stamp, revision));
-      if (isCurrentOwner(ownerId, fileKey, store)) {
-        setGames(new Map());
+      });
+      if (!update.saved && update.matched) {
+        for (const tab of jotaiStore.get(tabsAtom)) {
+          if (isFileBackedTab(tab) && fileWorkspaceKey(tab.gameOrigin.file.handle) === fileKey) {
+            setFileFreshness(tab.value, "conflict", { conflictReason: "changed" });
+          }
+        }
+        if (isCurrentOwner(ownerId, fileKey, ownerStore)) setGames(new Map());
+        throw new Error("Committed but durability uncertain: file deletion tab metadata");
       }
+
+      for (const tab of jotaiStore.get(tabsAtom)) {
+        if (isFileBackedTab(tab) && fileWorkspaceKey(tab.gameOrigin.file.handle) === fileKey) {
+          setFileFreshness(tab.value, "unverified");
+        }
+      }
+      if (isCurrentOwner(ownerId, fileKey, ownerStore)) setGames(new Map());
     } catch (error) {
+      if (nativeMutationSucceeded) throw error;
       const errorDetails = normalizeError(error);
-      const rollbackCount = () =>
-        setTabs((tabs) =>
-          tabs.map((tab) => {
-            if (tab.value !== ownerId) return tab;
-            if (
-              (tab.gameOrigin.kind !== "file" && tab.gameOrigin.kind !== "temp_file") ||
-              fileWorkspaceKey(tab.gameOrigin.file.handle) !== fileKey ||
-              tab.gameOrigin.file.numGames !== predictedCount
-            ) {
-              return tab;
-            }
-            return {
-              ...tab,
-              gameOrigin: {
-                ...tab.gameOrigin,
-                file: { ...tab.gameOrigin.file, numGames: originalCount },
-              },
-            };
-          }),
-        );
+      const rollbackCount = () => updateOwnerCount(ownerId, fileKey, predictedCount, originalCount);
 
       if (errorDetails.backendCategory === "stale-game") {
-        rollbackCount();
-        if (isCurrentOwner(ownerId, fileKey, store)) setGames(new Map());
-        notifications.show({
-          color: "red",
-          title: t("Common.Error"),
-          message: t("Files.RemoveGameStale", {
-            defaultValue:
-              "The file changed, so no game was removed. Refresh the game list before deleting.",
-          }),
-        });
-        refreshOwnerCount(ownerId, filePath, fileKey, store, originalCount);
+        const rollback = rollbackCount();
+        showStaleRefusal();
+        const ownerAfterRollback = jotaiStore.get(tabsAtom).find((tab) => tab.value === ownerId);
+        if (isCurrentOwner(ownerId, fileKey, ownerStore) && isFileBackedTab(ownerAfterRollback)) {
+          const refresh = await refreshOwnerCount(
+            ownerId,
+            filePath,
+            fileKey,
+            ownerStore,
+            ownerAfterRollback.gameOrigin.file.numGames,
+          );
+          if (rollback.matched && !rollback.saved) throw workspaceWriteRefusedError();
+          if (refresh === "refused") throw workspaceWriteRefusedError();
+        } else if (rollback.matched && !rollback.saved) {
+          throw workspaceWriteRefusedError();
+        }
         return;
       }
 
       if (errorDetails.category === "applied-despite-error") {
-        if (isCurrentOwner(ownerId, fileKey, store)) setGames(new Map());
-        refreshOwnerCount(ownerId, filePath, fileKey, store, predictedCount);
+        if (isCurrentOwner(ownerId, fileKey, ownerStore)) setGames(new Map());
+        const ownerNow = jotaiStore.get(tabsAtom).find((tab) => tab.value === ownerId);
+        if (isCurrentOwner(ownerId, fileKey, ownerStore) && isFileBackedTab(ownerNow)) {
+          const refresh = await refreshOwnerCount(
+            ownerId,
+            filePath,
+            fileKey,
+            ownerStore,
+            ownerNow.gameOrigin.file.numGames,
+          );
+          if (refresh === "refused") throw error;
+        }
         throw error;
       }
 
-      rollbackCount();
+      const rollback = rollbackCount();
+      if (rollback.matched && !rollback.saved) throw workspaceWriteRefusedError();
       throw error;
     }
   }

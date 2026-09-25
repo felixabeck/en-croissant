@@ -2,8 +2,6 @@ import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { FileWorkspaceHandle, StampedGame } from "@/bindings";
-import { normalizeError } from "@/platform/errors";
-import { TauriCommandError } from "@/platform/tauri";
 import { catalogueI18n } from "@/tests/catalogues";
 import GameSelector, { type GameSelectorRow } from "./GameSelector";
 
@@ -226,35 +224,6 @@ test("an unloaded row cannot open a delete confirmation", async () => {
   expect(deleteGame).not.toHaveBeenCalled();
 
   await act(async () => read.resolve([firstGame]));
-});
-
-test("confirmation closes after the owner resolves a typed stale refusal", async () => {
-  const stale = new TauriCommandError({
-    tag: "backend-error",
-    category: "stale-game",
-    message: "stale game",
-  });
-  const deleteGame = vi.fn(async () => {
-    try {
-      throw stale;
-    } catch (error) {
-      if (normalizeError(error).backendCategory !== "stale-game") throw error;
-    }
-  });
-  const row = {
-    name: "Test game",
-    identity: { stamp: "stamp-test", revision: "revision-test" },
-  };
-  await act(async () => renderSelector(new Map([[0, row]]), deleteGame));
-  await act(async () => deleteButton().click());
-  await act(async () => confirmButton().click());
-
-  expect(deleteGame).toHaveBeenCalledWith({
-    index: 0,
-    stamp: "stamp-test",
-    revision: "revision-test",
-  });
-  expect(host.querySelector('[role="dialog"]')).toBeNull();
 });
 
 test("keeps an ordinary failure retryable and closes after retry", async () => {
