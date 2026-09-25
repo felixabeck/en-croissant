@@ -944,6 +944,27 @@ test("reclaims a migrated source tree after its copy and uncertain envelope are 
     expect(sessionStorage.getItem(recoverableId)).toBe(recoverableTree);
 });
 
+test("repairing a legacy tab ID that collides with the database view preserves its session state", () => {
+    sessionStorage.clear();
+    const databaseView = JSON.stringify({
+        state: { database: { activeTab: "games" } },
+        version: 0,
+    });
+    sessionStorage.setItem("database-view", databaseView);
+    sessionStorage.setItem(
+        "tabs",
+        serializeStorageValue([{ ...legacyTab, value: "database-view" }]),
+    );
+    sessionStorage.setItem("activeTab", serializeStorageValue("database-view"));
+
+    const workspace = loadStoredWorkspace();
+
+    expect(workspace.tabs[0]!.value).not.toBe("database-view");
+    expect(sessionStorage.getItem("database-view")).toBe(databaseView);
+    expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).not.toBeNull();
+    expect(tabStorage.read(workspace.tabs[0]!.value)).toBeNull();
+});
+
 test("retries a failed migrated-source removal even when the ownership snapshot overflows", () => {
     sessionStorage.clear();
     sessionStorage.setItem(WORKSPACE_STORAGE_KEY, "{broken");

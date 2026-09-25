@@ -578,6 +578,22 @@ test("cloneDurable treats a legitimate tab without tree storage as an empty clon
     setItem.mockRestore();
 });
 
+test("cloning a legacy ID that belongs to another store preserves that store", () => {
+    const databaseView = JSON.stringify({
+        state: { database: { activeTab: "games" } },
+        version: 0,
+    });
+    sessionStorage.setItem("database-view", databaseView);
+
+    storage.clone("database-view", "ordinary-copy");
+    storage.cloneDurable("database-view", "durable-copy");
+
+    expect(sessionStorage.getItem("database-view")).toBe(databaseView);
+    expect(sessionStorage.getItem("ordinary-copy")).toBeNull();
+    expect(sessionStorage.getItem("durable-copy")).toBeNull();
+    expect(storage.pendingCount()).toBe(0);
+});
+
 test("cloneDurable propagates a normalized target write failure without changing its source", () => {
     const source = treeWith((state) => {
         state.dirty = true;

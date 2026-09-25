@@ -9,6 +9,14 @@ export const TREE_STORAGE_VERSION = 1;
 const DEBOUNCE_MS = 300;
 const FAILED_ADMISSION_PREFIX = "chessfable:failed-tab-admission:";
 const FAILED_ADMISSION_VALUE = "1";
+// Legacy tabs could use arbitrary IDs, including keys now owned by other stores.
+const NON_TREE_SESSION_KEYS = new Set([
+    "workspace",
+    "tabs",
+    "activeTab",
+    "database-view",
+    "expanded-directories",
+]);
 const tabIdSchema = z.string().uuid();
 const MAX_TREE_NODES = 100_000;
 const MAX_TREE_DEPTH = 512;
@@ -298,7 +306,7 @@ export class TabStorageRepository {
 
         const decoded = decodeLegacyOrCompressed(raw);
         if (!decoded) {
-            this.removeTreeSafely(tabId);
+            if (!NON_TREE_SESSION_KEYS.has(tabId)) this.removeTreeSafely(tabId);
             return null;
         }
 
@@ -376,7 +384,7 @@ export class TabStorageRepository {
             const validMarkers: Array<{ key: string; tabId: string }> = [];
             const invalidMarkers: string[] = [];
             const removable = new Set<string>();
-            let markerReadError: unknown;
+            let storageReadError: unknown;
             for (const marker of markers) {
                 const tabId = marker.slice(FAILED_ADMISSION_PREFIX.length);
                 if (!tabIdSchema.safeParse(tabId).success) {
@@ -390,7 +398,7 @@ export class TabStorageRepository {
                     // Keep an unread marker's tree out of the sweep until its intent is known.
                     markedIds.add(tabId);
                     failedIds.add(tabId);
-                    markerReadError ??= error;
+                    storageReadError ??= error;
                     continue;
                 }
                 if (value !== FAILED_ADMISSION_VALUE) {
@@ -404,12 +412,12 @@ export class TabStorageRepository {
                         if (this.isStoredTree(tabId)) removable.add(tabId);
                     } catch (error) {
                         failedIds.add(tabId);
-                        markerReadError ??= error;
+                        storageReadError ??= error;
                     }
                 }
             }
-            if (markerReadError !== undefined)
-                reportPersistError(persistStorageWriteError(markerReadError));
+            if (storageReadError !== undefined)
+                reportPersistError(persistStorageWriteError(storageReadError));
             const failed = this.removeKnownTreesSafely(removable);
             for (const id of failed) failedIds.add(id);
             let markerError: unknown;
