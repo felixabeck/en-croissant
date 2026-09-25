@@ -14,6 +14,7 @@ import {
     MAX_PROTECTED_TREE_KEY_LENGTH,
     MAX_PENDING_TREE_REMOVALS,
     WORKSPACE_STORAGE_KEY,
+    reconcilePendingTreeRemovals,
 } from "./workspace";
 
 const native = vi.hoisted(() => ({ warn: vi.fn() }));
@@ -442,6 +443,9 @@ test("a refused tree stays out of a fresh uncertain-ownership snapshot", () => {
     deny.mockRestore();
     expect(workspace.treeOwnershipUncertain).toBe(true);
     expect(workspace.treeOwnershipProtectedIds).toEqual([older.treeId]);
+    expect(readStoredWorkspace()).toMatchObject({
+        treeOwnershipProtectedIds: [older.treeId],
+    });
     expect(sessionStorage.getItem(older.treeId)).toBe(older.storedTree);
     expect(sessionStorage.getItem(refused.treeId)).toBe(refused.storedTree);
     expect(sessionStorage.getItem(marker)).toBe("1");
@@ -470,6 +474,9 @@ test("an existing ownership snapshot drops a tree with a refused-admission marke
 
     deny.mockRestore();
     expect(workspace.treeOwnershipProtectedIds).toEqual([older.treeId]);
+    expect(readStoredWorkspace()).toMatchObject({
+        treeOwnershipProtectedIds: [older.treeId],
+    });
     expect(sessionStorage.getItem(older.treeId)).toBe(older.storedTree);
     expect(sessionStorage.getItem(refused.treeId)).toBe(refused.storedTree);
     expect(sessionStorage.getItem(marker)).toBe("1");
@@ -857,6 +864,28 @@ test("does not persist an over-capacity retry list during legacy ID migration", 
     expect(repaired.tabs[0]!.value).not.toBe(legacyTab.value);
     expect(sessionStorage.getItem(pendingIds[0]!)).toBeNull();
     expect(loadStoredWorkspace().treeOwnershipPendingRemovalIds).toBeUndefined();
+});
+
+test("pending-removal overflow reports the count after partial cleanup", () => {
+    sessionStorage.clear();
+    const tree = serializeStorageValue({ version: 1, state: defaultTree() });
+    const priorIds = Array.from(
+        { length: MAX_PENDING_TREE_REMOVALS },
+        (_, index) => `pending-tree-${index}`,
+    );
+    for (const id of priorIds) sessionStorage.setItem(id, tree);
+    const deny = denyStorageRemoval((id) => id.startsWith("pending-tree-") && id !== priorIds[0]);
+
+    const result = reconcilePendingTreeRemovals(
+        priorIds,
+        ["new-tree-1", "new-tree-2", "new-tree-3"],
+        new Set(),
+    );
+
+    deny.mockRestore();
+    expect(result).toEqual({ ids: null, overflowCount: MAX_PENDING_TREE_REMOVALS + 2 });
+    expect(sessionStorage.getItem(priorIds[0]!)).toBeNull();
+    expect(sessionStorage.getItem(priorIds[1]!)).toBe(tree);
 });
 
 test("does not delete a non-tree session value named by a persisted retry", () => {

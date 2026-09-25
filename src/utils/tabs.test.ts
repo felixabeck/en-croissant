@@ -286,7 +286,7 @@ test("retries a refused seed rollback through snapshot overflow", () => {
     expect(sessionStorage.getItem("older-tree-0")).toBe(tree);
 });
 
-test("a throwing admission can have committed, so its failed rollback is not journaled", () => {
+test("a throwing admission preserves a potentially committed tree without a failed-admission marker", () => {
     let stagedId = "";
     const dispatchError = new Error("listener failed after commit");
 
