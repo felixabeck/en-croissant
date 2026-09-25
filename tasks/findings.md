@@ -11353,3 +11353,25 @@ Consequence: the real-app proof of `f-20260923-01` (the freshness scenario in th
 * **Proof:** The Rust fields are `u64`, generated bindings say `bigint`, and `useProgress.ts:92` adds `BigInt(1)` to the event-derived value. The `review-ipc-contract` lens found the mismatch while reviewing `f-20260907-05` on 2026-09-25 (confidence 94). Verify on the actual Tauri IPC path, including a rejected clear and a generation beyond JavaScript's safe integer range; a TypeScript-only mock would hide the serialization boundary.
 * **Open question:** choose one wire-safe generation representation for events, command arguments and returns, and preserve the monotonic stale-event fence across every consumer. Regenerate bindings and cover the real IPC boundary. The current player-statistics plan does not change these shared types or `useProgress`; this is a separate cross-app contract repair.
 * **Related:** `f-20260904-02` and `f-20260906-07` addressed other progress subscription/cancellation paths, not the generation wire type. `f-20260919-12` concerns a stored running bar after `begin_progress` emission failure.
+
+---
+
+## 2026-09-25 — filed through the inbox spool
+
+### Transposition fallback stops at a leaf before a later matching continuation
+
+* **ID:** f-20260925-03 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src/state/store/tree.ts`, `goToNext` transposition fallback.
+* **Defect:** The fallback chooses the first other node with the same board state, then returns if that node has no children. A later matching node with a continuation is never considered, so Next cannot reach a recorded move from a transposed position.
+* **Proof:** Construct two matching transposition nodes in traversal order, first a leaf and second with a continuation; navigate to another occurrence and invoke `goToNext`. Assert it follows the available continuation.
+* **Relation:** Existing `chess-tree` entries sharing `tree.ts` concern different path-rebasing and FEN defects; no common root is evidenced.
+* **Found by:** `review-chess-semantics` during plan review of `f-20260924-03`, 2026-09-25, confidence 98. Independent of unreadable-tree recovery.
+
+### PGN edit lock registry retains idle keys and repeats keyed lease ownership
+
+* **ID:** f-20260925-04 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src-tauri/src/pgn.rs:355-365`, `src-tauri/src/pgn.rs:1210-1220`, `src-tauri/src/pgn.rs:1289-1299`, `src-tauri/src/infra/keyed_locks.rs:8-96`.
+* **Defect:** `PgnRepository::edit_lock` keeps an `Arc<tokio::sync::Mutex<()>>` in a per-identity map and prunes idle entries only when another edit lock is requested. After a last edit, its key remains retained indefinitely if no later edit arrives. It also repeats keyed acquire/cleanup logic already owned by `KeyedLocks`.
+* **Why it matters:** long-running sessions can accumulate one stale edit-lock entry per distinct PGN identity. The existing shared async lease has immediate final-drop reclamation and cancellation-safe waiter ownership, but PGN edits bypass it. This is separate from f-20260908-01's search-cache lock lifetime: PGN edit operations have their own area and call sites.
+* **Proof:** migrate both `delete_game` and `write_game_core` to the shared async keyed lease while preserving cancellable waiting and exact snapshot-identity keys; test owner/waiter cancellation, same-key exclusion, different-key progress, and zero entries after final drop. Run affected backend and push gates and the named `review-pgn-index` lens.
+* **Found by:** plan-review `review-minimalism` round 3 during f-20260908-01, 2026-09-25, confidence 82.
