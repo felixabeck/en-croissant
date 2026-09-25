@@ -11,6 +11,7 @@ import {
     saveWorkspace,
     sweepOrphanedTreeKeys,
     MAX_PROTECTED_TREE_KEYS,
+    MAX_PROTECTED_TREE_KEY_LENGTH,
     WORKSPACE_STORAGE_KEY,
 } from "./workspace";
 
@@ -114,6 +115,26 @@ test("migrates separate legacy keys, repairs IDs, and keeps tree state", () => {
     expect(sessionStorage.getItem("42")).toBeNull();
     expect(workspace.tabs.every((tab) => sessionStorage.getItem(tab.value) !== null)).toBe(true);
     expect(readStoredWorkspace()).toEqual(workspace);
+});
+
+test("keeps the active tab selected when its legacy ID is migrated", () => {
+    sessionStorage.clear();
+    const first = { ...legacyTab, value: crypto.randomUUID() };
+    const second = { ...legacyTab, name: "Active", value: "old-active" };
+    sessionStorage.setItem(
+        WORKSPACE_STORAGE_KEY,
+        serializeStorageValue({ version: 0, tabs: [first, second], activeTab: second.value }),
+    );
+    sessionStorage.setItem(
+        second.value,
+        serializeStorageValue({ version: 0, state: defaultTree() }),
+    );
+
+    const workspace = loadStoredWorkspace();
+
+    expect(workspace.tabs[0]).toEqual(first);
+    expect(workspace.tabs[1]!.value).not.toBe(second.value);
+    expect(workspace.activeTab).toBe(workspace.tabs[1]!.value);
 });
 
 test("sweeps valid orphan trees during the first successful legacy migration", () => {
@@ -474,6 +495,25 @@ test("cleans leftover legacy keys while leaving a matching envelope unchanged", 
     expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(payload);
 });
 
+test("returns the durable workspace when a legacy-key removal fails and retries later", () => {
+    sessionStorage.clear();
+    const valid = { ...legacyTab, value: crypto.randomUUID() };
+    sessionStorage.setItem("tabs", JSON.stringify([valid]));
+    sessionStorage.setItem("activeTab", JSON.stringify(valid.value));
+    const deny = denyStorageRemoval("tabs");
+
+    const workspace = loadStoredWorkspace();
+
+    expect(workspace.tabs).toEqual([valid]);
+    expect(readStoredWorkspace()).toEqual(workspace);
+    expect(sessionStorage.getItem("tabs")).not.toBeNull();
+    expect(sessionStorage.getItem("activeTab")).toBeNull();
+    expect(persistError.reportPersistError).toHaveBeenCalledOnce();
+    deny.mockRestore();
+    expect(loadStoredWorkspace()).toEqual(workspace);
+    expect(sessionStorage.getItem("tabs")).toBeNull();
+});
+
 test("corrupt workspace storage recovers to a valid single-tab envelope", () => {
     sessionStorage.clear();
     sessionStorage.setItem("workspace", "{broken");
@@ -519,6 +559,26 @@ test("salvages valid version-0 tabs while retaining a dirty tree from a malforme
     expect(readStoredWorkspace()).toEqual(workspace);
 });
 
+test("treats a fully valid version-0 envelope as authority for orphan cleanup", () => {
+    sessionStorage.clear();
+    const validTab = { ...legacyTab, value: crypto.randomUUID() };
+    const { treeId } = storeUnownedDirtyTree();
+    sessionStorage.setItem(
+        WORKSPACE_STORAGE_KEY,
+        serializeStorageValue({
+            version: LEGACY_WORKSPACE_VERSION,
+            tabs: [validTab],
+            activeTab: validTab.value,
+        }),
+    );
+
+    const workspace = loadStoredWorkspace();
+
+    expect(workspace.tabs).toEqual([validTab]);
+    expect(workspace).not.toHaveProperty("treeOwnershipUncertain");
+    expect(sessionStorage.getItem(treeId)).toBeNull();
+});
+
 test("reclaims a migrated source tree after its copy and uncertain envelope are durable", () => {
     sessionStorage.clear();
     sessionStorage.setItem(WORKSPACE_STORAGE_KEY, "{broken");
@@ -539,6 +599,32 @@ test("reclaims a migrated source tree after its copy and uncertain envelope are 
     expect(sessionStorage.getItem(recoverableId)).toBe(recoverableTree);
 });
 
+test("retries a failed migrated-source removal even when the ownership snapshot overflows", () => {
+    sessionStorage.clear();
+    sessionStorage.setItem(WORKSPACE_STORAGE_KEY, "{broken");
+    sessionStorage.setItem("tabs", serializeStorageValue([legacyTab]));
+    sessionStorage.setItem("activeTab", serializeStorageValue(legacyTab.value));
+    const tree = serializeStorageValue({ version: 1, state: defaultTree() });
+    sessionStorage.setItem(legacyTab.value, tree);
+    for (let index = 0; index < MAX_PROTECTED_TREE_KEYS; index++) {
+        sessionStorage.setItem(`other-tree-${index}`, tree);
+    }
+    const deny = denyStorageRemoval(legacyTab.value);
+
+    const first = loadStoredWorkspace();
+
+    expect(first.treeOwnershipUncertain).toBe(true);
+    expect(first).not.toHaveProperty("treeOwnershipProtectedIds");
+    expect(first.treeOwnershipPendingRemovalIds).toContain(legacyTab.value);
+    expect(sessionStorage.getItem(legacyTab.value)).not.toBeNull();
+    deny.mockRestore();
+
+    const second = loadStoredWorkspace();
+    expect(sessionStorage.getItem(legacyTab.value)).toBeNull();
+    expect(second.treeOwnershipPendingRemovalIds).toContain(legacyTab.value);
+    expect(loadStoredWorkspace()).not.toHaveProperty("treeOwnershipPendingRemovalIds");
+});
+
 test("fails closed when the protected tree snapshot exceeds its documented bound", () => {
     sessionStorage.clear();
     sessionStorage.setItem(WORKSPACE_STORAGE_KEY, "{broken");
@@ -555,6 +641,38 @@ test("fails closed when the protected tree snapshot exceeds its documented bound
     expect(workspace).not.toHaveProperty("treeOwnershipProtectedIds");
     expect(sessionStorage.getItem(treeIds[0]!)).toBe(tree);
     expect(sessionStorage.getItem(treeIds.at(-1)!)).toBe(tree);
+});
+
+test("fails closed when a protected tree key exceeds the length bound", () => {
+    sessionStorage.clear();
+    sessionStorage.setItem(WORKSPACE_STORAGE_KEY, "{broken");
+    const longId = "x".repeat(MAX_PROTECTED_TREE_KEY_LENGTH + 1);
+    const tree = serializeStorageValue({ version: 1, state: defaultTree() });
+    sessionStorage.setItem(longId, tree);
+
+    const workspace = loadStoredWorkspace();
+
+    expect(workspace.treeOwnershipUncertain).toBe(true);
+    expect(workspace).not.toHaveProperty("treeOwnershipProtectedIds");
+    expect(sessionStorage.getItem(longId)).toBe(tree);
+});
+
+test("fails closed when stored tree enumeration throws", () => {
+    sessionStorage.clear();
+    sessionStorage.setItem(WORKSPACE_STORAGE_KEY, "{broken");
+    const { treeId, storedTree } = storeUnownedDirtyTree();
+    const scanError = new DOMException("denied", "SecurityError");
+    const key = vi.spyOn(Storage.prototype, "key").mockImplementation(() => {
+        throw scanError;
+    });
+
+    const workspace = loadStoredWorkspace();
+
+    key.mockRestore();
+    expect(workspace.treeOwnershipUncertain).toBe(true);
+    expect(workspace).not.toHaveProperty("treeOwnershipProtectedIds");
+    expect(sessionStorage.getItem(treeId)).toBe(storedTree);
+    expect(persistError.reportPersistError).toHaveBeenCalledWith(scanError);
 });
 
 test("keeps a valid current active ID, repairs stale IDs, and never scrubs retained trees", () => {

@@ -66,8 +66,18 @@ const zodArray = <Input, Output>(itemSchema: z.ZodType<Output, z.ZodTypeDef, Inp
 // Tabs
 
 const workspaceAtom = atom(loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY));
-const commitWorkspaceAtom = atom(null, (_get, set, workspace: Workspace) => {
-    const saved = saveWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY, workspace);
+const commitWorkspaceAtom = atom(null, (get, set, workspace: Workspace) => {
+    const previous = get(workspaceAtom);
+    const retainedIds = new Set(workspace.tabs.map((tab) => tab.value));
+    const closedIds = new Set(
+        previous.tabs.filter((tab) => !retainedIds.has(tab.value)).map((tab) => tab.value),
+    );
+    const protectedIds = workspace.treeOwnershipProtectedIds?.filter((id) => !closedIds.has(id));
+    const canonical =
+        protectedIds === undefined
+            ? workspace
+            : { ...workspace, treeOwnershipProtectedIds: protectedIds };
+    const saved = saveWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY, canonical);
     if (!saved) return false;
     set(workspaceAtom, saved);
     return true;

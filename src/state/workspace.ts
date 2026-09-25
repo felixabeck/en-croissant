@@ -27,6 +27,7 @@ export type Workspace = {
     activeTab: string | null;
     treeOwnershipUncertain?: true;
     treeOwnershipProtectedIds?: string[];
+    treeOwnershipPendingRemovalIds?: string[];
 };
 
 export const MAX_WORKSPACE_TABS = 100;
@@ -47,6 +48,7 @@ const workspaceLiveSchema = z.object({
     activeTab: z.string().max(128).nullable(),
     treeOwnershipUncertain: z.literal(true).optional(),
     treeOwnershipProtectedIds: protectedTreeKeysSchema,
+    treeOwnershipPendingRemovalIds: z.array(z.string().min(1)).max(MAX_WORKSPACE_TABS).optional(),
 });
 
 function newTab(used: Iterable<string>): Tab {
@@ -101,7 +103,8 @@ function planWorkspaceRepair(input: unknown): WorkspaceRepairPlan {
 
     if (tabs.length === 0) tabs.push(newTab(ids));
     const legacyActive = parsed.activeTab;
-    const activeTab = resolveActiveTab(tabs, legacyActive);
+    const legacyActiveIndex = candidates.findIndex((tab) => tab.value === legacyActive);
+    const activeTab = legacyActiveIndex === -1 ? tabs[0]!.value : tabs[legacyActiveIndex]!.value;
     const unrepairedTabs = candidates.length > 0 ? candidates : tabs;
     const unrepairedActiveTab = resolveActiveTab(unrepairedTabs, legacyActive);
     return {
@@ -146,6 +149,9 @@ function workspaceFromValue(value: unknown): Workspace | null {
         if (parsed.data.treeOwnershipProtectedIds !== undefined) {
             workspace.treeOwnershipProtectedIds = parsed.data.treeOwnershipProtectedIds;
         }
+    }
+    if (parsed.data.treeOwnershipPendingRemovalIds !== undefined) {
+        workspace.treeOwnershipPendingRemovalIds = parsed.data.treeOwnershipPendingRemovalIds;
     }
     return workspace;
 }
@@ -192,6 +198,11 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
         currentResult.success && currentResult.data.treeOwnershipUncertain
             ? currentResult.data.treeOwnershipProtectedIds
             : undefined;
+    const pendingSourceRemovals = currentResult.success
+        ? (currentResult.data.treeOwnershipPendingRemovalIds ?? []).filter(
+              (id) => sessionStorage.getItem(id) !== null,
+          )
+        : [];
     const legacy =
         current ??
         ({
@@ -203,12 +214,21 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
     );
     const legacyStoragePresent =
         storage.getItem("tabs") !== null || storage.getItem("activeTab") !== null;
+    const missingWorkspaceTreeSnapshot =
+        storedWorkspace === null && !validMigrationSource
+            ? tabStorage.snapshotStoredTreeKeys(
+                  MAX_PROTECTED_TREE_KEYS,
+                  MAX_PROTECTED_TREE_KEY_LENGTH,
+              )
+            : undefined;
     const treeOwnershipUncertain =
         (isRecord(current) && current.treeOwnershipUncertain === true) ||
         (storedWorkspace !== null && !hasAuthoritativeWorkspace && !validMigrationSource) ||
         (storedWorkspace === null &&
             !validMigrationSource &&
-            (legacyStoragePresent || tabStorage.hasStoredTrees()));
+            (legacyStoragePresent ||
+                missingWorkspaceTreeSnapshot === null ||
+                (missingWorkspaceTreeSnapshot?.length ?? 0) > 0));
     const plan = planWorkspaceRepair(legacy);
     const takingFreshOwnershipSnapshot =
         treeOwnershipUncertain && persistedProtectedTreeIds === undefined;
@@ -217,10 +237,12 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
         plan.unrepairedWorkspace.treeOwnershipUncertain = true;
         const protectedTreeIds =
             persistedProtectedTreeIds ??
-            tabStorage.snapshotStoredTreeKeys(
-                MAX_PROTECTED_TREE_KEYS,
-                MAX_PROTECTED_TREE_KEY_LENGTH,
-            ) ??
+            (missingWorkspaceTreeSnapshot !== undefined
+                ? missingWorkspaceTreeSnapshot
+                : tabStorage.snapshotStoredTreeKeys(
+                      MAX_PROTECTED_TREE_KEYS,
+                      MAX_PROTECTED_TREE_KEY_LENGTH,
+                  )) ??
             undefined;
         if (protectedTreeIds !== undefined) {
             plan.workspace.treeOwnershipProtectedIds = [...protectedTreeIds];
@@ -251,6 +273,11 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
             durableMigratedSources.add(sourceId);
         }
     }
+    const pendingRemovalIds = new Set([...pendingSourceRemovals, ...durableMigratedSources]);
+    for (const retainedId of retainedIds) pendingRemovalIds.delete(retainedId);
+    if (pendingRemovalIds.size > 0) {
+        plan.workspace.treeOwnershipPendingRemovalIds = [...pendingRemovalIds];
+    }
     if (plan.workspace.treeOwnershipProtectedIds) {
         plan.workspace.treeOwnershipProtectedIds = plan.workspace.treeOwnershipProtectedIds.filter(
             (id) => !durableMigratedSources.has(id),
@@ -271,7 +298,7 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
     }
 
     const failedSourceRemovals = new Set<string>();
-    for (const sourceId of durableMigratedSources) {
+    for (const sourceId of pendingRemovalIds) {
         if (!tabStorage.removeTreeSafely(sourceId)) failedSourceRemovals.add(sourceId);
     }
 
@@ -285,7 +312,12 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
             sweepOrphanedTreeKeys(plan.workspace.tabs, protectedTreeIds, failedSourceRemovals);
         }
     }
-    storage.removeItem("tabs");
-    storage.removeItem("activeTab");
+    for (const legacyKey of ["tabs", "activeTab"]) {
+        try {
+            storage.removeItem(legacyKey);
+        } catch (error) {
+            reportPersistError(persistStorageWriteError(error));
+        }
+    }
     return plan.workspace;
 }

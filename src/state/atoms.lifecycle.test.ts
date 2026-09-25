@@ -18,6 +18,7 @@ import {
 import { tabStorage } from "./store/tabStorage";
 import { commitNewTab, createTab } from "@/utils/tabs";
 import { loadWorkspace, WORKSPACE_STORAGE_KEY } from "./workspace";
+import { serializeStorageValue } from "./store/debouncedStorage";
 
 const persistError = vi.hoisted(() => ({ reportPersistError: vi.fn() }));
 vi.mock("./persistError", () => persistError);
@@ -282,6 +283,40 @@ test("keeps committed close metadata and attempts atom cleanup when tree removal
     expect(sessionStorage.getItem(tabId)).not.toBeNull();
     removeItem.mockRestore();
     tabStorage.remove(tabId);
+});
+
+test("a failed close removal is retried after uncertain workspace ownership", async () => {
+    sessionStorage.clear();
+    const tabId = crypto.randomUUID();
+    const tab = {
+        name: "Close",
+        value: tabId,
+        type: "analysis" as const,
+        gameOrigin: { kind: "none" as const },
+    };
+    sessionStorage.setItem(
+        WORKSPACE_STORAGE_KEY,
+        serializeStorageValue({
+            version: 1,
+            tabs: [tab],
+            activeTab: tabId,
+            treeOwnershipUncertain: true,
+            treeOwnershipProtectedIds: [tabId],
+        }),
+    );
+    tabStorage.seed(tabId, defaultTree());
+    vi.resetModules();
+    const freshAtoms = await import("./atoms");
+    const store = createStore();
+    const deny = denyStorageRemoval(tabId);
+
+    expect(store.set(freshAtoms.closeWorkspaceTabAtom, tabId)).toBe(true);
+    expect(sessionStorage.getItem(tabId)).not.toBeNull();
+    deny.mockRestore();
+
+    const reloaded = loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY);
+    expect(reloaded.treeOwnershipProtectedIds).not.toContain(tabId);
+    expect(sessionStorage.getItem(tabId)).toBeNull();
 });
 
 test("closes inactive, active, and last tabs and ignores a stale close id", () => {
