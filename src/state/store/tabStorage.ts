@@ -370,15 +370,17 @@ export class TabStorageRepository {
     }
 
     subscribeStatus(tabId: string, listener: () => void): () => void {
-        let listeners = this.statusListeners.get(tabId);
-        if (!listeners) {
-            listeners = new Set();
+        const registeredListeners = this.statusListeners.get(tabId);
+        const listeners = registeredListeners ?? new Set<() => void>();
+        if (registeredListeners === undefined) {
             this.statusListeners.set(tabId, listeners);
         }
         listeners.add(listener);
         return () => {
-            listeners?.delete(listener);
-            if (listeners?.size === 0) this.statusListeners.delete(tabId);
+            listeners.delete(listener);
+            if (listeners.size === 0 && this.statusListeners.get(tabId) === listeners) {
+                this.statusListeners.delete(tabId);
+            }
         };
     }
 
@@ -473,9 +475,7 @@ export class TabStorageRepository {
                 : new Error("The destination tree key is already in use.");
         }
 
-        let attemptedWrite = false;
         try {
-            attemptedWrite = true;
             sessionStorage.setItem(targetTabId, rawValue);
             if (sessionStorage.getItem(targetTabId) !== rawValue) {
                 throw new Error("Could not verify the copied unreadable tree value.");
@@ -485,14 +485,12 @@ export class TabStorageRepository {
             // The target was verified absent immediately before this write. Remove only bytes
             // produced by this copy; the original source remains the workspace's owner.
             let failure = error;
-            if (attemptedWrite) {
-                try {
-                    if (sessionStorage.getItem(targetTabId) === rawValue) {
-                        sessionStorage.removeItem(targetTabId);
-                    }
-                } catch (cleanupError) {
-                    failure = cleanupError;
+            try {
+                if (sessionStorage.getItem(targetTabId) === rawValue) {
+                    sessionStorage.removeItem(targetTabId);
                 }
+            } catch (cleanupError) {
+                failure = cleanupError;
             }
             this.setReadStatus(targetTabId, { kind: "unavailable", error: failure });
             throw failure;
@@ -695,16 +693,9 @@ export class TabStorageRepository {
         }
         const failedTabIds: string[] = [];
         let notifyError: unknown;
+        // Pending entries passed the write blocker before admission and stay authoritative until
+        // flushed, so checking the same gate again here cannot add protection.
         for (const [tabId, value] of this.pending) {
-            const blocker = this.writeBlocker(tabId);
-            if (blocker) {
-                failedTabIds.push(tabId);
-                notifyError ??=
-                    blocker.kind === "unavailable"
-                        ? blocker.error
-                        : new Error("Cannot persist a tab tree while its storage is unreadable.");
-                continue;
-            }
             try {
                 sessionStorage.setItem(tabId, serializeStorageValue(value));
                 this.pending.delete(tabId);
@@ -751,13 +742,7 @@ export class TabStorageRepository {
 
     private setReadStatus(tabId: string, status: TabTreeStorageStatus | TabTreeReadResult) {
         const next: TabTreeStorageStatus =
-            status.kind === "available"
-                ? { kind: "available" }
-                : status.kind === "unreadable"
-                  ? { kind: "unreadable", rawValue: status.rawValue }
-                  : status.kind === "unavailable"
-                    ? { kind: "unavailable", error: status.error }
-                    : status;
+            status.kind === "available" ? { kind: "available" } : status;
         const current = this.getStatus(tabId);
         const unchanged =
             current.kind === next.kind &&
