@@ -11292,7 +11292,7 @@ Found by `review-persisted-state` (blocker, confidence 91) in round 12 of the pl
 
 ### delete_game removes whatever game is at index n, so a stale game list can delete the wrong game
 
-* **ID:** f-20260924-05 · **Status:** open · **Area:** pgn-import · **Root:** none · **Entry:** build · **Blocked:** none
+* **ID:** f-20260924-05 · **Status:** handled · **Area:** pgn-import · **Root:** none · **Entry:** build · **Blocked:** none
 
 Found by `review-pgn-index` (blocker, confidence 94) in the cumulative review of the `f-20260923-01` build, 2026-09-24. Since that build every `write_game` is a compare-and-swap against the stamp of the game the renderer read (`src-tauri/src/pgn.rs`, `WriteExpectation`), but `delete_game` (`pgn.rs` `delete_game_core`) still selects the current `games[n]` with no expectation. The Files/Info game list (`src/components/panels/info/InfoPanel.tsx` `deleteGame`, `GameSelector.tsx`) is index-based and read at some earlier time: if another program inserts game X before A in a file holding A and B, deleting the displayed B at index 1 removes A. The native commit check only guards changes after its own scan.
 
