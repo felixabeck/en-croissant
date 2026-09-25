@@ -2430,6 +2430,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn delete_game_succeeds_when_the_selected_snapshot_is_unchanged() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("current-delete.pgn");
