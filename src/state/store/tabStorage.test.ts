@@ -812,6 +812,18 @@ test("unreadable workspace copies refuse occupied and reserved session keys", ()
     expect(sessionStorage.getItem("workspace")).toBe(workspaceMetadata);
 });
 
+test("orphan cleanup never removes reserved metadata even when it resembles a tree", () => {
+    const treeShapedMetadata = serializeStorageValue({
+        version: TREE_STORAGE_VERSION,
+        state: defaultTree(),
+    });
+    sessionStorage.setItem("workspace", treeShapedMetadata);
+
+    storage.removeOrphanedTrees(new Set());
+
+    expect(sessionStorage.getItem("workspace")).toBe(treeShapedMetadata);
+});
+
 test("unreadable workspace copy rolls back its target when exact-byte readback fails", () => {
     const targetId = "copy-target";
     const raw = "bytes preserved for workspace repair";

@@ -676,7 +676,13 @@ export class TabStorageRepository {
             sessionStorage.key(index),
         );
         for (const key of keys) {
-            if (!key || key.startsWith(FAILED_ADMISSION_PREFIX) || excludedKeys?.has(key)) continue;
+            if (
+                !key ||
+                NON_TREE_SESSION_KEYS.has(key) ||
+                key.startsWith(FAILED_ADMISSION_PREFIX) ||
+                excludedKeys?.has(key)
+            )
+                continue;
             if (!this.isStoredTree(key)) continue;
             yield key;
         }
