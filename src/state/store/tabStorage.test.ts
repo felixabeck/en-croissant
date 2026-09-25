@@ -668,6 +668,23 @@ test("reading and writing reserved session keys never admits them as tab trees",
 
         expect(storage.pendingCount()).toBe(0);
         expect(sessionStorage.getItem(key)).toBe(raw);
+
+        let seedError: unknown;
+        try {
+            storage.seed(key, defaultTree());
+        } catch (error) {
+            seedError = error;
+        }
+        expect(seedError).toBeInstanceOf(Error);
+        const blockedSeedError = seedError as Error & { cause?: unknown };
+        expect(blockedSeedError.message).toBe(
+            "Cannot replace a tab tree while its storage is unreadable or unavailable.",
+        );
+        expect(blockedSeedError.cause).toBeInstanceOf(Error);
+        expect((blockedSeedError.cause as Error).message).toBe(
+            "The key belongs to another session store.",
+        );
+        expect(sessionStorage.getItem(key)).toBe(raw);
     }
 });
 
@@ -795,10 +812,14 @@ test.each(["unreadable", "unavailable"] as const)(
         } catch (error) {
             cloneError = error;
         }
-        expect(cloneError).toMatchObject({
-            message: "Cannot replace a tab tree while its storage is unreadable or unavailable.",
-            cause: kind === "unavailable" ? failure : { kind: "unreadable", rawValue: target },
-        });
+        expect(cloneError).toBeInstanceOf(Error);
+        const blockedCloneError = cloneError as Error & { cause?: unknown };
+        expect(blockedCloneError.message).toBe(
+            "Cannot replace a tab tree while its storage is unreadable or unavailable.",
+        );
+        expect(blockedCloneError.cause).toEqual(
+            kind === "unavailable" ? failure : { kind: "unreadable", rawValue: target },
+        );
 
         getItem?.mockRestore();
         expect(storage.read("source")?.state).toMatchObject({ root: defaultTree().root });
@@ -832,10 +853,14 @@ test.each(["unreadable", "unavailable"] as const)(
         } catch (error) {
             seedError = error;
         }
-        expect(seedError).toMatchObject({
-            message: "Cannot replace a tab tree while its storage is unreadable or unavailable.",
-            cause: kind === "unavailable" ? failure : { kind: "unreadable", rawValue: target },
-        });
+        expect(seedError).toBeInstanceOf(Error);
+        const blockedSeedError = seedError as Error & { cause?: unknown };
+        expect(blockedSeedError.message).toBe(
+            "Cannot replace a tab tree while its storage is unreadable or unavailable.",
+        );
+        expect(blockedSeedError.cause).toEqual(
+            kind === "unavailable" ? failure : { kind: "unreadable", rawValue: target },
+        );
 
         getItem?.mockRestore();
         expect(sessionStorage.getItem("target")).toBe(target);
@@ -901,9 +926,14 @@ test("unreadable workspace copies refuse occupied and reserved session keys", ()
     sessionStorage.setItem("occupied-target", occupied);
     sessionStorage.setItem("workspace", workspaceMetadata);
 
-    expect(() => storage.copyUnreadableForWorkspaceRepair("occupied-target", raw)).toThrow(
-        /already in use/,
-    );
+    let occupiedError: unknown;
+    try {
+        storage.copyUnreadableForWorkspaceRepair("occupied-target", raw);
+    } catch (error) {
+        occupiedError = error;
+    }
+    expect(occupiedError).toBeInstanceOf(Error);
+    expect((occupiedError as Error).message).toBe("The destination tree key is already in use.");
     expect(() => storage.copyUnreadableForWorkspaceRepair("workspace", raw)).toThrow(
         /another session store/,
     );
@@ -929,9 +959,13 @@ test("unreadable workspace copies preserve unavailable destinations", () => {
         });
     const setItem = vi.spyOn(Storage.prototype, "setItem");
 
-    expect(() => storage.copyUnreadableForWorkspaceRepair(targetId, "recovery bytes")).toThrow(
-        failure,
-    );
+    let copyError: unknown;
+    try {
+        storage.copyUnreadableForWorkspaceRepair(targetId, "recovery bytes");
+    } catch (error) {
+        copyError = error;
+    }
+    expect(copyError).toBe(failure);
 
     getItem.mockRestore();
     setItem.mockRestore();

@@ -370,11 +370,8 @@ export class TabStorageRepository {
     }
 
     subscribeStatus(tabId: string, listener: () => void): () => void {
-        const registeredListeners = this.statusListeners.get(tabId);
-        const listeners = registeredListeners ?? new Set<() => void>();
-        if (registeredListeners === undefined) {
-            this.statusListeners.set(tabId, listeners);
-        }
+        const listeners = this.statusListeners.get(tabId) ?? new Set<() => void>();
+        this.statusListeners.set(tabId, listeners);
         listeners.add(listener);
         return () => {
             listeners.delete(listener);
@@ -740,16 +737,21 @@ export class TabStorageRepository {
         return status.kind === "unreadable" || status.kind === "unavailable" ? status : null;
     }
 
-    private setReadStatus(tabId: string, status: TabTreeStorageStatus | TabTreeReadResult) {
-        const next: TabTreeStorageStatus =
-            status.kind === "available" ? { kind: "available" } : status;
+    private setReadStatus(tabId: string, next: TabTreeStorageStatus) {
         const current = this.getStatus(tabId);
-        const unchanged =
-            current.kind === next.kind &&
-            (current.kind !== "unreadable" ||
-                (next.kind === "unreadable" && current.rawValue === next.rawValue)) &&
-            (current.kind !== "unavailable" ||
-                (next.kind === "unavailable" && current.error === next.error));
+        const currentDetail =
+            current.kind === "unreadable"
+                ? current.rawValue
+                : current.kind === "unavailable"
+                  ? current.error
+                  : undefined;
+        const nextDetail =
+            next.kind === "unreadable"
+                ? next.rawValue
+                : next.kind === "unavailable"
+                  ? next.error
+                  : undefined;
+        const unchanged = current.kind === next.kind && currentDetail === nextDetail;
         if (unchanged) return;
         if (next.kind === "not-read") this.readStatuses.delete(tabId);
         else this.readStatuses.set(tabId, next);
