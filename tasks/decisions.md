@@ -4142,3 +4142,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Three independent fifth-round lenses found a refused seed plus failed removal that remained orphaned through every overflowing load. Commit `8100c095` adds an explicit post-refusal intent and replays it before uncertain ownership is snapshotted. Reversal path: `commitNewTab` in `src/utils/tabs.ts`, the tree repository marker methods, and `loadWorkspace` in `src/state/workspace.ts`.
 * **Decided by:** Codex drain df992edd-eb21-4f56-ae9e-982da76bfbbc, cumulative push review repair · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"ca72b73519f76fe9227e46cb70219f68e8cb2ec48b101097cf3bca91d72ffea8","input_sha256":"5d34f6747aa6ca2a958397ba405864c64654885ee33505435e3703bf4dbc0032","kind":"mutation-receipt","operation":"23bef88055a058a1d5f708268eaec6bcef1185c159544d16aeb2e99563cd887f","options":{"section":null},"request_id_sha256":null,"results":["d-20260925-08"],"target":"decisions-ledger","v":1} -->
+
+### d-20260925-09 — Where should an unreadable persisted tab tree be kept until recovery?
+
+* **Question:** Where should an unreadable persisted tab tree be kept until recovery?
+* **Governs:** f-20260924-03
+* **Chosen:** Keep the original bytes in the existing tab-tree session key, mark the tab unreadable, block edits and close, and require explicit discard before a clean default can replace the value. A transient storage read failure remains unavailable until an in-app retry succeeds. Workspace ID repair retains ownership or durably carries the raw bytes before publishing a remapped tab.
+* **Rejected:** Duplicate the value into a quarantine key and hydrate a clean default. Duplication consumes the same shared quota and creates a second ownership and cleanup path, while the default can still be mistaken for the saved game.
+* **Reason:** The original key is the only durable copy of unsaved edits. Preserving it in place avoids quota amplification and lets the workspace keep an exact recovery owner. Reversal path: a proven backup store with independent capacity and migration semantics, plus a tested user recovery flow.
+* **Decided by:** Codex drain 2049a568-6411-42a1-b116-cb0ad1230e55 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"f1690bf0db3c17ff165e1f4224ba2c1f38896f8a02131c2d07fcfaabfd5533a8","input_sha256":"292c0c08754bf8bc6f81a1aa8ab83a6e383396a9faa875960164ae90486d608b","kind":"mutation-receipt","operation":"f83f5e5330bad27c3e59ae25b51ceb43550217b93b80cdbc0f48a6805f7b1a79","options":{"section":null},"request_id_sha256":null,"results":["d-20260925-09"],"target":"decisions-ledger","v":1} -->
