@@ -11104,7 +11104,7 @@ A plan closing this entry together with `f-20260922-04` (and the other of `f-202
 
 ### Tab close commits the workspace before deleting the tree key, so a failed delete orphans it forever
 
-* **ID:** f-20260922-09 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260922-09 · **Status:** handled · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `src/state/atoms.ts:112-125` (`commitWorkspaceAtom` is committed, *then* `tabStorage.remove(tabId)` runs inside a `try` whose error is only reported), `src/state/store/tabStorage.ts:318-321` (`remove` calls `sessionStorage.removeItem` with no retry or deferred-cleanup record).
 * **Defect:** the order is commit-then-clean, and the cleanup failure is swallowed into `reportPersistError` while the close returns `true`. The tab id is gone from the workspace at that point, and the only startup cleanup examines ids that are still present in workspace metadata, so the compressed tree value for that tab stays in `sessionStorage` for the rest of the window's life with nothing able to name it.
 * **Why it matters:** `sessionStorage` is the shared, quota-bounded store every tab tree persists into (`.claude/rules/persisted-state.md`); an orphan consumes that quota and cannot be reclaimed, and the user is told the close succeeded. `async-resource-invariants.md`: a registry entry whose removal depends on the happy path.
