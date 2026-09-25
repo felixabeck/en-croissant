@@ -148,14 +148,24 @@
 //                                           |   row shows its game — timed out waiting for the  |
 //                                           |   opened game's notation; expected 1.e4e52.d4d5   |
 
-// Staged-failure evidence for the file-freshness checks is pending; the orchestrator stages and
-// records it.
-//   check                                   | staged-failure evidence | exit
-//   stale-file in-place rewrite             | pending                 | pending
-//   open-tab reload or withhold              | pending                 | pending
-//   measured native read_game call           | pending                 | pending
-//   one-poll-interval freshness budget       | pending                 | pending
-//   conditional Reload from disk             | pending                 | pending
+// Staged-failure record for the file-freshness checks (2026-09-25). Each break was restored
+// before the next run. The in-place row replaced the file by rename. The read row did not
+// install the recorder. The apply row set the ceiling to 0. The withhold row deleted the PGN
+// after the in-place write. The conditional Reload check is not on the clean-tree path, so
+// this run did not enter it.
+//   break                                   | assertion/message                              | exit
+//   rename over the open PGN                | FAIL  the stale-file scenario rewrites the PGN | 1
+//                                           |   in place — inode changed from 92699786 to    |
+//                                           |   92703392                                     |
+//   recorder not installed                  | FAIL  the file freshness transition includes a | 1
+//                                           |   measured native read_game call — read_game   |
+//                                           |   duration: null                               |
+//   apply ceiling 0                         | FAIL  the freshness transition applies within  | 1
+//                                           |   0 ms of the measured read — apply duration:  |
+//                                           |   448.0 ms; read_game duration: 9.0 ms         |
+//   PGN removed after the in-place write    | FAIL  the open file-backed tab reloads or      | 1
+//                                           |   withholds the changed PGN — freshness state: |
+//                                           |   unavailable                                  |
 
 // Staged-failure record for the practice checks (2026-09-23). Each break was made in the
 // release artifact, rebuilt, run inside the 4 GiB scope, and restored with a clean rebuild.
