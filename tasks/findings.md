@@ -11326,3 +11326,27 @@ Consequence: the real-app proof of `f-20260923-01` (the freshness scenario in th
 **Why it is not already a gate.** `d-20260916-07` installed the toolchain as "a local verification instrument and no gate invokes it", and §4 of the push skill only reads the Windows jobs *before* pushing, from the previous run. Nothing checks the tree about to be pushed.
 
 * **Open question:** How to add a Windows compile gate that is honest on a machine without the toolchain: fail with a setup instruction, or record the gate as unavailable and refuse the push? And should it be a `gate:ensure` receipt gate, a contract-gate member, or only a line in §2? `d-20260916-07` is superseded in part by whichever answer is chosen; its reversal clause names `~/.local/opt/mingw`, so the gate must not silently assume the path.
+
+---
+
+## 2026-09-25 — filed through the inbox spool
+
+### Planner evidence mirror cannot validate a Gemini quota retry on Codex
+
+* **ID:** f-20260925-01 · **Status:** open · **Area:** docs-agent-config · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `/home/felixb/.claude/scripts/drain_planner.py` `mirror_evidence`; `/home/felixb/.claude/scripts/drain_supervisor_plans.py` `EvidenceMirror.copy`, `derive_review_manifest`, `_profile_check`.
+* **Defect:** A plan-only Gemini lens that reaches a provider-quota terminal is retried through the prescribed ordinary Codex leaf. Both launcher registrations have the same `lens-...-rN.jsonl` basename. `mirror_evidence` copies every terminal child under that basename; the failed source is first, and the successful retry has different bytes, so the write-once mirror refuses the collision. Even if only the retry were mirrored, `_profile_check` uses the assignment's `executor=gemini` for every row and runs the agy profile checker on Codex JSONL. Thus a valid quota recovery cannot satisfy plan evidence validation.
+* **Evidence:** In this plan-only run, all eleven round-one agy lenses returned `status: ERROR` with `Individual quota reached`; all eleven ordinary Codex retries completed with review reports. `leaf_terminal.terminal_verdict` returns `failed` for the agy source and `completed` for the retry; `mirror_evidence` does not skip the failed terminal. The corresponding artifact paths are under `/tmp/drain-plan-chessfable-0a459a4f-slot0/build/`.
+* **Open question:** How should the planner evidence manifest retain the failed source and successful same-role retry as distinct immutable records while validating the retry against its actual routed executor and preserving the full audit trail?
+* **Scope:** Fix the shared planner/leaf evidence contract and its validation tests; do not relax required lens coverage, terminal, profile, prompt, or write-once integrity checks.
+* **Related:** f-20260907-07 also concerns workflow ordering, f-20260917-01 concerns Grok write-leaf profiling, and f-20260917-10 concerns vendored kit parity; none has this failed-source/retry evidence collision as its cause, so no shared Root is assigned.
+* **Proof sought:** A fixture with a quota-failed agy source and successful Codex retry publishes a plan with both provenance records retained; missing, malformed, or writable retries still refuse publication.
+
+### Progress generations use incompatible JSON and TypeScript types
+
+* **ID:** f-20260925-02 · **Status:** open · **Area:** bindings-ipc · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/progress.rs:35-57`, `src/bindings/generated.ts:1041,1250-1252`, `src/hooks/useProgress.ts:70-102` and the progress-clear button.
+* **Defect:** Rust serializes `u64` progress generations as JSON numbers, while Specta declares them as `bigint`. The renderer passes native event values through without normalization. A failed clear can call `fence(null)` while a progress item is displayed; `current.generation + BigInt(1)` then mixes a runtime number with a BigInt and throws. Comparisons and clear-command return values rely on the same mismatched wire contract. This predates the player-statistics memory plan and affects all progress consumers.
+* **Proof:** The Rust fields are `u64`, generated bindings say `bigint`, and `useProgress.ts:92` adds `BigInt(1)` to the event-derived value. The `review-ipc-contract` lens found the mismatch while reviewing `f-20260907-05` on 2026-09-25 (confidence 94). Verify on the actual Tauri IPC path, including a rejected clear and a generation beyond JavaScript's safe integer range; a TypeScript-only mock would hide the serialization boundary.
+* **Open question:** choose one wire-safe generation representation for events, command arguments and returns, and preserve the monotonic stale-event fence across every consumer. Regenerate bindings and cover the real IPC boundary. The current player-statistics plan does not change these shared types or `useProgress`; this is a separate cross-app contract repair.
+* **Related:** `f-20260904-02` and `f-20260906-07` addressed other progress subscription/cancellation paths, not the generation wire type. `f-20260919-12` concerns a stored running bar after `begin_progress` emission failure.
