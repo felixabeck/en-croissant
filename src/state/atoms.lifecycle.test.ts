@@ -17,7 +17,12 @@ import {
 } from "./atoms";
 import { tabStorage } from "./store/tabStorage";
 import { commitNewTab, createTab } from "@/utils/tabs";
-import { loadWorkspace, WORKSPACE_STORAGE_KEY } from "./workspace";
+import {
+    loadWorkspace,
+    MAX_PROTECTED_TREE_KEYS,
+    readStoredWorkspaceValue,
+    WORKSPACE_STORAGE_KEY,
+} from "./workspace";
 import { serializeStorageValue } from "./store/debouncedStorage";
 
 const persistError = vi.hoisted(() => ({ reportPersistError: vi.fn() }));
@@ -319,6 +324,45 @@ test("a failed close removal is retried after uncertain workspace ownership", as
     expect(sessionStorage.getItem(tabId)).toBeNull();
 });
 
+test("a failed close removal retries even when the ownership snapshot overflows", async () => {
+    sessionStorage.clear();
+    const tabId = crypto.randomUUID();
+    const tab = {
+        name: "Close",
+        value: tabId,
+        type: "analysis" as const,
+        gameOrigin: { kind: "none" as const },
+    };
+    const tree = serializeStorageValue({ version: 1, state: defaultTree() });
+    sessionStorage.setItem(tabId, tree);
+    for (let index = 0; index < MAX_PROTECTED_TREE_KEYS; index++) {
+        sessionStorage.setItem(`other-tree-${index}`, tree);
+    }
+    sessionStorage.setItem(
+        WORKSPACE_STORAGE_KEY,
+        serializeStorageValue({
+            version: 1,
+            tabs: [tab],
+            activeTab: tabId,
+            treeOwnershipUncertain: true,
+        }),
+    );
+    vi.resetModules();
+    const freshAtoms = await import("./atoms");
+    const store = createStore();
+    const deny = denyStorageRemoval(tabId);
+
+    expect(store.set(freshAtoms.closeWorkspaceTabAtom, tabId)).toBe(true);
+    expect(sessionStorage.getItem(tabId)).not.toBeNull();
+    deny.mockRestore();
+
+    const reloaded = loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY);
+    expect(reloaded.treeOwnershipUncertain).toBe(true);
+    expect(reloaded).not.toHaveProperty("treeOwnershipProtectedIds");
+    expect(reloaded.treeOwnershipPendingRemovalIds).toContain(tabId);
+    expect(sessionStorage.getItem(tabId)).toBeNull();
+});
+
 test("closes inactive, active, and last tabs and ignores a stale close id", () => {
     sessionStorage.clear();
     const store = createStore();
@@ -339,6 +383,9 @@ test("closes inactive, active, and last tabs and ignores a stale close id", () =
     expect(store.set(closeWorkspaceTabAtom, tabs[0]!.value)).toBe(true);
     expect(store.get(tabsAtom)).toEqual([tabs[1]]);
     expect(store.get(activeTabAtom)).toBe(tabs[1]!.value);
+    expect(readStoredWorkspaceValue(sessionStorage, WORKSPACE_STORAGE_KEY)).toMatchObject({
+        treeOwnershipPendingRemovalIds: [tabs[0]!.value],
+    });
     expect(loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY)).toEqual({
         version: 1,
         tabs: [tabs[1]],

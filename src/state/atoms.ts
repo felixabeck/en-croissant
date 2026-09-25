@@ -73,10 +73,20 @@ const commitWorkspaceAtom = atom(null, (get, set, workspace: Workspace) => {
         previous.tabs.filter((tab) => !retainedIds.has(tab.value)).map((tab) => tab.value),
     );
     const protectedIds = workspace.treeOwnershipProtectedIds?.filter((id) => !closedIds.has(id));
-    const canonical =
-        protectedIds === undefined
-            ? workspace
-            : { ...workspace, treeOwnershipProtectedIds: protectedIds };
+    const pendingRemovalIds = [
+        ...new Set([
+            ...(workspace.treeOwnershipPendingRemovalIds ?? []).filter((id) =>
+                tabStorage.isStoredTree(id),
+            ),
+            ...closedIds,
+        ]),
+    ];
+    const canonical = {
+        ...workspace,
+        ...(protectedIds === undefined ? {} : { treeOwnershipProtectedIds: protectedIds }),
+        treeOwnershipPendingRemovalIds:
+            pendingRemovalIds.length === 0 ? undefined : pendingRemovalIds,
+    };
     const saved = saveWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY, canonical);
     if (!saved) return false;
     set(workspaceAtom, saved);

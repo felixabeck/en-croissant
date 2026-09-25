@@ -808,6 +808,47 @@ test("workspace JSON parsing and orphan-tree sweeping distinguish malformed valu
     expect(sessionStorage.getItem(String(nonStringValue))).toBe("must-remain");
 });
 
+test("a stored-key enumeration failure does not abort authoritative workspace loading", () => {
+    sessionStorage.clear();
+    const retained = { ...legacyTab, value: crypto.randomUUID() };
+    sessionStorage.setItem(
+        WORKSPACE_STORAGE_KEY,
+        serializeStorageValue({ version: 1, tabs: [retained], activeTab: retained.value }),
+    );
+    const { treeId, storedTree } = storeUnownedDirtyTree();
+    const scanError = new DOMException("denied", "SecurityError");
+    const key = vi.spyOn(Storage.prototype, "key").mockImplementation(() => {
+        throw scanError;
+    });
+
+    expect(loadStoredWorkspace().tabs).toEqual([retained]);
+
+    key.mockRestore();
+    expect(sessionStorage.getItem(treeId)).toBe(storedTree);
+    expect(persistError.reportPersistError).toHaveBeenCalledWith(scanError);
+});
+
+test("orphan sweeping reports one failure for multiple denied removals", () => {
+    sessionStorage.clear();
+    const tree = serializeStorageValue({ version: 1, state: defaultTree() });
+    sessionStorage.setItem("orphan-one", tree);
+    sessionStorage.setItem("orphan-two", tree);
+    const originalRemoveItem = Storage.prototype.removeItem;
+    const remove = vi
+        .spyOn(Storage.prototype, "removeItem")
+        .mockImplementation(function (this: Storage, key) {
+            if (key.startsWith("orphan-")) throw new DOMException("denied", "SecurityError");
+            return originalRemoveItem.call(this, key);
+        });
+
+    sweepOrphanedTreeKeys([]);
+
+    remove.mockRestore();
+    expect(sessionStorage.getItem("orphan-one")).toBe(tree);
+    expect(sessionStorage.getItem("orphan-two")).toBe(tree);
+    expect(persistError.reportPersistError).toHaveBeenCalledOnce();
+});
+
 test("saveWorkspace preserves tab IDs so a failed load migration can retry", () => {
     sessionStorage.clear();
     saveWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY, {

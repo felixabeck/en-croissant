@@ -2,6 +2,8 @@ import { afterEach, expect, test, vi } from "vitest";
 import { denyStorageRemoval } from "@/utils/tests/storageMocks";
 import type { FileWorkspaceHandle } from "@/bindings";
 import { tabStorage } from "@/state/store/tabStorage";
+import { serializeStorageValue } from "@/state/store/debouncedStorage";
+import { loadWorkspace, WORKSPACE_STORAGE_KEY } from "@/state/workspace";
 import { closeTreeStore, createTreeStore } from "@/state/store/tree";
 import {
     getFileFreshness,
@@ -212,6 +214,16 @@ test("refused duplicate preserves its pending source and removes the durable tar
 });
 
 test("keeps a refused creation unacknowledged when rollback removal is rejected", () => {
+    const retained: Tab = {
+        name: "Retained",
+        value: crypto.randomUUID(),
+        type: "analysis",
+        gameOrigin: { kind: "none" },
+    };
+    sessionStorage.setItem(
+        WORKSPACE_STORAGE_KEY,
+        serializeStorageValue({ version: 1, tabs: [retained], activeTab: retained.value }),
+    );
     let stagedId = "";
     const removeItem = denyStorageRemoval(() => stagedId);
 
@@ -225,11 +237,12 @@ test("keeps a refused creation unacknowledged when rollback removal is rejected"
     });
 
     expect(result).toBeNull();
-    expect(sessionStorage.getItem("workspace")).toBeNull();
+    expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).not.toBeNull();
     expect(sessionStorage.getItem(stagedId)).not.toBeNull();
     expect(mocks.reportPersistError).toHaveBeenCalledOnce();
     removeItem.mockRestore();
-    tabStorage.remove(stagedId);
+    expect(loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY).tabs).toEqual([retained]);
+    expect(sessionStorage.getItem(stagedId)).toBeNull();
 });
 
 test("saveToFile refuses the native write when the selected origin was not durable", async () => {
