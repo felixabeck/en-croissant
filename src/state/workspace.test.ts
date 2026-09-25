@@ -1234,6 +1234,90 @@ test("duplicate UUID migration retains the original tree and creates a copied tr
     expect(tabStorage.read(workspace.tabs[1].value)).not.toBeNull();
 });
 
+test("retains a shared source when one duplicate migration clone is absent", () => {
+    sessionStorage.clear();
+    const sourceId = "legacy-shared-source";
+    const sourceTree = serializeStorageValue({ version: 1, state: defaultTree() });
+    sessionStorage.setItem(sourceId, sourceTree);
+    sessionStorage.setItem(
+        WORKSPACE_STORAGE_KEY,
+        serializeStorageValue({
+            version: 2,
+            tabs: [
+                { ...legacyTab, value: sourceId },
+                { ...legacyTab, value: sourceId },
+            ],
+            activeTab: sourceId,
+        }),
+    );
+    const originalClone = tabStorage.clone.bind(tabStorage);
+    const cloneTargets: string[] = [];
+    const clone = vi.spyOn(tabStorage, "clone").mockImplementation((source, target) => {
+        cloneTargets.push(target);
+        return cloneTargets.length === 1 ? originalClone(source, target) : { kind: "absent" };
+    });
+
+    const workspace = loadStoredWorkspace();
+
+    clone.mockRestore();
+    expect(cloneTargets).toHaveLength(2);
+    expect(workspace.tabs.map((tab) => tab.value)).toEqual(cloneTargets);
+    expect(tabStorage.read(cloneTargets[0]!)).not.toBeNull();
+    expect(sessionStorage.getItem(cloneTargets[1]!)).toBeNull();
+    expect(tabStorage.read(sourceId)?.state).toMatchObject({ root: defaultTree().root });
+    expect(workspace.treeOwnershipProtectedIds).toContain(sourceId);
+    expect(readStoredWorkspace()).toEqual(workspace);
+});
+
+test("keeps the legacy owner when a readable clone fails verification", () => {
+    sessionStorage.clear();
+    const sourceTree = serializeStorageValue({ version: 0, state: defaultTree() });
+    sessionStorage.setItem("tabs", serializeStorageValue([legacyTab]));
+    sessionStorage.setItem("activeTab", serializeStorageValue(legacyTab.value));
+    sessionStorage.setItem(legacyTab.value, sourceTree);
+
+    const verificationError = new Error("Could not read the durable clone back.");
+    const originalClone = tabStorage.clone.bind(tabStorage);
+    const originalReadTree = tabStorage.readTree.bind(tabStorage);
+    const originalSetItem = Storage.prototype.setItem;
+    let targetId: string | undefined;
+    let targetWritten = false;
+    const clone = vi.spyOn(tabStorage, "clone").mockImplementation((source, target) => {
+        targetId = target;
+        return originalClone(source, target);
+    });
+    const readTree = vi.spyOn(tabStorage, "readTree").mockImplementation((tabId) => {
+        if (tabId === targetId && targetWritten) {
+            return { kind: "unavailable", error: verificationError };
+        }
+        return originalReadTree(tabId);
+    });
+    const setItem = vi
+        .spyOn(Storage.prototype, "setItem")
+        .mockImplementation(function (this: Storage, key, value) {
+            originalSetItem.call(this, key, value);
+            if (key === targetId) targetWritten = true;
+        });
+
+    const workspace = (() => {
+        try {
+            return loadStoredWorkspace();
+        } finally {
+            setItem.mockRestore();
+            readTree.mockRestore();
+            clone.mockRestore();
+        }
+    })();
+
+    expect(workspace.tabs).toEqual([legacyTab]);
+    expect(workspace.activeTab).toBe(legacyTab.value);
+    expect(targetId).toBeDefined();
+    expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBeNull();
+    expect(tabStorage.read(legacyTab.value)?.state).toMatchObject({ root: defaultTree().root });
+    expect(sessionStorage.getItem(targetId!)).toBeNull();
+    expect(persistError.reportPersistError).toHaveBeenCalledWith(verificationError);
+});
+
 test("legacy ID repair reclaims unreadable bytes after publishing the verified copy", () => {
     sessionStorage.clear();
     const raw = "legacy tree bytes that cannot be decoded";
@@ -1241,7 +1325,35 @@ test("legacy ID repair reclaims unreadable bytes after publishing the verified c
     sessionStorage.setItem("activeTab", serializeStorageValue(legacyTab.value));
     sessionStorage.setItem(legacyTab.value, raw);
 
-    const workspace = loadStoredWorkspace();
+    const events: string[] = [];
+    let sourceBytesBeforeCleanup: string | null = null;
+    let metadataBeforeCleanup: string | null = null;
+    const originalSetItem = Storage.prototype.setItem;
+    const originalRemoveItem = Storage.prototype.removeItem;
+    const setItem = vi
+        .spyOn(Storage.prototype, "setItem")
+        .mockImplementation(function (this: Storage, key, value) {
+            originalSetItem.call(this, key, value);
+            if (key === WORKSPACE_STORAGE_KEY) events.push("metadata-published");
+        });
+    const removeItem = vi
+        .spyOn(Storage.prototype, "removeItem")
+        .mockImplementation(function (this: Storage, key) {
+            if (key === legacyTab.value) {
+                events.push("source-cleanup");
+                sourceBytesBeforeCleanup = this.getItem(key);
+                metadataBeforeCleanup = this.getItem(WORKSPACE_STORAGE_KEY);
+            }
+            originalRemoveItem.call(this, key);
+        });
+    const workspace = (() => {
+        try {
+            return loadStoredWorkspace();
+        } finally {
+            removeItem.mockRestore();
+            setItem.mockRestore();
+        }
+    })();
     const repairedId = workspace.tabs[0]!.value;
 
     expect(repairedId).not.toBe(legacyTab.value);
@@ -1249,6 +1361,9 @@ test("legacy ID repair reclaims unreadable bytes after publishing the verified c
     expect(sessionStorage.getItem(legacyTab.value)).toBeNull();
     expect(workspace.tabs[0]!.value).toBe(readStoredWorkspace().tabs[0]!.value);
     expect(tabStorage.getStatus(repairedId)).toEqual({ kind: "unreadable", rawValue: raw });
+    expect(events).toEqual(["metadata-published", "source-cleanup"]);
+    expect(sourceBytesBeforeCleanup).toBe(raw);
+    expect(metadataBeforeCleanup).toBe(serializeStorageValue(workspace));
 });
 
 test("failed metadata publication preserves the old unreadable owner and rolls back its copy", () => {
@@ -1259,19 +1374,33 @@ test("failed metadata publication preserves the old unreadable owner and rolls b
     sessionStorage.setItem("activeTab", serializeStorageValue(legacyTab.value));
     sessionStorage.setItem(legacyTab.value, raw);
     const originalSetItem = Storage.prototype.setItem;
+    const originalRemoveItem = Storage.prototype.removeItem;
+    let sourceRemovalAttempts = 0;
     const setItem = vi
         .spyOn(Storage.prototype, "setItem")
         .mockImplementation(function (this: Storage, key, value) {
             if (key === WORKSPACE_STORAGE_KEY) throw publicationError;
             return originalSetItem.call(this, key, value);
         });
+    const removeItem = vi
+        .spyOn(Storage.prototype, "removeItem")
+        .mockImplementation(function (this: Storage, key) {
+            if (key === legacyTab.value) sourceRemovalAttempts++;
+            originalRemoveItem.call(this, key);
+        });
 
-    const workspace = loadStoredWorkspace();
-
-    setItem.mockRestore();
+    const workspace = (() => {
+        try {
+            return loadStoredWorkspace();
+        } finally {
+            removeItem.mockRestore();
+            setItem.mockRestore();
+        }
+    })();
     expect(workspace.tabs).toEqual([legacyTab]);
     expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBeNull();
     expect(sessionStorage.getItem(legacyTab.value)).toBe(raw);
+    expect(sourceRemovalAttempts).toBe(0);
     const copies = Array.from({ length: sessionStorage.length }, (_, index) =>
         sessionStorage.key(index),
     ).filter((key): key is string => key !== null && sessionStorage.getItem(key) === raw);

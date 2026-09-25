@@ -305,7 +305,7 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
         }
     }
     const stagedCloneIds: string[] = [];
-    const cloneKinds = new Map<string, "copied" | "copied-unreadable" | "absent">();
+    const cloneKinds = new Map<string, "copied" | "copied-unreadable">();
     for (const { sourceId, targetId } of plan.cloneTargets) {
         const result = tabStorage.clone(sourceId, targetId);
         if (result.kind === "unavailable" || result.kind === "copy-failed") {
@@ -328,8 +328,6 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
         if (result.kind === "copied") {
             stagedCloneIds.push(targetId);
             cloneKinds.set(targetId, "copied");
-        } else {
-            cloneKinds.set(targetId, "absent");
         }
     }
     if (stagedCloneIds.length > 0) {
@@ -341,7 +339,6 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
     }
 
     const durableMigratedSources = new Set<string>();
-    const durableUnreadableSources = new Set<string>();
     for (const sourceId of new Set(plan.cloneTargets.map(({ sourceId }) => sourceId))) {
         const sourceTargets = plan.cloneTargets.filter((target) => target.sourceId === sourceId);
         const copiedReadableTargets = sourceTargets.filter(
@@ -364,13 +361,6 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
         });
         if (allTargetsCopied) {
             durableMigratedSources.add(sourceId);
-            if (
-                sourceTargets.some(
-                    ({ targetId }) => cloneKinds.get(targetId) === "copied-unreadable",
-                )
-            ) {
-                durableUnreadableSources.add(sourceId);
-            }
         }
     }
     const pendingRemovalResult = reconcilePendingTreeRemovals(
@@ -404,15 +394,9 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
         }
     }
 
-    // Unreadable values do not appear in orphan sweeps. Reclaim only old IDs whose exact bytes
-    // were copied and verified above, after the repaired workspace durably owns the new IDs.
-    const unreadableSourcesToReclaim = [...durableUnreadableSources].filter(
-        (id) => !repairedRetainedIds.has(id),
-    );
-    const failedKnownRemovals = tabStorage.removeKnownTreesSafely([
-        ...pendingRemovalIds,
-        ...unreadableSourcesToReclaim,
-    ]);
+    // Every migrated source is in the published pending-removal list. This also reclaims
+    // unreadable bytes, which ordinary orphan sweeps cannot decode.
+    const failedKnownRemovals = tabStorage.removeKnownTreesSafely(pendingRemovalIds);
     for (const id of failedAdmissions.failedIds) failedKnownRemovals.add(id);
 
     // A direct true fault deletes the unowned tree in the fresh-module workspace test.
