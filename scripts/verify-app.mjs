@@ -969,8 +969,7 @@ try {
     .slice(initialPracticePositions.length)
     .map(({ answer }) => answer)
     .find(
-      (san) =>
-        extendedLargePracticePgn.includes(san) && !initialLargePracticePgn.includes(san),
+      (san) => extendedLargePracticePgn.includes(san) && !initialLargePracticePgn.includes(san),
     );
   if (!rewrittenOnlyMoveSan) {
     throw new Error("the rewritten practice PGN has no move absent from its initial PGN");
