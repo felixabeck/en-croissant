@@ -144,10 +144,13 @@ test("commitNewTab commits tab and selection together", () => {
 test("commitNewTab reports a seed failure once without attempting admission", () => {
     const setTabs = vi.fn(() => true);
     const failure = new Error("seed failed");
+    let stagedId = "";
 
     const result = commitNewTab({
         tab: { name: "Failed", type: "analysis", gameOrigin: { kind: "none" } },
-        seed: () => {
+        seed: (id) => {
+            stagedId = id;
+            tabStorage.seed(id, defaultTree());
             throw failure;
         },
         setTabs,
@@ -157,6 +160,7 @@ test("commitNewTab reports a seed failure once without attempting admission", ()
     expect(setTabs).not.toHaveBeenCalled();
     expect(mocks.reportPersistError).toHaveBeenCalledOnce();
     expect(mocks.reportPersistError).toHaveBeenCalledWith(failure);
+    expect(sessionStorage.getItem(stagedId)).toBeNull();
 });
 
 test("commitNewTab rolls back only its staged tree on refused admission", () => {

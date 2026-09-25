@@ -80,19 +80,16 @@ const commitWorkspaceAtom = atom(null, (get, set, workspace: Workspace) => {
         previous.tabs.filter((tab) => !retainedIds.has(tab.value)).map((tab) => tab.value),
     );
     const protectedIds = workspace.treeOwnershipProtectedIds?.filter((id) => !closedIds.has(id));
-    const pendingRemovalIds = reconcilePendingTreeRemovals(
+    const pendingRemovalResult = reconcilePendingTreeRemovals(
         workspace.treeOwnershipPendingRemovalIds ?? [],
         closedIds,
         retainedIds,
     );
-    if (pendingRemovalIds === null) {
-        reportPersistError(
-            pendingTreeRemovalCapacityError(
-                new Set([...(workspace.treeOwnershipPendingRemovalIds ?? []), ...closedIds]).size,
-            ),
-        );
+    if (pendingRemovalResult.ids === null) {
+        reportPersistError(pendingTreeRemovalCapacityError(pendingRemovalResult.overflowCount));
         return false;
     }
+    const pendingRemovalIds = pendingRemovalResult.ids;
     const canonical = {
         ...workspace,
         ...(protectedIds === undefined ? {} : { treeOwnershipProtectedIds: protectedIds }),

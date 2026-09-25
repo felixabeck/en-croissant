@@ -71,7 +71,7 @@ export function commitNewTab({
             seed(id);
         } catch (error) {
             reportPersistError(persistStorageWriteError(error));
-            rollbackCreatedTree(id, true);
+            rollbackCreatedTree(id);
             return null;
         }
     }
@@ -94,20 +94,17 @@ export function commitNewTab({
         }
     });
     if (admissionThrew) {
-        if (seed) rollbackCreatedTree(id, false);
         throw admissionError;
     }
     if (!admitted) {
-        if (seed) rollbackCreatedTree(id, true);
+        if (seed) rollbackCreatedTree(id);
         return null;
     }
     return id;
 }
 
-function rollbackCreatedTree(id: string, admissionKnownAbsent: boolean) {
-    // A throwing setter may have committed before notifying listeners. Only seed failure or
-    // a returned refusal proves that deleting the staged tree is safe.
-    if (!admissionKnownAbsent) return;
+function rollbackCreatedTree(id: string) {
+    // Only seed failure or a returned refusal proves that deleting the staged tree is safe.
     if (!tabStorage.removeTreeSafely(id)) {
         tabStorage.recordFailedAdmission(id);
     }

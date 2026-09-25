@@ -142,7 +142,7 @@ export function reconcilePendingTreeRemovals(
     priorIds: readonly string[],
     newIds: Iterable<string>,
     retainedIds: ReadonlySet<string>,
-): string[] | null {
+): { ids: string[]; overflowCount: null } | { ids: null; overflowCount: number } {
     let prior = priorIds.filter((id) => !retainedIds.has(id) && tabStorage.isStoredTree(id));
     const additions = [...newIds].filter((id) => !retainedIds.has(id));
     let pending = new Set([...prior, ...additions]);
@@ -151,7 +151,9 @@ export function reconcilePendingTreeRemovals(
         prior = prior.filter((id) => failedPriorRemovals.has(id));
         pending = new Set([...prior, ...additions]);
     }
-    return pending.size <= MAX_PENDING_TREE_REMOVALS ? [...pending] : null;
+    return pending.size <= MAX_PENDING_TREE_REMOVALS
+        ? { ids: [...pending], overflowCount: null }
+        : { ids: null, overflowCount: pending.size };
 }
 
 export function pendingTreeRemovalCapacityError(count: number): Error {
@@ -315,20 +317,17 @@ export function loadWorkspace(storage: SyncStringStorage, key: string): Workspac
             durableMigratedSources.add(sourceId);
         }
     }
-    const pendingRemovalIds = reconcilePendingTreeRemovals(
+    const pendingRemovalResult = reconcilePendingTreeRemovals(
         persistedPendingRemovals,
         durableMigratedSources,
         repairedRetainedIds,
     );
-    if (pendingRemovalIds === null) {
-        reportPersistError(
-            pendingTreeRemovalCapacityError(
-                new Set([...persistedPendingRemovals, ...durableMigratedSources]).size,
-            ),
-        );
+    if (pendingRemovalResult.ids === null) {
+        reportPersistError(pendingTreeRemovalCapacityError(pendingRemovalResult.overflowCount));
         tabStorage.removeKnownTreesSafely(stagedCloneIds);
         return plan.unrepairedWorkspace;
     }
+    const pendingRemovalIds = pendingRemovalResult.ids;
     if (pendingRemovalIds.length > 0) {
         plan.workspace.treeOwnershipPendingRemovalIds = pendingRemovalIds;
     }

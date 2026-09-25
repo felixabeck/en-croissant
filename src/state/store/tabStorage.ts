@@ -416,9 +416,7 @@ export class TabStorageRepository {
             let markerRemovalFailed = false;
             const markersToClear = [
                 ...invalidMarkers,
-                ...validMarkers
-                    .filter(({ tabId }) => !failed.has(tabId) && !failedIds.has(tabId))
-                    .map(({ key }) => key),
+                ...validMarkers.filter(({ tabId }) => !failedIds.has(tabId)).map(({ key }) => key),
             ];
             for (const key of markersToClear) {
                 try {

@@ -433,7 +433,13 @@ test("closing a tab frees capacity from completed removal intents", async () => 
 
     expect(store.set(freshAtoms.closeWorkspaceTabAtom, tabId)).toBe(false);
     expect(store.get(freshAtoms.tabsAtom)).toEqual([tab]);
-    expect(persistError.reportPersistError).toHaveBeenCalled();
+    expect(persistError.reportPersistError).toHaveBeenCalledWith(
+        expect.objectContaining({
+            cause: expect.objectContaining({
+                message: `Pending tree removals exceeded ${MAX_PENDING_TREE_REMOVALS}: 101`,
+            }),
+        }),
+    );
     expect(readStoredWorkspaceValue(sessionStorage, WORKSPACE_STORAGE_KEY)).toMatchObject({
         treeOwnershipPendingRemovalIds: pendingIds,
     });

@@ -419,23 +419,59 @@ test("a failed refused-tree removal is not retried by the same load's orphan swe
     );
     sessionStorage.setItem(refusedId, tree);
     sessionStorage.setItem(marker, "1");
-    const originalRemoveItem = Storage.prototype.removeItem;
-    let refusedRemovalAttempts = 0;
-    const deny = vi
-        .spyOn(Storage.prototype, "removeItem")
-        .mockImplementation(function (this: Storage, key) {
-            if (key === refusedId) {
-                refusedRemovalAttempts++;
-                throw new Error("removal denied");
-            }
-            return originalRemoveItem.call(this, key);
-        });
+    const deny = denyStorageRemoval(refusedId);
 
     loadStoredWorkspace();
 
+    expect(deny.mock.calls.filter(([key]) => key === refusedId)).toHaveLength(1);
     deny.mockRestore();
-    expect(refusedRemovalAttempts).toBe(1);
     expect(sessionStorage.getItem(refusedId)).toBe(tree);
+    expect(sessionStorage.getItem(marker)).toBe("1");
+});
+
+test("a refused tree stays out of a fresh uncertain-ownership snapshot", () => {
+    sessionStorage.clear();
+    const older = storeUnownedDirtyTree();
+    const refused = storeUnownedDirtyTree();
+    const marker = `chessfable:failed-tab-admission:${refused.treeId}`;
+    sessionStorage.setItem(marker, "1");
+    const deny = denyStorageRemoval(refused.treeId);
+
+    const workspace = loadStoredWorkspace();
+
+    deny.mockRestore();
+    expect(workspace.treeOwnershipUncertain).toBe(true);
+    expect(workspace.treeOwnershipProtectedIds).toEqual([older.treeId]);
+    expect(sessionStorage.getItem(older.treeId)).toBe(older.storedTree);
+    expect(sessionStorage.getItem(refused.treeId)).toBe(refused.storedTree);
+    expect(sessionStorage.getItem(marker)).toBe("1");
+});
+
+test("an existing ownership snapshot drops a tree with a refused-admission marker", () => {
+    sessionStorage.clear();
+    const retained = { ...legacyTab, value: crypto.randomUUID() };
+    const older = storeUnownedDirtyTree();
+    const refused = storeUnownedDirtyTree();
+    const marker = `chessfable:failed-tab-admission:${refused.treeId}`;
+    sessionStorage.setItem(marker, "1");
+    sessionStorage.setItem(
+        WORKSPACE_STORAGE_KEY,
+        serializeStorageValue({
+            version: 1,
+            tabs: [retained],
+            activeTab: retained.value,
+            treeOwnershipUncertain: true,
+            treeOwnershipProtectedIds: [older.treeId, refused.treeId],
+        }),
+    );
+    const deny = denyStorageRemoval(refused.treeId);
+
+    const workspace = loadStoredWorkspace();
+
+    deny.mockRestore();
+    expect(workspace.treeOwnershipProtectedIds).toEqual([older.treeId]);
+    expect(sessionStorage.getItem(older.treeId)).toBe(older.storedTree);
+    expect(sessionStorage.getItem(refused.treeId)).toBe(refused.storedTree);
     expect(sessionStorage.getItem(marker)).toBe("1");
 });
 
@@ -808,7 +844,13 @@ test("does not persist an over-capacity retry list during legacy ID migration", 
     expect(first.tabs[0]!.value).toBe(legacyTab.value);
     expect(first.treeOwnershipPendingRemovalIds).toEqual(pendingIds);
     expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(originalEnvelope);
-    expect(persistError.reportPersistError).toHaveBeenCalled();
+    expect(persistError.reportPersistError).toHaveBeenCalledWith(
+        expect.objectContaining({
+            cause: expect.objectContaining({
+                message: `Pending tree removals exceeded ${MAX_PENDING_TREE_REMOVALS}: 101`,
+            }),
+        }),
+    );
     deny.mockRestore();
 
     const repaired = loadStoredWorkspace();
@@ -1100,6 +1142,15 @@ test("saveWorkspace refuses invalid and 101-tab live writes while preserving dur
     expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(storedAtBoundary);
     expect(readStoredWorkspace()).toEqual(durable);
     expect(persistError.reportPersistError).toHaveBeenCalledTimes(3);
+    for (const [error] of persistError.reportPersistError.mock.calls) {
+        expect(error).toEqual(
+            expect.objectContaining({
+                cause: expect.objectContaining({
+                    message: "Workspace failed live schema validation",
+                }),
+            }),
+        );
+    }
 
     const reloaded = loadStoredWorkspace();
     expect(reloaded).toEqual(durable);
