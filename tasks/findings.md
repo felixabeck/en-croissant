@@ -11345,6 +11345,15 @@ Rejected: a longer WebDriver timeout, and a full-FEN dedup key.
 
 * **Open question:** How to add a Windows compile gate that is honest on a machine without the toolchain: fail with a setup instruction, or record the gate as unavailable and refuse the push? And should it be a `gate:ensure` receipt gate, a contract-gate member, or only a line in §2? `d-20260916-07` is superseded in part by whichever answer is chosen; its reversal clause names `~/.local/opt/mingw`, so the gate must not silently assume the path.
 
+**Handled 2026-09-26 (build run, Claude Code orchestrator, Codex executor).** Decision `d-20260926-01` answers the open question and partly supersedes `d-20260916-07`.
+
+* `01c5797e` adds `pnpm rust:windows:check` (`scripts/rust-windows-check.mjs`), fenced in push skill §2 "Rust/Tauri backend" after the Linux clippy line. It runs `cargo clippy --target x86_64-pc-windows-gnu --all-targets --locked -- -D warnings`. The compiler is resolved from `CHESSFABLE_MINGW_PREFIX` (no fallback when set), then `PATH`, then the printed default `$HOME/.local/opt/mingw`. A missing compiler or rustup target fails with the exact setup commands; the gate never skips and never installs anything. `rust:windows:test` joined the contract gate, and `CONTRACT_CHAIN` is updated. The push skill states that MSVC and all Windows tests stay CI-only.
+* `ec40e7af` repairs the cumulative-review findings. The apt remedy is now a fail-closed `set -e` subshell. PATH lookup is shared with the mutation tests through `scripts/executable-path.mjs`, which honours PATHEXT. The default prefix is one constant. The tests pin literal cargo arguments, cover signal termination, and assert the recipe's structure.
+* Proof, from the staged matrix in the script header: the `490831c7` class gives E0425 and exit 101. A Windows-only `dead_code` gives exit 101 while Linux clippy exits 0. A missing prefix, missing compiler or missing target each exits 1 with its own message. The printed recipe, run verbatim into an empty prefix, installed a toolchain that built all 260 crates from scratch in 38 s. A recipe with an unwritable prefix exits 1 without creating the links. `pnpm gates:contract:check` is green.
+* Rejected: a contract-gate member, a receipt gate, recording the gate as unavailable, and a provisioning script run before the check (see `d-20260926-01`).
+* Deferred: pinning local-only fence lines to their §2 subsection, filed as `f-20260926-01`. Plan-review record: `tasks/handoffs/2026-09-26-f-20260924-07-review.md`.
+<!-- ledger-meta {"command":"annotate","effect_lines":7,"effect_sha256":"d4453ece3c06338d6979ebe9ecc5570e01786292847781f6e00b13ea13523227","input_sha256":"7fcbdfec091374a6cc53ae6c8e8f6f6a3eb1bff10913da0f3a0a5a2b501b7442","kind":"mutation-receipt","operation":"fb7952207a6670a717e3cf41e05f2bd9b2e2658cbe1f3f26b09e23fd81dcf2bf","options":{"section":null},"request_id_sha256":null,"results":["f-20260924-07"],"target":"f-20260924-07","v":1} -->
+
 ---
 
 ## 2026-09-25 — filed through the inbox spool
