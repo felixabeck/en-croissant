@@ -4231,3 +4231,31 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** New evidence from the review lenses: the importer stores `[Site]` and `[TimeControl]` verbatim, so the "calendar and opening table" bound holds only when those strings repeat, as they do for real server and OTB exports. This refines the Reason of d-20260926-02 and d-20260926-04 without changing what was chosen. Reversal path: normalise the key fields on the backend together with the renderer filters.
 * **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, build run 2026-09-26, after the Codex cumulative review · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"8c379b49488066bfdc64ce402a7e94c0cb61b2d95d748c650b8283a77932e61f","input_sha256":"dcd4a846c63f761e97afa843b9ad7571e7eceb33cef58cc2fb75880dcc93beb3","kind":"mutation-receipt","operation":"b2d929fbbb82d869c7e7955a482f386ce9a8156882e2557d9bd6582d55637bd2","options":{"section":null},"request_id_sha256":null,"results":["d-20260926-06"],"target":"decisions-ledger","v":1} -->
+
+### d-20260926-07 — Should the synchronous search locks share the async keyed-lease mechanism or get their own?
+
+* **Question:** f-20260908-01 needs an atomic acquire/release lifetime for the parking_lot generation and collision locks on `SearchCache`; `infra/keyed_locks.rs` already has one for Tokio mutexes. Share it or write a synchronous twin?
+* **Governs:** f-20260908-01
+* **Chosen:** Make `KeyedLocks<K, M = tokio::sync::Mutex<()>>` and `KeyedLockLease<'a, K, M = …>` generic over the mutex type. Registry, `lease()` and the entry-locked `Drop` are written once; acquisition is an inherent impl per mutex type (Tokio `lock().await`; parking_lot `lock_cancellable` delegating to `cancellable_lock::lock_cancellable`). The Tokio default keeps the engine/game spellings unchanged.
+* **Rejected:** A parallel `SyncKeyedLocks` (a second copy of the atomic Drop, rule 11); a trait abstraction over locking (two closed types, no third caller).
+* **Reason:** One registry contract and one atomicity proof: the ownership count is read only through the occupied entry guard, so no `lease()` can interleave between the count and `entry.remove()`. Reversal path: split the generic back into two registries if a mutex type ever needs a different reclamation rule.
+* **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, plan-reviewed build run 2026-09-26 · **Superseded-by:** -
+
+### d-20260926-08 — What does `SearchCache::clear` do with the lock registries?
+
+* **Question:** `SearchCache::clear` cleared `collisions` and `generation_locks` unconditionally, orphaning live owners. Retain by owner count, or stop clearing them?
+* **Governs:** f-20260908-01
+* **Chosen:** `clear()` evicts only the result and index caches (and keeps retaining live mapping gates as before); it never touches the lock registries. Lease `Drop` owns retention, so the registries are empty at quiescence by construction.
+* **Rejected:** An owner-counted `retain` (a third removal path racing the lease `Drop` for the same entry); keeping the unconditional clear (the defect itself).
+* **Reason:** A lease registry holds only outstanding leases; clearing it can only split a live lock. Reversal path: none needed unless registries start holding non-lease state.
+* **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, plan-reviewed build run 2026-09-26 · **Superseded-by:** -
+
+### d-20260926-09 — Is the preferred-mapping gate converted to leases in the same change?
+
+* **Question:** `SearchCache.mapping_gates` is a third keyed registry on the same struct. Convert it too?
+* **Governs:** f-20260908-01
+* **Chosen:** No. The mapping gate stays as it is.
+* **Rejected:** Converting it now.
+* **Reason:** Outside the f-20260908-01 mandate; its necessity is owned by `f-20260919-06`, and `remove_idle_mapping_gate` already reads the owner count inside `remove_if` under the shard lock (d-20260918-17), so it does not carry this defect. Reversal path: `f-20260919-06` decides its fate.
+* **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, plan-reviewed build run 2026-09-26 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"ea72795150d95a587be261f38f1233e13a5f999aa6187c6b679e0970dfed2758","input_sha256":"200605ecb974fae7204e1c9398e55c3e8bcb037ce13a1b0e51a8816ffcf07225","kind":"mutation-receipt","operation":"4829315150a2d3d582c5719cd1154eb4c7a8345edfb41abf608836080a675179","options":{"section":null},"request_id_sha256":null,"results":["d-20260926-07","d-20260926-08","d-20260926-09"],"target":"decisions-ledger","v":1} -->
