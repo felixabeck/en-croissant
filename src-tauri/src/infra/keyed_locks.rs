@@ -109,7 +109,8 @@ where
         self.lock.as_ref().expect("lease owns its lock").try_lock()
     }
 
-    #[cfg(test)]
+    // The only consumer is the unix-only search-lock test in `db::search`.
+    #[cfg(all(test, unix))]
     pub(crate) fn observe_wait(&self) -> crate::infra::cancellable_lock::LockWaitObserver {
         crate::infra::cancellable_lock::observe_lock_wait(
             self.lock.as_ref().expect("lease owns its lock"),

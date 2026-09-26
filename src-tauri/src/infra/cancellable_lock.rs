@@ -79,7 +79,8 @@ pub(crate) fn observe_std_lock_wait<T>(lock: &StdMutex<T>) -> LockWaitObserver {
     register_wait_observer(lock as *const StdMutex<T> as usize)
 }
 
-#[cfg(test)]
+// The only consumer is the unix-only search-lock test in `db::search`.
+#[cfg(all(test, unix))]
 pub(crate) fn observe_lock_wait<T>(lock: &Mutex<T>) -> LockWaitObserver {
     register_wait_observer(lock as *const Mutex<T> as usize)
 }
