@@ -1,0 +1,276 @@
+import assert from "node:assert/strict";
+import { delimiter, dirname, join, resolve } from "node:path";
+import test from "node:test";
+import {
+  CARGO_CLIPPY_ARGUMENTS,
+  MINGW_COMPILER,
+  WINDOWS_GNU_TARGET,
+  formatMissingCompilerMessage,
+  formatMissingRustTargetMessage,
+  resolveWindowsGnuCompiler,
+  runWindowsGnuCheck,
+} from "./rust-windows-check.mjs";
+
+const repoRoot = "/scratch/chessfable";
+const home = "/scratch/home";
+
+function fileSystemFor(paths) {
+  const existing = new Set(paths);
+  return {
+    existsSync: (path) => existing.has(path),
+    accessSync(path) {
+      if (!existing.has(path)) throw new Error(`not executable: ${path}`);
+    },
+  };
+}
+
+function resolveWithPaths({ env, present = [], probeOnPath, repoRoot: root = repoRoot }) {
+  return resolveWindowsGnuCompiler({
+    env,
+    fileSystem: fileSystemFor(present),
+    probeOnPath,
+    repoRoot: root,
+  });
+}
+
+function installedCompiler(prefix) {
+  return join(prefix, "usr", "bin", MINGW_COMPILER);
+}
+
+test("resolves an explicit MinGW prefix", () => {
+  const prefix = "/scratch/explicit-mingw";
+  const compilerPath = installedCompiler(prefix);
+  const result = resolveWithPaths({
+    env: { CHESSFABLE_MINGW_PREFIX: prefix, PATH: "/empty" },
+    present: [compilerPath],
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    source: "explicit-prefix",
+    prefix: resolve(prefix),
+    compilerPath,
+  });
+});
+
+test("refuses a missing explicit prefix without falling back to PATH", () => {
+  const prefix = "/scratch/missing-explicit";
+  const pathCompiler = "/compiler/bin/x86_64-w64-mingw32-gcc";
+  const env = { CHESSFABLE_MINGW_PREFIX: prefix, HOME: home, PATH: "/compiler/bin" };
+  const fileSystem = fileSystemFor([pathCompiler]);
+  const result = resolveWindowsGnuCompiler({ env, fileSystem, repoRoot });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "explicit-prefix-missing");
+  assert.equal(result.prefix, resolve(prefix));
+  assert.equal(result.compilerPath, installedCompiler(prefix));
+  const message = formatMissingCompilerMessage(result);
+  assert.ok(message.includes(resolve(prefix)));
+  assert.ok(message.includes(installedCompiler(prefix)));
+  assert.match(message, /apt-get download/u);
+  assert.ok(message.includes(`mkdir -p '${join(resolve(prefix), "debs")}'`));
+  assert.match(message, /For non-apt systems, install x86_64-w64-mingw32-gcc/u);
+
+  const errors = [];
+  const exitStatus = runWindowsGnuCheck({
+    env,
+    fileSystem,
+    repoRoot,
+    writeError: (line) => errors.push(line),
+  });
+  assert.equal(exitStatus, 1);
+  assert.equal(errors[0], message);
+});
+
+test("resolves MinGW from PATH before checking the default prefix", () => {
+  const pathDirectory = "/scratch/path-mingw/bin";
+  const compilerPath = join(pathDirectory, MINGW_COMPILER);
+  const result = resolveWithPaths({
+    env: {
+      HOME: home,
+      PATH: ["/scratch/other", pathDirectory].join(delimiter),
+    },
+    present: [compilerPath, installedCompiler(join(home, ".local", "opt", "mingw"))],
+  });
+
+  assert.deepEqual(result, { ok: true, source: "path", compilerPath });
+});
+
+test("resolves MinGW from the default prefix when PATH has no compiler", () => {
+  const prefix = join(home, ".local", "opt", "mingw");
+  const compilerPath = installedCompiler(prefix);
+  const result = resolveWithPaths({
+    env: { HOME: home, PATH: "/scratch/empty" },
+    present: [compilerPath],
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    source: "default-prefix",
+    prefix: resolve(prefix),
+    compilerPath,
+  });
+});
+
+test("reports the resolved default prefix, apt packages, links, and non-apt remedy", () => {
+  const prefix = join(home, ".local", "opt", "mingw");
+  const env = { HOME: home, PATH: "/scratch/empty" };
+  const fileSystem = fileSystemFor([]);
+  const result = resolveWindowsGnuCompiler({ env, fileSystem, repoRoot });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "not-found");
+  assert.equal(result.prefix, resolve(prefix));
+  const message = formatMissingCompilerMessage(result);
+  assert.match(message, /Windows GNU cross compiler not found on PATH or in the default prefix/u);
+  assert.ok(message.includes(installedCompiler(prefix)));
+  for (const packageName of [
+    "binutils-common",
+    "binutils-mingw-w64-x86-64",
+    "gcc-mingw-w64-base",
+    "gcc-mingw-w64-x86-64",
+    "gcc-mingw-w64-x86-64-posix",
+    "gcc-mingw-w64-x86-64-posix-runtime",
+    "gcc-mingw-w64-x86-64-win32",
+    "gcc-mingw-w64-x86-64-win32-runtime",
+    "mingw-w64-common",
+    "mingw-w64-x86-64-dev",
+  ]) {
+    assert.ok(message.includes(packageName), `missing apt package ${packageName}`);
+  }
+  assert.match(
+    message,
+    new RegExp(`ln -sfn x86_64-w64-mingw32-gcc-posix .*x86_64-w64-mingw32-gcc`, "u"),
+  );
+  assert.match(message, /ln -sfn x86_64-w64-mingw32-cpp-posix .*x86_64-w64-mingw32-cpp/u);
+  assert.match(message, /For non-apt systems, install x86_64-w64-mingw32-gcc/u);
+
+  const errors = [];
+  const exitStatus = runWindowsGnuCheck({
+    env,
+    fileSystem,
+    repoRoot,
+    writeError: (line) => errors.push(line),
+  });
+  assert.equal(exitStatus, 1);
+  assert.equal(errors[0], message);
+});
+
+test("reports the rustup target-add remedy and returns a non-zero result when absent", () => {
+  const prefix = "/scratch/mingw";
+  const errors = [];
+  const calls = [];
+  const result = runWindowsGnuCheck({
+    env: { CHESSFABLE_MINGW_PREFIX: prefix, PATH: "/scratch/bin" },
+    fileSystem: fileSystemFor([installedCompiler(prefix)]),
+    repoRoot,
+    spawn(command, argumentsList, options) {
+      calls.push({ command, argumentsList, options });
+      return { status: 0, stdout: "x86_64-unknown-linux-gnu\n" };
+    },
+    writeError: (message) => errors.push(message),
+    writeOutput() {},
+  });
+
+  assert.notEqual(result, 0);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].command, "rustup");
+  assert.match(errors[0], /Rust target x86_64-pc-windows-gnu is not installed/u);
+  assert.match(errors[0], /rustup target add x86_64-pc-windows-gnu/u);
+  assert.equal(errors[0], formatMissingRustTargetMessage());
+});
+
+test("starts clippy with the resolved compiler directory first and propagates cargo status", () => {
+  const prefix = "/scratch/mingw";
+  const compilerPath = installedCompiler(prefix);
+  const output = [];
+  const errors = [];
+  const calls = [];
+  const result = runWindowsGnuCheck({
+    env: { CHESSFABLE_MINGW_PREFIX: prefix, PATH: "/scratch/cargo-bin:/usr/bin" },
+    fileSystem: fileSystemFor([compilerPath]),
+    repoRoot,
+    spawn(command, argumentsList, options) {
+      calls.push({ command, argumentsList, options });
+      return command === "rustup"
+        ? { status: 0, stdout: `${WINDOWS_GNU_TARGET}\nx86_64-unknown-linux-gnu\n` }
+        : { status: 37 };
+    },
+    writeOutput: (message) => output.push(message),
+    writeError: (message) => errors.push(message),
+  });
+
+  assert.equal(result, 37);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[1].argumentsList, CARGO_CLIPPY_ARGUMENTS);
+  assert.equal(calls[1].options.cwd, repoRoot);
+  assert.equal(calls[1].options.stdio, "inherit");
+  assert.equal(
+    calls[1].options.env.PATH,
+    `${dirname(compilerPath)}${delimiter}/scratch/cargo-bin:/usr/bin`,
+  );
+  assert.deepEqual(output, [`Windows GNU C compiler: ${compilerPath}`]);
+  assert.match(errors[0], /cargo clippy .* failed with exit status 37/u);
+});
+
+test("reports distinct rustup and cargo spawn failures", () => {
+  const prefix = "/scratch/mingw";
+  const compilerPath = installedCompiler(prefix);
+  for (const failCommand of ["rustup", "cargo"]) {
+    const errors = [];
+    const result = runWindowsGnuCheck({
+      env: { CHESSFABLE_MINGW_PREFIX: prefix, PATH: "/scratch/bin" },
+      fileSystem: fileSystemFor([compilerPath]),
+      repoRoot,
+      spawn(command) {
+        if (command === failCommand) return { error: new Error(`spawn ${command} ENOENT`) };
+        return { status: 0, stdout: `${WINDOWS_GNU_TARGET}\n` };
+      },
+      writeOutput() {},
+      writeError: (message) => errors.push(message),
+    });
+
+    assert.equal(result, 1);
+    assert.equal(errors.length, 1);
+    assert.match(
+      errors[0],
+      new RegExp(`Could not start ${failCommand} .*spawn ${failCommand} ENOENT`, "u"),
+    );
+  }
+});
+
+test("turns a thrown spawn failure into a distinct non-zero result", () => {
+  const prefix = "/scratch/mingw";
+  const errors = [];
+  const result = runWindowsGnuCheck({
+    env: { CHESSFABLE_MINGW_PREFIX: prefix, PATH: "/scratch/bin" },
+    fileSystem: fileSystemFor([installedCompiler(prefix)]),
+    repoRoot,
+    spawn() {
+      throw new Error("synthetic spawn failure");
+    },
+    writeOutput() {},
+    writeError: (message) => errors.push(message),
+  });
+
+  assert.equal(result, 1);
+  assert.deepEqual(errors, [
+    "Could not start rustup target list --installed: synthetic spawn failure",
+  ]);
+});
+
+test("reports a non-zero rustup target-list status separately from a missing target", () => {
+  const prefix = "/scratch/mingw";
+  const errors = [];
+  const result = runWindowsGnuCheck({
+    env: { CHESSFABLE_MINGW_PREFIX: prefix, PATH: "/scratch/bin" },
+    fileSystem: fileSystemFor([installedCompiler(prefix)]),
+    repoRoot,
+    spawn: () => ({ status: 3, stdout: "" }),
+    writeOutput() {},
+    writeError: (message) => errors.push(message),
+  });
+
+  assert.equal(result, 3);
+  assert.equal(errors[0], "rustup target list --installed failed with exit status 3.");
+});

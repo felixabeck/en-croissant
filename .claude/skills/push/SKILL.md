@@ -81,9 +81,14 @@ bash scripts/setup-rust.sh
 cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 cargo check --manifest-path src-tauri/Cargo.toml --all-targets --locked
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings
+pnpm rust:windows:check
 pnpm gate:ensure backend-test
 pnpm gate:ensure backend-coverage
 ```
+
+`pnpm rust:windows:check` covers GNU-target type-checking and linting only. The MSVC target
+(`rust-platform`) and all Windows tests (`rust-windows-test`) remain CI-only. If the gate is red
+because a toolchain prerequisite is missing, run the setup commands it prints and rerun the gate.
 
 `test:coverage:backend` needs the pinned `nightly-2025-06-01` toolchain with `llvm-tools-preview` and `cargo-llvm-cov` 0.8.7 (the versions `.github/workflows/test.yml` installs); `coverage:backend:check` reads the LCOV it writes, so the two run in that order. `spawn cargo ENOENT` from any of these means `~/.cargo/bin` is missing from that shell's `PATH`, not that the checkout is broken — prefix the call with `PATH="$HOME/.cargo/bin:$PATH"`.
 
@@ -270,10 +275,11 @@ Use the exact-string override keywords from
 - Require `git diff --check`, all affected gates green on the final tree, and no unresolved `Fix` finding.
 - If a final gate requires a repair, return to `repair`, commit the repair, and rerun the affected
   final gates on the changed tree before push. The push then uses the unchanged verified tree.
-- Before pushing, apply the shared policy §8 "A red remote is a red gate". The jobs this machine
-  cannot reproduce are `rust-windows-test`, `rust-macos-test` and the `rust-platform` matrix of the
-  `Test` workflow (a Linux host type-checks the Windows target through the MinGW cross toolchain of
-  `d-20260916-07`, but runs none of its tests). Read them from the newest run in which they have
+- Before pushing, apply the shared policy §8 "A red remote is a red gate". The §2 gate locally
+  type-checks and lints the `x86_64-pc-windows-gnu` target; the jobs this machine cannot reproduce
+  remain `rust-windows-test`, `rust-macos-test` and the `rust-platform` matrix of the `Test`
+  workflow, including the MSVC target. All Windows tests stay CI-only. Read those jobs from the
+  newest run in which they have
   completed — they finish about fifteen minutes before the run does:
   `gh run list --branch <branch> --workflow Test --limit 3 --json databaseId,headSha,status`, then
   `gh run view <id> --json jobs`; if one of them is red and this push does not repair it, refuse.
