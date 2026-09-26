@@ -11333,7 +11333,7 @@ Rejected: a longer WebDriver timeout, and a full-FEN dedup key.
 
 ### The push gates never type-check the Windows target, so cfg-gating mistakes reach CI after the push
 
-* **ID:** f-20260924-07 · **Status:** open · **Area:** gate-scripts · **Root:** none · **Entry:** build · **Blocked:** none
+* **ID:** f-20260924-07 · **Status:** handled · **Area:** gate-scripts · **Root:** none · **Entry:** build · **Blocked:** none
 * **Found by:** f-20260923-01 push (drain session 767c276a-499c-41b8-8170-256aa14b7d5c), 2026-09-24.
 * **Files:** `.claude/skills/push/SKILL.md` (§2 Rust/Tauri backend), `scripts/gate-receipt.mjs`, `package.json`.
 
