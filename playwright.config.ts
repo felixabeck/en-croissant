@@ -69,6 +69,11 @@ export default defineConfig({
             use: { ...chromium, viewport: { width: 800, height: 720 }, colorScheme: "light" },
         },
         {
+            name: "files-preview",
+            testMatch: /files-preview\.spec\.ts/,
+            use: { ...chromium, viewport: { width: 1920, height: 760 }, colorScheme: "light" },
+        },
+        {
             name: "tree-recovery",
             testMatch: /tree-recovery\.spec\.ts/,
             use: { ...chromium, viewport: { width: 800, height: 720 }, colorScheme: "light" },

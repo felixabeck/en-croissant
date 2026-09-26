@@ -34,7 +34,7 @@ import { FILE_TYPES, workspaceEntryToEntry } from "./file";
 
 const fileAction = { file: "file", folder: "folder", rename: "rename" } as const;
 type FileAction = (typeof fileAction)[keyof typeof fileAction];
-const FILE_CARD_HEIGHT = "32rem";
+const FILE_CARD_MIN_HEIGHT = "32rem";
 const TREE_MAX_HEIGHT = "60vh";
 const TREE_MIN_HEIGHT = "8rem";
 const EMPTY_PANE_MIN_HEIGHT = "12rem";
@@ -308,7 +308,7 @@ export default function FilesPage() {
           </Paper>
           <Paper withBorder p={{ base: 6, sm: "sm" }} miw={0}>
             {selected?.type === "file" ? (
-              <Stack gap="xs" miw={0}>
+              <Stack gap="xs" h="100%" miw={0}>
                 <Group gap="xs" wrap="wrap" miw={0}>
                   <Button
                     size="xs"
@@ -336,8 +336,10 @@ export default function FilesPage() {
                     {t("Files.Trash", { defaultValue: "Trash" })}
                   </Button>
                 </Group>
-                {/* The card splits a definite height between its game list and preview. */}
-                <Box h={FILE_CARD_HEIGHT}>
+                {/* The card fills the column down to the window's bottom edge and splits that height
+                    between its game list and preview. A fixed height left a tall window's list two
+                    rows high; the floor keeps a 200% font scale usable, where the page scrolls. */}
+                <Box flex={1} mih={FILE_CARD_MIN_HEIGHT}>
                   <FileCard key={fileWorkspaceKey(selected.handle)} selected={selected} />
                 </Box>
               </Stack>

@@ -133,6 +133,7 @@ const fontScaleByProject: Record<string, number> = {
     "async-errors": 200,
     "security-consent": 200,
     "file-freshness": 100,
+    "files-preview": 100,
     "tree-recovery": 100,
 };
 

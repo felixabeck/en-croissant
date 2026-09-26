@@ -21,6 +21,7 @@ import type { FileMetadata } from "./file";
 // Below this card width the preview's move list has no room beside the board. In rem, because the
 // list's needs grow with the font scale while a window width in px does not.
 const PREVIEW_CONTROLS_MIN_WIDTH_REM = 26;
+const GAME_LIST_MIN_HEIGHT = "8rem";
 
 function rootFontSizePx() {
   return Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
@@ -103,7 +104,9 @@ function FileCard({ selected }: { selected: FileMetadata }) {
 
       {selectedGame && (
         <>
-          <Box h={0} flex={1}>
+          {/* Both parts share what the header leaves, by ratio, from a zero basis: a fixed preview
+              share once left the list two rows in a short window. The floor keeps ~4 rows. */}
+          <Box flex="2 1 0" mih={GAME_LIST_MIN_HEIGHT}>
             <Divider />
             <GameSelector
               setGames={setGames}
@@ -115,8 +118,8 @@ function FileCard({ selected }: { selected: FileMetadata }) {
             />
             <Divider />
           </Box>
-          <Box h="55%" px="xs" pb="xs">
-            <GamePreview pgn={selectedGame} hideControls={narrow} />
+          <Box flex="3 1 0" mih={0} px="xs" pb="xs">
+            <GamePreview pgn={selectedGame} hideControls={narrow} fitHeight />
           </Box>
         </>
       )}
