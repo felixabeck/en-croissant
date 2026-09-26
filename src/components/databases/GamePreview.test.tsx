@@ -1,3 +1,4 @@
+import { MantineProvider } from "@mantine/core";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { SWRConfig } from "swr";
@@ -243,5 +244,127 @@ describe("GamePreviewWrapper", () => {
     // Stale rejection after departure must remain silent
     expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
     expect(container.querySelector("[data-testid='chessground']")).toBeNull();
+  });
+});
+
+// MantineProvider reads the colour scheme through matchMedia, which jsdom lacks.
+Object.defineProperty(window, "matchMedia", {
+  writable: true,
+  value: () => ({
+    matches: false,
+    media: "",
+    onchange: null,
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+    addListener: () => undefined,
+    removeListener: () => undefined,
+    dispatchEvent: () => false,
+  }),
+});
+
+// jsdom has no ResizeObserver. This one lets a test report the size of an observed element.
+const observed = new Map<Element, ResizeObserverCallback>();
+class ReportingResizeObserver {
+  constructor(private readonly callback: ResizeObserverCallback) {}
+  observe(element: Element) {
+    observed.set(element, this.callback);
+  }
+  unobserve() {}
+  disconnect() {}
+}
+
+describe("GamePreview board sizing", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    observed.clear();
+    vi.stubGlobal("ResizeObserver", ReportingResizeObserver);
+    mocks.lexPgn.mockReset();
+    mocks.lexPgn.mockResolvedValue([{ type: "San", value: "e4" }]);
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+    vi.unstubAllGlobals();
+  });
+
+  async function renderPreview(props: { fitHeight?: boolean; hideControls?: boolean }) {
+    await act(async () => {
+      root.render(
+        <MantineProvider>
+          <SWRConfig value={{ provider: () => new Map() }}>
+            <GamePreviewWrapper pgn={`1. e4 ${JSON.stringify(props)}`} {...props} />
+          </SWRConfig>
+        </MantineProvider>,
+      );
+    });
+    await vi.waitFor(() =>
+      expect(container.querySelector("[data-testid='chessground']")).not.toBeNull(),
+    );
+    // Group (frame) > board box > wheel box > board.
+    const boardBox = container.querySelector("[data-testid='chessground']")!.parentElement!
+      .parentElement as HTMLElement;
+    return { boardBox, frame: boardBox.parentElement! };
+  }
+
+  async function reportSize(element: Element, width: number, height: number) {
+    const callback = observed.get(element);
+    expect(callback).toBeDefined();
+    await act(async () => {
+      callback!(
+        [
+          {
+            contentRect: {
+              width,
+              height,
+              x: 0,
+              y: 0,
+              top: 0,
+              left: 0,
+              bottom: height,
+              right: width,
+            },
+          } as never,
+        ],
+        {} as ResizeObserver,
+      );
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    });
+  }
+
+  test("a short, wide frame limits the board by its height", async () => {
+    const { boardBox, frame } = await renderPreview({ fitHeight: true });
+    await reportSize(frame, 600, 200);
+
+    expect(boardBox.style.width).toBe("200px");
+    expect(container.querySelector("[data-testid='move-controls']")).not.toBeNull();
+  });
+
+  test("a narrow frame limits the board by its share of the width", async () => {
+    const { boardBox, frame } = await renderPreview({ fitHeight: true });
+    await reportSize(frame, 300, 400);
+
+    // Half the width: the notation and controls take the other half.
+    expect(boardBox.style.width).toBe("150px");
+  });
+
+  test("without controls the board may take the whole frame width", async () => {
+    const { boardBox, frame } = await renderPreview({ fitHeight: true, hideControls: true });
+    await reportSize(frame, 300, 400);
+
+    expect(boardBox.style.width).toBe("300px");
+    expect(container.querySelector("[data-testid='move-controls']")).toBeNull();
+  });
+
+  test("the default layout leaves the board sized by its column", async () => {
+    const { boardBox, frame } = await renderPreview({});
+    await reportSize(frame, 600, 200);
+
+    expect(boardBox.style.width).toBe("");
   });
 });
