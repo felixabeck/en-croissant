@@ -7,7 +7,7 @@ import { useAtom, useAtomValue } from "jotai";
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { PlayerGameInfo } from "@/bindings";
-import { type GameOutcome } from "@/bindings";
+import type { OpeningStatsData } from "@/bindings";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { fontSizeAtom, tabsAtom } from "@/state/atoms";
 import { parsePGN } from "@/utils/chess";
@@ -27,37 +27,24 @@ type OpeningStats = {
   lost: number;
 };
 
-function aggregateOpenings(
-  data: { opening: string; result: GameOutcome; is_player_white: boolean }[],
-  color: Color,
-): OpeningStats[] {
-  return Array.from(
-    data
-      .filter((d) => d.is_player_white === (color === "white"))
-      .reduce((acc, d) => {
-        const prev = acc.get(d.opening) ?? {
-          won: 0,
-          draw: 0,
-          lost: 0,
-          total: 0,
-        };
-        acc.set(d.opening, {
-          won: prev.won + (d.result === "Won" ? 1 : 0),
-          draw: prev.draw + (d.result === "Drawn" ? 1 : 0),
-          lost: prev.lost + (d.result === "Lost" ? 1 : 0),
-          total: prev.total + 1,
-        });
-        return acc;
-      }, new Map()),
-  )
-    .map(([name, { won, draw, lost, total }]) => ({
-      name,
-      games: total,
-      won,
-      draw,
-      lost,
-    }))
-    .sort((a, b) => b.games - a.games);
+function aggregateOpenings(data: OpeningStatsData[], color: Color): OpeningStats[] {
+  const openings = new Map<string, OpeningStats>();
+  for (const row of data) {
+    if (row.is_player_white !== (color === "white")) continue;
+    const previous = openings.get(row.opening) ?? {
+      name: row.opening,
+      games: 0,
+      won: 0,
+      draw: 0,
+      lost: 0,
+    };
+    previous.won += row.won;
+    previous.draw += row.drawn;
+    previous.lost += row.lost;
+    previous.games += row.won + row.drawn + row.lost;
+    openings.set(row.opening, previous);
+  }
+  return Array.from(openings.values()).sort((a, b) => b.games - a.games);
 }
 
 function OpeningsPanel({
@@ -78,21 +65,18 @@ function OpeningsPanel({
     info?.site_stats_data
       .filter((d) => website === "All websites" || d.site === website)
       .filter((d) => account === "All accounts" || d.player === account)
-      .flatMap((d) => d.data)
+      .flatMap((d) => d.openings)
       .filter(
         (g) =>
           !timeControl ||
           timeControl === "any" ||
           getTimeControl(website!, g.time_control) === timeControl,
-      )
-      .map((g) => ({
-        opening: g.opening,
-        result: g.result,
-        is_player_white: g.is_player_white,
-      })) ?? [];
+      ) ?? [];
 
-  const whiteGames = openingData.filter((g) => g.is_player_white).length;
-  const blackGames = openingData.filter((g) => !g.is_player_white).length;
+  const gameCount = (rows: OpeningStatsData[]) =>
+    rows.reduce((total, row) => total + row.won + row.drawn + row.lost, 0);
+  const whiteGames = gameCount(openingData.filter((g) => g.is_player_white));
+  const blackGames = gameCount(openingData.filter((g) => !g.is_player_white));
 
   const whiteOpenings = aggregateOpenings(openingData, "white");
   const blackOpenings = aggregateOpenings(openingData, "black");

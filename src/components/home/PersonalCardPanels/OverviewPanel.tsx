@@ -12,7 +12,7 @@ import {
   YAxis,
 } from "recharts";
 import type { NameType, ValueType } from "recharts/types/component/DefaultTooltipContent";
-import type { PlayerGameInfo, StatsData } from "@/bindings";
+import type { DailyStatsData, PlayerGameInfo } from "@/bindings";
 import { getTimeControl } from "@/utils/timeControl";
 import ResultsChart from "./ResultsChart";
 import TimeControlSelector from "./TimeControlSelector";
@@ -61,18 +61,21 @@ function mergeYears(data: { name: string; count: number }[]): { name: string; co
   }));
 }
 
-function extractGameStats(games: StatsData[]) {
-  const total = games.length;
-  const won = games.filter((d) => d.result === "Won").length;
-  const draw = games.filter((d) => d.result === "Drawn").length;
-  const lost = games.filter((d) => d.result === "Lost").length;
+function extractGameStats(dailyStats: DailyStatsData[]) {
+  let won = 0;
+  let draw = 0;
+  let lost = 0;
 
   const monthCounts: { [key: string]: number } = {};
-  for (const game of games) {
-    const monthString = game.date.slice(0, 7).replace(".", "-");
-    monthCounts[monthString] = (monthCounts[monthString] || 0) + 1;
+  for (const day of dailyStats) {
+    won += day.won;
+    draw += day.drawn;
+    lost += day.lost;
+    const monthString = day.date.slice(0, 7).replace(".", "-");
+    monthCounts[monthString] = (monthCounts[monthString] || 0) + day.won + day.drawn + day.lost;
   }
 
+  const total = won + draw + lost;
   const dataPerMonth = Object.entries(monthCounts).map(([month, count]) => ({
     name: month,
     count,
@@ -95,18 +98,18 @@ function OverviewPanel({
   const [account, setAccount] = useState<string | null>("All accounts");
   const [timeControl, setTimeControl] = useState<string | null>(null);
 
-  const games =
+  const dailyStats =
     info?.site_stats_data
       .filter((d) => website === "All websites" || d.site === website)
       .filter((d) => account === "All accounts" || d.player === account)
-      .flatMap((d) => d.data)
+      .flatMap((d) => d.daily)
       .filter(
-        (game) =>
+        (day) =>
           !timeControl ||
           timeControl === "any" ||
-          getTimeControl(website, game.time_control) === timeControl,
+          getTimeControl(website, day.time_control) === timeControl,
       ) ?? [];
-  const { total, won, draw, lost, dataPerMonth } = extractGameStats(games);
+  const { total, won, draw, lost, dataPerMonth } = extractGameStats(dailyStats);
 
   return (
     <Stack>

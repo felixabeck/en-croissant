@@ -1123,6 +1123,7 @@ export type CommitDurability = "Durable" | { DurabilityUncertain: DurabilityStag
  * rather than a percentage.
  */
 export type ConvertProgress = { id: string; imported_games: number; elapsed_ms: number; source_file_name: string | null }
+export type DailyStatsData = { date: string; time_control: string; won: number; drawn: number; lost: number; max_player_elo: number }
 export type DatabaseDescriptor = { handle: DatabaseHandle; filename: string; availability: PathAvailability }
 /**
  * Opaque handle for one exact database file.  It is deliberately a distinct
@@ -1200,7 +1201,6 @@ export type GameConfig = { white: PlayerConfig; black: PlayerConfig; whiteTimeCo
 export type GameEndReason = "checkmate" | "timeout" | "resignation" | "abandonment"
 export type GameMove = { uci: string; san: string; fenAfter: string; clock: bigint | null; whiteTime: bigint | null; blackTime: bigint | null }
 export type GameMoveEvent = { gameId: string; session: bigint; revision: bigint; moves: GameMove[]; fen: string; whiteTime: bigint | null; blackTime: bigint | null }
-export type GameOutcome = "Won" | "Drawn" | "Lost"
 export type GameOverEvent = { gameId: string; session: bigint; revision: bigint; result: GameResult; moves: GameMove[] }
 export type GameQuery = { options?: QueryOptions<GameSort> | null; player1?: number | null; player2?: number | null; tournament_id?: number | null; start_date?: string | null; end_date?: string | null; range1?: [number, number] | null; range2?: [number, number] | null; sides?: Sides | null; outcome?: string | null; position?: PositionQueryJs | null; wanted_result?: string | null; exclude_fast_events?: boolean | null }
 export type GameResult = { type: "whiteWins"; reason: GameEndReason } | { type: "blackWins"; reason: GameEndReason } | { type: "draw"; reason: DrawReason }
@@ -1222,6 +1222,7 @@ export type OpeningBookConfig = { book: OpeningBookHandle; maxPly?: bigint }
  */
 export type OpeningBookHandle = { id: PathRef; kind: OpeningBookHandleKind }
 export type OpeningBookHandleKind = "openingBook"
+export type OpeningStatsData = { time_control: string; is_player_white: boolean; opening: string; won: number; drawn: number; lost: number }
 export type OutOpening = { name: string; fen: string }
 export type Outcome = "1-0" | "0-1" | "1/2-1/2" | "*"
 export type PathAvailability = "available" | "unavailable"
@@ -1280,11 +1281,10 @@ export type ScoreValue =
  */
 { type: "mate"; value: number }
 export type Sides = "BlackWhite" | "WhiteBlack" | "Any"
-export type SiteStatsData = { site: string; player: string; data: StatsData[] }
+export type SiteStatsData = { site: string; player: string; daily: DailyStatsData[]; openings: OpeningStatsData[] }
 export type SortDirection = "asc" | "desc"
 export type StampedGame = { pgn: string; stamp: string; revision: string; present: boolean }
 export type StartupPathOwners = { retainedIds: PathRef[]; trustedFamilies: PathOwnerFamily[] }
-export type StatsData = { date: string; is_player_white: boolean; player_elo: number; result: GameOutcome; time_control: string; opening: string }
 export type TimeControl = { initialTime: bigint; increment: bigint }
 export type Token = { type: "ParenOpen" } | { type: "ParenClose" } | { type: "Comment"; value: string } | { type: "San"; value: string } | { type: "Header"; value: { tag: string; value: string } } | { type: "Nag"; value: string } | { type: "Outcome"; value: string }
 export type TournamentQuery = { options: QueryOptions<TournamentSort>; name: string | null }

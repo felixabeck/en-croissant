@@ -68,11 +68,11 @@ function RatingsPanel({
         ...info.site_stats_data
           .filter((games) => !website || games.site === website)
           .filter((games) => account === "All accounts" || games.player === account)
-          .flatMap((games) => games.data)
+          .flatMap((games) => games.daily)
           .filter(
-            (game) => !timeControl || getTimeControl(website, game.time_control) === timeControl,
+            (day) => !timeControl || getTimeControl(website, day.time_control) === timeControl,
           )
-          .map((game) => dayjs(game.date, "YYYY.MM.DD").valueOf()),
+          .map((day) => dayjs(day.date, "YYYY.MM.DD").valueOf()),
       ]),
     ).sort((a, b) => a - b);
   }, [info.site_stats_data, website, account, timeControl]);
@@ -88,32 +88,33 @@ function RatingsPanel({
   }, [dateRange, dates]);
 
   const [summary, ratingData] = useMemo(() => {
-    const filteredGames =
+    const filteredDailyStats =
       info.site_stats_data
         .filter((games) => !website || games.site === website)
         .filter((games) => account === "All accounts" || games.player === account)
-        .flatMap((games) => games.data)
-        .filter(
-          (game) => !timeControl || getTimeControl(website!, game.time_control) === timeControl,
-        )
-        .filter((game) => {
-          const gameDate = dayjs(game.date, "YYYY.MM.DD").valueOf();
+        .flatMap((games) => games.daily)
+        .filter((day) => !timeControl || getTimeControl(website!, day.time_control) === timeControl)
+        .filter((day) => {
+          const gameDate = dayjs(day.date, "YYYY.MM.DD").valueOf();
           return (
             gameDate >= (dates[timeRange.start] || 0) && gameDate <= (dates[timeRange.end] || 0)
           );
         }) ?? [];
 
-    const totalGamesCount = filteredGames.length;
-    const wonCount = filteredGames.filter((game) => game.result === "Won").length;
-    const drawCount = filteredGames.filter((game) => game.result === "Drawn").length;
-    const lostCount = filteredGames.filter((game) => game.result === "Lost").length;
+    const totalGamesCount = filteredDailyStats.reduce(
+      (sum, day) => sum + day.won + day.drawn + day.lost,
+      0,
+    );
+    const wonCount = filteredDailyStats.reduce((sum, day) => sum + day.won, 0);
+    const drawCount = filteredDailyStats.reduce((sum, day) => sum + day.drawn, 0);
+    const lostCount = filteredDailyStats.reduce((sum, day) => sum + day.lost, 0);
 
     const ratingData = (() => {
       const map = new Map<number, { date: number; player_elo: number }>();
-      for (const game of filteredGames) {
-        const date = dayjs(game.date, "YYYY.MM.DD").valueOf();
-        if (!map.has(date) || map.get(date)!.player_elo < game.player_elo) {
-          map.set(date, { date, player_elo: game.player_elo });
+      for (const day of filteredDailyStats) {
+        const date = dayjs(day.date, "YYYY.MM.DD").valueOf();
+        if (!map.has(date) || map.get(date)!.player_elo < day.max_player_elo) {
+          map.set(date, { date, player_elo: day.max_player_elo });
         }
       }
       return Array.from(map.values()).sort((a, b) => a.date - b.date);

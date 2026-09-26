@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   getPlayersGameInfo: vi.fn(),
   progress: vi.fn(),
   logError: vi.fn(),
+  personalCardInfo: vi.fn(),
 }));
 
 vi.mock("@/platform/tauri", async () => {
@@ -33,7 +34,12 @@ vi.mock("@/utils/db", async () => {
 vi.mock("@/platform/native", () => ({ error: mocks.logError }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("@/components/files/notifyError", () => ({ notifyListenerError: vi.fn() }));
-vi.mock("./PersonalCard", () => ({ default: () => <div>player-card</div> }));
+vi.mock("./PersonalCard", () => ({
+  default: ({ info }: { info: unknown }) => {
+    mocks.personalCardInfo(info);
+    return <div>player-card</div>;
+  },
+}));
 vi.mock("@tabler/icons-react", () => ({ IconDatabaseOff: () => null }));
 vi.mock("@mantine/core", () => ({
   Center: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
@@ -165,7 +171,7 @@ test("a ProgressEvent under a foreign PlayerCard id does not move the bar", asyn
 test("two owned ids average", async () => {
   mocks.getDatabases.mockResolvedValue([database("db-1"), database("db-2")]);
   mocks.getPlayersGameInfo
-    .mockResolvedValueOnce({ siteStatsData: [] })
+    .mockResolvedValueOnce({ site_stats_data: [] })
     .mockReturnValueOnce(new Promise(() => undefined));
   await renderDatabases();
   await vi.waitFor(() => expect(mocks.getPlayersGameInfo).toHaveBeenCalledTimes(2));
@@ -179,6 +185,68 @@ test("two owned ids average", async () => {
   });
 
   expect(displayedProgress()).toContain("50%");
+});
+
+test("merges aggregate records from two databases without dropping duplicate keys", async () => {
+  const firstRecord = {
+    site: "Lichess",
+    player: "Magnus",
+    daily: [
+      {
+        date: "2026.09.01",
+        time_control: "600+0",
+        won: 2,
+        drawn: 1,
+        lost: 0,
+        max_player_elo: 2_850,
+      },
+    ],
+    openings: [
+      {
+        time_control: "600+0",
+        is_player_white: true,
+        opening: "Sicilian Defense",
+        won: 2,
+        drawn: 1,
+        lost: 0,
+      },
+    ],
+  };
+  const secondRecord = {
+    site: "Lichess",
+    player: "Magnus",
+    daily: [
+      {
+        date: "2026.09.01",
+        time_control: "600+0",
+        won: 1,
+        drawn: 0,
+        lost: 2,
+        max_player_elo: 2_860,
+      },
+    ],
+    openings: [
+      {
+        time_control: "600+0",
+        is_player_white: true,
+        opening: "Sicilian Defense",
+        won: 1,
+        drawn: 0,
+        lost: 2,
+      },
+    ],
+  };
+  mocks.getDatabases.mockResolvedValue([database("db-1"), database("db-2")]);
+  mocks.getPlayersGameInfo
+    .mockResolvedValueOnce({ site_stats_data: [firstRecord] })
+    .mockResolvedValueOnce({ site_stats_data: [secondRecord] });
+
+  await renderDatabases();
+  await vi.waitFor(() => expect(mocks.personalCardInfo).toHaveBeenCalled());
+
+  expect(mocks.personalCardInfo).toHaveBeenLastCalledWith({
+    site_stats_data: [firstRecord, secondRecord],
+  });
 });
 
 test("a ProgressEvent under an id registered by the original fetcher still moves the bar after unmount and remount", async () => {
@@ -289,7 +357,7 @@ test("ordinary failed personal item retains successful sibling and reports a dia
   mocks.query_players
     .mockRejectedValueOnce(new Error("player lookup failed"))
     .mockResolvedValueOnce({ data: [{ id: 8, name: "Magnus", elo: null }], count: 1 });
-  mocks.getPlayersGameInfo.mockResolvedValue({ siteStatsData: [] });
+  mocks.getPlayersGameInfo.mockResolvedValue({ site_stats_data: [] });
   await renderDatabases();
   await vi.waitFor(() => expect(mocks.query_players).toHaveBeenCalledTimes(2));
   await vi.waitFor(() => expect(mocks.getPlayersGameInfo).toHaveBeenCalledOnce());
