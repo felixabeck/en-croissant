@@ -337,8 +337,8 @@ export default function FilesPage() {
                   </Button>
                 </Group>
                 {/* The card fills the column down to the window's bottom edge and splits that height
-                    between its game list and preview. A fixed height left a tall window's list two
-                    rows high; the floor keeps a 200% font scale usable, where the page scrolls. */}
+                    between its game list and preview. A fixed height left a wide, short window's list
+                    two rows high; the floor keeps a 200% font scale usable, where the page scrolls. */}
                 <Box flex={1} mih={FILE_CARD_MIN_HEIGHT}>
                   <FileCard key={fileWorkspaceKey(selected.handle)} selected={selected} />
                 </Box>
