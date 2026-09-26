@@ -11419,3 +11419,17 @@ Rejected: a longer WebDriver timeout, and a full-FEN dedup key.
 
 **Inherited review history.** This finding is issue **I10** of the f-20260924-07 plan review. Load `tasks/handoffs/2026-09-26-f-20260924-07-review.md` before planning or review. It holds the raw `review-plan` (r2) and `review-tests` (r3) witnesses, the traced checker lines, the Skip → Defer disposition under push-review-policy §4, and the reason the gate change itself did not need this pinning.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"fba50cc4932bc00c6628b1a17bb2252d15ceb8dffe20c7315fe97d85186470f2","input_sha256":"fad0efbe413a24a726f837ba3a6ebedab6377cc12e130b9bfcdd03ee55a68eab","kind":"mutation-receipt","operation":"df6237f7014f6772b4ddbabb4094f8f96a063712908f39d9707180dc8bf6ca8d","options":{"section":null},"request_id_sha256":null,"results":["f-20260926-01"],"target":"f-20260926-01","v":1} -->
+
+---
+
+## 2026-09-26 — filed through the inbox spool
+
+### Home personal summary hides per-database statistics failures
+
+* **ID:** f-20260926-02 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src/components/home/Databases.tsx:121` (the personal summary is built through `collectSequential`), `src/utils/collectSequential.ts:9-35`.
+* **Defect:** `collectSequential` deliberately keeps the successful siblings and only logs a failed item, by its index and a generic message. The home personal summary therefore renders the statistics of the databases that succeeded, or the empty state when all failed, with no sign that one database's `getPlayersGameInfo` call failed. Since f-20260907-05, a `load_iter` row error fails that command closed. The user still sees the reduced totals as if they were complete, and the log does not name the database.
+* **Open question:** how should the personal summary mark partial statistics? Options: a per-database error notice, an inline "incomplete" marker on the totals, or failing the whole summary. Which of the three `collectSequential` callers (`Databases.tsx`, `src/utils/db.ts:229`, `src/utils/lichess/api.tsx:195`) should share that contract?
+* **Why deferred:** it is a UI/UX design question outside the fixed f-20260907-05 mandate (bounded statistics memory). The retain-siblings contract predates that change, which only makes a DB read failure reach it as an error instead of a skipped row.
+* **Proof sought:** a component test with two databases, one rejecting, that asserts the visible partial-data indication, and the logged context names the failed database.
+* **Found by:** Codex `review-error-handling` cumulative lens during f-20260907-05, 2026-09-26, confidence 92.
