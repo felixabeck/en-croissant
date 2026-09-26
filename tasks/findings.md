@@ -7774,7 +7774,7 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 
 ### File import materializes a complete PGN through a page-limited IPC command
 
-* **ID:** f-20260908-04 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260908-04 · **Status:** handled · **Area:** pgn-import · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src/components/tabs/ImportModal.tsx:81-87`, `src-tauri/src/pgn.rs` read-games range limit.
 * **Defect:** Selecting a file calls `readGames(handle, 0, count - 1)` and joins the complete returned corpus before checking whether saving was requested. A file with 1,001 games exceeds the backend's 1,000-game page limit; a large corpus below that count is copied as one IPC payload and renderer string. Opening without saving performs that unnecessary complete read too.
 * **Why it matters:** Routine large PGNs cannot be imported reliably and may allocate several corpus-sized copies, contradicting the streaming rule.
