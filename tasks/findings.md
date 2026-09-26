@@ -7669,7 +7669,7 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 
 ### Player statistics materialize every matching game and full move blob
 
-* **ID:** f-20260907-05 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260907-05 · **Status:** handled · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** src-tauri/src/db/mod.rs:1851, get_players_game_info_blocking; GameInfo includes Vec<u8> moves and sql_query.load builds Vec<GameInfo> before Rayon processing.
 * **Defect:** All matching game rows and their complete encoded move blobs coexist in memory, although opening lookup reads at most 55 mainline moves. A large personal database with most games matching one player therefore needs memory proportional to its move corpus, plus the accumulated SiteStatsData output.
 * **Evidence:** The query selects games::moves at line 1829 and loads the full query at line 1851; the subsequent par_iter at line 1856 processes it only after collection. Review-pgn-index identified this while reviewing f-20260830-42.
