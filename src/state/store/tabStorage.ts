@@ -205,49 +205,28 @@ function migrateReport(report: unknown): { inProgress: boolean; operationId: str
     };
 }
 
-function migrateLegacyNodeComments(root: unknown): unknown {
-    let visitedNodes = 0;
-    const visit = (node: unknown, depth: number): unknown => {
-        if (depth > MAX_TREE_DEPTH || visitedNodes >= MAX_TREE_NODES) return node;
-        visitedNodes++;
-        if (!isRecord(node)) return node;
-
-        let migratedNode: Record<string, unknown> | undefined;
-        if (Array.isArray(node.children)) {
-            let migratedChildren: unknown[] | undefined;
-            for (
-                let index = 0;
-                index < node.children.length && visitedNodes < MAX_TREE_NODES;
-                index++
-            ) {
-                const child = node.children[index];
-                const migratedChild = visit(child, depth + 1);
-                if (migratedChild !== child) {
-                    migratedChildren ??= node.children.slice();
-                    migratedChildren[index] = migratedChild;
-                }
-            }
-            if (migratedChildren) {
-                (migratedNode ??= { ...node }).children = migratedChildren;
-            }
-        }
-
-        if (
-            !Object.prototype.hasOwnProperty.call(node, "commands") &&
-            typeof node.comment === "string"
-        ) {
-            const result = splitPgnComment(node.comment);
-            if (result.text !== node.comment || result.commands.length > 0) {
-                const migrated = (migratedNode ??= { ...node });
-                migrated.comment = result.text;
-                if (result.commands.length > 0) migrated.commands = result.commands;
-            }
-        }
-
-        return migratedNode ?? node;
-    };
-
-    return visit(root, 0);
+/**
+ * A tree persisted before commands were split out of comments (c449fbb2) carries `[%…]` commands
+ * inside `comment` and no `commands` field. Split those once; a node that already has `commands`
+ * is left alone, so the migration is idempotent. Depth is bounded like the schema's recursion.
+ */
+function migrateLegacyNodeComments(node: unknown, depth = 0): unknown {
+    if (!isRecord(node) || depth > MAX_TREE_DEPTH) return node;
+    const migrated: Record<string, unknown> = { ...node };
+    if (Array.isArray(node.children)) {
+        migrated.children = node.children.map((child) =>
+            migrateLegacyNodeComments(child, depth + 1),
+        );
+    }
+    if (
+        !Object.prototype.hasOwnProperty.call(node, "commands") &&
+        typeof node.comment === "string"
+    ) {
+        const { text, commands } = splitPgnComment(node.comment);
+        migrated.comment = text;
+        if (commands.length > 0) migrated.commands = commands;
+    }
+    return migrated;
 }
 
 /** Adds fields that were absent before TreeState persistence was versioned. */

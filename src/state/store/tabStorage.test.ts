@@ -388,6 +388,47 @@ test("keeps plain comments without adding commands when migrating the tree", () 
     expect(migrated.root.children[0]).not.toHaveProperty("commands");
 });
 
+test("migrates legacy comments down to the depth bound and leaves deeper nodes as stored", () => {
+    const tree = structuredClone(defaultTree()) as unknown as Record<string, unknown>;
+    const template: Record<string, unknown> = {
+        ...(tree.root as Record<string, unknown>),
+        children: [],
+    };
+    delete template.commands;
+    const leaf = { ...template, comment: "[%evp 0,34] deep" };
+    // 513 ancestors put the leaf at depth 513: one past MAX_TREE_DEPTH, so it is left as stored.
+    let node: Record<string, unknown> = leaf;
+    for (let depth = 0; depth < 513; depth++) node = { ...template, children: [node], comment: "" };
+    tree.root = node;
+
+    const descend = (root: unknown, levels: number) => {
+        let current = root as Record<string, unknown>;
+        for (let depth = 0; depth < levels; depth++) {
+            current = (current.children as Record<string, unknown>[])[0];
+        }
+        return current;
+    };
+    const deep = migrateTreeForStorage(tree) as Record<string, unknown>;
+    expect(descend(deep.root, 513)).toBe(leaf);
+
+    // One ancestor fewer puts the same leaf at depth 512, which is migrated.
+    tree.root = (node.children as Record<string, unknown>[])[0];
+    const bounded = migrateTreeForStorage(tree) as Record<string, unknown>;
+    expect(descend(bounded.root, 512)).toMatchObject({ comment: "deep", commands: "[%evp 0,34]" });
+});
+
+test("a legacy node without a comment string is passed through for the schema to judge", () => {
+    const tree = structuredClone(defaultTree());
+    const child = { ...tree.root, children: [] } as unknown as Record<string, unknown>;
+    delete child.commands;
+    delete child.comment;
+    tree.root.children = [child as unknown as typeof tree.root];
+
+    const migrated = migrateTreeForStorage(tree) as typeof tree;
+    expect(migrated.root.children[0]).not.toHaveProperty("comment");
+    expect(migrated.root.children[0]).not.toHaveProperty("commands");
+});
+
 test("a flush refuses a tree that would not rehydrate and keeps the stored one", () => {
     storage.seed(
         "oversized",
