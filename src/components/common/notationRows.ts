@@ -1,3 +1,4 @@
+import { splitPgnComment } from "@/utils/pgnComment";
 import type { TreeNode } from "@/utils/treeReducer";
 
 /** The largest run mounted as one notation row. */
@@ -191,6 +192,12 @@ function appendInlineTasks(
         let childIndex = task.childIndex;
         let first = task.first;
         const moves: NotationMove[] = [];
+
+        const startingComment = parent.children[childIndex]?.startingComment;
+        if (task.first && options.showComments && startingComment) {
+            const text = splitPgnComment(startingComment).text;
+            if (text.length > 0) addComment(rows, rowForNode, task.depth, text);
+        }
 
         while (parent.children[childIndex]) {
             const node = parent.children[childIndex];

@@ -20,7 +20,11 @@ const NON_TREE_SESSION_KEYS = new Set([
 const tabIdSchema = z.string().uuid();
 const MAX_TREE_NODES = 100_000;
 const MAX_TREE_DEPTH = 512;
-const boundedText = z.string().max(100_000);
+// Tree text comes out of a lexed PGN, which the backend caps at 10 MiB (`validate_pgn_len`), and
+// no parsed string — a header, a comment, its commands — is longer than its source. So any parsed
+// tree rehydrates; a lower bound once made a tab with one long comment unreadable.
+export const PGN_TEXT_MAX = 10 * 1024 * 1024;
+const boundedText = z.string().max(PGN_TEXT_MAX);
 const pathSchema = z.array(z.number().int().nonnegative()).max(MAX_TREE_DEPTH);
 const annotationSchema = z.enum([
     "",
@@ -129,6 +133,8 @@ type PersistedTreeNode = {
     }>;
     annotations: z.infer<typeof annotationSchema>[];
     comment: string;
+    commands?: string;
+    startingComment?: string;
     clock?: number;
 };
 
@@ -144,6 +150,8 @@ const treeNodeSchema: z.ZodType<PersistedTreeNode> = z.lazy(() =>
         shapes: z.array(shapeSchema).max(10_000),
         annotations: z.array(annotationSchema).max(1_024),
         comment: boundedText,
+        commands: boundedText.optional(),
+        startingComment: boundedText.optional(),
         clock: z.number().finite().optional(),
     }),
 );
@@ -257,6 +265,11 @@ function parseTree(value: unknown): ValidatedStoredTree | null {
     }
 
     return { version: TREE_STORAGE_VERSION, state };
+}
+
+/** The read gate as a predicate: whether this tree state would rehydrate if it were stored. */
+export function canRehydrate(state: unknown): boolean {
+    return parseTree(state) !== null;
 }
 
 export function createTabStorageQuotaError(cause: unknown): Error {
@@ -694,6 +707,11 @@ export class TabStorageRepository {
         // flushed, so checking the same gate again here cannot add protection.
         for (const [tabId, value] of this.pending) {
             try {
+                // The read gate, applied before the write: a tree that would not rehydrate is
+                // never stored in place of the last one that does.
+                if (!canRehydrate(value.state)) {
+                    throw new Error("Could not save this game: it no longer fits tab storage.");
+                }
                 sessionStorage.setItem(tabId, serializeStorageValue(value));
                 this.pending.delete(tabId);
                 this.setReadStatus(tabId, { kind: "available" });

@@ -1,6 +1,7 @@
 import { parseUci } from "chessops";
 import { beforeEach, expect, test } from "vitest";
 import { createTreeStore } from "@/state/store/tree";
+import { getPGN } from "../chess";
 import {
     defaultTree,
     getMemoizedBoardStateMap,
@@ -498,6 +499,23 @@ test("counts the actual custom root for threefold repetition", () => {
     expect(store.getState().headers.result).toBe("1/2-1/2");
 });
 
+test("setScore clears a depth that described the replaced score", () => {
+    const tree = treeE4D5();
+    tree.root.children[0].depth = 61;
+    store.getState().setState({ ...tree, position: [0] });
+    store.getState().setScore({ value: { type: "cp" as const, value: 5 }, wdl: null });
+
+    expect(getNewState().root.children[0].depth).toBeNull();
+    const pgn = getPGN(getNewState().root, {
+        headers: null,
+        glyphs: true,
+        comments: true,
+        variations: true,
+        extraMarkups: true,
+    });
+    expect(pgn).toContain("[%eval +0.05]");
+});
+
 test("should handle addAnalysis", () => {
     store.getState().setState({ ...treeE4D5(), position: [0] });
     store.getState().addAnalysis([
@@ -554,12 +572,15 @@ test("should handle addAnalysis", () => {
                     value: { type: "cp" as const, value: 20 },
                     wdl: null,
                 },
+                // The engine depth travels with its score, so a save writes `[%eval x,depth]`.
+                depth: 1,
             },
         ],
         score: {
             value: { type: "cp" as const, value: 10 },
             wdl: null,
         },
+        depth: 1,
     };
     expect(getNewState()).toStrictEqual({
         ...treeE4D5(),

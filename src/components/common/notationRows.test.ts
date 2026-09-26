@@ -191,3 +191,36 @@ describe("buildNotationRows", () => {
         );
     });
 });
+
+describe("variation starting comments", () => {
+    test("show their prose before the variation's first move, without commands", () => {
+        const tree = variedTree();
+        tree.d4.startingComment = "Also good: [%evp 0,34]";
+        const result = buildNotationRows(tree.root, {
+            showVariations: true,
+            showComments: true,
+            tableView: false,
+        });
+
+        const commentIndex = result.rows.findIndex((row) => row.type === "comment");
+        expect(result.rows[commentIndex]).toMatchObject({ comment: "Also good:" });
+        const next = result.rows[commentIndex + 1];
+        expect(next.type === "moves" && next.moves[0].node).toBe(tree.d4);
+    });
+
+    test("add no row when the starting comment is only commands or comments are hidden", () => {
+        const tree = variedTree();
+        tree.d4.startingComment = "[%evp 0,34]";
+        const options = { showVariations: true, showComments: true, tableView: false };
+        expect(buildNotationRows(tree.root, options).rows.some((r) => r.type === "comment")).toBe(
+            false,
+        );
+
+        tree.d4.startingComment = "Also good:";
+        expect(
+            buildNotationRows(tree.root, { ...options, showComments: false }).rows.some(
+                (r) => r.type === "comment",
+            ),
+        ).toBe(false);
+    });
+});

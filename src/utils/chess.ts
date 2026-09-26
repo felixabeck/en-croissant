@@ -3,12 +3,13 @@ import type { DrawShape } from "@lichess-org/chessground/draw";
 import { type Color, type Move, makeSquare, makeUci, parseUci, type Role } from "chessops";
 import { type Chess, normalizeMove } from "chessops/chess";
 import { INITIAL_FEN, makeFen, parseFen } from "chessops/fen";
-import { isPawns, parseComment } from "chessops/pgn";
+import { isPawns } from "chessops/pgn";
 import { makeSan, parseSan } from "chessops/san";
 import { type Outcome, type Score, type Token } from "@/bindings";
 import { ANNOTATION_INFO, isBasicAnnotation, NAG_INFO } from "./annotation";
 import { parseSanOrUci, positionFromFen } from "./chessops";
 import { harmonicMean, isPrefix, mean } from "./misc";
+import { joinCommands, splitPgnComment } from "./pgnComment";
 import { formatScore, getAccuracy, getCPLoss, INITIAL_SCORE } from "./score";
 import {
     createNode,
@@ -59,6 +60,11 @@ export function getMoveText(
     const moveNumber = Math.ceil(tree.halfMoves / 2);
     let moveText = "";
 
+    // Verbatim: it may hold commands as well as prose, and neither is modeled on the tree.
+    if (tree.startingComment && opt.comments) {
+        moveText += `{${tree.startingComment}} `;
+    }
+
     if (tree.san) {
         if (isBlack) {
             if (opt.isFirst) {
@@ -84,10 +90,11 @@ export function getMoveText(
 
         if (opt.extraMarkups) {
             if (tree.score !== null) {
+                const depth = tree.depth === null ? "" : `,${tree.depth}`;
                 if (tree.score.value.type === "cp") {
-                    content += `[%eval ${formatScore(tree.score.value)}] `;
+                    content += `[%eval ${formatScore(tree.score.value)}${depth}] `;
                 } else {
-                    content += `[%eval #${tree.score.value.value}] `;
+                    content += `[%eval #${tree.score.value.value}${depth}] `;
                 }
             }
             if (tree.clock !== undefined) {
@@ -113,6 +120,12 @@ export function getMoveText(
                     })
                     .join(",")}]`;
             }
+        }
+
+        // They were part of the comment text before the tree modeled them, so they travel with the
+        // comments: an "Update" from a PGN shown without extra markups must not drop them.
+        if (opt.comments && tree.commands) {
+            content += `${tree.commands} `;
         }
 
         if (opt.comments && tree.comment !== "") {
@@ -357,7 +370,7 @@ function innerParsePGN(tokens: Token[], fen: string = INITIAL_FEN, halfMoves?: n
         const token = tokens[i];
 
         if (token.type === "Comment") {
-            const comment = parseComment(token.value);
+            const comment = splitPgnComment(token.value);
 
             if (comment.evaluation) {
                 if (isPawns(comment.evaluation)) {
@@ -377,6 +390,8 @@ function innerParsePGN(tokens: Token[], fen: string = INITIAL_FEN, halfMoves?: n
                         wdl: null,
                     };
                 }
+                // Paired with the score it came with, so a save writes `[%eval x,depth]` back.
+                root.depth = comment.evaluation.depth ?? null;
             }
 
             if (comment.shapes.length > 0) {
@@ -392,10 +407,11 @@ function innerParsePGN(tokens: Token[], fen: string = INITIAL_FEN, halfMoves?: n
                 root.clock = comment.clock;
             }
 
-            // Strip [%timestamp N] annotations (chess.com export format) from comment text
-            root.comment = comment.text.replace(/\s?\[%timestamp\s+\d+\]\s?/g, " ").trim();
+            root.comment = comment.text;
+            const commands = joinCommands(root.commands, comment.commands);
+            if (commands !== undefined) root.commands = commands;
         } else if (token.type === "ParenOpen") {
-            const variation = [];
+            const variation: Token[] = [];
             let subvariations = 0;
             i++;
             while (i < tokens.length && (subvariations > 0 || tokens[i].type !== "ParenClose")) {
@@ -407,10 +423,23 @@ function innerParsePGN(tokens: Token[], fen: string = INITIAL_FEN, halfMoves?: n
                 variation.push(tokens[i]);
                 i++;
             }
-            const newTree = innerParsePGN(variation, prevNode.fen, root.halfMoves - 1);
-            if (newTree.root.children.length > 0) {
-                prevNode.children.push(newTree.root.children[0]);
+            // A comment before the variation's first move belongs to that move, not to the
+            // throwaway root the recursive parse would put it on.
+            const startingComments: string[] = [];
+            let leading = variation[0];
+            while (leading?.type === "Comment") {
+                startingComments.push(leading.value);
+                variation.shift();
+                leading = variation[0];
             }
+            const newTree = innerParsePGN(variation, prevNode.fen, root.halfMoves - 1);
+            // The recursive root stands for `prevNode` itself, so every child it has is an
+            // alternative from `prevNode` — a variation nested at the variation's first move included.
+            const [first] = newTree.root.children;
+            if (first && startingComments.length > 0) {
+                first.startingComment = startingComments.join(" ");
+            }
+            prevNode.children.push(...newTree.root.children);
         } else if (token.type === "ParenClose") {
         } else if (token.type === "Nag") {
             root.annotations.push(NAG_INFO.get(token.value) || "");

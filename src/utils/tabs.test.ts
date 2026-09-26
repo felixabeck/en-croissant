@@ -50,6 +50,7 @@ import {
     createTab,
     runTabCreation,
     saveToFile,
+    serializeStoreTree,
     type Tab,
 } from "./tabs";
 
@@ -914,4 +915,13 @@ test("a stale Save-As destination is a visible typed failure without changing th
     });
     expect(fixture.tabs[0].gameOrigin).toEqual({ kind: "none" });
     expect(fixture.store.getState()).toMatchObject({ dirty: true, sourceStamp: stampA });
+});
+
+test("a file save writes an unmodeled comment command back", () => {
+    const tree = defaultTree();
+    tree.root.comment = "note";
+    tree.root.commands = "[%evp 0,34,61]";
+    const store = createTreeStore(undefined, tree);
+
+    expect(serializeStoreTree(store)).toContain("{[%evp 0,34,61] note}");
 });

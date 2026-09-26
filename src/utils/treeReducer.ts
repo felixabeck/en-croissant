@@ -29,6 +29,10 @@ export interface TreeNode {
     shapes: DrawShape[];
     annotations: Annotation[];
     comment: string;
+    /** Embedded `[%…]` commands the tree does not model, verbatim. */
+    commands?: string;
+    /** A variation's comment that precedes its first move, verbatim (commands included). */
+    startingComment?: string;
     clock?: number;
 }
 

@@ -614,6 +614,8 @@ export const createTreeStore = (id?: string, initTree?: TreeState) => {
                     const node = getNodeAtPath(state.root, state.position);
                     if (node) {
                         node.score = score;
+                        // A depth read from the PGN described the score this one replaces.
+                        node.depth = null;
                     }
                 }),
             ),
@@ -909,6 +911,7 @@ function addAnalysis(
         const [pos] = positionFromFen(cur.fen);
         if (pos && !pos.isEnd() && analysis[i].best.length > 0) {
             cur.score = analysis[i].best[0].score;
+            cur.depth = analysis[i].best[0].depth;
             let prevScore = null;
             let prevprevScore = null;
             let prevMoves: BestMoves[] = [];

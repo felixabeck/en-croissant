@@ -180,3 +180,155 @@ test.each([
     expect(tree.headers.start).toEqual(entry.expected);
     expect(tree.position).toEqual(entry.expected);
 });
+
+const ALL_MARKUPS = { glyphs: true, comments: true, variations: true, extraMarkups: true };
+
+async function parseTokens(value: Token[]) {
+    mocks.lexPgn.mockResolvedValueOnce(value);
+    return await parsePGN("ignored by the mocked lexer");
+}
+
+function comment(value: string): Token {
+    return { type: "Comment", value };
+}
+
+function san(value: string): Token {
+    return { type: "San", value };
+}
+
+test("an unmodeled command is hidden from the comment and written back on save", async () => {
+    const { root } = await parseTokens([comment("[%evp 0,34,61] sofort vertreiben"), san("e4")]);
+
+    expect(root.comment).toBe("sofort vertreiben");
+    expect(root.commands).toBe("[%evp 0,34,61]");
+    expect(getPGN(root, { ...ALL_MARKUPS, headers: null })).toBe(
+        "{[%evp 0,34,61] sofort vertreiben} 1. e4",
+    );
+    // They were comment text before the tree modeled them, so they travel with the comments:
+    // PgnInput's "Update" from a PGN without extra markups must not drop them.
+    expect(getPGN(root, { ...ALL_MARKUPS, extraMarkups: false, headers: null })).toBe(
+        "{[%evp 0,34,61] sofort vertreiben} 1. e4",
+    );
+    expect(getPGN(root, { ...ALL_MARKUPS, comments: false, headers: null })).toBe("1. e4");
+});
+
+test("emt and timestamp commands are preserved instead of dropped", async () => {
+    const { root } = await parseTokens([san("e4"), comment("[%emt 0:00:05] ok [%timestamp 12]")]);
+    const e4 = root.children[0];
+
+    expect(e4.comment).toBe("ok");
+    // Concatenated with the whitespace they had, so the result is never longer than its source.
+    expect(e4.commands).toBe("[%emt 0:00:05]  [%timestamp 12]");
+    expect(getPGN(root, { ...ALL_MARKUPS, headers: null })).toBe(
+        "1. e4 {[%emt 0:00:05]  [%timestamp 12] ok}",
+    );
+});
+
+test("a malformed modeled command is kept as a command, never shown as prose", async () => {
+    const { root } = await parseTokens([san("e4"), comment("[%eval abc] note")]);
+    const e4 = root.children[0];
+
+    expect(e4.comment).toBe("note");
+    expect(e4.commands).toBe("[%eval abc]");
+    expect(e4.score).toBeNull();
+});
+
+test("commands from several comments on one move accumulate in order", async () => {
+    const { root } = await parseTokens([
+        san("e4"),
+        comment("[%evp 1,2] first"),
+        comment("second [%emt 0:00:01]"),
+    ]);
+    const e4 = root.children[0];
+
+    expect(e4.comment).toBe("second");
+    expect(e4.commands).toBe("[%evp 1,2] [%emt 0:00:01]");
+});
+
+test("modeled commands still parse into the score, clock and shapes", async () => {
+    const { root } = await parseTokens([
+        san("e4"),
+        comment("[%eval 0.34] [%clk 0:05:00] [%csl Ga1] [%cal Re2e4]"),
+    ]);
+    const e4 = root.children[0];
+
+    expect(e4.score).toEqual({ value: { type: "cp", value: 34 }, wdl: null });
+    expect(e4.depth).toBeNull();
+    expect(e4.clock).toBe(300);
+    expect(e4.shapes).toEqual([
+        { orig: "a1", dest: "a1", brush: "green" },
+        { orig: "e2", dest: "e4", brush: "red" },
+    ]);
+    expect(e4.commands).toBeUndefined();
+    expect(e4.comment).toBe("");
+});
+
+test("an evaluation depth round-trips with its score", async () => {
+    const { root } = await parseTokens([san("e4"), comment("[%eval 0.34,61]")]);
+    const e4 = root.children[0];
+
+    expect(e4.depth).toBe(61);
+    expect(getPGN(root, { ...ALL_MARKUPS, headers: null })).toBe("1. e4 {[%eval +0.34,61] }");
+});
+
+test("a comment before a variation's first move stays in front of that move", async () => {
+    const { root } = await parseTokens([
+        san("e4"),
+        { type: "ParenOpen" },
+        comment("Also good: [%evp 0,34]"),
+        san("d4"),
+        san("d5"),
+        { type: "ParenClose" },
+        san("e5"),
+    ]);
+    const d4 = root.children[1];
+
+    expect(d4.san).toBe("d4");
+    expect(d4.startingComment).toBe("Also good: [%evp 0,34]");
+    expect(root.comment).toBe("");
+    expect(getPGN(root, { ...ALL_MARKUPS, headers: null })).toBe(
+        "1. e4  ({Also good: [%evp 0,34]} 1. d4  d5) e5",
+    );
+});
+
+test("a comment of only commands leaves no prose to show", async () => {
+    const { root } = await parseTokens([comment("[%evp 0,34,61,53]"), san("e4")]);
+
+    expect(root.comment).toBe("");
+    expect(root.commands).toBe("[%evp 0,34,61,53]");
+});
+
+test("adjacent commands are kept without growing past their source", async () => {
+    const source = "[%timestamp 1][%timestamp 2]";
+    const { root } = await parseTokens([san("e4"), comment(source)]);
+
+    expect(root.children[0].commands).toBe(source);
+});
+
+test("a mate evaluation keeps its depth", async () => {
+    const { root } = await parseTokens([san("e4"), comment("[%eval #-3,24]")]);
+
+    expect(root.children[0].score).toEqual({ value: { type: "mate", value: -3 }, wdl: null });
+    expect(getPGN(root, { ...ALL_MARKUPS, headers: null })).toBe("1. e4 {[%eval #-3,24] }");
+});
+
+test("a variation nested at a variation's first move is kept with its starting comment", async () => {
+    // 1. e4 e5 (1... c5 ({[%evp 0,34]} 1... e6) 2. Nf3) *
+    const { root } = await parseTokens([
+        san("e4"),
+        san("e5"),
+        { type: "ParenOpen" },
+        san("c5"),
+        { type: "ParenOpen" },
+        comment("[%evp 0,34]"),
+        san("e6"),
+        { type: "ParenClose" },
+        san("Nf3"),
+        { type: "ParenClose" },
+    ]);
+    const afterE4 = root.children[0];
+
+    expect(afterE4.children.map((node) => node.san)).toEqual(["e5", "c5", "e6"]);
+    expect(afterE4.children[2].startingComment).toBe("[%evp 0,34]");
+    expect(getPGN(root, { ...ALL_MARKUPS, headers: null })).toContain("({[%evp 0,34]} 1... e6");
+});

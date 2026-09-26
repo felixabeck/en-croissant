@@ -2,10 +2,12 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { defaultTree } from "@/utils/treeReducer";
 import { deserializeStorageValue, serializeStorageValue } from "./debouncedStorage";
 import {
+    canRehydrate,
     decodeLegacyOrCompressed,
     isBoundedTreeForStorage,
     migrateTreeForStorage,
     persistStorageWriteError,
+    PGN_TEXT_MAX,
     TabStorageRepository,
     TREE_STORAGE_VERSION,
 } from "./tabStorage";
@@ -302,8 +304,54 @@ test("evaluates the complete static schema on a fresh ESM module instance", asyn
     }
 });
 
+type TextField = (tree: ReturnType<typeof defaultTree>, text: string) => void;
+const PGN_TEXT_FIELDS: [string, TextField][] = [
+    ["comment", (tree, text) => (tree.root.comment = text)],
+    ["commands", (tree, text) => (tree.root.commands = text)],
+    ["startingComment", (tree, text) => (tree.root.startingComment = text)],
+    ["a header", (tree, text) => (tree.headers.event = text)],
+    ["an unknown header", (tree, text) => (tree.headers.other = { custom: text })],
+];
+
+// The gate, not a stored round trip: compressing 10 MiB per field costs ~17 s, and `seed`, `flush`
+// and every read all go through this same predicate.
+test.each(PGN_TEXT_FIELDS)(
+    "%s rehydrates at the lexer's 10 MiB bound and is refused one character past it",
+    (_, set) => {
+        const atBound = "x".repeat(PGN_TEXT_MAX);
+        expect(canRehydrate(treeWith((tree) => set(tree, atBound)))).toBe(true);
+        expect(canRehydrate(treeWith((tree) => set(tree, `${atBound}x`)))).toBe(false);
+    },
+);
+
+test("comment commands and a starting comment survive hydration", () => {
+    const tree = treeWith((state) => {
+        state.root.commands = "[%evp 0,34,61]";
+        state.root.startingComment = "Also good: [%emt 0:00:01]";
+    });
+
+    storage.seed("commands", tree);
+    expect(storage.read("commands")?.state).toMatchObject({
+        root: { commands: "[%evp 0,34,61]", startingComment: "Also good: [%emt 0:00:01]" },
+    });
+});
+
+test("a flush refuses a tree that would not rehydrate and keeps the stored one", () => {
+    storage.seed(
+        "oversized",
+        treeWith(() => {}),
+    );
+    const stored = sessionStorage.getItem("oversized");
+    storage.write("oversized", {
+        version: 0,
+        state: treeWith((tree) => (tree.root.comment = "x".repeat(PGN_TEXT_MAX + 1))),
+    });
+
+    expect(storage.flush()).toEqual(["oversized"]);
+    expect(sessionStorage.getItem("oversized")).toBe(stored);
+});
+
 test("rejects every persisted tree type, scalar, and structural boundary", () => {
-    expectSeedRejected(treeWith((tree) => (tree.headers.event = "x".repeat(100_001))));
     expectSeedRejected(treeWith((tree) => (tree.position = Array(513).fill(0))));
     expectSeedRejected(treeWith((tree) => (tree.root.move = { from: -1, to: 0 } as never)));
     expectSeedRejected(treeWith((tree) => (tree.root.move = { from: 0, to: 64 } as never)));
@@ -339,7 +387,6 @@ test("rejects every persisted tree type, scalar, and structural boundary", () =>
     expectSeedRejected(treeWith((tree) => (tree.root.depth = -1)));
     expectSeedRejected(treeWith((tree) => (tree.headers.id = 0.5)));
     expectSeedRejected(treeWith((tree) => (tree.headers.result = "invalid" as never)));
-    expectSeedRejected(treeWith((tree) => (tree.headers.other = { custom: "x".repeat(100_001) })));
     expectSeedRejected(treeWith((tree) => (tree.root.children = null as never)));
     expect(isBoundedTreeForStorage({ root: null })).toBe(false);
 

@@ -19,11 +19,25 @@ test("files-preview: the card fills the window and shows the whole board and its
     assertNoHorizontalOverflow,
     capture,
 }) => {
-    await mockScenario({ commands: filesWorkspaceCommands([[repertoireFile]], pgnFileCommands) });
+    // A ChessBase evaluation profile ahead of the first move: machine data, never comment prose.
+    const lexPgn = pgnFileCommands.lex_pgn.result as unknown[];
+    const withCommand = [
+        ...lexPgn.slice(0, 4),
+        { type: "Comment", value: "[%evp 0,34,61,53] sofort vertreiben" },
+        ...lexPgn.slice(4),
+    ];
+    await mockScenario({
+        commands: filesWorkspaceCommands([[repertoireFile]], {
+            ...pgnFileCommands,
+            lex_pgn: { result: withCommand },
+        }),
+    });
     await page.goto("/files");
     await page.getByRole("button", { name: /choose collection/i }).click();
     await selectFilesTreeRow(page, repertoireFile.name);
     await expect(page.getByText("Weiss - Schwarz")).toBeVisible();
+    await expect(page.getByText("sofort vertreiben")).toBeVisible();
+    await expect(page.getByText(/%evp/)).toHaveCount(0);
 
     const listViewport = page
         .locator(".mantine-ScrollArea-viewport")
