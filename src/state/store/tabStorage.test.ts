@@ -76,6 +76,10 @@ function persistTree(tabId: string, state: unknown) {
     sessionStorage.setItem(tabId, serializeStorageValue({ version: TREE_STORAGE_VERSION, state }));
 }
 
+function storeLegacyTree(tabId: string, state: unknown) {
+    sessionStorage.setItem(tabId, JSON.stringify({ version: 0, state }));
+}
+
 function expectSeedRejected(value: ReturnType<typeof defaultTree>) {
     expect(() => storage.seed("invalid", value)).toThrow("Cannot persist an invalid game tree.");
     expect(sessionStorage.getItem("invalid")).toBeNull();
@@ -334,6 +338,54 @@ test("comment commands and a starting comment survive hydration", () => {
     expect(storage.read("commands")?.state).toMatchObject({
         root: { commands: "[%evp 0,34,61]", startingComment: "Also good: [%emt 0:00:01]" },
     });
+});
+
+test("hydrates legacy child comments by separating unmodeled PGN commands", () => {
+    const tree = structuredClone(defaultTree());
+    const child = { ...tree.root, children: [], comment: "[%evp 0,34] prose" };
+    delete child.commands;
+    delete tree.root.commands;
+    tree.root.children = [child];
+    storeLegacyTree("legacy-comment-command", tree);
+
+    expect(storage.read("legacy-comment-command")?.state).toMatchObject({
+        root: {
+            children: [{ comment: "prose", commands: "[%evp 0,34]" }],
+        },
+    });
+});
+
+test("preserves nodes with a commands field while migrating legacy siblings", () => {
+    const tree = structuredClone(defaultTree());
+    tree.root.comment = "[%evp 0,34] root prose";
+    tree.root.commands = "";
+    const child = { ...tree.root, children: [], comment: "[%emt 0:00:01] child prose" };
+    delete child.commands;
+    tree.root.children = [child];
+
+    expect(migrateTreeForStorage(tree)).toMatchObject({
+        root: {
+            comment: "[%evp 0,34] root prose",
+            commands: "",
+            children: [{ comment: "child prose", commands: "[%emt 0:00:01]" }],
+        },
+    });
+});
+
+test("keeps plain comments without adding commands when migrating the tree", () => {
+    const tree = structuredClone(defaultTree());
+    tree.root.comment = "[%evp 0,34] root prose";
+    const child = { ...tree.root, children: [], comment: "plain comment" };
+    delete child.commands;
+    tree.root.children = [child];
+
+    const migrated = migrateTreeForStorage(tree) as typeof tree;
+    expect(migrated.root).toMatchObject({
+        comment: "root prose",
+        commands: "[%evp 0,34]",
+        children: [{ comment: "plain comment" }],
+    });
+    expect(migrated.root.children[0]).not.toHaveProperty("commands");
 });
 
 test("a flush refuses a tree that would not rehydrate and keeps the stored one", () => {

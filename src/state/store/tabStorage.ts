@@ -1,5 +1,6 @@
 import { warn } from "@/platform/native";
 import { reportPersistError } from "@/state/persistError";
+import { splitPgnComment } from "@/utils/pgnComment";
 import { getResolvedPathLength } from "@/utils/treeReducer";
 import { z } from "zod";
 import type { PersistStorage, StorageValue } from "zustand/middleware";
@@ -204,12 +205,58 @@ function migrateReport(report: unknown): { inProgress: boolean; operationId: str
     };
 }
 
+function migrateLegacyNodeComments(root: unknown): unknown {
+    let visitedNodes = 0;
+    const visit = (node: unknown, depth: number): unknown => {
+        if (depth > MAX_TREE_DEPTH || visitedNodes >= MAX_TREE_NODES) return node;
+        visitedNodes++;
+        if (!isRecord(node)) return node;
+
+        let migratedNode: Record<string, unknown> | undefined;
+        if (Array.isArray(node.children)) {
+            let migratedChildren: unknown[] | undefined;
+            for (
+                let index = 0;
+                index < node.children.length && visitedNodes < MAX_TREE_NODES;
+                index++
+            ) {
+                const child = node.children[index];
+                const migratedChild = visit(child, depth + 1);
+                if (migratedChild !== child) {
+                    migratedChildren ??= node.children.slice();
+                    migratedChildren[index] = migratedChild;
+                }
+            }
+            if (migratedChildren) {
+                (migratedNode ??= { ...node }).children = migratedChildren;
+            }
+        }
+
+        if (
+            !Object.prototype.hasOwnProperty.call(node, "commands") &&
+            typeof node.comment === "string"
+        ) {
+            const result = splitPgnComment(node.comment);
+            if (result.text !== node.comment || result.commands.length > 0) {
+                const migrated = (migratedNode ??= { ...node });
+                migrated.comment = result.text;
+                if (result.commands.length > 0) migrated.commands = result.commands;
+            }
+        }
+
+        return migratedNode ?? node;
+    };
+
+    return visit(root, 0);
+}
+
 /** Adds fields that were absent before TreeState persistence was versioned. */
 export function migrateTreeForStorage(value: unknown): unknown {
     if (!isRecord(value)) return value;
     const hasAppendAttempted = Object.prototype.hasOwnProperty.call(value, "appendAttempted");
     return {
         ...value,
+        root: migrateLegacyNodeComments(value.root),
         position: Array.isArray(value.position) ? value.position : [],
         dirty: typeof value.dirty === "boolean" ? value.dirty : false,
         sourceStamp:
