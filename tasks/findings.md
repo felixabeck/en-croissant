@@ -7727,7 +7727,7 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 
 ### Search-cache lock reclamation can split a lock while a new waiter acquires it
 
-* **ID:** f-20260908-01 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260908-01 · **Status:** handled · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/main.rs:346-379`, `src-tauri/src/db/search.rs:306-330`.
 * **Defect:** `remove_generation_lock_if_idle` and `remove_collision_if_idle` check `Arc::strong_count == 2` before acquiring the DashMap entry guard. A concurrent `generation_lock`/`collision_lock` can clone the same Arc after that check but before `remove_if`, whose predicate checks only pointer identity. Removal then allows a third caller to create a second mutex for the same key while the second caller still owns the first. `SearchCache::clear` also clears these maps without honoring outstanding owners.
 * **Why it matters:** generation and collision exclusion can disappear during a database/index operation. The lifecycle-retention plan review found these synchronous registries while reviewing the analogous async engine/game locks in f-20260830-52.
