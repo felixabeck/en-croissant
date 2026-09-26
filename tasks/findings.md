@@ -11390,3 +11390,20 @@ Rejected: a longer WebDriver timeout, and a full-FEN dedup key.
 * **Why it matters:** long-running sessions can accumulate one stale edit-lock entry per distinct PGN identity. The existing shared async lease has immediate final-drop reclamation and cancellation-safe waiter ownership, but PGN edits bypass it. This is separate from f-20260908-01's search-cache lock lifetime: PGN edit operations have their own area and call sites.
 * **Proof:** migrate both `delete_game` and `write_game_core` to the shared async keyed lease while preserving cancellable waiting and exact snapshot-identity keys; test owner/waiter cancellation, same-key exclusion, different-key progress, and zero entries after final drop. Run affected backend and push gates and the named `review-pgn-index` lens.
 * **Found by:** plan-review `review-minimalism` round 3 during f-20260908-01, 2026-09-25, confidence 82.
+
+---
+
+## 2026-09-26 — filed through the inbox spool
+
+### Local-only push gates are not pinned to the §2 subsection whose paths trigger them
+
+* **ID:** f-20260926-01 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
+* **Found by:** plan review of f-20260924-07 (build run 2026-09-26, `review-plan` r2 confidence 97, `review-tests` r3 confidence 95).
+* **Files:** `scripts/check-gate-routing.mjs:22-32, 553-586`, `scripts/check-gate-routing-tests.mjs`, `.claude/skills/push/SKILL.md` §2.
+
+**Defect.** `check-gate-routing.mjs` proves that a fenced push-skill command sits in the §2 subsection named for it only for the scripts in `PATH_SCOPED_CI_SCRIPTS`, and that map also requires the script to run in `.github/workflows/test.yml`. A gate that runs only locally is validated by reachability from any fence. That covers the direct `cargo check` / `cargo clippy` lines in "### Rust/Tauri backend" and, from f-20260924-07 on, `pnpm rust:windows:check`. Moving such a line into another subsection (for example "### TypeScript/React frontend") leaves `gates:routing:check` and `gates:routing:test` green. The gate then stops running on the paths it exists for, and nothing reports it.
+
+**Why it is its own finding.** The class predates f-20260924-07 and covers raw `cargo` lines, which are not package scripts and so cannot be keyed the way `PATH_SCOPED_CI_SCRIPTS` keys them. The f-20260924-07 plan review deferred it under push-review-policy §4 rather than widen that mandate.
+
+* **Open question:** How should local-only fenced gate commands, including raw `cargo` lines that are not package scripts, be pinned to their §2 subsection? Options: a second map beside `PATH_SCOPED_CI_SCRIPTS` that asserts subsection placement and workflow absence, or a generalised placement map that keys commands as well as scripts. Whichever is chosen must meet the policy's "Proof selection before custom source verification" bar and the staged-failure matrix.
+* **Proof sought:** moving any local-only Rust gate line out of "### Rust/Tauri backend" turns `gates:routing:check` red with a message naming the line and its expected subsection.
