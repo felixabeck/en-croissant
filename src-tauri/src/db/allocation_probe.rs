@@ -95,7 +95,7 @@ impl Drop for ResetOnDrop {
     }
 }
 
-pub(super) fn measure<R>(operation: impl FnOnce() -> R) -> (R, usize) {
+pub(crate) fn measure<R>(operation: impl FnOnce() -> R) -> (R, usize) {
     ENABLED.with(|enabled| {
         assert!(!enabled.replace(true), "allocation probe cannot be nested");
     });
@@ -109,7 +109,7 @@ pub(super) fn measure<R>(operation: impl FnOnce() -> R) -> (R, usize) {
     (result, peak)
 }
 
-pub(super) fn assert_detects_owned_collection(bytes: usize, threshold: usize) -> usize {
+pub(crate) fn assert_detects_owned_collection(bytes: usize, threshold: usize) -> usize {
     let (owned, peak) = measure(|| std::hint::black_box(vec![0_u8; bytes]));
     assert_eq!(owned.len(), bytes);
     assert!(

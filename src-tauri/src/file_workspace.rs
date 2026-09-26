@@ -59,6 +59,18 @@ pub struct WorkspaceMetadata {
     pub tags: Vec<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum WorkspaceFileContent {
+    Text {
+        pgn: String,
+    },
+    Copy {
+        source: FileWorkspaceHandle,
+        revision: String,
+    },
+}
+
 impl Default for WorkspaceMetadata {
     fn default() -> Self {
         Self {
@@ -659,11 +671,12 @@ pub async fn create_workspace_file(
     parent: FileWorkspaceHandle,
     name: String,
     metadata: WorkspaceMetadata,
-    pgn: String,
+    content: WorkspaceFileContent,
     state: tauri::State<'_, AppState>,
 ) -> Result<WorkspaceEntry, Error> {
     let operation = state.operations.accept("create_workspace_file")?;
     let cancellation = operation.token();
+    let count_cancellation = cancellation.clone();
     let state = state.inner().clone();
     crate::infra::operations::run_native_operation(operation, "create_workspace_file", async move {
         let pgn_path_authority = Arc::clone(&state.pgn_path_authority);
@@ -675,7 +688,7 @@ pub async fn create_workspace_file(
                     parent,
                     name,
                     metadata,
-                    pgn,
+                    content,
                     &pgn_path_authority,
                     &workspace_mutation,
                     token,
@@ -689,8 +702,7 @@ pub async fn create_workspace_file(
                 .resolve(entry.handle.path_ref(), PathOperation::ReadPgn, &[])?
         };
         entry.game_count = Some(
-            pgn::count_pgn_games_core(resolved, &CancellationToken::new(), &state.pgn_repository)
-                .await?,
+            pgn::count_pgn_games_core(resolved, &count_cancellation, &state.pgn_repository).await?,
         );
         Ok(entry)
     })
@@ -705,7 +717,7 @@ fn create_workspace_file_blocking(
     parent: FileWorkspaceHandle,
     name: String,
     metadata: WorkspaceMetadata,
-    pgn: String,
+    content: WorkspaceFileContent,
     pgn_path_authority: &Mutex<Option<PathAuthority>>,
     workspace_mutation: &Mutex<()>,
     cancellation: &CancellationToken,
@@ -726,11 +738,63 @@ fn create_workspace_file_blocking(
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
-    let installed =
-        crate::infra::fs::atomic_replace_at_identified(parent_dir, &target_leaf, |file| {
+    let source_snapshot = match &content {
+        WorkspaceFileContent::Text { .. } => None,
+        WorkspaceFileContent::Copy { source, revision } => {
+            let resolved = {
+                authority(pgn_path_authority)?
+                    .as_mut()
+                    .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
+                    .resolve(source.path_ref(), PathOperation::ReadPgn, &[])?
+            };
+            let snapshot = resolved.pgn_snapshot()?;
+            if pgn::revision_string(&snapshot) != revision.as_str() {
+                return Err(Error::Conflict(
+                    "source PGN changed since it was opened".into(),
+                ));
+            }
+            Some(snapshot)
+        }
+    };
+    let mut source_file = source_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.file.try_clone())
+        .transpose()?;
+    let source_size = source_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.revision.size);
+    let installed = crate::infra::fs::atomic_replace_at_identified_with_precommit(
+        parent_dir,
+        &target_leaf,
+        || {
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancellation);
+            }
+            if let Some(snapshot) = &source_snapshot {
+                if snapshot.current_revision()? != snapshot.revision {
+                    return Err(Error::Conflict("source PGN changed during import".into()));
+                }
+            }
+            Ok(())
+        },
+        |file| {
             use std::io::Write;
-            file.write_all(pgn.as_bytes()).map_err(Error::from)
-        })?;
+            match &content {
+                WorkspaceFileContent::Text { pgn } => {
+                    file.write_all(pgn.as_bytes()).map_err(Error::from)
+                }
+                WorkspaceFileContent::Copy { .. } => {
+                    let source = source_file.as_mut().ok_or_else(|| {
+                        Error::Conflict("source PGN snapshot is unavailable".into())
+                    })?;
+                    let end = source_size.ok_or_else(|| {
+                        Error::Conflict("source PGN snapshot size is unavailable".into())
+                    })?;
+                    pgn::copy_range(source, file, 0, end, cancellation)
+                }
+            }
+        },
+    )?;
     let pgn_uncertainty = durability_uncertainty(
         installed.outcome,
         crate::error::DurabilityStage::WorkspacePgnCreation,
@@ -1533,7 +1597,9 @@ mod tests {
                         command_workspace,
                         "created.pgn".into(),
                         WorkspaceMetadata::default(),
-                        "1. d4 *".into(),
+                        WorkspaceFileContent::Text {
+                            pgn: "1. d4 *".into(),
+                        },
                         state,
                     )
                     .await
@@ -1671,7 +1737,9 @@ mod tests {
                         command_workspace,
                         "created.pgn".into(),
                         WorkspaceMetadata::default(),
-                        "1. d4 *".into(),
+                        WorkspaceFileContent::Text {
+                            pgn: "1. d4 *".into(),
+                        },
                         state,
                     )
                     .await
@@ -1829,7 +1897,9 @@ mod tests {
                 workspace,
                 "completed.pgn".into(),
                 WorkspaceMetadata::default(),
-                "1. e4 *".into(),
+                WorkspaceFileContent::Text {
+                    pgn: "1. e4 *".into(),
+                },
                 state,
             )
             .await
@@ -1926,7 +1996,9 @@ mod tests {
             workspace,
             "game.pgn".into(),
             WorkspaceMetadata::default(),
-            "1. e4 *".into(),
+            WorkspaceFileContent::Text {
+                pgn: "1. e4 *".into(),
+            },
             &state.pgn_path_authority,
             &state.workspace_mutation,
             &CancellationToken::new(),
@@ -1955,7 +2027,9 @@ mod tests {
             workspace,
             "game.pgn".into(),
             WorkspaceMetadata::default(),
-            "1. e4 *".into(),
+            WorkspaceFileContent::Text {
+                pgn: "1. e4 *".into(),
+            },
             &state.pgn_path_authority,
             &state.workspace_mutation,
             &CancellationToken::new(),
@@ -2935,7 +3009,7 @@ mod tests {
             workspace.clone(),
             "too-large".into(),
             oversized.clone(),
-            "*".into(),
+            WorkspaceFileContent::Text { pgn: "*".into() },
             &state.pgn_path_authority,
             &state.workspace_mutation,
             &CancellationToken::new(),
@@ -2950,7 +3024,7 @@ mod tests {
             workspace.clone(),
             "before".into(),
             WorkspaceMetadata::default(),
-            "*".into(),
+            WorkspaceFileContent::Text { pgn: "*".into() },
             &state.pgn_path_authority,
             &state.workspace_mutation,
             &CancellationToken::new(),
@@ -3081,7 +3155,7 @@ mod tests {
                 file_type: WorkspaceFileType::Game,
                 tags: vec![],
             },
-            "*".into(),
+            WorkspaceFileContent::Text { pgn: "*".into() },
             &state.pgn_path_authority,
             &state.workspace_mutation,
             &CancellationToken::new(),
@@ -3391,7 +3465,9 @@ mod tests {
                 file_type: WorkspaceFileType::Game,
                 tags: vec![],
             },
-            "1. e4 *".into(),
+            WorkspaceFileContent::Text {
+                pgn: "1. e4 *".into(),
+            },
             &state.pgn_path_authority,
             &state.workspace_mutation,
             &CancellationToken::new(),
@@ -3418,6 +3494,470 @@ mod tests {
             "{result:?}"
         );
         assert_eq!(fs::read(root.join("game.pgn")).unwrap(), b"replacement");
+    }
+
+    fn workspace_entry_names(root: &Path) -> Vec<String> {
+        let mut names = fs::read_dir(root)
+            .expect("read workspace entries")
+            .map(|entry| {
+                entry
+                    .expect("workspace entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    }
+
+    fn assert_workspace_entry_names(root: &Path, expected: &[&str]) {
+        let mut expected = expected
+            .iter()
+            .map(|name| name.to_string())
+            .collect::<Vec<_>>();
+        expected.sort();
+        assert_eq!(workspace_entry_names(root), expected);
+    }
+
+    fn source_revision(state: &AppState, source: &FileWorkspaceHandle) -> String {
+        let resolved = authority(&state.pgn_path_authority)
+            .expect("authority lock")
+            .as_mut()
+            .expect("authority")
+            .resolve(source.path_ref(), PathOperation::ReadPgn, &[])
+            .expect("resolve PGN source");
+        pgn::revision_string(&resolved.pgn_snapshot().expect("PGN snapshot"))
+    }
+
+    type WorkspaceCopyTask = tokio::task::JoinHandle<(Result<WorkspaceEntry, Error>, usize)>;
+
+    fn create_copy_with_chunk_hook(
+        state: &AppState,
+        workspace: FileWorkspaceHandle,
+        source: FileWorkspaceHandle,
+        name: &str,
+        revision: String,
+        cancellation: CancellationToken,
+        hook: pgn::BoundedHook,
+    ) -> WorkspaceCopyTask {
+        let pgn_path_authority = Arc::clone(&state.pgn_path_authority);
+        let workspace_mutation = Arc::clone(&state.workspace_mutation);
+        let name = name.to_string();
+        tokio::task::spawn_blocking(move || {
+            pgn::set_read_chunk_hook(Some(hook));
+            let result = create_workspace_file_blocking(
+                workspace.clone(),
+                workspace,
+                name,
+                WorkspaceMetadata::default(),
+                WorkspaceFileContent::Copy { source, revision },
+                &pgn_path_authority,
+                &workspace_mutation,
+                &cancellation,
+            );
+            let chunks = pgn::copy_chunk_count();
+            pgn::set_read_chunk_hook(None);
+            (result, chunks)
+        })
+    }
+
+    async fn wait_for_copy_chunk(
+        entered: tokio::sync::oneshot::Receiver<()>,
+        copy: WorkspaceCopyTask,
+        description: &str,
+    ) -> WorkspaceCopyTask {
+        match tokio::time::timeout(Duration::from_secs(2), entered).await {
+            Ok(Ok(())) => copy,
+            Ok(Err(signal_error)) => {
+                let copy_result = copy.await;
+                panic!("{description}: chunk signal closed ({signal_error}); copy task result: {copy_result:?}");
+            }
+            Err(timeout_error) => {
+                let copy_result = copy.await;
+                panic!(
+                    "{description}: timed out ({timeout_error}); copy task result: {copy_result:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn workspace_file_content_deserializes_the_renderer_wire_shapes() {
+        let text: WorkspaceFileContent =
+            serde_json::from_str(r#"{"kind":"text","pgn":"*"}"#).expect("text content");
+        assert!(matches!(text, WorkspaceFileContent::Text { pgn } if pgn == "*"));
+
+        let source = FileWorkspaceHandle::new(crate::infra::path_authority::PathRef {
+            id: "source-handle".into(),
+        });
+        let source_json = serde_json::to_string(&source).expect("serialize source handle");
+        let copy_json = format!(
+            r#"{{"kind":"copy","source":{source_json},"revision":"device:inode:revision"}}"#
+        );
+        let copy: WorkspaceFileContent = serde_json::from_str(&copy_json).expect("copy content");
+        match copy {
+            WorkspaceFileContent::Copy {
+                source: decoded,
+                revision,
+            } => {
+                assert_eq!(decoded, source);
+                assert_eq!(revision, "device:inode:revision");
+            }
+            WorkspaceFileContent::Text { .. } => panic!("copy JSON decoded as text"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn create_workspace_file_copies_more_than_one_page_verbatim() {
+        let (directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("workspace root");
+        let source_path = root.join("source.pgn");
+        let mut corpus = String::from("; Corpus preface\r\n");
+        for game in 0..1_001 {
+            corpus.push_str(&format!(
+                "[Event \"Game {game}\"]\r\n[White \"White\"]\r\n[Black \"Black\"]\r\n\r\n1. e4 e5 *\r\n"
+            ));
+        }
+        corpus.push_str("Trailing bytes after the final game\r\n");
+        fs::write(&source_path, corpus.as_bytes()).expect("write corpus");
+        let source = registered_child_file(&state, &workspace, &source_path);
+        let metadata = WorkspaceMetadata {
+            file_type: WorkspaceFileType::Tournament,
+            tags: vec!["imported".into()],
+        };
+        let revision = source_revision(&state, &source);
+        let app = tauri::test::mock_app();
+        app.manage(state);
+
+        let created = create_workspace_file(
+            workspace.clone(),
+            workspace,
+            "copy".into(),
+            metadata.clone(),
+            WorkspaceFileContent::Copy { source, revision },
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("create copied file");
+
+        assert_eq!(created.game_count, Some(1_001));
+        assert_eq!(
+            fs::read(root.join("copy.pgn")).expect("read copied corpus"),
+            corpus.as_bytes()
+        );
+        assert_eq!(
+            fs::read(source_path).expect("source stays unchanged"),
+            corpus.as_bytes()
+        );
+        let sidecar: WorkspaceMetadata =
+            serde_json::from_slice(&fs::read(root.join("copy.info")).expect("read sidecar"))
+                .expect("metadata sidecar");
+        assert_eq!(sidecar, metadata);
+        assert_workspace_entry_names(&root, &["copy.info", "copy.pgn", "source.pgn"]);
+        drop(directory);
+    }
+
+    #[test]
+    fn copy_workspace_file_rejects_unknown_and_directory_handles_without_artifacts() {
+        let (_directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("workspace root");
+        let (_directory_path, directory_handle) =
+            registered_child_directory(&state, &workspace, "not-pgn");
+        let unknown = FileWorkspaceHandle::new(crate::infra::path_authority::PathRef {
+            id: "unknown-source".into(),
+        });
+
+        for (name, source) in [("unknown", unknown), ("directory", directory_handle)] {
+            let result = create_workspace_file_blocking(
+                workspace.clone(),
+                workspace.clone(),
+                name.into(),
+                WorkspaceMetadata::default(),
+                WorkspaceFileContent::Copy {
+                    source,
+                    revision: "revision".into(),
+                },
+                &state.pgn_path_authority,
+                &state.workspace_mutation,
+                &CancellationToken::new(),
+            );
+            assert!(matches!(result, Err(Error::InvalidInput(_))), "{result:?}");
+            assert!(!root.join(format!("{name}.pgn")).exists());
+            assert!(!root.join(format!("{name}.info")).exists());
+            assert_workspace_entry_names(&root, &["not-pgn"]);
+        }
+    }
+
+    #[test]
+    fn copy_workspace_file_rejects_a_stale_preflight_revision_before_writing() {
+        let (_directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("workspace root");
+        let source_path = root.join("source.pgn");
+        fs::write(&source_path, b"[Event \"Source\"]\n\n1. e4 *").expect("write source");
+        let source = registered_child_file(&state, &workspace, &source_path);
+
+        let result = create_workspace_file_blocking(
+            workspace.clone(),
+            workspace,
+            "stale".into(),
+            WorkspaceMetadata::default(),
+            WorkspaceFileContent::Copy {
+                source,
+                revision: "stale-revision".into(),
+            },
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+            &CancellationToken::new(),
+        );
+
+        assert!(matches!(
+            result,
+            Err(Error::Conflict(message)) if message == "source PGN changed since it was opened"
+        ));
+        assert_workspace_entry_names(&root, &["source.pgn"]);
+    }
+
+    #[tokio::test]
+    async fn copy_workspace_file_cancels_after_the_first_chunk() {
+        let (_directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("workspace root");
+        let source_path = root.join("source.pgn");
+        fs::write(&source_path, vec![b'x'; 3 * 64 * 1024]).expect("write multi-chunk source");
+        let source = registered_child_file(&state, &workspace, &source_path);
+        let revision = source_revision(&state, &source);
+        let cancellation = CancellationToken::new();
+        let (hook, entered, release) = pgn::BoundedHook::new();
+        let copy = create_copy_with_chunk_hook(
+            &state,
+            workspace,
+            source,
+            "cancelled",
+            revision,
+            cancellation.clone(),
+            hook,
+        );
+        let copy = wait_for_copy_chunk(entered, copy, "copy reaches first chunk").await;
+        cancellation.cancel();
+        release.send(()).expect("release first chunk");
+        let (result, chunks) = copy.await.expect("join blocking workspace copy");
+
+        assert!(matches!(result, Err(Error::Cancellation)), "{result:?}");
+        assert_eq!(chunks, 1, "copy must stop after the first chunk");
+        assert!(!root.join("cancelled.pgn").exists());
+        assert!(!root.join("cancelled.info").exists());
+        assert_workspace_entry_names(&root, &["source.pgn"]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn copy_workspace_file_conflicts_when_source_is_truncated_mid_copy() {
+        let (_directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("workspace root");
+        let source_path = root.join("source.pgn");
+        fs::write(&source_path, vec![b'x'; 3 * 64 * 1024]).expect("write multi-chunk source");
+        let source = registered_child_file(&state, &workspace, &source_path);
+        let revision = source_revision(&state, &source);
+        let (hook, entered, release) = pgn::BoundedHook::new();
+        let copy = create_copy_with_chunk_hook(
+            &state,
+            workspace,
+            source,
+            "truncated",
+            revision,
+            CancellationToken::new(),
+            hook,
+        );
+        let copy = wait_for_copy_chunk(entered, copy, "copy reaches first chunk").await;
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&source_path)
+            .expect("open source to truncate")
+            .set_len(0)
+            .expect("truncate source");
+        release.send(()).expect("release first chunk");
+        let (result, chunks) = copy.await.expect("join blocking workspace copy");
+
+        assert!(matches!(
+            result,
+            Err(Error::Conflict(message)) if message == "PGN snapshot ended while copying"
+        ));
+        assert_eq!(chunks, 1);
+        assert!(!root.join("truncated.pgn").exists());
+        assert!(!root.join("truncated.info").exists());
+        assert_workspace_entry_names(&root, &["source.pgn"]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn copy_workspace_file_conflicts_when_source_changes_before_commit() {
+        let (_directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("workspace root");
+        let source_path = root.join("source.pgn");
+        fs::write(&source_path, vec![b'x'; 64 * 1024]).expect("write source");
+        let source = registered_child_file(&state, &workspace, &source_path);
+        let revision = source_revision(&state, &source);
+        let (hook, entered, release) = pgn::BoundedHook::new();
+        let copy = create_copy_with_chunk_hook(
+            &state,
+            workspace,
+            source,
+            "changed",
+            revision,
+            CancellationToken::new(),
+            hook,
+        );
+        let copy = wait_for_copy_chunk(entered, copy, "copy reaches final chunk").await;
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&source_path)
+            .expect("open source to change")
+            .write_all(b"changed")
+            .expect("change source size");
+        release.send(()).expect("release final chunk");
+        let (result, chunks) = copy.await.expect("join blocking workspace copy");
+
+        assert!(matches!(
+            result,
+            Err(Error::Conflict(message)) if message == "source PGN changed during import"
+        ));
+        assert_eq!(chunks, 1);
+        assert!(!root.join("changed.pgn").exists());
+        assert!(!root.join("changed.info").exists());
+        assert_workspace_entry_names(&root, &["source.pgn"]);
+    }
+
+    #[tokio::test]
+    async fn copy_workspace_file_cancellation_after_last_chunk_preserves_existing_destination() {
+        let (_directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("workspace root");
+        let source_path = root.join("source.pgn");
+        fs::write(&source_path, b"one final chunk").expect("write source");
+        let source = registered_child_file(&state, &workspace, &source_path);
+        let revision = source_revision(&state, &source);
+        let existing_pgn = b"previous destination bytes";
+        let existing_info = b"previous sidecar bytes";
+        fs::write(root.join("existing.pgn"), existing_pgn).expect("write destination");
+        fs::write(root.join("existing.info"), existing_info).expect("write sidecar");
+        let cancellation = CancellationToken::new();
+        let (hook, entered, release) = pgn::BoundedHook::new();
+        let copy = create_copy_with_chunk_hook(
+            &state,
+            workspace,
+            source,
+            "existing",
+            revision,
+            cancellation.clone(),
+            hook,
+        );
+        let copy = wait_for_copy_chunk(entered, copy, "copy reaches final chunk").await;
+        cancellation.cancel();
+        release.send(()).expect("release final chunk");
+        let (result, chunks) = copy.await.expect("join blocking workspace copy");
+
+        assert!(matches!(result, Err(Error::Cancellation)), "{result:?}");
+        assert_eq!(chunks, 1);
+        assert_eq!(fs::read(root.join("existing.pgn")).unwrap(), existing_pgn);
+        assert_eq!(fs::read(root.join("existing.info")).unwrap(), existing_info);
+        assert_workspace_entry_names(&root, &["existing.info", "existing.pgn", "source.pgn"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_workspace_file_keeps_heap_peak_below_the_corpus_size() {
+        const CORPUS_BYTES: usize = 4 * 1024 * 1024;
+        let (_directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("workspace root");
+        let source_path = root.join("source.pgn");
+        let corpus = vec![b'x'; CORPUS_BYTES];
+        fs::write(&source_path, &corpus).expect("write multi-megabyte source");
+        let source = registered_child_file(&state, &workspace, &source_path);
+        let revision = source_revision(&state, &source);
+        let probe_peak = crate::db::allocation_probe::assert_detects_owned_collection(
+            CORPUS_BYTES,
+            CORPUS_BYTES / 2,
+        );
+        let result = crate::db::allocation_probe::measure(|| {
+            create_workspace_file_blocking(
+                workspace.clone(),
+                workspace.clone(),
+                "copy".into(),
+                WorkspaceMetadata::default(),
+                WorkspaceFileContent::Copy { source, revision },
+                &state.pgn_path_authority,
+                &state.workspace_mutation,
+                &CancellationToken::new(),
+            )
+        });
+        let (created, peak) = result;
+
+        println!(
+            "workspace copy heap peak: {peak} bytes for a {CORPUS_BYTES}-byte corpus; whole-vector probe: {probe_peak} bytes"
+        );
+        assert!(created.is_ok(), "{created:?}");
+        assert!(
+            peak < CORPUS_BYTES / 10,
+            "copy heap peak {peak} should stay below one tenth of {CORPUS_BYTES} bytes"
+        );
+        assert_eq!(
+            fs::metadata(root.join("copy.pgn")).unwrap().len(),
+            CORPUS_BYTES as u64
+        );
+        assert_eq!(
+            fs::metadata(source_path).unwrap().len(),
+            CORPUS_BYTES as u64
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn create_workspace_file_count_cancellation_leaves_the_installed_file_and_sidecar() {
+        let (directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("workspace root");
+        let (hook, entered, release) = pgn::BoundedHook::new();
+        state
+            .pgn_repository
+            .set_count_hook(Some(hook))
+            .expect("set count hook");
+        let app = tauri::test::mock_app();
+        app.manage(state);
+        let app_handle = app.handle().clone();
+        let caller = tokio::spawn(async move {
+            let state = app_handle.state::<AppState>();
+            create_workspace_file(
+                workspace.clone(),
+                workspace,
+                "count-cancelled".into(),
+                WorkspaceMetadata::default(),
+                WorkspaceFileContent::Text {
+                    pgn: "[Event \"Count cancellation\"]\n\n1. e4 *".into(),
+                },
+                state,
+            )
+            .await
+        });
+
+        tokio::time::timeout(Duration::from_secs(2), entered)
+            .await
+            .expect("post-install count starts")
+            .expect("count hook signal");
+        app.state::<AppState>()
+            .operations
+            .seal_and_request_cancellation()
+            .expect("cancel accepted operation");
+        release.send(()).expect("release count hook");
+        let result = caller.await.expect("join create command");
+
+        assert!(matches!(result, Err(Error::Cancellation)), "{result:?}");
+        assert_eq!(
+            fs::read(root.join("count-cancelled.pgn")).unwrap(),
+            b"[Event \"Count cancellation\"]\n\n1. e4 *"
+        );
+        let sidecar: WorkspaceMetadata = serde_json::from_slice(
+            &fs::read(root.join("count-cancelled.info")).expect("installed sidecar remains"),
+        )
+        .expect("metadata sidecar");
+        assert_eq!(sidecar, WorkspaceMetadata::default());
+        drop(directory);
     }
 
     #[cfg(unix)]

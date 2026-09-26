@@ -116,6 +116,13 @@ test("keeps the modal state and metadata untouched when tab admission is refused
 test("acknowledges practice and recent metadata after successful admission", async () => {
   await submitRepertoire();
 
+  expect(fixtures.createFile).toHaveBeenCalledWith(
+    expect.objectContaining({
+      filename: "White",
+      filetype: "repertoire",
+      content: { kind: "text", pgn: '[Event "White"]\n\n*' },
+    }),
+  );
   expect(fixtures.openFile).toHaveBeenCalledWith(
     expect.objectContaining({ metadata: { type: "repertoire", tags: [] } }),
     fixtures.setTabs,

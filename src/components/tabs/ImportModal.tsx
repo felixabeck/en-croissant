@@ -1,4 +1,3 @@
-import { tauri } from "@/platform/tauri";
 import {
   Button,
   Checkbox,
@@ -73,9 +72,6 @@ export default function ImportModal({
           if (file) {
             let fileInfo: FileMetadata | undefined;
             const count = file.numGames;
-            const fileContent = (await tauri.readGames(file.handle, 0, Math.max(0, count - 1)))
-              .map((game) => game.pgn)
-              .join("\n\n");
             let loaded = await loadFileGame(file.handle, 0);
             if (save) {
               const workspace = await ensureFileWorkspace();
@@ -83,7 +79,11 @@ export default function ImportModal({
               const newFile = await createFile({
                 filename,
                 filetype,
-                pgn: fileContent,
+                content: {
+                  kind: "copy",
+                  source: file.handle,
+                  revision: loaded.revision,
+                },
                 workspace,
                 parent: workspace,
               });
@@ -136,7 +136,7 @@ export default function ImportModal({
             const created = await createFile({
               filename: `import-${Date.now()}`,
               filetype: "game",
-              pgn,
+              content: { kind: "text", pgn },
               workspace,
               parent: workspace,
             });

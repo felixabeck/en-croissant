@@ -192,17 +192,23 @@ impl BoundedHook {
 #[cfg(test)]
 std::thread_local! {
     static TEST_READ_CHUNK_HOOK: std::cell::RefCell<Option<BoundedHook>> = const { std::cell::RefCell::new(None) };
+    static TEST_COPY_CHUNK_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static TEST_SCAN_LINE_HOOK: std::cell::RefCell<Option<BoundedHook>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
-fn set_read_chunk_hook(hook: Option<BoundedHook>) {
+pub(crate) fn set_read_chunk_hook(hook: Option<BoundedHook>) {
     TEST_READ_CHUNK_HOOK.with(|cell| *cell.borrow_mut() = hook);
 }
 
 #[cfg(test)]
 fn current_read_chunk_hook() -> Option<BoundedHook> {
     TEST_READ_CHUNK_HOOK.with(|cell| cell.borrow().clone())
+}
+
+#[cfg(test)]
+pub(crate) fn copy_chunk_count() -> usize {
+    TEST_COPY_CHUNK_COUNT.with(std::cell::Cell::get)
 }
 
 #[cfg(test)]
@@ -777,7 +783,7 @@ fn game_stamp(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
-fn revision_string(key: &CacheKey) -> String {
+fn revision_string_for_key(key: &CacheKey) -> String {
     let (device, inode) = key.identity.pair();
     format!(
         "{device}:{inode}:{}:{}:{}",
@@ -785,13 +791,19 @@ fn revision_string(key: &CacheKey) -> String {
     )
 }
 
-fn copy_range(
+pub(crate) fn revision_string(snapshot: &crate::infra::path_authority::PgnSnapshot) -> String {
+    revision_string_for_key(&snapshot_key(snapshot))
+}
+
+pub(crate) fn copy_range(
     source: &mut File,
     target: &mut File,
     start: u64,
     end: u64,
     cancellation: &CancellationToken,
 ) -> Result<(), Error> {
+    #[cfg(test)]
+    TEST_COPY_CHUNK_COUNT.with(|count| count.set(0));
     let len = end
         .checked_sub(start)
         .ok_or_else(|| Error::Conflict("invalid PGN byte range".into()))?;
@@ -811,6 +823,13 @@ fn copy_range(
         target.write_all(&buffer[..read])?;
         remaining -= u64::try_from(read)
             .map_err(|_| Error::ResourceLimit("PGN copy range is too large".into()))?;
+        #[cfg(test)]
+        {
+            TEST_COPY_CHUNK_COUNT.with(|count| count.set(count.get().saturating_add(1)));
+            if let Some(hook) = current_read_chunk_hook() {
+                hook.notify_and_wait();
+            }
+        }
     }
     Ok(())
 }
@@ -958,7 +977,7 @@ pub async fn read_games_core(
         Ok(((), requested))
     })
     .await?;
-    let revision = revision_string(&key);
+    let revision = revision_string_for_key(&key);
     Ok(values
         .into_iter()
         .map(|pgn| StampedGame {
@@ -998,7 +1017,7 @@ pub async fn file_revision_core(
     BLOCKING_GATEWAY
         .spawn_cancellable(cancellation.clone(), move |_| {
             let snapshot = resolved.pgn_snapshot()?;
-            Ok(revision_string(&snapshot_key(&snapshot)))
+            Ok(revision_string(&snapshot))
         })
         .await
 }
@@ -1055,7 +1074,7 @@ async fn read_game_core(
     Ok(StampedGame {
         stamp: game_stamp(pgn.as_bytes()),
         pgn,
-        revision: revision_string(&key),
+        revision: revision_string_for_key(&key),
         present,
     })
 }
@@ -1246,7 +1265,7 @@ pub async fn delete_game_core(
             return Err(Error::Cancellation);
         }
         let (key, games) = scan_current(scan_snapshot, &repository, &cancellation).await?;
-        if revision_string(&key) != expected_revision {
+        if revision_string_for_key(&key) != expected_revision {
             return Err(Error::StaleGame);
         }
         let range = games.get(n).cloned().ok_or(Error::StaleGame)?;

@@ -1,5 +1,5 @@
 #[cfg(all(test, unix))]
-mod allocation_probe;
+pub(crate) mod allocation_probe;
 mod encoding;
 mod migrations;
 mod models;

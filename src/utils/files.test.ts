@@ -39,6 +39,7 @@ vi.mock("./tabs", () => ({ createTab: mocks.createTab }));
 
 import { TauriCommandError } from "@/platform/tauri";
 import type { FileWorkspaceHandle, WriteStamp } from "@/bindings";
+import { defaultGame, makePgn } from "chessops/pgn";
 import { fileWorkspaceAtom, fileWorkspaceDisplayNameAtom } from "@/state/atoms";
 import {
     getFileFreshness,
@@ -205,6 +206,64 @@ test.each([
         expect(mocks.listFileWorkspace).toHaveBeenCalledWith(parent);
     },
 );
+
+describe("createFile content", () => {
+    const workspace: FileWorkspaceHandle = {
+        id: { id: "create-file-workspace" },
+        kind: "fileWorkspace",
+    };
+    const created = {
+        handle: { id: { id: "created-file" }, kind: "fileWorkspace" },
+        name: "created",
+        metadata: { type: "game", tags: [] },
+        gameCount: 1,
+        lastModified: 1,
+    };
+
+    test("forwards copy content", async () => {
+        const content = {
+            kind: "copy" as const,
+            source: workspace,
+            revision: "source-revision",
+        };
+        mocks.createWorkspaceFile.mockResolvedValueOnce(created);
+
+        await createFile({
+            filename: "created",
+            filetype: "game",
+            content,
+            workspace,
+            parent: workspace,
+        });
+
+        expect(mocks.createWorkspaceFile).toHaveBeenCalledWith(
+            workspace,
+            workspace,
+            "created",
+            { type: "game", tags: [] },
+            content,
+        );
+    });
+
+    test("defaults to a text content from the default game", async () => {
+        mocks.createWorkspaceFile.mockResolvedValueOnce(created);
+
+        await createFile({
+            filename: "created",
+            filetype: "game",
+            workspace,
+            parent: workspace,
+        });
+
+        expect(mocks.createWorkspaceFile).toHaveBeenCalledWith(
+            workspace,
+            workspace,
+            "created",
+            { type: "game", tags: [] },
+            { kind: "text", pgn: makePgn(defaultGame()) },
+        );
+    });
+});
 
 describe("pickPgnFile", () => {
     const handle = { id: { id: "pgn" }, kind: "fileWorkspace" } as const;

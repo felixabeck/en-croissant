@@ -726,6 +726,12 @@ pub(crate) struct PgnSnapshot {
     pub revision: PgnSnapshotRevision,
 }
 
+impl PgnSnapshot {
+    pub(crate) fn current_revision(&self) -> Result<PgnSnapshotRevision, Error> {
+        Ok(ResolvedPath::pgn_snapshot_file(self.file.try_clone()?)?.revision)
+    }
+}
+
 #[cfg(unix)]
 pub(super) fn file_identity(meta: &fs::Metadata) -> super::Identity {
     use std::os::unix::fs::MetadataExt;

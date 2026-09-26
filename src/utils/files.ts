@@ -6,7 +6,12 @@ import { defaultGame, makePgn } from "chessops/pgn";
 import { getDefaultStore } from "jotai";
 import useSWR from "swr";
 import type { FileMetadata, FileType } from "@/components/files/file";
-import type { FileWorkspaceHandle, WriteExpectation, WriteStamp } from "@/bindings";
+import type {
+    FileWorkspaceHandle,
+    WorkspaceFileContent,
+    WriteExpectation,
+    WriteStamp,
+} from "@/bindings";
 import {
     addRecentFileAtom,
     fileWorkspaceAtom,
@@ -156,13 +161,13 @@ export async function openFile(
 export async function createFile({
     filename,
     filetype,
-    pgn,
+    content,
     workspace,
     parent,
 }: {
     filename: string;
     filetype: FileType;
-    pgn?: string;
+    content?: WorkspaceFileContent;
     workspace: FileWorkspaceHandle;
     parent: FileWorkspaceHandle;
 }): Promise<Result<FileMetadata>> {
@@ -176,7 +181,7 @@ export async function createFile({
                     parent,
                     filename,
                     { type: filetype, tags: [] },
-                    pgn || makePgn(defaultGame()),
+                    content ?? { kind: "text", pgn: makePgn(defaultGame()) },
                 ),
             async () =>
                 (await tauri.listFileWorkspace(parent)).find((candidate) => {

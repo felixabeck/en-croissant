@@ -488,7 +488,16 @@ test("applied-despite-error create refreshes and closes without operationFailed"
   });
   await act(async () => dialogButton("Confirm").click());
 
-  expect(mocks.createWorkspaceFile).toHaveBeenCalled();
+  expect(mocks.createWorkspaceFile).toHaveBeenCalledWith(
+    workspace,
+    workspace,
+    "created",
+    {
+      type: "game",
+      tags: [],
+    },
+    { kind: "text", pgn: "*" },
+  );
   expect(mocks.mutate).toHaveBeenCalledTimes(1);
   expect(container.querySelector('[role="dialog"]')).toBeNull();
   expect(container.textContent).not.toContain(

@@ -304,9 +304,9 @@ async listFileWorkspace(workspace: FileWorkspaceHandle, ticket: string | null) :
     else return { status: "error", error: e  as any };
 }
 },
-async createWorkspaceFile(workspace: FileWorkspaceHandle, parent: FileWorkspaceHandle, name: string, metadata: WorkspaceMetadata, pgn: string) : Promise<Result<WorkspaceEntry, ErrorPayload>> {
+async createWorkspaceFile(workspace: FileWorkspaceHandle, parent: FileWorkspaceHandle, name: string, metadata: WorkspaceMetadata, content: WorkspaceFileContent) : Promise<Result<WorkspaceEntry, ErrorPayload>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("create_workspace_file", { workspace, parent, name, metadata, pgn }) };
+    return { status: "ok", data: await TAURI_INVOKE("create_workspace_file", { workspace, parent, name, metadata, content }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1363,6 +1363,7 @@ name: string;
 default: string | null } }
 export type WorkspaceEntry = { handle: FileWorkspaceHandle; kind: WorkspaceEntryKind; name: string; children: WorkspaceEntry[]; metadata: WorkspaceMetadata | null; gameCount: number | null; lastModified: bigint }
 export type WorkspaceEntryKind = "file" | "directory"
+export type WorkspaceFileContent = { kind: "text"; pgn: string } | { kind: "copy"; source: FileWorkspaceHandle; revision: string }
 export type WorkspaceFileType = "repertoire" | "game" | "tournament" | "puzzle" | "other"
 export type WorkspaceMetadata = { type: WorkspaceFileType; tags: string[] }
 export type WriteExpectation = { kind: "game"; stamp: string } | { kind: "append" }

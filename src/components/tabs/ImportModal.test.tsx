@@ -27,6 +27,7 @@ const fixtures = vi.hoisted(() => ({
   ensureFileWorkspace: vi.fn(),
   loadFileGame: vi.fn(),
   pickPgnFile: vi.fn(),
+  readGame: vi.fn(),
   readGames: vi.fn(),
   setCurrentTab: vi.fn(),
   setTabs: vi.fn(),
@@ -45,7 +46,7 @@ vi.mock("jotai", () => ({
   useStore: () => ({ set: fixtures.storeSet }),
 }));
 vi.mock("@/platform/tauri", () => ({
-  tauri: { readGames: fixtures.readGames },
+  tauri: { readGame: fixtures.readGame, readGames: fixtures.readGames },
 }));
 vi.mock("@/utils/files", () => ({
   createFile: fixtures.createFile,
@@ -87,7 +88,7 @@ vi.mock("@mantine/core", () => ({
   SimpleGrid: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   Stack: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   Text: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
-  Textarea: () => null,
+  Textarea: (props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) => <textarea {...props} />,
   TextInput: () => null,
 }));
 
@@ -113,20 +114,6 @@ beforeEach(() => {
     },
   );
   fixtures.pickPgnFile.mockResolvedValue(fixtures.file);
-  fixtures.readGames.mockResolvedValue([
-    {
-      pgn: '[Event "Old preview"]\n\n1. e4 *',
-      stamp: "preview-stamp",
-      revision: "preview-revision",
-      present: true,
-    },
-    {
-      pgn: '[Event "Second PGN"]\n\n1. d4 *',
-      stamp: "second-stamp",
-      revision: "preview-revision",
-      present: true,
-    },
-  ]);
   fixtures.loadFileGame.mockImplementation(async () => {
     const tree = defaultTree();
     tree.headers.event = "Fresh from disk";
@@ -175,7 +162,9 @@ test("file import seeds a file-backed tab from the fresh game and its stamp", as
   });
 
   expect(fixtures.loadFileGame).toHaveBeenCalledWith(fixtures.file.handle, 0);
-  expect(fixtures.readGames).toHaveBeenCalledWith(fixtures.file.handle, 0, 1);
+  expect(fixtures.loadFileGame).toHaveBeenCalledOnce();
+  expect(fixtures.readGames).not.toHaveBeenCalled();
+  expect(fixtures.readGame).not.toHaveBeenCalled();
   expect(fixtures.currentTab).toMatchObject({
     name: "Fresh from disk",
     type: "analysis",
@@ -194,12 +183,31 @@ test("file import seeds a file-backed tab from the fresh game and its stamp", as
   );
 });
 
-test("saving an imported PGN joins the text from stamped page rows", async () => {
+test("saving an imported PGN copies its source after preflight and reloads the saved file", async () => {
   const workspace = { id: { id: "workspace" }, kind: "fileWorkspace" } as const;
   const savedFile = {
     ...fixtures.file,
     handle: { id: { id: "saved-pgn" }, kind: "fileWorkspace" },
   };
+  const sourceTree = defaultTree();
+  sourceTree.headers.event = "Source preflight";
+  const savedTree = defaultTree();
+  savedTree.headers.event = "Saved file";
+  fixtures.loadFileGame
+    .mockResolvedValueOnce({
+      pgn: '[Event "Source preflight"]\n\n1. e4 *',
+      stamp: "source-stamp",
+      revision: "source-revision",
+      present: true,
+      tree: sourceTree,
+    })
+    .mockResolvedValueOnce({
+      pgn: '[Event "Saved file"]\n\n1. d4 *',
+      stamp: "saved-stamp",
+      revision: "saved-revision",
+      present: true,
+      tree: savedTree,
+    });
   fixtures.ensureFileWorkspace.mockResolvedValue(workspace);
   fixtures.createFile.mockResolvedValue({ isErr: false, value: savedFile });
   await act(async () =>
@@ -223,12 +231,85 @@ test("saving an imported PGN joins the text from stamped page rows", async () =>
   expect(fixtures.createFile).toHaveBeenCalledWith({
     filename: "selected.pgn",
     filetype: "game",
-    pgn: '[Event "Old preview"]\n\n1. e4 *\n\n[Event "Second PGN"]\n\n1. d4 *',
+    content: {
+      kind: "copy",
+      source: fixtures.file.handle,
+      revision: "source-revision",
+    },
     workspace,
     parent: workspace,
   });
-  expect(fixtures.loadFileGame).toHaveBeenCalledWith(savedFile.handle, 0);
+  expect(fixtures.loadFileGame).toHaveBeenCalledTimes(2);
+  expect(fixtures.loadFileGame).toHaveBeenNthCalledWith(1, fixtures.file.handle, 0);
+  expect(fixtures.loadFileGame).toHaveBeenNthCalledWith(2, savedFile.handle, 0);
+  expect(fixtures.readGames).not.toHaveBeenCalled();
+  expect(fixtures.readGame).not.toHaveBeenCalled();
+  const [sourceLoadOrder, savedLoadOrder] = fixtures.loadFileGame.mock.invocationCallOrder;
+  const [createOrder] = fixtures.createFile.mock.invocationCallOrder;
+  expect(sourceLoadOrder).toBeLessThan(createOrder);
+  expect(createOrder).toBeLessThan(savedLoadOrder);
   expect(fixtures.currentTab).toMatchObject({
     gameOrigin: { kind: "file", file: { handle: savedFile.handle }, gameNumber: 0 },
   });
+});
+
+test("a rejected game-0 preflight creates no copied file", async () => {
+  const error = new Error("game 0 is too large");
+  fixtures.loadFileGame.mockRejectedValueOnce(error);
+  await act(async () =>
+    root.render(<ImportModal openModal setOpenModal={vi.fn()} setTabs={fixtures.setTabs} />),
+  );
+
+  await act(async () => {
+    host.querySelector<HTMLButtonElement>('[data-testid="choose-file"]')!.click();
+    await Promise.resolve();
+  });
+  await vi.waitFor(() => expect(fixtures.pickPgnFile).toHaveBeenCalledOnce());
+  await act(async () => {
+    host.querySelector<HTMLInputElement>('[data-testid="save-to-collection"]')!.click();
+  });
+  await act(async () => {
+    Array.from(host.querySelectorAll("button"))
+      .find((button) => button.textContent === "Home.Card.ImportGame.Button")!
+      .click();
+  });
+
+  expect(fixtures.loadFileGame).toHaveBeenCalledTimes(1);
+  expect(fixtures.loadFileGame).toHaveBeenCalledWith(fixtures.file.handle, 0);
+  expect(fixtures.ensureFileWorkspace).not.toHaveBeenCalled();
+  expect(fixtures.createFile).not.toHaveBeenCalled();
+  expect(fixtures.readGames).not.toHaveBeenCalled();
+  expect(fixtures.readGame).not.toHaveBeenCalled();
+});
+
+test("pasted PGN uses the text content variant", async () => {
+  const workspace = { id: { id: "workspace" }, kind: "fileWorkspace" } as const;
+  fixtures.ensureFileWorkspace.mockResolvedValue(workspace);
+  fixtures.createFile.mockResolvedValue({ isErr: false, value: fixtures.file });
+  await act(async () =>
+    root.render(<ImportModal openModal setOpenModal={vi.fn()} setTabs={fixtures.setTabs} />),
+  );
+
+  const pgn = '[Event "Pasted"]\n\n1. e4 *';
+  const textarea = host.querySelector<HTMLTextAreaElement>("textarea")!;
+  const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+  await act(async () => {
+    valueSetter.call(textarea, pgn);
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await act(async () => {
+    Array.from(host.querySelectorAll("button"))
+      .find((button) => button.textContent === "Home.Card.ImportGame.Button")!
+      .click();
+  });
+
+  expect(fixtures.createFile).toHaveBeenCalledWith({
+    filename: expect.stringMatching(/^import-/),
+    filetype: "game",
+    content: { kind: "text", pgn },
+    workspace,
+    parent: workspace,
+  });
+  expect(fixtures.readGames).not.toHaveBeenCalled();
+  expect(fixtures.readGame).not.toHaveBeenCalled();
 });

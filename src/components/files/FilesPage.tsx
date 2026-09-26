@@ -155,7 +155,16 @@ export default function FilesPage() {
     try {
       await runAppliedMutationWithRefresh(async () => {
         if (action === fileAction.file)
-          await tauri.createWorkspaceFile(workspace, parent, name, { type: "game", tags: [] }, "*");
+          await tauri.createWorkspaceFile(
+            workspace,
+            parent,
+            name,
+            { type: "game", tags: [] },
+            {
+              kind: "text",
+              pgn: "*",
+            },
+          );
         if (action === fileAction.folder)
           await tauri.createWorkspaceDirectory(workspace, parent, name);
         if (action === fileAction.rename && selected?.type === "file")

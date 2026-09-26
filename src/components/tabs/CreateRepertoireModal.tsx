@@ -49,7 +49,7 @@ export default function CreateRepertoireModal({
       const result = await createFile({
         filename: trimmedName,
         filetype: "repertoire",
-        pgn,
+        content: { kind: "text", pgn },
         workspace,
         parent: workspace,
       });
