@@ -347,8 +347,14 @@ test("a flush refuses a tree that would not rehydrate and keeps the stored one",
         state: treeWith((tree) => (tree.root.comment = "x".repeat(PGN_TEXT_MAX + 1))),
     });
 
-    expect(storage.flush()).toEqual(["oversized"]);
+    expect(storage.flush({ notify: true })).toEqual(["oversized"]);
     expect(sessionStorage.getItem("oversized")).toBe(stored);
+    // The user is told why the edit was not kept, not handed a generic storage failure.
+    expect(persistError.reportPersistError).toHaveBeenCalledWith(
+        expect.objectContaining({
+            message: "Could not save this game: it no longer fits tab storage.",
+        }),
+    );
 });
 
 test("rejects every persisted tree type, scalar, and structural boundary", () => {
