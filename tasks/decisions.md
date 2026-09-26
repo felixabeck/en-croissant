@@ -4184,3 +4184,40 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The gate's staged matrix shows it goes red on the `490831c7` class (E0425, exit 101) and on a Windows-only `dead_code` that Linux clippy passes (exit 101 against exit 0). It fails with a distinct message for every missing prerequisite. The printed recipe, run verbatim into an empty prefix, installed a toolchain that built all 260 crates from scratch, including zstd-sys's C code, in 38 s. This partly supersedes `d-20260916-07`: "no gate invokes it" no longer holds. Its reversal becomes: deleting `~/.local/opt/mingw` while `CHESSFABLE_MINGW_PREFIX` is unset and no other MinGW is on `PATH` makes the gate red and prints the reinstall commands. Retiring the gate means reverting its §2 fence line, its two package scripts, its contract-chain member and the `CONTRACT_CHAIN` pin in `scripts/check-gate-routing-tests.mjs`. The MSVC target and all Windows tests stay CI-only.
 * **Decided by:** Claude Code (Opus 5.5), autonomously under `full auto`, build run 2026-09-26; plan reviewed six rounds on Codex · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"ac4a07efb88eb6b0af06713132f3286757d3b818f08f7536cddb5b09c6827fba","input_sha256":"3dc61fcbe664c42ddd991b0d3e9bf9ed69b6286507db6e06f52ce5587a1cf247","kind":"mutation-receipt","operation":"e0ab9d0b9a33a343aac9aec9761d4fe6aba38d6a1cc20bebf10fecce9b7886a0","options":{"section":null},"request_id_sha256":null,"results":["d-20260926-01"],"target":"decisions-ledger","v":1} -->
+
+### d-20260926-02 — What does player statistics return instead of one record per game?
+
+* **Question:** f-20260907-05 needs the player-statistics result to stay bounded. Should it keep per-game `StatsData`, cap the game count, or return aggregates?
+* **Governs:** f-20260907-05
+* **Chosen:** Return bounded aggregates per (site, player), as flat records with `u32` counts. `daily` holds one record per (time_control, date) with won, drawn, lost and the maximum selected-player rating. `openings` holds one record per (time_control, colour, opening) with won, drawn, lost. Maps are used only while accumulating.
+* **Rejected:** Keeping per-game `StatsData`, because the result, the IPC JSON and the renderer copy would still grow with the game count. A game cap, because users would see different statistics. Composite-keyed maps on the wire, because serde_json and Specta cannot carry them. `u64` counts, because of the bigint mismatch in f-20260925-02.
+* **Reason:** Every consumer (Overview, Ratings, Openings, the `Databases.tsx` merge) only filters by site, account, time control and date, then counts or takes a maximum, so the aggregate loses nothing they use. Its size is bounded by the calendar span and the opening table. Reversal path: restore per-game records in the Specta type and in the four consumers.
+* **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, build run 2026-09-26; plan reviewed in four Gemini rounds · **Superseded-by:** -
+
+### d-20260926-03 — How does player statistics stream rows and handle the move prefix?
+
+* **Question:** How should `get_players_game_info_blocking` avoid holding every matching row and move blob, and should it read only a mainline prefix of each blob?
+* **Governs:** f-20260907-05
+* **Chosen:** Stream with `load_iter` into batches bounded by a move-blob byte budget and a row ceiling. A row larger than the budget forms a batch alone. Rayon evaluates each batch, which is folded into the aggregate before the next read. Every blob is still read and validated in full. Row errors propagate.
+* **Rejected:** SQL `substr` truncation to a prefix. Annotations and variations make the byte offset of ply 55 unbounded, and truncation would bypass the full-stream validation that decides eligibility under d-20260907-05. Also rejected: skipping failed rows, because of d-20260905-21.
+* **Reason:** This follows the d-20260905-20 streaming precedent. The memory held for blobs is bounded by one batch rather than by the corpus. Reversal path: return to `load(db)`, which the large-row memory test forbids.
+* **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, build run 2026-09-26 · **Superseded-by:** -
+
+### d-20260926-04 — Where does the statistics progress denominator come from?
+
+* **Question:** Once the rows are streamed, how does progress get its total, and should the count and the SELECT share one read transaction?
+* **Governs:** f-20260907-05
+* **Chosen:** A separate `COUNT(*)` over the same join and filters, with no transaction and the fraction clamped to 0..=1. The existing `* 100_f64` scale stays in the blocking body. A final running frame is emitted after the stream whenever at least one row was kept.
+* **Rejected:** One read transaction around both statements. While cancellation is armed, the SQLite progress handler would also interrupt Diesel's `ROLLBACK` and leave a pooled connection inside a transaction. Also rejected: the old `p == len - 1` last-frame rule, which never fires once any row is filtered out.
+* **Reason:** Clamping covers the only effect of skew between the two statements. Reversal path: derive progress without a denominator.
+* **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, build run 2026-09-26 · **Superseded-by:** -
+
+### d-20260926-05 — How is the player-statistics memory bound proven?
+
+* **Question:** How can a test prove the bound when Rayon workers do part of the work?
+* **Governs:** f-20260907-05
+* **Chosen:** Run `allocation_probe::measure` inside a dedicated one-thread Rayon pool (`pool.install`), so every allocation, worker work included, lands on the measured thread. Use two fixtures: a large-row corpus that detects input materialisation, and a many-row corpus that detects per-game result accumulation. Each must go red under its own reversion.
+* **Rejected:** Measuring on the calling thread with the global pool, which misses worker allocations and can undercount. Also rejected: a single 512-row fixture, which cannot see per-game accumulation.
+* **Reason:** This extends d-20260905-22. Reversal path: replace the probe with an equally direct production-path allocation instrument.
+* **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, build run 2026-09-26 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":35,"effect_sha256":"74fb296d617f591924c8b6fd1a20546e5c53c7ab504f7bd20441631c0be14ff5","input_sha256":"dad4393836049d603e4bdada20a2641e61b5defb2bd80f945d8dc01842c0717a","kind":"mutation-receipt","operation":"f5b3144b8d550ef491e9a5a666ae1cb2f82e323d80eead62d276a0451fc3a757","options":{"section":null},"request_id_sha256":null,"results":["d-20260926-02","d-20260926-03","d-20260926-04","d-20260926-05"],"target":"decisions-ledger","v":1} -->
