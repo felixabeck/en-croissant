@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { findExecutableOnPath } from "./executable-path.mjs";
 import {
   isAlive,
   runMutationRunner,
@@ -22,10 +23,8 @@ const fence = "mutants.out/backend/.mutation-in-progress";
 const marker = "/* ~ changed by cargo-mutants ~ */";
 
 function commandPath(command) {
-  for (const directory of process.env.PATH.split(":")) {
-    const candidate = join(directory, command);
-    if (existsSync(candidate)) return candidate;
-  }
+  const executablePath = findExecutableOnPath(command, { pathValue: process.env.PATH });
+  if (executablePath) return executablePath;
   throw new Error(`Test prerequisite is missing from PATH: ${command}`);
 }
 

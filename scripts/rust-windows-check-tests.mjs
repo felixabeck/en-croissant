@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { delimiter, dirname, join, resolve } from "node:path";
 import test from "node:test";
 import {
-  CARGO_CLIPPY_ARGUMENTS,
   MINGW_COMPILER,
   WINDOWS_GNU_TARGET,
   formatMissingCompilerMessage,
@@ -10,6 +9,7 @@ import {
   resolveWindowsGnuCompiler,
   runWindowsGnuCheck,
 } from "./rust-windows-check.mjs";
+import { findExecutableOnPath } from "./executable-path.mjs";
 
 const repoRoot = "/scratch/chessfable";
 const home = "/scratch/home";
@@ -24,12 +24,21 @@ function fileSystemFor(paths) {
   };
 }
 
-function resolveWithPaths({ env, present = [], probeOnPath, repoRoot: root = repoRoot }) {
+function resolveWithPaths({
+  env,
+  present = [],
+  probeOnPath,
+  repoRoot: root = repoRoot,
+  platform,
+  pathExt,
+}) {
   return resolveWindowsGnuCompiler({
     env,
     fileSystem: fileSystemFor(present),
     probeOnPath,
     repoRoot: root,
+    platform,
+    pathExt,
   });
 }
 
@@ -43,6 +52,23 @@ test("resolves an explicit MinGW prefix", () => {
   const result = resolveWithPaths({
     env: { CHESSFABLE_MINGW_PREFIX: prefix, PATH: "/empty" },
     present: [compilerPath],
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    source: "explicit-prefix",
+    prefix: resolve(prefix),
+    compilerPath,
+  });
+});
+
+test("resolves an explicit Windows MinGW prefix with the .exe compiler", () => {
+  const prefix = "/scratch/explicit-mingw";
+  const compilerPath = `${installedCompiler(prefix)}.exe`;
+  const result = resolveWithPaths({
+    env: { CHESSFABLE_MINGW_PREFIX: prefix, PATH: "/empty" },
+    present: [compilerPath],
+    platform: "win32",
   });
 
   assert.deepEqual(result, {
@@ -70,6 +96,29 @@ test("refuses a missing explicit prefix without falling back to PATH", () => {
   assert.match(message, /apt-get download/u);
   assert.ok(message.includes(`mkdir -p '${join(resolve(prefix), "debs")}'`));
   assert.match(message, /For non-apt systems, install x86_64-w64-mingw32-gcc/u);
+
+  const messageLines = message.split("\n");
+  const aptIndex = messageLines.findIndex((line) =>
+    line.startsWith("  Apt-based setup for prefix "),
+  );
+  const nonAptIndex = messageLines.findIndex((line) => line.startsWith("  For non-apt systems"));
+  assert.notEqual(aptIndex, -1);
+  assert.ok(nonAptIndex > aptIndex);
+  const recipe = messageLines.slice(aptIndex + 1, nonAptIndex).map((line) => line.slice(2));
+  assert.equal(recipe[0], "(");
+  assert.equal(recipe[1], "  set -e");
+  const extractionLine = `  for package in '${join(resolve(prefix), "debs")}'/*.deb; do dpkg-deb -x "$package" '${resolve(prefix)}'; done`;
+  assert.ok(recipe.includes(extractionLine));
+  const extractionIndex = recipe.indexOf(extractionLine);
+  const gccLinkIndex = recipe.findIndex((line) =>
+    line.startsWith("  ln -sfn x86_64-w64-mingw32-gcc-posix "),
+  );
+  const cppLinkIndex = recipe.findIndex((line) =>
+    line.startsWith("  ln -sfn x86_64-w64-mingw32-cpp-posix "),
+  );
+  const closingIndex = recipe.indexOf(")");
+  assert.ok(extractionIndex < gccLinkIndex && gccLinkIndex < closingIndex);
+  assert.ok(extractionIndex < cppLinkIndex && cppLinkIndex < closingIndex);
 
   const errors = [];
   const exitStatus = runWindowsGnuCheck({
@@ -110,6 +159,50 @@ test("resolves MinGW from the default prefix when PATH has no compiler", () => {
     prefix: resolve(prefix),
     compilerPath,
   });
+});
+
+test("resolves the default Windows MinGW prefix with the .exe compiler", () => {
+  const prefix = join(home, ".local", "opt", "mingw");
+  const compilerPath = `${installedCompiler(prefix)}.exe`;
+  const result = resolveWithPaths({
+    env: { HOME: home, PATH: "/scratch/empty" },
+    present: [compilerPath],
+    platform: "win32",
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    source: "default-prefix",
+    prefix: resolve(prefix),
+    compilerPath,
+  });
+});
+
+test("shared executable lookup resolves a .exe compiler using PATHEXT on win32", () => {
+  const compilerPath = "/scratch/bin/x86_64-w64-mingw32-gcc.exe";
+  assert.equal(
+    findExecutableOnPath(MINGW_COMPILER, {
+      pathValue: "/scratch/bin",
+      fileSystem: fileSystemFor([compilerPath]),
+      cwd: repoRoot,
+      platform: "win32",
+      pathExt: ".EXE;.CMD;.BAT;.COM",
+    }),
+    resolve(compilerPath),
+  );
+});
+
+test("shared executable lookup returns undefined when PATH has no matching executable", () => {
+  assert.equal(
+    findExecutableOnPath(MINGW_COMPILER, {
+      pathValue: "/scratch/bin",
+      fileSystem: fileSystemFor([]),
+      cwd: repoRoot,
+      platform: "win32",
+      pathExt: ".EXE;.CMD;.BAT;.COM",
+    }),
+    undefined,
+  );
 });
 
 test("reports the resolved default prefix, apt packages, links, and non-apt remedy", () => {
@@ -202,7 +295,18 @@ test("starts clippy with the resolved compiler directory first and propagates ca
 
   assert.equal(result, 37);
   assert.equal(calls.length, 2);
-  assert.deepEqual(calls[1].argumentsList, CARGO_CLIPPY_ARGUMENTS);
+  assert.deepEqual(calls[1].argumentsList, [
+    "clippy",
+    "--manifest-path",
+    "src-tauri/Cargo.toml",
+    "--target",
+    "x86_64-pc-windows-gnu",
+    "--all-targets",
+    "--locked",
+    "--",
+    "-D",
+    "warnings",
+  ]);
   assert.equal(calls[1].options.cwd, repoRoot);
   assert.equal(calls[1].options.stdio, "inherit");
   assert.equal(
@@ -236,6 +340,30 @@ test("reports distinct rustup and cargo spawn failures", () => {
       errors[0],
       new RegExp(`Could not start ${failCommand} .*spawn ${failCommand} ENOENT`, "u"),
     );
+  }
+});
+
+test("reports rustup and cargo termination by signal as non-zero failures", () => {
+  const prefix = "/scratch/mingw";
+  const compilerPath = installedCompiler(prefix);
+
+  for (const failCommand of ["rustup", "cargo"]) {
+    const errors = [];
+    const result = runWindowsGnuCheck({
+      env: { CHESSFABLE_MINGW_PREFIX: prefix, PATH: "/scratch/bin" },
+      fileSystem: fileSystemFor([compilerPath]),
+      repoRoot,
+      spawn(command) {
+        if (command === failCommand) return { status: null, signal: "SIGTERM" };
+        return { status: 0, stdout: `${WINDOWS_GNU_TARGET}\n` };
+      },
+      writeOutput() {},
+      writeError: (message) => errors.push(message),
+    });
+
+    assert.notEqual(result, 0);
+    assert.equal(errors.length, 1);
+    assert.match(errors[0], /was terminated by SIGTERM/u);
   }
 });
 
