@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: 1197cea43d1b23e4078ddb7aba3326b112a3d0fcfb81655ec3f7c4f94a977dad
+# agent-kit-sha256: cb6c5448b6ea0b5afdaa2e7e8fa7b4fec2beda7df62d2545bd8dba61284e85c3
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -83,6 +83,15 @@ from typing import Literal, cast
 # the parenthesized form is what a pre-3.14 interpreter needs to parse this file
 # (`d-20260830-26`). A name is a single expression with nothing to strip.
 _READ_ERRORS = (OSError, UnicodeError)
+
+# What json.loads raises on a document this tool did not write. RecursionError is
+# the half that keeps being forgotten: a record nested past the interpreter's
+# limit raises it instead of ValueError (`f-20260916-03`). A deliberate third
+# spelling of the same fact — `drain_supervisor_paths.JSON_PARSE_ERRORS` and
+# `leaf_terminal.py` carry the other two — because this file imports no
+# supervisor module and must stay a single vendorable script.
+_JSON_ERRORS = (ValueError, RecursionError)
+_MERGE_INTENT_ERRORS = _READ_ERRORS + _JSON_ERRORS + (KeyError, TypeError)
 
 # Keep one failed breadcrumb report, including its final newline, within this
 # fixed width so a helper cannot flood the drain's stderr. The beginning of the
@@ -997,7 +1006,7 @@ def _scan_ledger_metadata(text: str, path: Path) -> tuple[list[LedgerMeta], list
         except DuplicateLedgerMetadataKey:
             issues.append(f"{where}: duplicate ledger-meta JSON key")
             continue
-        except (json.JSONDecodeError, UnicodeError):
+        except _JSON_ERRORS:
             issues.append(f"{where}: malformed ledger-meta JSON")
             continue
         if not isinstance(data, dict):
@@ -2408,7 +2417,7 @@ def load_vocabulary_from_project_manifest(manifest: Path) -> frozenset[str]:
         )
     try:
         data = json.loads(manifest.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
+    except _JSON_ERRORS as exc:
         raise LedgerError(f"{manifest} is not valid JSON: {exc}") from exc
     findings_config = data.get("findings") if isinstance(data, dict) else None
     areas = (
@@ -2500,7 +2509,7 @@ def _controller_export_payload(text: str) -> dict[str, object] | None:
         )
     try:
         payload = json.loads(match.group("body"))
-    except json.JSONDecodeError as exc:
+    except _JSON_ERRORS as exc:
         raise LedgerError(f"Controller-generated ledger JSON is invalid: {exc}") from exc
     if not isinstance(payload, dict):
         raise LedgerError("Controller-generated ledger JSON must be an object")
@@ -4399,7 +4408,7 @@ def _read_receipt(path: Path) -> dict[str, str] | None:
         raise LedgerError(f"could not read filing receipt {path}: {exc}") from exc
     try:
         record = json.loads(raw)
-    except ValueError as exc:
+    except _JSON_ERRORS as exc:
         raise LedgerError(f"could not read filing receipt {path}: {exc}") from exc
     if not isinstance(record, dict):
         raise LedgerError(f"malformed filing receipt {path}: expected a JSON object")
@@ -6290,7 +6299,7 @@ def _read_claim_intent(
             files,
             quarantined,
         )
-    except (OSError, UnicodeError, ValueError, KeyError, TypeError) as exc:
+    except _MERGE_INTENT_ERRORS as exc:
         raise LedgerError(f"could not read {intent_path}: {exc}") from exc
 
 
@@ -8728,7 +8737,7 @@ def _read_announcement_state(state_path: Path) -> dict[str, object] | None:
         ) from exc
     try:
         state = json.loads(raw)
-    except ValueError as exc:
+    except _JSON_ERRORS as exc:
         raise LedgerError(
             f"could not read announcement state {state_path}: {exc}"
         ) from exc
