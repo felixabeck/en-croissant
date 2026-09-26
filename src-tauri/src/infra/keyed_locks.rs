@@ -110,7 +110,7 @@ where
     }
 
     #[cfg(test)]
-    pub(crate) fn observe_wait(&self) -> crate::infra::cancellable_lock::StdLockWaitObserver {
+    pub(crate) fn observe_wait(&self) -> crate::infra::cancellable_lock::LockWaitObserver {
         crate::infra::cancellable_lock::observe_lock_wait(
             self.lock.as_ref().expect("lease owns its lock"),
         )

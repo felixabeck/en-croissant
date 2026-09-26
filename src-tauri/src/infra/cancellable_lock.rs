@@ -11,27 +11,26 @@ use crate::error::Error;
 const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 #[cfg(test)]
-type StdLockWaitSender = std::sync::mpsc::SyncSender<()>;
+type LockWaitSender = std::sync::mpsc::SyncSender<()>;
 
 #[cfg(test)]
-type StdLockWaitHooks = std::collections::HashMap<usize, Vec<(u64, StdLockWaitSender)>>;
+type LockWaitHooks = std::collections::HashMap<usize, Vec<(u64, LockWaitSender)>>;
 
 #[cfg(test)]
-static STD_LOCK_WAIT_HOOK: std::sync::OnceLock<StdMutex<StdLockWaitHooks>> =
-    std::sync::OnceLock::new();
+static LOCK_WAIT_HOOK: std::sync::OnceLock<StdMutex<LockWaitHooks>> = std::sync::OnceLock::new();
 
 #[cfg(test)]
-static NEXT_STD_LOCK_OBSERVER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+static NEXT_LOCK_WAIT_OBSERVER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 #[cfg(test)]
-pub(crate) struct StdLockWaitObserver {
+pub(crate) struct LockWaitObserver {
     identity: usize,
     observer_id: u64,
     receiver: std::sync::mpsc::Receiver<()>,
 }
 
 #[cfg(test)]
-impl StdLockWaitObserver {
+impl LockWaitObserver {
     pub(crate) fn recv_timeout(
         &self,
         timeout: Duration,
@@ -41,9 +40,9 @@ impl StdLockWaitObserver {
 }
 
 #[cfg(test)]
-impl Drop for StdLockWaitObserver {
+impl Drop for LockWaitObserver {
     fn drop(&mut self) {
-        let Some(hooks) = STD_LOCK_WAIT_HOOK.get() else {
+        let Some(hooks) = LOCK_WAIT_HOOK.get() else {
             return;
         };
         if let Ok(mut hooks) = hooks.lock() {
@@ -58,17 +57,17 @@ impl Drop for StdLockWaitObserver {
 }
 
 #[cfg(test)]
-fn register_wait_observer(identity: usize) -> StdLockWaitObserver {
+fn register_wait_observer(identity: usize) -> LockWaitObserver {
     let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
-    let observer_id = NEXT_STD_LOCK_OBSERVER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    STD_LOCK_WAIT_HOOK
+    let observer_id = NEXT_LOCK_WAIT_OBSERVER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    LOCK_WAIT_HOOK
         .get_or_init(|| StdMutex::new(std::collections::HashMap::new()))
         .lock()
         .unwrap()
         .entry(identity)
         .or_default()
         .push((observer_id, entered_tx));
-    StdLockWaitObserver {
+    LockWaitObserver {
         identity,
         observer_id,
         receiver: entered_rx,
@@ -76,18 +75,18 @@ fn register_wait_observer(identity: usize) -> StdLockWaitObserver {
 }
 
 #[cfg(test)]
-pub(crate) fn observe_std_lock_wait<T>(lock: &StdMutex<T>) -> StdLockWaitObserver {
+pub(crate) fn observe_std_lock_wait<T>(lock: &StdMutex<T>) -> LockWaitObserver {
     register_wait_observer(lock as *const StdMutex<T> as usize)
 }
 
 #[cfg(test)]
-pub(crate) fn observe_lock_wait<T>(lock: &Mutex<T>) -> StdLockWaitObserver {
+pub(crate) fn observe_lock_wait<T>(lock: &Mutex<T>) -> LockWaitObserver {
     register_wait_observer(lock as *const Mutex<T> as usize)
 }
 
 #[cfg(test)]
 fn notify_wait_observers(identity: usize) {
-    let Some(hook) = STD_LOCK_WAIT_HOOK.get() else {
+    let Some(hook) = LOCK_WAIT_HOOK.get() else {
         return;
     };
     if let Some(observers) = hook.lock().unwrap().remove(&identity) {
