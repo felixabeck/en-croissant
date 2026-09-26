@@ -24,10 +24,14 @@ import { DEFAULT_WINDOWS_PATHEXT, findExecutableOnPath } from "./executable-path
 // (k) injected spawn function threw: `Could not start rustup target list --installed: synthetic spawn failure`; exit 1.
 // (l) scratch rustup was terminated: `rustup target list --installed was terminated by SIGTERM.`; exit 1.
 // (m) scratch prefix was `/proc/chessfable-no-such-prefix`: `mkdir: cannot create directory ‘/proc/chessfable-no-such-prefix’: No such file or directory`; recipe exit 1; no compiler link was created.
+// (n) `env -u HOME -u CHESSFABLE_MINGW_PREFIX PATH=/tmp/chessfable-rust-windows-n.BpGIh5 node scripts/rust-windows-check.mjs`: `Windows GNU cross compiler not found on PATH or in the default prefix`; `  Set CHESSFABLE_MINGW_PREFIX (or HOME) and rerun pnpm rust:windows:check to print the apt recipe for that prefix.`; exit 1; no apt recipe was printed.
+// (o) unit-test staged: injected EIO from PATH inspection printed `Could not inspect /scratch/bin/x86_64-w64-mingw32-gcc for x86_64-w64-mingw32-gcc: synthetic EIO`; exit 1. A real EIO cannot be staged harmlessly through the host filesystem.
 
 export const WINDOWS_GNU_TARGET = "x86_64-pc-windows-gnu";
 export const MINGW_COMPILER = "x86_64-w64-mingw32-gcc";
+export const MINGW_PREPROCESSOR = "x86_64-w64-mingw32-cpp";
 export const DEFAULT_MINGW_PREFIX_RELATIVE_TO_HOME = ".local/opt/mingw";
+const MINGW_POSIX_SUFFIX = "-posix";
 export const CARGO_CLIPPY_ARGUMENTS = Object.freeze([
   "clippy",
   "--manifest-path",
@@ -64,8 +68,8 @@ function compilerAtPrefix(prefix, platform) {
   return join(prefix, "usr", "bin", executable);
 }
 
-function compilerInPrefix(prefix, { probeOnPath = findExecutableOnPath, ...options }) {
-  return probeOnPath(MINGW_COMPILER, {
+function compilerInPrefix(prefix, options) {
+  return findExecutableOnPath(MINGW_COMPILER, {
     pathValue: join(prefix, "usr", "bin"),
     ...options,
   });
@@ -75,7 +79,6 @@ function compilerInPrefix(prefix, { probeOnPath = findExecutableOnPath, ...optio
 export function resolveWindowsGnuCompiler({
   env = process.env,
   fileSystem,
-  probeOnPath = findExecutableOnPath,
   repoRoot = process.cwd(),
   platform = process.platform,
   pathExt = env.PATHEXT ?? DEFAULT_WINDOWS_PATHEXT,
@@ -90,7 +93,7 @@ export function resolveWindowsGnuCompiler({
   if (env.CHESSFABLE_MINGW_PREFIX !== undefined) {
     const prefix = resolvePrefix(env.CHESSFABLE_MINGW_PREFIX, repoRoot);
     const expectedCompilerPath = compilerAtPrefix(prefix, platform);
-    const compilerPath = compilerInPrefix(prefix, { ...pathOptions, probeOnPath });
+    const compilerPath = compilerInPrefix(prefix, pathOptions);
     return compilerPath
       ? { ok: true, source: "explicit-prefix", prefix, compilerPath }
       : {
@@ -101,7 +104,7 @@ export function resolveWindowsGnuCompiler({
         };
   }
 
-  const pathCompiler = probeOnPath(MINGW_COMPILER, {
+  const pathCompiler = findExecutableOnPath(MINGW_COMPILER, {
     pathValue: env.PATH,
     fileSystem,
     cwd: repoRoot,
@@ -117,9 +120,7 @@ export function resolveWindowsGnuCompiler({
       ? resolvePrefix(join(env.HOME, DEFAULT_MINGW_PREFIX_RELATIVE_TO_HOME), repoRoot)
       : undefined;
   const expectedCompilerPath = prefix ? compilerAtPrefix(prefix, platform) : undefined;
-  const compilerPath = prefix
-    ? compilerInPrefix(prefix, { ...pathOptions, probeOnPath })
-    : undefined;
+  const compilerPath = prefix ? compilerInPrefix(prefix, pathOptions) : undefined;
   if (compilerPath) {
     return { ok: true, source: "default-prefix", prefix, compilerPath };
   }
@@ -137,15 +138,6 @@ function shellQuote(value) {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-function defaultPrefixExpression() {
-  return `"$HOME/${DEFAULT_MINGW_PREFIX_RELATIVE_TO_HOME}"`;
-}
-
-function childPathExpression(prefix, suffix) {
-  if (prefix) return shellQuote(join(prefix, suffix));
-  return `"$HOME/${DEFAULT_MINGW_PREFIX_RELATIVE_TO_HOME}/${suffix}"`;
-}
-
 /** Format the actionable compiler setup message for a failed resolution. */
 export function formatMissingCompilerMessage(resolution) {
   const targetPrefix = resolution.prefix;
@@ -155,35 +147,30 @@ export function formatMissingCompilerMessage(resolution) {
     resolution.reason === "explicit-prefix-missing"
       ? `Windows GNU cross compiler missing from CHESSFABLE_MINGW_PREFIX: ${targetPrefix}`
       : "Windows GNU cross compiler not found on PATH or in the default prefix";
-  const debs = childPathExpression(targetPrefix, "debs");
-  const destination = targetPrefix ? shellQuote(targetPrefix) : defaultPrefixExpression();
-  const bin = targetPrefix
-    ? shellQuote(join(targetPrefix, "usr", "bin"))
-    : `"$HOME/${DEFAULT_MINGW_PREFIX_RELATIVE_TO_HOME}/usr/bin"`;
-  const gccLink = targetPrefix
-    ? shellQuote(join(targetPrefix, "usr", "bin", MINGW_COMPILER))
-    : `${bin}/x86_64-w64-mingw32-gcc`;
-  const cppLink = targetPrefix
-    ? shellQuote(join(targetPrefix, "usr", "bin", "x86_64-w64-mingw32-cpp"))
-    : `${bin}/x86_64-w64-mingw32-cpp`;
-  const packageDownload = `apt-get download ${APT_MINGW_PACKAGES.join(" ")}`;
+  const setupInstructions = targetPrefix
+    ? [
+        `  Apt-based setup for prefix ${targetPrefix}:`,
+        "  (",
+        "    set -e",
+        `    mkdir -p ${shellQuote(join(targetPrefix, "debs"))}`,
+        `    cd ${shellQuote(join(targetPrefix, "debs"))}`,
+        `    apt-get download ${APT_MINGW_PACKAGES.join(" ")}`,
+        `    for package in ${shellQuote(join(targetPrefix, "debs"))}/*.deb; do dpkg-deb -x "$package" ${shellQuote(targetPrefix)}; done`,
+        `    ln -sfn ${MINGW_COMPILER}${MINGW_POSIX_SUFFIX} ${shellQuote(join(targetPrefix, "usr", "bin", MINGW_COMPILER))}`,
+        `    ln -sfn ${MINGW_PREPROCESSOR}${MINGW_POSIX_SUFFIX} ${shellQuote(join(targetPrefix, "usr", "bin", MINGW_PREPROCESSOR))}`,
+        "  )",
+      ]
+    : [
+        "  Set CHESSFABLE_MINGW_PREFIX (or HOME) and rerun pnpm rust:windows:check to print the apt recipe for that prefix.",
+      ];
   return [
     firstLine,
     `  Attempted compiler path: ${compilerPath}`,
     resolution.reason === "not-found"
       ? `  PATH searched: ${resolution.pathValue ?? "<unset>"}`
       : undefined,
-    `  Apt-based setup for prefix ${targetPrefix ?? `$HOME/${DEFAULT_MINGW_PREFIX_RELATIVE_TO_HOME}`}:`,
-    "  (",
-    "    set -e",
-    `    mkdir -p ${debs}`,
-    `    cd ${debs}`,
-    `    ${packageDownload}`,
-    `    for package in ${debs}/*.deb; do dpkg-deb -x "$package" ${destination}; done`,
-    `    ln -sfn x86_64-w64-mingw32-gcc-posix ${gccLink}`,
-    `    ln -sfn x86_64-w64-mingw32-cpp-posix ${cppLink}`,
-    "  )",
-    "  For non-apt systems, install x86_64-w64-mingw32-gcc and put it on PATH or set CHESSFABLE_MINGW_PREFIX.",
+    ...setupInstructions,
+    `  For non-apt systems, install ${MINGW_COMPILER} and put it on PATH or set CHESSFABLE_MINGW_PREFIX.`,
   ]
     .filter(Boolean)
     .join("\n");
@@ -223,13 +210,21 @@ function startProcess(spawn, command, argumentsList, options) {
 export function runWindowsGnuCheck({
   env = process.env,
   fileSystem,
-  probeOnPath = findExecutableOnPath,
   spawn = spawnSync,
   repoRoot = projectRoot,
   writeOutput = console.log,
   writeError = console.error,
 } = {}) {
-  const resolution = resolveWindowsGnuCompiler({ env, fileSystem, probeOnPath, repoRoot });
+  let resolution;
+  try {
+    resolution = resolveWindowsGnuCompiler({ env, fileSystem, repoRoot });
+  } catch (error) {
+    const inspectedPath = typeof error?.path === "string" ? error.path : "PATH";
+    const detail = error instanceof Error ? error.message : String(error);
+    writeError(`Could not inspect ${inspectedPath} for ${MINGW_COMPILER}: ${detail}`);
+    return 1;
+  }
+
   if (!resolution.ok) {
     writeError(formatMissingCompilerMessage(resolution));
     return 1;
@@ -283,10 +278,6 @@ export function runWindowsGnuCheck({
   return 0;
 }
 
-export function main() {
-  return runWindowsGnuCheck();
-}
-
 if (isEntrypoint(import.meta.url)) {
-  process.exitCode = main();
+  process.exitCode = runWindowsGnuCheck();
 }

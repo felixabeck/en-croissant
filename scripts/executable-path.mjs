@@ -4,6 +4,7 @@ import { delimiter, extname, resolve } from "node:path";
 export const DEFAULT_WINDOWS_PATHEXT = ".EXE;.CMD;.BAT;.COM";
 
 const defaultFileSystem = Object.freeze({ existsSync, accessSync });
+const absentExecutableErrorCodes = new Set(["ENOENT", "ENOTDIR", "EACCES"]);
 
 function executableNames(name, { platform, pathExt }) {
   if (platform !== "win32") return [name];
@@ -30,8 +31,9 @@ function isExecutable(path, { fileSystem, platform }) {
       return true;
     }
     return fileSystem.existsSync(path);
-  } catch {
-    return false;
+  } catch (error) {
+    if (absentExecutableErrorCodes.has(error?.code)) return false;
+    throw error;
   }
 }
 

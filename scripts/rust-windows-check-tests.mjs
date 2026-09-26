@@ -3,6 +3,7 @@ import { delimiter, dirname, join, resolve } from "node:path";
 import test from "node:test";
 import {
   MINGW_COMPILER,
+  MINGW_PREPROCESSOR,
   WINDOWS_GNU_TARGET,
   formatMissingCompilerMessage,
   formatMissingRustTargetMessage,
@@ -19,23 +20,20 @@ function fileSystemFor(paths) {
   return {
     existsSync: (path) => existing.has(path),
     accessSync(path) {
-      if (!existing.has(path)) throw new Error(`not executable: ${path}`);
+      if (!existing.has(path)) {
+        const error = new Error(`not executable: ${path}`);
+        error.code = "EACCES";
+        error.path = path;
+        throw error;
+      }
     },
   };
 }
 
-function resolveWithPaths({
-  env,
-  present = [],
-  probeOnPath,
-  repoRoot: root = repoRoot,
-  platform,
-  pathExt,
-}) {
+function resolveWithPaths({ env, present = [], repoRoot: root = repoRoot, platform, pathExt }) {
   return resolveWindowsGnuCompiler({
     env,
     fileSystem: fileSystemFor(present),
-    probeOnPath,
     repoRoot: root,
     platform,
     pathExt,
@@ -95,7 +93,11 @@ test("refuses a missing explicit prefix without falling back to PATH", () => {
   assert.ok(message.includes(installedCompiler(prefix)));
   assert.match(message, /apt-get download/u);
   assert.ok(message.includes(`mkdir -p '${join(resolve(prefix), "debs")}'`));
-  assert.match(message, /For non-apt systems, install x86_64-w64-mingw32-gcc/u);
+  assert.ok(
+    message.includes(
+      `For non-apt systems, install ${MINGW_COMPILER} and put it on PATH or set CHESSFABLE_MINGW_PREFIX.`,
+    ),
+  );
 
   const messageLines = message.split("\n");
   const aptIndex = messageLines.findIndex((line) =>
@@ -111,10 +113,10 @@ test("refuses a missing explicit prefix without falling back to PATH", () => {
   assert.ok(recipe.includes(extractionLine));
   const extractionIndex = recipe.indexOf(extractionLine);
   const gccLinkIndex = recipe.findIndex((line) =>
-    line.startsWith("  ln -sfn x86_64-w64-mingw32-gcc-posix "),
+    line.startsWith(`  ln -sfn ${MINGW_COMPILER}-posix `),
   );
   const cppLinkIndex = recipe.findIndex((line) =>
-    line.startsWith("  ln -sfn x86_64-w64-mingw32-cpp-posix "),
+    line.startsWith(`  ln -sfn ${MINGW_PREPROCESSOR}-posix `),
   );
   const closingIndex = recipe.indexOf(")");
   assert.ok(extractionIndex < gccLinkIndex && gccLinkIndex < closingIndex);
@@ -129,6 +131,73 @@ test("refuses a missing explicit prefix without falling back to PATH", () => {
   });
   assert.equal(exitStatus, 1);
   assert.equal(errors[0], message);
+});
+
+test("asks for HOME or an explicit prefix instead of printing a recipe without a prefix", () => {
+  for (const homeValue of [undefined, ""]) {
+    const env = { PATH: "/scratch/empty" };
+    if (homeValue !== undefined) env.HOME = homeValue;
+    const errors = [];
+    const result = runWindowsGnuCheck({
+      env,
+      fileSystem: fileSystemFor([]),
+      repoRoot,
+      writeError: (message) => errors.push(message),
+    });
+
+    assert.equal(result, 1);
+    assert.equal(errors.length, 1);
+    assert.match(
+      errors[0],
+      /Set CHESSFABLE_MINGW_PREFIX \(or HOME\) and rerun pnpm rust:windows:check to print the apt recipe for that prefix\./u,
+    );
+    assert.doesNotMatch(errors[0], /Apt-based setup|apt-get download/u);
+    assert.ok(errors[0].includes(`For non-apt systems, install ${MINGW_COMPILER}`));
+  }
+});
+
+test("reports unexpected executable inspection errors distinctly and exits non-zero", () => {
+  const compilerPath = "/scratch/bin/x86_64-w64-mingw32-gcc";
+  const inspectionError = Object.assign(new Error("synthetic EIO"), {
+    code: "EIO",
+    path: compilerPath,
+  });
+  const fileSystem = {
+    existsSync: () => false,
+    accessSync(path) {
+      if (path === compilerPath) throw inspectionError;
+      const error = new Error(`not executable: ${path}`);
+      error.code = "EACCES";
+      throw error;
+    },
+  };
+  const errors = [];
+  const result = runWindowsGnuCheck({
+    env: { PATH: "/scratch/bin", HOME: home },
+    fileSystem,
+    repoRoot,
+    writeError: (message) => errors.push(message),
+  });
+
+  assert.equal(result, 1);
+  assert.deepEqual(errors, [
+    `Could not inspect ${compilerPath} for ${MINGW_COMPILER}: synthetic EIO`,
+  ]);
+});
+
+test("treats EACCES during executable inspection as an absent compiler", () => {
+  const errors = [];
+  const result = runWindowsGnuCheck({
+    env: { PATH: "/scratch/empty", HOME: home },
+    fileSystem: fileSystemFor([]),
+    repoRoot,
+    writeError: (message) => errors.push(message),
+  });
+
+  assert.equal(result, 1);
+  assert.match(errors[0], /Windows GNU cross compiler not found on PATH/u);
+  assert.match(errors[0], /Apt-based setup for prefix \/scratch\/home\/\.local\/opt\/mingw/u);
+  assert.doesNotMatch(errors[0], /Could not inspect/u);
 });
 
 test("resolves MinGW from PATH before checking the default prefix", () => {
@@ -231,12 +300,17 @@ test("reports the resolved default prefix, apt packages, links, and non-apt reme
   ]) {
     assert.ok(message.includes(packageName), `missing apt package ${packageName}`);
   }
-  assert.match(
-    message,
-    new RegExp(`ln -sfn x86_64-w64-mingw32-gcc-posix .*x86_64-w64-mingw32-gcc`, "u"),
+  assert.ok(
+    message.includes(
+      `ln -sfn ${MINGW_COMPILER}-posix '${join(resolve(prefix), "usr", "bin", MINGW_COMPILER)}'`,
+    ),
   );
-  assert.match(message, /ln -sfn x86_64-w64-mingw32-cpp-posix .*x86_64-w64-mingw32-cpp/u);
-  assert.match(message, /For non-apt systems, install x86_64-w64-mingw32-gcc/u);
+  assert.ok(
+    message.includes(
+      `ln -sfn ${MINGW_PREPROCESSOR}-posix '${join(resolve(prefix), "usr", "bin", MINGW_PREPROCESSOR)}'`,
+    ),
+  );
+  assert.ok(message.includes(`For non-apt systems, install ${MINGW_COMPILER}`));
 
   const errors = [];
   const exitStatus = runWindowsGnuCheck({
