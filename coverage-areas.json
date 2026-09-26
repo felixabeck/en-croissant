@@ -74,6 +74,7 @@
         "src/utils/chessops.ts",
         "src/utils/clock.ts",
         "src/utils/misc.ts",
+        "src/utils/pgnComment.ts",
         "src/utils/phase.ts",
         "src/utils/repertoire.ts",
         "src/utils/score.ts",
