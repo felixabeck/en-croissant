@@ -59,7 +59,7 @@ use shakmaty::{
 };
 use specta::Type;
 use std::ffi::OsStr;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{
     collections::HashMap,
