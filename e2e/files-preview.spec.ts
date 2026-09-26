@@ -21,10 +21,11 @@ test("files-preview: the card fills the window and shows the whole board and its
 }) => {
     // A ChessBase evaluation profile ahead of the first move: machine data, never comment prose.
     const lexPgn = pgnFileCommands.lex_pgn.result as unknown[];
+    const firstMove = lexPgn.findIndex((token) => (token as { type: string }).type === "San");
     const withCommand = [
-        ...lexPgn.slice(0, 4),
+        ...lexPgn.slice(0, firstMove),
         { type: "Comment", value: "[%evp 0,34,61,53] sofort vertreiben" },
-        ...lexPgn.slice(4),
+        ...lexPgn.slice(firstMove),
     ];
     await mockScenario({
         commands: filesWorkspaceCommands([[repertoireFile]], {

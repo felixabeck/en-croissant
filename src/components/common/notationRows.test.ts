@@ -224,3 +224,54 @@ describe("variation starting comments", () => {
         ).toBe(false);
     });
 });
+
+describe("starting comments off a variation's first move", () => {
+    function commentBefore(rows: NotationRow[], node: TreeNode) {
+        const index = rows.findIndex(
+            (row) =>
+                (row.type === "moves" && row.moves.some((move) => move.node === node)) ||
+                (row.type === "table" && (row.white?.node === node || row.black?.node === node)),
+        );
+        return rows[index - 1];
+    }
+
+    test("inline, a promoted move keeps its comment in front of it mid-line", () => {
+        const tree = variedTree();
+        tree.nc6.startingComment = "Kept after promotion [%evp 1]";
+        const result = buildNotationRows(tree.root, {
+            showVariations: true,
+            showComments: true,
+            tableView: false,
+        });
+
+        expect(commentBefore(result.rows, tree.nc6)).toMatchObject({
+            type: "comment",
+            comment: "Kept after promotion",
+        });
+        const row = result.rows.find(
+            (r) => r.type === "moves" && r.moves.some((move) => move.node === tree.nc6),
+        );
+        expect(row?.type === "moves" && row.moves[0]).toMatchObject({
+            node: tree.nc6,
+            first: true,
+        });
+    });
+
+    test.each([
+        ["a white move", "bb5"],
+        ["a black move", "nc6"],
+    ] as const)("in table view, %s keeps its comment in front of its row", (_, key) => {
+        const tree = variedTree();
+        tree[key].startingComment = "Before this move";
+        const result = buildNotationRows(tree.root, {
+            showVariations: true,
+            showComments: true,
+            tableView: true,
+        });
+
+        expect(commentBefore(result.rows, tree[key])).toMatchObject({
+            type: "comment",
+            comment: "Before this move",
+        });
+    });
+});

@@ -15,39 +15,30 @@ export type SplitComment = {
     clock?: number;
 };
 
-function extractCommands(
-    comment: string,
-    isOpaque: (name: string) => boolean,
-): { text: string; commands: string[] } {
-    const commands: string[] = [];
-    const text = comment.replace(COMMAND, (match, name: string) => {
-        if (!isOpaque(name)) return match;
-        commands.push(match);
-        return " ";
-    });
-    return { text, commands };
+/** A modeled command chessops accepts: parsing it alone leaves no text behind. */
+function isWellFormedModeled(command: string): boolean {
+    return parseComment(command).text === "";
 }
 
 /**
  * Splits one PGN comment into its prose and its embedded commands. Commands the tree does not
  * model (`%evp`, `%emt`, `%timestamp`, …) are kept verbatim so a save writes them back; a modeled
- * command chessops refuses as malformed is kept the same way rather than shown as prose.
+ * command chessops refuses as malformed is kept the same way rather than shown as prose. One pass
+ * in source order, so the kept commands keep their order.
  */
 export function splitPgnComment(comment: string): SplitComment {
-    const opaque = extractCommands(comment, (name) => !MODELED_COMMANDS.has(name));
-    const parsed = parseComment(opaque.text);
-    const malformed = extractCommands(parsed.text, () => true);
+    const commands: string[] = [];
+    const rest = comment.replace(COMMAND, (match, name: string) => {
+        if (MODELED_COMMANDS.has(name) && isWellFormedModeled(match.trim())) return match;
+        commands.push(match);
+        return " ";
+    });
+    const parsed = parseComment(rest);
     return {
-        text: malformed.text.trim(),
-        commands: [...opaque.commands, ...malformed.commands].join("").trim(),
+        text: parsed.text,
+        commands: commands.join("").trim(),
         evaluation: parsed.evaluation,
         shapes: parsed.shapes,
         clock: parsed.clock,
     };
-}
-
-/** Appends one comment's commands; the space stands in for that comment's two braces. */
-export function joinCommands(current: string | undefined, next: string): string | undefined {
-    if (!next) return current;
-    return current ? `${current} ${next}` : next;
 }

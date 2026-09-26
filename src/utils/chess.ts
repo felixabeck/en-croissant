@@ -9,7 +9,7 @@ import { type Outcome, type Score, type Token } from "@/bindings";
 import { ANNOTATION_INFO, isBasicAnnotation, NAG_INFO } from "./annotation";
 import { parseSanOrUci, positionFromFen } from "./chessops";
 import { harmonicMean, isPrefix, mean } from "./misc";
-import { joinCommands, splitPgnComment } from "./pgnComment";
+import { splitPgnComment } from "./pgnComment";
 import { formatScore, getAccuracy, getCPLoss, INITIAL_SCORE } from "./score";
 import {
     createNode,
@@ -362,9 +362,10 @@ export async function getOpening(root: TreeNode, position: number[]): Promise<st
 
 function innerParsePGN(tokens: Token[], fen: string = INITIAL_FEN, halfMoves?: number): TreeState {
     const tree = defaultTree(fen);
-    let root = tree.root;
-    let prevNode = root;
-    if (halfMoves !== undefined) root.halfMoves = halfMoves;
+    // The cursor: the node the next comment, NAG or move attaches to.
+    let node = tree.root;
+    let prevNode = node;
+    if (halfMoves !== undefined) node.halfMoves = halfMoves;
 
     for (let i = 0; i < tokens.length; i++) {
         const token = tokens[i];
@@ -374,7 +375,7 @@ function innerParsePGN(tokens: Token[], fen: string = INITIAL_FEN, halfMoves?: n
 
             if (comment.evaluation) {
                 if (isPawns(comment.evaluation)) {
-                    root.score = {
+                    node.score = {
                         value: {
                             type: "cp",
                             value: comment.evaluation.pawns * 100,
@@ -382,7 +383,7 @@ function innerParsePGN(tokens: Token[], fen: string = INITIAL_FEN, halfMoves?: n
                         wdl: null,
                     };
                 } else {
-                    root.score = {
+                    node.score = {
                         value: {
                             type: "mate",
                             value: comment.evaluation.mate,
@@ -391,7 +392,7 @@ function innerParsePGN(tokens: Token[], fen: string = INITIAL_FEN, halfMoves?: n
                     };
                 }
                 // Paired with the score it came with, so a save writes `[%eval x,depth]` back.
-                root.depth = comment.evaluation.depth ?? null;
+                node.depth = comment.evaluation.depth ?? null;
             }
 
             if (comment.shapes.length > 0) {
@@ -400,16 +401,21 @@ function innerParsePGN(tokens: Token[], fen: string = INITIAL_FEN, halfMoves?: n
                     dest: makeSquare(shape.to),
                     brush: shape.color,
                 }));
-                root.shapes.push(...shapes);
+                node.shapes.push(...shapes);
             }
 
             if (comment.clock !== undefined) {
-                root.clock = comment.clock;
+                node.clock = comment.clock;
             }
 
-            root.comment = comment.text;
-            const commands = joinCommands(root.commands, comment.commands);
-            if (commands !== undefined) root.commands = commands;
+            node.comment = comment.text;
+            if (comment.commands) {
+                // The space stands in for the braces around this comment, so `commands` never
+                // grows past its source.
+                node.commands = node.commands
+                    ? `${node.commands} ${comment.commands}`
+                    : comment.commands;
+            }
         } else if (token.type === "ParenOpen") {
             const variation: Token[] = [];
             let subvariations = 0;
@@ -424,7 +430,7 @@ function innerParsePGN(tokens: Token[], fen: string = INITIAL_FEN, halfMoves?: n
                 i++;
             }
             // A comment before the variation's first move belongs to that move, not to the
-            // throwaway root the recursive parse would put it on.
+            // throwaway node the recursive parse would put it on.
             const startingComments: string[] = [];
             let leading = variation[0];
             while (leading?.type === "Comment") {
@@ -432,8 +438,8 @@ function innerParsePGN(tokens: Token[], fen: string = INITIAL_FEN, halfMoves?: n
                 variation.shift();
                 leading = variation[0];
             }
-            const newTree = innerParsePGN(variation, prevNode.fen, root.halfMoves - 1);
-            // The recursive root stands for `prevNode` itself, so every child it has is an
+            const newTree = innerParsePGN(variation, prevNode.fen, node.halfMoves - 1);
+            // The recursive node stands for `prevNode` itself, so every child it has is an
             // alternative from `prevNode` — a variation nested at the variation's first move included.
             const [first] = newTree.root.children;
             if (first && startingComments.length > 0) {
@@ -442,12 +448,12 @@ function innerParsePGN(tokens: Token[], fen: string = INITIAL_FEN, halfMoves?: n
             prevNode.children.push(...newTree.root.children);
         } else if (token.type === "ParenClose") {
         } else if (token.type === "Nag") {
-            root.annotations.push(NAG_INFO.get(token.value) || "");
-            root.annotations.sort((a, b) => {
+            node.annotations.push(NAG_INFO.get(token.value) || "");
+            node.annotations.sort((a, b) => {
                 return ANNOTATION_INFO[a].nag - ANNOTATION_INFO[b].nag;
             });
         } else if (token.type === "San") {
-            const [pos, error] = positionFromFen(root.fen);
+            const [pos, error] = positionFromFen(node.fen);
             if (error) {
                 continue;
             }
@@ -465,12 +471,12 @@ function innerParsePGN(tokens: Token[], fen: string = INITIAL_FEN, halfMoves?: n
                 fen: makeFen(pos.toSetup()),
                 move,
                 san,
-                halfMoves: root.halfMoves + 1,
+                halfMoves: node.halfMoves + 1,
             });
-            root.children.push(newTree);
+            node.children.push(newTree);
 
-            prevNode = root;
-            root = newTree;
+            prevNode = node;
+            node = newTree;
         } else if (token.type === "Outcome") {
             break;
         }

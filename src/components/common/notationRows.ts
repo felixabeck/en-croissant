@@ -139,6 +139,15 @@ function addComment(
     addRow(rows, rowForNode, { type: "comment", depth, comment });
 }
 
+/**
+ * The prose of a comment that precedes a move: a variation's opening comment, which stays on its
+ * move when the variation is promoted. Commands are never shown.
+ */
+function startingCommentText(node: TreeNode, options: NotationRowOptions): string {
+    if (!options.showComments || !node.startingComment) return "";
+    return splitPgnComment(node.startingComment).text;
+}
+
 function addInlineVariationRows(
     rows: NotationRow[],
     rowForNode: Map<TreeNode, number>,
@@ -193,14 +202,22 @@ function appendInlineTasks(
         let first = task.first;
         const moves: NotationMove[] = [];
 
-        const startingComment = parent.children[childIndex]?.startingComment;
-        if (task.first && options.showComments && startingComment) {
-            const text = splitPgnComment(startingComment).text;
-            if (text.length > 0) addComment(rows, rowForNode, task.depth, text);
-        }
-
         while (parent.children[childIndex]) {
             const node = parent.children[childIndex];
+            const starting = startingCommentText(node, options);
+            if (starting) {
+                // It precedes this move wherever the move is drawn, so the run breaks before it.
+                if (moves.length > 0) {
+                    addRow(rows, rowForNode, {
+                        type: "moves",
+                        depth: task.depth,
+                        moves: moves.splice(0),
+                        variationParent: task.variationParent,
+                    });
+                }
+                addComment(rows, rowForNode, task.depth, starting);
+                first = true;
+            }
             moves.push({ node, first });
             first = false;
 
@@ -315,6 +332,9 @@ function appendTableRows(
         const moveNumber = Math.ceil(child.halfMoves / 2);
         const variations = current.children.slice(1);
 
+        const childStarting = startingCommentText(child, options);
+        if (childStarting) addComment(rows, rowForNode, 0, childStarting);
+
         if (!isWhite) {
             const hasComment = options.showComments && child.comment.length > 0;
             const hasVariations = options.showVariations && variations.length > 0;
@@ -331,13 +351,15 @@ function appendTableRows(
         const whiteHasVariations = options.showVariations && variations.length > 0;
         const blackHasComment = !!black && options.showComments && black.comment.length > 0;
         const blackHasVariations = options.showVariations && blackVariations.length > 0;
-        const whiteBoundary = whiteHasComment || whiteHasVariations;
+        const blackStarting = black ? startingCommentText(black, options) : "";
+        const whiteBoundary = whiteHasComment || whiteHasVariations || blackStarting.length > 0;
         if (whiteBoundary) {
             addTableRow(rows, rowForNode, moveNumber, child, null, !!black);
             if (whiteHasComment) addComment(rows, rowForNode, 0, child.comment);
             if (whiteHasVariations) addInlineVariationRows(rows, rowForNode, current, 0, options);
 
             if (black) {
+                if (blackStarting) addComment(rows, rowForNode, 0, blackStarting);
                 addTableRow(rows, rowForNode, moveNumber, null, black, false);
                 if (blackHasComment) addComment(rows, rowForNode, 0, black.comment);
                 if (blackHasVariations) addInlineVariationRows(rows, rowForNode, child, 0, options);

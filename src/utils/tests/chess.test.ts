@@ -332,3 +332,37 @@ test("a variation nested at a variation's first move is kept with its starting c
     expect(afterE4.children[2].startingComment).toBe("[%evp 0,34]");
     expect(getPGN(root, { ...ALL_MARKUPS, headers: null })).toContain("({[%evp 0,34]} 1... e6");
 });
+
+test("kept commands keep their source order through a save", async () => {
+    const { root } = await parseTokens([
+        san("e4"),
+        comment("[%eval abc] [%evp 1] note [%emt 0:00:02]"),
+    ]);
+
+    expect(getPGN(root, { ...ALL_MARKUPS, headers: null })).toBe(
+        "1. e4 {[%eval abc] [%evp 1]  [%emt 0:00:02] note}",
+    );
+});
+
+test("several comments before a variation's first move all survive a save", async () => {
+    const { root } = await parseTokens([
+        san("e4"),
+        { type: "ParenOpen" },
+        comment("First"),
+        comment("[%evp 0,34] second"),
+        san("d4"),
+        { type: "ParenClose" },
+    ]);
+
+    expect(root.children[1].startingComment).toBe("First [%evp 0,34] second");
+    expect(getPGN(root, { ...ALL_MARKUPS, headers: null })).toContain(
+        "({First [%evp 0,34] second} 1. d4",
+    );
+});
+
+test("mixed adjacent opaque and malformed commands stay in order and within their source", async () => {
+    const source = "[%evp 1][%eval bad][%evp 2][%eval bad]";
+    const { root } = await parseTokens([san("e4"), comment(source)]);
+
+    expect(root.children[0].commands).toBe(source);
+});
