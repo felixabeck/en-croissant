@@ -2,6 +2,7 @@ import { act } from "react";
 import { MantineProvider } from "@mantine/core";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { installMatchMediaStub } from "@/tests/matchMedia";
 
 const mocks = vi.hoisted(() => ({
   clearProgress: vi.fn(),
@@ -22,19 +23,7 @@ vi.mock("@/bindings/generated", () => ({
 import DatabaseLoader from "./DatabaseLoader";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-Object.defineProperty(window, "matchMedia", {
-  writable: true,
-  value: () => ({
-    matches: false,
-    media: "",
-    onchange: null,
-    addEventListener: () => undefined,
-    removeEventListener: () => undefined,
-    addListener: () => undefined,
-    removeListener: () => undefined,
-    dispatchEvent: () => false,
-  }),
-});
+installMatchMediaStub();
 
 function renderLoader(isLoading: boolean, tab: string | null) {
   return act(async () => {

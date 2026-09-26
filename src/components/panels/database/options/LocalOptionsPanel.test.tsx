@@ -5,6 +5,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { activeTabAtom, currentLocalOptionsAtom, tabsAtom } from "@/state/atoms";
+import { installMatchMediaStub } from "@/tests/matchMedia";
 
 const mocks = vi.hoisted(() => ({ searchPosition: vi.fn() }));
 
@@ -36,19 +37,7 @@ class MockResizeObserver {
 }
 globalThis.ResizeObserver = MockResizeObserver;
 
-Object.defineProperty(window, "matchMedia", {
-  writable: true,
-  value: () => ({
-    matches: false,
-    media: "",
-    onchange: null,
-    addEventListener: () => undefined,
-    removeEventListener: () => undefined,
-    addListener: () => undefined,
-    removeListener: () => undefined,
-    dispatchEvent: () => false,
-  }),
-});
+installMatchMediaStub();
 
 const tabId = "22222222-2222-4222-8222-222222222222";
 const tab = {

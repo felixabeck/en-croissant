@@ -10,6 +10,7 @@ import { activeTabAtom, currentTabAtom, tabsAtom } from "@/state/atoms";
 import { cancellationError, TauriCommandError } from "@/platform/tauri";
 import type { Tab } from "@/state/workspaceTypes";
 import { defaultTree } from "@/utils/treeReducer";
+import { installMatchMediaStub } from "@/tests/matchMedia";
 import InfoPanel from "./InfoPanel";
 
 const mocks = vi.hoisted(() => ({
@@ -175,19 +176,7 @@ vi.mock("@/components/common/GameInfo", () => ({
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
-Object.defineProperty(window, "matchMedia", {
-  writable: true,
-  value: () => ({
-    matches: false,
-    media: "",
-    onchange: null,
-    addEventListener: () => undefined,
-    removeEventListener: () => undefined,
-    addListener: () => undefined,
-    removeListener: () => undefined,
-    dispatchEvent: () => false,
-  }),
-});
+installMatchMediaStub();
 
 class MockResizeObserver {
   observe() {}

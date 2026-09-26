@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { cancellationError } from "@/platform/tauri";
 import { tabStorage } from "@/state/store/tabStorage";
 import type { StampedGame } from "@/bindings";
+import { installMatchMediaStub } from "@/tests/matchMedia";
 
 const mocks = vi.hoisted(() => ({
   readGames: vi.fn(),
@@ -63,19 +64,7 @@ import FileCard from "./FileCard";
 import type { FileMetadata } from "./file";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-Object.defineProperty(window, "matchMedia", {
-  writable: true,
-  value: () => ({
-    matches: false,
-    media: "",
-    onchange: null,
-    addEventListener: () => undefined,
-    removeEventListener: () => undefined,
-    addListener: () => undefined,
-    removeListener: () => undefined,
-    dispatchEvent: () => false,
-  }),
-});
+installMatchMediaStub();
 
 function renderWithMantine(ui: React.ReactNode, root: Root) {
   return act(async () => {

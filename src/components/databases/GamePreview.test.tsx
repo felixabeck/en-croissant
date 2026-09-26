@@ -5,6 +5,7 @@ import { SWRConfig } from "swr";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { cancellationError } from "@/platform/tauri";
 import type { StampedGame } from "@/bindings";
+import { installMatchMediaStub } from "@/tests/matchMedia";
 
 const mocks = vi.hoisted(() => ({
   lexPgn: vi.fn(),
@@ -248,19 +249,7 @@ describe("GamePreviewWrapper", () => {
 });
 
 // MantineProvider reads the colour scheme through matchMedia, which jsdom lacks.
-Object.defineProperty(window, "matchMedia", {
-  writable: true,
-  value: () => ({
-    matches: false,
-    media: "",
-    onchange: null,
-    addEventListener: () => undefined,
-    removeEventListener: () => undefined,
-    addListener: () => undefined,
-    removeListener: () => undefined,
-    dispatchEvent: () => false,
-  }),
-});
+installMatchMediaStub();
 
 // jsdom has no ResizeObserver. This one lets a test report the size of an observed element.
 const observed = new Map<Element, ResizeObserverCallback>();

@@ -19,6 +19,7 @@ import {
   trackPuzzleTimeAtom,
 } from "@/state/atoms";
 import { TauriCommandError } from "@/platform/tauri";
+import { installMatchMediaStub } from "@/tests/matchMedia";
 import Puzzles from "./Puzzles";
 
 const mocks = vi.hoisted(() => ({
@@ -89,18 +90,9 @@ vi.mock("../common/MoveControls", () => ({ default: () => null }));
 vi.mock("../common/ChallengeHistory", () => ({ default: () => null }));
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-Object.defineProperty(window, "matchMedia", {
-  writable: true,
-  value: (query: string) => ({
-    matches: query.includes("prefers-reduced-motion"),
-    media: query,
-    onchange: null,
-    addEventListener: () => undefined,
-    removeEventListener: () => undefined,
-    addListener: () => undefined,
-    removeListener: () => undefined,
-    dispatchEvent: () => false,
-  }),
+installMatchMediaStub({
+  matches: (query) => query.includes("prefers-reduced-motion"),
+  media: (query) => query,
 });
 class ResizeObserverStub {
   observe() {}

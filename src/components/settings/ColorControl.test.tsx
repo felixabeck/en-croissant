@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, test, vi } from "vitest";
 import { DEFAULT_THEME, MantineProvider, mergeMantineTheme } from "@mantine/core";
 import { supportedLocales } from "@/i18n";
+import { installMatchMediaStub } from "@/tests/matchMedia";
 import { createAppTheme } from "@/styles/theme";
 import { catalogueI18n } from "@/tests/catalogues";
 import ColorControl from "./ColorControl";
@@ -35,19 +36,7 @@ vi.mock("@mantine/core", async () => {
 });
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-Object.defineProperty(window, "matchMedia", {
-  writable: true,
-  value: vi.fn().mockReturnValue({
-    matches: false,
-    media: "",
-    onchange: null,
-    addListener: vi.fn(),
-    removeListener: vi.fn(),
-    addEventListener: vi.fn(),
-    removeEventListener: vi.fn(),
-    dispatchEvent: vi.fn(),
-  }),
-});
+installMatchMediaStub({ trackCalls: true });
 
 const theme = mergeMantineTheme(
   DEFAULT_THEME,

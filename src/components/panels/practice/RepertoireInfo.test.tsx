@@ -9,6 +9,7 @@ import type { TreeStore } from "@/state/store/tree";
 import { activeTabAtom, referenceDbAtom, tabsAtom } from "@/state/atoms";
 import { createNode, defaultTree, getBoardState } from "@/utils/treeReducer";
 import { parseUci } from "chessops";
+import { installMatchMediaStub } from "@/tests/matchMedia";
 import RepertoireInfo from "./RepertoireInfo";
 
 const mocks = vi.hoisted(() => ({
@@ -31,19 +32,7 @@ vi.mock("@/utils/repertoire", async () => {
 });
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-Object.defineProperty(window, "matchMedia", {
-  writable: true,
-  value: () => ({
-    matches: false,
-    media: "",
-    onchange: null,
-    addEventListener: () => undefined,
-    removeEventListener: () => undefined,
-    addListener: () => undefined,
-    removeListener: () => undefined,
-    dispatchEvent: () => false,
-  }),
-});
+installMatchMediaStub();
 class ResizeObserverStub {
   observe() {}
   unobserve() {}

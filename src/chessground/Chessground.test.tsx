@@ -2,6 +2,7 @@ import { act, createRef } from "react";
 import { createRoot } from "react-dom/client";
 import { MantineProvider } from "@mantine/core";
 import { afterEach, expect, test, vi } from "vitest";
+import { installMatchMediaStub } from "@/tests/matchMedia";
 
 const api = {
   destroy: vi.fn(),
@@ -15,19 +16,7 @@ const api = {
 const createChessground = vi.fn(() => api);
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-Object.defineProperty(window, "matchMedia", {
-  writable: true,
-  value: () => ({
-    matches: false,
-    media: "",
-    onchange: null,
-    addEventListener: () => undefined,
-    removeEventListener: () => undefined,
-    addListener: () => undefined,
-    removeListener: () => undefined,
-    dispatchEvent: () => false,
-  }),
-});
+installMatchMediaStub();
 
 vi.mock("@lichess-org/chessground", () => ({ Chessground: createChessground }));
 
