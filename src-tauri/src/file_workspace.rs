@@ -732,6 +732,7 @@ fn create_workspace_file_blocking(
     let parent_target = mutation_target(pgn_path_authority, &parent)?;
     ensure_registered_descendant(&root, &parent_target)?;
     let parent_dir = parent_target.directory()?;
+    let destination_identity = parent_target.identity;
     let filename = pgn_name(&name)?;
     let target_leaf = std::ffi::OsString::from(&filename);
     let target = parent_target.path().join(&filename);
@@ -767,6 +768,14 @@ fn create_workspace_file_blocking(
         parent_dir,
         &target_leaf,
         || {
+            let current_root = mutation_target(pgn_path_authority, &workspace)?;
+            let current_parent = mutation_target(pgn_path_authority, &parent)?;
+            ensure_registered_descendant(&current_root, &current_parent)?;
+            if current_parent.identity != destination_identity {
+                return Err(Error::Conflict(
+                    "workspace destination changed during file creation".into(),
+                ));
+            }
             if cancellation.is_cancelled() {
                 return Err(Error::Cancellation);
             }
@@ -3532,9 +3541,12 @@ mod tests {
 
     type WorkspaceCopyTask = tokio::task::JoinHandle<(Result<WorkspaceEntry, Error>, usize)>;
 
+    // Mirrors the flat argument list of `create_workspace_file_blocking` plus the hook it installs.
+    #[allow(clippy::too_many_arguments)]
     fn create_copy_with_chunk_hook(
         state: &AppState,
         workspace: FileWorkspaceHandle,
+        parent: FileWorkspaceHandle,
         source: FileWorkspaceHandle,
         name: &str,
         revision: String,
@@ -3548,7 +3560,7 @@ mod tests {
             pgn::set_read_chunk_hook(Some(hook));
             let result = create_workspace_file_blocking(
                 workspace.clone(),
-                workspace,
+                parent,
                 name,
                 WorkspaceMetadata::default(),
                 WorkspaceFileContent::Copy { source, revision },
@@ -3730,6 +3742,7 @@ mod tests {
         let (hook, entered, release) = pgn::BoundedHook::new();
         let copy = create_copy_with_chunk_hook(
             &state,
+            workspace.clone(),
             workspace,
             source,
             "cancelled",
@@ -3751,6 +3764,47 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn copy_workspace_file_refuses_a_destination_parent_moved_outside_the_workspace() {
+        let (directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("workspace root");
+        let source_path = root.join("source.pgn");
+        fs::write(&source_path, vec![b'x'; 3 * 64 * 1024]).expect("write multi-chunk source");
+        let source = registered_child_file(&state, &workspace, &source_path);
+        let (destination_path, destination_parent) =
+            registered_child_directory(&state, &workspace, "destination");
+        let moved_destination_path = directory.path().join("moved-destination");
+        let revision = source_revision(&state, &source);
+        let (hook, entered, release) = pgn::BoundedHook::new();
+        let copy = create_copy_with_chunk_hook(
+            &state,
+            workspace,
+            destination_parent,
+            source,
+            "escaped",
+            revision,
+            CancellationToken::new(),
+            hook,
+        );
+        let copy = wait_for_copy_chunk(entered, copy, "copy reaches first chunk").await;
+
+        fs::rename(&destination_path, &moved_destination_path).expect("move destination outside");
+        release.send(()).expect("release first chunk");
+        let (result, chunks) = copy.await.expect("join blocking workspace copy");
+
+        assert!(result.is_err(), "copy unexpectedly committed: {result:?}");
+        assert_eq!(
+            chunks, 3,
+            "copy must reach precommit after all source chunks"
+        );
+        for destination in [&destination_path, &moved_destination_path] {
+            assert!(!destination.join("escaped.pgn").exists());
+            assert!(!destination.join("escaped.info").exists());
+        }
+        assert_workspace_entry_names(&root, &["source.pgn"]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn copy_workspace_file_conflicts_when_source_is_truncated_mid_copy() {
         let (_directory, state, workspace) = workspace_state();
         let root = workspace_root(&state.pgn_path_authority, &workspace).expect("workspace root");
@@ -3761,6 +3815,7 @@ mod tests {
         let (hook, entered, release) = pgn::BoundedHook::new();
         let copy = create_copy_with_chunk_hook(
             &state,
+            workspace.clone(),
             workspace,
             source,
             "truncated",
@@ -3800,6 +3855,7 @@ mod tests {
         let (hook, entered, release) = pgn::BoundedHook::new();
         let copy = create_copy_with_chunk_hook(
             &state,
+            workspace.clone(),
             workspace,
             source,
             "changed",
@@ -3843,6 +3899,7 @@ mod tests {
         let (hook, entered, release) = pgn::BoundedHook::new();
         let copy = create_copy_with_chunk_hook(
             &state,
+            workspace.clone(),
             workspace,
             source,
             "existing",

@@ -100,6 +100,8 @@ pub struct WriteStamp {
 const MAX_LINE_LEN: usize = 1024 * 1024;
 const MAX_PAGE_LEN: usize = 1_000;
 const MAX_PGN_BYTES: usize = 10 * 1024 * 1024;
+/// Size of each PGN read and copy chunk.
+const IO_CHUNK_LEN: usize = 64 * 1024;
 const MAX_CACHE_ENTRIES: usize = 128;
 const MAX_CACHE_BYTES: usize = 4 * 1024 * 1024;
 
@@ -326,7 +328,7 @@ impl PgnRepository {
         Ok(())
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn set_count_hook(&self, hook: Option<BoundedHook>) -> Result<(), Error> {
         self.inner()?.count_hook = hook;
         Ok(())
@@ -712,7 +714,7 @@ fn read_range_bytes(
         if cancellation.is_cancelled() {
             return Err(Error::Cancellation);
         }
-        let chunk = (len - offset).min(64 * 1024);
+        let chunk = (len - offset).min(IO_CHUNK_LEN);
         file.read_exact(&mut data[offset..offset + chunk])?;
         offset += chunk;
         #[cfg(test)]
@@ -809,7 +811,7 @@ pub(crate) fn copy_range(
         .ok_or_else(|| Error::Conflict("invalid PGN byte range".into()))?;
     source.seek(SeekFrom::Start(start))?;
     let mut remaining = len;
-    let mut buffer = [0; 64 * 1024];
+    let mut buffer = [0; IO_CHUNK_LEN];
     while remaining > 0 {
         if cancellation.is_cancelled() {
             return Err(Error::Cancellation);
