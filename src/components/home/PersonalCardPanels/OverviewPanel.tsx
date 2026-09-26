@@ -15,6 +15,7 @@ import type { NameType, ValueType } from "recharts/types/component/DefaultToolti
 import type { DailyStatsData, PlayerGameInfo } from "@/bindings";
 import { getTimeControl } from "@/utils/timeControl";
 import ResultsChart from "./ResultsChart";
+import { summarizeDailyStats } from "./dailyStatsSummary";
 import TimeControlSelector from "./TimeControlSelector";
 import WebsiteAccountSelector from "./WebsiteAccountSelector";
 
@@ -61,27 +62,17 @@ function mergeYears(data: { name: string; count: number }[]): { name: string; co
   }));
 }
 
-function extractGameStats(dailyStats: DailyStatsData[]) {
-  let won = 0;
-  let draw = 0;
-  let lost = 0;
-
+function extractMonthlyStats(dailyStats: DailyStatsData[]) {
   const monthCounts: { [key: string]: number } = {};
   for (const day of dailyStats) {
-    won += day.won;
-    draw += day.drawn;
-    lost += day.lost;
     const monthString = day.date.slice(0, 7).replace(".", "-");
     monthCounts[monthString] = (monthCounts[monthString] || 0) + day.won + day.drawn + day.lost;
   }
 
-  const total = won + draw + lost;
-  const dataPerMonth = Object.entries(monthCounts).map(([month, count]) => ({
+  return Object.entries(monthCounts).map(([month, count]) => ({
     name: month,
     count,
   }));
-
-  return { total, won, draw, lost, dataPerMonth };
 }
 
 function OverviewPanel({
@@ -109,7 +100,8 @@ function OverviewPanel({
           timeControl === "any" ||
           getTimeControl(website, day.time_control) === timeControl,
       ) ?? [];
-  const { total, won, draw, lost, dataPerMonth } = extractGameStats(dailyStats);
+  const { total, won, draw, lost } = summarizeDailyStats(dailyStats);
+  const dataPerMonth = extractMonthlyStats(dailyStats);
 
   return (
     <Stack>

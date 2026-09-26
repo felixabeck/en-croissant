@@ -45,13 +45,17 @@ vi.mock("./TimeControlSelector", () => ({ default: () => null }));
 vi.mock("./WebsiteAccountSelector", () => ({ default: () => null }));
 vi.mock("./DateRangeTabs", () => ({
   DateRange: {
-    SevenDays: "7 days",
-    ThirtyDays: "30 days",
-    NinetyDays: "90 days",
-    OneYear: "1 year",
-    AllTime: "All time",
+    SevenDays: "7d",
+    ThirtyDays: "30d",
+    NinetyDays: "90d",
+    OneYear: "1y",
+    AllTime: "all",
   },
-  default: () => null,
+  default: ({ onTimeRangeChange }: { onTimeRangeChange: (value: string | null) => void }) => (
+    <button data-testid="select-seven-days" onClick={() => onTimeRangeChange("7d")}>
+      Seven days
+    </button>
+  ),
 }));
 vi.mock("./TimeRangeSlider", () => ({ default: () => null }));
 vi.mock("@/platform/tauri", () => ({ tauri: { getOpeningFromName: vi.fn() } }));
@@ -212,6 +216,18 @@ test("Ratings sums duplicate daily keys and takes the highest rating for each da
   expect(container.textContent).toContain("6 Common.Games");
   expect(container.querySelector("[data-testid='result-counts']")?.textContent).toBe("3:1:2");
   expect(container.querySelector("[data-testid='rating-data']")?.textContent).toBe("2820|2810");
+});
+
+test("Ratings excludes out-of-range days from the summary and rating series", async () => {
+  await render(<RatingsPanel playerName="Magnus" info={duplicatedDailyStatistics} isDatabase />);
+
+  await act(async () => {
+    container.querySelector<HTMLButtonElement>("[data-testid='select-seven-days']")?.click();
+  });
+
+  expect(container.textContent).toContain("1 Common.Games");
+  expect(container.querySelector("[data-testid='result-counts']")?.textContent).toBe("0:0:1");
+  expect(container.querySelector("[data-testid='rating-data']")?.textContent).toBe("2810");
 });
 
 test("Openings sums duplicate opening keys and retains each colour's results", async () => {

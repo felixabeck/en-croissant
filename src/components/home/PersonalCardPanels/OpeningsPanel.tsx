@@ -73,13 +73,10 @@ function OpeningsPanel({
           getTimeControl(website!, g.time_control) === timeControl,
       ) ?? [];
 
-  const gameCount = (rows: OpeningStatsData[]) =>
-    rows.reduce((total, row) => total + row.won + row.drawn + row.lost, 0);
-  const whiteGames = gameCount(openingData.filter((g) => g.is_player_white));
-  const blackGames = gameCount(openingData.filter((g) => !g.is_player_white));
-
   const whiteOpenings = aggregateOpenings(openingData, "white");
   const blackOpenings = aggregateOpenings(openingData, "black");
+  const whiteGames = whiteOpenings.reduce((total, opening) => total + opening.games, 0);
+  const blackGames = blackOpenings.reduce((total, opening) => total + opening.games, 0);
 
   const fontSize = useAtomValue(fontSizeAtom);
 

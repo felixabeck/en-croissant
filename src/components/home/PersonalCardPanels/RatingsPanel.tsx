@@ -14,6 +14,7 @@ import dayjs from "dayjs";
 import type { PlayerGameInfo } from "@/bindings";
 import { getTimeControl } from "@/utils/timeControl";
 import DateRangeTabs, { DateRange } from "./DateRangeTabs";
+import { summarizeDailyStats } from "./dailyStatsSummary";
 import {
   gradientStops,
   linearGradientProps,
@@ -101,13 +102,7 @@ function RatingsPanel({
           );
         }) ?? [];
 
-    const totalGamesCount = filteredDailyStats.reduce(
-      (sum, day) => sum + day.won + day.drawn + day.lost,
-      0,
-    );
-    const wonCount = filteredDailyStats.reduce((sum, day) => sum + day.won, 0);
-    const drawCount = filteredDailyStats.reduce((sum, day) => sum + day.drawn, 0);
-    const lostCount = filteredDailyStats.reduce((sum, day) => sum + day.lost, 0);
+    const summary = summarizeDailyStats(filteredDailyStats);
 
     const ratingData = (() => {
       const map = new Map<number, { date: number; player_elo: number }>();
@@ -121,12 +116,7 @@ function RatingsPanel({
     })();
 
     return [
-      {
-        games: totalGamesCount,
-        won: wonCount,
-        draw: drawCount,
-        lost: lostCount,
-      },
+      { games: summary.total, won: summary.won, draw: summary.draw, lost: summary.lost },
       ratingData,
     ];
   }, [info.site_stats_data, website, account, timeControl, timeRange, dates]);
