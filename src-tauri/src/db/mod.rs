@@ -100,7 +100,7 @@ const DELETE_INDEXES_SQL: &str = include_str!("delete_indexes.sql");
 
 /// Established cap for replaying plies during statistics opening lookup.
 const OPENING_STATISTICS_PLY_LIMIT: usize = 55;
-const PLAYER_STATISTICS_BATCH_MOVE_BYTE_BUDGET: usize = 1024 * 1024;
+const PLAYER_STATISTICS_BATCH_ROW_BYTE_BUDGET: usize = 1024 * 1024;
 const PLAYER_STATISTICS_BATCH_ROW_LIMIT: usize = 256;
 
 fn cancellation_check(cancellation: &CancellationToken) -> Result<(), Error> {
@@ -2152,32 +2152,38 @@ fn get_players_game_info_blocking<R: tauri::Runtime>(
         .filter(games::white_id.eq(id).or(games::black_id.eq(id)))
         .filter(games::fen.is_null());
 
-    let total_rows: i64 = sqlite_cancellation::with_sqlite_cancellation(cancellation, || {
-        base_query.count().get_result(db)
-    })?;
+    let emit_progress = |kept_rows, total_rows| {
+        if let Some(lease) = &lease {
+            let _ = update_progress_with_state(
+                &app.state::<AppState>().progress_state,
+                &app,
+                lease,
+                (player_statistics_progress_fraction(kept_rows, total_rows) * 100_f64) as f32,
+                ProgressState::Running,
+            );
+        }
+    };
 
-    let sql_query = base_query.select((
-        games::white_id,
-        games::black_id,
-        games::result,
-        games::date,
-        games::moves,
-        games::white_elo,
-        games::black_elo,
-        games::time_control,
-        sites::name,
-        players::name,
-    ));
-
-    type GameInfo = PlayerStatisticsRow;
     let mut accumulator = PlayerStatisticsAccumulator::default();
     let mut kept_rows = 0usize;
-
-    sqlite_cancellation::with_sqlite_cancellation(cancellation, || {
-        let rows = sql_query.load_iter::<GameInfo, DefaultLoadingMode>(db)?;
+    let total_rows = sqlite_cancellation::with_sqlite_cancellation(cancellation, || {
+        let total_rows = base_query.count().get_result::<i64>(db)?;
+        let sql_query = base_query.select((
+            games::white_id,
+            games::black_id,
+            games::result,
+            games::date,
+            games::moves,
+            games::white_elo,
+            games::black_elo,
+            games::time_control,
+            sites::name,
+            players::name,
+        ));
+        let rows = sql_query.load_iter::<PlayerStatisticsRow, DefaultLoadingMode>(db)?;
         process_player_statistics_batches(
             rows,
-            PLAYER_STATISTICS_BATCH_MOVE_BYTE_BUDGET,
+            PLAYER_STATISTICS_BATCH_ROW_BYTE_BUDGET,
             PLAYER_STATISTICS_BATCH_ROW_LIMIT,
             cancellation,
             |batch| {
@@ -2191,35 +2197,19 @@ fn get_players_game_info_blocking<R: tauri::Runtime>(
                     accumulator.add(row);
                     kept_rows = kept_rows.saturating_add(1);
                     if (kept_rows - 1).is_multiple_of(1000) {
-                        if let Some(lease) = &lease {
-                            let _ = update_progress_with_state(
-                                &app.state::<AppState>().progress_state,
-                                &app,
-                                lease,
-                                (player_statistics_progress_fraction(kept_rows, total_rows)
-                                    * 100_f64) as f32,
-                                ProgressState::Running,
-                            );
-                        }
+                        emit_progress(kept_rows, total_rows);
                     }
                 }
 
                 Ok(())
             },
-        )
+        )?;
+        Ok::<i64, Error>(total_rows)
     })?;
 
     cancellation_check(cancellation)?;
     if kept_rows > 0 {
-        if let Some(lease) = &lease {
-            let _ = update_progress_with_state(
-                &app.state::<AppState>().progress_state,
-                &app,
-                lease,
-                (player_statistics_progress_fraction(kept_rows, total_rows) * 100_f64) as f32,
-                ProgressState::Running,
-            );
-        }
+        emit_progress(kept_rows, total_rows);
     }
 
     let game_info = accumulator.into_player_game_info();
@@ -2234,18 +2224,31 @@ fn get_players_game_info_blocking<R: tauri::Runtime>(
     Ok(game_info)
 }
 
-type PlayerStatisticsRow = (
-    i32,
-    i32,
-    Option<String>,
-    Option<String>,
-    Vec<u8>,
-    Option<i32>,
-    Option<i32>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-);
+#[derive(Queryable)]
+struct PlayerStatisticsRow {
+    white_id: i32,
+    black_id: i32,
+    outcome: Option<String>,
+    date: Option<String>,
+    moves: Vec<u8>,
+    white_elo: Option<i32>,
+    black_elo: Option<i32>,
+    time_control: Option<String>,
+    site: Option<String>,
+    player: Option<String>,
+}
+
+impl PlayerStatisticsRow {
+    fn owned_heap_bytes(&self) -> usize {
+        self.moves
+            .len()
+            .saturating_add(self.outcome.as_ref().map_or(0, String::len))
+            .saturating_add(self.date.as_ref().map_or(0, String::len))
+            .saturating_add(self.time_control.as_ref().map_or(0, String::len))
+            .saturating_add(self.site.as_ref().map_or(0, String::len))
+            .saturating_add(self.player.as_ref().map_or(0, String::len))
+    }
+}
 
 struct EvaluatedPlayerStatisticsRow {
     site: String,
@@ -2280,6 +2283,10 @@ struct PlayerStatisticsDailyAccumulator {
     max_player_elo: i32,
 }
 
+/// The result holds one record per distinct (site, player, time_control, date) and per distinct
+/// (site, player, time_control, colour, opening). Apart from the Lichess URL normalisation,
+/// site and time_control are kept verbatim, so a database whose games carry per-game Site or
+/// TimeControl strings yields one small record per game. Move blobs are never retained.
 #[derive(Default)]
 struct PlayerStatisticsAccumulator {
     daily: HashMap<(String, String, String, String), PlayerStatisticsDailyAccumulator>,
@@ -2319,13 +2326,7 @@ impl PlayerStatisticsAccumulator {
         let mut grouped: HashMap<(String, String), SiteStatsData> = HashMap::new();
 
         for ((site, player, time_control, date), daily) in self.daily {
-            let group = grouped
-                .entry((site.clone(), player.clone()))
-                .or_insert_with(|| SiteStatsData {
-                    site: site.clone(),
-                    player: player.clone(),
-                    ..SiteStatsData::default()
-                });
+            let group = player_statistics_site_group(&mut grouped, &site, &player);
             group.daily.push(DailyStatsData {
                 date,
                 time_control,
@@ -2337,13 +2338,7 @@ impl PlayerStatisticsAccumulator {
         }
 
         for ((site, player, time_control, is_player_white, opening), outcomes) in self.openings {
-            let group = grouped
-                .entry((site.clone(), player.clone()))
-                .or_insert_with(|| SiteStatsData {
-                    site: site.clone(),
-                    player: player.clone(),
-                    ..SiteStatsData::default()
-                });
+            let group = player_statistics_site_group(&mut grouped, &site, &player);
             group.openings.push(OpeningStatsData {
                 time_control,
                 is_player_white,
@@ -2378,59 +2373,62 @@ impl PlayerStatisticsAccumulator {
     }
 }
 
+fn player_statistics_site_group<'a>(
+    grouped: &'a mut HashMap<(String, String), SiteStatsData>,
+    site: &str,
+    player: &str,
+) -> &'a mut SiteStatsData {
+    grouped
+        .entry((site.to_string(), player.to_string()))
+        .or_insert_with(|| SiteStatsData {
+            site: site.to_string(),
+            player: player.to_string(),
+            ..SiteStatsData::default()
+        })
+}
+
 fn evaluate_player_statistics_row(
     row: &PlayerStatisticsRow,
     id: i32,
     cancellation: &CancellationToken,
 ) -> Result<Option<EvaluatedPlayerStatisticsRow>, Error> {
     cancellation_check(cancellation)?;
-    let (
-        white_id,
-        black_id,
-        outcome,
-        date,
-        moves,
-        white_elo,
-        black_elo,
-        time_control,
-        site,
-        player,
-    ) = row;
-    let is_white = *white_id == id;
-    let is_black = *black_id == id;
+    let is_white = row.white_id == id;
+    let is_black = row.black_id == id;
     if !is_white && !is_black {
         return Ok(None);
     }
 
-    let Some(player) = player.clone() else {
+    let Some(player) = row.player.clone() else {
         return Ok(None);
     };
-    let Some(date) = date.clone() else {
+    let Some(date) = row.date.clone() else {
         return Ok(None);
     };
-    let Some(result) = outcome
+    let Some(result) = row
+        .outcome
         .as_deref()
         .and_then(|outcome| GameOutcome::from_str(outcome, is_white))
     else {
         return Ok(None);
     };
     let player_elo = if is_white {
-        if is_black && black_elo.is_none() {
+        if is_black && row.black_elo.is_none() {
             // Preserve the prior eligibility rule for malformed self-play rows: both
             // appearances of the selected player must carry a rating.
             return Ok(None);
         }
-        let Some(white_elo) = *white_elo else {
+        let Some(white_elo) = row.white_elo else {
             return Ok(None);
         };
         white_elo
     } else {
-        let Some(black_elo) = *black_elo else {
+        let Some(black_elo) = row.black_elo else {
             return Ok(None);
         };
         black_elo
     };
-    let Some(site) = site.as_deref().map(|site| {
+    let Some(site) = row.site.as_deref().map(|site| {
         if site.starts_with("https://lichess.org/") {
             "Lichess".to_string()
         } else {
@@ -2440,7 +2438,7 @@ fn evaluate_player_statistics_row(
         return Ok(None);
     };
 
-    let move_bytes = match try_iter_mainline_move_bytes_cancellable(moves, cancellation) {
+    let move_bytes = match try_iter_mainline_move_bytes_cancellable(&row.moves, cancellation) {
         Ok(move_bytes) => move_bytes,
         Err(Error::Cancellation) => return Err(Error::Cancellation),
         Err(_) => return Ok(None),
@@ -2469,7 +2467,7 @@ fn evaluate_player_statistics_row(
         is_player_white: is_white,
         player_elo,
         result,
-        time_control: time_control.clone().unwrap_or_default(),
+        time_control: row.time_control.clone().unwrap_or_default(),
         opening,
     }))
 }
@@ -2477,7 +2475,7 @@ fn evaluate_player_statistics_row(
 fn next_player_statistics_batch<I>(
     rows: &mut I,
     pending: &mut Option<PlayerStatisticsRow>,
-    move_byte_budget: usize,
+    row_byte_budget: usize,
     row_count_limit: usize,
 ) -> Result<Option<Vec<PlayerStatisticsRow>>, Error>
 where
@@ -2485,7 +2483,7 @@ where
 {
     let row_count_limit = row_count_limit.max(1);
     let mut batch = Vec::with_capacity(row_count_limit.min(PLAYER_STATISTICS_BATCH_ROW_LIMIT));
-    let mut move_bytes = 0usize;
+    let mut row_bytes = 0usize;
 
     loop {
         let row = match pending.take() {
@@ -2495,20 +2493,20 @@ where
                 None => break,
             },
         };
-        let row_move_bytes = row.4.len();
+        let row_heap_bytes = row.owned_heap_bytes();
 
         if !batch.is_empty()
             && (batch.len() >= row_count_limit
-                || move_bytes.saturating_add(row_move_bytes) > move_byte_budget)
+                || row_bytes.saturating_add(row_heap_bytes) > row_byte_budget)
         {
             *pending = Some(row);
             break;
         }
 
-        move_bytes = move_bytes.saturating_add(row_move_bytes);
+        row_bytes = row_bytes.saturating_add(row_heap_bytes);
         batch.push(row);
-        if row_move_bytes > move_byte_budget
-            || move_bytes >= move_byte_budget
+        if row_heap_bytes > row_byte_budget
+            || row_bytes >= row_byte_budget
             || batch.len() >= row_count_limit
         {
             break;
@@ -2524,7 +2522,7 @@ where
 
 fn process_player_statistics_batches<I, F>(
     rows: I,
-    move_byte_budget: usize,
+    row_byte_budget: usize,
     row_count_limit: usize,
     cancellation: &CancellationToken,
     mut process_batch: F,
@@ -2540,7 +2538,7 @@ where
         let Some(batch) = next_player_statistics_batch(
             &mut rows,
             &mut pending,
-            move_byte_budget,
+            row_byte_budget,
             row_count_limit,
         )?
         else {
@@ -4357,6 +4355,16 @@ mod tests {
         );
     }
 
+    fn measure_player_statistics_on_one_rayon_thread<R: Send>(
+        operation: impl FnOnce() -> R + Send,
+    ) -> (R, usize) {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap();
+        pool.install(|| allocation_probe::measure(operation))
+    }
+
     #[test]
     fn player_statistics_large_move_corpus_has_a_bounded_heap_peak() {
         let (_dir, app, handle, database) = blocking_database_case();
@@ -4366,22 +4374,16 @@ mod tests {
         let sanity_peak =
             allocation_probe::assert_detects_owned_collection(corpus_bytes, threshold);
         let state = app.state::<AppState>();
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(1)
-            .build()
-            .unwrap();
-        let (result, peak) = pool.install(|| {
-            allocation_probe::measure(|| {
-                get_players_game_info_blocking(
-                    &state.pgn_path_authority,
-                    &state.database_repository,
-                    handle,
-                    player_id,
-                    app.clone(),
-                    None,
-                    &CancellationToken::new(),
-                )
-            })
+        let (result, peak) = measure_player_statistics_on_one_rayon_thread(|| {
+            get_players_game_info_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                handle,
+                player_id,
+                app.clone(),
+                None,
+                &CancellationToken::new(),
+            )
         });
         let info = result.unwrap();
         assert!(
@@ -4408,22 +4410,16 @@ mod tests {
         let sanity_peak =
             allocation_probe::assert_detects_owned_collection(2 * THRESHOLD, THRESHOLD);
         let state = app.state::<AppState>();
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(1)
-            .build()
-            .unwrap();
-        let (result, peak) = pool.install(|| {
-            allocation_probe::measure(|| {
-                get_players_game_info_blocking(
-                    &state.pgn_path_authority,
-                    &state.database_repository,
-                    handle,
-                    player_id,
-                    app.clone(),
-                    None,
-                    &CancellationToken::new(),
-                )
-            })
+        let (result, peak) = measure_player_statistics_on_one_rayon_thread(|| {
+            get_players_game_info_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                handle,
+                player_id,
+                app.clone(),
+                None,
+                &CancellationToken::new(),
+            )
         });
         let info = result.unwrap();
         assert!(
@@ -8446,7 +8442,7 @@ mod tests {
     }
 
     #[test]
-    fn player_statistics_preserve_ratings_results_and_output_normalization() {
+    fn player_statistics_preserve_ratings_results_and_site_metadata() {
         let (_dir, app, handle, database) = blocking_database_case();
         let player_id = {
             let state = app.state::<AppState>();
@@ -8798,22 +8794,22 @@ mod tests {
     }
 
     fn player_statistics_batch_row(moves: Vec<u8>) -> PlayerStatisticsRow {
-        (
-            1,
-            2,
-            Some("1-0".into()),
-            Some("2026.09.01".into()),
+        PlayerStatisticsRow {
+            white_id: 1,
+            black_id: 2,
+            outcome: None,
+            date: None,
             moves,
-            Some(2_000),
-            Some(1_900),
-            Some("600+0".into()),
-            Some("Site".into()),
-            Some("Player".into()),
-        )
+            white_elo: Some(2_000),
+            black_elo: Some(1_900),
+            time_control: None,
+            site: None,
+            player: None,
+        }
     }
 
     #[test]
-    fn player_statistics_batches_close_at_the_move_byte_budget() {
+    fn player_statistics_batches_close_at_the_row_byte_budget() {
         let mut rows = vec![
             Ok(player_statistics_batch_row(vec![0; 6])),
             Ok(player_statistics_batch_row(vec![0; 5])),
@@ -8825,14 +8821,50 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(first.len(), 1);
-        assert_eq!(first[0].4.len(), 6);
+        assert_eq!(first[0].moves.len(), 6);
         let second = next_player_statistics_batch(&mut rows, &mut pending, 10, 10)
             .unwrap()
             .unwrap();
         assert_eq!(second.len(), 1);
-        assert_eq!(second[0].4.len(), 5);
+        assert_eq!(second[0].moves.len(), 5);
         assert!(
             next_player_statistics_batch(&mut rows, &mut pending, 10, 10)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn player_statistics_batches_count_text_metadata_in_the_row_byte_budget() {
+        const ROW_BYTE_BUDGET: usize = 100;
+
+        let text_row = || {
+            let mut row = player_statistics_batch_row(vec![0]);
+            row.outcome = Some("r".repeat(10));
+            row.date = Some("d".repeat(10));
+            row.time_control = Some("t".repeat(10));
+            row.site = Some("s".repeat(10));
+            row.player = Some("p".repeat(10));
+            row
+        };
+        let first_row = text_row();
+        let second_row = text_row();
+        assert!(first_row.owned_heap_bytes() < ROW_BYTE_BUDGET);
+        assert!(first_row.owned_heap_bytes() + second_row.owned_heap_bytes() > ROW_BYTE_BUDGET);
+
+        let mut rows = vec![Ok(first_row), Ok(second_row)].into_iter();
+        let mut pending = None;
+
+        let first = next_player_statistics_batch(&mut rows, &mut pending, ROW_BYTE_BUDGET, 10)
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.len(), 1);
+        let second = next_player_statistics_batch(&mut rows, &mut pending, ROW_BYTE_BUDGET, 10)
+            .unwrap()
+            .unwrap();
+        assert_eq!(second.len(), 1);
+        assert!(
+            next_player_statistics_batch(&mut rows, &mut pending, ROW_BYTE_BUDGET, 10)
                 .unwrap()
                 .is_none()
         );
@@ -8872,17 +8904,17 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(first.len(), 1);
-        assert_eq!(first[0].4.len(), 2);
+        assert_eq!(first[0].moves.len(), 2);
         let oversized = next_player_statistics_batch(&mut rows, &mut pending, 8, 10)
             .unwrap()
             .unwrap();
         assert_eq!(oversized.len(), 1);
-        assert_eq!(oversized[0].4.len(), 9);
+        assert_eq!(oversized[0].moves.len(), 9);
         let last = next_player_statistics_batch(&mut rows, &mut pending, 8, 10)
             .unwrap()
             .unwrap();
         assert_eq!(last.len(), 1);
-        assert_eq!(last[0].4.len(), 1);
+        assert_eq!(last[0].moves.len(), 1);
     }
 
     #[test]
@@ -8901,7 +8933,6 @@ mod tests {
     #[test]
     fn player_statistics_batch_processing_fuses_non_fused_row_streams() {
         struct NonFusedRows {
-            row: PlayerStatisticsRow,
             next_step: u8,
         }
 
@@ -8912,17 +8943,14 @@ mod tests {
                 let step = self.next_step;
                 self.next_step = self.next_step.saturating_add(1);
                 match step {
-                    0 | 2 => Some(Ok(self.row.clone())),
+                    0 | 2 => Some(Ok(player_statistics_batch_row(vec![0]))),
                     1 | 3 => None,
                     _ => panic!("row stream was polled after its second None"),
                 }
             }
         }
 
-        let rows = NonFusedRows {
-            row: player_statistics_batch_row(vec![0]),
-            next_step: 0,
-        };
+        let rows = NonFusedRows { next_step: 0 };
         let cancellation = CancellationToken::new();
         let mut processed_rows = 0;
 
@@ -8966,6 +8994,9 @@ mod tests {
 
     #[test]
     fn player_statistics_aggregate_results_across_multiple_batches() {
+        const FULL_BATCH_ROW_COUNT: usize = PLAYER_STATISTICS_BATCH_ROW_LIMIT;
+        const TOTAL_ELIGIBLE_ROW_COUNT: usize = FULL_BATCH_ROW_COUNT + 1;
+
         let (_dir, app, handle, database) = blocking_database_case();
         let player_id = {
             let state = app.state::<AppState>();
@@ -8979,10 +9010,12 @@ mod tests {
             let site = create_site(&mut db, "Site").unwrap();
             let mut moves = Vec::new();
             encode_comment(&"x".repeat(5 * 1024), &mut moves);
-            assert!(moves.len() * 257 > PLAYER_STATISTICS_BATCH_MOVE_BYTE_BUDGET);
+            assert!(
+                moves.len() * TOTAL_ELIGIBLE_ROW_COUNT > PLAYER_STATISTICS_BATCH_ROW_BYTE_BUDGET
+            );
 
             db.transaction::<_, diesel::result::Error, _>(|db| {
-                for index in 0..256 {
+                for index in 0..FULL_BATCH_ROW_COUNT {
                     let is_player_white = index % 2 == 0;
                     insert_player_statistics_game(
                         db,
@@ -8992,7 +9025,7 @@ mod tests {
                             event_id: event.id,
                             site_id: site.id,
                             is_player_white,
-                            player_elo: Some(2_000 + index),
+                            player_elo: Some(2_000 + index as i32),
                             opponent_elo: Some(1_900),
                             moves: moves.clone(),
                             date: Some("2026.09.01"),
@@ -9010,7 +9043,7 @@ mod tests {
                         event_id: event.id,
                         site_id: site.id,
                         is_player_white: true,
-                        player_elo: Some(2_256),
+                        player_elo: Some(2_000 + FULL_BATCH_ROW_COUNT as i32),
                         opponent_elo: Some(1_900),
                         moves: moves.clone(),
                         date: Some("2026.09.01"),
@@ -9076,7 +9109,10 @@ mod tests {
             ),
             (0, 1, 0)
         );
-        assert_eq!(missing_time_control.max_player_elo, 2_256);
+        assert_eq!(
+            missing_time_control.max_player_elo,
+            2_000 + FULL_BATCH_ROW_COUNT as i32
+        );
 
         assert_eq!(group.openings.len(), 3);
         assert!(group.openings.iter().any(|row| {
@@ -9437,17 +9473,54 @@ mod tests {
         };
         let app_handle = app.clone();
         let state = app.state::<AppState>();
-        assert_cancelled_during_real_sql(|token| {
-            get_players_game_info_blocking(
-                &state.pgn_path_authority,
-                &state.database_repository,
-                handle,
-                player_id,
-                app_handle,
-                None,
-                token,
-            )
-        });
+        let count_callbacks = {
+            let cancellation = CancellationToken::new();
+            let checkpoints =
+                sqlite_cancellation::cancel_on_callback(cancellation.clone(), usize::MAX);
+            let mut connection = state
+                .database_repository
+                .connection(&test_target(&database), None)
+                .unwrap();
+            let count = sqlite_cancellation::with_sqlite_cancellation(&cancellation, || {
+                games::table
+                    .inner_join(sites::table.on(games::site_id.eq(sites::id)))
+                    .inner_join(players::table.on(players::id.eq(player_id)))
+                    .filter(
+                        games::white_id
+                            .eq(player_id)
+                            .or(games::black_id.eq(player_id)),
+                    )
+                    .filter(games::fen.is_null())
+                    .count()
+                    .get_result::<i64>(&mut *connection)
+            })
+            .unwrap();
+            assert_eq!(count, 1);
+            checkpoints.load(Ordering::SeqCst)
+        };
+        assert!(count_callbacks > 0);
+
+        let cancellation = CancellationToken::new();
+        let streamed_select_checkpoint = count_callbacks + 1;
+        let checkpoints = sqlite_cancellation::cancel_on_callback(
+            cancellation.clone(),
+            streamed_select_checkpoint,
+        );
+        let result = get_players_game_info_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle,
+            player_id,
+            app_handle,
+            None,
+            &cancellation,
+        );
+        assert_eq!(
+            checkpoints.load(Ordering::SeqCst),
+            streamed_select_checkpoint,
+            "expected COUNT(*) to consume {count_callbacks} callbacks and the streamed SELECT to stop at callback {streamed_select_checkpoint}"
+        );
+        assert!(matches!(result, Err(Error::Cancellation)));
     }
 
     #[test]
