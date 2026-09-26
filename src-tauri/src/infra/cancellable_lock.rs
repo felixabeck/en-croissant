@@ -58,9 +58,8 @@ impl Drop for StdLockWaitObserver {
 }
 
 #[cfg(test)]
-pub(crate) fn observe_std_lock_wait<T>(lock: &StdMutex<T>) -> StdLockWaitObserver {
+fn register_wait_observer(identity: usize) -> StdLockWaitObserver {
     let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
-    let identity = lock as *const StdMutex<T> as usize;
     let observer_id = NEXT_STD_LOCK_OBSERVER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     STD_LOCK_WAIT_HOOK
         .get_or_init(|| StdMutex::new(std::collections::HashMap::new()))
@@ -77,16 +76,35 @@ pub(crate) fn observe_std_lock_wait<T>(lock: &StdMutex<T>) -> StdLockWaitObserve
 }
 
 #[cfg(test)]
-fn notify_std_lock_wait<T>(lock: &StdMutex<T>) {
+pub(crate) fn observe_std_lock_wait<T>(lock: &StdMutex<T>) -> StdLockWaitObserver {
+    register_wait_observer(lock as *const StdMutex<T> as usize)
+}
+
+#[cfg(test)]
+pub(crate) fn observe_lock_wait<T>(lock: &Mutex<T>) -> StdLockWaitObserver {
+    register_wait_observer(lock as *const Mutex<T> as usize)
+}
+
+#[cfg(test)]
+fn notify_wait_observers(identity: usize) {
     let Some(hook) = STD_LOCK_WAIT_HOOK.get() else {
         return;
     };
-    let identity = lock as *const StdMutex<T> as usize;
     if let Some(observers) = hook.lock().unwrap().remove(&identity) {
         for (_, entered_tx) in observers {
             let _ = entered_tx.send(());
         }
     }
+}
+
+#[cfg(test)]
+fn notify_std_lock_wait<T>(lock: &StdMutex<T>) {
+    notify_wait_observers(lock as *const StdMutex<T> as usize);
+}
+
+#[cfg(test)]
+fn notify_lock_wait<T>(lock: &Mutex<T>) {
+    notify_wait_observers(lock as *const Mutex<T> as usize);
 }
 
 /// Waits for a synchronous worker lock without busy-spinning, observing cancellation between
@@ -102,6 +120,8 @@ pub fn lock_cancellable<'a, T>(
         if let Some(guard) = lock.try_lock_for(LOCK_POLL_INTERVAL) {
             return Ok(guard);
         }
+        #[cfg(test)]
+        notify_lock_wait(lock);
     }
 }
 

@@ -67,6 +67,7 @@ use crate::game::{
     take_back_game_move, ClockUpdateEvent, GameMoveEvent, GameOverEvent,
 };
 use crate::infra::blocking::BLOCKING_GATEWAY;
+use crate::infra::keyed_locks::{KeyedLockLease, KeyedLocks};
 use crate::infra::operations::{OperationLease, OperationRegistry};
 
 use crate::file_workspace::{
@@ -424,8 +425,8 @@ impl Drop for PreferredReplaceGuard {
 pub(crate) struct SearchCache {
     results: Mutex<BoundedSearchCache<SearchResultKey, CachedSearchResult>>,
     indexes: Mutex<BoundedSearchCache<SearchIndexIdentity, MmapSearchIndex>>,
-    collisions: DashMap<(GameQuery, PathBuf), Arc<parking_lot::Mutex<()>>>,
-    generation_locks: DashMap<PathBuf, Arc<parking_lot::Mutex<()>>>,
+    collisions: KeyedLocks<(GameQuery, PathBuf), parking_lot::Mutex<()>>,
+    generation_locks: KeyedLocks<PathBuf, parking_lot::Mutex<()>>,
     /// One mapping gate per preferred-sidecar path. Lock order is `indexes`
     /// then a gate's mutex; evicted indexes are dropped only after `indexes`
     /// is released, because dropping a lease takes the gate mutex.
@@ -435,13 +436,12 @@ pub(crate) struct SearchCache {
 }
 
 impl SearchCache {
+    /// Clears cached results and indexes; keyed locks are reclaimed by their outstanding leases.
     pub(crate) fn clear(&self) {
         *self.results.lock().expect("search result cache poisoned") = Default::default();
         let evicted =
             std::mem::take(&mut *self.indexes.lock().expect("search index cache poisoned"));
         drop(evicted);
-        self.collisions.clear();
-        self.generation_locks.clear();
         // Live or draining gates stay: a lease or write-guard still owns them.
         self.mapping_gates
             .retain(|_, gate| Arc::strong_count(gate) != 1);
@@ -649,48 +649,15 @@ impl SearchCache {
         &self,
         query: GameQuery,
         database: PathBuf,
-    ) -> Arc<parking_lot::Mutex<()>> {
-        self.collisions
-            .entry((query, database))
-            .or_insert_with(|| Arc::new(parking_lot::Mutex::new(())))
-            .value()
-            .clone()
+    ) -> KeyedLockLease<'_, (GameQuery, PathBuf), parking_lot::Mutex<()>> {
+        self.collisions.lease((query, database))
     }
 
-    pub(crate) fn generation_lock(&self, index: PathBuf) -> Arc<parking_lot::Mutex<()>> {
-        self.generation_locks
-            .entry(index)
-            .or_insert_with(|| Arc::new(parking_lot::Mutex::new(())))
-            .value()
-            .clone()
-    }
-
-    pub(crate) fn remove_generation_lock_if_idle(
+    pub(crate) fn generation_lock(
         &self,
-        index: &Path,
-        lock: &Arc<parking_lot::Mutex<()>>,
-    ) {
-        if Arc::strong_count(lock) == 2 {
-            self.generation_locks
-                .remove_if(index, |_, existing| Arc::ptr_eq(existing, lock));
-        }
-    }
-
-    pub(crate) fn remove_collision_if_idle(
-        &self,
-        query: &GameQuery,
-        database: &Path,
-        lock: &Arc<parking_lot::Mutex<()>>,
-    ) {
-        // One strong reference is held by the map and one by the cleanup
-        // guard. Any waiter holds another reference, so it keeps the key alive
-        // until it has serialized through the same mutex.
-        if Arc::strong_count(lock) == 2 {
-            self.collisions
-                .remove_if(&(query.clone(), database.to_path_buf()), |_, existing| {
-                    Arc::ptr_eq(existing, lock)
-                });
-        }
+        index: PathBuf,
+    ) -> KeyedLockLease<'_, PathBuf, parking_lot::Mutex<()>> {
+        self.generation_locks.lease(index)
     }
 
     /// Explicit in-process invalidation seam for database writes; revision
@@ -2684,7 +2651,58 @@ fn memory_size() -> u32 {
 mod search_cache_tests {
     use super::*;
     use crate::db::SearchIndexChunk;
+    use std::hash::Hash;
     use tempfile::tempdir;
+
+    fn assert_clear_keeps_the_live_lock<K: Clone + Eq + Hash + Send + Sync>(
+        cache: &Arc<SearchCache>,
+        registry: fn(&SearchCache) -> &KeyedLocks<K, parking_lot::Mutex<()>>,
+        key: K,
+    ) {
+        let holder = registry(cache).lease(key.clone());
+        let held = holder.lock();
+        let worker_cache = Arc::clone(cache);
+        let worker_key = key.clone();
+        let (waiting_tx, waiting_rx) = std::sync::mpsc::sync_channel(1);
+        let (acquired_tx, acquired_rx) = std::sync::mpsc::sync_channel(1);
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let worker_cancellation = cancellation.clone();
+
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(move || {
+                let worker_lease = registry(&worker_cache).lease(worker_key);
+                let _ = waiting_tx.send(());
+                let acquired = worker_lease.lock_cancellable(&worker_cancellation).is_ok();
+                let _ = acquired_tx.send(acquired);
+            });
+
+            waiting_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("second thread takes its lease before waiting");
+            cache.clear();
+            let third = registry(cache).lease(key);
+            assert!(third.try_lock().is_none());
+            drop(held);
+            assert!(acquired_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("second thread acquires after the holder releases"));
+            worker.join().expect("second lease holder must finish");
+            drop(third);
+        });
+
+        drop(holder);
+        assert_eq!(registry(cache).len(), 0);
+    }
+
+    fn generation_registry(cache: &SearchCache) -> &KeyedLocks<PathBuf, parking_lot::Mutex<()>> {
+        &cache.generation_locks
+    }
+
+    fn collision_registry(
+        cache: &SearchCache,
+    ) -> &KeyedLocks<(GameQuery, PathBuf), parking_lot::Mutex<()>> {
+        &cache.collisions
+    }
 
     #[test]
     fn bounded_cache_evicts_the_oldest_key() {
@@ -2750,6 +2768,17 @@ mod search_cache_tests {
         assert!(same.try_lock().is_none());
         assert!(other.try_lock().is_some());
         drop(held);
+    }
+
+    #[test]
+    fn clear_keeps_generation_and_collision_locks_with_live_leases() {
+        let cache = Arc::new(SearchCache::default());
+        assert_clear_keeps_the_live_lock(&cache, generation_registry, PathBuf::from("index.ecsi"));
+        assert_clear_keeps_the_live_lock(
+            &cache,
+            collision_registry,
+            (GameQuery::new(), PathBuf::from("games.db")),
+        );
     }
 }
 

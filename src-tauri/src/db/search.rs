@@ -1,7 +1,6 @@
 use dashmap::DashMap;
 use diesel::prelude::*;
 use log::info;
-use parking_lot::Mutex as ParkingMutex;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use shakmaty::{
@@ -12,7 +11,7 @@ use specta::Type;
 use std::{
     cmp::Reverse,
     collections::{BinaryHeap, HashSet},
-    path::{Path, PathBuf},
+    path::Path,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex,
@@ -226,13 +225,8 @@ pub(crate) fn load_search_index_cancellable(
 
     // Different queries for the same database may arrive concurrently. One
     // per-index lock serializes only generation/loading for that archive.
-    let generation_lock = GenerationLockCleanup {
-        search_cache,
-        index: get_index_path(read_target.path()),
-        lock: search_cache.generation_lock(get_index_path(read_target.path())),
-    };
-    let _generation_guard =
-        crate::infra::cancellable_lock::lock_cancellable(&generation_lock.lock, cancellation)?;
+    let generation_lease = search_cache.generation_lock(get_index_path(read_target.path()));
+    let _generation_guard = generation_lease.lock_cancellable(cancellation)?;
 
     let read_target = super::resolve_database(authority, handle, PathOperation::DatabaseRead)?;
     let db_identity = repository.database_identity_expected(
@@ -366,46 +360,6 @@ fn cache_loaded_index(
     let identity = SearchIndexIdentity::for_database(database, expected_source)?;
     let index = search_cache.insert_index(identity.clone(), index);
     Ok((identity, index))
-}
-
-struct CollisionCleanup<'a> {
-    search_cache: &'a SearchCache,
-    query: GameQuery,
-    database: PathBuf,
-    lock: Arc<ParkingMutex<()>>,
-}
-
-impl<'a> CollisionCleanup<'a> {
-    fn for_query(search_cache: &'a SearchCache, query: GameQuery, database: &Path) -> Self {
-        let database = database.to_path_buf();
-        let lock = search_cache.collision_lock(query.clone(), database.clone());
-        Self {
-            search_cache,
-            query,
-            database,
-            lock,
-        }
-    }
-}
-
-struct GenerationLockCleanup<'a> {
-    search_cache: &'a SearchCache,
-    index: PathBuf,
-    lock: Arc<ParkingMutex<()>>,
-}
-
-impl Drop for GenerationLockCleanup<'_> {
-    fn drop(&mut self) {
-        self.search_cache
-            .remove_generation_lock_if_idle(&self.index, &self.lock);
-    }
-}
-
-impl Drop for CollisionCleanup<'_> {
-    fn drop(&mut self) {
-        self.search_cache
-            .remove_collision_if_idle(&self.query, &self.database, &self.lock);
-    }
 }
 
 /// Returns true if the subset is contained in the container
@@ -687,10 +641,8 @@ fn search_position_blocking<R: tauri::Runtime>(
     }
     let database_handle = file;
     let target = super::resolve_database(authority, &database_handle, PathOperation::DatabaseRead)?;
-    let _collision_cleanup =
-        CollisionCleanup::for_query(search_cache, query.clone(), target.path());
-    let _guard =
-        crate::infra::cancellable_lock::lock_cancellable(&_collision_cleanup.lock, cancellation)?;
+    let collision_lease = search_cache.collision_lock(query.clone(), target.path().to_path_buf());
+    let _guard = collision_lease.lock_cancellable(cancellation)?;
 
     let mut database_connection = get_db_or_create(repository, &target, Some(cancellation))?;
     let db = &mut *database_connection;
@@ -937,10 +889,8 @@ pub(crate) fn is_position_in_db_cancellable(
     }
     let database_handle = file;
     let target = super::resolve_database(authority, database_handle, PathOperation::DatabaseRead)?;
-    let _collision_cleanup =
-        CollisionCleanup::for_query(search_cache, query.clone(), target.path());
-    let _guard =
-        crate::infra::cancellable_lock::lock_cancellable(&_collision_cleanup.lock, cancellation)?;
+    let collision_lease = search_cache.collision_lock(query.clone(), target.path().to_path_buf());
+    let _guard = collision_lease.lock_cancellable(cancellation)?;
 
     let parsed_position_query: Option<PositionQuery> = if let Some(pq) = &query.position {
         Some(convert_position_query(pq.clone())?)
@@ -1019,6 +969,7 @@ pub(crate) fn is_position_in_db_cancellable(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use crate::infra::keyed_locks::KeyedLockLease;
     use crate::{
         db::{
             legacy_index_path,
@@ -1029,7 +980,8 @@ mod tests {
         infra::fs::set_test_atomic_file_injector,
     };
     use diesel::Connection;
-    use std::sync::Arc;
+    use parking_lot::Mutex as ParkingMutex;
+    use std::{hash::Hash, path::PathBuf, sync::Arc};
     use tempfile::TempDir;
 
     fn loader_test_case(
@@ -1425,7 +1377,8 @@ mod tests {
     fn generation_lock_recovers_after_a_panicking_owner() {
         let (_dir, app, handle, database) = loader_test_case(vec![PathOperation::DatabaseRead]);
         let index = get_index_path(&database.canonicalize().unwrap());
-        let lock = app.state::<AppState>().search_cache.generation_lock(index);
+        let state = app.state::<AppState>();
+        let lock = state.search_cache.generation_lock(index);
         let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = lock.lock();
             panic!("poison the search cache generation lock");
@@ -1449,10 +1402,8 @@ mod tests {
         let (_dir, app, handle, database) = loader_test_case(vec![PathOperation::DatabaseRead]);
         let query = GameQuery::new();
         let canonical = database.canonicalize().unwrap();
-        let lock = app
-            .state::<AppState>()
-            .search_cache
-            .collision_lock(query.clone(), canonical);
+        let state = app.state::<AppState>();
+        let lock = state.search_cache.collision_lock(query.clone(), canonical);
         let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = lock.lock();
             panic!("poison the search cache collision lock");
@@ -1472,35 +1423,72 @@ mod tests {
         assert!(!matches!(result, Err(Error::Conflict(ref message)) if message.contains("lock")));
     }
 
-    #[test]
-    fn production_generation_and_collision_lock_waits_cancel_while_contended() {
-        let (_dir, app, _handle, database) = loader_test_case(vec![PathOperation::DatabaseRead]);
-        let cache = &app.state::<AppState>().search_cache;
-        let generation = cache.generation_lock(get_index_path(&database));
-        let collision = cache.collision_lock(GameQuery::new(), database.canonicalize().unwrap());
+    fn collision_lease_for_cache(
+        cache: &SearchCache,
+        (query, database): (GameQuery, PathBuf),
+    ) -> KeyedLockLease<'_, (GameQuery, PathBuf), ParkingMutex<()>> {
+        cache.collision_lock(query, database)
+    }
 
-        for lock in [generation.clone(), collision.clone()] {
-            let held = lock.lock();
-            let worker_lock = Arc::clone(&lock);
-            let cancellation = CancellationToken::new();
-            let worker_token = cancellation.clone();
-            let (done_tx, done_rx) = std::sync::mpsc::channel();
-            let worker = std::thread::spawn(move || {
-                let result =
-                    crate::infra::cancellable_lock::lock_cancellable(&worker_lock, &worker_token)
-                        .map(|_| ());
+    fn assert_search_lock_wait_cancels<K>(
+        cache: &SearchCache,
+        key: K,
+        lease_for_cache: for<'a> fn(&'a SearchCache, K) -> KeyedLockLease<'a, K, ParkingMutex<()>>,
+    ) where
+        K: Clone + Eq + Hash + Send + Sync,
+    {
+        let holder_lease = lease_for_cache(cache, key.clone());
+        let held_guard = holder_lease.lock();
+        let worker_observer_lease = lease_for_cache(cache, key.clone());
+        let observer = worker_observer_lease.observe_wait();
+        let cancellation = CancellationToken::new();
+        let worker_cancellation = cancellation.clone();
+        let (done_tx, done_rx) = std::sync::mpsc::sync_channel(1);
+
+        std::thread::scope(|scope| {
+            let worker_key = key.clone();
+            let worker = scope.spawn(move || {
+                let worker_lease = lease_for_cache(cache, worker_key);
+                let result = worker_lease
+                    .lock_cancellable(&worker_cancellation)
+                    .map(|_guard| ());
                 let _ = done_tx.send(result);
             });
+
+            observer
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("worker must reach an active contended lock wait");
             cancellation.cancel();
             assert!(matches!(
                 done_rx
-                    .recv_timeout(std::time::Duration::from_secs(1))
-                    .unwrap(),
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .expect("cancellation must end the active wait"),
                 Err(Error::Cancellation)
             ));
-            worker.join().unwrap();
-            drop(held);
-        }
+            assert!(
+                holder_lease.try_lock().is_none(),
+                "holder remains locked during cancellation"
+            );
+            drop(held_guard);
+            worker.join().expect("cancelled worker must finish");
+        });
+    }
+
+    #[test]
+    fn production_generation_and_collision_lock_waits_cancel_while_contended() {
+        let (_dir, app, _handle, database) = loader_test_case(vec![PathOperation::DatabaseRead]);
+        let state = app.state::<AppState>();
+        let cache = state.search_cache.as_ref();
+        assert_search_lock_wait_cancels(
+            cache,
+            get_index_path(&database),
+            SearchCache::generation_lock,
+        );
+        assert_search_lock_wait_cancels(
+            cache,
+            (GameQuery::new(), database.canonicalize().unwrap()),
+            collision_lease_for_cache,
+        );
     }
 
     fn assert_partial_match(fen1: &str, fen2: &str) {
