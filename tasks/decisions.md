@@ -4259,3 +4259,24 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Outside the f-20260908-01 mandate; its necessity is owned by `f-20260919-06`, and `remove_idle_mapping_gate` already reads the owner count inside `remove_if` under the shard lock (d-20260918-17), so it does not carry this defect. Reversal path: `f-20260919-06` decides its fate.
 * **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, plan-reviewed build run 2026-09-26 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"ea72795150d95a587be261f38f1233e13a5f999aa6187c6b679e0970dfed2758","input_sha256":"200605ecb974fae7204e1c9398e55c3e8bcb037ce13a1b0e51a8816ffcf07225","kind":"mutation-receipt","operation":"4829315150a2d3d582c5719cd1154eb4c7a8345edfb41abf608836080a675179","options":{"section":null},"request_id_sha256":null,"results":["d-20260926-07","d-20260926-08","d-20260926-09"],"target":"decisions-ledger","v":1} -->
+
+## 2026-09-27 — recorded through the decisions lock
+
+### d-20260927-01 — How does a file import reach the workspace without a corpus-sized IPC payload?
+
+* **Question:** f-20260908-04 needs a native streaming copy of a selected PGN into the workspace. Add a new command, or extend `create_workspace_file`?
+* **Governs:** f-20260908-04
+* **Chosen:** `create_workspace_file` takes `content: WorkspaceFileContent` — `{ kind: "text", pgn }` or `{ kind: "copy", source, revision }` — instead of `pgn: String`. One command, one destination core (`create_workspace_file_blocking`): sidecar, registration, rollback and durability reporting are shared; only the content-writing step branches. The copy streams the authority-resolved source descriptor in 64 KiB chunks through the existing atomic replace.
+* **Rejected:** A separate `import_workspace_file` command (a second copy of the destination core and of every source-scan inventory entry, rule 11); paging `readGames` and joining in the renderer (keeps the memory defect, as the finding states).
+* **Reason:** The destination semantics the finding requires preserved are exactly those of the existing core; routing both content kinds through it keeps one contract. Reversal path: split the `Copy` arm into its own command calling the same core.
+* **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, plan-reviewed build run 2026-09-26 · **Superseded-by:** -
+
+### d-20260927-02 — Is a saved import a verbatim byte copy of the source, bound to the revision the user opened?
+
+* **Question:** Should the saved file be the source bytes verbatim, or the scanned games re-serialised and joined by blank lines (the previous behaviour), and what if the source changes between opening and saving?
+* **Governs:** f-20260908-04
+* **Chosen:** Verbatim byte copy. The `Copy` request carries the `revision` returned by the preflight `loadFileGame(source, 0)`; the native side refuses with `Conflict` before writing if the source snapshot's revision differs, and its precommit refuses publication if the source changed or the operation was cancelled during the copy. A post-install count failure keeps the installed file and returns the error, unchanged from the `Text` path.
+* **Rejected:** Re-serialising scanned game ranges (reads every game, alters user bytes); rolling back on a post-install count failure (changes the shared destination contract beyond the mandate); copying without a revision binding (a source edited between preview and save could publish a file whose game 0 fails the per-game limit).
+* **Reason:** The copy is what the user selected, the game count is identical because scanning is deterministic over the same bytes, and the revision binding keeps the pre-publication validation that the old load-then-create order provided. Reversal path: drop the revision field and the precommit comparison.
+* **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, plan-reviewed build run 2026-09-26 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":17,"effect_sha256":"33843959eb9c06f9ffe2c96fc6c912ce100c65ea114b40d51767e024257b7589","input_sha256":"485708f178ff1d90f9c712e57ea2ad73edd992f99682aa0aaf61388cb626fcec","kind":"mutation-receipt","operation":"09ffe5dab73756194e3e2da9fe4139002ee5494b40f2248a36002982c9be142c","options":{"section":null},"request_id_sha256":null,"results":["d-20260927-01","d-20260927-02"],"target":"decisions-ledger","v":1} -->
