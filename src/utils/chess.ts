@@ -439,7 +439,7 @@ function innerParsePGN(tokens: Token[], fen: string = INITIAL_FEN, halfMoves?: n
                 leading = variation[0];
             }
             const newTree = innerParsePGN(variation, prevNode.fen, node.halfMoves - 1);
-            // The recursive node stands for `prevNode` itself, so every child it has is an
+            // `newTree.root` stands for `prevNode` itself, so every child it has is an
             // alternative from `prevNode` — a variation nested at the variation's first move included.
             const [first] = newTree.root.children;
             if (first && startingComments.length > 0) {
