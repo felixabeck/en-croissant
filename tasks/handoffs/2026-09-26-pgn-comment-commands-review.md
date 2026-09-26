@@ -84,7 +84,7 @@ asserted), fixed in `6324b2f3`.
 
 Round 5 (r5, on 2dc2d8e4): review-plan, correctness, tests and code-quality. correctness, tests
 and code-quality APPROVED; code-quality raised one nit (the comment „the recursive node" is
-ambiguous beside the renamed cursor), fixed with this record. review-plan confirmed P9 closed in
+ambiguous beside the renamed cursor), fixed in `b0e8e261`. review-plan confirmed P9 closed in
 code, and asked that the plan state the single-pass mechanism (done in the plan file) and that
 the r4 packet carry the delta block; the packet point is procedural and changes no obligation.
 
