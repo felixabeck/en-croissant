@@ -245,6 +245,15 @@ test("commands from several comments on one move accumulate in order", async () 
     expect(e4.commands).toBe("[%evp 1,2] [%emt 0:00:01]");
 });
 
+test("commands survive a later plain prose comment on one move", async () => {
+    const { root } = await parseTokens([san("e4"), comment("[%evp 1,2] first"), comment("second")]);
+    const e4 = root.children[0];
+
+    expect(e4.comment).toBe("second");
+    expect(e4.commands).toBe("[%evp 1,2]");
+    expect(getPGN(root, { ...ALL_MARKUPS, headers: null })).toContain("{[%evp 1,2] second}");
+});
+
 test("modeled commands still parse into the score, clock and shapes", async () => {
     const { root } = await parseTokens([
         san("e4"),
@@ -296,6 +305,10 @@ test("a comment of only commands leaves no prose to show", async () => {
 
     expect(root.comment).toBe("");
     expect(root.commands).toBe("[%evp 0,34,61,53]");
+    const pgn = getPGN(root, { ...ALL_MARKUPS, headers: null });
+
+    expect(pgn).toMatch(/\{\[%evp 0,34,61,53\]\s*\}/);
+    expect(pgn).not.toContain("{}");
 });
 
 test("adjacent commands are kept without growing past their source", async () => {
