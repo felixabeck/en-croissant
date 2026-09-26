@@ -81,7 +81,12 @@ function GamePreview({
           <PreviewBoard />
         </Box>
         {!hideControls && (
-          <Stack style={{ height }} gap="xs" flex={fitHeight ? 1 : undefined} miw={fitHeight ? 0 : undefined}>
+          <Stack
+            style={{ height }}
+            gap="xs"
+            flex={fitHeight ? 1 : undefined}
+            miw={fitHeight ? 0 : undefined}
+          >
             <GameNotation />
             <MoveControls readOnly />
           </Stack>
