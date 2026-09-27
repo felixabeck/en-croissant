@@ -381,6 +381,9 @@ En Croissant's own.
   * The closing note's "35 synthetic self-test cases" is wrong. At the push (`d1e0` series, after the default-mode left-edge case) there are 33: 29 reachable-mode and 4 default-mode.
 <!-- ledger-meta {"command":"annotate","effect_lines":3,"effect_sha256":"d54e42b9dfb356d42d4a27d7d4d1710455aa2b88145b943f960e77172ce3f65f","input_sha256":"285271dd14d726b7aa7ceccfde2e8daba14fd5fa74a52aed9d32bb31e96d4100","kind":"mutation-receipt","operation":"09ccc10f6b5b49840bed6a84e5f184dd3e29f78cceb4eb5f4c871f8872cb4b40","options":{"section":null},"request_id_sha256":null,"results":["f-20260829-02"],"target":"f-20260829-02","v":1} -->
 
+* **Correction to the note above:** "`d1e0` series" names no commit. The 33-case count (29 reachable, 4 default) holds at `0a2ef5e4`.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"fdb87fdffe34ef7e95da603d30dc569a5b68dfb00272bee49c3507d7d83dbb0d","input_sha256":"0e999db3763f3ddda807d12d32ddcb2f5580518f3f9787b20e6b522b5c2168f7","kind":"mutation-receipt","operation":"4b7e95f58d595dfccf8f2c4b66633fc48feb36ea1dca9b60d1c7443803bd4b49","options":{"section":null},"request_id_sha256":null,"results":["f-20260829-02"],"target":"f-20260829-02","v":1} -->
+
 ---
 
 ## 2026-08-29 — filed through the inbox spool
