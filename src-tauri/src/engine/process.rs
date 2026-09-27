@@ -2514,6 +2514,36 @@ impl Drop for EngineRuntime {
     }
 }
 
+#[cfg(test)]
+struct GameCleanupTestIo {
+    started: Arc<AtomicBool>,
+    delay: Option<Duration>,
+    error: Option<String>,
+}
+
+#[cfg(test)]
+#[async_trait]
+impl UciIo for GameCleanupTestIo {
+    async fn write_line(&mut self, _: &str) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn read_line(&mut self) -> Result<Option<String>, Error> {
+        std::future::pending().await
+    }
+
+    async fn terminate(&mut self, _: Duration, _: Duration) -> Result<(), Error> {
+        self.started.store(true, Ordering::SeqCst);
+        if let Some(delay) = self.delay {
+            tokio::time::sleep(delay).await;
+        }
+        match &self.error {
+            Some(error) => Err(std::io::Error::other(error.clone()).into()),
+            None => Ok(()),
+        }
+    }
+}
+
 impl EngineActor {
     #[cfg(all(test, unix))]
     pub(crate) fn set_test_option_before_send_hook(hook: Option<Box<dyn FnOnce() + Send>>) {
@@ -2531,6 +2561,34 @@ impl EngineActor {
             lines,
             Vec::new(),
             EngineDeadlines::default(),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn failing_terminate_test_actor(error: impl Into<String>) -> Arc<Self> {
+        Arc::new(Self::new(
+            Box::new(GameCleanupTestIo {
+                started: Arc::new(AtomicBool::new(false)),
+                delay: None,
+                error: Some(error.into()),
+            }),
+            EngineDeadlines::default(),
+        ))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn delayed_terminate_test_actor(delay: Duration) -> (Arc<Self>, Arc<AtomicBool>) {
+        let started = Arc::new(AtomicBool::new(false));
+        (
+            Arc::new(Self::new(
+                Box::new(GameCleanupTestIo {
+                    started: started.clone(),
+                    delay: Some(delay),
+                    error: None,
+                }),
+                EngineDeadlines::default(),
+            )),
+            started,
         )
     }
 

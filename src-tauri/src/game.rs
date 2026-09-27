@@ -28,9 +28,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     engine::{
-        parse_fen_to_position, resolve_launch, spawn_registered, verify_option_resources,
-        AdmissionLease, EngineActor, EngineDeadlines, EngineKey, EngineLog, EngineOption,
-        EngineSupervisor, GoMode, PlayersTime, ResolvedEngineOption, MAX_ENGINE_LIMIT,
+        log_registration_cleanup_error, parse_fen_to_position, resolve_launch, spawn_registered,
+        verify_option_resources, AdmissionLease, EngineActor, EngineDeadlines, EngineKey,
+        EngineLog, EngineOption, EngineSupervisor, GoMode, PlayersTime, RegistrationGuard,
+        ResolvedEngineOption, MAX_ENGINE_LIMIT,
     },
     error::Error,
     infra::blocking::BLOCKING_GATEWAY,
@@ -943,6 +944,170 @@ struct LiveSession {
     engine_supervisor: Arc<EngineSupervisor>,
 }
 
+struct RestoreJoinOnDrop<'a> {
+    slot: &'a std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    handle: Option<tokio::task::JoinHandle<()>>,
+    restore: bool,
+}
+
+impl<'a> RestoreJoinOnDrop<'a> {
+    fn new(
+        slot: &'a std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+        handle: tokio::task::JoinHandle<()>,
+    ) -> Self {
+        Self {
+            slot,
+            handle: Some(handle),
+            restore: true,
+        }
+    }
+
+    // This guard is created only with a handle and relinquishes it only after
+    // that handle has completed or has been aborted and joined.
+    fn handle_mut(&mut self) -> &mut tokio::task::JoinHandle<()> {
+        self.handle
+            .as_mut()
+            .expect("join restoration guard retains its handle until disarmed")
+    }
+
+    fn disarm(&mut self) {
+        self.restore = false;
+        self.handle.take();
+    }
+
+    fn abort(&mut self) {
+        self.handle_mut().abort();
+    }
+}
+
+impl Drop for RestoreJoinOnDrop<'_> {
+    fn drop(&mut self) {
+        if !self.restore {
+            return;
+        }
+        let Some(handle) = self.handle.take() else {
+            return;
+        };
+        let mut slot = match self.slot.lock() {
+            Ok(slot) => slot,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if slot.is_none() {
+            *slot = Some(handle);
+        } else {
+            drop(slot);
+            handle.abort();
+        }
+    }
+}
+
+struct PredecessorRetirement {
+    session: Option<Arc<LiveSession>>,
+    game_id: GameId,
+    join_budget: Duration,
+}
+
+impl PredecessorRetirement {
+    fn new(session: Arc<LiveSession>, game_id: GameId, join_budget: Duration) -> Self {
+        Self {
+            session: Some(session),
+            game_id,
+            join_budget,
+        }
+    }
+
+    async fn finish(&self) -> Result<(), Error> {
+        match &self.session {
+            Some(session) => session.finish_retired(self.join_budget).await,
+            None => Ok(()),
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.session = None;
+    }
+}
+
+impl Drop for PredecessorRetirement {
+    fn drop(&mut self) {
+        let Some(session) = self.session.take() else {
+            return;
+        };
+        let game_id = self.game_id.clone();
+        let session_id = session.session;
+        let join_budget = self.join_budget;
+        tokio::spawn(async move {
+            if let Err(error) = session.finish_retired(join_budget).await {
+                log_game_cleanup_error(&game_id, session_id, "retirement", &error);
+            }
+        });
+    }
+}
+
+struct GameEngineConstruction {
+    game_id: GameId,
+    session: u64,
+    guards: Vec<RegistrationGuard>,
+}
+
+impl GameEngineConstruction {
+    fn new(game_id: GameId, session: u64) -> Self {
+        Self {
+            game_id,
+            session,
+            guards: Vec::with_capacity(2),
+        }
+    }
+
+    fn own(&mut self, supervisor: &Arc<EngineSupervisor>, engine: &RegisteredGameEngine) {
+        self.guards.push(RegistrationGuard::new(
+            supervisor.clone(),
+            engine.key.clone(),
+            engine.generation,
+        ));
+    }
+
+    async fn abandon(self, primary: Error) -> Error {
+        let cleanup = aggregate_game_engine_termination_results(
+            futures_util::future::join_all(
+                self.guards
+                    .into_iter()
+                    .map(RegistrationGuard::terminate_now),
+            )
+            .await,
+        );
+        let error = Error::with_cleanup(primary, cleanup);
+        if matches!(&error, Error::OperationAndCleanup { .. }) {
+            log_game_cleanup_error(
+                &self.game_id,
+                self.session,
+                "construction abandoned",
+                &error,
+            );
+        }
+        error
+    }
+
+    fn transfer_to_live_session(mut self) {
+        for guard in &mut self.guards {
+            guard.disarm();
+        }
+    }
+}
+
+fn log_game_cleanup_error(game_id: &str, session: u64, event: &'static str, error: &Error) {
+    let message = format!(
+        "game cleanup failed game_id={game_id} session={session} event={event} error={}",
+        error.diagnostic()
+    );
+    #[cfg(test)]
+    match crate::engine::REGISTRATION_CLEANUP_ERRORS.lock() {
+        Ok(mut errors) => errors.push(message.clone()),
+        Err(poisoned) => poisoned.into_inner().push(message.clone()),
+    }
+    error!("{message}");
+}
+
 impl LiveSession {
     async fn terminate_registered_engines(&self) -> Result<(), Error> {
         let engines = {
@@ -958,41 +1123,56 @@ impl LiveSession {
     }
 
     async fn shutdown_and_join(&self, join_budget: Duration) -> Result<(), Error> {
-        self.controller.write().await.cancel_engine_request();
+        let game_id = {
+            let mut controller = self.controller.write().await;
+            controller.cancel_engine_request();
+            controller.game_id.clone()
+        };
         let _ = self.shutdown.send(true);
         let join = match self.join.lock() {
             Ok(mut join) => join.take(),
             Err(poisoned) => poisoned.into_inner().take(),
         };
-        if let Some(mut join) = join {
-            match tokio::time::timeout(join_budget, &mut join).await {
-                Ok(Ok(())) => {}
+        if let Some(join) = join {
+            let mut join = RestoreJoinOnDrop::new(&self.join, join);
+            #[cfg(test)]
+            SHUTDOWN_JOIN_TAKEN_HOOKS.run(&(game_id.clone(), self.session));
+            match tokio::time::timeout(join_budget, &mut *join.handle_mut()).await {
+                Ok(Ok(())) => join.disarm(),
                 Ok(Err(error)) => {
                     let primary = Error::Conflict(format!("game loop join failed: {error}"));
-                    return match self.terminate_registered_engines().await {
-                        Ok(()) => Err(primary),
-                        Err(cleanup) => Err(Error::OperationAndCleanup {
-                            primary: primary.to_string(),
-                            cleanup: cleanup.to_string(),
-                        }),
-                    };
+                    log_game_cleanup_error(&game_id, self.session, "loop join failed", &primary);
+                    join.disarm();
+                    return Err(Error::with_cleanup(
+                        primary,
+                        self.terminate_registered_engines().await,
+                    ));
                 }
                 Err(_) => {
-                    join.abort();
-                    let _ = join.await;
                     let primary =
                         Error::Conflict(format!("game loop did not exit within {join_budget:?}"));
-                    return match self.terminate_registered_engines().await {
-                        Ok(()) => Err(primary),
-                        Err(cleanup) => Err(Error::OperationAndCleanup {
-                            primary: primary.to_string(),
-                            cleanup: cleanup.to_string(),
-                        }),
-                    };
+                    log_game_cleanup_error(&game_id, self.session, "loop join failed", &primary);
+                    join.abort();
+                    let handle = join.handle_mut();
+                    let _ = (&mut *handle).await;
+                    join.disarm();
+                    return Err(Error::with_cleanup(
+                        primary,
+                        self.terminate_registered_engines().await,
+                    ));
                 }
             }
         }
         Ok(())
+    }
+
+    async fn finish_retired(&self, join_budget: Duration) -> Result<(), Error> {
+        let join = self.shutdown_and_join(join_budget).await;
+        let termination = self.terminate_registered_engines().await;
+        match join {
+            Ok(()) => termination,
+            Err(primary) => Err(Error::with_cleanup(primary, termination)),
+        }
     }
 }
 
@@ -1045,6 +1225,27 @@ async fn spawn_configured_game_engine(
     })
 }
 
+fn game_engine_registration_for_side(
+    player: &PlayerConfig,
+    supervisor: &Arc<EngineSupervisor>,
+    game_id: &str,
+    session: u64,
+    side: &str,
+) -> Result<Option<GameEngineRegistration>, Error> {
+    let PlayerConfig::Engine {
+        engine_id, handle, ..
+    } = player
+    else {
+        return Ok(None);
+    };
+    Ok(Some(GameEngineRegistration {
+        supervisor: supervisor.clone(),
+        key: game_side_engine_key(game_id, session, side, engine_id)?,
+        engine_id: engine_id.clone(),
+        executable_ref: handle.id.clone(),
+    }))
+}
+
 async fn initialize_configured_game_engine(
     engine: Arc<EngineActor>,
     resolved: Vec<ResolvedEngineOption>,
@@ -1092,6 +1293,36 @@ async fn spawn_configured_game_engine_with_resolved(
 #[cfg(all(test, unix))]
 static GAME_ENGINE_AFTER_SPAWN_HOOKS: crate::infra::test_hooks::KeyedTestHooks<EngineKey> =
     crate::infra::test_hooks::KeyedTestHooks::new();
+
+#[cfg(test)]
+static GAME_PUBLICATION_WAIT_HOOKS: crate::infra::test_hooks::KeyedTestHooks<GameId> =
+    crate::infra::test_hooks::KeyedTestHooks::new();
+
+#[cfg(test)]
+static SHUTDOWN_JOIN_TAKEN_HOOKS: crate::infra::test_hooks::KeyedTestHooks<(GameId, u64)> =
+    crate::infra::test_hooks::KeyedTestHooks::new();
+
+#[cfg(test)]
+static RUN_PUBLISHED_LOOP_READY_HOOKS: crate::infra::test_hooks::KeyedTestHooks<(GameId, u64)> =
+    crate::infra::test_hooks::KeyedTestHooks::new();
+
+#[cfg(test)]
+type PublishedLoopResolution = Box<dyn FnOnce(bool) + Send>;
+
+#[cfg(test)]
+static RUN_PUBLISHED_LOOP_RESOLUTIONS: crate::infra::test_hooks::KeyedTestValues<
+    (GameId, u64),
+    PublishedLoopResolution,
+> = crate::infra::test_hooks::KeyedTestValues::new();
+
+#[cfg(test)]
+type AfterHandoffHook = Box<dyn FnOnce(Arc<RwLock<GameController>>) + Send>;
+
+#[cfg(test)]
+static GAME_START_AFTER_HANDOFF_HOOKS: crate::infra::test_hooks::KeyedTestValues<
+    GameId,
+    AfterHandoffHook,
+> = crate::infra::test_hooks::KeyedTestValues::new();
 
 #[cfg(all(test, unix))]
 async fn spawn_configured_game_engine_with_executable(
@@ -1167,16 +1398,27 @@ async fn terminate_game_engines(
     supervisor: &EngineSupervisor,
     engines: impl IntoIterator<Item = RegisteredGameEngine>,
 ) -> Result<(), Error> {
-    let failures = futures_util::future::join_all(engines.into_iter().map(|engine| async move {
-        supervisor
+    let results = futures_util::future::join_all(engines.into_iter().map(|engine| async move {
+        let result = supervisor
             .terminate_exact(&engine.key, engine.generation)
-            .await
+            .await;
+        if let Err(error) = &result {
+            log_registration_cleanup_error(Some(&engine.key), Some(engine.generation), error);
+        }
+        result
     }))
-    .await
-    .into_iter()
-    .filter_map(Result::err)
-    .map(|error| error.to_string())
-    .collect::<Vec<_>>();
+    .await;
+    aggregate_game_engine_termination_results(results)
+}
+
+fn aggregate_game_engine_termination_results(
+    results: impl IntoIterator<Item = Result<(), Error>>,
+) -> Result<(), Error> {
+    let failures = results
+        .into_iter()
+        .filter_map(Result::err)
+        .map(|error| error.diagnostic())
+        .collect::<Vec<_>>();
     if failures.is_empty() {
         Ok(())
     } else {
@@ -1239,6 +1481,8 @@ impl GameManager {
         live: Arc<LiveSession>,
         install_loop: impl FnOnce(),
     ) -> Result<(), Error> {
+        #[cfg(test)]
+        GAME_PUBLICATION_WAIT_HOOKS.run(&game_id);
         let registration = self.registration.lock().await;
         self.ensure_accepting_starts()?;
         {
@@ -1330,7 +1574,14 @@ impl GameManager {
             let mut metadata = self.session_metadata.lock().await;
             self.retire_live_locked(&mut metadata, game_id, old_game.session);
         }
-        old_game.shutdown_and_join(join_budget).await
+        let session = old_game.session;
+        let mut retirement = PredecessorRetirement::new(old_game, game_id.to_owned(), join_budget);
+        let result = retirement.finish().await;
+        if let Err(error) = &result {
+            log_game_cleanup_error(game_id, session, "retirement", error);
+        }
+        retirement.disarm();
+        result
     }
 
     pub async fn start_game<R: Runtime>(
@@ -1363,45 +1614,50 @@ impl GameManager {
         let mut controller = GameController::new(game_id.clone(), session, config.clone())?;
         controller.polyglot_book = polyglot_book;
         controller.polyglot_max_ply = polyglot_max_ply;
+        let mut construction = GameEngineConstruction::new(game_id.clone(), session);
+        let white_registration = game_engine_registration_for_side(
+            &config.white,
+            &engine_supervisor,
+            &game_id,
+            session,
+            "white",
+        )?;
+        let black_registration = game_engine_registration_for_side(
+            &config.black,
+            &engine_supervisor,
+            &game_id,
+            session,
+            "black",
+        )?;
 
-        if let PlayerConfig::Engine {
-            engine_id,
-            handle,
-            options,
-            ..
-        } = &config.white
+        if let (
+            Some(registration),
+            PlayerConfig::Engine {
+                handle, options, ..
+            },
+        ) = (white_registration, &config.white)
         {
-            controller.white_engine = Some(
-                spawn_configured_game_engine(
-                    GameEngineRegistration {
-                        supervisor: engine_supervisor.clone(),
-                        key: game_side_engine_key(&game_id, session, "white", engine_id)?,
-                        engine_id: engine_id.clone(),
-                        executable_ref: handle.id.clone(),
-                    },
-                    handle.clone(),
-                    options,
-                    authority.clone(),
-                    castling_mode.is_chess960(),
-                )
-                .await?,
-            );
+            let registered = spawn_configured_game_engine(
+                registration,
+                handle.clone(),
+                options,
+                authority.clone(),
+                castling_mode.is_chess960(),
+            )
+            .await?;
+            construction.own(&engine_supervisor, &registered);
+            controller.white_engine = Some(registered);
         }
 
-        if let PlayerConfig::Engine {
-            engine_id,
-            handle,
-            options,
-            ..
-        } = &config.black
+        if let (
+            Some(registration),
+            PlayerConfig::Engine {
+                handle, options, ..
+            },
+        ) = (black_registration, &config.black)
         {
             match spawn_configured_game_engine(
-                GameEngineRegistration {
-                    supervisor: engine_supervisor.clone(),
-                    key: game_side_engine_key(&game_id, session, "black", engine_id)?,
-                    engine_id: engine_id.clone(),
-                    executable_ref: handle.id.clone(),
-                },
+                registration,
                 handle.clone(),
                 options,
                 authority.clone(),
@@ -1409,18 +1665,12 @@ impl GameManager {
             )
             .await
             {
-                Ok(engine) => controller.black_engine = Some(engine),
+                Ok(registered) => {
+                    construction.own(&engine_supervisor, &registered);
+                    controller.black_engine = Some(registered);
+                }
                 Err(primary) => {
-                    let cleanup =
-                        terminate_game_engines(&engine_supervisor, controller.white_engine.take())
-                            .await;
-                    return match cleanup {
-                        Ok(()) => Err(primary),
-                        Err(cleanup) => Err(Error::OperationAndCleanup {
-                            primary: primary.to_string(),
-                            cleanup: cleanup.to_string(),
-                        }),
-                    };
+                    return Err(construction.abandon(primary).await);
                 }
             }
         }
@@ -1451,22 +1701,7 @@ impl GameManager {
                 .retire_replaced_session(&game_id, old_game, EngineDeadlines::default().quit)
                 .await
             {
-                let engines = {
-                    let controller = controller.read().await;
-                    controller
-                        .white_engine
-                        .iter()
-                        .chain(controller.black_engine.iter())
-                        .cloned()
-                        .collect::<Vec<_>>()
-                };
-                return match terminate_game_engines(&engine_supervisor, engines).await {
-                    Ok(()) => Err(primary),
-                    Err(cleanup) => Err(Error::OperationAndCleanup {
-                        primary: primary.to_string(),
-                        cleanup: cleanup.to_string(),
-                    }),
-                };
+                return Err(construction.abandon(primary).await);
             }
         }
         let (start_loop, start_loop_rx) = tokio::sync::oneshot::channel();
@@ -1477,42 +1712,29 @@ impl GameManager {
         let install_live = live.clone();
         let publication = self
             .publish_live(game_id.clone(), session, live.clone(), move || {
-                let join = tokio::spawn(async move {
-                    if start_loop_rx.await.is_ok() {
-                        game_loop(
-                            loop_game_id,
-                            loop_live,
-                            shutdown_rx,
-                            move_notify_rx,
-                            loop_app,
-                            manager,
-                        )
-                        .await;
-                    }
-                });
+                let join = tokio::spawn(run_published_loop(
+                    loop_game_id,
+                    loop_live,
+                    shutdown_rx,
+                    move_notify_rx,
+                    loop_app,
+                    manager,
+                    start_loop_rx,
+                ));
                 match install_live.join.lock() {
                     Ok(mut slot) => *slot = Some(join),
                     Err(poisoned) => *poisoned.into_inner() = Some(join),
                 }
             })
             .await;
-        if let Err(error) = publication {
-            let engines = {
-                let controller = controller.read().await;
-                controller
-                    .white_engine
-                    .iter()
-                    .chain(controller.black_engine.iter())
-                    .cloned()
-                    .collect::<Vec<_>>()
-            };
-            return match terminate_game_engines(&engine_supervisor, engines).await {
-                Ok(()) => Err(error),
-                Err(cleanup) => Err(Error::OperationAndCleanup {
-                    primary: error.to_string(),
-                    cleanup: cleanup.to_string(),
-                }),
-            };
+        if let Err(primary) = publication {
+            return Err(construction.abandon(primary).await);
+        }
+        construction.transfer_to_live_session();
+
+        #[cfg(test)]
+        if let Some(hook) = GAME_START_AFTER_HANDOFF_HOOKS.take(&game_id) {
+            hook(controller.clone());
         }
 
         // A FEN (or a validated initial move sequence) may already be
@@ -2679,6 +2901,42 @@ async fn maybe_start_engine(
     ctrl.begin_engine_request()
 }
 
+async fn run_published_loop<R: Runtime>(
+    game_id: GameId,
+    live: Arc<LiveSession>,
+    shutdown_rx: watch::Receiver<bool>,
+    move_notify_rx: tokio::sync::mpsc::Receiver<()>,
+    app: AppHandle<R>,
+    manager: std::sync::Weak<GameManager>,
+    start_loop_rx: tokio::sync::oneshot::Receiver<()>,
+) {
+    #[cfg(test)]
+    let hook_key = (game_id.clone(), live.session);
+    #[cfg(test)]
+    RUN_PUBLISHED_LOOP_READY_HOOKS.run(&hook_key);
+    let started = start_loop_rx.await.is_ok();
+    #[cfg(test)]
+    if let Some(resolve) = RUN_PUBLISHED_LOOP_RESOLUTIONS.take(&hook_key) {
+        resolve(started);
+    }
+
+    if started {
+        game_loop(game_id, live, shutdown_rx, move_notify_rx, app, manager).await;
+        return;
+    }
+
+    if let Err(error) = live.terminate_registered_engines().await {
+        error!(
+            "Game {game_id} never-started engine cleanup failed: {}",
+            error.diagnostic()
+        );
+    }
+    if let Some(manager) = manager.upgrade() {
+        let mut metadata = manager.session_metadata.lock().await;
+        manager.retire_live_locked(&mut metadata, &game_id, live.session);
+    }
+}
+
 async fn game_loop<R: Runtime>(
     game_id: GameId,
     live: Arc<LiveSession>,
@@ -3189,6 +3447,12 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    use crate::engine::REGISTRATION_CLEANUP_ERRORS;
+    #[cfg(unix)]
+    use crate::engine::REGISTRATION_GUARD_DROPS;
+
+    const TEST_WAIT: Duration = Duration::from_secs(15);
+
     async fn register_test_game_engine(
         supervisor: &Arc<EngineSupervisor>,
         game_id: &str,
@@ -3199,6 +3463,29 @@ mod tests {
     ) -> RegisteredGameEngine {
         let key = game_side_engine_key(game_id, session, side, engine_id).unwrap();
         let (actor, _) = EngineActor::recording_test_actor(&[]);
+        register_test_actor(supervisor, key, actor, engine_id, executable_id).await
+    }
+
+    async fn register_test_game_engine_with_actor(
+        supervisor: &Arc<EngineSupervisor>,
+        game_id: &str,
+        session: u64,
+        side: &str,
+        engine_id: &str,
+        executable_id: &str,
+        actor: Arc<EngineActor>,
+    ) -> RegisteredGameEngine {
+        let key = game_side_engine_key(game_id, session, side, engine_id).unwrap();
+        register_test_actor(supervisor, key, actor, engine_id, executable_id).await
+    }
+
+    async fn register_test_actor(
+        supervisor: &Arc<EngineSupervisor>,
+        key: EngineKey,
+        actor: Arc<EngineActor>,
+        engine_id: &str,
+        executable_id: &str,
+    ) -> RegisteredGameEngine {
         let supervised = supervisor
             .replace_handle(
                 key.clone(),
@@ -3217,9 +3504,307 @@ mod tests {
         }
     }
 
+    async fn register_unrelated_test_engine(
+        supervisor: &Arc<EngineSupervisor>,
+        game_id: &str,
+    ) -> RegisteredGameEngine {
+        let key = EngineKey::new(
+            format!("unrelated:{game_id}"),
+            "unrelated-test-engine".into(),
+        )
+        .unwrap();
+        let (actor, _) = EngineActor::recording_test_actor(&[]);
+        register_test_actor(
+            supervisor,
+            key,
+            actor,
+            "unrelated-test-engine",
+            &format!("unrelated-{game_id}"),
+        )
+        .await
+    }
+
+    fn assert_unrelated_engine_survives(
+        supervisor: &EngineSupervisor,
+        unrelated: &RegisteredGameEngine,
+    ) {
+        assert!(supervisor
+            .get_exact(&unrelated.key)
+            .is_some_and(|entry| entry.generation == unrelated.generation));
+    }
+
+    fn registration_cleanup_messages(key: &EngineKey, generation: u64) -> Vec<String> {
+        let identity = format!("{}:{} generation={generation}", key.tab, key.engine);
+        let errors = REGISTRATION_CLEANUP_ERRORS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        errors
+            .iter()
+            .filter(|message| message.contains(&identity))
+            .cloned()
+            .collect()
+    }
+
+    fn game_cleanup_messages(game_id: &str, session: u64, event: &str) -> Vec<String> {
+        let identity = format!("game_id={game_id} session={session} event={event}");
+        let errors = REGISTRATION_CLEANUP_ERRORS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        errors
+            .iter()
+            .filter(|message| message.contains(&identity))
+            .cloned()
+            .collect()
+    }
+
+    #[cfg(unix)]
+    fn guard_drop_records(key: &EngineKey, generation: u64) -> Vec<bool> {
+        REGISTRATION_GUARD_DROPS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .filter(|(dropped_key, dropped_generation, _)| {
+                dropped_key == key && *dropped_generation == generation
+            })
+            .map(|(_, _, completed)| *completed)
+            .collect()
+    }
+
+    #[cfg(unix)]
+    fn guard_drop_records_for_key(key: &EngineKey) -> Vec<(u64, bool)> {
+        REGISTRATION_GUARD_DROPS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .filter(|(dropped_key, _, _)| dropped_key == key)
+            .map(|(_, generation, completed)| (*generation, *completed))
+            .collect()
+    }
+
+    async fn wait_until(mut condition: impl FnMut() -> bool) {
+        tokio::time::timeout(TEST_WAIT, async {
+            while !condition() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("condition did not become true before the test timeout");
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_generation(supervisor: &EngineSupervisor, key: &EngineKey) -> u64 {
+        tokio::time::timeout(TEST_WAIT, async {
+            loop {
+                if let Some(engine) = supervisor.get_exact(key) {
+                    break engine.generation;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("engine generation was not registered before the test timeout")
+    }
+
+    async fn wait_for_generation_gone(
+        supervisor: &EngineSupervisor,
+        key: &EngineKey,
+        generation: u64,
+    ) {
+        wait_until(|| {
+            supervisor
+                .get_exact(key)
+                .is_none_or(|engine| engine.generation != generation)
+        })
+        .await;
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_guard_drop_completion(key: &EngineKey, generation: u64) {
+        wait_until(|| guard_drop_records(key, generation).contains(&true)).await;
+    }
+
+    async fn assert_session_retired(manager: &GameManager, game_id: &str, _session: u64) {
+        assert!(manager.games.get(game_id).is_none());
+        let metadata = manager.session_metadata.lock().await;
+        assert!(!metadata
+            .snapshots
+            .iter()
+            .any(|snapshot| snapshot.game_id == game_id));
+        assert!(!metadata.latest.contains_key(game_id));
+    }
+
+    async fn set_session_engines(
+        controller: &Arc<RwLock<GameController>>,
+        white: Option<RegisteredGameEngine>,
+        black: Option<RegisteredGameEngine>,
+    ) {
+        let mut controller = controller.write().await;
+        controller.white_engine = white;
+        controller.black_engine = black;
+    }
+
+    async fn publish_test_session(manager: &GameManager, game_id: &str, live: Arc<LiveSession>) {
+        manager
+            .publish_live(game_id.into(), live.session, live, || {})
+            .await
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    fn loop_exits_on_shutdown(
+        mut shutdown_rx: watch::Receiver<bool>,
+        supervisor: Arc<EngineSupervisor>,
+        engines: Vec<RegisteredGameEngine>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            while shutdown_rx.changed().await.is_ok() {
+                if *shutdown_rx.borrow() {
+                    let _ = terminate_game_engines(&supervisor, engines).await;
+                    return;
+                }
+            }
+        })
+    }
+
+    fn loop_exits_without_engine_cleanup(
+        mut shutdown_rx: watch::Receiver<bool>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            while shutdown_rx.changed().await.is_ok() {
+                if *shutdown_rx.borrow() {
+                    return;
+                }
+            }
+        })
+    }
+
+    #[cfg(unix)]
+    enum TestEngineScript {
+        Responsive,
+        Pending,
+    }
+
+    #[cfg(unix)]
+    struct TestGameEngineBundle {
+        _directory: tempfile::TempDir,
+        config: GameConfig,
+        authority: Arc<std::sync::Mutex<Option<PathAuthority>>>,
+        white_engine_id: String,
+        black_engine_id: String,
+    }
+
+    #[cfg(unix)]
+    fn test_game_engine_bundle(
+        game_id: &str,
+        black_script: TestEngineScript,
+        register_black: bool,
+    ) -> TestGameEngineBundle {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let white_engine_id = format!("{game_id}-white-engine");
+        let black_engine_id = format!("{game_id}-black-engine");
+        let white_path = directory.path().join("white-engine.sh");
+        let black_path = directory.path().join("black-engine.sh");
+        let responsive = "#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in uci) echo uciok;; isready) echo readyok;; quit) exit 0;; esac; done\n";
+        let black_source = match black_script {
+            TestEngineScript::Responsive => responsive,
+            TestEngineScript::Pending => {
+                "#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in quit) exit 0;; esac; done\n"
+            }
+        };
+        std::fs::write(&white_path, responsive).unwrap();
+        std::fs::write(&black_path, black_source).unwrap();
+        std::fs::set_permissions(&white_path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::set_permissions(&black_path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut path_authority = {
+            #[cfg(target_os = "macos")]
+            {
+                PathAuthority::open_with_launch_root(
+                    directory.path().join("registry.json"),
+                    Vec::new(),
+                    crate::infra::path_authority::EngineLaunchRoot::for_test(directory.path())
+                        .unwrap(),
+                )
+                .unwrap()
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                PathAuthority::open(directory.path().join("registry.json"), Vec::new()).unwrap()
+            }
+        };
+        let white_handle = path_authority
+            .register_engine_file(&white_path, &white_engine_id)
+            .unwrap();
+        let black_handle = if register_black {
+            path_authority
+                .register_engine_file(&black_path, &black_engine_id)
+                .unwrap()
+        } else {
+            crate::infra::path_authority::EngineHandle {
+                id: crate::infra::path_authority::PathRef {
+                    id: format!("{game_id}-missing-black"),
+                },
+                kind: crate::infra::path_authority::EngineHandleKind::Engine,
+            }
+        };
+        let player = |engine_id: String, handle: EngineHandle| PlayerConfig::Engine {
+            name: engine_id.clone(),
+            engine_id,
+            handle,
+            options: Vec::new(),
+            go: None,
+        };
+        TestGameEngineBundle {
+            _directory: directory,
+            config: GameConfig {
+                white: player(white_engine_id.clone(), white_handle),
+                black: player(black_engine_id.clone(), black_handle),
+                white_time_control: None,
+                black_time_control: None,
+                initial_fen: None,
+                initial_moves: Vec::new(),
+                opening_book: None,
+            },
+            authority: Arc::new(std::sync::Mutex::new(Some(path_authority))),
+            white_engine_id,
+            black_engine_id,
+        }
+    }
+
+    #[cfg(unix)]
+    fn game_side_keys(
+        bundle: &TestGameEngineBundle,
+        game_id: &str,
+        session: u64,
+    ) -> (EngineKey, EngineKey) {
+        (
+            game_side_engine_key(game_id, session, "white", &bundle.white_engine_id).unwrap(),
+            game_side_engine_key(game_id, session, "black", &bundle.black_engine_id).unwrap(),
+        )
+    }
+
+    #[cfg(unix)]
+    fn assert_dropped_generation(key: &EngineKey, generation: u64) {
+        assert!(
+            guard_drop_records(key, generation)
+                .iter()
+                .any(|completed| *completed),
+            "armed guard drop for {key:?} generation {generation} must finish"
+        );
+    }
+
     fn test_live_session(
         game_id: &str,
         session: u64,
+    ) -> (Arc<LiveSession>, Arc<RwLock<GameController>>) {
+        test_live_session_with_supervisor(game_id, session, Arc::new(EngineSupervisor::default()))
+    }
+
+    fn test_live_session_with_supervisor(
+        game_id: &str,
+        session: u64,
+        engine_supervisor: Arc<EngineSupervisor>,
     ) -> (Arc<LiveSession>, Arc<RwLock<GameController>>) {
         let controller = Arc::new(RwLock::new(
             GameController::new(game_id.into(), session, human_config()).unwrap(),
@@ -3231,7 +3816,7 @@ mod tests {
                 controller: controller.clone(),
                 shutdown,
                 join: std::sync::Mutex::new(None),
-                engine_supervisor: Arc::new(EngineSupervisor::default()),
+                engine_supervisor,
             }),
             controller,
         )
@@ -5427,6 +6012,1604 @@ done
         assert_eq!(state_after_clock.current_fen, fen_after_move);
     }
 
+    #[tokio::test]
+    async fn never_started_published_loop_reaps_and_tombstones_its_session() {
+        let game_id = "never_started_published_loop_reaps_and_tombstones_its_session";
+        let manager = Arc::new(GameManager::new());
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let unrelated = register_unrelated_test_engine(&supervisor, game_id).await;
+        let white = register_test_game_engine(
+            &supervisor,
+            game_id,
+            1,
+            "white",
+            "never-started-white",
+            "never-started-white-handle",
+        )
+        .await;
+        let black = register_test_game_engine(
+            &supervisor,
+            game_id,
+            1,
+            "black",
+            "never-started-black",
+            "never-started-black-handle",
+        )
+        .await;
+        let white_key = white.key.clone();
+        let black_key = black.key.clone();
+        let (live, controller) = test_live_session_with_supervisor(game_id, 1, supervisor.clone());
+        set_session_engines(&controller, Some(white.clone()), Some(black.clone())).await;
+        publish_test_session(&manager, game_id, live.clone()).await;
+        let (start_loop, start_loop_rx) = tokio::sync::oneshot::channel();
+        drop(start_loop);
+        let (_, move_notify_rx) = tokio::sync::mpsc::channel(1);
+        let app = tauri::test::mock_app();
+        let shutdown_rx = live.shutdown.subscribe();
+
+        run_published_loop(
+            game_id.into(),
+            live,
+            shutdown_rx,
+            move_notify_rx,
+            app.handle().clone(),
+            Arc::downgrade(&manager),
+            start_loop_rx,
+        )
+        .await;
+
+        assert!(supervisor.get_exact(&white_key).is_none());
+        assert!(supervisor.get_exact(&black_key).is_none());
+        assert_session_retired(&manager, game_id, 1).await;
+        assert_unrelated_engine_survives(&supervisor, &unrelated);
+        supervisor
+            .terminate_exact(&unrelated.key, unrelated.generation)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn never_started_published_loop_retires_even_when_both_terminations_fail() {
+        let game_id = "never_started_published_loop_retires_even_when_both_terminations_fail";
+        let manager = Arc::new(GameManager::new());
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let unrelated = register_unrelated_test_engine(&supervisor, game_id).await;
+        let white_error = format!("{game_id}-white-termination-failure");
+        let black_error = format!("{game_id}-black-termination-failure");
+        let white = register_test_game_engine_with_actor(
+            &supervisor,
+            game_id,
+            1,
+            "white",
+            "never-started-failing-white",
+            "never-started-failing-white-handle",
+            EngineActor::failing_terminate_test_actor(white_error.clone()),
+        )
+        .await;
+        let black = register_test_game_engine_with_actor(
+            &supervisor,
+            game_id,
+            1,
+            "black",
+            "never-started-failing-black",
+            "never-started-failing-black-handle",
+            EngineActor::failing_terminate_test_actor(black_error.clone()),
+        )
+        .await;
+        let white_key = white.key.clone();
+        let white_generation = white.generation;
+        let black_key = black.key.clone();
+        let black_generation = black.generation;
+        assert!(registration_cleanup_messages(&white_key, white_generation).is_empty());
+        assert!(registration_cleanup_messages(&black_key, black_generation).is_empty());
+        let (live, controller) = test_live_session_with_supervisor(game_id, 1, supervisor.clone());
+        set_session_engines(&controller, Some(white), Some(black)).await;
+        publish_test_session(&manager, game_id, live.clone()).await;
+        let (start_loop, start_loop_rx) = tokio::sync::oneshot::channel();
+        drop(start_loop);
+        let (_, move_notify_rx) = tokio::sync::mpsc::channel(1);
+        let app = tauri::test::mock_app();
+        let shutdown_rx = live.shutdown.subscribe();
+
+        run_published_loop(
+            game_id.into(),
+            live.clone(),
+            shutdown_rx,
+            move_notify_rx,
+            app.handle().clone(),
+            Arc::downgrade(&manager),
+            start_loop_rx,
+        )
+        .await;
+
+        assert!(supervisor.get_exact(&white_key).is_none());
+        assert!(supervisor.get_exact(&black_key).is_none());
+        let white_messages = registration_cleanup_messages(&white_key, white_generation);
+        let black_messages = registration_cleanup_messages(&black_key, black_generation);
+        assert!(white_messages
+            .iter()
+            .any(|message| message.contains(&white_error)));
+        assert!(black_messages
+            .iter()
+            .any(|message| message.contains(&black_error)));
+        assert_session_retired(&manager, game_id, 1).await;
+        assert_unrelated_engine_survives(&supervisor, &unrelated);
+        supervisor
+            .terminate_exact(&unrelated.key, unrelated.generation)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn construction_abandon_returns_and_logs_cleanup_failure() {
+        let game_id = "construction_abandon_returns_and_logs_cleanup_failure";
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let error_text = format!("{game_id}-terminate-os-cause");
+        let registered = register_test_game_engine_with_actor(
+            &supervisor,
+            game_id,
+            1,
+            "white",
+            "construction-failing-engine",
+            "construction-failing-handle",
+            EngineActor::failing_terminate_test_actor(error_text.clone()),
+        )
+        .await;
+        assert!(registration_cleanup_messages(&registered.key, registered.generation).is_empty());
+        assert!(game_cleanup_messages(game_id, 1, "construction abandoned").is_empty());
+        let mut construction = GameEngineConstruction::new(game_id.into(), 1);
+        construction.own(&supervisor, &registered);
+
+        let error = construction
+            .abandon(Error::Conflict("construction primary sentinel".into()))
+            .await;
+
+        match error {
+            Error::OperationAndCleanup { primary, cleanup } => {
+                assert_eq!(primary, "Conflict: construction primary sentinel");
+                assert!(cleanup.contains("failed to terminate game engines"));
+                assert!(cleanup.contains(&error_text));
+            }
+            other => panic!("expected a folded construction error, got {other:?}"),
+        }
+        assert!(supervisor.get_exact(&registered.key).is_none());
+        assert!(
+            registration_cleanup_messages(&registered.key, registered.generation)
+                .iter()
+                .any(|message| message.contains(&error_text))
+        );
+        let messages = game_cleanup_messages(game_id, 1, "construction abandoned");
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].contains("construction primary sentinel"));
+        assert!(messages[0].contains(&error_text));
+    }
+
+    #[tokio::test]
+    async fn construction_abandon_logs_cleanup_failure_already_in_primary() {
+        let game_id = "construction_abandon_logs_cleanup_failure_already_in_primary";
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let registered = register_test_game_engine(
+            &supervisor,
+            game_id,
+            1,
+            "white",
+            "construction-success-engine",
+            "construction-success-handle",
+        )
+        .await;
+        assert!(game_cleanup_messages(game_id, 1, "construction abandoned").is_empty());
+        let primary = Error::with_cleanup(
+            std::io::Error::other(format!("{game_id}-primary-io-cause")).into(),
+            Err(std::io::Error::other(format!("{game_id}-primary-cleanup-cause")).into()),
+        );
+        let mut construction = GameEngineConstruction::new(game_id.into(), 1);
+        construction.own(&supervisor, &registered);
+
+        let error = construction.abandon(primary).await;
+
+        match error {
+            Error::OperationAndCleanup { primary, cleanup } => {
+                assert!(primary.contains(&format!("{game_id}-primary-io-cause")));
+                assert!(cleanup.contains(&format!("{game_id}-primary-cleanup-cause")));
+            }
+            other => panic!("expected the original folded error, got {other:?}"),
+        }
+        assert!(supervisor.get_exact(&registered.key).is_none());
+        let messages = game_cleanup_messages(game_id, 1, "construction abandoned");
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].contains(&format!("{game_id}-primary-io-cause")));
+        assert!(messages[0].contains(&format!("{game_id}-primary-cleanup-cause")));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn start_game_preserves_black_spawn_error_and_abandons_white_generation() {
+        let game_id = "start_game_preserves_black_spawn_error_and_abandons_white_generation";
+        let bundle = test_game_engine_bundle(game_id, TestEngineScript::Responsive, false);
+        let PlayerConfig::Engine {
+            handle, options, ..
+        } = &bundle.config.black
+        else {
+            panic!("test engine bundle must have an engine as black");
+        };
+        let expected_supervisor = Arc::new(EngineSupervisor::default());
+        let expected_registration = game_engine_registration_for_side(
+            &bundle.config.black,
+            &expected_supervisor,
+            game_id,
+            1,
+            "black",
+        )
+        .unwrap()
+        .unwrap();
+        let expected = match spawn_configured_game_engine(
+            expected_registration,
+            handle.clone(),
+            options,
+            bundle.authority.clone(),
+            false,
+        )
+        .await
+        {
+            Ok(_) => panic!("the unregistered black executable must fail to resolve"),
+            Err(error) => error,
+        };
+        let manager = Arc::new(GameManager::new());
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let unrelated = register_unrelated_test_engine(&supervisor, game_id).await;
+        let white_key = game_side_engine_key(game_id, 1, "white", &bundle.white_engine_id).unwrap();
+        let white_generation = Arc::new(AtomicU64::new(0));
+        let generation_for_hook = white_generation.clone();
+        let supervisor_for_hook = supervisor.clone();
+        let key_for_hook = white_key.clone();
+        GAME_ENGINE_AFTER_SPAWN_HOOKS.arm(
+            white_key.clone(),
+            Box::new(move || {
+                if let Some(engine) = supervisor_for_hook.get_exact(&key_for_hook) {
+                    generation_for_hook.store(engine.generation, Ordering::SeqCst);
+                }
+            }),
+        );
+        assert!(game_cleanup_messages(game_id, 1, "construction abandoned").is_empty());
+        let app = tauri::test::mock_app();
+
+        let actual = manager
+            .start_game(
+                game_id.into(),
+                bundle.config.clone(),
+                app.handle().clone(),
+                bundle.authority.clone(),
+                supervisor.clone(),
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(actual.category(), expected.category());
+        assert_eq!(actual.to_string(), expected.to_string());
+        let generation = white_generation.load(Ordering::SeqCst);
+        assert_ne!(generation, 0);
+        assert!(supervisor.get_exact(&white_key).is_none());
+        assert_session_retired(&manager, game_id, 1).await;
+        assert_unrelated_engine_survives(&supervisor, &unrelated);
+        supervisor
+            .terminate_exact(&unrelated.key, unrelated.generation)
+            .await
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn start_game_validates_both_engine_keys_before_spawning_white() {
+        let game_id = "start_game_validates_both_engine_keys_before_spawning_white";
+        let bundle = test_game_engine_bundle(game_id, TestEngineScript::Responsive, true);
+        let mut config = bundle.config.clone();
+        let PlayerConfig::Engine { engine_id, .. } = &mut config.black else {
+            panic!("test engine bundle must have an engine as black");
+        };
+        engine_id.push('\u{1f}');
+        let manager = Arc::new(GameManager::new());
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let unrelated = register_unrelated_test_engine(&supervisor, game_id).await;
+        let white_key = game_side_engine_key(game_id, 1, "white", &bundle.white_engine_id).unwrap();
+        let spawned = Arc::new(AtomicBool::new(false));
+        let spawned_by_hook = spawned.clone();
+        GAME_ENGINE_AFTER_SPAWN_HOOKS.arm(
+            white_key.clone(),
+            Box::new(move || spawned_by_hook.store(true, Ordering::SeqCst)),
+        );
+        let app = tauri::test::mock_app();
+
+        let error = manager
+            .start_game(
+                game_id.into(),
+                config,
+                app.handle().clone(),
+                bundle.authority.clone(),
+                supervisor.clone(),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            Error::InvalidInput(message) if message == "engine contains a UCI control character"
+        ));
+        assert!(!spawned.load(Ordering::SeqCst));
+        assert!(supervisor.get_exact(&white_key).is_none());
+        assert_session_retired(&manager, game_id, 1).await;
+        assert_unrelated_engine_survives(&supervisor, &unrelated);
+        supervisor
+            .terminate_exact(&unrelated.key, unrelated.generation)
+            .await
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn start_game_abandons_new_engines_when_predecessor_retirement_fails() {
+        let game_id = "start_game_abandons_new_engines_when_predecessor_retirement_fails";
+        let bundle = test_game_engine_bundle(game_id, TestEngineScript::Responsive, true);
+        let manager = Arc::new(GameManager::new());
+        manager.next_session.store(1, Ordering::Relaxed);
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let unrelated = register_unrelated_test_engine(&supervisor, game_id).await;
+        let old_error = format!("{game_id}-old-engine-termination-failure");
+        let old_engine = register_test_game_engine_with_actor(
+            &supervisor,
+            game_id,
+            1,
+            "white",
+            "predecessor-failing-engine",
+            "predecessor-failing-handle",
+            EngineActor::failing_terminate_test_actor(old_error.clone()),
+        )
+        .await;
+        let old_key = old_engine.key.clone();
+        let old_generation = old_engine.generation;
+        assert!(registration_cleanup_messages(&old_key, old_generation).is_empty());
+        assert!(game_cleanup_messages(game_id, 1, "retirement").is_empty());
+        let (old_live, old_controller) =
+            test_live_session_with_supervisor(game_id, 1, supervisor.clone());
+        set_session_engines(&old_controller, Some(old_engine), None).await;
+        let old_shutdown_rx = old_live.shutdown.subscribe();
+        let old_join = loop_exits_without_engine_cleanup(old_shutdown_rx);
+        match old_live.join.lock() {
+            Ok(mut slot) => *slot = Some(old_join),
+            Err(poisoned) => *poisoned.into_inner() = Some(old_join),
+        }
+        publish_test_session(&manager, game_id, old_live).await;
+        let (white_key, black_key) = game_side_keys(&bundle, game_id, 2);
+        let app = tauri::test::mock_app();
+        let task = tokio::spawn({
+            let manager = manager.clone();
+            let supervisor = supervisor.clone();
+            let config = bundle.config.clone();
+            let authority = bundle.authority.clone();
+            let game_id = game_id.to_owned();
+            async move {
+                manager
+                    .start_game(game_id, config, app.handle().clone(), authority, supervisor)
+                    .await
+            }
+        });
+        let white_generation = wait_for_generation(&supervisor, &white_key).await;
+        let black_generation = wait_for_generation(&supervisor, &black_key).await;
+        let error = task.await.unwrap().unwrap_err();
+
+        assert!(error.to_string().contains(&old_error));
+        assert!(supervisor.get_exact(&white_key).is_none());
+        assert!(supervisor.get_exact(&black_key).is_none());
+        wait_for_generation_gone(&supervisor, &white_key, white_generation).await;
+        wait_for_generation_gone(&supervisor, &black_key, black_generation).await;
+        assert!(supervisor.get_exact(&old_key).is_none());
+        assert!(registration_cleanup_messages(&old_key, old_generation)
+            .iter()
+            .any(|message| message.contains(&old_error)));
+        let messages = game_cleanup_messages(game_id, 1, "retirement");
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].contains(&old_error));
+        assert_session_retired(&manager, game_id, 1).await;
+        assert!(!manager.games.contains_key(game_id));
+        assert_unrelated_engine_survives(&supervisor, &unrelated);
+        supervisor
+            .terminate_exact(&unrelated.key, unrelated.generation)
+            .await
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn start_game_abandons_new_engines_when_publication_is_rejected() {
+        let game_id = "start_game_abandons_new_engines_when_publication_is_rejected";
+        let bundle = test_game_engine_bundle(game_id, TestEngineScript::Responsive, true);
+        let manager = Arc::new(GameManager::new());
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let unrelated = register_unrelated_test_engine(&supervisor, game_id).await;
+        let (white_key, black_key) = game_side_keys(&bundle, game_id, 1);
+        let registration = manager.registration.lock().await;
+        let (reached_tx, reached_rx) = tokio::sync::oneshot::channel();
+        GAME_PUBLICATION_WAIT_HOOKS.arm(
+            game_id.into(),
+            Box::new(move || {
+                let _ = reached_tx.send(());
+            }),
+        );
+        let app = tauri::test::mock_app();
+        let task = tokio::spawn({
+            let manager = manager.clone();
+            let supervisor = supervisor.clone();
+            let config = bundle.config.clone();
+            let authority = bundle.authority.clone();
+            let game_id = game_id.to_owned();
+            async move {
+                manager
+                    .start_game(game_id, config, app.handle().clone(), authority, supervisor)
+                    .await
+            }
+        });
+        let white_generation = wait_for_generation(&supervisor, &white_key).await;
+        let black_generation = wait_for_generation(&supervisor, &black_key).await;
+        tokio::time::timeout(TEST_WAIT, reached_rx)
+            .await
+            .expect("publication wait hook did not fire")
+            .expect("publication wait signal was dropped");
+        manager.sealed.store(true, Ordering::SeqCst);
+        drop(registration);
+        let error = task.await.unwrap().unwrap_err();
+
+        assert!(matches!(
+            error,
+            Error::Conflict(message) if message == "application is shutting down"
+        ));
+        assert!(supervisor.get_exact(&white_key).is_none());
+        assert!(supervisor.get_exact(&black_key).is_none());
+        wait_for_generation_gone(&supervisor, &white_key, white_generation).await;
+        wait_for_generation_gone(&supervisor, &black_key, black_generation).await;
+        assert_session_retired(&manager, game_id, 1).await;
+        assert_unrelated_engine_survives(&supervisor, &unrelated);
+        supervisor
+            .terminate_exact(&unrelated.key, unrelated.generation)
+            .await
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn replacement_cancellation_before_join_take_retires_predecessor_and_new_engines() {
+        let game_id =
+            "replacement_cancellation_before_join_take_retires_predecessor_and_new_engines";
+        let bundle = test_game_engine_bundle(game_id, TestEngineScript::Responsive, true);
+        let manager = Arc::new(GameManager::new());
+        manager.next_session.store(1, Ordering::Relaxed);
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let unrelated = register_unrelated_test_engine(&supervisor, game_id).await;
+        let old_white = register_test_game_engine(
+            &supervisor,
+            game_id,
+            1,
+            "white",
+            "old-white-engine",
+            "old-white-handle",
+        )
+        .await;
+        let old_black = register_test_game_engine(
+            &supervisor,
+            game_id,
+            1,
+            "black",
+            "old-black-engine",
+            "old-black-handle",
+        )
+        .await;
+        let old_white_key = old_white.key.clone();
+        let old_white_generation = old_white.generation;
+        let old_black_key = old_black.key.clone();
+        let old_black_generation = old_black.generation;
+        let (old_live, old_controller) =
+            test_live_session_with_supervisor(game_id, 1, supervisor.clone());
+        set_session_engines(
+            &old_controller,
+            Some(old_white.clone()),
+            Some(old_black.clone()),
+        )
+        .await;
+        let old_join = loop_exits_on_shutdown(
+            old_live.shutdown.subscribe(),
+            supervisor.clone(),
+            vec![old_white, old_black],
+        );
+        match old_live.join.lock() {
+            Ok(mut slot) => *slot = Some(old_join),
+            Err(poisoned) => *poisoned.into_inner() = Some(old_join),
+        }
+        publish_test_session(&manager, game_id, old_live.clone()).await;
+        let (new_white_key, new_black_key) = game_side_keys(&bundle, game_id, 2);
+        let controller_guard = old_controller.write().await;
+        let app = tauri::test::mock_app();
+        let task = tokio::spawn({
+            let manager = manager.clone();
+            let supervisor = supervisor.clone();
+            let config = bundle.config.clone();
+            let authority = bundle.authority.clone();
+            let game_id = game_id.to_owned();
+            async move {
+                manager
+                    .start_game(game_id, config, app.handle().clone(), authority, supervisor)
+                    .await
+            }
+        });
+        let new_white_generation = wait_for_generation(&supervisor, &new_white_key).await;
+        let new_black_generation = wait_for_generation(&supervisor, &new_black_key).await;
+        assert!(guard_drop_records(&new_white_key, new_white_generation).is_empty());
+        assert!(guard_drop_records(&new_black_key, new_black_generation).is_empty());
+        wait_until(|| manager.games.get(game_id).is_none()).await;
+        assert!(manager.games.is_empty());
+
+        task.abort();
+        let _ = task.await;
+        drop(controller_guard);
+        wait_for_generation_gone(&supervisor, &new_white_key, new_white_generation).await;
+        wait_for_generation_gone(&supervisor, &new_black_key, new_black_generation).await;
+        wait_for_generation_gone(&supervisor, &old_white_key, old_white_generation).await;
+        wait_for_generation_gone(&supervisor, &old_black_key, old_black_generation).await;
+        wait_until(|| {
+            old_live
+                .join
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_none()
+        })
+        .await;
+        assert!(*old_live.shutdown.borrow());
+        assert_dropped_generation(&new_white_key, new_white_generation);
+        assert_dropped_generation(&new_black_key, new_black_generation);
+        assert_session_retired(&manager, game_id, 1).await;
+        assert_unrelated_engine_survives(&supervisor, &unrelated);
+        supervisor
+            .terminate_exact(&unrelated.key, unrelated.generation)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn replacement_join_wait_cancellation_restores_handle_for_remainder() {
+        let game_id = "replacement_join_wait_cancellation_restores_handle_for_remainder";
+        let manager = Arc::new(GameManager::new());
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let unrelated = register_unrelated_test_engine(&supervisor, game_id).await;
+        let white = register_test_game_engine(
+            &supervisor,
+            game_id,
+            1,
+            "white",
+            "join-wait-white",
+            "join-wait-white-handle",
+        )
+        .await;
+        let black = register_test_game_engine(
+            &supervisor,
+            game_id,
+            1,
+            "black",
+            "join-wait-black",
+            "join-wait-black-handle",
+        )
+        .await;
+        let white_key = white.key.clone();
+        let white_generation = white.generation;
+        let black_key = black.key.clone();
+        let black_generation = black.generation;
+        assert!(registration_cleanup_messages(&white_key, white_generation).is_empty());
+        assert!(registration_cleanup_messages(&black_key, black_generation).is_empty());
+        let (live, controller) = test_live_session_with_supervisor(game_id, 1, supervisor.clone());
+        set_session_engines(&controller, Some(white), Some(black)).await;
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let join = tokio::spawn(async move {
+            let _ = release_rx.await;
+        });
+        match live.join.lock() {
+            Ok(mut slot) => *slot = Some(join),
+            Err(poisoned) => *poisoned.into_inner() = Some(join),
+        }
+        publish_test_session(&manager, game_id, live.clone()).await;
+        let key = (game_id.to_owned(), 1);
+        let (first_tx, first_rx) = tokio::sync::oneshot::channel();
+        SHUTDOWN_JOIN_TAKEN_HOOKS.arm(
+            key.clone(),
+            Box::new(move || {
+                let _ = first_tx.send(());
+            }),
+        );
+        let retirement = tokio::spawn({
+            let manager = manager.clone();
+            let live = live.clone();
+            let game_id = game_id.to_owned();
+            async move {
+                manager
+                    .retire_replaced_session(&game_id, live, Duration::from_secs(60))
+                    .await
+            }
+        });
+        tokio::time::timeout(TEST_WAIT, first_rx)
+            .await
+            .expect("first join-taken hook did not fire")
+            .expect("first join-taken signal was dropped");
+        let (second_tx, second_rx) = tokio::sync::oneshot::channel();
+        SHUTDOWN_JOIN_TAKEN_HOOKS.arm(
+            key,
+            Box::new(move || {
+                let _ = second_tx.send(());
+            }),
+        );
+
+        retirement.abort();
+        let _ = retirement.await;
+        tokio::time::timeout(TEST_WAIT, second_rx)
+            .await
+            .expect("remainder did not take the restored join handle")
+            .expect("remainder join-taken signal was dropped");
+        assert!(supervisor
+            .get_exact(&white_key)
+            .is_some_and(|engine| engine.generation == white_generation));
+        assert!(supervisor
+            .get_exact(&black_key)
+            .is_some_and(|engine| engine.generation == black_generation));
+
+        let _ = release_tx.send(());
+        wait_for_generation_gone(&supervisor, &white_key, white_generation).await;
+        wait_for_generation_gone(&supervisor, &black_key, black_generation).await;
+        assert!(live
+            .join
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_none());
+        assert_session_retired(&manager, game_id, 1).await;
+        assert_unrelated_engine_survives(&supervisor, &unrelated);
+        supervisor
+            .terminate_exact(&unrelated.key, unrelated.generation)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn replacement_timeout_fallback_cancellation_reaps_engines_and_logs_join_failure() {
+        let game_id =
+            "replacement_timeout_fallback_cancellation_reaps_engines_and_logs_join_failure";
+        let manager = Arc::new(GameManager::new());
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let unrelated = register_unrelated_test_engine(&supervisor, game_id).await;
+        let (white_actor, white_started) =
+            EngineActor::delayed_terminate_test_actor(Duration::from_millis(150));
+        let (black_actor, black_started) =
+            EngineActor::delayed_terminate_test_actor(Duration::from_millis(150));
+        let white = register_test_game_engine_with_actor(
+            &supervisor,
+            game_id,
+            1,
+            "white",
+            "timeout-white",
+            "timeout-white-handle",
+            white_actor,
+        )
+        .await;
+        let black = register_test_game_engine_with_actor(
+            &supervisor,
+            game_id,
+            1,
+            "black",
+            "timeout-black",
+            "timeout-black-handle",
+            black_actor,
+        )
+        .await;
+        let white_key = white.key.clone();
+        let white_generation = white.generation;
+        let black_key = black.key.clone();
+        let black_generation = black.generation;
+        assert!(game_cleanup_messages(game_id, 1, "loop join failed").is_empty());
+        assert!(game_cleanup_messages(game_id, 1, "retirement").is_empty());
+        let (live, controller) = test_live_session_with_supervisor(game_id, 1, supervisor.clone());
+        set_session_engines(&controller, Some(white), Some(black)).await;
+        let join = tokio::spawn(std::future::pending::<()>());
+        match live.join.lock() {
+            Ok(mut slot) => *slot = Some(join),
+            Err(poisoned) => *poisoned.into_inner() = Some(join),
+        }
+        publish_test_session(&manager, game_id, live.clone()).await;
+        let retirement = tokio::spawn({
+            let manager = manager.clone();
+            let live = live.clone();
+            let game_id = game_id.to_owned();
+            async move {
+                manager
+                    .retire_replaced_session(&game_id, live, Duration::from_millis(40))
+                    .await
+            }
+        });
+        wait_until(|| {
+            live.join
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_none()
+                && white_started.load(Ordering::SeqCst)
+                && black_started.load(Ordering::SeqCst)
+        })
+        .await;
+        let join_messages = game_cleanup_messages(game_id, 1, "loop join failed");
+        assert_eq!(join_messages.len(), 1);
+        assert!(join_messages[0].contains("did not exit within"));
+
+        retirement.abort();
+        let _ = retirement.await;
+        wait_for_generation_gone(&supervisor, &white_key, white_generation).await;
+        wait_for_generation_gone(&supervisor, &black_key, black_generation).await;
+        assert!(live
+            .join
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_none());
+        assert_session_retired(&manager, game_id, 1).await;
+        assert_unrelated_engine_survives(&supervisor, &unrelated);
+        supervisor
+            .terminate_exact(&unrelated.key, unrelated.generation)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn replacement_join_error_returns_and_logs_failure_after_engine_cleanup() {
+        let game_id = "replacement_join_error_returns_and_logs_failure_after_engine_cleanup";
+        let manager = Arc::new(GameManager::new());
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let unrelated = register_unrelated_test_engine(&supervisor, game_id).await;
+        let white = register_test_game_engine(
+            &supervisor,
+            game_id,
+            1,
+            "white",
+            "join-error-white",
+            "join-error-white-handle",
+        )
+        .await;
+        let black = register_test_game_engine(
+            &supervisor,
+            game_id,
+            1,
+            "black",
+            "join-error-black",
+            "join-error-black-handle",
+        )
+        .await;
+        let white_key = white.key.clone();
+        let white_generation = white.generation;
+        let black_key = black.key.clone();
+        let black_generation = black.generation;
+        let (live, controller) = test_live_session_with_supervisor(game_id, 1, supervisor.clone());
+        set_session_engines(&controller, Some(white), Some(black)).await;
+        let join = tokio::spawn(async { panic!("join-error test loop panic") });
+        match live.join.lock() {
+            Ok(mut slot) => *slot = Some(join),
+            Err(poisoned) => *poisoned.into_inner() = Some(join),
+        }
+        publish_test_session(&manager, game_id, live.clone()).await;
+        assert!(game_cleanup_messages(game_id, 1, "loop join failed").is_empty());
+        assert!(game_cleanup_messages(game_id, 1, "retirement").is_empty());
+
+        let error = manager
+            .retire_replaced_session(game_id, live, Duration::from_secs(2))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("game loop join failed"));
+        assert!(supervisor.get_exact(&white_key).is_none());
+        assert!(supervisor.get_exact(&black_key).is_none());
+        wait_for_generation_gone(&supervisor, &white_key, white_generation).await;
+        wait_for_generation_gone(&supervisor, &black_key, black_generation).await;
+        let join_messages = game_cleanup_messages(game_id, 1, "loop join failed");
+        assert_eq!(join_messages.len(), 1);
+        assert!(join_messages[0].contains("game loop join failed"));
+        let retirement_messages = game_cleanup_messages(game_id, 1, "retirement");
+        assert_eq!(retirement_messages.len(), 1);
+        assert!(retirement_messages[0].contains("game loop join failed"));
+        assert_session_retired(&manager, game_id, 1).await;
+        assert_unrelated_engine_survives(&supervisor, &unrelated);
+        supervisor
+            .terminate_exact(&unrelated.key, unrelated.generation)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn replacement_join_error_folds_and_logs_termination_failures() {
+        let game_id = "replacement_join_error_folds_and_logs_termination_failures";
+        let manager = Arc::new(GameManager::new());
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let unrelated = register_unrelated_test_engine(&supervisor, game_id).await;
+        let white_error = format!("{game_id}-white-termination-error");
+        let black_error = format!("{game_id}-black-termination-error");
+        let white = register_test_game_engine_with_actor(
+            &supervisor,
+            game_id,
+            1,
+            "white",
+            "join-error-failing-white",
+            "join-error-failing-white-handle",
+            EngineActor::failing_terminate_test_actor(white_error.clone()),
+        )
+        .await;
+        let black = register_test_game_engine_with_actor(
+            &supervisor,
+            game_id,
+            1,
+            "black",
+            "join-error-failing-black",
+            "join-error-failing-black-handle",
+            EngineActor::failing_terminate_test_actor(black_error.clone()),
+        )
+        .await;
+        let white_key = white.key.clone();
+        let white_generation = white.generation;
+        let black_key = black.key.clone();
+        let black_generation = black.generation;
+        assert!(registration_cleanup_messages(&white_key, white_generation).is_empty());
+        assert!(registration_cleanup_messages(&black_key, black_generation).is_empty());
+        let (live, controller) = test_live_session_with_supervisor(game_id, 1, supervisor.clone());
+        set_session_engines(&controller, Some(white), Some(black)).await;
+        let join = tokio::spawn(async { panic!("join-error combined test loop panic") });
+        match live.join.lock() {
+            Ok(mut slot) => *slot = Some(join),
+            Err(poisoned) => *poisoned.into_inner() = Some(join),
+        }
+        publish_test_session(&manager, game_id, live.clone()).await;
+        assert!(game_cleanup_messages(game_id, 1, "retirement").is_empty());
+
+        let error = manager
+            .retire_replaced_session(game_id, live, Duration::from_secs(2))
+            .await
+            .unwrap_err();
+
+        match error {
+            Error::OperationAndCleanup { primary, cleanup } => {
+                assert!(primary.contains("game loop join failed"));
+                assert!(cleanup.contains(&white_error));
+                assert!(cleanup.contains(&black_error));
+            }
+            other => panic!("expected combined join and termination failure, got {other:?}"),
+        }
+        assert!(supervisor.get_exact(&white_key).is_none());
+        assert!(supervisor.get_exact(&black_key).is_none());
+        for (key, generation, cause) in [
+            (&white_key, white_generation, white_error.as_str()),
+            (&black_key, black_generation, black_error.as_str()),
+        ] {
+            assert!(registration_cleanup_messages(key, generation)
+                .iter()
+                .any(|message| message.contains(cause)));
+        }
+        let retirement_messages = game_cleanup_messages(game_id, 1, "retirement");
+        assert_eq!(retirement_messages.len(), 1);
+        assert!(retirement_messages[0].contains("game loop join failed"));
+        assert!(retirement_messages[0].contains(&white_error));
+        assert!(retirement_messages[0].contains(&black_error));
+        assert_session_retired(&manager, game_id, 1).await;
+        assert_unrelated_engine_survives(&supervisor, &unrelated);
+        supervisor
+            .terminate_exact(&unrelated.key, unrelated.generation)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn retired_session_with_empty_join_slot_still_terminates_registered_engines() {
+        let game_id = "retired_session_with_empty_join_slot_still_terminates_registered_engines";
+        let manager = Arc::new(GameManager::new());
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let unrelated = register_unrelated_test_engine(&supervisor, game_id).await;
+        let white = register_test_game_engine(
+            &supervisor,
+            game_id,
+            1,
+            "white",
+            "empty-join-white",
+            "empty-join-white-handle",
+        )
+        .await;
+        let black = register_test_game_engine(
+            &supervisor,
+            game_id,
+            1,
+            "black",
+            "empty-join-black",
+            "empty-join-black-handle",
+        )
+        .await;
+        let white_key = white.key.clone();
+        let white_generation = white.generation;
+        let black_key = black.key.clone();
+        let black_generation = black.generation;
+        let (live, controller) = test_live_session_with_supervisor(game_id, 1, supervisor.clone());
+        set_session_engines(&controller, Some(white), Some(black)).await;
+        publish_test_session(&manager, game_id, live.clone()).await;
+        assert!(live
+            .join
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_none());
+
+        manager
+            .retire_replaced_session(game_id, live, Duration::from_secs(1))
+            .await
+            .unwrap();
+
+        wait_for_generation_gone(&supervisor, &white_key, white_generation).await;
+        wait_for_generation_gone(&supervisor, &black_key, black_generation).await;
+        assert_session_retired(&manager, game_id, 1).await;
+        assert_unrelated_engine_survives(&supervisor, &unrelated);
+        supervisor
+            .terminate_exact(&unrelated.key, unrelated.generation)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn retired_session_reports_termination_failure_after_clean_join() {
+        let game_id = "retired_session_reports_termination_failure_after_clean_join";
+        let manager = Arc::new(GameManager::new());
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let unrelated = register_unrelated_test_engine(&supervisor, game_id).await;
+        let white_error = format!("{game_id}-white-termination-error");
+        let black_error = format!("{game_id}-black-termination-error");
+        let white = register_test_game_engine_with_actor(
+            &supervisor,
+            game_id,
+            1,
+            "white",
+            "retired-failing-white",
+            "retired-failing-white-handle",
+            EngineActor::failing_terminate_test_actor(white_error.clone()),
+        )
+        .await;
+        let black = register_test_game_engine_with_actor(
+            &supervisor,
+            game_id,
+            1,
+            "black",
+            "retired-failing-black",
+            "retired-failing-black-handle",
+            EngineActor::failing_terminate_test_actor(black_error.clone()),
+        )
+        .await;
+        let white_key = white.key.clone();
+        let white_generation = white.generation;
+        let black_key = black.key.clone();
+        let black_generation = black.generation;
+        assert!(registration_cleanup_messages(&white_key, white_generation).is_empty());
+        assert!(registration_cleanup_messages(&black_key, black_generation).is_empty());
+        let (live, controller) = test_live_session_with_supervisor(game_id, 1, supervisor.clone());
+        set_session_engines(&controller, Some(white), Some(black)).await;
+        let join = loop_exits_without_engine_cleanup(live.shutdown.subscribe());
+        match live.join.lock() {
+            Ok(mut slot) => *slot = Some(join),
+            Err(poisoned) => *poisoned.into_inner() = Some(join),
+        }
+        publish_test_session(&manager, game_id, live.clone()).await;
+        assert!(game_cleanup_messages(game_id, 1, "retirement").is_empty());
+
+        let error = manager
+            .retire_replaced_session(game_id, live, Duration::from_secs(1))
+            .await
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("failed to terminate game engines"));
+        assert!(error.to_string().contains(&white_error));
+        assert!(error.to_string().contains(&black_error));
+        assert!(supervisor.get_exact(&white_key).is_none());
+        assert!(supervisor.get_exact(&black_key).is_none());
+        for (key, generation, cause) in [
+            (&white_key, white_generation, white_error.as_str()),
+            (&black_key, black_generation, black_error.as_str()),
+        ] {
+            assert!(registration_cleanup_messages(key, generation)
+                .iter()
+                .any(|message| message.contains(cause)));
+        }
+        let messages = game_cleanup_messages(game_id, 1, "retirement");
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].contains(&white_error));
+        assert!(messages[0].contains(&black_error));
+        assert_session_retired(&manager, game_id, 1).await;
+        assert_unrelated_engine_survives(&supervisor, &unrelated);
+        supervisor
+            .terminate_exact(&unrelated.key, unrelated.generation)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn retired_session_folds_join_timeout_with_termination_failure() {
+        let game_id = "retired_session_folds_join_timeout_with_termination_failure";
+        let manager = Arc::new(GameManager::new());
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let unrelated = register_unrelated_test_engine(&supervisor, game_id).await;
+        let white_error = format!("{game_id}-white-termination-error");
+        let black_error = format!("{game_id}-black-termination-error");
+        let white = register_test_game_engine_with_actor(
+            &supervisor,
+            game_id,
+            1,
+            "white",
+            "retired-timeout-white",
+            "retired-timeout-white-handle",
+            EngineActor::failing_terminate_test_actor(white_error.clone()),
+        )
+        .await;
+        let black = register_test_game_engine_with_actor(
+            &supervisor,
+            game_id,
+            1,
+            "black",
+            "retired-timeout-black",
+            "retired-timeout-black-handle",
+            EngineActor::failing_terminate_test_actor(black_error.clone()),
+        )
+        .await;
+        let white_key = white.key.clone();
+        let white_generation = white.generation;
+        let black_key = black.key.clone();
+        let black_generation = black.generation;
+        let (live, controller) = test_live_session_with_supervisor(game_id, 1, supervisor.clone());
+        set_session_engines(&controller, Some(white), Some(black)).await;
+        let join = tokio::spawn(std::future::pending::<()>());
+        match live.join.lock() {
+            Ok(mut slot) => *slot = Some(join),
+            Err(poisoned) => *poisoned.into_inner() = Some(join),
+        }
+        publish_test_session(&manager, game_id, live.clone()).await;
+        assert!(game_cleanup_messages(game_id, 1, "loop join failed").is_empty());
+        assert!(game_cleanup_messages(game_id, 1, "retirement").is_empty());
+
+        let error = manager
+            .retire_replaced_session(game_id, live, Duration::from_millis(35))
+            .await
+            .unwrap_err();
+
+        match error {
+            Error::OperationAndCleanup { primary, cleanup } => {
+                assert!(primary.contains("did not exit within"));
+                assert!(cleanup.contains(&white_error));
+                assert!(cleanup.contains(&black_error));
+            }
+            other => panic!("expected folded timeout and cleanup failure, got {other:?}"),
+        }
+        assert!(supervisor.get_exact(&white_key).is_none());
+        assert!(supervisor.get_exact(&black_key).is_none());
+        for (key, generation, cause) in [
+            (&white_key, white_generation, white_error.as_str()),
+            (&black_key, black_generation, black_error.as_str()),
+        ] {
+            assert!(registration_cleanup_messages(key, generation)
+                .iter()
+                .any(|message| message.contains(cause)));
+        }
+        let join_messages = game_cleanup_messages(game_id, 1, "loop join failed");
+        assert_eq!(join_messages.len(), 1);
+        assert!(join_messages[0].contains("did not exit within"));
+        let retirement_messages = game_cleanup_messages(game_id, 1, "retirement");
+        assert_eq!(retirement_messages.len(), 1);
+        assert!(retirement_messages[0].contains("did not exit within"));
+        assert!(retirement_messages[0].contains(&white_error));
+        assert!(retirement_messages[0].contains(&black_error));
+        assert_session_retired(&manager, game_id, 1).await;
+        assert_unrelated_engine_survives(&supervisor, &unrelated);
+        supervisor
+            .terminate_exact(&unrelated.key, unrelated.generation)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn retired_session_cancellation_remainder_logs_and_reaps_failing_engines() {
+        let game_id = "retired_session_cancellation_remainder_logs_and_reaps_failing_engines";
+        let manager = Arc::new(GameManager::new());
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let unrelated = register_unrelated_test_engine(&supervisor, game_id).await;
+        let white_error = format!("{game_id}-white-termination-error");
+        let black_error = format!("{game_id}-black-termination-error");
+        let white = register_test_game_engine_with_actor(
+            &supervisor,
+            game_id,
+            1,
+            "white",
+            "retirement-cancel-white",
+            "retirement-cancel-white-handle",
+            EngineActor::failing_terminate_test_actor(white_error.clone()),
+        )
+        .await;
+        let black = register_test_game_engine_with_actor(
+            &supervisor,
+            game_id,
+            1,
+            "black",
+            "retirement-cancel-black",
+            "retirement-cancel-black-handle",
+            EngineActor::failing_terminate_test_actor(black_error.clone()),
+        )
+        .await;
+        let white_key = white.key.clone();
+        let white_generation = white.generation;
+        let black_key = black.key.clone();
+        let black_generation = black.generation;
+        assert!(registration_cleanup_messages(&white_key, white_generation).is_empty());
+        assert!(registration_cleanup_messages(&black_key, black_generation).is_empty());
+        let (live, controller) = test_live_session_with_supervisor(game_id, 1, supervisor.clone());
+        set_session_engines(&controller, Some(white), Some(black)).await;
+        let join = loop_exits_without_engine_cleanup(live.shutdown.subscribe());
+        match live.join.lock() {
+            Ok(mut slot) => *slot = Some(join),
+            Err(poisoned) => *poisoned.into_inner() = Some(join),
+        }
+        publish_test_session(&manager, game_id, live.clone()).await;
+        assert!(game_cleanup_messages(game_id, 1, "retirement").is_empty());
+        let controller_guard = controller.write().await;
+        let retirement = tokio::spawn({
+            let manager = manager.clone();
+            let live = live.clone();
+            let game_id = game_id.to_owned();
+            async move {
+                manager
+                    .retire_replaced_session(&game_id, live, Duration::from_secs(2))
+                    .await
+            }
+        });
+        wait_until(|| manager.games.get(game_id).is_none()).await;
+        retirement.abort();
+        let _ = retirement.await;
+        drop(controller_guard);
+
+        wait_for_generation_gone(&supervisor, &white_key, white_generation).await;
+        wait_for_generation_gone(&supervisor, &black_key, black_generation).await;
+        let messages = game_cleanup_messages(game_id, 1, "retirement");
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].contains(&white_error));
+        assert!(messages[0].contains(&black_error));
+        for (key, generation, cause) in [
+            (&white_key, white_generation, white_error.as_str()),
+            (&black_key, black_generation, black_error.as_str()),
+        ] {
+            assert!(registration_cleanup_messages(key, generation)
+                .iter()
+                .any(|message| message.contains(cause)));
+        }
+        assert_session_retired(&manager, game_id, 1).await;
+        assert_unrelated_engine_survives(&supervisor, &unrelated);
+        supervisor
+            .terminate_exact(&unrelated.key, unrelated.generation)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn mixed_retirement_failure_is_logged_before_cancellation_and_remainder_finishes() {
+        let game_id =
+            "mixed_retirement_failure_is_logged_before_cancellation_and_remainder_finishes";
+        let manager = Arc::new(GameManager::new());
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let unrelated = register_unrelated_test_engine(&supervisor, game_id).await;
+        let error_text = format!("{game_id}-white-termination-error");
+        let white = register_test_game_engine_with_actor(
+            &supervisor,
+            game_id,
+            1,
+            "white",
+            "mixed-failing-white",
+            "mixed-failing-white-handle",
+            EngineActor::failing_terminate_test_actor(error_text.clone()),
+        )
+        .await;
+        let (black_actor, black_started) =
+            EngineActor::delayed_terminate_test_actor(Duration::from_millis(200));
+        let black = register_test_game_engine_with_actor(
+            &supervisor,
+            game_id,
+            1,
+            "black",
+            "mixed-delayed-black",
+            "mixed-delayed-black-handle",
+            black_actor,
+        )
+        .await;
+        let white_key = white.key.clone();
+        let white_generation = white.generation;
+        let black_key = black.key.clone();
+        let black_generation = black.generation;
+        assert!(registration_cleanup_messages(&white_key, white_generation).is_empty());
+        let (live, controller) = test_live_session_with_supervisor(game_id, 1, supervisor.clone());
+        set_session_engines(&controller, Some(white), Some(black)).await;
+        let join = loop_exits_without_engine_cleanup(live.shutdown.subscribe());
+        match live.join.lock() {
+            Ok(mut slot) => *slot = Some(join),
+            Err(poisoned) => *poisoned.into_inner() = Some(join),
+        }
+        publish_test_session(&manager, game_id, live.clone()).await;
+        assert!(game_cleanup_messages(game_id, 1, "retirement").is_empty());
+        let retirement = tokio::spawn({
+            let manager = manager.clone();
+            let live = live.clone();
+            let game_id = game_id.to_owned();
+            async move {
+                manager
+                    .retire_replaced_session(&game_id, live, Duration::from_secs(2))
+                    .await
+            }
+        });
+        wait_until(|| {
+            black_started.load(Ordering::SeqCst)
+                && registration_cleanup_messages(&white_key, white_generation)
+                    .iter()
+                    .any(|message| message.contains(&error_text))
+        })
+        .await;
+        assert!(registration_cleanup_messages(&white_key, white_generation)
+            .iter()
+            .any(|message| message.contains(&error_text)));
+
+        retirement.abort();
+        let _ = retirement.await;
+        wait_for_generation_gone(&supervisor, &white_key, white_generation).await;
+        wait_for_generation_gone(&supervisor, &black_key, black_generation).await;
+        assert_session_retired(&manager, game_id, 1).await;
+        assert_unrelated_engine_survives(&supervisor, &unrelated);
+        supervisor
+            .terminate_exact(&unrelated.key, unrelated.generation)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn replacement_join_error_fallback_cancellation_logs_when_failure_forms() {
+        let game_id = "replacement_join_error_fallback_cancellation_logs_when_failure_forms";
+        let manager = Arc::new(GameManager::new());
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let unrelated = register_unrelated_test_engine(&supervisor, game_id).await;
+        let (white_actor, white_started) =
+            EngineActor::delayed_terminate_test_actor(Duration::from_millis(150));
+        let (black_actor, black_started) =
+            EngineActor::delayed_terminate_test_actor(Duration::from_millis(150));
+        let white = register_test_game_engine_with_actor(
+            &supervisor,
+            game_id,
+            1,
+            "white",
+            "join-panic-white",
+            "join-panic-white-handle",
+            white_actor,
+        )
+        .await;
+        let black = register_test_game_engine_with_actor(
+            &supervisor,
+            game_id,
+            1,
+            "black",
+            "join-panic-black",
+            "join-panic-black-handle",
+            black_actor,
+        )
+        .await;
+        let white_key = white.key.clone();
+        let white_generation = white.generation;
+        let black_key = black.key.clone();
+        let black_generation = black.generation;
+        assert!(game_cleanup_messages(game_id, 1, "loop join failed").is_empty());
+        assert!(game_cleanup_messages(game_id, 1, "retirement").is_empty());
+        let (live, controller) = test_live_session_with_supervisor(game_id, 1, supervisor.clone());
+        set_session_engines(&controller, Some(white), Some(black)).await;
+        let join = tokio::spawn(async { panic!("join-panic test loop panic") });
+        match live.join.lock() {
+            Ok(mut slot) => *slot = Some(join),
+            Err(poisoned) => *poisoned.into_inner() = Some(join),
+        }
+        publish_test_session(&manager, game_id, live.clone()).await;
+        let retirement = tokio::spawn({
+            let manager = manager.clone();
+            let live = live.clone();
+            let game_id = game_id.to_owned();
+            async move {
+                manager
+                    .retire_replaced_session(&game_id, live, Duration::from_secs(60))
+                    .await
+            }
+        });
+        wait_until(|| {
+            live.join
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_none()
+                && white_started.load(Ordering::SeqCst)
+                && black_started.load(Ordering::SeqCst)
+        })
+        .await;
+        let join_messages = game_cleanup_messages(game_id, 1, "loop join failed");
+        assert_eq!(join_messages.len(), 1);
+        assert!(join_messages[0].contains("game loop join failed"));
+
+        retirement.abort();
+        let _ = retirement.await;
+        wait_for_generation_gone(&supervisor, &white_key, white_generation).await;
+        wait_for_generation_gone(&supervisor, &black_key, black_generation).await;
+        assert!(live
+            .join
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_none());
+        assert_session_retired(&manager, game_id, 1).await;
+        assert_unrelated_engine_survives(&supervisor, &unrelated);
+        supervisor
+            .terminate_exact(&unrelated.key, unrelated.generation)
+            .await
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn game_engine_construction_cancellation_reaps_both_spawn_boundaries() {
+        let game_id = "game_engine_construction_cancellation_reaps_both_spawn_boundaries";
+        let bundle = test_game_engine_bundle(game_id, TestEngineScript::Pending, true);
+        let manager = Arc::new(GameManager::new());
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let unrelated = register_unrelated_test_engine(&supervisor, game_id).await;
+        let (white_key, black_key) = game_side_keys(&bundle, game_id, 1);
+        assert!(guard_drop_records_for_key(&white_key).is_empty());
+        assert!(guard_drop_records_for_key(&black_key).is_empty());
+
+        let app = tauri::test::mock_app();
+        let task = tokio::spawn({
+            let manager = manager.clone();
+            let supervisor = supervisor.clone();
+            let bundle_config = bundle.config.clone();
+            let authority = bundle.authority.clone();
+            let game_id = game_id.to_owned();
+            async move {
+                manager
+                    .start_game(
+                        game_id,
+                        bundle_config,
+                        app.handle().clone(),
+                        authority,
+                        supervisor,
+                    )
+                    .await
+            }
+        });
+
+        let white_generation = wait_for_generation(&supervisor, &white_key).await;
+        let black_generation = wait_for_generation(&supervisor, &black_key).await;
+        assert!(guard_drop_records(&white_key, white_generation).is_empty());
+        assert!(guard_drop_records(&black_key, black_generation).is_empty());
+
+        task.abort();
+        let _ = task.await;
+        wait_for_generation_gone(&supervisor, &white_key, white_generation).await;
+        wait_for_generation_gone(&supervisor, &black_key, black_generation).await;
+        wait_for_guard_drop_completion(&white_key, white_generation).await;
+        wait_for_guard_drop_completion(&black_key, black_generation).await;
+        assert_dropped_generation(&white_key, white_generation);
+        assert_dropped_generation(&black_key, black_generation);
+        assert!(manager.games.is_empty());
+        assert_session_retired(&manager, game_id, 1).await;
+        assert_unrelated_engine_survives(&supervisor, &unrelated);
+        supervisor
+            .terminate_exact(&unrelated.key, unrelated.generation)
+            .await
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn game_engine_construction_cancellation_at_publication_reaps_both_engines() {
+        let game_id = "game_engine_construction_cancellation_at_publication_reaps_both_engines";
+        let bundle = test_game_engine_bundle(game_id, TestEngineScript::Responsive, true);
+        let manager = Arc::new(GameManager::new());
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let unrelated = register_unrelated_test_engine(&supervisor, game_id).await;
+        let (white_key, black_key) = game_side_keys(&bundle, game_id, 1);
+        let registration = manager.registration.lock().await;
+        let (reached_tx, reached_rx) = tokio::sync::oneshot::channel();
+        GAME_PUBLICATION_WAIT_HOOKS.arm(
+            game_id.into(),
+            Box::new(move || {
+                let _ = reached_tx.send(());
+            }),
+        );
+
+        let app = tauri::test::mock_app();
+        let task = tokio::spawn({
+            let manager = manager.clone();
+            let supervisor = supervisor.clone();
+            let config = bundle.config.clone();
+            let authority = bundle.authority.clone();
+            let game_id = game_id.to_owned();
+            async move {
+                manager
+                    .start_game(game_id, config, app.handle().clone(), authority, supervisor)
+                    .await
+            }
+        });
+
+        let white_generation = wait_for_generation(&supervisor, &white_key).await;
+        let black_generation = wait_for_generation(&supervisor, &black_key).await;
+        tokio::time::timeout(TEST_WAIT, reached_rx)
+            .await
+            .expect("publication wait hook did not fire")
+            .expect("publication wait signal was dropped");
+        assert!(guard_drop_records(&white_key, white_generation).is_empty());
+        assert!(guard_drop_records(&black_key, black_generation).is_empty());
+
+        task.abort();
+        let _ = task.await;
+        drop(registration);
+        wait_for_generation_gone(&supervisor, &white_key, white_generation).await;
+        wait_for_generation_gone(&supervisor, &black_key, black_generation).await;
+        wait_for_guard_drop_completion(&white_key, white_generation).await;
+        wait_for_guard_drop_completion(&black_key, black_generation).await;
+        assert_dropped_generation(&white_key, white_generation);
+        assert_dropped_generation(&black_key, black_generation);
+        assert!(manager.games.is_empty());
+        assert_session_retired(&manager, game_id, 1).await;
+        assert_unrelated_engine_survives(&supervisor, &unrelated);
+        supervisor
+            .terminate_exact(&unrelated.key, unrelated.generation)
+            .await
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn successful_game_start_transfers_engine_ownership_to_live_session() {
+        let game_id = "successful_game_start_transfers_engine_ownership_to_live_session";
+        let bundle = test_game_engine_bundle(game_id, TestEngineScript::Responsive, true);
+        let manager = Arc::new(GameManager::new());
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let unrelated = register_unrelated_test_engine(&supervisor, game_id).await;
+        let (white_key, black_key) = game_side_keys(&bundle, game_id, 1);
+        assert!(guard_drop_records_for_key(&white_key).is_empty());
+        assert!(guard_drop_records_for_key(&black_key).is_empty());
+        let app = tauri::test::mock_app();
+
+        let state = manager
+            .start_game(
+                game_id.into(),
+                bundle.config.clone(),
+                app.handle().clone(),
+                bundle.authority.clone(),
+                supervisor.clone(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(state.session, 1);
+        let white_generation = wait_for_generation(&supervisor, &white_key).await;
+        let black_generation = wait_for_generation(&supervisor, &black_key).await;
+        assert!(manager
+            .games
+            .get(game_id)
+            .is_some_and(|live| live.session == state.session));
+        assert!(guard_drop_records(&white_key, white_generation).is_empty());
+        assert!(guard_drop_records(&black_key, black_generation).is_empty());
+        assert!(supervisor
+            .get_exact(&white_key)
+            .is_some_and(|engine| engine.generation == white_generation));
+        assert!(supervisor
+            .get_exact(&black_key)
+            .is_some_and(|engine| engine.generation == black_generation));
+
+        manager.abort_game(game_id, state.session).await.unwrap();
+        wait_for_generation_gone(&supervisor, &white_key, white_generation).await;
+        wait_for_generation_gone(&supervisor, &black_key, black_generation).await;
+        assert_session_retired(&manager, game_id, state.session).await;
+        assert_unrelated_engine_survives(&supervisor, &unrelated);
+        supervisor
+            .terminate_exact(&unrelated.key, unrelated.generation)
+            .await
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancellation_after_publication_retires_the_never_started_session() {
+        let game_id = "cancellation_after_publication_retires_the_never_started_session";
+        let bundle = test_game_engine_bundle(game_id, TestEngineScript::Responsive, true);
+        let manager = Arc::new(GameManager::new());
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let unrelated = register_unrelated_test_engine(&supervisor, game_id).await;
+        let (white_key, black_key) = game_side_keys(&bundle, game_id, 1);
+        let held_controller = Arc::new(std::sync::Mutex::new(None));
+        let held_for_hook = held_controller.clone();
+        GAME_START_AFTER_HANDOFF_HOOKS.arm(
+            game_id.into(),
+            Box::new(move |controller| {
+                let guard = controller
+                    .try_write_owned()
+                    .expect("no controller writer exists before the start handoff continues");
+                *held_for_hook
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(guard);
+            }),
+        );
+        let loop_key = (game_id.into(), 1);
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        RUN_PUBLISHED_LOOP_READY_HOOKS.arm(
+            loop_key.clone(),
+            Box::new(move || {
+                let _ = ready_tx.send(());
+            }),
+        );
+        let (resolution_tx, mut resolution_rx) = tokio::sync::mpsc::unbounded_channel();
+        RUN_PUBLISHED_LOOP_RESOLUTIONS.arm(
+            loop_key,
+            Box::new(move |started| {
+                let _ = resolution_tx.send(started);
+            }),
+        );
+
+        let app = tauri::test::mock_app();
+        let task = tokio::spawn({
+            let manager = manager.clone();
+            let supervisor = supervisor.clone();
+            let config = bundle.config.clone();
+            let authority = bundle.authority.clone();
+            let game_id = game_id.to_owned();
+            async move {
+                manager
+                    .start_game(game_id, config, app.handle().clone(), authority, supervisor)
+                    .await
+            }
+        });
+
+        let white_generation = wait_for_generation(&supervisor, &white_key).await;
+        let black_generation = wait_for_generation(&supervisor, &black_key).await;
+        tokio::time::timeout(TEST_WAIT, ready_rx)
+            .await
+            .expect("published loop did not reach its start receiver")
+            .expect("published loop readiness signal was dropped");
+        assert!(matches!(
+            resolution_rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+        assert!(guard_drop_records(&white_key, white_generation).is_empty());
+        assert!(guard_drop_records(&black_key, black_generation).is_empty());
+        assert!(manager
+            .games
+            .get(game_id)
+            .is_some_and(|live| live.session == 1));
+
+        task.abort();
+        let _ = task.await;
+        let held = held_controller
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        drop(held);
+        assert_eq!(
+            tokio::time::timeout(TEST_WAIT, resolution_rx.recv())
+                .await
+                .expect("published loop did not resolve after its sender was dropped"),
+            Some(false)
+        );
+        assert!(resolution_rx.try_recv().is_err());
+        wait_for_generation_gone(&supervisor, &white_key, white_generation).await;
+        wait_for_generation_gone(&supervisor, &black_key, black_generation).await;
+        assert!(guard_drop_records(&white_key, white_generation).is_empty());
+        assert!(guard_drop_records(&black_key, black_generation).is_empty());
+        assert_session_retired(&manager, game_id, 1).await;
+        assert_unrelated_engine_survives(&supervisor, &unrelated);
+        supervisor
+            .terminate_exact(&unrelated.key, unrelated.generation)
+            .await
+            .unwrap();
+    }
+
     struct RoutingAnchor {
         name: &'static str,
         start_marker: &'static str,
@@ -5516,6 +7699,34 @@ done
                     count: 1,
                 },
             ],
+        },
+        RoutingAnchor {
+            name: "start_game_construction_handoff",
+            start_marker: "pub async fn start_game<R: Runtime>(\n        self: &Arc<Self>,",
+            end_marker: "async fn current_session(",
+            expected_patterns: &[
+                RoutingPattern {
+                    text: "run_published_loop(",
+                    count: 1,
+                },
+                RoutingPattern {
+                    text: ".transfer_to_live_session()",
+                    count: 1,
+                },
+                RoutingPattern {
+                    text: "return Err(construction.abandon(primary).await);",
+                    count: 3,
+                },
+            ],
+        },
+        RoutingAnchor {
+            name: "shutdown_and_join_logs_failures_when_formed",
+            start_marker: "async fn shutdown_and_join(",
+            end_marker: "join.abort();",
+            expected_patterns: &[RoutingPattern {
+                text: "log_game_cleanup_error(",
+                count: 2,
+            }],
         },
         RoutingAnchor {
             name: "engine_error_terminal",
@@ -5733,8 +7944,8 @@ done
             }
         }
         assert_eq!(
-            checked_occurrences, 29,
-            "all 29 production routing and cleanup occurrences must be tested individually"
+            checked_occurrences, 36,
+            "all 36 production routing and cleanup occurrences must be tested individually"
         );
     }
 }
