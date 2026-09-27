@@ -127,24 +127,27 @@ export async function assertNothingClipped(
         // `scrollWidth` also counts empty margin and padding (a Mantine Switch track label's 50px
         // margin), so a reported overflow only counts when visible text or a leaf box (an icon, the
         // switch thumb) really passes the edge. An input's value is not in the DOM, so its scroll size is all there is.
-        const contentPasses = (node: Element, axis: Axis, edge: number) => {
+        const contentPasses = (node: Element, axis: Axis, edge: number): boolean => {
             if (node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement)
                 return true;
-            const walker = document.createTreeWalker(
-                node,
-                NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT,
-            );
-            for (let child = walker.nextNode(); child; child = walker.nextNode()) {
-                const owner = child instanceof Element ? child : child.parentElement;
-                if (owner && invisible(owner)) continue;
-                // What paints is text and leaf boxes; a parent's padding is not content.
-                if (child instanceof Element && child.childNodes.length > 0) continue;
-                const range = document.createRange();
-                range.selectNode(child);
-                const box =
-                    child instanceof Element
-                        ? child.getBoundingClientRect()
-                        : range.getBoundingClientRect();
+            for (const child of node.childNodes) {
+                if (child instanceof Text) {
+                    const range = document.createRange();
+                    range.selectNode(child);
+                    const box = range.getBoundingClientRect();
+                    if (box.width > 0 && box.height > 0 && box[axis.end] > edge + 1) return true;
+                    continue;
+                }
+                if (!(child instanceof Element) || invisible(child)) continue;
+                // What paints is text and leaf boxes; a parent's padding is not content. A nested
+                // container that does not let overflow spill is judged on its own, so only its own
+                // box counts here, never what it scrolls or cuts.
+                const nested = overflowOf(child, axis) !== "visible";
+                if (child.childNodes.length > 0 && !nested) {
+                    if (contentPasses(child, axis, edge)) return true;
+                    continue;
+                }
+                const box = child.getBoundingClientRect();
                 if (box.width > 0 && box.height > 0 && box[axis.end] > edge + 1) return true;
             }
             return false;

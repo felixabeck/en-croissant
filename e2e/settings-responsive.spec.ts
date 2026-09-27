@@ -139,6 +139,11 @@ const clippingCases: { name: string; html: string; lost: boolean; scrollY?: numb
         html: `<div style="width: 50px; overflow: hidden"><span style="display: inline-block; padding: 0 4px; white-space: nowrap">An unbreakable line</span></div>`,
     },
     {
+        name: "hidden box around a scroller, overflowing only by padding",
+        lost: false,
+        html: `<div style="width: 100px; overflow: hidden"><div style="overflow-x: auto">${text}</div><span style="display: inline-block; padding-right: 150px">x</span></div>`,
+    },
+    {
         name: "hidden box cutting only a parent's padding",
         lost: false,
         html: `<div style="width: 50px; overflow: hidden"><span style="display: inline-block; padding-right: 60px">x</span></div>`,
