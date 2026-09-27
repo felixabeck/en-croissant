@@ -8105,7 +8105,7 @@ Handled 2026-09-19 together with f-20260905-14. The Files controls fit 320px / 2
 
 ### Existing-tab import overwrites its stored tree before metadata commit and bypasses the live tree owner
 
-* **ID:** f-20260910-09 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260910-09 · **Status:** handled · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** src/components/tabs/ImportModal.tsx handleSubmit file branch, tabStorage.seed inside setCurrentTab; src/state/store/tabStorage.ts seed/read; src/state/store/tree.ts createTreeStore cache.
 * **Defect:** importing a selected file into the current tab seeds the existing tab id before the workspace metadata is saved. A quota rejection of the workspace write leaves the prior durable origin/name referencing the replacement tree. A pending old tree also takes precedence over this seed in TabStorageRepository.read and can overwrite it on flush. The live cached store is not replaced by seed.
 * **Evidence:** ImportModal.tsx calls tabStorage.seed(prev.value, tree) inside the currentTabAtom updater; seed writes sessionStorage directly, while read checks pending first. The new-tab rollback protocol in f-20260901-05 cannot safely delete an existing id to undo this replacement.
