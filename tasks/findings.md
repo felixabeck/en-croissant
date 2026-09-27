@@ -8081,7 +8081,7 @@ Handled 2026-09-19 together with f-20260905-14. The Files controls fit 320px / 2
 
 ### Documented container e2e argument separator silently defeats project selection
 
-* **ID:** f-20260910-07 · **Status:** open · **Area:** e2e-gate · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260910-07 · **Status:** handled · **Area:** e2e-gate · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `.claude/skills/verify-ui/SKILL.md:91`, `scripts/run-e2e-container.mjs:91` argument forwarding.
 * **Defect:** the documented pnpm invocation includes `-- --project=...`. pnpm retains that separator, and the wrapper forwards it to Playwright, where following options become test-file filters. A supposedly scoped snapshot-update run executes the complete suite instead, risking unrelated snapshot updates.
 * **Evidence:** `pnpm test:e2e:update -- --project=async-errors --grep="localizes directory-trash"` ran all ten tests, including workspace-tabs, board-keyboard and security-consent. Log: `/tmp/build-confirmation-704e13a8/snapshot-1/log`. No existing snapshots changed in that run. The wrapper forwards `process.argv.slice(2)` unchanged.
