@@ -178,12 +178,14 @@ export default function DatabasesPage() {
       />
 
       <Group align="baseline" pl="lg" py="sm">
-        <Title>{t("Databases.Title")}</Title>
+        <Title className="wrap-anywhere">{t("Databases.Title")}</Title>
       </Group>
 
+      {/* Stacked, the panels take their content height and the page scrolls; squeezed into the
+          remaining height instead, a panel cut its list away at a large font scale. */}
       <SimpleGrid
         cols={{ base: 1, sm: 2 }}
-        flex={1}
+        flex={{ base: "1 0 auto", sm: 1 }}
         px="md"
         pb="md"
         mih={0}
@@ -241,7 +243,9 @@ export default function DatabasesPage() {
               </>
             )}
             <ScrollArea
-              flex={1}
+              // `auto`, not a zero basis: a scroll container's minimum height is zero, so with no
+              // basis of its own the list got no share of a stacked panel and vanished.
+              flex="1 1 auto"
               viewportProps={{ tabIndex: 0, "aria-label": t("Databases.Title") }}
             >
               {error && (

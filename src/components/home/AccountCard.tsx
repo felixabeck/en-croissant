@@ -111,8 +111,8 @@ export function AccountCard({
       }
     }
     return (
-      <Group key={stat.label} justify="space-between" wrap="nowrap">
-        <Text size="xs" c="dimmed" fw={700} tt="uppercase">
+      <Group key={stat.label} justify="space-between" wrap="wrap" miw={0}>
+        <Text size="xs" c="dimmed" fw={700} tt="uppercase" miw={0} className="wrap-anywhere">
           {capitalize(stat.label)}
         </Text>
         <Group gap={4}>
@@ -220,13 +220,13 @@ export function AccountCard({
     <Card withBorder radius="md" padding="lg">
       <Card.Section withBorder inheritPadding py="xs">
         <Group justify="space-between">
-          <Group>
+          <Group wrap="wrap" miw={0}>
             {type === "lichess" ? (
               <LichessLogo />
             ) : (
               <img width={30} height={30} src="/chesscom.png" alt="chess.com" />
             )}
-            <Text fw={600} size="sm">
+            <Text fw={600} size="sm" miw={0} className="wrap-anywhere">
               {title}
             </Text>
             {type === "lichess" && authenticated && (
@@ -326,7 +326,7 @@ export function AccountCard({
             animated={loading}
           />
           <Group justify="space-between" mt={4}>
-            <Text size="xs" c="dimmed">
+            <Text size="xs" c="dimmed" miw={0} className="wrap-anywhere">
               {t("Home.Accounts.LastUpdate", {
                 date: new Date(updatedAt).toLocaleDateString(),
                 interpolation: { escapeValue: false },

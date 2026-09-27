@@ -150,6 +150,7 @@ function Accounts() {
         <Group>
           <Button
             fullWidth
+            className="wrap-button"
             variant="light"
             rightSection={<IconPlus size="1rem" />}
             onClick={() => setOpen(true)}
