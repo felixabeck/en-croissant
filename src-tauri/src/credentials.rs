@@ -407,9 +407,10 @@ impl CredentialManager {
         })
     }
 
-    /// Writes a secret only while the retained registry directory remains at its startup path.
-    /// A later user move after the final check is the same data-location change as while the app
-    /// is closed; this guard covers replacements during this call.
+    /// Checks the registry location before writing and compensates if it changes during a write.
+    /// Once the keyring write is attempted, the final check follows the call's last registry
+    /// write on every exit: a detached secret is deleted, or recorded in a verified tombstone;
+    /// if neither succeeds, the operation requires recovery.
     fn checked_keyring_write(
         &self,
         registry: &mut RegistryFile,
@@ -418,7 +419,15 @@ impl CredentialManager {
         kind: CredentialWriteKind,
     ) -> Result<bool, Error> {
         let binding = credential_lock(&self.registry_dir)?.clone();
+        let operation = match kind {
+            CredentialWriteKind::Add => "add",
+            CredentialWriteKind::Reauthentication => "re-authentication",
+        };
         if !binding_is_at_startup(binding.as_ref()) {
+            log::warn!(
+                "credential {operation} detected a detached registry directory for account {}",
+                metadata.handle.0
+            );
             return Err(credential_directory_replaced());
         }
 
@@ -456,12 +465,18 @@ impl CredentialManager {
             }
         }
 
-        if !binding_is_at_startup(binding.as_ref()) {
-            if matches!(kind, CredentialWriteKind::Add) {
-                registry.accounts.remove(&metadata.handle.0);
+        if let Some(binding) = binding.as_ref() {
+            if !binding_is_at_startup(Some(binding)) {
+                log::warn!(
+                    "credential {operation} detected a detached registry directory for account {}",
+                    metadata.handle.0
+                );
+                if matches!(kind, CredentialWriteKind::Add) {
+                    registry.accounts.remove(&metadata.handle.0);
+                }
+                self.compensate_detached_secret(metadata, binding)?;
+                return Err(credential_directory_replaced());
             }
-            self.compensate_detached_secret(metadata, binding.as_ref())?;
-            return Err(credential_directory_replaced());
         }
 
         if set_result.is_err() {
@@ -476,34 +491,83 @@ impl CredentialManager {
     fn compensate_detached_secret(
         &self,
         metadata: &LichessAccountMetadata,
-        binding: Option<&CredentialRegistryDir>,
+        binding: &CredentialRegistryDir,
     ) -> Result<(), Error> {
-        if self.store.delete(&metadata.handle.key()).is_ok() {
+        if let Err(error) = self.store.delete(&metadata.handle.key()) {
+            log::error!(
+                "failed to delete detached credential for account {}: {error:?}",
+                metadata.handle.0
+            );
+        } else {
             return Ok(());
         }
-        let Some(binding) = binding else {
-            return Err(Error::CredentialRecoveryRequired);
+        let directory = match binding.location.reacquire() {
+            Ok(directory) => directory,
+            Err(error) => {
+                log::error!(
+                    "failed to reacquire credential directory for tombstone for account {}: {error:?}",
+                    metadata.handle.0
+                );
+                return Err(Error::CredentialRecoveryRequired);
+            }
         };
-        let directory = binding
-            .location
-            .reacquire()
-            .map_err(|_| Error::CredentialRecoveryRequired)?;
-        let mut registry = self
-            .load_registry(&directory)
-            .map_err(|_| Error::CredentialRecoveryRequired)?;
+        let mut registry = match self.load_registry(&directory) {
+            Ok(registry) => registry,
+            Err(error) => {
+                log::error!(
+                    "failed to load credential registry for tombstone for account {}: {error:?}",
+                    metadata.handle.0
+                );
+                return Err(Error::CredentialRecoveryRequired);
+            }
+        };
         registry.accounts.insert(
             metadata.handle.0.clone(),
             AccountRecord::PendingDelete(metadata.clone()),
         );
-        let bytes = serde_json::to_vec(&registry).map_err(|_| Error::CredentialRecoveryRequired)?;
+        let bytes = match serde_json::to_vec(&registry) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                log::error!(
+                    "failed to serialize credential tombstone for account {}: {error:?}",
+                    metadata.handle.0
+                );
+                return Err(Error::CredentialRecoveryRequired);
+            }
+        };
         match self.persistence.write(&directory, &bytes) {
             Ok(RegistryCommit::Durable) => {}
-            Ok(RegistryCommit::CommittedDurabilityUncertain) | Err(_) => {
+            Ok(RegistryCommit::CommittedDurabilityUncertain) => {
+                log::error!(
+                    "credential tombstone commit has uncertain durability for account {}",
+                    metadata.handle.0
+                );
+                return Err(Error::CredentialRecoveryRequired);
+            }
+            Err(error) => {
+                log::error!(
+                    "failed to persist credential tombstone for account {}: {error:?}",
+                    metadata.handle.0
+                );
                 return Err(Error::CredentialRecoveryRequired);
             }
         }
-        if !matches!(directory.resides_at(&binding.location), Ok(true)) {
-            return Err(Error::CredentialRecoveryRequired);
+        match directory.resides_at(&binding.location) {
+            Ok(true) => {}
+            Ok(false) => {
+                log::error!(
+                    "credential tombstone directory no longer resolves to startup location for account {}",
+                    metadata.handle.0
+                );
+                return Err(Error::CredentialRecoveryRequired);
+            }
+            Err(error) => {
+                log::error!(
+                    "failed to verify credential tombstone location for account {}: {error:?}",
+                    metadata.handle.0
+                );
+                return Err(Error::CredentialRecoveryRequired);
+            }
         }
         Ok(())
     }
@@ -685,8 +749,16 @@ impl CredentialManager {
 }
 
 fn binding_is_at_startup(binding: Option<&CredentialRegistryDir>) -> bool {
-    binding
-        .is_none_or(|binding| matches!(binding.directory.resides_at(&binding.location), Ok(true)))
+    let Some(binding) = binding else {
+        return true;
+    };
+    match binding.directory.resides_at(&binding.location) {
+        Ok(at_startup) => at_startup,
+        Err(error) => {
+            log::warn!("credential registry location check failed: {error:?}");
+            false
+        }
+    }
 }
 
 fn credential_directory_replaced() -> Error {
@@ -821,24 +893,6 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct WriteThenErrorStore(MemoryCredentialStore);
-    impl CredentialStore for WriteThenErrorStore {
-        fn set(&self, key: &str, secret: &str) -> Result<(), Error> {
-            self.0.set(key, secret)?;
-            Err(Error::CredentialFailure(
-                "injected post-write failure".into(),
-            ))
-        }
-        fn get(&self, key: &str) -> Result<Option<String>, Error> {
-            self.0.get(key)
-        }
-        fn delete(&self, key: &str) -> Result<(), Error> {
-            self.0.delete(key)
-        }
-    }
-
-    #[cfg(unix)]
-    #[derive(Default)]
     struct RecordingStore {
         inner: MemoryCredentialStore,
         set_calls: std::sync::atomic::AtomicUsize,
@@ -849,7 +903,6 @@ mod tests {
         on_set: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     }
 
-    #[cfg(unix)]
     impl RecordingStore {
         fn configured(write_then_error: bool, fail_delete: bool) -> Self {
             let store = Self::default();
@@ -865,24 +918,27 @@ mod tests {
                 .store(enabled, std::sync::atomic::Ordering::Relaxed);
         }
 
+        #[cfg(unix)]
         fn set_on_set_hook(&self, hook: impl FnOnce() + Send + 'static) {
             *self.on_set.lock().unwrap() = Some(Box::new(hook));
         }
 
+        #[cfg(unix)]
         fn set_count(&self) -> usize {
             self.set_calls.load(std::sync::atomic::Ordering::Relaxed)
         }
 
+        #[cfg(unix)]
         fn delete_count(&self) -> usize {
             self.delete_calls.load(std::sync::atomic::Ordering::Relaxed)
         }
 
+        #[cfg(unix)]
         fn last_set_key(&self) -> String {
             self.set_keys.lock().unwrap().last().unwrap().clone()
         }
     }
 
-    #[cfg(unix)]
     impl CredentialStore for RecordingStore {
         fn set(&self, key: &str, secret: &str) -> Result<(), Error> {
             self.set_calls
@@ -918,10 +974,8 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     type PersistenceHook = Box<dyn FnOnce(&AuthorizedDir) + Send>;
 
-    #[cfg(unix)]
     #[derive(Default)]
     struct RecordingPersistence {
         writes: std::sync::atomic::AtomicUsize,
@@ -931,8 +985,8 @@ mod tests {
         after_write: Mutex<BTreeMap<usize, PersistenceHook>>,
     }
 
-    #[cfg(unix)]
     impl RecordingPersistence {
+        #[cfg(unix)]
         fn writes(&self) -> usize {
             self.writes.load(std::sync::atomic::Ordering::Relaxed)
         }
@@ -945,6 +999,7 @@ mod tests {
             self.uncertain_on.lock().unwrap().insert(write);
         }
 
+        #[cfg(unix)]
         fn before_write(&self, write: usize, hook: impl FnOnce(&AuthorizedDir) + Send + 'static) {
             self.before_write
                 .lock()
@@ -952,6 +1007,7 @@ mod tests {
                 .insert(write, Box::new(hook));
         }
 
+        #[cfg(unix)]
         fn after_write(&self, write: usize, hook: impl FnOnce(&AuthorizedDir) + Send + 'static) {
             self.after_write
                 .lock()
@@ -960,7 +1016,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     impl RegistryPersistence for RecordingPersistence {
         fn write(&self, directory: &AuthorizedDir, bytes: &[u8]) -> Result<RegistryCommit, Error> {
             let write = self
@@ -1042,38 +1097,6 @@ mod tests {
         )
     }
 
-    struct FailPersistence {
-        writes: Mutex<usize>,
-        fail_on: usize,
-    }
-    impl RegistryPersistence for FailPersistence {
-        fn write(&self, directory: &AuthorizedDir, bytes: &[u8]) -> Result<RegistryCommit, Error> {
-            let mut writes = self.writes.lock().unwrap();
-            *writes += 1;
-            if *writes == self.fail_on {
-                return Err(Error::CredentialFailure("injected".into()));
-            }
-            AtomicRegistryPersistence.write(directory, bytes)
-        }
-    }
-
-    struct UncertainOnWrite {
-        writes: Mutex<usize>,
-        uncertain_on: usize,
-    }
-    impl RegistryPersistence for UncertainOnWrite {
-        fn write(&self, directory: &AuthorizedDir, bytes: &[u8]) -> Result<RegistryCommit, Error> {
-            let mut writes = self.writes.lock().unwrap();
-            *writes += 1;
-            AtomicRegistryPersistence.write(directory, bytes)?;
-            if *writes == self.uncertain_on {
-                Ok(RegistryCommit::CommittedDurabilityUncertain)
-            } else {
-                Ok(RegistryCommit::Durable)
-            }
-        }
-    }
-
     #[cfg(unix)]
     enum RegistryMutationAfterWrite {
         Delete,
@@ -1143,7 +1166,7 @@ mod tests {
     #[test]
     fn write_then_error_keyring_add_recovers_after_restart_without_leaking_a_token() {
         let temp = tempfile::tempdir().unwrap();
-        let store = Arc::new(WriteThenErrorStore::default());
+        let store = Arc::new(RecordingStore::configured(true, false));
         let manager = CredentialManager::new(store.clone());
         manager
             .initialize(&AppDataDir::for_test(temp.path()))
@@ -1197,13 +1220,9 @@ mod tests {
     fn final_add_write_failure_keeps_journal_for_restart_reconciliation() {
         let temp = tempfile::tempdir().unwrap();
         let store = Arc::new(MemoryCredentialStore::default());
-        let manager = CredentialManager::with_persistence(
-            store.clone(),
-            Arc::new(FailPersistence {
-                writes: Mutex::new(0),
-                fail_on: 3,
-            }),
-        );
+        let persistence = Arc::new(RecordingPersistence::default());
+        persistence.fail_on(3);
+        let manager = CredentialManager::with_persistence(store.clone(), persistence);
         manager
             .initialize(&AppDataDir::for_test(temp.path()))
             .unwrap();
@@ -1221,12 +1240,11 @@ mod tests {
     #[test]
     fn durability_uncertain_pending_add_journal_is_reported() {
         let temp = tempfile::tempdir().unwrap();
+        let persistence = Arc::new(RecordingPersistence::default());
+        persistence.return_uncertain_on(2);
         let manager = CredentialManager::with_persistence(
             Arc::new(MemoryCredentialStore::default()),
-            Arc::new(UncertainOnWrite {
-                writes: Mutex::new(0),
-                uncertain_on: 2,
-            }),
+            persistence,
         );
         manager
             .initialize(&AppDataDir::for_test(temp.path()))
@@ -1241,12 +1259,11 @@ mod tests {
     #[test]
     fn durability_uncertain_final_add_journal_is_reported() {
         let temp = tempfile::tempdir().unwrap();
+        let persistence = Arc::new(RecordingPersistence::default());
+        persistence.return_uncertain_on(3);
         let manager = CredentialManager::with_persistence(
             Arc::new(MemoryCredentialStore::default()),
-            Arc::new(UncertainOnWrite {
-                writes: Mutex::new(0),
-                uncertain_on: 3,
-            }),
+            persistence,
         );
         manager
             .initialize(&AppDataDir::for_test(temp.path()))
@@ -1261,12 +1278,11 @@ mod tests {
     #[test]
     fn durability_uncertain_pending_delete_journal_is_reported() {
         let temp = tempfile::tempdir().unwrap();
+        let persistence = Arc::new(RecordingPersistence::default());
+        persistence.return_uncertain_on(4);
         let manager = CredentialManager::with_persistence(
             Arc::new(MemoryCredentialStore::default()),
-            Arc::new(UncertainOnWrite {
-                writes: Mutex::new(0),
-                uncertain_on: 4,
-            }),
+            persistence,
         );
         manager
             .initialize(&AppDataDir::for_test(temp.path()))
@@ -1284,12 +1300,11 @@ mod tests {
     #[test]
     fn durability_uncertain_final_delete_journal_is_reported() {
         let temp = tempfile::tempdir().unwrap();
+        let persistence = Arc::new(RecordingPersistence::default());
+        persistence.return_uncertain_on(5);
         let manager = CredentialManager::with_persistence(
             Arc::new(MemoryCredentialStore::default()),
-            Arc::new(UncertainOnWrite {
-                writes: Mutex::new(0),
-                uncertain_on: 5,
-            }),
+            persistence,
         );
         manager
             .initialize(&AppDataDir::for_test(temp.path()))
@@ -1718,7 +1733,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn replacement_during_successful_or_write_then_error_active_write_is_compensated() {
+    fn replacement_before_successful_or_failing_active_write_is_compensated() {
         for fail_active_write in [false, true] {
             let temp = tempfile::tempdir().unwrap();
             let app_data = temp.path().to_path_buf();
