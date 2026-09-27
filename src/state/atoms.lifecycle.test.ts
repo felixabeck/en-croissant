@@ -16,7 +16,8 @@ import {
     tabFamily,
 } from "./atoms";
 import { tabStorage } from "./store/tabStorage";
-import { commitNewTab, createTab } from "@/utils/tabs";
+import { closeTreeStore, createTreeStore, type TreeStoreState } from "./store/tree";
+import { commitNewTab, createTab, replaceNewTab, type Tab } from "@/utils/tabs";
 import {
     loadWorkspace,
     MAX_PENDING_TREE_REMOVALS,
@@ -28,6 +29,18 @@ import { serializeStorageValue } from "./store/debouncedStorage";
 
 const persistError = vi.hoisted(() => ({ reportPersistError: vi.fn() }));
 vi.mock("./persistError", () => persistError);
+
+const replacementTabIds = new Set<string>();
+
+afterEach(() => {
+    persistError.reportPersistError.mockClear();
+    vi.restoreAllMocks();
+    for (const tabId of replacementTabIds) {
+        closeTreeStore(tabId);
+        tabStorage.remove(tabId);
+    }
+    replacementTabIds.clear();
+});
 
 function refuseWorkspaceWrites() {
     const originalSetItem = Storage.prototype.setItem;
@@ -41,10 +54,401 @@ function refuseWorkspaceWrites() {
         });
 }
 
-afterEach(() => {
+type ReplacementFixture = {
+    store: ReturnType<typeof createStore>;
+    owner: Tab;
+    second: Tab;
+    ownerTree: ReturnType<typeof defaultTree>;
+    pendingOwnerTree: ReturnType<typeof defaultTree>;
+    secondTree: ReturnType<typeof defaultTree>;
+    ownerTreeStore: ReturnType<typeof createTreeStore>;
+    secondTreeStore: ReturnType<typeof createTreeStore>;
+    ownerRoot: TreeStoreState["root"];
+    ownerHeaders: TreeStoreState["headers"];
+    secondRoot: TreeStoreState["root"];
+    secondHeaders: TreeStoreState["headers"];
+    ownerAtom: ReturnType<typeof tabFamily>;
+    secondAtom: ReturnType<typeof tabFamily>;
+    workspaceBytes: string | null;
+    ownerDurableBytes: string | null;
+    ownerPendingEntry: ReturnType<typeof tabStorage.readTree>;
+    secondDurableBytes: string | null;
+};
+
+function makeReplacementFixture({
+    ownerType = "new",
+    ownerActive = true,
+}: {
+    ownerType?: Tab["type"];
+    ownerActive?: boolean;
+} = {}): ReplacementFixture {
+    sessionStorage.clear();
+    const store = createStore();
+    const initialTab = store.get(tabsAtom)[0]!;
+    const ownerId = crypto.randomUUID();
+    const secondId = crypto.randomUUID();
+    replacementTabIds.add(ownerId);
+    replacementTabIds.add(secondId);
+    const owner: Tab = {
+        ...initialTab,
+        name: "Tab.NewTab",
+        value: ownerId,
+        type: ownerType,
+        gameOrigin: { kind: "none" },
+    };
+    const second: Tab = {
+        ...initialTab,
+        name: "Second tab",
+        value: secondId,
+        type: "analysis",
+        gameOrigin: { kind: "none" },
+    };
+    const ownerTree = defaultTree();
+    ownerTree.headers.event = "Owner durable tree";
+    const pendingOwnerTree = structuredClone(ownerTree);
+    pendingOwnerTree.headers.event = "Owner pending tree";
+    const secondTree = defaultTree();
+    secondTree.headers.event = "Second tab tree";
+
+    tabStorage.seed(ownerId, ownerTree);
+    tabStorage.write(ownerId, { version: 1, state: pendingOwnerTree });
+    tabStorage.seed(secondId, secondTree);
+    expect(store.set(tabsAtom, [second, owner], ownerActive ? ownerId : secondId)).toBe(true);
+
+    const ownerAtom = tabFamily(ownerId);
+    const secondAtom = tabFamily(secondId);
+    store.set(ownerAtom, "practice");
+    store.set(secondAtom, "info");
+    const ownerTreeStore = createTreeStore(ownerId);
+    const secondTreeStore = createTreeStore(secondId);
+    const ownerPendingEntry = tabStorage.readTree(ownerId);
+    expect(ownerPendingEntry.kind).toBe("available");
+
+    return {
+        store,
+        owner,
+        second,
+        ownerTree,
+        pendingOwnerTree,
+        secondTree,
+        ownerTreeStore,
+        secondTreeStore,
+        ownerRoot: ownerTreeStore.getState().root,
+        ownerHeaders: ownerTreeStore.getState().headers,
+        secondRoot: secondTreeStore.getState().root,
+        secondHeaders: secondTreeStore.getState().headers,
+        ownerAtom,
+        secondAtom,
+        workspaceBytes: sessionStorage.getItem(WORKSPACE_STORAGE_KEY),
+        ownerDurableBytes: sessionStorage.getItem(ownerId),
+        ownerPendingEntry,
+        secondDurableBytes: sessionStorage.getItem(secondId),
+    };
+}
+
+function expectReplacementOwnerUnchanged(fixture: ReplacementFixture) {
+    expect(fixture.store.get(tabsAtom)).toEqual([fixture.second, fixture.owner]);
+    expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(fixture.workspaceBytes);
+    expectReplacementResourcesUnchanged(fixture);
+}
+
+function expectReplacementResourcesUnchanged(fixture: ReplacementFixture) {
+    expect(sessionStorage.getItem(fixture.owner.value)).toBe(fixture.ownerDurableBytes);
+    const pendingOwnerEntry = tabStorage.readTree(fixture.owner.value);
+    expect(pendingOwnerEntry.kind).toBe("available");
+    if (pendingOwnerEntry.kind === "available" && fixture.ownerPendingEntry.kind === "available") {
+        expect(pendingOwnerEntry.value).toBe(fixture.ownerPendingEntry.value);
+    }
+    expect(createTreeStore(fixture.owner.value)).toBe(fixture.ownerTreeStore);
+    expect(fixture.ownerTreeStore.getState().root).toBe(fixture.ownerRoot);
+    expect(fixture.ownerTreeStore.getState().headers).toBe(fixture.ownerHeaders);
+    expect(tabFamily(fixture.owner.value)).toBe(fixture.ownerAtom);
+    expect(fixture.store.get(fixture.ownerAtom)).toBe("practice");
+    expect(fixture.store.get(fixture.secondAtom)).toBe("info");
+    expect(fixture.store.get(tabsAtom)[0]).toStrictEqual(fixture.second);
+    expect(sessionStorage.getItem(fixture.second.value)).toBe(fixture.secondDurableBytes);
+    expect(tabStorage.read(fixture.second.value)?.state).toEqual(fixture.secondTree);
+    expect(createTreeStore(fixture.second.value)).toBe(fixture.secondTreeStore);
+    expect(fixture.secondTreeStore.getState().root).toBe(fixture.secondRoot);
+    expect(fixture.secondTreeStore.getState().headers).toBe(fixture.secondHeaders);
+    expect(tabFamily(fixture.second.value)).toBe(fixture.secondAtom);
+}
+
+function makeThrowingCommitStore(
+    fixture: ReplacementFixture,
+    error: unknown,
+    writeBeforeThrow: boolean,
+): ReturnType<typeof createStore> {
+    return {
+        get: fixture.store.get.bind(fixture.store),
+        set: (atom: unknown, update?: unknown, activeTab?: string) => {
+            if (atom !== tabsAtom) throw new Error("Unexpected atom write in transaction test.");
+            if (writeBeforeThrow) {
+                fixture.store.set(tabsAtom, update as Tab[] | ((tabs: Tab[]) => Tab[]), activeTab);
+            }
+            throw error;
+        },
+    } as unknown as ReturnType<typeof createStore>;
+}
+
+test.each([true, false])(
+    "replaces the owner in place and preserves selection (owner active: %s)",
+    (ownerActive) => {
+        const fixture = makeReplacementFixture({ ownerActive });
+        const importedTree = defaultTree();
+        importedTree.headers.event = "Imported tree";
+        const importedTab = {
+            name: "Imported game",
+            type: "analysis" as const,
+            gameOrigin: { kind: "none" as const },
+        };
+        let workspaceWrites = 0;
+        const originalSetItem = Storage.prototype.setItem;
+        vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (
+            this: Storage,
+            key: string,
+            value: string,
+        ) {
+            if (key === WORKSPACE_STORAGE_KEY) workspaceWrites++;
+            return originalSetItem.call(this, key, value);
+        });
+
+        const result = replaceNewTab({
+            store: fixture.store,
+            ownerId: fixture.owner.value,
+            tab: importedTab,
+            tree: importedTree,
+        });
+
+        expect(result.kind).toBe("committed");
+        if (result.kind !== "committed") throw new Error("Expected the replacement to commit.");
+        replacementTabIds.add(result.id);
+        expect(workspaceWrites).toBe(1);
+        expect(fixture.store.get(tabsAtom)).toHaveLength(2);
+        expect(fixture.store.get(tabsAtom)[0]).toStrictEqual(fixture.second);
+        expect(fixture.store.get(tabsAtom)[1]).toEqual({ ...importedTab, value: result.id });
+        expect(fixture.store.get(activeTabAtom)).toBe(
+            ownerActive ? result.id : fixture.second.value,
+        );
+        expect(tabStorage.read(result.id)?.state).toEqual(importedTree);
+        expect(sessionStorage.getItem(fixture.owner.value)).toBeNull();
+        expect(tabStorage.readTree(fixture.owner.value).kind).toBe("absent");
+        expect(createTreeStore(fixture.owner.value)).not.toBe(fixture.ownerTreeStore);
+        expect([...tabFamily.getParams()]).not.toContain(fixture.owner.value);
+        expect(fixture.store.get(fixture.secondAtom)).toBe("info");
+        expect(sessionStorage.getItem(fixture.second.value)).toBe(fixture.secondDurableBytes);
+        expect(tabStorage.read(fixture.second.value)?.state).toEqual(fixture.secondTree);
+        expect(createTreeStore(fixture.second.value)).toBe(fixture.secondTreeStore);
+        expect(fixture.secondTreeStore.getState().root).toBe(fixture.secondRoot);
+        expect(fixture.secondTreeStore.getState().headers).toBe(fixture.secondHeaders);
+        expect(tabFamily(fixture.second.value)).toBe(fixture.secondAtom);
+
+        const reloaded = loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY);
+        expect(reloaded.tabs[1]).toEqual({ ...importedTab, value: result.id });
+        expect(tabStorage.read(result.id)?.state).toEqual(importedTree);
+    },
+);
+
+test("refuses a tree seed without changing the owner and retries successfully", () => {
+    const fixture = makeReplacementFixture();
+    const importedTree = defaultTree();
+    importedTree.headers.event = "Imported after retry";
     persistError.reportPersistError.mockClear();
-    vi.restoreAllMocks();
+    const quota = new DOMException("full", "QuotaExceededError");
+    let stagedId = "";
+    const originalSetItem = Storage.prototype.setItem;
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (
+        this: Storage,
+        key: string,
+        value: string,
+    ) {
+        if (key !== WORKSPACE_STORAGE_KEY) {
+            stagedId = key;
+            throw quota;
+        }
+        return originalSetItem.call(this, key, value);
+    });
+
+    expect(
+        replaceNewTab({
+            store: fixture.store,
+            ownerId: fixture.owner.value,
+            tab: { name: "Imported game", type: "analysis", gameOrigin: { kind: "none" } },
+            tree: importedTree,
+        }),
+    ).toEqual({ kind: "refused", stage: "tree" });
+    replacementTabIds.add(stagedId);
+    expectReplacementOwnerUnchanged(fixture);
+    expect(stagedId).not.toBe("");
+    expect(sessionStorage.getItem(stagedId)).toBeNull();
+    expect(persistError.reportPersistError).toHaveBeenCalledOnce();
+    expect(loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY).tabs).toEqual([
+        fixture.second,
+        fixture.owner,
+    ]);
+
+    setItem.mockRestore();
+    const retry = replaceNewTab({
+        store: fixture.store,
+        ownerId: fixture.owner.value,
+        tab: { name: "Imported game", type: "analysis", gameOrigin: { kind: "none" } },
+        tree: importedTree,
+    });
+    expect(retry.kind).toBe("committed");
+    if (retry.kind === "committed") replacementTabIds.add(retry.id);
 });
+
+test("refuses a workspace write without changing the owner and retries successfully", () => {
+    const fixture = makeReplacementFixture();
+    const importedTree = defaultTree();
+    importedTree.headers.event = "Imported after retry";
+    persistError.reportPersistError.mockClear();
+    const quota = new DOMException("full", "QuotaExceededError");
+    let stagedId = "";
+    const originalSetItem = Storage.prototype.setItem;
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (
+        this: Storage,
+        key: string,
+        value: string,
+    ) {
+        if (key === WORKSPACE_STORAGE_KEY) throw quota;
+        stagedId = key;
+        return originalSetItem.call(this, key, value);
+    });
+
+    expect(
+        replaceNewTab({
+            store: fixture.store,
+            ownerId: fixture.owner.value,
+            tab: { name: "Imported game", type: "analysis", gameOrigin: { kind: "none" } },
+            tree: importedTree,
+        }),
+    ).toEqual({ kind: "refused", stage: "workspace" });
+    replacementTabIds.add(stagedId);
+    expectReplacementOwnerUnchanged(fixture);
+    expect(stagedId).not.toBe("");
+    expect(sessionStorage.getItem(stagedId)).toBeNull();
+    expect(persistError.reportPersistError).toHaveBeenCalledOnce();
+    expect(loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY).tabs).toEqual([
+        fixture.second,
+        fixture.owner,
+    ]);
+
+    setItem.mockRestore();
+    const retry = replaceNewTab({
+        store: fixture.store,
+        ownerId: fixture.owner.value,
+        tab: { name: "Imported game", type: "analysis", gameOrigin: { kind: "none" } },
+        tree: importedTree,
+    });
+    expect(retry.kind).toBe("committed");
+    if (retry.kind === "committed") replacementTabIds.add(retry.id);
+});
+
+test.each([false, true])(
+    "preserves staged ownership and owner resources when the commit throws (write landed: %s)",
+    (writeBeforeThrow) => {
+        const fixture = makeReplacementFixture();
+        const dispatchError = new Error("workspace listener failed");
+        const importedTree = defaultTree();
+        importedTree.headers.event = "Imported tree";
+        persistError.reportPersistError.mockClear();
+        let stagedId = "";
+        const originalSetItem = Storage.prototype.setItem;
+        vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (
+            this: Storage,
+            key: string,
+            value: string,
+        ) {
+            if (key !== WORKSPACE_STORAGE_KEY) stagedId = key;
+            return originalSetItem.call(this, key, value);
+        });
+
+        expect(() =>
+            replaceNewTab({
+                store: makeThrowingCommitStore(fixture, dispatchError, writeBeforeThrow),
+                ownerId: fixture.owner.value,
+                tab: { name: "Imported game", type: "analysis", gameOrigin: { kind: "none" } },
+                tree: importedTree,
+            }),
+        ).toThrow(dispatchError);
+        replacementTabIds.add(stagedId);
+        expect(stagedId).not.toBe("");
+        expect(sessionStorage.getItem(stagedId)).not.toBeNull();
+        expect(sessionStorage.getItem(`chessfable:failed-tab-admission:${stagedId}`)).toBeNull();
+        expectReplacementResourcesUnchanged(fixture);
+        expect(persistError.reportPersistError).not.toHaveBeenCalled();
+
+        if (writeBeforeThrow) {
+            expect(fixture.store.get(tabsAtom)[1]).toEqual({
+                name: "Imported game",
+                type: "analysis",
+                gameOrigin: { kind: "none" },
+                value: stagedId,
+            });
+            const loaded = loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY);
+            expect(loaded.tabs[1]?.value).toBe(stagedId);
+            expect(loaded.treeOwnershipPendingRemovalIds).toContain(fixture.owner.value);
+            expect(tabStorage.read(stagedId)?.state).toEqual(importedTree);
+        } else {
+            expect(fixture.store.get(tabsAtom)).toEqual([fixture.second, fixture.owner]);
+            expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(fixture.workspaceBytes);
+            const loaded = loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY);
+            expect(loaded.tabs).toEqual([fixture.second, fixture.owner]);
+            expect(sessionStorage.getItem(stagedId)).toBeNull();
+        }
+    },
+);
+
+test("supersedes an owner that is no longer in the workspace without writing", () => {
+    const fixture = makeReplacementFixture();
+    expect(fixture.store.set(tabsAtom, [fixture.second], fixture.second.value)).toBe(true);
+    const workspaceBytes = sessionStorage.getItem(WORKSPACE_STORAGE_KEY);
+    const ownerBytes = sessionStorage.getItem(fixture.owner.value);
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+    const removeItem = vi.spyOn(Storage.prototype, "removeItem");
+
+    expect(
+        replaceNewTab({
+            store: fixture.store,
+            ownerId: fixture.owner.value,
+            tab: { name: "Imported game", type: "analysis", gameOrigin: { kind: "none" } },
+            tree: defaultTree(),
+        }),
+    ).toEqual({ kind: "superseded" });
+
+    expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(workspaceBytes);
+    expect(sessionStorage.getItem(fixture.owner.value)).toBe(ownerBytes);
+    expect(setItem).not.toHaveBeenCalled();
+    expect(removeItem).not.toHaveBeenCalled();
+});
+
+test.each(["not-new", "closing"] as const)(
+    "supersedes an existing owner when it is %s without changing its resources",
+    (reason) => {
+        const fixture = makeReplacementFixture({
+            ownerType: reason === "not-new" ? "analysis" : "new",
+        });
+        if (reason === "closing") {
+            fixture.store.set(closingTabsAtom, new Set([fixture.owner.value]));
+        }
+        const setItem = vi.spyOn(Storage.prototype, "setItem");
+        const removeItem = vi.spyOn(Storage.prototype, "removeItem");
+
+        expect(
+            replaceNewTab({
+                store: fixture.store,
+                ownerId: fixture.owner.value,
+                tab: { name: "Imported game", type: "analysis", gameOrigin: { kind: "none" } },
+                tree: defaultTree(),
+            }),
+        ).toEqual({ kind: "superseded" });
+
+        expectReplacementOwnerUnchanged(fixture);
+        expect(setItem).not.toHaveBeenCalled();
+        expect(removeItem).not.toHaveBeenCalled();
+    },
+);
 
 test("closing a tab removes all cached tab and per-engine atom-family entries", () => {
     const tabId = "closing-tab";

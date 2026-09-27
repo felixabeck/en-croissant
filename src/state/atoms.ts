@@ -130,17 +130,8 @@ export const activeTabAtom = atom(
 /** Transient close intent shared with async listeners; never persisted. */
 export const closingTabsAtom = atom<Set<string>>(new Set<string>());
 
-/** Commits tab metadata, then attempts every tab-local cleanup category. */
-export const closeWorkspaceTabAtom = atom(null, (get, set, tabId: string) => {
-    const workspace = get(workspaceAtom);
-    const index = workspace.tabs.findIndex((tab) => tab.value === tabId);
-    if (index === -1) return false;
-    const tabs = workspace.tabs.filter((tab) => tab.value !== tabId);
-    const activeTab =
-        workspace.activeTab !== tabId
-            ? workspace.activeTab
-            : (tabs[index]?.value ?? tabs[index - 1]?.value ?? null);
-    if (!set(commitWorkspaceAtom, { ...workspace, tabs, activeTab })) return false;
+/** Reclaims per-tab state after workspace metadata stops owning it. */
+export function reclaimTabLocalState(tabId: string) {
     removeFileFreshness(tabId);
     let cleanupError: unknown;
     try {
@@ -156,6 +147,20 @@ export const closeWorkspaceTabAtom = atom(null, (get, set, tabId: string) => {
     if (cleanupError !== undefined) {
         reportPersistError(persistStorageWriteError(cleanupError));
     }
+}
+
+/** Commits tab metadata, then attempts every tab-local cleanup category. */
+export const closeWorkspaceTabAtom = atom(null, (get, set, tabId: string) => {
+    const workspace = get(workspaceAtom);
+    const index = workspace.tabs.findIndex((tab) => tab.value === tabId);
+    if (index === -1) return false;
+    const tabs = workspace.tabs.filter((tab) => tab.value !== tabId);
+    const activeTab =
+        workspace.activeTab !== tabId
+            ? workspace.activeTab
+            : (tabs[index]?.value ?? tabs[index - 1]?.value ?? null);
+    if (!set(commitWorkspaceAtom, { ...workspace, tabs, activeTab })) return false;
+    reclaimTabLocalState(tabId);
     return true;
 });
 

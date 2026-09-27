@@ -1,5 +1,6 @@
 import { tauri } from "@/platform/tauri";
 import { normalizeError, type AppError } from "@/platform/errors";
+import type { getDefaultStore } from "jotai";
 import type { StoreApi } from "zustand";
 import { startTransition } from "react";
 import type { FileMetadata } from "@/components/files/file";
@@ -7,7 +8,8 @@ import type { WriteExpectation } from "@/bindings";
 import { persistStorageWriteError, tabStorage } from "@/state/store/tabStorage";
 import { reportPersistError } from "@/state/persistError";
 import { newWorkspaceId, tabSchema, type GameOrigin, type Tab } from "@/state/workspaceTypes";
-import type { TreeStoreState } from "@/state/store/tree";
+import { activeTabAtom, closingTabsAtom, reclaimTabLocalState, tabsAtom } from "@/state/atoms";
+import { closeTreeStore, type TreeStoreState } from "@/state/store/tree";
 import { getPGN, parsePGN } from "./chess";
 import { pickPgnFile, readFileGame, writeFileGame } from "./files";
 import type { GameHeaders, TreeState } from "./treeReducer";
@@ -54,6 +56,51 @@ export function updateTabById(setTabs: SetTabs, tabId: string, update: React.Set
     return committed && found;
 }
 
+type StagedAdmissionResult =
+    | { kind: "committed"; id: string }
+    | { kind: "refused"; stage: "tree" | "workspace" };
+
+function stageAndCommitTab({
+    seed,
+    existingTabIds,
+    commit,
+}: {
+    seed?: (id: string) => void;
+    existingTabIds?: Iterable<string>;
+    commit: (freshId: string) => boolean;
+}): StagedAdmissionResult {
+    const id = genID(existingTabIds);
+    if (seed) {
+        try {
+            seed(id);
+        } catch (error) {
+            reportPersistError(persistStorageWriteError(error));
+            rollbackCreatedTree(id);
+            return { kind: "refused", stage: "tree" };
+        }
+    }
+
+    let admitted = false;
+    let admissionThrew = false;
+    let admissionError: unknown;
+    startTransition(() => {
+        try {
+            admitted = commit(id);
+        } catch (error) {
+            admissionThrew = true;
+            admissionError = error;
+        }
+    });
+    if (admissionThrew) {
+        throw admissionError;
+    }
+    if (!admitted) {
+        if (seed) rollbackCreatedTree(id);
+        return { kind: "refused", stage: "workspace" };
+    }
+    return { kind: "committed", id };
+}
+
 export function commitNewTab({
     tab,
     setTabs,
@@ -65,42 +112,19 @@ export function commitNewTab({
     seed?: (id: string) => void;
     existingTabIds?: Iterable<string>;
 }): string | null {
-    const id = genID(existingTabIds);
-    if (seed) {
-        try {
-            seed(id);
-        } catch (error) {
-            reportPersistError(persistStorageWriteError(error));
-            rollbackCreatedTree(id);
-            return null;
-        }
-    }
-
-    let admitted = false;
-    let admissionThrew = false;
-    let admissionError: unknown;
-    startTransition(() => {
-        try {
-            admitted = setTabs((prev) => {
+    const result = stageAndCommitTab({
+        seed,
+        existingTabIds,
+        commit: (id) =>
+            setTabs((prev) => {
                 const nextTab = { ...tab, value: id };
                 return prev.length === 0 ||
                     (prev.length === 1 && prev[0].type === "new" && tab.type !== "new")
                     ? [nextTab]
                     : [...prev, nextTab];
-            }, id);
-        } catch (error) {
-            admissionThrew = true;
-            admissionError = error;
-        }
+            }, id),
     });
-    if (admissionThrew) {
-        throw admissionError;
-    }
-    if (!admitted) {
-        if (seed) rollbackCreatedTree(id);
-        return null;
-    }
-    return id;
+    return result.kind === "committed" ? result.id : null;
 }
 
 function rollbackCreatedTree(id: string) {
@@ -108,6 +132,55 @@ function rollbackCreatedTree(id: string) {
     if (!tabStorage.removeTreeSafely(id)) {
         tabStorage.recordFailedAdmission(id);
     }
+}
+
+export type ReplaceNewTabResult =
+    | { kind: "committed"; id: string }
+    | { kind: "superseded" }
+    | { kind: "refused"; stage: "tree" | "workspace" };
+
+export function replaceNewTab({
+    store,
+    ownerId,
+    tab,
+    tree,
+}: {
+    store: ReturnType<typeof getDefaultStore>;
+    ownerId: string;
+    tab: Omit<Tab, "value">;
+    tree: TreeState;
+}): ReplaceNewTabResult {
+    const tabs = store.get(tabsAtom);
+    const ownerIndex = tabs.findIndex((current) => current.value === ownerId);
+    if (
+        ownerIndex === -1 ||
+        tabs[ownerIndex]?.type !== "new" ||
+        store.get(closingTabsAtom).has(ownerId)
+    ) {
+        return { kind: "superseded" };
+    }
+
+    const result = stageAndCommitTab({
+        seed: (freshId) => tabStorage.seed(freshId, tree),
+        existingTabIds: tabs.map((current) => current.value),
+        commit: (freshId) => {
+            const activeTab = store.get(activeTabAtom);
+            const committed = store.set(
+                tabsAtom,
+                (currentTabs) =>
+                    currentTabs.map((current, index) =>
+                        index === ownerIndex ? { ...tab, value: freshId } : current,
+                    ),
+                activeTab === ownerId ? freshId : undefined,
+            );
+            if (committed) {
+                reclaimTabLocalState(ownerId);
+                closeTreeStore(ownerId);
+            }
+            return committed;
+        },
+    });
+    return result;
 }
 
 export async function runTabCreation({

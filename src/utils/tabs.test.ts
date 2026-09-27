@@ -312,6 +312,7 @@ test("a throwing admission preserves a potentially committed tree without a fail
     expect(sessionStorage.getItem(`chessfable:failed-tab-admission:${stagedId}`)).toBeNull();
     expect(loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY).tabs[0]!.value).toBe(stagedId);
     expect(sessionStorage.getItem(stagedId)).not.toBeNull();
+    expect(mocks.reportPersistError).not.toHaveBeenCalled();
 });
 
 test("a full storage origin reports that a failed rollback marker could not be written", () => {
