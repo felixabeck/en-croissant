@@ -8194,6 +8194,9 @@ Handled 2026-09-19 together with f-20260905-14. The Files controls fit 320px / 2
 * **Open question resolved:** `deadlines.stop`, `deadlines.uciok`, and `deadlines.readyok` are wall-clock exchange budgets; `deadlines.search` remains a per-line stall bound. Stop includes its write; readiness and UCI acknowledgement drain budgets start after their command writes. Decisions `d-20260927-15` through `d-20260927-20` record the trade-offs and reversal paths.
 <!-- ledger-meta {"command":"annotate","effect_lines":4,"effect_sha256":"4052faf4473e7a10792a9221856a31c628eef7ca8cf34b87832a016345c8dd09","input_sha256":"6a02283fd422182ec41cf0ca6a2609d2d7b02009956e3548d0732f4f81d1c0ad","kind":"mutation-receipt","operation":"6f34456133ddf36b5eec84a6c32bbc0508625e36361b83e8bcd2979c5940fdb2","options":{"section":null},"request_id_sha256":null,"results":["f-20260911-03"],"target":"f-20260911-03","v":1} -->
 
+* **Cumulative review repair:** `685274ac` routes failed actor `EnsureReady` through protocol recovery and closes the actor, and consolidates timed and finite UCI test fakes. The 142 focused engine-process tests, Rust format and locked Clippy passed. The new actor regression was deliberately run against the old handler: it failed at `terminate_calls >= 1` (exit 101), then passed after restoration. Review detail and successor ownership remain in `tasks/handoffs/2026-09-27-f-20260911-03-review.md`.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"1d09863d1bd851701e9aa640503bd23a078b37e697708e70202cf98dea280b3e","input_sha256":"779fa7e221b72d8fa3735622c39307ee1fc7960c37cb1dca2fa6640dc15151c8","kind":"mutation-receipt","operation":"637b6daa029096e5e718fbc57cdb887245c1cc4cfb779acebafd2c0b465993b4","options":{"section":null},"request_id_sha256":null,"results":["f-20260911-03"],"target":"f-20260911-03","v":1} -->
+
 ---
 
 ## 2026-09-12 — filed through the inbox spool
