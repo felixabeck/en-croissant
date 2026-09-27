@@ -442,7 +442,7 @@ En Croissant's own.
 
 ### 4. Backend coverage counts `#[cfg(test)]` modules against production ratios
 
-* **ID:** f-20260829-04 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** felix-baseline-deny-lifted
+* **ID:** f-20260829-04 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `scripts/rust-branch-coverage.mjs`, `backend-coverage-areas.json`.
 * **Defect:** the exporter measures `#[cfg(test)] mod tests` alongside production code, so a test's
   own untaken branches count against the area ratio — 89 of 4254 branch records today. Adding tests
