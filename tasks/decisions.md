@@ -4412,3 +4412,12 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Removes the mandate's stated harm for stop without changing readiness behaviour beyond the per-line fix. Plan review rounds 1, 5 (focused judgment, stop), 9–10 (readiness). Reversal path: move the deadline computation relative to `send` at the call site.
 * **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, drain plan-only run e436b468-2608-4d55-b3dc-7c04e10fde26, 2026-09-27 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":7,"effect_sha256":"90306099688b6f58a7595e48d3d54956ba255ff47fd96ca305f545991ab8f4c5","input_sha256":"c2bca36fd2efebc94e83d1c744b8689d3460598393eb9326cc758b6a50da801b","kind":"mutation-receipt","operation":"66874ea6a52f3013cc508deeb0e8747ce47f59d2dd5dc3a9573d17ad9e38c9ee","options":{"section":null},"request_id_sha256":null,"results":["d-20260927-16"],"target":"decisions-ledger","v":1} -->
+
+### d-20260927-17 — Where does the stop budget start when `stop_current` re-enters an already `Stopping` state?
+* **Question:** When `stop_current` finds `EngineState::Stopping` (no second `stop` written), does it get a fresh budget or the remainder of the original one?
+* **Governs:** f-20260911-03
+* **Chosen:** A fresh full budget from entry.
+* **Rejected:** Storing the original instant in `EngineState::Stopping`, which is `Copy + Eq` and compared by value in `service_search_read`.
+* **Reason:** Re-entry is reachable only if a previous `stop_current` future was dropped mid-drain; every production caller awaits it inside the actor, so the worst case is one extra bounded budget. Reversal path: carry an `Instant` in the state and compare by `request_id` only.
+* **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, drain plan-only run e436b468-2608-4d55-b3dc-7c04e10fde26, 2026-09-27 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":7,"effect_sha256":"c43ff78d5cfa5282de0934dfe166c8cc57667c7e224c3c4422330dafbc70010e","input_sha256":"b09b1bb8d92a08830e1530e390818db6f93c9b130d64a2c38a4ffab57f3f4d0c","kind":"mutation-receipt","operation":"449e425b4728bf8f16abe5cf0cdd74fb7c17e81a3367f20186d20cc31a3b8e3c","options":{"section":null},"request_id_sha256":null,"results":["d-20260927-17"],"target":"decisions-ledger","v":1} -->
