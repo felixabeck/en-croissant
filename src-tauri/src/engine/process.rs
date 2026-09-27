@@ -1376,22 +1376,51 @@ impl EngineSupervisor {
         key: &EngineKey,
         generation: Option<u64>,
     ) -> Result<(), Error> {
-        let generation = generation
-            .or_else(|| self.admissions.get(key).map(|entry| entry.generation))
-            .or_else(|| self.actors.get(key).map(|entry| entry.generation));
-        let Some(generation) = generation else {
-            return Ok(());
+        let (actor_generation, captured_admission) = {
+            let _coordination = self
+                .admission_coordination
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let actor_generation = self.actors.get(key).map(|entry| entry.generation);
+            let captured_admission = if generation.is_none() {
+                self.admissions.get(key).map(|entry| entry.clone())
+            } else {
+                None
+            };
+            (actor_generation, captured_admission)
         };
+        let mut target_generations = HashSet::new();
+        if let Some(generation) = generation {
+            target_generations.insert(generation);
+        } else {
+            target_generations.extend(actor_generation);
+            target_generations.extend(captured_admission.as_ref().map(|entry| entry.generation));
+        }
+        if target_generations.is_empty() {
+            return Ok(());
+        }
+        let captured_admission = if generation.is_none() {
+            captured_admission.filter(|entry| target_generations.contains(&entry.generation))
+        } else {
+            None
+        };
+
         let registration = self.registration.lock().await;
         {
             let _coordination = self
                 .admission_coordination
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if let Some(admission) = self.admissions.get(key).map(|entry| entry.clone()) {
-                if admission.generation == generation {
-                    self.cancel_admission(key, &admission);
-                }
+            let admission = match generation {
+                Some(generation) => self
+                    .admissions
+                    .get(key)
+                    .map(|entry| entry.clone())
+                    .filter(|entry| entry.generation == generation),
+                None => captured_admission,
+            };
+            if let Some(admission) = &admission {
+                self.cancel_admission(key, admission);
             }
         }
         drop(registration);
@@ -1400,7 +1429,7 @@ impl EngineSupervisor {
         let Some(current) = self.actors.get(key).map(|entry| entry.clone()) else {
             return Ok(());
         };
-        if current.generation != generation {
+        if !target_generations.contains(&current.generation) {
             return Ok(());
         }
         current.mark_cancelled();
@@ -5959,6 +5988,141 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stop_generation_unscoped_stops_actor_and_cancels_pending_admission() {
+        let supervisor = EngineSupervisor::default();
+        let key = EngineKey::new("tab".into(), "engine".into()).unwrap();
+        let ((actor, _), terminated) = actor_with(&[], false, None);
+        let live = supervisor.replace(key.clone(), actor).await.unwrap();
+        let executable = path_ref("test-engine");
+        let pending_generation = supervisor
+            .prepare_engine_search(key.clone(), "engine".into(), executable)
+            .await
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        let pending = supervisor.admissions.get(&key).unwrap().clone();
+
+        supervisor.stop_generation(&key, None).await.unwrap();
+
+        assert_eq!(terminated.load(AtomicOrdering::SeqCst), 1);
+        assert!(live.cancelled.load(AtomicOrdering::SeqCst));
+        assert_eq!(pending.generation, pending_generation);
+        assert!(pending.cancelled.load(AtomicOrdering::SeqCst));
+        assert!(!supervisor.admissions.contains_key(&key));
+        assert!(supervisor.get_exact(&key).is_none());
+    }
+
+    #[tokio::test]
+    async fn stop_generation_exact_actor_leaves_different_pending_admission() {
+        let supervisor = EngineSupervisor::default();
+        let key = EngineKey::new("tab".into(), "engine".into()).unwrap();
+        let ((actor, _), terminated) = actor_with(&[], false, None);
+        let live = supervisor.replace(key.clone(), actor).await.unwrap();
+        let pending_generation = supervisor
+            .prepare_engine_search(key.clone(), "engine".into(), path_ref("test-engine"))
+            .await
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        let pending = supervisor.admissions.get(&key).unwrap().clone();
+
+        supervisor
+            .stop_generation(&key, Some(live.generation))
+            .await
+            .unwrap();
+
+        assert_eq!(terminated.load(AtomicOrdering::SeqCst), 1);
+        assert!(supervisor.get_exact(&key).is_none());
+        assert_eq!(pending.generation, pending_generation);
+        assert!(!pending.cancelled.load(AtomicOrdering::SeqCst));
+        assert!(supervisor.admissions.contains_key(&key));
+
+        supervisor
+            .stop_generation(&key, Some(pending_generation))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn stop_generation_exact_pending_admission_preserves_live_actor() {
+        let supervisor = EngineSupervisor::default();
+        let key = EngineKey::new("tab".into(), "engine".into()).unwrap();
+        let ((actor, _), terminated) = actor_with(&[], false, None);
+        let live = supervisor.replace(key.clone(), actor).await.unwrap();
+        let pending_generation = supervisor
+            .prepare_engine_search(key.clone(), "engine".into(), path_ref("test-engine"))
+            .await
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        let pending = supervisor.admissions.get(&key).unwrap().clone();
+
+        supervisor
+            .stop_generation(&key, Some(pending_generation))
+            .await
+            .unwrap();
+
+        assert_eq!(terminated.load(AtomicOrdering::SeqCst), 0);
+        assert_eq!(
+            supervisor.get_exact(&key).unwrap().generation,
+            live.generation
+        );
+        assert!(pending.cancelled.load(AtomicOrdering::SeqCst));
+        assert!(!supervisor.admissions.contains_key(&key));
+
+        supervisor
+            .stop_generation(&key, Some(live.generation))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn stop_generation_exact_cancels_admission_added_while_registration_waits() {
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let key = EngineKey::new("tab".into(), "engine".into()).unwrap();
+        let expected_generation = supervisor.next_generation.load(AtomicOrdering::SeqCst) + 1;
+        let registration = supervisor.registration.lock().await;
+        let stop = tokio::spawn({
+            let supervisor = supervisor.clone();
+            let key = key.clone();
+            async move {
+                supervisor
+                    .stop_generation(&key, Some(expected_generation))
+                    .await
+            }
+        });
+        tokio::task::yield_now().await;
+
+        let admission = tokio::spawn({
+            let supervisor = supervisor.clone();
+            let key = key.clone();
+            async move {
+                supervisor
+                    .admit(key, "engine".into(), path_ref("engine-path"), true)
+                    .await
+            }
+        });
+        while !supervisor
+            .admissions
+            .get(&key)
+            .is_some_and(|entry| entry.generation == expected_generation)
+        {
+            tokio::task::yield_now().await;
+        }
+        let pending = supervisor.admissions.get(&key).unwrap().clone();
+        drop(registration);
+
+        stop.await.unwrap().unwrap();
+        match admission.await.unwrap() {
+            Ok(lease) => assert!(lease.cancel_error().is_some()),
+            Err(Error::Cancellation) => {}
+            Err(error) => panic!("exact stop returned an unexpected admission error: {error}"),
+        }
+        assert!(pending.cancelled.load(AtomicOrdering::SeqCst));
+        assert!(!supervisor.admissions.contains_key(&key));
+    }
+
+    #[tokio::test]
     async fn broad_stop_snapshots_empty_and_never_targets_a_later_actor() {
         let supervisor = Arc::new(EngineSupervisor::default());
         let key = EngineKey::new("tab".into(), "engine".into()).unwrap();
@@ -5975,7 +6139,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn broad_stop_captured_before_registration_wait_cannot_stop_replacement() {
+    async fn stop_generation_unscoped_preserves_replacement_after_target_capture() {
         let supervisor = Arc::new(EngineSupervisor::default());
         let key = EngineKey::new("tab".into(), "engine".into()).unwrap();
         let (first, _) = actor(&[]);
