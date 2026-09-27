@@ -18,7 +18,7 @@ use shakmaty::{
     fen::Fen, san::SanPlus, uci::UciMove, CastlingMode, Chess, Color, EnPassantMode, Position,
 };
 use specta::Type;
-use tauri::AppHandle;
+use tauri::{AppHandle, Runtime};
 use tauri_specta::Event;
 use tokio::{
     sync::{watch, Mutex, RwLock},
@@ -877,7 +877,10 @@ where
     true
 }
 
-fn attempt_terminal_event_emission(controller: &mut GameController, app: &AppHandle) -> bool {
+fn attempt_terminal_event_emission<R: Runtime>(
+    controller: &mut GameController,
+    app: &AppHandle<R>,
+) -> bool {
     attempt_terminal_event_emission_with(controller, |event| event.emit(app))
 }
 
@@ -1330,11 +1333,11 @@ impl GameManager {
         old_game.shutdown_and_join(join_budget).await
     }
 
-    pub async fn start_game(
+    pub async fn start_game<R: Runtime>(
         self: &Arc<Self>,
         game_id: GameId,
         config: GameConfig,
-        app: AppHandle,
+        app: AppHandle<R>,
         authority: std::sync::Arc<std::sync::Mutex<Option<PathAuthority>>>,
         engine_supervisor: Arc<EngineSupervisor>,
     ) -> Result<GameState, Error> {
@@ -2643,10 +2646,10 @@ fn cancellable_polyglot_sort(
     Ok(())
 }
 
-fn spawn_engine_task(
+fn spawn_engine_task<R: Runtime>(
     game_id: &GameId,
     controller: &Arc<RwLock<GameController>>,
-    app: &AppHandle,
+    app: &AppHandle<R>,
     context: EngineRequestContext,
     manager: std::sync::Weak<GameManager>,
 ) -> tokio::task::JoinHandle<Result<(), Error>> {
@@ -2676,12 +2679,12 @@ async fn maybe_start_engine(
     ctrl.begin_engine_request()
 }
 
-async fn game_loop(
+async fn game_loop<R: Runtime>(
     game_id: GameId,
     live: Arc<LiveSession>,
     mut shutdown_rx: watch::Receiver<bool>,
     mut move_notify_rx: tokio::sync::mpsc::Receiver<()>,
-    app: AppHandle,
+    app: AppHandle<R>,
     manager: std::sync::Weak<GameManager>,
 ) {
     let controller = live.controller.clone();
@@ -2883,10 +2886,10 @@ fn try_polyglot_book_move(controller: &GameController) -> Option<String> {
     Some(legal_moves[selected].0.clone())
 }
 
-async fn request_engine_move(
+async fn request_engine_move<R: Runtime>(
     game_id: &str,
     controller: &Arc<RwLock<GameController>>,
-    app: &AppHandle,
+    app: &AppHandle<R>,
     context: EngineRequestContext,
     manager: std::sync::Weak<GameManager>,
 ) -> Result<(), Error> {
@@ -3232,6 +3235,32 @@ mod tests {
             }),
             controller,
         )
+    }
+
+    /// `start_game` and its loop are generic over the Tauri runtime, so a mock app can drive
+    /// the real construction path.
+    #[tokio::test]
+    async fn start_game_runs_on_the_mock_runtime() {
+        let game_id = "start_game_runs_on_the_mock_runtime";
+        let app = tauri::test::mock_app();
+        let manager = Arc::new(GameManager::new());
+
+        let state = manager
+            .start_game(
+                game_id.into(),
+                human_config(),
+                app.handle().clone(),
+                Arc::new(std::sync::Mutex::new(None)),
+                Arc::new(EngineSupervisor::default()),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(state.game_id, game_id);
+        assert_eq!(state.status, GameStatus::Playing);
+        assert!(manager.games.get(game_id).is_some());
+        manager.abort_game(game_id, state.session).await.unwrap();
+        assert!(manager.games.get(game_id).is_none());
     }
 
     struct CancelsAfterFirstRead {
@@ -5414,7 +5443,7 @@ done
         RoutingAnchor {
             name: "terminal_helper_common_attempt",
             start_marker: "fn attempt_terminal_event_emission_with<F>(",
-            end_marker: "fn attempt_terminal_event_emission(",
+            end_marker: "fn attempt_terminal_event_emission<R: Runtime>(",
             expected_patterns: &[RoutingPattern {
                 text: "controller.attempt_event_emission(GameEventKind::GameOver, revision, || emitter(&event));",
                 count: 1,
