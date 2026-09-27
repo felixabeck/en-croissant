@@ -1399,12 +1399,6 @@ impl EngineSupervisor {
         if target_generations.is_empty() {
             return Ok(());
         }
-        let captured_admission = if generation.is_none() {
-            captured_admission.filter(|entry| target_generations.contains(&entry.generation))
-        } else {
-            None
-        };
-
         let registration = self.registration.lock().await;
         {
             let _coordination = self
@@ -6140,6 +6134,8 @@ mod tests {
 
     #[tokio::test]
     async fn stop_generation_unscoped_preserves_replacement_after_target_capture() {
+        use std::future::Future;
+
         let supervisor = Arc::new(EngineSupervisor::default());
         let key = EngineKey::new("tab".into(), "engine".into()).unwrap();
         let (first, _) = actor(&[]);
@@ -6147,12 +6143,12 @@ mod tests {
         let lifecycle = supervisor.lifecycle_lease(&key);
         let transition = lifecycle.lock().await;
         let registration = supervisor.registration.lock().await;
-        let stop = tokio::spawn({
-            let supervisor = supervisor.clone();
-            let key = key.clone();
-            async move { supervisor.stop_generation(&key, None).await }
-        });
-        tokio::task::yield_now().await;
+        let mut stop = std::pin::pin!(supervisor.stop_generation(&key, None));
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(matches!(
+            stop.as_mut().poll(&mut context),
+            std::task::Poll::Pending
+        ));
 
         let ((replacement_actor, _), replacement_terminated) = actor_with(&[], false, None);
         let replacement_generation = supervisor.allocate_generation().unwrap();
@@ -6169,7 +6165,7 @@ mod tests {
         drop(registration);
         drop(transition);
 
-        stop.await.unwrap().unwrap();
+        stop.await.unwrap();
         assert_eq!(replacement_terminated.load(AtomicOrdering::SeqCst), 0);
         assert_eq!(
             supervisor.get_exact(&key).unwrap().generation,
