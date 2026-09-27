@@ -50,9 +50,9 @@ const stampedPgnGame = {
 // anything pushed off the left edge — overflow to the left never adds to `scrollWidth` — so a page
 // that clipped its content would pass it. This walks every box instead.
 //
-// `scrollable: "clipped"` (the default) is horizontal only and counts every box narrower than its
+// `mode: "clipped"` (the default) is horizontal only and counts every box narrower than its
 // content, scroll containers included: the Files columns must fit without their own scroll
-// container absorbing content. `scrollable: "reachable"` is the whole-page rule of
+// container absorbing content. `mode: "reachable"` is the whole-page rule of
 // `d-20260831-16`, on both axes, where only lost content of a visible box counts:
 // * a box that clips (`overflow: hidden|clip`) while a descendant box or text passes its edge;
 // * a spill onto the page itself: sideways past the viewport, or downwards out of a fixed box, which
@@ -63,7 +63,7 @@ const stampedPgnGame = {
 // document's origin, because scrolling only ever reaches right and down.
 export async function assertNothingClipped(
     target: Locator,
-    { scrollable = "clipped" }: { scrollable?: "clipped" | "reachable" } = {},
+    { mode = "clipped" }: { mode?: "clipped" | "reachable" } = {},
 ) {
     const offenders = await target.evaluate((element, reachableMode) => {
         const axes = [
@@ -127,15 +127,30 @@ export async function assertNothingClipped(
         // `scrollWidth` also counts empty margin and padding (a Mantine Switch track label's 50px
         // margin), so a reported overflow only counts when visible text or a leaf box (an icon, the
         // switch thumb) really passes the edge. An input's value is not in the DOM, so its scroll size is all there is.
+        // A text range's rect is the font's content area, which can overhang a tight line box by a
+        // pixel or two (a Mantine Button label at 200%) without cutting a glyph; on y the extent is
+        // the line boxes, so that half-leading overhang is taken off both ends.
+        const textExtent = (text: Text, axis: Axis) => {
+            const range = document.createRange();
+            range.selectNode(text);
+            const box = range.getBoundingClientRect();
+            if (box.width === 0 || box.height === 0) return null;
+            if (axis.name === "x") return { start: box.left, end: box.right };
+            const lineHeight = parseFloat(getComputedStyle(text.parentElement!).lineHeight);
+            const line = range.getClientRects()[0];
+            const overhang =
+                Number.isFinite(lineHeight) && line
+                    ? Math.max(0, (line.height - lineHeight) / 2)
+                    : 0;
+            return { start: box.top + overhang, end: box.bottom - overhang };
+        };
         const contentPasses = (node: Element, axis: Axis, edge: number): boolean => {
             if (node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement)
                 return true;
             for (const child of node.childNodes) {
                 if (child instanceof Text) {
-                    const range = document.createRange();
-                    range.selectNode(child);
-                    const box = range.getBoundingClientRect();
-                    if (box.width > 0 && box.height > 0 && box[axis.end] > edge + 1) return true;
+                    const extent = textExtent(child, axis);
+                    if (extent && extent.end > edge + 1) return true;
                     continue;
                 }
                 if (!(child instanceof Element) || invisible(child)) continue;
@@ -171,17 +186,20 @@ export async function assertNothingClipped(
             if (axis.name === "x") return contentPasses(node, axis, window.innerWidth);
             return insideFixed(node) && contentPasses(node, axis, ownEdge);
         };
-        const boxLost = (node: Element, box: DOMRect, axis: Axis) => {
-            const bound = container(node, axis);
-            const fixed = insideFixed(node);
-            // Scrolling reaches only right and down, so anything before the content origin is lost.
-            const origin = bound
+        // Where content held by `bound` starts, in viewport coordinates: scrolling reaches only right
+        // and down from there. The page's origin is the document's, except inside a fixed box.
+        const contentOrigin = (bound: Element | null, fixed: boolean, axis: Axis) =>
+            bound
                 ? bound.getBoundingClientRect()[axis.start] +
                   bound[axis.clientStart] -
                   bound[axis.scrolled]
                 : fixed
                   ? 0
                   : -window[axis.page];
+        const boxLost = (node: Element, box: DOMRect, axis: Axis) => {
+            const bound = container(node, axis);
+            const fixed = insideFixed(node);
+            const origin = contentOrigin(bound, fixed, axis);
             if (box[axis.start] < origin - 1)
                 return `starts at ${Math.round(box[axis.start])}, before ${Math.round(origin)}`;
             // Past the far edge: a container's own scroll size covers what it holds; the page scrolls
@@ -190,6 +208,19 @@ export async function assertNothingClipped(
             return box[axis.end] > window[axis.viewport] + 1
                 ? `ends at ${Math.round(box[axis.end])}, past the viewport`
                 : null;
+        };
+        // Text can start before its holder even when its element does not (a negative text-indent):
+        // the holder is the element itself if it clips or scrolls, else its container.
+        const textBeforeOrigin = (node: Element, axis: Axis) => {
+            const holder = overflowOf(node, axis) !== "visible" ? node : container(node, axis);
+            const origin = contentOrigin(holder, insideFixed(node), axis);
+            for (const child of node.childNodes) {
+                if (!(child instanceof Text)) continue;
+                const extent = textExtent(child, axis);
+                if (extent && extent.start < origin - 1)
+                    return `text starts at ${Math.round(extent.start)}, before ${Math.round(origin)}`;
+            }
+            return null;
         };
         const describe = (node: Element, why: string) =>
             `${node.tagName.toLowerCase()}.${String(node.className)}: ${why}`;
@@ -200,26 +231,31 @@ export async function assertNothingClipped(
             const laidOut = box.width > 1 && box.height > 1;
             // The Files columns keep their horizontal-only check; the page-wide rule adds y.
             for (const axis of reachableMode ? axes : axes.slice(0, 1)) {
-                // An element without a layout box (an svg child, a hidden input) reports 0 for both.
-                if (node.clientWidth > 0 && overflowing(node, axis) && contentLost(node, axis)) {
+                // No layout-box guard: an element without one (an svg child, an inline span)
+                // reports 0 for both sizes, while a scroller squeezed to zero width must count.
+                if (overflowing(node, axis) && contentLost(node, axis)) {
                     const size = `${node[axis.scroll]}px > ${node[axis.client]}px`;
                     found.push(describe(node, `${axis.name} ${size}`));
                 }
                 const lost = placed && laidOut ? boxLost(node, box, axis) : null;
                 if (lost) found.push(describe(node, `${axis.name} ${lost}`));
+                if (placed) {
+                    const text = textBeforeOrigin(node, axis);
+                    if (text) found.push(describe(node, `${axis.name} ${text}`));
+                }
             }
         };
         for (let node = element.parentElement; node; node = node.parentElement) check(node, false);
         for (const node of [element, ...element.querySelectorAll("*")]) check(node, true);
         return found;
-    }, scrollable === "reachable");
+    }, mode === "reachable");
     expect(offenders, `content clipped: ${offenders.join("; ")}`).toEqual([]);
 }
 
 // The whole rendered page under the reachable rule — the 320px / 200% layout contract
 // (d-20260831-16), beside the document-width check that it does not replace.
 export async function assertPageNotClipped(page: Page) {
-    await assertNothingClipped(page.locator("body"), { scrollable: "reachable" });
+    await assertNothingClipped(page.locator("body"), { mode: "reachable" });
 }
 
 // Both Files columns with everything in them: the controls and tree, the action row and the card.

@@ -86,7 +86,8 @@ test("settings-responsive: labels every accent colour at a wide viewport", async
 // The page-wide clipping check proves the 320px layout, so each of its rules is pinned here on a
 // synthetic page: one case per rule, so dropping any rule turns exactly its case red.
 const text = "<span style='white-space: nowrap'>An unbreakable line of text</span>";
-const clippingCases: { name: string; html: string; lost: boolean; scrollY?: number }[] = [
+type ClippingCase = { name: string; html: string; lost: boolean; scrollY?: number };
+const clippingCases: ClippingCase[] = [
     {
         name: "hidden box narrower than its text",
         lost: true,
@@ -139,6 +140,21 @@ const clippingCases: { name: string; html: string; lost: boolean; scrollY?: numb
         html: `<div style="height: 20px; overflow: hidden; text-overflow: ellipsis"><div style="padding-top: 60px">tall</div></div>`,
     },
     {
+        name: "scroller squeezed to no width",
+        lost: true,
+        html: `<div style="display: flex; width: 100px"><div style="flex: 0 0 100px">x</div><div style="flex: 1 1 0%; min-width: 0; overflow-x: auto">${text}</div></div>`,
+    },
+    {
+        name: "text indented left of the page",
+        lost: true,
+        html: `<h1 style="white-space: nowrap; text-indent: -120px">Heading</h1>`,
+    },
+    {
+        name: "input narrower than its value",
+        lost: true,
+        html: `<input style="width: 50px" value="A value much longer than the field" />`,
+    },
+    {
         name: "scroller squeezed to no height",
         lost: true,
         html: `<div style="display: flex; flex-direction: column; height: 40px"><div style="height: 40px">x</div><div style="flex: 1 1 0%; min-height: 0; overflow: auto"><div style="height: 80px">hidden list</div></div></div>`,
@@ -152,6 +168,11 @@ const clippingCases: { name: string; html: string; lost: boolean; scrollY?: numb
         name: "hidden box around a scroller, overflowing only by padding",
         lost: false,
         html: `<div style="width: 100px; overflow: hidden"><div style="overflow-x: auto">${text}</div><span style="display: inline-block; padding-right: 150px">x</span></div>`,
+    },
+    {
+        name: "tight line box whose font overhangs it",
+        lost: false,
+        html: `<div style="overflow: hidden; font-size: 40px; line-height: 1">Hg</div>`,
     },
     {
         name: "hidden box cutting only a parent's padding",
@@ -211,18 +232,8 @@ const clippingCases: { name: string; html: string; lost: boolean; scrollY?: numb
     },
 ];
 
-for (const { name, html, lost, scrollY } of clippingCases) {
-    plain(`clipping instrument: ${lost ? "rejects" : "accepts"} ${name}`, async ({ page }) => {
-        await page.setContent(`<body style="margin: 0">${html}</body>`);
-        if (scrollY) await page.evaluate((y) => window.scrollTo(0, y), scrollY);
-        const check = assertNothingClipped(page.locator("body"), { scrollable: "reachable" });
-        if (lost) await expect(check).rejects.toThrow(/content clipped/);
-        else await check;
-    });
-}
-
 // The default mode is the Files columns' horizontal-only check, and must stay that.
-const defaultModeCases: { name: string; html: string; lost: boolean }[] = [
+const defaultModeCases: ClippingCase[] = [
     {
         name: "a scroll container",
         lost: true,
@@ -240,14 +251,20 @@ const defaultModeCases: { name: string; html: string; lost: boolean }[] = [
     },
 ];
 
-for (const { name, html, lost } of defaultModeCases) {
-    plain(
-        `clipping instrument: the default mode ${lost ? "counts" : "ignores"} ${name}`,
-        async ({ page }) => {
-            await page.setContent(`<body style="margin: 0">${html}</body>`);
-            const check = assertNothingClipped(page.locator("body"));
-            if (lost) await expect(check).rejects.toThrow(/content clipped/);
-            else await check;
-        },
-    );
+for (const [mode, cases] of [
+    ["reachable", clippingCases],
+    ["clipped", defaultModeCases],
+] as const) {
+    for (const { name, html, lost, scrollY } of cases) {
+        plain(
+            `clipping instrument (${mode}): ${lost ? "rejects" : "accepts"} ${name}`,
+            async ({ page }) => {
+                await page.setContent(`<body style="margin: 0">${html}</body>`);
+                if (scrollY) await page.evaluate((y) => window.scrollTo(0, y), scrollY);
+                const check = assertNothingClipped(page.locator("body"), { mode });
+                if (lost) await expect(check).rejects.toThrow(/content clipped/);
+                else await check;
+            },
+        );
+    }
 }

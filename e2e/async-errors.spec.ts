@@ -299,6 +299,10 @@ test("async-errors: verifies German navigation and a delayed native rejection at
     await page.getByRole("button", { name: "Hinzufügen" }).click();
     const accountDialog = page.getByRole("dialog", { name: "Hinzufügen" });
     await expect(accountDialog.getByLabel("Benutzername")).toBeVisible();
+    // The dialog itself, open: its submit button used to cut its German label.
+    await expect(accountDialog.getByRole("button", { name: "Hinzufügen" })).toBeVisible();
+    await assertNoHorizontalOverflow();
+    await assertPageNotClipped(page);
     await accountDialog.getByRole("button", { name: /Dialog schließen/i }).click();
     // The empty state's heading has to be there before "nothing clipped" means anything.
     await expect(page.getByRole("heading", { name: "Keine Konten verbunden" })).toBeVisible();
@@ -310,6 +314,12 @@ test("async-errors: verifies German navigation and a delayed native rejection at
     await expect(page.getByRole("tabpanel", { name: "Brett" })).toBeVisible();
     await assertNoHorizontalOverflow();
     await assertPageNotClipped(page);
+    for (const tab of ["Erscheinungsbild", "Privatsphäre"]) {
+        await page.getByRole("tab", { name: tab }).click();
+        await expect(page.getByRole("tabpanel", { name: tab })).toBeVisible();
+        await assertNoHorizontalOverflow();
+        await assertPageNotClipped(page);
+    }
     await page.getByRole("link", { name: "Datenbanken" }).click();
 
     await expect(page.getByRole("alert")).toContainText(
