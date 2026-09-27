@@ -11539,3 +11539,18 @@ Rejected: a longer WebDriver timeout, and a full-FEN dedup key.
 * **Open question:** what the read returns when the descriptor's revision after reading differs from the snapshot's: `Error::StaleGame` (renderer reloads), `Error::Conflict`, or one bounded internal retry with a fresh snapshot — each changes renderer freshness behaviour differently. The same post-read revision check is already used by workspace file copies (`PgnSnapshot::current_revision`, f-20260908-04).
 * **Proof:** a hook-driven test that rewrites the file in place between snapshot and `read_ranges` (the existing `read_chunk_hook`) and asserts the chosen outcome; reverting the check makes it fail.
 * **Found by:** `review-pgn-index` (Codex gpt-6-luna, confidence 92) in the cumulative diff review of f-20260908-04, drain session 938d21b7-e812-4fa7-8716-403a45da0144, 2026-09-27. Pre-existing read path, not changed by that diff; deferred because the error contract is a separate design question (push-review-policy §4). Related: f-20260908-04 (handled in the same run).
+
+---
+
+## 2026-09-27 — filed through the inbox spool
+
+### A closed tab's undecodable tree bytes lose their removal intent on reload and are never reclaimed
+
+* **ID:** f-20260927-04 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src/state/workspace.ts` `reconcilePendingTreeRemovals` (the `tabStorage.isStoredTree(id)` filter on prior intents); `src/state/store/tabStorage.ts` `removeOrphanedTrees` / `storedTreeKeys` (sweep only yields keys that decode as trees).
+* **Defect:** when a tab id leaves the workspace (tab close through `closeWorkspaceTabAtom`, or the owner of an import replaced by `replaceNewTab`), its id is recorded in `treeOwnershipPendingRemovalIds`. If the immediate `tabStorage.remove` also fails and the stored bytes under that id are undecodable, the next workspace commit or load drops the intent, because `reconcilePendingTreeRemovals` keeps only prior ids for which `isStoredTree` is true. The startup orphan sweep also skips undecodable values. The bytes then stay in sessionStorage for the rest of the session, counted against the shared ~5 MB quota.
+* **Evidence:** `workspace.ts:147` filters prior intents with `tabStorage.isStoredTree(id)`; `tabStorage.ts:677-682` returns false for an undecodable value; `tabStorage.ts:685-687,720` sweeps only keys that pass `isStoredTree`. Reported by `review-persisted-state` (confidence 88) on the f-20260910-09 cumulative diff; this pre-existing behaviour of the shared close/reclaim path is not introduced by that diff.
+* **Open question:** once no workspace tab owns an id, may its undecodable bytes be removed by the recorded intent, or must `persisted-state.md`'s "keep undecodable bytes; only an explicit discard removes the last workspace-owned unreadable value" still apply to an id that is no longer workspace-owned? If yes, the intent must survive undecodability; if no, the leak is by design and needs a bound.
+* **Relation:** shares the reclaim path with f-20260910-09 (the import replacement now reclaims its owner through `reclaimTabLocalState`) and with f-20260901-05 / f-20260906-22 (tab creation and close). Their Root is `-`, so no Root is shared.
+* **Proof required:** real-store test: a tab with undecodable stored bytes is closed while `removeItem` fails; after reload and a later commit the bytes are either removed or retained under an explicit, bounded, tested rule.
+* **Found by:** `review-persisted-state` lens during the f-20260910-09 build run, 2026-09-27.
