@@ -1077,6 +1077,17 @@ pub(crate) struct AuthorizedDir {
 }
 
 impl AuthorizedDir {
+    /// Whether startup's pathname still names this retained directory.
+    pub(crate) fn resides_at(&self, location: &DefaultRootLocation) -> Result<bool, Error> {
+        match identity(&location.path) {
+            Ok(identity) => Ok((identity.a, identity.b) == self.identity),
+            Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            // `identity` rejects symbolic links and other reparse points as invalid input.
+            Err(Error::InvalidInput(_)) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Returns the native directory retained for registry rebinding and display only. Filesystem
     /// changes must use the retained descriptor and must never reopen this pathname.
     pub(crate) fn path(&self) -> &Path {
@@ -2352,12 +2363,12 @@ impl AppOwnedDefaultRoot {
 ///
 /// Construction acquires the directory once: the longest existing prefix of the requested path is
 /// canonicalised and opened against its identity, and every missing component below it is created
-/// relative to that held descriptor. The value keeps only the canonical pathname and the retained
-/// descriptor; the original spelling is dropped, so every path derived from it — default roots,
-/// their children, engine images — is canonical from the moment it is registered, and a later
-/// ancestor swap cannot redirect default-root materialisation.
+/// relative to that held descriptor. The canonical pathname and retained descriptor are used to
+/// materialise registered paths. The requested spelling is retained only to name the location a
+/// fresh startup resolves; it never derives a registered path.
 pub(crate) struct AppDataDir {
     path: PathBuf,
+    requested: PathBuf,
     directory: fs::File,
 }
 
@@ -2446,11 +2457,39 @@ impl AppDataDir {
             directory = crate::infra::fs::ensure_directory_at(&directory, name)?;
             path.push(name);
         }
-        Ok(Self { path, directory })
+        Ok(Self {
+            path,
+            requested: requested.to_path_buf(),
+            directory,
+        })
     }
 
     fn as_path(&self) -> &Path {
         &self.path
+    }
+
+    pub(crate) fn startup_location(&self, root: AppOwnedDefaultRoot) -> DefaultRootLocation {
+        DefaultRootLocation {
+            path: self.requested.join(root.leaf()),
+            requested_app_data: self.requested.clone(),
+            root,
+        }
+    }
+}
+
+/// A sealed pathname naming where startup resolves one app-owned default root.
+#[derive(Clone, Debug)]
+pub(crate) struct DefaultRootLocation {
+    path: PathBuf,
+    requested_app_data: PathBuf,
+    root: AppOwnedDefaultRoot,
+}
+
+impl DefaultRootLocation {
+    /// Resolves this root through the same acquisition and materialisation path as startup.
+    pub(crate) fn reacquire(&self) -> Result<AuthorizedDir, Error> {
+        let app_data_dir = AppDataDir::acquire(&self.requested_app_data)?;
+        ensure_app_owned_default_dir(&app_data_dir, self.root)
     }
 }
 
@@ -8420,6 +8459,82 @@ mod portable_tests {
     }
 
     #[test]
+    fn default_root_location_resides_at_startup_path_and_reacquires() {
+        let app_data = tempfile::tempdir().unwrap();
+        let app_data_dir = AppDataDir::for_test(app_data.path());
+        let location = app_data_dir.startup_location(AppOwnedDefaultRoot::Credentials);
+        let directory =
+            ensure_app_owned_default_dir(&app_data_dir, AppOwnedDefaultRoot::Credentials).unwrap();
+
+        assert!(directory.resides_at(&location).unwrap());
+        let reacquired = location.reacquire().unwrap();
+        assert!(reacquired.resides_at(&location).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn default_root_location_rejects_replaced_and_missing_directories() {
+        for recreate in [true, false] {
+            let app_data = tempfile::tempdir().unwrap();
+            let app_data_dir = AppDataDir::for_test(app_data.path());
+            let location = app_data_dir.startup_location(AppOwnedDefaultRoot::Credentials);
+            let directory =
+                ensure_app_owned_default_dir(&app_data_dir, AppOwnedDefaultRoot::Credentials)
+                    .unwrap();
+            let root = app_data.path().join("credentials");
+            fs::rename(&root, app_data.path().join("credentials-renamed")).unwrap();
+            if recreate {
+                fs::create_dir(&root).unwrap();
+            }
+
+            assert!(!directory.resides_at(&location).unwrap());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn default_root_location_rejects_a_symlinked_leaf() {
+        use std::os::unix::fs::symlink;
+
+        let app_data = tempfile::tempdir().unwrap();
+        let app_data_dir = AppDataDir::for_test(app_data.path());
+        let location = app_data_dir.startup_location(AppOwnedDefaultRoot::Credentials);
+        let directory =
+            ensure_app_owned_default_dir(&app_data_dir, AppOwnedDefaultRoot::Credentials).unwrap();
+        let root = app_data.path().join("credentials");
+        let retained = app_data.path().join("credentials-renamed");
+        let target = app_data.path().join("target");
+        fs::create_dir(&target).unwrap();
+        fs::rename(&root, &retained).unwrap();
+        symlink(&target, &root).unwrap();
+
+        assert!(!directory.resides_at(&location).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn default_root_location_propagates_unreadable_parent_errors() {
+        use std::os::unix::fs::PermissionsExt;
+
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let app_data = tempfile::tempdir().unwrap();
+        let app_data_dir = AppDataDir::for_test(app_data.path());
+        let location = app_data_dir.startup_location(AppOwnedDefaultRoot::Credentials);
+        let directory =
+            ensure_app_owned_default_dir(&app_data_dir, AppOwnedDefaultRoot::Credentials).unwrap();
+        let original = fs::metadata(app_data.path()).unwrap().permissions().mode() & 0o777;
+        fs::set_permissions(app_data.path(), fs::Permissions::from_mode(0o0)).unwrap();
+        let result = directory.resides_at(&location);
+        fs::set_permissions(app_data.path(), fs::Permissions::from_mode(original)).unwrap();
+
+        assert!(
+            matches!(result, Err(Error::Io(ref error)) if error.kind() == std::io::ErrorKind::PermissionDenied)
+        );
+    }
+
+    #[test]
     fn ensure_app_owned_default_dir_rejects_a_regular_file_as_io() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("db"), b"not a directory").unwrap();
@@ -13985,6 +14100,7 @@ mod tests {
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
             [
+                "reacquire",
                 "ensure_app_owned_default_dir",
                 "open_app_owned_resource_dir"
             ]

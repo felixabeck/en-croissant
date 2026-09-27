@@ -11,6 +11,7 @@ use crate::{
         fs::AtomicFileOutcome,
         path_authority::{
             ensure_app_owned_default_dir, AppDataDir, AppOwnedDefaultRoot, AuthorizedDir,
+            DefaultRootLocation,
         },
     },
 };
@@ -204,6 +205,12 @@ enum RegistryCommit {
     CommittedDurabilityUncertain,
 }
 
+#[derive(Clone, Copy)]
+enum CredentialWriteKind {
+    Add,
+    Reauthentication,
+}
+
 trait RegistryPersistence: Send + Sync + 'static {
     fn write(&self, directory: &AuthorizedDir, bytes: &[u8]) -> Result<RegistryCommit, Error>;
 }
@@ -239,13 +246,19 @@ impl RegistryPersistence for UncertainRegistryPersistence {
     }
 }
 
+#[derive(Clone)]
+struct CredentialRegistryDir {
+    directory: Arc<AuthorizedDir>,
+    location: DefaultRootLocation,
+}
+
 /// One mutex covers the public journal and all credential-store mutations.  It prevents this
 /// process from exposing an account before a durable intent exists or interleaving compensations.
 pub struct CredentialManager {
     store: Arc<dyn CredentialStore>,
     persistence: Arc<dyn RegistryPersistence>,
     registry: Mutex<RegistryFile>,
-    registry_dir: Mutex<Option<Arc<AuthorizedDir>>>,
+    registry_dir: Mutex<Option<CredentialRegistryDir>>,
 }
 
 // Keep the credential manager's locks fail-closed after an unwind.
@@ -282,13 +295,17 @@ impl CredentialManager {
     }
 
     pub(crate) fn initialize(&self, app_data_dir: &AppDataDir) -> Result<(), Error> {
+        let location = app_data_dir.startup_location(AppOwnedDefaultRoot::Credentials);
         let directory = Arc::new(
             ensure_app_owned_default_dir(app_data_dir, AppOwnedDefaultRoot::Credentials)
                 .map_err(credential_failure)?,
         );
         let registry = self.load_registry(&directory)?;
         *credential_lock(&self.registry)? = registry;
-        *credential_lock(&self.registry_dir)? = Some(Arc::clone(&directory));
+        *credential_lock(&self.registry_dir)? = Some(CredentialRegistryDir {
+            directory: Arc::clone(&directory),
+            location,
+        });
         // Commit legacy metadata-only registries to the journalled format before reconciliation
         // is allowed to touch the native credential manager.
         let registry = credential_lock(&self.registry)?;
@@ -367,9 +384,12 @@ impl CredentialManager {
             | AccountRecord::PendingAdd(_)
             | AccountRecord::PendingDelete(_) => None,
         }) {
-            self.store
-                .set(&existing.handle.key(), &token)
-                .map_err(|_| Error::CredentialRecoveryRequired)?;
+            self.checked_keyring_write(
+                &mut registry,
+                &existing,
+                &token,
+                CredentialWriteKind::Reauthentication,
+            )?;
             return Ok(LichessAccountStoreResult {
                 account: existing,
                 durability_uncertain: false,
@@ -379,42 +399,113 @@ impl CredentialManager {
             handle: LichessAccountHandle::new(),
             username,
         };
-        registry.accounts.insert(
-            metadata.handle.0.clone(),
-            AccountRecord::PendingAdd(metadata.clone()),
-        );
-        let mut durability_uncertain = matches!(
-            self.persist_locked(&registry)?,
-            RegistryCommit::CommittedDurabilityUncertain
-        );
-        if self.store.set(&metadata.handle.key(), &token).is_err() {
-            // A credential manager may write the secret and still fail while committing its own
-            // metadata. The already-durable intent must remain: startup can inspect the keyring
-            // and either finalise this add or remove a genuinely absent secret. Compensating here
-            // could orphan a secret after a write-then-error outcome.
-            return Err(Error::CredentialRecoveryRequired);
-        }
-        registry.accounts.insert(
-            metadata.handle.0.clone(),
-            AccountRecord::Active(metadata.clone()),
-        );
-        match self.persist_locked(&registry) {
-            Ok(RegistryCommit::Durable) => {}
-            Ok(RegistryCommit::CommittedDurabilityUncertain) => {
-                durability_uncertain = true;
-            }
-            Err(error) => {
-                registry.accounts.insert(
-                    metadata.handle.0.clone(),
-                    AccountRecord::PendingAdd(metadata.clone()),
-                );
-                return Err(error);
-            }
-        }
+        let durability_uncertain =
+            self.checked_keyring_write(&mut registry, &metadata, &token, CredentialWriteKind::Add)?;
         Ok(LichessAccountStoreResult {
             account: metadata,
             durability_uncertain,
         })
+    }
+
+    /// Writes a secret only while the retained registry directory remains at its startup path.
+    /// A later user move after the final check is the same data-location change as while the app
+    /// is closed; this guard covers replacements during this call.
+    fn checked_keyring_write(
+        &self,
+        registry: &mut RegistryFile,
+        metadata: &LichessAccountMetadata,
+        token: &str,
+        kind: CredentialWriteKind,
+    ) -> Result<bool, Error> {
+        let binding = credential_lock(&self.registry_dir)?.clone();
+        if !binding_is_at_startup(binding.as_ref()) {
+            return Err(credential_directory_replaced());
+        }
+
+        let mut durability_uncertain = false;
+        if matches!(kind, CredentialWriteKind::Add) {
+            registry.accounts.insert(
+                metadata.handle.0.clone(),
+                AccountRecord::PendingAdd(metadata.clone()),
+            );
+            durability_uncertain = matches!(
+                self.persist_locked(registry)?,
+                RegistryCommit::CommittedDurabilityUncertain
+            );
+        }
+
+        let set_result = self.store.set(&metadata.handle.key(), token);
+        let mut active_result = Ok(());
+        if set_result.is_ok() && matches!(kind, CredentialWriteKind::Add) {
+            registry.accounts.insert(
+                metadata.handle.0.clone(),
+                AccountRecord::Active(metadata.clone()),
+            );
+            match self.persist_locked(registry) {
+                Ok(RegistryCommit::Durable) => {}
+                Ok(RegistryCommit::CommittedDurabilityUncertain) => {
+                    durability_uncertain = true;
+                }
+                Err(error) => {
+                    registry.accounts.insert(
+                        metadata.handle.0.clone(),
+                        AccountRecord::PendingAdd(metadata.clone()),
+                    );
+                    active_result = Err(error);
+                }
+            }
+        }
+
+        if !binding_is_at_startup(binding.as_ref()) {
+            if matches!(kind, CredentialWriteKind::Add) {
+                registry.accounts.remove(&metadata.handle.0);
+            }
+            self.compensate_detached_secret(metadata, binding.as_ref())?;
+            return Err(credential_directory_replaced());
+        }
+
+        if set_result.is_err() {
+            // A write-then-error may have stored the secret. Keep an add's PendingAdd intent so
+            // startup can reconcile it instead of dropping its only journal record.
+            return Err(Error::CredentialRecoveryRequired);
+        }
+        active_result?;
+        Ok(durability_uncertain)
+    }
+
+    fn compensate_detached_secret(
+        &self,
+        metadata: &LichessAccountMetadata,
+        binding: Option<&CredentialRegistryDir>,
+    ) -> Result<(), Error> {
+        if self.store.delete(&metadata.handle.key()).is_ok() {
+            return Ok(());
+        }
+        let Some(binding) = binding else {
+            return Err(Error::CredentialRecoveryRequired);
+        };
+        let directory = binding
+            .location
+            .reacquire()
+            .map_err(|_| Error::CredentialRecoveryRequired)?;
+        let mut registry = self
+            .load_registry(&directory)
+            .map_err(|_| Error::CredentialRecoveryRequired)?;
+        registry.accounts.insert(
+            metadata.handle.0.clone(),
+            AccountRecord::PendingDelete(metadata.clone()),
+        );
+        let bytes = serde_json::to_vec(&registry).map_err(|_| Error::CredentialRecoveryRequired)?;
+        match self.persistence.write(&directory, &bytes) {
+            Ok(RegistryCommit::Durable) => {}
+            Ok(RegistryCommit::CommittedDurabilityUncertain) | Err(_) => {
+                return Err(Error::CredentialRecoveryRequired);
+            }
+        }
+        if !matches!(directory.resides_at(&binding.location), Ok(true)) {
+            return Err(Error::CredentialRecoveryRequired);
+        }
+        Ok(())
     }
 
     pub(crate) async fn store_lichess_token_async(
@@ -581,16 +672,27 @@ impl CredentialManager {
     }
 
     fn persist_locked(&self, registry: &RegistryFile) -> Result<RegistryCommit, Error> {
-        let directory = credential_lock(&self.registry_dir)?.clone();
-        let Some(directory) = directory else {
+        let binding = credential_lock(&self.registry_dir)?.clone();
+        let Some(binding) = binding else {
             return Ok(RegistryCommit::Durable);
         };
         let bytes = serde_json::to_vec(registry)
             .map_err(|source| Error::CredentialFailure(source.to_string()))?;
         self.persistence
-            .write(&directory, &bytes)
+            .write(&binding.directory, &bytes)
             .map_err(|_| Error::CredentialFailure("credential registry update failed".into()))
     }
+}
+
+fn binding_is_at_startup(binding: Option<&CredentialRegistryDir>) -> bool {
+    binding
+        .is_none_or(|binding| matches!(binding.directory.resides_at(&binding.location), Ok(true)))
+}
+
+fn credential_directory_replaced() -> Error {
+    Error::CredentialFailure(
+        "credential directory was replaced while the application was running".into(),
+    )
 }
 
 fn log_uncertain_commit(commit: RegistryCommit, operation: &str) {
@@ -624,6 +726,8 @@ fn chmod_registry_file(file: &fs::File) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::path::PathBuf;
 
     #[derive(Default)]
     struct ThreadRecordingStore {
@@ -731,6 +835,211 @@ mod tests {
         fn delete(&self, key: &str) -> Result<(), Error> {
             self.0.delete(key)
         }
+    }
+
+    #[cfg(unix)]
+    #[derive(Default)]
+    struct RecordingStore {
+        inner: MemoryCredentialStore,
+        set_calls: std::sync::atomic::AtomicUsize,
+        delete_calls: std::sync::atomic::AtomicUsize,
+        set_keys: Mutex<Vec<String>>,
+        write_then_error: std::sync::atomic::AtomicBool,
+        fail_delete: std::sync::atomic::AtomicBool,
+        on_set: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    }
+
+    #[cfg(unix)]
+    impl RecordingStore {
+        fn configured(write_then_error: bool, fail_delete: bool) -> Self {
+            let store = Self::default();
+            store.set_write_then_error(write_then_error);
+            store
+                .fail_delete
+                .store(fail_delete, std::sync::atomic::Ordering::Relaxed);
+            store
+        }
+
+        fn set_write_then_error(&self, enabled: bool) {
+            self.write_then_error
+                .store(enabled, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        fn set_on_set_hook(&self, hook: impl FnOnce() + Send + 'static) {
+            *self.on_set.lock().unwrap() = Some(Box::new(hook));
+        }
+
+        fn set_count(&self) -> usize {
+            self.set_calls.load(std::sync::atomic::Ordering::Relaxed)
+        }
+
+        fn delete_count(&self) -> usize {
+            self.delete_calls.load(std::sync::atomic::Ordering::Relaxed)
+        }
+
+        fn last_set_key(&self) -> String {
+            self.set_keys.lock().unwrap().last().unwrap().clone()
+        }
+    }
+
+    #[cfg(unix)]
+    impl CredentialStore for RecordingStore {
+        fn set(&self, key: &str, secret: &str) -> Result<(), Error> {
+            self.set_calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.set_keys.lock().unwrap().push(key.to_owned());
+            self.inner.set(key, secret)?;
+            if let Some(hook) = self.on_set.lock().unwrap().take() {
+                hook();
+            }
+            if self
+                .write_then_error
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                Err(Error::CredentialFailure(
+                    "injected post-write failure".into(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+
+        fn get(&self, key: &str) -> Result<Option<String>, Error> {
+            self.inner.get(key)
+        }
+
+        fn delete(&self, key: &str) -> Result<(), Error> {
+            self.delete_calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if self.fail_delete.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err(Error::CredentialFailure("injected delete failure".into()));
+            }
+            self.inner.delete(key)
+        }
+    }
+
+    #[cfg(unix)]
+    type PersistenceHook = Box<dyn FnOnce(&AuthorizedDir) + Send>;
+
+    #[cfg(unix)]
+    #[derive(Default)]
+    struct RecordingPersistence {
+        writes: std::sync::atomic::AtomicUsize,
+        fail_on: Mutex<BTreeSet<usize>>,
+        uncertain_on: Mutex<BTreeSet<usize>>,
+        before_write: Mutex<BTreeMap<usize, PersistenceHook>>,
+        after_write: Mutex<BTreeMap<usize, PersistenceHook>>,
+    }
+
+    #[cfg(unix)]
+    impl RecordingPersistence {
+        fn writes(&self) -> usize {
+            self.writes.load(std::sync::atomic::Ordering::Relaxed)
+        }
+
+        fn fail_on(&self, write: usize) {
+            self.fail_on.lock().unwrap().insert(write);
+        }
+
+        fn return_uncertain_on(&self, write: usize) {
+            self.uncertain_on.lock().unwrap().insert(write);
+        }
+
+        fn before_write(&self, write: usize, hook: impl FnOnce(&AuthorizedDir) + Send + 'static) {
+            self.before_write
+                .lock()
+                .unwrap()
+                .insert(write, Box::new(hook));
+        }
+
+        fn after_write(&self, write: usize, hook: impl FnOnce(&AuthorizedDir) + Send + 'static) {
+            self.after_write
+                .lock()
+                .unwrap()
+                .insert(write, Box::new(hook));
+        }
+    }
+
+    #[cfg(unix)]
+    impl RegistryPersistence for RecordingPersistence {
+        fn write(&self, directory: &AuthorizedDir, bytes: &[u8]) -> Result<RegistryCommit, Error> {
+            let write = self
+                .writes
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                + 1;
+            if let Some(hook) = self.before_write.lock().unwrap().remove(&write) {
+                hook(directory);
+            }
+            if self.fail_on.lock().unwrap().contains(&write) {
+                return Err(Error::CredentialFailure("injected registry failure".into()));
+            }
+            let commit = AtomicRegistryPersistence.write(directory, bytes)?;
+            if let Some(hook) = self.after_write.lock().unwrap().remove(&write) {
+                hook(directory);
+            }
+            if self.uncertain_on.lock().unwrap().contains(&write) {
+                Ok(RegistryCommit::CommittedDurabilityUncertain)
+            } else {
+                Ok(commit)
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn detach_credentials(app_data: &Path, displaced_name: &str, recreate: bool) -> PathBuf {
+        let credentials = app_data.join("credentials");
+        let displaced = app_data.join(displaced_name);
+        fs::rename(&credentials, &displaced).unwrap();
+        if recreate {
+            fs::create_dir(&credentials).unwrap();
+        }
+        displaced
+    }
+
+    #[cfg(unix)]
+    fn replace_credentials_with_file(app_data: &Path, displaced_name: &str) {
+        detach_credentials(app_data, displaced_name, false);
+        fs::write(app_data.join("credentials"), b"not a directory").unwrap();
+    }
+
+    #[cfg(unix)]
+    struct PermissionRestore {
+        path: PathBuf,
+        mode: u32,
+    }
+
+    #[cfg(unix)]
+    impl PermissionRestore {
+        fn new(path: &Path) -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            Self {
+                path: path.to_path_buf(),
+                mode: fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for PermissionRestore {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&self.path, fs::Permissions::from_mode(self.mode));
+        }
+    }
+
+    #[cfg(unix)]
+    fn make_unreadable(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o0)).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn is_replaced_directory_error(result: &Result<LichessAccountStoreResult, Error>) -> bool {
+        matches!(
+            result,
+            Err(Error::CredentialFailure(message))
+                if message == "credential directory was replaced while the application was running"
+        )
     }
 
     struct FailPersistence {
@@ -1256,29 +1565,479 @@ mod tests {
     #[test]
     fn retained_credential_directory_descriptor_is_used_after_rename() {
         let temp = tempfile::tempdir().unwrap();
-        let store = Arc::new(MemoryCredentialStore::default());
-        let manager = CredentialManager::new(store);
+        let store = Arc::new(RecordingStore::default());
+        let persistence = Arc::new(RecordingPersistence::default());
+        let manager = CredentialManager::with_persistence(store.clone(), persistence.clone());
         manager
             .initialize(&AppDataDir::for_test(temp.path()))
             .unwrap();
 
-        let credentials = temp.path().join("credentials");
-        let renamed = temp.path().join("credentials-renamed");
-        fs::rename(&credentials, &renamed).unwrap();
-        fs::create_dir(&credentials).unwrap();
+        let writes_before = persistence.writes();
+        let renamed = detach_credentials(temp.path(), "credentials-renamed", true);
 
-        let account = manager
-            .store_lichess_token("user".into(), "secret".into())
-            .unwrap()
-            .account;
-        let renamed_registry: RegistryFile =
-            serde_json::from_slice(&fs::read(renamed.join(REGISTRY_FILE)).unwrap()).unwrap();
+        let result = manager.store_lichess_token("user".into(), "secret".into());
 
+        assert!(is_replaced_directory_error(&result));
+        assert_eq!(store.set_count(), 0);
+        assert_eq!(persistence.writes(), writes_before);
+        assert!(manager.list().unwrap().is_empty());
+        assert_eq!(
+            fs::read_dir(temp.path().join("credentials"))
+                .unwrap()
+                .count(),
+            0
+        );
+        assert_eq!(fs::read_dir(renamed).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn credential_add_refuses_a_renamed_directory_left_absent() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Arc::new(RecordingStore::default());
+        let persistence = Arc::new(RecordingPersistence::default());
+        let manager = CredentialManager::with_persistence(store.clone(), persistence.clone());
+        manager
+            .initialize(&AppDataDir::for_test(temp.path()))
+            .unwrap();
+        let writes_before = persistence.writes();
+        detach_credentials(temp.path(), "credentials-renamed", false);
+
+        let result = manager.store_lichess_token("user".into(), "secret".into());
+
+        assert!(is_replaced_directory_error(&result));
+        assert_eq!(store.set_count(), 0);
+        assert_eq!(persistence.writes(), writes_before);
+        assert!(manager.list().unwrap().is_empty());
+        assert!(!temp.path().join("credentials").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn credential_reauthentication_refuses_replaced_directory_without_changing_secret() {
+        for recreate in [true, false] {
+            let temp = tempfile::tempdir().unwrap();
+            let store = Arc::new(RecordingStore::default());
+            let persistence = Arc::new(RecordingPersistence::default());
+            let manager = CredentialManager::with_persistence(store.clone(), persistence.clone());
+            manager
+                .initialize(&AppDataDir::for_test(temp.path()))
+                .unwrap();
+            let account = manager
+                .store_lichess_token("user".into(), "existing-secret".into())
+                .unwrap()
+                .account;
+            let sets_before = store.set_count();
+            let writes_before = persistence.writes();
+            detach_credentials(temp.path(), "credentials-renamed", recreate);
+
+            let result = manager.store_lichess_token("USER".into(), "new-secret".into());
+
+            assert!(is_replaced_directory_error(&result));
+            assert_eq!(store.set_count(), sets_before);
+            assert_eq!(persistence.writes(), writes_before);
+            assert_eq!(
+                store.inner.get(&account.handle.key()).unwrap().as_deref(),
+                Some("existing-secret")
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn credential_add_refuses_an_unreadable_startup_location_before_writing() {
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let store = Arc::new(RecordingStore::default());
+        let persistence = Arc::new(RecordingPersistence::default());
+        let manager = CredentialManager::with_persistence(store.clone(), persistence.clone());
+        manager
+            .initialize(&AppDataDir::for_test(temp.path()))
+            .unwrap();
+        let writes_before = persistence.writes();
+        let restore = PermissionRestore::new(temp.path());
+        make_unreadable(temp.path());
+
+        let result = manager.store_lichess_token("user".into(), "secret".into());
+        drop(restore);
+
+        assert!(is_replaced_directory_error(&result));
+        assert_eq!(store.set_count(), 0);
+        assert_eq!(persistence.writes(), writes_before);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacement_during_successful_or_write_then_error_set_is_compensated_for_add_and_reauth() {
+        for write_then_error in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let app_data = temp.path().to_path_buf();
+            let store = Arc::new(RecordingStore::configured(write_then_error, false));
+            let manager = CredentialManager::new(store.clone());
+            manager
+                .initialize(&AppDataDir::for_test(&app_data))
+                .unwrap();
+            store.set_on_set_hook(move || {
+                detach_credentials(&app_data, "credentials-after-add-set", true);
+            });
+
+            let result = manager.store_lichess_token("user".into(), "secret".into());
+
+            assert!(is_replaced_directory_error(&result));
+            assert_eq!(store.set_count(), 1);
+            assert_eq!(store.delete_count(), 1);
+            assert_eq!(store.inner.get(&store.last_set_key()).unwrap(), None);
+            assert!(manager.list().unwrap().is_empty());
+
+            let temp = tempfile::tempdir().unwrap();
+            let app_data = temp.path().to_path_buf();
+            let store = Arc::new(RecordingStore::default());
+            let manager = CredentialManager::new(store.clone());
+            manager
+                .initialize(&AppDataDir::for_test(&app_data))
+                .unwrap();
+            let account = manager
+                .store_lichess_token("user".into(), "existing-secret".into())
+                .unwrap()
+                .account;
+            store.set_write_then_error(write_then_error);
+            store.set_on_set_hook(move || {
+                detach_credentials(&app_data, "credentials-after-reauth-set", true);
+            });
+
+            let result = manager.store_lichess_token("USER".into(), "new-secret".into());
+
+            assert!(is_replaced_directory_error(&result));
+            assert_eq!(store.set_count(), 2);
+            assert_eq!(store.delete_count(), 1);
+            assert_eq!(store.inner.get(&account.handle.key()).unwrap(), None);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacement_during_successful_or_write_then_error_active_write_is_compensated() {
+        for fail_active_write in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let app_data = temp.path().to_path_buf();
+            let store = Arc::new(RecordingStore::default());
+            let persistence = Arc::new(RecordingPersistence::default());
+            let manager = CredentialManager::with_persistence(store.clone(), persistence.clone());
+            manager
+                .initialize(&AppDataDir::for_test(&app_data))
+                .unwrap();
+            persistence.before_write(3, move |_| {
+                detach_credentials(&app_data, "credentials-during-active-write", true);
+            });
+            if fail_active_write {
+                persistence.fail_on(3);
+            }
+
+            let result = manager.store_lichess_token("user".into(), "secret".into());
+
+            assert!(is_replaced_directory_error(&result));
+            assert_eq!(persistence.writes(), 3);
+            assert_eq!(store.set_count(), 1);
+            assert_eq!(store.delete_count(), 1);
+            assert_eq!(store.inner.get(&store.last_set_key()).unwrap(), None);
+            assert!(manager.list().unwrap().is_empty());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacement_verification_error_after_set_is_compensated_for_add_and_reauth() {
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        for reauthenticate in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let app_data = temp.path().to_path_buf();
+            let store = Arc::new(RecordingStore::default());
+            let manager = CredentialManager::new(store.clone());
+            manager
+                .initialize(&AppDataDir::for_test(&app_data))
+                .unwrap();
+            let account = if reauthenticate {
+                Some(
+                    manager
+                        .store_lichess_token("user".into(), "existing-secret".into())
+                        .unwrap()
+                        .account,
+                )
+            } else {
+                None
+            };
+            let restore = PermissionRestore::new(&app_data);
+            store.set_on_set_hook(move || make_unreadable(&app_data));
+
+            let result = manager.store_lichess_token(
+                if reauthenticate { "USER" } else { "user" }.into(),
+                "new-secret".into(),
+            );
+            drop(restore);
+
+            assert!(is_replaced_directory_error(&result));
+            assert_eq!(store.delete_count(), 1);
+            let key = account
+                .as_ref()
+                .map(|account| account.handle.key())
+                .unwrap_or_else(|| store.last_set_key());
+            assert_eq!(store.inner.get(&key).unwrap(), None);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_compensating_delete_is_reconciled_from_startup_location_tombstone() {
+        let temp = tempfile::tempdir().unwrap();
+        let app_data = temp.path().to_path_buf();
+        let store = Arc::new(RecordingStore::configured(false, true));
+        let persistence = Arc::new(RecordingPersistence::default());
+        let manager = CredentialManager::with_persistence(store.clone(), persistence.clone());
+        manager
+            .initialize(&AppDataDir::for_test(&app_data))
+            .unwrap();
+        store.set_on_set_hook({
+            let app_data = app_data.clone();
+            move || {
+                detach_credentials(&app_data, "credentials-before-tombstone", true);
+            }
+        });
+
+        let result = manager.store_lichess_token("user".into(), "secret".into());
+
+        assert!(is_replaced_directory_error(&result));
+        assert_eq!(store.set_count(), 1);
+        assert_eq!(store.delete_count(), 1);
+        let key = store.last_set_key();
+        assert_eq!(store.inner.get(&key).unwrap().as_deref(), Some("secret"));
         assert!(matches!(
-            renamed_registry.accounts.get(&account.handle.0),
-            Some(AccountRecord::Active(metadata)) if metadata == &account
+            serde_json::from_slice::<RegistryFile>(
+                &fs::read(app_data.join("credentials").join(REGISTRY_FILE)).unwrap()
+            )
+            .unwrap()
+            .accounts
+            .get(key.strip_prefix("lichess-account:").unwrap()),
+            Some(AccountRecord::PendingDelete(_))
         ));
-        assert_eq!(fs::read_dir(credentials).unwrap().count(), 0);
+
+        let restart_store = Arc::new(MemoryCredentialStore::default());
+        restart_store.set(&key, "secret").unwrap();
+        CredentialManager::new(restart_store.clone())
+            .initialize(&AppDataDir::for_test(&app_data))
+            .unwrap();
+        assert_eq!(restart_store.get(&key).unwrap(), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_compensating_delete_reacquires_a_missing_credential_leaf() {
+        let temp = tempfile::tempdir().unwrap();
+        let app_data = temp.path().to_path_buf();
+        let store = Arc::new(RecordingStore::configured(false, true));
+        let persistence = Arc::new(RecordingPersistence::default());
+        let manager = CredentialManager::with_persistence(store.clone(), persistence);
+        manager
+            .initialize(&AppDataDir::for_test(&app_data))
+            .unwrap();
+        store.set_on_set_hook({
+            let app_data = app_data.clone();
+            move || {
+                detach_credentials(&app_data, "credentials-absent-before-tombstone", false);
+            }
+        });
+
+        let result = manager.store_lichess_token("user".into(), "secret".into());
+
+        assert!(is_replaced_directory_error(&result));
+        assert_eq!(store.set_count(), 1);
+        assert_eq!(store.delete_count(), 1);
+        let key = store.last_set_key();
+        assert_eq!(store.inner.get(&key).unwrap().as_deref(), Some("secret"));
+        let registry: RegistryFile = serde_json::from_slice(
+            &fs::read(app_data.join("credentials").join(REGISTRY_FILE)).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            registry
+                .accounts
+                .get(key.strip_prefix("lichess-account:").unwrap()),
+            Some(AccountRecord::PendingDelete(_))
+        ));
+
+        let restart_store = Arc::new(MemoryCredentialStore::default());
+        restart_store.set(&key, "secret").unwrap();
+        CredentialManager::new(restart_store.clone())
+            .initialize(&AppDataDir::for_test(&app_data))
+            .unwrap();
+        assert_eq!(restart_store.get(&key).unwrap(), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_delete_and_tombstone_write_returns_recovery_required() {
+        let temp = tempfile::tempdir().unwrap();
+        let app_data = temp.path().to_path_buf();
+        let store = Arc::new(RecordingStore::configured(false, true));
+        let persistence = Arc::new(RecordingPersistence::default());
+        let manager = CredentialManager::with_persistence(store.clone(), persistence.clone());
+        manager
+            .initialize(&AppDataDir::for_test(&app_data))
+            .unwrap();
+        persistence.fail_on(4);
+        store.set_on_set_hook({
+            let app_data = app_data.clone();
+            move || {
+                detach_credentials(&app_data, "credentials-before-failed-tombstone", true);
+            }
+        });
+
+        let result = manager.store_lichess_token("user".into(), "secret".into());
+
+        assert!(matches!(result, Err(Error::CredentialRecoveryRequired)));
+        assert_eq!(store.set_count(), 1);
+        assert_eq!(store.delete_count(), 1);
+        assert_eq!(persistence.writes(), 4, "the tombstone write was attempted");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_delete_and_regular_startup_leaf_returns_recovery_required_without_write() {
+        let temp = tempfile::tempdir().unwrap();
+        let app_data = temp.path().to_path_buf();
+        let store = Arc::new(RecordingStore::configured(false, true));
+        let persistence = Arc::new(RecordingPersistence::default());
+        let manager = CredentialManager::with_persistence(store.clone(), persistence.clone());
+        manager
+            .initialize(&AppDataDir::for_test(&app_data))
+            .unwrap();
+        store.set_on_set_hook({
+            let app_data = app_data.clone();
+            move || replace_credentials_with_file(&app_data, "credentials-before-file-leaf")
+        });
+
+        let result = manager.store_lichess_token("user".into(), "secret".into());
+
+        assert!(matches!(result, Err(Error::CredentialRecoveryRequired)));
+        assert_eq!(store.set_count(), 1);
+        assert_eq!(store.delete_count(), 1);
+        assert_eq!(
+            persistence.writes(),
+            3,
+            "reacquire refused before a tombstone write"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replaced_tombstone_directory_returns_recovery_required_after_write() {
+        let temp = tempfile::tempdir().unwrap();
+        let app_data = temp.path().to_path_buf();
+        let store = Arc::new(RecordingStore::configured(false, true));
+        let persistence = Arc::new(RecordingPersistence::default());
+        let manager = CredentialManager::with_persistence(store.clone(), persistence.clone());
+        manager
+            .initialize(&AppDataDir::for_test(&app_data))
+            .unwrap();
+        store.set_on_set_hook({
+            let app_data = app_data.clone();
+            move || {
+                detach_credentials(&app_data, "credentials-before-postwrite-check", true);
+            }
+        });
+        persistence.after_write(4, {
+            let app_data = app_data.clone();
+            move |_| {
+                detach_credentials(&app_data, "credentials-after-tombstone-write", true);
+            }
+        });
+
+        let result = manager.store_lichess_token("user".into(), "secret".into());
+
+        assert!(matches!(result, Err(Error::CredentialRecoveryRequired)));
+        assert_eq!(store.set_count(), 1);
+        assert_eq!(store.delete_count(), 1);
+        assert_eq!(persistence.writes(), 4, "the tombstone write was attempted");
+        assert!(app_data
+            .join("credentials-after-tombstone-write")
+            .join(REGISTRY_FILE)
+            .is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn uncertain_tombstone_is_left_for_fresh_startup_reconciliation() {
+        let temp = tempfile::tempdir().unwrap();
+        let app_data = temp.path().to_path_buf();
+        let store = Arc::new(RecordingStore::configured(false, true));
+        let persistence = Arc::new(RecordingPersistence::default());
+        let manager = CredentialManager::with_persistence(store.clone(), persistence.clone());
+        manager
+            .initialize(&AppDataDir::for_test(&app_data))
+            .unwrap();
+        persistence.return_uncertain_on(4);
+        store.set_on_set_hook({
+            let app_data = app_data.clone();
+            move || {
+                detach_credentials(&app_data, "credentials-before-uncertain-tombstone", true);
+            }
+        });
+
+        let result = manager.store_lichess_token("user".into(), "secret".into());
+
+        assert!(matches!(result, Err(Error::CredentialRecoveryRequired)));
+        assert_eq!(store.set_count(), 1);
+        assert_eq!(store.delete_count(), 1);
+        assert_eq!(
+            persistence.writes(),
+            4,
+            "the uncertain tombstone was committed"
+        );
+        let key = store.last_set_key();
+        let restart_store = Arc::new(MemoryCredentialStore::default());
+        restart_store.set(&key, "secret").unwrap();
+        CredentialManager::new(restart_store.clone())
+            .initialize(&AppDataDir::for_test(&app_data))
+            .unwrap();
+        assert_eq!(restart_store.get(&key).unwrap(), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn invalid_startup_registry_prevents_tombstone_write_and_requires_recovery() {
+        let temp = tempfile::tempdir().unwrap();
+        let app_data = temp.path().to_path_buf();
+        let store = Arc::new(RecordingStore::configured(false, true));
+        let persistence = Arc::new(RecordingPersistence::default());
+        let manager = CredentialManager::with_persistence(store.clone(), persistence.clone());
+        manager
+            .initialize(&AppDataDir::for_test(&app_data))
+            .unwrap();
+        store.set_on_set_hook({
+            let app_data = app_data.clone();
+            move || {
+                detach_credentials(&app_data, "credentials-before-invalid-registry", true);
+                fs::write(
+                    app_data.join("credentials").join(REGISTRY_FILE),
+                    b"not json",
+                )
+                .unwrap();
+            }
+        });
+
+        let result = manager.store_lichess_token("user".into(), "secret".into());
+
+        assert!(matches!(result, Err(Error::CredentialRecoveryRequired)));
+        assert_eq!(store.set_count(), 1);
+        assert_eq!(store.delete_count(), 1);
+        assert_eq!(
+            persistence.writes(),
+            3,
+            "load failure prevented a tombstone write"
+        );
     }
 
     #[cfg(unix)]
