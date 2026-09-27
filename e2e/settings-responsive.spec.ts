@@ -134,6 +134,11 @@ const clippingCases: { name: string; html: string; lost: boolean; scrollY?: numb
         html: `<div style="height: 20px; overflow: hidden; text-overflow: ellipsis"><div style="padding-top: 60px">tall</div></div>`,
     },
     {
+        name: "scroller squeezed to no height",
+        lost: true,
+        html: `<div style="display: flex; flex-direction: column; height: 40px"><div style="height: 40px">x</div><div style="flex: 1 1 0%; min-height: 0; overflow: auto"><div style="height: 80px">hidden list</div></div></div>`,
+    },
+    {
         name: "hidden box cutting a padded parent's text",
         lost: true,
         html: `<div style="width: 50px; overflow: hidden"><span style="display: inline-block; padding: 0 4px; white-space: nowrap">An unbreakable line</span></div>`,

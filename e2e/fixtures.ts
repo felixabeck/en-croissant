@@ -155,7 +155,9 @@ export async function assertNothingClipped(
         const contentLost = (node: Element, axis: Axis) => {
             if (!reachableMode) return axis.name === "x";
             const overflow = overflowOf(node, axis);
-            if (scrolls(overflow)) return false;
+            // Scrolling reaches what a scroller holds only if it has room to show some of it: one
+            // squeezed to nothing (a stacked panel's list) hides its content entirely.
+            if (scrolls(overflow)) return node[axis.client] < 1;
             const ownEdge =
                 node.getBoundingClientRect()[axis.start] +
                 node[axis.clientStart] +
