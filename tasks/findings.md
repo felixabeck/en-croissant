@@ -11632,3 +11632,17 @@ Rejected: a longer WebDriver timeout, and a full-FEN dedup key.
 
 * **Current handler after `685274ac`:** the direct `EnsureReady` arm now calls `recover_failed_protocol` on failure and exits the actor; the original **Open question** sentence saying it replies and continues describes the plan base, not current HEAD. The queued `Terminate` false-success path after failed recovery remains open as described above and in the closing review evidence.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"eb19c6d7d2b51433031b036ee30d3e1237488ac666e17a7be971cbd572dd0b77","input_sha256":"9ec6a7eae2e911e6080a6f2a21dd4b8b9ba35cf5fbddcd72642647aa157a72c2","kind":"mutation-receipt","operation":"e58d76c485e7bb7a8ce69f14f961edf41ae17df088c592e7fb524278aec93ea2","options":{"section":null},"request_id_sha256":null,"results":["f-20260927-06"],"target":"f-20260927-06","v":1} -->
+
+---
+
+## 2026-09-27 — filed through the inbox spool
+
+### `SearchIndexIdentity::for_database` and `SearchCache::invalidate_entries` reach the filesystem by pathname from `main.rs`
+
+* **ID:** f-20260927-07 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/main.rs` — `SearchIndexIdentity::for_database` (`:185-205` at `d7fd20e5`: `database.canonicalize()`, `preferred_index.exists()`, `legacy.exists()`, `index.canonicalize()`, `index.metadata()`) and `invalidate_entries` (`:673-676`: `database.canonicalize()`).
+* **Defect:** six production `Path` inherent-method calls resolve and stat the search-index sidecar and its database by pathname outside `infra/`. The release-surface gate never counted them because R3/R4 match only path-qualified calls (`f-20260912-03`). Measured 2026-09-27 with a typed `clippy::disallowed_methods` probe over `std::path::Path::{canonicalize, metadata, symlink_metadata, read_dir, read_link, exists, try_exists, is_file, is_dir, is_symlink}`: these six are the only production hits outside `infra/` on both `x86_64-unknown-linux-gnu` and `x86_64-pc-windows-gnu` (the seventh is inside `infra/path_authority`). The identity is computed from a pathname walk that can resolve to a different file than the one the search index is later opened from — the same TOCTOU class as `f-20260912-07`.
+* **Open question:** should the search-index cache identity be derived from the descriptor-retained database target the repository already holds (so no pathname canonicalisation or stat is needed), or does pathname canonicalisation stay as a deliberate identity key that moves into an `infra` primitive with its own counted R4 entry?
+* **Why it matters:** once `f-20260912-03` lands, these six sites are the only production pathname reaches outside `infra/` and the only reason the Path-method baseline is non-empty; the convention is measured, not yet true, until they are gone.
+* **Related:** `f-20260912-03` (the detection gap whose fix pins these sites in a shrink-only baseline; Root `-`, so named here), `f-20260912-07` (loader trusts a sidecar validated against an earlier probe), `f-20260905-04` (handled; sidecar provenance).
+* **Found by:** Claude Code, plan-only locate stage of `f-20260912-03`, 2026-09-27.
