@@ -10603,7 +10603,7 @@ deny stays in place for the next one.
 
 ### The credential registry writes through a retained descriptor but reopens by pathname at startup
 
-* **ID:** f-20260920-10 · **Status:** open · **Area:** oauth-credentials · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260920-10 · **Status:** handled · **Area:** oauth-credentials · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src-tauri/src/credentials.rs:216` (registry writes through a retained directory descriptor), `:284-311` (startup reopens the current pathname).
 * **Defect (reported by a lens, confirm first):** the two halves disagree about what identifies the credential directory. Renaming it while the app runs leaves the writer journaling into the detached inode, while the keyring token survives; the next startup opens the replacement pathname, finds an empty registry, and can neither reconcile the live token nor remove the orphaned credential.
 * **Why it matters:** the orphan is a bearer credential the application no longer knows it holds, so nothing will ever revoke or clean it up; the user sees a signed-out app with a live token still in the keyring. Same identity-versus-pathname class as `f-20260918-02` and `f-20260920-*` on the download installer, in the credential store rather than the filesystem.
