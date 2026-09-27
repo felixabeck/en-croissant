@@ -55,9 +55,15 @@ cg-board square.oc.move-dest:hover {
   align-items: stretch;
   height: auto;
   min-height: var(--button-height);
-  /* In a container too narrow for about six em of label, the side padding gives way to the text;
-     a percentage resolves against the container, so wider layouts keep Mantine's padding. */
-  --wrap-button-room: max(0.25em, calc((100% - 6em) / 2));
+  /* In a container too narrow for the minimum label width, the side padding gives way to the text,
+     down to the minimum padding; a percentage resolves against the container, so wider layouts
+     keep Mantine's padding. */
+  --wrap-button-min-label: 6em;
+  --wrap-button-min-padding: 0.25em;
+  --wrap-button-room: max(
+    var(--wrap-button-min-padding),
+    calc((100% - var(--wrap-button-min-label)) / 2)
+  );
   padding-inline: min(var(--button-padding-x), var(--wrap-button-room));
 }
 

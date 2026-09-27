@@ -74,7 +74,7 @@ function PersonalPlayerCard({
             />
           </Flex>
         ) : (
-          <Text fz="lg" fw={500} ta="center">
+          <Text fz="lg" fw={500} ta="center" className="wrap-anywhere">
             {name}
           </Text>
         )}

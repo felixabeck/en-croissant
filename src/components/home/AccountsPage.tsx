@@ -4,17 +4,21 @@ import { sessionsAtom } from "@/state/atoms";
 import Accounts from "./Accounts";
 import Databases from "./Databases";
 
+// Each column wraps from this basis: side by side while two fit, stacked once they do not (the rem
+// basis scales with the app font, so a large font scale stacks them sooner).
+const column = { flex: "1 1 15rem", minWidth: 0 } as const;
+
 function AccountsPage() {
   const sessions = useAtomValue(sessionsAtom);
 
   return (
     <Group wrap="wrap" px="lg" pb="lg" h="100%" style={{ overflowY: "auto" }}>
-      <Stack h="100%" style={{ flex: "1 1 15rem", minWidth: 0 }}>
+      <Stack h="100%" style={column}>
         <Accounts />
       </Stack>
 
       {sessions.length > 0 && (
-        <Box h="100%" pt="md" style={{ flex: "1 1 15rem", minWidth: 0, overflow: "hidden" }}>
+        <Box h="100%" pt="md" style={{ ...column, overflow: "hidden" }}>
           <Databases />
         </Box>
       )}
