@@ -11119,6 +11119,8 @@ It matters more since 2026-09-22 than before: `buildCoverageReport` now merges r
   `f-20260906-23`, 2026-09-22, which needed the assumption for the practice store's per-deck mutex
   and found nothing enforcing it. The plan states the limitation and files it here rather than
   fixing the application's process model inside a storage change.
+* **Another consequence, found 2026-09-27 by `review-correctness` in the cumulative review for `f-20260912-01`:** the Lichess credential registry (`src-tauri/src/credentials.rs`) is also a one-process assumption. If two instances start with the same registry, instance A adds an account, and instance B then adds one from its stale in-memory registry, B's journal replaces the file without A's record. A's keyring secret then has no record a fresh startup can load: an orphaned bearer token, the class `f-20260912-01` closed for a replaced directory. The directory-identity checks added there cannot see it, because both instances write the same inode. A single-instance guard would remove this case along with the others listed here.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"3233947fdd85c0d620c6e2131ba52c7842fa07e303c4e436fcfa0048d32c3afd","input_sha256":"ff3c1f30a17bf6d141161932129a91481f583394698bbb8cb803ad7d51dfd737","kind":"mutation-receipt","operation":"6de1ff2075f49ac8a1fe6043febee456229618e33817bcad804066947f223d2d","options":{"section":null},"request_id_sha256":null,"results":["f-20260922-07"],"target":"f-20260922-07","v":1} -->
 
 ---
 
