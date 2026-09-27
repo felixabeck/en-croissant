@@ -1,7 +1,6 @@
 import {
   Box,
   Center,
-  Group,
   type MantineColorScheme,
   SegmentedControl,
   useMantineColorScheme,
@@ -15,8 +14,9 @@ export default function ThemeButton() {
   const { colorScheme, setColorScheme } = useMantineColorScheme();
 
   return (
-    <Group justify="center">
+    <Box style={{ overflowX: "auto", maxWidth: "100%" }}>
       <SegmentedControl
+        style={{ display: "flex", width: "max-content", marginInline: "auto" }}
         value={colorScheme}
         onChange={(value) => setColorScheme(value as MantineColorScheme)}
         data={[
@@ -49,6 +49,6 @@ export default function ThemeButton() {
           },
         ]}
       />
-    </Group>
+    </Box>
   );
 }

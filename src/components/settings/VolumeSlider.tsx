@@ -30,6 +30,7 @@ export default function VolumeSlider() {
       max={100}
       marks={marks}
       w="15rem"
+      maw="100%"
       value={tempVolume}
       onChange={(value) => {
         setTempVolume(value as number);

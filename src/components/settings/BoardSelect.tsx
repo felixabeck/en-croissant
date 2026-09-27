@@ -40,7 +40,7 @@ function SelectOption({ label }: { label: string }) {
   }
 
   return (
-    <Group wrap="nowrap">
+    <Group wrap="nowrap" miw={0}>
       <Box
         style={{
           width: "64px",
@@ -50,7 +50,21 @@ function SelectOption({ label }: { label: string }) {
           backgroundSize: label.endsWith(".svg") ? "256px" : undefined,
         }}
       />
-      <Text fz="sm" fw={500}>
+      {/* Ellipsis without `truncate`, whose overflow: hidden would also cut descenders. */}
+      <Text
+        fz="sm"
+        fw={500}
+        miw={0}
+        style={{
+          overflowX: "clip",
+          overflowY: "visible",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+          // Room for a glyph's ink overhang (the tail of a "g"), which the clip would trim.
+          paddingInline: 2,
+          marginInline: -2,
+        }}
+      >
         {label.split(".")[0]}
       </Text>
     </Group>

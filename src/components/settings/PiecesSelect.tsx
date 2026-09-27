@@ -46,7 +46,7 @@ const pieceSets: Item[] = [
 function DisplayPieces() {
   const pieces = ["rook", "knight", "bishop", "queen", "king", "pawn"] as const;
   return (
-    <Flex gap="xs">
+    <Flex gap="xs" wrap="wrap">
       {pieces.map((role, index) => (
         <Box key={index} h="2.5rem" w="2.5rem">
           <PieceComponent piece={{ color: "white", role }} />

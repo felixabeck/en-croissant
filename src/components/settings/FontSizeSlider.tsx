@@ -21,6 +21,7 @@ export default function FontSizeSlider() {
       step={10}
       value={tempFontSize}
       w="15rem"
+      maw="100%"
       onChange={(value) => {
         setTempFontSize(value as number);
       }}

@@ -460,7 +460,7 @@ export default function Page() {
         description: t("Settings.Appearance.AccentColor.Desc"),
         keywords: ["accent", "color", "primary"],
         render: () => (
-          <div style={{ width: 200 }}>
+          <div style={{ width: 200, maxWidth: "100%" }}>
             <ColorControl />
           </div>
         ),
@@ -698,7 +698,7 @@ export default function Page() {
 
     if (filteredSettings.length === 0) {
       return (
-        <Card withBorder p="lg" className={classes.card} w="100%">
+        <Card withBorder className={`${classes.card} wrap-anywhere`} w="100%">
           <Text c="dimmed" ta="center">
             {t("Settings.Search.NoResults", { query: searchQuery })}
           </Text>
@@ -719,7 +719,7 @@ export default function Page() {
     );
 
     return (
-      <Card withBorder p="lg" className={classes.card} w="100%">
+      <Card withBorder className={`${classes.card} wrap-anywhere`} w="100%">
         {Object.entries(groupedSettings).map(([category, categorySettings]) => (
           <div key={category}>
             <Group gap="xs" mt="md" mb="xs">
@@ -751,7 +751,7 @@ export default function Page() {
   return (
     <Stack h="100%" gap={0}>
       <Group px="md" pt="md" pb="sm" className={classes.searchRow}>
-        <Title order={1} size="h3">
+        <Title order={1} size="h3" className="wrap-anywhere" miw={0}>
           {t("SideBar.Settings")}
         </Title>
         <TextInput
@@ -820,9 +820,9 @@ export default function Page() {
               {t("Settings.Privacy")}
             </Tabs.Tab>
           </Tabs.List>
-          <Stack flex={1} px="md" className={classes.settingsContent}>
+          <Stack flex={1} className={classes.settingsContent}>
             <ScrollArea className={classes.settingsScroll}>
-              <Card withBorder p="lg" className={classes.card} w="100%">
+              <Card withBorder className={`${classes.card} wrap-anywhere`} w="100%">
                 <Tabs.Panel value="board">
                   <Text size="lg" fw={500} className={classes.title}>
                     {t("Settings.Board")}

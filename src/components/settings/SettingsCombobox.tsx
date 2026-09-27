@@ -74,6 +74,7 @@ export function SettingsCombobox<T extends string>({
           pointer
           onClick={() => combobox.toggleDropdown()}
           w={width}
+          maw="100%"
         >
           {selected?.preview ?? selected?.label ?? (
             <Input.Placeholder>{t("Common.PickValue")}</Input.Placeholder>
