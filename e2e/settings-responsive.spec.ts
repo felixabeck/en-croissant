@@ -245,6 +245,11 @@ const defaultModeCases: ClippingCase[] = [
         html: `<div style="width: 50px; overflow: hidden; opacity: 0">${text}</div>`,
     },
     {
+        name: "an empty box left of its scrolling container",
+        lost: true,
+        html: `<div style="width: 100px; margin-left: 100px; overflow: auto"><div style="margin-left: -60px; height: 20px"></div></div>`,
+    },
+    {
         name: "a box above its clipping container",
         lost: false,
         html: `<div style="position: relative; overflow: hidden; height: 50px; margin-top: 100px"><div style="position: absolute; top: -30px; height: 20px">x</div></div>`,
