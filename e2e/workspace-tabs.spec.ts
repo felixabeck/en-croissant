@@ -1,4 +1,4 @@
-import { expect, test } from "./fixtures";
+import { expect, preserveStorageForReload, test } from "./fixtures";
 
 async function rejectWorkspaceWrites(page: import("@playwright/test").Page) {
     await page.evaluate(() => {
@@ -79,4 +79,56 @@ test("workspace-tabs: refuses failed creation and close until durable retry", as
     await expect(tabs).toHaveCount(1);
     await page.reload();
     await expect(tabs).toHaveCount(1);
+});
+
+test("workspace-tabs: FEN import keeps its New Tab on a refused write and replaces it on retry", async ({
+    page,
+    capture,
+}) => {
+    const fen = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1";
+    await page.goto("/");
+    // The analysis board renders its own panel tablist after the workspace one.
+    const tabs = page.getByRole("tablist").first().getByRole("tab");
+    await expect(tabs).toHaveCount(1);
+    await expect(tabs.first()).toHaveText(/new tab/i);
+
+    await page.getByRole("button", { name: /^import$/i }).click();
+    const modal = page.getByRole("dialog", { name: /import game/i });
+    await modal.getByText("FEN", { exact: true }).click();
+    const fenInput = modal.getByRole("textbox", { name: "FEN" });
+    await fenInput.fill(fen);
+
+    await rejectWorkspaceWrites(page);
+    await modal.getByRole("button", { name: /^import$/i }).click();
+    await expect(page.getByText(/session storage is full/i)).toBeVisible();
+    await expect(modal).toBeVisible();
+    await expect(fenInput).toHaveValue(fen);
+    await expect(tabs).toHaveCount(1);
+    await expect(tabs.first()).toHaveText(/new tab/i);
+    await capture("workspace-tabs-import-refused");
+    await expect(page).toHaveScreenshot("workspace-tabs-import-refused.png", { fullPage: true });
+
+    // Dismiss the refusal before retrying so its auto-close timer cannot race the next snapshot.
+    await page.locator(".mantine-Notification-closeButton").click();
+    await expect(page.getByText(/session storage is full/i)).toBeHidden();
+    await restoreWorkspaceWrites(page);
+    await modal.getByRole("button", { name: /^import$/i }).click();
+    const board = page.getByRole("grid", { name: "Chessboard, White orientation", exact: true });
+    await expect(board).toBeVisible();
+    await expect(tabs).toHaveCount(1);
+    await expect(tabs.first()).toHaveText(/analysis board/i);
+    await expect(page.getByRole("gridcell", { name: "e4, White Pawn", exact: true })).toHaveCount(
+        1,
+    );
+    await expect(page.getByRole("gridcell", { name: "e2, empty", exact: true })).toHaveCount(1);
+    await capture("workspace-tabs-import-committed");
+    await expect(page).toHaveScreenshot("workspace-tabs-import-committed.png", { fullPage: true });
+
+    await preserveStorageForReload(page);
+    await expect(tabs).toHaveCount(1);
+    await expect(tabs.first()).toHaveText(/analysis board/i);
+    await expect(board).toBeVisible();
+    await expect(page.getByRole("gridcell", { name: "e4, White Pawn", exact: true })).toHaveCount(
+        1,
+    );
 });

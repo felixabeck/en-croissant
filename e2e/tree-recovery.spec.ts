@@ -1,9 +1,4 @@
-import { expect, test } from "./fixtures";
-
-async function preserveStorageForReload(page: import("@playwright/test").Page) {
-    await page.evaluate(() => sessionStorage.setItem("__E2E_PRESERVE_STORAGE_ONCE__", "1"));
-    await page.reload();
-}
+import { expect, preserveStorageForReload, test } from "./fixtures";
 
 test("tree-recovery: retains an unreadable play tab behind its recovery panel", async ({
     page,
