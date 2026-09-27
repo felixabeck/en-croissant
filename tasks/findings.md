@@ -376,6 +376,11 @@ En Croissant's own.
   * **Not verified:** the native WebKitGTK window at 320px / 200% (no automated driver for that layout; the Chromium container suite is the pixel proof).
 <!-- ledger-meta {"command":"annotate","effect_lines":14,"effect_sha256":"14f147050058ce6c779f93b88fdf45d4dae4ba8004f8464eafa15eca107aa946","input_sha256":"aa5b89528ce505d8f2997d219041801c6b297ee5148dfe60040f0bb157a2008f","kind":"mutation-receipt","operation":"1c4b146d59af193cd0197544dc04b5d0c465a3e210e14abd2f75eff4569138e1","options":{"section":null},"request_id_sha256":null,"results":["f-20260829-02"],"target":"f-20260829-02","v":1} -->
 
+* **Correction (2026-09-28, push review of the same run, review-correctness):**
+  * `d-20260927-26` quotes the page-wide call as `assertNothingClipped(..., { scrollable: "reachable" })`. The option was renamed before the push (`874c3372`), so the call is `{ mode: "reachable" }`, wrapped as `assertPageNotClipped(page)`. In plain JavaScript an unknown `scrollable` key would silently leave the helper in its default mode.
+  * The closing note's "35 synthetic self-test cases" is wrong. At the push (`d1e0` series, after the default-mode left-edge case) there are 33: 29 reachable-mode and 4 default-mode.
+<!-- ledger-meta {"command":"annotate","effect_lines":3,"effect_sha256":"d54e42b9dfb356d42d4a27d7d4d1710455aa2b88145b943f960e77172ce3f65f","input_sha256":"285271dd14d726b7aa7ceccfde2e8daba14fd5fa74a52aed9d32bb31e96d4100","kind":"mutation-receipt","operation":"09ccc10f6b5b49840bed6a84e5f184dd3e29f78cceb4eb5f4c871f8872cb4b40","options":{"section":null},"request_id_sha256":null,"results":["f-20260829-02"],"target":"f-20260829-02","v":1} -->
+
 ---
 
 ## 2026-08-29 — filed through the inbox spool
