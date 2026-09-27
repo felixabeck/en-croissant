@@ -40,7 +40,7 @@ import {
   enginesAtom,
   tabEngineSettingsFamily,
 } from "@/state/atoms";
-import { chessopsError, positionFromFen, swapMove } from "@/utils/chessops";
+import { positionFromFen, swapMove, translateChessopsError } from "@/utils/chessops";
 import type { Engine } from "@/utils/engines";
 import { formatNodes } from "@/utils/format";
 import { formatScore } from "@/utils/score";
@@ -258,7 +258,9 @@ function BestMovesComponent({
               <Table.Tr>
                 <Table.Td>
                   <Text ta="center" my="lg">
-                    {t("Board.Analysis.InvalidPosition", { error: t(chessopsError(error)) })}
+                    {t("Board.Analysis.InvalidPosition", {
+                      error: translateChessopsError(t, error),
+                    })}
                   </Text>
                 </Table.Td>
               </Table.Tr>

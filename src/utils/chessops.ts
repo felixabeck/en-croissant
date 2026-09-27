@@ -16,6 +16,7 @@ import {
 import { type FenError, InvalidFen, makeFen, parseFen } from "chessops/fen";
 import { parseSan } from "chessops/san";
 import { squareFromCoords } from "chessops/util";
+import type { TFunction } from "i18next";
 
 export function positionFromFen(fen: string): [Chess, null] | [null, FenError | PositionError] {
     const [setup, error] = parseFen(fen).unwrap(
@@ -91,15 +92,19 @@ const chessopsErrorKeys = {
     [InvalidFen.Turn]: "Errors.InvalidTurn",
 } as const satisfies Partial<Record<IllegalSetup | InvalidFen, `Errors.${string}`>>;
 
-/** Catalogue key for a chessops error; callers translate it with `t` at render time. */
-export type ChessopsErrorKey =
+type ChessopsErrorKey =
     | (typeof chessopsErrorKeys)[keyof typeof chessopsErrorKeys]
     | "Errors.Unknown";
 
-export function chessopsError(error: PositionError | FenError): ChessopsErrorKey {
+function chessopsErrorKey(error: PositionError | FenError): ChessopsErrorKey {
     return Object.hasOwn(chessopsErrorKeys, error.message)
         ? chessopsErrorKeys[error.message as keyof typeof chessopsErrorKeys]
         : "Errors.Unknown";
+}
+
+/** Translates a chessops error through the catalogue. */
+export function translateChessopsError(t: TFunction, error: PositionError | FenError): string {
+    return t(chessopsErrorKey(error));
 }
 
 export function forceEnPassant(dests: Map<SquareName, SquareName[]>, pos: Chess) {

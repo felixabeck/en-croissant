@@ -6,7 +6,7 @@ import { useTranslation } from "react-i18next";
 import useSWRImmutable from "swr/immutable";
 import { useStore } from "zustand";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
-import { chessopsError } from "@/utils/chessops";
+import { translateChessopsError } from "@/utils/chessops";
 
 export default function FenSearch({ currentFen: currentFenInput }: { currentFen?: string }) {
   const { t } = useTranslation();
@@ -90,7 +90,7 @@ export default function FenSearch({ currentFen: currentFenInput }: { currentFen?
     >
       <Combobox.Target>
         <InputBase
-          error={error && t(chessopsError(error))}
+          error={error && translateChessopsError(t, error)}
           rightSection={isLoading && <Loader size={18} />}
           value={search}
           onChange={(event) => {

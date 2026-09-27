@@ -10,7 +10,7 @@ import {
   Textarea,
   TextInput,
 } from "@mantine/core";
-import { makeFen, parseFen } from "chessops/fen";
+import { type FenError, makeFen, parseFen } from "chessops/fen";
 import { useStore } from "jotai";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -19,7 +19,7 @@ import { notifyUnlessCancelled, runUnlessCancelled } from "@/components/files/no
 import { addRecentFileAtom } from "@/state/atoms";
 import { parsePGN } from "@/utils/chess";
 import { getChesscomGame } from "@/utils/chess.com/api";
-import { type ChessopsErrorKey, chessopsError } from "@/utils/chessops";
+import { translateChessopsError } from "@/utils/chessops";
 import {
   createFile,
   ensureFileWorkspace,
@@ -69,7 +69,7 @@ export default function ImportModal({
   const [filetype, setFiletype] = useState<FileType>("game");
   const [inFlightCount, setInFlightCount] = useState(0);
   const loading = inFlightCount > 0;
-  const [fenError, setFenError] = useState<ChessopsErrorKey | null>(null);
+  const [fenError, setFenError] = useState<FenError | null>(null);
 
   const [save, setSave] = useState(false);
   const [filename, setFilename] = useState("");
@@ -217,7 +217,7 @@ export default function ImportModal({
       } else if (importType === "FEN") {
         const res = parseFen(fen.trim());
         if (res.isErr) {
-          setFenError(chessopsError(res.error));
+          setFenError(res.error);
           return;
         }
         setFenError(null);
@@ -331,7 +331,7 @@ export default function ImportModal({
       <TextInput
         value={fen}
         onChange={(event) => setFen(event.currentTarget.value)}
-        error={fenError && t(fenError)}
+        error={fenError && translateChessopsError(t, fenError)}
         label="FEN"
         data-autofocus
         onKeyDown={(e) => {

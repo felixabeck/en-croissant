@@ -44,10 +44,10 @@ import classes from "@/styles/Chessboard.module.css";
 import { ANNOTATION_INFO, isBasicAnnotation } from "@/utils/annotation";
 import { getVariationLine } from "@/utils/chess";
 import {
-  chessopsError,
   forceEnPassant,
   normalizeEditedFen,
   positionFromFen,
+  translateChessopsError,
 } from "@/utils/chessops";
 import ShowMaterial from "../common/ShowMaterial";
 import { TreeStateContext } from "../common/TreeStateContext";
@@ -689,7 +689,7 @@ function Board({
           >
             {error && (
               <Text ta="center" c="red">
-                {t(chessopsError(error))}
+                {translateChessopsError(t, error)}
               </Text>
             )}
 
