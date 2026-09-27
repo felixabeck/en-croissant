@@ -8214,7 +8214,7 @@ Handled 2026-09-19 together with f-20260905-14. The Files controls fit 320px / 2
 
 ### A credential directory replaced under a running app orphans the bearer token, and the identity comparison that would catch it has no API
 
-* **ID:** f-20260912-01 · **Status:** open · **Area:** oauth-credentials · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260912-01 · **Status:** handled · **Area:** oauth-credentials · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/credentials.rs` — `persist_locked` (`:575-585`), the add transaction
   (`:368-400`) and the re-authentication branch (`:346-362`); `src-tauri/src/infra/fs.rs`
   `entry_identity_at` (`:1257-1272`); `src-tauri/src/infra/path_authority/mod.rs` `AuthorizedDir`
