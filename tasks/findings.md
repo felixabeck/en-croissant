@@ -11670,3 +11670,46 @@ Rejected: a longer WebDriver timeout, and a full-FEN dedup key.
 * **Why it matters:** once `f-20260912-03` lands, these six sites are the only production pathname reaches outside `infra/` and the only reason the Path-method baseline is non-empty; the convention is measured, not yet true, until they are gone.
 * **Related:** `f-20260912-03` (the detection gap whose fix pins these sites in a shrink-only baseline; Root `-`, so named here), `f-20260912-07` (loader trusts a sidecar validated against an earlier probe), `f-20260905-04` (handled; sidecar provenance).
 * **Found by:** Claude Code, plan-only locate stage of `f-20260912-03`, 2026-09-27.
+
+---
+
+## 2026-09-28 — filed through the inbox spool
+
+### Responsive breakpoints ignore the app font scale, so compact layouts switch on at the wrong width
+
+* **ID:** f-20260927-08 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src/components/settings/SettingsPage.tsx:126` (`useMediaQuery("(max-width: 50rem)")`), `src/components/settings/SettingsPage.module.css:60` (`@media (max-width: 50rem)`), and the Mantine `SimpleGrid cols` breakpoints at `src/components/files/FilesPage.tsx:217`, `src/components/databases/DatabasesPage.tsx:185,254`, `src/components/engines/EnginesPage.tsx:133`, `src/components/tabs/NewTabHome.tsx:241`, `src/components/engines/AddEngine.tsx:90,115`, `src/components/databases/AddDatabase.tsx:156`.
+* **Defect:** `App.tsx:209` scales the root font (`document.documentElement.style.fontSize = fontSize%`), but `rem`/`em` inside a media query resolve against the initial 16px, never the scaled root. So every breakpoint means the same pixel width at every app font scale: at 200% a 1000px window is only 31 root-em wide, yet Settings stays in its two-column layout (threshold 800px) and the grids stay multi-column, into widths the scaled content cannot fit.
+* **Evidence:** root cause 2 of `f-20260829-02` (its 2026-08-31 investigation). That run's 320px matrix never exercises it, because at 320px every breakpoint is already in its narrowest state; the f-20260829-02 plan review (2026-09-27, issue I3, lenses review-plan and review-root-cause) ruled a scale-aware breakpoint outside that finding's mandate because it changes behaviour only at other widths.
+* **Fix:** make the compact/column switch follow the effective width in scaled root-em — e.g. derive the query from `fontSizeAtom` (Mantine `useMediaQuery` re-subscribes when its query string changes, measured in `node_modules/@mantine/hooks/esm/.../use-media-query.mjs`), CSS container queries, or content-driven wrapping (`flex-basis` in rem) — and drive the CSS side from the same source.
+* **Open question:** one mechanism for all sites (atom-derived pixel query vs. container queries vs. rem flex-basis wrapping), and whether Mantine's theme breakpoints should be rewritten globally or per site.
+* **Proof:** an e2e project at e.g. 1000px / 200% font scale whose Settings and a SimpleGrid page pass `assertNothingClipped(page.locator("body"), { scrollable: "reachable" })` and switch to their compact layout.
+* **Related:** f-20260829-02 (root cause 2).
+
+### At 320px / 200% the title-bar menu is reachable only by scrolling a 104px strip, with no visible affordance
+
+* **ID:** f-20260927-09 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src/components/TopBar.tsx:97-160`, `src/components/TopBar.module.css` (`.menuArea` scroll strip).
+* **Defect:** since `c36c3279` (f-20260829-02) the custom title bar stays one row at 320px with the 200% app font scale: the window controls shrink to 72px squares and File/View/Help sit in a horizontal scroll strip with a hidden scrollbar. Measured at 320px / 200% de-DE: the strip is 104px wide, the logo and its padding take 84px, so only the first ~20px of "Datei" is visible and "Ansicht"/"Hilfe" start at x 176 / 292, beyond it. The menus are reachable (Tab focus scrolls them into view, Shift+wheel scrolls), which satisfies `d-20260831-16`, but a mouse user sees no menu and no hint that one exists — and the menu is the custom bar's only route to Exit and About.
+* **Fix:** a narrow-width form of the menu that is visible without scrolling — e.g. collapse File/View/Help into one "☰" menu (nested submenus) when the strip cannot hold them, or drop the logo below a width. Keep 100% / wide layouts unchanged.
+* **Open question:** which trigger decides "narrow" (strip overflow measured with a ResizeObserver, a scale-aware width query as in the breakpoint finding, or always-collapsed under the compact width), and whether nested Mantine menus are acceptable for keyboard navigation.
+* **Proof:** at 320px / 200% (async-errors, de-DE) every top-level menu entry is visible without scrolling and opens by mouse and keyboard; the 1280px / 100% bar measures as before; the page-wide `assertNothingClipped` stays green.
+* **Related:** f-20260829-02 (root cause 3, the scroll-strip fix this refines).
+
+### No e2e journey renders the personal player card, so its narrow-width wrapping is unverified
+
+* **ID:** f-20260927-10 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src/components/home/PersonalCard.tsx:77` (player-name `Text`, `wrap-anywhere` since `0e9f3713`), rendered by `src/components/home/Databases.tsx:248` only after `tauri.getPlayersGameInfo` has streamed a player's statistics.
+* **Defect:** during the f-20260829-02 cumulative review, review-root-cause found that a long unbroken player name in the personal card could be cut by the card's `overflow: hidden` Paper at 320px / 200% — the same chain as the account names that fix closed — and `0e9f3713` gave the name the shared `wrap-anywhere` class. review-tests (repair re-check, blocker 99) then noted that no e2e test ever reaches `PersonalPlayerCard`: the Accounts journeys use sessions without a personal database, so reverting the wrap would leave every clipping assertion green.
+* **Fix:** an e2e journey in the 320px / 200% `async-errors` project (German) that mocks a session with a personal database and the `get_players_game_info` progress stream, renders the personal card with a long unbroken player name, asserts the name visible, and runs `assertNoHorizontalOverflow` plus `assertPageNotClipped`.
+* **Open question:** how to mock the streamed `getPlayersGameInfo` progress protocol in `e2e/fixtures.ts` (per-request progress id and events via `__E2E_TAURI__.emit`) without a second, diverging copy of the IPC mock.
+* **Proof:** the new journey passes, and removing `wrap-anywhere` from `PersonalCard.tsx:77` turns it red.
+* **Related:** f-20260829-02 (issue R1 / T4 in `tasks/handoffs/2026-09-27-f-20260829-02-review.md`).
+
+### Seven test files each carry their own inert ResizeObserver stub
+
+* **ID:** f-20260928-01 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src/components/databases/GamePreview.test.tsx:254`, `src/components/databases/FideInfo.test.tsx`, `src/components/files/FileCard.test.tsx:77`, `src/components/panels/database/DatabasePanel.test.tsx`, `src/components/panels/database/options/LocalOptionsPanel.test.tsx`, `src/components/panels/practice/RepertoireInfo.test.tsx`, `src/components/panels/info/InfoPanel.test.tsx:181`, `src/components/puzzles/Puzzles.test.tsx:97`.
+* **Defect:** each file defines its own `ResizeObserver` stand-in (`observe/unobserve/disconnect` no-ops, installed through `globalThis` or `Object.defineProperty`), the duplication rule 11 forbids. `f38fa6a5` (f-20260829-02) added the shared `installResizeObserverStub()` in `src/tests/resizeObserver.ts`, beside `installMatchMediaStub()`, for `ThemeButton.test.tsx`; the older copies were left because they sit in other areas.
+* **Fix:** route every inert copy through `installResizeObserverStub()`. Keep `GamePreview.test.tsx`'s reporting observer local (it records callbacks to drive sizes) unless the helper gains that as an option.
+* **Proof:** `grep -rn "class .*ResizeObserver" src --include=*.test.tsx` lists only the reporting observer, and `pnpm test` stays green.
