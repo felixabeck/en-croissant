@@ -4421,3 +4421,12 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Re-entry is reachable only if a previous `stop_current` future was dropped mid-drain; every production caller awaits it inside the actor, so the worst case is one extra bounded budget. Reversal path: carry an `Instant` in the state and compare by `request_id` only.
 * **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, drain plan-only run e436b468-2608-4d55-b3dc-7c04e10fde26, 2026-09-27 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":7,"effect_sha256":"c43ff78d5cfa5282de0934dfe166c8cc57667c7e224c3c4422330dafbc70010e","input_sha256":"b09b1bb8d92a08830e1530e390818db6f93c9b130d64a2c38a4ffab57f3f4d0c","kind":"mutation-receipt","operation":"449e425b4728bf8f16abe5cf0cdd74fb7c17e81a3367f20186d20cc31a3b8e3c","options":{"section":null},"request_id_sha256":null,"results":["d-20260927-17"],"target":"decisions-ledger","v":1} -->
+
+### d-20260927-18 — Is `collect_engine_configuration` brought under the write-inclusive exchange deadline?
+* **Question:** The configuration probe writes `uci` under `send`'s bound and then wall-clocks the whole drain caller-side; is its write moved inside that timeout in `f-20260911-03`?
+* **Governs:** f-20260911-03
+* **Chosen:** No; the probe is unchanged. Its drain already has one caller-side wall clock, so the per-line reset is absent there.
+* **Rejected:** Moving `start_uci_configuration()` inside the timeout (plan-r3 O-5), judged a behaviour change the mandate does not require by five lenses.
+* **Reason:** Not the mandate's defect; bounded by the sum of two budgets. Reversal path: wrap `start_uci_configuration()` in the existing timeout.
+* **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, drain plan-only run e436b468-2608-4d55-b3dc-7c04e10fde26, 2026-09-27 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":7,"effect_sha256":"6ea457c61705058f3f41df8f98af695ca6942a62782bceaed36eec366d420931","input_sha256":"b79bd1d4f9754ba459892109e202c7ab17aa59df52649e7ed1125244ab318779","kind":"mutation-receipt","operation":"9900457ed7b0de372955a4c8ed83b42b16979452e20ed0471faac34c027096b6","options":{"section":null},"request_id_sha256":null,"results":["d-20260927-18"],"target":"decisions-ledger","v":1} -->
