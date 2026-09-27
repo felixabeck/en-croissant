@@ -4439,3 +4439,12 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Measured 2026-09-27: `cargo metadata --locked --offline` on a copy of the manifest and lock exits 0 with `Cargo.lock` byte-identical and `tokio@1.50.0` gaining `test-util`. Reversal path: drop the dev-dependency line and rewrite the tests with real-time slack.
 * **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, drain plan-only run e436b468-2608-4d55-b3dc-7c04e10fde26, 2026-09-27 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":7,"effect_sha256":"b23da674d891e87eaba8c23aaf33e74700722ed2b106f776100a9b989a886702","input_sha256":"bc78afd372b766d8d660c51483aa00b1810459e380bbe4490ac1f21a11f71182","kind":"mutation-receipt","operation":"c4a897d2e2367d56721ae23de97b609c35773b08a4d55f95832ba3f50e82d5c5","options":{"section":null},"request_id_sha256":null,"results":["d-20260927-19"],"target":"decisions-ledger","v":1} -->
+
+### d-20260927-20 — Does `f-20260911-03` also make termination preempt an in-flight engine exchange?
+* **Question:** Should every exchange the actor loop services observe the actor's `interrupt` token so a queued `Terminate` preempts it?
+* **Governs:** f-20260911-03
+* **Chosen:** No; deferred to its own `build` finding (filed through the drain inbox 2026-09-27).
+* **Rejected:** Folding it in (plan-r8 O-6): beyond the mandate for stop, and it raises its own design questions (StartSearch vs EnsureReady failure paths, `terminate` reporting success over an unconfirmed reap, preemption test ordering).
+* **Reason:** The remaining readiness overrun (10 s + 5.2 s) exists at BASE for a silent engine, independent of the per-line reset. Reversal path: the deferred finding's own run.
+* **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, drain plan-only run e436b468-2608-4d55-b3dc-7c04e10fde26, 2026-09-27 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":7,"effect_sha256":"72086ae90227c40b7debf67360711745e4c18d5d37cc1e96b3337f2c7e273a8f","input_sha256":"37f6adb3c7d2e3502d6b2ac949eb37b09bc58cf499de6b28193ac3b00ff1c678","kind":"mutation-receipt","operation":"5efef2e321149fa9afa4f8968bfd7808387dca603a01862b6e38ff08a824755d","options":{"section":null},"request_id_sha256":null,"results":["d-20260927-20"],"target":"decisions-ledger","v":1} -->
