@@ -8171,6 +8171,9 @@ Handled 2026-09-19 together with f-20260905-14. The Files controls fit 320px / 2
 * **Rejected:** Pending-only selection misses G1; actor-only selection allows G2 to restart after unload; requiring the UI to name a generation cannot express its key-wide unload action. Decision `d-20260927-14` records the reversal path.
 <!-- ledger-meta {"command":"annotate","effect_lines":3,"effect_sha256":"45167f3c4296f0b791f0680a5a4e0b6a1e787593aaf0f572bd7d0798c62b3833","input_sha256":"1af9df3adc8c1ae31e2b9cef8559a7ee9d1009cca12b040db28bebe88c117138","kind":"mutation-receipt","operation":"f45b19e800ee9188f810eb9d4828edfaeae9542858d33c5a55de44e5ca7fad51","options":{"section":null},"request_id_sha256":null,"results":["f-20260911-02"],"target":"f-20260911-02","v":1} -->
 
+* **Open question resolved:** An unscoped Stop owns both the live actor and pending admission captured for the key; a supplied generation owns only that generation. Decision `d-20260927-14` and the closure above supersede the filed question without rewriting the original finding.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"e2a28444ce99faa72a5bec2355ef0ffea350bebc25e1eb9a31b146d519b3edab","input_sha256":"177295b34fd8441e94dcf920c9a24c1a7309f0bd2847e21567f1484b40a641bc","kind":"mutation-receipt","operation":"f27243dc21ebc4c1b3de11642dc289d7c97a9d7e405bffe592aaf221ba325ab6","options":{"section":null},"request_id_sha256":null,"results":["f-20260911-02"],"target":"f-20260911-02","v":1} -->
+
 ---
 
 ## 2026-09-11 — filed through the inbox spool
