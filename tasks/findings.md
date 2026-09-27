@@ -10469,7 +10469,7 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 
 ### `bundle:check` measures bytes and cannot prove that a package stays out of a route's static closure
 
-* **ID:** f-20260920-05 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** felix-tooling-nod
+* **ID:** f-20260920-05 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `scripts/check-bundle-budget.mjs:26-50` (`collectRecordAssets` walks manifest `imports`), `:63-90` (`buildBundleReport` sums gzip bytes per route closure), `bundle-budgets.json`.
 * **Defect:** `4d025de9` moved `mantine-flagpack` behind a dynamic edge, and the only durable guard on that placement is quantitative: returning the whole pack to the **board** route's static closure costs ~242,000 bytes and now fails the 550,000 cap. Nothing checks the edge itself. A smaller lazy route can statically import the pack and stay under the cap, and a single named flag statically imported anywhere is invisible to the gate. Three lenses raised this independently during the plan review (J1, K3) and it was accepted as a limitation rather than closed.
 * **Why it matters:** the property the change actually establishes — "this package is reached only through a dynamic edge" — is proven once, by hand, at implementation time and recorded in `4d025de9`'s commit message. From then on it is guarded only by an inequality that happens to hold. The same accident can recur in a shape the gate does not see.
