@@ -8180,7 +8180,7 @@ Handled 2026-09-19 together with f-20260905-14. The Files controls fit 320px / 2
 
 ### Stop deadline resets on every UCI info line
 
-* **ID:** f-20260911-03 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260911-03 · **Status:** handled · **Area:** engine-uci · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/engine/process.rs` `EngineRuntime::stop_current` — `timeout(self.deadlines.stop, self.read_line())` inside the bestmove-drain loop. Same per-line reset in `wait_for`.
 * **Defect:** an engine that keeps emitting `info` after `stop` never trips the 5s deadline, because each successful read restarts it. `stop_current` never poisons; `terminate_all` can then hit the shutdown budget and leave the child unreaped.
 * **Why it matters:** `.claude/rules/engine-lifecycle.md` — every spawn has a kill on every exit path. A Stop that cannot finish because the child talks forever is not a kill.
