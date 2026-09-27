@@ -7740,7 +7740,7 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 
 ### Cancelling game construction after engine initialization leaves registered actors without a live game owner
 
-* **ID:** f-20260908-02 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260908-02 · **Status:** handled · **Area:** engine-uci · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/game.rs:1060-1268`, `src-tauri/src/engine/process.rs:958-961`.
 * **Defect:** `spawn_registered` disarms its cancellation guard after protocol initialization. `start_game` then holds the returned actor through further awaits (second engine setup, old-session join, registration barrier), without an owner that terminates it if the construction future is cancelled. Dropping the controller does not call `terminate_exact`; the actor stays in EngineSupervisor and its process survives until global shutdown. This precedes the lifecycle-retention change in f-20260830-52.
 * **Design question:** define transfer of cancellation ownership from per-engine initialization to game construction and then to the published LiveSession/loop. Existing cloneable RegisteredGameEngine handles are not ownership guards; adding Drop there can kill a still-shared actor. Decide an explicit construction transaction/guard and its exact handoff, including both players, replacement, event publication, and cleanup failure reporting.
