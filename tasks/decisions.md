@@ -372,7 +372,7 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
   comments, strings, raw strings and char literals is required.
 * **Recorded now although the work is parked**, so the session that answers d-20260830-09 implements
   rather than re-derives it.
-* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** d-20260927-24
 
 ### d-20260830-13 — How do the two new gate scripts get regression anchors, and how are they wired?
 
