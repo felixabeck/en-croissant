@@ -239,24 +239,118 @@ pub trait UciIo: Send {
 }
 
 #[cfg(test)]
-struct RecordingUciIo {
+struct ReadObservation {
+    started: Option<Arc<AtomicBool>>,
+    attempts: Option<Arc<std::sync::atomic::AtomicUsize>>,
+}
+
+#[cfg(test)]
+struct FakeIo {
     writes: Arc<Mutex<Vec<String>>>,
-    lines: VecDeque<Option<String>>,
+    write_completions: Arc<Mutex<Vec<(String, Instant)>>>,
+    write_delays: Vec<(String, Duration)>,
+    lines: VecDeque<(Duration, Option<String>)>,
+    endless_line: Option<String>,
+    read_interval: Duration,
+    pending_when_empty: bool,
+    terminate_calls: Arc<std::sync::atomic::AtomicUsize>,
+    fail_write: bool,
+    fail_stop: bool,
+    read_delay: Option<Duration>,
+    read_observation: Option<ReadObservation>,
+    terminate_delay: Option<Duration>,
+    terminate_started: Option<Arc<AtomicBool>>,
+}
+
+#[cfg(test)]
+impl FakeIo {
+    fn new(
+        writes: Arc<Mutex<Vec<String>>>,
+        lines: impl IntoIterator<Item = Option<String>>,
+    ) -> Self {
+        Self {
+            writes,
+            write_completions: Arc::new(Mutex::new(Vec::new())),
+            write_delays: Vec::new(),
+            lines: lines
+                .into_iter()
+                .map(|line| (Duration::ZERO, line))
+                .collect(),
+            endless_line: None,
+            read_interval: Duration::ZERO,
+            pending_when_empty: false,
+            terminate_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            fail_write: false,
+            fail_stop: false,
+            read_delay: None,
+            read_observation: None,
+            terminate_delay: None,
+            terminate_started: None,
+        }
+    }
 }
 
 #[cfg(test)]
 #[async_trait]
-impl UciIo for RecordingUciIo {
+impl UciIo for FakeIo {
     async fn write_line(&mut self, line: &str) -> Result<(), Error> {
+        if self.fail_write || (self.fail_stop && line == "stop") {
+            return Err(
+                std::io::Error::new(std::io::ErrorKind::BrokenPipe, "fake stdin closed").into(),
+            );
+        }
+        if let Some(index) = self
+            .write_delays
+            .iter()
+            .position(|(command, _)| command == line)
+        {
+            let (_, delay) = self.write_delays.remove(index);
+            tokio::time::sleep(delay).await;
+        }
         self.writes.lock().await.push(line.into());
+        self.write_completions
+            .lock()
+            .await
+            .push((line.into(), Instant::now()));
         Ok(())
     }
 
     async fn read_line(&mut self) -> Result<Option<String>, Error> {
-        Ok(self.lines.pop_front().flatten())
+        if let Some(observation) = &self.read_observation {
+            if let Some(started) = &observation.started {
+                started.store(true, Ordering::SeqCst);
+            }
+            if let Some(attempts) = &observation.attempts {
+                attempts.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        if let Some(delay) = self.read_delay.take() {
+            tokio::time::sleep(delay).await;
+        }
+        if let Some((delay, line)) = self.lines.pop_front() {
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+            return Ok(line);
+        }
+        if let Some(line) = &self.endless_line {
+            tokio::time::sleep(self.read_interval).await;
+            return Ok(Some(line.clone()));
+        }
+        if self.pending_when_empty {
+            return std::future::pending::<Result<Option<String>, Error>>().await;
+        }
+        Ok(None)
     }
 
     async fn terminate(&mut self, _: Duration, _: Duration) -> Result<(), Error> {
+        if let Some(started) = &self.terminate_started {
+            started.store(true, Ordering::SeqCst);
+        }
+        if let Some(delay) = self.terminate_delay {
+            tokio::time::sleep(delay).await;
+        }
+        self.terminate_calls.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 }
@@ -2657,10 +2751,10 @@ impl EngineActor {
         deadlines: EngineDeadlines,
     ) -> (Arc<Self>, Arc<Mutex<Vec<String>>>) {
         let writes = Arc::new(Mutex::new(Vec::new()));
-        let io = RecordingUciIo {
-            writes: writes.clone(),
-            lines: lines.iter().map(|line| Some((*line).into())).collect(),
-        };
+        let io = FakeIo::new(
+            writes.clone(),
+            lines.iter().map(|line| Some((*line).into())),
+        );
         (
             Arc::new(Self::from_runtime_with_resources(
                 EngineRuntime::new(Box::new(io), deadlines),
@@ -3211,7 +3305,15 @@ async fn engine_actor_loop(
                 let _ = reply.send(runtime.set_position(&fen, &moves).await);
             }
             EngineCommand::EnsureReady(reply) => {
-                let _ = reply.send(runtime.ensure_ready().await);
+                let result = runtime.ensure_ready().await;
+                let result =
+                    recover_failed_protocol(&mut runtime, &registration_identity, result).await;
+                let failed = result.is_err();
+                let _ = reply.send(result);
+                if failed {
+                    terminated = true;
+                    break;
+                }
             }
             EngineCommand::StartSearch { mode, reply } => {
                 let started = runtime.start_search(&mode).await;
@@ -3286,9 +3388,9 @@ fn log_actor_cleanup_failure(registration_identity: &OnceLock<(EngineKey, u64)>,
     }
 }
 
-/// A failed UCI stop or `go` means stdout can no longer be correlated with a
-/// request. The only safe recovery is to reap the process and permanently close
-/// this actor, never to accept another `position`/`go` on the same stream.
+/// A failed protocol exchange means stdout can no longer be trusted as a
+/// boundary for another request. Reap the process before replying and
+/// permanently close this actor rather than reusing the stream.
 async fn recover_failed_protocol<T>(
     runtime: &mut EngineRuntime,
     registration_identity: &OnceLock<(EngineKey, u64)>,
@@ -3683,26 +3785,10 @@ mod tests {
         actor.terminate().await.unwrap();
     }
 
-    struct ReadObservation {
-        started: Option<Arc<AtomicBool>>,
-        attempts: Option<Arc<AtomicUsize>>,
-    }
-
-    struct FakeIo {
-        writes: Arc<Mutex<Vec<String>>>,
-        lines: VecDeque<Option<String>>,
-        terminate_calls: Arc<AtomicUsize>,
-        fail_write: bool,
-        fail_stop: bool,
-        read_delay: Option<Duration>,
-        read_observation: Option<ReadObservation>,
-        terminate_delay: Option<Duration>,
-        terminate_started: Option<Arc<AtomicBool>>,
-    }
     type RecordedWrites = Arc<Mutex<Vec<String>>>;
     type RecordedWriteCompletions = Arc<Mutex<Vec<(String, tokio::time::Instant)>>>;
-    type DeadlineTestIoParts = (
-        DeadlineTestIo,
+    type DeadlineFakeIoParts = (
+        FakeIo,
         RecordedWrites,
         RecordedWriteCompletions,
         Arc<AtomicUsize>,
@@ -3710,114 +3796,29 @@ mod tests {
     type FakeActor = (EngineActor, RecordedWrites);
     type FakeActorWithTermination = (FakeActor, Arc<AtomicUsize>);
 
-    #[async_trait]
-    impl UciIo for FakeIo {
-        async fn write_line(&mut self, line: &str) -> Result<(), Error> {
-            if self.fail_write || (self.fail_stop && line == "stop") {
-                return Err(io::Error::new(io::ErrorKind::BrokenPipe, "fake stdin closed").into());
-            }
-            self.writes.lock().await.push(line.into());
-            Ok(())
-        }
-        async fn read_line(&mut self) -> Result<Option<String>, Error> {
-            if let Some(observation) = &self.read_observation {
-                if let Some(started) = &observation.started {
-                    started.store(true, AtomicOrdering::SeqCst);
-                }
-                if let Some(attempts) = &observation.attempts {
-                    attempts.fetch_add(1, AtomicOrdering::SeqCst);
-                }
-            }
-            if let Some(delay) = self.read_delay.take() {
-                tokio::time::sleep(delay).await;
-            }
-            Ok(self.lines.pop_front().flatten())
-        }
-        async fn terminate(&mut self, _: Duration, _: Duration) -> Result<(), Error> {
-            if let Some(started) = &self.terminate_started {
-                started.store(true, AtomicOrdering::SeqCst);
-            }
-            if let Some(delay) = self.terminate_delay {
-                tokio::time::sleep(delay).await;
-            }
-            self.terminate_calls.fetch_add(1, AtomicOrdering::SeqCst);
-            Ok(())
-        }
-    }
-
-    struct DeadlineTestIo {
-        writes: Arc<Mutex<Vec<String>>>,
-        write_completions: Arc<Mutex<Vec<(String, tokio::time::Instant)>>>,
-        write_delays: Vec<(String, Duration)>,
-        responses: VecDeque<(Duration, Option<String>)>,
-        endless_line: Option<String>,
-        read_interval: Duration,
-        terminate_calls: Arc<AtomicUsize>,
-    }
-
-    #[async_trait]
-    impl UciIo for DeadlineTestIo {
-        async fn write_line(&mut self, line: &str) -> Result<(), Error> {
-            if let Some(index) = self
-                .write_delays
-                .iter()
-                .position(|(command, _)| command == line)
-            {
-                let (_, delay) = self.write_delays.remove(index);
-                tokio::time::sleep(delay).await;
-            }
-            self.writes.lock().await.push(line.into());
-            self.write_completions
-                .lock()
-                .await
-                .push((line.into(), tokio::time::Instant::now()));
-            Ok(())
-        }
-
-        async fn read_line(&mut self) -> Result<Option<String>, Error> {
-            if let Some((delay, line)) = self.responses.pop_front() {
-                if !delay.is_zero() {
-                    tokio::time::sleep(delay).await;
-                }
-                return Ok(line);
-            }
-            if let Some(line) = &self.endless_line {
-                tokio::time::sleep(self.read_interval).await;
-                return Ok(Some(line.clone()));
-            }
-            std::future::pending::<Result<Option<String>, Error>>().await
-        }
-
-        async fn terminate(&mut self, _: Duration, _: Duration) -> Result<(), Error> {
-            self.terminate_calls.fetch_add(1, AtomicOrdering::SeqCst);
-            Ok(())
-        }
-    }
-
     fn deadline_test_io(
         write_delays: &[(&str, Duration)],
         responses: &[(Duration, Option<&str>)],
         endless_line: Option<&str>,
         read_interval: Duration,
-    ) -> DeadlineTestIoParts {
+    ) -> DeadlineFakeIoParts {
         let writes = Arc::new(Mutex::new(Vec::new()));
         let write_completions = Arc::new(Mutex::new(Vec::new()));
         let terminate_calls = Arc::new(AtomicUsize::new(0));
-        let io = DeadlineTestIo {
-            writes: writes.clone(),
-            write_completions: write_completions.clone(),
-            write_delays: write_delays
-                .iter()
-                .map(|(command, delay)| ((*command).into(), *delay))
-                .collect(),
-            responses: responses
-                .iter()
-                .map(|(delay, line)| (*delay, line.map(str::to_owned)))
-                .collect(),
-            endless_line: endless_line.map(str::to_owned),
-            read_interval,
-            terminate_calls: terminate_calls.clone(),
-        };
+        let mut io = FakeIo::new(writes.clone(), std::iter::empty());
+        io.write_completions = write_completions.clone();
+        io.write_delays = write_delays
+            .iter()
+            .map(|(command, delay)| ((*command).into(), *delay))
+            .collect();
+        io.lines = responses
+            .iter()
+            .map(|(delay, line)| (*delay, line.map(str::to_owned)))
+            .collect();
+        io.endless_line = endless_line.map(str::to_owned);
+        io.read_interval = read_interval;
+        io.pending_when_empty = true;
+        io.terminate_calls = terminate_calls.clone();
         (io, writes, write_completions, terminate_calls)
     }
 
@@ -4060,17 +4061,16 @@ mod tests {
     ) -> FakeActorWithTermination {
         let writes = Arc::new(Mutex::new(Vec::new()));
         let terminate_calls = Arc::new(AtomicUsize::new(0));
-        let io = FakeIo {
-            writes: writes.clone(),
-            lines: lines.iter().map(|line| Some((*line).into())).collect(),
-            terminate_calls: terminate_calls.clone(),
-            fail_write,
-            fail_stop,
-            read_delay,
-            read_observation,
-            terminate_delay,
-            terminate_started: None,
-        };
+        let mut io = FakeIo::new(
+            writes.clone(),
+            lines.iter().map(|line| Some((*line).into())),
+        );
+        io.terminate_calls = terminate_calls.clone();
+        io.fail_write = fail_write;
+        io.fail_stop = fail_stop;
+        io.read_delay = read_delay;
+        io.read_observation = read_observation;
+        io.terminate_delay = terminate_delay;
         (
             (EngineActor::new(Box::new(io), deadlines), writes),
             terminate_calls,
@@ -4150,17 +4150,10 @@ mod tests {
     ) -> FakeActorWithTermination {
         let writes = Arc::new(Mutex::new(Vec::new()));
         let terminate_calls = Arc::new(AtomicUsize::new(0));
-        let io = FakeIo {
-            writes: writes.clone(),
-            lines: VecDeque::new(),
-            terminate_calls: terminate_calls.clone(),
-            fail_write: false,
-            fail_stop: false,
-            read_delay: None,
-            read_observation: None,
-            terminate_delay: Some(delay),
-            terminate_started: Some(terminate_started),
-        };
+        let mut io = FakeIo::new(writes.clone(), std::iter::empty());
+        io.terminate_calls = terminate_calls.clone();
+        io.terminate_delay = Some(delay);
+        io.terminate_started = Some(terminate_started);
         (
             (
                 EngineActor::new(Box::new(io), EngineDeadlines::default()),
@@ -5958,10 +5951,7 @@ mod tests {
         assert!(logs.entries.is_empty());
 
         let writes = Arc::new(Mutex::new(Vec::new()));
-        let io = RecordingUciIo {
-            writes: writes.clone(),
-            lines: VecDeque::new(),
-        };
+        let io = FakeIo::new(writes.clone(), std::iter::empty());
         let mut runtime = EngineRuntime::new(Box::new(io), EngineDeadlines::default());
         for index in 0..MAX_RESOURCE_REDACTIONS {
             let value = format!("/resource/{index}");
@@ -7736,6 +7726,46 @@ mod tests {
         ));
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn chatty_ensure_ready_timeout_reaps_actor_and_rejects_search() {
+        let budget = Duration::from_millis(100);
+        let read_interval = Duration::from_millis(10);
+        let (io, writes, write_completions, terminate_calls) =
+            deadline_test_io(&[], &[], Some("info depth 1 score cp 0"), read_interval);
+        let actor = EngineActor::new(
+            Box::new(io),
+            EngineDeadlines {
+                readyok: budget,
+                ..EngineDeadlines::default()
+            },
+        );
+
+        let result = tokio::time::timeout(budget * 3, actor.ensure_ready())
+            .await
+            .expect("chatty actor readiness must be bounded");
+        let isready_completed_at = write_completion_at(&write_completions, "isready");
+        let elapsed = tokio::time::Instant::now() - isready_completed_at;
+
+        assert!(matches!(
+            result,
+            Err(Error::EngineTimeout(message)) if message == "waiting for readyok"
+        ));
+        assert!(
+            elapsed >= budget - read_interval,
+            "readyok timeout fired early after {elapsed:?}"
+        );
+        assert!(
+            elapsed <= budget,
+            "readyok timeout exceeded its deadline after {elapsed:?}"
+        );
+        assert_eq!(*writes.lock().await, vec!["isready"]);
+        assert!(terminate_calls.load(AtomicOrdering::SeqCst) >= 1);
+        assert!(matches!(
+            actor.start_search(&GoMode::Depth(1)).await,
+            Err(Error::EngineDisconnected)
+        ));
+    }
+
     #[tokio::test]
     async fn broken_stdin_does_not_enter_or_leave_a_search_state() {
         let ((actor, _), _) = actor_with(&[], true, None);
@@ -7823,17 +7853,8 @@ mod tests {
         let oversized = "x".repeat(MAX_ENGINE_LINE_BYTES + 1);
         let writes = Arc::new(Mutex::new(Vec::new()));
         let terminate_calls = Arc::new(AtomicUsize::new(0));
-        let io = FakeIo {
-            writes,
-            lines: VecDeque::from([Some(oversized)]),
-            terminate_calls,
-            fail_write: false,
-            fail_stop: false,
-            read_delay: None,
-            read_observation: None,
-            terminate_delay: None,
-            terminate_started: None,
-        };
+        let mut io = FakeIo::new(writes, [Some(oversized)]);
+        io.terminate_calls = terminate_calls;
         let actor = EngineActor::new(Box::new(io), EngineDeadlines::default());
         let id = actor.start_search(&GoMode::Depth(1)).await.unwrap();
         assert!(matches!(
@@ -8004,17 +8025,10 @@ mod tests {
     }
 
     fn fake_io() -> FakeIo {
-        FakeIo {
-            writes: Arc::new(Mutex::new(Vec::new())),
-            lines: VecDeque::new(),
-            terminate_calls: Arc::new(AtomicUsize::new(0)),
-            fail_write: false,
-            fail_stop: false,
-            read_delay: None,
-            read_observation: None,
-            terminate_delay: None,
-            terminate_started: None,
-        }
+        FakeIo::new(
+            Arc::new(Mutex::new(Vec::new())),
+            std::iter::empty::<Option<String>>(),
+        )
     }
 
     fn pending_stderr_drain(finished: Arc<AtomicBool>) -> tokio::task::JoinHandle<()> {
@@ -8043,7 +8057,8 @@ mod tests {
     #[tokio::test]
     async fn stop_current_keeps_the_stderr_drain_alive() {
         let mut io = fake_io();
-        io.lines.push_back(Some("bestmove e2e4".into()));
+        io.lines
+            .push_back((Duration::ZERO, Some("bestmove e2e4".into())));
         let mut runtime = EngineRuntime::new(Box::new(io), EngineDeadlines::default());
         let finished = Arc::new(AtomicBool::new(false));
         let (started_tx, started_rx) = oneshot::channel();
