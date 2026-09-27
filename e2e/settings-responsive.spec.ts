@@ -1,5 +1,5 @@
 import { test as plain } from "@playwright/test";
-import { assertNothingClipped, expect, test } from "./fixtures";
+import { assertNothingClipped, assertPageNotClipped, expect, test } from "./fixtures";
 
 test("settings-responsive: preserves keyboard focus at narrow 200% font scale", async ({
     page,
@@ -10,12 +10,17 @@ test("settings-responsive: preserves keyboard focus at narrow 200% font scale", 
     await page.goto("/settings");
 
     await expect(page.getByRole("heading", { name: /settings/i })).toBeVisible();
+    // The Board tab is open first, so it has to be there to be measured.
+    await expect(page.getByRole("tabpanel", { name: /board/i })).toBeVisible();
+    await assertNoHorizontalOverflow();
+    await assertPageNotClipped(page);
     const appearance = page.getByRole("tab", { name: /appearance/i });
     await appearance.focus();
     await page.keyboard.press("Enter");
     await expect(appearance).toHaveAttribute("aria-selected", "true");
     await expect(page.getByRole("slider", { name: /font size/i })).toBeVisible();
     await assertNoHorizontalOverflow();
+    await assertPageNotClipped(page);
     await assertAccessible();
     await capture("settings-responsive");
     await expect(page).toHaveScreenshot("settings-responsive.png", { fullPage: true });

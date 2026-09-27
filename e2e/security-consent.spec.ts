@@ -1,4 +1,4 @@
-import { expect, test } from "./fixtures";
+import { assertPageNotClipped, expect, test } from "./fixtures";
 
 test("security-consent: keeps telemetry opt-in and storage free of credential fields", async ({
     page,
@@ -30,6 +30,7 @@ test("security-consent: keeps telemetry opt-in and storage free of credential fi
     await expect(telemetry).toBeChecked();
     await expect.poll(() => telemetryRequests).toBeGreaterThan(0);
     await assertNoHorizontalOverflow();
+    await assertPageNotClipped(page);
     await assertAccessible();
     await capture("security-consent");
     await expect(page).toHaveScreenshot("security-consent.png", { fullPage: true });

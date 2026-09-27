@@ -7,6 +7,7 @@ import {
     pgnFileCommands,
     assertFilesColumnsNotClipped,
     assertNothingClipped,
+    assertPageNotClipped,
     selectFilesTreeRow,
     test,
     type MockScenario,
@@ -127,6 +128,7 @@ test("async-errors: localizes directory-trash failures in the confirmation dialo
     await expect(page.locator("body")).not.toContainText("private native diagnostic");
     await expect(page.locator("body")).not.toContainText("/private/file.pgn");
     await assertNoHorizontalOverflow();
+    await assertPageNotClipped(page);
     await assertAccessible();
     await dialog.getByRole("button", { name: "Löschen", exact: true }).scrollIntoViewIfNeeded();
     await expect(page).toHaveScreenshot("confirmation-error.png", { fullPage: true });
@@ -146,6 +148,7 @@ test("async-errors: fits a selected PGN file and its card at 320px", async ({
     const fileRow = await selectFilesTreeRow(page, pgnFile.name);
     // Nothing before this line depends on the card, so an overflowing page fails here.
     await assertNoHorizontalOverflow();
+    await assertPageNotClipped(page);
     await assertNothingClipped(fileRow);
 
     // By text: each tree row also carries an icon-only "Verschieben" button.
@@ -181,6 +184,7 @@ async function assertPurgeWarning(
     dialog: Locator,
     diagnostic: string,
     assertAccessible: () => Promise<void>,
+    assertNoHorizontalOverflow: () => Promise<void>,
 ) {
     const warning =
         "Ein Teil des Vorgangs wurde abgeschlossen. Die Anzeige entspricht möglicherweise nicht mehr dem aktuellen Stand.";
@@ -234,6 +238,8 @@ async function assertPurgeWarning(
     ).toHaveCount(1);
     await expect(dialog.getByRole("button", { name: "Löschen", exact: true })).toBeEnabled();
     await assertDialogWithinViewport(dialog);
+    await assertNoHorizontalOverflow();
+    await assertPageNotClipped(page);
     await assertAccessible();
 }
 
@@ -241,9 +247,16 @@ test("async-errors: keeps the partial-removal warning after permanent delete", a
     page,
     mockScenario,
     assertAccessible,
+    assertNoHorizontalOverflow,
 }) => {
     const dialog = await submitPurgeAndOpenFailureDialog(page, mockScenario, partialRemovalPayload);
-    await assertPurgeWarning(page, dialog, "typed native diagnostic", assertAccessible);
+    await assertPurgeWarning(
+        page,
+        dialog,
+        "typed native diagnostic",
+        assertAccessible,
+        assertNoHorizontalOverflow,
+    );
     await assertPurgeInvocationAndRefresh(page);
     await expect(page).toHaveScreenshot("purge-partial-removal.png", { fullPage: true });
 });
@@ -252,13 +265,20 @@ test("async-errors: keeps the durability warning after permanent delete", async 
     page,
     mockScenario,
     assertAccessible,
+    assertNoHorizontalOverflow,
 }) => {
     const dialog = await submitPurgeAndOpenFailureDialog(
         page,
         mockScenario,
         durabilityUncertainPayload,
     );
-    await assertPurgeWarning(page, dialog, "typed durability diagnostic", assertAccessible);
+    await assertPurgeWarning(
+        page,
+        dialog,
+        "typed durability diagnostic",
+        assertAccessible,
+        assertNoHorizontalOverflow,
+    );
     await assertPurgeInvocationAndRefresh(page);
     await expect(page).toHaveScreenshot("purge-durability-uncertain.png", { fullPage: true });
 });
@@ -280,15 +300,26 @@ test("async-errors: verifies German navigation and a delayed native rejection at
     const accountDialog = page.getByRole("dialog", { name: "Hinzufügen" });
     await expect(accountDialog.getByLabel("Benutzername")).toBeVisible();
     await accountDialog.getByRole("button", { name: /Dialog schließen/i }).click();
+    // The empty state's heading has to be there before "nothing clipped" means anything.
+    await expect(page.getByRole("heading", { name: "Keine Konten verbunden" })).toBeVisible();
+    await assertNoHorizontalOverflow();
+    await assertPageNotClipped(page);
 
     await page.goto("/settings");
     await expect(page.getByRole("heading", { name: "Einstellungen" })).toBeVisible();
+    await expect(page.getByRole("tabpanel", { name: "Brett" })).toBeVisible();
+    await assertNoHorizontalOverflow();
+    await assertPageNotClipped(page);
     await page.getByRole("link", { name: "Datenbanken" }).click();
 
     await expect(page.getByRole("alert")).toContainText(
         /database workspace unavailable|Datenbanken konnten nicht geladen werden/i,
     );
+    // Visible, not only present: the list holding it used to be squeezed to 0px.
+    await expect(page.getByRole("alert")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Deine Datenbanken" })).toBeVisible();
     await assertNoHorizontalOverflow();
+    await assertPageNotClipped(page);
     await assertAccessible();
     await capture("async-errors");
     await expect(page).toHaveScreenshot("async-errors.png", { fullPage: true });
@@ -356,6 +387,7 @@ test("async-errors: degrades to a usable account page when the database workspac
     await expect(page.locator("body")).not.toContainText("database workspace unavailable");
 
     await assertNoHorizontalOverflow();
+    await assertPageNotClipped(page);
     await assertAccessible();
     await capture("async-errors-personal-database");
     await expect(page).toHaveScreenshot("async-errors-personal-database.png", { fullPage: true });

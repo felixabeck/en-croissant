@@ -216,6 +216,12 @@ export async function assertNothingClipped(
     expect(offenders, `content clipped: ${offenders.join("; ")}`).toEqual([]);
 }
 
+// The whole rendered page under the reachable rule — the 320px / 200% layout contract
+// (d-20260831-16), beside the document-width check that it does not replace.
+export async function assertPageNotClipped(page: Page) {
+    await assertNothingClipped(page.locator("body"), { scrollable: "reachable" });
+}
+
 // Both Files columns with everything in them: the controls and tree, the action row and the card.
 export async function assertFilesColumnsNotClipped(page: Page) {
     for (const column of await page.locator(".mantine-SimpleGrid-root > *").all()) {
