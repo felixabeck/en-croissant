@@ -267,6 +267,36 @@ pub enum Error {
 }
 
 impl Error {
+    /// Returns the local diagnostic without changing the message exposed on the wire.
+    pub(crate) fn diagnostic(&self) -> String {
+        if let Self::OperationAndCleanup { primary, cleanup } = self {
+            return format!("primary={primary}; cleanup={cleanup}");
+        }
+
+        let mut diagnostic = self.to_string();
+        let mut source = std::error::Error::source(self);
+        while let Some(cause) = source {
+            let cause_text = cause.to_string();
+            if !diagnostic.ends_with(&cause_text) {
+                diagnostic.push_str(": ");
+                diagnostic.push_str(&cause_text);
+            }
+            source = cause.source();
+        }
+        diagnostic
+    }
+
+    /// Preserves the operation error and appends a cleanup failure when one exists.
+    pub(crate) fn with_cleanup(primary: Error, cleanup: Result<(), Error>) -> Error {
+        match cleanup {
+            Ok(()) => primary,
+            Err(cleanup) => Self::OperationAndCleanup {
+                primary: primary.diagnostic(),
+                cleanup: cleanup.diagnostic(),
+            },
+        }
+    }
+
     pub fn category(&self) -> ErrorCategory {
         match self {
             Self::Io(error) => match error.kind() {
@@ -455,7 +485,7 @@ impl serde::Serialize for Error {
     where
         S: serde::ser::Serializer,
     {
-        // No logging: debug builds send Info-and-above records to the webview.
+        // Backend log records do not reach the renderer; the payload stays on the fixed Display.
         ErrorPayload {
             tag: ErrorPayloadTag::BackendError,
             category: self.category(),
@@ -701,6 +731,43 @@ mod tests {
             payload["message"],
             "Operation failed; temporary cleanup also failed"
         );
+    }
+
+    #[test]
+    fn diagnostic_with_cleanup_preserves_both_io_causes() {
+        const PRIMARY: &str = "diagnostic-primary-io-cause";
+        const CLEANUP: &str = "diagnostic-cleanup-io-cause";
+        let primary = Error::from(std::io::Error::other(PRIMARY));
+        let cleanup = Error::from(std::io::Error::other(CLEANUP));
+        let primary_diagnostic = primary.diagnostic();
+        let cleanup_diagnostic = cleanup.diagnostic();
+
+        let error = Error::with_cleanup(primary, Err(cleanup));
+        match &error {
+            Error::OperationAndCleanup { primary, cleanup } => {
+                assert_eq!(primary, &primary_diagnostic);
+                assert_eq!(cleanup, &cleanup_diagnostic);
+                assert!(primary.contains(PRIMARY));
+                assert!(cleanup.contains(CLEANUP));
+            }
+            other => panic!("expected combined cleanup error, got {other:?}"),
+        }
+        assert_eq!(
+            error.diagnostic(),
+            format!("primary={primary_diagnostic}; cleanup={cleanup_diagnostic}")
+        );
+
+        let unchanged = Error::with_cleanup(Error::Cancellation, Ok(()));
+        assert!(matches!(unchanged, Error::Cancellation));
+    }
+
+    #[test]
+    fn diagnostic_transparent_parse_text_appears_once() {
+        let error: Error = "not-an-integer".parse::<u64>().unwrap_err().into();
+        let display = error.to_string();
+
+        assert_eq!(error.diagnostic(), display);
+        assert_eq!(error.diagnostic().matches(&display).count(), 1);
     }
 
     #[cfg(unix)]
