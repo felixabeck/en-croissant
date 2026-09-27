@@ -46,30 +46,169 @@ const stampedPgnGame = {
     present: true,
 };
 
-/** Native answers for selecting `pgnFile`: the card and its game list read and lex the one game. */
-// The document-width assertion cannot see overflow that the Files page's own scroll container, or a
-// control with `overflow: hidden`, absorbs — a page that scrolled or cut its overflow away would
-// pass it. So neither an ancestor of the target nor anything inside it may be narrower than its
-// content.
-export async function assertNothingClipped(target: Locator) {
-    const offenders = await target.evaluate((element) => {
-        const describe = (node: Element) =>
-            `${node.tagName.toLowerCase()}.${node.className}: ${node.scrollWidth}px > ${node.clientWidth}px`;
-        // An ellipsis is a deliberate, visible truncation (a game name in the list), not hidden overflow.
-        const clipped = (node: Element) =>
-            node.scrollWidth > node.clientWidth + 1 &&
-            getComputedStyle(node).textOverflow !== "ellipsis";
+// The document-width assertion cannot see content that a container absorbs or cuts away, nor
+// anything pushed off the left edge — overflow to the left never adds to `scrollWidth` — so a page
+// that clipped its content would pass it. This walks every box instead.
+//
+// `scrollable: "clipped"` (the default) is horizontal only and counts every box narrower than its
+// content, scroll containers included: the Files columns must fit without their own scroll
+// container absorbing content. `scrollable: "reachable"` is the whole-page rule of
+// `d-20260831-16`, on both axes, where only lost content of a visible box counts:
+// * a box that clips (`overflow: hidden|clip`) while a descendant box or text passes its edge;
+// * a spill onto the page itself: sideways past the viewport, or downwards out of a fixed box, which
+//   does not move while the page scrolls. A spill into a container is judged there — a scrolling
+//   container keeps it reachable, a clipping one reports itself;
+// * a fixed or positioned box past the viewport where nothing scrolls to it.
+// Both modes count a box that starts before the content of the container holding it, or before the
+// document's origin, because scrolling only ever reaches right and down.
+export async function assertNothingClipped(
+    target: Locator,
+    { scrollable = "clipped" }: { scrollable?: "clipped" | "reachable" } = {},
+) {
+    const offenders = await target.evaluate((element, reachableMode) => {
+        const axes = [
+            {
+                name: "x",
+                scroll: "scrollWidth",
+                client: "clientWidth",
+                overflow: "overflowX",
+                start: "left",
+                end: "right",
+                clientStart: "clientLeft",
+                scrolled: "scrollLeft",
+                page: "scrollX",
+                viewport: "innerWidth",
+            },
+            {
+                name: "y",
+                scroll: "scrollHeight",
+                client: "clientHeight",
+                overflow: "overflowY",
+                start: "top",
+                end: "bottom",
+                clientStart: "clientTop",
+                scrolled: "scrollTop",
+                page: "scrollY",
+                viewport: "innerHeight",
+            },
+        ] as const;
+        type Axis = (typeof axes)[number];
+        const overflowOf = (node: Element, axis: Axis) => getComputedStyle(node)[axis.overflow];
+        const scrolls = (overflow: string) => overflow === "auto" || overflow === "scroll";
+        // Where a node's overflow ends up: its nearest ancestor that does not let it spill further,
+        // or null for the page itself.
+        const container = (node: Element, axis: Axis) => {
+            for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+                if (parent === document.body || parent === document.documentElement) return null;
+                if (overflowOf(parent, axis) !== "visible") return parent;
+            }
+            return null;
+        };
+        // A box nobody can see has no visible content to lose: Mantine keeps a finished Button
+        // loader mounted at opacity 0, parked above the button, for its exit transition.
+        const invisible = (node: Element) => {
+            if (getComputedStyle(node).visibility === "hidden") return true;
+            for (let box: Element | null = node; box; box = box.parentElement) {
+                if (getComputedStyle(box).opacity === "0") return true;
+            }
+            return false;
+        };
+        const insideFixed = (node: Element) => {
+            for (let box: Element | null = node; box; box = box.parentElement) {
+                if (getComputedStyle(box).position === "fixed") return true;
+            }
+            return false;
+        };
+        // A box larger than its content on this axis, other than a deliberate, visible truncation:
+        // an ellipsis (a game name in the list) truncates inline text, never a vertical cut.
+        const overflowing = (node: Element, axis: Axis) =>
+            node[axis.scroll] > node[axis.client] + 1 &&
+            !(axis.name === "x" && getComputedStyle(node).textOverflow === "ellipsis");
+        // `scrollWidth` also counts empty margin and padding (a Mantine Switch track label's 50px
+        // margin), so a reported overflow only counts when visible text or a leaf box (an icon, the
+        // switch thumb) really passes the edge. An input's value is not in the DOM, so its scroll size is all there is.
+        const contentPasses = (node: Element, axis: Axis, edge: number) => {
+            if (node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement)
+                return true;
+            const walker = document.createTreeWalker(
+                node,
+                NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT,
+            );
+            for (let child = walker.nextNode(); child; child = walker.nextNode()) {
+                const owner = child instanceof Element ? child : child.parentElement;
+                if (owner && invisible(owner)) continue;
+                // What paints is text and leaf boxes; a parent's padding is not content.
+                if (child instanceof Element && child.childNodes.length > 0) continue;
+                const range = document.createRange();
+                range.selectNode(child);
+                const box =
+                    child instanceof Element
+                        ? child.getBoundingClientRect()
+                        : range.getBoundingClientRect();
+                if (box.width > 0 && box.height > 0 && box[axis.end] > edge + 1) return true;
+            }
+            return false;
+        };
+        const contentLost = (node: Element, axis: Axis) => {
+            if (!reachableMode) return axis.name === "x";
+            const overflow = overflowOf(node, axis);
+            if (scrolls(overflow)) return false;
+            const ownEdge =
+                node.getBoundingClientRect()[axis.start] +
+                node[axis.clientStart] +
+                node[axis.client];
+            if (overflow !== "visible") return contentPasses(node, axis, ownEdge);
+            // A visible spill into a container is judged by that container.
+            if (container(node, axis)) return false;
+            // Onto the page: sideways it is lost only past the viewport, since the page never scrolls
+            // sideways; downwards it is lost out of a fixed box, which does not move while the page
+            // scrolls and whose spill other fixed chrome paints over (the navbar over the title bar).
+            if (axis.name === "x") return contentPasses(node, axis, window.innerWidth);
+            return insideFixed(node) && contentPasses(node, axis, ownEdge);
+        };
+        const boxLost = (node: Element, box: DOMRect, axis: Axis) => {
+            const bound = container(node, axis);
+            const fixed = insideFixed(node);
+            // Scrolling reaches only right and down, so anything before the content origin is lost.
+            const origin = bound
+                ? bound.getBoundingClientRect()[axis.start] +
+                  bound[axis.clientStart] -
+                  bound[axis.scrolled]
+                : fixed
+                  ? 0
+                  : -window[axis.page];
+            if (box[axis.start] < origin - 1)
+                return `starts at ${Math.round(box[axis.start])}, before ${Math.round(origin)}`;
+            // Past the far edge: a container's own scroll size covers what it holds; the page scrolls
+            // down but never sideways, and a fixed box never moves.
+            if (!reachableMode || bound || (axis.name === "y" && !fixed)) return null;
+            return box[axis.end] > window[axis.viewport] + 1
+                ? `ends at ${Math.round(box[axis.end])}, past the viewport`
+                : null;
+        };
+        const describe = (node: Element, why: string) =>
+            `${node.tagName.toLowerCase()}.${String(node.className)}: ${why}`;
         const found: string[] = [];
-        for (let node = element.parentElement; node; node = node.parentElement) {
-            if (clipped(node)) found.push(describe(node));
-        }
-        for (const node of [element, ...element.querySelectorAll("*")]) {
-            // An element without a layout box (an svg child, a hidden input) reports 0 for both.
-            if (node.clientWidth > 0 && clipped(node)) found.push(describe(node));
-        }
+        const check = (node: Element, placed: boolean) => {
+            if (reachableMode && invisible(node)) return;
+            const box = node.getBoundingClientRect();
+            const laidOut = box.width > 1 && box.height > 1;
+            // The Files columns keep their horizontal-only check; the page-wide rule adds y.
+            for (const axis of reachableMode ? axes : axes.slice(0, 1)) {
+                // An element without a layout box (an svg child, a hidden input) reports 0 for both.
+                if (node.clientWidth > 0 && overflowing(node, axis) && contentLost(node, axis)) {
+                    const size = `${node[axis.scroll]}px > ${node[axis.client]}px`;
+                    found.push(describe(node, `${axis.name} ${size}`));
+                }
+                const lost = placed && laidOut ? boxLost(node, box, axis) : null;
+                if (lost) found.push(describe(node, `${axis.name} ${lost}`));
+            }
+        };
+        for (let node = element.parentElement; node; node = node.parentElement) check(node, false);
+        for (const node of [element, ...element.querySelectorAll("*")]) check(node, true);
         return found;
-    });
-    expect(offenders, `content wider than its container: ${offenders.join("; ")}`).toEqual([]);
+    }, scrollable === "reachable");
+    expect(offenders, `content clipped: ${offenders.join("; ")}`).toEqual([]);
 }
 
 // Both Files columns with everything in them: the controls and tree, the action row and the card.
@@ -94,6 +233,7 @@ export async function selectFilesTreeRow(page: Page, name: string): Promise<Loca
     return row;
 }
 
+/** Native answers for selecting `pgnFile`: the card and its game list read and lex the one game. */
 export const pgnFileCommands: NonNullable<MockScenario["commands"]> = {
     read_games: { result: [stampedPgnGame] },
     read_game: { result: stampedPgnGame },
