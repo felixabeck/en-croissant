@@ -4425,11 +4425,11 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 ### d-20260927-18 — Is `collect_engine_configuration` brought under the write-inclusive exchange deadline?
 * **Question:** The configuration probe writes `uci` under `send`'s bound and then wall-clocks the whole drain caller-side; is its write moved inside that timeout in `f-20260911-03`?
 * **Governs:** f-20260911-03
-* **Chosen:** No; the probe is unchanged. Its drain already has one caller-side wall clock, so the per-line reset is absent there.
+* **Chosen:** No; the probe is unchanged. Its caller-side wall-clock timeout bounds the whole drain, so per-line resets in `next_configuration_line_cancellable` cannot extend it.
 * **Rejected:** Moving `start_uci_configuration()` inside the timeout (plan-r3 O-5), judged a behaviour change the mandate does not require by five lenses.
 * **Reason:** Not the mandate's defect; bounded by the sum of two budgets. Reversal path: wrap `start_uci_configuration()` in the existing timeout.
 * **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, drain plan-only run e436b468-2608-4d55-b3dc-7c04e10fde26, 2026-09-27 · **Superseded-by:** -
-<!-- ledger-meta {"command":"record-decision","effect_lines":7,"effect_sha256":"6ea457c61705058f3f41df8f98af695ca6942a62782bceaed36eec366d420931","input_sha256":"b79bd1d4f9754ba459892109e202c7ab17aa59df52649e7ed1125244ab318779","kind":"mutation-receipt","operation":"9900457ed7b0de372955a4c8ed83b42b16979452e20ed0471faac34c027096b6","options":{"section":null},"request_id_sha256":null,"results":["d-20260927-18"],"target":"decisions-ledger","v":1} -->
+<!-- ledger-meta {"command":"record-decision","effect_lines":7,"effect_sha256":"c734deeae461b25cd04717caf8ca131aad27d11a1bfb107dba2f521d99236f7a","input_sha256":"b79bd1d4f9754ba459892109e202c7ab17aa59df52649e7ed1125244ab318779","kind":"mutation-receipt","operation":"9900457ed7b0de372955a4c8ed83b42b16979452e20ed0471faac34c027096b6","options":{"section":null},"request_id_sha256":null,"results":["d-20260927-18"],"target":"decisions-ledger","v":1} -->
 
 ### d-20260927-19 — How are the exchange-deadline tests made deterministic?
 * **Question:** Real-time tests with slack, or paused Tokio time (needs the `test-util` feature `full` does not include)?
