@@ -71,11 +71,7 @@ cg-board square.oc.move-dest:hover {
   display: flex;
 }
 
-/* Mantine's own padding beside a section, under the same cap. */
-.wrap-button[data-with-left-section] {
-  padding-inline-start: min(calc(var(--button-padding-x) / 1.5), var(--wrap-button-room));
-}
-
+/* Mantine's own padding beside a right section, under the same cap. */
 .wrap-button[data-with-right-section] {
   padding-inline-end: min(calc(var(--button-padding-x) / 1.5), var(--wrap-button-room));
 }

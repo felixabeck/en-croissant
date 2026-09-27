@@ -283,8 +283,10 @@ export default function DatabasesPage() {
                         //setStorageSelected(item);
                       }}
                       Header={
-                        <Group wrap="nowrap" justify="space-between">
-                          <Group wrap="nowrap" miw={0}>
+                        // Both rows wrap: a narrow card (a large font scale) puts the star and then
+                        // the title under the icon rather than squeezing the title to nothing.
+                        <Group justify="space-between">
+                          <Group miw={0}>
                             <IconDatabase size="1.5rem" />
                             <Box miw={0}>
                               <Text fw={500} fz="sm" className="wrap-anywhere">

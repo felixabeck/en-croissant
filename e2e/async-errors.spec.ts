@@ -402,3 +402,40 @@ test("async-errors: degrades to a usable account page when the database workspac
     await capture("async-errors-personal-database");
     await expect(page).toHaveScreenshot("async-errors-personal-database.png", { fullPage: true });
 });
+
+test("async-errors: wraps a long database title in the list at 320px", async ({
+    page,
+    mockScenario,
+    assertNoHorizontalOverflow,
+}) => {
+    const title = "Eröffnungsdatenbankzusammenstellung";
+    await mockScenario({
+        commands: {
+            list_workspace_databases: {
+                result: [
+                    {
+                        handle: { id: { id: "long-title" }, kind: "database" },
+                        filename: "long-title.db3",
+                        availability: "available",
+                    },
+                ],
+            },
+            get_db_info: {
+                result: {
+                    title,
+                    description: "",
+                    player_count: 0,
+                    event_count: 0,
+                    game_count: 0,
+                    storage_size: 0,
+                    indexed: false,
+                },
+            },
+        },
+    });
+    await page.goto("/databases");
+    // One unbroken word, wider than the stacked panel at 200%: it has to wrap, not be cut.
+    await expect(page.getByText(title)).toBeVisible();
+    await assertNoHorizontalOverflow();
+    await assertPageNotClipped(page);
+});
