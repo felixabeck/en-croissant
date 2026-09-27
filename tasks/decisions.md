@@ -4280,3 +4280,58 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The copy is what the user selected, the game count is identical because scanning is deterministic over the same bytes, and the revision binding keeps the pre-publication validation that the old load-then-create order provided. Reversal path: drop the revision field and the precommit comparison.
 * **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, plan-reviewed build run 2026-09-26 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":17,"effect_sha256":"33843959eb9c06f9ffe2c96fc6c912ce100c65ea114b40d51767e024257b7589","input_sha256":"485708f178ff1d90f9c712e57ea2ad73edd992f99682aa0aaf61388cb626fcec","kind":"mutation-receipt","operation":"09ffe5dab73756194e3e2da9fe4139002ee5494b40f2248a36002982c9be142c","options":{"section":null},"request_id_sha256":null,"results":["d-20260927-01","d-20260927-02"],"target":"decisions-ledger","v":1} -->
+
+### d-20260927-03 — Who owns a published game engine generation between initialization and the LiveSession?
+
+* **Question:** After `spawn_registered` disarms its initialization guard, `start_game` holds the actor across further awaits with no owner that terminates it if the construction future is dropped.
+* **Governs:** f-20260908-02
+* **Chosen:** A construction-local list of `RegistrationGuard`s (d-20260901-31's guard, made crate-visible with a synchronous `terminate_now`), disarmed when `publish_live` returns `Ok`.
+* **Rejected:** `Drop` on `RegisteredGameEngine` (shared clones would double-kill); a `GameManager`-side kill path (d-20260901-30 forbids a second one); an `OperationLease` wrapper (different design, f-20260915-06 class).
+* **Reason:** One owner per generation, one drop-terminator implementation, handoff at the point the session becomes reachable. Reversal path: replace the guard list with another owner type; the handoff point stays `publish_live`.
+* **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, plan-reviewed build run 2026-09-27 · **Superseded-by:** -
+
+### d-20260927-04 — What happens to a LiveSession whose loop never receives its start signal?
+
+* **Question:** `start_game` can be dropped after `publish_live` returned `Ok` but before `start_loop.send(())`.
+* **Governs:** f-20260908-02
+* **Chosen:** The installed task (`run_published_loop`) terminates both engines and tombstones the session through `retire_live_locked`.
+* **Rejected:** Treating it as completed (would record a snapshot of a game that never started); leaving it in `games` (leaks until exit, the measured gap).
+* **Reason:** Ownership has transferred at publication, so the session must clean itself up. Reversal path: change the `Err` branch of `run_published_loop`.
+* **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, plan-reviewed build run 2026-09-27 · **Superseded-by:** -
+
+### d-20260927-05 — When is a replaced predecessor session owned, and by what?
+
+* **Question:** `retire_replaced_session` removes the old session from `games` before awaiting its shutdown; a cancellation there orphans it.
+* **Governs:** f-20260908-02
+* **Chosen:** A local guard inside `retire_replaced_session`, from removal until `shutdown_and_join` and an unconditional direct exact termination (`finish_retired`) both completed; an armed drop spawns the same steps. `shutdown_and_join` restores its taken join handle when dropped mid-wait. An `Ok` with an empty join slot is never taken as termination.
+* **Rejected:** Owning it from the start of `retire_replaced_session` (would shut down a still-published session on a cancelled replacement); ending ownership when `shutdown_and_join` returns (another caller may hold the join and be cancelled); a field on the construction (no gain over the local guard).
+* **Reason:** The replacement commits at removal, and removal must imply termination regardless of who holds the join. Reversal path: move the guard boundary.
+* **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, plan-reviewed build run 2026-09-27 · **Superseded-by:** -
+
+### d-20260927-06 — How does a test reach GameManager::start_game?
+
+* **Question:** `game.rs` is fixed to `AppHandle<Wry>`, so no test can call `start_game`.
+* **Governs:** f-20260908-02
+* **Chosen:** Make the `start_game` call path generic over `tauri::Runtime` and use `tauri::test::mock_app()`; commands, `make_move`, `take_back_move`, `resign` stay concrete.
+* **Rejected:** An app-free construction core with an injected loop installer.
+* **Reason:** Zero behaviour change, the crate's existing test pattern (`chesscom.rs`, `puzzle.rs`), and the ownership logic under review is not reshaped for testability. Reversal path: re-concretise the signatures; the tests then need another harness.
+* **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, plan-reviewed build run 2026-09-27 · **Superseded-by:** -
+
+### d-20260927-07 — Is the construction-cancellation gap implemented although no production path drops start_game today?
+
+* **Question:** The `#[tauri::command]` wrapper spawns `start_game` onto Tauri's runtime and nothing cancels it before process exit.
+* **Governs:** f-20260908-02
+* **Chosen:** Implement anyway under `async-resource-invariants.md`, with deterministic drop tests as the proof; add no cancellation wrapper.
+* **Rejected:** Leaving the latent gap until an owner-scoped wrapper exists.
+* **Reason:** Cleanup on every exit path is the rule; the next cancellation wrapper around a game command would turn the latent gap into a leak. Reversal path: none needed; a later wrapper relies on this.
+* **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, plan-reviewed build run 2026-09-27 · **Superseded-by:** -
+
+### d-20260927-08 — How is an engine termination failure reported when the requester that asked for it is cancelled?
+
+* **Question:** A failed `runtime.terminate()` is only returned through the reply channel; a cancelled requester loses it and the entry is already removed.
+* **Governs:** f-20260908-02
+* **Chosen:** The actor logs it through the keyed, generation-exact `log_registration_cleanup_error` before replying (one helper for all three `Terminate` arms), bound to its key and generation inside `publish_admitted` before the registry insert; requesters still report what they receive.
+* **Rejected:** A keyless actor-level line (loses identity); recording the failure and replaying it to a later `terminate` (a same-key replacement consumes it and fails g+1's publication).
+* **Reason:** The only reporter no requester cancellation can bypass is the actor itself. Reversal path: drop the actor-side log and restore requester-only reporting if the duplicate lines prove unacceptable in the field.
+* **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, plan-reviewed build run 2026-09-27 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":53,"effect_sha256":"63a650924f7400dd0adaf4b311c96bcd9e8092d97465cc0b0469d4f4f8840510","input_sha256":"3a9469533821594fed5d00a09b7455972e91d9989c5018f9661710dd0ed8ad2b","kind":"mutation-receipt","operation":"bb05839f224ad0f7cc71f153fec65af7d726896eead3b112eaf893a94e442133","options":{"section":null},"request_id_sha256":null,"results":["d-20260927-03","d-20260927-04","d-20260927-05","d-20260927-06","d-20260927-07","d-20260927-08"],"target":"decisions-ledger","v":1} -->
