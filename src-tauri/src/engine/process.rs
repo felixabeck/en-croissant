@@ -7328,6 +7328,54 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn infinite_search_reads_can_continue_past_the_per_line_stall_budget() {
+        let search_budget = Duration::from_millis(100);
+        let read_interval = Duration::from_millis(40);
+        let info_line = "info depth 1 score cp 0";
+        let info_line_count = 4;
+        let (io, _, _, _) = deadline_test_io(&[], &[], Some(info_line), read_interval);
+        let actor = EngineActor::new(
+            Box::new(io),
+            EngineDeadlines {
+                search: search_budget,
+                ..EngineDeadlines::default()
+            },
+        );
+
+        let search_started = tokio::time::Instant::now();
+        let lines = tokio::time::timeout(search_budget * 3, async {
+            let request = actor
+                .start_search(&GoMode::Infinite)
+                .await
+                .expect("infinite search must start");
+            let mut lines = Vec::with_capacity(info_line_count);
+            for _ in 0..info_line_count {
+                lines.push(
+                    actor
+                        .next_search_line(request)
+                        .await
+                        .expect("each info-line read must stay within its stall bound"),
+                );
+            }
+            lines
+        })
+        .await
+        .expect("the bounded info-line reads must complete");
+        let elapsed = tokio::time::Instant::now() - search_started;
+
+        assert_eq!(lines, vec![Some(info_line.to_owned()); info_line_count]);
+        assert!(
+            elapsed > search_budget,
+            "search elapsed time {elapsed:?} must exceed its per-line stall budget"
+        );
+        assert!(read_interval < search_budget);
+        actor
+            .terminate()
+            .await
+            .expect("fake search actor must terminate");
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn chatty_stop_obeys_one_write_inclusive_wall_clock_deadline() {
         let budget = Duration::from_millis(100);
         let read_interval = Duration::from_millis(10);
