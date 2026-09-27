@@ -480,7 +480,7 @@
     "Errors.InvalidEpSquare": "Ugyldig en passant-felt",
     "Errors.InvalidFen": "Ugyldig FEN",
     "Errors.InvalidFullmoves": "Ugyldig heltall for trekk",
-    "Errors.InvalidHaldmoves": "Ugyldig halvtall for trekk",
+    "Errors.InvalidHalfmoves": "Ugyldig halvtall for trekk",
     "Errors.InvalidKings": "Ugyldig antall konger",
     "Errors.InvalidPockets": "Ugyldige lommer",
     "Errors.InvalidRemainingChecks": "Ugyldig antall gjenværende sjakker",

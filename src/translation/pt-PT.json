@@ -487,7 +487,7 @@
     "Errors.InvalidEpSquare": "Casa en passant inválida",
     "Errors.InvalidFen": "FEN inválido",
     "Errors.InvalidFullmoves": "Número de lances completos inválido",
-    "Errors.InvalidHaldmoves": "Número de meios-lances inválido",
+    "Errors.InvalidHalfmoves": "Número de meios-lances inválido",
     "Errors.InvalidKings": "Número de reis inválido",
     "Errors.InvalidPockets": "Reservas inválidas",
     "Errors.InvalidRemainingChecks": "Número de xeques restantes inválido",

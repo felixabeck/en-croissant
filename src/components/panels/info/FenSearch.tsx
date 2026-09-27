@@ -90,7 +90,7 @@ export default function FenSearch({ currentFen: currentFenInput }: { currentFen?
     >
       <Combobox.Target>
         <InputBase
-          error={error && chessopsError(error)}
+          error={error && t(chessopsError(error))}
           rightSection={isLoading && <Loader size={18} />}
           value={search}
           onChange={(event) => {

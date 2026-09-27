@@ -16,7 +16,6 @@ import {
 import { type FenError, InvalidFen, makeFen, parseFen } from "chessops/fen";
 import { parseSan } from "chessops/san";
 import { squareFromCoords } from "chessops/util";
-import { match } from "ts-pattern";
 
 export function positionFromFen(fen: string): [Chess, null] | [null, FenError | PositionError] {
     const [setup, error] = parseFen(fen).unwrap(
@@ -76,22 +75,31 @@ export function squareToCoordinates(square: Square, orientation: "white" | "blac
     return { file, rank };
 }
 
-export function chessopsError(error: PositionError | FenError) {
-    return match(error)
-        .with({ message: IllegalSetup.Empty }, () => "Errors.EmptyBoard")
-        .with({ message: IllegalSetup.Kings }, () => "Errors.InvalidKings")
-        .with({ message: IllegalSetup.OppositeCheck }, () => "Errors.OppositeCheck")
-        .with({ message: IllegalSetup.PawnsOnBackrank }, () => "Errors.PawnsOnBackrank")
-        .with({ message: InvalidFen.Board }, () => "Errors.InvalidBoard")
-        .with({ message: InvalidFen.Castling }, () => "Errors.InvalidCastlingRights")
-        .with({ message: InvalidFen.EpSquare }, () => "Errors.InvalidEpSquare")
-        .with({ message: InvalidFen.Fen }, () => "Errors.InvalidFen")
-        .with({ message: InvalidFen.Fullmoves }, () => "Errors.InvalidFullmoves")
-        .with({ message: InvalidFen.Halfmoves }, () => "Errors.InvalidHalfmoves")
-        .with({ message: InvalidFen.Pockets }, () => "Errors.InvalidPockets")
-        .with({ message: InvalidFen.RemainingChecks }, () => "Errors.InvalidRemainingChecks")
-        .with({ message: InvalidFen.Turn }, () => "Errors.InvalidTurn")
-        .otherwise(() => "Errors.Unknown");
+const chessopsErrorKeys = {
+    [IllegalSetup.Empty]: "Errors.EmptyBoard",
+    [IllegalSetup.Kings]: "Errors.InvalidKings",
+    [IllegalSetup.OppositeCheck]: "Errors.OppositeCheck",
+    [IllegalSetup.PawnsOnBackrank]: "Errors.PawnsOnBackrank",
+    [InvalidFen.Board]: "Errors.InvalidBoard",
+    [InvalidFen.Castling]: "Errors.InvalidCastlingRights",
+    [InvalidFen.EpSquare]: "Errors.InvalidEpSquare",
+    [InvalidFen.Fen]: "Errors.InvalidFen",
+    [InvalidFen.Fullmoves]: "Errors.InvalidFullmoves",
+    [InvalidFen.Halfmoves]: "Errors.InvalidHalfmoves",
+    [InvalidFen.Pockets]: "Errors.InvalidPockets",
+    [InvalidFen.RemainingChecks]: "Errors.InvalidRemainingChecks",
+    [InvalidFen.Turn]: "Errors.InvalidTurn",
+} as const satisfies Partial<Record<IllegalSetup | InvalidFen, `Errors.${string}`>>;
+
+/** Catalogue key for a chessops error; callers translate it with `t` at render time. */
+export type ChessopsErrorKey =
+    | (typeof chessopsErrorKeys)[keyof typeof chessopsErrorKeys]
+    | "Errors.Unknown";
+
+export function chessopsError(error: PositionError | FenError): ChessopsErrorKey {
+    return Object.hasOwn(chessopsErrorKeys, error.message)
+        ? chessopsErrorKeys[error.message as keyof typeof chessopsErrorKeys]
+        : "Errors.Unknown";
 }
 
 export function forceEnPassant(dests: Map<SquareName, SquareName[]>, pos: Chess) {

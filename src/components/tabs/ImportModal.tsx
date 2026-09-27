@@ -19,7 +19,7 @@ import { notifyUnlessCancelled, runUnlessCancelled } from "@/components/files/no
 import { addRecentFileAtom } from "@/state/atoms";
 import { parsePGN } from "@/utils/chess";
 import { getChesscomGame } from "@/utils/chess.com/api";
-import { chessopsError } from "@/utils/chessops";
+import { type ChessopsErrorKey, chessopsError } from "@/utils/chessops";
 import {
   createFile,
   ensureFileWorkspace,
@@ -69,7 +69,7 @@ export default function ImportModal({
   const [filetype, setFiletype] = useState<FileType>("game");
   const [inFlightCount, setInFlightCount] = useState(0);
   const loading = inFlightCount > 0;
-  const [fenError, setFenError] = useState("");
+  const [fenError, setFenError] = useState<ChessopsErrorKey | null>(null);
 
   const [save, setSave] = useState(false);
   const [filename, setFilename] = useState("");
@@ -220,7 +220,7 @@ export default function ImportModal({
           setFenError(chessopsError(res.error));
           return;
         }
-        setFenError("");
+        setFenError(null);
         const parsedFen = makeFen(res.value);
         const tree = defaultTree(parsedFen);
         tree.headers.fen = parsedFen;
@@ -331,7 +331,7 @@ export default function ImportModal({
       <TextInput
         value={fen}
         onChange={(event) => setFen(event.currentTarget.value)}
-        error={fenError}
+        error={fenError && t(fenError)}
         label="FEN"
         data-autofocus
         onKeyDown={(e) => {

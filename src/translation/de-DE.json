@@ -480,7 +480,7 @@
     "Errors.InvalidEpSquare": "Ungültiges En-passant-Feld",
     "Errors.InvalidFen": "Ungültige FEN",
     "Errors.InvalidFullmoves": "Ungültige Zugnummer",
-    "Errors.InvalidHaldmoves": "Ungültige Halbzugzahl",
+    "Errors.InvalidHalfmoves": "Ungültige Halbzugzahl",
     "Errors.InvalidKings": "Ungültige Anzahl Könige",
     "Errors.InvalidPockets": "Ungültige Taschen",
     "Errors.InvalidRemainingChecks": "Ungültige verbleibende Schachs",

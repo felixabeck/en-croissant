@@ -487,7 +487,7 @@
     "Errors.InvalidEpSquare": "Casa en passant non valida",
     "Errors.InvalidFen": "FEN non valido",
     "Errors.InvalidFullmoves": "Numero della mossa completa non valido",
-    "Errors.InvalidHaldmoves": "Numero di semimosse non valido",
+    "Errors.InvalidHalfmoves": "Numero di semimosse non valido",
     "Errors.InvalidKings": "Numero di re non valido",
     "Errors.InvalidPockets": "Riserve non valide",
     "Errors.InvalidRemainingChecks": "Numero di scacchi rimanenti non valido",

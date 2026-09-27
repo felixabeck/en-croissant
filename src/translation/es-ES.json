@@ -487,7 +487,7 @@
     "Errors.InvalidEpSquare": "Casilla al paso inválida",
     "Errors.InvalidFen": "FEN inválido",
     "Errors.InvalidFullmoves": "Número de jugadas completas inválido",
-    "Errors.InvalidHaldmoves": "Número de medias jugadas inválido",
+    "Errors.InvalidHalfmoves": "Número de medias jugadas inválido",
     "Errors.InvalidKings": "Número de reyes inválido",
     "Errors.InvalidPockets": "Bolsillos inválidos",
     "Errors.InvalidRemainingChecks": "Jaque restantes inválidos",

@@ -494,7 +494,7 @@
     "Errors.InvalidEpSquare": "Некоректне поле взяття на проході",
     "Errors.InvalidFen": "Некоректний FEN",
     "Errors.InvalidFullmoves": "Некоректний номер повного ходу",
-    "Errors.InvalidHaldmoves": "Некоректний номер півходу",
+    "Errors.InvalidHalfmoves": "Некоректний номер півходу",
     "Errors.InvalidKings": "Некоректна кількість королів",
     "Errors.InvalidPockets": "Некоректні кішені",
     "Errors.InvalidRemainingChecks": "Некоректна кількість шахів, що залишилися",

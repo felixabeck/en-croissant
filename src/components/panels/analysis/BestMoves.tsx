@@ -258,7 +258,7 @@ function BestMovesComponent({
               <Table.Tr>
                 <Table.Td>
                   <Text ta="center" my="lg">
-                    {t("Board.Analysis.InvalidPosition", { error: chessopsError(error) })}
+                    {t("Board.Analysis.InvalidPosition", { error: t(chessopsError(error)) })}
                   </Text>
                 </Table.Td>
               </Table.Tr>

@@ -494,7 +494,7 @@
     "Errors.InvalidEpSquare": "Nieprawidłowe pole bicia w przelocie",
     "Errors.InvalidFen": "Nieprawidłowy FEN",
     "Errors.InvalidFullmoves": "Nieprawidłowy numer pełnego ruchu",
-    "Errors.InvalidHaldmoves": "Nieprawidłowy licznik półruchów",
+    "Errors.InvalidHalfmoves": "Nieprawidłowy licznik półruchów",
     "Errors.InvalidKings": "Nieprawidłowa liczba króli",
     "Errors.InvalidPockets": "Nieprawidłowe kieszenie",
     "Errors.InvalidRemainingChecks": "Nieprawidłowa liczba pozostałych szachów",
