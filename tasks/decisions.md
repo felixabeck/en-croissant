@@ -4345,3 +4345,22 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** New evidence from the cumulative error-handling lens (confidence 95), confirmed against `error.rs` Serialize. The log-side property the plan wanted is already met by the per-generation logs. Reversal path: return diagnostics in the aggregate only if the renderer payload stops using Display.
 * **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, plan-reviewed build run 2026-09-27 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"769bc990cdfc177f41458882aada6aafa9fd9000ab8119d8cf0671e59826329f","input_sha256":"9c380e9f09fa6604de2f5625258d037d93779d494ec832ac8563f47878e93325","kind":"mutation-receipt","operation":"28dc3839d396546911669a14ed974a20231744898ec7599b846e60d9a755db07","options":{"section":null},"request_id_sha256":null,"results":["d-20260927-09"],"target":"decisions-ledger","v":1} -->
+
+### d-20260927-10 — How does an ImportModal import replace its owning New Tab without writing the existing tab id before the metadata commit?
+
+* **Question:** Should an import into the current New Tab replace the tree stored under the existing tab id in place, or admit the imported game under a fresh id that takes the owner's slot in one workspace write?
+* **Governs:** f-20260910-09
+* **Chosen:** A fresh tab id is seeded and put in the owner's slot in the tab list through the `d-20260910-10` staged-admission protocol (shared with `commitNewTab`). The owner id's durable tree, pending tree, cached store and atoms are never written before the commit; they are reclaimed with the tab-close cleanup only after the envelope write succeeds.
+* **Rejected:** An existing-id transaction that snapshots the owner's durable tree, pending entry and cached store and restores all three on failure. It needs restore-on-failure across three stores and still has a window where the durable tree is already overwritten, which is the defect class itself.
+* **Reason:** The owner is always a `"new"` tab and the tab id is internal; users see the same tab position, name and content. The fresh-id protocol is already proven under `d-20260910-10`. Reversal path: replace `replaceNewTab` in `src/utils/tabs.ts` with an in-place transaction if a future owner type needs its id preserved.
+* **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, plan-reviewed build run 2026-09-27 (plan planned ahead, 9 review rounds) · **Superseded-by:** -
+
+### d-20260927-11 — What happens to an import whose requesting New Tab was closed, is closing, or was already replaced before the import finished?
+
+* **Question:** When an async import resolves after its owning tab left the workspace (closed, in `closingTabsAtom`, or no longer of type `"new"`), is it discarded or opened somewhere else?
+* **Governs:** f-20260910-09
+* **Chosen:** It is discarded silently (`superseded`): nothing is written and no error is shown. Closing the requesting tab counts as the user's cancel.
+* **Rejected:** Completing the import into a newly created tab, which would bring back a tab the user closed.
+* **Reason:** The owner binding is the import's identity (`async-resource-invariants.md`: use a discriminator, never timing). While the owner is still open the modal cannot be dismissed with the import pending, so only the owner's own close or replacement can supersede it. Reversal path: open a new tab on `superseded` in `ImportModal`'s transaction helper.
+* **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, plan-reviewed build run 2026-09-27 (plan planned ahead, 9 review rounds) · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":17,"effect_sha256":"70f331bc6199b5801e4be3610bdf431dcdb70d916a836d7c455adc451df90937","input_sha256":"9f986b19ac8f434df6e6d1dd9c0485d25885172674eaf051c45bdc9604b611b1","kind":"mutation-receipt","operation":"19d9b1cea3eb88d592e12132ea80d73fe1dd50bf9636ade552d5e6caf0b185f4","options":{"section":null},"request_id_sha256":null,"results":["d-20260927-10","d-20260927-11"],"target":"decisions-ledger","v":1} -->
