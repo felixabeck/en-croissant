@@ -634,6 +634,7 @@
     "Import.Or": "O",
     "Import.PGN.ClickToSelect": "Haz clic para seleccionar un archivo PGN.",
     "Import.SaveToCollection": "Guardar en colección",
+    "Import.UnsupportedGameUrl": "Solo se pueden importar enlaces de partidas de lichess y chess.com.",
     "Menu.Application.About": "Acerca de ChessFable",
     "Menu.Application.Hide": "Ocultar ChessFable",
     "Menu.Application.Menu": "Menú de la aplicación",

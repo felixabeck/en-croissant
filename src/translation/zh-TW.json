@@ -616,6 +616,7 @@
     "Import.Or": "或",
     "Import.PGN.ClickToSelect": "点击选择一个 PGN 文件",
     "Import.SaveToCollection": "保存到合集",
+    "Import.UnsupportedGameUrl": "只能匯入 lichess 和 chess.com 的對局連結。",
     "Menu.Application.About": "關於 ChessFable",
     "Menu.Application.Hide": "隱藏 ChessFable",
     "Menu.Application.Menu": "應用程式選單",

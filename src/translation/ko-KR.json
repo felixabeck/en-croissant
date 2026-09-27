@@ -616,6 +616,7 @@
     "Import.Or": "또는",
     "Import.PGN.ClickToSelect": "클릭하여 PGN 선택",
     "Import.SaveToCollection": "컬렉션에 저장",
+    "Import.UnsupportedGameUrl": "lichess 및 chess.com 게임 링크만 가져올 수 있습니다.",
     "Menu.Application.About": "ChessFable 정보",
     "Menu.Application.Hide": "ChessFable 숨기기",
     "Menu.Application.Menu": "애플리케이션 메뉴",

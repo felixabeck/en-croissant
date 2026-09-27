@@ -625,6 +625,7 @@
     "Import.Or": "veya",
     "Import.PGN.ClickToSelect": "Seçmek için tıklayın",
     "Import.SaveToCollection": "Koleksiyona kaydet",
+    "Import.UnsupportedGameUrl": "Yalnızca lichess ve chess.com oyun bağlantıları içe aktarılabilir.",
     "Menu.Application.About": "ChessFable hakkında",
     "Menu.Application.Hide": "ChessFable'ı gizle",
     "Menu.Application.Menu": "Uygulama menüsü",

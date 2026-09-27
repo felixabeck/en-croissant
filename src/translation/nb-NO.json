@@ -625,6 +625,7 @@
     "Import.Or": "ELLER",
     "Import.PGN.ClickToSelect": "Klikk for å velge en PGN-fil.",
     "Import.SaveToCollection": "Lagre i samling",
+    "Import.UnsupportedGameUrl": "Bare partilenker fra lichess og chess.com kan importeres.",
     "Menu.Application.About": "Om ChessFable",
     "Menu.Application.Hide": "Skjul ChessFable",
     "Menu.Application.Menu": "Programmeny",

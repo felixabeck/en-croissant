@@ -625,6 +625,7 @@
     "Import.Or": "Oder",
     "Import.PGN.ClickToSelect": "Klicken um auszuwählen",
     "Import.SaveToCollection": "Hinzufügen zur Sammlung",
+    "Import.UnsupportedGameUrl": "Nur Partie-Links von lichess und chess.com können importiert werden.",
     "Menu.Application.About": "Über",
     "Menu.Application.Hide": "Verbergen",
     "Menu.Application.Menu": "Anwendungsmenü",

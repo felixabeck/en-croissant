@@ -12,7 +12,7 @@ import {
 } from "@mantine/core";
 import { makeFen, parseFen } from "chessops/fen";
 import { useStore } from "jotai";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { match } from "ts-pattern";
 import { notifyUnlessCancelled, runUnlessCancelled } from "@/components/files/notifyError";
@@ -63,6 +63,13 @@ export default function ImportModal({
   const [error, setError] = useState("");
   const [submitError, setSubmitError] = useState("");
   const store = useStore();
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   function replaceImportedTab(
     submittingOwnerId: string,
@@ -136,7 +143,7 @@ export default function ImportModal({
               tree,
             );
 
-            if (fileInfo && result && (result.kind !== "refused" || result.stage === "workspace")) {
+            if (result && (result.kind !== "refused" || result.stage === "workspace")) {
               store.set(addRecentFileAtom, {
                 name: fileInfo.name,
                 handle: fileInfo.handle,
@@ -174,9 +181,13 @@ export default function ImportModal({
             .split("/")
             .find((x) => x && !excludedPathParts.includes(x));
           if (!gameId) {
+            setSubmitError(t("Import.UnsupportedGameUrl"));
             return;
           }
           pgn = await getLichessGame(gameId);
+        } else {
+          setSubmitError(t("Import.UnsupportedGameUrl"));
+          return;
         }
 
         const tree = await parsePGN(pgn);
@@ -210,7 +221,12 @@ export default function ImportModal({
         );
       }
     } catch (e) {
-      setSubmitError(e instanceof Error ? e.message : String(e));
+      // A tab switch unmounts the owner's page mid-import; its inline error would then be lost.
+      if (mountedRef.current) {
+        setSubmitError(e instanceof Error ? e.message : String(e));
+      } else {
+        notifyUnlessCancelled(t("Common.Error"), e);
+      }
     } finally {
       setInFlightCount((count) => count - 1);
     }

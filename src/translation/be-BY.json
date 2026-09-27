@@ -643,6 +643,7 @@
     "Import.Or": "АБО",
     "Import.PGN.ClickToSelect": "Націсніце, каб выбраць файл PGN.",
     "Import.SaveToCollection": "Захаваць у калекцыю",
+    "Import.UnsupportedGameUrl": "Можна імпартаваць толькі спасылкі на гульні lichess і chess.com.",
     "Menu.Application.About": "Пра ChessFable",
     "Menu.Application.Hide": "Схаваць ChessFable",
     "Menu.Application.Menu": "Меню праграмы",

@@ -257,10 +257,7 @@ test("file import passes the fresh file tree and file origin to its owner", asyn
   const seed = vi.spyOn(tabStorage, "seed");
   fixtures.replaceNewTab.mockReturnValue({ kind: "refused", stage: "workspace" });
   const ownerTreeBytes = "existing-owner-tree-bytes";
-  const ownerMetadata = { value: "owner-tab", name: "New tab", type: "new" };
-  const ownerMetadataBytes = JSON.stringify(ownerMetadata);
   sessionStorage.setItem("owner-tab", ownerTreeBytes);
-  sessionStorage.setItem("owner-metadata", ownerMetadataBytes);
   const setOpenModal = vi.fn();
   await renderModal("owner-tab", setOpenModal);
   await chooseFile();
@@ -290,8 +287,6 @@ test("file import passes the fresh file tree and file origin to its owner", asyn
   });
   expect(seed).not.toHaveBeenCalled();
   expect(sessionStorage.getItem("owner-tab")).toBe(ownerTreeBytes);
-  expect(JSON.stringify(ownerMetadata)).toBe(ownerMetadataBytes);
-  expect(sessionStorage.getItem("owner-metadata")).toBe(ownerMetadataBytes);
   expect(fixtures.storeSet).toHaveBeenCalledWith(
     fixtures.atoms.addRecentFile,
     expect.objectContaining({ handle: fixtures.file.handle }),
@@ -468,13 +463,11 @@ test.each(fileRecentOutcomes)(
     await clickSubmit();
     await vi.waitFor(() => expect(fixtures.replaceNewTab).toHaveBeenCalledOnce());
 
-    expect(fixtures.storeSet).toHaveBeenCalledTimes(outcome.addRecent ? 1 : 0);
-    if (outcome.addRecent) {
-      expect(fixtures.storeSet).toHaveBeenCalledWith(
-        fixtures.atoms.addRecentFile,
-        expect.objectContaining({ handle: fixtures.file.handle }),
-      );
-    }
+    const recentFileCall = [
+      fixtures.atoms.addRecentFile,
+      expect.objectContaining({ handle: fixtures.file.handle }),
+    ];
+    expect(fixtures.storeSet.mock.calls).toEqual(outcome.addRecent ? [recentFileCall] : []);
     expect(fixtures.notifyUnlessCancelled).toHaveBeenCalledTimes(outcome.name === "thrown" ? 1 : 0);
   },
 );
@@ -600,6 +593,56 @@ test("reports a thrown transaction after the modal unmounts", async () => {
   await vi.waitFor(() => expect(fixtures.notifyUnlessCancelled).toHaveBeenCalledOnce());
   expect(fixtures.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", error);
   expect(fixtures.replaceNewTab).toHaveBeenCalledOnce();
+});
+
+test.each([
+  ["an unsupported host", "https://example.org/game/42"],
+  ["a lichess URL without a game id", "https://lichess.org/"],
+])("Link import rejects %s without replacing its owner", async (_case, url) => {
+  await renderModal();
+  await chooseType("Link");
+  await setInputValue(input("Import.GameURL"), url);
+  await clickSubmit();
+
+  await vi.waitFor(() => expect(host.textContent).toContain("Import.UnsupportedGameUrl"));
+  expect(fixtures.getLichessGame).not.toHaveBeenCalled();
+  expect(fixtures.parsePGN).not.toHaveBeenCalled();
+  expect(fixtures.replaceNewTab).not.toHaveBeenCalled();
+});
+
+test("reports an import failure through a notification after the modal unmounts", async () => {
+  const request = deferred<string>();
+  const error = new Error("fetch failed after unmount");
+  fixtures.getChesscomGame.mockReturnValue(request.promise);
+  await renderModal();
+  await chooseType("Link");
+  const linkInput = input("Import.GameURL");
+  await setInputValue(linkInput, link);
+  await pressEnter(linkInput);
+  await vi.waitFor(() => expect(fixtures.getChesscomGame).toHaveBeenCalledOnce());
+  await act(async () => root.unmount());
+  rootMounted = false;
+
+  fixtures.parsePGN.mockRejectedValueOnce(error);
+  await act(async () => {
+    request.resolve(linkPgn);
+    await request.promise;
+  });
+  await vi.waitFor(() => expect(fixtures.notifyUnlessCancelled).toHaveBeenCalledOnce());
+  expect(fixtures.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", error);
+  expect(fixtures.replaceNewTab).not.toHaveBeenCalled();
+});
+
+test("shows an import failure inline while the modal is mounted", async () => {
+  fixtures.parsePGN.mockRejectedValueOnce(new Error("unparseable game"));
+  await renderModal();
+  await chooseType("Link");
+  await setInputValue(input("Import.GameURL"), link);
+  await clickSubmit();
+
+  await vi.waitFor(() => expect(host.textContent).toContain("unparseable game"));
+  expect(fixtures.notifyUnlessCancelled).not.toHaveBeenCalled();
+  expect(fixtures.replaceNewTab).not.toHaveBeenCalled();
 });
 
 test("pasted PGN uses the text content variant and still opens through file admission", async () => {

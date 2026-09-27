@@ -643,6 +643,7 @@
     "Import.Or": "LUB",
     "Import.PGN.ClickToSelect": "Kliknij, aby wybrać plik PGN.",
     "Import.SaveToCollection": "Zapisz w kolekcji",
+    "Import.UnsupportedGameUrl": "Można importować tylko linki do partii z lichess i chess.com.",
     "Menu.Application.About": "O ChessFable",
     "Menu.Application.Hide": "Ukryj ChessFable",
     "Menu.Application.Menu": "Menu aplikacji",
