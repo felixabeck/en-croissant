@@ -11,6 +11,17 @@
 
 .menuArea {
   flex: 0 1 auto;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.menuArea::-webkit-scrollbar {
+  display: none;
+}
+
+.logo {
+  flex: 0 0 auto;
 }
 
 .dragRegion {
@@ -18,13 +29,18 @@
   align-self: stretch;
 }
 
+/* Three controls at their 2.8125rem basis, shrinking to their squared minimum and never below it:
+   past that the menu strip scrolls instead. */
 .windowControls {
-  flex: 0 0 auto;
+  flex: 0 1 calc(3 * 2.8125rem);
 }
 
 .icon {
   height: 2.25rem;
-  width: 2.8125rem;
+  /* The basis is the width; a fixed width would also be the floor the controls cannot shrink past. */
+  width: auto;
+  flex: 0 1 2.8125rem;
+  min-width: 2.25rem;
   border-radius: 0;
   transition: background-color 100ms ease;
 }
@@ -35,7 +51,9 @@
 
 .close {
   height: 2.25rem;
-  width: 2.8125rem;
+  width: auto;
+  flex: 0 1 2.8125rem;
+  min-width: 2.25rem;
   border-radius: 0;
   transition: background-color 100ms ease;
 }

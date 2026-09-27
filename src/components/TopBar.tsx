@@ -97,11 +97,11 @@ function TopBar({
   return (
     <Group gap={0} className={classes.root}>
       <Box className={classes.menuArea}>
-        <Group gap="xs" px="sm">
-          <Box h="1.25rem" w="1.25rem" data-tauri-drag-region>
+        <Group gap="xs" px="sm" wrap="nowrap">
+          <Box h="1.25rem" w="1.25rem" className={classes.logo} data-tauri-drag-region>
             <Image src="/logo.png" alt="" fit="fill" />
           </Box>
-          <Group gap={0}>
+          <Group gap={0} wrap="nowrap">
             {menuActions.map((action) => (
               <Menu
                 key={action.label}
@@ -163,7 +163,7 @@ function TopBar({
       <Box className={classes.dragRegion} data-tauri-drag-region />
       {showWindowControls && (
         <Box className={classes.windowControls}>
-          <Group gap={0}>
+          <Group gap={0} wrap="nowrap">
             <IconAction
               label={t("Window.Minimize")}
               onClick={() => void windowControls.minimize()}
