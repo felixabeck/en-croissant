@@ -123,11 +123,13 @@ vi.mock("@mantine/core", () => ({
   Textarea: (props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) => <textarea {...props} />,
   TextInput: ({
     label,
+    error,
     ...props
-  }: React.InputHTMLAttributes<HTMLInputElement> & { label?: string }) => (
+  }: React.InputHTMLAttributes<HTMLInputElement> & { label?: string; error?: React.ReactNode }) => (
     <label>
       {label}
       <input aria-label={label} {...props} />
+      {error && <span data-testid={`error-${label}`}>{error}</span>}
     </label>
   ),
 }));
@@ -415,6 +417,18 @@ test("FEN import submits a tree with the normalized FEN and owner fields", async
     tree: expect.objectContaining({ headers: expect.objectContaining({ fen: normalizedFen }) }),
   });
   expect(seed).not.toHaveBeenCalled();
+});
+
+test("an invalid FEN shows its catalogue error and submits nothing", async () => {
+  await renderModal("fen-invalid-owner");
+  await chooseType("FEN");
+  await setInputValue(input("FEN"), "8/8/8/8/8/8/8/K6k w - - x 1");
+  await clickSubmit();
+
+  expect(host.querySelector('[data-testid="error-FEN"]')?.textContent).toBe(
+    "Errors.InvalidHalfmoves",
+  );
+  expect(fixtures.replaceNewTab).not.toHaveBeenCalled();
 });
 
 test("a refused import keeps its inputs and modal open for a full retry", async () => {
