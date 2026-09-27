@@ -4430,3 +4430,12 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Not the mandate's defect; bounded by the sum of two budgets. Reversal path: wrap `start_uci_configuration()` in the existing timeout.
 * **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, drain plan-only run e436b468-2608-4d55-b3dc-7c04e10fde26, 2026-09-27 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":7,"effect_sha256":"6ea457c61705058f3f41df8f98af695ca6942a62782bceaed36eec366d420931","input_sha256":"b79bd1d4f9754ba459892109e202c7ab17aa59df52649e7ed1125244ab318779","kind":"mutation-receipt","operation":"9900457ed7b0de372955a4c8ed83b42b16979452e20ed0471faac34c027096b6","options":{"section":null},"request_id_sha256":null,"results":["d-20260927-18"],"target":"decisions-ledger","v":1} -->
+
+### d-20260927-19 — How are the exchange-deadline tests made deterministic?
+* **Question:** Real-time tests with slack, or paused Tokio time (needs the `test-util` feature `full` does not include)?
+* **Governs:** f-20260911-03
+* **Chosen:** Paused time; `tokio = { version = "1.33", features = ["test-util"] }` under `[dev-dependencies]` in `src-tauri/Cargo.toml`.
+* **Rejected:** Real-time bounds with slack: cannot assert exact upper and lower bounds (deadline reuse, early firing, write inclusion) without flake margins.
+* **Reason:** Measured 2026-09-27: `cargo metadata --locked --offline` on a copy of the manifest and lock exits 0 with `Cargo.lock` byte-identical and `tokio@1.50.0` gaining `test-util`. Reversal path: drop the dev-dependency line and rewrite the tests with real-time slack.
+* **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, drain plan-only run e436b468-2608-4d55-b3dc-7c04e10fde26, 2026-09-27 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":7,"effect_sha256":"b23da674d891e87eaba8c23aaf33e74700722ed2b106f776100a9b989a886702","input_sha256":"bc78afd372b766d8d660c51483aa00b1810459e380bbe4490ac1f21a11f71182","kind":"mutation-receipt","operation":"c4a897d2e2367d56721ae23de97b609c35773b08a4d55f95832ba3f50e82d5c5","options":{"section":null},"request_id_sha256":null,"results":["d-20260927-19"],"target":"decisions-ledger","v":1} -->
