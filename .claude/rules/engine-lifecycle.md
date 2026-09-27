@@ -73,6 +73,11 @@ recomputed on the next read.
   shutdown cancel that admission under the publication barrier; a canceled late actor is reaped.
 * State what resets a cached option belief when the process is replaced or the option is written by
   another path, and prove a cached `last_best_moves` still belongs to the current position.
+* Bound every wait for a terminal UCI line (`bestmove` after `stop`, `readyok`, `uciok`) by one
+  absolute deadline computed once; output cannot reset it. The stop deadline starts before `stop`
+  is written and covers both the write and drain. The actor serializes commands and the stop drain
+  does not observe the termination interrupt, so a separate write budget can push shutdown past
+  `SHUTDOWN_BUDGET`. This is the invariant for `f-20260911-03`.
 * Check that stopping one tab's engine cannot kill another tab's.
 
 ## DO NOT

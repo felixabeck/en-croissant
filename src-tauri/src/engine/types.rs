@@ -35,9 +35,13 @@ pub enum EngineState {
     Terminating,
 }
 
-/// All protocol waits are bounded.  They are intentionally supplied as a
-/// value so tests and game sessions can use shorter limits without global
-/// mutable configuration.
+/// All protocol waits are bounded. `stop` is a wall-clock budget for the
+/// complete stop exchange, including its command write. `uciok` and `readyok`
+/// bound their post-write drains; command writes retain `send`'s `readyok`
+/// bound. `collect_engine_configuration` also applies a caller-side wall-clock
+/// bound to its full `uciok` drain. `search` is a per-line stall bound. These
+/// values are supplied so tests and game sessions can use shorter limits
+/// without global mutable configuration.
 #[derive(Debug, Clone)]
 pub struct EngineDeadlines {
     pub spawn: Duration,

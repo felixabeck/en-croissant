@@ -17,7 +17,7 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::{
     io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, ChildStdout, Command},
-    time::timeout,
+    time::{timeout, timeout_at, Instant},
 };
 use tokio_util::sync::CancellationToken;
 use vampirc_uci::UciMessage;
@@ -2376,6 +2376,7 @@ impl EngineRuntime {
     }
 
     pub async fn stop_current(&mut self) -> Result<(), Error> {
+        let deadline = Instant::now() + self.deadlines.stop;
         let send_stop = match self.state {
             EngineState::Searching { request_id } => {
                 self.state = EngineState::Stopping { request_id };
@@ -2389,19 +2390,12 @@ impl EngineRuntime {
         };
         let result = async {
             if send_stop {
-                self.send("stop").await?;
+                self.send_with_deadline("stop", deadline).await?;
             }
-            loop {
-                let line = timeout(self.deadlines.stop, self.read_line())
-                    .await
-                    .map_err(|_| Error::EngineTimeout("waiting for bestmove after stop".into()))?;
-                let Some(line) = line? else {
-                    return Err(Error::EngineDisconnected);
-                };
-                if matches!(vampirc_uci::parse_one(&line), UciMessage::BestMove { .. }) {
-                    return Ok(());
-                }
-            }
+            self.read_until(deadline, "waiting for bestmove after stop", None, |line| {
+                matches!(vampirc_uci::parse_one(line), UciMessage::BestMove { .. })
+            })
+            .await
         }
         .await;
         // A failed stop has no trustworthy protocol boundary. Mark the
@@ -2461,11 +2455,16 @@ impl EngineRuntime {
     }
 
     async fn send(&mut self, command: &str) -> Result<(), Error> {
+        self.send_with_deadline(command, Instant::now() + self.deadlines.readyok)
+            .await
+    }
+
+    async fn send_with_deadline(&mut self, command: &str, deadline: Instant) -> Result<(), Error> {
         validate_uci_text("UCI command", command)?;
         self.logs.push(EngineLog::Gui(
             self.resource_redactions.redact(format!("{command}\n")),
         ));
-        timeout(self.deadlines.readyok, self.io.write_line(command))
+        timeout_at(deadline, self.io.write_line(command))
             .await
             .map_err(|_| Error::EngineTimeout("writing engine command".into()))?
     }
@@ -2486,20 +2485,15 @@ impl EngineRuntime {
     }
 
     async fn wait_for(&mut self, expected: &str, wait: Duration) -> Result<(), Error> {
-        loop {
-            let line = timeout(wait, self.read_line())
-                .await
-                .map_err(|_| Error::EngineTimeout(format!("waiting for {expected}")))?;
-            let Some(line) = line? else {
-                return Err(Error::EngineDisconnected);
-            };
+        let deadline = Instant::now() + wait;
+        let timeout_label = format!("waiting for {expected}");
+        self.read_until(deadline, &timeout_label, None, |line| {
             // UCI acknowledgements are complete protocol tokens. Prefix
             // matching would accept e.g. `uciok-not-really` from a malformed
             // or hostile executable and advance the state machine.
-            if line.trim() == expected {
-                return Ok(());
-            }
-        }
+            line.trim() == expected
+        })
+        .await
     }
 
     async fn wait_for_cancellable(
@@ -2508,17 +2502,41 @@ impl EngineRuntime {
         wait: Duration,
         cancellation: &CancellationToken,
     ) -> Result<(), Error> {
+        let deadline = Instant::now() + wait;
+        let timeout_label = format!("waiting for {expected}");
+        self.read_until(deadline, &timeout_label, Some(cancellation), |line| {
+            line.trim() == expected
+        })
+        .await
+    }
+
+    async fn read_until<F>(
+        &mut self,
+        deadline: Instant,
+        timeout_label: &str,
+        cancellation: Option<&CancellationToken>,
+        mut is_terminal: F,
+    ) -> Result<(), Error>
+    where
+        F: FnMut(&str) -> bool,
+    {
         loop {
-            let line = tokio::select! {
-                _ = cancellation.cancelled() => return Err(Error::EngineDisconnected),
-                line = timeout(wait, self.read_line()) => {
-                    line.map_err(|_| Error::EngineTimeout(format!("waiting for {expected}")))?
+            let line = if let Some(cancellation) = cancellation {
+                tokio::select! {
+                    _ = cancellation.cancelled() => return Err(Error::EngineDisconnected),
+                    line = timeout_at(deadline, self.read_line()) => {
+                        line.map_err(|_| Error::EngineTimeout(timeout_label.into()))?
+                    }
                 }
+            } else {
+                timeout_at(deadline, self.read_line())
+                    .await
+                    .map_err(|_| Error::EngineTimeout(timeout_label.into()))?
             };
             let Some(line) = line? else {
                 return Err(Error::EngineDisconnected);
             };
-            if line.trim() == expected {
+            if is_terminal(&line) {
                 return Ok(());
             }
         }
@@ -3682,6 +3700,13 @@ mod tests {
         terminate_started: Option<Arc<AtomicBool>>,
     }
     type RecordedWrites = Arc<Mutex<Vec<String>>>;
+    type RecordedWriteCompletions = Arc<Mutex<Vec<(String, tokio::time::Instant)>>>;
+    type DeadlineTestIoParts = (
+        DeadlineTestIo,
+        RecordedWrites,
+        RecordedWriteCompletions,
+        Arc<AtomicUsize>,
+    );
     type FakeActor = (EngineActor, RecordedWrites);
     type FakeActorWithTermination = (FakeActor, Arc<AtomicUsize>);
 
@@ -3718,6 +3743,94 @@ mod tests {
             self.terminate_calls.fetch_add(1, AtomicOrdering::SeqCst);
             Ok(())
         }
+    }
+
+    struct DeadlineTestIo {
+        writes: Arc<Mutex<Vec<String>>>,
+        write_completions: Arc<Mutex<Vec<(String, tokio::time::Instant)>>>,
+        write_delays: Vec<(String, Duration)>,
+        responses: VecDeque<(Duration, Option<String>)>,
+        endless_line: Option<String>,
+        read_interval: Duration,
+        terminate_calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl UciIo for DeadlineTestIo {
+        async fn write_line(&mut self, line: &str) -> Result<(), Error> {
+            if let Some(index) = self
+                .write_delays
+                .iter()
+                .position(|(command, _)| command == line)
+            {
+                let (_, delay) = self.write_delays.remove(index);
+                tokio::time::sleep(delay).await;
+            }
+            self.writes.lock().await.push(line.into());
+            self.write_completions
+                .lock()
+                .await
+                .push((line.into(), tokio::time::Instant::now()));
+            Ok(())
+        }
+
+        async fn read_line(&mut self) -> Result<Option<String>, Error> {
+            if let Some((delay, line)) = self.responses.pop_front() {
+                if !delay.is_zero() {
+                    tokio::time::sleep(delay).await;
+                }
+                return Ok(line);
+            }
+            if let Some(line) = &self.endless_line {
+                tokio::time::sleep(self.read_interval).await;
+                return Ok(Some(line.clone()));
+            }
+            std::future::pending::<Result<Option<String>, Error>>().await
+        }
+
+        async fn terminate(&mut self, _: Duration, _: Duration) -> Result<(), Error> {
+            self.terminate_calls.fetch_add(1, AtomicOrdering::SeqCst);
+            Ok(())
+        }
+    }
+
+    fn deadline_test_io(
+        write_delays: &[(&str, Duration)],
+        responses: &[(Duration, Option<&str>)],
+        endless_line: Option<&str>,
+        read_interval: Duration,
+    ) -> DeadlineTestIoParts {
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let write_completions = Arc::new(Mutex::new(Vec::new()));
+        let terminate_calls = Arc::new(AtomicUsize::new(0));
+        let io = DeadlineTestIo {
+            writes: writes.clone(),
+            write_completions: write_completions.clone(),
+            write_delays: write_delays
+                .iter()
+                .map(|(command, delay)| ((*command).into(), *delay))
+                .collect(),
+            responses: responses
+                .iter()
+                .map(|(delay, line)| (*delay, line.map(str::to_owned)))
+                .collect(),
+            endless_line: endless_line.map(str::to_owned),
+            read_interval,
+            terminate_calls: terminate_calls.clone(),
+        };
+        (io, writes, write_completions, terminate_calls)
+    }
+
+    fn write_completion_at(
+        write_completions: &RecordedWriteCompletions,
+        command: &str,
+    ) -> tokio::time::Instant {
+        write_completions
+            .try_lock()
+            .expect("test write completion lock must be available")
+            .iter()
+            .find_map(|(written, at)| (written == command).then_some(*at))
+            .expect("the command write must have completed")
     }
 
     enum FakeWait {
@@ -7186,9 +7299,391 @@ mod tests {
 
     #[tokio::test]
     async fn uci_acknowledgements_are_exact_and_timeout_is_bounded() {
-        let (actor, _) = actor(&["uciok-not-an-ack"]);
+        let (actor, writes) = actor(&["uciok-not-an-ack"]);
         assert!(matches!(
             actor.init_uci().await,
+            Err(Error::EngineDisconnected)
+        ));
+        assert_eq!(*writes.lock().await, vec!["uci"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn ensure_ready_rejects_a_readyok_prefix() {
+        let (io, writes, _, _) = deadline_test_io(
+            &[],
+            &[
+                (Duration::ZERO, Some("readyok-not-an-ack")),
+                (Duration::ZERO, None),
+            ],
+            None,
+            Duration::from_millis(10),
+        );
+        let mut runtime = EngineRuntime::new(Box::new(io), EngineDeadlines::default());
+
+        assert!(matches!(
+            runtime.ensure_ready().await,
+            Err(Error::EngineDisconnected)
+        ));
+        assert_eq!(*writes.lock().await, vec!["isready"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn chatty_stop_obeys_one_write_inclusive_wall_clock_deadline() {
+        let budget = Duration::from_millis(100);
+        let read_interval = Duration::from_millis(10);
+        let (io, writes, _, _) = deadline_test_io(
+            &[("stop", Duration::from_millis(60))],
+            &[],
+            Some("info depth 1 score cp 0"),
+            read_interval,
+        );
+        let mut runtime = EngineRuntime::new(
+            Box::new(io),
+            EngineDeadlines {
+                stop: budget,
+                ..EngineDeadlines::default()
+            },
+        );
+        runtime
+            .start_search(&GoMode::Depth(1))
+            .await
+            .expect("search must start before its stop exchange");
+
+        let started = tokio::time::Instant::now();
+        let result = tokio::time::timeout(budget * 3, runtime.stop_current())
+            .await
+            .expect("chatty stop must finish within its outer bound");
+        let elapsed = tokio::time::Instant::now() - started;
+
+        assert!(matches!(
+            result,
+            Err(Error::EngineTimeout(message)) if message == "waiting for bestmove after stop"
+        ));
+        assert!(
+            elapsed >= budget - read_interval,
+            "stop fired early after {elapsed:?}"
+        );
+        assert!(
+            elapsed <= budget,
+            "stop exceeded its deadline after {elapsed:?}"
+        );
+        assert_eq!(runtime.state, EngineState::Terminating);
+        assert_eq!(*writes.lock().await, vec!["go depth 1", "stop"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn chatty_readyok_drain_starts_after_the_isready_write() {
+        let budget = Duration::from_millis(100);
+        let read_interval = Duration::from_millis(10);
+        let (io, _, write_completions, _) = deadline_test_io(
+            &[("isready", Duration::from_millis(60))],
+            &[],
+            Some("info depth 1 score cp 0"),
+            read_interval,
+        );
+        let mut runtime = EngineRuntime::new(
+            Box::new(io),
+            EngineDeadlines {
+                readyok: budget,
+                ..EngineDeadlines::default()
+            },
+        );
+
+        let result = tokio::time::timeout(budget * 3, runtime.ensure_ready())
+            .await
+            .expect("chatty readyok drain must finish within its outer bound");
+        let completed_at = write_completion_at(&write_completions, "isready");
+        let elapsed = tokio::time::Instant::now() - completed_at;
+
+        assert!(matches!(
+            result,
+            Err(Error::EngineTimeout(message)) if message == "waiting for readyok"
+        ));
+        assert!(
+            elapsed >= budget - read_interval,
+            "readyok fired early after {elapsed:?}"
+        );
+        assert!(
+            elapsed <= budget,
+            "readyok exceeded its deadline after {elapsed:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn chatty_uciok_drain_starts_after_the_uci_write() {
+        let budget = Duration::from_millis(100);
+        let read_interval = Duration::from_millis(10);
+        let (io, _, write_completions, _) = deadline_test_io(
+            &[("uci", Duration::from_millis(60))],
+            &[],
+            Some("info depth 1 score cp 0"),
+            read_interval,
+        );
+        let mut runtime = EngineRuntime::new(
+            Box::new(io),
+            EngineDeadlines {
+                uciok: budget,
+                ..EngineDeadlines::default()
+            },
+        );
+        let cancellation = CancellationToken::new();
+
+        let result = tokio::time::timeout(budget * 3, runtime.init_uci_cancellable(&cancellation))
+            .await
+            .expect("chatty uciok drain must finish within its outer bound");
+        let completed_at = write_completion_at(&write_completions, "uci");
+        let elapsed = tokio::time::Instant::now() - completed_at;
+
+        assert!(matches!(
+            result,
+            Err(Error::EngineTimeout(message)) if message == "waiting for uciok"
+        ));
+        assert!(
+            elapsed >= budget - read_interval,
+            "uciok fired early after {elapsed:?}"
+        );
+        assert!(
+            elapsed <= budget,
+            "uciok exceeded its deadline after {elapsed:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn chatty_readyok_after_uciok_gets_a_fresh_deadline_after_isready_write() {
+        let uciok_budget = Duration::from_millis(100);
+        let readyok_budget = Duration::from_millis(300);
+        let read_interval = Duration::from_millis(10);
+        let (io, _, write_completions, _) = deadline_test_io(
+            &[
+                ("uci", Duration::from_millis(60)),
+                ("isready", Duration::from_millis(180)),
+            ],
+            &[(Duration::from_millis(70), Some("uciok"))],
+            Some("info depth 1 score cp 0"),
+            read_interval,
+        );
+        let mut runtime = EngineRuntime::new(
+            Box::new(io),
+            EngineDeadlines {
+                uciok: uciok_budget,
+                readyok: readyok_budget,
+                ..EngineDeadlines::default()
+            },
+        );
+        let cancellation = CancellationToken::new();
+
+        let result = tokio::time::timeout(
+            uciok_budget + readyok_budget * 3,
+            runtime.init_uci_cancellable(&cancellation),
+        )
+        .await
+        .expect("second chatty exchange must finish within its outer bound");
+        let isready_completed_at = write_completion_at(&write_completions, "isready");
+        let elapsed = tokio::time::Instant::now() - isready_completed_at;
+
+        assert!(matches!(
+            result,
+            Err(Error::EngineTimeout(message)) if message == "waiting for readyok"
+        ));
+        assert!(
+            elapsed >= readyok_budget - read_interval,
+            "readyok reused an earlier deadline or fired early after {elapsed:?}"
+        );
+        assert!(
+            elapsed <= readyok_budget,
+            "readyok exceeded its deadline after {elapsed:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stop_write_uses_the_stop_exchange_deadline_and_poisons_runtime() {
+        let stop_budget = Duration::from_millis(100);
+        let (io, _, _, _) = deadline_test_io(
+            &[("stop", Duration::from_millis(150))],
+            &[],
+            Some("info depth 1 score cp 0"),
+            Duration::from_millis(10),
+        );
+        let mut runtime = EngineRuntime::new(
+            Box::new(io),
+            EngineDeadlines {
+                stop: stop_budget,
+                readyok: Duration::from_millis(500),
+                ..EngineDeadlines::default()
+            },
+        );
+        runtime
+            .start_search(&GoMode::Depth(1))
+            .await
+            .expect("search must start before stop write exhaustion");
+        let started = tokio::time::Instant::now();
+
+        let result = tokio::time::timeout(stop_budget * 3, runtime.stop_current())
+            .await
+            .expect("stop write must be bounded by the outer deadline");
+        let elapsed = tokio::time::Instant::now() - started;
+
+        assert!(matches!(
+            result,
+            Err(Error::EngineTimeout(message)) if message == "writing engine command"
+        ));
+        assert!(
+            elapsed <= stop_budget,
+            "stop write exceeded its deadline after {elapsed:?}"
+        );
+        assert_eq!(runtime.state, EngineState::Terminating);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn plain_send_keeps_its_readyok_write_bound() {
+        let budget = Duration::from_millis(100);
+        let (io, _, _, _) = deadline_test_io(
+            &[("isready", Duration::from_millis(150))],
+            &[],
+            None,
+            Duration::from_millis(10),
+        );
+        let mut runtime = EngineRuntime::new(
+            Box::new(io),
+            EngineDeadlines {
+                readyok: budget,
+                ..EngineDeadlines::default()
+            },
+        );
+        let started = tokio::time::Instant::now();
+
+        let result = tokio::time::timeout(budget * 3, runtime.ensure_ready())
+            .await
+            .expect("plain send must finish within its outer bound");
+        let elapsed = tokio::time::Instant::now() - started;
+
+        assert!(matches!(
+            result,
+            Err(Error::EngineTimeout(message)) if message == "writing engine command"
+        ));
+        assert!(elapsed >= budget - Duration::from_millis(10));
+        assert!(
+            elapsed <= budget,
+            "plain send exceeded its bound after {elapsed:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn init_uci_cancellable_still_returns_disconnected_when_cancelled_during_uciok() {
+        let (io, _, _, _) = deadline_test_io(&[], &[], None, Duration::from_millis(10));
+        let mut runtime = EngineRuntime::new(Box::new(io), EngineDeadlines::default());
+        let cancellation = CancellationToken::new();
+
+        let (result, ()) = tokio::join!(runtime.init_uci_cancellable(&cancellation), async {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            cancellation.cancel();
+        });
+
+        assert!(matches!(result, Err(Error::EngineDisconnected)));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn init_uci_cancellable_still_returns_disconnected_when_cancelled_during_readyok() {
+        let (io, _, _, _) = deadline_test_io(
+            &[],
+            &[(Duration::ZERO, Some("uciok"))],
+            None,
+            Duration::from_millis(10),
+        );
+        let mut runtime = EngineRuntime::new(Box::new(io), EngineDeadlines::default());
+        let cancellation = CancellationToken::new();
+
+        let (result, ()) = tokio::join!(runtime.init_uci_cancellable(&cancellation), async {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            cancellation.cancel();
+        });
+
+        assert!(matches!(result, Err(Error::EngineDisconnected)));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stopping_reentry_gets_a_fresh_deadline_without_a_second_stop_write() {
+        let budget = Duration::from_millis(100);
+        let read_interval = Duration::from_millis(10);
+        let (io, writes, _, _) =
+            deadline_test_io(&[], &[], Some("info depth 1 score cp 0"), read_interval);
+        let mut runtime = EngineRuntime::new(
+            Box::new(io),
+            EngineDeadlines {
+                stop: budget,
+                ..EngineDeadlines::default()
+            },
+        );
+        runtime
+            .start_search(&GoMode::Depth(1))
+            .await
+            .expect("search must start before stopping");
+
+        assert!(tokio::time::timeout(budget * 3 / 5, runtime.stop_current())
+            .await
+            .is_err());
+        assert!(matches!(runtime.state, EngineState::Stopping { .. }));
+        let second_started = tokio::time::Instant::now();
+        let result = tokio::time::timeout(budget * 3, runtime.stop_current())
+            .await
+            .expect("re-entered stop must finish within its outer bound");
+        let elapsed = tokio::time::Instant::now() - second_started;
+
+        assert!(matches!(
+            result,
+            Err(Error::EngineTimeout(message)) if message == "waiting for bestmove after stop"
+        ));
+        assert!(
+            elapsed >= budget - read_interval,
+            "re-entered stop fired early after {elapsed:?}"
+        );
+        assert!(
+            elapsed <= budget,
+            "re-entered stop exceeded its deadline after {elapsed:?}"
+        );
+        assert_eq!(
+            writes
+                .lock()
+                .await
+                .iter()
+                .filter(|line| line.as_str() == "stop")
+                .count(),
+            1
+        );
+        assert_eq!(runtime.state, EngineState::Terminating);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn chatty_stop_timeout_reaps_actor_and_rejects_another_search() {
+        let budget = Duration::from_millis(100);
+        let (io, _, _, terminate_calls) = deadline_test_io(
+            &[],
+            &[],
+            Some("info depth 1 score cp 0"),
+            Duration::from_millis(10),
+        );
+        let actor = EngineActor::new(
+            Box::new(io),
+            EngineDeadlines {
+                stop: budget,
+                ..EngineDeadlines::default()
+            },
+        );
+        actor
+            .start_search(&GoMode::Depth(1))
+            .await
+            .expect("first search must start");
+
+        let result = tokio::time::timeout(budget * 3, actor.stop_current())
+            .await
+            .expect("chatty actor stop must be bounded");
+        assert!(matches!(
+            result,
+            Err(Error::EngineTimeout(message)) if message == "waiting for bestmove after stop"
+        ));
+        assert!(terminate_calls.load(AtomicOrdering::SeqCst) >= 1);
+        assert!(matches!(
+            actor.start_search(&GoMode::Depth(2)).await,
             Err(Error::EngineDisconnected)
         ));
     }
