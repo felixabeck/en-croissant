@@ -284,7 +284,13 @@ function AccountModal({
               onChange={(e) => setWithLogin(e.currentTarget.checked)}
             />
           )}
-          <Button mt="1rem" type="submit" loading={isPending} disabled={isPending}>
+          <Button
+            mt="1rem"
+            type="submit"
+            className="wrap-button"
+            loading={isPending}
+            disabled={isPending}
+          >
             {t("Common.Add")}
           </Button>
           {isPending && (

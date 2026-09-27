@@ -49,8 +49,7 @@ cg-board square.oc.move-dest:hover {
 }
 
 /* A Mantine Button whose label wraps when it does not fit on one line, instead of being cut; while
-   it fits, the button keeps its usual size (the inner stretches to the root's minimum height). Not
-   for buttons that show a loading state. */
+   it fits, the button keeps its usual size (the inner stretches to the root's minimum height). */
 .wrap-button {
   display: inline-flex;
   align-items: stretch;
@@ -60,9 +59,6 @@ cg-board square.oc.move-dest:hover {
      a percentage resolves against the container, so wider layouts keep Mantine's padding. */
   --wrap-button-room: max(0.25em, calc((100% - 6em) / 2));
   padding-inline: min(var(--button-padding-x), var(--wrap-button-room));
-  /* Mantine clips the root for its loader, which these buttons never show; a wrapped label's last
-     line may overhang its line box by a pixel or two. */
-  overflow: visible;
 }
 
 .wrap-button[data-block] {
@@ -85,7 +81,9 @@ cg-board square.oc.move-dest:hover {
 
 .wrap-button .mantine-Button-label {
   height: auto;
-  overflow: visible;
+  /* A wrapped label's last line can overhang its line box by a pixel or two; the root still clips
+     for Mantine's loader. */
+  padding-block: 2px;
   white-space: normal;
   overflow-wrap: anywhere;
   text-align: center;
