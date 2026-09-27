@@ -7298,7 +7298,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn uci_acknowledgements_are_exact_and_timeout_is_bounded() {
+    async fn uci_acknowledgement_requires_exact_token() {
         let (actor, writes) = actor(&["uciok-not-an-ack"]);
         assert!(matches!(
             actor.init_uci().await,
