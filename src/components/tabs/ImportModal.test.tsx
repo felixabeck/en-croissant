@@ -598,6 +598,12 @@ test("reports a thrown transaction after the modal unmounts", async () => {
 test.each([
   ["an unsupported host", "https://example.org/game/42"],
   ["a lichess URL without a game id", "https://lichess.org/"],
+  [
+    "a host that only contains chess.com in its path",
+    "https://evil.invalid/chess.com/game/live/123",
+  ],
+  ["a host that only contains lichess in its name", "https://lichess.evil.invalid/abcdefgh"],
+  ["text that is not a URL", "chess.com game 123"],
 ])("Link import rejects %s without replacing its owner", async (_case, url) => {
   await renderModal();
   await chooseType("Link");
@@ -605,9 +611,25 @@ test.each([
   await clickSubmit();
 
   await vi.waitFor(() => expect(host.textContent).toContain("Import.UnsupportedGameUrl"));
+  expect(fixtures.getChesscomGame).not.toHaveBeenCalled();
   expect(fixtures.getLichessGame).not.toHaveBeenCalled();
   expect(fixtures.parsePGN).not.toHaveBeenCalled();
   expect(fixtures.replaceNewTab).not.toHaveBeenCalled();
+});
+
+test("Link import fetches a lichess game by the id in its URL", async () => {
+  await renderModal("lichess-owner");
+  await chooseType("Link");
+  await setInputValue(input("Import.GameURL"), "https://lichess.org/abcdefgh/black");
+  await clickSubmit();
+  await vi.waitFor(() => expect(fixtures.replaceNewTab).toHaveBeenCalledOnce());
+
+  expect(fixtures.getLichessGame).toHaveBeenCalledWith("abcdefgh");
+  expect(fixtures.getChesscomGame).not.toHaveBeenCalled();
+  expect(fixtures.parsePGN).toHaveBeenCalledWith(linkPgn);
+  expect(fixtures.replaceNewTab).toHaveBeenCalledWith(
+    expect.objectContaining({ ownerId: "lichess-owner" }),
+  );
 });
 
 test("reports an import failure through a notification after the modal unmounts", async () => {

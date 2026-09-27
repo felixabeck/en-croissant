@@ -36,6 +36,19 @@ import { FILE_TYPES, type FileMetadata, type FileType } from "../files/file";
 
 type ImportType = "PGN" | "Link" | "FEN";
 
+/** Classifies a game link by its parsed hostname; a substring match would accept any host. */
+function gameUrlHost(link: string): "chess.com" | "lichess" | null {
+  let hostname: string;
+  try {
+    hostname = new URL(link).hostname;
+  } catch {
+    return null;
+  }
+  if (hostname === "chess.com" || hostname.endsWith(".chess.com")) return "chess.com";
+  if (hostname === "lichess.org" || hostname.endsWith(".lichess.org")) return "lichess";
+  return null;
+}
+
 export default function ImportModal({
   ownerId,
   openModal,
@@ -168,14 +181,15 @@ export default function ImportModal({
         if (!link) {
           return;
         }
-        let pgn = "";
-        if (link.includes("chess.com")) {
+        const host = gameUrlHost(link);
+        let pgn: string;
+        if (host === "chess.com") {
           const res = await getChesscomGame(link);
           if (res === null) {
             return;
           }
           pgn = res;
-        } else if (link.includes("lichess")) {
+        } else if (host === "lichess") {
           const excludedPathParts = ["game", "export", "white", "black"];
           const gameId = new URL(link).pathname
             .split("/")
