@@ -8158,7 +8158,7 @@ Handled 2026-09-19 together with f-20260905-14. The Files controls fit 320px / 2
 
 ### Unscoped stop prefers a pending admission and leaves the live search running
 
-* **ID:** f-20260911-02 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260911-02 · **Status:** handled · **Area:** engine-uci · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/engine/process.rs` `stop_generation` (`:1054-1084`) — generation is taken from `admissions` first, then `actors`.
 * **Defect:** a Stop without an explicit generation, while actor generation G1 is searching and admission G2 is pending, binds to G2, cancels only that admission, then returns `Ok(())` because `current.generation != G2`. G1 keeps searching.
 * **Why it matters:** `.claude/rules/engine-lifecycle.md` — every spawn has a kill on every exit path, and a stop of one identity must not miss the live child. The user pressed Stop on the engine that is outputting lines.
