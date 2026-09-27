@@ -36,9 +36,15 @@ test("only the first separator is pnpm's; a later one is the caller's own", () =
   ]);
 });
 
-// The launchers themselves, not only the helper: a launcher that stopped calling it would
-// leave the unit tests above green while the scoped run widened to the whole suite again.
-test("the container launcher hands Playwright the selection as options", async () => {
+// The package scripts themselves, through pnpm, not only the helper: a launcher that stopped
+// calling it, or a package script that bypassed its launcher, would leave the unit tests above
+// green while the scoped run widened to the whole suite again.
+const projectRoot = resolve(scripts, "..");
+function pnpm(args, env = process.env) {
+  return spawnSync("pnpm", ["--silent", ...args], { cwd: projectRoot, encoding: "utf8", env });
+}
+
+test("the container snapshot command hands Playwright the selection as options", async () => {
   const bin = await mkdtemp(join(tmpdir(), "fake-docker-"));
   const record = join(bin, "argv.json");
   const docker = join(bin, "docker");
@@ -54,17 +60,10 @@ test("the container launcher hands Playwright the selection as options", async (
     ].join("\n"),
   );
   await chmod(docker, 0o755);
-  const run = spawnSync(
-    process.execPath,
-    [
-      join(scripts, "run-e2e-container.mjs"),
-      "--update-snapshots",
-      "--",
-      "--project=async-errors",
-      directoryTrash,
-    ],
-    { encoding: "utf8", env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}` } },
-  );
+  const run = pnpm(["test:e2e:update", "--", "--project=async-errors", directoryTrash], {
+    ...process.env,
+    PATH: `${bin}${delimiter}${process.env.PATH}`,
+  });
   assert.equal(run.status, 0, run.stderr);
   const argv = JSON.parse(await readFile(record, "utf8"));
   assert.deepEqual(argv.slice(argv.indexOf("test")), [
@@ -75,14 +74,10 @@ test("the container launcher hands Playwright the selection as options", async (
   ]);
 });
 
-test("the native launcher selects only the named test through pnpm's separator", () => {
+test("the native e2e command selects only the named test through pnpm's separator", () => {
   // `--list` sits before the separator, so a regression lists the whole suite instead of
   // running it.
-  const run = spawnSync(
-    process.execPath,
-    [join(scripts, "run-e2e-native.mjs"), "--list", "--", "--project=async-errors", directoryTrash],
-    { cwd: resolve(scripts, ".."), encoding: "utf8" },
-  );
+  const run = pnpm(["test:e2e", "--list", "--", "--project=async-errors", directoryTrash]);
   assert.equal(run.status, 0, run.stderr);
   assert.match(
     run.stdout,
