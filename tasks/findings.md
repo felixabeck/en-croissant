@@ -8051,7 +8051,7 @@ The same-parent install check is unchanged. Closed with f-20260914-12
 
 ### Invalid halfmove errors reference a misspelled catalogue key
 
-* **ID:** f-20260910-05 · **Status:** open · **Area:** i18n · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260910-05 · **Status:** handled · **Area:** i18n · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `src/utils/chessops.ts:90`, consumed by `src/components/boards/Board.tsx`, all `src/translation/*.json`.
 * **Defect:** `chessopsError` maps `InvalidFen.Halfmoves` to `Errors.InvalidHalfmoves`, but all 16 catalogues contain only `Errors.InvalidHaldmoves`. A malformed FEN halfmove field therefore displays the untranslated key.
 * **Evidence:** the producer spelling differs from the retained catalogue spelling in every locale. Unlike f-20260830-11, extraction already preserves `Errors.*`; this is a producer/catalogue typo, so it does not share the dynamic-extraction root.
