@@ -93,8 +93,9 @@ repo has no `scripts/dev-up.sh`.
 
 ## After a visible UI change
 
-5. Run `pnpm test:e2e:container` (add `-- --project=<name>` for a single
-   affected project). Keep the snapshots. Missing snapshots are not
+5. Run `pnpm test:e2e:container` (add `--project=<name>` for a single
+   affected project; no `--` separator — the wrapper tolerates one, but this
+   is the canonical form). Keep the snapshots. Missing snapshots are not
    evidence that layout is correct.
 6. For responsive work, the committed matrix already includes 320px and
    200% font-scale. That layout is a known open defect (clipped headings,

@@ -18,69 +18,92 @@
 import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isEntrypoint } from "./entrypoint.mjs";
 import { playwrightImage } from "./playwright-image.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const image = playwrightImage();
 
-const docker = spawnSync("docker", ["version", "--format", "{{.Server.Version}}"], {
-  encoding: "utf8",
-});
-if (docker.status !== 0) {
-  process.stderr.write(
-    "docker is required for the containerized e2e run and is not available.\n" +
-      "The native `pnpm test:e2e` compares against snapshots recorded in the container,\n" +
-      "so it fails on font rasterization alone on most machines. Install docker, or run\n" +
-      "the suite in CI.\n",
-  );
-  process.exit(1);
+/**
+ * The arguments handed to `playwright test` for this script's own argv tail.
+ *
+ * pnpm keeps a `--` its caller writes: `pnpm test:e2e:update -- --project=x` reaches this
+ * script as `["--update-snapshots", "--", "--project=x"]` (pnpm 10.34.5, measured
+ * 2026-09-27). Playwright reads everything after `--` as test-file filters, so the
+ * `--project` and `--grep` that should have narrowed the run matched no file argument and the
+ * whole suite ran — a "scoped" snapshot update that could rewrite unrelated snapshots
+ * (`f-20260910-07`). The first `--` is that pnpm artefact, never a Playwright separator, so it
+ * is dropped; with or without it, the options reach Playwright as options.
+ */
+export function playwrightArguments(forwarded) {
+  const separator = forwarded.indexOf("--");
+  if (separator === -1) return [...forwarded];
+  return [...forwarded.slice(0, separator), ...forwarded.slice(separator + 1)];
 }
 
-// Scope, stated honestly: this pins the RENDERING environment, which is what the snapshots
-// depend on. It does not make the run portable across host platforms — `node_modules` is
-// mounted from the host, so its native packages (esbuild, @swc/core, @parcel/watcher) must be
-// the ones Linux x64 needs. On a macOS or Windows host, install dependencies inside the
-// container instead of mounting a host tree built for another platform.
-//
-// Root-owned dist/, artifacts/ and snapshot files in the host tree are worse than a failed
-// run, so the container always runs as the invoking user. That user has no entry in the
-// image's /etc/passwd, hence an explicit writable HOME.
-if (typeof process.getuid !== "function" || typeof process.getgid !== "function") {
-  process.stderr.write(
-    "The containerized e2e run needs a POSIX host: it maps the container process to the\n" +
-      "invoking uid/gid so nothing lands root-owned in the working tree, and process.getuid\n" +
-      "is unavailable here (Windows). Run it under WSL, or in CI.\n",
+function main() {
+  const image = playwrightImage();
+
+  const docker = spawnSync("docker", ["version", "--format", "{{.Server.Version}}"], {
+    encoding: "utf8",
+  });
+  if (docker.status !== 0) {
+    process.stderr.write(
+      "docker is required for the containerized e2e run and is not available.\n" +
+        "The native `pnpm test:e2e` compares against snapshots recorded in the container,\n" +
+        "so it fails on font rasterization alone on most machines. Install docker, or run\n" +
+        "the suite in CI.\n",
+    );
+    process.exit(1);
+  }
+
+  // Scope, stated honestly: this pins the RENDERING environment, which is what the snapshots
+  // depend on. It does not make the run portable across host platforms — `node_modules` is
+  // mounted from the host, so its native packages (esbuild, @swc/core, @parcel/watcher) must be
+  // the ones Linux x64 needs. On a macOS or Windows host, install dependencies inside the
+  // container instead of mounting a host tree built for another platform.
+  //
+  // Root-owned dist/, artifacts/ and snapshot files in the host tree are worse than a failed
+  // run, so the container always runs as the invoking user. That user has no entry in the
+  // image's /etc/passwd, hence an explicit writable HOME.
+  if (typeof process.getuid !== "function" || typeof process.getgid !== "function") {
+    process.stderr.write(
+      "The containerized e2e run needs a POSIX host: it maps the container process to the\n" +
+        "invoking uid/gid so nothing lands root-owned in the working tree, and process.getuid\n" +
+        "is unavailable here (Windows). Run it under WSL, or in CI.\n",
+    );
+    process.exit(1);
+  }
+  const uid = process.getuid();
+  const gid = process.getgid();
+
+  const result = spawnSync(
+    "docker",
+    [
+      "run",
+      "--rm",
+      "--init",
+      // Chromium exhausts the default 64 MB /dev/shm and crashes mid-suite.
+      "--ipc=host",
+      "--user",
+      `${uid}:${gid}`,
+      "--volume",
+      `${projectRoot}:/work`,
+      "--workdir",
+      "/work",
+      "--env",
+      "HOME=/tmp",
+      "--env",
+      "CI=1",
+      image,
+      "node_modules/.bin/playwright",
+      "test",
+      ...playwrightArguments(process.argv.slice(2)),
+    ],
+    { stdio: "inherit" },
   );
-  process.exit(1);
+
+  if (result.error) throw result.error;
+  process.exit(result.status ?? 1);
 }
-const uid = process.getuid();
-const gid = process.getgid();
 
-const result = spawnSync(
-  "docker",
-  [
-    "run",
-    "--rm",
-    "--init",
-    // Chromium exhausts the default 64 MB /dev/shm and crashes mid-suite.
-    "--ipc=host",
-    "--user",
-    `${uid}:${gid}`,
-    "--volume",
-    `${projectRoot}:/work`,
-    "--workdir",
-    "/work",
-    "--env",
-    "HOME=/tmp",
-    "--env",
-    "CI=1",
-    image,
-    "node_modules/.bin/playwright",
-    "test",
-    ...process.argv.slice(2),
-  ],
-  { stdio: "inherit" },
-);
-
-if (result.error) throw result.error;
-process.exit(result.status ?? 1);
+if (isEntrypoint(import.meta.url)) main();

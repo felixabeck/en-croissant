@@ -15,7 +15,7 @@
     "skills:bridges:test": "node --test scripts/check-skill-bridges-tests.mjs",
     "gates:routing:check": "node scripts/check-gate-routing.mjs",
     "gates:routing:test": "node --test scripts/check-gate-routing-tests.mjs",
-    "gates:contract:check": "pnpm mutation:guard:check && pnpm lint:ci && pnpm tauri:boundary:check && pnpm rust:surface:check && pnpm ui:boundary:check && pnpm skills:check && pnpm skills:bridges:test && pnpm gates:routing:check && pnpm gates:routing:test && pnpm tools:parity:check && pnpm tools:parity:test && pnpm workflows:check && pnpm workflows:permissions:test && pnpm hooks:check && pnpm ui:boundary:report:test && pnpm coverage:report:test && pnpm bundle:report:test && pnpm mutation:runner:test && pnpm gates:receipt:test && pnpm rust:windows:test && pnpm entrypoint:test && pnpm install:local:test && pnpm app:driver:test && pnpm findings:test && ./scripts/findings.py check && pnpm ipc:consumers:check",
+    "gates:contract:check": "pnpm mutation:guard:check && pnpm lint:ci && pnpm tauri:boundary:check && pnpm rust:surface:check && pnpm ui:boundary:check && pnpm skills:check && pnpm skills:bridges:test && pnpm gates:routing:check && pnpm gates:routing:test && pnpm tools:parity:check && pnpm tools:parity:test && pnpm workflows:check && pnpm workflows:permissions:test && pnpm hooks:check && pnpm ui:boundary:report:test && pnpm coverage:report:test && pnpm bundle:report:test && pnpm mutation:runner:test && pnpm gates:receipt:test && pnpm rust:windows:test && pnpm entrypoint:test && pnpm e2e:container:test && pnpm install:local:test && pnpm app:driver:test && pnpm findings:test && ./scripts/findings.py check && pnpm ipc:consumers:check",
     "gate:ensure": "node scripts/gate-receipt.mjs ensure",
     "gate:run": "node scripts/gate-receipt.mjs run",
     "gate:check": "node scripts/gate-receipt.mjs check",
@@ -67,7 +67,8 @@
     "verify:app": "node scripts/verify-app.mjs",
     "test:e2e": "playwright test",
     "test:e2e:container": "node scripts/run-e2e-container.mjs",
-    "test:e2e:update": "node scripts/run-e2e-container.mjs --update-snapshots"
+    "test:e2e:update": "node scripts/run-e2e-container.mjs --update-snapshots",
+    "e2e:container:test": "node --test scripts/run-e2e-container-tests.mjs"
   },
   "dependencies": {
     "@badrap/result": "^0.2.13",
