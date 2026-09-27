@@ -242,7 +242,7 @@ En Croissant's own.
 
 ### 2. The 320px / 200% font-scale layout is broken and its screenshots record the breakage
 
-* **ID:** f-20260829-02 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** felix-snapshot-deny-lifted
+* **ID:** f-20260829-02 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `e2e/async-errors.spec.ts-snapshots/*`, `e2e/settings-responsive.spec.ts-snapshots/*`,
   `e2e/security-consent.spec.ts-snapshots/*`, and the components they render. Those are the four
   committed snapshots from the three 320px / 200% Playwright projects.
