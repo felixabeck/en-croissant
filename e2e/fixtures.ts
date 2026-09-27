@@ -79,14 +79,14 @@ export async function assertFilesColumnsNotClipped(page: Page) {
     }
 }
 
-// Selects a Files tree row by its name. Once a row wraps at a narrow width its centre can be one of
-// its icon buttons, so a plain row click would not select; the name always does.
 /** Reloads once without the fixture's per-load storage reset, as a real reload would. */
 export async function preserveStorageForReload(page: Page) {
     await page.evaluate(() => sessionStorage.setItem("__E2E_PRESERVE_STORAGE_ONCE__", "1"));
     await page.reload();
 }
 
+// Selects a Files tree row by its name. Once a row wraps at a narrow width its centre can be one of
+// its icon buttons, so a plain row click would not select; the name always does.
 export async function selectFilesTreeRow(page: Page, name: string): Promise<Locator> {
     const row = page.getByRole("treeitem", { name, exact: true });
     await row.getByText(name, { exact: true }).click();
