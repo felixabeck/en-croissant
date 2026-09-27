@@ -947,7 +947,6 @@ struct LiveSession {
 struct RestoreJoinOnDrop<'a> {
     slot: &'a std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     handle: Option<tokio::task::JoinHandle<()>>,
-    restore: bool,
 }
 
 impl<'a> RestoreJoinOnDrop<'a> {
@@ -958,12 +957,11 @@ impl<'a> RestoreJoinOnDrop<'a> {
         Self {
             slot,
             handle: Some(handle),
-            restore: true,
         }
     }
 
-    // This guard is created only with a handle and relinquishes it only after
-    // that handle has completed or has been aborted and joined.
+    // The handle remains here from construction until disarm; every caller
+    // disarms only after its last use, so this expect is an invariant.
     fn handle_mut(&mut self) -> &mut tokio::task::JoinHandle<()> {
         self.handle
             .as_mut()
@@ -971,7 +969,6 @@ impl<'a> RestoreJoinOnDrop<'a> {
     }
 
     fn disarm(&mut self) {
-        self.restore = false;
         self.handle.take();
     }
 
@@ -982,9 +979,6 @@ impl<'a> RestoreJoinOnDrop<'a> {
 
 impl Drop for RestoreJoinOnDrop<'_> {
     fn drop(&mut self) {
-        if !self.restore {
-            return;
-        }
         let Some(handle) = self.handle.take() else {
             return;
         };
@@ -1002,37 +996,38 @@ impl Drop for RestoreJoinOnDrop<'_> {
 }
 
 struct PredecessorRetirement {
-    session: Option<Arc<LiveSession>>,
+    session: Arc<LiveSession>,
     game_id: GameId,
     join_budget: Duration,
+    armed: bool,
 }
 
 impl PredecessorRetirement {
     fn new(session: Arc<LiveSession>, game_id: GameId, join_budget: Duration) -> Self {
         Self {
-            session: Some(session),
+            session,
             game_id,
             join_budget,
+            armed: true,
         }
     }
 
     async fn finish(&self) -> Result<(), Error> {
-        match &self.session {
-            Some(session) => session.finish_retired(self.join_budget).await,
-            None => Ok(()),
-        }
+        self.session.finish_retired(self.join_budget).await
     }
 
     fn disarm(&mut self) {
-        self.session = None;
+        self.armed = false;
     }
 }
 
 impl Drop for PredecessorRetirement {
     fn drop(&mut self) {
-        let Some(session) = self.session.take() else {
+        if !self.armed {
             return;
-        };
+        }
+        self.armed = false;
+        let session = self.session.clone();
         let game_id = self.game_id.clone();
         let session_id = session.session;
         let join_budget = self.join_budget;
@@ -1101,7 +1096,7 @@ fn log_game_cleanup_error(game_id: &str, session: u64, event: &'static str, erro
         error.diagnostic()
     );
     #[cfg(test)]
-    match crate::engine::REGISTRATION_CLEANUP_ERRORS.lock() {
+    match crate::engine::CLEANUP_FAILURE_LOG.lock() {
         Ok(mut errors) => errors.push(message.clone()),
         Err(poisoned) => poisoned.into_inner().push(message.clone()),
     }
@@ -1417,7 +1412,7 @@ fn aggregate_game_engine_termination_results(
     let failures = results
         .into_iter()
         .filter_map(Result::err)
-        .map(|error| error.diagnostic())
+        .map(|error| error.to_string())
         .collect::<Vec<_>>();
     if failures.is_empty() {
         Ok(())
@@ -1637,14 +1632,20 @@ impl GameManager {
             },
         ) = (white_registration, &config.white)
         {
-            let registered = spawn_configured_game_engine(
+            let registered = match spawn_configured_game_engine(
                 registration,
                 handle.clone(),
                 options,
                 authority.clone(),
                 castling_mode.is_chess960(),
             )
-            .await?;
+            .await
+            {
+                Ok(registered) => registered,
+                Err(primary) => {
+                    return Err(construction.abandon(primary).await);
+                }
+            };
             construction.own(&engine_supervisor, &registered);
             controller.white_engine = Some(registered);
         }
@@ -3447,7 +3448,7 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    use crate::engine::REGISTRATION_CLEANUP_ERRORS;
+    use crate::engine::CLEANUP_FAILURE_LOG;
     #[cfg(unix)]
     use crate::engine::REGISTRATION_GUARD_DROPS;
 
@@ -3535,7 +3536,7 @@ mod tests {
 
     fn registration_cleanup_messages(key: &EngineKey, generation: u64) -> Vec<String> {
         let identity = format!("{}:{} generation={generation}", key.tab, key.engine);
-        let errors = REGISTRATION_CLEANUP_ERRORS
+        let errors = CLEANUP_FAILURE_LOG
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         errors
@@ -3547,7 +3548,7 @@ mod tests {
 
     fn game_cleanup_messages(game_id: &str, session: u64, event: &str) -> Vec<String> {
         let identity = format!("game_id={game_id} session={session} event={event}");
-        let errors = REGISTRATION_CLEANUP_ERRORS
+        let errors = CLEANUP_FAILURE_LOG
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         errors
@@ -6168,7 +6169,7 @@ done
             Error::OperationAndCleanup { primary, cleanup } => {
                 assert_eq!(primary, "Conflict: construction primary sentinel");
                 assert!(cleanup.contains("failed to terminate game engines"));
-                assert!(cleanup.contains(&error_text));
+                assert!(!cleanup.contains(&error_text));
             }
             other => panic!("expected a folded construction error, got {other:?}"),
         }
@@ -6181,7 +6182,24 @@ done
         let messages = game_cleanup_messages(game_id, 1, "construction abandoned");
         assert_eq!(messages.len(), 1);
         assert!(messages[0].contains("construction primary sentinel"));
-        assert!(messages[0].contains(&error_text));
+        assert!(messages[0].contains("failed to terminate game engines"));
+        assert!(!messages[0].contains(&error_text));
+    }
+
+    #[test]
+    fn aggregate_game_engine_termination_error_keeps_os_cause_out_of_ipc() {
+        const CAUSE: &str = "aggregate-game-termination-os-cause";
+        let error = aggregate_game_engine_termination_results([Err(Error::from(
+            std::io::Error::other(CAUSE),
+        ))])
+        .expect_err("the aggregate reports the failed termination");
+
+        assert!(error
+            .to_string()
+            .contains("failed to terminate game engines"));
+        assert!(!error.to_string().contains(CAUSE));
+        let serialized = serde_json::to_string(&error).unwrap();
+        assert!(!serialized.contains(CAUSE));
     }
 
     #[tokio::test]
@@ -6218,6 +6236,25 @@ done
         let messages = game_cleanup_messages(game_id, 1, "construction abandoned");
         assert_eq!(messages.len(), 1);
         assert!(messages[0].contains(&format!("{game_id}-primary-io-cause")));
+        assert!(messages[0].contains(&format!("{game_id}-primary-cleanup-cause")));
+    }
+
+    #[tokio::test]
+    async fn construction_abandon_logs_operation_and_cleanup_primary_without_guards() {
+        let game_id = "construction_abandon_logs_operation_and_cleanup_primary_without_guards";
+        assert!(game_cleanup_messages(game_id, 1, "construction abandoned").is_empty());
+        let primary = Error::with_cleanup(
+            std::io::Error::other(format!("{game_id}-primary-cause")).into(),
+            Err(std::io::Error::other(format!("{game_id}-primary-cleanup-cause")).into()),
+        );
+        let construction = GameEngineConstruction::new(game_id.into(), 1);
+
+        let error = construction.abandon(primary).await;
+
+        assert!(matches!(error, Error::OperationAndCleanup { .. }));
+        let messages = game_cleanup_messages(game_id, 1, "construction abandoned");
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].contains(&format!("{game_id}-primary-cause")));
         assert!(messages[0].contains(&format!("{game_id}-primary-cleanup-cause")));
     }
 
@@ -6289,6 +6326,7 @@ done
         let generation = white_generation.load(Ordering::SeqCst);
         assert_ne!(generation, 0);
         assert!(supervisor.get_exact(&white_key).is_none());
+        assert!(game_cleanup_messages(game_id, 1, "construction abandoned").is_empty());
         assert_session_retired(&manager, game_id, 1).await;
         assert_unrelated_engine_survives(&supervisor, &unrelated);
         supervisor
@@ -6396,7 +6434,10 @@ done
         let black_generation = wait_for_generation(&supervisor, &black_key).await;
         let error = task.await.unwrap().unwrap_err();
 
-        assert!(error.to_string().contains(&old_error));
+        assert!(error
+            .to_string()
+            .contains("failed to terminate game engines"));
+        assert!(!error.to_string().contains(&old_error));
         assert!(supervisor.get_exact(&white_key).is_none());
         assert!(supervisor.get_exact(&black_key).is_none());
         wait_for_generation_gone(&supervisor, &white_key, white_generation).await;
@@ -6407,7 +6448,8 @@ done
             .any(|message| message.contains(&old_error)));
         let messages = game_cleanup_messages(game_id, 1, "retirement");
         assert_eq!(messages.len(), 1);
-        assert!(messages[0].contains(&old_error));
+        assert!(messages[0].contains("failed to terminate game engines"));
+        assert!(!messages[0].contains(&old_error));
         assert_session_retired(&manager, game_id, 1).await;
         assert!(!manager.games.contains_key(game_id));
         assert_unrelated_engine_survives(&supervisor, &unrelated);
@@ -6784,6 +6826,8 @@ done
         let white_generation = white.generation;
         let black_key = black.key.clone();
         let black_generation = black.generation;
+        assert!(registration_cleanup_messages(&white_key, white_generation).is_empty());
+        assert!(registration_cleanup_messages(&black_key, black_generation).is_empty());
         let (live, controller) = test_live_session_with_supervisor(game_id, 1, supervisor.clone());
         set_session_engines(&controller, Some(white), Some(black)).await;
         let join = tokio::spawn(async { panic!("join-error test loop panic") });
@@ -6871,8 +6915,9 @@ done
         match error {
             Error::OperationAndCleanup { primary, cleanup } => {
                 assert!(primary.contains("game loop join failed"));
-                assert!(cleanup.contains(&white_error));
-                assert!(cleanup.contains(&black_error));
+                assert!(cleanup.contains("failed to terminate game engines"));
+                assert!(!cleanup.contains(&white_error));
+                assert!(!cleanup.contains(&black_error));
             }
             other => panic!("expected combined join and termination failure, got {other:?}"),
         }
@@ -6889,8 +6934,9 @@ done
         let retirement_messages = game_cleanup_messages(game_id, 1, "retirement");
         assert_eq!(retirement_messages.len(), 1);
         assert!(retirement_messages[0].contains("game loop join failed"));
-        assert!(retirement_messages[0].contains(&white_error));
-        assert!(retirement_messages[0].contains(&black_error));
+        assert!(retirement_messages[0].contains("failed to terminate game engines"));
+        assert!(!retirement_messages[0].contains(&white_error));
+        assert!(!retirement_messages[0].contains(&black_error));
         assert_session_retired(&manager, game_id, 1).await;
         assert_unrelated_engine_survives(&supervisor, &unrelated);
         supervisor
@@ -7003,8 +7049,8 @@ done
         assert!(error
             .to_string()
             .contains("failed to terminate game engines"));
-        assert!(error.to_string().contains(&white_error));
-        assert!(error.to_string().contains(&black_error));
+        assert!(!error.to_string().contains(&white_error));
+        assert!(!error.to_string().contains(&black_error));
         assert!(supervisor.get_exact(&white_key).is_none());
         assert!(supervisor.get_exact(&black_key).is_none());
         for (key, generation, cause) in [
@@ -7017,8 +7063,9 @@ done
         }
         let messages = game_cleanup_messages(game_id, 1, "retirement");
         assert_eq!(messages.len(), 1);
-        assert!(messages[0].contains(&white_error));
-        assert!(messages[0].contains(&black_error));
+        assert!(messages[0].contains("failed to terminate game engines"));
+        assert!(!messages[0].contains(&white_error));
+        assert!(!messages[0].contains(&black_error));
         assert_session_retired(&manager, game_id, 1).await;
         assert_unrelated_engine_survives(&supervisor, &unrelated);
         supervisor
@@ -7059,6 +7106,8 @@ done
         let white_generation = white.generation;
         let black_key = black.key.clone();
         let black_generation = black.generation;
+        assert!(registration_cleanup_messages(&white_key, white_generation).is_empty());
+        assert!(registration_cleanup_messages(&black_key, black_generation).is_empty());
         let (live, controller) = test_live_session_with_supervisor(game_id, 1, supervisor.clone());
         set_session_engines(&controller, Some(white), Some(black)).await;
         let join = tokio::spawn(std::future::pending::<()>());
@@ -7078,8 +7127,9 @@ done
         match error {
             Error::OperationAndCleanup { primary, cleanup } => {
                 assert!(primary.contains("did not exit within"));
-                assert!(cleanup.contains(&white_error));
-                assert!(cleanup.contains(&black_error));
+                assert!(cleanup.contains("failed to terminate game engines"));
+                assert!(!cleanup.contains(&white_error));
+                assert!(!cleanup.contains(&black_error));
             }
             other => panic!("expected folded timeout and cleanup failure, got {other:?}"),
         }
@@ -7099,8 +7149,9 @@ done
         let retirement_messages = game_cleanup_messages(game_id, 1, "retirement");
         assert_eq!(retirement_messages.len(), 1);
         assert!(retirement_messages[0].contains("did not exit within"));
-        assert!(retirement_messages[0].contains(&white_error));
-        assert!(retirement_messages[0].contains(&black_error));
+        assert!(retirement_messages[0].contains("failed to terminate game engines"));
+        assert!(!retirement_messages[0].contains(&white_error));
+        assert!(!retirement_messages[0].contains(&black_error));
         assert_session_retired(&manager, game_id, 1).await;
         assert_unrelated_engine_survives(&supervisor, &unrelated);
         supervisor
@@ -7172,8 +7223,9 @@ done
         wait_for_generation_gone(&supervisor, &black_key, black_generation).await;
         let messages = game_cleanup_messages(game_id, 1, "retirement");
         assert_eq!(messages.len(), 1);
-        assert!(messages[0].contains(&white_error));
-        assert!(messages[0].contains(&black_error));
+        assert!(messages[0].contains("failed to terminate game engines"));
+        assert!(!messages[0].contains(&white_error));
+        assert!(!messages[0].contains(&black_error));
         for (key, generation, cause) in [
             (&white_key, white_generation, white_error.as_str()),
             (&black_key, black_generation, black_error.as_str()),
@@ -7715,7 +7767,7 @@ done
                 },
                 RoutingPattern {
                     text: "return Err(construction.abandon(primary).await);",
-                    count: 3,
+                    count: 4,
                 },
             ],
         },
@@ -7944,8 +7996,8 @@ done
             }
         }
         assert_eq!(
-            checked_occurrences, 36,
-            "all 36 production routing and cleanup occurrences must be tested individually"
+            checked_occurrences, 37,
+            "all 37 production routing and cleanup occurrences must be tested individually"
         );
     }
 }

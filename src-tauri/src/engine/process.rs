@@ -1636,7 +1636,7 @@ impl Drop for PendingActorGuard {
 }
 
 #[cfg(test)]
-pub(crate) static REGISTRATION_CLEANUP_ERRORS: StdMutex<Vec<String>> = StdMutex::new(Vec::new());
+pub(crate) static CLEANUP_FAILURE_LOG: StdMutex<Vec<String>> = StdMutex::new(Vec::new());
 
 #[cfg(test)]
 pub(crate) static REGISTRATION_GUARD_DROPS: StdMutex<Vec<(EngineKey, u64, bool)>> =
@@ -1686,7 +1686,7 @@ pub(crate) fn log_registration_cleanup_error(
         ),
     };
     #[cfg(test)]
-    match REGISTRATION_CLEANUP_ERRORS.lock() {
+    match CLEANUP_FAILURE_LOG.lock() {
         Ok(mut errors) => errors.push(message.clone()),
         Err(poisoned) => poisoned.into_inner().push(message.clone()),
     }
@@ -1708,16 +1708,22 @@ impl RegistrationGuard {
     }
 
     pub(crate) async fn terminate_now(mut self) -> Result<(), Error> {
-        let result = self
-            .supervisor
-            .terminate_exact(&self.key, self.generation)
-            .await;
-        if let Err(error) = &result {
-            log_registration_cleanup_error(Some(&self.key), Some(self.generation), error);
-        }
+        let result = terminate_exact_and_log(&self.supervisor, &self.key, self.generation).await;
         self.disarm();
         result
     }
+}
+
+async fn terminate_exact_and_log(
+    supervisor: &EngineSupervisor,
+    key: &EngineKey,
+    generation: u64,
+) -> Result<(), Error> {
+    let result = supervisor.terminate_exact(key, generation).await;
+    if let Err(error) = &result {
+        log_registration_cleanup_error(Some(key), Some(generation), error);
+    }
+    result
 }
 
 impl Drop for RegistrationGuard {
@@ -1729,38 +1735,28 @@ impl Drop for RegistrationGuard {
         let key = self.key.clone();
         let generation = self.generation;
         #[cfg(test)]
-        match REGISTRATION_GUARD_DROPS.lock() {
-            Ok(mut drops) => drops.push((key.clone(), generation, false)),
-            Err(poisoned) => poisoned.into_inner().push((key.clone(), generation, false)),
-        }
+        REGISTRATION_GUARD_DROPS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((key.clone(), generation, false));
         tokio::spawn(async move {
-            let result = supervisor.terminate_exact(&key, generation).await;
+            // The helper logs a failure; a dropped guard has nobody to return it to.
+            let _ = terminate_exact_and_log(&supervisor, &key, generation).await;
             #[cfg(test)]
-            match REGISTRATION_GUARD_DROPS.lock() {
-                Ok(mut drops) => {
-                    if let Some((_, _, completed)) =
-                        drops
-                            .iter_mut()
-                            .rev()
-                            .find(|(dropped_key, dropped_generation, _)| {
-                                dropped_key == &key && *dropped_generation == generation
-                            })
-                    {
-                        *completed = true;
-                    }
-                }
-                Err(poisoned) => {
-                    if let Some((_, _, completed)) = poisoned.into_inner().iter_mut().rev().find(
-                        |(dropped_key, dropped_generation, _)| {
+            {
+                let mut drops = REGISTRATION_GUARD_DROPS
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some((_, _, completed)) =
+                    drops
+                        .iter_mut()
+                        .rev()
+                        .find(|(dropped_key, dropped_generation, _)| {
                             dropped_key == &key && *dropped_generation == generation
-                        },
-                    ) {
-                        *completed = true;
-                    }
+                        })
+                {
+                    *completed = true;
                 }
-            }
-            if let Err(error) = result {
-                log_registration_cleanup_error(Some(&key), Some(generation), &error);
             }
         });
     }
@@ -3178,7 +3174,8 @@ async fn engine_actor_loop(
             }
             EngineCommand::StartSearch { mode, reply } => {
                 let started = runtime.start_search(&mode).await;
-                let result = recover_failed_protocol(&mut runtime, started).await;
+                let result =
+                    recover_failed_protocol(&mut runtime, &registration_identity, started).await;
                 let failed = result.is_err();
                 let _ = reply.send(result);
                 if failed {
@@ -3202,7 +3199,7 @@ async fn engine_actor_loop(
                 }
             }
             EngineCommand::Stop(reply) => {
-                let result = stop_at_protocol_boundary(&mut runtime).await;
+                let result = stop_at_protocol_boundary(&mut runtime, &registration_identity).await;
                 let failed = result.is_err();
                 let _ = reply.send(result);
                 if failed {
@@ -3234,14 +3231,18 @@ async fn terminate_and_reply(
 ) {
     let result = runtime.terminate().await;
     if let Err(error) = &result {
-        match registration_identity.get() {
-            Some((key, generation)) => {
-                log_registration_cleanup_error(Some(key), Some(*generation), error);
-            }
-            None => log_registration_cleanup_error(None, None, error),
-        }
+        log_actor_cleanup_failure(registration_identity, error);
     }
     let _ = reply.send(result);
+}
+
+fn log_actor_cleanup_failure(registration_identity: &OnceLock<(EngineKey, u64)>, error: &Error) {
+    match registration_identity.get() {
+        Some((key, generation)) => {
+            log_registration_cleanup_error(Some(key), Some(*generation), error);
+        }
+        None => log_registration_cleanup_error(None, None, error),
+    }
 }
 
 /// A failed UCI stop or `go` means stdout can no longer be correlated with a
@@ -3249,17 +3250,27 @@ async fn terminate_and_reply(
 /// this actor, never to accept another `position`/`go` on the same stream.
 async fn recover_failed_protocol<T>(
     runtime: &mut EngineRuntime,
+    registration_identity: &OnceLock<(EngineKey, u64)>,
     result: Result<T, Error>,
 ) -> Result<T, Error> {
     match result {
         Ok(value) => Ok(value),
-        Err(primary) => Err(Error::with_cleanup(primary, runtime.terminate().await)),
+        Err(primary) => {
+            let termination = runtime.terminate().await;
+            if let Err(error) = &termination {
+                log_actor_cleanup_failure(registration_identity, error);
+            }
+            Err(Error::with_cleanup(primary, termination))
+        }
     }
 }
 
-async fn stop_at_protocol_boundary(runtime: &mut EngineRuntime) -> Result<(), Error> {
+async fn stop_at_protocol_boundary(
+    runtime: &mut EngineRuntime,
+    registration_identity: &OnceLock<(EngineKey, u64)>,
+) -> Result<(), Error> {
     let result = runtime.stop_current().await;
-    recover_failed_protocol(runtime, result).await
+    recover_failed_protocol(runtime, registration_identity, result).await
 }
 
 async fn service_search_read(
@@ -3287,7 +3298,8 @@ async fn service_search_read(
                         return false;
                     }
                     EngineCommand::Stop(control_reply) => {
-                        let result = stop_at_protocol_boundary(runtime).await;
+                        let result =
+                            stop_at_protocol_boundary(runtime, registration_identity).await;
                         let failed = result.is_err();
                         let _ = control_reply.send(result);
                         let _ = reply.send(if failed {
@@ -3336,7 +3348,7 @@ async fn service_search_read(
                     return false;
                 }
                 Some(EngineCommand::Stop(control_reply)) => {
-                    let result = stop_at_protocol_boundary(runtime).await;
+                    let result = stop_at_protocol_boundary(runtime, registration_identity).await;
                     let failed = result.is_err();
                     let _ = control_reply.send(result);
                     let _ = reply.send(if failed {
@@ -4059,7 +4071,7 @@ mod tests {
 
     fn registration_cleanup_messages(key: &EngineKey, generation: u64) -> Vec<String> {
         let identity = format!("for {}:{} generation={generation} ", key.tab, key.engine);
-        match REGISTRATION_CLEANUP_ERRORS.lock() {
+        match CLEANUP_FAILURE_LOG.lock() {
             Ok(errors) => errors
                 .iter()
                 .filter(|message| message.contains(&identity))
@@ -4194,6 +4206,11 @@ mod tests {
         terminate_calls: Arc<AtomicUsize>,
     }
 
+    struct ProtocolAndTerminationErrorIo {
+        operation_error: String,
+        termination_error: String,
+    }
+
     #[async_trait]
     impl UciIo for PendingTerminateErrorIo {
         async fn write_line(&mut self, _: &str) -> Result<(), Error> {
@@ -4272,6 +4289,21 @@ mod tests {
                     cleanup: "typed cleanup sentinel".into(),
                 }),
             }
+        }
+    }
+
+    #[async_trait]
+    impl UciIo for ProtocolAndTerminationErrorIo {
+        async fn write_line(&mut self, _: &str) -> Result<(), Error> {
+            Err(io::Error::other(self.operation_error.clone()).into())
+        }
+
+        async fn read_line(&mut self) -> Result<Option<String>, Error> {
+            std::future::pending().await
+        }
+
+        async fn terminate(&mut self, _: Duration, _: Duration) -> Result<(), Error> {
+            Err(io::Error::other(self.termination_error.clone()).into())
         }
     }
 
@@ -4817,8 +4849,10 @@ mod tests {
             }),
             EngineDeadlines::default(),
         );
+        let registration_identity = OnceLock::new();
         let result = recover_failed_protocol::<()>(
             &mut runtime,
+            &registration_identity,
             Err(Error::Conflict("protocol operation sentinel".into())),
         )
         .await;
@@ -4830,6 +4864,56 @@ mod tests {
             }
             other => panic!("expected protocol and termination failure, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn recover_failed_protocol_logs_termination_failure_for_bound_actor() {
+        const OPERATION: &str = "recover-protocol-operation-os-cause";
+        const TERMINATION: &str = "recover-protocol-termination-os-cause";
+        let supervisor = EngineSupervisor::default();
+        let key = EngineKey::new(
+            "recover-protocol-bound-actor".into(),
+            "recover-protocol-bound-actor-engine".into(),
+        )
+        .unwrap();
+        let actor = Arc::new(EngineActor::new(
+            Box::new(ProtocolAndTerminationErrorIo {
+                operation_error: OPERATION.into(),
+                termination_error: TERMINATION.into(),
+            }),
+            EngineDeadlines::default(),
+        ));
+        let supervised = supervisor
+            .replace_handle(
+                key.clone(),
+                actor.clone(),
+                key.engine.clone(),
+                path_ref("recover-protocol-bound-actor-executable"),
+            )
+            .await
+            .unwrap();
+        let generation = supervised.generation;
+        assert!(registration_cleanup_messages(&key, generation).is_empty());
+
+        let error = actor
+            .start_search(&GoMode::Depth(1))
+            .await
+            .expect_err("the injected go write fails and cleanup also fails");
+
+        match error {
+            Error::OperationAndCleanup { primary, cleanup } => {
+                assert!(primary.contains(OPERATION));
+                assert!(cleanup.contains(TERMINATION));
+            }
+            other => panic!("expected protocol and termination failure, got {other:?}"),
+        }
+        let messages = registration_cleanup_messages(&key, generation);
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].contains(TERMINATION));
+        supervisor
+            .terminate_exact(&key, generation)
+            .await
+            .expect("the exited actor can be reaped idempotently");
     }
 
     #[tokio::test]

@@ -3,7 +3,7 @@ mod types;
 mod uci;
 
 #[cfg(test)]
-pub(crate) use process::REGISTRATION_CLEANUP_ERRORS;
+pub(crate) use process::CLEANUP_FAILURE_LOG;
 #[cfg(all(test, unix))]
 pub(crate) use process::REGISTRATION_GUARD_DROPS;
 pub(crate) use process::{

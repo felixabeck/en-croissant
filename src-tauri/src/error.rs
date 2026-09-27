@@ -770,6 +770,43 @@ mod tests {
         assert_eq!(error.diagnostic().matches(&display).count(), 1);
     }
 
+    #[test]
+    fn diagnostic_skips_a_source_already_in_the_outer_source_text() {
+        const INNER: &str = "diagnostic-source-chain-unique-inner";
+
+        #[derive(Debug)]
+        struct Inner;
+
+        impl std::fmt::Display for Inner {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str(INNER)
+            }
+        }
+
+        impl std::error::Error for Inner {}
+
+        #[derive(Debug)]
+        struct Outer(Inner);
+
+        impl std::fmt::Display for Outer {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(formatter, "outer-context: {}", self.0)
+            }
+        }
+
+        impl std::error::Error for Outer {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+
+        let error = Error::from(std::io::Error::other(Outer(Inner)));
+        assert_eq!(
+            error.diagnostic(),
+            format!("I/O failure: outer-context: {INNER}")
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn durability_producer_logs_native_cause() {
