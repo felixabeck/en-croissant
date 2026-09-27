@@ -13,6 +13,7 @@ const fixtures = vi.hoisted(() => ({
   },
   countPgnGames: vi.fn(),
   createTab: vi.fn(),
+  importModal: vi.fn(),
   openFile: vi.fn(),
   notify: vi.fn(),
   readGames: vi.fn(),
@@ -76,7 +77,12 @@ vi.mock("@/components/files/opening", () => ({
 vi.mock("@/utils/tabs", () => ({ createTab: fixtures.createTab }));
 vi.mock("@/utils/files", () => ({ openFile: fixtures.openFile }));
 vi.mock("./CreateRepertoireModal", () => ({ default: () => null }));
-vi.mock("./ImportModal", () => ({ default: () => null }));
+vi.mock("./ImportModal", () => ({
+  default: (props: { ownerId: string }) => {
+    fixtures.importModal(props);
+    return null;
+  },
+}));
 vi.mock("../icons/Chessboard", () => ({ default: () => null }));
 vi.mock("@/components/files/FileIcon", () => ({ FileIcon: () => null }));
 vi.mock("@tabler/icons-react", () => ({
@@ -385,6 +391,16 @@ test("home cards start play, analysis, puzzles, import, and repertoire", async (
   expect(puzzleUpdate(puzzleInput)[0].type).toBe("puzzles");
   expect(puzzleInput).toEqual([{ value: "new-tab", name: "Home", type: "new" }]);
   expect(puzzleUpdate([])).toEqual([]);
+});
+
+test("passes its own tab id to ImportModal as the owner", async () => {
+  await act(async () => {
+    root.render(<NewTabHome id="owning-tab" />);
+  });
+
+  expect(fixtures.importModal).toHaveBeenCalledWith(
+    expect.objectContaining({ ownerId: "owning-tab" }),
+  );
 });
 
 test("shows an empty recent-files state", async () => {

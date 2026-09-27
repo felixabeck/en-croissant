@@ -6,14 +6,7 @@ import { defaultTree } from "@/utils/treeReducer";
 
 const fixtures = vi.hoisted(() => ({
   atoms: {
-    currentTab: Symbol("current-tab"),
     addRecentFile: Symbol("add-recent-file"),
-  },
-  currentTab: {
-    value: "import-tab",
-    name: "New tab",
-    type: "new",
-    gameOrigin: { kind: "none" },
   },
   file: {
     type: "file",
@@ -25,49 +18,88 @@ const fixtures = vi.hoisted(() => ({
   },
   createFile: vi.fn(),
   ensureFileWorkspace: vi.fn(),
+  getChesscomGame: vi.fn(),
+  getLichessGame: vi.fn(),
   loadFileGame: vi.fn(),
+  notifyUnlessCancelled: vi.fn(),
+  parsePGN: vi.fn(),
   pickPgnFile: vi.fn(),
-  readGame: vi.fn(),
-  readGames: vi.fn(),
-  setCurrentTab: vi.fn(),
-  setTabs: vi.fn(),
+  replaceNewTab: vi.fn(),
+  store: {
+    tag: "import-modal-store",
+    activeTabId: "owner-tab",
+    set: (...args: unknown[]) => fixtures.storeSet(...args),
+  },
   storeSet: vi.fn(),
+  setTabs: vi.fn(),
+  openFile: vi.fn(),
 }));
 
-vi.mock("@/state/atoms", () => ({
-  addRecentFileAtom: fixtures.atoms.addRecentFile,
-  currentTabAtom: fixtures.atoms.currentTab,
-}));
-vi.mock("jotai", () => ({
-  useAtom: (atom: symbol) =>
-    atom === fixtures.atoms.currentTab
-      ? [fixtures.currentTab, fixtures.setCurrentTab]
-      : [null, vi.fn()],
-  useStore: () => ({ set: fixtures.storeSet }),
-}));
-vi.mock("@/platform/tauri", () => ({
-  tauri: { readGame: fixtures.readGame, readGames: fixtures.readGames },
-}));
+vi.mock("@/state/atoms", () => ({ addRecentFileAtom: fixtures.atoms.addRecentFile }));
+vi.mock("jotai", () => ({ useStore: () => fixtures.store }));
+vi.mock("@/utils/chess", () => ({ parsePGN: fixtures.parsePGN }));
+vi.mock("@/utils/chess.com/api", () => ({ getChesscomGame: fixtures.getChesscomGame }));
+vi.mock("@/utils/lichess/api", () => ({ getLichessGame: fixtures.getLichessGame }));
+vi.mock("@/utils/tabs", () => ({ replaceNewTab: fixtures.replaceNewTab }));
 vi.mock("@/utils/files", () => ({
   createFile: fixtures.createFile,
   ensureFileWorkspace: fixtures.ensureFileWorkspace,
   loadFileGame: fixtures.loadFileGame,
-  openFile: vi.fn(),
+  openFile: fixtures.openFile,
   pickPgnFile: fixtures.pickPgnFile,
 }));
 vi.mock("@/components/files/notifyError", () => ({
+  notifyUnlessCancelled: fixtures.notifyUnlessCancelled,
   runUnlessCancelled: async (_title: string, action: () => Promise<void>) => action(),
 }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("../common/AppModal", () => ({
-  default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  default: ({
+    children,
+    opened,
+    pending,
+  }: {
+    children: React.ReactNode;
+    opened: boolean;
+    pending?: boolean;
+  }) => (
+    <div data-testid="modal" data-opened={String(opened)} data-pending={String(Boolean(pending))}>
+      {children}
+    </div>
+  ),
 }));
 vi.mock("../common/GenericCard", () => ({
-  default: ({ Header }: { Header: React.ReactNode }) => <div>{Header}</div>,
+  default: ({
+    id,
+    Header,
+    setSelected,
+  }: {
+    id: string;
+    Header: React.ReactNode;
+    setSelected?: (id: string) => void;
+  }) => (
+    <button type="button" data-testid={`mode-${id}`} onClick={() => setSelected?.(id)}>
+      {Header}
+    </button>
+  ),
 }));
 vi.mock("@mantine/core", () => ({
-  Button: ({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
-    <button {...props}>{children}</button>
+  Button: ({
+    children,
+    loading,
+    fullWidth: _fullWidth,
+    mt: _mt,
+    radius: _radius,
+    ...props
+  }: React.ButtonHTMLAttributes<HTMLButtonElement> & {
+    loading?: boolean;
+    fullWidth?: boolean;
+    mt?: string;
+    radius?: string;
+  }) => (
+    <button type="button" aria-busy={loading} {...props}>
+      {children}
+    </button>
   ),
   Checkbox: ({
     checked,
@@ -89,30 +121,102 @@ vi.mock("@mantine/core", () => ({
   Stack: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   Text: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
   Textarea: (props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) => <textarea {...props} />,
-  TextInput: () => null,
+  TextInput: ({
+    label,
+    ...props
+  }: React.InputHTMLAttributes<HTMLInputElement> & { label?: string }) => (
+    <label>
+      {label}
+      <input aria-label={label} {...props} />
+    </label>
+  ),
 }));
 
 import ImportModal from "./ImportModal";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
+const link = "https://www.chess.com/game/live/123";
+const linkPgn = '[Event "Online game"]\n\n1. e4 *';
+
 let host: HTMLDivElement;
 let root: Root;
+let rootMounted: boolean;
+
+function modalElement() {
+  return host.querySelector<HTMLDivElement>('[data-testid="modal"]')!;
+}
+
+function submitButton() {
+  return Array.from(host.querySelectorAll("button")).find(
+    (button) => button.textContent === "Home.Card.ImportGame.Button",
+  )!;
+}
+
+function input(label: string) {
+  return host.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!;
+}
+
+async function renderModal(ownerId = "owner-tab", setOpenModal = vi.fn()) {
+  await act(async () => {
+    root.render(
+      <ImportModal
+        ownerId={ownerId}
+        openModal
+        setOpenModal={setOpenModal}
+        setTabs={fixtures.setTabs}
+      />,
+    );
+  });
+  rootMounted = true;
+  return setOpenModal;
+}
+
+async function chooseFile() {
+  await act(async () => {
+    host.querySelector<HTMLButtonElement>('[data-testid="choose-file"]')!.click();
+  });
+  await vi.waitFor(() => expect(fixtures.pickPgnFile).toHaveBeenCalledOnce());
+  await vi.waitFor(() => expect(submitButton().disabled).toBe(false));
+}
+
+async function chooseType(type: "Link" | "FEN") {
+  await act(async () => {
+    host.querySelector<HTMLButtonElement>(`[data-testid="mode-${type}"]`)!.click();
+  });
+}
+
+async function setInputValue(target: HTMLInputElement, value: string) {
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    setter.call(target, value);
+    target.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
+async function pressEnter(target: HTMLInputElement) {
+  await act(async () => {
+    target.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  });
+}
+
+async function clickSubmit() {
+  await act(async () => submitButton().click());
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
 
 beforeEach(() => {
   sessionStorage.clear();
-  vi.clearAllMocks();
-  fixtures.currentTab = {
-    value: "import-tab",
-    name: "New tab",
-    type: "new",
-    gameOrigin: { kind: "none" },
-  };
-  fixtures.setCurrentTab.mockImplementation(
-    (update: (previous: typeof fixtures.currentTab) => typeof fixtures.currentTab) => {
-      fixtures.currentTab = update(fixtures.currentTab);
-    },
-  );
+  vi.resetAllMocks();
+  fixtures.store.activeTabId = "owner-tab";
+  fixtures.replaceNewTab.mockReturnValue({ kind: "committed", id: "imported-tab" });
   fixtures.pickPgnFile.mockResolvedValue(fixtures.file);
   fixtures.loadFileGame.mockImplementation(async () => {
     const tree = defaultTree();
@@ -126,64 +230,76 @@ beforeEach(() => {
       tree,
     };
   });
+  fixtures.parsePGN.mockImplementation(async () => {
+    const tree = defaultTree();
+    tree.headers.event = "Online game";
+    return tree;
+  });
+  fixtures.getChesscomGame.mockResolvedValue(linkPgn);
+  fixtures.getLichessGame.mockResolvedValue(linkPgn);
+  fixtures.storeSet.mockImplementation(() => undefined);
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
+  rootMounted = false;
 });
 
 afterEach(async () => {
-  await act(async () => root.unmount());
+  if (rootMounted) {
+    await act(async () => root.unmount());
+    rootMounted = false;
+  }
+  vi.restoreAllMocks();
   host.remove();
 });
 
-test("file import seeds a file-backed tab from the fresh game and its stamp", async () => {
+test("file import passes the fresh file tree and file origin to its owner", async () => {
   const seed = vi.spyOn(tabStorage, "seed");
+  fixtures.replaceNewTab.mockReturnValue({ kind: "refused", stage: "workspace" });
+  const ownerTreeBytes = "existing-owner-tree-bytes";
+  const ownerMetadata = { value: "owner-tab", name: "New tab", type: "new" };
+  const ownerMetadataBytes = JSON.stringify(ownerMetadata);
+  sessionStorage.setItem("owner-tab", ownerTreeBytes);
+  sessionStorage.setItem("owner-metadata", ownerMetadataBytes);
   const setOpenModal = vi.fn();
-  await act(async () =>
-    root.render(<ImportModal openModal setOpenModal={setOpenModal} setTabs={fixtures.setTabs} />),
-  );
+  await renderModal("owner-tab", setOpenModal);
+  await chooseFile();
+  await clickSubmit();
+  await vi.waitFor(() => expect(fixtures.replaceNewTab).toHaveBeenCalledOnce());
 
-  await act(async () => {
-    host.querySelector<HTMLButtonElement>('[data-testid="choose-file"]')!.click();
-    await Promise.resolve();
-  });
-  await vi.waitFor(() => expect(fixtures.pickPgnFile).toHaveBeenCalledOnce());
-  await vi.waitFor(() => {
-    expect(
-      Array.from(host.querySelectorAll("button")).find(
-        (button) => button.textContent === "Home.Card.ImportGame.Button",
-      )?.disabled,
-    ).toBe(false);
-  });
-  await act(async () => {
-    Array.from(host.querySelectorAll("button"))
-      .find((button) => button.textContent === "Home.Card.ImportGame.Button")!
-      .click();
-  });
-
+  const loaded = await fixtures.loadFileGame.mock.results[0].value;
   expect(fixtures.loadFileGame).toHaveBeenCalledWith(fixtures.file.handle, 0);
   expect(fixtures.loadFileGame).toHaveBeenCalledOnce();
-  expect(fixtures.readGames).not.toHaveBeenCalled();
-  expect(fixtures.readGame).not.toHaveBeenCalled();
-  expect(fixtures.currentTab).toMatchObject({
-    name: "Fresh from disk",
-    type: "analysis",
-    gameOrigin: { kind: "file", gameNumber: 0, file: { handle: fixtures.file.handle } },
+  expect(fixtures.replaceNewTab).toHaveBeenCalledWith({
+    store: fixtures.store,
+    ownerId: "owner-tab",
+    tab: {
+      name: "Fresh from disk",
+      gameOrigin: {
+        kind: "file",
+        file: expect.objectContaining({ handle: fixtures.file.handle }),
+        gameNumber: 0,
+      },
+      type: "analysis",
+    },
+    tree: loaded.tree,
   });
-  expect(seed).toHaveBeenCalledWith(
-    "import-tab",
-    expect.objectContaining({
-      sourceStamp: "f".repeat(64),
-      headers: expect.objectContaining({ event: "Fresh from disk" }),
-    }),
-  );
+  expect(loaded.tree).toMatchObject({
+    sourceStamp: "f".repeat(64),
+    headers: { event: "Fresh from disk" },
+  });
+  expect(seed).not.toHaveBeenCalled();
+  expect(sessionStorage.getItem("owner-tab")).toBe(ownerTreeBytes);
+  expect(JSON.stringify(ownerMetadata)).toBe(ownerMetadataBytes);
+  expect(sessionStorage.getItem("owner-metadata")).toBe(ownerMetadataBytes);
   expect(fixtures.storeSet).toHaveBeenCalledWith(
     fixtures.atoms.addRecentFile,
     expect.objectContaining({ handle: fixtures.file.handle }),
   );
+  expect(setOpenModal).not.toHaveBeenCalled();
 });
 
-test("saving an imported PGN copies its source after preflight and reloads the saved file", async () => {
+test("saving an imported PGN copies its source before submitting the reloaded file tree", async () => {
   const workspace = { id: { id: "workspace" }, kind: "fileWorkspace" } as const;
   const savedFile = {
     ...fixtures.file,
@@ -210,23 +326,13 @@ test("saving an imported PGN copies its source after preflight and reloads the s
     });
   fixtures.ensureFileWorkspace.mockResolvedValue(workspace);
   fixtures.createFile.mockResolvedValue({ isErr: false, value: savedFile });
+  await renderModal();
+  await chooseFile();
   await act(async () =>
-    root.render(<ImportModal openModal setOpenModal={vi.fn()} setTabs={fixtures.setTabs} />),
+    host.querySelector<HTMLInputElement>('[data-testid="save-to-collection"]')!.click(),
   );
-
-  await act(async () => {
-    host.querySelector<HTMLButtonElement>('[data-testid="choose-file"]')!.click();
-    await Promise.resolve();
-  });
-  await vi.waitFor(() => expect(fixtures.pickPgnFile).toHaveBeenCalledOnce());
-  await act(async () => {
-    host.querySelector<HTMLInputElement>('[data-testid="save-to-collection"]')!.click();
-  });
-  await act(async () => {
-    Array.from(host.querySelectorAll("button"))
-      .find((button) => button.textContent === "Home.Card.ImportGame.Button")!
-      .click();
-  });
+  await clickSubmit();
+  await vi.waitFor(() => expect(fixtures.replaceNewTab).toHaveBeenCalledOnce());
 
   expect(fixtures.createFile).toHaveBeenCalledWith({
     filename: "selected.pgn",
@@ -242,53 +348,265 @@ test("saving an imported PGN copies its source after preflight and reloads the s
   expect(fixtures.loadFileGame).toHaveBeenCalledTimes(2);
   expect(fixtures.loadFileGame).toHaveBeenNthCalledWith(1, fixtures.file.handle, 0);
   expect(fixtures.loadFileGame).toHaveBeenNthCalledWith(2, savedFile.handle, 0);
-  expect(fixtures.readGames).not.toHaveBeenCalled();
-  expect(fixtures.readGame).not.toHaveBeenCalled();
-  const [sourceLoadOrder, savedLoadOrder] = fixtures.loadFileGame.mock.invocationCallOrder;
-  const [createOrder] = fixtures.createFile.mock.invocationCallOrder;
-  expect(sourceLoadOrder).toBeLessThan(createOrder);
-  expect(createOrder).toBeLessThan(savedLoadOrder);
-  expect(fixtures.currentTab).toMatchObject({
-    gameOrigin: { kind: "file", file: { handle: savedFile.handle }, gameNumber: 0 },
-  });
+  expect(fixtures.replaceNewTab).toHaveBeenCalledWith(
+    expect.objectContaining({
+      tab: expect.objectContaining({
+        gameOrigin: { kind: "file", file: savedFile, gameNumber: 0 },
+      }),
+      tree: savedTree,
+    }),
+  );
 });
 
 test("a rejected game-0 preflight creates no copied file", async () => {
-  const error = new Error("game 0 is too large");
-  fixtures.loadFileGame.mockRejectedValueOnce(error);
+  fixtures.loadFileGame.mockRejectedValueOnce(new Error("game 0 is too large"));
+  await renderModal();
+  await chooseFile();
   await act(async () =>
-    root.render(<ImportModal openModal setOpenModal={vi.fn()} setTabs={fixtures.setTabs} />),
+    host.querySelector<HTMLInputElement>('[data-testid="save-to-collection"]')!.click(),
   );
-
-  await act(async () => {
-    host.querySelector<HTMLButtonElement>('[data-testid="choose-file"]')!.click();
-    await Promise.resolve();
-  });
-  await vi.waitFor(() => expect(fixtures.pickPgnFile).toHaveBeenCalledOnce());
-  await act(async () => {
-    host.querySelector<HTMLInputElement>('[data-testid="save-to-collection"]')!.click();
-  });
-  await act(async () => {
-    Array.from(host.querySelectorAll("button"))
-      .find((button) => button.textContent === "Home.Card.ImportGame.Button")!
-      .click();
-  });
+  await clickSubmit();
 
   expect(fixtures.loadFileGame).toHaveBeenCalledTimes(1);
   expect(fixtures.loadFileGame).toHaveBeenCalledWith(fixtures.file.handle, 0);
   expect(fixtures.ensureFileWorkspace).not.toHaveBeenCalled();
   expect(fixtures.createFile).not.toHaveBeenCalled();
-  expect(fixtures.readGames).not.toHaveBeenCalled();
-  expect(fixtures.readGame).not.toHaveBeenCalled();
+  expect(fixtures.replaceNewTab).not.toHaveBeenCalled();
 });
 
-test("pasted PGN uses the text content variant", async () => {
+test("Link import parses and submits its tree once with the owner and analysis fields", async () => {
+  const seed = vi.spyOn(tabStorage, "seed");
+  const tree = defaultTree();
+  tree.headers.event = "Parsed online game";
+  fixtures.parsePGN.mockResolvedValue(tree);
+  await renderModal("link-owner");
+  await chooseType("Link");
+  await setInputValue(input("Import.GameURL"), link);
+  await clickSubmit();
+  await vi.waitFor(() => expect(fixtures.replaceNewTab).toHaveBeenCalledOnce());
+
+  expect(fixtures.getChesscomGame).toHaveBeenCalledWith(link);
+  expect(fixtures.parsePGN).toHaveBeenCalledWith(linkPgn);
+  expect(fixtures.replaceNewTab).toHaveBeenCalledWith({
+    store: fixtures.store,
+    ownerId: "link-owner",
+    tab: {
+      name: "Parsed online game",
+      gameOrigin: { kind: "none" },
+      type: "analysis",
+    },
+    tree,
+  });
+  expect(seed).not.toHaveBeenCalled();
+});
+
+test("FEN import submits a tree with the normalized FEN and owner fields", async () => {
+  const seed = vi.spyOn(tabStorage, "seed");
+  const normalizedFen = "8/8/8/8/8/8/8/K6k w - - 0 1";
+  await renderModal("fen-owner");
+  await chooseType("FEN");
+  await setInputValue(input("FEN"), ` ${normalizedFen} `);
+  await clickSubmit();
+  await vi.waitFor(() => expect(fixtures.replaceNewTab).toHaveBeenCalledOnce());
+
+  expect(fixtures.replaceNewTab).toHaveBeenCalledWith({
+    store: fixtures.store,
+    ownerId: "fen-owner",
+    tab: {
+      name: "Home.Card.AnalysisBoard.Title",
+      gameOrigin: { kind: "none" },
+      type: "analysis",
+    },
+    tree: expect.objectContaining({ headers: expect.objectContaining({ fen: normalizedFen }) }),
+  });
+  expect(seed).not.toHaveBeenCalled();
+});
+
+test("a refused import keeps its inputs and modal open for a full retry", async () => {
+  fixtures.replaceNewTab
+    .mockReturnValueOnce({ kind: "refused", stage: "workspace" })
+    .mockReturnValueOnce({ kind: "committed", id: "retried-import" });
+  const setOpenModal = vi.fn();
+  await renderModal("retry-owner", setOpenModal);
+  await chooseType("Link");
+  await setInputValue(input("Import.GameURL"), link);
+  await clickSubmit();
+  await vi.waitFor(() => expect(fixtures.replaceNewTab).toHaveBeenCalledOnce());
+
+  expect(modalElement().dataset.opened).toBe("true");
+  expect(input("Import.GameURL").value).toBe(link);
+  expect(setOpenModal).not.toHaveBeenCalled();
+  expect(host.textContent).not.toContain("transaction failed");
+
+  await clickSubmit();
+  await vi.waitFor(() => expect(fixtures.replaceNewTab).toHaveBeenCalledTimes(2));
+  expect(input("Import.GameURL").value).toBe(link);
+  expect(setOpenModal).not.toHaveBeenCalled();
+});
+
+const fileRecentOutcomes = [
+  { name: "committed", result: { kind: "committed", id: "imported" }, addRecent: true },
+  { name: "superseded", result: { kind: "superseded" }, addRecent: true },
+  {
+    name: "workspace-refused",
+    result: { kind: "refused", stage: "workspace" },
+    addRecent: true,
+  },
+  { name: "tree-refused", result: { kind: "refused", stage: "tree" }, addRecent: false },
+  { name: "thrown", result: undefined, addRecent: false },
+] as const;
+
+test.each(fileRecentOutcomes)(
+  "keeps a recent file for the $name import result according to the existing rule",
+  async (outcome) => {
+    fixtures.replaceNewTab.mockImplementationOnce(() => {
+      if (outcome.name === "thrown") throw new Error("transaction failed");
+      return outcome.result;
+    });
+    await renderModal();
+    await chooseFile();
+    await clickSubmit();
+    await vi.waitFor(() => expect(fixtures.replaceNewTab).toHaveBeenCalledOnce());
+
+    expect(fixtures.storeSet).toHaveBeenCalledTimes(outcome.addRecent ? 1 : 0);
+    if (outcome.addRecent) {
+      expect(fixtures.storeSet).toHaveBeenCalledWith(
+        fixtures.atoms.addRecentFile,
+        expect.objectContaining({ handle: fixtures.file.handle }),
+      );
+    }
+    expect(fixtures.notifyUnlessCancelled).toHaveBeenCalledTimes(outcome.name === "thrown" ? 1 : 0);
+  },
+);
+
+test("keeps AppModal pending until both overlapping submissions settle", async () => {
+  const requests: Array<ReturnType<typeof deferred<string>>> = [];
+  fixtures.getChesscomGame.mockImplementation(() => {
+    const request = deferred<string>();
+    requests.push(request);
+    return request.promise;
+  });
+  fixtures.replaceNewTab.mockReturnValue({ kind: "superseded" });
+  await renderModal();
+  await chooseType("Link");
+  const linkInput = input("Import.GameURL");
+  await setInputValue(linkInput, link);
+  await pressEnter(linkInput);
+  await vi.waitFor(() => expect(fixtures.getChesscomGame).toHaveBeenCalledOnce());
+  expect(modalElement().dataset.pending).toBe("true");
+
+  await pressEnter(linkInput);
+  await vi.waitFor(() => expect(fixtures.getChesscomGame).toHaveBeenCalledTimes(2));
+  expect(modalElement().dataset.pending).toBe("true");
+
+  await act(async () => requests[0].resolve(linkPgn));
+  await vi.waitFor(() => expect(fixtures.replaceNewTab).toHaveBeenCalledOnce());
+  expect(modalElement().dataset.pending).toBe("true");
+
+  await act(async () => requests[1].resolve(linkPgn));
+  await vi.waitFor(() => expect(fixtures.replaceNewTab).toHaveBeenCalledTimes(2));
+  expect(modalElement().dataset.pending).toBe("false");
+});
+
+test("captures the original owner when the active tab changes during a deferred Link import", async () => {
+  const request = deferred<string>();
+  fixtures.getChesscomGame.mockReturnValue(request.promise);
+  fixtures.replaceNewTab.mockReturnValue({ kind: "superseded" });
+  await renderModal("original-owner");
+  await chooseType("Link");
+  const linkInput = input("Import.GameURL");
+  await setInputValue(linkInput, link);
+  await pressEnter(linkInput);
+  await vi.waitFor(() => expect(fixtures.getChesscomGame).toHaveBeenCalledOnce());
+
+  fixtures.store.activeTabId = "another-tab";
+  await act(async () => {
+    request.resolve(linkPgn);
+    await request.promise;
+  });
+  await vi.waitFor(() => expect(fixtures.replaceNewTab).toHaveBeenCalledOnce());
+
+  expect(fixtures.replaceNewTab.mock.calls[0][0].ownerId).toBe("original-owner");
+  expect(fixtures.replaceNewTab.mock.calls[0][0].store.activeTabId).toBe("another-tab");
+  expect(host.textContent).not.toContain("transaction failed");
+});
+
+test("captures the original owner when it is replaced during a deferred Link import", async () => {
+  const request = deferred<string>();
+  fixtures.getChesscomGame.mockReturnValue(request.promise);
+  fixtures.replaceNewTab.mockReturnValue({ kind: "superseded" });
+  await renderModal("original-owner");
+  await chooseType("Link");
+  const linkInput = input("Import.GameURL");
+  await setInputValue(linkInput, link);
+  await pressEnter(linkInput);
+  await vi.waitFor(() => expect(fixtures.getChesscomGame).toHaveBeenCalledOnce());
+
+  await act(async () => {
+    root.render(
+      <ImportModal
+        ownerId="replacement-owner"
+        openModal
+        setOpenModal={vi.fn()}
+        setTabs={fixtures.setTabs}
+      />,
+    );
+  });
+  await act(async () => {
+    request.resolve(linkPgn);
+    await request.promise;
+  });
+  await vi.waitFor(() => expect(fixtures.replaceNewTab).toHaveBeenCalledOnce());
+
+  expect(fixtures.replaceNewTab.mock.calls[0][0].ownerId).toBe("original-owner");
+  expect(host.textContent).not.toContain("transaction failed");
+});
+
+test("reports a thrown transaction once without rendering submitError while mounted", async () => {
+  const error = new Error("transaction failed");
+  fixtures.replaceNewTab.mockImplementationOnce(() => {
+    throw error;
+  });
+  await renderModal();
+  await chooseType("Link");
+  await setInputValue(input("Import.GameURL"), link);
+  await clickSubmit();
+  await vi.waitFor(() => expect(fixtures.notifyUnlessCancelled).toHaveBeenCalledOnce());
+
+  expect(fixtures.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", error);
+  expect(host.textContent).not.toContain("transaction failed");
+});
+
+test("reports a thrown transaction after the modal unmounts", async () => {
+  const request = deferred<string>();
+  const error = new Error("transaction failed after unmount");
+  fixtures.getChesscomGame.mockReturnValue(request.promise);
+  fixtures.replaceNewTab.mockImplementationOnce(() => {
+    throw error;
+  });
+  await renderModal();
+  await chooseType("Link");
+  const linkInput = input("Import.GameURL");
+  await setInputValue(linkInput, link);
+  await pressEnter(linkInput);
+  await vi.waitFor(() => expect(fixtures.getChesscomGame).toHaveBeenCalledOnce());
+  await act(async () => root.unmount());
+  rootMounted = false;
+
+  await act(async () => {
+    request.resolve(linkPgn);
+    await request.promise;
+  });
+  await vi.waitFor(() => expect(fixtures.notifyUnlessCancelled).toHaveBeenCalledOnce());
+  expect(fixtures.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", error);
+  expect(fixtures.replaceNewTab).toHaveBeenCalledOnce();
+});
+
+test("pasted PGN uses the text content variant and still opens through file admission", async () => {
   const workspace = { id: { id: "workspace" }, kind: "fileWorkspace" } as const;
   fixtures.ensureFileWorkspace.mockResolvedValue(workspace);
   fixtures.createFile.mockResolvedValue({ isErr: false, value: fixtures.file });
-  await act(async () =>
-    root.render(<ImportModal openModal setOpenModal={vi.fn()} setTabs={fixtures.setTabs} />),
-  );
+  await renderModal();
 
   const pgn = '[Event "Pasted"]\n\n1. e4 *';
   const textarea = host.querySelector<HTMLTextAreaElement>("textarea")!;
@@ -297,11 +615,7 @@ test("pasted PGN uses the text content variant", async () => {
     valueSetter.call(textarea, pgn);
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
   });
-  await act(async () => {
-    Array.from(host.querySelectorAll("button"))
-      .find((button) => button.textContent === "Home.Card.ImportGame.Button")!
-      .click();
-  });
+  await clickSubmit();
 
   expect(fixtures.createFile).toHaveBeenCalledWith({
     filename: expect.stringMatching(/^import-/),
@@ -310,6 +624,5 @@ test("pasted PGN uses the text content variant", async () => {
     workspace,
     parent: workspace,
   });
-  expect(fixtures.readGames).not.toHaveBeenCalled();
-  expect(fixtures.readGame).not.toHaveBeenCalled();
+  expect(fixtures.replaceNewTab).not.toHaveBeenCalled();
 });

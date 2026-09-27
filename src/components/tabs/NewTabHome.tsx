@@ -230,7 +230,12 @@ export default function NewTabHome({ id }: { id: string }) {
 
   return (
     <>
-      <ImportModal openModal={openModal} setOpenModal={setOpenModal} setTabs={setTabs} />
+      <ImportModal
+        ownerId={id}
+        openModal={openModal}
+        setOpenModal={setOpenModal}
+        setTabs={setTabs}
+      />
       <CreateRepertoireModal opened={openRepertoireModal} setOpened={setOpenRepertoireModal} />
       <Stack gap="lg" pt="sm">
         <SimpleGrid cols={{ base: 1, sm: 2, lg: 5 }}>

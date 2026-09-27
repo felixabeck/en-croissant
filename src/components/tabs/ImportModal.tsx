@@ -11,13 +11,12 @@ import {
   TextInput,
 } from "@mantine/core";
 import { makeFen, parseFen } from "chessops/fen";
-import { useAtom, useStore } from "jotai";
+import { useStore } from "jotai";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { match } from "ts-pattern";
-import { runUnlessCancelled } from "@/components/files/notifyError";
-import { addRecentFileAtom, currentTabAtom } from "@/state/atoms";
-import { tabStorage } from "@/state/store/tabStorage";
+import { notifyUnlessCancelled, runUnlessCancelled } from "@/components/files/notifyError";
+import { addRecentFileAtom } from "@/state/atoms";
 import { parsePGN } from "@/utils/chess";
 import { getChesscomGame } from "@/utils/chess.com/api";
 import { chessopsError } from "@/utils/chessops";
@@ -29,8 +28,8 @@ import {
   pickPgnFile,
 } from "@/utils/files";
 import { getLichessGame } from "@/utils/lichess/api";
-import { type SetTabs } from "@/utils/tabs";
-import { defaultTree, getGameName } from "@/utils/treeReducer";
+import { replaceNewTab, type ReplaceNewTabResult, type SetTabs, type Tab } from "@/utils/tabs";
+import { defaultTree, getGameName, type TreeState } from "@/utils/treeReducer";
 import AppModal from "../common/AppModal";
 import GenericCard from "../common/GenericCard";
 import { FILE_TYPES, type FileMetadata, type FileType } from "../files/file";
@@ -38,10 +37,12 @@ import { FILE_TYPES, type FileMetadata, type FileType } from "../files/file";
 type ImportType = "PGN" | "Link" | "FEN";
 
 export default function ImportModal({
+  ownerId,
   openModal,
   setOpenModal,
   setTabs,
 }: {
+  ownerId: string;
   openModal: boolean;
   setOpenModal: React.Dispatch<React.SetStateAction<boolean>>;
   setTabs: SetTabs;
@@ -53,8 +54,8 @@ export default function ImportModal({
   const [link, setLink] = useState("");
   const [importType, setImportType] = useState<ImportType>("PGN");
   const [filetype, setFiletype] = useState<FileType>("game");
-  const [loading, setLoading] = useState(false);
-  const [, setCurrentTab] = useAtom(currentTabAtom);
+  const [inFlightCount, setInFlightCount] = useState(0);
+  const loading = inFlightCount > 0;
   const [fenError, setFenError] = useState("");
 
   const [save, setSave] = useState(false);
@@ -63,14 +64,28 @@ export default function ImportModal({
   const [submitError, setSubmitError] = useState("");
   const store = useStore();
 
+  function replaceImportedTab(
+    submittingOwnerId: string,
+    tab: Omit<Tab, "value">,
+    tree: TreeState,
+  ): ReplaceNewTabResult | undefined {
+    try {
+      return replaceNewTab({ store, ownerId: submittingOwnerId, tab, tree });
+    } catch (error) {
+      notifyUnlessCancelled(t("Common.Error"), error);
+      return undefined;
+    }
+  }
+
   async function handleSubmit() {
-    setLoading(true);
+    const submittingOwnerId = ownerId;
+    setInFlightCount((count) => count + 1);
     setSubmitError("");
     try {
       if (importType === "PGN") {
         if (file || pgn) {
           if (file) {
-            let fileInfo: FileMetadata | undefined;
+            let fileInfo: FileMetadata;
             const count = file.numGames;
             let loaded = await loadFileGame(file.handle, 0);
             if (save) {
@@ -89,7 +104,6 @@ export default function ImportModal({
               });
               if (newFile.isErr) {
                 setError(newFile.error.message);
-                setLoading(false);
                 return;
               }
               fileInfo = newFile.value;
@@ -108,22 +122,21 @@ export default function ImportModal({
               };
             }
             const tree = loaded.tree;
-            const originKind = "file";
-            setCurrentTab((prev) => {
-              tabStorage.seed(prev.value, tree);
-              return {
-                ...prev,
+            const result = replaceImportedTab(
+              submittingOwnerId,
+              {
                 name: getGameName(tree.headers),
                 gameOrigin: {
-                  kind: originKind,
+                  kind: "file",
                   file: fileInfo,
                   gameNumber: 0,
                 },
                 type: "analysis",
-              };
-            });
+              },
+              tree,
+            );
 
-            if (fileInfo) {
+            if (fileInfo && result && (result.kind !== "refused" || result.stage === "workspace")) {
               store.set(addRecentFileAtom, {
                 name: fileInfo.name,
                 handle: fileInfo.handle,
@@ -146,14 +159,12 @@ export default function ImportModal({
         }
       } else if (importType === "Link") {
         if (!link) {
-          setLoading(false);
           return;
         }
         let pgn = "";
         if (link.includes("chess.com")) {
           const res = await getChesscomGame(link);
           if (res === null) {
-            setLoading(false);
             return;
           }
           pgn = res;
@@ -163,51 +174,45 @@ export default function ImportModal({
             .split("/")
             .find((x) => x && !excludedPathParts.includes(x));
           if (!gameId) {
-            setLoading(false);
             return;
           }
           pgn = await getLichessGame(gameId);
         }
 
         const tree = await parsePGN(pgn);
-        setCurrentTab((prev) => {
-          tabStorage.seed(prev.value, tree);
-          return {
-            ...prev,
+        replaceImportedTab(
+          submittingOwnerId,
+          {
             name: getGameName(tree.headers),
-            gameOrigin: {
-              kind: "none",
-            },
+            gameOrigin: { kind: "none" },
             type: "analysis",
-          };
-        });
+          },
+          tree,
+        );
       } else if (importType === "FEN") {
         const res = parseFen(fen.trim());
         if (res.isErr) {
           setFenError(chessopsError(res.error));
-          setLoading(false);
           return;
         }
         setFenError("");
         const parsedFen = makeFen(res.value);
-        setCurrentTab((prev) => {
-          const tree = defaultTree(parsedFen);
-          tree.headers.fen = parsedFen;
-          tabStorage.seed(prev.value, tree);
-          return {
-            ...prev,
+        const tree = defaultTree(parsedFen);
+        tree.headers.fen = parsedFen;
+        replaceImportedTab(
+          submittingOwnerId,
+          {
             name: t("Home.Card.AnalysisBoard.Title"),
-            gameOrigin: {
-              kind: "none",
-            },
+            gameOrigin: { kind: "none" },
             type: "analysis",
-          };
-        });
+          },
+          tree,
+        );
       }
     } catch (e) {
       setSubmitError(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoading(false);
+      setInFlightCount((count) => count - 1);
     }
   }
 
@@ -317,6 +322,7 @@ export default function ImportModal({
       opened={openModal}
       onClose={() => setOpenModal(false)}
       title={t("Home.Card.ImportGame.Title")}
+      pending={loading}
     >
       <Group grow mb="sm">
         <GenericCard
