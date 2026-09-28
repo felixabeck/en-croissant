@@ -14,7 +14,7 @@ function hasAttributeMetavariable(text) {
   return maskRustSourceWithSpans(text).masked.includes("$");
 }
 
-function lineAt(source, offset) {
+export function lineAt(source, offset) {
   let line = 1;
   for (let index = 0; index < offset; index += 1) {
     if (source[index] === "\n") line += 1;
@@ -1429,7 +1429,7 @@ function prepareAtomValuation(atomValuation) {
   return result;
 }
 
-function sourceEntries(sources) {
+export function sourceEntries(sources) {
   if (sources instanceof Map)
     return [...sources.entries()].map(([path, contents]) => ({ path, contents }));
   return [...sources];

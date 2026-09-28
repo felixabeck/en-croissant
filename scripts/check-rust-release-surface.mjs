@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { extname, join, resolve } from "node:path";
 import { isEntrypoint } from "./entrypoint.mjs";
 import { maskRustSource } from "./rust-source-mask.mjs";
-import { classifyRustTestOnlySources } from "./rust-test-only.mjs";
+import { classifyRustTestOnlySources, lineAt, sourceEntries } from "./rust-test-only.mjs";
 import { listWorkingTreeFiles } from "./working-tree-files.mjs";
 
 // Owner: f-20260830-25. Emptied 2026-09-06 by the finding that owned it;
@@ -57,13 +57,13 @@ const INITIAL_PATH_EXPECT_BASELINE = Object.freeze([
   Object.freeze({
     path: "src-tauri/src/main.rs",
     function: "for_database",
-    sha256: "d013dd32cd56aeffcd5f6ede9de6037509cf6f464ba0432a6c5d85e7c313ef88",
+    sha256: "42ecbf0e672cdd02a81410085b044647eb7122a03ec7f2f4cac66aa0c8deb1a5",
     methods: Object.freeze({ canonicalize: 2, exists: 2, metadata: 1 }),
   }),
   Object.freeze({
     path: "src-tauri/src/main.rs",
     function: "invalidate_entries",
-    sha256: "6b9602c1f621922fee445e8fbdd69e36fe1a0c379b8e0127be19e2bfabca0538",
+    sha256: "4b6504c02c74f90728e0423004d1af36883f1217633f7c5c097ed0be6fb0d69c",
     methods: Object.freeze({ canonicalize: 1 }),
   }),
 ]);
@@ -91,12 +91,6 @@ const INJECTION_NAME = /(?:FaultPoint|Injector|_with_injector)/i;
 const PUBLIC_ITEM =
   /^\s*pub(?:\s*\(\s*(?:crate|super)\s*\))?\s+(?:(?:async|const|unsafe|extern(?:\s+"[^"]+")?)\s+)*(?:fn|struct|enum|trait|type|mod|static|const)\s+([A-Za-z_][A-Za-z0-9_]*)/;
 const USE_START = /^\s*(?:pub(?:\s*\(\s*(?:crate|super)\s*\))?\s+)?use\b/;
-
-function sourceEntries(sources) {
-  if (sources instanceof Map)
-    return [...sources.entries()].map(([path, contents]) => ({ path, contents }));
-  return sources;
-}
 
 function isFileLevelDeadCodeAllowance(line) {
   return /^\s*#!\s*\[\s*allow\s*\(\s*dead_code\s*\)\s*\]/.test(line);
@@ -569,16 +563,8 @@ function sha256(text) {
   return createHash("sha256").update(text).digest("hex");
 }
 
-function lineForOffset(source, offset) {
-  let line = 1;
-  for (let index = 0; index < offset; index += 1) {
-    if (source[index] === "\n") line += 1;
-  }
-  return line;
-}
-
 function isTestOnlyOffset(path, source, offset, classification) {
-  return classification.excludedLines.get(path)?.has(lineForOffset(source, offset)) ?? false;
+  return classification.excludedLines.get(path)?.has(lineAt(source, offset)) ?? false;
 }
 
 function suppressionForms(attributeText) {
@@ -640,6 +626,67 @@ function hasMacroInvocation(text) {
   );
 }
 
+function inspectAttributeControls({
+  path,
+  source,
+  attribute,
+  offset,
+  isInner = false,
+  isInfra,
+  inMacroDefinition,
+  skipCfgChecks = false,
+  allowCountedExpect = false,
+  allowCrateRootException = false,
+  isCrateRootAttribute = false,
+}) {
+  const beforeCountViolations = [];
+  const afterCountViolations = [];
+  const line = lineAt(source, offset);
+  const forms = suppressionForms(attribute.text);
+  if (maskRustSource(attribute.text).includes("$")) {
+    beforeCountViolations.push(
+      `${path}:${line}: R5: attribute metavariable can generate an unreviewed rustc or clippy attribute`,
+    );
+  }
+
+  const suppressionApplies = forms.length > 0 && (!isInfra || inMacroDefinition);
+  const countedExpect =
+    suppressionApplies && allowCountedExpect && isCountedPathExpect(path, attribute);
+  const crateRootException =
+    suppressionApplies &&
+    allowCrateRootException &&
+    exactMainTestAllowance(path, {
+      root: isCrateRootAttribute,
+      attribute,
+    });
+  if (suppressionApplies && !countedExpect && !crateRootException) {
+    const prefix = isInner ? "inner " : "";
+    beforeCountViolations.push(
+      `${path}:${line}: R5: ${prefix}${forms.map(({ level, names }) => `${level}(${names.join(", ")})`).join("; ")} can suppress disallowed Path methods`,
+    );
+  }
+
+  if (!skipCfgChecks) {
+    const maskedAttribute = maskRustSource(attribute.text);
+    if (/\bclippy\b(?!\s*::)/.test(maskedAttribute)) {
+      afterCountViolations.push(
+        `${path}:${line}: R5: production cfg attribute may not use the clippy cfg atom`,
+      );
+    }
+    if (
+      !isInfra &&
+      /^\s*cfg_attr\s*\(/.test(maskedAttribute) &&
+      /\bcfg\s*\(/.test(maskedAttribute)
+    ) {
+      afterCountViolations.push(
+        `${path}:${line}: R5: cfg_attr payload may not introduce a nested cfg predicate`,
+      );
+    }
+  }
+
+  return { beforeCountViolations, afterCountViolations, countedExpect };
+}
+
 function checkPathMethodExpectationsWithClassification(
   entries,
   classification,
@@ -661,116 +708,80 @@ function checkPathMethodExpectationsWithClassification(
     for (const group of analysis.groups) {
       if (isTestOnlyOffset(path, contents, group.start, classification)) continue;
       const region = regionByStart.get(group.start);
+      const isInfra = isInfraPath(path);
       for (const attribute of group.attributes) {
-        const forms = suppressionForms(attribute.text);
-        const isInfra = isInfraPath(path);
         const inMacroDefinition = analysis.macroRegions?.some(
           ({ start, end }) => start <= attribute.start && attribute.start < end,
         );
-        if (maskRustSource(attribute.text).includes("$")) {
-          violations.push(
-            `${path}:${lineForOffset(contents, attribute.start)}: R5: attribute metavariable can generate an unreviewed rustc or clippy attribute`,
-          );
-        }
-        if (forms.length && (!isInfra || inMacroDefinition)) {
-          if (isCountedPathExpect(path, attribute)) {
-            const row = region;
-            const fn = row?.function;
-            const key = fn ? `${path}::${fn.name}` : `${path}::<outside-function>`;
-            candidateKeys.add(key);
-            const maskedStatement = row
-              ? maskRustSource(contents.slice(row.range.start, row.range.end))
-              : "";
-            const statementStart = row
-              ? maskRustSource(contents.slice(group.end, row.range.end)).trimStart()
-              : "";
-            const tokens = methodTokens(maskedStatement);
-            const direct = tokens.length === 1 && hasDirectMethodCall(maskedStatement, tokens[0]);
-            const startsLet = /^let\b/.test(statementStart);
-            const macro = hasMacroInvocation(maskedStatement);
-            if (!fn || !startsLet || tokens.length !== 1 || !direct || macro) {
-              violations.push(
-                `${path}:${lineForOffset(contents, attribute.start)}: R5: counted expect must annotate one direct Path method call in a single let statement without a macro`,
-              );
-            }
-            if (fn) {
-              const methods = observed.get(key) ?? [];
-              if (tokens.length === 1) methods.push(tokens[0]);
-              observed.set(key, methods);
-              const itemHash = sha256(normaliseRustText(fn.text));
-              const expected = baseline.find((entry) => `${entry.path}::${entry.function}` === key);
-              if (!expected) {
-                violations.push(
-                  `${path}:${lineForOffset(contents, attribute.start)}: R5: counted expect in ${fn.name} has no pinned baseline entry`,
-                );
-              } else if (itemHash !== expected.sha256) {
-                violations.push(
-                  `${path}:${lineForOffset(contents, attribute.start)}: R5: pinned function ${fn.name} changed from its recorded text`,
-                );
-              }
-            }
-          } else {
+        const controls = inspectAttributeControls({
+          path,
+          source: contents,
+          attribute,
+          offset: attribute.start,
+          isInfra,
+          inMacroDefinition,
+          skipCfgChecks: isTestOnlyOffset(path, contents, attribute.start, classification),
+          allowCountedExpect: true,
+        });
+        violations.push(...controls.beforeCountViolations);
+        if (controls.countedExpect) {
+          const row = region;
+          const fn = row?.function;
+          const key = fn ? `${path}::${fn.name}` : `${path}::<outside-function>`;
+          candidateKeys.add(key);
+          const maskedStatement = row
+            ? maskRustSource(contents.slice(row.range.start, row.range.end))
+            : "";
+          const statementStart = row
+            ? maskRustSource(contents.slice(group.end, row.range.end)).trimStart()
+            : "";
+          const tokens = methodTokens(maskedStatement);
+          const direct = tokens.length === 1 && hasDirectMethodCall(maskedStatement, tokens[0]);
+          const startsLet = /^let\b/.test(statementStart);
+          const macro = hasMacroInvocation(maskedStatement);
+          if (!fn || !startsLet || tokens.length !== 1 || !direct || macro) {
             violations.push(
-              `${path}:${lineForOffset(contents, attribute.start)}: R5: ${forms.map(({ level, names }) => `${level}(${names.join(", ")})`).join("; ")} can suppress disallowed Path methods`,
+              `${path}:${lineAt(contents, attribute.start)}: R5: counted expect must annotate one direct Path method call in a single let statement without a macro`,
             );
           }
+          if (fn) {
+            const methods = observed.get(key) ?? [];
+            if (tokens.length === 1) methods.push(tokens[0]);
+            observed.set(key, methods);
+            const itemHash = sha256(normaliseRustText(fn.text));
+            const expected = baseline.find((entry) => `${entry.path}::${entry.function}` === key);
+            if (!expected) {
+              violations.push(
+                `${path}:${lineAt(contents, attribute.start)}: R5: counted expect in ${fn.name} has no pinned baseline entry`,
+              );
+            } else if (itemHash !== expected.sha256) {
+              violations.push(
+                `${path}:${lineAt(contents, attribute.start)}: R5: pinned function ${fn.name} changed from its recorded text`,
+              );
+            }
+          }
         }
-        const maskedAttribute = maskRustSource(attribute.text);
-        if (
-          !isTestOnlyOffset(path, contents, attribute.start, classification) &&
-          /\bclippy\b(?!\s*::)/.test(maskedAttribute)
-        ) {
-          violations.push(
-            `${path}:${lineForOffset(contents, attribute.start)}: R5: production cfg attribute may not use the clippy cfg atom`,
-          );
-        }
-        if (
-          !isTestOnlyOffset(path, contents, attribute.start, classification) &&
-          !isInfra &&
-          /\bcfg\s*\(/.test(maskedAttribute) &&
-          /^\s*cfg_attr\s*\(/.test(maskedAttribute)
-        ) {
-          violations.push(
-            `${path}:${lineForOffset(contents, attribute.start)}: R5: cfg_attr payload may not introduce a nested cfg predicate`,
-          );
-        }
+        violations.push(...controls.afterCountViolations);
       }
     }
     for (const inner of analysis.innerAttributes) {
       if (isTestOnlyOffset(path, contents, inner.start, classification)) continue;
-      const forms = suppressionForms(inner.attribute.text);
-      if (maskRustSource(inner.attribute.text).includes("$")) {
-        violations.push(
-          `${path}:${lineForOffset(contents, inner.start)}: R5: attribute metavariable can generate an unreviewed rustc or clippy attribute`,
-        );
-      }
+      const isInfra = isInfraPath(path);
       const inMacroDefinition = analysis.macroRegions?.some(
         ({ start, end }) => start <= inner.start && inner.start < end,
       );
-      if (
-        forms.length &&
-        (!isInfraPath(path) || inMacroDefinition) &&
-        !exactMainTestAllowance(path, inner)
-      ) {
-        violations.push(
-          `${path}:${lineForOffset(contents, inner.start)}: R5: inner ${forms.map(({ level, names }) => `${level}(${names.join(", ")})`).join("; ")} can suppress disallowed Path methods`,
-        );
-      }
-      const maskedAttribute = maskRustSource(inner.attribute.text);
-      if (/\bclippy\b(?!\s*::)/.test(maskedAttribute)) {
-        violations.push(
-          `${path}:${lineForOffset(contents, inner.start)}: R5: production cfg attribute may not use the clippy cfg atom`,
-        );
-      }
-      if (
-        !isInfraPath(path) &&
-        /^\s*cfg_attr\s*\(/.test(maskedAttribute) &&
-        /\bcfg\s*\(/.test(maskedAttribute)
-      ) {
-        violations.push(
-          `${path}:${lineForOffset(contents, inner.start)}: R5: cfg_attr payload may not introduce a nested cfg predicate`,
-        );
-      }
+      const controls = inspectAttributeControls({
+        path,
+        source: contents,
+        attribute: inner.attribute,
+        offset: inner.start,
+        isInner: true,
+        isInfra,
+        inMacroDefinition,
+        allowCrateRootException: true,
+        isCrateRootAttribute: inner.root,
+      });
+      violations.push(...controls.beforeCountViolations, ...controls.afterCountViolations);
     }
 
     const masked = maskRustSource(contents);
@@ -786,7 +797,7 @@ function checkPathMethodExpectationsWithClassification(
       if (isTestOnlyOffset(path, contents, region.start, classification)) continue;
       if (/\bpath\s*=/.test(maskRustSource(region.text))) {
         violations.push(
-          `${path}:${lineForOffset(contents, region.start)}: R5: production source may not use a #[path] attribute`,
+          `${path}:${lineAt(contents, region.start)}: R5: production source may not use a #[path] attribute`,
         );
       }
     }
@@ -1112,7 +1123,7 @@ function gateScope(path, source, region, inner = false, analysis) {
   );
 }
 
-function collectModuleRegionText(path, declaration, analyses, sourcesByPath) {
+function collectModuleRegionText(declaration, analyses, sourcesByPath) {
   const result = [];
   const visited = new Set();
   const visit = (currentPath) => {
@@ -1132,6 +1143,28 @@ function regionIdentity(path, attributeText, regionText) {
   const attribute = normaliseRustText(maskRustSource(attributeText));
   const regionSha256 = sha256(normaliseRustText(regionText));
   return { path, attribute, regionSha256, id: `${path}|${attribute}|${regionSha256}` };
+}
+
+function gateInvisibleContentViolations(path, line, text) {
+  const violations = [];
+  const masked = maskRustSource(text);
+  const methods = methodTokens(masked);
+  if (methods.length) {
+    violations.push(
+      `${path}:${line}: R5: gate-invisible pinned region contains Path method name(s): ${[...new Set(methods)].join(", ")}`,
+    );
+  }
+  if (hasMacroInvocation(masked)) {
+    violations.push(
+      `${path}:${line}: R5: gate-invisible pinned region may not contain a macro invocation`,
+    );
+  }
+  if (/\bmod\s+[A-Za-z_][A-Za-z0-9_]*\s*;/.test(masked)) {
+    violations.push(
+      `${path}:${line}: R5: gate-invisible pinned region may not declare an out-of-line module`,
+    );
+  }
+  return violations;
 }
 
 export function checkGateInvisibleRegions(
@@ -1179,7 +1212,7 @@ export function checkGateInvisibleRegions(
       for (const attribute of group.attributes) {
         if (attribute.details?.containsCfgPayload) {
           violations.push(
-            `${path}:${lineForOffset(contents, attribute.start)}: R5: cfg_attr payload may not introduce a nested cfg predicate`,
+            `${path}:${lineAt(contents, attribute.start)}: R5: cfg_attr payload may not introduce a nested cfg predicate`,
           );
         }
       }
@@ -1191,7 +1224,7 @@ export function checkGateInvisibleRegions(
         inner.attribute.details?.containsCfgPayload
       ) {
         violations.push(
-          `${path}:${lineForOffset(contents, inner.start)}: R5: cfg_attr payload may not introduce a nested cfg predicate`,
+          `${path}:${lineAt(contents, inner.start)}: R5: cfg_attr payload may not introduce a nested cfg predicate`,
         );
       }
     }
@@ -1233,7 +1266,7 @@ export function checkGateInvisibleRegions(
     for (const region of analysis.sourceRegions) {
       if (isTestOnlyOffset(path, contents, region.start, classification)) continue;
       if (!gateScope(path, contents, region, false, analysis)) continue;
-      const regionLine = lineForOffset(contents, region.start);
+      const regionLine = lineAt(contents, region.start);
       const allExcluded = commonLines.get(path)?.has(regionLine) === true;
       if (!allExcluded) continue;
 
@@ -1248,27 +1281,11 @@ export function checkGateInvisibleRegions(
         }))
         .find(({ declaration }) => declaration);
       const moduleText = moduleOwner
-        ? collectModuleRegionText(path, moduleOwner.declaration, moduleOwner.analyses, sourceByPath)
+        ? collectModuleRegionText(moduleOwner.declaration, moduleOwner.analyses, sourceByPath)
         : "";
       const regionText = contents.slice(region.range.start, region.range.end) + moduleText;
       actualRegions.push(regionIdentity(path, region.text, regionText));
-      const maskedRegion = maskRustSource(regionText);
-      const methods = methodTokens(maskedRegion);
-      if (methods.length) {
-        violations.push(
-          `${path}:${lineForOffset(contents, region.start)}: R5: gate-invisible pinned region contains Path method name(s): ${[...new Set(methods)].join(", ")}`,
-        );
-      }
-      if (hasMacroInvocation(maskedRegion)) {
-        violations.push(
-          `${path}:${lineForOffset(contents, region.start)}: R5: gate-invisible pinned region may not contain a macro invocation`,
-        );
-      }
-      if (/\bmod\s+[A-Za-z_][A-Za-z0-9_]*\s*;/.test(maskedRegion)) {
-        violations.push(
-          `${path}:${lineForOffset(contents, region.start)}: R5: gate-invisible pinned region may not declare an out-of-line module`,
-        );
-      }
+      violations.push(...gateInvisibleContentViolations(path, regionLine, regionText));
     }
 
     for (const inner of analysis.innerAttributes) {
@@ -1280,7 +1297,7 @@ export function checkGateInvisibleRegions(
           ?.innerAttributes.find((item) => item.start === inner.start);
         return (
           candidate?.attribute.details?.excluded === true &&
-          result.excludedLines.get(path)?.has(lineForOffset(contents, inner.start))
+          result.excludedLines.get(path)?.has(lineAt(contents, inner.start))
         );
       });
       const pinnedRootAttribute =
@@ -1290,23 +1307,9 @@ export function checkGateInvisibleRegions(
       if (!allExcluded && !pinnedRootAttribute) continue;
       const identity = regionIdentity(path, inner.text, inner.text);
       actualRegions.push(identity);
-      const maskedRegion = maskRustSource(inner.text);
-      const methods = methodTokens(maskedRegion);
-      if (methods.length) {
-        violations.push(
-          `${path}:${lineForOffset(contents, inner.start)}: R5: gate-invisible pinned region contains Path method name(s): ${[...new Set(methods)].join(", ")}`,
-        );
-      }
-      if (hasMacroInvocation(maskedRegion)) {
-        violations.push(
-          `${path}:${lineForOffset(contents, inner.start)}: R5: gate-invisible pinned region may not contain a macro invocation`,
-        );
-      }
-      if (/\bmod\s+[A-Za-z_][A-Za-z0-9_]*\s*;/.test(maskedRegion)) {
-        violations.push(
-          `${path}:${lineForOffset(contents, inner.start)}: R5: gate-invisible pinned region may not declare an out-of-line module`,
-        );
-      }
+      violations.push(
+        ...gateInvisibleContentViolations(path, lineAt(contents, inner.start), inner.text),
+      );
     }
   }
 
@@ -1478,7 +1481,7 @@ function scanToml(contents) {
 
   const outsideStrings = bareCode.join("\n");
   return {
-    bareLintTokens: [...outsideStrings.matchAll(/\b(?:lints|cargo-features)\b/g)].map(
+    bareManifestControlTokens: [...outsideStrings.matchAll(/\b(?:lints|cargo-features)\b/g)].map(
       (match) => match[0],
     ),
     keySegments,
@@ -1490,10 +1493,14 @@ function manifestViolations(path, contents, packageManifest) {
   const violations = [];
   const scanned = scanToml(contents);
   const keys = new Set(scanned.keySegments);
-  const hasQuotedLintKey = scanned.keySegments.some(
+  const hasQuotedManifestControlKey = scanned.keySegments.some(
     (key) => key === "lints" || key === "cargo-features",
   );
-  if (scanned.bareLintTokens.length || hasQuotedLintKey || scanned.basicStringBackslashes.length) {
+  if (
+    scanned.bareManifestControlTokens.length ||
+    hasQuotedManifestControlKey ||
+    scanned.basicStringBackslashes.length
+  ) {
     violations.push(
       `${path}: R5: Cargo manifests may not define lint levels or cargo-features, and basic strings may not contain backslash escapes`,
     );
@@ -1548,26 +1555,32 @@ function inspectGitTree(workspaceRoot, runGit) {
     }
   }
 
-  const otherArgs = [
-    "ls-files",
-    "--others",
-    "--directory",
-    "--exclude-standard",
-    "-z",
-    "--",
-    "src-tauri",
+  const otherCommands = [
+    ["ls-files", "--others", "--directory", "--exclude-standard", "-z", "--", "src-tauri"],
+    [
+      "ls-files",
+      "--others",
+      "--ignored",
+      "--exclude-standard",
+      "--directory",
+      "-z",
+      "--",
+      "src-tauri",
+    ],
   ];
-  const others = runGit("git", otherArgs, { cwd: workspaceRoot, encoding: "utf8" });
-  if (others.error || others.status !== 0) {
-    throw new Error(
-      `R5: cannot inspect untracked source directories (${others.error?.message ?? others.stderr ?? others.status})`,
-    );
-  }
   const candidates = new Set(["src-tauri", "src-tauri/src"]);
-  for (const path of String(others.stdout ?? "")
-    .split("\0")
-    .filter(Boolean)) {
-    candidates.add(path.replace(/\/$/, ""));
+  for (const args of otherCommands) {
+    const result = runGit("git", args, { cwd: workspaceRoot, encoding: "utf8" });
+    if (result.error || result.status !== 0) {
+      throw new Error(
+        `R5: cannot inspect untracked source directories (${result.error?.message ?? result.stderr ?? result.status})`,
+      );
+    }
+    for (const path of String(result.stdout ?? "")
+      .split("\0")
+      .filter(Boolean)) {
+      candidates.add(path.replace(/\/$/, ""));
+    }
   }
   for (const path of candidates) {
     const directory = resolve(workspaceRoot, path);
@@ -1610,13 +1623,13 @@ function checkRepositoryInputs({ workspaceRoot, runGit = spawnSync }) {
     }
   }
 
-  const sourceEntries = listWorkingTreeFiles({
+  const listedSourcePaths = listWorkingTreeFiles({
     workspaceRoot,
     pathspec: "src-tauri/src",
     runGit,
     includeIgnored: true,
   });
-  for (const listedPath of sourceEntries) {
+  for (const listedPath of listedSourcePaths) {
     const path = listedPath.replace(/\/$/, "");
     if (!path.startsWith("src-tauri/src/")) continue;
     const parts = path.split("/");
@@ -1749,11 +1762,9 @@ export function listRustSources(workspaceRoot, runGit = spawnSync) {
   }).filter((path) => path.startsWith("src-tauri/src/") && path.endsWith(".rs"));
 }
 
-export const listTrackedRustSources = listRustSources;
-
 export function runReleaseSurfaceCheck({
   workspaceRoot = process.cwd(),
-  listFiles = listTrackedRustSources,
+  listFiles = listRustSources,
   readFile = (path) => readFileSync(path, "utf8"),
   checkResidency = false,
   paths = listFiles(workspaceRoot),
@@ -1786,7 +1797,7 @@ export function runReleaseSurfaceCheck({
 
 if (isEntrypoint(import.meta.url)) {
   try {
-    const paths = listTrackedRustSources(process.cwd());
+    const paths = listRustSources(process.cwd());
     const residency = process.argv.includes("--check-allowlist-residency")
       ? checkAllowlistResidency(paths)
       : [];

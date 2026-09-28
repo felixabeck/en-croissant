@@ -186,13 +186,13 @@ impl SearchIndexIdentity {
     pub(crate) fn for_database(database: &Path, source: IndexSource) -> io::Result<Self> {
         #[expect(
             clippy::disallowed_methods,
-            reason = "f-20260927-07: SearchIndexIdentity::for_database database.canonicalize"
+            reason = "pinned pathname reach (search-index identity by canonical path); counted by R5 until f-20260927-07 migrates it: SearchIndexIdentity::for_database database.canonicalize"
         )]
         let database = database.canonicalize()?;
         let preferred_index = db::get_index_path(&database);
         #[expect(
             clippy::disallowed_methods,
-            reason = "f-20260927-07: SearchIndexIdentity::for_database preferred_index.exists"
+            reason = "pinned pathname reach (search-index identity by canonical path); counted by R5 until f-20260927-07 migrates it: SearchIndexIdentity::for_database preferred_index.exists"
         )]
         let preferred_exists = preferred_index.exists();
         let index = if preferred_exists {
@@ -201,7 +201,7 @@ impl SearchIndexIdentity {
             let legacy = db::legacy_index_path(&database);
             #[expect(
                 clippy::disallowed_methods,
-                reason = "f-20260927-07: SearchIndexIdentity::for_database legacy.exists"
+                reason = "pinned pathname reach (search-index identity by canonical path); counted by R5 until f-20260927-07 migrates it: SearchIndexIdentity::for_database legacy.exists"
             )]
             let legacy_exists = legacy.exists();
             if legacy_exists {
@@ -212,12 +212,12 @@ impl SearchIndexIdentity {
         };
         #[expect(
             clippy::disallowed_methods,
-            reason = "f-20260927-07: SearchIndexIdentity::for_database index.canonicalize"
+            reason = "pinned pathname reach (search-index identity by canonical path); counted by R5 until f-20260927-07 migrates it: SearchIndexIdentity::for_database index.canonicalize"
         )]
         let index = index.canonicalize()?;
         #[expect(
             clippy::disallowed_methods,
-            reason = "f-20260927-07: SearchIndexIdentity::for_database index.metadata"
+            reason = "pinned pathname reach (search-index identity by canonical path); counted by R5 until f-20260927-07 migrates it: SearchIndexIdentity::for_database index.metadata"
         )]
         let metadata = index.metadata()?;
         Ok(Self {
@@ -696,7 +696,7 @@ impl SearchCache {
     fn invalidate_entries(&self, database: &Path, gate: Option<&Arc<MappingGate>>) {
         #[expect(
             clippy::disallowed_methods,
-            reason = "f-20260927-07: SearchCache::invalidate_entries database.canonicalize"
+            reason = "pinned pathname reach (search-cache invalidation by canonical path); counted by R5 until f-20260927-07 migrates it: SearchCache::invalidate_entries database.canonicalize"
         )]
         let database = database
             .canonicalize()

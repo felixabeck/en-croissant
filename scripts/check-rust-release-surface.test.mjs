@@ -16,7 +16,7 @@ import {
   EXPECTED_CLIPPY_TOML,
   FS_SURFACE_ALLOWLIST,
   INITIAL_FS_SURFACE_COUNTS,
-  listTrackedRustSources,
+  listRustSources,
   PATH_METHODS,
 } from "./check-rust-release-surface.mjs";
 import { classifyRustTestOnlySources } from "./rust-test-only.mjs";
@@ -312,7 +312,7 @@ pub(crate) trait AtomicWriterInjector {}
 
   test("the checker rejects a failing git ls-files command", () => {
     expect(() =>
-      listTrackedRustSources("/fixture", () => ({
+      listRustSources("/fixture", () => ({
         error: new Error("git unavailable"),
         status: null,
         stderr: "",
@@ -323,7 +323,7 @@ pub(crate) trait AtomicWriterInjector {}
   test("the checker rejects a failure of the second git ls-files command", () => {
     let calls = 0;
     expect(() =>
-      listTrackedRustSources("/fixture", () => {
+      listRustSources("/fixture", () => {
         calls += 1;
         if (calls === 1) return { status: 0, stdout: "", stderr: "" };
         return { error: new Error("index unavailable"), status: null, stderr: "" };
@@ -957,7 +957,7 @@ describe("R5 suppression containment and counted statements", () => {
 
   test("O3.2 pins each counted function and rejects an expectation outside its function", () => {
     const relocated = CHECKOUT_MAIN.replace(
-      '        #[expect(\n            clippy::disallowed_methods,\n            reason = "f-20260927-07: SearchIndexIdentity::for_database database.canonicalize"\n        )]\n        let database = database.canonicalize()?;',
+      /        #\[expect\(\s*clippy::disallowed_methods,\s*reason = "[^"]*SearchIndexIdentity::for_database database\.canonicalize"\s*\)\]\n        let database = database\.canonicalize\(\)\?;/,
       "        let database = database.canonicalize()?;",
     );
     const movedSite = `${relocated}\nfn moved_site(path: &Path) {\n    #[expect(clippy::disallowed_methods)]\n    let _ = path.canonicalize();\n}\n`;
@@ -1556,6 +1556,34 @@ describe("R5 config, test-only scope, and physical source surface", () => {
     expectCliStatus(result, 1);
     expect(result.output).toContain(
       `${path}: R5: untracked nested git repositories are not allowed in the Rust source tree`,
+    );
+  });
+
+  test("O3.7 rejects an ignored nested repository in the Rust source tree", async () => {
+    const result = await runCheckerOver(
+      [{ path: ".gitignore", contents: "src-tauri/src/hidden/\n" }],
+      [],
+      {
+        prepare: async (root, phase) => {
+          if (phase !== "after-remove") return;
+          const directory = join(root, "src-tauri/src/hidden");
+          await mkdir(directory, { recursive: true });
+          const init = spawnSync("git", ["init", "--quiet"], {
+            cwd: directory,
+            encoding: "utf8",
+          });
+          expect(init.status).toBe(0);
+          expect(init.error).toBeUndefined();
+          await writeFile(
+            join(directory, "mod.rs"),
+            'use std::path::Path;\npub fn hidden() { Path::new(".").exists(); }\n',
+          );
+        },
+      },
+    );
+    expectCliStatus(result, 1);
+    expect(result.output).toContain(
+      "src-tauri/src/hidden: R5: untracked nested git repositories are not allowed in the Rust source tree",
     );
   });
 
