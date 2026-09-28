@@ -2,6 +2,7 @@
     all(not(debug_assertions), target_os = "windows"),
     windows_subsystem = "windows"
 )]
+#![cfg_attr(test, allow(clippy::disallowed_methods))]
 
 mod chess;
 mod chesscom;
@@ -183,19 +184,41 @@ pub(crate) struct SearchIndexIdentity {
 
 impl SearchIndexIdentity {
     pub(crate) fn for_database(database: &Path, source: IndexSource) -> io::Result<Self> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "f-20260927-07: SearchIndexIdentity::for_database database.canonicalize"
+        )]
         let database = database.canonicalize()?;
         let preferred_index = db::get_index_path(&database);
-        let index = if preferred_index.exists() {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "f-20260927-07: SearchIndexIdentity::for_database preferred_index.exists"
+        )]
+        let preferred_exists = preferred_index.exists();
+        let index = if preferred_exists {
             preferred_index
         } else {
             let legacy = db::legacy_index_path(&database);
-            if legacy.exists() {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "f-20260927-07: SearchIndexIdentity::for_database legacy.exists"
+            )]
+            let legacy_exists = legacy.exists();
+            if legacy_exists {
                 legacy
             } else {
                 preferred_index
             }
         };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "f-20260927-07: SearchIndexIdentity::for_database index.canonicalize"
+        )]
         let index = index.canonicalize()?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "f-20260927-07: SearchIndexIdentity::for_database index.metadata"
+        )]
         let metadata = index.metadata()?;
         Ok(Self {
             database,
@@ -671,6 +694,10 @@ impl SearchCache {
     }
 
     fn invalidate_entries(&self, database: &Path, gate: Option<&Arc<MappingGate>>) {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "f-20260927-07: SearchCache::invalidate_entries database.canonicalize"
+        )]
         let database = database
             .canonicalize()
             .unwrap_or_else(|_| database.to_path_buf());

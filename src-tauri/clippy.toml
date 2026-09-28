@@ -1,0 +1,12 @@
+disallowed-methods = [
+  { path = "std::path::Path::canonicalize", reason = "pathname filesystem reach: route through src-tauri/src/infra (descriptor-relative outside infra); f-20260912-03" },
+  { path = "std::path::Path::metadata", reason = "pathname filesystem reach: route through src-tauri/src/infra (descriptor-relative outside infra); f-20260912-03" },
+  { path = "std::path::Path::symlink_metadata", reason = "pathname filesystem reach: route through src-tauri/src/infra (descriptor-relative outside infra); f-20260912-03" },
+  { path = "std::path::Path::read_dir", reason = "pathname filesystem reach: route through src-tauri/src/infra (descriptor-relative outside infra); f-20260912-03" },
+  { path = "std::path::Path::read_link", reason = "pathname filesystem reach: route through src-tauri/src/infra (descriptor-relative outside infra); f-20260912-03" },
+  { path = "std::path::Path::exists", reason = "pathname filesystem reach: route through src-tauri/src/infra (descriptor-relative outside infra); f-20260912-03" },
+  { path = "std::path::Path::try_exists", reason = "pathname filesystem reach: route through src-tauri/src/infra (descriptor-relative outside infra); f-20260912-03" },
+  { path = "std::path::Path::is_file", reason = "pathname filesystem reach: route through src-tauri/src/infra (descriptor-relative outside infra); f-20260912-03" },
+  { path = "std::path::Path::is_dir", reason = "pathname filesystem reach: route through src-tauri/src/infra (descriptor-relative outside infra); f-20260912-03" },
+  { path = "std::path::Path::is_symlink", reason = "pathname filesystem reach: route through src-tauri/src/infra (descriptor-relative outside infra); f-20260912-03" },
+]

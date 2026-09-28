@@ -1,3 +1,6 @@
+// infra/ is the sanctioned owner of pathname filesystem reaches (f-20260912-03).
+#![allow(clippy::disallowed_methods)]
+
 pub mod blocking;
 pub mod cancellable_lock;
 pub mod fs;
