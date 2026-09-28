@@ -1,29 +1,9 @@
 use pgn_reader::{BufferedReader, Nag, RawHeader, SanPlus, Skip, Visitor};
 use serde::Serialize;
 use specta::Type;
-use std::io::Read;
 use tokio_util::sync::CancellationToken;
 
-use crate::{error::Error, AppState};
-
-struct CancellableReader<R> {
-    inner: R,
-    cancellation: Option<CancellationToken>,
-}
-
-impl<R: Read> Read for CancellableReader<R> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        if let Some(cancellation) = &self.cancellation {
-            if cancellation.is_cancelled() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Interrupted,
-                    "PGN lexing cancelled",
-                ));
-            }
-        }
-        self.inner.read(buf)
-    }
-}
+use crate::{cancellable_read::CancellableRead, error::Error, AppState};
 
 struct Lexer {
     tokens: Vec<Token>,
@@ -172,10 +152,8 @@ pub fn lex_pgn_cancellable(
             return Err(Error::Cancellation);
         }
     }
-    let reader = CancellableReader {
-        inner: pgn.as_bytes(),
-        cancellation: cancellation.cloned(),
-    };
+    let never_cancelled = CancellationToken::new();
+    let reader = CancellableRead::new(pgn.as_bytes(), cancellation.unwrap_or(&never_cancelled));
     let mut buffered = BufferedReader::new(reader);
     let mut lexer = Lexer {
         tokens: Vec::new(),

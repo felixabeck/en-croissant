@@ -626,12 +626,7 @@ fn scan_file(
 }
 
 fn map_scan_result<T>(result: io::Result<T>, cancellation: &CancellationToken) -> Result<T, Error> {
-    match result {
-        Err(error) if error.kind() == io::ErrorKind::Interrupted && cancellation.is_cancelled() => {
-            Err(Error::Cancellation)
-        }
-        result => result.map_err(Error::from),
-    }
+    result.map_err(|error| crate::cancellable_read::map_read_error(error, cancellation))
 }
 
 async fn scan_current(

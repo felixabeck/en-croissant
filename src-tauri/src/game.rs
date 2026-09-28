@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, VecDeque},
-    io::{self, BufRead, BufReader, Cursor, Read},
+    io::{BufRead, BufReader, Cursor, Read},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
@@ -27,6 +27,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
+    cancellable_read::{map_read_error, CancellableRead},
     engine::{
         log_registration_cleanup_error, parse_fen_to_position, resolve_launch, spawn_registered,
         verify_option_resources, AdmissionLease, EngineActor, EngineDeadlines, EngineKey,
@@ -2403,36 +2404,6 @@ fn select_random_pgn_entry(input: impl Read) -> Result<OpeningBookSelection, Err
     select_random_pgn_entry_cancellable(input, &CancellationToken::new())
 }
 
-/// Makes cancellation observable inside a single `pgn_reader::read_game`
-/// call. The parser may issue many reads for a large game, so checking only
-/// between games would leave an abandoned request occupying the bounded
-/// blocking gateway unnecessarily long.
-struct CancellableRead<R> {
-    inner: R,
-    cancellation: CancellationToken,
-}
-
-impl<R> CancellableRead<R> {
-    fn new(inner: R, cancellation: &CancellationToken) -> Self {
-        Self {
-            inner,
-            cancellation: cancellation.clone(),
-        }
-    }
-}
-
-impl<R: Read> Read for CancellableRead<R> {
-    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        if self.cancellation.is_cancelled() {
-            return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "opening-book parsing cancelled",
-            ));
-        }
-        self.inner.read(buffer)
-    }
-}
-
 fn select_random_pgn_entry_cancellable(
     input: impl Read,
     cancellation: &CancellationToken,
@@ -2445,8 +2416,7 @@ fn select_random_pgn_entry_cancellable(
         match reader.read_game(&mut visitor) {
             Ok(Some(_)) => {}
             Ok(None) => break,
-            Err(_) if cancellation.is_cancelled() => return Err(Error::Cancellation),
-            Err(error) => return Err(error.into()),
+            Err(error) => return Err(map_read_error(error, cancellation)),
         }
     }
 
