@@ -39,7 +39,7 @@ import {
 } from "./rust-branch-coverage.mjs";
 import { RUST_COVERAGE_TOOLCHAIN } from "./toolchain-versions.mjs";
 import { maskRustSource, maskRustSourceWithSpans } from "./rust-source-mask.mjs";
-import { scanRustTestOnly } from "./rust-test-only.mjs";
+import { classifyRustTestOnlySources, scanRustTestOnly } from "./rust-test-only.mjs";
 
 const config = {
   version: 1,
@@ -201,6 +201,62 @@ test("Rust cfg and nested cfg_attr predicates use the fixed three-valued test ru
   }
 });
 
+test("the in-memory Rust classifier accepts atom valuations and defaults to the test rule", () => {
+  const path = "src-tauri/src/lib.rs";
+  const unixSource = [{ path, contents: "#[cfg(unix)]\nfn conditional() {}\n" }];
+  expectClassifierLines(classifyRustTestOnlySources(unixSource), path, []);
+  expectClassifierLines(classifyRustTestOnlySources(unixSource, { unix: false }), path, [1, 2]);
+  expectClassifierLines(classifyRustTestOnlySources(unixSource, { unix: true }), path, []);
+
+  const valueSource = [{ path, contents: '#[cfg(target_os = "macos")]\nfn conditional() {}\n' }];
+  expectClassifierLines(
+    classifyRustTestOnlySources(valueSource, { 'target_os="macos"': false }),
+    path,
+    [1, 2],
+  );
+});
+
+function expectClassifierLines(result, path, expected) {
+  assert.deepEqual(
+    [...result.excludedLines.get(path)].sort((a, b) => a - b),
+    expected,
+  );
+}
+
+test("the in-memory Rust classifier resolves test-only modules from its supplied sources", async () => {
+  const files = {
+    "src-tauri/src/lib.rs": "#[cfg(test)]\nmod helper;\nfn production() {}\n",
+    "src-tauri/src/helper.rs": "mod nested;\npub fn helper() {}\n",
+    "src-tauri/src/helper/nested.rs": "pub fn nested() {}\n",
+  };
+  const sources = Object.entries(files).map(([path, contents]) => ({ path, contents }));
+  const inMemory = classifyRustTestOnlySources(sources);
+  const { result: filesystem } = await scanRustFixture(files);
+
+  assert.deepEqual(inMemory, filesystem);
+  assert.deepEqual([...inMemory.testOnlyFiles].sort(), [
+    "src-tauri/src/helper.rs",
+    "src-tauri/src/helper/nested.rs",
+  ]);
+
+  assert.throws(
+    () =>
+      classifyRustTestOnlySources([
+        { path: "src-tauri/src/lib.rs", contents: "#[cfg(test)]\nmod helper;\n" },
+      ]),
+    /src-tauri\/src\/lib\.rs:2: cannot resolve test-only module helper/,
+  );
+  assert.throws(
+    () =>
+      classifyRustTestOnlySources([
+        { path: "src-tauri/src/lib.rs", contents: "#[cfg(test)]\nmod helper;\n" },
+        { path: "src-tauri/src/helper.rs", contents: "pub fn one() {}\n" },
+        { path: "src-tauri/src/helper/mod.rs", contents: "pub fn two() {}\n" },
+      ]),
+    /src-tauri\/src\/lib\.rs:2: ambiguous test-only module helper: src-tauri\/src\/helper\.rs, src-tauri\/src\/helper\/mod\.rs/,
+  );
+});
+
 test("test-only item extents stop at each recognised item terminator", async () => {
   const cases = [
     ["body-bearing fn", 'pub async unsafe extern "C" fn hidden() {\n    let _value = true;\n}'],
@@ -355,6 +411,32 @@ test("test-only module files are excluded in both layouts and recursively", asyn
       assert.equal(result.excludedLineCounts.get("src-tauri/src/helper/nested.rs"), 1);
     }
   }
+});
+
+test("filesystem scanning ignores test-only modules outside its supplied file set", async () => {
+  const source = rustConfig().sources[0];
+  const parent = "src-tauri/src/lib.rs";
+  const child = "src-tauri/src/x.rs";
+  const parentSource = "#[cfg(test)]\nmod x;\n";
+  const { root } = await fixture({
+    files: {
+      [parent]: parentSource,
+      [child]: "pub fn helper() {}\n",
+    },
+  });
+
+  const result = await scanRustTestOnly({ root, source, files: [parent] });
+  assert.deepEqual([...result.testOnlyFiles], []);
+  assert.deepEqual([...result.excludedLines.get(parent)], [1, 2]);
+  assert.equal(result.excludedLines.has(child), false);
+
+  const { root: missingRoot } = await fixture({
+    files: { [parent]: parentSource },
+  });
+  await assert.rejects(
+    scanRustTestOnly({ root: missingRoot, source, files: [parent] }),
+    /src-tauri\/src\/lib\.rs:2: cannot resolve test-only module x/,
+  );
 });
 
 test("inner cfg attributes exclude their file or enclosing block", async () => {

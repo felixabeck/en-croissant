@@ -140,6 +140,23 @@ pub(crate) trait AtomicWriterInjector {}
     ).toEqual([]);
   });
 
+  test("R2 uses the shared classifier for attributed items", () => {
+    expect(
+      checkFaultInjectionSurface(
+        "src-tauri/src/infra/fs.rs",
+        '#[cfg(all(feature = "x", any(test, feature = "x")))]\npub struct FaultPoint;\n',
+      ),
+    ).toContain(
+      "src-tauri/src/infra/fs.rs:2: R2: public fault-injection item FaultPoint must be inside #[cfg(test)]",
+    );
+    expect(
+      checkFaultInjectionSurface(
+        "src-tauri/src/infra/fs.rs",
+        "#[cfg(all(unix, not(not(test))))]\npub struct FaultPoint;\n",
+      ),
+    ).toEqual([]);
+  });
+
   test("R2 rejects an ungated use importing a fault-injection name", () => {
     const violations = checkFaultInjectionSurface(
       "src-tauri/src/infra/file_workspace.rs",
@@ -173,6 +190,20 @@ pub(crate) trait AtomicWriterInjector {}
 
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("Cannot read Rust source src-tauri/src/missing.rs");
+  });
+
+  test("the CLI reports unparseable cfg predicates as R5 violations", async () => {
+    const result = await runCheckerOver([
+      {
+        path: "src-tauri/src/invalid_cfg.rs",
+        contents: "#[cfg(not(test, unix))]\nfn production() {}\n",
+      },
+    ]);
+
+    expect(result.status).toBe(1);
+    expect(result.output).toContain(
+      "src-tauri/src/invalid_cfg.rs:1: R5: unclassifiable cfg (unparseable cfg predicate (not() requires one cfg predicate))",
+    );
   });
 
   test("the checker rejects a failing git ls-files command", () => {
@@ -257,6 +288,27 @@ mod tests {
 }
 `),
     ).toEqual([]);
+  });
+
+  test.each([
+    '#[cfg(all(feature = "x", any(test, feature = "x")))]',
+    "#[cfg(any(test, unix))]",
+    "#[cfg(all(unix, not(any(test, windows))))]",
+    "#[cfg(not(test))]",
+  ])("R3 counts filesystem calls under production cfg %s", (attribute) => {
+    expect(fsHits(`${attribute}\nfn f() { std::fs::write("x", b""); }\n`)).toContain(
+      `${chess}:2: R3: production filesystem reach (qualified) must be inside infra/, #[cfg(test)], or the shrink-only allowlist`,
+    );
+  });
+
+  test.each([
+    "#[cfg(all(test, unix))]",
+    '#[cfg(all(test, target_os = "macos"))]',
+    "#[cfg(all(unix, all(test, windows)))]",
+    "#[cfg(all(unix, not(not(test))))]",
+    "#[cfg(not(any(not(test), windows)))]",
+  ])("R3 excludes filesystem calls under test-only cfg %s", (attribute) => {
+    expect(fsHits(`${attribute}\nfn f() { std::fs::write("x", b""); }\n`)).toEqual([]);
   });
 
   test("multiline cfg(test) does not leak into the next production item", () => {
@@ -485,6 +537,75 @@ mod tests {
         line.includes("R3:"),
       ),
     ).toBe(true);
+  });
+
+  test("R3 counts a filesystem call reached through a production-attributed import", () => {
+    const violations = fsHits(
+      '#[cfg(all(feature = "x", any(test, feature = "x")))]\n' +
+        'use std::fs::write;\nfn f() { write("x", b""); }\n',
+    );
+
+    expect(violations).toContain(
+      `${chess}:3: R3: production filesystem reach (imported-fn) must be inside infra/, #[cfg(test)], or the shrink-only allowlist`,
+    );
+  });
+
+  test("R4 counts a production-attributed pathname import", () => {
+    expect(fsHits("#[cfg(any(test, unix))]\nuse crate::infra::fs::atomic_replace;\n")).toContain(
+      `${chess}:2: R4: production filesystem reach (import) must be inside infra/, #[cfg(test)], or the shrink-only allowlist`,
+    );
+  });
+
+  test("R2 counts a fault-injection import under a production cfg", () => {
+    expect(
+      checkFaultInjectionSurface(
+        "src-tauri/src/infra/fs.rs",
+        "#[cfg(any(test, unix))]\nuse crate::probe::FaultPoint;\n",
+      ),
+    ).toContain(
+      "src-tauri/src/infra/fs.rs:2: R2: use importing a fault-injection name must be inside #[cfg(test)]",
+    );
+  });
+
+  test("R2, R3, and R4 ignore test-only imports and preserve multiline use assembly", () => {
+    const testOnly = "#[cfg(all(unix, not(not(test))))]\n";
+    expect(
+      checkFaultInjectionSurface(
+        "src-tauri/src/infra/fs.rs",
+        `${testOnly}use crate::probe::FaultPoint;\n`,
+      ),
+    ).toEqual([]);
+    expect(fsHits(`${testOnly}use crate::infra::fs::atomic_replace;\n`)).toEqual([]);
+    expect(
+      fsHits(
+        `${testOnly}use std::fs::write;\n#[cfg(test)]\nmod t { fn f() { write("x", b""); } }\n`,
+      ),
+    ).toEqual([]);
+    expect(
+      fsHits('#[cfg(test)]\nuse std::{\n    fs::write,\n};\nfn f() { write("x", b""); }\n'),
+    ).toEqual([]);
+  });
+
+  test("whole-file test modules are excluded by the shared classifier", () => {
+    expect(
+      checkFilesystemSurface(
+        sources(
+          ["src-tauri/src/lib.rs", "#[cfg(test)]\nmod support;\n"],
+          ["src-tauri/src/support.rs", 'fn f() { std::fs::write("x", b""); }\n'],
+        ),
+      ),
+    ).toEqual([]);
+  });
+
+  test("a production line after a test-only parameter remains an R3 reach", () => {
+    const violations = fsHits(
+      "fn production(\n    #[cfg(test)]\n    _test: (),\n) {\n" +
+        '    std::fs::write("x", b"");\n}\n',
+    );
+
+    expect(violations).toContain(
+      `${chess}:5: R3: production filesystem reach (qualified) must be inside infra/, #[cfg(test)], or the shrink-only allowlist`,
+    );
   });
 
   test("R3-only fixtures fail the composer even without pathname primitives", () => {

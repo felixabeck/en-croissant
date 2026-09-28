@@ -1,11 +1,14 @@
-import { access, readFile } from "node:fs/promises";
-import { basename, dirname, extname, join, resolve } from "node:path";
+import { accessSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { extname, resolve } from "node:path";
+import { posix as posixPath } from "node:path";
 import { filesBelow } from "./files-below.mjs";
 import { matches, normalisePath } from "./coverage-scope.mjs";
 import { maskRustSourceWithSpans } from "./rust-source-mask.mjs";
 
 const WORD = /[A-Za-z0-9_]/;
 const IDENTIFIER = /^(?:r#)?[A-Za-z_][A-Za-z0-9_]*/;
+const DEFAULT_ATOM_VALUATION = Object.freeze({ test: false });
 
 function lineAt(source, offset) {
   let line = 1;
@@ -263,10 +266,11 @@ function parsePredicate(text, path, source, offset) {
       cursor += 1;
       whitespace();
       if (text[cursor] !== '"') throw new Error("invalid cfg value");
+      const valueStart = cursor;
       const end = skipQuoted(text, cursor);
       if (end === -1) throw new Error("unterminated cfg value");
       cursor = end;
-      return { type: "atom", name: `${name}=value` };
+      return { type: "atom", name: `${name}=${text.slice(valueStart, end)}` };
     }
     if (text[cursor] !== "(") return { type: "atom", name };
     cursor += 1;
@@ -336,12 +340,11 @@ function metaParts(text) {
   return { name: match[1], body: match[2] };
 }
 
-function evaluatePredicate(predicate) {
+function evaluatePredicate(predicate, atomValuation) {
   if (predicate.type === "atom") {
-    if (predicate.name === "test") return false;
-    return undefined;
+    return Object.hasOwn(atomValuation, predicate.name) ? atomValuation[predicate.name] : undefined;
   }
-  const values = predicate.children.map(evaluatePredicate);
+  const values = predicate.children.map((child) => evaluatePredicate(child, atomValuation));
   if (predicate.type === "not") return values[0] === undefined ? undefined : !values[0];
   if (predicate.type === "all") {
     if (values.includes(false)) return false;
@@ -353,12 +356,15 @@ function evaluatePredicate(predicate) {
   return undefined;
 }
 
-function evaluateCfgAttribute(attribute, path, source) {
+function evaluateCfgAttribute(attribute, path, source, atomValuation) {
   const { name, body } = metaParts(attribute.text);
   if (name === "cfg") {
     if (body === undefined)
       fail(path, source, attribute.start, "unparseable cfg predicate (missing parentheses)");
-    return evaluatePredicate(parsePredicate(body, path, source, attribute.start)) === false;
+    return (
+      evaluatePredicate(parsePredicate(body, path, source, attribute.start), atomValuation) ===
+      false
+    );
   }
   if (name !== "cfg_attr") return false;
   if (body === undefined)
@@ -401,8 +407,10 @@ function evaluateCfgAttribute(attribute, path, source) {
       }
       const nested = parsePredicate(parts.body, path, source, attribute.start);
       const applies =
-        conditions.length === 0 ? true : evaluatePredicate({ type: "all", children: conditions });
-      const result = evaluatePredicate(nested);
+        conditions.length === 0
+          ? true
+          : evaluatePredicate({ type: "all", children: conditions }, atomValuation);
+      const result = evaluatePredicate(nested, atomValuation);
       const effective =
         applies === false ? true : applies === true ? result : result === true ? true : undefined;
       return effective === false;
@@ -439,10 +447,10 @@ function evaluateCfgAttribute(attribute, path, source) {
   return argumentsList.slice(1).some((nestedMeta) => visit(nestedMeta, [condition]));
 }
 
-function parseAttributes(path, source, groups) {
+function parseAttributes(path, source, groups, atomValuation) {
   for (const group of groups) {
     group.testOnly = group.attributes.some((attribute) =>
-      evaluateCfgAttribute(attribute, path, source),
+      evaluateCfgAttribute(attribute, path, source, atomValuation),
     );
   }
 }
@@ -941,12 +949,12 @@ function lineRanges(path, source, comments, ranges, wholeFile) {
   return excluded;
 }
 
-function analyzeRustFile(path, source) {
+function analyzeRustFile(path, source, atomValuation) {
   const { masked, comments } = maskRustSourceWithSpans(source);
   const pairs = delimiterPairs(path, source, masked);
   const contexts = openerContexts(path, source, masked, pairs);
   const groups = attributeGroups(path, source, masked, pairs);
-  parseAttributes(path, source, groups);
+  parseAttributes(path, source, groups, atomValuation);
   const excludedRanges = [];
   for (const group of groups) {
     if (!group.testOnly) continue;
@@ -978,7 +986,7 @@ function analyzeRustFile(path, source) {
     const close = pairs.get(open);
     if (close === undefined) fail(path, source, index, "unbalanced inner attribute delimiter");
     const attribute = { start: index, text: source.slice(open + 1, close) };
-    if (!evaluateCfgAttribute(attribute, path, source)) continue;
+    if (!evaluateCfgAttribute(attribute, path, source, atomValuation)) continue;
     const context = contextAt(index, pairs, contexts);
     if (context.context?.kind === "opaque")
       fail(path, source, index, "unsupported inner cfg attribute context");
@@ -1037,7 +1045,18 @@ function hasPathAttribute(attributes) {
   return attributes.some((attribute) => hasPathMeta(attribute.text));
 }
 
-async function resolveModulePath(path, source, declaration, root) {
+function moduleCandidatePaths(path, name) {
+  const fileName = posixPath.basename(path);
+  const base = ["main.rs", "lib.rs", "mod.rs"].includes(fileName)
+    ? posixPath.dirname(path)
+    : posixPath.join(
+        posixPath.dirname(path),
+        fileName.slice(0, -posixPath.extname(fileName).length),
+      );
+  return [posixPath.join(base, `${name}.rs`), posixPath.join(base, name, "mod.rs")];
+}
+
+function validateModuleDeclaration(path, source, declaration) {
   if (declaration.inline) {
     fail(
       path,
@@ -1054,17 +1073,34 @@ async function resolveModulePath(path, source, declaration, root) {
       "unsupported #[path] on a test-only module declaration",
     );
   }
-  const file = resolve(root, path);
-  const fileName = basename(file);
-  const base = ["main.rs", "lib.rs", "mod.rs"].includes(fileName)
-    ? dirname(file)
-    : join(dirname(file), fileName.slice(0, -extname(fileName).length));
-  const candidates = [join(base, `${declaration.name}.rs`), join(base, declaration.name, "mod.rs")];
+}
+
+function resolveModulePath(path, source, declaration, sourcesByPath, resolveModule) {
+  validateModuleDeclaration(path, source, declaration);
+  const candidates = moduleCandidatePaths(path, declaration.name);
+  if (resolveModule) return resolveModule(path, source, declaration, candidates);
+
+  const found = candidates.filter((candidate) => sourcesByPath.has(candidate));
+  if (found.length !== 1) {
+    fail(
+      path,
+      source,
+      declaration.keyword,
+      found.length === 0
+        ? `cannot resolve test-only module ${declaration.name}`
+        : `ambiguous test-only module ${declaration.name}: ${found.join(", ")}`,
+    );
+  }
+  return found[0];
+}
+
+function resolveModulePathOnDisk(path, source, declaration, candidates, root) {
   const found = [];
   for (const candidate of candidates) {
+    const filePath = resolve(root, candidate);
     try {
-      await access(candidate);
-      found.push(normalisePath(candidate, root));
+      accessSync(filePath);
+      found.push(candidate);
     } catch (error) {
       if (error.code === "ENOENT" || error.code === "ENOTDIR") continue;
       const details =
@@ -1075,7 +1111,7 @@ async function resolveModulePath(path, source, declaration, root) {
         path,
         source,
         declaration.keyword,
-        `unable to access test-only module candidate ${candidate}: ${details}`,
+        `unable to access test-only module candidate ${filePath}: ${details}`,
       );
     }
   }
@@ -1090,6 +1126,99 @@ async function resolveModulePath(path, source, declaration, root) {
     );
   }
   return found[0];
+}
+
+function prepareAtomValuation(atomValuation) {
+  if (atomValuation === null || typeof atomValuation !== "object" || Array.isArray(atomValuation)) {
+    throw new TypeError("Rust cfg atom valuation must be an object");
+  }
+  const result = { ...DEFAULT_ATOM_VALUATION, ...atomValuation };
+  for (const [atom, value] of Object.entries(result)) {
+    if (value !== undefined && typeof value !== "boolean") {
+      throw new TypeError(`Rust cfg atom valuation for ${atom} must be a boolean or undefined`);
+    }
+  }
+  return result;
+}
+
+function sourceEntries(sources) {
+  if (sources instanceof Map)
+    return [...sources.entries()].map(([path, contents]) => ({ path, contents }));
+  return [...sources];
+}
+
+/**
+ * Classify test-only Rust lines and module files from in-memory source contents.
+ * Atom valuation keys are cfg atom names; string-valued atoms use `name="value"` keys.
+ */
+export function classifyRustTestOnlySources(
+  sources,
+  atomValuation = DEFAULT_ATOM_VALUATION,
+  options = {},
+) {
+  if (!options || typeof options !== "object" || Array.isArray(options)) {
+    throw new TypeError("Rust test-only classifier options must be an object");
+  }
+  if (options.resolveModule !== undefined && typeof options.resolveModule !== "function") {
+    throw new TypeError("Rust test-only module resolver must be a function");
+  }
+  const evaluatedAtoms = prepareAtomValuation(atomValuation);
+  const entries = sourceEntries(sources);
+  const analyses = new Map();
+  for (const { path, contents } of entries) {
+    if (typeof path !== "string" || typeof contents !== "string") {
+      throw new TypeError("Rust source entries must contain string path and contents fields");
+    }
+    if (extname(path) !== ".rs") {
+      throw new Error(`${path}:1: excludeTestOnlyItems can scan only .rs files`);
+    }
+    if (analyses.has(path)) throw new Error(`${path}:1: duplicate Rust source path`);
+    analyses.set(path, analyzeRustFile(path, contents, evaluatedAtoms));
+  }
+
+  const testOnlyFiles = new Set(
+    [...analyses].filter(([, analysis]) => analysis.wholeFile).map(([path]) => path),
+  );
+  const sourcesByPath = new Map(entries.map(({ path, contents }) => [path, contents]));
+  const queue = [];
+  for (const [path, analysis] of analyses) {
+    for (const declaration of analysis.moduleItems) {
+      if (declaration.testOnly) queue.push({ path, source: analysis.source, declaration });
+    }
+  }
+  const processed = new Set();
+  while (queue.length) {
+    const item = queue.shift();
+    const key = `${item.path}:${item.declaration.keyword}`;
+    if (processed.has(key)) continue;
+    processed.add(key);
+    const target = resolveModulePath(
+      item.path,
+      item.source,
+      item.declaration,
+      sourcesByPath,
+      options.resolveModule,
+    );
+    if (!sourcesByPath.has(target) || testOnlyFiles.has(target)) continue;
+    testOnlyFiles.add(target);
+    const targetAnalysis = analyses.get(target);
+    for (const declaration of targetAnalysis.moduleItems) {
+      queue.push({
+        path: target,
+        source: targetAnalysis.source,
+        declaration: { ...declaration, testOnly: true },
+      });
+    }
+  }
+
+  const excludedLines = new Map(
+    [...analyses].map(([path, analysis]) => [path, analysis.excludedLines]),
+  );
+  for (const path of testOnlyFiles) {
+    excludedLines.set(path, lineRanges(path, sourcesByPath.get(path), [], [], true));
+  }
+  const excludedLineCounts = new Map([...excludedLines].map(([path, lines]) => [path, lines.size]));
+  return { testOnlyFiles, excludedLines, excludedLineCounts };
 }
 
 function validateExclusionConfig(source) {
@@ -1136,56 +1265,23 @@ export async function scanRustTestOnly({ root, source, files }) {
   }
 
   const sourceTexts = new Map();
-  const analyses = new Map();
   for (const path of included) {
     try {
       const text = await readFile(resolve(root, path), "utf8");
       sourceTexts.set(path, text);
-      analyses.set(path, analyzeRustFile(path, text));
     } catch (error) {
       if (error.message?.startsWith(`${path}:`)) throw error;
       throw new Error(`${path}:1: unable to read Rust source: ${error.message}`, { cause: error });
     }
   }
-
-  const testOnlyFiles = new Set(
-    [...analyses].filter(([, analysis]) => analysis.wholeFile).map(([path]) => path),
+  return classifyRustTestOnlySources(
+    [...sourceTexts].map(([path, contents]) => ({ path, contents })),
+    DEFAULT_ATOM_VALUATION,
+    {
+      resolveModule: (path, text, declaration, candidates) =>
+        resolveModulePathOnDisk(path, text, declaration, candidates, root),
+    },
   );
-  const includedFiles = new Set(included);
-  const queue = [];
-  for (const [path, analysis] of analyses) {
-    for (const declaration of analysis.moduleItems) {
-      if (declaration.testOnly) queue.push({ path, source: analysis.source, declaration });
-    }
-  }
-  const processed = new Set();
-  while (queue.length) {
-    const item = queue.shift();
-    const key = `${item.path}:${item.declaration.keyword}`;
-    if (processed.has(key)) continue;
-    processed.add(key);
-    const target = await resolveModulePath(item.path, item.source, item.declaration, root);
-    if (!includedFiles.has(target) || testOnlyFiles.has(target)) continue;
-    testOnlyFiles.add(target);
-    const targetAnalysis = analyses.get(target);
-    if (!targetAnalysis) continue;
-    for (const declaration of targetAnalysis.moduleItems) {
-      queue.push({
-        path: target,
-        source: targetAnalysis.source,
-        declaration: { ...declaration, testOnly: true },
-      });
-    }
-  }
-
-  const excludedLines = new Map();
-  for (const [path, analysis] of analyses) excludedLines.set(path, analysis.excludedLines);
-  for (const path of testOnlyFiles) {
-    const text = sourceTexts.get(path) ?? "";
-    excludedLines.set(path, lineRanges(path, text, [], [], true));
-  }
-  const excludedLineCounts = new Map([...excludedLines].map(([path, lines]) => [path, lines.size]));
-  return { testOnlyFiles, excludedLines, excludedLineCounts };
 }
 
 export { validateExclusionConfig };

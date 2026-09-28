@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { isEntrypoint } from "./entrypoint.mjs";
 import { maskRustSource } from "./rust-source-mask.mjs";
+import { classifyRustTestOnlySources } from "./rust-test-only.mjs";
 import { listWorkingTreeFiles } from "./working-tree-files.mjs";
 
 // Owner: f-20260830-25. Emptied 2026-09-06 by the finding that owned it;
@@ -29,15 +30,6 @@ const INJECTION_NAME = /(?:FaultPoint|Injector|_with_injector)/i;
 const PUBLIC_ITEM =
   /^\s*pub(?:\s*\(\s*(?:crate|super)\s*\))?\s+(?:(?:async|const|unsafe|extern(?:\s+"[^"]+")?)\s+)*(?:fn|struct|enum|trait|type|mod|static|const)\s+([A-Za-z_][A-Za-z0-9_]*)/;
 const USE_START = /^\s*(?:pub(?:\s*\(\s*(?:crate|super)\s*\))?\s+)?use\b/;
-const ITEM_START =
-  /^\s*(?:(?:pub(?:\s*\(\s*(?:crate|super)\s*\))?\s+)?(?:async\s+|const\s+|unsafe\s+|extern(?:\s+"[^"]+"\s+)?)*)(?:fn|struct|enum|trait|type|mod|static|const|impl)\b/;
-
-function isTestCfgAttribute(line) {
-  const match = line.match(/^\s*#!?\[\s*cfg\s*\((.*)\)\s*\]/);
-  if (!match || /\bnot\s*\(\s*test\s*\)/.test(match[1])) return false;
-  const condition = match[1].trim();
-  return condition === "test" || (/^all\s*\(/.test(condition) && /\btest\b/.test(condition));
-}
 
 function sourceEntries(sources) {
   if (sources instanceof Map)
@@ -79,22 +71,12 @@ export function checkDeadCodeSurface(sources, allowlist = DEAD_CODE_ALLOWLIST) {
   return violations;
 }
 
-function braceDelta(code) {
-  let opens = 0;
-  let closes = 0;
-  for (const character of code) {
-    if (character === "{") opens += 1;
-    if (character === "}") closes += 1;
-  }
-  return { opens, closes };
-}
-
-function firstOpeningBraceOffset(code) {
-  return code.indexOf("{");
-}
-
-function testRegionAtDepth(regionStarts, braceDepth) {
-  return regionStarts.some((startDepth) => braceDepth >= startDepth);
+function unclassifiableCfgViolation(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  const location = message.match(/^(.*):(\d+): ([\s\S]*)$/);
+  return location
+    ? `${location[1]}:${location[2]}: R5: unclassifiable cfg (${location[3]})`
+    : `R5: unclassifiable cfg (${message})`;
 }
 
 const FS_FN_NAMES = [
@@ -251,106 +233,71 @@ function parseUseBindings(text) {
   return state;
 }
 
-function walkGatedLines(source, onLine) {
+function walkGatedLines(source, onLine, testOnlyLines) {
   const lines = maskRustSource(source).split("\n");
-  const testRegionStarts = [];
-  let braceDepth = 0;
-  let crateCfgTest = false;
-  let pendingCfgTest = false;
-  let pendingGatedItem = false;
-  let pendingUse = false;
   let useStatement = null;
 
   for (let index = 0; index < lines.length; index += 1) {
     const code = lines[index];
-    while (testRegionStarts.length && braceDepth < testRegionStarts.at(-1)) {
-      testRegionStarts.pop();
-    }
-
-    const crateCfg = /^\s*#!/.test(code) && isTestCfgAttribute(code);
-    const itemCfg = /^\s*#(?!\s*!)/.test(code) && isTestCfgAttribute(code);
-    if (crateCfg) crateCfgTest = true;
-    if (itemCfg) pendingCfgTest = true;
-
-    const gatedAtLine =
-      crateCfgTest || testRegionAtDepth(testRegionStarts, braceDepth) || pendingCfgTest;
+    const gated = testOnlyLines.has(index + 1);
 
     const startsUse =
       USE_START.test(code) || USE_START.test(code.replace(/^\s*(?:#\[[^\]]*\]\s*)+/, ""));
     if (startsUse) {
-      useStatement = { gated: gatedAtLine, text: code };
-      pendingUse = pendingCfgTest || itemCfg;
+      useStatement = { gated, text: code };
     } else if (useStatement) {
       useStatement.text += `\n${code}`;
     }
 
-    const { opens, closes } = braceDelta(code);
-    const codeWithoutAttrs = code.replace(/^\s*(?:#\[[^\]]*\]\s*)+/, "");
-    const startsItem = ITEM_START.test(code) || ITEM_START.test(codeWithoutAttrs) || startsUse;
     const isUseComplete = Boolean(useStatement && code.includes(";"));
-    const trimmed = code.trim();
-    const isAttribute = trimmed.startsWith("#");
-    const hasCode = trimmed.length > 0 && !isAttribute;
-
-    if ((pendingCfgTest || itemCfg) && !crateCfg) {
-      if (startsUse) pendingUse = true;
-      else if (startsItem) pendingGatedItem = true;
-      else if (hasCode && !pendingGatedItem && !pendingUse && !itemCfg) pendingCfgTest = false;
-
-      if (pendingGatedItem && opens > 0) {
-        const openingOffset = firstOpeningBraceOffset(code);
-        const depthAtOpening =
-          braceDepth +
-          1 +
-          [...code.slice(0, openingOffset)].filter((character) => character === "{").length;
-        testRegionStarts.push(depthAtOpening);
-        pendingCfgTest = false;
-        pendingGatedItem = false;
-      } else if (pendingGatedItem && code.includes(";") && opens === 0) {
-        pendingCfgTest = false;
-        pendingGatedItem = false;
-      }
-    }
 
     onLine({
       index,
       code,
-      gated: gatedAtLine,
+      gated,
       useText: isUseComplete ? useStatement.text : null,
       useGated: isUseComplete ? useStatement.gated : false,
     });
 
     if (isUseComplete) {
-      pendingCfgTest = false;
-      pendingUse = false;
       useStatement = null;
-    }
-
-    braceDepth += opens - closes;
-    while (testRegionStarts.length && braceDepth < testRegionStarts.at(-1)) {
-      testRegionStarts.pop();
     }
   }
 }
 
-export function checkFaultInjectionSurface(path, source) {
+function checkFaultInjectionSurfaceWithClassification(path, source, classification) {
   const violations = [];
+  const testOnlyLines = classification.excludedLines.get(path) ?? new Set();
 
-  walkGatedLines(source, ({ index, code, gated, useText, useGated }) => {
-    const publicItem = PUBLIC_ITEM.exec(code);
-    if (publicItem && INJECTION_NAME.test(publicItem[1]) && !gated) {
-      violations.push(
-        `${path}:${index + 1}: R2: public fault-injection item ${publicItem[1]} must be inside #[cfg(test)]`,
-      );
-    }
-    if (useText && INJECTION_NAME.test(useText) && !useGated) {
-      violations.push(
-        `${path}:${index + 1}: R2: use importing a fault-injection name must be inside #[cfg(test)]`,
-      );
-    }
-  });
+  walkGatedLines(
+    source,
+    ({ index, code, gated, useText, useGated }) => {
+      const publicItem = PUBLIC_ITEM.exec(code);
+      if (publicItem && INJECTION_NAME.test(publicItem[1]) && !gated) {
+        violations.push(
+          `${path}:${index + 1}: R2: public fault-injection item ${publicItem[1]} must be inside #[cfg(test)]`,
+        );
+      }
+      if (useText && INJECTION_NAME.test(useText) && !useGated) {
+        violations.push(
+          `${path}:${index + 1}: R2: use importing a fault-injection name must be inside #[cfg(test)]`,
+        );
+      }
+    },
+    testOnlyLines,
+  );
 
   return [...new Set(violations)];
+}
+
+export function checkFaultInjectionSurface(path, source) {
+  let classification;
+  try {
+    classification = classifyRustTestOnlySources([{ path, contents: source }]);
+  } catch (error) {
+    return [unclassifiableCfgViolation(error)];
+  }
+  return checkFaultInjectionSurfaceWithClassification(path, source, classification);
 }
 
 function isInfraPath(path) {
@@ -368,11 +315,12 @@ function pathnameCall(name, code) {
   return new RegExp(`\\b${escaped}${TURBOFISH_CALL}`).test(code);
 }
 
-function collectFilesystemMatches(path, source) {
+function collectFilesystemMatches(path, source, classification) {
   if (isInfraPath(path)) return [];
   const matches = [];
   const events = [];
-  walkGatedLines(source, (event) => events.push(event));
+  const testOnlyLines = classification.excludedLines.get(path) ?? new Set();
+  walkGatedLines(source, (event) => events.push(event), testOnlyLines);
 
   const imports = emptyImportState();
   for (const { useText, useGated } of events) {
@@ -444,10 +392,11 @@ function collectFilesystemMatches(path, source) {
   return unique;
 }
 
-export function checkFilesystemSurface(
+function checkFilesystemSurfaceWithClassification(
   sources,
   allowlist = FS_SURFACE_ALLOWLIST,
   counts = INITIAL_FS_SURFACE_COUNTS,
+  classification,
 ) {
   const entries = sourceEntries(sources);
   const violations = [];
@@ -460,7 +409,7 @@ export function checkFilesystemSurface(
   }
 
   for (const { path, contents } of entries) {
-    const matches = collectFilesystemMatches(path, contents);
+    const matches = collectFilesystemMatches(path, contents, classification);
     if (allowedPaths.has(path)) {
       const expected = counts[path] ?? 0;
       if (matches.length === 0) {
@@ -484,6 +433,21 @@ export function checkFilesystemSurface(
   return violations;
 }
 
+export function checkFilesystemSurface(
+  sources,
+  allowlist = FS_SURFACE_ALLOWLIST,
+  counts = INITIAL_FS_SURFACE_COUNTS,
+) {
+  const entries = sourceEntries(sources);
+  let classification;
+  try {
+    classification = classifyRustTestOnlySources(entries);
+  } catch (error) {
+    return [unclassifiableCfgViolation(error)];
+  }
+  return checkFilesystemSurfaceWithClassification(entries, allowlist, counts, classification);
+}
+
 // An allowlist entry whose file has left the working tree is stale: without this rule the entry
 // survives the deletion for ever and every gate stays green.
 export function checkAllowlistResidency(paths, allowlist = FS_SURFACE_ALLOWLIST) {
@@ -501,10 +465,24 @@ export function checkAllowlistResidency(paths, allowlist = FS_SURFACE_ALLOWLIST)
 
 export function checkRustReleaseSurface(sources, allowlist = DEAD_CODE_ALLOWLIST) {
   const entries = sourceEntries(sources);
+  const violations = checkDeadCodeSurface(entries, allowlist);
+  let classification;
+  try {
+    classification = classifyRustTestOnlySources(entries);
+  } catch (error) {
+    return [...violations, unclassifiableCfgViolation(error)];
+  }
   return [
-    ...checkDeadCodeSurface(entries, allowlist),
-    ...entries.flatMap(({ path, contents }) => checkFaultInjectionSurface(path, contents)),
-    ...checkFilesystemSurface(entries),
+    ...violations,
+    ...entries.flatMap(({ path, contents }) =>
+      checkFaultInjectionSurfaceWithClassification(path, contents, classification),
+    ),
+    ...checkFilesystemSurfaceWithClassification(
+      entries,
+      FS_SURFACE_ALLOWLIST,
+      INITIAL_FS_SURFACE_COUNTS,
+      classification,
+    ),
   ];
 }
 
