@@ -108,7 +108,11 @@ the difference separately rather than including it in an upward refresh.
 Record the CI run, commit, artifact, all metric deltas and the reasoned exception in the
 task records before committing the refresh. Use the existing `coverage-report.mjs`
 baseline writer with that CI LCOV, then run `pnpm coverage:frontend:check` against the
-fresh local LCOV and the normal push gates. Baseline commands remain denied by default;
-an actual runtime refusal is a blocker, never a reason to disguise the command. Never
-refresh automatically during tests or to clear a red gate. The 2026-09-11 refresh follows
-this procedure under `d-20260911-02` in `tasks/decisions.md`.
+fresh local LCOV and the normal push gates. A baseline write refuses any decrease in a
+covered count or ratio, and any change to the recorded scope or area set, unless
+`--instrument-change <d-id> --finding <f-id>` names a decision in `tasks/decisions.md`
+whose `Governs:` line names that finding. The writer prints every per-area, per-metric
+delta before deciding and applies no shrink allowance. Upward refreshes still follow the
+CI-artifact procedure above. Never refresh automatically during tests or to clear a red
+gate. The 2026-09-11 refresh follows this procedure under `d-20260911-02` in
+`tasks/decisions.md`.

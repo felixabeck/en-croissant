@@ -246,10 +246,13 @@ What is **not** settled, all of it filed in `tasks/findings.md` rather than only
   across builds, so ~170 records routinely flip in each direction and cancel.
   **Never rewrite a baseline to clear a red ratchet** (`docs/coverage.md`) — lowering the backend
   floor to the runner's 744 would have permanently retired the only enforcement of a recursive
-  delete that guards against directory traversal. `.claude/settings.json` denies the known spellings
-  of `coverage:baseline:*` and of a direct `--write-baseline` call, as well as a direct host
-  `playwright … --update-snapshots` and the force-push command forms; re-recording inside the
-  pinned container is open to every agent under the rule in `.claude/skills/verify-ui/SKILL.md`
+  delete that guards against directory traversal. `.claude/settings.json` denies direct host
+  `playwright … --update-snapshots` and force-push command forms. Baseline writes are protected by
+  the `scripts/coverage-report.mjs` writer guard (`d-20260927-23`):
+  `--instrument-change <d-id> --finding <f-id>` must name a decision in `tasks/decisions.md` whose
+  `Governs:` line names the finding before any decrease or recorded scope/area-set change is
+  accepted. The writer prints every per-area, per-metric delta. Re-recording inside the pinned
+  container is open to every agent under the rule in `.claude/skills/verify-ui/SKILL.md`
   (`d-20260919-13`). `.claude/hooks/block-env-files.sh` adds semantic
   protection for secret-file access. These are defense-in-depth guards: the rule is what binds, and
   a determined invocation can phrase a command differently.

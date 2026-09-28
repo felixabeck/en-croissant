@@ -16,7 +16,7 @@
  * from the previous matrix, and each inherited the last one's errors; that is why this one starts
  * from the file.
  *
- * **42 distinct failure paths**, plus one swallowed cleanup path that deliberately produces no
+ * **71 distinct failure paths**, plus one swallowed cleanup path that deliberately produces no
  * failure of its own (row 32) and one shared sink (row 41). No row is *argued*: every one is
  * staged. "Argued" is reserved for a path that could only be reached by editing the verifier,
  * doing harm that outlives the run, or touching something the run may not modify, and none of
@@ -30,111 +30,199 @@
  *
  *  #  site                what fails                          message (to its distinguishing part)
  * --- ------------------- ---------------------------------- ------------------------------------
- *  1  :297    assignArea   no area claims a production file   `Unmapped production file: src/other.ts`
- *  2  :298    assignArea   two areas claim the same file      `Production file belongs to multiple
+ *  1  :394    assignArea   no area claims a production file   `Unmapped production file: src/other.ts`
+ *  2  :395    assignArea   two areas claim the same file      `Production file belongs to multiple
  *                                                             coverage areas: src/utils/a.ts
  *                                                             (utilities, second)`
- *  3  :334                 an area's declared source is not   `Coverage area utilities has the
+ *  3  :431                 an area's declared source is not   `Coverage area utilities has the
  *                          the source the file came from      wrong source for src/utils/example.ts`
- *  4  :358                 a production file has no LCOV      `Coverage data missing for production
+ *  4  :455                 a production file has no LCOV      `Coverage data missing for production
  *                          record at all                      files: src/utils/example.ts`
- *  5  :375                 an undeclared blank record         `Coverage measurement is blank for
+ *  5  :472                 an undeclared blank record         `Coverage measurement is blank for
  *                          (condition 1)                      production files: src/utils/blank.ts.`
- *  6  :385                 a declared path outside the        `Coverage statementFree declarations
+ *  6  :482                 a declared path outside the        `Coverage statementFree declarations
  *                          measured set (condition 2)         are outside the measured production
  *                                                             set: src/gone.ts.`
- *  7  :395                 a declared path that is measured   `Coverage statementFree declarations
+ *  7  :492                 a declared path that is measured   `Coverage statementFree declarations
  *                          and not blank (condition 3)        are no longer blank:
  *                                                             src/utils/example.ts.`
- *  8  :400                 a configured area with no          `Coverage data missing for area:
+ *  8  :497                 a configured area with no          `Coverage data missing for area:
  *                          measured file at all               empty`
- *  9  :314    ->           the source root is unreadable      `EACCES: permission denied, scandir
+ *  9  :411    ->           the source root is unreadable      `EACCES: permission denied, scandir
  *      files-below.mjs:5   (readdir at the root)              '<root>/src'`
  * 10  files-below.mjs:5    a directory *below* the source     `EACCES: permission denied, scandir
  *      via :9 recursion    root is unreadable                 '<root>/src/locked'`
- * 11  :313                 config of the wrong shape: `{}`    TypeError: `config.sources is not
+ * 11  :410                 config of the wrong shape: `{}`    TypeError: `config.sources is not
  *                                                             iterable`
- * 12  :337                 `{"sources":[],"areas":null}`      TypeError: `Cannot read properties of
+ * 12  :434                 `{"sources":[],"areas":null}`      TypeError: `Cannot read properties of
  *                                                             null (reading 'map')`
- * 13  :318    ->           a source with no `include` list    TypeError: `Cannot read properties of
+ * 13  :415    ->           a source with no `include` list    TypeError: `Cannot read properties of
  *      coverage-scope.mjs:34                                   undefined (reading 'some')`
- * 14  :318    ->           a source with no `exclude` list    TypeError: `Cannot read properties of
+ * 14  :415    ->           a source with no `exclude` list    TypeError: `Cannot read properties of
  *      coverage-scope.mjs:39                                   undefined (reading 'map')`
- * 14a :362                 a `statementFree` that is not an    TypeError: `(source.statementFree ??
+ * 14a :459                 a `statementFree` that is not an    TypeError: `(source.statementFree ??
  *                          array: `{}`                        []).map is not a function`
- * 14b :362                 a `statementFree` entry that is     TypeError: `Cannot destructure
+ * 14b :459                 a `statementFree` entry that is     TypeError: `Cannot destructure
  *                          not an object: `[null]`            property 'path' of 'object null' as
  *                                                             it is null.`
- * 15  :215    parseLcov    given something not a string       TypeError: `Cannot read properties of
+ * 15  :312    parseLcov    given something not a string       TypeError: `Cannot read properties of
  *                                                             null (reading 'replaceAll')`
- * 16  :432                 the baseline's version is not 1    `Unsupported coverage baseline format`
+ * 16  :529                 the baseline's version is not 1    `Unsupported coverage baseline format`
  *                          or it carries no `areas`
- * 17  :435                 no recorded scope, checked         `Coverage baseline is missing its
+ * 17  :532                 no recorded scope, checked         `Coverage baseline is missing its
  *                          against a config                   recorded scope`
- * 18  :438                 the recorded scope no longer       `Coverage measurement scope changed:
+ * 18  :535                 the recorded scope no longer       `Coverage measurement scope changed:
  *                          matches the config                 source ids and roots, include globs,
  *                                                             exclude globs, statementFree
  *                                                             declarations, or area ids, sources,
  *                                                             and paths ... Re-record the scope
  *                                                             subtree by hand ...`
- * 19  :449                 a measured area the baseline       `Missing baseline for area: utilities`
+ * 19  :546                 a measured area the baseline       `Missing baseline for area: utilities`
  *                          does not carry
- * 20  :454                 a baseline area missing one        `Missing functions baseline for area:
+ * 20  :551                 a baseline area missing one        `Missing functions baseline for area:
  *                          metric                             utilities`
- * 21  :487                 a covered count or ratio           `utilities lines regressed: 1/2,
+ * 21  :584                 a covered count or ratio           `utilities lines regressed: 1/2,
  *                          regressed                          baseline 2/2`
- * 22  :493                 a baseline area absent from the    `Baseline references unknown area:
+ * 22  :590                 a baseline area absent from the    `Baseline references unknown area:
  *                          report                             ghost`
- * 23  :431                 a baseline of the wrong shape:     TypeError: `Cannot read properties of
+ * 23  :528                 a baseline of the wrong shape:     TypeError: `Cannot read properties of
  *                          `null`                             null (reading 'version')`
- * 24  :501                 an area with no                    `Missing minimum coverage for area:
+ * 24  :598                 an area with no                    `Missing minimum coverage for area:
  *                          `minimumCoverage`                  utilities`
- * 25  :503                 an area with no entry in the       `Missing coverage report for area:
+ * 25  :600                 an area with no entry in the       `Missing coverage report for area:
  *                          report. Reachable through the      utilities`
  *                          exported API, not through the
  *                          CLI, and it stays for that
- * 26  :507                 a minimum that is not a            `Invalid lines minimum coverage for
+ * 26  :604                 a minimum that is not a            `Invalid lines minimum coverage for
  *                          percentage                         area: utilities`
- * 27  :513                 a measured area below its floor    `utilities lines is below minimum
+ * 27  :610                 a measured area below its floor    `utilities lines is below minimum
  *                                                             coverage: 50.00% < 80.00%`
- * 28  :533                 the temporary write rejects        the rejection, unchanged:
+ * 28  :888                 the temporary write rejects        the rejection, unchanged:
  *                                                             `writeFile refused`
- * 29  :551                 the formatter exits non-zero       `Failed to format coverage baseline
+ * 29  :900                 the formatter exits non-zero       `Failed to format coverage baseline
  *                                                             with <path>: status=23; signal=null;
  *                                                             stderr="rejected"`
- * 29b :551                 the formatter is killed by a       `... status=null; signal=SIGTERM;
+ * 29b :900                 the formatter is killed by a       `... status=null; signal=SIGTERM;
  *                          signal                             stderr=""` -- `status !== 0` is true
  *                                                             for `null`, so a kill is caught
  *                                                             rather than reported as success
- * 30  :551                 the formatter binary is missing    `... status=null; signal=null;
+ * 30  :900                 the formatter binary is missing    `... status=null; signal=null;
  *                                                             stderr=""; error.code=ENOENT;
  *                                                             error.message="spawnSync <path>
  *                                                             ENOENT"`
- * 31  :555                 the rename into place rejects      the rejection, unchanged:
+ * 31  :910                 the rename into place rejects      the rejection, unchanged:
  *                                                             `rename refused`
- * 32  :524                 cleanup's unlink rejects after a   **no failure of its own**: the
+ * 32  :879                 cleanup's unlink rejects after a   **no failure of its own**: the
  *                          failure. Deliberately swallowed    primary error is rethrown unchanged
  *                          so it cannot replace the           (`rename refused`) and the temporary
  *                          actionable error                   file survives as evidence
- * 33  :569                 an option with no value            `Missing value for --config`
+ * 33  :929                 an option with no value            `Missing value for --config`
  *                                                             — exit 1
- * 34  :572                 an unknown argument                `Unknown argument: --nope` — exit 1
- * 35  :576                 a required option omitted          `Usage: coverage-report.mjs --config
+ * 34  :932                 an unknown argument                `Unknown argument: --nope` — exit 1
+ * 35  :936                 a required option omitted          `Usage: coverage-report.mjs --config
  *                                                             <file> ...` — exit 1
- * 36  :585                 the config file does not exist     `ENOENT: no such file or directory,
+ * 36  :953                 the config file does not exist     `ENOENT: no such file or directory,
  *                                                             open '<root>/missing.json'` — exit 1
- * 37  :585                 the config file is not JSON        SyntaxError: `Expected property name
+ * 37  :953                 the config file is not JSON        SyntaxError: `Expected property name
  *                                                             or '}' in JSON at position 2` — exit 1
- * 38  :587                 an LCOV file does not exist        `ENOENT: ... '<root>/missing.info'`
+ * 38  :955                 an LCOV file does not exist        `ENOENT: ... '<root>/missing.info'`
  *                                                             — exit 1
- * 39  :598                 the baseline file does not exist   `ENOENT: ... '<root>/missing.json'`
+ * 39  :975                 the baseline file does not exist   `ENOENT: ... '<root>/missing.json'`
  *                                                             — exit 1
- * 40  :598                 the baseline file is not JSON      SyntaxError, as row 37 — exit 1
- * 41  :612                 `main().catch` — the shared sink,  every throw above, reached through
+ * 40  :975                 the baseline file is not JSON      SyntaxError, as row 37 — exit 1
+ * 41  :990                 `main().catch` — the shared sink,  every CLI throw, reached through
  *                          **not an independent failure**     the CLI, prints `error.message` on
  *                                                             stderr and exits **1**. Measured with
  *                                                             row 17's throw: exit 1, message on
  *                                                             stderr, nothing on stdout
+ * 42  :677    write guard  prior baseline is not JSON          `Invalid prior coverage baseline at
+ *                                                             <path>: <JSON parse message>` — exit 1
+ * 43  :626    validate     prior version or `areas` is         `Invalid prior coverage baseline
+ *                          wrong-shaped                        from <path>: expected version 1
+ *                                                             and an areas object` — exit 1
+ * 44  :632    validate     a prior area's metrics container    `Invalid prior coverage baseline
+ *                          is not an object                     from <path>: utilities must
+ *                                                             contain all metrics` — exit 1
+ * 45  :646    validate     a prior area is missing one metric  `Invalid prior coverage baseline
+ *                                                             from <path>: utilities lines must
+ *                                                             have non-negative integer covered
+ *                                                             and total counts with covered <=
+ *                                                             total` — exit 1
+ * 46  :646    validate     prior `covered` is not an integer  same invalid-count message, with
+ *                                                             `covered: "bad"` — exit 1
+ * 47  :646    validate     prior `covered` is negative        same invalid-count message, with
+ *                                                             `covered: -1` — exit 1
+ * 48  :646    validate     prior `covered > total`             same invalid-count message, with
+ *                                                             `covered: 2, total: 1` — exit 1
+ * 49  :646    validate     prior `covered` is fractional      same invalid-count message, with
+ *                                                             `covered: 1.5` — exit 1
+ * 50  :646    validate     prior `total` is fractional        same invalid-count message, with
+ *                                                             `total: 2.5` — exit 1
+ * 51  :646    validate     prior `total` is negative          same invalid-count message, with
+ *                                                             `total: -1` — exit 1
+ * 52  :868    write guard  covered count decreases while the  `Coverage baseline write refused
+ *                          ratio stays level                    (decreases: utilities lines
+ *                                                             (covered count 10 → 9)); ...` — exit 1
+ * 53  :868    write guard  ratio decreases while `covered`   `Coverage baseline write refused
+ *                          rises                                (decreases: utilities lines
+ *                                                             (ratio 50.00% → 46.15%)); ...` — exit 1
+ * 54  :868    write guard  an area is removed                 `Coverage baseline write refused
+ *                                                             (... retired lines (area removed)
+ *                                                             ...); ...` — exit 1
+ * 55  :754→868 ratio check `0/0 → 0/1` is a decrease          `Coverage baseline write refused
+ *                                                             (... utilities lines (ratio
+ *                                                             100.00% → 0.00%)); ...` — exit 1
+ * 56  :868    write guard  recorded scope changes             `Coverage baseline write refused
+ *                                                             (... scope keys changed:
+ *                                                             sources[0].exclude[0]); ...` — exit 1
+ * 57  :868    write guard  an area is added                   `Coverage baseline write refused
+ *                                                             (... areas changed: added=[puzzles],
+ *                                                             removed=[]); ...` — exit 1
+ * 58  :818    authorize    `tasks/decisions.md` is missing    `Instrument change authorization
+ *                                                             requires tasks/decisions.md for
+ *                                                             decision d-20260927-23 governing
+ *                                                             f-20260829-04` — exit 1
+ * 59  :826    authorize    decision id has no entry           `No decision entry found for
+ *                                                             --instrument-change d-20260927-23
+ *                                                             in tasks/decisions.md` — exit 1
+ * 60  :830    authorize    `Governs:` misses the exact finding `Decision d-20260927-23 does not
+ *                                                             govern finding f-20260829-04` — exit 1
+ * 61  :924    parse         `--instrument-change` has no value `Missing value for
+ *                                                             --instrument-change` — exit 1
+ * 62  :924    parse         `--finding` has no value           `Missing value for --finding` — exit 1
+ * 63  :942    parse         authorization flags without       `--instrument-change and --finding
+ *                          `--write-baseline`                 require --write-baseline` — exit 1
+ * 64  :945    parse         only `--instrument-change`        `--instrument-change and --finding
+ *                                                             must be used together` — exit 1
+ * 65  :945    parse         only `--finding`                  `--instrument-change and --finding
+ *                                                             must be used together` — exit 1
+ * 66  :693    git           `rev-parse` fails for another     `Failed to inspect prior coverage
+ *                          reason than not-a-repository        baseline with git rev-parse
+ *                                                             --is-inside-work-tree: status=37;
+ *                                                             stderr="fatal: simulated repository
+ *                                                             metadata error\n"` — exit 1
+ * 67  :666    git           git cannot be spawned             `Failed to inspect prior coverage
+ *                                                             baseline with git rev-parse
+ *                                                             --is-inside-work-tree: status=null;
+ *                                                             stderr=""; error.code=ENOENT;
+ *                                                             error.message="spawnSync git
+ *                                                             ENOENT"` — exit 1
+ * 68  :698    git           `ls-tree` fails for unborn `HEAD` `Failed to inspect prior coverage
+ *                                                             baseline with git ls-tree
+ *                                                             --full-name HEAD -- scratch-
+ *                                                             baseline.json: status=128;
+ *                                                             stderr="fatal: Not a valid object
+ *                                                             name HEAD\n"` — exit 1
+ * 69  :703    git           `ls-tree` output is ambiguous or  `Failed to inspect prior coverage
+ *                          malformed                            baseline with git ls-tree
+ *                                                             --full-name HEAD -- scratch-
+ *                                                             baseline.json: expected one tracked
+ *                                                             file entry; stderr=""` — exit 1
+ * 70  :710    git           `show` fails for a tracked path    `Failed to inspect prior coverage
+ *                                                             baseline with git show
+ *                                                             HEAD:scratch-baseline.json:
+ *                                                             status=38; stderr="fatal: simulated
+ *                                                             committed object failure\n"` — exit 1
  *
  * **The rows the blank-measurement work added or changed were also staged against the real
  * frontend LCOV**, not only against fixtures, because that is the artefact an operator runs. Rows
@@ -154,8 +242,17 @@
  *           not filesystem existence.
  *   row 7   scratch config declaring `src/utils/format.ts`, then it and `src/utils/chess.ts`.
  *   row 18  a scratch baseline whose recorded scope was one `statementFree` entry stale — and the
- *           message does **not** name `coverage:baseline:*`, which is the route this repository
- *           denies.
+ *           message does **not** name a baseline-write command. The baseline denies were removed
+ *           under `d-20260927-23`; write protection now lives in the writer guard (rows 42-70).
+ *
+ * **Baseline-writer rows 42-70** were staged by CLI subtests in
+ * `scripts/coverage-report-tests.mjs`; every refused write asserts exit 1 and byte-identical
+ * scratch baseline-file bytes. Rows 42-51 are the individual prior-JSON/schema/counter cases; 52-55
+ * are covered-count, ratio, removed-area, and zero-total decreases; 56-57 are scope and area-set
+ * changes; 58-60 are missing or non-governing decisions; 61-65 are authorization-flag usage
+ * errors; and 66-70 stage unexpected `rev-parse`, missing git, unborn `HEAD`, ambiguous/malformed
+ * `ls-tree`, and failing `show` results. The tracked-`HEAD`, untracked-disk, first-write, accepted increase,
+ * and accepted authorization cases also use scratch baselines; none names a repository baseline.
  *
  * What this matrix does **not** cover, stated rather than implied: `parseLcov`'s tolerance of
  * malformed counter lines, which fail no assertion and are merged as written — a non-numeric hit
@@ -165,7 +262,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { readFile, rename as renameFile, unlink as unlinkFile, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { excluded, excludePatterns, matches, normalisePath } from "./coverage-scope.mjs";
 import { isEntrypoint } from "./entrypoint.mjs";
 import { filesBelow } from "./files-below.mjs";
@@ -519,6 +616,264 @@ export function assertAreaFloors(report, config) {
 
 const defaultFileSystem = { rename: renameFile, unlink: unlinkFile, writeFile };
 
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function validatePriorBaseline(baseline, source) {
+  if (!isRecord(baseline) || baseline.version !== 1 || !isRecord(baseline.areas)) {
+    throw new Error(
+      `Invalid prior coverage baseline from ${source}: expected version 1 and an areas object`,
+    );
+  }
+  for (const [area, metrics] of Object.entries(baseline.areas)) {
+    if (!isRecord(metrics)) {
+      throw new Error(
+        `Invalid prior coverage baseline from ${source}: ${area} must contain all metrics`,
+      );
+    }
+    for (const metric of METRICS) {
+      const counts = metrics[metric];
+      if (
+        !isRecord(counts) ||
+        !Number.isInteger(counts.covered) ||
+        !Number.isInteger(counts.total) ||
+        counts.covered < 0 ||
+        counts.total < 0 ||
+        counts.covered > counts.total
+      ) {
+        throw new Error(
+          `Invalid prior coverage baseline from ${source}: ${area} ${metric} must have non-negative integer covered and total counts with covered <= total`,
+        );
+      }
+    }
+  }
+  return baseline;
+}
+
+function gitFailure(args, result) {
+  const command = `git ${args.join(" ")}`;
+  const spawnError = result.error
+    ? `; error.code=${result.error.code}; error.message=${JSON.stringify(result.error.message)}`
+    : "";
+  return new Error(
+    `Failed to inspect prior coverage baseline with ${command}: status=${result.status}; stderr=${JSON.stringify(result.stderr ?? "")}${spawnError}`,
+  );
+}
+
+function runGit(cwd, args) {
+  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+  if (result.error) throw gitFailure(args, result);
+  return result;
+}
+
+async function readDiskBaseline(path) {
+  try {
+    const contents = await readFile(path, "utf8");
+    let baseline;
+    try {
+      baseline = JSON.parse(contents);
+    } catch (error) {
+      throw new Error(`Invalid prior coverage baseline at ${path}: ${error.message}`);
+    }
+    return { source: path, baseline: validatePriorBaseline(baseline, path) };
+  } catch (error) {
+    if (error.code === "ENOENT") return { source: null, baseline: null };
+    throw error;
+  }
+}
+
+async function readPriorBaseline(path) {
+  const directory = dirname(path);
+  const file = basename(path);
+  const revParseArgs = ["rev-parse", "--is-inside-work-tree"];
+  const revParse = runGit(directory, revParseArgs);
+  if (revParse.status !== 0) {
+    if (/not a git repository/i.test(revParse.stderr ?? "")) return readDiskBaseline(path);
+    throw gitFailure(revParseArgs, revParse);
+  }
+
+  const lsTreeArgs = ["ls-tree", "--full-name", "HEAD", "--", file];
+  const lsTree = runGit(directory, lsTreeArgs);
+  if (lsTree.status !== 0) throw gitFailure(lsTreeArgs, lsTree);
+  const entries = (lsTree.stdout ?? "").trimEnd().split("\n").filter(Boolean);
+  if (entries.length === 0) return readDiskBaseline(path);
+  if (entries.length !== 1 || !entries[0].includes("\t")) {
+    throw new Error(
+      `Failed to inspect prior coverage baseline with git ${lsTreeArgs.join(" ")}: expected one tracked file entry; stderr=${JSON.stringify(lsTree.stderr ?? "")}`,
+    );
+  }
+
+  const fullName = entries[0].slice(entries[0].indexOf("\t") + 1);
+  const showArgs = ["show", `HEAD:${fullName}`];
+  const show = runGit(directory, showArgs);
+  if (show.status !== 0) throw gitFailure(showArgs, show);
+  let baseline;
+  try {
+    baseline = JSON.parse(show.stdout);
+  } catch (error) {
+    throw new Error(
+      `Invalid prior coverage baseline from git ${showArgs.join(" ")}: ${error.message}`,
+    );
+  }
+  const source = `git ${showArgs.join(" ")}`;
+  return { source, baseline: validatePriorBaseline(baseline, source) };
+}
+
+function scopeDiffPaths(before, after, prefix = "scope") {
+  if (before === undefined || after === undefined) {
+    return before === after ? [] : [prefix];
+  }
+  if (Array.isArray(before) || Array.isArray(after)) {
+    if (!Array.isArray(before) || !Array.isArray(after)) return [prefix];
+    const paths = [];
+    const length = Math.max(before.length, after.length);
+    for (let index = 0; index < length; index += 1) {
+      paths.push(...scopeDiffPaths(before[index], after[index], `${prefix}[${index}]`));
+    }
+    return paths;
+  }
+  if (isRecord(before) || isRecord(after)) {
+    if (!isRecord(before) || !isRecord(after)) return [prefix];
+    const paths = [];
+    const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])].sort();
+    for (const key of keys) {
+      const beforeValue = Object.hasOwn(before, key) ? before[key] : undefined;
+      const afterValue = Object.hasOwn(after, key) ? after[key] : undefined;
+      paths.push(...scopeDiffPaths(beforeValue, afterValue, `${prefix}.${key}`));
+    }
+    return paths;
+  }
+  return Object.is(before, after) ? [] : [prefix];
+}
+
+function percentage({ covered, total }) {
+  return total === 0 ? 100 : (covered / total) * 100;
+}
+
+function ratioDecreased(after, before) {
+  if (before.total === 0) {
+    return after.total !== 0 && after.covered < after.total;
+  }
+  return after.covered * before.total < before.covered * after.total;
+}
+
+function formatMetric(counts) {
+  return `${counts.covered}/${counts.total} (${percentage(counts).toFixed(2)}%)`;
+}
+
+function printBaselineDeltas(report, prior) {
+  const deltas = [];
+  const priorAreas = prior ? prior.areas : {};
+  const areas = [...new Set([...Object.keys(priorAreas), ...Object.keys(report)])].sort();
+  for (const area of areas) {
+    for (const metric of METRICS) {
+      const priorArea = Object.hasOwn(priorAreas, area) ? priorAreas[area] : undefined;
+      const reportArea = Object.hasOwn(report, area) ? report[area] : undefined;
+      const before = priorArea?.[metric];
+      const after = reportArea?.[metric];
+      const coveredDecrease = Boolean(before && after && after.covered < before.covered);
+      const ratioDecrease = Boolean(before && after && ratioDecreased(after, before));
+      const removed = Boolean(before && !after);
+      const decreased = coveredDecrease || ratioDecrease || removed;
+      const from = before ? formatMetric(before) : "NEW";
+      const to = after ? formatMetric(after) : "REMOVED";
+      const marks = decreased ? " [DECREASE]" : !before && after ? " [NEW]" : "";
+      console.log(`Coverage baseline delta: ${area} ${metric}: ${from} → ${to}${marks}`);
+      if (decreased) {
+        const reasons = [];
+        if (removed) reasons.push("area removed");
+        if (coveredDecrease) reasons.push(`covered count ${before.covered} → ${after.covered}`);
+        if (ratioDecrease) {
+          reasons.push(
+            `ratio ${percentage(before).toFixed(2)}% → ${percentage(after).toFixed(2)}%`,
+          );
+        }
+        deltas.push(`${area} ${metric} (${reasons.join(", ")})`);
+      }
+    }
+  }
+  return deltas;
+}
+
+function governingFinding(decisions, decisionId) {
+  const entry = decisions
+    .split(/^### /m)
+    .map((section) => (section.startsWith("### ") ? section : `### ${section}`))
+    .find((section) => section.split("\n", 1)[0].startsWith(`### ${decisionId} —`));
+  if (!entry) return null;
+  const line = entry.match(/^\* \*\*Governs:\*\*\s*(.*)$/m)?.[1];
+  if (!line) return [];
+  return line.split(/[^A-Za-z0-9_-]+/).filter(Boolean);
+}
+
+async function assertInstrumentChange(decisionId, finding, cwd) {
+  const decisionsPath = resolve(cwd, "tasks/decisions.md");
+  let decisions;
+  try {
+    decisions = await readFile(decisionsPath, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      throw new Error(
+        `Instrument change authorization requires tasks/decisions.md for decision ${decisionId} governing ${finding}`,
+      );
+    }
+    throw error;
+  }
+  const governing = governingFinding(decisions, decisionId);
+  if (governing === null) {
+    throw new Error(
+      `No decision entry found for --instrument-change ${decisionId} in tasks/decisions.md`,
+    );
+  }
+  if (!governing.includes(finding)) {
+    throw new Error(`Decision ${decisionId} does not govern finding ${finding}`);
+  }
+}
+
+async function guardBaselineWrite({ areas, scope, path, instrumentChange, finding, cwd }) {
+  const priorResult = await readPriorBaseline(path);
+  const prior = priorResult.baseline;
+  const decreases = printBaselineDeltas(areas, prior);
+  const changedScope = prior ? scopeDiffPaths(prior.scope, scope) : [];
+  const scopeKeys = changedScope.map((key) =>
+    key.startsWith("scope.") ? key.slice("scope.".length) : key,
+  );
+  const previousAreas = prior ? Object.keys(prior.areas) : [];
+  const nextAreas = Object.keys(areas);
+  const previousAreaSet = new Set(previousAreas);
+  const nextAreaSet = new Set(nextAreas);
+  const addedAreas = prior ? nextAreas.filter((area) => !previousAreaSet.has(area)).sort() : [];
+  const removedAreas = prior ? previousAreas.filter((area) => !nextAreaSet.has(area)).sort() : [];
+  if (changedScope.length > 0) {
+    console.log(`Coverage baseline scope changed: ${scopeKeys.join(", ")}`);
+  }
+  if (addedAreas.length > 0 || removedAreas.length > 0) {
+    console.log(
+      `Coverage baseline areas changed: added=[${addedAreas.join(", ")}], removed=[${removedAreas.join(", ")}]`,
+    );
+  }
+
+  const changes = [];
+  if (decreases.length > 0) changes.push(`decreases: ${decreases.join("; ")}`);
+  if (scopeKeys.length > 0) changes.push(`scope keys changed: ${scopeKeys.join(", ")}`);
+  if (addedAreas.length > 0 || removedAreas.length > 0) {
+    changes.push(
+      `areas changed: added=[${addedAreas.join(", ")}], removed=[${removedAreas.join(", ")}]`,
+    );
+  }
+  if (changes.length === 0) return;
+  if (!instrumentChange || !finding) {
+    throw new Error(
+      `Coverage baseline write refused (${changes.join("; ")}); pass --instrument-change <d-id> --finding <f-id>`,
+    );
+  }
+  await assertInstrumentChange(instrumentChange, finding, cwd);
+  console.log(
+    `Coverage baseline write authorized by decision ${instrumentChange} for finding ${finding}`,
+  );
+}
+
 async function cleanupTemporaryFile(unlink, temporaryPath) {
   try {
     await unlink(temporaryPath);
@@ -564,7 +919,12 @@ function parseArguments(argumentsList) {
   for (let index = 0; index < argumentsList.length; index += 1) {
     const argument = argumentsList[index];
     if (argument === "--write-baseline") options.writeBaseline = true;
-    else if (["--config", "--baseline", "--lcov"].includes(argument)) {
+    else if (argument === "--instrument-change" || argument === "--finding") {
+      const value = argumentsList[++index];
+      if (!value || value.startsWith("--")) throw new Error(`Missing value for ${argument}`);
+      if (argument === "--instrument-change") options.instrumentChange = value;
+      else options.finding = value;
+    } else if (["--config", "--baseline", "--lcov"].includes(argument)) {
       const value = argumentsList[++index];
       if (!value) throw new Error(`Missing value for ${argument}`);
       if (argument === "--lcov") options.lcov.push(value);
@@ -573,8 +933,16 @@ function parseArguments(argumentsList) {
   }
   if (!options.config || !options.baseline || options.lcov.length === 0) {
     throw new Error(
-      "Usage: coverage-report.mjs --config <file> --baseline <file> --lcov <file> [--lcov <file>] [--write-baseline]",
+      "Usage: coverage-report.mjs --config <file> --baseline <file> --lcov <file> [--lcov <file>] [--write-baseline [--instrument-change <d-id> --finding <f-id>]]",
     );
+  }
+  const hasInstrumentChange = options.instrumentChange !== undefined;
+  const hasFinding = options.finding !== undefined;
+  if ((hasInstrumentChange || hasFinding) && !options.writeBaseline) {
+    throw new Error("--instrument-change and --finding require --write-baseline");
+  }
+  if (hasInstrumentChange !== hasFinding) {
+    throw new Error("--instrument-change and --finding must be used together");
   }
   return options;
 }
@@ -588,10 +956,19 @@ async function main() {
   ).join("\n");
   const areas = await buildCoverageReport({ config, configPath: options.config, lcov, root });
   if (options.writeBaseline) {
+    const baselinePath = resolve(root, options.baseline);
+    await guardBaselineWrite({
+      areas,
+      scope: scopeSignature(config),
+      path: baselinePath,
+      instrumentChange: options.instrumentChange,
+      finding: options.finding,
+      cwd: root,
+    });
     await writeBaseline({
       areas,
       scope: scopeSignature(config),
-      path: resolve(root, options.baseline),
+      path: baselinePath,
     });
     console.log(`Wrote coverage baseline: ${options.baseline}`);
   } else {

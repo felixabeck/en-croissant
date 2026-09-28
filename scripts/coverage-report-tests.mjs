@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
+  access,
   mkdtemp,
   mkdir,
   readFile,
@@ -9,7 +10,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { delimiter, dirname, join, relative, resolve, sep } from "node:path";
 import test from "node:test";
 import {
   assertAreaFloors,
@@ -96,6 +97,7 @@ function lcovRecord(file, { lines = 0, functions = 0, branches = 0 } = {}) {
 }
 
 const OXFMT_SCRIPTS = {
+  success: "#!/bin/sh\nexit 0\n",
   "non-zero": "#!/bin/sh\nprintf '%s' 'formatter rejected the temporary baseline' >&2\nexit 23\n",
   // A formatter killed by a signal leaves `status` null, which `status !== 0` still catches.
   // Without this fixture a regression to `status > 0` would report the kill as a success.
@@ -136,14 +138,33 @@ function cliConfig(statementFree = []) {
   };
 }
 
-async function runCoverageCli(root, { config, lcov, writeBaseline = false, baselineContents }) {
+async function runCoverageCli(
+  root,
+  {
+    config,
+    lcov,
+    writeBaseline = false,
+    baselineContents,
+    baselinePath = writeBaseline ? "scratch-baseline.json" : "baseline.json",
+    instrumentChange,
+    finding,
+    extraArgs = [],
+    extraEnv,
+  },
+) {
   await writeFile(join(root, "config.json"), JSON.stringify(config));
   await writeFile(join(root, "lcov.info"), lcov);
   if (baselineContents !== undefined) {
-    await writeFile(join(root, "scratch-baseline.json"), baselineContents);
+    const path = join(root, baselinePath);
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, baselineContents);
   } else if (!writeBaseline) {
     await writeFile(join(root, "baseline.json"), JSON.stringify({ version: 1 }));
   }
+  const authorizationArgs = [
+    ...(instrumentChange ? ["--instrument-change", instrumentChange] : []),
+    ...(finding ? ["--finding", finding] : []),
+  ];
   return spawnSync(
     process.execPath,
     [
@@ -151,13 +172,193 @@ async function runCoverageCli(root, { config, lcov, writeBaseline = false, basel
       "--config",
       "config.json",
       "--baseline",
-      writeBaseline ? "scratch-baseline.json" : "baseline.json",
+      baselinePath,
       "--lcov",
       "lcov.info",
       ...(writeBaseline ? ["--write-baseline"] : []),
+      ...authorizationArgs,
+      ...extraArgs,
     ],
-    { cwd: root, encoding: "utf8" },
+    {
+      cwd: root,
+      encoding: "utf8",
+      ...(extraEnv ? { env: { ...process.env, ...extraEnv } } : {}),
+    },
   );
+}
+
+function writerConfig({ twoAreas = false, exclude = [] } = {}) {
+  return {
+    version: 1,
+    sources: [
+      {
+        id: "frontend",
+        root: "src",
+        include: ["src/**/*.ts"],
+        exclude,
+      },
+    ],
+    areas: [
+      {
+        id: "utilities",
+        source: "frontend",
+        paths: ["src/utils/**"],
+      },
+      ...(twoAreas
+        ? [
+            {
+              id: "puzzles",
+              source: "frontend",
+              paths: ["src/puzzles/**"],
+            },
+          ]
+        : []),
+    ],
+  };
+}
+
+function coverageLcov(file, values) {
+  const records = ["TN:", `SF:${file}`];
+  for (let index = 1; index <= values.functions.total; index += 1) {
+    const name = `function${index}`;
+    records.push(
+      `FN:${index},${name}`,
+      `FNDA:${index <= values.functions.covered ? 1 : 0},${name}`,
+    );
+  }
+  for (let index = 1; index <= values.lines.total; index += 1) {
+    records.push(`DA:${index},${index <= values.lines.covered ? 1 : 0}`);
+  }
+  for (let index = 1; index <= values.branches.total; index += 1) {
+    records.push(`BRDA:${index},0,${index},${index <= values.branches.covered ? 1 : 0}`);
+  }
+  records.push("end_of_record", "");
+  return records.join("\n");
+}
+
+function writerLcov(areaMetrics) {
+  return Object.entries(areaMetrics)
+    .map(([area, values]) =>
+      coverageLcov(`src/${area === "utilities" ? "utils" : area}/example.ts`, values),
+    )
+    .join("\n");
+}
+
+function baselineMetrics(lines, functions, branches) {
+  return { lines, functions, branches };
+}
+
+function baselineFor(config, areas) {
+  return { version: 1, scope: scopeSignature(config), areas };
+}
+
+async function writeFixtureFiles(root, files) {
+  for (const [path, contents] of Object.entries(files)) {
+    const absolutePath = join(root, path);
+    await mkdir(dirname(absolutePath), { recursive: true });
+    await writeFile(absolutePath, contents);
+  }
+}
+
+async function writeFixtureDecision(
+  root,
+  { decision = "d-20260927-23", governs = "f-20260829-04" } = {},
+) {
+  const decisionsPath = join(root, "tasks", "decisions.md");
+  await mkdir(dirname(decisionsPath), { recursive: true });
+  await writeFile(
+    decisionsPath,
+    `### ${decision} — Fixture decision\n\n* **Governs:** ${governs}\n`,
+  );
+}
+
+async function assertScratchBaselineUnchanged(
+  root,
+  expected,
+  baselinePath = "scratch-baseline.json",
+) {
+  assert.deepEqual(await readFile(join(root, baselinePath)), Buffer.from(expected));
+}
+
+function assertDeltaLines(output, areas) {
+  for (const area of areas) {
+    for (const metric of ["lines", "functions", "branches"]) {
+      assert.match(output, new RegExp(`Coverage baseline delta: ${area} ${metric}:`));
+    }
+  }
+}
+
+async function findExecutable(name) {
+  for (const directory of (process.env.PATH ?? "").split(delimiter)) {
+    if (!directory) continue;
+    const candidate = join(directory, name);
+    try {
+      await access(candidate);
+      return candidate;
+    } catch {
+      // Continue through PATH until the executable is found.
+    }
+  }
+  throw new Error(`Could not find ${name} on PATH`);
+}
+
+async function gitInScratch(root, args, input = "") {
+  const result = spawnSync("git", args, { cwd: root, input, encoding: "utf8" });
+  assert.equal(result.status, 0, `git ${args.join(" ")} failed: ${result.stderr}`);
+  return result.stdout.trim();
+}
+
+async function createScratchHead(root, trackedFiles = {}) {
+  await gitInScratch(root, ["init", "--quiet"]);
+  const entries = [];
+  for (const [path, contents] of Object.entries(trackedFiles)) {
+    await writeFixtureFiles(root, { [path]: contents });
+    const blob = await gitInScratch(root, ["hash-object", "-w", "--stdin"], contents);
+    entries.push(`100644 blob ${blob}\t${path}\n`);
+  }
+  const tree = await gitInScratch(root, ["mktree"], entries.join(""));
+  const commit = await gitInScratch(
+    root,
+    ["hash-object", "-t", "commit", "-w", "--stdin"],
+    `tree ${tree}\nauthor Fixture <fixture@example.test> 0 +0000\ncommitter Fixture <fixture@example.test> 0 +0000\n\ncoverage writer fixture\n`,
+  );
+  await gitInScratch(root, ["update-ref", "refs/heads/fixture", commit]);
+  await gitInScratch(root, ["symbolic-ref", "HEAD", "refs/heads/fixture"]);
+}
+
+function shellQuote(value) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+async function installGitShim(
+  root,
+  { command, status = 37, stdout = "", stderr = "fatal: simulated git failure" },
+) {
+  const realGit = await findExecutable("git");
+  const shimDirectory = join(root, "git-shim");
+  await mkdir(shimDirectory, { recursive: true });
+  await writeFile(
+    join(shimDirectory, "git"),
+    `#!/bin/sh\nif [ "$1" = ${shellQuote(command)} ]; then\n  printf '%s' ${shellQuote(stdout)}\n  if [ -n ${shellQuote(stderr)} ]; then printf '%s\\n' ${shellQuote(stderr)} >&2; fi\n  exit ${status}\nfi\nexec ${shellQuote(realGit)} "$@"\n`,
+    { mode: 0o755 },
+  );
+  return `${shimDirectory}${delimiter}${process.env.PATH}`;
+}
+
+async function coverageWriterFixture({ config = writerConfig(), records, files = {}, baseline }) {
+  const { root } = await fixture();
+  await writeFixtureFiles(root, files);
+  return {
+    root,
+    config,
+    lcov: records,
+    baselineContents:
+      baseline === undefined
+        ? undefined
+        : typeof baseline === "string"
+          ? baseline
+          : JSON.stringify(baseline),
+  };
 }
 
 test("parses LCOV line, function, and branch totals", () => {
@@ -953,6 +1154,17 @@ test("preserves the previous baseline and cleans up every failed write path", as
 
   const assertFormatterCliFailure = async (failureCase) => {
     const { root } = await fixture();
+    const cliPreviousBaseline = Buffer.from(
+      JSON.stringify(
+        baselineFor(cliConfig(), {
+          utilities: baselineMetrics(
+            { covered: 0, total: 10 },
+            { covered: 0, total: 10 },
+            { covered: 0, total: 10 },
+          ),
+        }),
+      ),
+    );
     if (failureCase.formatter && failureCase.formatter !== "missing") {
       await installOxfmt(root, failureCase.formatter);
     }
@@ -960,7 +1172,7 @@ test("preserves the previous baseline and cleans up every failed write path", as
       config: cliConfig(),
       lcov,
       writeBaseline: true,
-      baselineContents: previousBaseline,
+      baselineContents: cliPreviousBaseline,
     });
     assert.notEqual(cliResult.status, 0, cliResult.stdout);
     assert.doesNotMatch(cliResult.stdout, /Wrote coverage baseline:/);
@@ -978,7 +1190,7 @@ test("preserves the previous baseline and cleans up every failed write path", as
         /status=null; signal=null; stderr=""; error\.code=ENOENT; error\.message=/,
       );
     }
-    assert.deepEqual(await readFile(join(root, "scratch-baseline.json")), previousBaseline);
+    assert.deepEqual(await readFile(join(root, "scratch-baseline.json")), cliPreviousBaseline);
     await assert.rejects(
       () => readFile(join(root, "scratch-baseline.json.tmp.json")),
       (cleanupError) => cleanupError.code === "ENOENT",
@@ -1074,6 +1286,916 @@ test("writes a baseline with exact integer totals", async () => {
   const baseline = JSON.parse(await readFile(path, "utf8"));
   assert.deepEqual(baseline.areas.utilities.lines, { covered: 1, total: 2 });
   assert.doesNotThrow(() => assertBaseline(areas, baseline));
+});
+
+test("baseline writer refuses per-area covered-count and ratio decreases before writing", async (t) => {
+  const config = writerConfig({ twoAreas: true });
+  const reportMetrics = {
+    utilities: baselineMetrics(
+      { covered: 9, total: 18 },
+      { covered: 2, total: 2 },
+      { covered: 1, total: 2 },
+    ),
+    puzzles: baselineMetrics(
+      { covered: 3, total: 6 },
+      { covered: 1, total: 1 },
+      { covered: 1, total: 2 },
+    ),
+  };
+  const puzzleFile = { "src/puzzles/example.ts": "export const puzzle = 1;\n" };
+  const cases = [
+    {
+      name: "covered count drops while the ratio stays level",
+      areas: {
+        utilities: baselineMetrics(
+          { covered: 10, total: 20 },
+          { covered: 2, total: 2 },
+          { covered: 1, total: 2 },
+        ),
+        puzzles: reportMetrics.puzzles,
+      },
+      message: /utilities lines \(covered count 10 → 9\)/,
+    },
+    {
+      name: "ratio drops while the covered count rises",
+      areas: {
+        utilities: baselineMetrics(
+          { covered: 5, total: 10 },
+          { covered: 2, total: 2 },
+          { covered: 1, total: 2 },
+        ),
+        puzzles: reportMetrics.puzzles,
+      },
+      actualLines: { covered: 6, total: 13 },
+      message: /utilities lines \(ratio 50\.00% → 46\.15%\)/,
+    },
+  ];
+
+  for (const failureCase of cases) {
+    await t.test(failureCase.name, async () => {
+      const caseMetrics = {
+        ...reportMetrics,
+        utilities: {
+          ...reportMetrics.utilities,
+          lines: failureCase.actualLines ?? reportMetrics.utilities.lines,
+        },
+      };
+      const fixtureCase = await coverageWriterFixture({
+        config,
+        records: writerLcov(caseMetrics),
+        files: puzzleFile,
+        baseline: baselineFor(config, failureCase.areas),
+      });
+      const expected = fixtureCase.baselineContents;
+      const result = await runCoverageCli(fixtureCase.root, {
+        config,
+        lcov: fixtureCase.lcov,
+        writeBaseline: true,
+        baselineContents: expected,
+      });
+      assert.equal(result.status, 1, result.stdout);
+      assert.match(result.stderr, /Coverage baseline write refused/);
+      assert.match(result.stderr, failureCase.message);
+      assertDeltaLines(result.stdout, ["utilities", "puzzles"]);
+      await assertScratchBaselineUnchanged(fixtureCase.root, expected);
+    });
+  }
+
+  await t.test("a removed area is a decrease of all its recorded metrics", async () => {
+    const singleConfig = writerConfig();
+    const singleLcov = writerLcov({
+      utilities: baselineMetrics(
+        { covered: 1, total: 1 },
+        { covered: 1, total: 1 },
+        { covered: 1, total: 1 },
+      ),
+    });
+    const areas = {
+      utilities: baselineMetrics(
+        { covered: 1, total: 1 },
+        { covered: 1, total: 1 },
+        { covered: 1, total: 1 },
+      ),
+      retired: baselineMetrics(
+        { covered: 1, total: 1 },
+        { covered: 1, total: 1 },
+        { covered: 1, total: 1 },
+      ),
+    };
+    const fixtureCase = await coverageWriterFixture({
+      config: singleConfig,
+      records: singleLcov,
+      baseline: baselineFor(singleConfig, areas),
+    });
+    const expected = fixtureCase.baselineContents;
+    const result = await runCoverageCli(fixtureCase.root, {
+      config: singleConfig,
+      lcov: fixtureCase.lcov,
+      writeBaseline: true,
+      baselineContents: expected,
+    });
+    assert.equal(result.status, 1, result.stdout);
+    assert.match(
+      result.stdout,
+      /Coverage baseline delta: retired lines: 1\/1 \(100\.00%\) → REMOVED \[DECREASE\]/,
+    );
+    assert.match(result.stderr, /areas changed: added=\[\], removed=\[retired\]/);
+    await assertScratchBaselineUnchanged(fixtureCase.root, expected);
+  });
+
+  await t.test("0/0 to 0/1 is a ratio decrease", async () => {
+    const singleConfig = writerConfig();
+    const areas = {
+      utilities: baselineMetrics(
+        { covered: 0, total: 0 },
+        { covered: 1, total: 1 },
+        { covered: 1, total: 1 },
+      ),
+    };
+    const records = writerLcov({
+      utilities: baselineMetrics(
+        { covered: 0, total: 1 },
+        { covered: 1, total: 1 },
+        { covered: 1, total: 1 },
+      ),
+    });
+    const fixtureCase = await coverageWriterFixture({
+      config: singleConfig,
+      records,
+      baseline: baselineFor(singleConfig, areas),
+    });
+    const expected = fixtureCase.baselineContents;
+    const result = await runCoverageCli(fixtureCase.root, {
+      config: singleConfig,
+      lcov: fixtureCase.lcov,
+      writeBaseline: true,
+      baselineContents: expected,
+    });
+    assert.equal(result.status, 1, result.stdout);
+    assert.match(
+      result.stdout,
+      /utilities lines: 0\/0 \(100\.00%\) → 0\/1 \(0\.00%\) \[DECREASE\]/,
+    );
+    assert.match(result.stderr, /utilities lines \(ratio 100\.00% → 0\.00%\)/);
+    await assertScratchBaselineUnchanged(fixtureCase.root, expected);
+  });
+});
+
+test("baseline writer prints every area metric on refused and accepted multi-area writes", async (t) => {
+  const config = writerConfig({ twoAreas: true });
+  const actual = {
+    utilities: baselineMetrics(
+      { covered: 9, total: 18 },
+      { covered: 2, total: 2 },
+      { covered: 1, total: 2 },
+    ),
+    puzzles: baselineMetrics(
+      { covered: 3, total: 6 },
+      { covered: 1, total: 1 },
+      { covered: 1, total: 2 },
+    ),
+  };
+  const lower = {
+    utilities: baselineMetrics(
+      { covered: 8, total: 18 },
+      { covered: 1, total: 2 },
+      { covered: 0, total: 2 },
+    ),
+    puzzles: baselineMetrics(
+      { covered: 2, total: 6 },
+      { covered: 0, total: 1 },
+      { covered: 0, total: 2 },
+    ),
+  };
+  const records = writerLcov(actual);
+  const files = { "src/puzzles/example.ts": "export const puzzle = 1;\n" };
+
+  await t.test("refused write", async () => {
+    const fixtureCase = await coverageWriterFixture({
+      config,
+      records,
+      files,
+      baseline: baselineFor(config, lower),
+    });
+    const expected = fixtureCase.baselineContents;
+    const result = await runCoverageCli(fixtureCase.root, {
+      config,
+      lcov: fixtureCase.lcov,
+      writeBaseline: true,
+      baselineContents: expected,
+    });
+    assert.equal(result.status, 1, result.stdout);
+    assertDeltaLines(result.stdout, ["utilities", "puzzles"]);
+    await assertScratchBaselineUnchanged(fixtureCase.root, expected);
+  });
+
+  await t.test("accepted increase-only write", async () => {
+    const fixtureCase = await coverageWriterFixture({
+      config,
+      records,
+      files,
+      baseline: baselineFor(config, lower),
+    });
+    const expected = fixtureCase.baselineContents;
+    await installOxfmt(fixtureCase.root, "success");
+    const result = await runCoverageCli(fixtureCase.root, {
+      config,
+      lcov: fixtureCase.lcov,
+      writeBaseline: true,
+      baselineContents: expected,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assertDeltaLines(result.stdout, ["utilities", "puzzles"]);
+    assert.match(result.stdout, /Wrote coverage baseline: scratch-baseline\.json/);
+    const written = JSON.parse(
+      await readFile(join(fixtureCase.root, "scratch-baseline.json"), "utf8"),
+    );
+    assert.deepEqual(written.areas, actual);
+  });
+});
+
+test("baseline writer requires authorization for area-set and scope changes", async (t) => {
+  const config = writerConfig({ twoAreas: true });
+  const actual = {
+    utilities: baselineMetrics(
+      { covered: 2, total: 2 },
+      { covered: 1, total: 1 },
+      { covered: 1, total: 1 },
+    ),
+    puzzles: baselineMetrics(
+      { covered: 1, total: 1 },
+      { covered: 1, total: 1 },
+      { covered: 1, total: 1 },
+    ),
+  };
+  const records = writerLcov(actual);
+  const files = { "src/puzzles/example.ts": "export const puzzle = 1;\n" };
+  const utilitiesOnly = { utilities: actual.utilities };
+
+  await t.test("added area refused without authorization", async () => {
+    const fixtureCase = await coverageWriterFixture({
+      config,
+      records,
+      files,
+      baseline: baselineFor(config, utilitiesOnly),
+    });
+    const expected = fixtureCase.baselineContents;
+    const result = await runCoverageCli(fixtureCase.root, {
+      config,
+      lcov: fixtureCase.lcov,
+      writeBaseline: true,
+      baselineContents: expected,
+    });
+    assert.equal(result.status, 1, result.stdout);
+    assert.match(
+      result.stdout,
+      /Coverage baseline delta: puzzles lines: NEW → 1\/1 \(100\.00%\) \[NEW\]/,
+    );
+    assert.match(result.stderr, /areas changed: added=\[puzzles\], removed=\[\]/);
+    await assertScratchBaselineUnchanged(fixtureCase.root, expected);
+  });
+
+  await t.test("added area accepted with a governing decision", async () => {
+    const fixtureCase = await coverageWriterFixture({
+      config,
+      records,
+      files,
+      baseline: baselineFor(config, utilitiesOnly),
+    });
+    const expected = fixtureCase.baselineContents;
+    await writeFixtureDecision(fixtureCase.root);
+    await installOxfmt(fixtureCase.root, "success");
+    const result = await runCoverageCli(fixtureCase.root, {
+      config,
+      lcov: fixtureCase.lcov,
+      writeBaseline: true,
+      baselineContents: expected,
+      instrumentChange: "d-20260927-23",
+      finding: "f-20260829-04",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(
+      result.stdout,
+      /Coverage baseline write authorized by decision d-20260927-23 for finding f-20260829-04/,
+    );
+    assert.equal(
+      JSON.parse(await readFile(join(fixtureCase.root, "scratch-baseline.json"), "utf8")).areas
+        .puzzles.lines.total,
+      1,
+    );
+  });
+
+  await t.test("tracked empty and partial area sets are refused", async (t2) => {
+    for (const { name, areas, expectedAdded } of [
+      { name: "tracked empty areas", areas: {}, expectedAdded: /added=\[puzzles, utilities\]/ },
+      {
+        name: "one reported area missing from tracked prior",
+        areas: utilitiesOnly,
+        expectedAdded: /added=\[puzzles\]/,
+      },
+    ]) {
+      await t2.test(name, async () => {
+        const fixtureCase = await coverageWriterFixture({ config, records, files });
+        const priorText = JSON.stringify(baselineFor(config, areas));
+        await createScratchHead(fixtureCase.root, { "scratch-baseline.json": priorText });
+        const expectedWorkingCopy = priorText;
+        const result = await runCoverageCli(fixtureCase.root, {
+          config,
+          lcov: fixtureCase.lcov,
+          writeBaseline: true,
+          baselineContents: expectedWorkingCopy,
+        });
+        assert.equal(result.status, 1, result.stdout);
+        assert.match(result.stderr, /areas changed: added=\[/);
+        assert.match(result.stderr, expectedAdded);
+        await assertScratchBaselineUnchanged(fixtureCase.root, expectedWorkingCopy);
+      });
+    }
+  });
+
+  await t.test("scope-only narrowing is refused without authorization", async () => {
+    const priorConfig = writerConfig();
+    const narrowedConfig = writerConfig({ exclude: ["src/utils/untested.ts"] });
+    const example = baselineMetrics(
+      { covered: 1, total: 1 },
+      { covered: 1, total: 1 },
+      { covered: 1, total: 1 },
+    );
+    const untested = baselineMetrics(
+      { covered: 0, total: 1 },
+      { covered: 0, total: 1 },
+      { covered: 0, total: 1 },
+    );
+    const records = [
+      coverageLcov("src/utils/example.ts", example),
+      coverageLcov("src/utils/untested.ts", untested),
+    ].join("\n");
+    const fixtureCase = await coverageWriterFixture({
+      config: narrowedConfig,
+      records,
+      files: { "src/utils/untested.ts": "export const untested = 0;\n" },
+      baseline: baselineFor(priorConfig, {
+        utilities: baselineMetrics(
+          { covered: 1, total: 2 },
+          { covered: 1, total: 2 },
+          { covered: 1, total: 2 },
+        ),
+      }),
+    });
+    const expected = fixtureCase.baselineContents;
+    const result = await runCoverageCli(fixtureCase.root, {
+      config: narrowedConfig,
+      lcov: fixtureCase.lcov,
+      writeBaseline: true,
+      baselineContents: expected,
+    });
+    assert.equal(result.status, 1, result.stdout);
+    assert.match(result.stdout, /Coverage baseline scope changed: sources\[0\]\.exclude/);
+    assert.match(result.stderr, /scope keys changed: sources\[0\]\.exclude/);
+    assert.doesNotMatch(result.stdout, /\[DECREASE\]/);
+    await assertScratchBaselineUnchanged(fixtureCase.root, expected);
+  });
+
+  await t.test("scope-only narrowing is accepted with a governing decision", async () => {
+    const priorConfig = writerConfig();
+    const narrowedConfig = writerConfig({ exclude: ["src/utils/untested.ts"] });
+    const example = baselineMetrics(
+      { covered: 1, total: 1 },
+      { covered: 1, total: 1 },
+      { covered: 1, total: 1 },
+    );
+    const untested = baselineMetrics(
+      { covered: 0, total: 1 },
+      { covered: 0, total: 1 },
+      { covered: 0, total: 1 },
+    );
+    const records = [
+      coverageLcov("src/utils/example.ts", example),
+      coverageLcov("src/utils/untested.ts", untested),
+    ].join("\n");
+    const fixtureCase = await coverageWriterFixture({
+      config: narrowedConfig,
+      records,
+      files: { "src/utils/untested.ts": "export const untested = 0;\n" },
+      baseline: baselineFor(priorConfig, {
+        utilities: baselineMetrics(
+          { covered: 1, total: 2 },
+          { covered: 1, total: 2 },
+          { covered: 1, total: 2 },
+        ),
+      }),
+    });
+    const expected = fixtureCase.baselineContents;
+    await writeFixtureDecision(fixtureCase.root);
+    await installOxfmt(fixtureCase.root, "success");
+    const result = await runCoverageCli(fixtureCase.root, {
+      config: narrowedConfig,
+      lcov: fixtureCase.lcov,
+      writeBaseline: true,
+      baselineContents: expected,
+      instrumentChange: "d-20260927-23",
+      finding: "f-20260829-04",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Coverage baseline scope changed: sources\[0\]\.exclude/);
+    assert.match(result.stdout, /authorized by decision d-20260927-23 for finding f-20260829-04/);
+  });
+});
+
+test("baseline writer authorizes decreases only for an exact Governs finding token", async (t) => {
+  const config = writerConfig();
+  const actual = baselineMetrics(
+    { covered: 9, total: 18 },
+    { covered: 1, total: 1 },
+    { covered: 1, total: 1 },
+  );
+  const priorAreas = {
+    utilities: baselineMetrics(
+      { covered: 10, total: 20 },
+      { covered: 1, total: 1 },
+      { covered: 1, total: 1 },
+    ),
+  };
+  const cases = [
+    {
+      name: "missing decisions file",
+      decisionFile: false,
+      stderr: /requires tasks\/decisions\.md/,
+    },
+    {
+      name: "decision entry does not exist",
+      decision: "d-20260927-22",
+      governs: "f-20260829-04",
+      stderr: /No decision entry found for --instrument-change d-20260927-23/,
+    },
+    {
+      name: "Governs names only an adjacent finding id",
+      decision: "d-20260927-23",
+      governs: "f-20260829-040",
+      stderr: /Decision d-20260927-23 does not govern finding f-20260829-04/,
+    },
+  ];
+  for (const failureCase of cases) {
+    await t.test(failureCase.name, async () => {
+      const fixtureCase = await coverageWriterFixture({
+        config,
+        records: writerLcov({ utilities: actual }),
+        baseline: baselineFor(config, priorAreas),
+      });
+      const expected = fixtureCase.baselineContents;
+      if (failureCase.decisionFile !== false) {
+        await writeFixtureDecision(fixtureCase.root, {
+          decision: failureCase.decision ?? "d-20260927-23",
+          governs: failureCase.governs ?? "f-20260829-04",
+        });
+      }
+      const result = await runCoverageCli(fixtureCase.root, {
+        config,
+        lcov: fixtureCase.lcov,
+        writeBaseline: true,
+        baselineContents: expected,
+        instrumentChange: "d-20260927-23",
+        finding: "f-20260829-04",
+      });
+      assert.equal(result.status, 1, result.stdout);
+      assert.match(result.stderr, failureCase.stderr);
+      await assertScratchBaselineUnchanged(fixtureCase.root, expected);
+    });
+  }
+
+  await t.test("a governing decision permits a decrease and is printed", async () => {
+    const fixtureCase = await coverageWriterFixture({
+      config,
+      records: writerLcov({ utilities: actual }),
+      baseline: baselineFor(config, priorAreas),
+    });
+    const expected = fixtureCase.baselineContents;
+    await writeFixtureDecision(fixtureCase.root);
+    await installOxfmt(fixtureCase.root, "success");
+    const result = await runCoverageCli(fixtureCase.root, {
+      config,
+      lcov: fixtureCase.lcov,
+      writeBaseline: true,
+      baselineContents: expected,
+      instrumentChange: "d-20260927-23",
+      finding: "f-20260829-04",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(
+      result.stdout,
+      /Coverage baseline write authorized by decision d-20260927-23 for finding f-20260829-04/,
+    );
+    assert.match(
+      result.stdout,
+      /utilities lines: 10\/20 \(50\.00%\) → 9\/18 \(50\.00%\) \[DECREASE\]/,
+    );
+    assert.equal(
+      JSON.parse(await readFile(join(fixtureCase.root, "scratch-baseline.json"), "utf8")).areas
+        .utilities.lines.covered,
+      9,
+    );
+  });
+});
+
+test("baseline writer validates prior metrics before writing", async (t) => {
+  const config = writerConfig();
+  const actual = baselineMetrics(
+    { covered: 1, total: 1 },
+    { covered: 1, total: 1 },
+    { covered: 1, total: 1 },
+  );
+  const valid = baselineFor(config, { utilities: actual });
+  const cases = [
+    {
+      name: "malformed JSON",
+      contents: "{bad",
+      message: /Invalid prior coverage baseline at/,
+    },
+    {
+      name: "unsupported version",
+      baseline: { ...valid, version: 2 },
+      message: /expected version 1 and an areas object/,
+    },
+    {
+      name: "areas is not an object",
+      baseline: { ...valid, areas: null },
+      message: /expected version 1 and an areas object/,
+    },
+    {
+      name: "an area's metric container is not an object",
+      baseline: { ...valid, areas: { utilities: null } },
+      message: /utilities must contain all metrics/,
+    },
+    {
+      name: "an area has no metric object",
+      baseline: {
+        ...valid,
+        areas: { utilities: { functions: actual.functions, branches: actual.branches } },
+      },
+      message: /utilities lines must have non-negative integer/,
+    },
+    {
+      name: "covered is not numeric",
+      mutate: (baseline) => {
+        baseline.areas.utilities.lines.covered = "bad";
+      },
+      message: /utilities lines must have non-negative integer/,
+    },
+    {
+      name: "covered is negative",
+      mutate: (baseline) => {
+        baseline.areas.utilities.lines.covered = -1;
+      },
+      message: /utilities lines must have non-negative integer/,
+    },
+    {
+      name: "covered exceeds total",
+      mutate: (baseline) => {
+        baseline.areas.utilities.lines.covered = 2;
+      },
+      message: /utilities lines must have non-negative integer/,
+    },
+    {
+      name: "covered is fractional",
+      mutate: (baseline) => {
+        baseline.areas.utilities.lines.covered = 1.5;
+        baseline.areas.utilities.lines.total = 2;
+      },
+      message: /utilities lines must have non-negative integer/,
+    },
+    {
+      name: "total is fractional",
+      mutate: (baseline) => {
+        baseline.areas.utilities.lines.covered = 1;
+        baseline.areas.utilities.lines.total = 2.5;
+      },
+      message: /utilities lines must have non-negative integer/,
+    },
+    {
+      name: "total is negative",
+      mutate: (baseline) => {
+        baseline.areas.utilities.lines.covered = 0;
+        baseline.areas.utilities.lines.total = -1;
+      },
+      message: /utilities lines must have non-negative integer/,
+    },
+  ];
+  for (const failureCase of cases) {
+    await t.test(failureCase.name, async () => {
+      let contents = failureCase.contents;
+      if (contents === undefined) {
+        const baseline = structuredClone(failureCase.baseline ?? valid);
+        failureCase.mutate?.(baseline);
+        contents = JSON.stringify(baseline);
+      }
+      const fixtureCase = await coverageWriterFixture({
+        config,
+        records: writerLcov({ utilities: actual }),
+        baseline: contents,
+      });
+      const result = await runCoverageCli(fixtureCase.root, {
+        config,
+        lcov: fixtureCase.lcov,
+        writeBaseline: true,
+        baselineContents: contents,
+      });
+      assert.equal(result.status, 1, result.stdout);
+      assert.match(result.stderr, failureCase.message);
+      await assertScratchBaselineUnchanged(fixtureCase.root, contents);
+    });
+  }
+});
+
+test("baseline writer rejects invalid authorization flag combinations", async (t) => {
+  const config = writerConfig();
+  const contents = "previous baseline bytes\n";
+  const cases = [
+    {
+      name: "instrument change without a finding",
+      writeBaseline: true,
+      extraArgs: ["--instrument-change", "d-20260927-23"],
+      message: /--instrument-change and --finding must be used together/,
+    },
+    {
+      name: "finding without an instrument change",
+      writeBaseline: true,
+      extraArgs: ["--finding", "f-20260829-04"],
+      message: /--instrument-change and --finding must be used together/,
+    },
+    {
+      name: "instrument change flags without baseline write",
+      writeBaseline: false,
+      extraArgs: ["--instrument-change", "d-20260927-23", "--finding", "f-20260829-04"],
+      message: /--instrument-change and --finding require --write-baseline/,
+    },
+    {
+      name: "missing instrument change value",
+      writeBaseline: true,
+      extraArgs: ["--instrument-change"],
+      message: /Missing value for --instrument-change/,
+    },
+    {
+      name: "missing finding value",
+      writeBaseline: true,
+      extraArgs: ["--finding"],
+      message: /Missing value for --finding/,
+    },
+  ];
+  for (const failureCase of cases) {
+    await t.test(failureCase.name, async () => {
+      const fixtureCase = await coverageWriterFixture({
+        config,
+        records: writerLcov({
+          utilities: baselineMetrics(
+            { covered: 1, total: 1 },
+            { covered: 1, total: 1 },
+            { covered: 1, total: 1 },
+          ),
+        }),
+        baseline: contents,
+      });
+      const result = await runCoverageCli(fixtureCase.root, {
+        config,
+        lcov: fixtureCase.lcov,
+        writeBaseline: failureCase.writeBaseline,
+        baselineContents: contents,
+        extraArgs: failureCase.extraArgs,
+      });
+      assert.equal(result.status, 1, result.stdout);
+      assert.match(result.stderr, failureCase.message);
+      await assertScratchBaselineUnchanged(
+        fixtureCase.root,
+        contents,
+        failureCase.writeBaseline ? "scratch-baseline.json" : "baseline.json",
+      );
+    });
+  }
+});
+
+test("baseline writer uses committed HEAD, disk fallback, and permits a first write", async (t) => {
+  const config = writerConfig();
+  const actual = baselineMetrics(
+    { covered: 9, total: 18 },
+    { covered: 1, total: 1 },
+    { covered: 1, total: 1 },
+  );
+  const prior = baselineFor(config, {
+    utilities: baselineMetrics(
+      { covered: 10, total: 20 },
+      { covered: 1, total: 1 },
+      { covered: 1, total: 1 },
+    ),
+  });
+  const priorText = JSON.stringify(prior);
+  const records = writerLcov({ utilities: actual });
+
+  await t.test("tracked HEAD remains the prior when the working copy is lower", async () => {
+    const fixtureCase = await coverageWriterFixture({ config, records });
+    await createScratchHead(fixtureCase.root, { "scratch-baseline.json": priorText });
+    const workingCopy = JSON.stringify(
+      baselineFor(config, {
+        utilities: baselineMetrics(
+          { covered: 1, total: 2 },
+          { covered: 1, total: 1 },
+          { covered: 1, total: 1 },
+        ),
+      }),
+    );
+    const result = await runCoverageCli(fixtureCase.root, {
+      config,
+      lcov: fixtureCase.lcov,
+      writeBaseline: true,
+      baselineContents: workingCopy,
+    });
+    assert.equal(result.status, 1, result.stdout);
+    assert.match(
+      result.stdout,
+      /utilities lines: 10\/20 \(50\.00%\) → 9\/18 \(50\.00%\) \[DECREASE\]/,
+    );
+    await assertScratchBaselineUnchanged(fixtureCase.root, workingCopy);
+  });
+
+  await t.test("untracked repository path falls back to its disk baseline", async () => {
+    const fixtureCase = await coverageWriterFixture({ config, records });
+    await createScratchHead(fixtureCase.root);
+    const diskBaseline = baselineFor(config, {
+      utilities: baselineMetrics(
+        { covered: 0, total: 1 },
+        { covered: 0, total: 1 },
+        { covered: 0, total: 1 },
+      ),
+    });
+    await installOxfmt(fixtureCase.root, "success");
+    const result = await runCoverageCli(fixtureCase.root, {
+      config,
+      lcov: fixtureCase.lcov,
+      writeBaseline: true,
+      baselineContents: JSON.stringify(diskBaseline),
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Wrote coverage baseline:/);
+  });
+
+  await t.test("an absent baseline in a repository is a first write", async () => {
+    const fixtureCase = await coverageWriterFixture({ config, records });
+    await createScratchHead(fixtureCase.root);
+    await installOxfmt(fixtureCase.root, "success");
+    const result = await runCoverageCli(fixtureCase.root, {
+      config,
+      lcov: fixtureCase.lcov,
+      writeBaseline: true,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Wrote coverage baseline:/);
+    assert.deepEqual(
+      JSON.parse(await readFile(join(fixtureCase.root, "scratch-baseline.json"), "utf8")).areas
+        .utilities.lines,
+      { covered: 9, total: 18 },
+    );
+  });
+});
+
+test("baseline writer refuses git lookup failures without touching the baseline", async (t) => {
+  const config = writerConfig();
+  const records = writerLcov({
+    utilities: baselineMetrics(
+      { covered: 1, total: 1 },
+      { covered: 1, total: 1 },
+      { covered: 1, total: 1 },
+    ),
+  });
+  const priorText = JSON.stringify(
+    baselineFor(config, {
+      utilities: baselineMetrics(
+        { covered: 1, total: 1 },
+        { covered: 1, total: 1 },
+        { covered: 1, total: 1 },
+      ),
+    }),
+  );
+  const cases = [
+    {
+      name: "rev-parse fails outside the not-a-repository case",
+      setup: async (root) =>
+        installGitShim(root, {
+          command: "rev-parse",
+          stderr: "fatal: simulated repository metadata error",
+        }),
+      message:
+        /git rev-parse --is-inside-work-tree: status=37; stderr="fatal: simulated repository metadata error/,
+    },
+    {
+      name: "git executable cannot be spawned",
+      setup: async (root) => {
+        const emptyPath = join(root, "empty-path");
+        await mkdir(emptyPath, { recursive: true });
+        return emptyPath;
+      },
+      message:
+        /git rev-parse --is-inside-work-tree: status=null; stderr=""; error\.code=ENOENT; error\.message=/,
+    },
+  ];
+  for (const failureCase of cases) {
+    await t.test(failureCase.name, async () => {
+      const fixtureCase = await coverageWriterFixture({ config, records, baseline: priorText });
+      const extraPath = await failureCase.setup(fixtureCase.root);
+      const result = await runCoverageCli(fixtureCase.root, {
+        config,
+        lcov: fixtureCase.lcov,
+        writeBaseline: true,
+        baselineContents: priorText,
+        extraEnv: { PATH: extraPath },
+      });
+      assert.equal(result.status, 1, result.stdout);
+      assert.match(result.stderr, failureCase.message);
+      await assertScratchBaselineUnchanged(fixtureCase.root, priorText);
+    });
+  }
+
+  await t.test("ls-tree fails for an unborn HEAD", async () => {
+    const fixtureCase = await coverageWriterFixture({ config, records, baseline: priorText });
+    await gitInScratch(fixtureCase.root, ["init", "--quiet"]);
+    const result = await runCoverageCli(fixtureCase.root, {
+      config,
+      lcov: fixtureCase.lcov,
+      writeBaseline: true,
+      baselineContents: priorText,
+    });
+    assert.equal(result.status, 1, result.stdout);
+    assert.match(result.stderr, /git ls-tree --full-name HEAD -- scratch-baseline\.json/);
+    assert.match(result.stderr, /stderr="fatal:/);
+    await assertScratchBaselineUnchanged(fixtureCase.root, priorText);
+  });
+
+  await t.test("ls-tree returning multiple entries refuses the ambiguous prior", async () => {
+    const fixtureCase = await coverageWriterFixture({ config, records, baseline: priorText });
+    await createScratchHead(fixtureCase.root);
+    const path = await installGitShim(fixtureCase.root, {
+      command: "ls-tree",
+      status: 0,
+      stdout:
+        "100644 blob aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\tscratch-baseline.json\n" +
+        "100644 blob bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\tscratch-baseline.json\n",
+      stderr: "",
+    });
+    const result = await runCoverageCli(fixtureCase.root, {
+      config,
+      lcov: fixtureCase.lcov,
+      writeBaseline: true,
+      baselineContents: priorText,
+      extraEnv: { PATH: path },
+    });
+    assert.equal(result.status, 1, result.stdout);
+    assert.match(result.stderr, /git ls-tree --full-name HEAD -- scratch-baseline\.json/);
+    assert.match(result.stderr, /expected one tracked file entry; stderr=/);
+    await assertScratchBaselineUnchanged(fixtureCase.root, priorText);
+  });
+
+  await t.test("ls-tree output without an entry delimiter refuses the prior", async () => {
+    const fixtureCase = await coverageWriterFixture({ config, records, baseline: priorText });
+    await createScratchHead(fixtureCase.root);
+    const path = await installGitShim(fixtureCase.root, {
+      command: "ls-tree",
+      status: 0,
+      stdout: "malformed ls-tree output\n",
+      stderr: "",
+    });
+    const result = await runCoverageCli(fixtureCase.root, {
+      config,
+      lcov: fixtureCase.lcov,
+      writeBaseline: true,
+      baselineContents: priorText,
+      extraEnv: { PATH: path },
+    });
+    assert.equal(result.status, 1, result.stdout);
+    assert.match(result.stderr, /git ls-tree --full-name HEAD -- scratch-baseline\.json/);
+    assert.match(result.stderr, /expected one tracked file entry; stderr=/);
+    await assertScratchBaselineUnchanged(fixtureCase.root, priorText);
+  });
+
+  await t.test(
+    "show failure for a committed baseline refuses instead of falling back",
+    async () => {
+      const fixtureCase = await coverageWriterFixture({ config, records, baseline: priorText });
+      await createScratchHead(fixtureCase.root, { "scratch-baseline.json": priorText });
+      const path = await installGitShim(fixtureCase.root, {
+        command: "show",
+        status: 38,
+        stderr: "fatal: simulated committed object failure",
+      });
+      const result = await runCoverageCli(fixtureCase.root, {
+        config,
+        lcov: fixtureCase.lcov,
+        writeBaseline: true,
+        baselineContents: priorText,
+        extraEnv: { PATH: path },
+      });
+      assert.equal(result.status, 1, result.stdout);
+      assert.match(result.stderr, /git show HEAD:scratch-baseline\.json/);
+      assert.match(result.stderr, /stderr="fatal: simulated committed object failure/);
+      await assertScratchBaselineUnchanged(fixtureCase.root, priorText);
+    },
+  );
 });
 
 test("scopeSignature normalises exclude through excludePatterns", () => {
