@@ -11720,3 +11720,25 @@ Rejected: a longer WebDriver timeout, and a full-FEN dedup key.
 * **Defect:** each file defines its own `ResizeObserver` stand-in (`observe/unobserve/disconnect` no-ops, installed through `globalThis` or `Object.defineProperty`), the duplication rule 11 forbids. `f38fa6a5` (f-20260829-02) added the shared `installResizeObserverStub()` in `src/tests/resizeObserver.ts`, beside `installMatchMediaStub()`, for `ThemeButton.test.tsx`; the older copies were left because they sit in other areas.
 * **Fix:** route every inert copy through `installResizeObserverStub()`. Keep `GamePreview.test.tsx`'s reporting observer local (it records callbacks to drive sizes) unless the helper gains that as an option.
 * **Proof:** `grep -rn "class .*ResizeObserver" src --include=*.test.tsx` lists only the reporting observer, and `pnpm test` stays green.
+
+---
+
+## 2026-09-28 — filed through the inbox spool
+
+### The release-surface checker keeps its own line-based `#[cfg(test)]` region walker beside the coverage gate's test-only item scanner
+
+* **ID:** f-20260928-02 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `scripts/check-rust-release-surface.mjs` (`isTestCfgAttribute`, `walkGatedLines`, `testRegionAtDepth`), and the test-only item scanner `scripts/rust-test-only.mjs` introduced by `f-20260829-04`.
+* **Defect:** two scanners now answer "is this Rust code compiled only under `test`?" with different rules. The release-surface walker is line-based: `isTestCfgAttribute` accepts only `cfg(test)` or an `all(…)` whose text contains `test` (so `cfg(not(not(test)))` and `cfg_attr(not(test), cfg(test))` are production to it, and an `all(any(test, windows), unix)` is test-only to it although it is compiled on Windows without `test`), and region ends are tracked by brace depth from the first `{` on a line. The coverage gate's scanner (`f-20260829-04`, `d-20260927-24`) evaluates the predicate three-valued with `test` false and every other atom unknown, handles `cfg_attr`, and bounds item extents by `;`, `,`, closers and brace blocks. Both already share one masker (`scripts/rust-source-mask.mjs`, extracted in `f-20260829-04`). A disagreement means one gate calls production what the other calls test code, and the release-surface R1–R4 verdicts (dead-code allowance, fs surface counts, injection-name exposure) can be wrong on exactly the constructs where they differ.
+* **Why deferred:** `f-20260829-04`'s plan review (round 1, `review-minimalism`) found the duplicate masker, which that run extracted; routing the region walker through the new scanner changes another gate's verdicts and its shrink-only counts, which is outside that finding's mandate (the plan-review adoption gate).
+* **Related:** `f-20260829-04` (introduced the second scanner), `f-20260830-23` (the release-surface R3/R4 fs surface this walker feeds).
+* **Open question:** does `walkGatedLines` become a consumer of `rust-test-only.mjs`'s ranges (one predicate, one extent rule for both gates, with the fs surface counts re-measured), or is a line-granular walker kept deliberately for the release surface — and if kept, which of the two predicates is the authority?
+
+### The coverage ratchet accepts a 0/0 → 0/n drop, which the floors read as 100 % → 0 %
+
+* **ID:** f-20260928-03 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `scripts/coverage-report.mjs` `assertBaseline` (the ratio clause, ~line 478) and `assertAreaFloors` (~line 511).
+* **Defect:** `assertAreaFloors` reads a metric with `total = 0` as 100 %, but `assertBaseline` compares ratios by cross-multiplication, so a prior `0/0` against a report `0/1` gives `0*0 < 0*1` = false — no regression. An area metric that had no records and gains an uncovered one passes the ratchet, and with a floor of 0 it passes the floor too, although under the floors' own reading it fell from 100 % to 0 %. Found by `review-correctness` during `f-20260829-04`'s plan review (round 10, confidence 97); that run's writer guard (`--write-baseline`) defines `total = 0` as 100 % and refuses the same drop, so the two paths now disagree.
+* **Why deferred:** outside `f-20260829-04`'s mandate (the writer guard, the exclusion, the re-record); changing the ratchet's comparison is a separate change with its own shrink-allowance interplay (`f-20260829-15`).
+* **Fix shape:** make `assertBaseline`'s ratio clause treat `total = 0` as ratio 1 on both sides (consistent with `assertAreaFloors` and the writer), check the interaction with the shrink-adjusted baseline, and add the `0/0 → 0/1` case to `scripts/coverage-report-tests.mjs` plus a failure-matrix row.
+* **Related:** `f-20260829-04` (writer guard with the 100 % rule), `f-20260829-15` (shrink allowance).
