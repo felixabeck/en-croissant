@@ -4,11 +4,22 @@ export function listWorkingTreeFiles({
   workspaceRoot = process.cwd(),
   pathspec = "src",
   runGit = spawnSync,
+  includeIgnored = false,
 } = {}) {
   const commands = [
     ["ls-files", "--others", "--exclude-standard", "--", pathspec],
     ["ls-files", "--", pathspec],
   ];
+  if (includeIgnored) {
+    commands.splice(1, 0, [
+      "ls-files",
+      "--others",
+      "--ignored",
+      "--exclude-standard",
+      "--",
+      pathspec,
+    ]);
+  }
   const paths = [];
 
   for (const args of commands) {

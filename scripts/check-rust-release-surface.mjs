@@ -1,6 +1,7 @@
-import { readFileSync } from "node:fs";
+import { lstatSync, readFileSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { extname, join, resolve } from "node:path";
 import { isEntrypoint } from "./entrypoint.mjs";
 import { maskRustSource } from "./rust-source-mask.mjs";
 import { classifyRustTestOnlySources } from "./rust-test-only.mjs";
@@ -25,6 +26,66 @@ export const INITIAL_FS_SURFACE_COUNTS = Object.freeze({
   "src-tauri/src/file_workspace.rs": 1,
   "src-tauri/src/fs.rs": 7,
 });
+
+export const PATH_METHODS = Object.freeze([
+  "canonicalize",
+  "metadata",
+  "symlink_metadata",
+  "read_dir",
+  "read_link",
+  "exists",
+  "try_exists",
+  "is_file",
+  "is_dir",
+  "is_symlink",
+]);
+
+const PATH_METHOD_REASON =
+  "pathname filesystem reach: route through src-tauri/src/infra (descriptor-relative outside infra); f-20260912-03";
+export const EXPECTED_CLIPPY_TOML = `disallowed-methods = [\n${PATH_METHODS.map(
+  (name) => `  { path = "std::path::Path::${name}", reason = "${PATH_METHOD_REASON}" },`,
+).join("\n")}\n]\n`;
+
+const CLIPPY_SUPPRESSING_LINTS = Object.freeze([
+  "clippy::disallowed_methods",
+  "clippy::style",
+  "clippy::all",
+  "warnings",
+]);
+
+const INITIAL_PATH_EXPECT_BASELINE = Object.freeze([
+  Object.freeze({
+    path: "src-tauri/src/main.rs",
+    function: "for_database",
+    sha256: "d013dd32cd56aeffcd5f6ede9de6037509cf6f464ba0432a6c5d85e7c313ef88",
+    methods: Object.freeze({ canonicalize: 2, exists: 2, metadata: 1 }),
+  }),
+  Object.freeze({
+    path: "src-tauri/src/main.rs",
+    function: "invalidate_entries",
+    sha256: "6b9602c1f621922fee445e8fbdd69e36fe1a0c379b8e0127be19e2bfabca0538",
+    methods: Object.freeze({ canonicalize: 1 }),
+  }),
+]);
+
+const PATH_EXPECT_BASELINE = INITIAL_PATH_EXPECT_BASELINE;
+const INITIAL_GATE_REGION_BASELINE = Object.freeze([
+  Object.freeze({
+    path: "src-tauri/src/main.rs",
+    key: "root-windows-subsystem",
+    attribute:
+      '#![cfg_attr( all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows" )]',
+    regionSha256: "d07a1672d2012b6a85aa65c87b4571931718b0899f4134f3ca9a29aadc6d5bbf",
+  }),
+  Object.freeze({
+    path: "src-tauri/src/main.rs",
+    key: "release-native-log-sinks",
+    attribute: "#[cfg(not(debug_assertions))]",
+    regionSha256: "666cf86646e54d42fd49038417112038dc15f6163cb2437f395649b5562d0f1e",
+  }),
+]);
+const GATE_REGION_BASELINE = INITIAL_GATE_REGION_BASELINE;
+const BUILD_SCRIPT_SHA256 = "487059eaf8a947b80f20a9aacac038a5047b2ad69d2401b827376c67d6fe847f";
 
 const INJECTION_NAME = /(?:FaultPoint|Injector|_with_injector)/i;
 const PUBLIC_ITEM =
@@ -392,6 +453,48 @@ function collectFilesystemMatches(path, source, classification) {
   return unique;
 }
 
+function validateShrinkOnlyBaseline({
+  rule,
+  initialBaseline,
+  baseline,
+  counts,
+  measure,
+  measurePresentPaths,
+  presentPaths,
+  messages,
+}) {
+  const initial = new Set(initialBaseline);
+  const present = presentPaths === undefined ? null : new Set(presentPaths);
+  const measurable = measurePresentPaths === undefined ? present : new Set(measurePresentPaths);
+  const violations = [];
+  for (const key of baseline) {
+    const path = messages.pathFor(key);
+    if (!initial.has(key)) violations.push(messages.added(key, path));
+    if (present && !present.has(path)) violations.push(messages.residency(key, path));
+    if (measure && (!measurable || measurable.has(path))) {
+      const measured = measure(key, path);
+      const expected = counts?.[key] ?? 0;
+      if (measured === 0) violations.push(messages.empty(key, path));
+      else if (measured !== expected)
+        violations.push(messages.mismatch(key, path, measured, expected));
+    }
+  }
+  return violations.map((violation) =>
+    violation.startsWith(`${rule}:`) ? violation : `${rule}: ${violation}`,
+  );
+}
+
+const R3_BASELINE_MESSAGES = Object.freeze({
+  pathFor: (path) => path,
+  added: (_key, path) => `allowlist entry ${path} is not part of the shrink-only baseline`,
+  residency: (_key, path) =>
+    `allowlist entry ${path} is not present in the working tree and must be removed from the allowlist`,
+  empty: (_key, path) =>
+    `allowlist entry ${path} has no production filesystem reaches and must be removed from the allowlist`,
+  mismatch: (_key, path, measured, expected) =>
+    `${path} has ${measured} production filesystem reaches, allowlisted for ${expected}`,
+});
+
 function checkFilesystemSurfaceWithClassification(
   sources,
   allowlist = FS_SURFACE_ALLOWLIST,
@@ -401,26 +504,12 @@ function checkFilesystemSurfaceWithClassification(
   const entries = sourceEntries(sources);
   const violations = [];
   const allowedPaths = new Set(allowlist);
-
-  for (const path of allowedPaths) {
-    if (!INITIAL_FS_SURFACE_ALLOWLIST.includes(path)) {
-      violations.push(`R3: allowlist entry ${path} is not part of the shrink-only baseline`);
-    }
-  }
+  const matchesByPath = new Map();
 
   for (const { path, contents } of entries) {
     const matches = collectFilesystemMatches(path, contents, classification);
+    matchesByPath.set(path, matches);
     if (allowedPaths.has(path)) {
-      const expected = counts[path] ?? 0;
-      if (matches.length === 0) {
-        violations.push(
-          `R3: allowlist entry ${path} has no production filesystem reaches and must be removed from the allowlist`,
-        );
-      } else if (matches.length !== expected) {
-        violations.push(
-          `R3: ${path} has ${matches.length} production filesystem reaches, allowlisted for ${expected}`,
-        );
-      }
       continue;
     }
     for (const match of matches) {
@@ -429,6 +518,18 @@ function checkFilesystemSurfaceWithClassification(
       );
     }
   }
+
+  violations.unshift(
+    ...validateShrinkOnlyBaseline({
+      rule: "R3",
+      initialBaseline: INITIAL_FS_SURFACE_ALLOWLIST,
+      baseline: [...allowedPaths],
+      counts,
+      measurePresentPaths: matchesByPath.keys(),
+      measure: (path) => matchesByPath.get(path)?.length ?? 0,
+      messages: R3_BASELINE_MESSAGES,
+    }),
+  );
 
   return violations;
 }
@@ -451,29 +552,1162 @@ export function checkFilesystemSurface(
 // An allowlist entry whose file has left the working tree is stale: without this rule the entry
 // survives the deletion for ever and every gate stays green.
 export function checkAllowlistResidency(paths, allowlist = FS_SURFACE_ALLOWLIST) {
-  const present = new Set(paths);
+  return validateShrinkOnlyBaseline({
+    rule: "R3",
+    initialBaseline: INITIAL_FS_SURFACE_ALLOWLIST,
+    baseline: [...allowlist],
+    presentPaths: paths,
+    messages: R3_BASELINE_MESSAGES,
+  });
+}
+
+function normaliseRustText(text) {
+  return text.replace(/\r\n?/g, "\n").replace(/\s+/g, " ").trim();
+}
+
+function sha256(text) {
+  return createHash("sha256").update(text).digest("hex");
+}
+
+function lineForOffset(source, offset) {
+  let line = 1;
+  for (let index = 0; index < offset; index += 1) {
+    if (source[index] === "\n") line += 1;
+  }
+  return line;
+}
+
+function isTestOnlyOffset(path, source, offset, classification) {
+  return classification.excludedLines.get(path)?.has(lineForOffset(source, offset)) ?? false;
+}
+
+function suppressionForms(attributeText) {
+  const masked = maskRustSource(attributeText);
+  const forms = [];
+  for (const match of masked.matchAll(/\b(allow|expect)\s*\(([^)]*)\)/g)) {
+    const names = CLIPPY_SUPPRESSING_LINTS.filter((name) =>
+      new RegExp(`\\b${name.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")}\\b`).test(match[2]),
+    );
+    if (names.length) forms.push({ level: match[1], names });
+  }
+  return forms;
+}
+
+function exactMainTestAllowance(path, innerAttribute) {
+  return (
+    path === "src-tauri/src/main.rs" &&
+    innerAttribute.root &&
+    normaliseRustText(maskRustSource(innerAttribute.attribute.text)).replaceAll(" ", "") ===
+      "cfg_attr(test,allow(clippy::disallowed_methods))"
+  );
+}
+
+function isCountedPathExpect(path, attribute) {
+  const meta = maskRustSource(attribute.text).trim();
+  const direct = meta.match(/^expect\s*\(([^)]*)\)/);
+  if (!direct) return false;
+  const names = suppressionForms(attribute.text)
+    .filter(({ level }) => level === "expect")
+    .flatMap(({ names: suppressions }) => suppressions);
+  return (
+    path === "src-tauri/src/main.rs" &&
+    names.length === 1 &&
+    names[0] === "clippy::disallowed_methods" &&
+    /\bclippy\s*::\s*disallowed_methods\b/.test(direct[1])
+  );
+}
+
+function methodTokens(text) {
+  const escaped = PATH_METHODS.map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const expression = new RegExp(`\\b(?:${escaped.join("|")})\\b`, "g");
+  const masked = maskRustSource(text);
+  return [...masked.matchAll(expression)]
+    .filter((match) => {
+      const before = masked.slice(0, match.index);
+      return !/\blet\s+(?:mut\s+)?$/.test(before);
+    })
+    .map((match) => match[0]);
+}
+
+function hasDirectMethodCall(text, name) {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:\\.|::)\\s*${escaped}\\s*\\(`).test(maskRustSource(text));
+}
+
+function hasMacroInvocation(text) {
+  return /\b[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*\s*!\s*[([{]/.test(
+    maskRustSource(text),
+  );
+}
+
+function checkPathMethodExpectationsWithClassification(
+  entries,
+  classification,
+  {
+    initialBaseline = INITIAL_PATH_EXPECT_BASELINE,
+    baseline = PATH_EXPECT_BASELINE,
+    presentPaths,
+  } = {},
+) {
   const violations = [];
-  for (const path of allowlist) {
-    if (!present.has(path)) {
+  const analyses = classification.analysis;
+  const observed = new Map();
+  const candidateKeys = new Set();
+
+  for (const { path, contents } of entries) {
+    const analysis = analyses.get(path);
+    if (!analysis) continue;
+    const regionByStart = new Map(analysis.sourceRegions.map((region) => [region.start, region]));
+    for (const group of analysis.groups) {
+      if (isTestOnlyOffset(path, contents, group.start, classification)) continue;
+      const region = regionByStart.get(group.start);
+      for (const attribute of group.attributes) {
+        const forms = suppressionForms(attribute.text);
+        const isInfra = isInfraPath(path);
+        const inMacroDefinition = analysis.macroRegions?.some(
+          ({ start, end }) => start <= attribute.start && attribute.start < end,
+        );
+        if (maskRustSource(attribute.text).includes("$")) {
+          violations.push(
+            `${path}:${lineForOffset(contents, attribute.start)}: R5: attribute metavariable can generate an unreviewed rustc or clippy attribute`,
+          );
+        }
+        if (forms.length && (!isInfra || inMacroDefinition)) {
+          if (isCountedPathExpect(path, attribute)) {
+            const row = region;
+            const fn = row?.function;
+            const key = fn ? `${path}::${fn.name}` : `${path}::<outside-function>`;
+            candidateKeys.add(key);
+            const maskedStatement = row
+              ? maskRustSource(contents.slice(row.range.start, row.range.end))
+              : "";
+            const statementStart = row
+              ? maskRustSource(contents.slice(group.end, row.range.end)).trimStart()
+              : "";
+            const tokens = methodTokens(maskedStatement);
+            const direct = tokens.length === 1 && hasDirectMethodCall(maskedStatement, tokens[0]);
+            const startsLet = /^let\b/.test(statementStart);
+            const macro = hasMacroInvocation(maskedStatement);
+            if (!fn || !startsLet || tokens.length !== 1 || !direct || macro) {
+              violations.push(
+                `${path}:${lineForOffset(contents, attribute.start)}: R5: counted expect must annotate one direct Path method call in a single let statement without a macro`,
+              );
+            }
+            if (fn) {
+              const methods = observed.get(key) ?? [];
+              if (tokens.length === 1) methods.push(tokens[0]);
+              observed.set(key, methods);
+              const itemHash = sha256(normaliseRustText(fn.text));
+              const expected = baseline.find((entry) => `${entry.path}::${entry.function}` === key);
+              if (!expected) {
+                violations.push(
+                  `${path}:${lineForOffset(contents, attribute.start)}: R5: counted expect in ${fn.name} has no pinned baseline entry`,
+                );
+              } else if (itemHash !== expected.sha256) {
+                violations.push(
+                  `${path}:${lineForOffset(contents, attribute.start)}: R5: pinned function ${fn.name} changed from its recorded text`,
+                );
+              }
+            }
+          } else {
+            violations.push(
+              `${path}:${lineForOffset(contents, attribute.start)}: R5: ${forms.map(({ level, names }) => `${level}(${names.join(", ")})`).join("; ")} can suppress disallowed Path methods`,
+            );
+          }
+        }
+        const maskedAttribute = maskRustSource(attribute.text);
+        if (
+          !isTestOnlyOffset(path, contents, attribute.start, classification) &&
+          /\bclippy\b(?!\s*::)/.test(maskedAttribute)
+        ) {
+          violations.push(
+            `${path}:${lineForOffset(contents, attribute.start)}: R5: production cfg attribute may not use the clippy cfg atom`,
+          );
+        }
+        if (
+          !isTestOnlyOffset(path, contents, attribute.start, classification) &&
+          !isInfra &&
+          /\bcfg\s*\(/.test(maskedAttribute) &&
+          /^\s*cfg_attr\s*\(/.test(maskedAttribute)
+        ) {
+          violations.push(
+            `${path}:${lineForOffset(contents, attribute.start)}: R5: cfg_attr payload may not introduce a nested cfg predicate`,
+          );
+        }
+      }
+    }
+    for (const inner of analysis.innerAttributes) {
+      if (isTestOnlyOffset(path, contents, inner.start, classification)) continue;
+      const forms = suppressionForms(inner.attribute.text);
+      if (maskRustSource(inner.attribute.text).includes("$")) {
+        violations.push(
+          `${path}:${lineForOffset(contents, inner.start)}: R5: attribute metavariable can generate an unreviewed rustc or clippy attribute`,
+        );
+      }
+      const inMacroDefinition = analysis.macroRegions?.some(
+        ({ start, end }) => start <= inner.start && inner.start < end,
+      );
+      if (
+        forms.length &&
+        (!isInfraPath(path) || inMacroDefinition) &&
+        !exactMainTestAllowance(path, inner)
+      ) {
+        violations.push(
+          `${path}:${lineForOffset(contents, inner.start)}: R5: inner ${forms.map(({ level, names }) => `${level}(${names.join(", ")})`).join("; ")} can suppress disallowed Path methods`,
+        );
+      }
+      const maskedAttribute = maskRustSource(inner.attribute.text);
+      if (/\bclippy\b(?!\s*::)/.test(maskedAttribute)) {
+        violations.push(
+          `${path}:${lineForOffset(contents, inner.start)}: R5: production cfg attribute may not use the clippy cfg atom`,
+        );
+      }
+      if (
+        !isInfraPath(path) &&
+        /^\s*cfg_attr\s*\(/.test(maskedAttribute) &&
+        /\bcfg\s*\(/.test(maskedAttribute)
+      ) {
+        violations.push(
+          `${path}:${lineForOffset(contents, inner.start)}: R5: cfg_attr payload may not introduce a nested cfg predicate`,
+        );
+      }
+    }
+
+    const masked = maskRustSource(contents);
+    for (const [lineIndex, line] of masked.split("\n").entries()) {
+      if (classification.excludedLines.get(path)?.has(lineIndex + 1)) continue;
+      if (/\binclude\b/.test(line)) {
+        violations.push(
+          `${path}:${lineIndex + 1}: R5: production source may not name the include macro`,
+        );
+      }
+    }
+    for (const region of analysis.sourceRegions) {
+      if (isTestOnlyOffset(path, contents, region.start, classification)) continue;
+      if (/\bpath\s*=/.test(maskRustSource(region.text))) {
+        violations.push(
+          `${path}:${lineForOffset(contents, region.start)}: R5: production source may not use a #[path] attribute`,
+        );
+      }
+    }
+  }
+
+  const measuredCounts = Object.fromEntries(
+    [...observed].map(([key, methods]) => [key, methods.length]),
+  );
+  const expectedCounts = Object.fromEntries(
+    baseline.map((entry) => [
+      `${entry.path}::${entry.function}`,
+      Object.values(entry.methods).reduce((sum, count) => sum + count, 0),
+    ]),
+  );
+  const siteMessages = {
+    pathFor: (key) => key.slice(0, key.lastIndexOf("::")),
+    added: (_key, path) => `pinned expect entry ${path} is not part of the shrink-only baseline`,
+    residency: (_key, path) =>
+      `pinned expect path ${path} is not present in the working tree and must be removed`,
+    empty: (key) => `pinned expect entry ${key} has no counted reaches and must be removed`,
+    mismatch: (key, _path, measured, expected) =>
+      `pinned expect entry ${key} has ${measured} counted reaches, baseline ${expected}`,
+  };
+  violations.push(
+    ...validateShrinkOnlyBaseline({
+      rule: "R5",
+      initialBaseline: initialBaseline.map((entry) => `${entry.path}::${entry.function}`),
+      baseline: baseline.map((entry) => `${entry.path}::${entry.function}`),
+      counts: expectedCounts,
+      measure: (key) => measuredCounts[key] ?? 0,
+      measurePresentPaths: entries.map(({ path }) => path),
+      presentPaths,
+      messages: siteMessages,
+    }),
+  );
+
+  for (const key of candidateKeys) {
+    if (!baseline.some((entry) => `${entry.path}::${entry.function}` === key)) continue;
+    const actual = (observed.get(key) ?? []).sort();
+    const expected = baseline.find((entry) => `${entry.path}::${entry.function}` === key).methods;
+    const expectedMethods = Object.entries(expected)
+      .flatMap(([method, count]) => Array.from({ length: count }, () => method))
+      .sort();
+    if (
+      actual.length !== expectedMethods.length ||
+      actual.some((method, index) => method !== expectedMethods[index])
+    ) {
       violations.push(
-        `R3: allowlist entry ${path} is not present in the working tree and must be removed from the allowlist`,
+        `R5: counted expect methods for ${key} differ from the pinned method multiset`,
+      );
+    }
+  }
+  for (const entry of baseline) {
+    const key = `${entry.path}::${entry.function}`;
+    const initial = initialBaseline.find(
+      (candidate) => `${candidate.path}::${candidate.function}` === key,
+    );
+    if (!initial) continue;
+    for (const [method, count] of Object.entries(entry.methods)) {
+      if (count > (initial.methods[method] ?? 0)) {
+        violations.push(
+          `R5: counted ${method} expects in ${key} exceed the initial shrink-only baseline`,
+        );
+      }
+    }
+  }
+  for (const [key, methods] of observed) {
+    if (
+      candidateKeys.has(key) &&
+      !baseline.some((entry) => `${entry.path}::${entry.function}` === key)
+    ) {
+      violations.push(`R5: counted expect in ${key} has no pinned baseline entry`);
+    }
+    const initial = initialBaseline.find((entry) => `${entry.path}::${entry.function}` === key);
+    if (initial) {
+      const max = initial.methods;
+      const actualCounts = Object.fromEntries(PATH_METHODS.map((method) => [method, 0]));
+      for (const method of methods) actualCounts[method] += 1;
+      for (const [method, count] of Object.entries(actualCounts)) {
+        if (count > (max[method] ?? 0)) {
+          violations.push(
+            `R5: counted ${method} expects in ${key} exceed the initial shrink-only baseline`,
+          );
+        }
+      }
+    }
+  }
+
+  return [...new Set(violations)];
+}
+
+export function checkPathMethodExpectations(sources, options = {}) {
+  const entries = sourceEntries(sources);
+  try {
+    const classification = classifyRustTestOnlySources(entries, undefined, {
+      includeAnalysis: true,
+    });
+    return checkPathMethodExpectationsWithClassification(entries, classification, options);
+  } catch (error) {
+    return [unclassifiableCfgViolation(error)];
+  }
+}
+
+const GATE_TARGETS = Object.freeze([
+  Object.freeze({
+    triple: "x86_64-unknown-linux-gnu",
+    values: Object.freeze({
+      debug_assertions: true,
+      overflow_checks: true,
+      'panic="unwind"': true,
+      unix: true,
+      windows: false,
+      desktop: true,
+      mobile: false,
+      'target_os="linux"': true,
+      'target_family="unix"': true,
+      'target_family="windows"': false,
+      'target_arch="x86_64"': true,
+      'target_env="gnu"': true,
+      'target_env="msvc"': false,
+      'target_env=""': false,
+      'target_vendor="unknown"': true,
+      'target_vendor="apple"': false,
+      'target_vendor="pc"': false,
+      'target_endian="little"': true,
+      'target_pointer_width="64"': true,
+    }),
+  }),
+  Object.freeze({
+    triple: "x86_64-pc-windows-gnu",
+    values: Object.freeze({
+      debug_assertions: true,
+      overflow_checks: true,
+      'panic="unwind"': true,
+      unix: false,
+      windows: true,
+      desktop: true,
+      mobile: false,
+      'target_os="windows"': true,
+      'target_family="unix"': false,
+      'target_family="windows"': true,
+      'target_arch="x86_64"': true,
+      'target_env="gnu"': true,
+      'target_env="msvc"': false,
+      'target_env=""': false,
+      'target_vendor="unknown"': false,
+      'target_vendor="apple"': false,
+      'target_vendor="pc"': true,
+      'target_endian="little"': true,
+      'target_pointer_width="64"': true,
+    }),
+  }),
+  Object.freeze({
+    triple: "x86_64-pc-windows-msvc",
+    values: Object.freeze({
+      debug_assertions: true,
+      overflow_checks: true,
+      'panic="unwind"': true,
+      unix: false,
+      windows: true,
+      desktop: true,
+      mobile: false,
+      'target_os="windows"': true,
+      'target_family="unix"': false,
+      'target_family="windows"': true,
+      'target_arch="x86_64"': true,
+      'target_env="gnu"': false,
+      'target_env="msvc"': true,
+      'target_env=""': false,
+      'target_vendor="unknown"': false,
+      'target_vendor="apple"': false,
+      'target_vendor="pc"': true,
+      'target_endian="little"': true,
+      'target_pointer_width="64"': true,
+    }),
+  }),
+  Object.freeze({
+    triple: "aarch64-apple-darwin",
+    values: Object.freeze({
+      debug_assertions: true,
+      overflow_checks: true,
+      'panic="unwind"': true,
+      unix: true,
+      windows: false,
+      desktop: true,
+      mobile: false,
+      'target_os="macos"': true,
+      'target_family="unix"': true,
+      'target_family="windows"': false,
+      'target_arch="aarch64"': true,
+      'target_env="gnu"': false,
+      'target_env="msvc"': false,
+      'target_env=""': true,
+      'target_vendor="unknown"': false,
+      'target_vendor="apple"': true,
+      'target_vendor="pc"': false,
+      'target_endian="little"': true,
+      'target_pointer_width="64"': true,
+    }),
+  }),
+  Object.freeze({
+    triple: "x86_64-apple-darwin",
+    values: Object.freeze({
+      debug_assertions: true,
+      overflow_checks: true,
+      'panic="unwind"': true,
+      unix: true,
+      windows: false,
+      desktop: true,
+      mobile: false,
+      'target_os="macos"': true,
+      'target_family="unix"': true,
+      'target_family="windows"': false,
+      'target_arch="x86_64"': true,
+      'target_env="gnu"': false,
+      'target_env="msvc"': false,
+      'target_env=""': true,
+      'target_vendor="unknown"': false,
+      'target_vendor="apple"': true,
+      'target_vendor="pc"': false,
+      'target_endian="little"': true,
+      'target_pointer_width="64"': true,
+    }),
+  }),
+]);
+
+const KNOWN_BOOLEAN_CFG_ATOMS = new Set([
+  "debug_assertions",
+  "overflow_checks",
+  "test",
+  "unix",
+  "windows",
+  "desktop",
+  "mobile",
+]);
+const KNOWN_STRING_CFG_ATOMS = new Set([
+  "feature",
+  "panic",
+  "target_os",
+  "target_family",
+  "target_arch",
+  "target_env",
+  "target_vendor",
+  "target_endian",
+  "target_pointer_width",
+]);
+
+function cfgAtomDetails(atom) {
+  const match = atom.match(/^([A-Za-z_][A-Za-z0-9_]*)(?:=("(?:[^"\\]|\\.)*"))?$/);
+  return match ? { name: match[1], value: match[2] } : null;
+}
+
+function defaultCargoFeatures(manifestText) {
+  if (typeof manifestText !== "string") return new Set();
+  const lines = manifestText.split("\n");
+  const header = lines.findIndex((line) => /^\s*\[features\]\s*(?:#.*)?$/.test(line));
+  if (header < 0) return new Set();
+  for (let index = header + 1; index < lines.length; index += 1) {
+    if (/^\s*\[/.test(lines[index])) break;
+    const match = lines[index].match(/^\s*default\s*=\s*\[([^\]]*)\]\s*(?:#.*)?$/);
+    if (!match) continue;
+    return new Set([...match[1].matchAll(/"([^"\\]*)"/g)].map((item) => item[1]));
+  }
+  return new Set();
+}
+
+function cfgValuationForTarget(atoms, target, features) {
+  const valuation = { test: false };
+  for (const atom of atoms) {
+    const detail = cfgAtomDetails(atom);
+    if (!detail) continue;
+    if (KNOWN_BOOLEAN_CFG_ATOMS.has(detail.name)) valuation[atom] = false;
+    else if (KNOWN_STRING_CFG_ATOMS.has(detail.name)) valuation[atom] = false;
+  }
+  Object.assign(valuation, target.values);
+  for (const atom of atoms) {
+    const detail = cfgAtomDetails(atom);
+    if (detail?.name === "feature" && detail.value) {
+      const name = detail.value.slice(1, -1);
+      valuation[atom] = features.has(name);
+    }
+  }
+  return valuation;
+}
+
+function cfgAtomsInAnalysis(path, source, analysis, classification) {
+  const atoms = new Set();
+  const addAttribute = (attribute) => {
+    for (const atom of attribute.details?.atoms ?? []) atoms.add(atom);
+  };
+  const regions = new Map(analysis.sourceRegions.map((region) => [region.start, region]));
+  for (const group of analysis.groups) {
+    const region = regions.get(group.start);
+    if (
+      group.testOnly ||
+      isTestOnlyOffset(path, source, group.start, classification) ||
+      !region ||
+      !gateScope(path, source, region, false, analysis)
+    )
+      continue;
+    for (const attribute of group.attributes) addAttribute(attribute);
+  }
+  for (const attribute of analysis.innerAttributes) {
+    if (
+      isTestOnlyOffset(path, source, attribute.start, classification) ||
+      !gateScope(path, source, attribute, true, analysis)
+    )
+      continue;
+    addAttribute(attribute.attribute);
+  }
+  return atoms;
+}
+
+function gateScope(path, source, region, inner = false, analysis) {
+  if (!isInfraPath(path)) return true;
+  const text = inner ? region.text : source.slice(region.range.start, region.range.end);
+  const masked = maskRustSource(text);
+  const insideMacro = analysis?.macroRegions?.some(
+    ({ start, end }) => start <= region.start && region.start < end,
+  );
+  return (
+    insideMacro || /\bmacro_rules\s*!/.test(masked) || /#\s*\[\s*macro_export\s*\]/.test(masked)
+  );
+}
+
+function collectModuleRegionText(path, declaration, analyses, sourcesByPath) {
+  const result = [];
+  const visited = new Set();
+  const visit = (currentPath) => {
+    if (!currentPath || visited.has(currentPath)) return;
+    visited.add(currentPath);
+    const contents = sourcesByPath.get(currentPath);
+    if (contents === undefined) return;
+    result.push(contents);
+    const analysis = analyses.get(currentPath);
+    for (const child of analysis?.moduleItems ?? []) visit(child.targetPath);
+  };
+  visit(declaration.targetPath);
+  return result.join("\n");
+}
+
+function regionIdentity(path, attributeText, regionText) {
+  const attribute = normaliseRustText(maskRustSource(attributeText));
+  const regionSha256 = sha256(normaliseRustText(regionText));
+  return { path, attribute, regionSha256, id: `${path}|${attribute}|${regionSha256}` };
+}
+
+export function checkGateInvisibleRegions(
+  entries,
+  classification,
+  {
+    initialBaseline = INITIAL_GATE_REGION_BASELINE,
+    baseline = GATE_REGION_BASELINE,
+    workspaceRoot = process.cwd(),
+    presentPaths,
+  } = {},
+) {
+  entries = sourceEntries(entries);
+  const violations = [];
+  const sourceByPath = new Map(entries.map(({ path, contents }) => [path, contents]));
+  const analyses = classification.analysis;
+  const allAtoms = new Set();
+  for (const { path, contents } of entries) {
+    const analysis = analyses.get(path);
+    if (!analysis) continue;
+    for (const atom of cfgAtomsInAnalysis(path, contents, analysis, classification))
+      allAtoms.add(atom);
+  }
+  const unknownAtoms = [];
+  for (const atom of allAtoms) {
+    const detail = cfgAtomDetails(atom);
+    if (
+      !detail ||
+      (!KNOWN_BOOLEAN_CFG_ATOMS.has(detail.name) && !KNOWN_STRING_CFG_ATOMS.has(detail.name))
+    ) {
+      unknownAtoms.push(atom);
+    }
+  }
+  if (unknownAtoms.length) {
+    for (const atom of unknownAtoms.sort()) violations.push(`R5: unknown cfg atom ${atom}`);
+  }
+
+  for (const { path, contents } of entries) {
+    const analysis = analyses.get(path);
+    if (!analysis) continue;
+    for (const group of analysis.groups) {
+      if (isTestOnlyOffset(path, contents, group.start, classification)) continue;
+      const region = analysis.sourceRegions.find((item) => item.start === group.start);
+      if (!region || !gateScope(path, contents, region, false, analysis)) continue;
+      for (const attribute of group.attributes) {
+        if (attribute.details?.containsCfgPayload) {
+          violations.push(
+            `${path}:${lineForOffset(contents, attribute.start)}: R5: cfg_attr payload may not introduce a nested cfg predicate`,
+          );
+        }
+      }
+    }
+    for (const inner of analysis.innerAttributes) {
+      if (isTestOnlyOffset(path, contents, inner.start, classification)) continue;
+      if (
+        gateScope(path, contents, inner, true, analysis) &&
+        inner.attribute.details?.containsCfgPayload
+      ) {
+        violations.push(
+          `${path}:${lineForOffset(contents, inner.start)}: R5: cfg_attr payload may not introduce a nested cfg predicate`,
+        );
+      }
+    }
+  }
+
+  const manifestPath = "src-tauri/Cargo.toml";
+  let manifest = null;
+  try {
+    manifest = readFileSync(resolve(workspaceRoot, manifestPath), "utf8");
+  } catch {
+    // The filesystem check reports the missing or unreadable package manifest below.
+  }
+  const features = defaultCargoFeatures(manifest);
+  const gateResults = [];
+  for (const target of GATE_TARGETS) {
+    const valuation = cfgValuationForTarget(allAtoms, target, features);
+    try {
+      gateResults.push(classifyRustTestOnlySources(entries, valuation, { includeAnalysis: true }));
+    } catch (error) {
+      violations.push(unclassifiableCfgViolation(error));
+      return [...new Set(violations)];
+    }
+  }
+
+  const commonLines = new Map();
+  const paths = new Set(gateResults.flatMap((result) => [...result.excludedLines.keys()]));
+  for (const path of paths) {
+    const sets = gateResults.map((result) => result.excludedLines.get(path) ?? new Set());
+    commonLines.set(
+      path,
+      new Set([...sets[0]].filter((line) => sets.every((set) => set.has(line)))),
+    );
+  }
+
+  const actualRegions = [];
+  for (const { path, contents } of entries) {
+    const analysis = analyses.get(path);
+    if (!analysis) continue;
+    for (const region of analysis.sourceRegions) {
+      if (isTestOnlyOffset(path, contents, region.start, classification)) continue;
+      if (!gateScope(path, contents, region, false, analysis)) continue;
+      const regionLine = lineForOffset(contents, region.start);
+      const allExcluded = commonLines.get(path)?.has(regionLine) === true;
+      if (!allExcluded) continue;
+
+      const moduleOwner = gateResults
+        .map((result) => ({
+          analyses: result.analysis,
+          declaration: result.analysis
+            .get(path)
+            ?.moduleItems.find(
+              (item) => item.attributeGroupStarts.includes(region.start) && item.targetPath,
+            ),
+        }))
+        .find(({ declaration }) => declaration);
+      const moduleText = moduleOwner
+        ? collectModuleRegionText(path, moduleOwner.declaration, moduleOwner.analyses, sourceByPath)
+        : "";
+      const regionText = contents.slice(region.range.start, region.range.end) + moduleText;
+      actualRegions.push(regionIdentity(path, region.text, regionText));
+      const maskedRegion = maskRustSource(regionText);
+      const methods = methodTokens(maskedRegion);
+      if (methods.length) {
+        violations.push(
+          `${path}:${lineForOffset(contents, region.start)}: R5: gate-invisible pinned region contains Path method name(s): ${[...new Set(methods)].join(", ")}`,
+        );
+      }
+      if (hasMacroInvocation(maskedRegion)) {
+        violations.push(
+          `${path}:${lineForOffset(contents, region.start)}: R5: gate-invisible pinned region may not contain a macro invocation`,
+        );
+      }
+      if (/\bmod\s+[A-Za-z_][A-Za-z0-9_]*\s*;/.test(maskedRegion)) {
+        violations.push(
+          `${path}:${lineForOffset(contents, region.start)}: R5: gate-invisible pinned region may not declare an out-of-line module`,
+        );
+      }
+    }
+
+    for (const inner of analysis.innerAttributes) {
+      if (isTestOnlyOffset(path, contents, inner.start, classification)) continue;
+      if (!gateScope(path, contents, inner, true, analysis)) continue;
+      const allExcluded = gateResults.every((result) => {
+        const candidate = result.analysis
+          .get(path)
+          ?.innerAttributes.find((item) => item.start === inner.start);
+        return (
+          candidate?.attribute.details?.excluded === true &&
+          result.excludedLines.get(path)?.has(lineForOffset(contents, inner.start))
+        );
+      });
+      const pinnedRootAttribute =
+        inner.root &&
+        ["cfg", "cfg_attr"].includes(inner.attribute.details?.kind) &&
+        !exactMainTestAllowance(path, inner);
+      if (!allExcluded && !pinnedRootAttribute) continue;
+      const identity = regionIdentity(path, inner.text, inner.text);
+      actualRegions.push(identity);
+      const maskedRegion = maskRustSource(inner.text);
+      const methods = methodTokens(maskedRegion);
+      if (methods.length) {
+        violations.push(
+          `${path}:${lineForOffset(contents, inner.start)}: R5: gate-invisible pinned region contains Path method name(s): ${[...new Set(methods)].join(", ")}`,
+        );
+      }
+      if (hasMacroInvocation(maskedRegion)) {
+        violations.push(
+          `${path}:${lineForOffset(contents, inner.start)}: R5: gate-invisible pinned region may not contain a macro invocation`,
+        );
+      }
+      if (/\bmod\s+[A-Za-z_][A-Za-z0-9_]*\s*;/.test(maskedRegion)) {
+        violations.push(
+          `${path}:${lineForOffset(contents, inner.start)}: R5: gate-invisible pinned region may not declare an out-of-line module`,
+        );
+      }
+    }
+  }
+
+  const actualCounts = new Map();
+  for (const region of actualRegions)
+    actualCounts.set(region.id, (actualCounts.get(region.id) ?? 0) + 1);
+  const baselineId = (entry) =>
+    `${entry.path}|${normaliseRustText(maskRustSource(entry.attribute))}|${entry.regionSha256}`;
+  const initialIds = initialBaseline.map(baselineId);
+  const baselineIds = baseline.map(baselineId);
+  const baselineCounts = Object.fromEntries(baselineIds.map((id) => [id, 1]));
+  const regionMessages = {
+    pathFor: (id) => id.split("|", 1)[0],
+    added: (_id, path) => `pinned gate region at ${path} is not part of the shrink-only baseline`,
+    residency: (_id, path) =>
+      `pinned gate-region path ${path} is not present in the working tree and must be removed`,
+    empty: (id) => `pinned gate region ${id} no longer exists and must be removed`,
+    mismatch: (id, _path, measured, expected) =>
+      `pinned gate region ${id} occurs ${measured} time(s), baseline ${expected}`,
+  };
+  violations.push(
+    ...validateShrinkOnlyBaseline({
+      rule: "R5",
+      initialBaseline: initialIds,
+      baseline: baselineIds,
+      counts: baselineCounts,
+      measure: (id) => actualCounts.get(id) ?? 0,
+      measurePresentPaths: entries.map(({ path }) => path),
+      presentPaths,
+      messages: regionMessages,
+    }),
+  );
+  for (const region of actualRegions) {
+    if (!baselineIds.includes(region.id)) {
+      violations.push(
+        `R5: gate-invisible region ${region.path} is not in the pinned shrink-only baseline`,
+      );
+    }
+  }
+  return [...new Set(violations)];
+}
+
+function scanToml(contents) {
+  const bareCode = [];
+  const keySegments = [];
+  const basicStringBackslashes = [];
+  const lines = contents.split("\n");
+  let multilineQuote = null;
+
+  const parseSegments = (text) => {
+    const segments = [];
+    let cursor = 0;
+    while (cursor < text.length) {
+      while (/\s/.test(text[cursor] ?? "")) cursor += 1;
+      if (text[cursor] === ".") {
+        cursor += 1;
+        continue;
+      }
+      const opening = text[cursor];
+      if (opening === '"' || opening === "'") {
+        const closing = text.indexOf(opening, cursor + 1);
+        if (closing < 0) break;
+        segments.push(text.slice(cursor + 1, closing));
+        cursor = closing + 1;
+      } else {
+        const match = text.slice(cursor).match(/^[A-Za-z0-9_-]+/);
+        if (!match) break;
+        segments.push(match[0]);
+        cursor += match[0].length;
+      }
+      while (/\s/.test(text[cursor] ?? "")) cursor += 1;
+      if (text[cursor] !== ".") break;
+    }
+    return segments;
+  };
+
+  for (const line of lines) {
+    const masked = line.split("");
+    const startedInMultiline = multilineQuote !== null;
+    let quote = multilineQuote;
+    let triple = quote !== null;
+    let escaped = false;
+    let comment = line.length;
+    const equalPositions = [];
+    for (let index = 0; index < line.length; index += 1) {
+      const character = line[index];
+      if (quote) {
+        masked[index] = " ";
+        if (quote === '"' && character === "\\" && !escaped) {
+          basicStringBackslashes.push(index);
+          escaped = true;
+          continue;
+        }
+        const closes = triple
+          ? line.slice(index, index + 3) === quote.repeat(3) && !escaped
+          : character === quote && !escaped;
+        if (closes) {
+          if (triple) {
+            masked[index + 1] = " ";
+            masked[index + 2] = " ";
+            index += 2;
+          }
+          quote = null;
+          triple = false;
+          multilineQuote = null;
+        }
+        escaped = false;
+      } else if (character === '"' || character === "'") {
+        quote = character;
+        triple = line.slice(index, index + 3) === character.repeat(3);
+        if (triple) {
+          masked[index] = " ";
+          masked[index + 1] = " ";
+          masked[index + 2] = " ";
+          index += 2;
+          multilineQuote = character;
+        }
+        escaped = false;
+        masked[index] = " ";
+      } else if (character === "#") {
+        comment = index;
+        for (let rest = index; rest < line.length; rest += 1) masked[rest] = " ";
+        break;
+      } else if (character === "=") {
+        equalPositions.push(index);
+      }
+    }
+    if (!triple) multilineQuote = null;
+    bareCode.push(masked.join(""));
+
+    if (!startedInMultiline) {
+      const trimmed = line.slice(0, comment).trim();
+      if (trimmed.startsWith("[[") && trimmed.endsWith("]]")) {
+        keySegments.push(...parseSegments(trimmed.slice(2, -2)));
+      } else if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+        keySegments.push(...parseSegments(trimmed.slice(1, -1)));
+      }
+    }
+
+    if (!startedInMultiline) {
+      for (const equal of equalPositions) {
+        let startAt = equal - 1;
+        while (startAt >= 0 && /\s/.test(line[startAt])) startAt -= 1;
+        if (startAt < 0) continue;
+        let endAt = startAt + 1;
+        if (line[startAt] === '"' || line[startAt] === "'") {
+          let openAt = startAt - 1;
+          while (openAt >= 0) {
+            if (
+              line[openAt] === line[startAt] &&
+              (line[startAt] !== '"' || line[openAt - 1] !== "\\")
+            )
+              break;
+            openAt -= 1;
+          }
+          if (openAt >= 0) startAt = openAt;
+        } else {
+          while (startAt >= 0 && /[A-Za-z0-9_-]/.test(line[startAt])) startAt -= 1;
+          startAt += 1;
+        }
+        while (startAt > 0 && /\s/.test(line[startAt - 1])) startAt -= 1;
+        let boundary = startAt;
+        while (boundary > 0 && !/[{,]/.test(line[boundary - 1])) boundary -= 1;
+        const keyText = line.slice(boundary, endAt);
+        keySegments.push(...parseSegments(keyText));
+      }
+    }
+  }
+
+  const outsideStrings = bareCode.join("\n");
+  return {
+    bareLintTokens: [...outsideStrings.matchAll(/\b(?:lints|cargo-features)\b/g)].map(
+      (match) => match[0],
+    ),
+    keySegments,
+    basicStringBackslashes,
+  };
+}
+
+function manifestViolations(path, contents, packageManifest) {
+  const violations = [];
+  const scanned = scanToml(contents);
+  const keys = new Set(scanned.keySegments);
+  const hasQuotedLintKey = scanned.keySegments.some(
+    (key) => key === "lints" || key === "cargo-features",
+  );
+  if (scanned.bareLintTokens.length || hasQuotedLintKey || scanned.basicStringBackslashes.length) {
+    violations.push(
+      `${path}: R5: Cargo manifests may not define lint levels or cargo-features, and basic strings may not contain backslash escapes`,
+    );
+  }
+  if (keys.has("profile")) {
+    violations.push(`${path}: R5: Cargo manifests may not override the gate compilation profile`);
+  }
+  if (keys.has("path")) {
+    violations.push(
+      `${path}: R5: Cargo manifest path keys may add Rust code outside the pinned target`,
+    );
+  }
+  if (packageManifest) {
+    if (keys.has("build")) {
+      violations.push(`${path}: R5: src-tauri/Cargo.toml may not select a different build script`);
+    }
+    if (["bin", "lib", "autobins", "autolib", "workspace"].some((key) => keys.has(key))) {
+      violations.push(`${path}: R5: may not change the production target roots`);
+    }
+  }
+  return violations;
+}
+
+function lstatIfPresent(absolutePath) {
+  try {
+    return lstatSync(absolutePath);
+  } catch (error) {
+    if (error.code === "ENOENT" || error.code === "ENOTDIR") return null;
+    throw error;
+  }
+}
+
+function inspectGitTree(workspaceRoot, runGit) {
+  const violations = [];
+  const stageArgs = ["ls-files", "--stage", "-z", "--", "src-tauri"];
+  const staged = runGit("git", stageArgs, { cwd: workspaceRoot, encoding: "utf8" });
+  if (staged.error || staged.status !== 0) {
+    throw new Error(
+      `R5: cannot inspect gitlinks under src-tauri (${staged.error?.message ?? staged.stderr ?? staged.status})`,
+    );
+  }
+  for (const entry of String(staged.stdout ?? "")
+    .split("\0")
+    .filter(Boolean)) {
+    const match = entry.match(/^160000\s+[^\t]+\t(.+)$/);
+    const path = match?.[1];
+    if (
+      path &&
+      (path === "src-tauri" || path === "src-tauri/src" || path.startsWith("src-tauri/src/"))
+    ) {
+      violations.push(`${path}: R5: gitlink source trees are not allowed`);
+    }
+  }
+
+  const otherArgs = [
+    "ls-files",
+    "--others",
+    "--directory",
+    "--exclude-standard",
+    "-z",
+    "--",
+    "src-tauri",
+  ];
+  const others = runGit("git", otherArgs, { cwd: workspaceRoot, encoding: "utf8" });
+  if (others.error || others.status !== 0) {
+    throw new Error(
+      `R5: cannot inspect untracked source directories (${others.error?.message ?? others.stderr ?? others.status})`,
+    );
+  }
+  const candidates = new Set(["src-tauri", "src-tauri/src"]);
+  for (const path of String(others.stdout ?? "")
+    .split("\0")
+    .filter(Boolean)) {
+    candidates.add(path.replace(/\/$/, ""));
+  }
+  for (const path of candidates) {
+    const directory = resolve(workspaceRoot, path);
+    const dirStat = lstatIfPresent(directory);
+    if (!dirStat || dirStat.isSymbolicLink() || !dirStat.isDirectory()) continue;
+    const gitMarker = lstatIfPresent(join(directory, ".git"));
+    if (
+      gitMarker &&
+      (path === "src-tauri" || path === "src-tauri/src" || path.startsWith("src-tauri/src/"))
+    ) {
+      violations.push(
+        `${path}: R5: untracked nested git repositories are not allowed in the Rust source tree`,
       );
     }
   }
   return violations;
 }
 
-export function checkRustReleaseSurface(sources, allowlist = DEAD_CODE_ALLOWLIST) {
+function checkRepositoryInputs({ workspaceRoot, runGit = spawnSync }) {
+  const violations = [];
+  const fixedRoots = [
+    ["src-tauri", "directory"],
+    ["src-tauri/src", "directory"],
+    ["src-tauri/Cargo.toml", "file"],
+    ["src-tauri/build.rs", "file"],
+    ["src-tauri/src/main.rs", "file"],
+    ["src-tauri/clippy.toml", "file"],
+  ];
+  for (const [path, kind] of fixedRoots) {
+    const absolutePath = resolve(workspaceRoot, path);
+    const stats = lstatIfPresent(absolutePath);
+    if (!stats) {
+      violations.push(`${path}: R5: required pinned input is missing`);
+      continue;
+    }
+    if (stats.isSymbolicLink()) {
+      violations.push(`${path}: R5: pinned Rust roots and inputs may not be symbolic links`);
+    } else if (kind === "directory" ? !stats.isDirectory() : !stats.isFile()) {
+      violations.push(`${path}: R5: pinned Rust ${kind} has the wrong filesystem type`);
+    }
+  }
+
+  const sourceEntries = listWorkingTreeFiles({
+    workspaceRoot,
+    pathspec: "src-tauri/src",
+    runGit,
+    includeIgnored: true,
+  });
+  for (const listedPath of sourceEntries) {
+    const path = listedPath.replace(/\/$/, "");
+    if (!path.startsWith("src-tauri/src/")) continue;
+    const parts = path.split("/");
+    let current = workspaceRoot;
+    for (let index = 0; index < parts.length; index += 1) {
+      current = join(current, parts[index]);
+      const stats = lstatIfPresent(current);
+      if (!stats?.isSymbolicLink()) continue;
+      let targetIsDirectory = false;
+      try {
+        targetIsDirectory = statSync(current).isDirectory();
+      } catch {
+        // A dangling Rust path is also unreadable by the checker and is rejected below.
+      }
+      if (targetIsDirectory || (index === parts.length - 1 && extname(path) === ".rs")) {
+        violations.push(
+          `${path}: R5: symbolic links to Rust source files or directories are not allowed`,
+        );
+        break;
+      }
+    }
+  }
+
+  for (const path of [".cargo/config", ".cargo/config.toml"]) {
+    if (lstatIfPresent(resolve(workspaceRoot, path))) {
+      violations.push(`${path}: R5: repository Cargo configuration is not allowed`);
+    }
+  }
+  if (lstatIfPresent(resolve(workspaceRoot, "src-tauri/.clippy.toml"))) {
+    violations.push("src-tauri/.clippy.toml: R5: shadowing clippy configuration is not allowed");
+  }
+
+  const clippyPath = resolve(workspaceRoot, "src-tauri/clippy.toml");
+  try {
+    const contents = readFileSync(clippyPath);
+    if (!contents.equals(Buffer.from(EXPECTED_CLIPPY_TOML))) {
+      violations.push(
+        `src-tauri/clippy.toml: R5: clippy configuration differs from the pinned text; expected exactly:\n${EXPECTED_CLIPPY_TOML}`,
+      );
+    }
+  } catch (error) {
+    violations.push(
+      `src-tauri/clippy.toml: R5: cannot read pinned clippy configuration; expected exactly:\n${EXPECTED_CLIPPY_TOML} (${error.message})`,
+    );
+  }
+
+  try {
+    const buildScript = readFileSync(resolve(workspaceRoot, "src-tauri/build.rs"));
+    const actualHash = sha256(buildScript);
+    if (actualHash !== BUILD_SCRIPT_SHA256) {
+      violations.push(`src-tauri/build.rs: R5: build script differs from its pinned SHA-256`);
+    }
+  } catch (error) {
+    violations.push(`src-tauri/build.rs: R5: cannot read pinned build script (${error.message})`);
+  }
+
+  for (const [path, packageManifest] of [
+    ["src-tauri/Cargo.toml", true],
+    ["Cargo.toml", false],
+  ]) {
+    const absolutePath = resolve(workspaceRoot, path);
+    const stats = lstatIfPresent(absolutePath);
+    if (!stats) {
+      if (packageManifest) violations.push(`${path}: R5: required pinned input is missing`);
+      continue;
+    }
+    try {
+      violations.push(
+        ...manifestViolations(path, readFileSync(absolutePath, "utf8"), packageManifest),
+      );
+    } catch (error) {
+      violations.push(`${path}: R5: cannot read Cargo manifest (${error.message})`);
+    }
+  }
+
+  violations.push(...inspectGitTree(workspaceRoot, runGit));
+  return [...new Set(violations)];
+}
+
+export function checkRustReleaseSurface(sources, allowlist = DEAD_CODE_ALLOWLIST, options = {}) {
   const entries = sourceEntries(sources);
   const violations = checkDeadCodeSurface(entries, allowlist);
   let classification;
   try {
-    classification = classifyRustTestOnlySources(entries);
+    classification = classifyRustTestOnlySources(entries, undefined, {
+      includeAnalysis: options.includeR5 === true,
+    });
   } catch (error) {
     return [...violations, unclassifiableCfgViolation(error)];
   }
-  return [
-    ...violations,
+  violations.push(
     ...entries.flatMap(({ path, contents }) =>
       checkFaultInjectionSurfaceWithClassification(path, contents, classification),
     ),
@@ -483,7 +1717,27 @@ export function checkRustReleaseSurface(sources, allowlist = DEAD_CODE_ALLOWLIST
       INITIAL_FS_SURFACE_COUNTS,
       classification,
     ),
-  ];
+  );
+  if (options.includeR5) {
+    violations.push(
+      ...checkPathMethodExpectationsWithClassification(entries, classification, {
+        presentPaths: options.checkResidency ? entries.map(({ path }) => path) : undefined,
+      }),
+      ...checkGateInvisibleRegions(entries, classification, {
+        workspaceRoot: options.workspaceRoot,
+        presentPaths: options.checkResidency ? entries.map(({ path }) => path) : undefined,
+      }),
+    );
+    if (options.workspaceRoot) {
+      violations.push(
+        ...checkRepositoryInputs({
+          workspaceRoot: options.workspaceRoot,
+          runGit: options.runGit ?? spawnSync,
+        }),
+      );
+    }
+  }
+  return [...new Set(violations)];
 }
 
 export function listRustSources(workspaceRoot, runGit = spawnSync) {
@@ -491,6 +1745,7 @@ export function listRustSources(workspaceRoot, runGit = spawnSync) {
     workspaceRoot,
     pathspec: "src-tauri/src",
     runGit,
+    includeIgnored: true,
   }).filter((path) => path.startsWith("src-tauri/src/") && path.endsWith(".rs"));
 }
 
@@ -500,11 +1755,17 @@ export function runReleaseSurfaceCheck({
   workspaceRoot = process.cwd(),
   listFiles = listTrackedRustSources,
   readFile = (path) => readFileSync(path, "utf8"),
+  checkResidency = false,
   paths = listFiles(workspaceRoot),
 } = {}) {
   const sources = new Map();
   for (const path of paths) {
     const absolutePath = resolve(workspaceRoot, path);
+    if (lstatIfPresent(absolutePath)?.isSymbolicLink()) {
+      throw new Error(
+        `${path}: R5: symbolic links to Rust source files or directories are not allowed`,
+      );
+    }
     try {
       sources.set(path, readFile(absolutePath));
     } catch (error) {
@@ -513,7 +1774,11 @@ export function runReleaseSurfaceCheck({
     }
   }
 
-  const violations = checkRustReleaseSurface(sources);
+  const violations = checkRustReleaseSurface(sources, DEAD_CODE_ALLOWLIST, {
+    includeR5: true,
+    workspaceRoot,
+    checkResidency,
+  });
   if (violations.length)
     throw new Error(`Rust release-surface violations:\n${violations.join("\n")}`);
   return paths;
@@ -527,7 +1792,10 @@ if (isEntrypoint(import.meta.url)) {
       : [];
     let surfaceFailure = null;
     try {
-      runReleaseSurfaceCheck({ paths });
+      runReleaseSurfaceCheck({
+        paths,
+        checkResidency: process.argv.includes("--check-allowlist-residency"),
+      });
     } catch (error) {
       surfaceFailure = error instanceof Error ? error.message : String(error);
     }

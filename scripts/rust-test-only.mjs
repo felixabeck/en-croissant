@@ -10,6 +10,10 @@ const WORD = /[A-Za-z0-9_]/;
 const IDENTIFIER = /^(?:r#)?[A-Za-z_][A-Za-z0-9_]*/;
 const DEFAULT_ATOM_VALUATION = Object.freeze({ test: false });
 
+function hasAttributeMetavariable(text) {
+  return maskRustSourceWithSpans(text).masked.includes("$");
+}
+
 function lineAt(source, offset) {
   let line = 1;
   for (let index = 0; index < offset; index += 1) {
@@ -118,7 +122,7 @@ function headerBeforeBrace(path, source, code, pairs, open) {
   return code.slice(cursor + 1, open).trim();
 }
 
-function classifyBrace(path, source, code, pairs, open) {
+function classifyBrace(path, source, code, pairs, open, includeAnalysis = false) {
   const header = headerBeforeBrace(path, source, code, pairs, open);
   const compact = header
     .replace(/\s+/g, " ")
@@ -156,19 +160,25 @@ function classifyBrace(path, source, code, pairs, open) {
   if (/\|\s*(?:[^|]|\|\|)*\|\s*$/.test(compact) || /\bmove\s*\|\|\s*$/.test(compact)) {
     return { kind: "statement-list", form: "closure-body" };
   }
-  if (
-    !/\btry\s*$/.test(compact) &&
-    /\b[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*(?:\s*::<[\s\S]*>)?\s*$/.test(compact)
-  ) {
-    return { kind: "comma-list", form: "struct-literal" };
-  }
   if (/^(?:std::)?thread_local\s*!\s*$/.test(compact)) {
     return { kind: "item-list", form: "thread-local-macro" };
   }
-  if (
-    /\b(?:macro_rules|[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)\s*!\s*$/.test(compact)
-  ) {
+  const macroRulesBody = /\bmacro_rules\s*!\s*[A-Za-z_][A-Za-z0-9_]*\s*$/.test(compact);
+  const macroInvocation = /\b[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*\s*!\s*$/.test(
+    compact,
+  );
+  if (includeAnalysis && macroRulesBody) {
     return { kind: "opaque", form: "macro-input" };
+  }
+  const structLiteral =
+    !/\btry\s*$/.test(compact) &&
+    /\b[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*(?:\s*::<[\s\S]*>)?\s*$/.test(compact);
+  if (!includeAnalysis && structLiteral) {
+    return { kind: "comma-list", form: "struct-literal" };
+  }
+  if (macroInvocation) return { kind: "opaque", form: "macro-input" };
+  if (includeAnalysis && structLiteral) {
+    return { kind: "comma-list", form: "struct-literal" };
   }
   if (
     compact === "" ||
@@ -180,13 +190,13 @@ function classifyBrace(path, source, code, pairs, open) {
   return { kind: "unplaced", form: "unknown-brace-context", offset: open };
 }
 
-function openerContexts(path, source, code, pairs) {
+function openerContexts(path, source, code, pairs, includeAnalysis = false) {
   const contexts = new Map();
   for (const [open, close] of pairs) {
     if (open > close) continue;
     const delimiter = code[open];
     if (delimiter === "{") {
-      contexts.set(open, classifyBrace(path, source, code, pairs, open));
+      contexts.set(open, classifyBrace(path, source, code, pairs, open, includeAnalysis));
     } else if (delimiter === "(" || delimiter === "[") {
       const previous = previousTokenStart(code, pairs, open);
       contexts.set(
@@ -200,14 +210,29 @@ function openerContexts(path, source, code, pairs) {
   return contexts;
 }
 
-function contextAt(offset, pairs, contexts) {
+function contextAt(offset, pairs, contexts, includeOpaqueAncestors = false) {
   let selected;
+  let opaque;
   for (const [open, close] of pairs) {
     if (open < close && open < offset && offset < close && (!selected || open > selected.open)) {
       selected = { open, close, context: contexts.get(open) };
     }
+    const context = contexts.get(open);
+    if (
+      includeOpaqueAncestors &&
+      open < close &&
+      open < offset &&
+      offset < close &&
+      context?.kind === "opaque" &&
+      (!opaque || open > opaque.open)
+    ) {
+      opaque = { open, close, context };
+    }
   }
-  return selected ?? { open: null, close: null, context: { kind: "item-list", form: "file" } };
+  return (
+    (includeOpaqueAncestors ? opaque : null) ??
+    selected ?? { open: null, close: null, context: { kind: "item-list", form: "file" } }
+  );
 }
 
 function attributeGroups(path, source, code, pairs) {
@@ -358,13 +383,26 @@ function evaluatePredicate(predicate, atomValuation) {
 
 function evaluateCfgAttribute(attribute, path, source, atomValuation) {
   const { name, body } = metaParts(attribute.text);
+  const details = attribute.details;
+  const collectAtoms = (predicate) => {
+    if (predicate.type === "atom") {
+      details?.atoms.push(predicate.name);
+      return;
+    }
+    for (const child of predicate.children) collectAtoms(child);
+  };
   if (name === "cfg") {
     if (body === undefined)
       fail(path, source, attribute.start, "unparseable cfg predicate (missing parentheses)");
-    return (
-      evaluatePredicate(parsePredicate(body, path, source, attribute.start), atomValuation) ===
-      false
-    );
+    const predicate = parsePredicate(body, path, source, attribute.start);
+    collectAtoms(predicate);
+    const excluded = evaluatePredicate(predicate, atomValuation) === false;
+    if (details) {
+      details.kind = "cfg";
+      details.excluded = excluded;
+      details.inactive = excluded;
+    }
+    return excluded;
   }
   if (name !== "cfg_attr") return false;
   if (body === undefined)
@@ -384,6 +422,13 @@ function evaluateCfgAttribute(attribute, path, source, atomValuation) {
     );
   }
   const condition = parsePredicate(argumentsList[0], path, source, attribute.start);
+  collectAtoms(condition);
+  const conditionValue = evaluatePredicate(condition, atomValuation);
+  if (details) {
+    details.kind = "cfg_attr";
+    details.conditionExcluded = conditionValue === false;
+    details.inactive = conditionValue === false;
+  }
   const visit = (meta, conditions) => {
     let parts;
     try {
@@ -406,6 +451,8 @@ function evaluateCfgAttribute(attribute, path, source, atomValuation) {
         );
       }
       const nested = parsePredicate(parts.body, path, source, attribute.start);
+      collectAtoms(nested);
+      if (details) details.containsCfgPayload = true;
       const applies =
         conditions.length === 0
           ? true
@@ -413,7 +460,9 @@ function evaluateCfgAttribute(attribute, path, source, atomValuation) {
       const result = evaluatePredicate(nested, atomValuation);
       const effective =
         applies === false ? true : applies === true ? result : result === true ? true : undefined;
-      return effective === false;
+      const excluded = effective === false;
+      if (excluded && details) details.excluded = true;
+      return excluded;
     }
     if (parts.name === "cfg_attr") {
       if (parts.body === undefined)
@@ -438,20 +487,35 @@ function evaluateCfgAttribute(attribute, path, source, atomValuation) {
         );
       }
       const nestedCondition = parsePredicate(nestedArguments[0], path, source, attribute.start);
+      collectAtoms(nestedCondition);
       return nestedArguments
         .slice(1)
         .some((nestedMeta) => visit(nestedMeta, [...conditions, nestedCondition]));
     }
     return false;
   };
-  return argumentsList.slice(1).some((nestedMeta) => visit(nestedMeta, [condition]));
+  const excluded = argumentsList.slice(1).some((nestedMeta) => visit(nestedMeta, [condition]));
+  if (details) details.excluded = excluded;
+  return excluded;
 }
 
-function parseAttributes(path, source, groups, atomValuation) {
+function parseAttributes(path, source, groups, atomValuation, allowAttributeMetavariables) {
   for (const group of groups) {
-    group.testOnly = group.attributes.some((attribute) =>
-      evaluateCfgAttribute(attribute, path, source, atomValuation),
-    );
+    for (const attribute of group.attributes) {
+      attribute.details = {
+        atoms: [],
+        excluded: false,
+        inactive: false,
+        containsCfgPayload: false,
+      };
+    }
+    group.testOnly = group.attributes.some((attribute) => {
+      if (allowAttributeMetavariables && hasAttributeMetavariable(attribute.text)) {
+        attribute.details.kind = "metavariable";
+        return false;
+      }
+      return evaluateCfgAttribute(attribute, path, source, atomValuation);
+    });
   }
 }
 
@@ -513,7 +577,7 @@ function findTopLevelTerminator(code, pairs, start, close, wanted) {
   return -1;
 }
 
-function findItemEnd(path, source, code, pairs, start, contextClose) {
+function findItemEnd(path, source, code, pairs, start, contextClose, includeAnalysis = false) {
   const cursor = skipVisibilityAndModifiers(code, pairs, start);
   const word = nextWord(code, cursor)?.word;
   const itemWords = new Set([
@@ -598,17 +662,50 @@ function findItemEnd(path, source, code, pairs, start, contextClose) {
     return semicolon;
   }
 
+  if (!includeAnalysis) {
+    const macro = code
+      .slice(cursor, contextClose)
+      .match(/^(?:[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)\s*!\s*\{/);
+    if (macro) {
+      const brace = cursor + macro[0].lastIndexOf("{");
+      const end = pairs.get(brace);
+      if (end === undefined) fail(path, source, brace, "unbalanced delimiter");
+      let final = end;
+      const following = skipWhitespace(code, end + 1);
+      if (code[following] === ";") final = following;
+      return final;
+    }
+    fail(
+      path,
+      source,
+      start,
+      "unsupported test-only form; give it its own item/statement or extend rust-test-only.mjs",
+    );
+  }
+
+  const macroRules = code
+    .slice(cursor, contextClose)
+    .match(/^macro_rules\s*!\s*[A-Za-z_][A-Za-z0-9_]*\s*/);
+  const macroRulesOpen = macroRules ? cursor + macroRules[0].length : -1;
+  if (macroRules && code[macroRulesOpen] === "{") {
+    const end = pairs.get(macroRulesOpen);
+    if (end === undefined) fail(path, source, macroRulesOpen, "unbalanced delimiter");
+    const following = skipWhitespace(code, end + 1);
+    return code[following] === ";" ? following : end;
+  }
+
   const macro = code
     .slice(cursor, contextClose)
-    .match(/^(?:[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)\s*!\s*\{/);
-  if (macro) {
-    const brace = cursor + macro[0].lastIndexOf("{");
-    const end = pairs.get(brace);
-    if (end === undefined) fail(path, source, brace, "unbalanced delimiter");
-    let final = end;
+    .match(/^(?:[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)\s*!\s*/);
+  const macroOpen = macro ? cursor + macro[0].length : -1;
+  if (macro && ["{", "(", "["].includes(code[macroOpen])) {
+    const end = pairs.get(macroOpen);
+    if (end === undefined) fail(path, source, macroOpen, "unbalanced delimiter");
     const following = skipWhitespace(code, end + 1);
-    if (code[following] === ";") final = following;
-    return final;
+    if (code[following] === ";") return following;
+    if (code[macroOpen] === "{") return end;
+    const semicolon = findTopLevelTerminator(code, pairs, end + 1, contextClose, new Set([";"]));
+    if (semicolon >= 0) return semicolon;
   }
   fail(
     path,
@@ -681,12 +778,29 @@ function findStatementEnd(path, source, code, pairs, start, context) {
       "static",
     ].includes(nextWord(code, itemStart).word)
   ) {
-    return findItemEnd(path, source, code, pairs, cursor, close);
+    return findItemEnd(path, source, code, pairs, cursor, close, context.includeAnalysis);
   }
   if (word === "let") {
     const semicolon = findTopLevelTerminator(code, pairs, cursor + 3, close, new Set([";"]));
     if (semicolon < 0)
       fail(path, source, start, "test-only statement reaches its enclosing } without a terminator");
+    return semicolon;
+  }
+  if (word === "return" && context.includeAnalysis) {
+    const semicolon = findTopLevelTerminator(
+      code,
+      pairs,
+      cursor + word.length,
+      close,
+      new Set([";"]),
+    );
+    if (semicolon < 0)
+      fail(
+        path,
+        source,
+        start,
+        "test-only return statement reaches its enclosing } without a terminator",
+      );
     return semicolon;
   }
   if (word === "if") return findIfChainEnd(path, source, code, pairs, cursor + 2, close);
@@ -708,19 +822,43 @@ function findStatementEnd(path, source, code, pairs, start, context) {
     if (code[following] === ";") end = following;
     return end;
   }
-  const macro = code
-    .slice(cursor, close)
-    .match(/^(?:[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)\s*!\s*\{/);
-  if (macro) {
-    const brace = cursor + macro[0].lastIndexOf("{");
-    let end = pairs.get(brace);
-    if (end === undefined) fail(path, source, brace, "unbalanced delimiter");
-    assertNoBlockContinuation(path, source, code, end);
-    const following = skipWhitespace(code, end + 1);
-    if (code[following] === ";") end = following;
-    return end;
+  if (context.includeAnalysis) {
+    const macro = code
+      .slice(cursor, close)
+      .match(/^(?:[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)\s*!\s*/);
+    const macroOpen = macro ? cursor + macro[0].length : -1;
+    if (macro && ["{", "(", "["].includes(code[macroOpen])) {
+      const end = pairs.get(macroOpen);
+      if (end === undefined) fail(path, source, macroOpen, "unbalanced delimiter");
+      const following = skipWhitespace(code, end + 1);
+      if (code[following] === ";") return following;
+      if (code[macroOpen] === "{") return end;
+      const semicolon = findTopLevelTerminator(code, pairs, end + 1, close, new Set([";"]));
+      if (semicolon >= 0) return semicolon;
+    }
+  } else {
+    const macro = code
+      .slice(cursor, close)
+      .match(/^(?:[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)\s*!\s*\{/);
+    if (macro) {
+      const brace = cursor + macro[0].lastIndexOf("{");
+      let end = pairs.get(brace);
+      if (end === undefined) fail(path, source, brace, "unbalanced delimiter");
+      assertNoBlockContinuation(path, source, code, end);
+      const following = skipWhitespace(code, end + 1);
+      if (code[following] === ";") end = following;
+      return end;
+    }
   }
   const semicolon = findTopLevelTerminator(code, pairs, cursor, close, new Set([";"]));
+  if (
+    context.includeAnalysis &&
+    semicolon < 0 &&
+    context.close !== undefined &&
+    skipWhitespace(code, cursor) < close
+  ) {
+    return close - 1;
+  }
   if (semicolon < 0)
     fail(path, source, start, "test-only statement reaches its enclosing } without a terminator");
   return semicolon;
@@ -803,7 +941,15 @@ function itemRange(path, source, code, pairs, group, context) {
   const after = skipTriviaAndAttributes(code, pairs, group.end);
   let end;
   if (context.kind === "item-list") {
-    end = findItemEnd(path, source, code, pairs, after, context.close ?? code.length);
+    end = findItemEnd(
+      path,
+      source,
+      code,
+      pairs,
+      after,
+      context.close ?? code.length,
+      context.includeAnalysis,
+    );
   } else if (context.kind === "statement-list")
     end = findStatementEnd(path, source, code, pairs, after, context);
   else if (context.kind === "comma-list") {
@@ -845,14 +991,24 @@ function attachedAttributes(path, source, code, pairs, offset) {
   return attrs;
 }
 
-function moduleDeclarations(path, source, code, pairs, contexts, groups, ranges, wholeFile) {
+function moduleDeclarations(
+  path,
+  source,
+  code,
+  pairs,
+  contexts,
+  groups,
+  ranges,
+  wholeFile,
+  includeAnalysis = false,
+) {
   const declarations = [];
   const regex = /\bmod\s+((?:r#)?[A-Za-z_][A-Za-z0-9_]*)\s*;/g;
   let match;
   while ((match = regex.exec(code))) {
     const keyword = match.index;
     const name = match[1].replace(/^r#/, "");
-    const context = contextAt(keyword, pairs, contexts);
+    const context = contextAt(keyword, pairs, contexts, includeAnalysis);
     if (context.context?.kind !== "item-list") continue;
     const attributes = attachedAttributes(path, source, code, pairs, keyword);
     const associatedGroups = groups.filter((group) => {
@@ -871,6 +1027,7 @@ function moduleDeclarations(path, source, code, pairs, contexts, groups, ranges,
       testOnly,
       inline: context.open !== null && contexts.get(context.open)?.form === "inline-module",
       attributes,
+      attributeGroupStarts: associatedGroups.map((group) => group.start),
     });
   }
   return declarations;
@@ -949,18 +1106,90 @@ function lineRanges(path, source, comments, ranges, wholeFile) {
   return excluded;
 }
 
-function analyzeRustFile(path, source, atomValuation) {
+function analyzeRustFile(path, source, atomValuation, includeAnalysis = false) {
   const { masked, comments } = maskRustSourceWithSpans(source);
   const pairs = delimiterPairs(path, source, masked);
-  const contexts = openerContexts(path, source, masked, pairs);
+  const contexts = openerContexts(path, source, masked, pairs, includeAnalysis);
   const groups = attributeGroups(path, source, masked, pairs);
-  parseAttributes(path, source, groups, atomValuation);
+  const macroRegions = [...pairs]
+    .filter(([open, close]) => open < close && masked[open] === "{")
+    .map(([open, close]) => {
+      if (contexts.get(open)?.kind !== "opaque") return null;
+      const header = headerBeforeBrace(path, source, masked, pairs, open);
+      if (!/\bmacro_rules\s*!/.test(header)) return null;
+      return { start: open, end: close + 1 };
+    })
+    .filter(Boolean);
+  parseAttributes(path, source, groups, atomValuation, includeAnalysis);
   const excludedRanges = [];
+  const sourceRegions = [];
   for (const group of groups) {
-    if (!group.testOnly) continue;
-    const context = contextAt(group.start, pairs, contexts);
+    if (
+      includeAnalysis &&
+      excludedRanges.some((range) => range.start <= group.start && group.start < range.end)
+    )
+      continue;
+    let relevant = false;
+    if (includeAnalysis) {
+      relevant = group.attributes.some((attribute) => {
+        if (hasAttributeMetavariable(attribute.text)) return true;
+        try {
+          const meta = metaParts(attribute.text);
+          return (
+            ["cfg", "cfg_attr", "path"].includes(meta.name) ||
+            (["allow", "expect"].includes(meta.name) &&
+              /\bclippy\s*::\s*disallowed_methods\b/.test(
+                maskRustSourceWithSpans(attribute.text).masked,
+              ))
+          );
+        } catch {
+          return false;
+        }
+      });
+    }
+    if (!group.testOnly && !relevant) continue;
+    const context = contextAt(group.start, pairs, contexts, includeAnalysis);
     if (context.context?.kind === "opaque") {
-      fail(path, source, group.start, "unsupported test-only context inside a macro input");
+      const inMacroRulesBody = macroRegions.some(
+        ({ start, end }) => start <= group.start && group.start < end,
+      );
+      const testOnlyByDefault = includeAnalysis
+        ? group.attributes.some(
+            (attribute) =>
+              attribute.details?.kind !== "metavariable" &&
+              evaluateCfgAttribute(
+                { start: attribute.start, text: attribute.text },
+                path,
+                source,
+                DEFAULT_ATOM_VALUATION,
+              ),
+          )
+        : group.testOnly;
+      if (testOnlyByDefault)
+        fail(path, source, group.start, "unsupported test-only context inside a macro input");
+      const cfgAttribute = group.attributes.some((attribute) =>
+        ["cfg", "cfg_attr"].includes(attribute.details?.kind),
+      );
+      const nestedCfgPayload = group.attributes.some(
+        (attribute) => attribute.details?.containsCfgPayload,
+      );
+      if (includeAnalysis && cfgAttribute && !(inMacroRulesBody && nestedCfgPayload)) {
+        fail(path, source, group.start, "unsupported cfg attribute inside a macro input");
+      }
+      if (group.testOnly && !includeAnalysis) {
+        fail(path, source, group.start, "unsupported test-only context inside a macro input");
+      }
+      if (group.testOnly) excludedRanges.push({ start: group.start, end: group.end });
+      sourceRegions.push({
+        start: group.start,
+        end: group.end,
+        range: { start: group.start, end: group.end },
+        attributes: group.attributes,
+        text: source.slice(group.start, group.end),
+        testOnly: false,
+        context: context.context,
+      });
+      continue;
     }
     if (!context.context || context.context.kind === "unplaced") {
       fail(
@@ -970,24 +1199,59 @@ function analyzeRustFile(path, source, atomValuation) {
         "unplaceable test-only context; extend rust-test-only.mjs only for a listed Rust form",
       );
     }
-    excludedRanges.push(
-      itemRange(path, source, masked, pairs, group, {
-        ...context.context,
-        open: context.open,
-        close: context.close,
-      }),
-    );
+    const range = itemRange(path, source, masked, pairs, group, {
+      ...context.context,
+      open: context.open,
+      close: context.close,
+      includeAnalysis,
+    });
+    if (group.testOnly) excludedRanges.push(range);
+    if (relevant) {
+      sourceRegions.push({
+        start: group.start,
+        end: group.end,
+        range,
+        attributes: group.attributes,
+        text: source.slice(group.start, group.end),
+        testOnly: group.testOnly,
+        context: context.context,
+      });
+    }
   }
 
   let wholeFile = false;
+  const innerAttributes = [];
   for (let index = 0; index < masked.length; index += 1) {
     if (masked[index] !== "#" || masked[index + 1] !== "!" || masked[index + 2] !== "[") continue;
     const open = index + 2;
     const close = pairs.get(open);
     if (close === undefined) fail(path, source, index, "unbalanced inner attribute delimiter");
-    const attribute = { start: index, text: source.slice(open + 1, close) };
-    if (!evaluateCfgAttribute(attribute, path, source, atomValuation)) continue;
-    const context = contextAt(index, pairs, contexts);
+    const attribute = {
+      start: index,
+      text: source.slice(open + 1, close),
+      details: { atoms: [], excluded: false, inactive: false, containsCfgPayload: false },
+    };
+    if (
+      includeAnalysis &&
+      excludedRanges.some((range) => range.start <= index && index < range.end)
+    )
+      continue;
+    const excluded =
+      includeAnalysis && hasAttributeMetavariable(attribute.text)
+        ? false
+        : evaluateCfgAttribute(attribute, path, source, atomValuation);
+    if (includeAnalysis) {
+      innerAttributes.push({
+        start: index,
+        end: close + 1,
+        text: source.slice(index, close + 1),
+        attribute,
+        range: { start: index, end: close + 1 },
+        root: contextAt(index, pairs, contexts, includeAnalysis).open === null,
+      });
+    }
+    if (!excluded) continue;
+    const context = contextAt(index, pairs, contexts, includeAnalysis);
     if (context.context?.kind === "opaque")
       fail(path, source, index, "unsupported inner cfg attribute context");
     if (context.open === null) {
@@ -1009,9 +1273,10 @@ function analyzeRustFile(path, source, atomValuation) {
     groups,
     excludedRanges,
     wholeFile,
+    includeAnalysis,
   );
   const excludedLines = lineRanges(path, source, comments, excludedRanges, wholeFile);
-  return {
+  const analysis = {
     source,
     masked,
     pairs,
@@ -1022,6 +1287,29 @@ function analyzeRustFile(path, source, atomValuation) {
     wholeFile,
     moduleItems,
   };
+  if (includeAnalysis) {
+    analysis.sourceRegions = sourceRegions;
+    analysis.innerAttributes = innerAttributes;
+    analysis.macroRegions = macroRegions;
+    analysis.functionItems = [...pairs]
+      .filter(([open, close]) => open < close && masked[open] === "{")
+      .map(([open, close]) => {
+        if (contexts.get(open)?.form !== "function-body") return null;
+        const header = headerBeforeBrace(path, source, masked, pairs, open);
+        const name = header.match(/\bfn\s+(?:r#)?([A-Za-z_][A-Za-z0-9_]*)/)?.[1];
+        if (!name) return null;
+        const start = open - header.length;
+        return { name, start, end: close + 1, text: source.slice(start, close + 1) };
+      })
+      .filter(Boolean);
+    for (const region of sourceRegions) {
+      const containing = analysis.functionItems
+        .filter((item) => item.start <= region.start && region.start < item.end)
+        .sort((left, right) => left.end - left.start - (right.end - right.start))[0];
+      region.function = containing;
+    }
+  }
+  return analysis;
 }
 
 function hasPathAttribute(attributes) {
@@ -1173,7 +1461,10 @@ export function classifyRustTestOnlySources(
       throw new Error(`${path}:1: excludeTestOnlyItems can scan only .rs files`);
     }
     if (analyses.has(path)) throw new Error(`${path}:1: duplicate Rust source path`);
-    analyses.set(path, analyzeRustFile(path, contents, evaluatedAtoms));
+    analyses.set(
+      path,
+      analyzeRustFile(path, contents, evaluatedAtoms, options.includeAnalysis === true),
+    );
   }
 
   const testOnlyFiles = new Set(
@@ -1199,6 +1490,7 @@ export function classifyRustTestOnlySources(
       sourcesByPath,
       options.resolveModule,
     );
+    item.declaration.targetPath = target;
     if (!sourcesByPath.has(target) || testOnlyFiles.has(target)) continue;
     testOnlyFiles.add(target);
     const targetAnalysis = analyses.get(target);
@@ -1218,7 +1510,9 @@ export function classifyRustTestOnlySources(
     excludedLines.set(path, lineRanges(path, sourcesByPath.get(path), [], [], true));
   }
   const excludedLineCounts = new Map([...excludedLines].map(([path, lines]) => [path, lines.size]));
-  return { testOnlyFiles, excludedLines, excludedLineCounts };
+  const result = { testOnlyFiles, excludedLines, excludedLineCounts };
+  if (options.includeAnalysis) result.analysis = analyses;
+  return result;
 }
 
 function validateExclusionConfig(source) {

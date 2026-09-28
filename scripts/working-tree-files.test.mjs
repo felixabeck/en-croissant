@@ -31,6 +31,32 @@ describe("working-tree file enumeration", () => {
     ]);
   });
 
+  test("includes git-ignored entries only when explicitly requested", () => {
+    const root = workspace();
+    expect(listWorkingTreeFiles({ workspaceRoot: root, pathspec: "src" })).not.toContain(
+      "src/ignored.ts",
+    );
+    expect(
+      listWorkingTreeFiles({ workspaceRoot: root, pathspec: "src", includeIgnored: true }),
+    ).toContain("src/ignored.ts");
+  });
+
+  test("the default call keeps its original two git queries", () => {
+    const calls = [];
+    listWorkingTreeFiles({
+      workspaceRoot: "/fixture",
+      pathspec: "src",
+      runGit: (_command, args) => {
+        calls.push(args);
+        return { status: 0, stdout: "", stderr: "" };
+      },
+    });
+    expect(calls).toEqual([
+      ["ls-files", "--others", "--exclude-standard", "--", "src"],
+      ["ls-files", "--", "src"],
+    ]);
+  });
+
   test("reports a tracked file whose only sibling is ignored", () => {
     const root = workspace();
     // Deleting the untracked file leaves the tracked query as the sole source,
