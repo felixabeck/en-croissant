@@ -3309,8 +3309,9 @@ fn write_db_game_blocking(
     let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
 
     let mut importer = Importer::new(None);
-    let temp_game = BufferedReader::new(pgn.as_bytes())
-        .read_game(&mut importer)?
+    let temp_game = BufferedReader::new(CancellableRead::new(pgn.as_bytes(), cancellation))
+        .read_game(&mut importer)
+        .map_err(|error| map_read_error(error, cancellation))?
         .flatten()
         .ok_or(Error::NoMovesFound)?;
     with_validated_mutation(repository, search_cache, &target, cancellation, |db| {
