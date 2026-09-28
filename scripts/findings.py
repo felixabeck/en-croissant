@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: cb6c5448b6ea0b5afdaa2e7e8fa7b4fec2beda7df62d2545bd8dba61284e85c3
+# agent-kit-sha256: 476d93bb82717615181368ec19b0adada5c0f4657363517f56b577925dbaf434
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -290,27 +290,6 @@ ANSWERS = (
     else Path("tasks") / "findings-answers"
 )
 
-# Which Felix-facing blockers have already been announced. Git-ignored: it is
-# machine state about who has been told what, not part of the ledger's record.
-ANNOUNCED_STATE = ".decisions-announced.json"
-# The desktop notifier shared with Codex and the Claude hooks
-# (~/.local/bin/notify). Reused whole — nothing here draws a notification
-# itself. Not found means no announcement, never an error: another developer's
-# checkout has no reason to carry Felix's notifier.
-NOTIFIER = "notify"
-# Matches APPLICATIONS in `notify`, which keys the desktop entry off the title,
-# so a parked Felix-facing blocker looks like every other Claude notification.
-NOTIFY_APP = "Claude Code"
-# Matches Claude/Grok session toasts (`EXPIRE_MS = 30000`). 0 is DBus "never
-# expire" and is wrong here: a park ping is the same class as a finished turn.
-NOTIFY_DURATION_MS = 30000
-# Overlay copies on other screens keep `notify show` alive for the duration.
-# The subprocess timeout must outlast that wait, or a successful post is killed
-# and left unrecorded, so the next named `decisions` toasts again.
-NOTIFY_POST_TIMEOUT_S = (NOTIFY_DURATION_MS + 999) // 1000 + 2
-# Lets the waiter outlast the overlay-length post timeout plus the state write.
-NOTIFY_STATE_WRITE_GRACE_S = 5.0
-NOTIFY_TITLE_CHARS = 90
 # Ledger writers may wait for the exact-byte pre-commit hook and its termination
 # grace period. Keep this above both those bounds so a hook never races another
 # writer's read or worktree restoration.
@@ -347,9 +326,6 @@ SCRATCH_GRACE_SECONDS = 3600.0
 _GENERATED_SCRATCH_RE = re.compile(r"^(?P<target>.+)\.(?:tmp|candidate)-\d+-\d+-\d+$")
 _GENERATED_INBOX_PART_RE = re.compile(r"^\.\d{8}-\d{6}-\d+-\d+-\d+\.part$")
 MERGE_INTENT_NAME = ".merge-intent.json"
-# Set by the test harness. `decisions` is a query, and a query run in a suite
-# must not put real popups on Felix's screen.
-NOTIFY_OFF_ENV = "FINDINGS_NO_NOTIFY"
 
 STATUSES = frozenset({"open", "handled", "rejected"})
 ENTRIES = frozenset({"inline", "lens", "build"})
@@ -5363,45 +5339,22 @@ def _ledger_mutation_scope(path: Path) -> Iterator[str]:
 def _locked_ledger_mutation(
     path: Path,
     build: Callable[[str], str],
-    clear_announcement_ids: Collection[str] | None = None,
     post_commit: Callable[[], None] | None = None,
 ) -> None:
-    """Run one validated, compare-and-swap mutation under the required locks.
-
-    ``None`` selects a ledger-only mutation. Any supplied collection, including
-    an empty one, selects announcement-first locking and a durable state prune.
-    The collection is read after ``build`` returns so builders such as
-    ``apply-answers`` may populate a shared mutable list while constructing the
-    candidate. The post-commit callback runs only after the ledger write
-    succeeds and while every selected outer lock is still held.
-    """
+    """Run one validated, compare-and-swap mutation under the ledger lock."""
     path = _canonical_ledger_path(path)
 
-    def mutate() -> None:
-        with _ledger_mutation_scope(path) as original:
-            candidate = build(original)
-            issues = _validate_text(candidate, path)
-            if issues:
-                raise LedgerError(
-                    "the mutation would leave the ledger invalid:\n"
-                    + "\n".join(issues)
-                )
-            if clear_announcement_ids is not None:
-                _prune_announcement_state_strict(path, clear_announcement_ids)
-            _write_if_unchanged(path, original, candidate)
-            if post_commit is not None:
-                post_commit()
-
-    if clear_announcement_ids is None:
-        mutate()
-        return
-
-    # Notification readers own only the announcement lock. Taking it before
-    # the ledger lock prevents a clear waiting behind notifier I/O from
-    # convoying unrelated ledger writers, and keeps every two-lock operation in
-    # one order.
-    with _announcement_lock(path, strict=True):
-        mutate()
+    with _ledger_mutation_scope(path) as original:
+        candidate = build(original)
+        issues = _validate_text(candidate, path)
+        if issues:
+            raise LedgerError(
+                "the mutation would leave the ledger invalid:\n"
+                + "\n".join(issues)
+            )
+        _write_if_unchanged(path, original, candidate)
+        if post_commit is not None:
+            post_commit()
 
 
 @dataclass(frozen=True)
@@ -8722,268 +8675,12 @@ def cmd_file(args: argparse.Namespace) -> int:
     return 0
 
 
-def _read_announcement_state(state_path: Path) -> dict[str, object] | None:
-    """Read announcement state, distinguishing absent from damaged state."""
-    try:
-        state_mode = state_path.lstat().st_mode
-        if stat.S_ISLNK(state_mode) or not stat.S_ISREG(state_mode):
-            raise OSError("not a regular file")
-        raw = state_path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return None
-    except (OSError, UnicodeError) as exc:
-        raise LedgerError(
-            f"could not read announcement state {state_path}: {exc}"
-        ) from exc
-    try:
-        state = json.loads(raw)
-    except _JSON_ERRORS as exc:
-        raise LedgerError(
-            f"could not read announcement state {state_path}: {exc}"
-        ) from exc
-    if not isinstance(state, dict):
-        raise LedgerError(
-            f"could not read announcement state {state_path}: expected a JSON object"
-        )
-    return state
-
-
-def _current_waiting_ids(ledger: Path) -> set[str]:
-    """Return ids currently waiting on Felix, for announcement prune/re-read."""
-    findings, _problems, _vocabulary = parse(ledger)
-    buckets = summary_buckets(findings)
-    return {finding.id for finding in buckets.product + buckets.preconditions}
-
-
-def _persist_announcement_state(state_path: Path, announced: dict[str, object]) -> None:
-    """Persist fire-once state without making notification reads fail."""
-    try:
-        _atomic_write(
-            state_path, json.dumps(announced, indent=2, sort_keys=True) + "\n"
-        )
-    except OSError as exc:
-        print(
-            f"warning: could not record the announcement state at {state_path} "
-            f"({exc}); parked blockers may re-notify.",
-            file=sys.stderr,
-        )
-
-
-def _announce_felix_blockers_unlocked(shown_ids: set[str], ledger: Path) -> None:
-    """Ping Felix for a newly parked blocker; listing the queue never toasts.
-
-    **Deliberately not routed through the Claude notification hook.** That hook
-    suppresses inside a 45-second quiet window, on the premise that a Felix who
-    is at the keyboard will see the prompt in his pane. The premise does not hold
-    here: a drain parks its blocker into a terminal he is not reading, and
-    presence detection measures input devices, not which pane he is looking at.
-    So this pings even while he is typing — which is why it is its own event
-    class rather than a reuse of that policy.
-
-    A bare ``decisions`` is how he *reads* the queue, so it only prunes cleared
-    ids. The drain names the ids a cluster just parked; those are the only toast.
-    ``FINDINGS_NO_NOTIFY`` still prunes — it only skips the desktop post.
-
-    Nothing here draws a notification; ``notify`` is the shared notifier used by
-    the Claude hooks and Codex alike, and it is called unchanged. Its absence — a
-    different machine, another developer's checkout — silently skips the
-    announcement rather than failing the query.
-    """
-    state_path = ledger.with_name(ANNOUNCED_STATE)
-    try:
-        announced = _read_announcement_state(state_path) or {}
-    except LedgerError as exc:
-        print(f"warning: {exc}; skipping announcement.", file=sys.stderr)
-        return
-
-    try:
-        waiting_ids = _current_waiting_ids(ledger)
-    except (OSError, UnicodeError, LedgerError) as exc:
-        print(
-            f"warning: could not read waiting blockers for announcement prune "
-            f"({type(exc).__name__}: {exc}); skipping announcement.",
-            file=sys.stderr,
-        )
-        return
-
-    # Prune against every current Felix-facing blocker, never against the
-    # subset just shown — the drain shows only the ids one cluster parked, and
-    # pruning to those would forget the others and re-announce them later.
-    kept = {key: value for key, value in announced.items() if key in waiting_ids}
-    if kept != announced:
-        _persist_announcement_state(state_path, kept)
-
-    if os.environ.get(NOTIFY_OFF_ENV):
-        return
-    notifier = shutil.which(NOTIFIER)
-    if notifier is None:
-        return
-
-    findings, _problems, _vocabulary = parse(ledger)
-    buckets = summary_buckets(findings)
-    # The announcement covers the answerable class and preconditions only.
-    # Automated verification is machine work and must never enter Felix's
-    # announcement state, so `buckets.answerable`'s approval half is excluded
-    # here by construction: only the product half is a Felix-facing answer.
-    waiting = sorted(buckets.product + buckets.preconditions, key=lambda f: f.line)
-    shown = [finding for finding in waiting if finding.id in shown_ids]
-    fresh = [finding for finding in shown if finding.id not in kept]
-    if not fresh:
-        return
-
-    product_ids = {finding.id for finding in buckets.product}
-    answerable = [finding for finding in fresh if finding.id in product_ids]
-    preconditions = [finding for finding in fresh if finding.id not in product_ids]
-    if len(fresh) == 1:
-        detail = f"{fresh[0].id} — {fresh[0].title[:NOTIFY_TITLE_CHARS]}"
-    else:
-        detail = f"{len(fresh)} new Felix items: " + ", ".join(
-            finding.id for finding in fresh
-        )
-    actions: list[str] = []
-    if answerable:
-        actions.append("Run /decide in a terminal to answer.")
-    if preconditions:
-        actions.append("Clear the listed precondition; no answer is needed.")
-    # Named in every failure line: this warning is the only signal that these
-    # blockers did not reach Felix, so it must say which ones and through what.
-    unannounced_ids = ", ".join(sorted(finding.id for finding in fresh))
-    try:
-        posted = subprocess.run(
-            [
-                notifier,
-                "show",
-                "--title",
-                NOTIFY_APP,
-                "--text",
-                f"{detail}\n" + "\n".join(actions),
-                "--sound",
-                "attention",
-                "--duration",
-                str(NOTIFY_DURATION_MS),
-                "--project",
-                REPO_ROOT.name if REPO_ROOT is not None else "unknown",
-            ],
-            check=False,
-            timeout=NOTIFY_POST_TIMEOUT_S,
-        ).returncode
-    except (OSError, subprocess.SubprocessError) as exc:
-        print(
-            f"warning: notifier {notifier} failed while announcing Felix blockers "
-            f"({type(exc).__name__}: {exc}); blockers remain unannounced: "
-            f"{unannounced_ids}.",
-            file=sys.stderr,
-        )
-        return
-    if posted != 0:
-        # Left unrecorded on purpose: a failed post (no session bus, headless)
-        # should be retried on the next named look, not counted as delivered.
-        print(
-            f"warning: notifier {notifier} exited with status {posted}; "
-            f"blockers remain unannounced: {unannounced_ids}.",
-            file=sys.stderr,
-        )
-        return
-
-    try:
-        waiting_after = _current_waiting_ids(ledger)
-    except (OSError, UnicodeError, LedgerError) as exc:
-        print(
-            f"warning: could not re-read waiting blockers after announcing "
-            f"({type(exc).__name__}: {exc}); recording delivery anyway.",
-            file=sys.stderr,
-        )
-        waiting_after = waiting_ids
-    kept = {key: value for key, value in kept.items() if key in waiting_after}
-    stamp = datetime.now().astimezone().isoformat(timespec="seconds")
-    kept.update({finding.id: stamp for finding in fresh if finding.id in waiting_after})
-    # Non-fatal by design -- a failed state write must never stop `decisions`
-    # from answering. The helper still names the failure because otherwise the
-    # missing fire-once record surfaces only as repeated notifications.
-    _persist_announcement_state(state_path, kept)
-
-
-def _prune_announcement_state_strict(
-    ledger: Path, ids: Collection[str]
-) -> None:
-    """Durably invalidate stamps before a protected ledger mutation commits."""
-    state_path = ledger.with_name(ANNOUNCED_STATE)
-    try:
-        announced = _read_announcement_state(state_path) or {}
-        kept = {key: value for key, value in announced.items() if key not in ids}
-        # Always replace and fsync the directory, even when the ids are already
-        # absent. A previous failed directory fsync can leave the visible map
-        # ahead of its durable state, so equality is not proof of durability.
-        _atomic_write(
-            state_path,
-            json.dumps(kept, indent=2, sort_keys=True) + "\n",
-            durable_directory=True,
-        )
-    except LedgerError:
-        raise
-    except OSError as exc:
-        raise LedgerError(
-            f"could not durably prune announcement state {state_path}: {exc}"
-        ) from exc
-
-
-@contextmanager
-def _announcement_lock(
-    ledger: Path, *, strict: bool = False
-) -> Iterator[bool]:
-    """Own announcement state for a reader or strict ledger mutation.
-
-    Reader acquisition failures are diagnosed and yield ``False`` so the query
-    still succeeds. Strict mutations instead raise ``LedgerError`` and never
-    enter the context without the state lock.
-    """
-    state_lock = ledger_lock_path(ledger.with_name(ANNOUNCED_STATE))
-    try:
-        acquired, waited_seconds = acquire_ledger_lock(
-            state_lock,
-            wait_window_seconds=NOTIFY_POST_TIMEOUT_S + NOTIFY_STATE_WRITE_GRACE_S,
-        )
-    except (LedgerError, OSError) as exc:
-        message = (
-            f"LOCK ACQUISITION failed for announcement state lock {state_lock} "
-            f"({type(exc).__name__}: {exc})"
-        )
-        if strict:
-            raise LedgerError(message) from exc
-        print(f"warning: {message}; skipping announcement.", file=sys.stderr)
-        yield False
-        return
-    if not acquired:
-        message = (
-            f"LOCK ACQUISITION could not acquire announcement state lock {state_lock} "
-            f"after {waited_seconds:.2f}s"
-        )
-        if strict:
-            raise LedgerError(message)
-        print(f"warning: {message}; skipping announcement.", file=sys.stderr)
-        yield False
-        return
-    try:
-        yield True
-    finally:
-        release_ledger_lock(state_lock)
-
-
-def _announce_felix_blockers(shown: list[Finding], ledger: Path) -> None:
-    """Announce current Felix-facing blockers while holding the state lock."""
-    with _announcement_lock(ledger) as acquired:
-        if acquired:
-            _announce_felix_blockers_unlocked({f.id for f in shown}, ledger)
-
-
 def cmd_decisions(args: argparse.Namespace) -> int:
     """Print Felix-facing blockers and automated verification.
 
     Optionally restricted to ``args.ids``.
 
-    The drain prints a Felix-facing blocker once, when it parks it. A six-hour run scrolls,
-    and Felix reads the chat rather than the ledger, so a one-time print is a
-    notification and not a place to look things up. This is the place to look.
+    This is a read-only lookup and does not send notifications or change state.
     """
     findings, problems, vocabulary = parse(args.ledger)
     issues = validate(findings, problems, vocabulary)
@@ -9004,26 +8701,18 @@ def cmd_decisions(args: argparse.Namespace) -> int:
     preconditions = list(buckets.preconditions)
     verification = list(buckets.approvals)
     if args.ids:
-        # The drain names the ids a cluster just parked, so a park announcement
-        # shows those blockers and not the whole backlog again.
+        # Apply one requested id set consistently to each printed class.
         wanted = set(args.ids)
         waiting = [f for f in waiting if f.id in wanted]
         preconditions = [f for f in preconditions if f.id in wanted]
         verification = [f for f in verification if f.id in wanted]
     if not waiting and not preconditions:
         if verification:
-            # Sentry verification is machine work.  It must not touch Felix's
-            # announcement state, even when the state contains stale entries
-            # from an earlier product decision.
             print(
                 f"{len(verification)} Sentry finding(s) awaiting automated "
                 "verification — nothing for you to do."
             )
             return 0
-        # The announcement read also prunes cleared ids. Run it before this
-        # early return so an emptied queue can self-heal before a re-park.
-        # A bare review never toasts: shown_ids is empty.
-        _announce_felix_blockers([], args.ledger)
         if not issues:
             print("No decisions are waiting on you.")
         return 0
@@ -9079,12 +8768,6 @@ def cmd_decisions(args: argparse.Namespace) -> int:
         )
     if preconditions:
         print("To clear: make the listed precondition true; no answer is needed.")
-    # Named ids are the drain park path and the only toast. A bare review still
-    # prunes cleared stamps so a later re-park can fire.
-    if args.ids:
-        _announce_felix_blockers(waiting + preconditions, args.ledger)
-    else:
-        _announce_felix_blockers([], args.ledger)
     return 0
 
 
@@ -9381,15 +9064,7 @@ def cmd_set_header(args: argparse.Namespace) -> int:
         lines[index] = line
         return _with_final_newline(text, lines)
 
-    dropped: set[str] = set()
-    if args.status in {"handled", "rejected"}:
-        dropped.add(args.id)
-    if args.blocked is not None and classify_blocker(args.blocked) not in {
-        BLOCKER_ANSWERABLE,
-        BLOCKER_PRECONDITION,
-    }:
-        dropped.add(args.id)
-    _locked_ledger_mutation(args.ledger, build, dropped or None)
+    _locked_ledger_mutation(args.ledger, build)
     if args.status in {"handled", "rejected"}:
         append_drain_breadcrumb(f"step 10 finding closed {args.id}", args.status)
     print(f"updated header for {args.id}")
@@ -10516,12 +10191,7 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
         if claimed and (mode != "deferred" or not applied):
             release_spool(claim, spool, claimed)
 
-    _locked_ledger_mutation(
-        args.ledger,
-        build,
-        applied,
-        post_commit=clean_committed_claim,
-    )
+    _locked_ledger_mutation(args.ledger, build, post_commit=clean_committed_claim)
     if applied:
         print(f"applied {len(applied)} decision(s): {', '.join(applied)}")
     for note in skipped:
