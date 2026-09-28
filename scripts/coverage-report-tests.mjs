@@ -488,6 +488,42 @@ test("Rust exclusion failures are staged through the CLI with path, line, and ex
         "src-tauri/src/lib.rs:4: unsupported test-only form; give it its own item/statement or extend rust-test-only.mjs",
     },
     {
+      name: "braced macro statement followed by .await",
+      files: {
+        "src-tauri/src/lib.rs":
+          "fn enclosing() {\n  #[cfg(test)]\n  fixture! { true }\n  .await;\n}\n",
+      },
+      expected:
+        "src-tauri/src/lib.rs:4: unsupported test-only form; give it its own item/statement or extend rust-test-only.mjs",
+    },
+    {
+      name: "braced macro statement followed by a method call",
+      files: {
+        "src-tauri/src/lib.rs":
+          "fn enclosing() {\n  #[cfg(test)]\n  fixture! { true }\n  .method();\n}\n",
+      },
+      expected:
+        "src-tauri/src/lib.rs:4: unsupported test-only form; give it its own item/statement or extend rust-test-only.mjs",
+    },
+    {
+      name: "braced macro statement followed by as",
+      files: {
+        "src-tauri/src/lib.rs":
+          "fn enclosing() {\n  #[cfg(test)]\n  fixture! { true }\n  as bool;\n}\n",
+      },
+      expected:
+        "src-tauri/src/lib.rs:4: unsupported test-only form; give it its own item/statement or extend rust-test-only.mjs",
+    },
+    {
+      name: "if/else statement followed by try operator",
+      files: {
+        "src-tauri/src/lib.rs":
+          "fn enclosing(value: bool) {\n  #[cfg(test)]\n  if value { one(); } else { two(); }\n  ?;\n}\n",
+      },
+      expected:
+        "src-tauri/src/lib.rs:4: unsupported test-only form; give it its own item/statement or extend rust-test-only.mjs",
+    },
+    {
       name: "unplaceable try-block context",
       files: {
         "src-tauri/src/lib.rs":
@@ -527,6 +563,22 @@ test("Rust exclusion failures are staged through the CLI with path, line, and ex
     {
       name: "path attribute on test-only module",
       files: { "src-tauri/src/lib.rs": '#[path = "helper.rs"]\n#[cfg(test)]\nmod helper;\n' },
+      expected: "src-tauri/src/lib.rs:3: unsupported #[path] on a test-only module declaration",
+    },
+    {
+      name: "path attribute through cfg_attr on test-only module",
+      files: {
+        "src-tauri/src/lib.rs":
+          '#[cfg_attr(test, path = "helpers/test.rs")]\n#[cfg(test)]\nmod helpers;\n',
+      },
+      expected: "src-tauri/src/lib.rs:3: unsupported #[path] on a test-only module declaration",
+    },
+    {
+      name: "nested path attribute through cfg_attr on test-only module",
+      files: {
+        "src-tauri/src/lib.rs":
+          '#[cfg_attr(test, cfg_attr(unix, path = "helpers/test.rs"))]\n#[cfg(test)]\nmod helpers;\n',
+      },
       expected: "src-tauri/src/lib.rs:3: unsupported #[path] on a test-only module declaration",
     },
     {
@@ -589,6 +641,35 @@ test("Rust exclusion failures are staged through the CLI with path, line, and ex
     );
   });
 });
+
+test(
+  "test-only module resolution reports unreadable candidate directories",
+  { skip: process.getuid?.() === 0 },
+  async () => {
+    const { root } = await fixture({
+      files: { "src-tauri/src/parent.rs": "#[cfg(test)]\nmod helpers;\n" },
+    });
+    const candidateDirectory = join(root, "src-tauri/src/parent");
+    await mkdir(candidateDirectory);
+    await chmod(candidateDirectory, 0);
+    try {
+      await assert.rejects(
+        scanRustTestOnly({
+          root,
+          source: rustConfig().sources[0],
+          files: ["src-tauri/src/parent.rs"],
+        }),
+        (error) => {
+          assert.match(error.message, /src-tauri\/src\/parent\.rs:2:/);
+          assert.match(error.message, /EACCES: permission denied/);
+          return true;
+        },
+      );
+    } finally {
+      await chmod(candidateDirectory, 0o755);
+    }
+  },
+);
 
 const OXFMT_SCRIPTS = {
   success: "#!/bin/sh\nexit 0\n",

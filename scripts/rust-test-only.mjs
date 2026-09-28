@@ -55,7 +55,6 @@ function delimiterPairs(path, source, code) {
   const stack = [];
   const openers = new Set(["(", "[", "{"]);
   const closers = new Map([
-    [" )", "("],
     [")", "("],
     ["]", "["],
     ["}", "{"],
@@ -473,29 +472,35 @@ function skipVisibilityAndModifiers(code, pairs, offset) {
   return cursor;
 }
 
-function findTopLevelTerminator(code, pairs, start, close, wanted, { angleAware = true } = {}) {
-  let angle = 0;
+function transitionAngleDepth(code, index, angleDepth) {
+  const character = code[index];
+  if (character === ";") return 0;
+  if (character === "<") {
+    const previous = code[index - 1];
+    if (WORD.test(previous ?? "") || (previous === ":" && code[index - 2] === ":"))
+      return angleDepth + 1;
+  } else if (character === ">" && angleDepth > 0) {
+    if (code[index - 1] === "-" || code[index - 1] === "=" || code[index + 1] === "=")
+      return angleDepth;
+    return angleDepth - 1;
+  }
+  return angleDepth;
+}
+
+function findTopLevelTerminator(code, pairs, start, close, wanted) {
+  let angleDepth = 0;
   for (let index = start; index < close; index += 1) {
     const character = code[index];
-    if (character === "<" && angleAware) {
-      const previous = code[index - 1];
-      const beforePrevious = code[index - 2];
-      if (WORD.test(previous ?? "") || (previous === ":" && beforePrevious === ":")) angle += 1;
-      continue;
-    }
-    if (character === ">" && angleAware && angle > 0) {
-      if (code[index - 1] === "-" || code[index - 1] === "=" || code[index + 1] === "=") continue;
-      angle = Math.max(0, angle - 1);
-      continue;
-    }
+    angleDepth = transitionAngleDepth(code, index, angleDepth);
+    if (character === "<" || character === ">") continue;
     if ("([{ ".includes(character) && character !== " ") {
       const end = pairs.get(index);
       if (end === undefined) return -1;
-      if (character === "{" && angle === 0 && wanted.has("{")) return index;
+      if (character === "{" && angleDepth === 0 && wanted.has("{")) return index;
       index = end;
       continue;
     }
-    if (character === ";" && angle === 0 && wanted.has(";")) return index;
+    if (character === ";" && angleDepth === 0 && wanted.has(";")) return index;
   }
   return -1;
 }
@@ -629,8 +634,21 @@ function findIfChainEnd(path, source, code, pairs, start, contextClose) {
     if (lastClose === undefined) fail(path, source, cursor, "unbalanced delimiter");
     break;
   }
+  assertNoBlockContinuation(path, source, code, lastClose);
   const following = skipWhitespace(code, lastClose + 1);
   return code[following] === ";" ? following : lastClose;
+}
+
+function assertNoBlockContinuation(path, source, code, end) {
+  const following = skipWhitespace(code, end + 1);
+  if (code[following] === "." || code[following] === "?" || /^as\b/.test(code.slice(following))) {
+    fail(
+      path,
+      source,
+      following,
+      "unsupported test-only form; give it its own item/statement or extend rust-test-only.mjs",
+    );
+  }
 }
 
 function findStatementEnd(path, source, code, pairs, start, context) {
@@ -669,6 +687,7 @@ function findStatementEnd(path, source, code, pairs, start, context) {
     if (body < 0) fail(path, source, start, "unsupported test-only match form");
     let end = pairs.get(body);
     if (end === undefined) fail(path, source, body, "unbalanced delimiter");
+    assertNoBlockContinuation(path, source, code, end);
     const following = skipWhitespace(code, end + 1);
     if (code[following] === ";") end = following;
     return end;
@@ -676,6 +695,7 @@ function findStatementEnd(path, source, code, pairs, start, context) {
   if (code[cursor] === "{") {
     let end = pairs.get(cursor);
     if (end === undefined) fail(path, source, cursor, "unbalanced delimiter");
+    assertNoBlockContinuation(path, source, code, end);
     const following = skipWhitespace(code, end + 1);
     if (code[following] === ";") end = following;
     return end;
@@ -687,14 +707,8 @@ function findStatementEnd(path, source, code, pairs, start, context) {
     const brace = cursor + macro[0].lastIndexOf("{");
     let end = pairs.get(brace);
     if (end === undefined) fail(path, source, brace, "unbalanced delimiter");
+    assertNoBlockContinuation(path, source, code, end);
     const following = skipWhitespace(code, end + 1);
-    if (code[following] === "?")
-      fail(
-        path,
-        source,
-        cursor,
-        "unsupported test-only form; give it its own item/statement or extend rust-test-only.mjs",
-      );
     if (code[following] === ";") end = following;
     return end;
   }
@@ -704,27 +718,13 @@ function findStatementEnd(path, source, code, pairs, start, context) {
   return semicolon;
 }
 
-function angleOpens(code, index) {
-  const previous = code[index - 1];
-  return WORD.test(previous ?? "") || (previous === ":" && code[index - 2] === ":");
-}
-
 function findListComma(code, pairs, start, context, sourceLength) {
   const close = context.close ?? sourceLength;
-  const stack = [
-    { open: context.open, type: context.open === null ? "root" : code[context.open], angle: 0 },
-  ];
+  let angleDepth = 0;
   for (let index = start; index < close; index += 1) {
     const character = code[index];
-    if (character === "<" && angleOpens(code, index)) {
-      stack.at(-1).angle += 1;
-      continue;
-    }
-    if (character === ">" && stack.at(-1).angle > 0) {
-      if (code[index - 1] === "-" || code[index - 1] === "=" || code[index + 1] === "=") continue;
-      stack.at(-1).angle = Math.max(0, stack.at(-1).angle - 1);
-      continue;
-    }
+    angleDepth = transitionAngleDepth(code, index, angleDepth);
+    if (character === "<" || character === ">") continue;
     if ("([{ ".includes(character) && character !== " ") {
       const end = pairs.get(index);
       if (end === undefined) return { comma: -1, close };
@@ -732,8 +732,7 @@ function findListComma(code, pairs, start, context, sourceLength) {
       index = end;
       continue;
     }
-    if (character === "," && stack.length === 1 && stack[0].angle === 0)
-      return { comma: index, close };
+    if (character === "," && angleDepth === 0) return { comma: index, close };
   }
   return { comma: -1, close };
 }
@@ -741,18 +740,11 @@ function findListComma(code, pairs, start, context, sourceLength) {
 function matchArmEnd(path, source, code, pairs, start, context) {
   const { close } = findListComma(code, pairs, start, context, source.length);
   let arrow = -1;
-  let angle = 0;
+  let angleDepth = 0;
   for (let index = start; index < close; index += 1) {
-    if (code[index] === "<" && angleOpens(code, index)) angle += 1;
-    else if (
-      code[index] === ">" &&
-      angle > 0 &&
-      code[index - 1] !== "-" &&
-      code[index - 1] !== "=" &&
-      code[index + 1] !== "="
-    )
-      angle -= 1;
-    else if (angle === 0 && code.startsWith("=>", index)) {
+    angleDepth = transitionAngleDepth(code, index, angleDepth);
+    if (code[index] === "<" || code[index] === ">") continue;
+    if (angleDepth === 0 && code.startsWith("=>", index)) {
       arrow = index;
       break;
     }
@@ -784,19 +776,12 @@ function matchArmEnd(path, source, code, pairs, start, context) {
 
   // A block-like RHS may omit its separator before the next arm. Do not mistake the next arm's
   // comma for this arm's extent.
-  let nestedAngle = 0;
+  angleDepth = 0;
   for (let index = next; index < close; index += 1) {
-    if (code[index] === "<" && angleOpens(code, index)) nestedAngle += 1;
-    else if (
-      code[index] === ">" &&
-      nestedAngle > 0 &&
-      code[index - 1] !== "-" &&
-      code[index - 1] !== "=" &&
-      code[index + 1] !== "="
-    )
-      nestedAngle -= 1;
-    else if (nestedAngle === 0 && code.startsWith("=>", index)) return blockEnd;
-    else if (nestedAngle === 0 && code[index] === ",") return index;
+    angleDepth = transitionAngleDepth(code, index, angleDepth);
+    if (code[index] === "<" || code[index] === ">") continue;
+    if (angleDepth === 0 && code.startsWith("=>", index)) return blockEnd;
+    if (angleDepth === 0 && code[index] === ",") return index;
     if ("([{ ".includes(code[index]) && code[index] !== " ") {
       const end = pairs.get(index);
       if (end !== undefined) index = end;
@@ -922,6 +907,7 @@ function lineRanges(path, source, comments, ranges, wholeFile) {
       continue;
     }
     let overlaps = false;
+    let firstOutsideCode = -1;
     let currentRange = rangeCursor;
     for (let cursor = start; cursor < end; cursor += 1) {
       while (currentRange < sortedRanges.length && sortedRanges[currentRange].end <= cursor)
@@ -934,29 +920,22 @@ function lineRanges(path, source, comments, ranges, wholeFile) {
         overlaps = true;
         continue;
       }
-      if (overlaps && !isWhitespace(source[cursor]) && !commentPosition(comments, cursor)) {
-        fail(path, source, cursor, "shared coverage line; give the test-only item its own lines");
-      }
+      if (
+        firstOutsideCode < 0 &&
+        !isWhitespace(source[cursor]) &&
+        !commentPosition(comments, cursor)
+      )
+        firstOutsideCode = cursor;
     }
+    rangeCursor = currentRange;
     if (!overlaps) continue;
-    // The line may start with production code before the excluded item. Validate those characters
-    // too; the forward loop above only sees them before `overlaps` became true.
-    for (let cursor = start; cursor < end; cursor += 1) {
-      let inRange = false;
-      for (
-        let range = rangeCursor;
-        range < sortedRanges.length && sortedRanges[range].start < end;
-        range += 1
-      ) {
-        if (sortedRanges[range].start <= cursor && cursor < sortedRanges[range].end) {
-          inRange = true;
-          break;
-        }
-      }
-      if (!inRange && !isWhitespace(source[cursor]) && !commentPosition(comments, cursor)) {
-        fail(path, source, cursor, "shared coverage line; give the test-only item its own lines");
-      }
-    }
+    if (firstOutsideCode >= 0)
+      fail(
+        path,
+        source,
+        firstOutsideCode,
+        "shared coverage line; give the test-only item its own lines",
+      );
     excluded.add(lineIndex + 1);
   }
   return excluded;
@@ -1037,7 +1016,28 @@ function analyzeRustFile(path, source) {
   };
 }
 
-async function resolveModulePath(path, source, declaration, root, includedFiles) {
+function hasPathAttribute(attributes) {
+  const hasPathMeta = (meta) => {
+    let parts;
+    try {
+      parts = metaParts(meta);
+    } catch {
+      return false;
+    }
+    if (parts.name === "path") return true;
+    if (parts.name !== "cfg_attr" || parts.body === undefined) return false;
+    let argumentsList;
+    try {
+      argumentsList = splitMetaArguments(parts.body);
+    } catch {
+      return false;
+    }
+    return argumentsList.slice(1).some(hasPathMeta);
+  };
+  return attributes.some((attribute) => hasPathMeta(attribute.text));
+}
+
+async function resolveModulePath(path, source, declaration, root) {
   if (declaration.inline) {
     fail(
       path,
@@ -1046,7 +1046,7 @@ async function resolveModulePath(path, source, declaration, root, includedFiles)
       "unsupported test-only module declaration inside an inline module",
     );
   }
-  if (declaration.attributes.some((attribute) => /^\s*path\b/.test(attribute.text))) {
+  if (hasPathAttribute(declaration.attributes)) {
     fail(
       path,
       source,
@@ -1065,8 +1065,18 @@ async function resolveModulePath(path, source, declaration, root, includedFiles)
     try {
       await access(candidate);
       found.push(normalisePath(candidate, root));
-    } catch {
-      // Missing module paths are diagnosed below with the declaring file and line.
+    } catch (error) {
+      if (error.code === "ENOENT" || error.code === "ENOTDIR") continue;
+      const details =
+        error.code && !error.message?.startsWith(`${error.code}:`)
+          ? `${error.code}: ${error.message}`
+          : error.message;
+      fail(
+        path,
+        source,
+        declaration.keyword,
+        `unable to access test-only module candidate ${candidate}: ${details}`,
+      );
     }
   }
   if (found.length !== 1) {
@@ -1079,9 +1089,7 @@ async function resolveModulePath(path, source, declaration, root, includedFiles)
         : `ambiguous test-only module ${declaration.name}: ${found.join(", ")}`,
     );
   }
-  const target = found[0];
-  if (!includedFiles.has(target)) return target;
-  return target;
+  return found[0];
 }
 
 function validateExclusionConfig(source) {
@@ -1156,13 +1164,7 @@ export async function scanRustTestOnly({ root, source, files }) {
     const key = `${item.path}:${item.declaration.keyword}`;
     if (processed.has(key)) continue;
     processed.add(key);
-    const target = await resolveModulePath(
-      item.path,
-      item.source,
-      item.declaration,
-      root,
-      includedFiles,
-    );
+    const target = await resolveModulePath(item.path, item.source, item.declaration, root);
     if (!includedFiles.has(target) || testOnlyFiles.has(target)) continue;
     testOnlyFiles.add(target);
     const targetAnalysis = analyses.get(target);
