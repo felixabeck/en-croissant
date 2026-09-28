@@ -8297,7 +8297,7 @@ Handled 2026-09-19 together with f-20260905-14. The Files controls fit 320px / 2
 
 ### Route both ledgers through the vendored findings.py merge driver in .gitattributes
 
-* **ID:** f-20260912-02 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260912-02 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
 
 - **Where:** `.gitattributes` at the repo root, for `tasks/findings.md` and `tasks/decisions.md`; `scripts/findings.py` once re-vendored from agent-kit (the drain re-vendors a `stale` copy itself, d-20260906-04 there).
 
