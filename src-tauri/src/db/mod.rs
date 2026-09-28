@@ -10249,6 +10249,29 @@ mod tests {
     }
 
     #[test]
+    fn write_db_game_parse_observes_cancellation() {
+        let (_dir, app, handle, database) = blocking_database_case();
+        let game_id = insert_named_game(&app, &database, "Old", "Black", "Event", "Site");
+        let before = database_row_counts(&app, &database);
+        let state = app.state::<AppState>();
+        let token = CancellationToken::new();
+        token.cancel();
+        // Empty input parses to no game, `NoMovesFound`, so only a parser
+        // that reads through the token reports `Cancellation`.
+        let result = write_db_game_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle,
+            game_id,
+            String::new(),
+            &token,
+        );
+        assert!(matches!(result, Err(Error::Cancellation)), "{result:?}");
+        assert_eq!(database_row_counts(&app, &database), before);
+    }
+
+    #[test]
     fn edit_db_info_failed_bump_leaves_title_unchanged() {
         let (_dir, app, handle, database) = blocking_database_case();
         let state = app.state::<AppState>();
