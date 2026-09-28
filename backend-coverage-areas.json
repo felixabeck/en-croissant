@@ -36,6 +36,7 @@
       "source": "backend",
       "minimumCoverage": { "lines": 81, "functions": 53, "branches": 45 },
       "paths": [
+        "src-tauri/src/cancellable_read.rs",
         "src-tauri/src/file_workspace.rs",
         "src-tauri/src/fs.rs",
         "src-tauri/src/lexer.rs",

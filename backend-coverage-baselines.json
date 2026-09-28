@@ -24,6 +24,7 @@
         "id": "filesystem-native-boundaries",
         "source": "backend",
         "paths": [
+          "src-tauri/src/cancellable_read.rs",
           "src-tauri/src/file_workspace.rs",
           "src-tauri/src/fs.rs",
           "src-tauri/src/lexer.rs",
