@@ -8333,7 +8333,7 @@ Handled 2026-09-19 together with f-20260905-14. The Files controls fit 320px / 2
 
 ### `convert_pgn` discards its cancellation token, so a running import cannot be cancelled
 
-* **ID:** f-20260912-04 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260912-04 · **Status:** handled · **Area:** pgn-import · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `src-tauri/src/db/mod.rs:630` (`BLOCKING_GATEWAY.spawn_cancellable(cancellation, move |_| { convert_pgn_blocking(…) })`) and `convert_pgn_blocking` (`:653-740`), which takes no `CancellationToken` and performs no `cancellation_check` while streaming files into the transaction.
 * **Defect:** the accepted operation's token is dropped at the closure boundary (`move |_|`), and the blocking body never observes cancellation. Cancelling during a multi-hundred-megabyte or multi-file import keeps parsing, keeps emitting progress, and can commit the transaction after the renderer has cancelled. Every sibling in the same file threads the token (`generate_search_index_locked` at `:754-756`, the delete and search paths) and checks it before emitting or committing — the pattern `.claude/rules/pgn-scanning.md` names for `06c23b6a`.
 * **Fix shape:** pass the worker token into `convert_pgn_blocking`, call `cancellation_check` per file and per progress emission inside the transaction closure so a cancelled import rolls back as one unit, and pin it with a test that cancels mid-import and asserts no games were committed. Lens: `review-pgn-index`.
