@@ -4551,3 +4551,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** the recorded condition is about a specific finding, and the writer cannot infer it. Reversal path: drop `--finding` and accept any governed finding.
 * **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run for f-20260829-04, 2026-09-28 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"45723392f748fdbc13c393e162aedf650a616d8ffcd3a1d893c50ad22c7534c5","input_sha256":"40eb0ab086e28ce5b914f25135b6beea354e8714ccf27abdd6b0aea2b474f385","kind":"mutation-receipt","operation":"2310b945855a791713733d9e64453527bf829f275ca0b06216356d865dabe8f7","options":{"section":null},"request_id_sha256":null,"results":["d-20260928-02"],"target":"decisions-ledger","v":1} -->
+
+### d-20260928-03 — How are the backend coverage floors re-derived after the test-only exclusion?
+
+* **Question:** `d-20260902-02` requires the 18 backend floors to be recomputed on the corrected measurement. To which values?
+* **Governs:** f-20260829-04
+* **Chosen:** `minimumCoverage = floor(covered / total × 100)` per area and metric, computed from the gate's filtered report of the CI `backend-coverage` artifact used for the re-record — the calibration the previous floors already followed (4137/6208 = 66.6 % → 66). Raises and lowerings both land, each listed in the commit message.
+* **Rejected:** leaving the unbroken floors where they were (the decision says "recomputed", and floors far below the measurement re-create the non-binding state the finding reports); floors several points below the measurement for headroom (the exact-count baseline and its shrink allowance already absorb record churn).
+* **Reason:** one rule, the existing one, applied to the new scale. Reversal path: set floors by hand in `backend-coverage-areas.json`.
+* **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run for f-20260829-04, 2026-09-28 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"f396f4237730ef45f4990cf0211e6063ff374d0e313a5d571b732d8dfe212432","input_sha256":"7610fb4db3d79a8a1d1ac37f2438a00643e19a6be85b6c9c05974ba82f5bf66d","kind":"mutation-receipt","operation":"bbc357cbbacb9c2d94847692f02f94698a80d0a20396dc67ed9187c996baa948","options":{"section":null},"request_id_sha256":null,"results":["d-20260928-03"],"target":"decisions-ledger","v":1} -->
