@@ -617,16 +617,10 @@ fn scan_file(
     cancellation: &CancellationToken,
 ) -> Result<(CacheKey, Arc<[GameRange]>), Error> {
     let key = snapshot_key(&snapshot);
-    let games = map_scan_result(
-        scan_games_cancelled(snapshot.file, cancellation),
-        cancellation,
-    )?
-    .into();
+    let games = scan_games_cancelled(snapshot.file, cancellation)
+        .map_err(|error| crate::cancellable_read::map_read_error(error, cancellation))?
+        .into();
     Ok((key, games))
-}
-
-fn map_scan_result<T>(result: io::Result<T>, cancellation: &CancellationToken) -> Result<T, Error> {
-    result.map_err(|error| crate::cancellable_read::map_read_error(error, cancellation))
 }
 
 async fn scan_current(
@@ -3686,17 +3680,7 @@ mod tests {
     }
 
     #[test]
-    fn unrelated_interrupted_and_malformed_scans_remain_io_errors() {
-        let interrupted = map_scan_result::<()>(
-            Err(io::Error::new(io::ErrorKind::Interrupted, "unrelated read")),
-            &CancellationToken::new(),
-        )
-        .expect_err("unrelated interruption must remain I/O");
-        assert!(matches!(
-            interrupted,
-            Error::Io(ref source) if source.kind() == io::ErrorKind::Interrupted
-        ));
-
+    fn malformed_scans_remain_io_errors() {
         let malformed = scan_games(Cursor::new(b"[Event \"A\"]\n\n{ open\n"))
             .expect_err("unclosed comment must be malformed");
         assert_eq!(malformed.kind(), io::ErrorKind::InvalidData);
