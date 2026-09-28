@@ -10090,6 +10090,59 @@ mod tests {
         assert!(!database_has_data_revision(&database));
     }
 
+    /// Imports `files` with a token that the first `ConvertProgress` frame
+    /// cancels, so everything after that frame runs on a cancelled import.
+    fn convert_cancelled_at_first_frame(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        handle: DatabaseHandle,
+        files: Vec<FileWorkspaceHandle>,
+    ) -> (Result<(), Error>, usize) {
+        mount_convert_progress_events(app);
+        let frames = capture_events::<ConvertProgress>(app);
+        let token = CancellationToken::new();
+        let listener_token = token.clone();
+        ConvertProgress::listen(app, move |_| listener_token.cancel());
+        let result = run_import_with_token(app, handle, files, None, &token);
+        let frame_count = frames.lock().expect("convert progress frames").len();
+        (result, frame_count)
+    }
+
+    #[test]
+    fn convert_pgn_cancel_mid_file_stops_parsing_and_does_not_commit() {
+        let (dir, app, handle, database) = empty_database_case();
+        let source = dir.path().join("cancel-mid-file.pgn");
+        // 1001 games: without the per-game check the loop would reach the
+        // periodic frame at game 1000 after the cancel at game 0.
+        std::fs::write(&source, vec![REPLACEMENT_PGN; 1001].join("\n")).unwrap();
+        let (result, frame_count) =
+            convert_cancelled_at_first_frame(&app, handle, vec![grant_import_file(&app, &source)]);
+        assert!(matches!(result, Err(Error::Cancellation)), "{result:?}");
+        assert_eq!(frame_count, 1, "no progress may be emitted after cancel");
+        assert!(!database_row_counts_for_path(&database));
+        assert!(!database_has_data_revision(&database));
+    }
+
+    #[test]
+    fn convert_pgn_cancel_between_files_does_not_open_the_next_file() {
+        let (dir, app, handle, database) = empty_database_case();
+        let first = dir.path().join("cancel-first.pgn");
+        let second = dir.path().join("cancel-second.pgn");
+        std::fs::write(&first, REPLACEMENT_PGN).unwrap();
+        std::fs::write(&second, REPLACEMENT_PGN).unwrap();
+        let files = vec![
+            grant_import_file(&app, &first),
+            grant_import_file(&app, &second),
+        ];
+        // Resolving the removed second file fails with a non-cancellation
+        // error, so only the per-file check can yield `Cancellation` here.
+        std::fs::remove_file(&second).unwrap();
+        let (result, frame_count) = convert_cancelled_at_first_frame(&app, handle, files);
+        assert!(matches!(result, Err(Error::Cancellation)), "{result:?}");
+        assert_eq!(frame_count, 1, "no progress may be emitted after cancel");
+        assert!(!database_row_counts_for_path(&database));
+        assert!(!database_has_data_revision(&database));
+    }
+
     #[test]
     fn write_db_game_failed_bump_leaves_games_unchanged() {
         let (_dir, app, handle, database) = blocking_database_case();
