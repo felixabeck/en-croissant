@@ -265,8 +265,6 @@ What is **not** settled, all of it filed in `tasks/findings.md` rather than only
 - **The 320px / 200% font-scale layout is broken** — `f-20260829-02`. The committed screenshots
   record the clipping rather than contradict it.
 - **`src/App.tsx` is untested** (0 of 67 lines) — `f-20260829-03`.
-- **The backend coverage exporter measures `#[cfg(test)]` modules** alongside production code —
-  `f-20260829-04`.
 
 E2E runs go through `pnpm test:e2e:container`, inside the pinned Playwright image — the reasoning
 is `d-20260829-01` in `tasks/decisions.md`. The committed snapshots already match what that image

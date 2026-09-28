@@ -26,6 +26,11 @@ the numeric backstop is gone, so any future mechanism that changes *what gets me
 exclusion in `rust-branch-coverage.mjs`, a new include/exclude glob — must be expressed through the
 config so it reaches that signature, or the narrowing becomes invisible.
 
+Backend sources can declare `excludeTestOnlyItems` to remove Rust items and module files whose cfg
+predicate is definitely false with `test` set to false and other atoms unknown. The coverage gate
+scans included Rust files before applying exclude globs, then filters those lines and files from its
+report; the exporter and its LCOV artifact remain unchanged.
+
 **A narrowing can also arrive through the test suite, where the numeric ratchets do not look.**
 An eager `?raw` import of a file inside the coverage include set registers that file in the v8
 coverage map as a string module with no coverable statements. Vitest generates empty-but-counted
@@ -89,11 +94,15 @@ functions, 1.5% branches) is backed by workspace/download mutation success and f
 plus engine lifecycle/analysis IPC controller tests. Raise floors when additional central flows
 are covered; never lower them to accept a regression.
 
-The backend uses the same two-layer policy. Its floors are calibrated just below the verified
-instrumented result for each cohesive native area: app infrastructure 66/47/36%, filesystem
-boundaries 50/38/36%, OAuth and credentials 68/61/53%, database and search 65/54/65%, engine,
-game, and chess 48/54/55%, and auxiliary domain services 55/41/79% (lines/functions/branches).
-The exact-count baseline catches changes above those floors; new security or IPC surfaces require
+The backend uses the same two-layer policy, measured on production code only: every item, statement
+and module file compiled only under `test` leaves the measurement (`excludeTestOnlyItems`,
+`d-20260927-24`), so a test's own code can neither raise nor lower an area. Each floor is
+`floor(covered/total × 100)` of the CI measurement it was re-derived from (2026-09-28, CI run
+36355498319): app infrastructure 81/73/47%, filesystem boundaries 81/53/45%, OAuth and credentials
+64/58/59%, database and search 86/71/71%, engine, game, and chess 78/78/62%, and auxiliary domain
+services 75/58/90% (lines/functions/branches). Before that re-derivation the backend measured its
+own `#[cfg(test)]` code, which inflated most areas by 15 to 30 points (`f-20260829-04`). The
+exact-count baseline catches changes above those floors; new security or IPC surfaces require
 focused tests before the baseline is refreshed.
 
 After adding coverage, deliberately refresh the frontend baseline so the new gains become

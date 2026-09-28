@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { isEntrypoint } from "./entrypoint.mjs";
+import { maskRustSource } from "./rust-source-mask.mjs";
 import { listWorkingTreeFiles } from "./working-tree-files.mjs";
 
 // Owner: f-20260830-25. Emptied 2026-09-06 by the finding that owned it;
@@ -52,7 +53,9 @@ export function checkDeadCodeSurface(sources, allowlist = DEAD_CODE_ALLOWLIST) {
   const entries = sourceEntries(sources);
   const pathsWithAllowance = new Set(
     entries
-      .filter(({ contents }) => maskRustLines(contents).some(isFileLevelDeadCodeAllowance))
+      .filter(({ contents }) =>
+        maskRustSource(contents).split("\n").some(isFileLevelDeadCodeAllowance),
+      )
       .map(({ path }) => path),
   );
   const allowedPaths = new Set(allowlist);
@@ -74,122 +77,6 @@ export function checkDeadCodeSurface(sources, allowlist = DEAD_CODE_ALLOWLIST) {
   }
 
   return violations;
-}
-
-function maskRustLines(source) {
-  const lines = source.split("\n");
-  const state = { blockCommentDepth: 0, rawStringEnd: null, string: null };
-
-  return lines.map((line) => {
-    let masked = "";
-    let index = 0;
-
-    const blank = (count) => {
-      masked += " ".repeat(count);
-    };
-
-    while (index < line.length) {
-      if (state.rawStringEnd) {
-        const end = line.indexOf(state.rawStringEnd, index);
-        if (end === -1) {
-          blank(line.length - index);
-          index = line.length;
-          continue;
-        }
-        blank(end - index + state.rawStringEnd.length);
-        index = end + state.rawStringEnd.length;
-        state.rawStringEnd = null;
-        continue;
-      }
-
-      if (state.string) {
-        const quote = state.string;
-        let escaped = false;
-        let end = -1;
-        for (let cursor = index; cursor < line.length; cursor += 1) {
-          const character = line[cursor];
-          if (!escaped && character === quote) {
-            end = cursor;
-            break;
-          }
-          escaped = !escaped && character === "\\";
-          if (character !== "\\") escaped = false;
-        }
-        if (end === -1) {
-          blank(line.length - index);
-          index = line.length;
-          continue;
-        }
-        blank(end - index + 1);
-        index = end + 1;
-        state.string = null;
-        continue;
-      }
-
-      if (state.blockCommentDepth > 0) {
-        if (line.startsWith("/*", index)) {
-          state.blockCommentDepth += 1;
-          blank(2);
-          index += 2;
-        } else if (line.startsWith("*/", index)) {
-          state.blockCommentDepth -= 1;
-          blank(2);
-          index += 2;
-        } else {
-          blank(1);
-          index += 1;
-        }
-        continue;
-      }
-
-      if (line.startsWith("//", index)) {
-        blank(line.length - index);
-        break;
-      }
-      if (line.startsWith("/*", index)) {
-        state.blockCommentDepth = 1;
-        blank(2);
-        index += 2;
-        continue;
-      }
-
-      // `#*`, not `#+`: a hash-less `r"..."` is a raw string too, and reading one as an
-      // ordinary string is not a cosmetic error. `r"\\?\UNC\"` ends in a backslash-quote,
-      // which the ordinary-string branch takes for an escaped quote, so the masker stays inside
-      // a string for the rest of the file. Every brace after it is then miscounted, and
-      // `walkGatedLines` loses track of which regions are `#[cfg(test)]` — which reports
-      // production violations inside test modules and, worse, can silently treat a real
-      // production region as gated.
-      const rawStart = line.slice(index).match(/^r(#*)"/);
-      if (rawStart) {
-        const delimiter = rawStart[1];
-        state.rawStringEnd = `"${delimiter}`;
-        blank(rawStart[0].length);
-        index += rawStart[0].length;
-        continue;
-      }
-
-      if (line[index] === '"') {
-        state.string = line[index];
-        blank(1);
-        index += 1;
-        continue;
-      }
-      if (line[index] === "'") {
-        const charLiteral = line.slice(index).match(/^'(?:\\.|[^'\\])'/);
-        if (charLiteral) {
-          blank(charLiteral[0].length);
-          index += charLiteral[0].length;
-          continue;
-        }
-      }
-
-      masked += line[index];
-      index += 1;
-    }
-
-    return masked;
-  });
 }
 
 function braceDelta(code) {
@@ -365,7 +252,7 @@ function parseUseBindings(text) {
 }
 
 function walkGatedLines(source, onLine) {
-  const lines = maskRustLines(source);
+  const lines = maskRustSource(source).split("\n");
   const testRegionStarts = [];
   let braceDepth = 0;
   let crateCfgTest = false;

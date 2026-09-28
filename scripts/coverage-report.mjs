@@ -16,7 +16,7 @@
  * from the previous matrix, and each inherited the last one's errors; that is why this one starts
  * from the file.
  *
- * **71 distinct failure paths**, plus one swallowed cleanup path that deliberately produces no
+ * **87 distinct failure paths**, plus one swallowed cleanup path that deliberately produces no
  * failure of its own (row 32) and one shared sink (row 41). No row is *argued*: every one is
  * staged. "Argued" is reserved for a path that could only be reached by editing the verifier,
  * doing harm that outlives the run, or touching something the run may not modify, and none of
@@ -223,6 +223,58 @@
  *                                                             HEAD:scratch-baseline.json:
  *                                                             status=38; stderr="fatal: simulated
  *                                                             committed object failure\n"` — exit 1
+ * 71  rust-test-only.mjs   invalid exclusion object or        `Coverage source backend
+ *     validateExclusionConfig empty reason                      excludeTestOnlyItems must be an
+ *                                                             object with a non-empty reason
+ *                                                             string` — exit 1
+ * 72  rust-test-only.mjs   include-matched non-Rust file       `src-tauri/src/config.ts:1:
+ *     scanRustTestOnly                                         excludeTestOnlyItems can scan only
+ *                                                             .rs files` — exit 1
+ * 73  rust-test-only.mjs   unbalanced delimiter at EOF         `src-tauri/src/lib.rs:2: unbalanced
+ *     delimiterPairs                                           delimiter at end of file` — exit 1
+ * 74  rust-test-only.mjs   unparseable `cfg` predicate         `src-tauri/src/lib.rs:1:
+ *     parsePredicate                                           unparseable cfg predicate (not()
+ *                                                             requires one cfg predicate)` — exit 1
+ * 75  rust-test-only.mjs   unparseable `cfg_attr` predicate    `src-tauri/src/lib.rs:1:
+ *     evaluateCfgAttribute                                      unparseable cfg_attr predicate
+ *                                                             (expected a condition and
+ *                                                             attribute)` — exit 1
+ * 76  rust-test-only.mjs   braced macro expression followed    `src-tauri/src/lib.rs:4: unsupported
+ *     findStatementEnd      by `?`                              test-only form; give it its own
+ *                                                             item/statement or extend
+ *                                                             rust-test-only.mjs` — exit 1
+ * 77  rust-test-only.mjs   test-only attribute in unplaced     `src-tauri/src/lib.rs:3:
+ *     analyzeRustFile       `try` block                         unplaceable test-only context;
+ *                                                             extend rust-test-only.mjs only for
+ *                                                             a listed Rust form` — exit 1
+ * 78  rust-test-only.mjs   statement reaches `}` without `;`   `src-tauri/src/lib.rs:3: test-only
+ *     findStatementEnd                                         statement reaches its enclosing }
+ *                                                             without a terminator` — exit 1
+ * 79  rust-test-only.mjs   shared line with production call    `src-tauri/src/lib.rs:1: shared
+ *     lineRanges                                               coverage line; give the test-only
+ *                                                             item its own lines` — exit 1
+ * 80  rust-test-only.mjs   shared line with production string  same shared-line message, with
+ *     lineRanges                                                `const VALUE: &str = "production"`
+ *                                                             outside the test-only fn — exit 1
+ * 81  rust-test-only.mjs   nested module in a test-only inline `src-tauri/src/lib.rs:1: unsupported
+ *     resolveModulePath    module                               test-only module declaration inside
+ *                                                             an inline module` — exit 1
+ * 82  rust-test-only.mjs   `#[path]` on test-only `mod`        `src-tauri/src/lib.rs:3: unsupported
+ *     resolveModulePath                                          #[path] on a test-only module
+ *                                                             declaration` — exit 1
+ * 83  rust-test-only.mjs   unresolved test-only `mod`          `src-tauri/src/lib.rs:2: cannot
+ *     resolveModulePath                                          resolve test-only module missing`
+ *                                                             — exit 1
+ * 84  rust-test-only.mjs   ambiguous module file layouts       `src-tauri/src/lib.rs:2: ambiguous
+ *     resolveModulePath                                          test-only module helper:
+ *                                                             src-tauri/src/helper.rs,
+ *                                                             src-tauri/src/helper/mod.rs` — exit 1
+ * 85  rust-test-only.mjs   test-only attribute in unrelated    `src-tauri/src/lib.rs:2: unsupported
+ *     analyzeRustFile       macro input                          test-only context inside a macro
+ *                                                             input` — exit 1
+ * 86  rust-test-only.mjs   unreadable included Rust file       `src-tauri/src/unreadable.rs:1:
+ *     scanRustTestOnly                                          unable to read Rust source: EACCES`
+ *                                                             — exit 1
  *
  * **The rows the blank-measurement work added or changed were also staged against the real
  * frontend LCOV**, not only against fixtures, because that is the artefact an operator runs. Rows
@@ -245,7 +297,7 @@
  *           message does **not** name a baseline-write command. The baseline denies were removed
  *           under `d-20260927-23`; write protection now lives in the writer guard (rows 42-70).
  *
- * **Baseline-writer rows 42-70** were staged by CLI subtests in
+ * **Baseline-writer rows 42-70 and Rust-exclusion rows 71-86** were staged by CLI subtests in
  * `scripts/coverage-report-tests.mjs`; every refused write asserts exit 1 and byte-identical
  * scratch baseline-file bytes. Rows 42-51 are the individual prior-JSON/schema/counter cases; 52-55
  * are covered-count, ratio, removed-area, and zero-total decreases; 56-57 are scope and area-set
@@ -266,6 +318,7 @@ import { basename, dirname, resolve } from "node:path";
 import { excluded, excludePatterns, matches, normalisePath } from "./coverage-scope.mjs";
 import { isEntrypoint } from "./entrypoint.mjs";
 import { filesBelow } from "./files-below.mjs";
+import { scanRustTestOnly, validateExclusionConfig } from "./rust-test-only.mjs";
 
 const METRICS = ["lines", "functions", "branches"];
 
@@ -289,7 +342,7 @@ function emptyMetrics() {
  * counter identity, is the only place that can do it correctly: past this function the counters are
  * gone and only totals remain, which can be summed but not unioned.
  */
-export function parseLcov(lcov, identify = (file) => file) {
+export function parseLcov(lcov, identify = (file) => file, includeLine = () => true) {
   const reports = new Map();
   let report;
 
@@ -334,7 +387,9 @@ export function parseLcov(lcov, identify = (file) => file) {
     if (!report) continue;
     if (key === "DA") {
       const [line, hits, checksum = ""] = value.split(",");
-      addCounter(report.lines, identity(line, checksum), Number(hits));
+      if (includeLine(report.file, Number(line))) {
+        addCounter(report.lines, identity(line, checksum), Number(hits));
+      }
     } else if (key === "FN") {
       // The occurrence index counts same-named declarations *on the same line*, not same-named
       // declarations anywhere in the file. Both spellings disambiguate the only case that needs
@@ -349,21 +404,26 @@ export function parseLcov(lcov, identify = (file) => file) {
       const sameLine = report.functionsByDeclaration.get(declarationKey) ?? 0;
       const functionIdentity = identity(line, name, sameLine);
       report.functionsByDeclaration.set(declarationKey, sameLine + 1);
-      report.functions.set(functionIdentity, 0);
-      functionsWithName.push(functionIdentity);
+      const included = includeLine(report.file, Number(line));
+      if (included) report.functions.set(functionIdentity, 0);
+      functionsWithName.push({ identity: functionIdentity, included });
       report.functionIdsByName.set(name, functionsWithName);
     } else if (key === "FNDA") {
       const [hits, name] = value.split(",");
       const occurrence = report.functionDataOccurrences.get(name) ?? 0;
       // `null` where a declaration would carry its line: no `FN` line can produce it, so an
       // `FNDA` with no matching declaration cannot collide with a real function.
-      const functionIdentity =
-        report.functionIdsByName.get(name)?.[occurrence] ?? identity(null, name, occurrence);
+      const declaration = report.functionIdsByName.get(name)?.[occurrence];
       report.functionDataOccurrences.set(name, occurrence + 1);
-      addCounter(report.functions, functionIdentity, Number(hits));
+      if (!declaration || declaration.included) {
+        const functionIdentity = declaration?.identity ?? identity(null, name, occurrence);
+        addCounter(report.functions, functionIdentity, Number(hits));
+      }
     } else if (key === "BRDA") {
       const [line, block, branch, hits] = value.split(",");
-      addCounter(report.branches, identity(line, block, branch), hits === "-" ? 0 : Number(hits));
+      if (includeLine(report.file, Number(line))) {
+        addCounter(report.branches, identity(line, block, branch), hits === "-" ? 0 : Number(hits));
+      }
     }
   }
   mergeReport(report);
@@ -407,12 +467,30 @@ function addMetrics(total, addition) {
 
 export async function buildCoverageReport({ config, configPath, lcov, root }) {
   const productionFiles = new Map();
+  const scansBySource = new Map();
   for (const source of config.sources) {
-    const files = (await filesBelow(resolve(root, source.root))).map((path) =>
-      normalisePath(path, root),
-    );
+    if (source.excludeTestOnlyItems !== undefined) validateExclusionConfig(source);
+    let paths;
+    try {
+      paths = await filesBelow(resolve(root, source.root));
+    } catch (error) {
+      if (source.excludeTestOnlyItems === undefined) throw error;
+      throw new Error(`${source.root}:1: unable to scan Rust source tree: ${error.message}`, {
+        cause: error,
+      });
+    }
+    const files = paths.map((path) => normalisePath(path, root));
+    const testOnlyScan =
+      source.excludeTestOnlyItems === undefined
+        ? undefined
+        : await scanRustTestOnly({ root, source, files: paths });
+    if (testOnlyScan) scansBySource.set(source.id, testOnlyScan);
     for (const file of files) {
-      if (matches(file, source.include) && !excluded(file, source))
+      if (
+        matches(file, source.include) &&
+        !excluded(file, source) &&
+        !testOnlyScan?.testOnlyFiles.has(file)
+      )
         productionFiles.set(file, source.id);
     }
   }
@@ -438,7 +516,12 @@ export async function buildCoverageReport({ config, configPath, lcov, root }) {
   // below would add the same file's records once each, and the blank check further down would see
   // whichever record happened to come last.
   const coverageMetricsByFile = new Map();
-  for (const record of parseLcov(lcov, (file) => normalisePath(file, root))) {
+  for (const record of parseLcov(
+    lcov,
+    (file) => normalisePath(file, root),
+    (file, line) =>
+      !scansBySource.get(productionFiles.get(file))?.excludedLines.get(file)?.has(line),
+  )) {
     const file = record.file;
     const sourceId = productionFiles.get(file);
     if (!sourceId) continue;
@@ -514,6 +597,7 @@ export function scopeSignature(config) {
       include: [...source.include].sort(),
       exclude: [...excludePatterns(source)].sort(),
       statementFree: source.statementFree?.map(({ path }) => path).sort(),
+      excludeTestOnlyItems: source.excludeTestOnlyItems ? true : undefined,
     })),
     areas: config.areas.map((area) => ({
       id: area.id,
@@ -533,7 +617,7 @@ export function assertBaseline(report, baseline, config) {
     if (JSON.stringify(baseline.scope) !== actualScope) {
       throw new Error(
         "Coverage measurement scope changed: source ids and roots, include globs, exclude globs, " +
-          "statementFree declarations, or area ids, sources, and paths no longer match the " +
+          "statementFree declarations, test-only Rust exclusion, or area ids, sources, and paths no longer match the " +
           "baseline. Narrowing the measured set hides untested code without changing any " +
           "percentage. Re-record the scope subtree by hand, leave areas untouched, and prove " +
           "the edit is scope-only by comparing the parsed committed baseline with the parsed " +

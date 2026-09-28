@@ -5,6 +5,9 @@
       "id": "backend",
       "root": "src-tauri/src",
       "include": ["src-tauri/src/**/*.rs"],
+      "excludeTestOnlyItems": {
+        "reason": "Rust items and module files compiled only when the test configuration is enabled are not production coverage."
+      },
       "exclude": [
         {
           "pattern": "src-tauri/src/engine/mod.rs",
@@ -25,13 +28,13 @@
     {
       "id": "app-infrastructure",
       "source": "backend",
-      "minimumCoverage": { "lines": 66, "functions": 47, "branches": 36 },
+      "minimumCoverage": { "lines": 81, "functions": 73, "branches": 47 },
       "paths": ["src-tauri/src/main.rs", "src-tauri/src/error.rs", "src-tauri/src/infra/**"]
     },
     {
       "id": "filesystem-native-boundaries",
       "source": "backend",
-      "minimumCoverage": { "lines": 50, "functions": 38, "branches": 36 },
+      "minimumCoverage": { "lines": 81, "functions": 53, "branches": 45 },
       "paths": [
         "src-tauri/src/file_workspace.rs",
         "src-tauri/src/fs.rs",
@@ -43,7 +46,7 @@
     {
       "id": "oauth-credentials",
       "source": "backend",
-      "minimumCoverage": { "lines": 68, "functions": 61, "branches": 53 },
+      "minimumCoverage": { "lines": 64, "functions": 58, "branches": 59 },
       "paths": [
         "src-tauri/src/credentials.rs",
         "src-tauri/src/chesscom.rs",
@@ -54,19 +57,19 @@
     {
       "id": "database-search",
       "source": "backend",
-      "minimumCoverage": { "lines": 65, "functions": 54, "branches": 65 },
+      "minimumCoverage": { "lines": 86, "functions": 71, "branches": 71 },
       "paths": ["src-tauri/src/db/**"]
     },
     {
       "id": "engine-game-chess",
       "source": "backend",
-      "minimumCoverage": { "lines": 48, "functions": 54, "branches": 55 },
+      "minimumCoverage": { "lines": 78, "functions": 78, "branches": 62 },
       "paths": ["src-tauri/src/chess.rs", "src-tauri/src/game.rs", "src-tauri/src/engine/**"]
     },
     {
       "id": "auxiliary-domain-services",
       "source": "backend",
-      "minimumCoverage": { "lines": 55, "functions": 41, "branches": 79 },
+      "minimumCoverage": { "lines": 75, "functions": 58, "branches": 90 },
       "paths": [
         "src-tauri/src/opening.rs",
         "src-tauri/src/progress.rs",

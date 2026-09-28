@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
   access,
+  chmod,
   mkdtemp,
   mkdir,
   readFile,
@@ -37,6 +38,8 @@ import {
   probeCrashingSources,
 } from "./rust-branch-coverage.mjs";
 import { RUST_COVERAGE_TOOLCHAIN } from "./toolchain-versions.mjs";
+import { maskRustSource, maskRustSourceWithSpans } from "./rust-source-mask.mjs";
+import { scanRustTestOnly } from "./rust-test-only.mjs";
 
 const config = {
   version: 1,
@@ -62,6 +65,43 @@ async function fixture({ source = "export const example = 1;\n", files = {} } = 
     await writeFile(filePath, contents);
   }
   return { root };
+}
+
+function rustConfig({ include = ["src-tauri/src/**/*.rs"], exclude = [], exclusion = true } = {}) {
+  return {
+    version: 1,
+    sources: [
+      {
+        id: "backend",
+        root: "src-tauri/src",
+        include,
+        exclude,
+        ...(exclusion ? { excludeTestOnlyItems: { reason: "Fixture test-only Rust code." } } : {}),
+      },
+    ],
+    areas: [
+      {
+        id: "backend-area",
+        source: "backend",
+        minimumCoverage: { lines: 0, functions: 0, branches: 0 },
+        paths: ["src-tauri/src/**"],
+      },
+    ],
+  };
+}
+
+async function scanRustFixture(files, source = rustConfig().sources[0]) {
+  const { root } = await fixture({ files });
+  const result = await scanRustTestOnly({ root, source });
+  return { root, result };
+}
+
+function physicalLines(source, first, last) {
+  return source
+    .split("\n")
+    .map((line, index) => ({ line, number: index + 1 }))
+    .filter(({ line, number }) => number >= first && number <= last && line.trim())
+    .map(({ number }) => number);
 }
 
 function metrics(metric, covered, total) {
@@ -95,6 +135,460 @@ function lcovRecord(file, { lines = 0, functions = 0, branches = 0 } = {}) {
   records.push("end_of_record", "");
   return records.join("\n");
 }
+
+test("the shared Rust masker preserves offsets and separates comments from literal contents", () => {
+  const source = String.raw`// { line comment
+/* outer { /* nested } */ still open */
+let normal = "{ escaped quote: \"";
+let raw = r###"{ /* literal */ }"###;
+let byte = b"{ not a delimiter";
+let c_string = c"{ not a delimiter";
+let byte_raw = br##"{ not a delimiter"##;
+let c_raw = cr#"{ not a delimiter"#;
+let chars = ('x', '\n', '\u{1f}', b'{');
+let borrow: &'static str = "value";
+'outer: loop { break 'outer; }
+let pgn = b"{ Event \"brace\"";`;
+  const { masked, comments, literals } = maskRustSourceWithSpans(source);
+  assert.equal(maskRustSource(source), masked);
+  assert.equal(masked.length, source.length);
+  assert.deepEqual(
+    masked.split("").filter((character) => character === "\n"),
+    source.split("").filter((character) => character === "\n"),
+  );
+  assert.equal(comments.length, 2);
+  assert.equal(literals.length, 12);
+  assert.match(masked, /'static/);
+  assert.match(masked, /'outer:/);
+  assert.match(masked, /break 'outer/);
+  assert.doesNotMatch(masked, /u\{1f\}|b"\{ Event/);
+  assert.ok(comments.every(({ start, end }) => end > start));
+  assert.ok(literals.every(({ start, end }) => end > start));
+});
+
+test("Rust cfg and nested cfg_attr predicates use the fixed three-valued test rule", async () => {
+  const excludedAttributes = [
+    "#[cfg(test)]",
+    "#[cfg(all(test, unix))]",
+    "#[cfg(not(not(test)))]",
+    "#[cfg(any())]",
+    "#[cfg_attr(not(test), cfg(test))]",
+    '#[cfg(all(test, target_os = "a,b)"))]',
+  ];
+  const measuredAttributes = [
+    "#[cfg(any(test, windows))]",
+    "#[cfg(not(test))]",
+    "#[cfg(unix)]",
+    "#[cfg(all())]",
+    "#[cfg_attr(test, allow(dead_code))]",
+    "#[cfg_attr(test, cfg_attr(not(test), cfg(test)))]",
+    "#[cfg_attr(unix, cfg(test))]",
+    '#[cfg(target_os = "macos")]',
+  ];
+
+  for (const [attributes, expected] of [
+    ...excludedAttributes.map((attribute) => [attribute, true]),
+    ...measuredAttributes.map((attribute) => [attribute, false]),
+    ["#[allow(dead_code)]\n#[cfg(test)]", true],
+  ]) {
+    const source = `${attributes}\nfn hidden() {}\nfn production() {}\n`;
+    const { result } = await scanRustFixture({ "src-tauri/src/lib.rs": source });
+    const lines = result.excludedLines.get("src-tauri/src/lib.rs");
+    const hiddenLine = attributes.split("\n").length + 1;
+    const productionLine = hiddenLine + 1;
+    assert.equal(lines.has(hiddenLine), expected, attributes);
+    assert.equal(lines.has(productionLine), false, attributes);
+  }
+});
+
+test("test-only item extents stop at each recognised item terminator", async () => {
+  const cases = [
+    ["body-bearing fn", 'pub async unsafe extern "C" fn hidden() {\n    let _value = true;\n}'],
+    ["const fn", "const fn hidden() {}"],
+    ["bare extern fn", "extern fn hidden();"],
+    ["extern fn with ABI", 'extern "C" fn hidden();'],
+    ["inline module", "mod hidden { fn nested() {} }"],
+    [
+      "test-only module with spaced comparisons",
+      "mod hidden {\n    fn compare(a: i32, b: i32, c: i32) {\n        if a < b && b < c {}\n    }\n}",
+    ],
+    ["impl", "impl Hidden { fn nested() {} }"],
+    ["trait", "trait Hidden { fn nested(&self); }"],
+    ["braced struct", "struct Hidden { field: bool, }"],
+    ["braced enum", "enum Hidden { Variant, }"],
+    ["braced union", "union Hidden { field: u32 }"],
+    ["use item", "use crate::hidden;"],
+    ["type item", "type Hidden = bool;"],
+    ["const item", "const HIDDEN: bool = true;"],
+    ["static item", "static HIDDEN: bool = true;"],
+    ["tuple struct", "struct Hidden(bool);"],
+    ["unit struct", "struct Hidden;"],
+    ["braced macro item with semicolon", "fixture! {\n    const VALUE: bool = true;\n};"],
+  ];
+  for (const [name, snippet] of cases) {
+    const source = `#[cfg(test)]\n${snippet}\nfn production_after() {}\n`;
+    const { result } = await scanRustFixture({ "src-tauri/src/lib.rs": source });
+    const excluded = [...result.excludedLines.get("src-tauri/src/lib.rs")].sort((a, b) => a - b);
+    assert.deepEqual(excluded, physicalLines(source, 1, snippet.split("\n").length + 1), name);
+    assert.equal(excluded.includes(snippet.split("\n").length + 2), false, name);
+  }
+});
+
+test("test-only statement extents stop at statement, branch, block, and expression boundaries", async () => {
+  const cases = [
+    ["let with braced initializer", "  let hidden = {\n    true\n  } && {\n    false\n  };"],
+    [
+      "if/else-if/else with semicolon",
+      "  if first {\n    one();\n  } else if second {\n    two();\n  } else {\n    three();\n  };",
+    ],
+    ["if/else chain without semicolon", "  if first {\n    one();\n  } else {\n    two();\n  }"],
+    [
+      "match statement",
+      "  match value {\n    Some(_) => { one(); },\n    None => { two(); },\n  };",
+    ],
+    ["bare block with semicolon", "  {\n    hidden();\n  };"],
+    ["expression statement with closure", "  value.with(|slot| {\n    *slot = true;\n  });"],
+    ["local item", "  fn local() {\n    hidden();\n  }"],
+  ];
+  for (const [name, snippet] of cases) {
+    const source = `fn enclosing() {\n  #[cfg(test)]\n${snippet}\n  let production_after = true;\n}\n`;
+    const { result } = await scanRustFixture({ "src-tauri/src/lib.rs": source });
+    const lastTestLine = snippet.split("\n").length + 2;
+    assert.deepEqual(
+      [...result.excludedLines.get("src-tauri/src/lib.rs")].sort((a, b) => a - b),
+      physicalLines(source, 2, lastTestLine),
+      name,
+    );
+    assert.equal(
+      result.excludedLines.get("src-tauri/src/lib.rs").has(lastTestLine + 1),
+      false,
+      name,
+    );
+  }
+
+  const macroSource = `fn enclosing() {\n  #[cfg(test)]\n  matches! {\n    true, true\n  }\n  && false;\n  let production_after = true;\n}\n`;
+  const { result: macroResult } = await scanRustFixture({ "src-tauri/src/lib.rs": macroSource });
+  assert.deepEqual([...macroResult.excludedLines.get("src-tauri/src/lib.rs")], [2, 3, 4, 5]);
+  assert.equal(macroResult.excludedLines.get("src-tauri/src/lib.rs").has(6), false);
+});
+
+test("comma-list extents preserve following parameters, arguments, fields, elements, and variants", async () => {
+  const cases = [
+    [
+      "generic parameter spanning lines",
+      "fn consume(\n    #[cfg(test)]\n    observer: Option<\n        &Arc<dyn A + Send>,\n    >,\n    visible: (),\n) {}\n",
+      [2, 3, 4, 5],
+    ],
+    [
+      "argument",
+      "fn call() {\n  consume(\n    #[cfg(test)]\n    1,\n    2,\n  );\n  production();\n}\n",
+      [3, 4],
+    ],
+    [
+      "last argument without comma",
+      "fn call() {\n  consume(\n    #[cfg(test)]\n    1\n  );\n  production();\n}\n",
+      [3, 4],
+    ],
+    [
+      "struct field",
+      "struct Record {\n  #[cfg(test)]\n  hidden: bool,\n  visible: bool,\n}\n",
+      [2, 3],
+    ],
+    ["array element", "const VALUES: [u8; 2] = [\n  #[cfg(test)]\n  1,\n  2,\n];\n", [2, 3]],
+    ["enum variant", "enum Kind {\n  #[cfg(test)]\n  Hidden,\n  Visible,\n}\n", [2, 3]],
+    [
+      "braced const generic argument",
+      "fn consume<const N: usize, T>(\n  #[cfg(test)]\n  hidden: Array<{ N + 1 }, ()>,\n  visible: (),\n) {}\n",
+      [2, 3],
+    ],
+  ];
+  for (const [name, source, expected] of cases) {
+    const { result } = await scanRustFixture({ "src-tauri/src/lib.rs": source });
+    assert.deepEqual(
+      [...result.excludedLines.get("src-tauri/src/lib.rs")].sort((a, b) => a - b),
+      expected,
+      name,
+    );
+  }
+});
+
+test("thread_local! braces are item lists and exclude only a test-only static entry", async () => {
+  const source = `thread_local! {\n  static PRODUCTION: bool = false;\n  #[cfg(test)]\n  static TEST_ONLY: bool = true;\n}\nfn production_after() {}\n`;
+  const { result } = await scanRustFixture({ "src-tauri/src/lib.rs": source });
+  assert.deepEqual([...result.excludedLines.get("src-tauri/src/lib.rs")], [3, 4]);
+  const stdSource = `std::thread_local! {\n  static PRODUCTION: bool = false;\n  #[cfg(test)]\n  static TEST_ONLY: bool = true;\n}\nfn production_after() {}\n`;
+  const { result: stdResult } = await scanRustFixture({ "src-tauri/src/lib.rs": stdSource });
+  assert.deepEqual([...stdResult.excludedLines.get("src-tauri/src/lib.rs")], [3, 4]);
+});
+
+test("a no-comma match arm with a block RHS stops before the following production arm", async () => {
+  const source = `fn enclosing(value: bool) {\n  match value {\n    #[cfg(test)]\n    true => {\n      hidden();\n    }\n    false => {\n      production();\n    }\n  }\n}\n`;
+  const { result } = await scanRustFixture({ "src-tauri/src/lib.rs": source });
+  assert.deepEqual([...result.excludedLines.get("src-tauri/src/lib.rs")], [3, 4, 5, 6]);
+  assert.equal(result.excludedLines.get("src-tauri/src/lib.rs").has(7), false);
+});
+
+test("test-only module files are excluded in both layouts and recursively", async () => {
+  for (const [target, extra] of [
+    ["src-tauri/src/helper.rs", {}],
+    ["src-tauri/src/helper/mod.rs", {}],
+    ["src-tauri/src/helper.rs", { "src-tauri/src/helper/nested.rs": "pub fn nested() {}\n" }],
+  ]) {
+    const source = "#[cfg(test)]\nmod helper;\nfn production() {}\n";
+    const { result } = await scanRustFixture({
+      "src-tauri/src/lib.rs": source,
+      [target]: extra["src-tauri/src/helper/nested.rs"]
+        ? "// whole test-only module file\nmod nested;\npub fn helper() {}\n"
+        : "// whole test-only module file\npub fn helper() {}\n",
+      ...extra,
+    });
+    assert.deepEqual([...result.excludedLines.get("src-tauri/src/lib.rs")], [1, 2]);
+    assert.ok(result.testOnlyFiles.has(target), target);
+    assert.equal(
+      result.excludedLineCounts.get(target),
+      extra["src-tauri/src/helper/nested.rs"] ? 3 : 2,
+      target,
+    );
+    assert.equal(result.excludedLines.get(target).has(2), true, target);
+    if (extra["src-tauri/src/helper/nested.rs"]) {
+      assert.ok(result.testOnlyFiles.has("src-tauri/src/helper/nested.rs"));
+      assert.equal(result.excludedLineCounts.get("src-tauri/src/helper/nested.rs"), 1);
+    }
+  }
+});
+
+test("inner cfg attributes exclude their file or enclosing block", async () => {
+  const files = {
+    "src-tauri/src/file.rs": "#![cfg(test)]\npub fn file_only() {}\n",
+    "src-tauri/src/block.rs":
+      "fn enclosing()\n{\n  #![cfg(test)]\n  fn block_only() {}\n}\nfn production() {}\n",
+  };
+  const { result } = await scanRustFixture(files);
+  assert.equal(result.testOnlyFiles.has("src-tauri/src/file.rs"), true);
+  assert.deepEqual([...result.excludedLines.get("src-tauri/src/file.rs")], [1, 2]);
+  assert.deepEqual([...result.excludedLines.get("src-tauri/src/block.rs")], [2, 3, 4, 5]);
+  assert.equal(result.excludedLines.get("src-tauri/src/block.rs").has(6), false);
+});
+
+test("line mapping leaves production literals alone and includes trailing test-item comments", async () => {
+  const source =
+    '#[cfg(test)]\nfn hidden() {} // trailing test comment\nconst PRODUCTION: &str = "literal";\nfn after() {}\n';
+  const { result } = await scanRustFixture({ "src-tauri/src/lib.rs": source });
+  assert.deepEqual([...result.excludedLines.get("src-tauri/src/lib.rs")], [1, 2]);
+  assert.equal(result.excludedLines.get("src-tauri/src/lib.rs").has(3), false);
+});
+
+test("line mapping excludes empty lines inside a test item and keeps those between items", async () => {
+  // Measured on the real tree: `llvm-cov` emits a `DA` record for a blank line inside a test body
+  // or a multi-line string (`src-tauri/src/db/mod.rs:4623`), because the enclosing region spans it.
+  const source =
+    'fn production() {}\n\n#[cfg(test)]\nfn hidden() {\n    let pgn = "[Event \\"E\\"]\n\n1. e4 *";\n\n    drop(pgn);\n}\n\nfn after() {}\n';
+  const { result } = await scanRustFixture({ "src-tauri/src/lib.rs": source });
+  assert.deepEqual(
+    [...result.excludedLines.get("src-tauri/src/lib.rs")].sort((a, b) => a - b),
+    [3, 4, 5, 6, 7, 8, 9, 10],
+  );
+});
+
+test("LCOV filtering drops excluded DA, FN, paired FNDA, and BRDA records", () => {
+  const input = `TN:\nSF:src-tauri/src/lib.rs\nFN:1,duplicate\nFN:2,duplicate\nFNDA:1,duplicate\nFNDA:0,duplicate\nDA:1,1\nDA:2,0\nBRDA:1,0,0,1\nBRDA:2,0,0,0\nend_of_record\n`;
+  const [record] = parseLcov(
+    input,
+    (file) => file,
+    (_file, line) => line !== 2,
+  );
+  assert.deepEqual(record.metrics, {
+    lines: { covered: 1, total: 1 },
+    functions: { covered: 1, total: 1 },
+    branches: { covered: 1, total: 1 },
+  });
+});
+
+test("filtered Rust measurement drives buildCoverageReport and the CLI ratchet", async () => {
+  const config = rustConfig({ exclude: ["src-tauri/src/lib.rs"] });
+  const files = {
+    "src-tauri/src/lib.rs": "#[cfg(test)]\nmod support;\nfn excluded_by_config() {}\n",
+    "src-tauri/src/support.rs": "pub fn test_support() {}\n",
+    "src-tauri/src/production.rs":
+      "pub fn before() {}\n#[cfg(test)]\npub fn hidden() {}\npub fn after() {}\n",
+  };
+  const { root } = await fixture({ files });
+  const lcov = `TN:\nSF:src-tauri/src/production.rs\nFN:1,before\nFN:3,hidden\nFN:4,after\nFNDA:1,before\nFNDA:0,hidden\nFNDA:1,after\nDA:1,1\nDA:3,0\nDA:4,1\nBRDA:1,0,0,1\nBRDA:3,0,0,0\nBRDA:4,0,0,1\nend_of_record\n`;
+  const report = await buildCoverageReport({
+    config,
+    configPath: "backend-coverage-areas.json",
+    lcov,
+    root,
+  });
+  assert.deepEqual(report["backend-area"], {
+    lines: { covered: 2, total: 2 },
+    functions: { covered: 2, total: 2 },
+    branches: { covered: 2, total: 2 },
+  });
+  const baseline = {
+    version: 1,
+    scope: scopeSignature(config),
+    areas: report,
+  };
+  const result = await runCoverageCli(root, {
+    config,
+    lcov,
+    baselineContents: JSON.stringify(baseline),
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Coverage ratchet and area floors passed/);
+});
+
+test("Rust exclusion failures are staged through the CLI with path, line, and exit status", async (t) => {
+  const cases = [
+    {
+      name: "invalid exclusion config",
+      files: { "src-tauri/src/lib.rs": "pub fn production() {}\n" },
+      config: (() => {
+        const invalid = rustConfig();
+        invalid.sources[0].excludeTestOnlyItems = { reason: "  " };
+        return invalid;
+      })(),
+      expected:
+        "Coverage source backend excludeTestOnlyItems must be an object with a non-empty reason string",
+    },
+    {
+      name: "non-Rust included file",
+      files: {
+        "src-tauri/src/lib.rs": "pub fn production() {}\n",
+        "src-tauri/src/config.ts": "export {};\n",
+      },
+      config: rustConfig({ include: ["src-tauri/src/**/*"] }),
+      expected: "src-tauri/src/config.ts:1: excludeTestOnlyItems can scan only .rs files",
+    },
+    {
+      name: "unbalanced delimiter at EOF",
+      files: { "src-tauri/src/lib.rs": "#[cfg(test)]\nfn hidden() {\n" },
+      expected: "src-tauri/src/lib.rs:2: unbalanced delimiter at end of file",
+    },
+    {
+      name: "unparseable cfg",
+      files: { "src-tauri/src/lib.rs": "#[cfg(not(test, unix))]\nfn hidden() {}\n" },
+      expected:
+        "src-tauri/src/lib.rs:1: unparseable cfg predicate (not() requires one cfg predicate)",
+    },
+    {
+      name: "unparseable cfg_attr",
+      files: { "src-tauri/src/lib.rs": "#[cfg_attr(test)]\nfn hidden() {}\n" },
+      expected:
+        "src-tauri/src/lib.rs:1: unparseable cfg_attr predicate (expected a condition and attribute)",
+    },
+    {
+      name: "unrecognised braced macro expression form",
+      files: {
+        "src-tauri/src/lib.rs":
+          "fn enclosing() {\n  let value =\n    #[cfg(test)]\n    fixture! { 1 }?;\n}\n",
+      },
+      expected:
+        "src-tauri/src/lib.rs:4: unsupported test-only form; give it its own item/statement or extend rust-test-only.mjs",
+    },
+    {
+      name: "unplaceable try-block context",
+      files: {
+        "src-tauri/src/lib.rs":
+          "fn enclosing() {\n  let value = try {\n    #[cfg(test)]\n    let hidden = true;\n    hidden\n  };\n}\n",
+      },
+      expected:
+        "src-tauri/src/lib.rs:3: unplaceable test-only context; extend rust-test-only.mjs only for a listed Rust form",
+    },
+    {
+      name: "statement without a terminator",
+      files: {
+        "src-tauri/src/lib.rs": "fn enclosing() {\n  #[cfg(test)]\n  let hidden = true\n}\n",
+      },
+      expected:
+        "src-tauri/src/lib.rs:3: test-only statement reaches its enclosing } without a terminator",
+    },
+    {
+      name: "shared line with production call",
+      files: { "src-tauri/src/lib.rs": "#[cfg(test)] fn hidden() {} fn production() {}\n" },
+      expected:
+        "src-tauri/src/lib.rs:1: shared coverage line; give the test-only item its own lines",
+    },
+    {
+      name: "shared line with production string literal",
+      files: {
+        "src-tauri/src/lib.rs": '#[cfg(test)] fn hidden() {} const VALUE: &str = "production";\n',
+      },
+      expected:
+        "src-tauri/src/lib.rs:1: shared coverage line; give the test-only item its own lines",
+    },
+    {
+      name: "nested module declaration inside test-only inline module",
+      files: { "src-tauri/src/lib.rs": "#[cfg(test)] mod outer { mod inner; }\n" },
+      expected:
+        "src-tauri/src/lib.rs:1: unsupported test-only module declaration inside an inline module",
+    },
+    {
+      name: "path attribute on test-only module",
+      files: { "src-tauri/src/lib.rs": '#[path = "helper.rs"]\n#[cfg(test)]\nmod helper;\n' },
+      expected: "src-tauri/src/lib.rs:3: unsupported #[path] on a test-only module declaration",
+    },
+    {
+      name: "unresolved test-only module",
+      files: { "src-tauri/src/lib.rs": "#[cfg(test)]\nmod missing;\n" },
+      expected: "src-tauri/src/lib.rs:2: cannot resolve test-only module missing",
+    },
+    {
+      name: "ambiguous test-only module layouts",
+      files: {
+        "src-tauri/src/lib.rs": "#[cfg(test)]\nmod helper;\n",
+        "src-tauri/src/helper.rs": "pub fn one() {}\n",
+        "src-tauri/src/helper/mod.rs": "pub fn two() {}\n",
+      },
+      expected:
+        "src-tauri/src/lib.rs:2: ambiguous test-only module helper: src-tauri/src/helper.rs, src-tauri/src/helper/mod.rs",
+    },
+    {
+      name: "test-only attribute inside an unrelated macro input",
+      files: {
+        "src-tauri/src/lib.rs":
+          "other_macro! {\n  #[cfg(test)]\n  static HIDDEN: bool = true;\n}\n",
+      },
+      expected: "src-tauri/src/lib.rs:2: unsupported test-only context inside a macro input",
+    },
+  ];
+
+  for (const entry of cases) {
+    await t.test(entry.name, async () => {
+      const { root } = await fixture({ files: entry.files });
+      const result = await runCoverageCli(root, {
+        config: entry.config ?? rustConfig(),
+        lcov: "",
+      });
+      assert.equal(result.status, 1, result.stdout);
+      assert.ok(result.stderr.includes(entry.expected), result.stderr);
+    });
+  }
+
+  await t.test("unreadable included Rust file", async () => {
+    const { root } = await fixture({
+      files: {
+        "src-tauri/src/lib.rs": "pub fn production() {}\n",
+        "src-tauri/src/unreadable.rs": "pub fn unreadable() {}\n",
+      },
+    });
+    await chmod(root, 0o755);
+    await chmod(join(root, "src-tauri"), 0o755);
+    await chmod(join(root, "src-tauri/src"), 0o755);
+    await chmod(join(root, "src-tauri/src/unreadable.rs"), 0);
+    const result = await runCoverageCli(root, {
+      config: rustConfig(),
+      lcov: "",
+      ...(process.getuid() === 0 ? { uid: 65534 } : {}),
+    });
+    assert.equal(result.status, 1, result.stdout);
+    assert.match(
+      result.stderr,
+      /src-tauri\/src\/unreadable\.rs:1: unable to read Rust source: EACCES:/,
+    );
+  });
+});
 
 const OXFMT_SCRIPTS = {
   success: "#!/bin/sh\nexit 0\n",
@@ -150,6 +644,7 @@ async function runCoverageCli(
     finding,
     extraArgs = [],
     extraEnv,
+    uid,
   },
 ) {
   await writeFile(join(root, "config.json"), JSON.stringify(config));
@@ -182,6 +677,7 @@ async function runCoverageCli(
     {
       cwd: root,
       encoding: "utf8",
+      ...(uid === undefined ? {} : { uid, gid: uid }),
       ...(extraEnv ? { env: { ...process.env, ...extraEnv } } : {}),
     },
   );
@@ -2222,6 +2718,20 @@ test("scopeSignature omits absent statementFree and sorts declared paths without
   const signature = scopeSignature(statementFreeConfig);
   assert.deepEqual(signature.sources[0].statementFree, ["src/utils/a.ts", "src/utils/z.ts"]);
   assert.doesNotMatch(JSON.stringify(signature), /Fixture declaration/);
+});
+
+test("scopeSignature records test-only Rust exclusion and rejects an older scope", () => {
+  const withoutExclusion = rustConfig({ exclusion: false });
+  const withExclusion = rustConfig();
+  const oldScope = scopeSignature(withoutExclusion);
+  const nextScope = scopeSignature(withExclusion);
+  assert.equal(oldScope.sources[0].excludeTestOnlyItems, undefined);
+  assert.equal(nextScope.sources[0].excludeTestOnlyItems, true);
+  assert.doesNotMatch(JSON.stringify(oldScope), /excludeTestOnlyItems/);
+  assert.throws(
+    () => assertBaseline({}, { version: 1, scope: oldScope, areas: {} }, withExclusion),
+    /Coverage measurement scope changed/,
+  );
 });
 
 test("coverage tools follow the pinned compiler host, including Windows tool suffixes", () => {
