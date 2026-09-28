@@ -1521,52 +1521,71 @@ describe("R5 config, test-only scope, and physical source surface", () => {
     expect(result.output).toContain(`${path}: R5: gitlink source trees are not allowed`);
   });
 
-  test.each([
-    ["source child", "src-tauri/src/hidden"],
-    ["src root", "src-tauri/src"],
-    ["package root", "src-tauri"],
-  ])("O3.7 rejects an untracked nested repository at the %s", async (_name, path) => {
-    const result = await runCheckerOver([], [], {
-      prepare: async (root, phase) => {
-        if (phase !== "after-remove") return;
-        const remove = spawnSync(
-          "git",
-          ["rm", "-r", "--cached", "--quiet", "--ignore-unmatch", "--", path],
-          {
-            cwd: root,
-            encoding: "utf8",
-          },
-        );
-        expect(remove.status).toBe(0);
-        expect(remove.error).toBeUndefined();
-        const directory = join(root, path);
-        await mkdir(directory, { recursive: true });
-        const init = spawnSync("git", ["init", "--quiet"], { cwd: directory, encoding: "utf8" });
-        expect(init.status).toBe(0);
-        const sourcePath =
-          path === "src-tauri" ? "src/main.rs" : path === "src-tauri/src" ? "main.rs" : "mod.rs";
-        const source =
-          path === "src-tauri/src/hidden"
-            ? "pub fn hidden() {}\n"
-            : '#![allow(clippy::disallowed_methods)]\nfn main() { std::path::Path::new(".").exists(); }\n';
-        await mkdir(dirname(join(directory, sourcePath)), { recursive: true });
-        await writeFile(join(directory, sourcePath), source);
-      },
-    });
-    expectCliStatus(result, 1);
-    expect(result.output).toContain(
-      `${path}: R5: untracked nested git repositories are not allowed in the Rust source tree`,
-    );
-  });
+  const nestedRepositoryCases = [
+    ["source child", "src-tauri/src", ["hidden"], 1, null, "mod.rs", "pub fn hidden() {}\n"],
+    [
+      "src root",
+      "src-tauri",
+      ["src"],
+      1,
+      null,
+      "main.rs",
+      '#![allow(clippy::disallowed_methods)]\nfn main() { std::path::Path::new(".").exists(); }\n',
+    ],
+    [
+      "package root",
+      ".",
+      ["src-tauri"],
+      1,
+      null,
+      "src/main.rs",
+      '#![allow(clippy::disallowed_methods)]\nfn main() { std::path::Path::new(".").exists(); }\n',
+    ],
+    [
+      "ignored source child",
+      "src-tauri/src",
+      ["hidden"],
+      1,
+      "src-tauri/src/hidden/\n",
+      "mod.rs",
+      'use std::path::Path;\npub fn hidden() { Path::new(".").exists(); }\n',
+    ],
+    [
+      "ignored nested child",
+      "src-tauri/src",
+      ["hidden", "child"],
+      2,
+      "src-tauri/src/hidden/\n",
+      "mod.rs",
+      'use std::path::Path;\npub fn hidden() { Path::new(".").exists(); }\n',
+    ],
+    [
+      "untracked nested child",
+      "src-tauri/src",
+      ["hidden", "child"],
+      2,
+      null,
+      "mod.rs",
+      'use std::path::Path;\npub fn hidden() { Path::new(".").exists(); }\n',
+    ],
+  ];
 
-  test("O3.7 rejects an ignored nested repository in the Rust source tree", async () => {
-    const result = await runCheckerOver(
-      [{ path: ".gitignore", contents: "src-tauri/src/hidden/\n" }],
-      [],
-      {
+  test.each(nestedRepositoryCases)(
+    "O3.7 rejects a nested repository in the %s",
+    async (_name, parentPath, pathSegments, depth, gitignoreSeed, sourcePath, source) => {
+      const path = join(parentPath, ...pathSegments.slice(0, depth));
+      const files = gitignoreSeed ? [{ path: ".gitignore", contents: gitignoreSeed }] : [];
+      const result = await runCheckerOver(files, [], {
         prepare: async (root, phase) => {
           if (phase !== "after-remove") return;
-          const directory = join(root, "src-tauri/src/hidden");
+          const remove = spawnSync(
+            "git",
+            ["rm", "-r", "--cached", "--quiet", "--ignore-unmatch", "--", path],
+            { cwd: root, encoding: "utf8" },
+          );
+          expect(remove.status).toBe(0);
+          expect(remove.error).toBeUndefined();
+          const directory = join(root, path);
           await mkdir(directory, { recursive: true });
           const init = spawnSync("git", ["init", "--quiet"], {
             cwd: directory,
@@ -1574,18 +1593,16 @@ describe("R5 config, test-only scope, and physical source surface", () => {
           });
           expect(init.status).toBe(0);
           expect(init.error).toBeUndefined();
-          await writeFile(
-            join(directory, "mod.rs"),
-            'use std::path::Path;\npub fn hidden() { Path::new(".").exists(); }\n',
-          );
+          await mkdir(dirname(join(directory, sourcePath)), { recursive: true });
+          await writeFile(join(directory, sourcePath), source);
         },
-      },
-    );
-    expectCliStatus(result, 1);
-    expect(result.output).toContain(
-      "src-tauri/src/hidden: R5: untracked nested git repositories are not allowed in the Rust source tree",
-    );
-  });
+      });
+      expectCliStatus(result, 1);
+      expect(result.output).toContain(
+        `${path}: R5: untracked nested git repositories are not allowed in the Rust source tree`,
+      );
+    },
+  );
 
   const cargoConfigCases = [
     [".cargo/config", "tracked", [{ path: ".cargo/config", contents: "[build]\njobs = 2\n" }]],

@@ -1,4 +1,4 @@
-import { lstatSync, readFileSync, statSync } from "node:fs";
+import { lstatSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { extname, join, resolve } from "node:path";
@@ -1493,12 +1493,13 @@ function manifestViolations(path, contents, packageManifest) {
   const violations = [];
   const scanned = scanToml(contents);
   const keys = new Set(scanned.keySegments);
-  const hasQuotedManifestControlKey = scanned.keySegments.some(
+  // scanToml records both bare and quoted TOML keys in keySegments.
+  const hasManifestControlKey = scanned.keySegments.some(
     (key) => key === "lints" || key === "cargo-features",
   );
   if (
     scanned.bareManifestControlTokens.length ||
-    hasQuotedManifestControlKey ||
+    hasManifestControlKey ||
     scanned.basicStringBackslashes.length
   ) {
     violations.push(
@@ -1555,47 +1556,43 @@ function inspectGitTree(workspaceRoot, runGit) {
     }
   }
 
-  const otherCommands = [
-    ["ls-files", "--others", "--directory", "--exclude-standard", "-z", "--", "src-tauri"],
-    [
-      "ls-files",
-      "--others",
-      "--ignored",
-      "--exclude-standard",
-      "--directory",
-      "-z",
-      "--",
-      "src-tauri",
-    ],
-  ];
-  const candidates = new Set(["src-tauri", "src-tauri/src"]);
-  for (const args of otherCommands) {
-    const result = runGit("git", args, { cwd: workspaceRoot, encoding: "utf8" });
-    if (result.error || result.status !== 0) {
-      throw new Error(
-        `R5: cannot inspect untracked source directories (${result.error?.message ?? result.stderr ?? result.status})`,
-      );
-    }
-    for (const path of String(result.stdout ?? "")
-      .split("\0")
-      .filter(Boolean)) {
-      candidates.add(path.replace(/\/$/, ""));
-    }
-  }
-  for (const path of candidates) {
-    const directory = resolve(workspaceRoot, path);
-    const dirStat = lstatIfPresent(directory);
-    if (!dirStat || dirStat.isSymbolicLink() || !dirStat.isDirectory()) continue;
-    const gitMarker = lstatIfPresent(join(directory, ".git"));
-    if (
-      gitMarker &&
-      (path === "src-tauri" || path === "src-tauri/src" || path.startsWith("src-tauri/src/"))
-    ) {
+  const candidates = new Set([
+    "src-tauri",
+    "src-tauri/src",
+    ...listWorkingTreeFiles({
+      workspaceRoot,
+      pathspec: "src-tauri",
+      runGit,
+      includeIgnored: true,
+      directories: true,
+    }).map((path) => path.replace(/\/$/, "")),
+  ]);
+  const visited = new Set();
+  const inSourceTree = (path) =>
+    path === "src-tauri" || path === "src-tauri/src" || path.startsWith("src-tauri/src/");
+  const walkDirectory = (path) => {
+    if (!inSourceTree(path) || visited.has(path)) return;
+    const absolutePath = resolve(workspaceRoot, path);
+    const stats = lstatIfPresent(absolutePath);
+    if (!stats || stats.isSymbolicLink() || !stats.isDirectory()) return;
+    visited.add(path);
+
+    if (lstatIfPresent(join(absolutePath, ".git"))) {
       violations.push(
         `${path}: R5: untracked nested git repositories are not allowed in the Rust source tree`,
       );
     }
-  }
+
+    for (const name of readdirSync(absolutePath)) {
+      if (name === ".git") continue;
+      const childPath = `${path}/${name}`;
+      if (!inSourceTree(childPath)) continue;
+      const childPathOnDisk = join(absolutePath, name);
+      const childStats = lstatIfPresent(childPathOnDisk);
+      if (childStats?.isDirectory() && !childStats.isSymbolicLink()) walkDirectory(childPath);
+    }
+  };
+  for (const path of candidates) walkDirectory(path);
   return violations;
 }
 
