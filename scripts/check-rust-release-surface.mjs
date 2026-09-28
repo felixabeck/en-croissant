@@ -1556,17 +1556,9 @@ function inspectGitTree(workspaceRoot, runGit) {
     }
   }
 
-  const candidates = new Set([
-    "src-tauri",
-    "src-tauri/src",
-    ...listWorkingTreeFiles({
-      workspaceRoot,
-      pathspec: "src-tauri",
-      runGit,
-      includeIgnored: true,
-      directories: true,
-    }).map((path) => path.replace(/\/$/, "")),
-  ]);
+  // Walk every real directory from the package root down through src-tauri/src: git reports an
+  // untracked or ignored directory as one collapsed entry, so its listing cannot find a nested
+  // repository deeper inside it.
   const visited = new Set();
   const inSourceTree = (path) =>
     path === "src-tauri" || path === "src-tauri/src" || path.startsWith("src-tauri/src/");
@@ -1592,7 +1584,7 @@ function inspectGitTree(workspaceRoot, runGit) {
       if (childStats?.isDirectory() && !childStats.isSymbolicLink()) walkDirectory(childPath);
     }
   };
-  for (const path of candidates) walkDirectory(path);
+  walkDirectory("src-tauri");
   return violations;
 }
 

@@ -7,8 +7,8 @@ import { listWorkingTreeFiles } from "./working-tree-files.mjs";
 
 /**
  * The walker is the single enumeration primitive every gate checker now shares,
- * so its default and opt-in queries are proven here rather than re-derived in
- * each checker's suite (`f-20260901-16`).
+ * so its two queries are proven here once rather than re-derived in each
+ * checker's suite (`f-20260901-16`).
  */
 function workspace() {
   const root = mkdtempSync(join(tmpdir(), "working-tree-files-"));
@@ -55,28 +55,6 @@ describe("working-tree file enumeration", () => {
       ["ls-files", "--others", "--exclude-standard", "--", "src"],
       ["ls-files", "--", "src"],
     ]);
-  });
-
-  test("directory enumeration opts into ignored directories and NUL-delimited paths", () => {
-    const calls = [];
-    const outputs = ["src/untracked/\0", "src/ignored/\0", "src/tracked.ts\0"];
-    const paths = listWorkingTreeFiles({
-      workspaceRoot: "/fixture",
-      pathspec: "src",
-      includeIgnored: true,
-      directories: true,
-      runGit: (_command, args) => {
-        calls.push(args);
-        return { status: 0, stdout: outputs.shift(), stderr: "" };
-      },
-    });
-
-    expect(calls).toEqual([
-      ["ls-files", "--others", "--directory", "--exclude-standard", "-z", "--", "src"],
-      ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z", "--", "src"],
-      ["ls-files", "-z", "--", "src"],
-    ]);
-    expect(paths).toEqual(["src/untracked/", "src/ignored/", "src/tracked.ts"]);
   });
 
   test("reports a tracked file whose only sibling is ignored", () => {
