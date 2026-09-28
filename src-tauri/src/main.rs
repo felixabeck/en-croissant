@@ -2786,6 +2786,32 @@ mod search_cache_tests {
     }
 
     #[test]
+    fn identity_falls_back_to_the_legacy_index_only_without_a_preferred_one() {
+        let directory = tempdir().unwrap();
+        let database = directory.path().join("legacy.db");
+        std::fs::write(&database, []).unwrap();
+        let legacy = db::legacy_index_path(&database);
+        std::fs::write(&legacy, [0_u8; 3]).unwrap();
+
+        let identity = SearchIndexIdentity::for_database(
+            &database,
+            IndexSource::from_database(&database, 0).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(identity.index, legacy.canonicalize().unwrap());
+        assert_eq!(identity.length, 3);
+
+        let preferred = db::get_index_path(&database);
+        SearchIndexChunk::default().write_to(&preferred).unwrap();
+        let identity = SearchIndexIdentity::for_database(
+            &database,
+            IndexSource::from_database(&database, 0).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(identity.index, preferred.canonicalize().unwrap());
+    }
+
+    #[test]
     fn generation_lock_is_shared_only_for_the_same_index_path() {
         let cache = SearchCache::default();
         let first = cache.generation_lock(PathBuf::from("one.ecsi"));
