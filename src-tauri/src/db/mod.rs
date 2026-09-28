@@ -18,6 +18,7 @@ mod search_index;
 pub(crate) mod sqlite_cancellation;
 
 use crate::{
+    cancellable_read::{map_read_error, CancellableRead},
     db::{
         encoding::{
             decode_game_to_movetext, decode_game_to_movetext_cancellable, decode_move,
@@ -850,8 +851,12 @@ fn convert_pgn_blocking<R: tauri::Runtime>(
                         };
 
                     let mut importer = Importer::new(timestamp.map(|t| t as i64));
-                    let mut reader = BufferedReader::new(uncompressed);
-                    while let Some(parsed_game) = reader.read_game(&mut importer)? {
+                    let mut reader =
+                        BufferedReader::new(CancellableRead::new(uncompressed, cancellation));
+                    while let Some(parsed_game) = reader
+                        .read_game(&mut importer)
+                        .map_err(|error| map_read_error(error, cancellation))?
+                    {
                         cancellation_check(cancellation)?;
                         let Some(game) = parsed_game else { continue };
                         if imported_games.is_multiple_of(1000) {
@@ -10039,7 +10044,7 @@ mod tests {
         drop(_hooks);
         assert!(matches!(result, Err(Error::Cancellation)));
         assert_eq!(after_count.load(std::sync::atomic::Ordering::SeqCst), 0);
-        assert!(!database_row_counts_for_path(&database));
+        assert!(!database_has_games_table(&database));
         assert!(app
             .state::<AppState>()
             .search_cache
@@ -10053,7 +10058,7 @@ mod tests {
         let (result, database, count, cache_retained) = convert_cancel_before_bump_case();
         assert!(matches!(result, Err(Error::Cancellation)));
         assert_eq!(count, 1);
-        assert!(!database_row_counts_for_path(&database));
+        assert!(!database_has_games_table(&database));
         assert!(!database_has_data_revision(&database));
         assert!(cache_retained);
     }
@@ -10081,7 +10086,7 @@ mod tests {
             &token,
         );
         assert!(matches!(result, Err(Error::Cancellation)));
-        assert!(!database_row_counts_for_path(&database));
+        assert!(!database_has_games_table(&database));
         assert!(app
             .state::<AppState>()
             .search_cache
@@ -10118,7 +10123,7 @@ mod tests {
             convert_cancelled_at_first_frame(&app, handle, vec![grant_import_file(&app, &source)]);
         assert!(matches!(result, Err(Error::Cancellation)), "{result:?}");
         assert_eq!(frame_count, 1, "no progress may be emitted after cancel");
-        assert!(!database_row_counts_for_path(&database));
+        assert!(!database_has_games_table(&database));
         assert!(!database_has_data_revision(&database));
     }
 
@@ -10139,8 +10144,85 @@ mod tests {
         let (result, frame_count) = convert_cancelled_at_first_frame(&app, handle, files);
         assert!(matches!(result, Err(Error::Cancellation)), "{result:?}");
         assert_eq!(frame_count, 1, "no progress may be emitted after cancel");
-        assert!(!database_row_counts_for_path(&database));
+        assert!(!database_has_games_table(&database));
         assert!(!database_has_data_revision(&database));
+    }
+
+    #[test]
+    fn convert_pgn_cancel_mid_game_interrupts_the_parser() {
+        let (dir, app, handle, database) = empty_database_case();
+        // One bz2 stream holding a small game and a game far larger than the
+        // parser's buffer, followed by bytes that are no bz2 stream. Reading
+        // that tail fails with an I/O error, so only a reader that observes
+        // the cancel before refilling during the large game yields
+        // `Cancellation`; checks between games run only after the tail.
+        let large_game = format!(
+            "[Event \"Large\"]\n\n1. e4 {{{}}} e5 1-0\n",
+            "x".repeat(256 * 1024)
+        );
+        let mut encoder = bzip2::write::BzEncoder::new(Vec::new(), bzip2::Compression::fast());
+        std::io::Write::write_all(
+            &mut encoder,
+            format!("{REPLACEMENT_PGN}\n{large_game}").as_bytes(),
+        )
+        .unwrap();
+        let mut bytes = encoder.finish().unwrap();
+        bytes.extend_from_slice(b"not a bz2 stream");
+        let source = dir.path().join("cancel-mid-game.pgn.bz2");
+        std::fs::write(&source, bytes).unwrap();
+
+        let (result, frame_count) = convert_cancelled_at_first_frame(
+            &app,
+            handle.clone(),
+            vec![grant_import_file(&app, &source)],
+        );
+        assert!(matches!(result, Err(Error::Cancellation)), "{result:?}");
+        assert_eq!(frame_count, 1, "no progress may be emitted after cancel");
+        assert!(!database_has_games_table(&database));
+        assert!(!database_has_data_revision(&database));
+        let control = run_import(&app, handle, vec![grant_import_file(&app, &source)], None);
+        assert!(
+            matches!(control, Err(Error::Io(_))),
+            "an uncancelled import must reach the corrupt tail, got {control:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn convert_pgn_command_shutdown_cancel_reaches_the_worker() {
+        let (dir, app, handle, database) = blocking_database_case();
+        let inputs = prepare_database_command_case(
+            DatabaseCommandCase::ConvertPgn,
+            dir.path(),
+            &app,
+            &database,
+        );
+        let before = database_row_counts(&app, &database);
+        let (entered, release) = install_database_command_checkpoint("convert_pgn", &handle);
+        let command_app = app.clone();
+        let command_handle = handle.clone();
+        let command = tokio::spawn(async move {
+            run_database_command_case(
+                DatabaseCommandCase::ConvertPgn,
+                command_app,
+                command_handle,
+                inputs,
+            )
+            .await
+        });
+        entered
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("convert_pgn worker did not enter its core");
+        app.state::<AppState>()
+            .operations
+            .seal_and_request_cancellation()
+            .unwrap();
+        release.send(()).unwrap();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), command)
+            .await
+            .expect("cancelled import must finish")
+            .unwrap();
+        assert!(matches!(result, Err(Error::Cancellation)), "{result:?}");
+        assert_eq!(database_row_counts(&app, &database), before);
     }
 
     #[test]
@@ -10660,7 +10742,7 @@ mod tests {
         assert!(!legacy.exists());
     }
 
-    fn database_row_counts_for_path(path: &Path) -> bool {
+    fn database_has_games_table(path: &Path) -> bool {
         #[derive(QueryableByName)]
         struct TableCount {
             #[diesel(sql_type = diesel::sql_types::BigInt)]
