@@ -8380,7 +8380,7 @@ Handled 2026-09-19 together with f-20260905-14. The Files controls fit 320px / 2
 
 ### The search-index loader trusts a sidecar validated against an earlier database probe, so a database replaced after the probe can answer searches from the old index
 
-* **ID:** f-20260912-07 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260912-07 · **Status:** handled · **Area:** db-search · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `src-tauri/src/db/search.rs:204-215` (`load_search_index_cancellable`: `database_identity_expected` then `open_valid_preferred`), `:312-341` (`open_valid_preferred` compares `archive.source()` with the expected `IndexSource` built from that earlier identity), `:830-850` (`is_position_in_db_cancellable` answers from the index without opening the database).
 * **Defect:** the identity the loader compares the sidecar against is captured before the sidecar is opened. If the database at that pathname is replaced after the probe while the old `.ecsi` remains beside it, the sidecar still matches the captured identity, is accepted, and `is_position_in_db` returns results for the old database without ever opening the new one. The window is the same TOCTOU class as the repository's pathname open, but here nothing later re-validates.
 * **Open question:** should the loader re-probe the database target after the sidecar is opened (and before results are published), bind the sidecar's acceptance to a retained descriptor of the database, or accept and document the residual next to the repository's?
