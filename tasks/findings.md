@@ -11918,3 +11918,16 @@ Handled 2026-09-29 in 8b97e423. Mechanism confirmed by close-thread instrumentat
 * **Proposed fix:** identity-only probes stop creating lockable descriptors: on Linux open the leaf `O_PATH | O_NOFOLLOW` (or `fstatat(AT_SYMLINK_NOFOLLOW)` relative to the verified parent) and compare identity; on macOS use `fstatat` relative to the verified parent; Windows is unaffected (`LockFileEx` locks belong to their handle). Keep `open_current` returning a readable `File` only for consumers that read. Add a witness that holds a SQLite lock through a pooled connection, drives `get()` and the classifier, and asserts the lock survives with a persistent probe descriptor.
 * **Open question:** which `open_current` consumers need a readable descriptor rather than identity only, and what identity-only primitive (`O_PATH` descriptor vs `fstatat` on the verified parent) keeps the parent-verification and reparse/wrong-kind classification that `open_current` performs today on every platform?
 * **Found by:** Codex `review-correctness`, plan review round 2 of the `f-20260929-06` build run, 2026-09-29 (Claude Code orchestrator session d4edd5c8-b834-46cd-aec7-058afcc03b66); widened by the orchestrator from the classifier to every probe consumer by source reading. Related: `f-20260929-06`, `d-20260929-04`.
+
+---
+
+## 2026-09-29 — filed through the inbox spool
+
+### A backend mutation run can start after the push gates' one-shot mutation guard and mutate the tree under them
+
+* **ID:** f-20260929-12 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `scripts/run-backend-mutation.mjs` `--check-guard` (exits 0 at once when no fence exists, ~line 183) and fence acquisition (~373-384); `gates:contract:check` (guard is its first member) and every gate run after it.
+* **Defect:** the guard is a point-in-time check. A `pnpm mutation:backend` started (by another session or agent) after the guard passed acquires the fence and edits tracked `src-tauri` sources in place while the push gates are still compiling and testing, so a gate can measure mutated code — or record a receipt over it if the mutant is reverted before the receipt's second sample. Pre-existing in the serial push chain; the 2026-09-29 push-gate lane runner keeps the same one-shot check.
+* **Why it matters:** a green gate or receipt over a tree that briefly contained an injected mutant.
+* **Open question:** should a push-gate run hold a shared "gates running" lease that the backend mutation runner refuses on (and vice versa), and where does that lease live so a crashed gate run cannot block mutation forever?
+* **Found by:** Codex `review-plan` lens, round 5 of `tasks/plans/2026-09-29-push-gate-parallelism.md`, 2026-09-29.
