@@ -1450,8 +1450,8 @@ mod tests {
         drop(bound);
         assert_ne!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1);
         drop(alias_bound);
-        assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1);
-        assert_eq!(unix_hooks::last_errno(), libc::EBADF);
+        // A closed descriptor number can be reused at once by a parallel test, so closure is
+        // observed through the registry, which owns the quarantined `File`s.
         assert!(REGISTRY
             .get()
             .and_then(|registry| registry.lock().ok())
@@ -1484,15 +1484,16 @@ mod tests {
         for fd in fds.iter().take(MAX_QUARANTINED_DESCRIPTORS_PER_IDENTITY) {
             assert_ne!(unsafe { libc::fcntl(*fd, libc::F_GETFD) }, -1);
         }
-        assert_eq!(
-            unsafe { libc::fcntl(fds[MAX_QUARANTINED_DESCRIPTORS_PER_IDENTITY], libc::F_GETFD,) },
-            -1
+        assert!(
+            !quarantined_descriptor_fds(identity)
+                .contains(&fds[MAX_QUARANTINED_DESCRIPTORS_PER_IDENTITY]),
+            "the descriptor over the cap must not be retained"
         );
 
         drop(bound);
-        for fd in fds.iter().take(MAX_QUARANTINED_DESCRIPTORS_PER_IDENTITY) {
-            assert_eq!(unsafe { libc::fcntl(*fd, libc::F_GETFD) }, -1);
-        }
+        // Closure is observed through the registry: a closed descriptor number can be reused at
+        // once by a parallel test.
+        assert!(quarantined_descriptor_fds(identity).is_empty());
     }
 
     #[test]

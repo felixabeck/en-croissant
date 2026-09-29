@@ -3547,9 +3547,9 @@ mod bound_sqlite_witnesses {
         drop(b_reader);
         drop(bound_a);
         drop(bound_b);
-        for fd in quarantined {
-            assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1);
-        }
+        // Observed through the registry: a closed descriptor number can be reused at once by a
+        // parallel test.
+        assert!(quarantined_descriptor_fds(b_identity).is_empty());
         let mut swap = swap.lock().unwrap();
         swap.restore();
     }
