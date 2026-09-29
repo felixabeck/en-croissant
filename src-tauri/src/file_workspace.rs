@@ -250,11 +250,10 @@ fn register_created_entry(
     path: &Path,
     display_name: String,
     identity: (u64, u64),
-    parent: &fs::File,
+    parent_identity: (u64, u64),
     is_dir: bool,
 ) -> Result<FileWorkspaceHandle, Error> {
     let components = workspace_components(pgn_path_authority, workspace, path)?;
-    let parent_identity = crate::infra::path_authority::opened_file_identity(parent)?;
     #[cfg(test)]
     WORKSPACE_CREATED_CHILD_PRE_REGISTER_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
@@ -678,7 +677,7 @@ fn rebind_after_move(
     entry: &FileWorkspaceHandle,
     source: &WorkspaceMutationTarget,
     target: &Path,
-    target_parent: &fs::File,
+    target_parent_identity: (u64, u64),
 ) -> Result<(), Error> {
     let mut authority = authority(pgn_path_authority)?;
     let authority = authority
@@ -697,7 +696,7 @@ fn rebind_after_move(
             entry,
             target,
             target.file_stem().unwrap_or_default().to_string_lossy(),
-            crate::infra::path_authority::opened_file_identity(target_parent)?,
+            target_parent_identity,
         )
     }
 }
@@ -889,7 +888,7 @@ fn create_workspace_file_blocking(
         &target,
         name.clone(),
         installed.identity,
-        parent_dir,
+        parent_target.identity,
         false,
     )?;
     let entry = WorkspaceEntry {
@@ -971,7 +970,7 @@ fn create_workspace_directory_inner(
         &target,
         name.clone(),
         identity,
-        parent_dir,
+        parent_target.identity,
         true,
     ) {
         Ok(handle) => handle,
@@ -1063,7 +1062,7 @@ fn move_workspace_entry_blocking(
         &entry,
         &source,
         &target,
-        destination.directory()?,
+        destination.identity,
     )
 }
 
@@ -1129,6 +1128,8 @@ fn rename_workspace_file_blocking(
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
+    let target_parent_identity =
+        crate::infra::path_authority::opened_file_identity(&source.parent)?;
     paired_rename(&source, &source.parent, &target_leaf)?;
     let info_leaf = sidecar_leaf(&target_leaf)?;
     let sidecar_outcome =
@@ -1144,7 +1145,13 @@ fn rename_workspace_file_blocking(
         sidecar_outcome,
         crate::error::DurabilityStage::WorkspaceSidecarReplacement,
     );
-    let rebind = rebind_after_move(pgn_path_authority, &entry, &source, &target, &source.parent);
+    let rebind = rebind_after_move(
+        pgn_path_authority,
+        &entry,
+        &source,
+        &target,
+        target_parent_identity,
+    );
     match (sidecar_uncertainty, rebind) {
         (Some(stage), Ok(()) | Err(Error::CommittedDurabilityUncertain(_))) => {
             Err(Error::CommittedDurabilityUncertain(stage))
@@ -1208,6 +1215,7 @@ fn trash_entry(
     let bucket_path = trash_path.join(&bucket);
     let bucket_dir = crate::infra::fs::open_directory_at(&trash_dir, &bucket, true)?;
     let target = bucket_path.join(&source.leaf);
+    let target_parent_identity = crate::infra::path_authority::opened_file_identity(&bucket_dir)?;
     if source.is_dir {
         crate::infra::fs::rename_entry_at(
             &source.parent,
@@ -1220,7 +1228,13 @@ fn trash_entry(
     } else {
         paired_rename(&source, &bucket_dir, &source.leaf)?;
     }
-    rebind_after_move(pgn_path_authority, entry, &source, &target, &bucket_dir)
+    rebind_after_move(
+        pgn_path_authority,
+        entry,
+        &source,
+        &target,
+        target_parent_identity,
+    )
 }
 
 #[tauri::command]
@@ -1289,13 +1303,7 @@ fn restore_entry(
     } else {
         paired_rename(&source, root.directory()?, &source.leaf)?;
     }
-    rebind_after_move(
-        pgn_path_authority,
-        entry,
-        &source,
-        &target,
-        root.directory()?,
-    )
+    rebind_after_move(pgn_path_authority, entry, &source, &target, root.identity)
 }
 
 #[tauri::command]
@@ -2120,7 +2128,7 @@ mod tests {
             &child,
             name.into(),
             identity,
-            root.directory().expect("workspace directory"),
+            root.identity,
             true,
         )
         .expect("child handle");
@@ -3157,7 +3165,10 @@ mod tests {
                 &game,
                 "Round one expected".into(),
                 (metadata.dev(), metadata.ino()),
-                &crate::infra::fs::open_parent_no_follow(&game).expect("game parent"),
+                crate::infra::path_authority::opened_file_identity(
+                    &crate::infra::fs::open_parent_no_follow(&game).expect("game parent"),
+                )
+                .expect("game parent identity"),
                 false,
             )
             .expect("expected entry handle");

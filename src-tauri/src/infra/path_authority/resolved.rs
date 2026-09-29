@@ -119,7 +119,8 @@ impl ResolvedPath {
         self.directory.take()
     }
 
-    // Read only by the database-child boundary, which `f-20260914-09` still refuses off unix.
+    // The descriptor that observed a resolved file's leaf; registration doors record its identity
+    // as the entry's authorized parent (`f-20260912-05`).
     pub(super) fn parent(&self) -> Option<&fs::File> {
         self.parent.as_ref()
     }
@@ -741,6 +742,9 @@ pub(super) fn file_identity(meta: &fs::Metadata) -> super::Identity {
 }
 
 #[cfg(unix)]
+/// `stored_parent_identity` is `None` for a transient dialog grant (not parent-checked here; its
+/// parent is enforced at promotion), `Some(&None)` for a registry file entry without a recorded
+/// parent (refused, fail closed), and `Some(&Some(id))` for one bound to directory `id`.
 pub(super) fn resolve_unix(
     root: &Path,
     expected_root: &super::Identity,
@@ -910,6 +914,9 @@ pub(super) fn resolve_unix(
 }
 
 #[cfg(windows)]
+/// `stored_parent_identity` is `None` for a transient dialog grant (not parent-checked here; its
+/// parent is enforced at promotion), `Some(&None)` for a registry file entry without a recorded
+/// parent (refused, fail closed), and `Some(&Some(id))` for one bound to directory `id`.
 pub(super) fn resolve_windows(
     root: &Path,
     expected_root: &super::Identity,
