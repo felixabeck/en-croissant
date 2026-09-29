@@ -20641,7 +20641,7 @@ mod windows_parent_identity_tests {
         directory: &TempDir,
         root_path: &Path,
         child_path: &Path,
-    ) -> (PathAuthority, FileWorkspaceHandle) {
+    ) -> (PathAuthority, FileWorkspaceHandle, FileWorkspaceHandle) {
         fs::create_dir_all(root_path).unwrap();
         fs::create_dir_all(child_path.parent().unwrap()).unwrap();
         fs::write(child_path, b"1. e4 *").unwrap();
@@ -20664,7 +20664,9 @@ mod windows_parent_identity_tests {
         let parent = crate::infra::fs::open_parent_no_follow(child_path).unwrap();
         let parent_identity = opened_file_identity(&parent).unwrap();
         let child_identity = identity(child_path).unwrap();
-        authority
+        // The registry stores the canonical spelling, which on Windows differs from `child_path`
+        // (verbatim prefix), so callers use this handle rather than looking the path up.
+        let child = authority
             .register_workspace_child_observed_with_parent(
                 &workspace,
                 &components,
@@ -20674,7 +20676,7 @@ mod windows_parent_identity_tests {
                 PathOperation::WritePgn,
             )
             .unwrap();
-        (authority, workspace)
+        (authority, workspace, child)
     }
 
     #[test]
@@ -20740,16 +20742,7 @@ mod windows_parent_identity_tests {
         let directory = tempfile::tempdir().unwrap();
         let root_path = directory.path().join("workspace");
         let path = root_path.join("sub/a.pgn");
-        let (mut authority, workspace) = workspace_with_file(&directory, &root_path, &path);
-        let handle = authority
-            .persistent
-            .values()
-            .find(|entry| entry.stored.path.to_path().ok().as_ref() == Some(&path))
-            .unwrap()
-            .stored
-            .id
-            .clone();
-        let handle = FileWorkspaceHandle::new(handle);
+        let (mut authority, workspace, handle) = workspace_with_file(&directory, &root_path, &path);
         assert!(authority.workspace_mutation_target(&handle).is_ok());
         drop(workspace);
 
@@ -20767,22 +20760,11 @@ mod windows_parent_identity_tests {
         let directory = tempfile::tempdir().unwrap();
         let root_path = directory.path().join("workspace");
         let path = root_path.join("sub/a.pgn");
-        let (mut authority, workspace) = workspace_with_file(&directory, &root_path, &path);
-        let handle = authority
-            .persistent
-            .values()
-            .find(|entry| entry.stored.path.to_path().ok().as_ref() == Some(&path))
+        let (mut authority, workspace, handle) = workspace_with_file(&directory, &root_path, &path);
+        assert!(authority
+            .workspace_entry_path(&handle, PathOperation::ReadPgn)
             .unwrap()
-            .stored
-            .id
-            .clone();
-        let handle = FileWorkspaceHandle::new(handle);
-        assert_eq!(
-            authority
-                .workspace_entry_path(&handle, PathOperation::ReadPgn)
-                .unwrap(),
-            path
-        );
+            .ends_with(Path::new("sub").join("a.pgn")));
         drop(workspace);
 
         replace_parent_with_same_inode_hard_link(&path);
