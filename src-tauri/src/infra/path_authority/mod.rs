@@ -178,6 +178,7 @@ mod windows_tests {
             dir.path(),
             &expected,
             true,
+            None,
             &components,
             PathOperation::DownloadFile,
         );
@@ -328,6 +329,7 @@ mod windows_tests {
             operations: vec![PathOperation::OpeningBookRead],
             path: NativePath::from_path(&file),
             identity: identity(&file).unwrap(),
+            parent_identity: None,
             target_is_dir: false,
         };
         let mut candidate = authority.persistent.clone();
@@ -382,6 +384,7 @@ mod windows_tests {
             operations: canonical_operations(EntryPurpose::PgnFile),
             path: NativePath::from_path(&junction.join("changed.pgn")),
             identity: identity(&junction.join("changed.pgn")).unwrap(),
+            parent_identity: None,
             target_is_dir: false,
         };
         let stable = StoredEntry {
@@ -394,6 +397,7 @@ mod windows_tests {
             operations: canonical_operations(EntryPurpose::PgnFile),
             path: NativePath::from_path(&junction.join("stable.pgn")),
             identity: identity(&junction.join("stable.pgn")).unwrap(),
+            parent_identity: None,
             target_is_dir: false,
         };
         fs::write(real.join("replacement.pgn"), b"new").unwrap();
@@ -491,6 +495,10 @@ pub(crate) struct CapabilityDirectory {
 }
 
 impl CapabilityDirectory {
+    pub(crate) fn identity(&self) -> Result<(u64, u64), Error> {
+        opened_file_identity(&self.directory)
+    }
+
     /// One descriptor-relative read of this directory, on both platforms.
     ///
     /// Every method on this type is live on Windows since `f-20260914-08`: the walk that drives
@@ -1030,6 +1038,12 @@ std::thread_local! {
     static DATABASE_CHILD_POST_CREATE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
     static INSTALLED_ENGINE_POST_RESOLVE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static ENGINE_IMAGE_PRE_REGISTRATION_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static PROMOTE_DIALOG_POST_ACQUIRE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static PERSISTENT_FILE_POST_TARGET_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
     static RESOLVE_PRE_REGULAR_OPEN_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
@@ -3218,6 +3232,35 @@ pub(crate) struct Identity {
     a: u64,
     b: u64,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct IdentityBinding {
+    identity: Identity,
+    parent_identity: Option<Identity>,
+}
+
+impl IdentityBinding {
+    fn new(identity: Identity, parent_identity: Option<Identity>) -> Self {
+        Self {
+            identity,
+            parent_identity,
+        }
+    }
+
+    pub(crate) fn from_pairs(identity: (u64, u64), parent_identity: (u64, u64)) -> Self {
+        Self::new(
+            Identity {
+                a: identity.0,
+                b: identity.1,
+            },
+            Some(Identity {
+                a: parent_identity.0,
+                b: parent_identity.1,
+            }),
+        )
+    }
+}
+
 fn identity(path: &Path) -> Result<Identity, Error> {
     let meta = fs::symlink_metadata(path)?;
     if is_link_like(&meta) {
@@ -3377,6 +3420,21 @@ pub(crate) fn opened_file_identity(file: &fs::File) -> Result<(u64, u64), Error>
         let identity = windows_file_identity(file)?;
         Ok((identity.a, identity.b))
     }
+}
+
+fn identity_from_open_file(file: &fs::File) -> Result<Identity, Error> {
+    let (a, b) = opened_file_identity(file)?;
+    Ok(Identity { a, b })
+}
+
+fn verify_parent_identity(parent: &fs::File, expected: Option<&Identity>) -> Result<(), Error> {
+    let actual = identity_from_open_file(parent)?;
+    if expected != Some(&actual) {
+        return Err(Error::Conflict(
+            "path authority is unavailable because its object changed".into(),
+        ));
+    }
+    Ok(())
 }
 #[cfg(not(windows))]
 pub(crate) fn is_reparse_point(_: &fs::Metadata) -> bool {
@@ -3624,14 +3682,21 @@ impl AcquireShape {
 
 /// A path with a normal leaf stores the proven canonical `(path, identity)` pair and its retained
 /// parent/leaf descriptor. Leafless paths keep the caller's spelling and carry no descriptor.
+/// `parent_identity` is captured from the already-open parent for persisted file entries.
 /// `parent_and_leaf` is the proving descriptor consumed by `database_file_target`/`for_test_path`
-/// and dropped by registration doors, whose later use re-walks the stored path no-follow. The PGN
-/// export door keeps its own proving parent and passes `None`.
+/// and dropped by registration doors, whose later use re-walks the stored path no-follow.
 struct AcquiredTarget {
     path: PathBuf,
     identity: Identity,
+    parent_identity: Option<Identity>,
     target_is_dir: bool,
     parent_and_leaf: Option<(fs::File, OsString)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RegistrationDoor {
+    ExplicitReauthorization,
+    PassiveObservation,
 }
 
 fn acquire_target(path: &Path, shape: AcquireShape) -> Result<AcquiredTarget, Error> {
@@ -3660,6 +3725,7 @@ fn acquire_target(path: &Path, shape: AcquireShape) -> Result<AcquiredTarget, Er
         return Ok(AcquiredTarget {
             path: path.to_path_buf(),
             identity,
+            parent_identity: None,
             target_is_dir,
             parent_and_leaf: None,
         });
@@ -3680,9 +3746,15 @@ fn acquire_target(path: &Path, shape: AcquireShape) -> Result<AcquiredTarget, Er
             target_is_dir,
             parent_access,
         )?;
+        let parent_identity = if target_is_dir {
+            None
+        } else {
+            Some(identity_from_open_file(&parent_and_leaf.0)?)
+        };
         Ok(AcquiredTarget {
             path: canonical,
             identity,
+            parent_identity,
             target_is_dir,
             parent_and_leaf: Some(parent_and_leaf),
         })
@@ -3697,9 +3769,15 @@ fn acquire_target(path: &Path, shape: AcquireShape) -> Result<AcquiredTarget, Er
             target_is_dir,
             parent_access,
         )?;
+        let parent_identity = if target_is_dir {
+            None
+        } else {
+            Some(identity_from_open_file(&parent_and_leaf.0)?)
+        };
         Ok(AcquiredTarget {
             path: canonical,
             identity,
+            parent_identity,
             target_is_dir,
             parent_and_leaf: Some(parent_and_leaf),
         })
@@ -3714,6 +3792,8 @@ struct StoredEntry {
     operations: Vec<PathOperation>,
     path: NativePath,
     identity: Identity,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    parent_identity: Option<Identity>,
     #[serde(default)]
     target_is_dir: bool,
     #[serde(default)]
@@ -4107,6 +4187,10 @@ impl PathAuthority {
                         a: identity.0,
                         b: identity.1,
                     },
+                    parent_identity: Some(Identity {
+                        a: parent_identity.0,
+                        b: parent_identity.1,
+                    }),
                     target_is_dir: false,
                     parent_and_leaf: None,
                 },
@@ -4233,6 +4317,10 @@ impl PathAuthority {
                         a: identity.0,
                         b: identity.1,
                     },
+                    parent_identity: Some(Identity {
+                        a: parent_identity.0,
+                        b: parent_identity.1,
+                    }),
                     target_is_dir: false,
                     parent_and_leaf: None,
                 },
@@ -4479,6 +4567,7 @@ impl PathAuthority {
                 operations: root.operations,
                 path: NativePath::from_path(&root.path),
                 identity: validate_target(&root.path, PathClass::AppOwnedRoot)?,
+                parent_identity: None,
                 target_is_dir: true,
             };
             persistent.insert(
@@ -4519,12 +4608,12 @@ impl PathAuthority {
         };
         // Recovery validates pending roots by their stored spelling; repair legacy spellings
         // before it runs so a recovered artifact sees the same canonical root as the registry.
-        authority.rebind_legacy_spellings();
+        authority.rebind_legacy_spellings_and_parent_identities();
         authority.recover_pending_artifacts()?;
         Ok(authority)
     }
 
-    fn rebind_legacy_spellings(&mut self) {
+    fn rebind_legacy_spellings_and_parent_identities(&mut self) {
         let ids: Vec<_> = self.persistent.keys().cloned().collect();
         let mut rebound_ids = Vec::new();
 
@@ -4547,8 +4636,13 @@ impl PathAuthority {
                     continue;
                 }
             };
+            let needs_parent_upgrade = !entry.stored.target_is_dir
+                && has_normal_leaf(&path)
+                && entry.stored.parent_identity.is_none();
             match classify_canonical_binding(&path) {
-                CanonicalBindingStatus::Canonical | CanonicalBindingStatus::Leafless => continue,
+                CanonicalBindingStatus::Canonical if !needs_parent_upgrade => continue,
+                CanonicalBindingStatus::Leafless => continue,
+                CanonicalBindingStatus::Canonical => {}
                 CanonicalBindingStatus::NeedsRebinding => {}
                 CanonicalBindingStatus::Failed(error) => {
                     entry.availability = PathAvailability::Unavailable;
@@ -4587,6 +4681,28 @@ impl PathAuthority {
                 );
                 continue;
             }
+            if let Some(expected_parent) = entry.stored.parent_identity.as_ref() {
+                if acquired.parent_identity.as_ref() != Some(expected_parent) {
+                    entry.availability = PathAvailability::Unavailable;
+                    log::warn!(
+                        "legacy path rebinding skipped for entry {} at {:?}: parent identity changed",
+                        entry.stored.id.id,
+                        path
+                    );
+                    continue;
+                }
+            } else if needs_parent_upgrade {
+                let Some(parent_identity) = acquired.parent_identity.clone() else {
+                    entry.availability = PathAvailability::Unavailable;
+                    log::warn!(
+                        "legacy parent identity upgrade skipped for entry {} at {:?}: parent is unavailable",
+                        entry.stored.id.id,
+                        path
+                    );
+                    continue;
+                };
+                entry.stored.parent_identity = Some(parent_identity);
+            }
             entry.stored.path = NativePath::from_path(&acquired.path);
             entry.availability = PathAvailability::Available;
             rebound_ids.push(id);
@@ -4623,6 +4739,16 @@ impl PathAuthority {
     #[cfg(test)]
     pub(crate) fn has_persistent_id(&self, id: &str) -> bool {
         self.persistent.contains_key(id)
+    }
+    #[cfg(test)]
+    pub(crate) fn parent_identity_for_test(&self, id: &PathRef) -> Option<(u64, u64)> {
+        let parent = self
+            .persistent
+            .get(&id.id)?
+            .stored
+            .parent_identity
+            .as_ref()?;
+        Some((parent.a, parent.b))
     }
     #[cfg(test)]
     pub(crate) fn has_pending_artifact_filename(&self, filename: &std::path::Path) -> bool {
@@ -4767,6 +4893,7 @@ impl PathAuthority {
             operations,
             path: NativePath::from_path(&acquired.path),
             identity: acquired.identity,
+            parent_identity: acquired.parent_identity,
             target_is_dir: acquired.target_is_dir,
         };
         self.dialogs.insert(
@@ -4860,7 +4987,16 @@ impl PathAuthority {
             parent_access_for_operations(&operations),
         );
         let acquired = acquire_target(&path, shape)?;
-        if acquired.path != path || acquired.identity != grant.entry.stored.identity {
+        #[cfg(test)]
+        PROMOTE_DIALOG_POST_ACQUIRE_HOOK.with(|slot| {
+            if let Some(hook) = slot.borrow_mut().take() {
+                hook();
+            }
+        });
+        if acquired.path != path
+            || acquired.identity != grant.entry.stored.identity
+            || acquired.parent_identity != grant.entry.stored.parent_identity
+        {
             return Err(Error::Conflict(
                 "dialog target changed before promotion".into(),
             ));
@@ -4881,6 +5017,7 @@ impl PathAuthority {
                 let mut candidate = self.persistent.clone();
                 if let Some(entry) = candidate.get_mut(&id.id) {
                     entry.stored.operations = canonical_operations(purpose);
+                    entry.stored.parent_identity = acquired.parent_identity.clone();
                 }
                 let durability = self.commit_candidate(candidate, Some(dialog))?;
                 self.session_protected_ids.insert(id.id.clone());
@@ -4897,6 +5034,7 @@ impl PathAuthority {
             operations,
             path: NativePath::from_path(&acquired.path),
             identity: expected,
+            parent_identity: acquired.parent_identity,
             target_is_dir,
         };
         let mut candidate = self.persistent.clone();
@@ -4934,12 +5072,12 @@ impl PathAuthority {
         class: PathClass,
         operations: Vec<PathOperation>,
     ) -> Result<PathCommit, Error> {
-        self.migrate_legacy_os_path_inner(path, display_name.into(), class, operations, None)
+        self.migrate_legacy_os_path_inner(path, display_name.into(), class, operations, None, None)
     }
 
     fn fresh_stored_entry(
         path: &Path,
-        identity: Identity,
+        binding: IdentityBinding,
         display_name: String,
         class: PathClass,
         purpose: Option<EntryPurpose>,
@@ -4953,7 +5091,8 @@ impl PathAuthority {
             purpose,
             operations,
             path: NativePath::from_path(path),
-            identity,
+            identity: binding.identity,
+            parent_identity: binding.parent_identity,
             target_is_dir,
         }
     }
@@ -4961,7 +5100,7 @@ impl PathAuthority {
     fn persist_entry(
         &mut self,
         path: &Path,
-        identity: Identity,
+        binding: IdentityBinding,
         display_name: String,
         class: PathClass,
         operations: Vec<PathOperation>,
@@ -4971,7 +5110,7 @@ impl PathAuthority {
         let operations = purpose.map(canonical_operations).unwrap_or(operations);
         let stored = Self::fresh_stored_entry(
             path,
-            identity,
+            binding,
             display_name,
             class,
             purpose,
@@ -4986,7 +5125,8 @@ impl PathAuthority {
         class: PathClass,
         operations: &[PathOperation],
         expected_identity: Option<VerifiedIdentity>,
-    ) -> Result<(PathBuf, Identity), Error> {
+        expected_parent_identity: Option<VerifiedIdentity>,
+    ) -> Result<(PathBuf, IdentityBinding), Error> {
         match expected_identity {
             None => {
                 let shape = AcquireShape::for_persistent_class(
@@ -4994,12 +5134,28 @@ impl PathAuthority {
                     parent_access_for_operations(operations),
                 );
                 let acquired = acquire_target(path, shape)?;
-                Ok((acquired.path, acquired.identity))
+                Ok((
+                    acquired.path,
+                    IdentityBinding::new(acquired.identity, acquired.parent_identity),
+                ))
             }
             Some(expected) => {
                 let identity = validate_target(path, class)?;
                 reject_disagreeing_expected_identity(&identity, Some(expected))?;
-                Ok((path.to_path_buf(), identity))
+                let parent_identity = if class == PathClass::PersistentFile && has_normal_leaf(path)
+                {
+                    let parent = expected_parent_identity.ok_or_else(|| {
+                        Error::InvalidInput("verified file has no parent identity".into())
+                    })?;
+                    let (a, b) = parent.pair();
+                    Some(Identity { a, b })
+                } else {
+                    None
+                };
+                Ok((
+                    path.to_path_buf(),
+                    IdentityBinding::new(identity, parent_identity),
+                ))
             }
         }
     }
@@ -5011,6 +5167,7 @@ impl PathAuthority {
         class: PathClass,
         operations: Vec<PathOperation>,
         expected_identity: Option<VerifiedIdentity>,
+        expected_parent_identity: Option<VerifiedIdentity>,
     ) -> Result<PathCommit, Error> {
         if !matches!(
             class,
@@ -5026,9 +5183,20 @@ impl PathAuthority {
             ));
         }
         let path = PathBuf::from(path);
-        let (path, identity) =
-            Self::registration_target(&path, class, &operations, expected_identity)?;
-        self.persist_entry(&path, identity, display_name, class, operations)
+        let (path, binding) = Self::registration_target(
+            &path,
+            class,
+            &operations,
+            expected_identity,
+            expected_parent_identity,
+        )?;
+        #[cfg(test)]
+        PERSISTENT_FILE_POST_TARGET_HOOK.with(|slot| {
+            if let Some(hook) = slot.borrow_mut().take() {
+                hook();
+            }
+        });
+        self.persist_entry(&path, binding, display_name, class, operations)
     }
     /// Registers a bundled/app-owned or picker-selected persistent file. A call without an
     /// expected identity acquires through `acquire_target`; Unix paths with normal leaves are
@@ -5041,7 +5209,14 @@ impl PathAuthority {
         display_name: impl Into<String>,
         operations: Vec<PathOperation>,
     ) -> Result<PathCommit, Error> {
-        self.get_or_create_persistent_file_inner(path, display_name.into(), operations, None)
+        self.get_or_create_persistent_file_inner(
+            path,
+            display_name.into(),
+            operations,
+            None,
+            None,
+            RegistrationDoor::ExplicitReauthorization,
+        )
     }
 
     pub(crate) fn get_or_create_persistent_file_verified(
@@ -5050,12 +5225,16 @@ impl PathAuthority {
         display_name: impl Into<String>,
         operations: Vec<PathOperation>,
         expected: VerifiedIdentity,
+        expected_parent: VerifiedIdentity,
+        door: RegistrationDoor,
     ) -> Result<PathCommit, Error> {
         self.get_or_create_persistent_file_inner(
             path,
             display_name.into(),
             operations,
             Some(expected),
+            Some(expected_parent),
+            door,
         )
     }
 
@@ -5065,29 +5244,45 @@ impl PathAuthority {
         display_name: String,
         operations: Vec<PathOperation>,
         expected_identity: Option<VerifiedIdentity>,
+        expected_parent_identity: Option<VerifiedIdentity>,
+        door: RegistrationDoor,
     ) -> Result<PathCommit, Error> {
         if operations.is_empty() {
             return Err(Error::InvalidInput(
                 "persistent operations cannot be empty".into(),
             ));
         }
-        let (path, expected) = Self::registration_target(
+        let (path, binding) = Self::registration_target(
             path,
             PathClass::PersistentFile,
             &operations,
             expected_identity,
+            expected_parent_identity,
         )?;
-        self.get_or_create_persistent_file_from_identity(&path, display_name, operations, expected)
+        #[cfg(test)]
+        PERSISTENT_FILE_POST_TARGET_HOOK.with(|slot| {
+            if let Some(hook) = slot.borrow_mut().take() {
+                hook();
+            }
+        });
+        self.get_or_create_persistent_file_from_identity(
+            &path,
+            display_name,
+            operations,
+            binding,
+            door,
+        )
     }
 
     /// Common storage body for native paths whose file identity has already been established.
-    /// Callers must acquire `identity` from a checked pathname or retained descriptor boundary.
+    /// Callers must acquire the binding from a checked pathname or retained descriptor boundary.
     fn get_or_create_persistent_file_from_identity(
         &mut self,
         path: &Path,
         display_name: String,
         operations: Vec<PathOperation>,
-        identity: Identity,
+        binding: IdentityBinding,
+        door: RegistrationDoor,
     ) -> Result<PathCommit, Error> {
         let purpose = purpose_for_shape(PathClass::PersistentFile, false, &operations);
         let desired_operations = purpose
@@ -5105,31 +5300,40 @@ impl PathAuthority {
                     .to_path()
                     .is_ok_and(|stored_path| stored_path == path)
         }) {
-            if entry.stored.identity != identity {
+            if entry.stored.identity != binding.identity {
                 return Err(Error::Conflict(
                     "persistent file changed; acquire a new capability".into(),
                 ));
             }
-            let id = entry.stored.id.clone();
-            let needs_update = purpose.is_some() && entry.stored.operations != desired_operations;
-            if needs_update {
-                let mut candidate = self.persistent.clone();
-                if let Some(candidate_entry) = candidate.get_mut(&id.id) {
-                    candidate_entry.stored.operations = desired_operations.clone();
+            if entry.stored.parent_identity != binding.parent_identity
+                && door == RegistrationDoor::PassiveObservation
+            {
+                // Passive discovery leaves the old binding refused and creates a fresh ID below.
+            } else {
+                let id = entry.stored.id.clone();
+                let parent_changed = entry.stored.parent_identity != binding.parent_identity;
+                let operations_changed =
+                    purpose.is_some() && entry.stored.operations != desired_operations;
+                if parent_changed || operations_changed {
+                    let mut candidate = self.persistent.clone();
+                    if let Some(candidate_entry) = candidate.get_mut(&id.id) {
+                        candidate_entry.stored.operations = desired_operations.clone();
+                        candidate_entry.stored.parent_identity = binding.parent_identity.clone();
+                    }
+                    let durability = self.commit_candidate(candidate, None)?;
+                    self.session_protected_ids.insert(id.id.clone());
+                    return Ok(PathCommit { id, durability });
                 }
-                let durability = self.commit_candidate(candidate, None)?;
                 self.session_protected_ids.insert(id.id.clone());
-                return Ok(PathCommit { id, durability });
+                return Ok(PathCommit {
+                    id,
+                    durability: CommitDurability::Durable,
+                });
             }
-            self.session_protected_ids.insert(id.id.clone());
-            return Ok(PathCommit {
-                id,
-                durability: CommitDurability::Durable,
-            });
         }
         let stored = Self::fresh_stored_entry(
             path,
-            identity,
+            binding,
             display_name,
             PathClass::PersistentFile,
             purpose,
@@ -5241,11 +5445,12 @@ impl PathAuthority {
     ) -> Result<PathRef, Error> {
         let display_name = display_name.into();
         let purpose = purpose_for_shape(PathClass::PersistentCustomRoot, true, &operations);
-        let (path, identity) = Self::registration_target(
+        let (path, binding) = Self::registration_target(
             path,
             PathClass::PersistentCustomRoot,
             &operations,
             expected_identity,
+            None,
         )?;
         if let Some(entry) = self
             .persistent
@@ -5267,7 +5472,7 @@ impl PathAuthority {
             })
             .cloned()
         {
-            if identity != entry.stored.identity {
+            if binding.identity != entry.stored.identity {
                 if expected_identity.is_some() {
                     let stale_root = entry.stored.id.clone();
                     let new_root = PathRef::fresh();
@@ -5287,7 +5492,8 @@ impl PathAuthority {
                         purpose,
                         operations: purpose.map(canonical_operations).unwrap_or(operations),
                         path: NativePath::from_path(&path),
-                        identity,
+                        identity: binding.identity.clone(),
+                        parent_identity: None,
                         target_is_dir: true,
                     };
                     candidate.insert(
@@ -5334,7 +5540,9 @@ impl PathAuthority {
             return Ok(id);
         }
         if expected_identity.is_some() {
-            if let Some(id) = self.adopt_unavailable_root(&path, &identity, purpose, &operations)? {
+            if let Some(id) =
+                self.adopt_unavailable_root(&path, &binding.identity, purpose, &operations)?
+            {
                 self.session_protected_ids.insert(id.id.clone());
                 return Ok(id);
             }
@@ -5342,7 +5550,7 @@ impl PathAuthority {
         let id = self
             .persist_entry(
                 &path,
-                identity,
+                binding,
                 display_name,
                 PathClass::PersistentCustomRoot,
                 operations,
@@ -5507,8 +5715,14 @@ impl PathAuthority {
         display_name: impl Into<String>,
     ) -> Result<EngineHandle, Error> {
         let operations = engine_file_operations();
-        let commit =
-            self.get_or_create_persistent_file_inner(path, display_name.into(), operations, None)?;
+        let commit = self.get_or_create_persistent_file_inner(
+            path,
+            display_name.into(),
+            operations,
+            None,
+            None,
+            RegistrationDoor::ExplicitReauthorization,
+        )?;
         Ok(keep_adopted_handle(
             commit.durability,
             EngineHandle::new(commit.id),
@@ -5520,17 +5734,16 @@ impl PathAuthority {
         path: &Path,
         display_name: String,
         identity: VerifiedIdentity,
+        parent_identity: VerifiedIdentity,
     ) -> Result<EngineHandle, Error> {
         let operations = engine_file_operations();
-        let pair = identity.pair();
+        let binding = IdentityBinding::from_pairs(identity.pair(), parent_identity.pair());
         let commit = self.get_or_create_persistent_file_from_identity(
             path,
             display_name,
             operations,
-            Identity {
-                a: pair.0,
-                b: pair.1,
-            },
+            binding,
+            RegistrationDoor::ExplicitReauthorization,
         )?;
         Ok(keep_adopted_handle(
             commit.durability,
@@ -5638,11 +5851,19 @@ impl PathAuthority {
         crate::infra::fs::single_leaf(leaf)
             .map_err(|_| Error::InvalidInput("engine image leaf must be one component".into()))?;
         let path = dir.path().join(leaf);
+        #[cfg(test)]
+        ENGINE_IMAGE_PRE_REGISTRATION_HOOK.with(|slot| {
+            if let Some(hook) = slot.borrow_mut().take() {
+                hook();
+            }
+        });
         let commit = self.get_or_create_persistent_file_verified(
             &path,
             display_name,
             canonical_operations(EntryPurpose::EngineImage),
             installed,
+            dir.identity(),
+            RegistrationDoor::ExplicitReauthorization,
         )?;
         Ok(keep_adopted_handle(
             commit.durability,
@@ -5706,6 +5927,10 @@ impl PathAuthority {
         }
         resolved.mark_engine_executable()?;
         let identity = resolved.identity()?;
+        let parent = resolved.parent().ok_or_else(|| {
+            Error::InvalidInput("installed engine has no retained parent boundary".into())
+        })?;
+        let parent_identity = VerifiedIdentity::from_pair(opened_file_identity(parent)?);
         let path = resolved
             .target()
             .ok_or_else(|| Error::InvalidInput("installed engine must be a regular file".into()))?
@@ -5721,7 +5946,7 @@ impl PathAuthority {
             .ok_or_else(|| Error::InvalidInput("engine path is required".into()))?
             .to_string_lossy()
             .into_owned();
-        self.register_engine_file_from_resolved(&path, display_name, identity)
+        self.register_engine_file_from_resolved(&path, display_name, identity, parent_identity)
     }
 
     pub(crate) fn engine_archive_destination(
@@ -5940,6 +6165,10 @@ impl PathAuthority {
             &[filename.to_os_string()],
         )?;
         let resolved_identity = refuse_unobserved(resolved.identity()?, observed)?;
+        let parent = resolved.parent().ok_or_else(|| {
+            Error::InvalidInput("puzzle child has no retained parent boundary".into())
+        })?;
+        let parent_identity = VerifiedIdentity::from_pair(opened_file_identity(parent)?);
         #[cfg(test)]
         PUZZLE_CHILD_POST_RESOLVE_HOOK.with(|slot| {
             if let Some(hook) = slot.borrow_mut().take() {
@@ -5952,6 +6181,8 @@ impl PathAuthority {
             filename.to_string_lossy(),
             canonical_operations(EntryPurpose::PuzzleFile),
             resolved_identity,
+            parent_identity,
+            RegistrationDoor::PassiveObservation,
         )?;
         require_durable(commit.durability)?;
         Ok(commit.id)
@@ -6023,14 +6254,14 @@ impl PathAuthority {
         resolved: &ResolvedPath,
         expected_identity: VerifiedIdentity,
     ) -> Result<DatabaseHandle, Error> {
-        #[cfg(not(unix))]
-        let _ = resolved;
-        #[cfg(unix)]
         if resolved.parent().is_none() || resolved.leaf().is_none() {
             return Err(Error::InvalidInput(
                 "database child has no retained parent boundary".into(),
             ));
         }
+        let parent_identity = identity_from_open_file(resolved.parent().ok_or_else(|| {
+            Error::InvalidInput("database child has no retained parent boundary".into())
+        })?)?;
         let root_path = self.database_root_path(root)?;
         let path = root_path.join(filename);
         let validated_identity = validate_target(&path, PathClass::PersistentFile)?;
@@ -6040,6 +6271,7 @@ impl PathAuthority {
             entry.stored.class == PathClass::PersistentFile
                 && entry.stored.path.to_path().ok().as_ref() == Some(&path)
                 && entry.stored.identity == validated_identity
+                && entry.stored.parent_identity.as_ref() == Some(&parent_identity)
                 && !entry.stored.target_is_dir
                 && entry.stored.purpose == Some(EntryPurpose::DatabaseFile)
                 && entry
@@ -6073,6 +6305,7 @@ impl PathAuthority {
                 let (a, b) = verified_identity.pair();
                 Identity { a, b }
             },
+            parent_identity: Some(parent_identity),
             target_is_dir: false,
         };
         let mut candidate = self.persistent.clone();
@@ -6213,6 +6446,7 @@ impl PathAuthority {
         let (parent, leaf) = acquired
             .parent_and_leaf
             .ok_or_else(|| Error::InvalidInput("database path needs a leaf name".into()))?;
+        verify_parent_identity(&parent, stored.parent_identity.as_ref())?;
         self.session_protected_ids
             .insert(handle.path_ref().id.clone());
         Ok(DatabaseFileTarget::assemble(
@@ -6712,15 +6946,17 @@ impl PathAuthority {
                 "workspace entry is not persistent".into(),
             ));
         }
-        let entry = if let Some(entry) = self
+        let stored_entry = self
             .persistent
             .get(&id.id)
             .or_else(|| self.retired_attachments.get(&id.id))
-            .cloned()
-        {
-            entry
-        } else {
-            self.take_dialog(id, Some(operation))?.entry
+            .cloned();
+        let parent_binding = stored_entry
+            .as_ref()
+            .map(|entry| &entry.stored.parent_identity);
+        let entry = match stored_entry.as_ref() {
+            Some(entry) => entry.clone(),
+            None => self.take_dialog(id, Some(operation))?.entry,
         };
         if !entry.stored.operations.contains(&operation) {
             return Err(Error::InvalidInput(
@@ -6746,6 +6982,7 @@ impl PathAuthority {
             &root,
             &entry.stored.identity,
             entry.stored.target_is_dir,
+            parent_binding,
             components,
             operation,
         );
@@ -6754,6 +6991,7 @@ impl PathAuthority {
             &root,
             &entry.stored.identity,
             entry.stored.target_is_dir,
+            parent_binding,
             components,
             operation,
         );
@@ -6863,12 +7101,12 @@ impl PathAuthority {
 
     /// Persists an opaque child handle for an entry observed through a retained directory
     /// descriptor. The supplied identity is the one captured during enumeration.
-    pub(crate) fn register_workspace_child_observed(
+    pub(crate) fn register_workspace_child_observed_with_parent(
         &mut self,
         workspace: &FileWorkspaceHandle,
         components: &[OsString],
         display_name: impl Into<String>,
-        identity: (u64, u64),
+        binding: IdentityBinding,
         is_dir: bool,
         operation: PathOperation,
     ) -> Result<FileWorkspaceHandle, Error> {
@@ -6899,11 +7137,40 @@ impl PathAuthority {
             path,
             display_name.into(),
             class,
-            Identity {
-                a: identity.0,
-                b: identity.1,
-            },
+            binding,
             is_dir,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn register_workspace_child_observed(
+        &mut self,
+        workspace: &FileWorkspaceHandle,
+        components: &[OsString],
+        display_name: impl Into<String>,
+        identity: (u64, u64),
+        is_dir: bool,
+        operation: PathOperation,
+    ) -> Result<FileWorkspaceHandle, Error> {
+        let root_entry = self
+            .persistent
+            .get(&workspace.path_ref().id)
+            .ok_or_else(|| Error::InvalidInput("workspace is not persistent".into()))?;
+        let path =
+            components
+                .iter()
+                .fold(root_entry.stored.path.to_path()?, |mut path, component| {
+                    path.push(component);
+                    path
+                });
+        let parent = crate::infra::fs::open_parent_no_follow(&path)?;
+        self.register_workspace_child_observed_with_parent(
+            workspace,
+            components,
+            display_name,
+            IdentityBinding::from_pairs(identity, opened_file_identity(&parent)?),
+            is_dir,
+            operation,
         )
     }
 
@@ -6913,9 +7180,16 @@ impl PathAuthority {
         path: PathBuf,
         display_name: String,
         class: PathClass,
-        identity: Identity,
+        binding: IdentityBinding,
         is_dir: bool,
     ) -> Result<FileWorkspaceHandle, Error> {
+        let parent_identity = if is_dir {
+            None
+        } else {
+            Some(binding.parent_identity.clone().ok_or_else(|| {
+                Error::InvalidInput("workspace file has no observed parent identity".into())
+            })?)
+        };
         let purpose =
             (root_entry.stored.purpose == Some(EntryPurpose::PgnWorkspace)).then_some(if is_dir {
                 EntryPurpose::PgnWorkspace
@@ -6925,7 +7199,8 @@ impl PathAuthority {
         if let Some((id, entry)) = self.persistent.iter().find(|(_, entry)| {
             entry.stored.class == class
                 && entry.stored.path.to_path().ok().as_ref() == Some(&path)
-                && entry.stored.identity == identity
+                && entry.stored.identity == binding.identity
+                && entry.stored.parent_identity == parent_identity
                 && entry.stored.target_is_dir == is_dir
                 && entry.stored.purpose == purpose
                 && (purpose.is_some()
@@ -6957,7 +7232,8 @@ impl PathAuthority {
                 .map(canonical_operations)
                 .unwrap_or(root_entry.stored.operations),
             path: NativePath::from_path(&path),
-            identity,
+            identity: binding.identity,
+            parent_identity,
             target_is_dir: is_dir,
         };
         let mut candidate = self.persistent.clone();
@@ -7126,6 +7402,9 @@ impl PathAuthority {
             .to_os_string();
         let mut re_resolved =
             self.resolve(&verified.pending.root, PathOperation::DownloadFile, &[leaf])?;
+        let parent_identity = identity_from_open_file(re_resolved.parent().ok_or_else(|| {
+            Error::Conflict("artifact target parent handle is unavailable".into())
+        })?)?;
         let current_file = re_resolved
             .take_file()
             .ok_or_else(|| Error::Conflict("artifact target is not a regular file".into()))?;
@@ -7173,6 +7452,7 @@ impl PathAuthority {
             operations,
             path: NativePath::from_path(&root_path.join(&filename)),
             identity: verified.verified_identity,
+            parent_identity: Some(parent_identity),
             target_is_dir: false,
         };
         let mut candidate = self.persistent.clone();
@@ -7296,6 +7576,7 @@ impl PathAuthority {
         handle: &FileWorkspaceHandle,
         path: &Path,
         display_name: impl Into<String>,
+        parent_identity: (u64, u64),
     ) -> Result<(), Error> {
         let mut candidate = self.persistent.clone();
         let entry = candidate
@@ -7303,6 +7584,10 @@ impl PathAuthority {
             .ok_or_else(|| Error::Conflict("workspace entry disappeared".into()))?;
         entry.stored.path = NativePath::from_path(path);
         entry.stored.display_name = display_name.into();
+        entry.stored.parent_identity = Some(Identity {
+            a: parent_identity.0,
+            b: parent_identity.1,
+        });
         entry.availability = PathAvailability::Available;
         require_durable(self.commit_candidate(candidate, None)?)?;
         Ok(())
@@ -7342,6 +7627,15 @@ impl PathAuthority {
             return Err(Error::Conflict(
                 "workspace entry is unavailable because its object changed".into(),
             ));
+        }
+        let (parent, _) = crate::infra::fs::open_verified_parent(
+            &path,
+            (entry.stored.identity.a, entry.stored.identity.b),
+            entry.stored.target_is_dir,
+            parent_access_for_operations(&[operation]),
+        )?;
+        if !entry.stored.target_is_dir {
+            verify_parent_identity(&parent, entry.stored.parent_identity.as_ref())?;
         }
         self.session_protected_ids
             .insert(handle.path_ref().id.clone());
@@ -7387,6 +7681,9 @@ impl PathAuthority {
             entry.stored.target_is_dir,
             ParentAccess::Writable,
         )?;
+        if !entry.stored.target_is_dir {
+            verify_parent_identity(&parent, entry.stored.parent_identity.as_ref())?;
+        }
         self.session_protected_ids
             .insert(handle.path_ref().id.clone());
         Ok(RetainedWorkspaceTarget {
@@ -8270,9 +8567,15 @@ mod portable_tests {
             .create_pgn_export_destination(&path, "export.pgn")
             .unwrap();
         assert!(path.is_file());
-        assert!(authority
-            .resolve(destination.handle.path_ref(), PathOperation::ReadPgn, &[],)
-            .is_ok());
+        let resolved = authority
+            .resolve(destination.handle.path_ref(), PathOperation::ReadPgn, &[])
+            .unwrap();
+        let expected_parent = identity_from_open_file(resolved.parent().unwrap()).unwrap();
+        assert_eq!(
+            authority.parent_identity_for_test(destination.handle.path_ref()),
+            Some((expected_parent.a, expected_parent.b))
+        );
+        drop(resolved);
         assert!(authority
             .resolve(destination.handle.path_ref(), PathOperation::WritePgn, &[],)
             .is_ok());
@@ -8280,6 +8583,44 @@ mod portable_tests {
             authority.create_pgn_export_destination(&dir.path().join("export.txt"), "export.txt"),
             Err(Error::InvalidInput(_))
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pgn_export_promotion_keeps_the_retained_parent_identity_across_registration_race() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("exports");
+        fs::create_dir(&root).unwrap();
+        let path = root.join("export.pgn");
+        let parent = crate::infra::fs::open_parent_no_follow(&path).unwrap();
+        let expected_parent = identity_from_open_file(&parent).unwrap();
+        let moved = dir.path().join("exports.old");
+        let root_for_hook = root.clone();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        PROMOTE_DIALOG_POST_ACQUIRE_HOOK.with(|slot| {
+            assert!(slot
+                .replace(Some(Box::new(move || {
+                    fs::rename(&root_for_hook, &moved).unwrap();
+                    fs::create_dir(&root_for_hook).unwrap();
+                    fs::hard_link(moved.join("export.pgn"), root_for_hook.join("export.pgn"))
+                        .unwrap();
+                })))
+                .is_none());
+        });
+
+        let destination = authority
+            .create_pgn_export_destination(&path, "export.pgn")
+            .unwrap();
+
+        assert_eq!(
+            authority.parent_identity_for_test(destination.handle.path_ref()),
+            Some((expected_parent.a, expected_parent.b))
+        );
+        assert!(matches!(
+            authority.resolve(destination.handle.path_ref(), PathOperation::ReadPgn, &[]),
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
     }
 
     #[test]
@@ -8298,6 +8639,7 @@ mod portable_tests {
             operations: vec![PathOperation::ReadPgn],
             path: NativePath::from_path(&file),
             identity: identity(&file).unwrap(),
+            parent_identity: None,
             target_is_dir: false,
         };
         authority.persistent.insert(
@@ -8324,6 +8666,7 @@ mod portable_tests {
             operations: vec![],
             path: NativePath::from_path(&wrong_path),
             identity: identity(&wrong_path).unwrap(),
+            parent_identity: None,
             target_is_dir: false,
         };
         authority.persistent.insert(
@@ -8366,6 +8709,7 @@ mod portable_tests {
             operations,
             path: NativePath::from_path(&file),
             identity: identity(&file).unwrap(),
+            parent_identity: None,
             target_is_dir: false,
         };
 
@@ -8716,6 +9060,7 @@ mod tests {
         let path = dir.path().join("engine");
         let original = dir.path().join("engine-original");
         fs::write(&path, b"original").unwrap();
+        let expected_parent = descriptor_parent_identity(&path);
         let original_identity = validate_target(&path, PathClass::PersistentFile).unwrap();
         let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
         let registered = authority
@@ -8726,6 +9071,10 @@ mod tests {
                 vec![PathOperation::EngineInstall],
             )
             .unwrap();
+        assert_eq!(
+            authority.parent_identity_for_test(&registered.id),
+            Some((expected_parent.a, expected_parent.b))
+        );
         let resolved = authority
             .resolve(&registered.id, PathOperation::EngineInstall, &[])
             .unwrap();
@@ -8789,6 +9138,13 @@ mod tests {
         let stored = &authority.persistent[&handle.id.id].stored.identity;
 
         assert_eq!((stored.a, stored.b), installed.pair());
+        assert_eq!(
+            authority.parent_identity_for_test(handle.path_ref()),
+            Some(image_dir.identity().pair())
+        );
+        assert!(authority
+            .resolve(handle.path_ref(), PathOperation::ImageRead, &[])
+            .is_ok());
     }
 
     #[cfg(unix)]
@@ -8907,7 +9263,14 @@ mod tests {
             .unwrap();
 
         let error = authority
-            .get_or_create_persistent_file_verified(&file, "file", operations, other_dir.identity())
+            .get_or_create_persistent_file_verified(
+                &file,
+                "file",
+                operations,
+                other_dir.identity(),
+                other_dir.identity(),
+                RegistrationDoor::ExplicitReauthorization,
+            )
             .expect_err("the reuse arm must compare the required identity");
 
         assert!(matches!(error, Error::Conflict(_)), "{error:?}");
@@ -8932,6 +9295,7 @@ mod tests {
                 "file".into(),
                 PathClass::PersistentFile,
                 vec![PathOperation::ReadPgn],
+                Some(other_dir.identity()),
                 Some(other_dir.identity()),
             )
             .expect_err("the migrate arm must compare the required identity");
@@ -9029,6 +9393,22 @@ mod tests {
             .unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].handle, created);
+        let expected_parent = authority
+            .capability_directory(root.path_ref(), PathOperation::DatabaseRead)
+            .unwrap()
+            .identity()
+            .unwrap();
+        assert_eq!(
+            authority.parent_identity_for_test(listed[0].handle.path_ref()),
+            Some(expected_parent)
+        );
+        assert!(authority
+            .resolve(
+                listed[0].handle.path_ref(),
+                PathOperation::DatabaseRead,
+                &[]
+            )
+            .is_ok());
 
         fs::write(root_path.join("existing.db3"), b"original").unwrap();
         let conflict = authority
@@ -9345,6 +9725,18 @@ mod tests {
         let first = authority
             .register_installed_engine(&root, "engine")
             .unwrap();
+        let expected_parent = authority
+            .capability_directory(root.path_ref(), PathOperation::EngineInstall)
+            .unwrap()
+            .identity()
+            .unwrap();
+        assert_eq!(
+            authority.parent_identity_for_test(first.path_ref()),
+            Some(expected_parent)
+        );
+        assert!(authority
+            .resolve(first.path_ref(), PathOperation::EngineBinaryInspect, &[])
+            .is_ok());
         let second = authority
             .register_installed_engine(&root, "engine")
             .unwrap();
@@ -9587,6 +9979,18 @@ mod tests {
         let handle = authority
             .create_database_child(&root, OsStr::new("created.db3"))
             .unwrap();
+        let expected_parent = authority
+            .capability_directory(root.path_ref(), PathOperation::DatabaseRead)
+            .unwrap()
+            .identity()
+            .unwrap();
+        assert_eq!(
+            authority.parent_identity_for_test(handle.path_ref()),
+            Some(expected_parent)
+        );
+        assert!(authority
+            .resolve(handle.path_ref(), PathOperation::DatabaseRead, &[])
+            .is_ok());
         let expected_path = root_path.canonicalize().unwrap().join("created.db3");
         let expected_identity =
             opened_file_identity(&fs::File::open(&expected_path).unwrap()).unwrap();
@@ -9718,6 +10122,8 @@ mod tests {
                 "x",
                 canonical_operations(EntryPurpose::DatabaseFile),
                 verified_file,
+                real_directory.identity(),
+                RegistrationDoor::ExplicitReauthorization,
             )
             .unwrap();
         assert_eq!(
@@ -10411,8 +10817,14 @@ mod tests {
         fs::rename(&source, &moved).unwrap();
         fs::rename(&moved, workspace.join("moved-original.pgn")).unwrap();
         fs::write(&moved, b"attacker replacement").unwrap();
+        let moved_parent = crate::infra::fs::open_parent_no_follow(&moved).unwrap();
         authority
-            .rebind_workspace_entry(&moved_handle, &moved, "moved")
+            .rebind_workspace_entry(
+                &moved_handle,
+                &moved,
+                "moved",
+                opened_file_identity(&moved_parent).unwrap(),
+            )
             .unwrap();
         assert!(matches!(
             authority.resolve(moved_handle.path_ref(), PathOperation::ReadPgn, &[]),
@@ -12039,6 +12451,7 @@ mod tests {
             operations: vec![PathOperation::ReadPgn],
             path: NativePath::from_path(&file),
             identity: identity(&file).unwrap(),
+            parent_identity: None,
             target_is_dir: false,
         };
         let mut candidate = a.persistent.clone();
@@ -12722,6 +13135,103 @@ mod tests {
     struct CommitStageMutationObserver {
         target_path: PathBuf,
         fired: std::sync::atomic::AtomicBool,
+    }
+
+    struct CommitStageParentSwapObserver {
+        root_path: PathBuf,
+        old_root_path: PathBuf,
+        leaf: OsString,
+        fired: std::sync::atomic::AtomicBool,
+    }
+
+    impl ActivationObserver for CommitStageParentSwapObserver {
+        fn observe(&self, stage: ActivationObserverStage) {
+            if stage == ActivationObserverStage::CommitBeforeRetainedDescriptorValidation
+                && !self.fired.swap(true, Ordering::SeqCst)
+            {
+                fs::rename(&self.root_path, &self.old_root_path)
+                    .expect("rename artifact root after parent resolution");
+                fs::create_dir(&self.root_path).expect("create replacement artifact root");
+                fs::hard_link(
+                    self.old_root_path.join(&self.leaf),
+                    self.root_path.join(&self.leaf),
+                )
+                .expect("link installed artifact into replacement root");
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn download_artifact_commit_refuses_a_late_root_swap_and_retains_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut fixture = InstalledArtifactFixture::new(dir.path());
+        assert!(fixture
+            .authority
+            .resolve(
+                &fixture.app_root.id,
+                PathOperation::DownloadFile,
+                &[OsString::from("games.pgn")],
+            )
+            .is_ok());
+        let observer = Arc::new(CommitStageParentSwapObserver {
+            root_path: fixture.app_root.path.clone(),
+            old_root_path: dir.path().join("downloads-old"),
+            leaf: OsString::from("games.pgn"),
+            fired: std::sync::atomic::AtomicBool::new(false),
+        });
+        fixture
+            .authority
+            .set_activation_observer(Some(observer.clone()));
+        let verified = fixture.prepare_and_verify();
+        let pending_before = serde_json::to_value(&fixture.authority.pending_artifacts).unwrap();
+        let error = fixture
+            .authority
+            .commit_download_artifact(verified)
+            .expect_err("the retained descriptor change stamp rejects the late hard link");
+
+        assert!(observer.fired.load(Ordering::SeqCst));
+        assert!(matches!(error, Error::Conflict(_)), "{error:?}");
+        assert!(!fixture
+            .authority
+            .persistent
+            .contains_key(&fixture.reservation.id.id));
+        assert_eq!(
+            serde_json::to_value(&fixture.authority.pending_artifacts).unwrap(),
+            pending_before
+        );
+        assert_eq!(fs::read_dir(&fixture.app_root.path).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn download_artifact_publication_resolves_with_its_retained_parent_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut fixture = InstalledArtifactFixture::new(dir.path());
+        let resolved = fixture
+            .authority
+            .resolve(
+                &fixture.app_root.id,
+                PathOperation::DownloadFile,
+                &[OsString::from("games.pgn")],
+            )
+            .unwrap();
+        let expected_parent = identity_from_open_file(resolved.parent().unwrap()).unwrap();
+        let verified = fixture.prepare_and_verify();
+        let publication = fixture
+            .authority
+            .commit_download_artifact(verified)
+            .unwrap();
+
+        assert_eq!(
+            fixture
+                .authority
+                .parent_identity_for_test(publication.handle.path_ref()),
+            Some((expected_parent.a, expected_parent.b))
+        );
+        assert!(fixture
+            .authority
+            .resolve(publication.handle.path_ref(), PathOperation::ReadPgn, &[])
+            .is_ok());
     }
 
     impl ActivationObserver for CommitStageMutationObserver {
@@ -13552,6 +14062,7 @@ mod tests {
             operations: canonical_operations(EntryPurpose::PgnFile),
             path: NativePath::Unix { bytes: "!".into() },
             identity: Identity { a: 0, b: 0 },
+            parent_identity: None,
             target_is_dir: false,
         };
         let valid = stored_entry_for(
@@ -13865,6 +14376,804 @@ mod tests {
             .err()
             .expect("a same-inode ancestor swap must not mint a target");
         assert!(matches!(error, Error::Conflict(_)), "{error:?}");
+    }
+
+    #[test]
+    fn database_file_target_refuses_a_same_inode_parent_replacement_without_sidecars() {
+        let dir = tempfile::tempdir().unwrap();
+        let database_dir = dir.path().join("database");
+        fs::create_dir(&database_dir).unwrap();
+        let database = database_dir.join("games.db3");
+        fs::write(&database, b"database").unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let handle = DatabaseHandle::new(
+            authority
+                .get_or_create_persistent_file(
+                    &database,
+                    "games",
+                    canonical_operations(EntryPurpose::DatabaseFile),
+                )
+                .unwrap()
+                .id,
+        );
+        assert!(authority
+            .database_file_target(&handle, PathOperation::DatabaseRead)
+            .is_ok());
+        assert_eq!(
+            authority.parent_identity_for_test(handle.path_ref()),
+            Some({
+                let parent = identity(&database_dir).unwrap();
+                (parent.a, parent.b)
+            })
+        );
+
+        replace_parent_with_same_inode_hard_link(&database);
+        let error = authority
+            .database_file_target(&handle, PathOperation::DatabaseMutate)
+            .err()
+            .expect("the stored parent identity must reject a replacement directory");
+        assert!(matches!(error, Error::Conflict(_)), "{error:?}");
+        let children: Vec<_> = fs::read_dir(&database_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(children, vec![OsString::from("games.db3")]);
+    }
+
+    #[test]
+    fn resolve_refuses_a_same_inode_parent_replacement_for_pgn_read_and_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("pgn");
+        fs::create_dir(&parent).unwrap();
+        let path = parent.join("study.pgn");
+        fs::write(&path, b"1. e4 *").unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let handle = authority
+            .migrate_legacy_os_path(
+                path.clone().into_os_string(),
+                "study",
+                PathClass::PersistentFile,
+                vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+            )
+            .unwrap()
+            .id;
+        let authorized_parent = identity(&parent).unwrap();
+        assert_eq!(
+            authority.parent_identity_for_test(&handle),
+            Some((authorized_parent.a, authorized_parent.b))
+        );
+        for operation in [PathOperation::ReadPgn, PathOperation::WritePgn] {
+            assert!(authority.resolve(&handle, operation, &[]).is_ok());
+        }
+
+        replace_parent_with_same_inode_hard_link(&path);
+        for operation in [PathOperation::ReadPgn, PathOperation::WritePgn] {
+            assert!(matches!(
+                authority.resolve(&handle, operation, &[]),
+                Err(Error::Conflict(message))
+                    if message == "path authority is unavailable because its object changed"
+            ));
+        }
+        assert_eq!(
+            fs::read_dir(&parent).unwrap().count(),
+            1,
+            "resolution must not create a sidecar or replacement leaf"
+        );
+    }
+
+    #[test]
+    fn resolve_refuses_a_retired_engine_attachment_after_a_same_inode_parent_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("resources");
+        fs::create_dir(&parent).unwrap();
+        let path = parent.join("network.nnue");
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let handle = attachment_resource(&mut authority, &path);
+        authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                retained_ids: Some(vec![]),
+                abandoned_ids: vec![handle.id.clone()],
+                startup: false,
+            })
+            .unwrap();
+        assert!(authority.retired_attachments.contains_key(&handle.id.id));
+        assert!(authority
+            .resolve(&handle.id, PathOperation::EngineResourceRead, &[])
+            .is_ok());
+
+        replace_parent_with_same_inode_hard_link(&path);
+        assert!(matches!(
+            authority.resolve(&handle.id, PathOperation::EngineResourceRead, &[]),
+            Err(Error::Conflict(message))
+                if message == "path authority is unavailable because its object changed"
+        ));
+        assert_eq!(fs::read_dir(&parent).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn workspace_mutation_target_and_workspace_entry_path_refuse_a_same_inode_parent_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().join("workspace");
+        let parent = root_path.join("sub");
+        fs::create_dir_all(&parent).unwrap();
+        let path = parent.join("a.pgn");
+        fs::write(&path, b"1. e4 *").unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let root = authority
+            .migrate_legacy_os_path(
+                root_path.into_os_string(),
+                "workspace",
+                PathClass::PersistentCustomRoot,
+                vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+            )
+            .unwrap()
+            .id;
+        let workspace = FileWorkspaceHandle::new(root);
+        let child_identity = identity(&path).unwrap();
+        let parent_identity = identity(&parent).unwrap();
+        let handle = authority
+            .register_workspace_child_observed_with_parent(
+                &workspace,
+                &[OsString::from("sub"), OsString::from("a.pgn")],
+                "a",
+                IdentityBinding::from_pairs(
+                    (child_identity.a, child_identity.b),
+                    (parent_identity.a, parent_identity.b),
+                ),
+                false,
+                PathOperation::WritePgn,
+            )
+            .unwrap();
+        assert_eq!(
+            authority.parent_identity_for_test(handle.path_ref()),
+            Some((parent_identity.a, parent_identity.b))
+        );
+        assert_eq!(
+            authority
+                .workspace_entry_path(&handle, PathOperation::ReadPgn)
+                .unwrap(),
+            path
+        );
+        assert!(authority.workspace_mutation_target(&handle).is_ok());
+
+        replace_parent_with_same_inode_hard_link(&path);
+        assert!(matches!(
+            authority.workspace_entry_path(&handle, PathOperation::ReadPgn),
+            Err(Error::Conflict(_))
+        ));
+        assert!(matches!(
+            authority.workspace_mutation_target(&handle),
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(fs::read_dir(&parent).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn promote_dialog_refuses_a_parent_replaced_after_the_file_was_picked() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("picked");
+        fs::create_dir(&parent).unwrap();
+        let path = parent.join("study.pgn");
+        fs::write(&path, b"1. e4 *").unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let operations = vec![PathOperation::ReadPgn, PathOperation::WritePgn];
+        let grant = authority
+            .grant_dialog_operations(
+                &path,
+                "study",
+                PathClass::BoundedDialogGrant,
+                operations.clone(),
+                Duration::from_secs(60),
+                1,
+            )
+            .unwrap();
+
+        replace_parent_with_same_inode_hard_link(&path);
+        let error = authority
+            .promote_dialog(&grant, PathClass::PersistentFile, "study", operations)
+            .expect_err("promotion must reject a parent changed since the picker observed it");
+        assert!(
+            matches!(error, Error::Conflict(message) if message == "dialog target changed before promotion")
+        );
+        assert!(authority.persistent.is_empty());
+        assert_eq!(fs::read_dir(&parent).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn dialog_promotion_persists_the_parent_identity_observed_by_the_picker() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("picked");
+        fs::create_dir(&parent).unwrap();
+        let path = parent.join("study.pgn");
+        fs::write(&path, b"1. e4 *").unwrap();
+        let expected_parent = descriptor_parent_identity(&path);
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let operations = vec![PathOperation::ReadPgn, PathOperation::WritePgn];
+        let grant = authority
+            .grant_dialog_operations(
+                &path,
+                "study",
+                PathClass::BoundedDialogGrant,
+                operations.clone(),
+                Duration::from_secs(60),
+                1,
+            )
+            .unwrap();
+
+        let promoted = authority
+            .promote_dialog(&grant, PathClass::PersistentFile, "study", operations)
+            .unwrap();
+
+        assert_eq!(
+            authority.parent_identity_for_test(&promoted.id),
+            Some((expected_parent.a, expected_parent.b))
+        );
+        assert!(authority
+            .resolve(&promoted.id, PathOperation::ReadPgn, &[])
+            .is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dialog_promotion_keeps_its_acquired_parent_identity_across_registration_race() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("picked");
+        fs::create_dir(&parent).unwrap();
+        let path = parent.join("study.pgn");
+        fs::write(&path, b"1. e4 *").unwrap();
+        let expected_parent = descriptor_parent_identity(&path);
+        let replacement = parent.clone();
+        let old_parent = parent.with_file_name("picked.old");
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let operations = vec![PathOperation::ReadPgn, PathOperation::WritePgn];
+        let grant = authority
+            .grant_dialog_operations(
+                &path,
+                "study",
+                PathClass::BoundedDialogGrant,
+                operations.clone(),
+                Duration::from_secs(60),
+                1,
+            )
+            .unwrap();
+        PROMOTE_DIALOG_POST_ACQUIRE_HOOK.with(|slot| {
+            assert!(slot
+                .replace(Some(Box::new(move || {
+                    fs::rename(&replacement, &old_parent).unwrap();
+                    fs::create_dir(&replacement).unwrap();
+                    fs::hard_link(old_parent.join("study.pgn"), replacement.join("study.pgn"))
+                        .unwrap();
+                })))
+                .is_none());
+        });
+
+        let promoted = authority
+            .promote_dialog(&grant, PathClass::PersistentFile, "study", operations)
+            .unwrap();
+
+        assert_eq!(
+            authority.parent_identity_for_test(&promoted.id),
+            Some((expected_parent.a, expected_parent.b))
+        );
+        assert!(matches!(
+            authority.resolve(&promoted.id, PathOperation::ReadPgn, &[]),
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(fs::read_dir(&parent).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_migration_keeps_its_acquired_parent_identity_across_registration_race() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("pgn");
+        fs::create_dir(&parent).unwrap();
+        let path = parent.join("study.pgn");
+        fs::write(&path, b"1. e4 *").unwrap();
+        let expected_parent = descriptor_parent_identity(&path);
+        let replacement = parent.clone();
+        let old_parent = parent.with_file_name("pgn.old");
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        PERSISTENT_FILE_POST_TARGET_HOOK.with(|slot| {
+            assert!(slot
+                .replace(Some(Box::new(move || {
+                    fs::rename(&replacement, &old_parent).unwrap();
+                    fs::create_dir(&replacement).unwrap();
+                    fs::hard_link(old_parent.join("study.pgn"), replacement.join("study.pgn"))
+                        .unwrap();
+                })))
+                .is_none());
+        });
+
+        let migrated = authority
+            .migrate_legacy_os_path(
+                path.clone().into_os_string(),
+                "study",
+                PathClass::PersistentFile,
+                vec![PathOperation::ReadPgn],
+            )
+            .unwrap();
+
+        assert_eq!(
+            authority.parent_identity_for_test(&migrated.id),
+            Some((expected_parent.a, expected_parent.b))
+        );
+        assert!(matches!(
+            authority.resolve(&migrated.id, PathOperation::ReadPgn, &[]),
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(fs::read_dir(&parent).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn passive_workspace_listing_mints_a_fresh_id_after_a_parent_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().join("workspace");
+        let parent = root_path.join("sub");
+        fs::create_dir_all(&parent).unwrap();
+        let path = parent.join("a.pgn");
+        fs::write(&path, b"1. e4 *").unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let root = authority
+            .migrate_legacy_os_path(
+                root_path.into_os_string(),
+                "workspace",
+                PathClass::PersistentCustomRoot,
+                vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+            )
+            .unwrap()
+            .id;
+        let workspace = FileWorkspaceHandle::new(root);
+        let leaf_identity = identity(&path).unwrap();
+        let old_parent_identity = identity(&parent).unwrap();
+        let components = [OsString::from("sub"), OsString::from("a.pgn")];
+        let old_handle = authority
+            .register_workspace_child_observed_with_parent(
+                &workspace,
+                &components,
+                "a",
+                IdentityBinding::from_pairs(
+                    (leaf_identity.a, leaf_identity.b),
+                    (old_parent_identity.a, old_parent_identity.b),
+                ),
+                false,
+                PathOperation::ReadPgn,
+            )
+            .unwrap();
+        assert!(authority
+            .resolve(old_handle.path_ref(), PathOperation::ReadPgn, &[])
+            .is_ok());
+
+        replace_parent_with_same_inode_hard_link(&path);
+        assert!(matches!(
+            authority.resolve(old_handle.path_ref(), PathOperation::ReadPgn, &[]),
+            Err(Error::Conflict(_))
+        ));
+        let new_parent_identity = identity(&parent).unwrap();
+        let new_handle = authority
+            .register_workspace_child_observed_with_parent(
+                &workspace,
+                &components,
+                "a",
+                IdentityBinding::from_pairs(
+                    (leaf_identity.a, leaf_identity.b),
+                    (new_parent_identity.a, new_parent_identity.b),
+                ),
+                false,
+                PathOperation::ReadPgn,
+            )
+            .unwrap();
+        assert_ne!(old_handle, new_handle);
+        assert!(authority.persistent.contains_key(&old_handle.path_ref().id));
+        assert_eq!(
+            authority.parent_identity_for_test(new_handle.path_ref()),
+            Some((new_parent_identity.a, new_parent_identity.b))
+        );
+        assert!(authority
+            .resolve(new_handle.path_ref(), PathOperation::ReadPgn, &[])
+            .is_ok());
+        assert!(matches!(
+            authority.resolve(old_handle.path_ref(), PathOperation::ReadPgn, &[]),
+            Err(Error::Conflict(_))
+        ));
+    }
+
+    #[test]
+    fn explicit_dialog_repick_rebinds_the_existing_file_id_after_a_parent_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("pgn");
+        fs::create_dir(&parent).unwrap();
+        let path = parent.join("study.pgn");
+        fs::write(&path, b"1. e4 *").unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let operations = vec![PathOperation::ReadPgn, PathOperation::WritePgn];
+        let handle = authority
+            .migrate_legacy_os_path(
+                path.clone().into_os_string(),
+                "study",
+                PathClass::PersistentFile,
+                operations.clone(),
+            )
+            .unwrap()
+            .id;
+        replace_parent_with_same_inode_hard_link(&path);
+        assert!(matches!(
+            authority.resolve(&handle, PathOperation::ReadPgn, &[]),
+            Err(Error::Conflict(_))
+        ));
+
+        let grant = authority
+            .grant_dialog_operations(
+                &path,
+                "study",
+                PathClass::BoundedDialogGrant,
+                operations.clone(),
+                Duration::from_secs(60),
+                1,
+            )
+            .unwrap();
+        let rebound = authority
+            .promote_dialog(&grant, PathClass::PersistentFile, "study", operations)
+            .unwrap();
+        assert_eq!(rebound.id, handle);
+        let parent_identity = identity(&parent).unwrap();
+        assert_eq!(
+            authority.parent_identity_for_test(&handle),
+            Some((parent_identity.a, parent_identity.b))
+        );
+        assert!(authority
+            .resolve(&handle, PathOperation::ReadPgn, &[])
+            .is_ok());
+    }
+
+    #[test]
+    fn explicit_engine_file_repick_rebinds_the_existing_id_after_a_parent_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("engines");
+        fs::create_dir(&parent).unwrap();
+        let path = parent.join("engine");
+        fs::write(&path, b"engine").unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let handle = authority.register_engine_file(&path, "engine").unwrap();
+        assert!(authority
+            .resolve(handle.path_ref(), PathOperation::EngineBinaryInspect, &[])
+            .is_ok());
+        let original_parent = identity(&parent).unwrap();
+        assert_eq!(
+            authority.parent_identity_for_test(handle.path_ref()),
+            Some((original_parent.a, original_parent.b))
+        );
+
+        replace_parent_with_same_inode_hard_link(&path);
+        assert!(matches!(
+            authority.resolve(handle.path_ref(), PathOperation::EngineBinaryInspect, &[]),
+            Err(Error::Conflict(_))
+        ));
+        let rebound = authority.register_engine_file(&path, "engine").unwrap();
+        assert_eq!(rebound.id, handle.id);
+        let parent_identity = identity(&parent).unwrap();
+        assert_eq!(
+            authority.parent_identity_for_test(rebound.path_ref()),
+            Some((parent_identity.a, parent_identity.b))
+        );
+        assert!(authority
+            .resolve(rebound.path_ref(), PathOperation::EngineBinaryInspect, &[])
+            .is_ok());
+    }
+
+    #[test]
+    fn canonical_legacy_file_is_upgraded_at_startup_and_the_upgrade_is_persisted() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("pgn");
+        fs::create_dir(&parent).unwrap();
+        let path = parent.join("legacy.pgn");
+        fs::write(&path, b"1. e4 *").unwrap();
+        let registry = dir.path().join("registry.json");
+        let mut entry = stored_entry_for(
+            &path,
+            "legacy-file",
+            Some(EntryPurpose::PgnFile),
+            canonical_operations(EntryPurpose::PgnFile),
+        );
+        entry.parent_identity = None;
+        write_registry_with_entries(&registry, vec![entry]);
+
+        let mut authority = PathAuthority::open(registry.clone(), vec![]).unwrap();
+        let parent_identity = identity(&parent).unwrap();
+        let handle = PathRef {
+            id: "legacy-file".into(),
+        };
+        assert_eq!(
+            authority.parent_identity_for_test(&handle),
+            Some((parent_identity.a, parent_identity.b))
+        );
+        assert!(authority
+            .resolve(&handle, PathOperation::ReadPgn, &[])
+            .is_ok());
+        let persisted: Registry = serde_json::from_slice(&fs::read(&registry).unwrap()).unwrap();
+        let upgraded = persisted
+            .entries
+            .iter()
+            .find(|entry| entry.id == handle)
+            .unwrap();
+        assert_eq!(
+            upgraded
+                .parent_identity
+                .as_ref()
+                .map(|identity| (identity.a, identity.b)),
+            Some((parent_identity.a, parent_identity.b))
+        );
+
+        replace_parent_with_same_inode_hard_link(&path);
+        assert!(matches!(
+            authority.resolve(&handle, PathOperation::ReadPgn, &[]),
+            Err(Error::Conflict(_))
+        ));
+    }
+
+    #[test]
+    fn unverified_legacy_workspace_child_stays_refused_and_passive_listing_mints_a_new_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().join("workspace");
+        let original_parent = root_path.join("sub");
+        fs::create_dir_all(&original_parent).unwrap();
+        let path = original_parent.join("a.pgn");
+        fs::write(&path, b"1. e4 *").unwrap();
+        let backup = dir.path().join("authorized-inode.pgn");
+        fs::hard_link(&path, &backup).unwrap();
+        let registry = dir.path().join("registry.json");
+        let mut root_entry = stored_entry_for(
+            &root_path,
+            "workspace-root",
+            Some(EntryPurpose::PgnWorkspace),
+            canonical_operations(EntryPurpose::PgnWorkspace),
+        );
+        root_entry.target_is_dir = true;
+        let mut child_entry = stored_entry_for(
+            &path,
+            "legacy-child",
+            Some(EntryPurpose::PgnFile),
+            canonical_operations(EntryPurpose::PgnFile),
+        );
+        child_entry.parent_identity = None;
+        write_registry_with_entries(&registry, vec![root_entry, child_entry]);
+        fs::remove_file(&path).unwrap();
+
+        let mut authority = PathAuthority::open(registry, vec![]).unwrap();
+        let old_handle = PathRef {
+            id: "legacy-child".into(),
+        };
+        assert_eq!(authority.parent_identity_for_test(&old_handle), None);
+        fs::rename(&original_parent, root_path.join("sub.old")).unwrap();
+        fs::create_dir(&original_parent).unwrap();
+        fs::hard_link(&backup, &path).unwrap();
+
+        let leaf_identity = identity(&path).unwrap();
+        let parent_identity = identity(&original_parent).unwrap();
+        let workspace = FileWorkspaceHandle::new(PathRef {
+            id: "workspace-root".into(),
+        });
+        let new_handle = authority
+            .register_workspace_child_observed_with_parent(
+                &workspace,
+                &[OsString::from("sub"), OsString::from("a.pgn")],
+                "a",
+                IdentityBinding::from_pairs(
+                    (leaf_identity.a, leaf_identity.b),
+                    (parent_identity.a, parent_identity.b),
+                ),
+                false,
+                PathOperation::ReadPgn,
+            )
+            .unwrap();
+        assert_ne!(new_handle.path_ref(), &old_handle);
+        assert!(matches!(
+            authority.resolve(&old_handle, PathOperation::ReadPgn, &[]),
+            Err(Error::Conflict(_))
+        ));
+        assert!(authority
+            .resolve(new_handle.path_ref(), PathOperation::ReadPgn, &[])
+            .is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn register_engine_file_keeps_the_acquired_parent_identity_across_registration_race() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("engines");
+        fs::create_dir(&parent).unwrap();
+        let path = parent.join("engine");
+        fs::write(&path, b"engine").unwrap();
+        let expected_parent = descriptor_parent_identity(&path);
+        let replacement = parent.clone();
+        let old_parent = parent.with_file_name("engines.old");
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        PERSISTENT_FILE_POST_TARGET_HOOK.with(|slot| {
+            assert!(slot
+                .replace(Some(Box::new(move || {
+                    fs::rename(&replacement, &old_parent).unwrap();
+                    fs::create_dir(&replacement).unwrap();
+                    fs::hard_link(old_parent.join("engine"), replacement.join("engine")).unwrap();
+                })))
+                .is_none());
+        });
+
+        let handle = authority.register_engine_file(&path, "engine").unwrap();
+
+        assert_eq!(
+            authority.parent_identity_for_test(handle.path_ref()),
+            Some((expected_parent.a, expected_parent.b))
+        );
+        assert!(matches!(
+            authority.resolve(handle.path_ref(), PathOperation::EngineBinaryInspect, &[]),
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(fs::read_dir(&parent).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installed_engine_registration_keeps_its_resolved_parent_during_registration_race() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().join("engines");
+        let sub = root_path.join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(sub.join("engine"), b"engine").unwrap();
+        let expected_parent = descriptor_parent_identity(&sub.join("engine"));
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let root = authority
+            .get_or_create_engine_root(&root_path, "Engines", None)
+            .unwrap();
+        let replacement = sub.clone();
+        let old_parent = sub.with_file_name("sub.old");
+        INSTALLED_ENGINE_POST_RESOLVE_HOOK.with(|slot| {
+            assert!(slot
+                .replace(Some(Box::new(move || {
+                    fs::rename(&replacement, &old_parent).unwrap();
+                    fs::create_dir(&replacement).unwrap();
+                    fs::hard_link(old_parent.join("engine"), replacement.join("engine")).unwrap();
+                })))
+                .is_none());
+        });
+
+        let handle = authority
+            .register_installed_engine(&root, "sub/engine")
+            .unwrap();
+
+        assert_eq!(
+            authority.parent_identity_for_test(handle.path_ref()),
+            Some((expected_parent.a, expected_parent.b))
+        );
+        assert!(matches!(
+            authority.resolve(handle.path_ref(), PathOperation::EngineBinaryInspect, &[]),
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(fs::read_dir(&sub).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn engine_image_registration_keeps_authorized_directory_identity_during_registration_race() {
+        let dir = tempfile::tempdir().unwrap();
+        let image_dir = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::EngineImages,
+        )
+        .unwrap();
+        let leaf = OsStr::new("image.png");
+        let (_, installed) = image_dir
+            .atomic_replace_leaf_identified(leaf, |file| {
+                file.write_all(b"image").map_err(Error::from)
+            })
+            .unwrap();
+        let expected_parent = image_dir.identity();
+        let moved = dir.path().join("engine-images.old");
+        let path = image_dir.path().to_path_buf();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        ENGINE_IMAGE_PRE_REGISTRATION_HOOK.with(|slot| {
+            assert!(slot
+                .replace(Some(Box::new(move || {
+                    fs::rename(&path, &moved).unwrap();
+                    fs::create_dir(&path).unwrap();
+                    fs::hard_link(moved.join(leaf), path.join(leaf)).unwrap();
+                })))
+                .is_none());
+        });
+
+        let handle = authority
+            .register_engine_image(&image_dir, leaf, installed, "image".into())
+            .unwrap();
+
+        assert_eq!(
+            authority.parent_identity_for_test(handle.path_ref()),
+            Some(expected_parent.pair())
+        );
+        assert!(matches!(
+            authority.resolve(handle.path_ref(), PathOperation::ImageRead, &[]),
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(fs::read_dir(image_dir.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_child_registration_refuses_a_root_swap_before_inserting_an_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().join("databases");
+        fs::create_dir(&root_path).unwrap();
+        fs::write(root_path.join("child.db3"), b"database").unwrap();
+        let child_identity = identity(&root_path.join("child.db3")).unwrap();
+        let old_root = dir.path().join("databases.old");
+        let old_root_for_hook = old_root.clone();
+        let replacement = root_path.clone();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let root = authority
+            .get_or_create_database_root(&root_path, "Databases", None)
+            .unwrap();
+        let entries_before = authority.persistent.len();
+        DATABASE_CHILD_POST_RESOLVE_HOOK.with(|slot| {
+            assert!(slot
+                .replace(Some(Box::new(move || {
+                    fs::rename(&replacement, &old_root_for_hook).unwrap();
+                    fs::create_dir(&replacement).unwrap();
+                    fs::hard_link(
+                        old_root_for_hook.join("child.db3"),
+                        replacement.join("child.db3"),
+                    )
+                    .unwrap();
+                })))
+                .is_none());
+        });
+
+        let error = authority
+            .register_database_child(&root, OsStr::new("child.db3"), "child.db3", {
+                (child_identity.a, child_identity.b)
+            })
+            .expect_err("root revalidation must reject the replaced database root");
+
+        assert!(matches!(error, Error::Conflict(_)), "{error:?}");
+        assert_eq!(authority.persistent.len(), entries_before);
+        assert!(!authority
+            .persistent
+            .values()
+            .any(|entry| entry.stored.purpose == Some(EntryPurpose::DatabaseFile)));
+        assert_eq!(fs::read_dir(&root_path).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn puzzle_child_registration_refuses_a_root_swap_before_inserting_an_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().join("puzzles");
+        fs::create_dir(&root_path).unwrap();
+        fs::write(root_path.join("child.db3"), b"puzzles").unwrap();
+        let old_root = dir.path().join("puzzles.old");
+        let replacement = root_path.clone();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let root = authority
+            .get_or_create_puzzle_root(&root_path, "Puzzles", None)
+            .unwrap();
+        PUZZLE_CHILD_POST_RESOLVE_HOOK.with(|slot| {
+            assert!(slot
+                .replace(Some(Box::new(move || {
+                    fs::rename(&replacement, &old_root).unwrap();
+                    fs::create_dir(&replacement).unwrap();
+                    fs::hard_link(old_root.join("child.db3"), replacement.join("child.db3"))
+                        .unwrap();
+                })))
+                .is_none());
+        });
+
+        let error = authority
+            .list_puzzle_children_cancellable(&root, &CancellationToken::new())
+            .expect_err("root revalidation must reject the replaced puzzle root");
+
+        assert!(matches!(error, Error::Conflict(_)), "{error:?}");
+        assert!(!authority
+            .persistent
+            .values()
+            .any(|entry| entry.stored.purpose == Some(EntryPurpose::PuzzleFile)));
+        assert_eq!(fs::read_dir(&root_path).unwrap().count(), 1);
     }
 
     /// Test 6 (R3-06): the stored root's ancestor is replaced by a symlink to the same directory
@@ -14529,6 +15838,7 @@ mod tests {
                 "Surviving".into(),
                 PathClass::PersistentCustomRoot,
                 vec![PathOperation::DownloadFile],
+                None,
                 None,
             )
             .unwrap()
@@ -15535,6 +16845,8 @@ mod tests {
             })
             .unwrap();
         let image = image_dir.path().join(image_leaf);
+        let book_parent = descriptor_parent_identity(&book);
+        let resource_parent = descriptor_parent_identity(&resource);
         let grant = authority
             .grant_dialog(
                 &resource,
@@ -15567,6 +16879,17 @@ mod tests {
                 .values()
                 .any(|entry| { entry.stored.path.to_path().ok().as_ref() == Some(path) }));
         }
+        assert_eq!(
+            authority.parent_identity_for_test(book_handle.path_ref()),
+            Some((book_parent.a, book_parent.b))
+        );
+        assert!(authority
+            .resolve(book_handle.path_ref(), PathOperation::OpeningBookRead, &[])
+            .is_ok());
+        assert_eq!(
+            authority.parent_identity_for_test(resource_handle.path_ref()),
+            Some((resource_parent.a, resource_parent.b))
+        );
         let engine_again = authority
             .register_engine_file(&engine, "engine")
             .expect("lookup of adopted engine");
@@ -15643,11 +16966,17 @@ mod tests {
             )
             .unwrap();
         fs::rename(&old, &new).unwrap();
+        let new_parent = crate::infra::fs::open_parent_no_follow(&new).unwrap();
         set_test_atomic_file_injector(Some(Arc::new(crate::infra::fs::ParentSyncFault(
             "uncertain",
         ))));
         let error = authority
-            .rebind_workspace_entry(&handle, &new, "new")
+            .rebind_workspace_entry(
+                &handle,
+                &new,
+                "new",
+                opened_file_identity(&new_parent).unwrap(),
+            )
             .expect_err("uncertain registry durability must be surfaced");
         set_test_atomic_file_injector(None);
         assert!(matches!(error, Error::CommittedDurabilityUncertain(_)));
@@ -16343,6 +17672,37 @@ mod tests {
         );
     }
 
+    fn parent_identity_for_path(path: &Path) -> Result<Option<Identity>, Error> {
+        let identity = identity(path)?;
+        let path = canonical_binding(path)?;
+        let (parent, _) = crate::infra::fs::open_verified_parent(
+            &path,
+            (identity.a, identity.b),
+            false,
+            ParentAccess::Readable,
+        )?;
+        Ok(Some(identity_from_open_file(&parent)?))
+    }
+
+    fn replace_parent_with_same_inode_hard_link(path: &Path) -> PathBuf {
+        let parent = path.parent().expect("test file parent");
+        let leaf = path.file_name().expect("test file leaf");
+        let parent_name = parent
+            .file_name()
+            .expect("test parent name")
+            .to_string_lossy();
+        let old_parent = parent.with_file_name(format!("{parent_name}.old"));
+        fs::rename(parent, &old_parent).expect("rename authorized parent");
+        fs::create_dir(parent).expect("create replacement parent");
+        fs::hard_link(old_parent.join(leaf), path).expect("hard link authorized inode");
+        old_parent
+    }
+
+    fn descriptor_parent_identity(path: &Path) -> Identity {
+        let parent = crate::infra::fs::open_parent_no_follow(path).unwrap();
+        identity_from_open_file(&parent).unwrap()
+    }
+
     fn stored_entry_for(
         path: &Path,
         id: impl Into<String>,
@@ -16361,6 +17721,11 @@ mod tests {
             operations,
             path: NativePath::from_path(path),
             identity: identity(path).unwrap(),
+            parent_identity: if target_is_dir {
+                None
+            } else {
+                parent_identity_for_path(path).unwrap()
+            },
             target_is_dir,
             purpose,
         }
@@ -17848,6 +19213,7 @@ mod tests {
             operations: vec![PathOperation::ReadPgn, PathOperation::LogWrite],
             path: NativePath::from_path(&child_path),
             identity: identity(&child_path).unwrap(),
+            parent_identity: None,
             target_is_dir: false,
             purpose: None,
         };
@@ -19206,6 +20572,209 @@ mod tests {
     }
 }
 
+#[cfg(all(test, windows))]
+mod windows_parent_identity_tests {
+    use super::*;
+    use std::time::Duration;
+    use tempfile::TempDir;
+
+    fn replace_parent_with_same_inode_hard_link(path: &Path) {
+        let parent = path.parent().unwrap();
+        let leaf = path.file_name().unwrap();
+        let old_parent = parent.with_file_name(format!(
+            "{}.old",
+            parent.file_name().unwrap().to_string_lossy()
+        ));
+        fs::rename(parent, &old_parent).unwrap();
+        fs::create_dir(parent).unwrap();
+        fs::hard_link(old_parent.join(leaf), path).unwrap();
+    }
+
+    fn workspace_with_file(
+        directory: &TempDir,
+        root_path: &Path,
+        child_path: &Path,
+    ) -> (PathAuthority, FileWorkspaceHandle) {
+        fs::create_dir_all(root_path).unwrap();
+        fs::create_dir_all(child_path.parent().unwrap()).unwrap();
+        fs::write(child_path, b"1. e4 *").unwrap();
+        let mut authority =
+            PathAuthority::open(directory.path().join("registry.json"), vec![]).unwrap();
+        let root = authority
+            .migrate_legacy_os_path(
+                root_path.as_os_str().to_os_string(),
+                "workspace",
+                PathClass::PersistentCustomRoot,
+                vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+            )
+            .unwrap();
+        let workspace = FileWorkspaceHandle::new(root.id);
+        let relative = child_path.strip_prefix(root_path).unwrap();
+        let components: Vec<_> = relative
+            .components()
+            .map(|component| component.as_os_str().to_os_string())
+            .collect();
+        let parent = crate::infra::fs::open_parent_no_follow(child_path).unwrap();
+        let parent_identity = opened_file_identity(&parent).unwrap();
+        let child_identity = identity(child_path).unwrap();
+        authority
+            .register_workspace_child_observed_with_parent(
+                &workspace,
+                &components,
+                "a",
+                IdentityBinding::from_pairs((child_identity.a, child_identity.b), parent_identity),
+                false,
+                PathOperation::WritePgn,
+            )
+            .unwrap();
+        (authority, workspace)
+    }
+
+    #[test]
+    fn resolve_refuses_a_same_inode_parent_replacement_without_open_handles() {
+        let directory = tempfile::tempdir().unwrap();
+        let parent = directory.path().join("pgn");
+        fs::create_dir(&parent).unwrap();
+        let path = parent.join("study.pgn");
+        fs::write(&path, b"1. e4 *").unwrap();
+        let mut authority =
+            PathAuthority::open(directory.path().join("registry.json"), vec![]).unwrap();
+        let handle = authority
+            .migrate_legacy_os_path(
+                path.clone().into_os_string(),
+                "study",
+                PathClass::PersistentFile,
+                vec![PathOperation::ReadPgn],
+            )
+            .unwrap()
+            .id;
+        assert!(authority
+            .resolve(&handle, PathOperation::ReadPgn, &[])
+            .is_ok());
+
+        replace_parent_with_same_inode_hard_link(&path);
+
+        assert!(matches!(
+            authority.resolve(&handle, PathOperation::ReadPgn, &[]),
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(fs::read_dir(&parent).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn database_file_target_refuses_a_same_inode_parent_replacement_without_open_handles() {
+        let directory = tempfile::tempdir().unwrap();
+        let root_path = directory.path().join("databases");
+        fs::create_dir(&root_path).unwrap();
+        let mut authority =
+            PathAuthority::open(directory.path().join("registry.json"), vec![]).unwrap();
+        let root = authority
+            .get_or_create_database_root(&root_path, "Databases", None)
+            .unwrap();
+        let handle = authority
+            .create_database_child(&root, OsStr::new("child.db3"))
+            .unwrap();
+        let path = root_path.join("child.db3");
+        assert!(authority
+            .database_file_target(&handle, PathOperation::DatabaseRead)
+            .is_ok());
+
+        replace_parent_with_same_inode_hard_link(&path);
+
+        assert!(matches!(
+            authority.database_file_target(&handle, PathOperation::DatabaseRead),
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(fs::read_dir(&root_path).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn workspace_mutation_target_refuses_a_same_inode_parent_replacement_without_open_handles() {
+        let directory = tempfile::tempdir().unwrap();
+        let root_path = directory.path().join("workspace");
+        let path = root_path.join("sub/a.pgn");
+        let (mut authority, workspace) = workspace_with_file(&directory, &root_path, &path);
+        let handle = authority
+            .persistent
+            .values()
+            .find(|entry| entry.stored.path.to_path().ok().as_ref() == Some(&path))
+            .unwrap()
+            .stored
+            .id
+            .clone();
+        let handle = FileWorkspaceHandle::new(handle);
+        assert!(authority.workspace_mutation_target(&handle).is_ok());
+        drop(workspace);
+
+        replace_parent_with_same_inode_hard_link(&path);
+
+        assert!(matches!(
+            authority.workspace_mutation_target(&handle),
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn workspace_entry_path_refuses_a_same_inode_parent_replacement_without_open_handles() {
+        let directory = tempfile::tempdir().unwrap();
+        let root_path = directory.path().join("workspace");
+        let path = root_path.join("sub/a.pgn");
+        let (mut authority, workspace) = workspace_with_file(&directory, &root_path, &path);
+        let handle = authority
+            .persistent
+            .values()
+            .find(|entry| entry.stored.path.to_path().ok().as_ref() == Some(&path))
+            .unwrap()
+            .stored
+            .id
+            .clone();
+        let handle = FileWorkspaceHandle::new(handle);
+        assert_eq!(
+            authority
+                .workspace_entry_path(&handle, PathOperation::ReadPgn)
+                .unwrap(),
+            path
+        );
+        drop(workspace);
+
+        replace_parent_with_same_inode_hard_link(&path);
+
+        assert!(matches!(
+            authority.workspace_entry_path(&handle, PathOperation::ReadPgn),
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn dialog_parent_replacement_fails_before_promotion_without_open_handles() {
+        let directory = tempfile::tempdir().unwrap();
+        let parent = directory.path().join("picked");
+        fs::create_dir(&parent).unwrap();
+        let path = parent.join("study.pgn");
+        fs::write(&path, b"1. e4 *").unwrap();
+        let mut authority =
+            PathAuthority::open(directory.path().join("registry.json"), vec![]).unwrap();
+        let operations = vec![PathOperation::ReadPgn, PathOperation::WritePgn];
+        let grant = authority
+            .grant_dialog_operations(
+                &path,
+                "study",
+                PathClass::BoundedDialogGrant,
+                operations.clone(),
+                Duration::from_secs(60),
+                1,
+            )
+            .unwrap();
+        replace_parent_with_same_inode_hard_link(&path);
+        assert!(matches!(
+            authority.promote_dialog(&grant, PathClass::PersistentFile, "study", operations),
+            Err(Error::Conflict(_))
+        ));
+    }
+}
+
 #[cfg(unix)]
 #[cfg(test)]
 mod workspace_directory_enumeration_tests {
@@ -19635,6 +21204,34 @@ mod workspace_directory_enumeration_tests {
                 .collect::<Vec<_>>(),
             expected
         );
+        let database_parent = authority
+            .capability_directory(database.path_ref(), PathOperation::DatabaseRead)
+            .unwrap()
+            .identity()
+            .unwrap();
+        let puzzle_parent = authority
+            .capability_directory(puzzle.path_ref(), PathOperation::PuzzleRead)
+            .unwrap()
+            .identity()
+            .unwrap();
+        for entry in &databases {
+            assert_eq!(
+                authority.parent_identity_for_test(entry.handle.path_ref()),
+                Some(database_parent)
+            );
+            assert!(authority
+                .resolve(entry.handle.path_ref(), PathOperation::DatabaseRead, &[])
+                .is_ok());
+        }
+        for entry in &puzzles {
+            assert_eq!(
+                authority.parent_identity_for_test(&entry.file),
+                Some(puzzle_parent)
+            );
+            assert!(authority
+                .resolve(&entry.file, PathOperation::PuzzleRead, &[])
+                .is_ok());
+        }
     }
 
     #[test]

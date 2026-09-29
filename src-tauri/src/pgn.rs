@@ -1995,6 +1995,16 @@ mod tests {
                 PathOperation::WritePgn,
             )
             .expect("register workspace PGN");
+        let parent = crate::infra::fs::open_parent_no_follow(&path).expect("PGN parent descriptor");
+        let parent_identity = crate::infra::path_authority::opened_file_identity(&parent)
+            .expect("parent descriptor identity");
+        assert_eq!(
+            authority.parent_identity_for_test(child.path_ref()),
+            Some(parent_identity)
+        );
+        assert!(authority
+            .resolve(child.path_ref(), PathOperation::ReadPgn, &[])
+            .is_ok());
         let root_identity = fs_identity(&workspace_path);
         assert_eq!(
             registry_identity(&registry, workspace.path_ref()),
@@ -2013,6 +2023,18 @@ mod tests {
             .expect("write workspace PGN");
 
         assert_eq!(fs_identity(&workspace_path), root_identity);
+        {
+            let mut authority = authority_arc.lock().expect("path authority lock");
+            let authority = authority.as_mut().expect("path authority");
+            assert_eq!(
+                authority.parent_identity_for_test(child.path_ref()),
+                Some(parent_identity),
+                "atomic PGN replacement must preserve the bound parent identity"
+            );
+            assert!(authority
+                .resolve(child.path_ref(), PathOperation::ReadPgn, &[])
+                .is_ok());
+        }
         assert_eq!(
             registry_identity(&registry, workspace.path_ref()),
             root_identity

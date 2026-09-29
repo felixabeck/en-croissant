@@ -10,7 +10,7 @@ use crate::{
     infra::cancellable_lock::lock_std_cancellable,
     infra::path_authority::{
         workspace_sidecar_leaf as sidecar_leaf, CommitDurability, FileWorkspaceDescriptor,
-        FileWorkspaceHandle, PathAuthority, PathClass, PathOperation, PathRef,
+        FileWorkspaceHandle, IdentityBinding, PathAuthority, PathClass, PathOperation, PathRef,
         WorkspaceMutationTarget, WorkspaceRemovalStatus,
     },
     pgn, AppState,
@@ -250,17 +250,25 @@ fn register_created_entry(
     path: &Path,
     display_name: String,
     identity: (u64, u64),
+    parent: &fs::File,
     is_dir: bool,
 ) -> Result<FileWorkspaceHandle, Error> {
     let components = workspace_components(pgn_path_authority, workspace, path)?;
+    let parent_identity = crate::infra::path_authority::opened_file_identity(parent)?;
+    #[cfg(test)]
+    WORKSPACE_CREATED_CHILD_PRE_REGISTER_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
     authority(pgn_path_authority)?
         .as_mut()
         .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .register_workspace_child_observed(
+        .register_workspace_child_observed_with_parent(
             workspace,
             &components,
             display_name,
-            identity,
+            IdentityBinding::from_pairs(identity, parent_identity),
             is_dir,
             PathOperation::WritePgn,
         )
@@ -277,17 +285,35 @@ pub(crate) fn map_picker_join(error: tokio::task::JoinError) -> Error {
 #[cfg(all(test, unix))]
 type WorkspaceListingConfirmHook = Box<dyn FnMut(&DirectoryEntry)>;
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 std::thread_local! {
     static WORKSPACE_LISTING_PRE_REGISTER_HOOK: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
         const { std::cell::RefCell::new(None) };
-    static WORKSPACE_LISTING_PRE_CONFIRM_HOOK: std::cell::RefCell<Option<WorkspaceListingConfirmHook>> =
+    static WORKSPACE_CREATED_CHILD_PRE_REGISTER_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static WORKSPACE_REBIND_PRE_REGISTER_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(all(test, unix))]
+std::thread_local! {
+    static WORKSPACE_LISTING_PRE_CONFIRM_HOOK: std::cell::RefCell<Option<WorkspaceListingConfirmHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
 pub(crate) fn set_workspace_listing_pre_register_hook(hook: Option<Box<dyn FnMut()>>) {
     WORKSPACE_LISTING_PRE_REGISTER_HOOK.with(|slot| *slot.borrow_mut() = hook);
+}
+
+#[cfg(all(test, unix))]
+fn set_workspace_created_child_pre_register_hook(hook: Option<Box<dyn FnOnce()>>) {
+    WORKSPACE_CREATED_CHILD_PRE_REGISTER_HOOK.with(|slot| *slot.borrow_mut() = hook);
+}
+
+#[cfg(all(test, unix))]
+fn set_workspace_rebind_pre_register_hook(hook: Option<Box<dyn FnOnce()>>) {
+    WORKSPACE_REBIND_PRE_REGISTER_HOOK.with(|slot| *slot.borrow_mut() = hook);
 }
 
 #[cfg(all(test, unix))]
@@ -310,6 +336,7 @@ fn collect_tree_entries(
         components: Vec<std::ffi::OsString>,
         name: String,
         identity: (u64, u64),
+        parent_identity: (u64, u64),
         last_modified: i64,
         body: StagedBody,
     }
@@ -343,6 +370,7 @@ fn collect_tree_entries(
         if token.is_cancelled() {
             return Err(Error::Cancellation);
         }
+        let parent_identity = dir.identity()?;
         let mut entries = dir.entries(token, &mut |name| name != OsStr::new(TRASH_DIRECTORY))?;
         if token.is_cancelled() {
             return Err(Error::Cancellation);
@@ -383,6 +411,7 @@ fn collect_tree_entries(
                     components: child_components,
                     name: display,
                     identity: entry.identity,
+                    parent_identity,
                     last_modified,
                     body: StagedBody::Directory(children),
                 });
@@ -398,6 +427,7 @@ fn collect_tree_entries(
                     components: child_components,
                     name,
                     identity: entry.identity,
+                    parent_identity,
                     last_modified,
                     body: StagedBody::File(metadata),
                 });
@@ -418,7 +448,7 @@ fn collect_tree_entries(
             if token.is_cancelled() {
                 return Err(Error::Cancellation);
             }
-            #[cfg(all(test, unix))]
+            #[cfg(test)]
             WORKSPACE_LISTING_PRE_REGISTER_HOOK.with(|slot| {
                 if let Some(hook) = slot.borrow_mut().as_mut() {
                     hook();
@@ -428,11 +458,11 @@ fn collect_tree_entries(
             let handle = authority(pgn_path_authority)?
                 .as_mut()
                 .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-                .register_workspace_child_observed(
+                .register_workspace_child_observed_with_parent(
                     workspace,
                     &entry.components,
                     entry.name.clone(),
-                    entry.identity,
+                    IdentityBinding::from_pairs(entry.identity, entry.parent_identity),
                     is_dir,
                     PathOperation::ReadPgn,
                 )?;
@@ -648,6 +678,7 @@ fn rebind_after_move(
     entry: &FileWorkspaceHandle,
     source: &WorkspaceMutationTarget,
     target: &Path,
+    target_parent: &fs::File,
 ) -> Result<(), Error> {
     let mut authority = authority(pgn_path_authority)?;
     let authority = authority
@@ -656,10 +687,17 @@ fn rebind_after_move(
     if source.is_dir {
         authority.rebase_workspace_entries(source.path(), target)
     } else {
+        #[cfg(test)]
+        WORKSPACE_REBIND_PRE_REGISTER_HOOK.with(|slot| {
+            if let Some(hook) = slot.borrow_mut().take() {
+                hook();
+            }
+        });
         authority.rebind_workspace_entry(
             entry,
             target,
             target.file_stem().unwrap_or_default().to_string_lossy(),
+            crate::infra::path_authority::opened_file_identity(target_parent)?,
         )
     }
 }
@@ -851,6 +889,7 @@ fn create_workspace_file_blocking(
         &target,
         name.clone(),
         installed.identity,
+        parent_dir,
         false,
     )?;
     let entry = WorkspaceEntry {
@@ -932,6 +971,7 @@ fn create_workspace_directory_inner(
         &target,
         name.clone(),
         identity,
+        parent_dir,
         true,
     ) {
         Ok(handle) => handle,
@@ -1018,7 +1058,13 @@ fn move_workspace_entry_blocking(
         return Err(Error::Cancellation);
     }
     paired_rename(&source, destination.directory()?, &name)?;
-    rebind_after_move(pgn_path_authority, &entry, &source, &target)
+    rebind_after_move(
+        pgn_path_authority,
+        &entry,
+        &source,
+        &target,
+        destination.directory()?,
+    )
 }
 
 #[tauri::command]
@@ -1098,7 +1144,7 @@ fn rename_workspace_file_blocking(
         sidecar_outcome,
         crate::error::DurabilityStage::WorkspaceSidecarReplacement,
     );
-    let rebind = rebind_after_move(pgn_path_authority, &entry, &source, &target);
+    let rebind = rebind_after_move(pgn_path_authority, &entry, &source, &target, &source.parent);
     match (sidecar_uncertainty, rebind) {
         (Some(stage), Ok(()) | Err(Error::CommittedDurabilityUncertain(_))) => {
             Err(Error::CommittedDurabilityUncertain(stage))
@@ -1174,7 +1220,7 @@ fn trash_entry(
     } else {
         paired_rename(&source, &bucket_dir, &source.leaf)?;
     }
-    rebind_after_move(pgn_path_authority, entry, &source, &target)
+    rebind_after_move(pgn_path_authority, entry, &source, &target, &bucket_dir)
 }
 
 #[tauri::command]
@@ -1243,7 +1289,13 @@ fn restore_entry(
     } else {
         paired_rename(&source, root.directory()?, &source.leaf)?;
     }
-    rebind_after_move(pgn_path_authority, entry, &source, &target)
+    rebind_after_move(
+        pgn_path_authority,
+        entry,
+        &source,
+        &target,
+        root.directory()?,
+    )
 }
 
 #[tauri::command]
@@ -2068,6 +2120,7 @@ mod tests {
             &child,
             name.into(),
             identity,
+            root.directory().expect("workspace directory"),
             true,
         )
         .expect("child handle");
@@ -3104,6 +3157,7 @@ mod tests {
                 &game,
                 "Round one expected".into(),
                 (metadata.dev(), metadata.ino()),
+                &crate::infra::fs::open_parent_no_follow(&game).expect("game parent"),
                 false,
             )
             .expect("expected entry handle");
@@ -3203,6 +3257,19 @@ mod tests {
         let rebound = mutation_target(&state.pgn_path_authority, handle)
             .expect("renamed entry stays registered");
         assert_eq!(rebound.path(), root.join("after.pgn"));
+        let parent = crate::infra::fs::open_parent_no_follow(&root.join("after.pgn"))
+            .expect("renamed file parent descriptor");
+        let expected_parent = crate::infra::path_authority::opened_file_identity(&parent)
+            .expect("renamed parent identity");
+        let mut authority = authority(&state.pgn_path_authority).expect("authority lock");
+        let authority = authority.as_mut().expect("path authority");
+        assert_eq!(
+            authority.parent_identity_for_test(handle.path_ref()),
+            Some(expected_parent)
+        );
+        assert!(authority
+            .resolve(handle.path_ref(), PathOperation::ReadPgn, &[])
+            .is_ok());
     }
 
     /// The listing's shape, asserted on every platform. The existing shape assertion,
@@ -4100,6 +4167,385 @@ mod tests {
             .expect("count");
         assert_eq!(count, 1);
         assert!(!parent.is_cancelled());
+    }
+
+    fn workspace_child_parent_identity(
+        state: &AppState,
+        workspace: &FileWorkspaceHandle,
+        directory_name: &str,
+    ) -> (u64, u64) {
+        let mut authority = authority(&state.pgn_path_authority).unwrap();
+        let authority = authority.as_mut().unwrap();
+        let root = authority
+            .capability_directory(workspace.path_ref(), PathOperation::ReadPgn)
+            .unwrap();
+        let entry = root
+            .entries(&CancellationToken::new(), &mut |name| {
+                name == OsStr::new(directory_name)
+            })
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        root.open_child_directory(&entry)
+            .unwrap()
+            .identity()
+            .unwrap()
+    }
+
+    #[test]
+    fn listed_and_created_workspace_files_bind_their_parent_descriptors() {
+        let (_directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).unwrap();
+        let sub = root.join("sub");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("listed.pgn"), b"1. e4 *").unwrap();
+
+        let (entries, _) = collect_tree_entries(
+            &state.pgn_path_authority,
+            &workspace,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        let sub_entry = entries.iter().find(|entry| entry.name == "sub").unwrap();
+        let listed = sub_entry
+            .children
+            .iter()
+            .find(|entry| entry.name == "listed")
+            .unwrap();
+        let observed_parent = workspace_child_parent_identity(&state, &workspace, "sub");
+        {
+            let mut authority = authority(&state.pgn_path_authority).unwrap();
+            let authority = authority.as_mut().unwrap();
+            assert_eq!(
+                authority.parent_identity_for_test(listed.handle.path_ref()),
+                Some(observed_parent)
+            );
+            assert!(authority
+                .resolve(listed.handle.path_ref(), PathOperation::ReadPgn, &[])
+                .is_ok());
+        }
+
+        let created = create_workspace_file_blocking(
+            workspace.clone(),
+            sub_entry.handle.clone(),
+            "created".into(),
+            WorkspaceMetadata::default(),
+            WorkspaceFileContent::Text {
+                pgn: "1. d4 *".into(),
+            },
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        {
+            let mut authority = authority(&state.pgn_path_authority).unwrap();
+            let authority = authority.as_mut().unwrap();
+            assert_eq!(
+                authority.parent_identity_for_test(created.handle.path_ref()),
+                Some(observed_parent)
+            );
+            assert!(authority
+                .resolve(created.handle.path_ref(), PathOperation::ReadPgn, &[])
+                .is_ok());
+        }
+    }
+
+    #[test]
+    fn workspace_mutation_target_refuses_a_listed_nested_file_after_parent_replacement() {
+        let (_directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).unwrap();
+        let sub = root.join("sub");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("a.pgn"), b"1. e4 *").unwrap();
+        let (entries, _) = collect_tree_entries(
+            &state.pgn_path_authority,
+            &workspace,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        let child = entries[0].children[0].handle.clone();
+        assert!(mutation_target(&state.pgn_path_authority, &child).is_ok());
+
+        let old = root.join("sub.old");
+        fs::rename(&sub, &old).unwrap();
+        fs::create_dir(&sub).unwrap();
+        fs::hard_link(old.join("a.pgn"), sub.join("a.pgn")).unwrap();
+
+        assert!(matches!(
+            mutation_target(&state.pgn_path_authority, &child),
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(fs::read_dir(&sub).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn workspace_listing_parent_swap_between_enumeration_and_registration_is_refused() {
+        let (_directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).unwrap();
+        let sub = root.join("sub");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("a.pgn"), b"1. e4 *").unwrap();
+        let expected_parent = workspace_child_parent_identity(&state, &workspace, "sub");
+        let old = root.join("sub.old");
+        let sub_for_hook = sub.clone();
+        let old_for_hook = old.clone();
+        let mut registrations = 0usize;
+        let swapped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let swapped_in_hook = Arc::clone(&swapped);
+        set_workspace_listing_pre_register_hook(Some(Box::new(move || {
+            if registrations == 1 {
+                // On Windows open_child_directory reaches open_windows_child with
+                // allow_delete_share=true; the staged descriptor has also been dropped before
+                // this registration hook, so this rename is the reachable W57 outcome.
+                fs::rename(&sub_for_hook, &old_for_hook).expect("rename enumerated parent");
+                fs::create_dir(&sub_for_hook).expect("replacement parent");
+                fs::hard_link(old_for_hook.join("a.pgn"), sub_for_hook.join("a.pgn"))
+                    .expect("hard-link enumerated leaf");
+                swapped_in_hook.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            registrations += 1;
+        })));
+
+        let result = collect_tree_entries(
+            &state.pgn_path_authority,
+            &workspace,
+            &CancellationToken::new(),
+        );
+        set_workspace_listing_pre_register_hook(None);
+        let (entries, _) = result.expect("registration stores the enumerated parent identity");
+        assert!(swapped.load(std::sync::atomic::Ordering::SeqCst));
+        let sub_entry = entries.iter().find(|entry| entry.name == "sub").unwrap();
+        let child = sub_entry
+            .children
+            .iter()
+            .find(|entry| entry.name == "a")
+            .unwrap();
+        {
+            let mut authority = authority(&state.pgn_path_authority).unwrap();
+            let authority = authority.as_mut().unwrap();
+            assert_eq!(
+                authority.parent_identity_for_test(child.handle.path_ref()),
+                Some(expected_parent)
+            );
+            assert!(matches!(
+                authority.resolve(child.handle.path_ref(), PathOperation::ReadPgn, &[]),
+                Err(Error::Conflict(_))
+            ));
+        }
+        assert_eq!(fs::read_dir(&sub).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn created_workspace_child_keeps_its_parent_descriptor_across_registration_race() {
+        let (_directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).unwrap();
+        let sub = root.join("sub");
+        fs::create_dir(&sub).unwrap();
+        let (entries, _) = collect_tree_entries(
+            &state.pgn_path_authority,
+            &workspace,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        let sub_handle = entries[0].handle.clone();
+        let expected_parent = mutation_target(&state.pgn_path_authority, &sub_handle)
+            .unwrap()
+            .identity;
+        let old = root.join("sub.old");
+        let sub_for_hook = sub.clone();
+        set_workspace_created_child_pre_register_hook(Some(Box::new(move || {
+            fs::rename(&sub_for_hook, &old).unwrap();
+            fs::create_dir(&sub_for_hook).unwrap();
+            fs::hard_link(old.join("created.pgn"), sub_for_hook.join("created.pgn")).unwrap();
+        })));
+
+        let created = create_workspace_file_blocking(
+            workspace.clone(),
+            sub_handle,
+            "created".into(),
+            WorkspaceMetadata::default(),
+            WorkspaceFileContent::Text {
+                pgn: "1. e4 *".into(),
+            },
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+
+        {
+            let mut authority = authority(&state.pgn_path_authority).unwrap();
+            let authority = authority.as_mut().unwrap();
+            assert_eq!(
+                authority.parent_identity_for_test(created.handle.path_ref()),
+                Some(expected_parent)
+            );
+            assert!(matches!(
+                authority.resolve(created.handle.path_ref(), PathOperation::ReadPgn, &[]),
+                Err(Error::Conflict(_))
+            ));
+            assert!(matches!(
+                authority.workspace_mutation_target(&created.handle),
+                Err(Error::Conflict(_))
+            ));
+        }
+        assert_eq!(fs::read_dir(&sub).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_rebind_keeps_the_target_parent_descriptor_across_registration_race() {
+        let (_directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).unwrap();
+        let sub = root.join("sub");
+        fs::create_dir(&sub).unwrap();
+        fs::write(root.join("a.pgn"), b"1. e4 *").unwrap();
+        let (entries, _) = collect_tree_entries(
+            &state.pgn_path_authority,
+            &workspace,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        let source = entries.iter().find(|entry| entry.name == "a").unwrap();
+        let destination = entries.iter().find(|entry| entry.name == "sub").unwrap();
+        let destination_target =
+            mutation_target(&state.pgn_path_authority, &destination.handle).unwrap();
+        let expected_parent = crate::infra::path_authority::opened_file_identity(
+            destination_target.directory().unwrap(),
+        )
+        .unwrap();
+        let old = root.join("sub.old");
+        let sub_for_hook = sub.clone();
+        set_workspace_rebind_pre_register_hook(Some(Box::new(move || {
+            fs::rename(&sub_for_hook, &old).unwrap();
+            fs::create_dir(&sub_for_hook).unwrap();
+            fs::hard_link(old.join("a.pgn"), sub_for_hook.join("a.pgn")).unwrap();
+        })));
+
+        move_workspace_entry_blocking(
+            workspace.clone(),
+            source.handle.clone(),
+            destination.handle.clone(),
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+
+        {
+            let mut authority = authority(&state.pgn_path_authority).unwrap();
+            let authority = authority.as_mut().unwrap();
+            assert_eq!(
+                authority.parent_identity_for_test(source.handle.path_ref()),
+                Some(expected_parent)
+            );
+            assert!(matches!(
+                authority.workspace_mutation_target(&source.handle),
+                Err(Error::Conflict(_))
+            ));
+        }
+        assert_eq!(fs::read_dir(&sub).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn workspace_file_move_rebinds_the_new_parent_and_directory_move_keeps_child_binding() {
+        let (_directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).unwrap();
+        let destination_path = root.join("destination");
+        let outer_path = root.join("outer");
+        fs::create_dir(&destination_path).unwrap();
+        fs::create_dir(&outer_path).unwrap();
+        fs::write(root.join("move.pgn"), b"1. e4 *").unwrap();
+        fs::write(outer_path.join("child.pgn"), b"1. d4 *").unwrap();
+        let (entries, _) = collect_tree_entries(
+            &state.pgn_path_authority,
+            &workspace,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        let source = entries.iter().find(|entry| entry.name == "move").unwrap();
+        let destination = entries
+            .iter()
+            .find(|entry| entry.name == "destination")
+            .unwrap();
+        let new_parent = mutation_target(&state.pgn_path_authority, &destination.handle)
+            .unwrap()
+            .identity;
+
+        move_workspace_entry_blocking(
+            workspace.clone(),
+            source.handle.clone(),
+            destination.handle.clone(),
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        {
+            let mut authority = authority(&state.pgn_path_authority).unwrap();
+            let authority = authority.as_mut().unwrap();
+            assert_eq!(
+                authority.parent_identity_for_test(source.handle.path_ref()),
+                Some(new_parent)
+            );
+            assert_eq!(
+                authority
+                    .workspace_mutation_target(&source.handle)
+                    .unwrap()
+                    .path(),
+                destination_path.join("move.pgn")
+            );
+            assert!(authority
+                .resolve(source.handle.path_ref(), PathOperation::ReadPgn, &[])
+                .is_ok());
+        }
+
+        let (entries, _) = collect_tree_entries(
+            &state.pgn_path_authority,
+            &workspace,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        let outer = entries.iter().find(|entry| entry.name == "outer").unwrap();
+        let child = outer
+            .children
+            .iter()
+            .find(|entry| entry.name == "child")
+            .unwrap();
+        let original_child_parent = workspace_child_parent_identity(&state, &workspace, "outer");
+        let directory_destination = entries
+            .iter()
+            .find(|entry| entry.name == "destination")
+            .unwrap();
+        move_workspace_entry_blocking(
+            workspace.clone(),
+            outer.handle.clone(),
+            directory_destination.handle.clone(),
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        {
+            let mut authority = authority(&state.pgn_path_authority).unwrap();
+            let authority = authority.as_mut().unwrap();
+            assert_eq!(
+                authority.parent_identity_for_test(child.handle.path_ref()),
+                Some(original_child_parent)
+            );
+            assert_eq!(
+                authority
+                    .workspace_entry_path(&child.handle, PathOperation::ReadPgn)
+                    .unwrap(),
+                destination_path.join("outer/child.pgn")
+            );
+            assert!(authority
+                .resolve(child.handle.path_ref(), PathOperation::ReadPgn, &[])
+                .is_ok());
+        }
     }
 }
 

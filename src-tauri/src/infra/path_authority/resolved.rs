@@ -120,7 +120,6 @@ impl ResolvedPath {
     }
 
     // Read only by the database-child boundary, which `f-20260914-09` still refuses off unix.
-    #[cfg_attr(not(unix), allow(dead_code))]
     pub(super) fn parent(&self) -> Option<&fs::File> {
         self.parent.as_ref()
     }
@@ -746,6 +745,7 @@ pub(super) fn resolve_unix(
     root: &Path,
     expected_root: &super::Identity,
     root_is_dir: bool,
+    stored_parent_identity: Option<&Option<super::Identity>>,
     components: &[OsString],
     operation: PathOperation,
 ) -> Result<ResolvedPath, Error> {
@@ -767,6 +767,11 @@ pub(super) fn resolve_unix(
     );
     if root_is_dir && file_identity(&handle.metadata()?) != *expected_root {
         return Err(Error::Conflict("root changed concurrently".into()));
+    }
+    if !root_is_dir {
+        if let Some(expected_parent) = stored_parent_identity {
+            super::verify_parent_identity(&handle, expected_parent.as_ref())?;
+        }
     }
     let names: Vec<OsString> = if root_is_dir {
         components.to_vec()
@@ -909,6 +914,7 @@ pub(super) fn resolve_windows(
     root: &Path,
     expected_root: &super::Identity,
     root_is_dir: bool,
+    stored_parent_identity: Option<&Option<super::Identity>>,
     components: &[OsString],
     operation: PathOperation,
 ) -> Result<ResolvedPath, Error> {
@@ -976,6 +982,11 @@ pub(super) fn resolve_windows(
             parent_writable,
         )?
     };
+    if !root_is_dir {
+        if let Some(expected_parent) = stored_parent_identity {
+            super::verify_parent_identity(&handle, expected_parent.as_ref())?;
+        }
+    }
     let names: Vec<OsString> = if root_is_dir {
         components.to_vec()
     } else {
@@ -1127,6 +1138,7 @@ mod windows_tests {
             dir.path(),
             &expected,
             true,
+            None,
             &components,
             PathOperation::DownloadArchive,
         ) {

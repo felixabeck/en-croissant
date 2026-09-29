@@ -2744,8 +2744,8 @@ mod tests {
             ),
             (
                 "fn register_created_entry(",
-                "fnregister_created_entry(pgn_path_authority:&Mutex<Option<PathAuthority>>,workspace:&FileWorkspaceHandle,path:&Path,display_name:String,identity:(u64,u64),is_dir:bool,)->Result<FileWorkspaceHandle,Error>",
-                &[".register_workspace_child_observed("],
+                "fnregister_created_entry(pgn_path_authority:&Mutex<Option<PathAuthority>>,workspace:&FileWorkspaceHandle,path:&Path,display_name:String,identity:(u64,u64),parent:&fs::File,is_dir:bool,)->Result<FileWorkspaceHandle,Error>",
+                &[".register_workspace_child_observed_with_parent("],
             ),
             (
                 "fn collect_tree_entries(",
