@@ -11874,3 +11874,17 @@ Rejected: a longer WebDriver timeout, and a full-FEN dedup key.
 * **Why it matters:** after the push-gate parallelization, the backend lane is the critical path of every Rust-only push; this test is most of that lane's test time.
 * **Proposed fix:** find where the 21 s goes (it builds two `schema_database_case` fixtures and walks every read command; likely a fixed wait or a timeout path per command), remove the wait or split the per-command cases into separate `#[test]`s so the harness parallelizes them; same check for the three ~10 s tests. Keep every assertion.
 * **Found by:** Claude Code, ChessFable push-gate speed investigation 2026-09-29.
+
+---
+
+## 2026-09-29 — filed through the inbox spool
+
+### Module-load work in `workspace.ts` and `tabStorage.ts` makes 27% of their mutants static and dominates the frontend mutation gate
+
+* **ID:** f-20260929-09 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src/state/workspace.ts` (`loadWorkspace` and helpers such as `isValidLegacyWorkspace`, lines ~222-280, run while the module is imported), `src/state/store/tabStorage.ts` (module-level zod schemas, lines ~60-165); the Stryker `workspace-storage` package in `scripts/frontend-mutation-packages.mjs`.
+* **Defect:** measured 2026-09-29 on atlas: Stryker reports "Detected 281 static mutants (27% of total) that are estimated to take 89% of the time running the tests" for `workspace-storage` (116 in `tabStorage.ts`, 165 in `workspace.ts`; `tree-path` has 42 more in `treeReducer.ts`/`pathCapabilities.ts`). A static mutant is reached at import time, so Stryker cannot use per-test coverage for it and reruns every related test with a module reload. `workspace-storage` alone took 294 s of the 549 s frontend mutation gate at `concurrency: 2`, and still 141-148 s at 12-18 runners, so raising concurrency cannot remove this cost. The existing "Stryker disable … static mutant is not activated" comments show earlier runs already met the class.
+* **Why it matters:** the frontend mutation gate is the critical path of every frontend push; this is the part of it that more cores do not shorten.
+* **Proposed fix:** a design question in a persisted-state area (read `.claude/rules/persisted-state.md`): move the load/repair out of module evaluation into an explicitly invoked (or lazily memoised) initialiser so the work runs inside tests rather than at import, keeping hydration semantics identical; compare Stryker's static-mutant count and package time before/after. Not a Stryker option change: `ignoreStatic` would stop measuring those mutants and weaken the gate.
+* **Open question:** where does workspace hydration run once the module no longer does it at import — an explicit initialiser called from app startup, or a lazily memoised first read of the atom — and how is the same-tick semantics that current callers rely on preserved?
+* **Found by:** Claude Code, ChessFable push-gate speed investigation 2026-09-29 (Stryker concurrency sweep, logs in that session's scratchpad).
