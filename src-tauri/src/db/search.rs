@@ -197,15 +197,15 @@ pub(crate) fn load_search_index(
 /// Loads the search index for `handle`, serving a sidecar only when its archived
 /// provenance equals the database identity probed by this call.
 ///
-/// The probe is the linearization point, and no re-probe after the sidecar open is
-/// needed (`f-20260912-07`): the probe stats only the authority-bound object and
-/// refuses any other inode, the sidecar is opened relative to the retained parent,
-/// and every call probes again before any cached index or result is reused. So an
-/// accepted index describes a state the authorized database had during this call; a
-/// change after the probe is concurrent with the call and is seen by the next one. A
-/// re-probe would only move that instant, never close the window. The probe's
-/// revision is still read through SQLite's pathname open, the repository-wide hop
-/// `f-20260929-01` owns; that is where an A-B-A leaf swap is closed, not here.
+/// The identity probe is meant to be the linearization point, so no re-probe after
+/// the sidecar open is added (`d-20260929-03`): the sidecar is opened relative to the
+/// retained parent, and every call probes again before any cached index or result is
+/// reused, so a change after the probe is seen by the next call. A second probe would
+/// only move that instant. The probe is not yet one object's state, though: its
+/// object, length and mtime come from the authority-bound descriptor, but its revision
+/// (and generation's rows) come from SQLite's pathname open, so an A-B-A leaf swap can
+/// assemble a mixed identity. Binding SQLite to the authorized leaf is the open fix
+/// (`f-20260912-07`, `f-20260929-01`).
 pub(crate) fn load_search_index_cancellable(
     authority: &Mutex<Option<PathAuthority>>,
     repository: &DatabaseRepository,
