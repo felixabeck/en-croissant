@@ -194,6 +194,18 @@ pub(crate) fn load_search_index(
     )
 }
 
+/// Loads the search index for `handle`, serving a sidecar only when its archived
+/// provenance equals the database identity probed by this call.
+///
+/// The probe is the linearization point, and no re-probe after the sidecar open is
+/// needed (`f-20260912-07`): the probe stats only the authority-bound object and
+/// refuses any other inode, the sidecar is opened relative to the retained parent,
+/// and every call probes again before any cached index or result is reused. So an
+/// accepted index describes a state the authorized database had during this call; a
+/// change after the probe is concurrent with the call and is seen by the next one. A
+/// re-probe would only move that instant, never close the window. The probe's
+/// revision is still read through SQLite's pathname open, the repository-wide hop
+/// `f-20260929-01` owns; that is where an A-B-A leaf swap is closed, not here.
 pub(crate) fn load_search_index_cancellable(
     authority: &Mutex<Option<PathAuthority>>,
     repository: &DatabaseRepository,
@@ -1146,6 +1158,41 @@ mod tests {
             )
         };
         assert!(loaded.is_ok());
+    }
+
+    #[test]
+    fn a_loaded_index_is_not_served_after_the_database_changes_in_place() {
+        let (_dir, app, handle, database) = loader_test_case(vec![PathOperation::DatabaseRead]);
+        SearchIndexChunk::default()
+            .write_to_with_source(get_index_path(&database), loader_source(&app, &database))
+            .unwrap()
+            .expect_durable();
+        let state = app.state::<AppState>();
+        let load = || {
+            load_search_index(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                &state.search_cache,
+                &handle,
+            )
+        };
+        let (identity, _index) = load().unwrap();
+        assert!(state.search_cache.get_index(&identity).is_some());
+
+        // Same inode, new freshness: the sidecar and the cached index now describe
+        // an earlier state. A read-only load must re-probe and refuse them, which
+        // surfaces as the generation path's missing Mutate permission.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&database)
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000))
+            .unwrap();
+        assert!(matches!(
+            load(),
+            Err(Error::InvalidInput(message))
+                if message == "workspace entry does not permit this operation"
+        ));
     }
 
     #[test]
