@@ -293,19 +293,7 @@ impl BoundDatabase {
         &self,
         callback: impl FnOnce() + Send + 'static,
     ) -> Result<(), Error> {
-        let mut hook = self
-            .0
-            .binding
-            .before_openat
-            .lock()
-            .map_err(|_| Error::Conflict("bound SQLite open test hook was poisoned".into()))?;
-        if hook.is_some() {
-            return Err(Error::Conflict(
-                "bound SQLite open test hook is already set".into(),
-            ));
-        }
-        *hook = Some(Box::new(callback));
-        Ok(())
+        set_binding_test_hook(&self.0.binding.before_openat, "open", callback)
     }
 
     #[cfg(all(test, windows))]
@@ -313,20 +301,31 @@ impl BoundDatabase {
         &self,
         callback: impl FnOnce() + Send + 'static,
     ) -> Result<(), Error> {
-        let mut hook = self
-            .0
-            .binding
-            .before_delete_disposition
-            .lock()
-            .map_err(|_| Error::Conflict("bound SQLite delete test hook was poisoned".into()))?;
-        if hook.is_some() {
-            return Err(Error::Conflict(
-                "bound SQLite delete test hook is already set".into(),
-            ));
-        }
-        *hook = Some(Box::new(callback));
-        Ok(())
+        set_binding_test_hook(
+            &self.0.binding.before_delete_disposition,
+            "delete",
+            callback,
+        )
     }
+}
+
+/// Installs a one-shot test hook into a binding's hook slot; refuses to replace a pending one.
+#[cfg(test)]
+fn set_binding_test_hook(
+    slot: &Mutex<Option<BindingTestHook>>,
+    operation: &str,
+    callback: impl FnOnce() + Send + 'static,
+) -> Result<(), Error> {
+    let mut hook = slot
+        .lock()
+        .map_err(|_| Error::Conflict(format!("bound SQLite {operation} test hook was poisoned")))?;
+    if hook.is_some() {
+        return Err(Error::Conflict(format!(
+            "bound SQLite {operation} test hook is already set"
+        )));
+    }
+    *hook = Some(Box::new(callback));
+    Ok(())
 }
 
 #[cfg(test)]
