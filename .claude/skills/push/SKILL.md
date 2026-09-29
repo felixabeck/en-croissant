@@ -246,6 +246,9 @@ docs/signed-download-manifests.md
 It does not replace `review-ipc-contract`: capability and CSP scope, `src-tauri/tauri.conf.json`,
 the Specta registry and generated bindings, and listener lifetimes remain owned by that lens.
 
+**Repairs:** read and follow `~/.claude/references/push-review-policy.md` §5 before
+implementing any adopted `Fix`.
+
 Repair every `Fix`, inspect each repair diff, and rerun every gate invalidated by the repair.
 Security and filesystem refusal paths must be exercised, not merely read.
 
