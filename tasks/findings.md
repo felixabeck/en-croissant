@@ -11848,3 +11848,16 @@ Rejected: a longer WebDriver timeout, and a full-FEN dedup key.
 * **Open question:** on Linux, verify the leaf on an `O_PATH | O_NOFOLLOW` descriptor (whose close skips `locks_remove_posix`, `FMODE_PATH`) and reopen it through `/proc/self/fd/<n>` with SQLite's flags, so a lockable descriptor of a foreign inode is never created — measure that the reopen yields the same inode and that closing an `O_PATH` fd leaves another descriptor's POSIX locks intact; what is the macOS equivalent (none known: no `O_PATH`), and is the documented residual acceptable there?
 * **Related:** `f-20260929-01` (the binding this refines; surfaced by `review-pgn-index` and `review-tauri-security` in the cumulative review, 2026-09-29), `f-20260912-07`; FIFO sidecar finding (inbox `20260929-071945-307309-1790659185646737657-3`).
 * **Found by:** Codex `review-pgn-index` / `review-tauri-security`, cumulative diff re-review of the `sqlite-pathname-open` build run, 2026-09-29 (drain session `1af0f1fc-ab06-4981-9a3d-47a89d71c541`). Review record: `tasks/handoffs/2026-09-29-sqlite-pathname-open-review.md`.
+
+---
+
+## 2026-09-29 — filed through the inbox spool
+
+### `pool_parent_swap_keeps_wal_and_shm_in_held_parent_and_unlinks_them_there` fails intermittently on an idle machine
+
+* **ID:** f-20260929-07 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src-tauri/src/db/repository.rs` test `bound_sqlite_witnesses::pool_parent_swap_keeps_wal_and_shm_in_held_parent_and_unlinks_them_there` (assertion at line 3052, `!sidecar_listing(&swap.held_parent, "pool.db3")…any(-wal|-shm)`), introduced by `9ea21bc0` (2026-09-29).
+* **Defect:** measured 2026-09-29 on atlas against the current `master` test binary: run alone with `--exact`, the test failed 5 of 30 serial runs on an otherwise idle machine and 15 of 72 when 24 copies ran at once. The failing assertion is the post-restore expectation that the held parent no longer lists `pool.db3-wal`/`-shm`; the sidecars are sometimes still present when the assertion samples the directory, so either their unlink is asynchronous to the observation (pool connection drop on another thread) or the code under test can leave them behind. It first surfaced as a red `backend-coverage` gate while `backend-test` ran beside it.
+* **Why it matters:** an intermittently red backend gate on every push that touches `src-tauri/**`, locally and on CI, and a test that cannot distinguish a real sidecar leak from a timing race — the property it guards (sidecars are unlinked in the held parent) is exactly what `f-20260929-01` promised.
+* **Proposed fix:** establish which it is before touching the assertion: trace when the pool's connections holding the WAL/SHM are closed relative to `initialization_connection` returning `Conflict`; if the unlink is legitimately deferred to connection drop, make the test wait on that deterministic event (drop the pool or the repository entry) rather than sampling; if sidecars can survive, fix the code. Prove with 200 serial and 200 concurrent runs green.
+* **Found by:** Claude Code, ChessFable push-gate speed investigation 2026-09-29 (concurrent receipt-gate experiment; reproduction loop in that session).
