@@ -5932,10 +5932,7 @@ impl PathAuthority {
         }
         resolved.mark_engine_executable()?;
         let identity = resolved.identity()?;
-        let parent = resolved.parent().ok_or_else(|| {
-            Error::InvalidInput("installed engine has no retained parent boundary".into())
-        })?;
-        let parent_identity = VerifiedIdentity::from_pair(opened_file_identity(parent)?);
+        let parent_identity = VerifiedIdentity::from_pair(resolved.parent_identity()?);
         let path = resolved
             .target()
             .ok_or_else(|| Error::InvalidInput("installed engine must be a regular file".into()))?
@@ -6170,10 +6167,7 @@ impl PathAuthority {
             &[filename.to_os_string()],
         )?;
         let resolved_identity = refuse_unobserved(resolved.identity()?, observed)?;
-        let parent = resolved.parent().ok_or_else(|| {
-            Error::InvalidInput("puzzle child has no retained parent boundary".into())
-        })?;
-        let parent_identity = VerifiedIdentity::from_pair(opened_file_identity(parent)?);
+        let parent_identity = VerifiedIdentity::from_pair(resolved.parent_identity()?);
         #[cfg(test)]
         PUZZLE_CHILD_POST_RESOLVE_HOOK.with(|slot| {
             if let Some(hook) = slot.borrow_mut().take() {
@@ -6264,9 +6258,8 @@ impl PathAuthority {
                 "database child has no retained parent boundary".into(),
             ));
         }
-        let parent_identity = identity_from_open_file(resolved.parent().ok_or_else(|| {
-            Error::InvalidInput("database child has no retained parent boundary".into())
-        })?)?;
+        let (a, b) = resolved.parent_identity()?;
+        let parent_identity = Identity { a, b };
         let root_path = self.database_root_path(root)?;
         let path = root_path.join(filename);
         let validated_identity = validate_target(&path, PathClass::PersistentFile)?;
@@ -7160,7 +7153,7 @@ impl PathAuthority {
         let root_entry = self
             .persistent
             .get(&workspace.path_ref().id)
-            .ok_or_else(|| Error::InvalidInput("workspace is not persistent".into()))?;
+            .expect("test workspace is persistent");
         let path =
             components
                 .iter()
@@ -7407,9 +7400,8 @@ impl PathAuthority {
             .to_os_string();
         let mut re_resolved =
             self.resolve(&verified.pending.root, PathOperation::DownloadFile, &[leaf])?;
-        let parent_identity = identity_from_open_file(re_resolved.parent().ok_or_else(|| {
-            Error::Conflict("artifact target parent handle is unavailable".into())
-        })?)?;
+        let (a, b) = re_resolved.parent_identity()?;
+        let parent_identity = Identity { a, b };
         let current_file = re_resolved
             .take_file()
             .ok_or_else(|| Error::Conflict("artifact target is not a regular file".into()))?;
@@ -14932,6 +14924,62 @@ mod tests {
         assert!(matches!(
             authority.resolve(&handle, PathOperation::ReadPgn, &[]),
             Err(Error::Conflict(_))
+        ));
+    }
+
+    /// The producers' fail-closed refusals: a file entry is never registered without the
+    /// identity of the directory that observed it.
+    #[test]
+    fn file_registration_without_an_observed_parent_is_refused() {
+        let retained_nothing = resolved::ResolvedPath::download_archive_test(PathBuf::from("x"));
+        assert!(matches!(
+            retained_nothing.parent_identity(),
+            Err(Error::InvalidInput(_))
+        ));
+
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("book.bin");
+        fs::write(&file, b"book").unwrap();
+        let leaf = identity(&file).unwrap();
+        assert!(matches!(
+            PathAuthority::registration_target(
+                &file,
+                PathClass::PersistentFile,
+                &[PathOperation::ReadPgn],
+                Some(VerifiedIdentity::from_pair((leaf.a, leaf.b))),
+                None,
+            ),
+            Err(Error::InvalidInput(_))
+        ));
+
+        let root_path = dir.path().join("workspace");
+        fs::create_dir(&root_path).unwrap();
+        let path = root_path.join("a.pgn");
+        fs::write(&path, b"1. e4 *").unwrap();
+        let registry = dir.path().join("registry.json");
+        let mut root_entry = stored_entry_for(
+            &root_path,
+            "workspace-root",
+            Some(EntryPurpose::PgnWorkspace),
+            canonical_operations(EntryPurpose::PgnWorkspace),
+        );
+        root_entry.target_is_dir = true;
+        write_registry_with_entries(&registry, vec![root_entry]);
+        let mut authority = PathAuthority::open(registry, vec![]).unwrap();
+        let workspace = FileWorkspaceHandle::new(PathRef {
+            id: "workspace-root".into(),
+        });
+        let child = identity(&path).unwrap();
+        assert!(matches!(
+            authority.register_workspace_child_observed_with_parent(
+                &workspace,
+                &[OsString::from("a.pgn")],
+                "a",
+                IdentityBinding::new(child, None),
+                false,
+                PathOperation::ReadPgn,
+            ),
+            Err(Error::InvalidInput(_))
         ));
     }
 

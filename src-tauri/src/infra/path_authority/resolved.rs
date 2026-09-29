@@ -125,6 +125,16 @@ impl ResolvedPath {
         self.parent.as_ref()
     }
 
+    /// Identity of the retained parent — the directory a registration door records as the
+    /// entry's authorized parent (`f-20260912-05`). A resolution that retained no parent (a
+    /// directory result) cannot bind a file entry, so it is refused rather than re-walked.
+    pub(super) fn parent_identity(&self) -> Result<(u64, u64), Error> {
+        let parent = self.parent.as_ref().ok_or_else(|| {
+            Error::InvalidInput("resolved path has no retained parent boundary".into())
+        })?;
+        super::opened_file_identity(parent)
+    }
+
     #[cfg_attr(not(unix), allow(dead_code))]
     pub(super) fn leaf(&self) -> Option<&OsStr> {
         self.leaf.as_deref()
