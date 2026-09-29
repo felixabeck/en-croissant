@@ -11804,3 +11804,47 @@ Rejected: a longer WebDriver timeout, and a full-FEN dedup key.
 * **Why it matters:** master's `test` job is red on every push until this is fixed, which hides any real frontend or tooling regression behind a known failure.
 * **Related:** `f-20260912-03` (the release-surface checker work that added O3.12), `d-20260928-06`, `d-20260901-36`.
 * **Found by:** Claude Code, `$push` red-remote check of the `f-20260912-05` drain run (session `6f9c4b3e-8255-48b2-82b2-497c962dd7df`), 2026-09-29.
+
+---
+
+## 2026-09-29 — filed through the inbox spool
+
+### A non-regular file planted as an authorized database's `-shm` can block SQLite's open inside the identity probe
+
+* **ID:** f-20260929-03 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** SQLite 3.39.2 unix VFS `unixOpenSharedMemory` (`libsqlite3-sys-0.25.2/sqlite3/sqlite3.c:40120-40135`), reached from `DatabaseRepository::read_revision` and the repository pool (`src-tauri/src/db/repository.rs`), after `f-20260929-01`'s binding also through `src-tauri/src/db/bound_sqlite.rs`.
+* **Defect:** SQLite opens `<db>-shm` with `O_RDWR|O_CREAT|O_NOFOLLOW` and, if that fails, retries `O_RDONLY|O_NOFOLLOW`. Neither carries `O_NONBLOCK`, and SQLite does not check the file type, so a FIFO planted as `-shm` in the authorized directory can block the read-only fallback's `open()` indefinitely (a FIFO opened read-only blocks until a writer appears), hanging the identity probe or a pool worker. Pre-existing with pathname opens; unmeasured (no probe run yet).
+* **Why it matters:** a hung native identity probe stalls search/index loading for that database; the actor needs write access to the authorized directory, which is also SQLite's own trust boundary for `-wal`.
+* **Open question:** should the bound SQLite hooks refuse non-regular sidecars (open with `O_NONBLOCK`, `fstat` `S_ISREG`, clear `O_NONBLOCK`), and what error does the caller then see — or is an in-parent FIFO inside SQLite's accepted trust boundary and to be documented as a residual? Measure first whether the fallback path is reachable (it requires the `O_RDWR` open to fail).
+* **Related:** `f-20260929-01` (the SQLite binding whose plan review surfaced it; withdrawn from that plan as outside its mandate by `review-correctness` and `review-minimalism`, round 3), `f-20260912-07`.
+* **Found by:** Codex `review-tauri-security` lens, plan review round 2 of `tasks/plans/2026-09-29-sqlite-bound-vfs.md`, 2026-09-29 (drain session `1af0f1fc-ab06-4981-9a3d-47a89d71c541`).
+
+### A failing pooled SQLite open is retried and logged at error level for the full r2d2 timeout without naming the database
+
+* **ID:** f-20260929-04 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src-tauri/src/db/repository.rs` pool construction in `DatabaseRepository::entry` (`Pool::builder()` without `connection_timeout` or `error_handler`), r2d2 0.8.10 `add_connection` retry loop (`~/.cargo/registry/src/*/r2d2-0.8.10/src/lib.rs:219-278`).
+* **Defect:** when a pooled connection cannot be established, r2d2 retries on its worker threads with exponential backoff until the default 30 s `connection_timeout`, and its default `LoggingErrorHandler` logs every failed attempt at error level with only Diesel's message ("unable to open database file") — no database identifier. The caller waits 30 s and the native log gains a burst of uncorrelated error lines. Pre-existing for any establish failure; more reachable once `f-20260929-01`'s binding refuses opens of a swapped leaf.
+* **Why it matters:** an unattributable log burst and a 30 s stall for a condition that is already known to be permanent after the first refusal.
+* **Proposed fix:** give the repository pool a contextual `error_handler` (database path/entry key, deduplicated) and a bounded `connection_timeout` suited to the local file case; prove with a test that a refused open returns promptly and logs once.
+* **Related:** `f-20260929-01` (surfaced during its plan review, `review-error-handling` round 7, confidence 89; outside that plan's mandate).
+* **Found by:** Codex `review-error-handling` lens, plan review round 7 of `tasks/plans/2026-09-29-sqlite-bound-vfs.md`, 2026-09-29 (drain session `1af0f1fc-ab06-4981-9a3d-47a89d71c541`).
+
+### Two hard-link names of one database in the same directory share SQLite's `-shm` but get separate `-wal` files
+
+* **ID:** f-20260929-05 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/db/repository.rs` (`hard_link_bindings_have_separate_repository_entries`, `:1795-1815`, pins separate entries for two names of one inode); SQLite 3.39.2 unix VFS per-inode record and `-shm` node keyed by (dev, ino) (`libsqlite3-sys-0.25.2/sqlite3/sqlite3.c:36876-36887, 40068-40112`) while the WAL name is derived from each connection's own path (`:58717-58723`).
+* **Defect:** when both names are open in one process, SQLite pairs a single shared-memory wal-index with two different `-wal` files. SQLite documents multiple links to one database file as a corruption hazard. Pre-existing with pathname opens; `f-20260929-01`'s binding keeps both names' sidecars inside the one authorized parent but does not change the pairing.
+* **Why it matters:** a user who registers the same database twice through hard-linked names in one folder can corrupt it by opening both.
+* **Open question:** refuse a second concurrent name for an inode that already has a live binding in the same directory (a user-visible `Conflict` until the first repository entry is evicted — the entry keeps its binding alive while cached), route both names through one binding (then the binding's leaf name must survive the deletion of either name), or detect hard-linked databases at registration and refuse them?
+* **Related:** `f-20260929-01` (plan review round 9 of `tasks/plans/2026-09-29-sqlite-bound-vfs.md`: `review-plan` asked for safe pairing, `review-correctness` showed sharing one binding breaks the surviving alias when the other name is deleted; both left outside that mandate), `f-20260905-03`.
+* **Found by:** Codex `review-plan` / `review-correctness` lenses, plan review round 9, 2026-09-29 (drain session `1af0f1fc-ab06-4981-9a3d-47a89d71c541`).
+
+### A refused bound SQLite leaf open can still close a descriptor of a locked foreign inode, or hold descriptors until the inode's binding drops
+
+* **ID:** f-20260929-06 · **Status:** open · **Area:** db-search · **Root:** sqlite-pathname-open · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/db/bound_sqlite.rs` unix `open` hook (pre-open `fstatat` identity check, `openat`, post-open `fstat` check, `retain_mismatched_descriptor` quarantine with a per-inode cap; the `fstat`-failure branch closes the fresh descriptor).
+* **Defect:** the bound open refuses a leaf whose identity is not the authority-bound one. The pre-open `fstatat` check handles the ordinary case without opening, but a writer that swaps the leaf to another bound database B between that check and `openat` produces a real descriptor of B. Closing it would drop every POSIX lock this process holds on B (SQLite's locks are process-associated), so it is quarantined until B's last binding drops — bounded per inode by a cap, beyond which it is closed and the lock hazard returns. The rare `fstat`-failure branch closes an unclassified descriptor unconditionally. Needs a local actor who can write the authorized directory and win the race repeatedly.
+* **Why it matters:** a dropped lock lets another process write B while this process's SQLite connection believes it holds a lock (corruption); an uncapped quarantine lets the race exhaust descriptors.
+* **Open question:** on Linux, verify the leaf on an `O_PATH | O_NOFOLLOW` descriptor (whose close skips `locks_remove_posix`, `FMODE_PATH`) and reopen it through `/proc/self/fd/<n>` with SQLite's flags, so a lockable descriptor of a foreign inode is never created — measure that the reopen yields the same inode and that closing an `O_PATH` fd leaves another descriptor's POSIX locks intact; what is the macOS equivalent (none known: no `O_PATH`), and is the documented residual acceptable there?
+* **Related:** `f-20260929-01` (the binding this refines; surfaced by `review-pgn-index` and `review-tauri-security` in the cumulative review, 2026-09-29), `f-20260912-07`; FIFO sidecar finding (inbox `20260929-071945-307309-1790659185646737657-3`).
+* **Found by:** Codex `review-pgn-index` / `review-tauri-security`, cumulative diff re-review of the `sqlite-pathname-open` build run, 2026-09-29 (drain session `1af0f1fc-ab06-4981-9a3d-47a89d71c541`). Review record: `tasks/handoffs/2026-09-29-sqlite-pathname-open-review.md`.
