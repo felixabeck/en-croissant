@@ -70,6 +70,8 @@ struct BindingKey {
 
 #[cfg(test)]
 type BindingTestHook = Box<dyn FnOnce() + Send>;
+#[cfg(test)]
+type RegistryTestHook = Box<dyn FnOnce() + Send>;
 
 struct Binding {
     parent: File,
@@ -80,6 +82,8 @@ struct Binding {
     opened_names: Mutex<Vec<OsString>>,
     #[cfg(all(test, unix))]
     before_openat: Mutex<Option<BindingTestHook>>,
+    #[cfg(all(test, unix))]
+    faccessat_error: Mutex<Option<std::os::raw::c_int>>,
     #[cfg(all(test, windows))]
     before_delete_disposition: Mutex<Option<BindingTestHook>>,
 }
@@ -117,6 +121,10 @@ struct Registry {
     by_key: HashMap<BindingKey, (u64, Weak<Registration>)>,
     creating: HashMap<BindingKey, u64>,
     quarantined_descriptors: HashMap<(u64, u64), Vec<File>>,
+    #[cfg(test)]
+    creation_hooks: HashMap<BindingKey, RegistryTestHook>,
+    #[cfg(test)]
+    waiting_hooks: HashMap<BindingKey, RegistryTestHook>,
 }
 
 static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
@@ -175,6 +183,10 @@ impl BoundDatabase {
                 ));
             }
             if registry.creating.contains_key(&key) {
+                #[cfg(test)]
+                if let Some(hook) = registry.waiting_hooks.remove(&key) {
+                    hook();
+                }
                 drop(
                     changed.wait(registry).map_err(|_| {
                         Error::Conflict("bound SQLite registry was poisoned".into())
@@ -191,6 +203,8 @@ impl BoundDatabase {
             break token;
         };
 
+        #[cfg(test)]
+        invoke_registry_creation_hook(&key);
         let registration = (|| {
             let parent = target.parent().try_clone()?;
             let binding = Binding {
@@ -202,6 +216,8 @@ impl BoundDatabase {
                 opened_names: Mutex::new(Vec::new()),
                 #[cfg(all(test, unix))]
                 before_openat: Mutex::new(None),
+                #[cfg(all(test, unix))]
+                faccessat_error: Mutex::new(None),
                 #[cfg(all(test, windows))]
                 before_delete_disposition: Mutex::new(None),
             };
@@ -296,6 +312,21 @@ impl BoundDatabase {
         set_binding_test_hook(&self.0.binding.before_openat, "open", callback)
     }
 
+    #[cfg(all(test, unix))]
+    pub(super) fn fail_next_faccessat_with(&self, error: std::os::raw::c_int) -> Result<(), Error> {
+        let mut slot =
+            self.0.binding.faccessat_error.lock().map_err(|_| {
+                Error::Conflict("bound SQLite access test hook was poisoned".into())
+            })?;
+        if slot.is_some() {
+            return Err(Error::Conflict(
+                "bound SQLite access test hook is already set".into(),
+            ));
+        }
+        *slot = Some(error);
+        Ok(())
+    }
+
     #[cfg(all(test, windows))]
     pub(super) fn set_before_delete_disposition_hook(
         &self,
@@ -306,6 +337,17 @@ impl BoundDatabase {
             "delete",
             callback,
         )
+    }
+}
+
+#[cfg(test)]
+fn invoke_registry_creation_hook(key: &BindingKey) {
+    let hook = REGISTRY
+        .get()
+        .and_then(|registry| registry.lock().ok())
+        .and_then(|mut registry| registry.creation_hooks.remove(key));
+    if let Some(hook) = hook {
+        hook();
     }
 }
 
@@ -796,6 +838,31 @@ mod unix_hooks {
         -1
     }
 
+    pub(super) unsafe fn binding_faccessat(
+        registration: &Registration,
+        directory: c_int,
+        path: *const c_char,
+        mode: c_int,
+        flags: c_int,
+    ) -> c_int {
+        #[cfg(test)]
+        {
+            let error = registration
+                .binding
+                .faccessat_error
+                .lock()
+                .ok()
+                .and_then(|mut error| error.take());
+            if let Some(error) = error {
+                set_errno(error);
+                return -1;
+            }
+        }
+        #[cfg(not(test))]
+        let _ = registration;
+        unsafe { libc::faccessat(directory, path, mode, flags) }
+    }
+
     pub(super) fn last_errno() -> c_int {
         match std::io::Error::last_os_error().raw_os_error() {
             Some(error) => error,
@@ -995,7 +1062,10 @@ mod unix_hooks {
         }
     }
 
-    unsafe extern "C" fn stat_hook(path: *const c_char, output: *mut libc::stat) -> c_int {
+    pub(super) unsafe extern "C" fn stat_hook(
+        path: *const c_char,
+        output: *mut libc::stat,
+    ) -> c_int {
         match catch_unwind(AssertUnwindSafe(|| unsafe {
             stat_hook_inner(path, output)
         })) {
@@ -1059,7 +1129,8 @@ mod unix_hooks {
             },
             Resolution::Refused(error) => syscall_failure(error),
             Resolution::Directory(registration) => unsafe {
-                libc::faccessat(
+                binding_faccessat(
+                    &registration,
                     registration.binding.parent.as_raw_fd(),
                     c".".as_ptr(),
                     mode,
@@ -1091,7 +1162,8 @@ mod unix_hooks {
                     }
                 }
                 unsafe {
-                    libc::faccessat(
+                    binding_faccessat(
+                        &registration,
                         registration.binding.parent.as_raw_fd(),
                         name.as_ptr(),
                         mode,
@@ -1294,7 +1366,8 @@ mod unix_vfs {
         unsafe { *out = 1 };
         if flags == ffi::SQLITE_ACCESS_READWRITE {
             let result = unsafe {
-                libc::faccessat(
+                unix_hooks::binding_faccessat(
+                    &registration,
                     fd,
                     path.as_ptr().cast(),
                     libc::R_OK | libc::W_OK,
@@ -2185,6 +2258,7 @@ mod tests {
         std::fs::File::create(&path).unwrap();
         let target = DatabaseFileTarget::for_test_path(&path).unwrap();
         let bound = BoundDatabase::acquire(&target).unwrap();
+        assert!(format!("{bound:?}").contains(&bound.token().to_string()));
         let uri = bound.uri(SqliteMode::ReadWrite).unwrap();
         assert!(uri.starts_with(RESERVED_URI_PREFIX));
         assert!(uri.contains("percent%25question%3F%23.db3"));
@@ -2511,6 +2585,92 @@ mod tests {
         assert!(!registry.creating.contains_key(&key));
     }
 
+    #[test]
+    fn binding_creation_waiter_reuses_the_reserved_registration() {
+        use std::sync::mpsc;
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("reserved-creation.db3");
+        std::fs::File::create(&path).unwrap();
+        let target = DatabaseFileTarget::for_test_path(&path).unwrap();
+        let key = BindingKey {
+            identity: target.identity(),
+            parent_identity: opened_file_identity(target.parent()).unwrap(),
+            leaf: binding_key_leaf(target.leaf()),
+        };
+        let (creation_started_tx, creation_started_rx) = mpsc::channel();
+        let (release_creation_tx, release_creation_rx) = mpsc::channel();
+        let (waiter_reached_tx, waiter_reached_rx) = mpsc::channel();
+        let (owner_acquired_tx, owner_acquired_rx) = mpsc::channel();
+        let (release_owner_tx, release_owner_rx) = mpsc::channel();
+        let (waiter_acquired_tx, waiter_acquired_rx) = mpsc::channel();
+
+        let registry = REGISTRY.get_or_init(|| Mutex::new(Registry::default()));
+        {
+            let mut registry = registry.lock().unwrap();
+            registry.creation_hooks.insert(
+                key.clone(),
+                Box::new(move || {
+                    let _ = creation_started_tx.send(());
+                    let _ = release_creation_rx.recv();
+                }),
+            );
+            registry.waiting_hooks.insert(
+                key.clone(),
+                Box::new(move || {
+                    let _ = waiter_reached_tx.send(());
+                }),
+            );
+        }
+
+        let creator_path = path.clone();
+        let creator = std::thread::spawn(move || {
+            let target = DatabaseFileTarget::for_test_path(&creator_path).unwrap();
+            let binding = BoundDatabase::acquire(&target).unwrap();
+            owner_acquired_tx.send(binding.token()).unwrap();
+            release_owner_rx.recv().unwrap();
+            drop(binding);
+        });
+        creation_started_rx.recv().unwrap();
+
+        let waiter_path = path.clone();
+        let waiter = std::thread::spawn(move || {
+            let target = DatabaseFileTarget::for_test_path(&waiter_path).unwrap();
+            let binding = BoundDatabase::acquire(&target).unwrap();
+            waiter_acquired_tx.send(binding.token()).unwrap();
+        });
+        waiter_reached_rx.recv().unwrap();
+        release_creation_tx.send(()).unwrap();
+
+        let owner_token = owner_acquired_rx.recv().unwrap();
+        let waiter_token = waiter_acquired_rx.recv().unwrap();
+        assert_eq!(owner_token, waiter_token);
+        release_owner_tx.send(()).unwrap();
+        creator.join().unwrap();
+        waiter.join().unwrap();
+
+        let registry = registry.lock().unwrap();
+        assert!(!registry.by_key.contains_key(&key));
+        assert!(!registry.creating.contains_key(&key));
+    }
+
+    #[test]
+    fn binding_test_hook_rejects_replacement_until_invoked() {
+        let called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let called_by_hook = Arc::clone(&called);
+        let hook = Mutex::new(None);
+        set_binding_test_hook(&hook, "witness", move || {
+            called_by_hook.store(true, Ordering::SeqCst);
+        })
+        .unwrap();
+        assert!(matches!(
+            set_binding_test_hook(&hook, "witness", || {}),
+            Err(Error::Conflict(message)) if message == "bound SQLite witness test hook is already set"
+        ));
+        invoke_binding_test_hook(&hook);
+        assert!(called.load(Ordering::SeqCst));
+    }
+
     fn call_vfs_open(bound: &BoundDatabase, name: *const std::os::raw::c_char, flags: i32) -> i32 {
         unsafe {
             let vfs = bound.vfs_pointer();
@@ -2534,12 +2694,36 @@ mod tests {
     }
 
     fn call_vfs_access(bound: &BoundDatabase, name: &std::ffi::CStr) -> (i32, i32) {
+        let mut exists = -1;
+        let result =
+            call_vfs_access_with_flags(bound, name, ffi::SQLITE_ACCESS_EXISTS, &mut exists);
+        (result, exists)
+    }
+
+    fn call_vfs_access_with_flags(
+        bound: &BoundDatabase,
+        name: &std::ffi::CStr,
+        flags: i32,
+        out: *mut i32,
+    ) -> i32 {
         unsafe {
             let vfs = bound.vfs_pointer();
-            let mut exists = -1;
             let callback = (*vfs).xAccess.unwrap();
-            let result = callback(vfs, name.as_ptr(), ffi::SQLITE_ACCESS_EXISTS, &mut exists);
-            (result, exists)
+            callback(vfs, name.as_ptr(), flags, out)
+        }
+    }
+
+    #[cfg(unix)]
+    fn call_vfs_full_pathname(
+        bound: &BoundDatabase,
+        name: *const std::os::raw::c_char,
+        output: *mut std::os::raw::c_char,
+        output_size: i32,
+    ) -> i32 {
+        unsafe {
+            let vfs = bound.vfs_pointer();
+            let callback = (*vfs).xFullPathname.unwrap();
+            callback(vfs, name, output_size, output)
         }
     }
 
@@ -2549,6 +2733,362 @@ mod tests {
             let callback = (*vfs).xDelete.unwrap();
             callback(vfs, name.as_ptr(), 0)
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_syscall_hooks_resolve_bound_paths_and_delegate_unbound_paths() {
+        use std::{
+            ffi::CString,
+            os::{fd::FromRawFd, unix::ffi::OsStrExt},
+        };
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("syscall-witness.db3");
+        std::fs::write(&path, b"database").unwrap();
+        let target = DatabaseFileTarget::for_test_path(&path).unwrap();
+        let bound = BoundDatabase::acquire(&target).unwrap();
+        let leaf = path.file_name().unwrap().to_str().unwrap();
+        let directory_name = CString::new(format!("{RESERVED_PREFIX}{}", bound.token())).unwrap();
+        let leaf_name =
+            CString::new(format!("{RESERVED_PREFIX}{}/{}", bound.token(), leaf)).unwrap();
+        let sidecar_name = CString::new(format!(
+            "{RESERVED_PREFIX}{}/{}-journal",
+            bound.token(),
+            leaf
+        ))
+        .unwrap();
+        let bad_token = CString::new(format!("{RESERVED_PREFIX}not-a-token/{leaf}")).unwrap();
+        let invalid_remainder =
+            CString::new(format!("{RESERVED_PREFIX}{}/../escape", bound.token())).unwrap();
+        let overflowing_token =
+            CString::new(format!("{RESERVED_PREFIX}999999999999999999999999999999")).unwrap();
+
+        let directory_fd =
+            unsafe { unix_hooks::open_hook(directory_name.as_ptr(), libc::O_RDONLY, 0) };
+        assert!(directory_fd >= 0);
+        let directory = unsafe { std::fs::File::from_raw_fd(directory_fd) };
+        assert!(directory.metadata().unwrap().is_dir());
+        drop(directory);
+
+        let leaf_fd = unsafe { unix_hooks::open_hook(leaf_name.as_ptr(), libc::O_RDONLY, 0) };
+        assert!(leaf_fd >= 0);
+        let opened_leaf = unsafe { std::fs::File::from_raw_fd(leaf_fd) };
+        assert_eq!(
+            opened_leaf.metadata().unwrap().len(),
+            b"database".len() as u64
+        );
+        drop(opened_leaf);
+
+        for invalid in [&bad_token, &invalid_remainder, &overflowing_token] {
+            assert_eq!(
+                unsafe { unix_hooks::open_hook(invalid.as_ptr(), libc::O_RDONLY, 0) },
+                -1
+            );
+            assert_eq!(unix_hooks::last_errno(), libc::ENOENT);
+        }
+        assert_eq!(
+            unsafe { unix_hooks::open_hook(std::ptr::null(), libc::O_RDONLY, 0) },
+            -1
+        );
+        assert_eq!(unix_hooks::last_errno(), libc::EINVAL);
+
+        let mut directory_stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+        assert_eq!(
+            unsafe { unix_hooks::stat_hook(directory_name.as_ptr(), directory_stat.as_mut_ptr()) },
+            0
+        );
+        assert!(unsafe { directory_stat.assume_init() }.st_mode & libc::S_IFMT == libc::S_IFDIR);
+        let mut leaf_stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+        assert_eq!(
+            unsafe { unix_hooks::stat_hook(leaf_name.as_ptr(), leaf_stat.as_mut_ptr()) },
+            0
+        );
+        assert_eq!(
+            raw_libc_stat_identity(unsafe { &leaf_stat.assume_init() }),
+            target.identity()
+        );
+        assert_eq!(
+            unsafe { unix_hooks::stat_hook(leaf_name.as_ptr(), std::ptr::null_mut()) },
+            -1
+        );
+        assert_eq!(unix_hooks::last_errno(), libc::EINVAL);
+        assert_eq!(
+            unsafe { unix_hooks::stat_hook(invalid_remainder.as_ptr(), leaf_stat.as_mut_ptr()) },
+            -1
+        );
+        assert_eq!(unix_hooks::last_errno(), libc::ENOENT);
+
+        assert_eq!(
+            unsafe { unix_hooks::access_hook(directory_name.as_ptr(), libc::F_OK) },
+            0
+        );
+        assert_eq!(
+            unsafe { unix_hooks::access_hook(leaf_name.as_ptr(), libc::R_OK | libc::W_OK) },
+            0
+        );
+        assert_eq!(
+            unsafe { unix_hooks::access_hook(invalid_remainder.as_ptr(), libc::F_OK) },
+            -1
+        );
+        assert_eq!(unix_hooks::last_errno(), libc::ENOENT);
+        bound.fail_next_faccessat_with(libc::EACCES).unwrap();
+        assert_eq!(
+            unsafe { unix_hooks::access_hook(leaf_name.as_ptr(), libc::R_OK | libc::W_OK) },
+            -1
+        );
+        assert_eq!(unix_hooks::last_errno(), libc::EACCES);
+        assert_eq!(
+            unsafe { unix_hooks::access_hook(std::ptr::null(), libc::F_OK) },
+            -1
+        );
+        assert_eq!(unix_hooks::last_errno(), libc::EINVAL);
+
+        assert_eq!(
+            unsafe { unix_hooks::unlink_hook(directory_name.as_ptr()) },
+            -1
+        );
+        assert_eq!(unix_hooks::last_errno(), libc::EISDIR);
+        assert_eq!(unsafe { unix_hooks::unlink_hook(leaf_name.as_ptr()) }, -1);
+        assert_eq!(unix_hooks::last_errno(), libc::EPERM);
+        std::fs::write(path.with_file_name(format!("{leaf}-journal")), b"rollback").unwrap();
+        assert_eq!(unsafe { unix_hooks::unlink_hook(sidecar_name.as_ptr()) }, 0);
+        assert!(!path.with_file_name(format!("{leaf}-journal")).exists());
+        assert_eq!(
+            unsafe { unix_hooks::unlink_hook(invalid_remainder.as_ptr()) },
+            -1
+        );
+        assert_eq!(unix_hooks::last_errno(), libc::ENOENT);
+        assert_eq!(unsafe { unix_hooks::unlink_hook(std::ptr::null()) }, -1);
+        assert_eq!(unix_hooks::last_errno(), libc::EINVAL);
+
+        let unbound_path = root.path().join("plain-syscall-fallback");
+        std::fs::write(&unbound_path, b"fallback").unwrap();
+        let unbound_name = CString::new(unbound_path.as_os_str().as_bytes()).unwrap();
+        let unbound_fd = unsafe { unix_hooks::open_hook(unbound_name.as_ptr(), libc::O_RDONLY, 0) };
+        assert!(unbound_fd >= 0);
+        drop(unsafe { std::fs::File::from_raw_fd(unbound_fd) });
+        let mut unbound_stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+        assert_eq!(
+            unsafe { unix_hooks::stat_hook(unbound_name.as_ptr(), unbound_stat.as_mut_ptr()) },
+            0
+        );
+        assert_eq!(
+            unsafe { unix_hooks::access_hook(unbound_name.as_ptr(), libc::R_OK) },
+            0
+        );
+        assert_eq!(unsafe { unix_hooks::unlink_hook(unbound_name.as_ptr()) }, 0);
+        assert!(!unbound_path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_bound_vfs_access_and_full_path_callbacks_cover_sqlite_results() {
+        use std::ffi::{CStr, CString};
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("vfs-callbacks.db3");
+        std::fs::write(&path, b"database contents").unwrap();
+        let target = DatabaseFileTarget::for_test_path(&path).unwrap();
+        let bound = BoundDatabase::acquire(&target).unwrap();
+        let leaf = path.file_name().unwrap().to_str().unwrap();
+        let leaf_name =
+            CString::new(format!("{RESERVED_PREFIX}{}/{}", bound.token(), leaf)).unwrap();
+        let journal_name = CString::new(format!(
+            "{RESERVED_PREFIX}{}/{}-journal",
+            bound.token(),
+            leaf
+        ))
+        .unwrap();
+        let invalid_name =
+            CString::new(format!("{RESERVED_PREFIX}{}/../outside", bound.token())).unwrap();
+
+        let mut access_result = -1;
+        assert_eq!(
+            call_vfs_access_with_flags(
+                &bound,
+                &leaf_name,
+                ffi::SQLITE_ACCESS_READ,
+                &mut access_result,
+            ),
+            ffi::SQLITE_OK
+        );
+        assert_eq!(access_result, 1);
+        assert_eq!(
+            call_vfs_access_with_flags(
+                &bound,
+                &leaf_name,
+                ffi::SQLITE_ACCESS_READWRITE,
+                &mut access_result,
+            ),
+            ffi::SQLITE_OK
+        );
+        assert_eq!(access_result, 1);
+
+        bound.fail_next_faccessat_with(libc::EACCES).unwrap();
+        assert_eq!(
+            call_vfs_access_with_flags(
+                &bound,
+                &leaf_name,
+                ffi::SQLITE_ACCESS_READWRITE,
+                &mut access_result,
+            ),
+            ffi::SQLITE_OK
+        );
+        assert_eq!(access_result, 0);
+        bound.fail_next_faccessat_with(libc::EROFS).unwrap();
+        assert_eq!(
+            call_vfs_access_with_flags(
+                &bound,
+                &leaf_name,
+                ffi::SQLITE_ACCESS_READWRITE,
+                &mut access_result,
+            ),
+            ffi::SQLITE_OK
+        );
+        assert_eq!(access_result, 0);
+        assert_eq!(
+            call_vfs_access_with_flags(
+                &bound,
+                &leaf_name,
+                // Not one of EXISTS (0), READWRITE (1) or READ (2).
+                ffi::SQLITE_ACCESS_READWRITE | ffi::SQLITE_ACCESS_READ,
+                &mut access_result,
+            ),
+            ffi::SQLITE_IOERR_ACCESS
+        );
+        assert_eq!(
+            call_vfs_access_with_flags(
+                &bound,
+                &leaf_name,
+                ffi::SQLITE_ACCESS_EXISTS,
+                std::ptr::null_mut(),
+            ),
+            ffi::SQLITE_IOERR_ACCESS
+        );
+        assert_eq!(
+            call_vfs_access(&bound, &invalid_name).0,
+            ffi::SQLITE_IOERR_ACCESS
+        );
+
+        let journal_path = path.with_file_name(format!("{leaf}-journal"));
+        std::fs::File::create(&journal_path).unwrap();
+        assert_eq!(call_vfs_access(&bound, &journal_name), (ffi::SQLITE_OK, 0));
+        assert!(bound
+            .opened_names()
+            .iter()
+            .all(|name| name != &OsString::from(format!("{leaf}-journal"))));
+        std::fs::write(&journal_path, b"rollback").unwrap();
+        assert_eq!(call_vfs_access(&bound, &journal_name), (ffi::SQLITE_OK, 1));
+        std::fs::remove_file(&journal_path).unwrap();
+        assert_eq!(call_vfs_access(&bound, &journal_name), (ffi::SQLITE_OK, 0));
+
+        let too_small = [0 as std::os::raw::c_char; 1];
+        assert_eq!(
+            call_vfs_full_pathname(
+                &bound,
+                leaf_name.as_ptr(),
+                too_small.as_ptr().cast_mut(),
+                too_small.len() as i32,
+            ),
+            ffi::SQLITE_CANTOPEN
+        );
+        let mut reserved_output = vec![0 as std::os::raw::c_char; 512];
+        assert_eq!(
+            call_vfs_full_pathname(
+                &bound,
+                leaf_name.as_ptr(),
+                reserved_output.as_mut_ptr(),
+                reserved_output.len() as i32,
+            ),
+            ffi::SQLITE_OK
+        );
+        assert_eq!(
+            unsafe { CStr::from_ptr(reserved_output.as_ptr()) }.to_bytes(),
+            leaf_name.to_bytes()
+        );
+        let unprefixed_name = CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        let mut full_path = vec![0 as std::os::raw::c_char; 4096];
+        assert_eq!(
+            call_vfs_full_pathname(
+                &bound,
+                unprefixed_name.as_ptr(),
+                full_path.as_mut_ptr(),
+                full_path.len() as i32,
+            ),
+            ffi::SQLITE_OK
+        );
+        assert!(!unsafe { CStr::from_ptr(full_path.as_ptr()) }
+            .to_bytes()
+            .is_empty());
+        assert_eq!(
+            call_vfs_full_pathname(
+                &bound,
+                std::ptr::null(),
+                full_path.as_mut_ptr(),
+                full_path.len() as i32,
+            ),
+            ffi::SQLITE_CANTOPEN
+        );
+        assert_eq!(
+            call_vfs_full_pathname(
+                &bound,
+                unprefixed_name.as_ptr(),
+                std::ptr::null_mut(),
+                full_path.len() as i32,
+            ),
+            ffi::SQLITE_CANTOPEN
+        );
+        assert_eq!(
+            call_vfs_full_pathname(&bound, leaf_name.as_ptr(), full_path.as_mut_ptr(), 0),
+            ffi::SQLITE_CANTOPEN
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn malformed_reserved_names_are_refused_not_passed_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("names.db3");
+        std::fs::File::create(&path).unwrap();
+        let target = DatabaseFileTarget::for_test_path(&path).unwrap();
+        let bound = BoundDatabase::acquire(&target).unwrap();
+        let token = bound.token();
+        let names = [
+            format!("{RESERVED_PREFIX}/names.db3"),
+            format!("{RESERVED_PREFIX}abc/names.db3"),
+            format!("{RESERVED_PREFIX}{token}/"),
+            format!("{RESERVED_PREFIX}{token}/."),
+            format!("{RESERVED_PREFIX}{token}/.."),
+        ];
+        for name in names {
+            let name = CString::new(name).unwrap();
+            assert!(
+                matches!(
+                    unix_hooks::resolve(name.as_ptr()),
+                    unix_hooks::Resolution::Refused(libc::ENOENT)
+                ),
+                "{name:?} must be refused"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_refused_descriptor_of_an_unbound_inode_is_not_retained() {
+        use std::os::{fd::IntoRawFd, unix::fs::MetadataExt};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("never-bound.db3");
+        std::fs::File::create(&path).unwrap();
+        let metadata = std::fs::metadata(&path).unwrap();
+        let identity = (metadata.dev(), metadata.ino());
+        let fd = std::fs::File::open(&path).unwrap().into_raw_fd();
+
+        // No binding holds this inode, so this process holds no SQLite lock on it and the
+        // descriptor is closed at once instead of being quarantined.
+        retain_mismatched_descriptor(fd, identity);
+        assert!(quarantined_descriptor_fds(identity).is_empty());
     }
 
     #[test]
