@@ -112,5 +112,11 @@ disappear. Decision: `d-20260929-01`.
 | R9 | intermediate ancestor symlink to an "outside copy" | tauri-security | Skip | a copy cannot preserve the leaf and parent identities, which are both verified; moving the authorized directory keeps writes in the authorized directory; ancestor following is recorded design (2026-09-13 W1) |
 | R10 | download late-swap test cannot observe a pathname-derived parent | tests | Skip | the swap changes the leaf's ctime and `commit_download_artifact` refuses on the change stamp before insertion (observed: `Conflict("download artifact target changed before activation")`); a published handle through that window is unreachable |
 
+Final gates: the backend coverage ratchet went red (`app-infrastructure` functions 1937/2653 vs
+baseline 1925/2635) on six never-executed fail-closed error closures. Repaired in `62d5f01c`
+without touching a baseline: the four identical retained-parent reads became
+`ResolvedPath::parent_identity` (rule 11), and the refusals are pinned by
+`file_registration_without_an_observed_parent_is_refused`.
+
 Successor: the R7 finding (spool-filed 2026-09-29, id allocated at drain merge) owns the SQLite
 pathname-open residual; it builds on this binding and needs no issue from this record.
