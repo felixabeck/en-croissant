@@ -992,7 +992,7 @@ mod unix_hooks {
                     registration.binding.parent.as_raw_fd(),
                     c".".as_ptr(),
                     flags | libc::O_DIRECTORY | libc::O_NOFOLLOW,
-                    mode as libc::mode_t,
+                    mode as libc::c_uint,
                 )
             },
             Resolution::Child {
@@ -1029,7 +1029,7 @@ mod unix_hooks {
                         registration.binding.parent.as_raw_fd(),
                         name.as_ptr(),
                         flags | libc::O_NOFOLLOW,
-                        mode as libc::mode_t,
+                        mode as libc::c_uint,
                     )
                 };
                 if fd < 0 {
@@ -2254,14 +2254,20 @@ mod tests {
     #[test]
     fn bound_uri_encodes_special_leaf_bytes_and_refuses_non_utf8() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("percent%question?#.db3");
+        // `?` is not a legal Windows file-name character, so it is only exercised on unix.
+        let (leaf, encoded) = if cfg!(windows) {
+            ("percent%hash# .db3", "percent%25hash%23%20.db3")
+        } else {
+            ("percent%question?#.db3", "percent%25question%3F%23.db3")
+        };
+        let path = dir.path().join(leaf);
         std::fs::File::create(&path).unwrap();
         let target = DatabaseFileTarget::for_test_path(&path).unwrap();
         let bound = BoundDatabase::acquire(&target).unwrap();
         assert!(format!("{bound:?}").contains(&bound.token().to_string()));
         let uri = bound.uri(SqliteMode::ReadWrite).unwrap();
         assert!(uri.starts_with(RESERVED_URI_PREFIX));
-        assert!(uri.contains("percent%25question%3F%23.db3"));
+        assert!(uri.contains(encoded), "{uri}");
         assert!(uri.contains("&vfs=chessfable-bound-"));
         rusqlite::Connection::open_with_flags(
             &uri,

@@ -2858,17 +2858,26 @@ mod bound_sqlite_witnesses {
         }
 
         fn restore(&mut self) {
+            self.try_restore().expect("restore authorized parent");
+        }
+
+        fn try_restore(&mut self) -> std::io::Result<()> {
             let parent = self.path.parent().expect("database parent");
             if self.held_parent.exists() {
                 let _ = fs::remove_dir_all(parent);
-                fs::rename(&self.held_parent, parent).expect("restore authorized parent");
+                fs::rename(&self.held_parent, parent)?;
             }
+            Ok(())
         }
     }
 
     impl Drop for ParentSwapGuard {
+        // Never panics: a panic here while a failing test unwinds aborts the whole test binary
+        // and hides every result (Windows refuses to rename a directory with open files in it).
         fn drop(&mut self) {
-            self.restore();
+            if let Err(error) = self.try_restore() {
+                eprintln!("could not restore the authorized parent: {error}");
+            }
         }
     }
 
@@ -2900,16 +2909,25 @@ mod bound_sqlite_witnesses {
         }
 
         fn restore(&mut self) {
+            self.try_restore()
+                .expect("restore authorized database leaf");
+        }
+
+        fn try_restore(&mut self) -> std::io::Result<()> {
             if self.backup.exists() {
                 let _ = fs::remove_file(&self.path);
-                fs::rename(&self.backup, &self.path).expect("restore authorized database leaf");
+                fs::rename(&self.backup, &self.path)?;
             }
+            Ok(())
         }
     }
 
     impl Drop for LeafSwapGuard {
+        // Never panics, for the same reason as `ParentSwapGuard`.
         fn drop(&mut self) {
-            self.restore();
+            if let Err(error) = self.try_restore() {
+                eprintln!("could not restore the authorized database leaf: {error}");
+            }
         }
     }
 
