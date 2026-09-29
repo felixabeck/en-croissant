@@ -11855,7 +11855,7 @@ Rejected: a longer WebDriver timeout, and a full-FEN dedup key.
 
 ### `pool_parent_swap_keeps_wal_and_shm_in_held_parent_and_unlinks_them_there` fails intermittently on an idle machine
 
-* **ID:** f-20260929-07 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260929-07 · **Status:** handled · **Area:** db-search · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `src-tauri/src/db/repository.rs` test `bound_sqlite_witnesses::pool_parent_swap_keeps_wal_and_shm_in_held_parent_and_unlinks_them_there` (assertion at line 3052, `!sidecar_listing(&swap.held_parent, "pool.db3")…any(-wal|-shm)`), introduced by `9ea21bc0` (2026-09-29).
 * **Defect:** measured 2026-09-29 on atlas against the current `master` test binary: run alone with `--exact`, the test failed 5 of 30 serial runs on an otherwise idle machine and 15 of 72 when 24 copies ran at once. The failing assertion is the post-restore expectation that the held parent no longer lists `pool.db3-wal`/`-shm`; the sidecars are sometimes still present when the assertion samples the directory, so either their unlink is asynchronous to the observation (pool connection drop on another thread) or the code under test can leave them behind. It first surfaced as a red `backend-coverage` gate while `backend-test` ran beside it.
 * **Why it matters:** an intermittently red backend gate on every push that touches `src-tauri/**`, locally and on CI, and a test that cannot distinguish a real sidecar leak from a timing race — the property it guards (sidecars are unlinked in the held parent) is exactly what `f-20260929-01` promised.
