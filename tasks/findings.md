@@ -11888,3 +11888,16 @@ Rejected: a longer WebDriver timeout, and a full-FEN dedup key.
 * **Proposed fix:** a design question in a persisted-state area (read `.claude/rules/persisted-state.md`): move the load/repair out of module evaluation into an explicitly invoked (or lazily memoised) initialiser so the work runs inside tests rather than at import, keeping hydration semantics identical; compare Stryker's static-mutant count and package time before/after. Not a Stryker option change: `ignoreStatic` would stop measuring those mutants and weaken the gate.
 * **Open question:** where does workspace hydration run once the module no longer does it at import — an explicit initialiser called from app startup, or a lazily memoised first read of the atom — and how is the same-tick semantics that current callers rely on preserved?
 * **Found by:** Claude Code, ChessFable push-gate speed investigation 2026-09-29 (Stryker concurrency sweep, logs in that session's scratchpad).
+
+---
+
+## 2026-09-29 — filed through the inbox spool
+
+### Every host failure to open an SQLite connection is reported as invalid input
+
+* **ID:** f-20260929-10 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src-tauri/src/error.rs:378` `map_sqlite_establish`; callers `src-tauri/src/db/repository.rs:514` (`read_revision`) and the pool's establish path via `classify_bound_open_error_result` (`repository.rs:1099`), which passes the original error through when neither the binding's refusal counter nor the authority probe reports a conflict.
+* **Defect:** every establish failure that is not `SQLITE_NOTADB` becomes `Error::InvalidInput("could not open SQLite database: …")`, so a host-side failure — `EACCES`, `EMFILE`, `ENOSPC`, an I/O error, or (after `f-20260929-06`) a failed `/proc/self/fd` reopen on Linux — carries the same variant as a malformed database. The SQLite message is appended, but the variant is what callers and the renderer classification (`f-20260830-08`) key on.
+* **Why it matters:** the user is told the input is invalid when the file is fine and the host refused the open, and any retry or recovery keyed on the variant treats a transient host failure as permanent bad input.
+* **Proposed fix:** map establish failures by SQLite's extended/system error (`sqlite3_system_errno` or the `SQLITE_CANTOPEN`/`SQLITE_IOERR` family) to `Error::Io` for host failures, keep `InvalidInput` for `NOTADB` and malformed-schema cases; check every caller's handling of the two variants before changing it.
+* **Found by:** Codex `review-error-handling`, plan review round 1 of the `f-20260929-06` build run, 2026-09-29 (Claude Code orchestrator session d4edd5c8-b834-46cd-aec7-058afcc03b66). Related: `f-20260830-08` (renderer error classification).
