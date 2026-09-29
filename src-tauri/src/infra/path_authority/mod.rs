@@ -801,9 +801,9 @@ impl DatabaseFileTarget {
         self.identity
     }
 
-    /// Returns the canonical pathname the identity was validated against. SQLite's pathname-only
-    /// open, in-memory keys, and logging consume this value; create, unlink, and mmap use the
-    /// retained parent descriptor and leaf instead of reopening the pathname.
+    /// Returns the canonical pathname the identity was validated against. In-memory keys and
+    /// logging consume this value; SQLite opens go through `db::bound_sqlite`, and create, unlink
+    /// and mmap use the retained parent descriptor and leaf instead of reopening the pathname.
     pub(crate) fn path(&self) -> &Path {
         &self.path
     }

@@ -3047,6 +3047,32 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn a_failing_sidecar_stat_is_an_access_error_not_absence() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("authorized");
+        std::fs::create_dir(&parent).unwrap();
+        let path = parent.join("stat-error.db3");
+        std::fs::File::create(&path).unwrap();
+        let target = DatabaseFileTarget::for_test_path(&path).unwrap();
+        let bound = BoundDatabase::acquire(&target).unwrap();
+        let journal_name = CString::new(format!(
+            "{RESERVED_PREFIX}{}/stat-error.db3-journal",
+            bound.token()
+        ))
+        .unwrap();
+
+        // Without search permission on the held directory, fstatat fails with EACCES; an
+        // "absent" answer here would let SQLite skip a hot journal's rollback.
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let result = call_vfs_access(&bound, &journal_name);
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(result.0, ffi::SQLITE_IOERR_ACCESS);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn malformed_reserved_names_are_refused_not_passed_through() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("names.db3");
