@@ -513,16 +513,13 @@ impl DatabaseRepository {
         let connection =
             SqliteConnection::establish(&uri).map_err(crate::error::map_sqlite_establish);
         let mut connection = match connection {
-            Ok(connection) => BoundSqliteConnection {
-                connection,
-                _binding: bound.clone(),
-            },
+            Ok(connection) => connection,
             Err(error) => {
                 return Err(self.classify_bound_open_error(target, &bound, refusal_count, error));
             }
         };
         let revision = super::sqlite_cancellation::with_sqlite_cancellation(cancellation, || {
-            read_data_revision(&mut connection.connection)
+            read_data_revision(&mut connection)
         })?;
         #[cfg(test)]
         run_test_hook(TestHook::AfterReadRevision, target.path());
@@ -1009,11 +1006,11 @@ impl DatabaseRepository {
         if refused_identity {
             run_test_hook(TestHook::BoundRefusal, target.path());
         }
-        if refused_identity || matches!(target.open_current(), Err(Error::Conflict(_))) {
-            Error::Conflict("database changed after capability resolution".into())
-        } else {
-            error
-        }
+        classify_bound_open_error_result(
+            refused_identity,
+            || target.open_current().map(drop),
+            error,
+        )
     }
 
     fn retire_after_probe_conflict(
@@ -1091,6 +1088,23 @@ fn entry_key(target: &crate::infra::path_authority::DatabaseFileTarget) -> Resul
         parent_identity: crate::infra::path_authority::opened_file_identity(target.parent())?,
         path: target.path().to_owned(),
     })
+}
+
+fn classify_bound_open_error_result(
+    refused_identity: bool,
+    open_current: impl FnOnce() -> Result<(), Error>,
+    original: Error,
+) -> Error {
+    if refused_identity {
+        return Error::Conflict("database changed after capability resolution".into());
+    }
+    match open_current() {
+        Err(Error::Conflict(_)) => {
+            Error::Conflict("database changed after capability resolution".into())
+        }
+        Err(error) => error,
+        Ok(()) => original,
+    }
 }
 
 #[derive(QueryableByName)]
@@ -2803,7 +2817,7 @@ mod bound_sqlite_witnesses {
         db::bound_sqlite::{BoundDatabase, SqliteMode},
         infra::path_authority::database_test_support::replace_parent_with_same_inode_hard_link,
     };
-    use diesel::{connection::SimpleConnection as _, Connection as _};
+    use diesel::connection::SimpleConnection as _;
     use rusqlite::Connection;
     use std::{
         collections::BTreeSet,
@@ -3356,8 +3370,29 @@ mod bound_sqlite_witnesses {
                 permission_error,
             );
             fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-            assert!(!matches!(result, Err(Error::Conflict(_))));
-            assert!(matches!(classified, Error::Io(_)));
+            assert!(matches!(
+                result,
+                Err(Error::Io(source))
+                    if source.kind() == std::io::ErrorKind::PermissionDenied
+            ));
+            assert!(matches!(
+                classified,
+                Error::Io(source) if source.kind() == std::io::ErrorKind::PermissionDenied
+            ));
+
+            let probed_io_error = classify_bound_open_error_result(
+                false,
+                || {
+                    Err(Error::Io(Box::new(std::io::Error::from(
+                        std::io::ErrorKind::PermissionDenied,
+                    ))))
+                },
+                Error::InvalidInput("less specific SQLite establish failure".into()),
+            );
+            assert!(matches!(
+                probed_io_error,
+                Error::Io(source) if source.kind() == std::io::ErrorKind::PermissionDenied
+            ));
         }
     }
 
@@ -3484,33 +3519,42 @@ mod bound_sqlite_witnesses {
     }
 
     #[test]
-    fn sqlite_connection_wrapper_keeps_the_vfs_registered_until_connection_close() {
+    fn pooled_connection_keeps_the_vfs_registered_until_connection_close() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("binding-lifetime.db3");
         seed_database(&path, 3, "WAL");
         let target = test_target(&path);
         let bound = BoundDatabase::acquire(&target).unwrap();
         let token = bound.token();
-        let connection =
-            SqliteConnection::establish(&bound.uri(SqliteMode::ReadWrite).unwrap()).unwrap();
-        let mut wrapped = BoundSqliteConnection {
-            connection,
-            _binding: bound.clone(),
-        };
+        let uri = bound.uri(SqliteMode::ReadWrite).unwrap();
+        let pool = Pool::builder()
+            .max_size(MAX_CONNECTIONS_PER_DATABASE)
+            .min_idle(Some(0))
+            .connection_timeout(POOL_CONNECTION_TIMEOUT)
+            .connection_customizer(Box::new(ConnectionOptions))
+            .build(BoundConnectionManager {
+                database: bound.clone(),
+                uri,
+            })
+            .unwrap();
+        let mut pooled = pool.get().unwrap();
         drop(bound);
-        wrapped
+        drop(pool);
+        pooled
             .batch_execute(
-                "CREATE TABLE Lifetime (Value INTEGER); INSERT INTO Lifetime VALUES (1);",
+                "PRAGMA wal_autocheckpoint = 0;\
+                 CREATE TABLE Lifetime (Value INTEGER);\
+                 INSERT INTO Lifetime VALUES (1);\
+                 INSERT INTO Lifetime VALUES (2);",
             )
             .unwrap();
-        wrapped
-            .batch_execute("INSERT INTO Lifetime VALUES (2);")
-            .unwrap();
-        drop(wrapped);
+        assert!(
+            sidecar_listing(path.parent().unwrap(), "binding-lifetime.db3")
+                .contains("binding-lifetime.db3-wal")
+        );
+        drop(pooled);
         let name = std::ffi::CString::new(format!("chessfable-bound-{token}")).unwrap();
         assert!(unsafe { rusqlite::ffi::sqlite3_vfs_find(name.as_ptr()) }.is_null());
         assert!(sidecar_listing(path.parent().unwrap(), "binding-lifetime.db3").is_empty());
-        let replacement = BoundDatabase::acquire(&target).unwrap();
-        assert_ne!(replacement.token(), token);
     }
 }

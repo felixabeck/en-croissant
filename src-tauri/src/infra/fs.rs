@@ -1093,6 +1093,10 @@ mod unix {
         identity_from_parts(stat.st_dev, stat.st_ino)
     }
 
+    pub(crate) fn raw_libc_stat_identity(stat: &libc::stat) -> (u64, u64) {
+        identity_from_parts(stat.st_dev, stat.st_ino)
+    }
+
     fn directory_removed_error() -> Error {
         Error::Io(Box::new(std::io::Error::new(
             std::io::ErrorKind::NotFound,
@@ -1223,7 +1227,9 @@ mod unix {
 
     #[cfg(test)]
     mod identity_tests {
-        use super::{identity_from_parts, raw_mode_from, raw_stat_identity};
+        use super::{
+            identity_from_parts, raw_libc_stat_identity, raw_mode_from, raw_stat_identity,
+        };
         use crate::infra::blocking::source_scan::{braced_body, normalise, Literals};
 
         #[cfg(target_os = "macos")]
@@ -1250,9 +1256,43 @@ mod unix {
         }
 
         #[test]
+        fn raw_libc_stat_identity_matches_file_metadata() {
+            use std::os::fd::AsRawFd;
+            use std::os::unix::fs::MetadataExt;
+
+            let temp = tempfile::tempdir().expect("tempdir");
+            let path = temp.path().join("libc-stat-file");
+            std::fs::write(&path, b"file").expect("file");
+            let file = std::fs::File::open(&path).expect("open file");
+            let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+            assert_eq!(
+                unsafe { libc::fstat(file.as_raw_fd(), stat.as_mut_ptr()) },
+                0
+            );
+            let stat = unsafe { stat.assume_init() };
+            let metadata = file.metadata().expect("metadata");
+            assert_eq!(
+                raw_libc_stat_identity(&stat),
+                (metadata.dev(), metadata.ino())
+            );
+        }
+
+        #[test]
         fn raw_stat_identity_body_is_the_plain_call() {
             let source = include_str!("fs.rs");
             let body = braced_body(source, "pub(crate) fn raw_stat_identity(");
+            let compact: String = normalise(&source[body], Literals::Blank)
+                .chars()
+                .filter(|character| !character.is_whitespace())
+                .collect();
+            let expected = ["{identity_from_parts(stat.st", "_dev,stat.st_ino)}"].concat();
+            assert_eq!(compact, expected);
+        }
+
+        #[test]
+        fn raw_libc_stat_identity_body_is_the_plain_call() {
+            let source = include_str!("fs.rs");
+            let body = braced_body(source, "pub(crate) fn raw_libc_stat_identity(");
             let compact: String = normalise(&source[body], Literals::Blank)
                 .chars()
                 .filter(|character| !character.is_whitespace())
@@ -1307,17 +1347,42 @@ mod unix {
             }
             assert_eq!(
                 occurrences.len(),
-                1,
+                2,
                 "raw device occurrences: {occurrences:?}"
             );
             let fs_source = include_str!("fs.rs");
-            let body = braced_body(fs_source, "pub(crate) fn raw_stat_identity(");
-            let offset = normalise(fs_source, Literals::Blank)
-                .find(&needle)
-                .expect("raw device occurrence");
-            assert!(
-                body.contains(&offset),
-                "raw device access is outside helper"
+            let normalised = normalise(fs_source, Literals::Blank);
+            let offsets: Vec<_> = normalised
+                .match_indices(&needle)
+                .map(|(offset, _)| offset)
+                .collect();
+            for helper in ["raw_stat_identity", "raw_libc_stat_identity"] {
+                let body = braced_body(fs_source, &format!("pub(crate) fn {helper}("));
+                let in_body: Vec<_> = offsets
+                    .iter()
+                    .copied()
+                    .filter(|offset| body.contains(offset))
+                    .collect();
+                assert_eq!(
+                    in_body.len(),
+                    1,
+                    "raw device access must occur exactly once inside {helper}"
+                );
+            }
+            assert_eq!(
+                offsets.len(),
+                offsets
+                    .iter()
+                    .filter(|offset| {
+                        ["raw_stat_identity", "raw_libc_stat_identity"]
+                            .iter()
+                            .any(|helper| {
+                                braced_body(fs_source, &format!("pub(crate) fn {helper}("))
+                                    .contains(offset)
+                            })
+                    })
+                    .count(),
+                "raw device access is outside the identity helpers"
             );
         }
     }
@@ -4023,7 +4088,9 @@ pub(crate) use unix::{
     RemovalInjector,
 };
 #[cfg(unix)]
-pub(crate) use unix::{raw_mode_from, raw_stat_identity, MAX_REMOVE_TREE_DEPTH};
+pub(crate) use unix::{
+    raw_libc_stat_identity, raw_mode_from, raw_stat_identity, MAX_REMOVE_TREE_DEPTH,
+};
 // Not stale, and deliberately not a blanket allow: on Windows every *production* consumer of the
 // depth bound lives inside `mod win` itself, because `fs.rs`'s `MAX_ARCHIVE_PATH_COMPONENTS` is
 // still `#[cfg(unix)]` (archive extraction is not ported). The re-export keeps one crate-level

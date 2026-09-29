@@ -7,6 +7,7 @@ use std::{
 };
 use windows_sys::{
     core::BOOL,
+    Wdk::Storage::FileSystem::{FILE_CREATE, FILE_OPEN, FILE_OPEN_IF},
     Win32::{
         Foundation::{
             GetLastError, SetLastError, ERROR_ACCESS_DENIED, ERROR_FILE_INVALID,
@@ -16,8 +17,10 @@ use windows_sys::{
         Security::SECURITY_ATTRIBUTES,
         Storage::FileSystem::{
             FileDispositionInfo, GetFileInformationByHandle, SetFileInformationByHandle,
-            BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
-            FILE_SHARE_READ, FILE_SHARE_WRITE, INVALID_FILE_ATTRIBUTES, WIN32_FILE_ATTRIBUTE_DATA,
+            BY_HANDLE_FILE_INFORMATION, CREATE_NEW, FILE_ATTRIBUTE_NORMAL,
+            FILE_ATTRIBUTE_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
+            INVALID_FILE_ATTRIBUTES, OPEN_ALWAYS, OPEN_EXISTING, SYNCHRONIZE,
+            WIN32_FILE_ATTRIBUTE_DATA,
         },
     },
 };
@@ -179,6 +182,13 @@ pub(super) fn resolve_utf8(path: *const std::ffi::c_char) -> Resolution {
     }
 }
 
+pub(super) fn is_own_child(token: u64, path: *const std::ffi::c_char) -> bool {
+    matches!(
+        resolve_utf8(path),
+        Resolution::Child { registration, .. } if registration.token == token
+    )
+}
+
 fn error_code(error: &Error) -> u32 {
     match error {
         Error::Io(source) => match source.raw_os_error() {
@@ -200,7 +210,7 @@ fn open_relative(
         &registration.binding.parent,
         name,
         creation_disposition,
-        desired_access,
+        desired_access | SYNCHRONIZE,
         std::ptr::null(),
         false,
         allow_delete_share,
@@ -224,13 +234,7 @@ pub(super) fn query_attributes(
     name: &std::ffi::OsStr,
     is_leaf: bool,
 ) -> Result<BY_HANDLE_FILE_INFORMATION, u32> {
-    let file = open_relative(
-        registration,
-        name,
-        1, // FILE_OPEN
-        GENERIC_READ,
-        true,
-    )?;
+    let file = open_relative(registration, name, FILE_OPEN, GENERIC_READ, true)?;
     if is_leaf && !identity_matches(registration, &file)? {
         return Err(report_identity_refusal(registration));
     }
@@ -311,7 +315,10 @@ unsafe fn create_file_hook_inner(
         } => {
             let valid_access =
                 desired_access == GENERIC_READ || desired_access == GENERIC_READ | GENERIC_WRITE;
-            let valid_disposition = matches!(creation_disposition, 1 | 3 | 4);
+            let valid_disposition = matches!(
+                creation_disposition,
+                CREATE_NEW | OPEN_EXISTING | OPEN_ALWAYS
+            );
             if !valid_access
                 || share_mode != FILE_SHARE_READ | FILE_SHARE_WRITE
                 || !security_attributes.is_null()
@@ -323,9 +330,9 @@ unsafe fn create_file_hook_inner(
                 return INVALID_HANDLE_VALUE;
             }
             let nt_disposition = match creation_disposition {
-                3 => 1, // OPEN_EXISTING -> FILE_OPEN
-                4 => 3, // OPEN_ALWAYS -> FILE_OPEN_IF
-                1 => 2, // CREATE_NEW -> FILE_CREATE
+                OPEN_EXISTING => FILE_OPEN,
+                OPEN_ALWAYS => FILE_OPEN_IF,
+                CREATE_NEW => FILE_CREATE,
                 _ => {
                     unsafe { SetLastError(ERROR_INVALID_PARAMETER) };
                     return INVALID_HANDLE_VALUE;
@@ -404,7 +411,7 @@ unsafe fn delete_file_hook_inner(path: *const u16) -> BOOL {
             let file = match open_relative(
                 &registration,
                 &name,
-                1,
+                FILE_OPEN,
                 windows_sys::Win32::Storage::FileSystem::DELETE,
                 true,
             ) {

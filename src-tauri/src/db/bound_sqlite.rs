@@ -5,8 +5,6 @@
 //! SQLite by a plain pathname under `/<chessfable-bound>/`; the only remaining
 //! plain-path production open is the private puzzle snapshot in the temp dir.
 
-#![allow(unexpected_cfgs)]
-
 use std::{
     collections::HashMap,
     ffi::{CString, OsStr, OsString},
@@ -19,6 +17,8 @@ use std::{
 
 use rusqlite::ffi;
 
+#[cfg(unix)]
+use crate::infra::fs::raw_libc_stat_identity;
 use crate::{
     error::Error,
     infra::path_authority::{opened_file_identity, DatabaseFileTarget},
@@ -45,6 +45,13 @@ type VfsFullPathnameFn = unsafe extern "C" fn(
     std::os::raw::c_int,
     *mut std::os::raw::c_char,
 ) -> std::os::raw::c_int;
+type VfsAccessFn = unsafe extern "C" fn(
+    *mut ffi::sqlite3_vfs,
+    *const std::os::raw::c_char,
+    std::os::raw::c_int,
+    *mut std::os::raw::c_int,
+) -> std::os::raw::c_int;
+type ResolveOwnNameFn = fn(u64, *const std::os::raw::c_char) -> bool;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum SqliteMode {
@@ -355,13 +362,21 @@ enum InstallState {
 
 static INSTALL_STATE: OnceLock<InstallState> = OnceLock::new();
 
-#[ctor::ctor]
-fn install_hooks_at_load() {
-    let state = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(install_hooks)) {
-        Ok(Ok(())) => InstallState::Installed,
-        Ok(Err(_)) | Err(_) => InstallState::Failed("bound SQLite hooks could not be installed"),
-    };
-    let _ = INSTALL_STATE.set(state);
+// `ctor` emits a `cfg(used_linker)` inside its expansion, which is outside this crate's cfg list.
+#[allow(unexpected_cfgs)]
+mod load_time_constructor {
+    use super::{install_hooks, InstallState, INSTALL_STATE};
+
+    #[ctor::ctor]
+    fn install_hooks_at_load() {
+        let state = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(install_hooks)) {
+            Ok(Ok(())) => InstallState::Installed,
+            Ok(Err(_)) | Err(_) => {
+                InstallState::Failed("bound SQLite hooks could not be installed")
+            }
+        };
+        let _ = INSTALL_STATE.set(state);
+    }
 }
 
 fn ensure_hooks_installed() -> Result<(), Error> {
@@ -374,21 +389,11 @@ fn ensure_hooks_installed() -> Result<(), Error> {
     }
 }
 
-#[cfg(unix)]
 #[repr(C)]
 struct BoundVfs {
     base: ffi::sqlite3_vfs,
     token: u64,
-    default_open: Option<VfsOpenFn>,
-    default_delete: Option<VfsDeleteFn>,
-    default_full_pathname: Option<VfsFullPathnameFn>,
-}
-
-#[cfg(windows)]
-#[repr(C)]
-struct BoundVfs {
-    base: ffi::sqlite3_vfs,
-    token: u64,
+    resolve_own_name: ResolveOwnNameFn,
     default_open: Option<VfsOpenFn>,
     default_delete: Option<VfsDeleteFn>,
     default_full_pathname: Option<VfsFullPathnameFn>,
@@ -402,7 +407,26 @@ fn create_registration(
     ensure_hooks_installed()?;
     let name = CString::new(format!("chessfable-bound-{token}"))
         .map_err(|_| Error::Conflict("bound SQLite VFS name was invalid".into()))?;
-    let vfs_pointer = unsafe { register_vfs(token, &name) }?;
+    #[cfg(unix)]
+    let vfs_pointer = unsafe {
+        register_bound_vfs(
+            token,
+            &name,
+            c"unix",
+            unix_hooks::is_own_child,
+            unix_vfs::vfs_access,
+        )
+    }?;
+    #[cfg(windows)]
+    let vfs_pointer = unsafe {
+        register_bound_vfs(
+            token,
+            &name,
+            c"win32",
+            windows_hooks::is_own_child,
+            windows_vfs::vfs_access,
+        )
+    }?;
     Ok(Arc::new(Registration {
         token,
         key,
@@ -410,6 +434,151 @@ fn create_registration(
         vfs_name: Some(name),
         vfs_pointer: vfs_pointer as usize,
     }))
+}
+
+unsafe fn register_bound_vfs(
+    token: u64,
+    name: &CString,
+    default_name: &std::ffi::CStr,
+    resolve_own_name: ResolveOwnNameFn,
+    access: VfsAccessFn,
+) -> Result<*mut ffi::sqlite3_vfs, Error> {
+    let original = unsafe { ffi::sqlite3_vfs_find(default_name.as_ptr()) };
+    if original.is_null() {
+        return Err(Error::Conflict("SQLite platform VFS is unavailable".into()));
+    }
+    let default = unsafe { *original };
+    let mut base = default;
+    base.pNext = std::ptr::null_mut();
+    base.zName = name.as_ptr();
+    base.xOpen = Some(bound_vfs_open);
+    base.xDelete = Some(bound_vfs_delete);
+    base.xAccess = Some(access);
+    base.xFullPathname = Some(bound_vfs_full_pathname);
+    let vfs = Box::new(BoundVfs {
+        base,
+        token,
+        resolve_own_name,
+        default_open: default.xOpen,
+        default_delete: default.xDelete,
+        default_full_pathname: default.xFullPathname,
+    });
+    let pointer = Box::into_raw(vfs);
+    let rc = unsafe { ffi::sqlite3_vfs_register(pointer.cast(), 0) };
+    if rc != ffi::SQLITE_OK {
+        unsafe { drop(Box::from_raw(pointer)) };
+        return Err(Error::Conflict(format!(
+            "SQLite bound VFS registration failed with code {rc}"
+        )));
+    }
+    Ok(pointer.cast())
+}
+
+unsafe extern "C" fn bound_vfs_open(
+    vfs: *mut ffi::sqlite3_vfs,
+    name: *const std::os::raw::c_char,
+    file: *mut ffi::sqlite3_file,
+    flags: std::os::raw::c_int,
+    out_flags: *mut std::os::raw::c_int,
+) -> std::os::raw::c_int {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+        bound_vfs_open_inner(vfs, name, file, flags, out_flags)
+    })) {
+        Ok(result) => result,
+        Err(_) => ffi::SQLITE_CANTOPEN,
+    }
+}
+
+unsafe fn bound_vfs_open_inner(
+    vfs: *mut ffi::sqlite3_vfs,
+    name: *const std::os::raw::c_char,
+    file: *mut ffi::sqlite3_file,
+    flags: std::os::raw::c_int,
+    out_flags: *mut std::os::raw::c_int,
+) -> std::os::raw::c_int {
+    if flags & ffi::SQLITE_OPEN_SUPER_JOURNAL != 0 {
+        return ffi::SQLITE_CANTOPEN;
+    }
+    let Some(bound_vfs) = (unsafe { vfs.cast::<BoundVfs>().as_ref() }) else {
+        return ffi::SQLITE_CANTOPEN;
+    };
+    if !name.is_null() && !(bound_vfs.resolve_own_name)(bound_vfs.token, name) {
+        return ffi::SQLITE_CANTOPEN;
+    }
+    let Some(open) = bound_vfs.default_open else {
+        return ffi::SQLITE_CANTOPEN;
+    };
+    unsafe { open(vfs, name, file, flags, out_flags) }
+}
+
+unsafe extern "C" fn bound_vfs_delete(
+    vfs: *mut ffi::sqlite3_vfs,
+    name: *const std::os::raw::c_char,
+    sync_dir: std::os::raw::c_int,
+) -> std::os::raw::c_int {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+        bound_vfs_delete_inner(vfs, name, sync_dir)
+    })) {
+        Ok(result) => result,
+        Err(_) => ffi::SQLITE_IOERR_DELETE,
+    }
+}
+
+unsafe fn bound_vfs_delete_inner(
+    vfs: *mut ffi::sqlite3_vfs,
+    name: *const std::os::raw::c_char,
+    sync_dir: std::os::raw::c_int,
+) -> std::os::raw::c_int {
+    let Some(bound_vfs) = (unsafe { vfs.cast::<BoundVfs>().as_ref() }) else {
+        return ffi::SQLITE_IOERR_DELETE;
+    };
+    if !(bound_vfs.resolve_own_name)(bound_vfs.token, name) {
+        return ffi::SQLITE_IOERR_DELETE;
+    }
+    let Some(delete) = bound_vfs.default_delete else {
+        return ffi::SQLITE_IOERR_DELETE;
+    };
+    unsafe { delete(vfs, name, sync_dir) }
+}
+
+unsafe extern "C" fn bound_vfs_full_pathname(
+    vfs: *mut ffi::sqlite3_vfs,
+    name: *const std::os::raw::c_char,
+    output_size: std::os::raw::c_int,
+    output: *mut std::os::raw::c_char,
+) -> std::os::raw::c_int {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+        bound_vfs_full_pathname_inner(vfs, name, output_size, output)
+    })) {
+        Ok(result) => result,
+        Err(_) => ffi::SQLITE_CANTOPEN,
+    }
+}
+
+unsafe fn bound_vfs_full_pathname_inner(
+    vfs: *mut ffi::sqlite3_vfs,
+    name: *const std::os::raw::c_char,
+    output_size: std::os::raw::c_int,
+    output: *mut std::os::raw::c_char,
+) -> std::os::raw::c_int {
+    if name.is_null() || output.is_null() || output_size <= 0 {
+        return ffi::SQLITE_CANTOPEN;
+    }
+    let bytes = unsafe { std::ffi::CStr::from_ptr(name) }.to_bytes();
+    if bytes.starts_with(RESERVED_PREFIX.as_bytes()) {
+        if bytes.len() + 1 > output_size as usize {
+            return ffi::SQLITE_CANTOPEN;
+        }
+        unsafe { std::ptr::copy_nonoverlapping(name, output, bytes.len() + 1) };
+        return ffi::SQLITE_OK;
+    }
+    let Some(bound_vfs) = (unsafe { vfs.cast::<BoundVfs>().as_ref() }) else {
+        return ffi::SQLITE_CANTOPEN;
+    };
+    match bound_vfs.default_full_pathname {
+        Some(full_pathname) => unsafe { full_pathname(vfs, name, output_size, output) },
+        None => ffi::SQLITE_CANTOPEN,
+    }
 }
 
 #[cfg(unix)]
@@ -556,11 +725,11 @@ mod unix_hooks {
         Ok(())
     }
 
-    // libc's stat fields have different integer widths across Unix targets. These casts normalize
-    // the FFI fields to the u64 identity returned by opened_file_identity on every target.
-    #[allow(clippy::unnecessary_cast)]
-    pub(super) fn leaf_identity_matches(registration: &Registration, stat: &libc::stat) -> bool {
-        (stat.st_dev as u64, stat.st_ino as u64) == registration.binding.identity
+    pub(super) fn is_own_child(token: u64, path: *const c_char) -> bool {
+        matches!(
+            resolve(path),
+            Resolution::Child { registration, .. } if registration.token == token
+        )
     }
 
     fn set_errno_after_panic() -> c_int {
@@ -600,6 +769,27 @@ mod unix_hooks {
                 name,
                 is_leaf,
             } => {
+                if is_leaf {
+                    // Refuse a swapped leaf before opening it: closing a descriptor on another
+                    // inode would release every POSIX lock this process holds on that inode.
+                    // The check after the open still covers a swap between the two calls.
+                    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+                    let result = unsafe {
+                        libc::fstatat(
+                            registration.binding.parent.as_raw_fd(),
+                            name.as_ptr(),
+                            stat.as_mut_ptr(),
+                            libc::AT_SYMLINK_NOFOLLOW,
+                        )
+                    };
+                    if result == 0
+                        && raw_libc_stat_identity(unsafe { &stat.assume_init() })
+                            != registration.binding.identity
+                    {
+                        increment_refusal(&registration.binding);
+                        return syscall_failure(libc::ESTALE);
+                    }
+                }
                 let fd = unsafe {
                     libc::openat(
                         registration.binding.parent.as_raw_fd(),
@@ -614,11 +804,13 @@ mod unix_hooks {
                 if is_leaf {
                     let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
                     if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } != 0 {
+                        let error = last_errno();
                         unsafe { libc::close(fd) };
-                        return -1;
+                        return syscall_failure(error);
                     }
                     let stat = unsafe { stat.assume_init() };
-                    if !leaf_identity_matches(&registration, &stat) {
+                    let identity = raw_libc_stat_identity(&stat);
+                    if identity != registration.binding.identity {
                         increment_refusal(&registration.binding);
                         unsafe { libc::close(fd) };
                         return syscall_failure(libc::ESTALE);
@@ -668,9 +860,11 @@ mod unix_hooks {
                         libc::AT_SYMLINK_NOFOLLOW,
                     )
                 };
-                if result == 0
-                    && is_leaf
-                    && !leaf_identity_matches(&registration, unsafe { &*output })
+                if result != 0 {
+                    return result;
+                }
+                if is_leaf
+                    && raw_libc_stat_identity(unsafe { &*output }) != registration.binding.identity
                 {
                     increment_refusal(&registration.binding);
                     return syscall_failure(libc::ESTALE);
@@ -722,7 +916,8 @@ mod unix_hooks {
                     if result != 0 {
                         return result;
                     }
-                    if !leaf_identity_matches(&registration, unsafe { &stat.assume_init() }) {
+                    let stat = unsafe { stat.assume_init() };
+                    if raw_libc_stat_identity(&stat) != registration.binding.identity {
                         increment_refusal(&registration.binding);
                         return syscall_failure(libc::ESTALE);
                     }
@@ -843,93 +1038,12 @@ mod unix_hooks {
 mod unix_vfs {
     use super::*;
     use std::{
-        ffi::{c_char, c_int, CStr},
+        ffi::{c_char, c_int},
         os::fd::AsRawFd,
         panic::{catch_unwind, AssertUnwindSafe},
     };
 
-    pub(super) unsafe fn register_vfs(
-        token: u64,
-        name: &CString,
-    ) -> Result<*mut ffi::sqlite3_vfs, Error> {
-        let original = unsafe { ffi::sqlite3_vfs_find(c"unix".as_ptr()) };
-        if original.is_null() {
-            return Err(Error::Conflict("SQLite unix VFS is unavailable".into()));
-        }
-        let default = unsafe { *original };
-        let mut base = default;
-        base.pNext = std::ptr::null_mut();
-        base.zName = name.as_ptr();
-        base.xOpen = Some(vfs_open);
-        base.xDelete = Some(vfs_delete);
-        base.xAccess = Some(vfs_access);
-        base.xFullPathname = Some(vfs_full_pathname);
-        let vfs = Box::new(BoundVfs {
-            base,
-            token,
-            default_open: default.xOpen,
-            default_delete: default.xDelete,
-            default_full_pathname: default.xFullPathname,
-        });
-        let pointer = Box::into_raw(vfs);
-        let rc = unsafe { ffi::sqlite3_vfs_register(pointer.cast(), 0) };
-        if rc != ffi::SQLITE_OK {
-            unsafe { drop(Box::from_raw(pointer)) };
-            return Err(Error::Conflict(format!(
-                "SQLite bound VFS registration failed with code {rc}"
-            )));
-        }
-        Ok(pointer.cast())
-    }
-
-    unsafe extern "C" fn vfs_open(
-        vfs: *mut ffi::sqlite3_vfs,
-        name: *const c_char,
-        file: *mut ffi::sqlite3_file,
-        flags: c_int,
-        out_flags: *mut c_int,
-    ) -> c_int {
-        match catch_unwind(AssertUnwindSafe(|| unsafe {
-            vfs_open_inner(vfs, name, file, flags, out_flags)
-        })) {
-            Ok(result) => result,
-            Err(_) => ffi::SQLITE_CANTOPEN,
-        }
-    }
-
-    unsafe fn vfs_open_inner(
-        vfs: *mut ffi::sqlite3_vfs,
-        name: *const c_char,
-        file: *mut ffi::sqlite3_file,
-        flags: c_int,
-        out_flags: *mut c_int,
-    ) -> c_int {
-        if flags & ffi::SQLITE_OPEN_SUPER_JOURNAL != 0 {
-            return ffi::SQLITE_CANTOPEN;
-        }
-        let Some(bound_vfs) = (unsafe { vfs.cast::<BoundVfs>().as_ref() }) else {
-            return ffi::SQLITE_CANTOPEN;
-        };
-        if !name.is_null() {
-            let registration = match registration_for(bound_vfs.token) {
-                Ok(registration) => registration,
-                Err(_) => return ffi::SQLITE_CANTOPEN,
-            };
-            match unix_hooks::resolve(name) {
-                unix_hooks::Resolution::Child {
-                    registration: named,
-                    ..
-                } if named.token == registration.token => {}
-                _ => return ffi::SQLITE_CANTOPEN,
-            }
-        }
-        let Some(open) = bound_vfs.default_open else {
-            return ffi::SQLITE_CANTOPEN;
-        };
-        unsafe { open(vfs, name, file, flags, out_flags) }
-    }
-
-    unsafe extern "C" fn vfs_access(
+    pub(super) unsafe extern "C" fn vfs_access(
         vfs: *mut ffi::sqlite3_vfs,
         name: *const c_char,
         flags: c_int,
@@ -979,7 +1093,7 @@ mod unix_vfs {
         };
         let path = name
             .as_ref()
-            .map_or(b".\0".as_slice(), |name| name.as_bytes());
+            .map_or(c".".to_bytes_with_nul(), |name| name.as_bytes_with_nul());
         let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
         let result = unsafe {
             libc::fstatat(
@@ -997,10 +1111,12 @@ mod unix_vfs {
             }
             return ffi::SQLITE_IOERR_ACCESS;
         }
-        let stat = unsafe { stat.assume_init() };
-        if is_leaf && !unix_hooks::leaf_identity_matches(&registration, &stat) {
-            increment_refusal(&registration.binding);
-            return ffi::SQLITE_IOERR_ACCESS;
+        if is_leaf {
+            let stat = unsafe { stat.assume_init() };
+            if raw_libc_stat_identity(&stat) != registration.binding.identity {
+                increment_refusal(&registration.binding);
+                return ffi::SQLITE_IOERR_ACCESS;
+            }
         }
         unsafe { *out = 1 };
         if flags == ffi::SQLITE_ACCESS_READWRITE {
@@ -1023,103 +1139,13 @@ mod unix_vfs {
         }
         ffi::SQLITE_OK
     }
-
-    unsafe extern "C" fn vfs_delete(
-        vfs: *mut ffi::sqlite3_vfs,
-        name: *const c_char,
-        sync_dir: c_int,
-    ) -> c_int {
-        match catch_unwind(AssertUnwindSafe(|| unsafe {
-            vfs_delete_inner(vfs, name, sync_dir)
-        })) {
-            Ok(result) => result,
-            Err(_) => ffi::SQLITE_IOERR_DELETE,
-        }
-    }
-
-    unsafe fn vfs_delete_inner(
-        vfs: *mut ffi::sqlite3_vfs,
-        name: *const c_char,
-        sync_dir: c_int,
-    ) -> c_int {
-        let Some(bound_vfs) = (unsafe { vfs.cast::<BoundVfs>().as_ref() }) else {
-            return ffi::SQLITE_IOERR_DELETE;
-        };
-        let registration = match registration_for(bound_vfs.token) {
-            Ok(registration) => registration,
-            Err(_) => return ffi::SQLITE_IOERR_DELETE,
-        };
-        match unix_hooks::resolve(name) {
-            unix_hooks::Resolution::Child {
-                registration: named,
-                ..
-            } if named.token == registration.token => {}
-            _ => return ffi::SQLITE_IOERR_DELETE,
-        }
-        let Some(delete) = bound_vfs.default_delete else {
-            return ffi::SQLITE_IOERR_DELETE;
-        };
-        unsafe { delete(vfs, name, sync_dir) }
-    }
-
-    unsafe extern "C" fn vfs_full_pathname(
-        vfs: *mut ffi::sqlite3_vfs,
-        name: *const c_char,
-        output_size: c_int,
-        output: *mut c_char,
-    ) -> c_int {
-        match catch_unwind(AssertUnwindSafe(|| unsafe {
-            vfs_full_pathname_inner(vfs, name, output_size, output)
-        })) {
-            Ok(result) => result,
-            Err(_) => ffi::SQLITE_CANTOPEN,
-        }
-    }
-
-    unsafe fn vfs_full_pathname_inner(
-        vfs: *mut ffi::sqlite3_vfs,
-        name: *const c_char,
-        output_size: c_int,
-        output: *mut c_char,
-    ) -> c_int {
-        if name.is_null() || output.is_null() || output_size <= 0 {
-            return ffi::SQLITE_CANTOPEN;
-        }
-        let bytes = unsafe { CStr::from_ptr(name) }.to_bytes();
-        if bytes.starts_with(RESERVED_PREFIX.as_bytes()) {
-            if bytes.len() + 1 > output_size as usize {
-                return ffi::SQLITE_CANTOPEN;
-            }
-            unsafe {
-                std::ptr::copy_nonoverlapping(name, output, bytes.len() + 1);
-            }
-            return ffi::SQLITE_OK;
-        }
-        let Some(bound_vfs) = (unsafe { vfs.cast::<BoundVfs>().as_ref() }) else {
-            return ffi::SQLITE_CANTOPEN;
-        };
-        match bound_vfs.default_full_pathname {
-            Some(full_pathname) => unsafe { full_pathname(vfs, name, output_size, output) },
-            None => ffi::SQLITE_CANTOPEN,
-        }
-    }
 }
 
 #[cfg(unix)]
-use unix_hooks::install as install_platform_hooks;
+use unix_hooks::install as install_hooks;
 
 #[cfg(windows)]
-use windows_hooks::install as install_platform_hooks;
-
-#[cfg(unix)]
-fn install_hooks() -> Result<(), &'static str> {
-    install_platform_hooks()
-}
-
-#[cfg(windows)]
-fn install_hooks() -> Result<(), &'static str> {
-    install_platform_hooks()
-}
+use windows_hooks::install as install_hooks;
 
 fn registration_for(token: u64) -> Result<Arc<Registration>, Error> {
     let mutex = REGISTRY
@@ -1133,16 +1159,6 @@ fn registration_for(token: u64) -> Result<Arc<Registration>, Error> {
         .get(&token)
         .and_then(Weak::upgrade)
         .ok_or_else(|| Error::Conflict("bound SQLite registration is unavailable".into()))
-}
-
-#[cfg(unix)]
-unsafe fn register_vfs(token: u64, name: &CString) -> Result<*mut ffi::sqlite3_vfs, Error> {
-    unix_vfs::register_vfs(token, name)
-}
-
-#[cfg(windows)]
-unsafe fn register_vfs(token: u64, name: &CString) -> Result<*mut ffi::sqlite3_vfs, Error> {
-    windows_vfs::register_vfs(token, name)
 }
 
 #[cfg(windows)]
@@ -1282,20 +1298,75 @@ mod tests {
         use std::{ffi::CString, os::unix::fs::symlink};
 
         let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("nofollow.db3");
+        let parent = root.path().join("authorized");
+        std::fs::create_dir(&parent).unwrap();
+        let path = parent.join("nofollow.db3");
         std::fs::File::create(&path).unwrap();
         let target = DatabaseFileTarget::for_test_path(&path).unwrap();
         let bound = BoundDatabase::acquire(&target).unwrap();
-        let sidecar_path = root.path().join("nofollow.db3-wal");
-        symlink("missing-sidecar-target", &sidecar_path).unwrap();
+        let external_path = root.path().join("external-readable-file");
+        std::fs::write(&external_path, b"external file remains untouched").unwrap();
+        let original_external_contents = std::fs::read(&external_path).unwrap();
+        let sidecar_path = parent.join("nofollow.db3-wal");
+        symlink(&external_path, &sidecar_path).unwrap();
         let leaf = path.file_name().unwrap().to_string_lossy();
         let name =
             CString::new(format!("{RESERVED_PREFIX}{}/{}-wal", bound.token(), leaf)).unwrap();
 
         let opened = unsafe { unix_hooks::open_hook(name.as_ptr(), libc::O_RDONLY, 0) };
         assert_eq!(opened, -1);
+        assert_eq!(unix_hooks::last_errno(), libc::ELOOP);
+        assert_eq!(
+            std::fs::read(&external_path).unwrap(),
+            original_external_contents
+        );
         let accessed = unsafe { unix_hooks::access_hook(name.as_ptr(), libc::F_OK) };
-        assert_eq!(accessed, 0, "access must observe the dangling link itself");
+        assert_eq!(accessed, 0, "access must observe the symlink itself");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn concurrent_first_binding_acquisitions_share_one_token_and_clean_up() {
+        use std::sync::Barrier;
+
+        const THREADS: usize = 8;
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("concurrent-first-binding.db3");
+        std::fs::File::create(&path).unwrap();
+        let target = DatabaseFileTarget::for_test_path(&path).unwrap();
+        let key = BindingKey {
+            identity: target.identity(),
+            parent_identity: opened_file_identity(target.parent()).unwrap(),
+            leaf: binding_key_leaf(target.leaf()),
+        };
+        let start = Arc::new(Barrier::new(THREADS));
+        let acquired = Arc::new(Barrier::new(THREADS));
+
+        let handles: Vec<_> = (0..THREADS)
+            .map(|_| {
+                let path = path.clone();
+                let start = Arc::clone(&start);
+                let acquired = Arc::clone(&acquired);
+                std::thread::spawn(move || {
+                    let target = DatabaseFileTarget::for_test_path(&path).unwrap();
+                    start.wait();
+                    let binding = BoundDatabase::acquire(&target);
+                    let token = binding.as_ref().ok().map(BoundDatabase::token);
+                    acquired.wait();
+                    drop(binding);
+                    token
+                })
+            })
+            .collect();
+        let tokens: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap().expect("binding acquisition"))
+            .collect();
+
+        assert!(tokens.iter().all(|token| *token == tokens[0]));
+        let registry = REGISTRY.get().unwrap().lock().unwrap();
+        assert!(!registry.by_key.contains_key(&key));
+        assert!(!registry.creating.contains_key(&key));
     }
 
     fn call_vfs_open(bound: &BoundDatabase, name: *const std::os::raw::c_char, flags: i32) -> i32 {
