@@ -2267,7 +2267,13 @@ mod tests {
             let path = dir
                 .path()
                 .join(OsString::from_vec(b"nonutf8-\xff.db3".to_vec()));
-            std::fs::File::create(&path).unwrap();
+            // APFS stores only UTF-8 names and refuses this one with `EILSEQ` (CI run
+            // 36594812395), so there no such database can reach `acquire` at all.
+            match std::fs::File::create(&path) {
+                Ok(_) => {}
+                Err(error) if error.raw_os_error() == Some(libc::EILSEQ) => return,
+                Err(error) => panic!("creating the non-UTF-8 leaf failed: {error}"),
+            }
             let target = DatabaseFileTarget::for_test_path(&path).unwrap();
             assert!(matches!(
                 BoundDatabase::acquire(&target),
