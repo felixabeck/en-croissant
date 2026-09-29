@@ -796,6 +796,7 @@ dependencies = [
  "dashmap 6.0.1",
  "derivative",
  "diesel",
+ "errno",
  "flate2",
  "futures-util",
  "governor",

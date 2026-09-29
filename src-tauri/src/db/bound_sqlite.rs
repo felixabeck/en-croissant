@@ -786,14 +786,9 @@ mod unix_hooks {
     }
 
     fn set_errno(value: c_int) {
-        #[cfg(target_os = "linux")]
-        unsafe {
-            *libc::__errno_location() = value;
-        }
-        #[cfg(target_os = "macos")]
-        unsafe {
-            *libc::__error() = value;
-        }
+        // The errno crate owns the per-platform errno location, so no target-specific region
+        // is needed here.
+        errno::set_errno(errno::Errno(value));
     }
 
     fn syscall_failure(error: c_int) -> c_int {
