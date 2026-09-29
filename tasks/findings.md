@@ -11760,3 +11760,27 @@ Rejected: a longer WebDriver timeout, and a full-FEN dedup key.
 * **Why deferred:** outside `f-20260829-04`'s mandate (the writer guard, the exclusion, the re-record); changing the ratchet's comparison is a separate change with its own shrink-allowance interplay (`f-20260829-15`).
 * **Fix shape:** make `assertBaseline`'s ratio clause treat `total = 0` as ratio 1 on both sides (consistent with `assertAreaFloors` and the writer), check the interaction with the shrink-adjusted baseline, and add the `0/0 → 0/1` case to `scripts/coverage-report-tests.mjs` plus a failure-matrix row.
 * **Related:** `f-20260829-04` (writer guard with the 100 % rule), `f-20260829-15` (shrink allowance).
+
+---
+
+## 2026-09-29 — filed through the inbox spool
+
+### SQLite opens the authorized database by pathname after the parent-bound probe, so a same-inode parent swap in that window moves `-wal`/`-shm` into the replacement directory
+
+* **ID:** f-20260929-01 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/db/repository.rs` — `acquire_probed` (~`:978-986`: `target.open_current()` probe, then `pool.get()`), pool construction through `sqlite_uri(target.path())` (~`:805`); `src-tauri/src/db/mod.rs:183` (`ConnectionOptions` enables WAL).
+* **Defect:** since `f-20260912-05` (commit `5953bafd`, `d-20260929-01`) a persisted database entry is bound to its authorized parent directory and `database_file_target` refuses a replacement parent. The repository then probes the carrier (`open_current`, which compares a re-walked parent with the retained, now authenticated one) and drops the probe before the pool opens SQLite by pathname. A parent directory replaced in that window by one holding a hard link to the same database inode passes nothing new — the leaf is the same object — but SQLite derives `x.db3-wal`/`x.db3-shm` from the pathname, so the journal and shared-memory files are created in the replacement directory.
+* **Open question:** how does the SQLite open inherit the authenticated parent? Candidates: on unix open through `/proc/self/fd/<retained parent>/<leaf>` so SQLite's sidecar names resolve relative to the held directory (measure that SQLite, diesel 2.1.4 and the `file:` URI with `mode=rw` accept it, and what the Windows analogue is); or re-probe the parent after the connection is established and discard the connection on mismatch (does not stop the sidecar creation itself). `f-20260905-03`'s handled note records the same A-B-A opening window for the leaf and rejected a pathname adapter.
+* **Why it matters:** `f-20260912-05` named SQLite `-wal`/`-shm` among the writes the parent binding must keep in the authorized directory; the binding now holds up to the carrier, and this is the remaining pathname hop.
+* **Related:** `f-20260912-05` (the parent binding this builds on), `f-20260905-03` (repository re-key; records the pathname-open residual), `f-20260912-07`.
+* **Found by:** Codex `review-root-cause` lens, cumulative review of the `f-20260912-05` build run, 2026-09-29 (drain session `6f9c4b3e-8255-48b2-82b2-497c962dd7df`).
+
+### Two `check-rust-release-surface` O3.12 tests take ~6.7 s on the CI runner and die at vitest's 5 s default, reddening the `test` job on master
+
+* **ID:** f-20260929-02 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `scripts/check-rust-release-surface.test.mjs:2128` (`O3.12 rejects unknown and never-built target cfg atoms`) and `:2165` (`O3.12 rejects added and edited gate-invisible regions and catches stale pins`), suite `R5 clippy cfg and gate-invisible regions`.
+* **Defect:** CI run 36484034989 (`test` job 109136412350, head `c06f66a5`, 2026-09-28) failed only on these two tests: `Test timed out in 5000ms`, measured 6660 ms and 6743 ms; neighbours in the same suite ran 1.0–3.3 s. 2 failed, 2187 passed. The R5/O3.12 evaluation that `d-20260928-06` routed through `rust-test-only.mjs` runs once per gate-configuration valuation, so its per-test cost scales with the valuation count and crossed the default on the runner.
+* **Open question (lens tier):** make the O3.12 evaluation cheaper (cache the per-valuation scan across the fixtures of one test, or narrow the valuation set) versus splitting the fixture loops into one test per case. `d-20260901-36` rejected raising `testTimeout` as a fix for a slow test body — follow it.
+* **Why it matters:** master's `test` job is red on every push until this is fixed, which hides any real frontend or tooling regression behind a known failure.
+* **Related:** `f-20260912-03` (the release-surface checker work that added O3.12), `d-20260928-06`, `d-20260901-36`.
+* **Found by:** Claude Code, `$push` red-remote check of the `f-20260912-05` drain run (session `6f9c4b3e-8255-48b2-82b2-497c962dd7df`), 2026-09-29.
