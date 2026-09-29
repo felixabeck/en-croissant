@@ -792,6 +792,7 @@ dependencies = [
  "bzip2",
  "chrono",
  "csv",
+ "ctor",
  "dashmap 6.0.1",
  "derivative",
  "diesel",

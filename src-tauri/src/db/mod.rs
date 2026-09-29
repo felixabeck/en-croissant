@@ -1,5 +1,6 @@
 #[cfg(all(test, unix))]
 pub(crate) mod allocation_probe;
+mod bound_sqlite;
 mod encoding;
 mod migrations;
 mod models;

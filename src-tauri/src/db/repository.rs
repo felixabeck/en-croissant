@@ -1,8 +1,10 @@
+#[cfg(test)]
+use std::path::Path;
 use std::{
     collections::{HashMap, HashSet},
     io::{Read, Seek, SeekFrom, Write},
     ops::{Deref, DerefMut},
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{Arc, Condvar, Mutex},
     time::{Duration, Instant},
 };
@@ -10,115 +12,6 @@ use std::{
 #[cfg(all(test, unix))]
 std::thread_local! {
     pub(crate) static FAIL_NEXT_REVISION_BUMP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-#[cfg(test)]
-mod sqlite_uri_tests {
-    use super::*;
-    use std::path::Path;
-
-    fn invalid_input(result: Result<String, Error>) -> String {
-        match result {
-            Err(Error::InvalidInput(message)) => message,
-            other => panic!("expected invalid input, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn windows_sqlite_uri_covers_drive_unc_and_verbatim_shapes() {
-        let cases = [
-            (r"\\?\C:\dir\db.db3", "file:///C:/dir/db.db3?mode=rw"),
-            (
-                r"\\?\UNC\server\share\db.db3",
-                "file://server/share/db.db3?mode=rw",
-            ),
-            (r"C:\dir\db.db3", "file:///C:/dir/db.db3?mode=rw"),
-            (
-                r"\\server\share\db.db3",
-                "file://server/share/db.db3?mode=rw",
-            ),
-        ];
-        for (path, expected) in cases {
-            assert_eq!(
-                sqlite_uri_for(Path::new(path), SqliteMode::ReadWrite, PathStyle::Windows).unwrap(),
-                expected
-            );
-        }
-    }
-
-    #[test]
-    fn windows_sqlite_uri_refuses_non_absolute_shapes_with_the_existing_message() {
-        for path in [r"db.db3", r"\dir\db.db3", r"C:dir\db.db3"] {
-            assert_eq!(
-                invalid_input(sqlite_uri_for(
-                    Path::new(path),
-                    SqliteMode::ReadWrite,
-                    PathStyle::Windows,
-                )),
-                "SQLite database path must be absolute"
-            );
-        }
-    }
-
-    #[test]
-    fn windows_sqlite_uri_preserves_encoding_and_mode() {
-        let path = Path::new(r"C:\dir\percent%question?#.db3");
-        let read_write = sqlite_uri_for(path, SqliteMode::ReadWrite, PathStyle::Windows).unwrap();
-        let read_only = sqlite_uri_for(path, SqliteMode::ReadOnly, PathStyle::Windows).unwrap();
-        assert_eq!(
-            read_write,
-            "file:///C:/dir/percent%25question%3F%23.db3?mode=rw"
-        );
-        assert_eq!(
-            read_only,
-            "file:///C:/dir/percent%25question%3F%23.db3?mode=ro"
-        );
-        assert!(read_write.contains("/C:/"));
-        assert!(!read_write.contains("%3A"));
-    }
-
-    #[test]
-    fn windows_sqlite_uri_checks_ancestors_and_path_length() {
-        for path in [r"\\?\C:\Data.\games.db3", r"\\?\C:\Data \games.db3"] {
-            assert!(matches!(
-                sqlite_uri_for(Path::new(path), SqliteMode::ReadWrite, PathStyle::Windows),
-                Err(Error::InvalidInput(_))
-            ));
-        }
-
-        let long_path = format!(
-            r"C:\{}\{}\{}.db3",
-            "a".repeat(100),
-            "b".repeat(100),
-            "c".repeat(60)
-        );
-        assert_eq!(
-            invalid_input(sqlite_uri_for(
-                Path::new(&long_path),
-                SqliteMode::ReadWrite,
-                PathStyle::Windows,
-            )),
-            "SQLite Windows path exceeds the 259-character path-length limit"
-        );
-    }
-
-    #[test]
-    fn production_sqlite_uri_selects_the_platform_path_style() {
-        // The delimiters carry the complete signature line: this module's own shorter string
-        // literals would otherwise match first and the scan would pin itself rather than the
-        // function.
-        let source = include_str!("repository.rs");
-        let body = source
-            .split("\nfn sqlite_uri(path: &Path, mode: SqliteMode) -> Result<String, Error> {\n")
-            .nth(1)
-            .unwrap()
-            .split("\nfn sqlite_uri_for(")
-            .next()
-            .unwrap();
-        assert!(body.contains("cfg!(windows)"));
-        assert!(body.contains("PathStyle::Windows"));
-        assert!(body.contains("PathStyle::Posix"));
-    }
 }
 
 #[cfg(all(test, unix))]
@@ -140,7 +33,7 @@ pub(crate) fn fail_next_revision_bump() -> RevisionBumpFailureGuard {
 use diesel::sql_types::{Nullable, Text};
 use diesel::{
     prelude::*,
-    r2d2::{ConnectionManager, Pool, PooledConnection},
+    r2d2::{CustomizeConnection, ManageConnection, Pool, PooledConnection},
     sql_query, Connection, OptionalExtension, SqliteConnection,
 };
 use parking_lot::Mutex as ParkingMutex;
@@ -148,11 +41,21 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::Error;
 
-use super::{migrations, ConnectionOptions, DatabaseSchemaIdentity};
+use super::{
+    bound_sqlite::{BoundDatabase, SqliteMode},
+    migrations, ConnectionOptions, DatabaseSchemaIdentity,
+};
 
 const MAX_OPEN_DATABASES: usize = 16;
 // Maximum number of pooled SQLite connections per database.
 const MAX_CONNECTIONS_PER_DATABASE: u32 = 16;
+// r2d2 retries a failed pooled open until this timeout; tests that drive a refused bound open
+// shorten it so they do not wait the production 30 s.
+const POOL_CONNECTION_TIMEOUT: Duration = if cfg!(test) {
+    Duration::from_secs(2)
+} else {
+    Duration::from_secs(30)
+};
 // Must exceed `PRAGMA busy_timeout = 30000` in `db/mod.rs` so an ordinary
 // contended write completes rather than tripping retirement.
 const RETIRE_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
@@ -186,13 +89,78 @@ pub(crate) fn cancel_snapshot_copy_after_chunks(cancellation: CancellationToken,
     });
 }
 
-type SqlitePool = Pool<ConnectionManager<SqliteConnection>>;
+type SqlitePool = Pool<BoundConnectionManager>;
 type AcquiredConnection = (
     Arc<DatabaseEntry>,
     EntryLease,
-    PooledConnection<ConnectionManager<SqliteConnection>>,
+    PooledConnection<BoundConnectionManager>,
     std::fs::File,
 );
+
+/// Keeps the binding alive until after the SQLite connection closes. Field
+/// order is deliberate: Rust drops `connection` before `_binding`.
+struct BoundSqliteConnection {
+    connection: SqliteConnection,
+    _binding: BoundDatabase,
+}
+
+impl Deref for BoundSqliteConnection {
+    type Target = SqliteConnection;
+
+    fn deref(&self) -> &Self::Target {
+        &self.connection
+    }
+}
+
+impl DerefMut for BoundSqliteConnection {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.connection
+    }
+}
+
+#[derive(Clone, Debug)]
+struct BoundConnectionManager {
+    database: BoundDatabase,
+    uri: String,
+}
+
+impl ManageConnection for BoundConnectionManager {
+    type Connection = BoundSqliteConnection;
+    type Error = diesel::r2d2::Error;
+
+    fn connect(&self) -> Result<Self::Connection, Self::Error> {
+        let connection =
+            SqliteConnection::establish(&self.uri).map_err(diesel::r2d2::Error::ConnectionError)?;
+        Ok(BoundSqliteConnection {
+            connection,
+            _binding: self.database.clone(),
+        })
+    }
+
+    fn is_valid(&self, connection: &mut Self::Connection) -> Result<(), Self::Error> {
+        <SqliteConnection as diesel::r2d2::R2D2Connection>::ping(&mut connection.connection)
+            .map_err(diesel::r2d2::Error::QueryError)
+    }
+
+    fn has_broken(&self, connection: &mut Self::Connection) -> bool {
+        std::thread::panicking()
+            || <SqliteConnection as diesel::r2d2::R2D2Connection>::is_broken(
+                &mut connection.connection,
+            )
+    }
+}
+
+impl CustomizeConnection<BoundSqliteConnection, diesel::r2d2::Error> for ConnectionOptions {
+    fn on_acquire(
+        &self,
+        connection: &mut BoundSqliteConnection,
+    ) -> Result<(), diesel::r2d2::Error> {
+        <ConnectionOptions as CustomizeConnection<SqliteConnection, diesel::r2d2::Error>>::on_acquire(
+            self,
+            &mut connection.connection,
+        )
+    }
+}
 /// A pooled connection cannot outlive the repository lifecycle lease which
 /// admitted it. Keeping the two values together makes an unleased pooled
 /// connection unrepresentable at the repository boundary.
@@ -204,7 +172,7 @@ pub struct DatabaseConnection {
 }
 
 enum DatabaseConnectionInner {
-    Pooled(PooledConnection<ConnectionManager<SqliteConnection>>),
+    Pooled(PooledConnection<BoundConnectionManager>),
     Pinned(SqliteConnection),
 }
 
@@ -239,7 +207,10 @@ pub struct DatabaseIdentity {
 }
 
 struct DatabaseEntry {
+    // Declared before `bound`: fields drop in order, so pooled connections close before the
+    // entry's binding handle is released.
     pool: SqlitePool,
+    bound: BoundDatabase,
     write_lock: Arc<ParkingMutex<()>>,
     index_lock: Arc<ParkingMutex<()>>,
     state: Mutex<EntryState>,
@@ -536,13 +507,24 @@ impl DatabaseRepository {
     ) -> Result<u64, Error> {
         super::cancellation_check(cancellation)?;
         super::sqlite_cancellation::install()?;
-        let mut connection =
-            SqliteConnection::establish(&sqlite_uri(target.path(), SqliteMode::ReadOnly)?)
-                .map_err(crate::error::map_sqlite_establish)?;
+        let bound = BoundDatabase::acquire(target)?;
+        let uri = bound.uri(SqliteMode::ReadOnly)?;
+        let refusal_count = bound.refusal_count();
+        let connection =
+            SqliteConnection::establish(&uri).map_err(crate::error::map_sqlite_establish);
+        let mut connection = match connection {
+            Ok(connection) => BoundSqliteConnection {
+                connection,
+                _binding: bound.clone(),
+            },
+            Err(error) => {
+                return Err(self.classify_bound_open_error(target, &bound, refusal_count, error));
+            }
+        };
         let revision = super::sqlite_cancellation::with_sqlite_cancellation(cancellation, || {
-            read_data_revision(&mut connection)
+            read_data_revision(&mut connection.connection)
         })?;
-        #[cfg(all(test, unix))]
+        #[cfg(test)]
         run_test_hook(TestHook::AfterReadRevision, target.path());
         Ok(revision)
     }
@@ -797,14 +779,17 @@ impl DatabaseRepository {
             drop(pre_build_probe);
             #[cfg(all(test, unix))]
             run_test_hook(TestHook::PreBuild, target.path());
+            let bound = BoundDatabase::acquire(target)?;
+            let uri = bound.uri(SqliteMode::ReadWrite)?;
             let pool = Pool::builder()
                 .max_size(MAX_CONNECTIONS_PER_DATABASE)
                 .min_idle(Some(0))
+                .connection_timeout(POOL_CONNECTION_TIMEOUT)
                 .connection_customizer(Box::new(ConnectionOptions))
-                .build(ConnectionManager::<SqliteConnection>::new(sqlite_uri(
-                    target.path(),
-                    SqliteMode::ReadWrite,
-                )?))?;
+                .build(BoundConnectionManager {
+                    database: bound.clone(),
+                    uri,
+                })?;
             #[cfg(all(test, unix))]
             run_test_hook(TestHook::PostBuild, target.path());
             initial_probe = self.open_current(target)?;
@@ -828,6 +813,7 @@ impl DatabaseRepository {
             state.clock = state.clock.saturating_add(1);
             let entry = Arc::new(DatabaseEntry {
                 pool,
+                bound,
                 write_lock: Arc::new(ParkingMutex::new(())),
                 index_lock: Arc::new(ParkingMutex::new(())),
                 state: Mutex::new(EntryState {
@@ -922,7 +908,7 @@ impl DatabaseRepository {
         target: &crate::infra::path_authority::DatabaseFileTarget,
     ) -> Result<std::fs::File, Error> {
         let result = target.open_current();
-        #[cfg(all(test, unix))]
+        #[cfg(test)]
         run_test_hook(TestHook::AfterOpenCurrent, target.path());
         result
     }
@@ -983,8 +969,22 @@ impl DatabaseRepository {
             }
         };
         drop(pre_get_probe);
-        let connection = entry.pool.get()?;
-        #[cfg(all(test, unix))]
+        let refusal_count = entry.bound.refusal_count();
+        #[cfg(test)]
+        run_test_hook(TestHook::BeforePoolGet, target.path());
+        let connection = match entry.pool.get() {
+            Ok(connection) => connection,
+            Err(error) => {
+                #[cfg(test)]
+                run_test_hook(TestHook::PoolGetFailed, target.path());
+                let error: Error = error.into();
+                let error =
+                    self.classify_bound_open_error(target, &entry.bound, refusal_count, error);
+                drop(lease);
+                return Err(self.retire_after_probe_conflict(&key, &entry, error, cancellation)?);
+            }
+        };
+        #[cfg(test)]
         run_test_hook(TestHook::PostGet, target.path());
         let post_get_probe = match self.open_current(target) {
             Ok(file) => file,
@@ -995,6 +995,25 @@ impl DatabaseRepository {
             }
         };
         Ok((entry, lease, connection, post_get_probe))
+    }
+
+    fn classify_bound_open_error(
+        &self,
+        target: &crate::infra::path_authority::DatabaseFileTarget,
+        bound: &BoundDatabase,
+        refusal_count_before: u64,
+        error: Error,
+    ) -> Error {
+        let refused_identity = bound.refusal_count() > refusal_count_before;
+        #[cfg(test)]
+        if refused_identity {
+            run_test_hook(TestHook::BoundRefusal, target.path());
+        }
+        if refused_identity || matches!(target.open_current(), Err(Error::Conflict(_))) {
+            Error::Conflict("database changed after capability resolution".into())
+        } else {
+            error
+        }
     }
 
     fn retire_after_probe_conflict(
@@ -1074,18 +1093,6 @@ fn entry_key(target: &crate::infra::path_authority::DatabaseFileTarget) -> Resul
     })
 }
 
-#[derive(Clone, Copy)]
-enum SqliteMode {
-    ReadWrite,
-    ReadOnly,
-}
-
-#[derive(Clone, Copy)]
-enum PathStyle {
-    Posix,
-    Windows,
-}
-
 #[derive(QueryableByName)]
 struct RevisionRow {
     #[diesel(sql_type = Nullable<Text>)]
@@ -1130,135 +1137,6 @@ pub(crate) fn read_data_revision(conn: &mut SqliteConnection) -> Result<u64, Err
     }
     u64::try_from(value)
         .map_err(|_| Error::InvalidInput("DataRevision is not a non-negative i64".into()))
-}
-
-fn sqlite_uri(path: &Path, mode: SqliteMode) -> Result<String, Error> {
-    let style = if cfg!(windows) {
-        PathStyle::Windows
-    } else {
-        PathStyle::Posix
-    };
-    sqlite_uri_for(path, mode, style)
-}
-
-fn sqlite_uri_for(path: &Path, mode: SqliteMode, style: PathStyle) -> Result<String, Error> {
-    let path = path
-        .to_str()
-        .ok_or_else(|| Error::InvalidInput("Path is not valid UTF-8".into()))?;
-    let path = match style {
-        PathStyle::Posix => {
-            if !path.starts_with('/') {
-                return Err(Error::InvalidInput(
-                    "SQLite database path must be absolute".into(),
-                ));
-            }
-            path.to_owned()
-        }
-        PathStyle::Windows => windows_sqlite_path(path)?,
-    };
-    let encoded = percent_encode_path(&path, matches!(style, PathStyle::Windows));
-    let mode = match mode {
-        SqliteMode::ReadWrite => "rw",
-        SqliteMode::ReadOnly => "ro",
-    };
-    let prefix = if matches!(style, PathStyle::Windows) && path.as_bytes().get(1) == Some(&b':') {
-        "file:///"
-    } else {
-        "file://"
-    };
-    Ok(format!("{prefix}{encoded}?mode={mode}"))
-}
-
-fn percent_encode_path(path: &str, allow_drive_colon: bool) -> String {
-    let mut encoded = String::with_capacity(path.len());
-    for (index, byte) in path.bytes().enumerate() {
-        if byte.is_ascii_alphanumeric()
-            || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/')
-            || (allow_drive_colon && index == 1 && byte == b':')
-        {
-            encoded.push(char::from(byte));
-        } else {
-            encoded.push('%');
-            encoded.push_str(&format!("{byte:02X}"));
-        }
-    }
-    encoded
-}
-
-fn windows_sqlite_path(path: &str) -> Result<String, Error> {
-    const ABSOLUTE: &str = "SQLite database path must be absolute";
-    const LENGTH: &str = "SQLite Windows path exceeds the 259-character path-length limit";
-
-    let (prefix, rest) = if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
-        ("unc", rest)
-    } else if let Some(rest) = path.strip_prefix(r"\\?\") {
-        ("drive", rest)
-    } else if let Some(rest) = path.strip_prefix(r"\\") {
-        ("unc", rest)
-    } else {
-        ("drive", path)
-    };
-
-    let (root, components_start) = match prefix {
-        "drive" if rest.len() >= 3 => {
-            let bytes = rest.as_bytes();
-            if bytes[0].is_ascii_alphabetic()
-                && bytes[1] == b':'
-                && matches!(bytes[2], b'\\' | b'/')
-            {
-                (format!("{}:", &rest[..1]), 3)
-            } else {
-                return Err(Error::InvalidInput(ABSOLUTE.into()));
-            }
-        }
-        "unc" => {
-            let mut components = rest.split(is_windows_separator);
-            let server = components.next().filter(|component| !component.is_empty());
-            let share = components.next().filter(|component| !component.is_empty());
-            let (Some(server), Some(share)) = (server, share) else {
-                return Err(Error::InvalidInput(ABSOLUTE.into()));
-            };
-            check_windows_component(server)?;
-            check_windows_component(share)?;
-            let prefix_len = server.len() + 1 + share.len();
-            (format!("{server}/{share}"), prefix_len + 1)
-        }
-        _ => return Err(Error::InvalidInput(ABSOLUTE.into())),
-    };
-
-    let tail = &rest[components_start..];
-    let mut output = root;
-    let mut component_count = 0;
-    for component in tail.split(is_windows_separator) {
-        if component.is_empty() {
-            continue;
-        }
-        check_windows_component(component)?;
-        output.push('/');
-        output.push_str(component);
-        component_count += 1;
-    }
-    if prefix == "drive" && component_count == 0 {
-        return Err(Error::InvalidInput(ABSOLUTE.into()));
-    }
-    let path_length = output.encode_utf16().count() + if prefix == "unc" { 2 } else { 0 };
-    if path_length > 259 {
-        return Err(Error::InvalidInput(LENGTH.into()));
-    }
-    Ok(output)
-}
-
-fn is_windows_separator(character: char) -> bool {
-    character == '\\' || character == '/'
-}
-
-fn check_windows_component(component: &str) -> Result<(), Error> {
-    if let Some(reason) =
-        crate::infra::path_authority::windows_component_refusal(std::ffi::OsStr::new(component))
-    {
-        return Err(Error::InvalidInput(reason.into()));
-    }
-    Ok(())
 }
 
 struct BuildGuard<'a> {
@@ -1325,48 +1203,66 @@ impl Drop for TombstoneGuard<'_> {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 #[derive(Clone, Copy)]
 pub(crate) enum TestHook {
+    #[cfg(unix)]
     PreBuild,
+    #[cfg(unix)]
     PostBuild,
+    #[cfg(unix)]
     PreInsert,
+    #[cfg(unix)]
     PreGet,
+    BeforePoolGet,
+    PoolGetFailed,
+    BoundRefusal,
     PostGet,
     AfterOpenCurrent,
     AfterReadRevision,
+    #[cfg(unix)]
     AfterBumpOp,
+    #[cfg(unix)]
     BeforeRevisionBump,
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 #[derive(Default)]
 pub(crate) struct TestHooks {
     generation: u64,
     scope: Option<PathBuf>,
+    #[cfg(unix)]
     pub(crate) pre_build: Option<Box<dyn FnMut() + Send>>,
+    #[cfg(unix)]
     pub(crate) post_build: Option<Box<dyn FnMut() + Send>>,
+    #[cfg(unix)]
     pub(crate) pre_insert: Option<Box<dyn FnMut() + Send>>,
+    #[cfg(unix)]
     pub(crate) pre_get: Option<Box<dyn FnMut() + Send>>,
+    pub(crate) before_pool_get: Option<Box<dyn FnMut() + Send>>,
+    pub(crate) pool_get_failed: Option<Box<dyn FnMut() + Send>>,
+    pub(crate) bound_refusal: Option<Box<dyn FnMut() + Send>>,
     pub(crate) post_get: Option<Box<dyn FnMut() + Send>>,
     pub(crate) after_open_current: Option<Box<dyn FnMut(usize) + Send>>,
     pub(crate) after_read_revision: Option<Box<dyn FnMut() + Send>>,
+    #[cfg(unix)]
     pub(crate) after_bump_op: Option<Box<dyn FnMut() + Send>>,
+    #[cfg(unix)]
     pub(crate) before_revision_bump: Option<Box<dyn FnMut() + Send>>,
     pub(crate) open_current_count: usize,
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 static TEST_HOOKS: std::sync::OnceLock<std::sync::Mutex<TestHooks>> = std::sync::OnceLock::new();
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 static TEST_HOOK_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 static NEXT_TEST_HOOK_GENERATION: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(1);
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 fn test_hook_scope_matches(hooks: &TestHooks, path: &Path) -> bool {
     let normalized_path = normalize_test_hook_path(path);
     hooks
@@ -1375,7 +1271,7 @@ fn test_hook_scope_matches(hooks: &TestHooks, path: &Path) -> bool {
         .is_some_and(|scope| normalized_path.starts_with(scope))
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 fn normalize_test_hook_path(scope: &Path) -> PathBuf {
     if scope.is_dir() {
         return scope.canonicalize().unwrap_or_else(|_| scope.to_path_buf());
@@ -1393,13 +1289,13 @@ fn normalize_test_hook_path(scope: &Path) -> PathBuf {
         .unwrap_or_else(|_| scope.to_path_buf())
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 pub(crate) struct TestHooksGuard {
     previous: Option<TestHooks>,
     _serial: std::sync::MutexGuard<'static, ()>,
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 pub(crate) fn configure_test_hooks(
     scope: impl AsRef<Path>,
     configure: impl FnOnce(&mut TestHooks),
@@ -1424,7 +1320,7 @@ pub(crate) fn configure_test_hooks(
     guard
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 impl Drop for TestHooksGuard {
     fn drop(&mut self) {
         let Some(previous) = self.previous.take() else {
@@ -1439,23 +1335,27 @@ impl Drop for TestHooksGuard {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 pub(crate) fn run_test_hook(hook: TestHook, path: &Path) {
     match hook {
-        TestHook::PreBuild
-        | TestHook::PostBuild
-        | TestHook::PreInsert
-        | TestHook::PreGet
+        #[cfg(unix)]
+        TestHook::PreBuild | TestHook::PostBuild | TestHook::PreInsert | TestHook::PreGet => {
+            run_noarg_test_hook(hook, path)
+        }
+        TestHook::BeforePoolGet
+        | TestHook::PoolGetFailed
+        | TestHook::BoundRefusal
         | TestHook::PostGet => run_noarg_test_hook(hook, path),
         TestHook::AfterOpenCurrent => run_after_open_current_test_hook(path),
-        #[cfg(unix)]
         TestHook::AfterReadRevision => run_noarg_test_hook(hook, path),
+        #[cfg(unix)]
         TestHook::AfterBumpOp => run_noarg_test_hook(hook, path),
+        #[cfg(unix)]
         TestHook::BeforeRevisionBump => run_noarg_test_hook(hook, path),
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 fn run_noarg_test_hook(hook: TestHook, path: &Path) {
     let hooks_mutex = TEST_HOOKS.get_or_init(|| std::sync::Mutex::new(TestHooks::default()));
     let mut hooks = hooks_mutex
@@ -1465,15 +1365,23 @@ fn run_noarg_test_hook(hook: TestHook, path: &Path) {
         return;
     }
     let mut callback = match hook {
+        #[cfg(unix)]
         TestHook::PreBuild => hooks.pre_build.take(),
+        #[cfg(unix)]
         TestHook::PostBuild => hooks.post_build.take(),
+        #[cfg(unix)]
         TestHook::PreInsert => hooks.pre_insert.take(),
+        #[cfg(unix)]
         TestHook::PreGet => hooks.pre_get.take(),
+        TestHook::BeforePoolGet => hooks.before_pool_get.take(),
+        TestHook::PoolGetFailed => hooks.pool_get_failed.take(),
+        TestHook::BoundRefusal => hooks.bound_refusal.take(),
         TestHook::PostGet => hooks.post_get.take(),
         TestHook::AfterOpenCurrent => None,
-        #[cfg(unix)]
         TestHook::AfterReadRevision => hooks.after_read_revision.take(),
+        #[cfg(unix)]
         TestHook::AfterBumpOp => hooks.after_bump_op.take(),
+        #[cfg(unix)]
         TestHook::BeforeRevisionBump => hooks.before_revision_bump.take(),
     };
     let generation = hooks.generation;
@@ -1485,21 +1393,27 @@ fn run_noarg_test_hook(hook: TestHook, path: &Path) {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if hooks.generation == generation {
             match hook {
-                TestHook::PreBuild => hooks.pre_build = Some(callback_fn),
-                TestHook::PostBuild => hooks.post_build = Some(callback_fn),
-                TestHook::PreInsert => hooks.pre_insert = Some(callback_fn),
-                TestHook::PreGet => hooks.pre_get = Some(callback_fn),
-                TestHook::PostGet | TestHook::AfterOpenCurrent => {}
                 #[cfg(unix)]
+                TestHook::PreBuild => hooks.pre_build = Some(callback_fn),
+                #[cfg(unix)]
+                TestHook::PostBuild => hooks.post_build = Some(callback_fn),
+                #[cfg(unix)]
+                TestHook::PreInsert => hooks.pre_insert = Some(callback_fn),
+                #[cfg(unix)]
+                TestHook::PreGet => hooks.pre_get = Some(callback_fn),
+                TestHook::BeforePoolGet | TestHook::PoolGetFailed | TestHook::BoundRefusal => {}
+                TestHook::PostGet | TestHook::AfterOpenCurrent => {}
                 TestHook::AfterReadRevision => hooks.after_read_revision = Some(callback_fn),
+                #[cfg(unix)]
                 TestHook::AfterBumpOp => hooks.after_bump_op = Some(callback_fn),
+                #[cfg(unix)]
                 TestHook::BeforeRevisionBump => hooks.before_revision_bump = Some(callback_fn),
             }
         }
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 fn run_after_open_current_test_hook(path: &Path) {
     let hooks_mutex = TEST_HOOKS.get_or_init(|| std::sync::Mutex::new(TestHooks::default()));
     let mut hooks = hooks_mutex
@@ -1617,7 +1531,7 @@ impl DatabaseEntry {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 pub(crate) fn test_target(path: &Path) -> crate::infra::path_authority::DatabaseFileTarget {
     crate::infra::path_authority::DatabaseFileTarget::for_test_path(path)
         .expect("test database path must produce a target")
@@ -1633,82 +1547,6 @@ mod tests {
     struct TestText {
         #[diesel(sql_type = diesel::sql_types::Text)]
         value: String,
-    }
-
-    #[test]
-    fn sqlite_uri_refuses_absent_file_without_creating_it() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("absent.db3");
-        let uri = sqlite_uri(&path, SqliteMode::ReadWrite).unwrap();
-
-        assert!(SqliteConnection::establish(&uri).is_err());
-        assert!(!path.exists());
-    }
-
-    #[test]
-    fn sqlite_uri_opens_present_file_read_write() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("present.db3");
-        std::fs::File::create(&path).unwrap();
-        let uri = sqlite_uri(&path, SqliteMode::ReadWrite).unwrap();
-        let mut connection = SqliteConnection::establish(&uri).unwrap();
-
-        diesel::connection::SimpleConnection::batch_execute(
-            &mut connection,
-            "PRAGMA journal_mode = WAL; CREATE TABLE probe (value INTEGER);",
-        )
-        .unwrap();
-        assert!(path.exists());
-    }
-
-    #[test]
-    fn sqlite_uri_encodes_special_filename_bytes_and_uses_file_slash_slash() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("percent%question?#.db3");
-        std::fs::File::create(&path).unwrap();
-        let uri = sqlite_uri(&path, SqliteMode::ReadWrite).unwrap();
-
-        assert!(uri.starts_with("file:///"));
-        assert!(uri.contains("percent%25question%3F%23.db3"));
-        SqliteConnection::establish(&uri).unwrap();
-    }
-
-    #[test]
-    fn sqlite_uri_refuses_non_absolute_paths() {
-        assert!(matches!(
-            sqlite_uri(Path::new("database.db3"), SqliteMode::ReadWrite),
-            Err(Error::InvalidInput(message)) if message == "SQLite database path must be absolute"
-        ));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn sqlite_uri_refuses_non_utf8_paths() {
-        use std::os::unix::ffi::OsStringExt;
-
-        let path = PathBuf::from(std::ffi::OsString::from_vec(b"/tmp/caf\xe9.db3".to_vec()));
-        assert!(matches!(
-            sqlite_uri(&path, SqliteMode::ReadWrite),
-            Err(Error::InvalidInput(message)) if message == "Path is not valid UTF-8"
-        ));
-    }
-
-    #[test]
-    fn sqlite_uri_pool_get_does_not_create_an_absent_file() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("pooled.db3");
-        std::fs::File::create(&path).unwrap();
-        let pool = Pool::builder()
-            .min_idle(Some(0))
-            .connection_timeout(Duration::from_millis(100))
-            .build(ConnectionManager::<SqliteConnection>::new(
-                sqlite_uri(&path, SqliteMode::ReadWrite).unwrap(),
-            ))
-            .unwrap();
-        std::fs::remove_file(&path).unwrap();
-
-        assert!(pool.get().is_err());
-        assert!(!path.exists());
     }
 
     #[test]
@@ -2955,5 +2793,724 @@ mod tests {
         assert!(!body.contains("Pool::builder"));
         assert!(!body.contains("entry("));
         assert!(!body.contains("repository.connection("));
+    }
+}
+
+#[cfg(test)]
+mod bound_sqlite_witnesses {
+    use super::*;
+    use crate::{
+        db::bound_sqlite::{BoundDatabase, SqliteMode},
+        infra::path_authority::database_test_support::replace_parent_with_same_inode_hard_link,
+    };
+    use diesel::{connection::SimpleConnection as _, Connection as _};
+    use rusqlite::Connection;
+    use std::{
+        collections::BTreeSet,
+        ffi::OsStr,
+        fs,
+        path::{Path, PathBuf},
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc, Mutex,
+        },
+    };
+
+    #[derive(Clone, Debug, Default, Eq, PartialEq)]
+    struct SidecarListing {
+        held: BTreeSet<String>,
+        replacement: BTreeSet<String>,
+    }
+
+    struct ParentSwapGuard {
+        path: PathBuf,
+        held_parent: PathBuf,
+    }
+
+    impl ParentSwapGuard {
+        fn replace(path: &Path) -> Self {
+            let held_parent = replace_parent_with_same_inode_hard_link(path);
+            Self {
+                path: path.to_path_buf(),
+                held_parent,
+            }
+        }
+
+        fn listing(&self, leaf: &str) -> SidecarListing {
+            SidecarListing {
+                held: sidecar_listing(&self.held_parent, leaf),
+                replacement: sidecar_listing(self.path.parent().expect("database parent"), leaf),
+            }
+        }
+
+        fn restore(&mut self) {
+            let parent = self.path.parent().expect("database parent");
+            if self.held_parent.exists() {
+                let _ = fs::remove_dir_all(parent);
+                fs::rename(&self.held_parent, parent).expect("restore authorized parent");
+            }
+        }
+    }
+
+    impl Drop for ParentSwapGuard {
+        fn drop(&mut self) {
+            self.restore();
+        }
+    }
+
+    struct LeafSwapGuard {
+        path: PathBuf,
+        backup: PathBuf,
+        replacement: PathBuf,
+    }
+
+    impl LeafSwapGuard {
+        fn new(path: &Path, replacement: &Path) -> Self {
+            let backup = path.with_file_name(format!(
+                "{}.leaf-swap-original",
+                path.file_name().expect("database leaf").to_string_lossy()
+            ));
+            Self {
+                path: path.to_path_buf(),
+                backup,
+                replacement: replacement.to_path_buf(),
+            }
+        }
+
+        fn swap_to_replacement(&mut self) {
+            if self.backup.exists() {
+                return;
+            }
+            fs::rename(&self.path, &self.backup).expect("move authorized database aside");
+            fs::hard_link(&self.replacement, &self.path).expect("link replacement database");
+        }
+
+        fn restore(&mut self) {
+            if self.backup.exists() {
+                let _ = fs::remove_file(&self.path);
+                fs::rename(&self.backup, &self.path).expect("restore authorized database leaf");
+            }
+        }
+    }
+
+    impl Drop for LeafSwapGuard {
+        fn drop(&mut self) {
+            self.restore();
+        }
+    }
+
+    fn sidecar_listing(parent: &Path, leaf: &str) -> BTreeSet<String> {
+        let names = [
+            format!("{leaf}-wal"),
+            format!("{leaf}-shm"),
+            format!("{leaf}-journal"),
+        ];
+        fs::read_dir(parent)
+            .expect("list database parent")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|entry| names.iter().any(|name| name == entry))
+            .collect()
+    }
+
+    fn seed_database(path: &Path, revision: i64, journal_mode: &str) {
+        let connection = Connection::open(path).expect("open database fixture");
+        connection
+            .execute_batch(&format!(
+                "PRAGMA journal_mode = {journal_mode};\
+                 CREATE TABLE Info (Name TEXT PRIMARY KEY, Value TEXT);\
+                 INSERT INTO Info (Name, Value) VALUES ('DataRevision', '{revision}');"
+            ))
+            .expect("seed database fixture");
+    }
+
+    fn read_revision_from_plain_path(path: &Path) -> u64 {
+        let connection = Connection::open(path).expect("open fixture to inspect revision");
+        connection
+            .query_row(
+                "SELECT CAST(Value AS INTEGER) FROM Info WHERE Name = 'DataRevision'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read fixture revision")
+    }
+
+    fn journal_mode(path: &Path) -> String {
+        let connection = Connection::open(path).expect("open fixture to inspect journal mode");
+        connection
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .expect("read fixture journal mode")
+    }
+
+    fn new_database_parent(root: &Path) -> PathBuf {
+        let parent = root.join("authorized");
+        fs::create_dir(&parent).expect("create database parent");
+        parent
+    }
+
+    #[test]
+    fn pool_parent_swap_keeps_wal_and_shm_in_held_parent_and_unlinks_them_there() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = new_database_parent(root.path());
+        let path = parent.join("pool.db3");
+        seed_database(&path, 3, "WAL");
+        let target = test_target(&path);
+        let bound = BoundDatabase::acquire(&target).unwrap();
+        let repository = DatabaseRepository::default();
+        let swap = Arc::new(Mutex::new(None));
+        let observed = Arc::new(Mutex::new(None));
+        let swap_path = path.clone();
+        let swap_before = Arc::clone(&swap);
+        let swap_after = Arc::clone(&swap);
+        let observed_after = Arc::clone(&observed);
+        let leaf = "pool.db3".to_owned();
+        let _hooks = configure_test_hooks(&path, move |hooks| {
+            hooks.before_pool_get = Some(Box::new(move || {
+                *swap_before.lock().unwrap() = Some(ParentSwapGuard::replace(&swap_path));
+            }));
+            hooks.post_get = Some(Box::new(move || {
+                if let Some(swap) = swap_after.lock().unwrap().as_ref() {
+                    *observed_after.lock().unwrap() = Some(swap.listing(&leaf));
+                }
+            }));
+        });
+
+        assert!(matches!(
+            repository.initialization_connection(&target, None),
+            Err(Error::Conflict(_))
+        ));
+        let during = observed
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("post-get observation");
+        assert!(during.held.contains("pool.db3-wal"), "{during:?}");
+        assert!(during.held.contains("pool.db3-shm"), "{during:?}");
+        assert!(during.replacement.is_empty(), "{during:?}");
+        assert!(bound
+            .opened_names()
+            .iter()
+            .any(|name| name == OsStr::new("pool.db3-wal")));
+
+        let mut swap = swap.lock().unwrap().take().expect("parent swap");
+        assert!(!sidecar_listing(&swap.held_parent, "pool.db3")
+            .iter()
+            .any(|name| name.ends_with("-wal") || name.ends_with("-shm")));
+        assert!(sidecar_listing(path.parent().unwrap(), "pool.db3").is_empty());
+        drop(bound);
+        swap.restore();
+    }
+
+    #[test]
+    fn revision_parent_swap_reads_the_existing_wal_from_the_held_parent() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = new_database_parent(root.path());
+        let path = parent.join("revision.db3");
+        seed_database(&path, 1, "WAL");
+        let writer = Connection::open(&path).unwrap();
+        writer
+            .execute_batch("PRAGMA wal_autocheckpoint = 0;")
+            .unwrap();
+        writer
+            .execute(
+                "UPDATE Info SET Value = '23' WHERE Name = 'DataRevision'",
+                [],
+            )
+            .unwrap();
+        let target = test_target(&path);
+        let bound = BoundDatabase::acquire(&target).unwrap();
+        let repository = DatabaseRepository::default();
+        let swap = Arc::new(Mutex::new(None));
+        let observed = Arc::new(Mutex::new(None));
+        let swap_path = path.clone();
+        let swap_after_probe = Arc::clone(&swap);
+        let swap_after_read = Arc::clone(&swap);
+        let observed_after_read = Arc::clone(&observed);
+        let leaf = "revision.db3".to_owned();
+        let _hooks = configure_test_hooks(&path, move |hooks| {
+            hooks.after_open_current = Some(Box::new(move |count| {
+                if count == 1 {
+                    *swap_after_probe.lock().unwrap() = Some(ParentSwapGuard::replace(&swap_path));
+                }
+            }));
+            hooks.after_read_revision = Some(Box::new(move || {
+                if let Some(swap) = swap_after_read.lock().unwrap().as_ref() {
+                    *observed_after_read.lock().unwrap() = Some(swap.listing(&leaf));
+                }
+            }));
+        });
+
+        let pre_swap = repository.open_current(&target).unwrap();
+        drop(pre_swap);
+        assert_eq!(
+            repository
+                .read_revision(&target, &CancellationToken::new())
+                .unwrap(),
+            23
+        );
+        assert!(matches!(
+            repository.database_identity(&target),
+            Err(Error::Conflict(_))
+        ));
+        let during = observed
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("revision observation");
+        assert!(during.held.contains("revision.db3-wal"), "{during:?}");
+        assert!(during.held.contains("revision.db3-shm"), "{during:?}");
+        assert!(during.replacement.is_empty(), "{during:?}");
+        assert!(bound
+            .opened_names()
+            .iter()
+            .any(|name| name == OsStr::new("revision.db3-wal")));
+
+        let mut swap = swap.lock().unwrap().take().expect("parent swap");
+        assert!(sidecar_listing(path.parent().unwrap(), "revision.db3").is_empty());
+        drop(writer);
+        drop(bound);
+        swap.restore();
+    }
+
+    #[test]
+    fn rollback_mode_pool_conversion_opens_journal_only_in_the_held_parent() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = new_database_parent(root.path());
+        let path = parent.join("rollback.db3");
+        seed_database(&path, 4, "DELETE");
+        let target = test_target(&path);
+        let bound = BoundDatabase::acquire(&target).unwrap();
+        let repository = DatabaseRepository::default();
+        let swap = Arc::new(Mutex::new(None));
+        let observed = Arc::new(Mutex::new(None));
+        let swap_path = path.clone();
+        let swap_before = Arc::clone(&swap);
+        let swap_after = Arc::clone(&swap);
+        let observed_after = Arc::clone(&observed);
+        let leaf = "rollback.db3".to_owned();
+        let _hooks = configure_test_hooks(&path, move |hooks| {
+            hooks.before_pool_get = Some(Box::new(move || {
+                *swap_before.lock().unwrap() = Some(ParentSwapGuard::replace(&swap_path));
+            }));
+            hooks.post_get = Some(Box::new(move || {
+                if let Some(swap) = swap_after.lock().unwrap().as_ref() {
+                    *observed_after.lock().unwrap() = Some(swap.listing(&leaf));
+                }
+            }));
+        });
+
+        assert!(matches!(
+            repository.initialization_connection(&target, None),
+            Err(Error::Conflict(_))
+        ));
+        let during = observed
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("post-get observation");
+        assert!(!during.held.contains("rollback.db3-journal"), "{during:?}");
+        assert!(during.replacement.is_empty(), "{during:?}");
+        assert!(bound
+            .opened_names()
+            .iter()
+            .any(|name| name == OsStr::new("rollback.db3-journal")));
+        assert_eq!(journal_mode(&path), "wal");
+
+        let mut swap = swap.lock().unwrap().take().expect("parent swap");
+        assert!(sidecar_listing(&swap.held_parent, "rollback.db3").is_empty());
+        assert!(sidecar_listing(path.parent().unwrap(), "rollback.db3").is_empty());
+        drop(bound);
+        swap.restore();
+    }
+
+    struct HotJournalFixture {
+        root: tempfile::TempDir,
+        path: PathBuf,
+        _writer: Connection,
+    }
+
+    fn hot_journal_fixture(name: &str) -> HotJournalFixture {
+        let root = tempfile::tempdir().unwrap();
+        let parent = new_database_parent(root.path());
+        let path = parent.join(format!("{name}.db3"));
+        let source = root.path().join(format!("{name}-source.db3"));
+        let writer = Connection::open(&source).unwrap();
+        writer
+            .execute_batch(
+                "PRAGMA journal_mode = DELETE;\
+                 PRAGMA synchronous = FULL;\
+                 PRAGMA cache_size = 1;\
+                 PRAGMA cache_spill = ON;\
+                 CREATE TABLE Payload (Id INTEGER PRIMARY KEY, Data BLOB);\
+                 INSERT INTO Payload (Data) VALUES (zeroblob(8192));",
+            )
+            .unwrap();
+        for _ in 0..80 {
+            writer
+                .execute("INSERT INTO Payload (Data) VALUES (zeroblob(8192))", [])
+                .unwrap();
+        }
+        writer
+            .execute_batch(
+                "CREATE TABLE Info (Name TEXT PRIMARY KEY, Value TEXT);\
+                 INSERT INTO Info (Name, Value) VALUES ('DataRevision', '1');\
+                 BEGIN IMMEDIATE;\
+                 UPDATE Info SET Value = '2' WHERE Name = 'DataRevision';\
+                 UPDATE Payload SET Data = randomblob(8192);",
+            )
+            .unwrap();
+        let source_journal = PathBuf::from(format!("{}-journal", source.to_string_lossy()));
+        assert!(fs::metadata(&source_journal).unwrap().len() > 512);
+        fs::copy(&source, &path).unwrap();
+        let destination_journal = PathBuf::from(format!("{}-journal", path.to_string_lossy()));
+        fs::copy(source_journal, destination_journal).unwrap();
+        HotJournalFixture {
+            root,
+            path,
+            _writer: writer,
+        }
+    }
+
+    #[test]
+    fn revision_read_does_not_skip_a_held_hot_journal_after_parent_swap() {
+        let fixture = hot_journal_fixture("revision-hot");
+        let target = test_target(&fixture.path);
+        let repository = DatabaseRepository::default();
+        let swap = Arc::new(Mutex::new(None));
+        let hot_path = fixture.path.clone();
+        let swap_after_probe = Arc::clone(&swap);
+        let _hooks = configure_test_hooks(&fixture.path, move |hooks| {
+            hooks.after_open_current = Some(Box::new(move |count| {
+                if count == 1 {
+                    *swap_after_probe.lock().unwrap() = Some(ParentSwapGuard::replace(&hot_path));
+                }
+            }));
+        });
+        let pre_swap = repository.open_current(&target).unwrap();
+        drop(pre_swap);
+        let result = repository.read_revision(&target, &CancellationToken::new());
+        assert!(
+            !matches!(result, Ok(2)),
+            "hot journal returned spilled revision: {result:?}"
+        );
+        let mut swap = swap.lock().unwrap().take().expect("parent swap");
+        let held = sidecar_listing(&swap.held_parent, "revision-hot.db3");
+        let replacement = sidecar_listing(fixture.path.parent().unwrap(), "revision-hot.db3");
+        assert!(held.contains("revision-hot.db3-journal"), "{held:?}");
+        assert!(replacement.is_empty(), "{replacement:?}");
+        drop(target);
+        swap.restore();
+        let _ = fixture.root.path();
+    }
+
+    #[test]
+    fn read_write_pool_rolls_back_held_hot_journal_and_removes_it_from_held_parent() {
+        let fixture = hot_journal_fixture("pool-hot");
+        let target = test_target(&fixture.path);
+        let bound = BoundDatabase::acquire(&target).unwrap();
+        let repository = DatabaseRepository::default();
+        let swap = Arc::new(Mutex::new(None));
+        let observed = Arc::new(Mutex::new(None));
+        let hot_path = fixture.path.clone();
+        let swap_before = Arc::clone(&swap);
+        let swap_after = Arc::clone(&swap);
+        let observed_after = Arc::clone(&observed);
+        let leaf = "pool-hot.db3".to_owned();
+        let _hooks = configure_test_hooks(&fixture.path, move |hooks| {
+            hooks.before_pool_get = Some(Box::new(move || {
+                *swap_before.lock().unwrap() = Some(ParentSwapGuard::replace(&hot_path));
+            }));
+            hooks.post_get = Some(Box::new(move || {
+                if let Some(swap) = swap_after.lock().unwrap().as_ref() {
+                    *observed_after.lock().unwrap() = Some(swap.listing(&leaf));
+                }
+            }));
+        });
+
+        assert!(matches!(
+            repository.initialization_connection(&target, None),
+            Err(Error::Conflict(_))
+        ));
+        let during = observed
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("post-get observation");
+        assert!(!during.held.contains("pool-hot.db3-journal"), "{during:?}");
+        assert!(during.replacement.is_empty(), "{during:?}");
+        let mut swap = swap.lock().unwrap().take().expect("parent swap");
+        assert!(sidecar_listing(&swap.held_parent, "pool-hot.db3").is_empty());
+        assert!(sidecar_listing(fixture.path.parent().unwrap(), "pool-hot.db3").is_empty());
+        drop(bound);
+        swap.restore();
+        assert_eq!(read_revision_from_plain_path(&fixture.path), 1);
+        let _ = fixture.root.path();
+    }
+
+    #[test]
+    fn leaf_a_to_b_to_a_refusal_is_conflict_and_restores_the_authorized_leaf() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = new_database_parent(root.path());
+        let path = parent.join("leaf.db3");
+        let b_path = parent.join("replacement.db3");
+        seed_database(&path, 11, "WAL");
+        seed_database(&b_path, 22, "WAL");
+        let target = test_target(&path);
+        let repository = DatabaseRepository::default();
+        let leaf_swap = Arc::new(Mutex::new(LeafSwapGuard::new(&path, &b_path)));
+        let after_open = Arc::clone(&leaf_swap);
+        let after_read = Arc::clone(&leaf_swap);
+        let on_refusal = Arc::clone(&leaf_swap);
+        let refusal_seen = Arc::new(AtomicBool::new(false));
+        let refusal_seen_hook = Arc::clone(&refusal_seen);
+        let _hooks = configure_test_hooks(&path, move |hooks| {
+            hooks.after_open_current = Some(Box::new(move |_| {
+                after_open.lock().unwrap().swap_to_replacement();
+            }));
+            hooks.after_read_revision = Some(Box::new(move || {
+                #[cfg(unix)]
+                after_read.lock().unwrap().restore();
+                #[cfg(windows)]
+                let _ = &after_read;
+            }));
+            hooks.bound_refusal = Some(Box::new(move || {
+                refusal_seen_hook.store(true, Ordering::SeqCst);
+                on_refusal.lock().unwrap().restore();
+            }));
+        });
+
+        assert!(matches!(
+            repository.database_identity(&target),
+            Err(Error::Conflict(_))
+        ));
+        assert!(refusal_seen.load(Ordering::SeqCst));
+        assert_eq!(read_revision_from_plain_path(&path), 11);
+        leaf_swap.lock().unwrap().restore();
+    }
+
+    #[test]
+    fn pool_refusal_counter_maps_r2d2_failure_to_conflict_and_retires_entry() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = new_database_parent(root.path());
+        let path = parent.join("pool-refusal.db3");
+        let b_path = parent.join("replacement.db3");
+        seed_database(&path, 1, "WAL");
+        seed_database(&b_path, 9, "DELETE");
+        let target = test_target(&path);
+        let repository = DatabaseRepository::default();
+        let leaf_swap = Arc::new(Mutex::new(LeafSwapGuard::new(&path, &b_path)));
+        let before_pool = Arc::clone(&leaf_swap);
+        let after_failure = Arc::clone(&leaf_swap);
+        let failed_hook_seen = Arc::new(AtomicBool::new(false));
+        let failed_hook = Arc::clone(&failed_hook_seen);
+        let refusal_hook_seen = Arc::new(AtomicBool::new(false));
+        let refusal_hook = Arc::clone(&refusal_hook_seen);
+        let _hooks = configure_test_hooks(&path, move |hooks| {
+            hooks.before_pool_get = Some(Box::new(move || {
+                before_pool.lock().unwrap().swap_to_replacement();
+            }));
+            hooks.pool_get_failed = Some(Box::new(move || {
+                failed_hook.store(true, Ordering::SeqCst);
+                after_failure.lock().unwrap().restore();
+            }));
+            hooks.bound_refusal = Some(Box::new(move || {
+                refusal_hook.store(true, Ordering::SeqCst);
+            }));
+        });
+
+        assert!(matches!(
+            repository.initialization_connection(&target, None),
+            Err(Error::Conflict(_))
+        ));
+        assert!(failed_hook_seen.load(Ordering::SeqCst));
+        assert!(refusal_hook_seen.load(Ordering::SeqCst));
+        let key = entry_key(&target).unwrap();
+        assert!(!repository.state.lock().unwrap().entries.contains_key(&key));
+        assert_eq!(journal_mode(&b_path), "delete");
+        leaf_swap.lock().unwrap().restore();
+    }
+
+    #[test]
+    fn bound_refusal_keeps_an_unchanged_permission_failure_non_conflict() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let root = tempfile::tempdir().unwrap();
+            let parent = new_database_parent(root.path());
+            let path = parent.join("unreadable.db3");
+            seed_database(&path, 1, "WAL");
+            let target = test_target(&path);
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o0)).unwrap();
+            let repository = DatabaseRepository::default();
+            let result = repository.initialization_connection(&target, None);
+            let bound = BoundDatabase::acquire(&target).unwrap();
+            let refusal_count = bound.refusal_count();
+            let permission_error = Error::Io(Box::new(std::io::Error::from(
+                std::io::ErrorKind::PermissionDenied,
+            )));
+            let classified = repository.classify_bound_open_error(
+                &target,
+                &bound,
+                refusal_count,
+                permission_error,
+            );
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+            assert!(!matches!(result, Err(Error::Conflict(_))));
+            assert!(matches!(classified, Error::Io(_)));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn leaf_identity_stat_refuses_a_parked_descriptor_for_another_inode() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = new_database_parent(root.path());
+        let path = parent.join("cached.db3");
+        let b_path = parent.join("replacement.db3");
+        seed_database(&path, 1, "DELETE");
+        seed_database(&b_path, 2, "DELETE");
+        let target = test_target(&path);
+        let bound = BoundDatabase::acquire(&target).unwrap();
+        let mut leaf_swap = LeafSwapGuard::new(&path, &b_path);
+        leaf_swap.swap_to_replacement();
+
+        let first =
+            Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let second =
+            Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        second.execute_batch("BEGIN;").unwrap();
+        second
+            .query_row(
+                "SELECT Value FROM Info WHERE Name='DataRevision'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap();
+        first
+            .query_row(
+                "SELECT Value FROM Info WHERE Name='DataRevision'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap();
+        drop(first);
+
+        let result = Connection::open_with_flags(
+            bound.uri(SqliteMode::ReadOnly).unwrap(),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+        );
+        assert!(result.is_err());
+        assert!(bound.refusal_count() > 0);
+        drop(second);
+        drop(bound);
+        leaf_swap.restore();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_reparse_sidecar_is_reported_as_present_but_never_followed() {
+        use std::os::windows::fs::symlink_file;
+
+        let root = tempfile::tempdir().unwrap();
+        let parent = new_database_parent(root.path());
+        let path = parent.join("reparse.db3");
+        let baseline = parent.join("baseline.db3");
+        let wal_copy = parent.join("external-wal");
+        seed_database(&path, 1, "WAL");
+        fs::copy(&path, &baseline).unwrap();
+        let writer = Connection::open(&path).unwrap();
+        writer
+            .execute_batch("PRAGMA wal_autocheckpoint=0;")
+            .unwrap();
+        writer
+            .execute("UPDATE Info SET Value='2' WHERE Name='DataRevision'", [])
+            .unwrap();
+        fs::copy(
+            PathBuf::from(format!("{}-wal", path.to_string_lossy())),
+            &wal_copy,
+        )
+        .unwrap();
+        drop(writer);
+        fs::copy(&baseline, &path).unwrap();
+        let wal_path = PathBuf::from(format!("{}-wal", path.to_string_lossy()));
+        let _ = fs::remove_file(&wal_path);
+        symlink_file(&wal_copy, &wal_path).unwrap();
+        let target = test_target(&path);
+        let repository = DatabaseRepository::default();
+        assert!(repository
+            .read_revision(&target, &CancellationToken::new())
+            .is_err());
+    }
+
+    #[test]
+    fn bound_uri_mode_is_read_only_for_revision_and_plain_connections_are_unbound() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("uri-check.db3");
+        seed_database(&path, 5, "WAL");
+        let target = test_target(&path);
+        let bound = BoundDatabase::acquire(&target).unwrap();
+        assert!(bound.uri(SqliteMode::ReadOnly).unwrap().contains("mode=ro"));
+        assert!(bound
+            .uri(SqliteMode::ReadWrite)
+            .unwrap()
+            .contains("mode=rw"));
+        let plain = Connection::open(&path).unwrap();
+        plain.execute_batch("SELECT 1;").unwrap();
+    }
+
+    #[test]
+    fn pool_and_revision_reader_share_one_binding_while_wal_is_open() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("shared-wal.db3");
+        seed_database(&path, 7, "WAL");
+        let target = test_target(&path);
+        let bound = BoundDatabase::acquire(&target).unwrap();
+        let repository = DatabaseRepository::default();
+        let pool_connection = repository.initialization_connection(&target, None).unwrap();
+        assert_eq!(
+            repository
+                .read_revision(&target, &CancellationToken::new())
+                .unwrap(),
+            7
+        );
+        let same_binding = BoundDatabase::acquire(&target).unwrap();
+        assert_eq!(bound.token(), same_binding.token());
+        assert!(bound
+            .opened_names()
+            .iter()
+            .any(|name| name == OsStr::new("shared-wal.db3-wal")));
+        drop(pool_connection);
+    }
+
+    #[test]
+    fn sqlite_connection_wrapper_keeps_the_vfs_registered_until_connection_close() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("binding-lifetime.db3");
+        seed_database(&path, 3, "WAL");
+        let target = test_target(&path);
+        let bound = BoundDatabase::acquire(&target).unwrap();
+        let token = bound.token();
+        let connection =
+            SqliteConnection::establish(&bound.uri(SqliteMode::ReadWrite).unwrap()).unwrap();
+        let mut wrapped = BoundSqliteConnection {
+            connection,
+            _binding: bound.clone(),
+        };
+        drop(bound);
+        wrapped
+            .batch_execute(
+                "CREATE TABLE Lifetime (Value INTEGER); INSERT INTO Lifetime VALUES (1);",
+            )
+            .unwrap();
+        wrapped
+            .batch_execute("INSERT INTO Lifetime VALUES (2);")
+            .unwrap();
+        drop(wrapped);
+        let name = std::ffi::CString::new(format!("chessfable-bound-{token}")).unwrap();
+        assert!(unsafe { rusqlite::ffi::sqlite3_vfs_find(name.as_ptr()) }.is_null());
+        assert!(sidecar_listing(path.parent().unwrap(), "binding-lifetime.db3").is_empty());
+        let replacement = BoundDatabase::acquire(&target).unwrap();
+        assert_ne!(replacement.token(), token);
     }
 }

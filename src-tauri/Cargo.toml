@@ -27,6 +27,7 @@ csv = "1.1.6"
 lazy_static = "1.4.0"
 btoi = "0.4.2"
 rusqlite = { version = "0.28.0", features = ["bundled"] }
+ctor = "0.2.7"
 bzip2 = "0.4.3"
 zstd = "0.13"
 diesel = { version = "2.0.2", features = [

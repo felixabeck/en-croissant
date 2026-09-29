@@ -849,7 +849,7 @@ impl DatabaseFileTarget {
         Ok(file)
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn for_test_path(path: &Path) -> Result<Self, Error> {
         path.file_name()
             .filter(|name| !name.is_empty())
@@ -875,6 +875,29 @@ impl DatabaseFileTarget {
             (acquired.identity.a, acquired.identity.b),
             acquired.path,
         ))
+    }
+}
+
+/// Database fixtures shared by path-authority and repository witnesses.
+#[cfg(test)]
+pub(crate) mod database_test_support {
+    use super::*;
+
+    /// Replaces `path`'s parent directory with a fresh one holding a hard link to the same
+    /// inode: the leaf identity is unchanged, the parent identity is not. Returns the moved
+    /// original parent.
+    pub(crate) fn replace_parent_with_same_inode_hard_link(path: &Path) -> PathBuf {
+        let parent = path.parent().expect("test file parent");
+        let leaf = path.file_name().expect("test file leaf");
+        let parent_name = parent
+            .file_name()
+            .expect("test parent name")
+            .to_string_lossy();
+        let old_parent = parent.with_file_name(format!("{parent_name}.old"));
+        fs::rename(parent, &old_parent).expect("rename authorized parent");
+        fs::create_dir(parent).expect("create replacement parent");
+        fs::hard_link(old_parent.join(leaf), path).expect("hard link authorized inode");
+        old_parent
     }
 }
 
@@ -8498,23 +8521,6 @@ mod portable_tests {
     };
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-    /// Replaces `path`'s parent directory with a fresh one holding a hard link to the same
-    /// inode: the leaf identity is unchanged, the parent identity is not. Returns the moved
-    /// original parent.
-    pub(super) fn replace_parent_with_same_inode_hard_link(path: &Path) -> PathBuf {
-        let parent = path.parent().expect("test file parent");
-        let leaf = path.file_name().expect("test file leaf");
-        let parent_name = parent
-            .file_name()
-            .expect("test parent name")
-            .to_string_lossy();
-        let old_parent = parent.with_file_name(format!("{parent_name}.old"));
-        fs::rename(parent, &old_parent).expect("rename authorized parent");
-        fs::create_dir(parent).expect("create replacement parent");
-        fs::hard_link(old_parent.join(leaf), path).expect("hard link authorized inode");
-        old_parent
-    }
-
     pub(super) struct TestClock(AtomicU64);
     impl TestClock {
         pub(super) fn new(v: u64) -> Self {
@@ -8955,9 +8961,8 @@ mod portable_tests {
 #[cfg(unix)]
 #[cfg(test)]
 mod tests {
-    use super::portable_tests::{
-        authority, authority_at, replace_parent_with_same_inode_hard_link, TestClock,
-    };
+    use super::database_test_support::replace_parent_with_same_inode_hard_link;
+    use super::portable_tests::{authority, authority_at, TestClock};
     use super::resolved::file_identity;
     use super::*;
     use crate::infra::blocking::source_scan::body_at_indent;
@@ -20632,7 +20637,7 @@ mod tests {
 
 #[cfg(all(test, windows))]
 mod windows_parent_identity_tests {
-    use super::portable_tests::replace_parent_with_same_inode_hard_link;
+    use super::database_test_support::replace_parent_with_same_inode_hard_link;
     use super::*;
     use std::time::Duration;
     use tempfile::TempDir;
