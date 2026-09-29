@@ -11861,3 +11861,16 @@ Rejected: a longer WebDriver timeout, and a full-FEN dedup key.
 * **Why it matters:** an intermittently red backend gate on every push that touches `src-tauri/**`, locally and on CI, and a test that cannot distinguish a real sidecar leak from a timing race — the property it guards (sidecars are unlinked in the held parent) is exactly what `f-20260929-01` promised.
 * **Proposed fix:** establish which it is before touching the assertion: trace when the pool's connections holding the WAL/SHM are closed relative to `initialization_connection` returning `Conflict`; if the unlink is legitimately deferred to connection drop, make the test wait on that deterministic event (drop the pool or the repository entry) rather than sampling; if sidecars can survive, fix the code. Prove with 200 serial and 200 concurrent runs green.
 * **Found by:** Claude Code, ChessFable push-gate speed investigation 2026-09-29 (concurrent receipt-gate experiment; reproduction loop in that session).
+
+---
+
+## 2026-09-29 — filed through the inbox spool
+
+### One 21 s Rust test sets the wall time of both backend test gates
+
+* **ID:** f-20260929-08 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src-tauri/src/db/mod.rs` `commands_resolve_with_their_own_operation` (line ~5289); next slowest `file_workspace::tests::copy_workspace_file_refuses_a_destination_parent_moved_outside_the_workspace` (10.6 s), `db::tests::every_database_command_finishes_its_real_tail_after_caller_drop` (10.2 s), `db::tests::every_database_command_retires_its_error_tail_after_caller_drop` (10.1 s).
+* **Defect:** measured 2026-09-29 on atlas with `--report-time`: the 1,623 tests sum to 461 s of test time, which the harness spreads over 24 threads (~19 s ideal), but the run takes 23.7 s because this single test takes 21.1 s. `backend-test` and `backend-coverage` both execute it, so it bounds both gates.
+* **Why it matters:** after the push-gate parallelization, the backend lane is the critical path of every Rust-only push; this test is most of that lane's test time.
+* **Proposed fix:** find where the 21 s goes (it builds two `schema_database_case` fixtures and walks every read command; likely a fixed wait or a timeout path per command), remove the wait or split the per-command cases into separate `#[test]`s so the harness parallelizes them; same check for the three ~10 s tests. Keep every assertion.
+* **Found by:** Claude Code, ChessFable push-gate speed investigation 2026-09-29.
