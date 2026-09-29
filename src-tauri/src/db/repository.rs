@@ -36,7 +36,7 @@ use diesel::{
     r2d2::{CustomizeConnection, ManageConnection, Pool, PooledConnection},
     sql_query, Connection, OptionalExtension, SqliteConnection,
 };
-use parking_lot::Mutex as ParkingMutex;
+use parking_lot::{Condvar as ParkingCondvar, Mutex as ParkingMutex, RwLock as ParkingRwLock};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::Error;
@@ -102,6 +102,86 @@ type AcquiredConnection = (
 struct BoundSqliteConnection {
     connection: SqliteConnection,
     _binding: BoundDatabase,
+    // Drop the tracker only after SQLite has closed and released its binding.
+    _lifecycle: ConnectionLease,
+}
+
+#[derive(Debug, Default)]
+struct ConnectionTracker {
+    state: ParkingMutex<ConnectionTrackerState>,
+    changed: ParkingCondvar,
+}
+
+#[derive(Debug, Default)]
+struct ConnectionTrackerState {
+    retiring: bool,
+    connecting: usize,
+    open: usize,
+}
+
+struct ConnectionAttempt {
+    tracker: Arc<ConnectionTracker>,
+    connecting: bool,
+}
+
+struct ConnectionLease {
+    tracker: Arc<ConnectionTracker>,
+}
+
+impl ConnectionTracker {
+    fn begin_connect(self: &Arc<Self>) -> Option<ConnectionAttempt> {
+        let mut state = self.state.lock();
+        if state.retiring {
+            return None;
+        }
+        state.connecting = state.connecting.saturating_add(1);
+        Some(ConnectionAttempt {
+            tracker: Arc::clone(self),
+            connecting: true,
+        })
+    }
+
+    fn begin_retirement(&self) {
+        self.state.lock().retiring = true;
+    }
+
+    fn wait_until_closed(&self) {
+        let mut state = self.state.lock();
+        while state.connecting != 0 || state.open != 0 {
+            self.changed.wait(&mut state);
+        }
+    }
+}
+
+impl ConnectionAttempt {
+    fn connection_opened(mut self) -> ConnectionLease {
+        let mut state = self.tracker.state.lock();
+        state.connecting = state.connecting.saturating_sub(1);
+        state.open = state.open.saturating_add(1);
+        self.connecting = false;
+        self.tracker.changed.notify_all();
+        ConnectionLease {
+            tracker: Arc::clone(&self.tracker),
+        }
+    }
+}
+
+impl Drop for ConnectionAttempt {
+    fn drop(&mut self) {
+        if self.connecting {
+            let mut state = self.tracker.state.lock();
+            state.connecting = state.connecting.saturating_sub(1);
+            self.tracker.changed.notify_all();
+        }
+    }
+}
+
+impl Drop for ConnectionLease {
+    fn drop(&mut self) {
+        let mut state = self.tracker.state.lock();
+        state.open = state.open.saturating_sub(1);
+        self.tracker.changed.notify_all();
+    }
 }
 
 impl Deref for BoundSqliteConnection {
@@ -122,6 +202,7 @@ impl DerefMut for BoundSqliteConnection {
 struct BoundConnectionManager {
     database: BoundDatabase,
     uri: String,
+    connections: Arc<ConnectionTracker>,
 }
 
 impl ManageConnection for BoundConnectionManager {
@@ -129,11 +210,17 @@ impl ManageConnection for BoundConnectionManager {
     type Error = diesel::r2d2::Error;
 
     fn connect(&self) -> Result<Self::Connection, Self::Error> {
+        let attempt = self.connections.begin_connect().ok_or_else(|| {
+            diesel::r2d2::Error::ConnectionError(diesel::ConnectionError::BadConnection(
+                "database pool is retiring".into(),
+            ))
+        })?;
         let connection =
             SqliteConnection::establish(&self.uri).map_err(diesel::r2d2::Error::ConnectionError)?;
         Ok(BoundSqliteConnection {
             connection,
             _binding: self.database.clone(),
+            _lifecycle: attempt.connection_opened(),
         })
     }
 
@@ -209,8 +296,9 @@ pub struct DatabaseIdentity {
 struct DatabaseEntry {
     // Declared before `bound`: fields drop in order, so pooled connections close before the
     // entry's binding handle is released.
-    pool: SqlitePool,
+    pool: ParkingRwLock<Option<SqlitePool>>,
     bound: BoundDatabase,
+    connection_tracker: Arc<ConnectionTracker>,
     write_lock: Arc<ParkingMutex<()>>,
     index_lock: Arc<ParkingMutex<()>>,
     state: Mutex<EntryState>,
@@ -778,6 +866,7 @@ impl DatabaseRepository {
             run_test_hook(TestHook::PreBuild, target.path());
             let bound = BoundDatabase::acquire(target)?;
             let uri = bound.uri(SqliteMode::ReadWrite)?;
+            let connection_tracker = Arc::new(ConnectionTracker::default());
             let pool = Pool::builder()
                 .max_size(MAX_CONNECTIONS_PER_DATABASE)
                 .min_idle(Some(0))
@@ -786,6 +875,7 @@ impl DatabaseRepository {
                 .build(BoundConnectionManager {
                     database: bound.clone(),
                     uri,
+                    connections: Arc::clone(&connection_tracker),
                 })?;
             #[cfg(all(test, unix))]
             run_test_hook(TestHook::PostBuild, target.path());
@@ -809,8 +899,9 @@ impl DatabaseRepository {
             }
             state.clock = state.clock.saturating_add(1);
             let entry = Arc::new(DatabaseEntry {
-                pool,
+                pool: ParkingRwLock::new(Some(pool)),
                 bound,
+                connection_tracker,
                 write_lock: Arc::new(ParkingMutex::new(())),
                 index_lock: Arc::new(ParkingMutex::new(())),
                 state: Mutex::new(EntryState {
@@ -860,6 +951,9 @@ impl DatabaseRepository {
         cancellation: Option<&CancellationToken>,
     ) -> Result<(), Error> {
         entry.retire_and_wait_cancellable(self.retire_wait, cancellation)?;
+        entry.connection_tracker.begin_retirement();
+        entry.close_pool();
+        entry.connection_tracker.wait_until_closed();
         let mut state = self
             .state
             .lock()
@@ -969,12 +1063,11 @@ impl DatabaseRepository {
         let refusal_count = entry.bound.refusal_count();
         #[cfg(test)]
         run_test_hook(TestHook::BeforePoolGet, target.path());
-        let connection = match entry.pool.get() {
+        let connection = match entry.get_connection() {
             Ok(connection) => connection,
             Err(error) => {
                 #[cfg(test)]
                 run_test_hook(TestHook::PoolGetFailed, target.path());
-                let error: Error = error.into();
                 let error =
                     self.classify_bound_open_error(target, &entry.bound, refusal_count, error);
                 drop(lease);
@@ -1455,6 +1548,19 @@ fn run_after_open_current_test_hook(path: &Path) {
 }
 
 impl DatabaseEntry {
+    fn get_connection(&self) -> Result<PooledConnection<BoundConnectionManager>, Error> {
+        let pool = self.pool.read();
+        let pool = pool
+            .as_ref()
+            .ok_or_else(|| Error::Conflict("database pool has been retired".into()))?;
+        pool.get().map_err(Error::from)
+    }
+
+    fn close_pool(&self) {
+        let pool = self.pool.write().take();
+        drop(pool);
+    }
+
     fn acquire(self: &Arc<Self>) -> Result<EntryLease, Error> {
         let mut lifecycle = self
             .lifecycle
@@ -3675,6 +3781,7 @@ mod bound_sqlite_witnesses {
         let bound = BoundDatabase::acquire(&target).unwrap();
         let token = bound.token();
         let uri = bound.uri(SqliteMode::ReadWrite).unwrap();
+        let connection_tracker = Arc::new(ConnectionTracker::default());
         let pool = Pool::builder()
             .max_size(MAX_CONNECTIONS_PER_DATABASE)
             .min_idle(Some(0))
@@ -3683,6 +3790,7 @@ mod bound_sqlite_witnesses {
             .build(BoundConnectionManager {
                 database: bound.clone(),
                 uri,
+                connections: Arc::clone(&connection_tracker),
             })
             .unwrap();
         let mut pooled = pool.get().unwrap();
