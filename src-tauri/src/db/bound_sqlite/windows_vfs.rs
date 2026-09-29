@@ -51,9 +51,11 @@ unsafe fn vfs_access_inner(
         } if named.token == registration.token => {
             match windows_hooks::query_attributes(&registration, &name, is_leaf) {
                 Ok(info) => {
+                    // winAccess applies its zero-size absence rule to every attribute record.
+                    let file_size =
+                        (u64::from(info.nFileSizeHigh) << 32) | u64::from(info.nFileSizeLow);
                     let exists = flags != ffi::SQLITE_ACCESS_EXISTS
-                        || info.nFileSizeHigh != 0
-                        || info.nFileSizeLow != 0;
+                        || sqlite_access_exists(true, i128::from(file_size));
                     let accessible = flags != ffi::SQLITE_ACCESS_READWRITE
                         || info.dwFileAttributes
                             & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_READONLY

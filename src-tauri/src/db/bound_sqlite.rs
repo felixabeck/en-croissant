@@ -26,6 +26,8 @@ use crate::{
 
 const RESERVED_PREFIX: &str = "/<chessfable-bound>/";
 const RESERVED_URI_PREFIX: &str = "file:/%3Cchessfable-bound%3E/";
+#[cfg(unix)]
+const MAX_QUARANTINED_DESCRIPTORS_PER_IDENTITY: usize = 8;
 
 type VfsOpenFn = unsafe extern "C" fn(
     *mut ffi::sqlite3_vfs,
@@ -66,6 +68,9 @@ struct BindingKey {
     leaf: OsString,
 }
 
+#[cfg(test)]
+type BindingTestHook = Box<dyn FnOnce() + Send>;
+
 struct Binding {
     parent: File,
     leaf: OsString,
@@ -73,6 +78,10 @@ struct Binding {
     refusal_count: AtomicU64,
     #[cfg(test)]
     opened_names: Mutex<Vec<OsString>>,
+    #[cfg(all(test, unix))]
+    before_openat: Mutex<Option<BindingTestHook>>,
+    #[cfg(all(test, windows))]
+    before_delete_disposition: Mutex<Option<BindingTestHook>>,
 }
 
 struct Registration {
@@ -191,6 +200,10 @@ impl BoundDatabase {
                 refusal_count: AtomicU64::new(0),
                 #[cfg(test)]
                 opened_names: Mutex::new(Vec::new()),
+                #[cfg(all(test, unix))]
+                before_openat: Mutex::new(None),
+                #[cfg(all(test, windows))]
+                before_delete_disposition: Mutex::new(None),
             };
             create_registration(token, key.clone(), binding)
         })();
@@ -274,8 +287,59 @@ impl BoundDatabase {
             .map(|opened| opened.clone())
             .unwrap_or_default()
     }
+
+    #[cfg(all(test, unix))]
+    pub(super) fn set_before_openat_hook(
+        &self,
+        callback: impl FnOnce() + Send + 'static,
+    ) -> Result<(), Error> {
+        let mut hook = self
+            .0
+            .binding
+            .before_openat
+            .lock()
+            .map_err(|_| Error::Conflict("bound SQLite open test hook was poisoned".into()))?;
+        if hook.is_some() {
+            return Err(Error::Conflict(
+                "bound SQLite open test hook is already set".into(),
+            ));
+        }
+        *hook = Some(Box::new(callback));
+        Ok(())
+    }
+
+    #[cfg(all(test, windows))]
+    pub(super) fn set_before_delete_disposition_hook(
+        &self,
+        callback: impl FnOnce() + Send + 'static,
+    ) -> Result<(), Error> {
+        let mut hook = self
+            .0
+            .binding
+            .before_delete_disposition
+            .lock()
+            .map_err(|_| Error::Conflict("bound SQLite delete test hook was poisoned".into()))?;
+        if hook.is_some() {
+            return Err(Error::Conflict(
+                "bound SQLite delete test hook is already set".into(),
+            ));
+        }
+        *hook = Some(Box::new(callback));
+        Ok(())
+    }
 }
 
+#[cfg(test)]
+fn invoke_binding_test_hook(hook: &Mutex<Option<BindingTestHook>>) {
+    let callback = hook.lock().ok().and_then(|mut hook| hook.take());
+    if let Some(callback) = callback {
+        callback();
+    }
+}
+
+/// For Windows bindings, matches the kernel's `OBJ_CASE_INSENSITIVE` comparison: simple uppercase
+/// per UTF-16 code unit, with no length-changing mappings. Kernel-equivalent spellings must share
+/// one binding and SQLite filename because Windows matches `-shm` nodes by name.
 fn binding_key_leaf(leaf: &OsStr) -> OsString {
     #[cfg(windows)]
     {
@@ -327,6 +391,10 @@ fn percent_encode_leaf(leaf: &str) -> String {
         }
     }
     encoded
+}
+
+fn sqlite_access_exists(is_regular_file: bool, length: i128) -> bool {
+    !is_regular_file || length > 0
 }
 
 fn remove_key_if_token(registry: &mut Registry, key: &BindingKey, token: u64) -> bool {
@@ -415,14 +483,37 @@ fn retain_mismatched_descriptor(fd: libc::c_int, identity: (u64, u64)) {
     };
     let identity_is_live = identity_has_live_registration(&registry, identity);
     if identity_is_live {
-        registry
+        let quarantined = registry
             .quarantined_descriptors
             .entry(identity)
-            .or_default()
-            .push(file);
+            .or_default();
+        if quarantined.len() < MAX_QUARANTINED_DESCRIPTORS_PER_IDENTITY {
+            quarantined.push(file);
+        } else {
+            // Closing beyond the cap reopens the process-wide POSIX-lock hazard tracked by
+            // "A refused bound SQLite leaf open can still close a descriptor of a locked foreign
+            // inode…" (Linux O_PATH hardening).
+            drop(file);
+        }
     } else {
         drop(file);
     }
+}
+
+#[cfg(all(test, unix))]
+pub(super) fn quarantined_descriptor_fds(identity: (u64, u64)) -> Vec<std::os::fd::RawFd> {
+    use std::os::fd::AsRawFd;
+
+    REGISTRY
+        .get()
+        .and_then(|registry| registry.lock().ok())
+        .and_then(|registry| {
+            registry
+                .quarantined_descriptors
+                .get(&identity)
+                .map(|files| files.iter().map(AsRawFd::as_raw_fd).collect())
+        })
+        .unwrap_or_default()
 }
 
 fn increment_refusal(binding: &Binding) {
@@ -868,6 +959,10 @@ mod unix_hooks {
                         return syscall_failure(libc::ESTALE);
                     }
                 }
+                #[cfg(test)]
+                if is_leaf {
+                    invoke_binding_test_hook(&registration.binding.before_openat);
+                }
                 let fd = unsafe {
                     libc::openat(
                         registration.binding.parent.as_raw_fd(),
@@ -883,6 +978,10 @@ mod unix_hooks {
                     let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
                     if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } != 0 {
                         let error = last_errno();
+                        // Identity is unavailable, so closing can still release locks on a
+                        // foreign inode; this residual hazard is tracked by "A refused bound
+                        // SQLite leaf open can still close a descriptor of a locked foreign
+                        // inode…" (Linux O_PATH hardening).
                         unsafe { libc::close(fd) };
                         return syscall_failure(error);
                     }
@@ -1191,9 +1290,9 @@ mod unix_vfs {
             increment_refusal(&registration.binding);
             return ffi::SQLITE_IOERR_ACCESS;
         }
+        let is_regular_file = stat.st_mode & libc::S_IFMT == libc::S_IFREG;
         if flags == ffi::SQLITE_ACCESS_EXISTS
-            && stat.st_mode & libc::S_IFMT == libc::S_IFREG
-            && stat.st_size == 0
+            && !sqlite_access_exists(is_regular_file, i128::from(stat.st_size))
         {
             unsafe { *out = 0 };
             return ffi::SQLITE_OK;
@@ -1255,6 +1354,14 @@ mod tests {
     fn bundled_sqlite_version_is_pinned_for_the_hook_set() {
         assert_eq!(ffi::SQLITE_VERSION_NUMBER, 3_039_002);
         assert_eq!(ffi::SQLITE_VERSION, b"3.39.2\0");
+    }
+
+    #[test]
+    fn sqlite_exists_size_rule_keeps_nonregular_entries_and_rejects_empty_regular_files() {
+        assert!(sqlite_access_exists(false, 0));
+        assert!(!sqlite_access_exists(true, 0));
+        assert!(sqlite_access_exists(true, 1));
+        assert!(!sqlite_access_exists(true, -1));
     }
 
     #[test]
@@ -1324,7 +1431,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn post_open_mismatch_descriptor_is_quarantined_until_last_inode_binding_drops() {
+    fn a_descriptor_for_a_bound_inode_is_retained_until_its_last_binding_drops() {
         use std::os::fd::IntoRawFd;
 
         let dir = tempfile::tempdir().unwrap();
@@ -1355,6 +1462,43 @@ mod tests {
             .get()
             .and_then(|registry| registry.lock().ok())
             .is_some_and(|registry| !registry.quarantined_descriptors.contains_key(&identity)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn quarantined_descriptors_are_capped_per_inode() {
+        use std::os::fd::IntoRawFd;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("quarantine-cap.db3");
+        std::fs::File::create(&path).unwrap();
+        let target = DatabaseFileTarget::for_test_path(&path).unwrap();
+        let bound = BoundDatabase::acquire(&target).unwrap();
+        let identity = bound.0.binding.identity;
+        let fds: Vec<_> = (0..=MAX_QUARANTINED_DESCRIPTORS_PER_IDENTITY)
+            .map(|_| std::fs::File::open(&path).unwrap().into_raw_fd())
+            .collect();
+
+        for fd in &fds {
+            retain_mismatched_descriptor(*fd, identity);
+        }
+
+        assert_eq!(
+            quarantined_descriptor_fds(identity).len(),
+            MAX_QUARANTINED_DESCRIPTORS_PER_IDENTITY
+        );
+        for fd in fds.iter().take(MAX_QUARANTINED_DESCRIPTORS_PER_IDENTITY) {
+            assert_ne!(unsafe { libc::fcntl(*fd, libc::F_GETFD) }, -1);
+        }
+        assert_eq!(
+            unsafe { libc::fcntl(fds[MAX_QUARANTINED_DESCRIPTORS_PER_IDENTITY], libc::F_GETFD,) },
+            -1
+        );
+
+        drop(bound);
+        for fd in fds.iter().take(MAX_QUARANTINED_DESCRIPTORS_PER_IDENTITY) {
+            assert_eq!(unsafe { libc::fcntl(*fd, libc::F_GETFD) }, -1);
+        }
     }
 
     #[test]
@@ -1428,6 +1572,58 @@ mod tests {
             windows_hooks::resolve(final_sigma_wide.as_ptr()),
             windows_hooks::Resolution::Child { is_leaf: true, .. }
         ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn delete_sidecar_handle_prevents_rename_out_of_the_authorized_parent() {
+        use windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION;
+
+        let root = tempfile::tempdir().unwrap();
+        let parent = root.path().join("authorized");
+        std::fs::create_dir(&parent).unwrap();
+        let path = parent.join("delete-race.db3");
+        std::fs::File::create(&path).unwrap();
+        let sidecar = parent.join("delete-race.db3-wal");
+        std::fs::write(&sidecar, b"held sidecar").unwrap();
+        let outside = root.path().join("moved-wal");
+        let target = DatabaseFileTarget::for_test_path(&path).unwrap();
+        let bound = BoundDatabase::acquire(&target).unwrap();
+        let rename_result = Arc::new(Mutex::new(None));
+        let rename_result_in_hook = Arc::clone(&rename_result);
+        let sidecar_in_hook = sidecar.clone();
+        let outside_in_hook = outside.clone();
+        bound
+            .set_before_delete_disposition_hook(move || {
+                *rename_result_in_hook.lock().unwrap() =
+                    Some(std::fs::rename(&sidecar_in_hook, &outside_in_hook));
+            })
+            .unwrap();
+
+        let sqlite_name = format!("{RESERVED_PREFIX}{}/delete-race.db3-wal", bound.token());
+        let mut wide_name: Vec<u16> = sqlite_name.encode_utf16().collect();
+        wide_name.push(0);
+        let deleted = unsafe { windows_hooks::delete_file_hook(wide_name.as_ptr()) };
+        assert_eq!(deleted, 1);
+
+        let rename_error = rename_result
+            .lock()
+            .unwrap()
+            .take()
+            .expect("rename attempt ran")
+            .expect_err("the open handle must deny rename");
+        assert_eq!(
+            rename_error.raw_os_error(),
+            Some(ERROR_SHARING_VIOLATION as i32)
+        );
+        assert!(
+            !sidecar.exists(),
+            "the sidecar should be deleted in the held parent"
+        );
+        assert!(
+            !outside.exists(),
+            "nothing should be moved outside the held parent"
+        );
     }
 
     #[cfg(unix)]

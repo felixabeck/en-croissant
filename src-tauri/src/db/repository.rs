@@ -2962,6 +2962,30 @@ mod bound_sqlite_witnesses {
         parent
     }
 
+    #[cfg(target_os = "linux")]
+    fn assert_sqlite_shared_read_lock_is_held(path: &Path) {
+        use std::os::fd::AsRawFd;
+
+        const PENDING_BYTE: libc::off_t = 0x4000_0000;
+        const SHARED_FIRST: libc::off_t = PENDING_BYTE + 2;
+        const SHARED_SIZE: libc::off_t = 510;
+
+        let probe = fs::File::open(path).expect("open database inode for lock probe");
+        let mut lock: libc::flock = unsafe { std::mem::zeroed() };
+        lock.l_type = libc::F_WRLCK as _;
+        lock.l_whence = libc::SEEK_SET as _;
+        lock.l_start = SHARED_FIRST;
+        lock.l_len = SHARED_SIZE;
+        lock.l_pid = 0;
+        let result = unsafe { libc::fcntl(probe.as_raw_fd(), libc::F_OFD_GETLK, &mut lock) };
+        assert_eq!(result, 0, "query SQLite shared-byte locks");
+        assert_ne!(
+            lock.l_type,
+            libc::F_UNLCK as libc::c_short,
+            "a fresh descriptor must still see the held SQLite read lock"
+        );
+    }
+
     #[test]
     fn pool_parent_swap_keeps_wal_and_shm_in_held_parent_and_unlinks_them_there() {
         let root = tempfile::tempdir().unwrap();
@@ -3096,6 +3120,7 @@ mod bound_sqlite_witnesses {
         fs::File::create(&journal).expect("create empty rollback journal");
 
         let target = test_target(&path);
+        let bound = BoundDatabase::acquire(&target).unwrap();
         let repository = DatabaseRepository::default();
         assert_eq!(
             repository
@@ -3103,6 +3128,10 @@ mod bound_sqlite_witnesses {
                 .unwrap(),
             17
         );
+        assert!(!bound
+            .opened_names()
+            .iter()
+            .any(|name| name == OsStr::new("empty-journal.db3-journal")));
     }
 
     #[test]
@@ -3457,31 +3486,72 @@ mod bound_sqlite_witnesses {
         assert!(result.is_err());
         assert!(bound.refusal_count() > 0);
         #[cfg(target_os = "linux")]
-        {
-            use std::os::fd::AsRawFd;
-
-            const PENDING_BYTE: libc::off_t = 0x4000_0000;
-            const SHARED_FIRST: libc::off_t = PENDING_BYTE + 2;
-            const SHARED_SIZE: libc::off_t = 510;
-
-            let probe = fs::File::open(&b_path).expect("open replacement inode for lock probe");
-            let mut lock: libc::flock = unsafe { std::mem::zeroed() };
-            lock.l_type = libc::F_WRLCK as _;
-            lock.l_whence = libc::SEEK_SET as _;
-            lock.l_start = SHARED_FIRST;
-            lock.l_len = SHARED_SIZE;
-            lock.l_pid = 0;
-            let result = unsafe { libc::fcntl(probe.as_raw_fd(), libc::F_OFD_GETLK, &mut lock) };
-            assert_eq!(result, 0, "query SQLite shared-byte locks");
-            assert_ne!(
-                lock.l_type,
-                libc::F_UNLCK as libc::c_short,
-                "a fresh descriptor must still see the held SQLite read lock"
-            );
-        }
+        assert_sqlite_shared_read_lock_is_held(&b_path);
         drop(second);
         drop(bound);
         leaf_swap.restore();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn post_open_leaf_swap_quarantines_foreign_descriptor_without_dropping_locks() {
+        use crate::db::bound_sqlite::quarantined_descriptor_fds;
+
+        let root = tempfile::tempdir().unwrap();
+        let parent = new_database_parent(root.path());
+        let path_a = parent.join("race-a.db3");
+        let path_b = parent.join("race-b.db3");
+        seed_database(&path_a, 1, "DELETE");
+        seed_database(&path_b, 2, "DELETE");
+        let target_a = test_target(&path_a);
+        let target_b = test_target(&path_b);
+        let bound_a = BoundDatabase::acquire(&target_a).unwrap();
+        let bound_b = BoundDatabase::acquire(&target_b).unwrap();
+        let b_identity = target_b.identity();
+
+        let b_reader =
+            Connection::open_with_flags(&path_b, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .unwrap();
+        b_reader.execute_batch("BEGIN;").unwrap();
+        b_reader
+            .query_row(
+                "SELECT Value FROM Info WHERE Name='DataRevision'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap();
+
+        let swap = Arc::new(Mutex::new(LeafSwapGuard::new(&path_a, &path_b)));
+        let swap_in_hook = Arc::clone(&swap);
+        bound_a
+            .set_before_openat_hook(move || {
+                swap_in_hook.lock().unwrap().swap_to_replacement();
+            })
+            .unwrap();
+
+        let result =
+            DatabaseRepository::default().read_revision(&target_a, &CancellationToken::new());
+        assert!(matches!(result, Err(Error::Conflict(_))), "{result:?}");
+        assert!(bound_a.refusal_count() > 0);
+        assert_sqlite_shared_read_lock_is_held(&path_b);
+
+        let quarantined = quarantined_descriptor_fds(b_identity);
+        assert!(
+            !quarantined.is_empty(),
+            "post-open descriptor was not quarantined"
+        );
+        for fd in &quarantined {
+            assert_ne!(unsafe { libc::fcntl(*fd, libc::F_GETFD) }, -1);
+        }
+
+        drop(b_reader);
+        drop(bound_a);
+        drop(bound_b);
+        for fd in quarantined {
+            assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1);
+        }
+        let mut swap = swap.lock().unwrap();
+        swap.restore();
     }
 
     #[cfg(windows)]

@@ -377,7 +377,7 @@ unsafe fn create_file_hook_inner(
     }
 }
 
-unsafe extern "system" fn delete_file_hook(path: *const u16) -> BOOL {
+pub(super) unsafe extern "system" fn delete_file_hook(path: *const u16) -> BOOL {
     match catch_unwind(AssertUnwindSafe(|| unsafe { delete_file_hook_inner(path) })) {
         Ok(result) => result,
         Err(_) => {
@@ -426,6 +426,8 @@ unsafe fn delete_file_hook_inner(path: *const u16) -> BOOL {
                     return 0;
                 }
             };
+            #[cfg(test)]
+            super::invoke_binding_test_hook(&registration.binding.before_delete_disposition);
             let disposition =
                 windows_sys::Win32::Storage::FileSystem::FILE_DISPOSITION_INFO { DeleteFile: true };
             if unsafe {
