@@ -80,7 +80,7 @@ struct Binding {
     refusal_count: AtomicU64,
     #[cfg(test)]
     opened_names: Mutex<Vec<OsString>>,
-    #[cfg(all(test, unix))]
+    #[cfg(all(test, target_os = "linux"))]
     before_openat: Mutex<Option<BindingTestHook>>,
     #[cfg(all(test, unix))]
     faccessat_error: Mutex<Option<std::os::raw::c_int>>,
@@ -214,7 +214,7 @@ impl BoundDatabase {
                 refusal_count: AtomicU64::new(0),
                 #[cfg(test)]
                 opened_names: Mutex::new(Vec::new()),
-                #[cfg(all(test, unix))]
+                #[cfg(all(test, target_os = "linux"))]
                 before_openat: Mutex::new(None),
                 #[cfg(all(test, unix))]
                 faccessat_error: Mutex::new(None),
@@ -304,7 +304,7 @@ impl BoundDatabase {
             .unwrap_or_default()
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(all(test, target_os = "linux"))]
     pub(super) fn set_before_openat_hook(
         &self,
         callback: impl FnOnce() + Send + 'static,
@@ -378,40 +378,23 @@ fn invoke_binding_test_hook(hook: &Mutex<Option<BindingTestHook>>) {
     }
 }
 
-/// For Windows bindings, matches the kernel's `OBJ_CASE_INSENSITIVE` comparison: simple uppercase
-/// per UTF-16 code unit, with no length-changing mappings. Kernel-equivalent spellings must share
-/// one binding and SQLite filename because Windows matches `-shm` nodes by name.
+/// For Windows bindings, approximates the case-insensitive name match with the system up-case
+/// table (`RtlUpcaseUnicodeChar`, one UTF-16 unit at a time, no length-changing mappings), so
+/// case variants of one path share one binding. The locale-based `LCMapStringEx` left `ς`
+/// unmapped while NTFS folds it onto `Σ` (CI run 36590198609). A volume whose own up-case table
+/// disagrees only splits one database across two registrations: each carries its own token in
+/// every SQLite filename, and Windows byte-range locks are per handle, so the two coordinate
+/// exactly like two processes. Distinct files never share a key, because it includes the leaf
+/// identity.
 fn binding_key_leaf(leaf: &OsStr) -> OsString {
     #[cfg(windows)]
     {
         use std::os::windows::ffi::{OsStrExt, OsStringExt};
-        use windows_sys::Win32::Globalization::{
-            LCMapStringEx, LCMAP_UPPERCASE, LOCALE_NAME_INVARIANT,
-        };
+        use windows_sys::Wdk::System::SystemServices::RtlUpcaseUnicodeChar;
 
         let normalized: Vec<u16> = leaf
             .encode_wide()
-            .map(|unit| {
-                let mut uppercase = 0u16;
-                let mapped = unsafe {
-                    LCMapStringEx(
-                        LOCALE_NAME_INVARIANT,
-                        LCMAP_UPPERCASE,
-                        &unit,
-                        1,
-                        &mut uppercase,
-                        1,
-                        std::ptr::null(),
-                        std::ptr::null(),
-                        0,
-                    )
-                };
-                if mapped == 1 {
-                    uppercase
-                } else {
-                    unit
-                }
-            })
+            .map(|unit| unsafe { RtlUpcaseUnicodeChar(unit) })
             .collect();
         OsString::from_wide(&normalized)
     }
@@ -1020,7 +1003,7 @@ mod unix_hooks {
                         return syscall_failure(libc::ESTALE);
                     }
                 }
-                #[cfg(test)]
+                #[cfg(all(test, target_os = "linux"))]
                 if is_leaf {
                     invoke_binding_test_hook(&registration.binding.before_openat);
                 }
@@ -1830,7 +1813,10 @@ mod windows_hooks {
                     &registration,
                     &name,
                     FILE_OPEN,
-                    windows_sys::Win32::Storage::FileSystem::DELETE,
+                    // `open_windows_child` reads the handle's attributes to refuse a reparse point,
+                    // so a `DELETE`-only handle fails before the disposition (CI run 36590198609).
+                    windows_sys::Win32::Storage::FileSystem::DELETE
+                        | windows_sys::Win32::Storage::FileSystem::FILE_READ_ATTRIBUTES,
                     false,
                 ) {
                     Ok(file) => file,
@@ -2437,17 +2423,31 @@ mod tests {
             BoundDatabase::acquire(&DatabaseFileTarget::for_test_path(&alternate).unwrap())
                 .unwrap();
         assert_eq!(first.token(), second.token());
-        assert_eq!(
-            binding_key_leaf(OsStr::new("Σ.db3")),
-            binding_key_leaf(OsStr::new("ς.db3"))
-        );
         assert_ne!(
             binding_key_leaf(OsStr::new("ß.db3")),
             binding_key_leaf(OsStr::new("SS.db3"))
         );
 
+        // The key must agree with the filesystem rather than with a hard-coded folding table:
+        // two spellings share a key exactly when the second opens the file the first created.
         let sigma_path = root.path().join("Σ.db3");
         std::fs::File::create(&sigma_path).unwrap();
+        let final_sigma_path = root.path().join("ς.db3");
+        let filesystem_folds = match std::fs::File::open(&final_sigma_path) {
+            Ok(file) => {
+                crate::infra::path_authority::opened_file_identity(&file).unwrap()
+                    == crate::infra::path_authority::opened_file_identity(
+                        &std::fs::File::open(&sigma_path).unwrap(),
+                    )
+                    .unwrap()
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => panic!("probing the final-sigma spelling failed: {error}"),
+        };
+        assert_eq!(
+            binding_key_leaf(OsStr::new("Σ.db3")) == binding_key_leaf(OsStr::new("ς.db3")),
+            filesystem_folds
+        );
         let sigma_bound =
             BoundDatabase::acquire(&DatabaseFileTarget::for_test_path(&sigma_path).unwrap())
                 .unwrap();
@@ -2456,10 +2456,13 @@ mod tests {
             .encode_utf16()
             .chain(std::iter::once(0))
             .collect();
-        assert!(matches!(
-            windows_hooks::resolve(final_sigma_wide.as_ptr()),
-            windows_hooks::Resolution::Child { is_leaf: true, .. }
-        ));
+        assert_eq!(
+            matches!(
+                windows_hooks::resolve(final_sigma_wide.as_ptr()),
+                windows_hooks::Resolution::Child { is_leaf: true, .. }
+            ),
+            filesystem_folds
+        );
     }
 
     #[cfg(windows)]

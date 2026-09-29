@@ -3057,6 +3057,10 @@ mod bound_sqlite_witnesses {
         swap.restore();
     }
 
+    // Unix only: these fixtures hold a writer or journal handle without `FILE_SHARE_DELETE`
+    // inside the authorized parent, and Windows refuses to rename a directory with such a
+    // child open (`ERROR_ACCESS_DENIED`, CI run 36590198609), so the swap cannot happen there.
+    #[cfg(unix)]
     #[test]
     fn revision_parent_swap_reads_the_existing_wal_from_the_held_parent() {
         let root = tempfile::tempdir().unwrap();
@@ -3152,6 +3156,10 @@ mod bound_sqlite_witnesses {
             .any(|name| name == OsStr::new("empty-journal.db3-journal")));
     }
 
+    // Unix only: these fixtures hold a writer or journal handle without `FILE_SHARE_DELETE`
+    // inside the authorized parent, and Windows refuses to rename a directory with such a
+    // child open (`ERROR_ACCESS_DENIED`, CI run 36590198609), so the swap cannot happen there.
+    #[cfg(unix)]
     #[test]
     fn rollback_mode_pool_conversion_opens_journal_only_in_the_held_parent() {
         let root = tempfile::tempdir().unwrap();
@@ -3203,12 +3211,14 @@ mod bound_sqlite_witnesses {
         swap.restore();
     }
 
+    #[cfg(unix)]
     struct HotJournalFixture {
         root: tempfile::TempDir,
         path: PathBuf,
         _writer: Connection,
     }
 
+    #[cfg(unix)]
     fn hot_journal_fixture(name: &str) -> HotJournalFixture {
         let root = tempfile::tempdir().unwrap();
         let parent = new_database_parent(root.path());
@@ -3251,6 +3261,10 @@ mod bound_sqlite_witnesses {
         }
     }
 
+    // Unix only: these fixtures hold a writer or journal handle without `FILE_SHARE_DELETE`
+    // inside the authorized parent, and Windows refuses to rename a directory with such a
+    // child open (`ERROR_ACCESS_DENIED`, CI run 36590198609), so the swap cannot happen there.
+    #[cfg(unix)]
     #[test]
     fn revision_read_does_not_skip_a_held_hot_journal_after_parent_swap() {
         let fixture = hot_journal_fixture("revision-hot");
@@ -3283,6 +3297,10 @@ mod bound_sqlite_witnesses {
         let _ = fixture.root.path();
     }
 
+    // Unix only: these fixtures hold a writer or journal handle without `FILE_SHARE_DELETE`
+    // inside the authorized parent, and Windows refuses to rename a directory with such a
+    // child open (`ERROR_ACCESS_DENIED`, CI run 36590198609), so the swap cannot happen there.
+    #[cfg(unix)]
     #[test]
     fn read_write_pool_rolls_back_held_hot_journal_and_removes_it_from_held_parent() {
         let fixture = hot_journal_fixture("pool-hot");
