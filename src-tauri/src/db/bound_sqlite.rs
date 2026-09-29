@@ -107,6 +107,7 @@ struct Registry {
     by_token: HashMap<u64, Weak<Registration>>,
     by_key: HashMap<BindingKey, (u64, Weak<Registration>)>,
     creating: HashMap<BindingKey, u64>,
+    quarantined_descriptors: HashMap<(u64, u64), Vec<File>>,
 }
 
 static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
@@ -278,7 +279,36 @@ impl BoundDatabase {
 fn binding_key_leaf(leaf: &OsStr) -> OsString {
     #[cfg(windows)]
     {
-        OsString::from(leaf.to_string_lossy().to_lowercase())
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+        use windows_sys::Win32::Globalization::{
+            LCMapStringEx, LCMAP_UPPERCASE, LOCALE_NAME_INVARIANT,
+        };
+
+        let normalized: Vec<u16> = leaf
+            .encode_wide()
+            .map(|unit| {
+                let mut uppercase = 0u16;
+                let mapped = unsafe {
+                    LCMapStringEx(
+                        LOCALE_NAME_INVARIANT,
+                        LCMAP_UPPERCASE,
+                        &unit,
+                        1,
+                        &mut uppercase,
+                        1,
+                        std::ptr::null(),
+                        std::ptr::null(),
+                        0,
+                    )
+                };
+                if mapped == 1 {
+                    uppercase
+                } else {
+                    unit
+                }
+            })
+            .collect();
+        OsString::from_wide(&normalized)
     }
     #[cfg(not(windows))]
     {
@@ -344,6 +374,55 @@ fn remove_registration_if_current(key: &BindingKey, token: u64, registration: &R
         registry.by_token.remove(&token);
     }
     remove_key_if_token(&mut registry, key, token);
+
+    let identity = registration.binding.identity;
+    let identity_is_live = identity_has_live_registration(&registry, identity);
+    if !identity_is_live {
+        // Drain while holding the registry lock so a new binding cannot acquire this inode
+        // between the last-registration check and closing the quarantined descriptors.
+        drop(registry.quarantined_descriptors.remove(&identity));
+    }
+}
+
+/// Checks liveness without upgrading a `Weak` under the registry lock: a temporary `Arc` dropped
+/// here could be the last one, and `Registration::drop` locks the registry again.
+fn identity_has_live_registration(registry: &Registry, identity: (u64, u64)) -> bool {
+    registry
+        .by_key
+        .iter()
+        .any(|(key, (_, weak))| key.identity == identity && weak.strong_count() != 0)
+}
+
+#[cfg(unix)]
+fn leaf_identity_matches(registration: &Registration, stat: &libc::stat) -> bool {
+    raw_libc_stat_identity(stat) == registration.binding.identity
+}
+
+#[cfg(unix)]
+fn retain_mismatched_descriptor(fd: libc::c_int, identity: (u64, u64)) {
+    use std::os::fd::FromRawFd;
+
+    // This is the one descriptor produced by a post-open leaf swap race. Keep it only while
+    // the inode has a live binding; each winning race contributes at most one descriptor.
+    let file = unsafe { File::from_raw_fd(fd) };
+    let Some(registry_mutex) = REGISTRY.get() else {
+        drop(file);
+        return;
+    };
+    let mut registry = match registry_mutex.lock() {
+        Ok(registry) => registry,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let identity_is_live = identity_has_live_registration(&registry, identity);
+    if identity_is_live {
+        registry
+            .quarantined_descriptors
+            .entry(identity)
+            .or_default()
+            .push(file);
+    } else {
+        drop(file);
+    }
 }
 
 fn increment_refusal(binding: &Binding) {
@@ -783,8 +862,7 @@ mod unix_hooks {
                         )
                     };
                     if result == 0
-                        && raw_libc_stat_identity(unsafe { &stat.assume_init() })
-                            != registration.binding.identity
+                        && !leaf_identity_matches(&registration, unsafe { &stat.assume_init() })
                     {
                         increment_refusal(&registration.binding);
                         return syscall_failure(libc::ESTALE);
@@ -809,10 +887,9 @@ mod unix_hooks {
                         return syscall_failure(error);
                     }
                     let stat = unsafe { stat.assume_init() };
-                    let identity = raw_libc_stat_identity(&stat);
-                    if identity != registration.binding.identity {
+                    if !leaf_identity_matches(&registration, &stat) {
                         increment_refusal(&registration.binding);
-                        unsafe { libc::close(fd) };
+                        retain_mismatched_descriptor(fd, raw_libc_stat_identity(&stat));
                         return syscall_failure(libc::ESTALE);
                     }
                 }
@@ -863,9 +940,7 @@ mod unix_hooks {
                 if result != 0 {
                     return result;
                 }
-                if is_leaf
-                    && raw_libc_stat_identity(unsafe { &*output }) != registration.binding.identity
-                {
+                if is_leaf && !leaf_identity_matches(&registration, unsafe { &*output }) {
                     increment_refusal(&registration.binding);
                     return syscall_failure(libc::ESTALE);
                 }
@@ -917,7 +992,7 @@ mod unix_hooks {
                         return result;
                     }
                     let stat = unsafe { stat.assume_init() };
-                    if raw_libc_stat_identity(&stat) != registration.binding.identity {
+                    if !leaf_identity_matches(&registration, &stat) {
                         increment_refusal(&registration.binding);
                         return syscall_failure(libc::ESTALE);
                     }
@@ -1111,12 +1186,17 @@ mod unix_vfs {
             }
             return ffi::SQLITE_IOERR_ACCESS;
         }
-        if is_leaf {
-            let stat = unsafe { stat.assume_init() };
-            if raw_libc_stat_identity(&stat) != registration.binding.identity {
-                increment_refusal(&registration.binding);
-                return ffi::SQLITE_IOERR_ACCESS;
-            }
+        let stat = unsafe { stat.assume_init() };
+        if is_leaf && !leaf_identity_matches(&registration, &stat) {
+            increment_refusal(&registration.binding);
+            return ffi::SQLITE_IOERR_ACCESS;
+        }
+        if flags == ffi::SQLITE_ACCESS_EXISTS
+            && stat.st_mode & libc::S_IFMT == libc::S_IFREG
+            && stat.st_size == 0
+        {
+            unsafe { *out = 0 };
+            return ffi::SQLITE_OK;
         }
         unsafe { *out = 1 };
         if flags == ffi::SQLITE_ACCESS_READWRITE {
@@ -1242,6 +1322,41 @@ mod tests {
         assert!(registry.by_key.contains_key(&key));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn post_open_mismatch_descriptor_is_quarantined_until_last_inode_binding_drops() {
+        use std::os::fd::IntoRawFd;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("quarantined-inode.db3");
+        std::fs::File::create(&path).unwrap();
+        let alias = dir.path().join("quarantined-inode-alias.db3");
+        std::fs::hard_link(&path, &alias).unwrap();
+        let target = DatabaseFileTarget::for_test_path(&path).unwrap();
+        let bound = BoundDatabase::acquire(&target).unwrap();
+        let identity = bound.0.binding.identity;
+        let alias_target = DatabaseFileTarget::for_test_path(&alias).unwrap();
+        let alias_bound = BoundDatabase::acquire(&alias_target).unwrap();
+        let fd = std::fs::File::open(&path).unwrap().into_raw_fd();
+
+        retain_mismatched_descriptor(fd, identity);
+        assert_ne!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1);
+        assert!(REGISTRY
+            .get()
+            .and_then(|registry| registry.lock().ok())
+            .is_some_and(|registry| registry.quarantined_descriptors.contains_key(&identity)));
+
+        drop(bound);
+        assert_ne!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1);
+        drop(alias_bound);
+        assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1);
+        assert_eq!(unix_hooks::last_errno(), libc::EBADF);
+        assert!(REGISTRY
+            .get()
+            .and_then(|registry| registry.lock().ok())
+            .is_some_and(|registry| !registry.quarantined_descriptors.contains_key(&identity)));
+    }
+
     #[test]
     fn bindings_share_one_name_per_directory_entry_and_refuse_cross_parent_aliases() {
         let root = tempfile::tempdir().unwrap();
@@ -1290,6 +1405,29 @@ mod tests {
             BoundDatabase::acquire(&DatabaseFileTarget::for_test_path(&alternate).unwrap())
                 .unwrap();
         assert_eq!(first.token(), second.token());
+        assert_eq!(
+            binding_key_leaf(OsStr::new("Σ.db3")),
+            binding_key_leaf(OsStr::new("ς.db3"))
+        );
+        assert_ne!(
+            binding_key_leaf(OsStr::new("ß.db3")),
+            binding_key_leaf(OsStr::new("SS.db3"))
+        );
+
+        let sigma_path = root.path().join("Σ.db3");
+        std::fs::File::create(&sigma_path).unwrap();
+        let sigma_bound =
+            BoundDatabase::acquire(&DatabaseFileTarget::for_test_path(&sigma_path).unwrap())
+                .unwrap();
+        let final_sigma_name = format!("{RESERVED_PREFIX}{}/ς.db3", sigma_bound.token());
+        let final_sigma_wide: Vec<u16> = final_sigma_name
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        assert!(matches!(
+            windows_hooks::resolve(final_sigma_wide.as_ptr()),
+            windows_hooks::Resolution::Child { is_leaf: true, .. }
+        ));
     }
 
     #[cfg(unix)]

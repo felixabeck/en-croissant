@@ -38,6 +38,9 @@ type DeleteFileFn = unsafe extern "system" fn(*const u16) -> BOOL;
 type GetAttributesFn = unsafe extern "system" fn(*const u16) -> u32;
 type GetAttributesExFn = unsafe extern "system" fn(*const u16, i32, *mut std::ffi::c_void) -> BOOL;
 
+// winAccess reports a zero-length file as absent, so this keeps a reparse point visible to SQLite.
+const PRESENT_REPARSE_POINT_SYNTHETIC_SIZE: u32 = 1;
+
 #[derive(Clone, Copy)]
 struct Originals {
     create_file: CreateFileFn,
@@ -151,13 +154,15 @@ pub(super) fn resolve(path: *const u16) -> Resolution {
         return Resolution::Refused(ERROR_ACCESS_DENIED);
     }
     let name = OsString::from_wide(name_wide);
-    let leaf = registration.binding.leaf.to_string_lossy().to_lowercase();
-    let child = name.to_string_lossy().to_lowercase();
+    let leaf = super::binding_key_leaf(&registration.binding.leaf);
+    let child = super::binding_key_leaf(&name);
     let leaf_match = child == leaf;
     let valid = leaf_match
-        || ["-wal", "-shm", "-journal"]
-            .iter()
-            .any(|suffix| child == format!("{leaf}{suffix}"));
+        || ["-WAL", "-SHM", "-JOURNAL"].iter().any(|suffix| {
+            let mut sidecar = leaf.clone();
+            sidecar.push(*suffix);
+            child == sidecar
+        });
     if !valid {
         return Resolution::Refused(ERROR_ACCESS_DENIED);
     }
@@ -413,7 +418,7 @@ unsafe fn delete_file_hook_inner(path: *const u16) -> BOOL {
                 &name,
                 FILE_OPEN,
                 windows_sys::Win32::Storage::FileSystem::DELETE,
-                true,
+                false,
             ) {
                 Ok(file) => file,
                 Err(error) => {
@@ -569,7 +574,7 @@ unsafe fn get_attributes_ex_hook_inner(
                 Err(error) if error == ERROR_ACCESS_DENIED && !is_leaf => {
                     let mut info: WIN32_FILE_ATTRIBUTE_DATA = unsafe { std::mem::zeroed() };
                     info.dwFileAttributes = FILE_ATTRIBUTE_REPARSE_POINT;
-                    info.nFileSizeLow = 1;
+                    info.nFileSizeLow = PRESENT_REPARSE_POINT_SYNTHETIC_SIZE;
                     unsafe { std::ptr::write(data.cast(), info) };
                     return 1;
                 }

@@ -3087,6 +3087,25 @@ mod bound_sqlite_witnesses {
     }
 
     #[test]
+    fn zero_length_rollback_journal_is_absent_for_revision_read() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = new_database_parent(root.path());
+        let path = parent.join("empty-journal.db3");
+        seed_database(&path, 17, "DELETE");
+        let journal = PathBuf::from(format!("{}-journal", path.to_string_lossy()));
+        fs::File::create(&journal).expect("create empty rollback journal");
+
+        let target = test_target(&path);
+        let repository = DatabaseRepository::default();
+        assert_eq!(
+            repository
+                .read_revision(&target, &CancellationToken::new())
+                .unwrap(),
+            17
+        );
+    }
+
+    #[test]
     fn rollback_mode_pool_conversion_opens_journal_only_in_the_held_parent() {
         let root = tempfile::tempdir().unwrap();
         let parent = new_database_parent(root.path());
@@ -3437,6 +3456,29 @@ mod bound_sqlite_witnesses {
         );
         assert!(result.is_err());
         assert!(bound.refusal_count() > 0);
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::fd::AsRawFd;
+
+            const PENDING_BYTE: libc::off_t = 0x4000_0000;
+            const SHARED_FIRST: libc::off_t = PENDING_BYTE + 2;
+            const SHARED_SIZE: libc::off_t = 510;
+
+            let probe = fs::File::open(&b_path).expect("open replacement inode for lock probe");
+            let mut lock: libc::flock = unsafe { std::mem::zeroed() };
+            lock.l_type = libc::F_WRLCK as _;
+            lock.l_whence = libc::SEEK_SET as _;
+            lock.l_start = SHARED_FIRST;
+            lock.l_len = SHARED_SIZE;
+            lock.l_pid = 0;
+            let result = unsafe { libc::fcntl(probe.as_raw_fd(), libc::F_OFD_GETLK, &mut lock) };
+            assert_eq!(result, 0, "query SQLite shared-byte locks");
+            assert_ne!(
+                lock.l_type,
+                libc::F_UNLCK as libc::c_short,
+                "a fresh descriptor must still see the held SQLite read lock"
+            );
+        }
         drop(second);
         drop(bound);
         leaf_swap.restore();
