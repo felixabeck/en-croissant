@@ -329,3 +329,25 @@ noise (`…-1790667297378353979-3`), same-directory hard-link hazard (`…-17906
   this run; Windows and macOS execution is proven by the CI run on the pushed commit.
 * Decisions recorded: `d-20260929-04` (mechanism), `d-20260929-05` (cross-directory hard-link
   conflict).
+
+## Post-push CI repairs
+
+* CI on `91b4049f`: macOS E0617 (`u16` passed to a variadic) and a Windows test-binary abort
+  (`STATUS_STACK_BUFFER_OVERRUN` from panicking guard `Drop`s) → `e60d1ef0` (`c_uint`,
+  non-panicking `try_restore` guards, Windows-legal URI test leaf).
+* CI run 36590198609 on `e60d1ef0`: macOS `-D warnings` (the before-openat hook is used only by a
+  Linux test); Windows 8 failures — the `DeleteFileW` hook opened sidecars with `DELETE` only
+  while `open_windows_child` reads attributes to refuse a reparse point (product bug: sidecars were
+  never deleted on Windows); `LCMapStringEx` left `ς` unmapped while NTFS folds it onto `Σ`; four
+  parent-swap witnesses could not rename a directory holding a child handle without
+  `FILE_SHARE_DELETE` (os error 5) → `8b74127a` (`FILE_READ_ATTRIBUTES`, `RtlUpcaseUnicodeChar`
+  with a filesystem-measured sigma assertion, the four witnesses unix-only, the hook Linux-only).
+  Correctness lens on the repair: REVISE, one blocker — a volume up-case table can differ from the
+  system table. Arbitrated **Skip (evidence)**: a disagreement only splits one database across two
+  registrations, each with its own token in every SQLite filename (`winOpenSharedMemory` matches
+  nodes by `sqlite3StrICmp` on that name), and Windows byte-range locks are per handle, so the two
+  coordinate exactly like two processes; distinct files never share a key because it includes the
+  leaf identity. The doc comment now states that contract instead of claiming kernel equality.
+* CI run 36594812395 on `8b74127a`: macOS APFS refuses the non-UTF-8 fixture name with `EILSEQ`
+  → `edb633cc` accepts exactly that refusal. CI run 36595753649 on `edb633cc`: rust-windows-test,
+  rust-macos-test and all three rust-platform jobs green.
