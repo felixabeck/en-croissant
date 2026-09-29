@@ -1182,11 +1182,13 @@ mod tests {
         // Same inode, new freshness: the sidecar and the cached index now describe
         // an earlier state. A read-only load must re-probe and refuse them, which
         // surfaces as the generation path's missing Mutate permission.
+        // Any mtime other than the one just probed; the epoch is never a fresh file's.
+        let stale_mtime = std::time::UNIX_EPOCH;
         std::fs::OpenOptions::new()
             .write(true)
             .open(&database)
             .unwrap()
-            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000))
+            .set_modified(stale_mtime)
             .unwrap();
         assert!(matches!(
             load(),
