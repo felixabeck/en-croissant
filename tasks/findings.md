@@ -8397,6 +8397,9 @@ Handled 2026-09-19 together with f-20260905-14. The Files controls fit 320px / 2
 * **Open question:** how does every SQLite open of an authorized database — the identity probe's revision read, the pool, and generation's reader — read the authorized leaf rather than whatever the pathname names (`f-20260929-01`'s candidates; note `/proc/self/fd/<fd>` breaks WAL sidecar derivation), and how does the probe prove its revision came from the same object as its descriptor stat?
 <!-- ledger-meta {"command":"annotate","effect_lines":2,"effect_sha256":"ccd8068d30b8674ce4c8482031777d4f3175c665d68af26ae09a9666795e0279","input_sha256":"47852090a973409534b5e19d339b0afba3a8581ee2a543679116ac89d3153a97","kind":"mutation-receipt","operation":"b2b459a676e96483ad2b3600b42526b50b2154492fdf9d0fb35fa9ed5bd9bbcc","options":{"section":null},"request_id_sha256":null,"results":["f-20260912-07"],"target":"f-20260912-07","v":1} -->
 
+* **Which question is live, 2026-09-29:** the original **Open question** above (re-probe / retained descriptor / accept) is answered by `d-20260929-03` (no post-open re-probe). The live question is the one in the reopen annotation: binding every SQLite open of the authorized database to its leaf, shared with `f-20260929-01`.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"cf66aa1e9f9b2c4fd76d4dedbd35e0da98560462678f4247cccc076064c979f1","input_sha256":"7a9aa3dc58226e04e77740982bd16a5f9467326c26abcaf403b39f5cebf81b71","kind":"mutation-receipt","operation":"503c7e1c7c2c8932ce1bf7baa4f351681bcafda8b4e77e5599ee662cb73878a6","options":{"section":null},"request_id_sha256":null,"results":["f-20260912-07"],"target":"f-20260912-07","v":1} -->
+
 ### A `PuzzleRead` capability builds the repository's read-write SQLite pool, whose acquire hook runs `PRAGMA journal_mode = WAL`
 
 * **ID:** f-20260912-08 · **Status:** handled · **Area:** db-search · **Root:** - · **Entry:** lens · **Blocked:** none
