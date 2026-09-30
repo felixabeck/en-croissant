@@ -1,9 +1,10 @@
 //! SQLite opens for authorized databases use a reserved URI name that cannot
 //! name a real file. Unix and Windows syscall hooks resolve that name through
 //! a retained parent directory handle, and each binding owns its SQLite VFS
-//! until every connection using it has closed. Production code must not open
-//! SQLite by a plain pathname under `/<chessfable-bound>/`; the only remaining
-//! plain-path production open is the private puzzle snapshot in the temp dir.
+//! until every connection using it has closed. Linux verifies leaf opens on
+//! `O_PATH` descriptors before reopening the verified inode; other Unix
+//! platforms quarantine mismatched descriptors and refuse new leaf opens when
+//! that bounded registry is full. Windows locks are handle-scoped.
 
 use std::{
     collections::HashMap,
@@ -26,7 +27,7 @@ use crate::{
 
 const RESERVED_PREFIX: &str = "/<chessfable-bound>/";
 const RESERVED_URI_PREFIX: &str = "file:/%3Cchessfable-bound%3E/";
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "linux")))]
 const MAX_QUARANTINED_DESCRIPTORS_PER_IDENTITY: usize = 8;
 
 type VfsOpenFn = unsafe extern "C" fn(
@@ -80,8 +81,14 @@ struct Binding {
     refusal_count: AtomicU64,
     #[cfg(test)]
     opened_names: Mutex<Vec<OsString>>,
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(all(test, unix))]
     before_openat: Mutex<Option<BindingTestHook>>,
+    #[cfg(all(test, target_os = "linux"))]
+    before_proc_reopen: Mutex<Option<BindingTestHook>>,
+    #[cfg(all(test, unix))]
+    leaf_fstat_error: Mutex<Option<std::os::raw::c_int>>,
+    #[cfg(all(test, target_os = "linux"))]
+    proc_reopen_error: Mutex<Option<std::os::raw::c_int>>,
     #[cfg(all(test, unix))]
     faccessat_error: Mutex<Option<std::os::raw::c_int>>,
     #[cfg(all(test, windows))]
@@ -120,7 +127,10 @@ struct Registry {
     by_token: HashMap<u64, Weak<Registration>>,
     by_key: HashMap<BindingKey, (u64, Weak<Registration>)>,
     creating: HashMap<BindingKey, u64>,
+    #[cfg(all(unix, not(target_os = "linux")))]
     quarantined_descriptors: HashMap<(u64, u64), Vec<File>>,
+    #[cfg(all(unix, not(target_os = "linux")))]
+    unclassified_descriptors: Vec<File>,
     #[cfg(test)]
     creation_hooks: HashMap<BindingKey, RegistryTestHook>,
     #[cfg(test)]
@@ -214,8 +224,14 @@ impl BoundDatabase {
                 refusal_count: AtomicU64::new(0),
                 #[cfg(test)]
                 opened_names: Mutex::new(Vec::new()),
-                #[cfg(all(test, target_os = "linux"))]
+                #[cfg(all(test, unix))]
                 before_openat: Mutex::new(None),
+                #[cfg(all(test, target_os = "linux"))]
+                before_proc_reopen: Mutex::new(None),
+                #[cfg(all(test, unix))]
+                leaf_fstat_error: Mutex::new(None),
+                #[cfg(all(test, target_os = "linux"))]
+                proc_reopen_error: Mutex::new(None),
                 #[cfg(all(test, unix))]
                 faccessat_error: Mutex::new(None),
                 #[cfg(all(test, windows))]
@@ -304,12 +320,67 @@ impl BoundDatabase {
             .unwrap_or_default()
     }
 
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(all(test, unix))]
     pub(super) fn set_before_openat_hook(
         &self,
         callback: impl FnOnce() + Send + 'static,
     ) -> Result<(), Error> {
         set_binding_test_hook(&self.0.binding.before_openat, "open", callback)
+    }
+
+    #[cfg(all(test, unix, not(target_os = "linux")))]
+    pub(super) fn has_pending_before_openat_hook(&self) -> bool {
+        self.0
+            .binding
+            .before_openat
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_some()
+    }
+
+    #[cfg(all(test, unix))]
+    pub(super) fn fail_next_leaf_fstat_with(
+        &self,
+        error: std::os::raw::c_int,
+    ) -> Result<(), Error> {
+        let mut slot = self
+            .0
+            .binding
+            .leaf_fstat_error
+            .lock()
+            .map_err(|_| Error::Conflict("bound SQLite fstat test hook was poisoned".into()))?;
+        if slot.is_some() {
+            return Err(Error::Conflict(
+                "bound SQLite fstat test hook is already set".into(),
+            ));
+        }
+        *slot = Some(error);
+        Ok(())
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    pub(super) fn set_before_proc_reopen_hook(
+        &self,
+        callback: impl FnOnce() + Send + 'static,
+    ) -> Result<(), Error> {
+        set_binding_test_hook(&self.0.binding.before_proc_reopen, "proc reopen", callback)
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    pub(super) fn fail_next_proc_reopen_with(
+        &self,
+        error: std::os::raw::c_int,
+    ) -> Result<(), Error> {
+        let mut slot = self.0.binding.proc_reopen_error.lock().map_err(|_| {
+            Error::Conflict("bound SQLite proc reopen test hook was poisoned".into())
+        })?;
+        if slot.is_some() {
+            return Err(Error::Conflict(
+                "bound SQLite proc reopen test hook is already set".into(),
+            ));
+        }
+        *slot = Some(error);
+        Ok(())
     }
 
     #[cfg(all(test, unix))]
@@ -467,17 +538,28 @@ fn remove_registration_if_current(key: &BindingKey, token: u64, registration: &R
     }
     remove_key_if_token(&mut registry, key, token);
 
-    let identity = registration.binding.identity;
-    let identity_is_live = identity_has_live_registration(&registry, identity);
-    if !identity_is_live {
-        // Drain while holding the registry lock so a new binding cannot acquire this inode
-        // between the last-registration check and closing the quarantined descriptors.
-        drop(registry.quarantined_descriptors.remove(&identity));
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        let identity = registration.binding.identity;
+        let identity_is_live = identity_has_live_registration(&registry, identity);
+        if !identity_is_live {
+            // Drain while holding the registry lock so a new binding cannot acquire this inode
+            // between the last-registration check and closing the quarantined descriptors.
+            drop(registry.quarantined_descriptors.remove(&identity));
+        }
+        if !registry
+            .by_key
+            .values()
+            .any(|(_, weak)| weak.strong_count() != 0)
+        {
+            drop(std::mem::take(&mut registry.unclassified_descriptors));
+        }
     }
 }
 
 /// Checks liveness without upgrading a `Weak` under the registry lock: a temporary `Arc` dropped
 /// here could be the last one, and `Registration::drop` locks the registry again.
+#[cfg(all(unix, not(target_os = "linux")))]
 fn identity_has_live_registration(registry: &Registry, identity: (u64, u64)) -> bool {
     registry
         .by_key
@@ -490,12 +572,11 @@ fn leaf_identity_matches(registration: &Registration, stat: &libc::stat) -> bool
     raw_libc_stat_identity(stat) == registration.binding.identity
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "linux")))]
 fn retain_mismatched_descriptor(fd: libc::c_int, identity: (u64, u64)) {
     use std::os::fd::FromRawFd;
 
-    // This is the one descriptor produced by a post-open leaf swap race. Keep it only while
-    // the inode has a live binding; each winning race contributes at most one descriptor.
+    // Keep a lockable descriptor from a leaf-swap race until its inode has no live binding.
     let file = unsafe { File::from_raw_fd(fd) };
     let Some(registry_mutex) = REGISTRY.get() else {
         drop(file);
@@ -507,24 +588,49 @@ fn retain_mismatched_descriptor(fd: libc::c_int, identity: (u64, u64)) {
     };
     let identity_is_live = identity_has_live_registration(&registry, identity);
     if identity_is_live {
-        let quarantined = registry
+        registry
             .quarantined_descriptors
             .entry(identity)
-            .or_default();
-        if quarantined.len() < MAX_QUARANTINED_DESCRIPTORS_PER_IDENTITY {
-            quarantined.push(file);
-        } else {
-            // Closing beyond the cap reopens the process-wide POSIX-lock hazard tracked by
-            // "A refused bound SQLite leaf open can still close a descriptor of a locked foreign
-            // inode…" (Linux O_PATH hardening).
-            drop(file);
-        }
+            .or_default()
+            .push(file);
     } else {
         drop(file);
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(all(unix, not(target_os = "linux")))]
+fn retain_unclassified_descriptor(fd: libc::c_int) {
+    use std::os::fd::FromRawFd;
+
+    let file = unsafe { File::from_raw_fd(fd) };
+    let Some(registry_mutex) = REGISTRY.get() else {
+        drop(file);
+        return;
+    };
+    let mut registry = match registry_mutex.lock() {
+        Ok(registry) => registry,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    registry.unclassified_descriptors.push(file);
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn leaf_open_is_admitted() -> bool {
+    let Some(registry_mutex) = REGISTRY.get() else {
+        return true;
+    };
+    let registry = match registry_mutex.lock() {
+        Ok(registry) => registry,
+        Err(_) => return false,
+    };
+    !registry
+        .quarantined_descriptors
+        .values()
+        .any(|descriptors| descriptors.len() >= MAX_QUARANTINED_DESCRIPTORS_PER_IDENTITY)
+        && registry.unclassified_descriptors.len() < MAX_QUARANTINED_DESCRIPTORS_PER_IDENTITY
+}
+
+#[cfg(all(test, unix, not(target_os = "linux")))]
 pub(super) fn quarantined_descriptor_fds(identity: (u64, u64)) -> Vec<std::os::fd::RawFd> {
     use std::os::fd::AsRawFd;
 
@@ -538,6 +644,51 @@ pub(super) fn quarantined_descriptor_fds(identity: (u64, u64)) -> Vec<std::os::f
                 .map(|files| files.iter().map(AsRawFd::as_raw_fd).collect())
         })
         .unwrap_or_default()
+}
+
+#[cfg(all(test, unix, not(target_os = "linux")))]
+pub(super) fn unclassified_descriptor_fds() -> Vec<std::os::fd::RawFd> {
+    use std::os::fd::AsRawFd;
+
+    REGISTRY
+        .get()
+        .and_then(|registry| registry.lock().ok())
+        .map(|registry| {
+            registry
+                .unclassified_descriptors
+                .iter()
+                .map(AsRawFd::as_raw_fd)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(all(test, unix, not(target_os = "linux")))]
+pub(super) const fn quarantine_capacity() -> usize {
+    MAX_QUARANTINED_DESCRIPTORS_PER_IDENTITY
+}
+
+#[cfg(all(test, unix, not(target_os = "linux")))]
+pub(super) fn retain_mismatched_descriptor_for_test(fd: libc::c_int, identity: (u64, u64)) {
+    retain_mismatched_descriptor(fd, identity);
+}
+
+#[cfg(all(test, unix, not(target_os = "linux")))]
+pub(super) fn retain_unclassified_descriptor_for_test(fd: libc::c_int) {
+    retain_unclassified_descriptor(fd);
+}
+
+#[cfg(all(test, unix, not(target_os = "linux")))]
+pub(super) fn open_bound_leaf_for_test(bound: &BoundDatabase) -> Result<libc::c_int, libc::c_int> {
+    let leaf = bound.0.binding.leaf.to_string_lossy();
+    let path = CString::new(format!("{RESERVED_PREFIX}{}/{leaf}", bound.0.token))
+        .map_err(|_| libc::EINVAL)?;
+    let fd = unsafe { unix_hooks::open_hook_inner(path.as_ptr(), libc::O_RDONLY, 0) };
+    if fd < 0 {
+        Err(unix_hooks::last_errno())
+    } else {
+        Ok(fd)
+    }
 }
 
 fn increment_refusal(binding: &Binding) {
@@ -924,19 +1075,127 @@ mod unix_hooks {
             .any(|suffix| name == [leaf, suffix].concat())
     }
 
-    fn set_opened_name(registration: &Registration, name: &OsStr) -> Result<(), c_int> {
+    fn set_opened_name(registration: &Registration, name: &OsStr) {
         #[cfg(test)]
         {
             let mut opened = registration
                 .binding
                 .opened_names
                 .lock()
-                .map_err(|_| libc::EIO)?;
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             opened.push(name.to_os_string());
         }
         #[cfg(not(test))]
         let _ = (registration, name);
-        Ok(())
+    }
+
+    unsafe fn fstat_leaf_descriptor(
+        registration: &Registration,
+        fd: c_int,
+        output: *mut libc::stat,
+    ) -> c_int {
+        #[cfg(test)]
+        {
+            let error = registration
+                .binding
+                .leaf_fstat_error
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take();
+            if let Some(error) = error {
+                set_errno(error);
+                return -1;
+            }
+        }
+        #[cfg(not(test))]
+        let _ = registration;
+        unsafe { libc::fstat(fd, output) }
+    }
+
+    #[cfg(target_os = "linux")]
+    unsafe fn open_linux_leaf(
+        registration: &Registration,
+        name: &CString,
+        flags: c_int,
+        mode: c_int,
+    ) -> c_int {
+        use std::os::fd::FromRawFd;
+
+        #[cfg(test)]
+        invoke_binding_test_hook(&registration.binding.before_openat);
+
+        let path_fd = unsafe {
+            libc::openat(
+                registration.binding.parent.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                0,
+            )
+        };
+        if path_fd < 0 {
+            return path_fd;
+        }
+        let path_file = unsafe { File::from_raw_fd(path_fd) };
+        let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+        if unsafe { fstat_leaf_descriptor(registration, path_fd, stat.as_mut_ptr()) } != 0 {
+            let error = last_errno();
+            drop(path_file);
+            return syscall_failure(error);
+        }
+        let stat = unsafe { stat.assume_init() };
+        if !leaf_identity_matches(registration, &stat) {
+            increment_refusal(&registration.binding);
+            drop(path_file);
+            return syscall_failure(libc::ESTALE);
+        }
+
+        set_opened_name(registration, OsStr::from_bytes(name.as_bytes()));
+        #[cfg(test)]
+        invoke_binding_test_hook(&registration.binding.before_proc_reopen);
+
+        let proc_path = match CString::new(format!("/proc/self/fd/{path_fd}")) {
+            Ok(path) => path,
+            Err(_) => {
+                drop(path_file);
+                return syscall_failure(libc::EINVAL);
+            }
+        };
+        #[cfg(test)]
+        let reopened_fd = {
+            let error = registration
+                .binding
+                .proc_reopen_error
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take();
+            match error {
+                Some(error) => {
+                    set_errno(error);
+                    -1
+                }
+                None => unsafe {
+                    libc::open(
+                        proc_path.as_ptr(),
+                        flags & !libc::O_NOFOLLOW,
+                        mode as libc::c_uint,
+                    )
+                },
+            }
+        };
+        #[cfg(not(test))]
+        let reopened_fd = unsafe {
+            libc::open(
+                proc_path.as_ptr(),
+                flags & !libc::O_NOFOLLOW,
+                mode as libc::c_uint,
+            )
+        };
+        let error = (reopened_fd < 0).then(last_errno);
+        drop(path_file);
+        match error {
+            Some(error) => syscall_failure(error),
+            None => reopened_fd,
+        }
     }
 
     pub(super) fn is_own_child(token: u64, path: *const c_char) -> bool {
@@ -984,26 +1243,35 @@ mod unix_hooks {
                 is_leaf,
             } => {
                 if is_leaf {
-                    // Refuse a swapped leaf before opening it: closing a descriptor on another
-                    // inode would release every POSIX lock this process holds on that inode.
-                    // The check after the open still covers a swap between the two calls.
-                    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-                    let result = unsafe {
-                        libc::fstatat(
-                            registration.binding.parent.as_raw_fd(),
-                            name.as_ptr(),
-                            stat.as_mut_ptr(),
-                            libc::AT_SYMLINK_NOFOLLOW,
-                        )
-                    };
-                    if result == 0
-                        && !leaf_identity_matches(&registration, unsafe { &stat.assume_init() })
+                    #[cfg(target_os = "linux")]
+                    return unsafe { open_linux_leaf(&registration, &name, flags, mode) };
+
+                    #[cfg(all(unix, not(target_os = "linux")))]
                     {
-                        increment_refusal(&registration.binding);
-                        return syscall_failure(libc::ESTALE);
+                        if !leaf_open_is_admitted() {
+                            return syscall_failure(libc::EMFILE);
+                        }
+
+                        // Non-Linux Unix must check before opening because a mismatched lockable
+                        // descriptor can only be retained safely after the race has occurred.
+                        let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+                        let result = unsafe {
+                            libc::fstatat(
+                                registration.binding.parent.as_raw_fd(),
+                                name.as_ptr(),
+                                stat.as_mut_ptr(),
+                                libc::AT_SYMLINK_NOFOLLOW,
+                            )
+                        };
+                        if result == 0
+                            && !leaf_identity_matches(&registration, unsafe { &stat.assume_init() })
+                        {
+                            increment_refusal(&registration.binding);
+                            return syscall_failure(libc::ESTALE);
+                        }
                     }
                 }
-                #[cfg(all(test, target_os = "linux"))]
+                #[cfg(all(test, unix, not(target_os = "linux")))]
                 if is_leaf {
                     invoke_binding_test_hook(&registration.binding.before_openat);
                 }
@@ -1018,28 +1286,24 @@ mod unix_hooks {
                 if fd < 0 {
                     return fd;
                 }
+                #[cfg(all(unix, not(target_os = "linux")))]
                 if is_leaf {
                     let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-                    if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } != 0 {
+                    if unsafe { fstat_leaf_descriptor(&registration, fd, stat.as_mut_ptr()) } != 0 {
                         let error = last_errno();
-                        // Identity is unavailable, so closing can still release locks on a
-                        // foreign inode; this residual hazard is tracked by "A refused bound
-                        // SQLite leaf open can still close a descriptor of a locked foreign
-                        // inode…" (Linux O_PATH hardening).
-                        unsafe { libc::close(fd) };
+                        #[cfg(all(unix, not(target_os = "linux")))]
+                        retain_unclassified_descriptor(fd);
                         return syscall_failure(error);
                     }
                     let stat = unsafe { stat.assume_init() };
                     if !leaf_identity_matches(&registration, &stat) {
                         increment_refusal(&registration.binding);
+                        #[cfg(all(unix, not(target_os = "linux")))]
                         retain_mismatched_descriptor(fd, raw_libc_stat_identity(&stat));
                         return syscall_failure(libc::ESTALE);
                     }
                 }
-                if set_opened_name(&registration, OsStr::from_bytes(name.as_bytes())).is_err() {
-                    unsafe { libc::close(fd) };
-                    return syscall_failure(libc::EIO);
-                }
+                set_opened_name(&registration, OsStr::from_bytes(name.as_bytes()));
                 fd
             }
         }
@@ -2308,7 +2572,7 @@ mod tests {
         assert!(registry.by_key.contains_key(&key));
     }
 
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "linux")))]
     #[test]
     fn a_descriptor_for_a_bound_inode_is_retained_until_its_last_binding_drops() {
         use std::os::fd::IntoRawFd;
@@ -2341,44 +2605,6 @@ mod tests {
             .get()
             .and_then(|registry| registry.lock().ok())
             .is_some_and(|registry| !registry.quarantined_descriptors.contains_key(&identity)));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn quarantined_descriptors_are_capped_per_inode() {
-        use std::os::fd::IntoRawFd;
-
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("quarantine-cap.db3");
-        std::fs::File::create(&path).unwrap();
-        let target = DatabaseFileTarget::for_test_path(&path).unwrap();
-        let bound = BoundDatabase::acquire(&target).unwrap();
-        let identity = bound.0.binding.identity;
-        let fds: Vec<_> = (0..=MAX_QUARANTINED_DESCRIPTORS_PER_IDENTITY)
-            .map(|_| std::fs::File::open(&path).unwrap().into_raw_fd())
-            .collect();
-
-        for fd in &fds {
-            retain_mismatched_descriptor(*fd, identity);
-        }
-
-        assert_eq!(
-            quarantined_descriptor_fds(identity).len(),
-            MAX_QUARANTINED_DESCRIPTORS_PER_IDENTITY
-        );
-        for fd in fds.iter().take(MAX_QUARANTINED_DESCRIPTORS_PER_IDENTITY) {
-            assert_ne!(unsafe { libc::fcntl(*fd, libc::F_GETFD) }, -1);
-        }
-        assert!(
-            !quarantined_descriptor_fds(identity)
-                .contains(&fds[MAX_QUARANTINED_DESCRIPTORS_PER_IDENTITY]),
-            "the descriptor over the cap must not be retained"
-        );
-
-        drop(bound);
-        // Closure is observed through the registry: a closed descriptor number can be reused at
-        // once by a parallel test.
-        assert!(quarantined_descriptor_fds(identity).is_empty());
     }
 
     #[test]
@@ -3114,17 +3340,22 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "linux")))]
     #[test]
     fn a_refused_descriptor_of_an_unbound_inode_is_not_retained() {
-        use std::os::{fd::IntoRawFd, unix::fs::MetadataExt};
+        use std::os::fd::{AsRawFd, IntoRawFd};
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("never-bound.db3");
         std::fs::File::create(&path).unwrap();
-        let metadata = std::fs::metadata(&path).unwrap();
-        let identity = (metadata.dev(), metadata.ino());
-        let fd = std::fs::File::open(&path).unwrap().into_raw_fd();
+        let file = std::fs::File::open(&path).unwrap();
+        let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+        assert_eq!(
+            unsafe { libc::fstat(file.as_raw_fd(), stat.as_mut_ptr()) },
+            0
+        );
+        let identity = raw_libc_stat_identity(unsafe { &stat.assume_init() });
+        let fd = file.into_raw_fd();
 
         // No binding holds this inode, so this process holds no SQLite lock on it and the
         // descriptor is closed at once instead of being quarantined.
