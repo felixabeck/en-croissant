@@ -1,7 +1,15 @@
 #!/usr/bin/env node
 
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  statSync,
+  writeSync,
+} from "node:fs";
 import {
   availableParallelism as defaultAvailableParallelism,
   constants as osConstants,
@@ -363,7 +371,16 @@ function importSpecifiers(source) {
   ];
 }
 
-function resolveLocalImport(root, importer, specifier, exists = existsSync) {
+function isRegularFile(path) {
+  try {
+    return statSync(path).isFile();
+  } catch (error) {
+    if (error.code === "ENOENT" || error.code === "ENOTDIR") return false;
+    throw error;
+  }
+}
+
+function resolveLocalImport(root, importer, specifier, isFile = isRegularFile) {
   let base;
   if (specifier.startsWith("@/")) base = resolve(root, "src", specifier.slice(2));
   else if (specifier.startsWith("./") || specifier.startsWith("../")) {
@@ -384,7 +401,7 @@ function resolveLocalImport(root, importer, specifier, exists = existsSync) {
         ),
       ];
   for (const candidate of candidates) {
-    if (!exists(candidate)) continue;
+    if (!isFile(candidate)) continue;
     const path = relative(root, candidate).split(sep).join("/");
     if (!path.startsWith("../")) return path;
   }
@@ -397,6 +414,7 @@ export function mutationFilesForChanges(
     root = process.cwd(),
     readSource = (path) => readFileSync(path, "utf8"),
     exists = existsSync,
+    isFile = isRegularFile,
   } = {},
 ) {
   const filesByPackage = new Map(
@@ -429,7 +447,7 @@ export function mutationFilesForChanges(
       );
     }
     for (const specifier of importSpecifiers(source)) {
-      const dependency = resolveLocalImport(root, importer, specifier, exists);
+      const dependency = resolveLocalImport(root, importer, specifier, isFile);
       if (!dependency) continue;
       if (filesByPackage.has(dependency)) selectedFiles.add(dependency);
       if (dependency.startsWith("src/") && exists(resolve(root, dependency))) {

@@ -417,6 +417,60 @@ test("a changed Vitest file adds its exercised production file to the mutation l
   assert.ok(mutationLane.commands[0].args.includes(sourcePath));
 });
 
+test("a changed test follows a directory import through its index file", async (t) => {
+  const root = await temporarySchedulerRoot(t);
+  const testPath = "src/state/directory-import.test.ts";
+  const directoryIndexPath = "src/dir/index.ts";
+  const mutationPath = "src/state/workspace.ts";
+  await mkdir(dirname(join(root, testPath)), { recursive: true });
+  await mkdir(dirname(join(root, directoryIndexPath)), { recursive: true });
+  await mkdir(dirname(join(root, mutationPath)), { recursive: true });
+  await writeFile(join(root, testPath), 'import { directoryValue } from "@/dir";\n');
+  await writeFile(
+    join(root, directoryIndexPath),
+    'import { workspace } from "@/state/workspace";\nexport const directoryValue = workspace;\n',
+  );
+  await writeFile(join(root, mutationPath), "export const workspace = 1;\n");
+
+  assert.deepEqual(mutationFilesForChanges([testPath], { root }), [mutationPath]);
+});
+
+test("a changed test skips a directory import without an index file", async (t) => {
+  const root = await temporarySchedulerRoot(t);
+  const testPath = "src/state/missing-directory-import.test.ts";
+  await mkdir(dirname(join(root, testPath)), { recursive: true });
+  await mkdir(join(root, "src/dir"), { recursive: true });
+  await writeFile(join(root, testPath), 'import { directoryValue } from "@/dir";\n');
+
+  assert.deepEqual(mutationFilesForChanges([testPath], { root }), []);
+});
+
+test("a changed test read failure still throws with its cause", async (t) => {
+  const root = await temporarySchedulerRoot(t);
+  const testPath = "src/state/unreadable.test.ts";
+  await mkdir(dirname(join(root, testPath)), { recursive: true });
+  await writeFile(join(root, testPath), "export {};\n");
+  const readError = new Error("injected read failure");
+
+  assert.throws(
+    () =>
+      mutationFilesForChanges([testPath], {
+        root,
+        readSource: () => {
+          throw readError;
+        },
+      }),
+    (error) => {
+      assert.equal(
+        error.message,
+        `Cannot read changed test ${testPath} for mutation selection: ${readError.message}`,
+      );
+      assert.strictEqual(error.cause, readError);
+      return true;
+    },
+  );
+});
+
 test("Rust-only pre-review waits for the frontend build before Windows clippy", async (t) => {
   const cwd = await temporarySchedulerRoot(t);
   const events = [];
