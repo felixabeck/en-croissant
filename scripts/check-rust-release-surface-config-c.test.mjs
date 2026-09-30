@@ -1,11 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
-
 import { spawnSync } from "node:child_process";
-
 import { dirname, join } from "node:path";
-
 import { describe, expect, test } from "vitest";
-
 import { expectCliStatus, runCheckerOver } from "./rust-release-surface-fixture.mjs";
 
 describe("R5 config, test-only scope, and physical source surface", () => {

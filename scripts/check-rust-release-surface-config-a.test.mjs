@@ -1,11 +1,7 @@
 import { readFile } from "node:fs/promises";
-
 import { join } from "node:path";
-
 import { describe, expect, test } from "vitest";
-
 import { EXPECTED_CLIPPY_TOML, PATH_METHODS } from "./check-rust-release-surface.mjs";
-
 import {
   CHECKOUT_FILES,
   expectCliStatus,

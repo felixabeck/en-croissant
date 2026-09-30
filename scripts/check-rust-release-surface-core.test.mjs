@@ -1,5 +1,6 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { describe, expect, test } from "vitest";
-
 import {
   checkDeadCodeSurface,
   checkFaultInjectionSurface,
@@ -11,7 +12,6 @@ import {
   INITIAL_FS_SURFACE_COUNTS,
   listRustSources,
 } from "./check-rust-release-surface.mjs";
-
 import {
   allowedSource,
   CHECKOUT_MAIN,
@@ -20,7 +20,6 @@ import {
   expectR5Diagnostic,
   LEGACY_ALLOWED_FILE,
   pathMethodViolations,
-  readFileForWiring,
   runCheckerOver,
   sources,
 } from "./rust-release-surface-fixture.mjs";
@@ -179,7 +178,7 @@ pub(crate) trait AtomicWriterInjector {}
     expect(calls).toBe(2);
   });
   test("the release script is wired into package.json", async () => {
-    const packageJson = JSON.parse(await readFileForWiring("package.json"));
+    const packageJson = JSON.parse(await readFile(join(process.cwd(), "package.json"), "utf8"));
     expect(packageJson.scripts["rust:surface:check"]).toBe(
       "node scripts/check-rust-release-surface.mjs --check-allowlist-residency",
     );

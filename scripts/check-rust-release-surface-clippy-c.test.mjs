@@ -1,11 +1,7 @@
 import { createHash } from "node:crypto";
-
 import { describe, expect, test } from "vitest";
-
 import { checkGateInvisibleRegions } from "./check-rust-release-surface.mjs";
-
 import { classifyRustTestOnlySources } from "./rust-test-only.mjs";
-
 import {
   CHECKOUT_MAIN,
   expectCliStatus,

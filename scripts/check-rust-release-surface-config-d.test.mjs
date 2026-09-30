@@ -1,5 +1,4 @@
 import { describe, expect, test } from "vitest";
-
 import {
   CHECKOUT_FILES,
   expectCliStatus,

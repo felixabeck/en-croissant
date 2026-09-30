@@ -1,21 +1,14 @@
 import { mkdtemp, mkdir, readFile, rm, symlink, unlink, writeFile } from "node:fs/promises";
-
 import { createHash } from "node:crypto";
-
 import { spawnSync } from "node:child_process";
-
 import { tmpdir } from "node:os";
-
 import { dirname, join } from "node:path";
-
 import { expect } from "vitest";
-
 import {
   checkPathMethodExpectations,
   checkRustReleaseSurface,
   DEAD_CODE_ALLOWLIST,
 } from "./check-rust-release-surface.mjs";
-
 import { classifyRustTestOnlySources } from "./rust-test-only.mjs";
 
 export const LEGACY_ALLOWED_FILE = "src-tauri/src/infra/path_authority.rs";
@@ -166,8 +159,4 @@ export function customExpectBaseline(path, contents, functionName, methods) {
 
 export function expectR5Diagnostic(violations, diagnostic) {
   expect(violations.some((line) => line.includes("R5:") && line.includes(diagnostic))).toBe(true);
-}
-
-export async function readFileForWiring(path) {
-  return readFile(join(process.cwd(), path), "utf8");
 }
