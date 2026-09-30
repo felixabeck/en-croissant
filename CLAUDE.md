@@ -59,8 +59,9 @@ bindings, bundle, container e2e, mutation, and the Rust compile, clippy and test
 
 The push skill's §2 runs every final gate through one command,
 `pnpm gates:push -- [--rust] [--frontend] [--bindings]` (`scripts/run-push-gates.mjs`; no flags is
-the contract-only run). It runs the mutation guard and `setup-rust` first, then rebuilds `dist/` and
-runs `bindings:check` serially, then the contract, Rust lint, Rust test, Rust coverage, frontend
+the contract-only run). For the selected blocks, it runs the mutation guard first (always) and
+`setup-rust` for Rust or bindings, then rebuilds `dist/` for every `dist/` consumer and runs
+`bindings:check` with `--bindings`, then the contract, Rust lint, Rust test, Rust coverage, frontend
 coverage and bundle lanes concurrently; e2e waits for bundle and every cargo lane because its
 container build rewrites `dist/`, a Rust compile input, and frontend mutation runs last unless the
 budget allows one wave. Worker counts come from the cgroup memory budget
@@ -233,7 +234,7 @@ WebDriver sees the page, not the GTK widgets around it, and `issue_engine_binary
 native picker, so registering an engine (and therefore any check needing a live engine child)
 cannot be automated this way.
 
-## Repository state (as of 2026-08-30)
+## Repository state (as of 2026-08-30; later updates are dated inline)
 
 The audit implementation is committed; `master` tracks `origin/master` and is well ahead of
 `upstream/master`. Work here is a side project, picked up in bursts. **Do not restate an exact
