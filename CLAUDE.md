@@ -57,6 +57,17 @@ triage, and red-gate behavior.
 checks. The path map in the push skill covers the expensive path-scoped gates (coverage, build,
 bindings, bundle, container e2e, mutation, and the Rust compile, clippy and test gates).
 
+The push skill's §2 runs every final gate through one command,
+`pnpm gates:push -- [--rust] [--frontend] [--bindings]` (`scripts/run-push-gates.mjs`; no flags is
+the contract-only run). It runs the mutation guard and `setup-rust` first, then rebuilds `dist/` and
+runs `bindings:check` serially, then the contract, Rust lint, Rust test, Rust coverage, frontend
+coverage and bundle lanes concurrently; e2e waits for bundle and every cargo lane because its
+container build rewrites `dist/`, a Rust compile input, and frontend mutation runs last unless the
+budget allows one wave. Worker counts come from the cgroup memory budget
+(`scripts/gate-parallelism.mjs`), because every agent session runs in an 8 GiB scope where
+core-count sizing was measured to OOM-kill Stryker. The schedule and its constants are
+`d-20260930-03` and `d-20260930-04`.
+
 Gate scripts live in `package.json`; the path mapping and any direct tool invocations live in the
 canonical push contract. Two properties worth knowing before planning any change:
 
@@ -78,8 +89,11 @@ canonical push contract. Two properties worth knowing before planning any change
   largest-lazy, and total gzip bytes. Never lower a floor or rewrite a baseline to accept a
   regression — see `docs/coverage.md`.
 
-**Frontend mutation testing is a receipt-backed frontend push gate.** It runs all three packages
-through `gate:ensure frontend-mutation` and was measured at 323 s on the runner. The backend suite
+**Frontend mutation testing is a receipt-backed frontend push gate.** It runs its three packages
+through `gate:ensure frontend-mutation` in memory-sized slots: in the 8 GiB agent budget one package
+at a time with five Stryker runners. Measured 2026-09-30 as the last lane of an all-blocks
+`pnpm gates:push`: 397.5 s with 0 OOM kills, under load average 12-20 from other sessions (549.1 s
+serially at the old fixed concurrency of 2). The backend suite
 stays in `.github/workflows/mutation.yml`, dispatchable and scheduled weekly, with the eight backend
 packages as a matrix over the runner's `BACKEND_MUTATION_PACKAGE` selector. A single sequential
 backend run is slow enough to crowd GitHub's 6-hour per-job limit, so `test.yml` and local pushes
@@ -259,9 +273,9 @@ What is **not** settled, all of it filed in `tasks/findings.md` rather than only
 - **Mutation testing now has valid evidence on this tree for the first time** (`f-20260829-05`,
   handled), after the pinned tooling was installed on atlas on 2026-08-29. The **backend is green**:
   all eight packages, 324 mutants, 305 caught, 9 timeouts, 10 unviable, **0 survivors**. The
-  **frontend is red**: 97.93 on `game-practice` with three survivors in
-  `src/components/boards/gameSession.ts` (`f-20260829-08`), which stops the runner before its other
-  two packages, so those stay unmeasured until the survivors are killed.
+  **frontend is green** as of 2026-09-30: all three packages at a 100 % score in the final push-gate
+  run of the gate-parallelism change. The first red package now terminates its running siblings and
+  starts no queued package, so a red package still hides the others' results until it is fixed.
 - **The 320px / 200% font-scale layout is broken** — `f-20260829-02`. The committed screenshots
   record the clipping rather than contradict it.
 - **`src/App.tsx` is untested** (0 of 67 lines) — `f-20260829-03`.
