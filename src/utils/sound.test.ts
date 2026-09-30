@@ -12,6 +12,12 @@ vi.mock("@/platform/tauri", async () => {
 
 vi.mock("@/platform/native", () => ({ warn: mocks.warn }));
 
+// Warm the atoms graph transform during collection; dynamic imports after vi.resetModules() only re-evaluate modules.
+// Keep vi.resetModules() for the sound-server latch; loadSound() returns the fresh sound instance, never this top-level one.
+import "jotai";
+import "@/state/atoms";
+import "./sound";
+
 type AudioStub = {
     play: ReturnType<typeof vi.fn>;
     src: string;
