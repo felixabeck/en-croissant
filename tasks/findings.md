@@ -11852,7 +11852,7 @@ Rejected: a longer WebDriver timeout, and a full-FEN dedup key.
 
 ### A refused bound SQLite leaf open can still close a descriptor of a locked foreign inode, or hold descriptors until the inode's binding drops
 
-* **ID:** f-20260929-06 · **Status:** open · **Area:** db-search · **Root:** sqlite-pathname-open · **Entry:** build · **Blocked:** none
+* **ID:** f-20260929-06 · **Status:** handled · **Area:** db-search · **Root:** sqlite-pathname-open · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/db/bound_sqlite.rs` unix `open` hook (pre-open `fstatat` identity check, `openat`, post-open `fstat` check, `retain_mismatched_descriptor` quarantine with a per-inode cap; the `fstat`-failure branch closes the fresh descriptor).
 * **Defect:** the bound open refuses a leaf whose identity is not the authority-bound one. The pre-open `fstatat` check handles the ordinary case without opening, but a writer that swaps the leaf to another bound database B between that check and `openat` produces a real descriptor of B. Closing it would drop every POSIX lock this process holds on B (SQLite's locks are process-associated), so it is quarantined until B's last binding drops — bounded per inode by a cap, beyond which it is closed and the lock hazard returns. The rare `fstat`-failure branch closes an unclassified descriptor unconditionally. Needs a local actor who can write the authorized directory and win the race repeatedly.
 * **Why it matters:** a dropped lock lets another process write B while this process's SQLite connection believes it holds a lock (corruption); an uncapped quarantine lets the race exhaust descriptors.
