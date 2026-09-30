@@ -128,7 +128,7 @@ untranslated JSX and missing locale keys (`pnpm i18n:jsx`, `pnpm i18n:check`), d
 
 Adversarial review runs in two tiers, and names never collide between them. Seven project-independent
 lenses live in `~/.claude/agents/review-*.md` (`plan`, `minimalism`, `root-cause`, `correctness`,
-`tests`, `code-quality`, `error-handling`); six ChessFable-specific ones live in `.claude/agents/` and
+`tests`, `code-quality`, `error-handling`); seven ChessFable-specific ones live in `.claude/agents/` and
 carry this codebase's failure history:
 
 | Lens | Owns | Triggered by a diff touching |
@@ -139,6 +139,7 @@ carry this codebase's failure history:
 | `review-persisted-state` | `sessionStorage`/`localStorage` size and quota, write/read symmetry, keys shared across tabs, hydration of corrupt or absent data | `src/state/**`, `src/hooks/**`, `src/utils/tabs.ts`, `src/components/tabs/**`, any direct web-storage access |
 | `review-pgn-index` | game-boundary detection, the cached byte-offset index, reader position, `CastlingMode` symmetry across encode/decode, whole-file materialisation | `src-tauri/src/pgn.rs`, `src-tauri/src/lexer.rs`, `src-tauri/src/db/**`, `src-tauri/src/opening.rs`, `src-tauri/src/puzzle.rs`, `src/components/tabs/ImportModal.tsx`, `src/utils/db.ts` |
 | `review-tauri-security` | OAuth token acquisition, credential storage and refresh, renderer-session sanitization, path containment and recursive deletion, signed download manifest verification, bearer-token and raw-diagnostic egress | `src-tauri/src/oauth.rs`, `src-tauri/src/credentials.rs`, `src/utils/session.ts`, `src-tauri/src/fs.rs`, `src-tauri/src/infra/**`, `docs/signed-download-manifests.md` |
+| `review-platform-semantics` | OS behavior of filesystem, handle, process and FFI code; platform-gated test parity across Linux, macOS and Windows | `src-tauri/src/**` with `cfg` on `target_os`, `windows` or `unix`, or filesystem/process/handle/FFI code; tests with platform-specific fixtures or cfg-gated helpers |
 
 Which lenses run for a push is decided by `~/.claude/references/push-review-policy.md`; this table
 says what each one knows, so a plan can be sanity-checked against the right lens before code exists.
