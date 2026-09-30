@@ -32,14 +32,14 @@ export function runMutationRunnerWithNodeArgs(runner, root, env, nodeArgs = [], 
  * CPU inside the contract gate). The runner starts in its own process group so
  * the teardown can reap the shim and its grandchild along with it.
  */
-export function startMutationRunner(
+export function startNodeCli(
   t,
-  runner,
+  script,
   root,
   env,
-  { stdio = ["ignore", "pipe", "pipe"], args = [], nodeArgs = [] } = {},
+  { stdio = ["ignore", "pipe", "pipe"], args = [], nodeArgs = [], afterChildExit = undefined } = {},
 ) {
-  const child = spawn(process.execPath, [...nodeArgs, runner, ...args], {
+  const child = spawn(process.execPath, [...nodeArgs, script, ...args], {
     cwd: root,
     env,
     stdio,
@@ -57,23 +57,29 @@ export function startMutationRunner(
     child.once("close", (code, signal) => resolve({ code, signal, stdout, stderr }));
   });
   t.after(async () => {
-    if (child.exitCode !== null || child.signalCode !== null) return;
-    // SIGTERM first: the runner forwards it and reaps its own Stryker or cargo
-    // child, which lives in a separate process group the runner supervises.
-    child.kill("SIGTERM");
-    const settled = await Promise.race([
-      done.then(() => true),
-      new Promise((resolve) => setTimeout(() => resolve(false), 5_000).unref()),
-    ]);
-    if (settled) return;
-    try {
-      process.kill(-child.pid, "SIGKILL");
-    } catch {
-      // The group is already gone; nothing to reap.
+    if (child.exitCode === null && child.signalCode === null) {
+      // SIGTERM first: the runner forwards it and reaps its own supervised child groups.
+      child.kill("SIGTERM");
+      const settled = await Promise.race([
+        done.then(() => true),
+        new Promise((resolve) => setTimeout(() => resolve(false), 5_000).unref()),
+      ]);
+      if (!settled) {
+        try {
+          process.kill(-child.pid, "SIGKILL");
+        } catch {
+          // The group is already gone; nothing to reap.
+        }
+        await done;
+      }
     }
-    await done;
+    await afterChildExit?.({ child, done });
   });
   return { child, done };
+}
+
+export function startMutationRunner(t, runner, root, env, options = {}) {
+  return startNodeCli(t, runner, root, env, options);
 }
 
 export async function waitFor(path, timeoutMs = 5_000) {

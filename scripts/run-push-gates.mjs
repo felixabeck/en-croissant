@@ -14,9 +14,9 @@ import { installMultiChildSignalForwarding, superviseChild } from "./child-super
 
 const GIB = 1024 ** 3;
 
-// While cargo lanes run, frontend coverage gets half the budget; the other half covers their
-// measured concurrent cargo and contract peaks (2026-09-29: clippy 1.5, backend-test 1.8,
-// backend-coverage 2.0, contract 0.5 GB). Without cargo lanes, frontend coverage gets it all.
+// While cargo lanes or mutation run with P2, frontend coverage gets half the budget; with only
+// non-self-sizing lanes it gets all of it. The remaining share covers cargo/contract peaks
+// (2026-09-29: clippy 1.5, backend-test 1.8, backend-coverage 2.0, contract 0.5 GB) or mutation.
 export const P2_VITEST_SHARE = 0.5;
 
 // Mutation's P2 slice; 0.5 + 0.35 leaves 0.15 for the measured cargo/contract/receipt peak.
@@ -124,6 +124,14 @@ function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
+function nestedErrorMessage(error, depth = 0) {
+  const lines = [`${"  ".repeat(depth)}${errorMessage(error)}`];
+  const nested = error instanceof AggregateError ? [...error.errors] : [];
+  if (error?.cause !== undefined) nested.push(error.cause);
+  for (const cause of nested) lines.push(nestedErrorMessage(cause, depth + 1));
+  return lines.join("\n");
+}
+
 export function parsePushGateArguments(argumentsList) {
   const args = [...argumentsList];
   if (args[0] === "--") args.shift();
@@ -201,7 +209,11 @@ function writeTaskHeader(task, command, append = task.kind === "lane-step") {
   return fd;
 }
 
-async function runCommand(command, task, { cwd, env, spawnProcess, signalForwarding }) {
+async function runCommand(
+  command,
+  task,
+  { cwd, env, spawnProcess, signalForwarding, writeCapturedOutput = appendLog },
+) {
   const { executable, args } = commandArgv(command);
   const fd = writeTaskHeader(task, command);
   let logError;
@@ -226,7 +238,7 @@ async function runCommand(command, task, { cwd, env, spawnProcess, signalForward
 
   const capture = (chunk) => {
     try {
-      appendLog(fd, chunk);
+      writeCapturedOutput(fd, chunk);
     } catch (error) {
       logError ??= error;
     }
@@ -243,19 +255,34 @@ async function runCommand(command, task, { cwd, env, spawnProcess, signalForward
       : `${task.phase} step ${task.name} (${command})`;
   signalForwarding.attach(supervisor, childLabel);
 
-  let result;
+  let completion;
   try {
-    result = await supervisor.done;
+    completion = await Promise.race([
+      supervisor.done.then((result) => ({ type: "completed", result })),
+      signalForwarding.signalRequested.then(() => ({ type: "interrupted" })),
+    ]);
   } finally {
     closeSync(fd);
   }
 
-  if (logError) {
-    return { code: 1, error: new Error(`cannot write gate log: ${errorMessage(logError)}`) };
+  if (completion.type === "interrupted") {
+    return { signal: signalForwarding.requestedSignal, logError };
   }
-  if (result.error) return { code: 127, error: result.error };
-  if (result.code !== null) return { code: result.code, signal: result.signal };
-  return { code: signalExitCode(result.signal), signal: result.signal };
+  const { result } = completion;
+  let commandResult;
+  if (result.error) commandResult = { code: 127, error: result.error };
+  else if (result.code !== null) commandResult = { code: result.code, signal: result.signal };
+  else commandResult = { code: signalExitCode(result.signal), signal: result.signal };
+
+  if (logError && commandResult.code === 0) {
+    return {
+      ...commandResult,
+      code: 1,
+      error: new Error(`cannot write gate log: ${errorMessage(logError)}`),
+      logError,
+    };
+  }
+  return { ...commandResult, logError };
 }
 
 function skipTask(task, reason) {
@@ -317,6 +344,7 @@ async function runStep(task, command, context) {
   }
   task.durationMs = performance.now() - task.startedAt;
   task.error = result.error;
+  task.logError = result.logError;
   task.signal = result.signal;
   if (context.signalForwarding.requestedSignal) {
     task.code = signalExitCode(context.signalForwarding.requestedSignal);
@@ -372,6 +400,7 @@ async function runLane(lane, env, context, results) {
     }
     if (result.code !== 0) {
       task.error = result.error;
+      task.logError = result.logError;
       task.failedCommand = command;
       break;
     }
@@ -390,7 +419,7 @@ async function runLane(lane, env, context, results) {
 
 function makeLaneEnvironment(env, laneName, budgetBytes, concurrentMutation, cargoLanesPresent) {
   if (laneName === "frontend-coverage") {
-    const memoryShare = cargoLanesPresent ? P2_VITEST_SHARE : 1;
+    const memoryShare = cargoLanesPresent || concurrentMutation ? P2_VITEST_SHARE : 1;
     const cpuShare = concurrentMutation ? P2_CPU_SHARE : 1;
     return {
       ...env,
@@ -437,6 +466,9 @@ function printSummary(results, logDirectory) {
       process.stdout.write(`Unable to read log tail: ${errorMessage(error)}\n`);
     }
     if (task.error) process.stdout.write(`Spawn or runner error: ${errorMessage(task.error)}\n`);
+    if (task.logError) {
+      process.stdout.write(`Gate log write failed: ${errorMessage(task.logError)}\n`);
+    }
   }
 }
 
@@ -454,12 +486,10 @@ export async function runPushGates(
     availableParallelism = defaultAvailableParallelism,
     getGateBudgetBytes = () => gateBudgetBytes({ env }),
     beforeStep = undefined,
+    writeCapturedOutput = appendLog,
   } = {},
 ) {
-  const parsed =
-    argumentsList instanceof Set
-      ? { blocks: argumentsList }
-      : parsePushGateArguments(argumentsList);
+  const parsed = parsePushGateArguments(argumentsList);
   if (parsed.error) {
     process.stderr.write(`${parsed.error}\n`);
     return { exitCode: 2, results: [], logDirectory: undefined };
@@ -474,7 +504,15 @@ export async function runPushGates(
   let exitCode = 0;
   let cleanupFailed = false;
   let fatalError;
-  const context = { cwd, env, spawnProcess, signalForwarding, beforeStep, logDirectory };
+  const context = {
+    cwd,
+    env,
+    spawnProcess,
+    signalForwarding,
+    beforeStep,
+    logDirectory,
+    writeCapturedOutput,
+  };
   const runSerialStep = async (entry, phase) => {
     const task = createTaskResult(logDirectory, entry.name, "step", { phase });
     stepResults.push(task);
@@ -633,14 +671,16 @@ export async function runPushGates(
       await signalForwarding.terminateAll();
     } catch (cleanupError) {
       cleanupFailed = true;
-      process.stderr.write(`Push gate child cleanup failed: ${errorMessage(cleanupError)}\n`);
+      process.stderr.write(
+        `Push gate child cleanup failed:\n${nestedErrorMessage(cleanupError)}\n`,
+      );
     }
   } finally {
     try {
       await signalForwarding.termination;
     } catch (error) {
       cleanupFailed = true;
-      process.stderr.write(`Push gate child cleanup failed: ${errorMessage(error)}\n`);
+      process.stderr.write(`Push gate child cleanup failed:\n${nestedErrorMessage(error)}\n`);
     }
     signalForwarding.uninstall();
   }

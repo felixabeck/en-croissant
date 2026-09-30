@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
@@ -7,14 +6,20 @@ import { availableParallelism } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { ONE_WAVE_BYTES, PUSH_GATE_SCHEDULE, runPushGates } from "./run-push-gates.mjs";
+import {
+  ONE_WAVE_BYTES,
+  P2_MUTATION_SHARE,
+  P2_VITEST_SHARE,
+  PUSH_GATE_SCHEDULE,
+  runPushGates,
+} from "./run-push-gates.mjs";
 import { workerCount } from "./gate-parallelism.mjs";
+import { startNodeCli } from "./mutation-runner-test-harness.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const runnerPath = join(repositoryRoot, "scripts/run-push-gates.mjs");
 const GIB = 1024 ** 3;
 // A broken process test must fail promptly instead of holding the contract gate indefinitely.
-const CHILD_CLEANUP_TIMEOUT_MS = 5_000;
 // Fake CLI events are polled with a finite deadline so missing progress cannot hang node:test.
 const EVENT_WAIT_TIMEOUT_MS = 10_000;
 // A missing marker exposes a scheduler concurrency regression within a bounded test run.
@@ -200,52 +205,21 @@ function signalGroup(pid, signal) {
 }
 
 function startCli(t, harness, args = []) {
-  const child = spawn(process.execPath, [runnerPath, ...args], {
-    cwd: harness.root,
-    env: harness.env,
-    detached: true,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  let stdout = "";
-  let stderr = "";
-  child.stdout.on("data", (chunk) => (stdout += chunk));
-  child.stderr.on("data", (chunk) => (stderr += chunk));
-  const done = new Promise((resolve) => {
-    child.once("close", (code, signal) => resolve({ code, signal, stdout, stderr }));
-  });
-  t.after(async () => {
-    if (child.exitCode === null && child.signalCode === null) {
-      child.kill("SIGTERM");
-      let cleanupTimer;
-      const finished = await Promise.race([
-        done.then(() => true),
-        new Promise((resolve) => {
-          cleanupTimer = setTimeout(() => resolve(false), CHILD_CLEANUP_TIMEOUT_MS);
-          cleanupTimer.unref();
-        }),
-      ]);
-      clearTimeout(cleanupTimer);
-      if (!finished) {
-        try {
-          process.kill(-child.pid, "SIGKILL");
-        } catch (error) {
-          if (error.code !== "ESRCH") throw error;
-        }
-        await done;
+  return startNodeCli(t, runnerPath, harness.root, harness.env, {
+    args,
+    afterChildExit: async () => {
+      const events = await readEvents(harness);
+      const started = events.filter((event) => event.type === "start");
+      const finishedPids = new Set(
+        events.filter((event) => event.type === "finish").map((event) => event.pid),
+      );
+      for (const event of started) {
+        if (finishedPids.has(event.pid) || !groupExists(event.pid)) continue;
+        signalGroup(event.pid, "SIGTERM");
+        signalGroup(event.pid, "SIGKILL");
       }
-    }
-    const events = await readEvents(harness);
-    const started = events.filter((event) => event.type === "start");
-    const finishedPids = new Set(
-      events.filter((event) => event.type === "finish").map((event) => event.pid),
-    );
-    for (const event of started) {
-      if (finishedPids.has(event.pid) || !groupExists(event.pid)) continue;
-      signalGroup(event.pid, "SIGTERM");
-      signalGroup(event.pid, "SIGKILL");
-    }
+    },
   });
-  return { child, done };
 }
 
 async function runCli(t, harness, args = []) {
@@ -450,6 +424,21 @@ test("contract-only invocation, unknown flags, and P0 guard failure/spawn failur
     assert.match(result.stderr, /Unknown argument .*--unexpected/u);
     assert.deepEqual(await readEvents(harness), []);
   });
+
+  await t.test(
+    "invalid GATE_MEMORY_BYTES after P1 prevents every P2 lane, including contract, from starting",
+    async (subtest) => {
+      const harness = await makeHarness(subtest);
+      harness.env.GATE_MEMORY_BYTES = "abc";
+      const result = await runCli(subtest, harness, ["--frontend"]);
+      assert.equal(result.code, 1, `${result.stdout}\n${result.stderr}`);
+      assert.match(result.stderr, /GATE_MEMORY_BYTES/u);
+      assert.deepEqual(
+        commandSet(await readEvents(harness)),
+        ["pnpm mutation:guard:check", "pnpm gate:run frontend-build"].sort(),
+      );
+    },
+  );
 
   await t.test(
     "failed mutation guard stops all later commands with its exit code",
@@ -680,16 +669,26 @@ test("spawn failures, signals and SIGKILL codes propagate from P0, P1 and lanes 
 
   for (const signal of ["SIGTERM", "SIGINT"]) {
     await t.test(
-      `${signal} during a running lane leaves no child process group alive`,
+      `${signal} during concurrent contract, Rust-test and frontend-coverage lanes leaves every held process group gone`,
       async (subtest) => {
         const harness = await makeHarness(subtest, {
-          commands: { "pnpm gate:ensure frontend-coverage": { hold: true } },
+          budgetBytes: ONE_WAVE_BYTES + GIB,
+          commands: {
+            "pnpm gates:contract:check": { hold: true },
+            "pnpm gate:ensure backend-test": { hold: true },
+            "pnpm gate:ensure frontend-coverage": { hold: true },
+          },
         });
-        const running = startCli(subtest, harness, ["--frontend"]);
-        const started = await waitForEvent(
-          harness,
-          (event) =>
-            event.type === "start" && event.command === "pnpm gate:ensure frontend-coverage",
+        const running = startCli(subtest, harness, ["--rust", "--frontend", "--bindings"]);
+        const heldCommands = [
+          "pnpm gates:contract:check",
+          "pnpm gate:ensure backend-test",
+          "pnpm gate:ensure frontend-coverage",
+        ];
+        const held = await Promise.all(
+          heldCommands.map((command) =>
+            waitForEvent(harness, (event) => event.type === "start" && event.command === command),
+          ),
         );
         running.child.kill(signal);
         const result = await running.done;
@@ -698,7 +697,13 @@ test("spawn failures, signals and SIGKILL codes propagate from P0, P1 and lanes 
           signal === "SIGINT" ? 130 : 143,
           `${result.stdout}\n${result.stderr}`,
         );
-        assert.equal(groupExists(started.pid), false);
+        for (const event of held) {
+          assert.equal(
+            groupExists(event.pid),
+            false,
+            `${event.command} process group ${event.pid} must be gone`,
+          );
+        }
       },
     );
   }
@@ -1102,6 +1107,125 @@ test("P2 memory/CPU placement, concurrency anchor and cgroup-read guards (PG-47,
   );
 });
 
+test("gate log write failures preserve command results and fail successful commands", async (t) => {
+  for (const [commandCode, expectedCode] of [
+    [17, 17],
+    [0, 1],
+  ]) {
+    await t.test(
+      `child exit ${commandCode} reports the log failure with exit ${expectedCode}`,
+      async (subtest) => {
+        const cwd = await temporarySchedulerRoot(subtest);
+        const spawnProcess = () => {
+          const child = new EventEmitter();
+          child.stdout = new PassThrough();
+          child.stderr = new PassThrough();
+          child.pid = undefined;
+          child.exitCode = null;
+          child.signalCode = null;
+          setImmediate(() => {
+            child.stdout.write("child output\n");
+            child.stdout.end();
+            child.stderr.end();
+            setImmediate(() => {
+              child.exitCode = commandCode;
+              child.emit("close", commandCode, null);
+            });
+          });
+          return child;
+        };
+        const result = await runPushGates([], {
+          cwd,
+          env: { ...process.env },
+          spawnProcess,
+          writeCapturedOutput() {
+            throw new Error("injected log EIO");
+          },
+        });
+        const guard = result.results.find((task) => task.name === "mutation-guard");
+        assert.equal(result.exitCode, expectedCode);
+        assert.equal(guard.code, expectedCode);
+        assert.equal(guard.logError.message, "injected log EIO");
+        if (commandCode === 0) {
+          assert.match(guard.error.message, /cannot write gate log: injected log EIO/u);
+        } else {
+          assert.equal(guard.error, undefined);
+        }
+      },
+    );
+  }
+});
+
+test("signal cleanup failure stops waiting on the child and reports nested termination errors", async (t) => {
+  for (const [signal, expectedCode] of [
+    ["SIGINT", 130],
+    ["SIGTERM", 143],
+  ]) {
+    await t.test(
+      `${signal} returns its signal code and names the child and cause`,
+      async (subtest) => {
+        const cwd = await temporarySchedulerRoot(subtest);
+        const fakePid = 987_654_321;
+        const originalKill = process.kill;
+        const originalStderrWrite = process.stderr.write;
+        let stderr = "";
+        let child;
+        process.kill = function (pid, childSignal) {
+          if (pid === -fakePid && childSignal !== 0) {
+            const error = new Error("injected EPERM");
+            error.code = "EPERM";
+            throw error;
+          }
+          return Reflect.apply(originalKill, process, [pid, childSignal]);
+        };
+        process.stderr.write = function (chunk) {
+          stderr += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+          return true;
+        };
+        try {
+          const running = runPushGates([], {
+            cwd,
+            env: { ...process.env },
+            spawnProcess() {
+              child = new EventEmitter();
+              child.stdout = new PassThrough();
+              child.stderr = new PassThrough();
+              child.pid = fakePid;
+              child.exitCode = null;
+              child.signalCode = null;
+              child.unref = () => {};
+              setImmediate(() => process.emit(signal, signal));
+              return child;
+            },
+          });
+          let timeout;
+          const outcome = await Promise.race([
+            running.then((result) => ({ result })),
+            new Promise((resolve) => {
+              timeout = setTimeout(() => resolve({ timedOut: true }), 1_000);
+            }),
+          ]);
+          clearTimeout(timeout);
+          if (outcome.timedOut) {
+            child.exitCode = 0;
+            child.stdout.end();
+            child.stderr.end();
+            child.emit("close", 0, null);
+            await running;
+            assert.fail("the scheduler waited for a child after termination failed");
+          }
+          assert.equal(outcome.result.exitCode, expectedCode);
+        } finally {
+          process.kill = originalKill;
+          process.stderr.write = originalStderrWrite;
+        }
+        assert.match(stderr, /P0 step mutation-guard \(pnpm mutation:guard:check\)/u);
+        assert.match(stderr, /injected EPERM/u);
+      },
+    );
+  }
+});
+
 test("scheduler-level beforeStep cancellation and injected spawn failures (PG-51, PG-55, PG-58)", async (t) => {
   for (const [signal, expectedCode] of [
     ["SIGINT", 130],
@@ -1191,13 +1315,14 @@ test("frontend self-sizing lane environment and P1 schedule anchor (PG-17, PG-58
         );
         const cargoLanesRun =
           cargo && events.some((event) => event.command === "pnpm gate:ensure backend-test");
-        const expectedCoverageMemory = Math.floor(budgetBytes * (cargoLanesRun ? 0.5 : 1));
-        assert.equal(coverage.env.GATE_MEMORY_BYTES, String(expectedCoverageMemory));
-        assert.equal(coverage.env.GATE_CPU_SHARE, concurrent ? "0.5" : "1");
-        assert.equal(
-          mutation.env.GATE_MEMORY_BYTES,
-          String(Math.floor(budgetBytes * (concurrent ? 0.35 : 1))),
+        const coverageMemory = Math.floor(
+          budgetBytes * (cargoLanesRun || concurrent ? P2_VITEST_SHARE : 1),
         );
+        const mutationMemory = Math.floor(budgetBytes * (concurrent ? P2_MUTATION_SHARE : 1));
+        assert.equal(coverage.env.GATE_MEMORY_BYTES, String(coverageMemory));
+        assert.equal(mutation.env.GATE_MEMORY_BYTES, String(mutationMemory));
+        if (concurrent) assert.ok(coverageMemory + mutationMemory <= budgetBytes);
+        assert.equal(coverage.env.GATE_CPU_SHARE, concurrent ? "0.5" : "1");
         assert.equal(mutation.env.GATE_CPU_SHARE, concurrent ? "0.5" : "1");
       }
     },

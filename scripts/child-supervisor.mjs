@@ -107,7 +107,11 @@ async function terminateChildren(children, label) {
 }
 
 /** Forward runner signals to every attached child and latch attachment into termination. */
-export function installMultiChildSignalForwarding({ label = "frontend mutation" } = {}) {
+export function installMultiChildSignalForwarding({ label } = {}) {
+  if (typeof label !== "string" || label.trim() === "") {
+    throw new TypeError("A non-empty child label is required for signal forwarding.");
+  }
+
   let requestedSignal;
   let resolveSignalRequested;
   const signalRequested = new Promise((resolve) => {

@@ -361,7 +361,7 @@ export async function runFrontendMutation(spawnChild = spawn) {
   const runnerIdentity = currentIdentity();
   if (!acquireFence(runnerIdentity)) return 1;
 
-  const signalForwarding = installMultiChildSignalForwarding();
+  const signalForwarding = installMultiChildSignalForwarding({ label: "frontend mutation" });
   const children = [];
   let resolveStopped;
   const stopRequested = new Promise((resolve) => {
