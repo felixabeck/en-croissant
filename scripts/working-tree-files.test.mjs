@@ -41,19 +41,21 @@ describe("working-tree file enumeration", () => {
     ).toContain("src/ignored.ts");
   });
 
-  test("the default call keeps its original two git queries", () => {
+  test("the default call keeps its two NUL-delimited git queries", () => {
     const calls = [];
     listWorkingTreeFiles({
       workspaceRoot: "/fixture",
       pathspec: "src",
       runGit: (_command, args) => {
         calls.push(args);
-        return { status: 0, stdout: "", stderr: "" };
+        const records = ["src/foo.ts", "src/shared.ts"];
+        const stdout = args.includes("-z") ? `${records.join("\0")}\0` : `${records.join("\n")}\n`;
+        return { status: 0, stdout, stderr: "" };
       },
     });
     expect(calls).toEqual([
-      ["ls-files", "--others", "--exclude-standard", "--", "src"],
-      ["ls-files", "--", "src"],
+      ["ls-files", "--others", "--exclude-standard", "-z", "--", "src"],
+      ["ls-files", "-z", "--", "src"],
     ]);
   });
 

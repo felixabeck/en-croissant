@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -20,10 +20,18 @@ async function runChecker(listedPath, prepare) {
     `#!/bin/sh
 case "$*" in
   *"--others"*) ;;
-  *) printf '%s\\n' '${listedPath}' ;;
+  *)
+    case " $* " in
+      *" -z "*) printf '%s\\000' '${listedPath}' ;;
+      *) printf '%s\\n' '${listedPath}' ;;
+    esac
+    ;;
 esac
 `,
   );
+  const fakeGitSource = await readFile(fakeGit, "utf8");
+  assert.equal(fakeGitSource.includes("\0"), false);
+  assert.ok(fakeGitSource.includes("printf '%s\\000'"));
   await chmod(fakeGit, 0o755);
 
   return spawnSync(process.execPath, [checker], {

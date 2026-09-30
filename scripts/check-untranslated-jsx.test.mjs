@@ -155,7 +155,7 @@ describe("untranslated UI literal file discovery", () => {
     assertCli(
       broken,
       2,
-      "Cannot enumerate working-tree files: git ls-files --others --exclude-standard -- src failed (fatal: not a git repository (or any of the parent directories): .git)\n",
+      "Cannot enumerate working-tree files: git ls-files --others --exclude-standard -z -- src failed (fatal: not a git repository (or any of the parent directories): .git)\n",
     );
   });
 });

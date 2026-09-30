@@ -402,15 +402,17 @@ describe("working-tree enumeration and reads", () => {
     const calls = [];
     const runGit = (command, args, options) => {
       calls.push([command, args, options]);
-      return { status: 0, stdout: "src/foo.ts\nsrc/shared.ts\n" };
+      const records = ["src/foo.ts", "src/shared.ts"];
+      const stdout = args.includes("-z") ? `${records.join("\0")}\0` : `${records.join("\n")}\n`;
+      return { status: 0, stdout };
     };
     expect(listWorkingTreeFiles({ workspaceRoot: "/fixture", runGit })).toEqual([
       "src/foo.ts",
       "src/shared.ts",
     ]);
     expect(calls.map(([, args]) => args)).toEqual([
-      ["ls-files", "--others", "--exclude-standard", "--", "src"],
-      ["ls-files", "--", "src"],
+      ["ls-files", "--others", "--exclude-standard", "-z", "--", "src"],
+      ["ls-files", "-z", "--", "src"],
     ]);
   });
 

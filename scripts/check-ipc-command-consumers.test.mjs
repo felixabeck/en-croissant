@@ -1177,7 +1177,7 @@ describe("CLI failure matrix", () => {
       () => ({
         root: cliWorkspace({ git: false }),
         expected:
-          "Cannot enumerate working-tree files: git ls-files --others --exclude-standard -- src failed (fatal: not a git repository (or any of the parent directories): .git)",
+          "Cannot enumerate working-tree files: git ls-files --others --exclude-standard -z -- src failed (fatal: not a git repository (or any of the parent directories): .git)",
       }),
     ],
     [
@@ -1186,7 +1186,7 @@ describe("CLI failure matrix", () => {
         root: cliWorkspace(),
         env: { PATH: "" },
         expected:
-          "Cannot enumerate working-tree files: git ls-files --others --exclude-standard -- src failed (spawnSync git ENOENT)",
+          "Cannot enumerate working-tree files: git ls-files --others --exclude-standard -z -- src failed (spawnSync git ENOENT)",
       }),
     ],
   ])("stages the %s failure through the CLI", (_name, build) => {
