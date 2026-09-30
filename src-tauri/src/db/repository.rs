@@ -3162,9 +3162,6 @@ mod bound_sqlite_witnesses {
         },
     };
 
-    #[cfg(all(unix, not(target_os = "linux")))]
-    static QUARANTINE_WITNESS_LOCK: Mutex<()> = Mutex::new(());
-
     #[derive(Clone, Debug, Default, Eq, PartialEq)]
     struct SidecarListing {
         held: BTreeSet<String>,
@@ -3315,20 +3312,26 @@ mod bound_sqlite_witnesses {
         parent
     }
 
-    #[cfg(target_os = "linux")]
-    fn assert_sqlite_shared_read_lock_is_held(probe: &fs::File) {
-        use std::os::fd::AsRawFd;
-
+    #[cfg(unix)]
+    fn sqlite_shared_read_lock_query() -> libc::flock {
         const PENDING_BYTE: libc::off_t = 0x4000_0000;
         const SHARED_FIRST: libc::off_t = PENDING_BYTE + 2;
         const SHARED_SIZE: libc::off_t = 510;
 
-        let mut lock: libc::flock = unsafe { std::mem::zeroed() };
-        lock.l_type = libc::F_WRLCK as _;
-        lock.l_whence = libc::SEEK_SET as _;
-        lock.l_start = SHARED_FIRST;
-        lock.l_len = SHARED_SIZE;
-        lock.l_pid = 0;
+        let mut query: libc::flock = unsafe { std::mem::zeroed() };
+        query.l_type = libc::F_WRLCK as _;
+        query.l_whence = libc::SEEK_SET as _;
+        query.l_start = SHARED_FIRST;
+        query.l_len = SHARED_SIZE;
+        query.l_pid = 0;
+        query
+    }
+
+    #[cfg(target_os = "linux")]
+    fn assert_sqlite_shared_read_lock_is_held(probe: &fs::File) {
+        use std::os::fd::AsRawFd;
+
+        let mut lock = sqlite_shared_read_lock_query();
         let result = unsafe { libc::fcntl(probe.as_raw_fd(), libc::F_OFD_GETLK, &mut lock) };
         assert_eq!(result, 0, "query SQLite shared-byte locks");
         assert_ne!(
@@ -3342,16 +3345,7 @@ mod bound_sqlite_witnesses {
     fn assert_sqlite_shared_read_lock_is_held(probe: &fs::File) {
         use std::os::fd::AsRawFd;
 
-        const PENDING_BYTE: libc::off_t = 0x4000_0000;
-        const SHARED_FIRST: libc::off_t = PENDING_BYTE + 2;
-        const SHARED_SIZE: libc::off_t = 510;
-
-        let mut lock: libc::flock = unsafe { std::mem::zeroed() };
-        lock.l_type = libc::F_WRLCK as _;
-        lock.l_whence = libc::SEEK_SET as _;
-        lock.l_start = SHARED_FIRST;
-        lock.l_len = SHARED_SIZE;
-        lock.l_pid = 0;
+        let mut lock = sqlite_shared_read_lock_query();
 
         let probe_fd = probe.as_raw_fd();
         let child = unsafe { libc::fork() };
@@ -3436,6 +3430,57 @@ mod bound_sqlite_witnesses {
                 .expect("bound read-only URI"),
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
         )
+    }
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    fn assert_full_quarantine_refuses_leaf_opens_without_closing_retained_descriptors(
+        retained_path: &Path,
+        retained_identity: (u64, u64),
+        bound_open: &BoundDatabase,
+        mut retain_descriptor: impl FnMut(libc::c_int),
+        inspect_descriptors: impl Fn() -> Vec<libc::c_int>,
+    ) -> (fs::File, Connection, Arc<AtomicBool>) {
+        use crate::db::bound_sqlite::open_bound_leaf_for_test;
+        use std::os::fd::IntoRawFd;
+
+        let admission_limit = crate::db::bound_sqlite::quarantine_admission_limit();
+        for _ in 0..admission_limit {
+            let fd = fs::File::open(retained_path)
+                .expect("open descriptor to retain")
+                .into_raw_fd();
+            retain_descriptor(fd);
+        }
+        let (probe, reader) = lock_plain_database(retained_path);
+
+        let hook_ran = Arc::new(AtomicBool::new(false));
+        let hook_ran_callback = Arc::clone(&hook_ran);
+        bound_open
+            .set_before_openat_hook(move || {
+                hook_ran_callback.store(true, Ordering::SeqCst);
+            })
+            .unwrap();
+        let refusal_count = bound_open.refusal_count();
+        assert_eq!(open_bound_leaf_for_test(bound_open), Err(libc::EMFILE));
+        assert_eq!(bound_open.refusal_count(), refusal_count);
+        assert!(!hook_ran.load(Ordering::SeqCst));
+        assert!(bound_open.has_pending_before_openat_hook());
+        let retained = inspect_descriptors();
+        assert_eq!(retained.len(), admission_limit);
+        assert_descriptors_have_identity(&retained, retained_identity);
+        assert_sqlite_shared_read_lock_is_held(&probe);
+        assert_sqlite_shared_read_lock_is_held(&probe);
+
+        let overflow_fd = fs::File::open(retained_path)
+            .expect("open descriptor beyond admission limit")
+            .into_raw_fd();
+        retain_descriptor(overflow_fd);
+        let over_limit = inspect_descriptors();
+        assert_eq!(over_limit.len(), admission_limit + 1);
+        assert_descriptors_have_identity(&over_limit, retained_identity);
+        assert_sqlite_shared_read_lock_is_held(&probe);
+        assert_sqlite_shared_read_lock_is_held(&probe);
+
+        (probe, reader, hook_ran)
     }
 
     #[test]
@@ -3948,6 +3993,7 @@ mod bound_sqlite_witnesses {
                 |row| row.get::<_, String>(0),
             )
             .unwrap();
+        drop(first);
 
         let result = Connection::open_with_flags(
             bound.uri(SqliteMode::ReadOnly).unwrap(),
@@ -3957,7 +4003,6 @@ mod bound_sqlite_witnesses {
         assert!(bound.refusal_count() > 0);
         assert_sqlite_shared_read_lock_is_held(&b_probe);
         assert_sqlite_shared_read_lock_is_held(&b_probe);
-        drop(first);
         drop(second);
         drop(b_probe);
         drop(bound);
@@ -4111,7 +4156,6 @@ mod bound_sqlite_witnesses {
     fn post_open_leaf_swap_quarantines_foreign_descriptor_without_dropping_locks() {
         use crate::db::bound_sqlite::quarantined_descriptor_fds;
 
-        let _test_guard = QUARANTINE_WITNESS_LOCK.lock().unwrap();
         let root = tempfile::tempdir().unwrap();
         let parent = new_database_parent(root.path());
         let path_a = parent.join("race-a.db3");
@@ -4165,180 +4209,169 @@ mod bound_sqlite_witnesses {
     #[cfg(all(unix, not(target_os = "linux")))]
     #[test]
     fn bound_sqlite_fstat_failure_retains_unclassified_descriptor_until_all_bindings_drop() {
-        use crate::db::bound_sqlite::unclassified_descriptor_fds;
+        crate::db::test_support::run_isolated(
+            "db::repository::bound_sqlite_witnesses::bound_sqlite_fstat_failure_retains_unclassified_descriptor_until_all_bindings_drop",
+            || {
+                use crate::db::bound_sqlite::unclassified_descriptor_fds;
 
-        let _test_guard = QUARANTINE_WITNESS_LOCK.lock().unwrap();
-        let root = tempfile::tempdir().unwrap();
-        let parent = new_database_parent(root.path());
-        let path_a = parent.join("unclassified-a.db3");
-        let path_b = parent.join("unclassified-b.db3");
-        seed_database(&path_a, 1, "DELETE");
-        seed_database(&path_b, 2, "DELETE");
-        let target_a = test_target(&path_a);
-        let target_b = test_target(&path_b);
-        let bound_a = BoundDatabase::acquire(&target_a).unwrap();
-        let bound_b = BoundDatabase::acquire(&target_b).unwrap();
-        let b_identity = target_b.identity();
-        let (b_probe, b_reader) = lock_plain_database(&path_b);
+                let root = tempfile::tempdir().unwrap();
+                let parent = new_database_parent(root.path());
+                let path_a = parent.join("unclassified-a.db3");
+                let path_b = parent.join("unclassified-b.db3");
+                seed_database(&path_a, 1, "DELETE");
+                seed_database(&path_b, 2, "DELETE");
+                let target_a = test_target(&path_a);
+                let target_b = test_target(&path_b);
+                let bound_a = BoundDatabase::acquire(&target_a).unwrap();
+                let bound_b = BoundDatabase::acquire(&target_b).unwrap();
+                let b_identity = target_b.identity();
+                let (b_probe, b_reader) = lock_plain_database(&path_b);
 
-        let swap = Arc::new(Mutex::new(LeafSwapGuard::new(&path_a, &path_b)));
-        let swap_in_hook = Arc::clone(&swap);
-        let swapped = Arc::new(AtomicBool::new(false));
-        let swapped_in_hook = Arc::clone(&swapped);
-        bound_a
-            .set_before_openat_hook(move || {
-                swap_in_hook.lock().unwrap().swap_to_replacement();
-                swapped_in_hook.store(true, Ordering::SeqCst);
-            })
-            .unwrap();
-        bound_a.fail_next_leaf_fstat_with(libc::EIO).unwrap();
+                let swap = Arc::new(Mutex::new(LeafSwapGuard::new(&path_a, &path_b)));
+                let swap_in_hook = Arc::clone(&swap);
+                let swapped = Arc::new(AtomicBool::new(false));
+                let swapped_in_hook = Arc::clone(&swapped);
+                bound_a
+                    .set_before_openat_hook(move || {
+                        swap_in_hook.lock().unwrap().swap_to_replacement();
+                        swapped_in_hook.store(true, Ordering::SeqCst);
+                    })
+                    .unwrap();
+                bound_a.fail_next_leaf_fstat_with(libc::EIO).unwrap();
 
-        assert!(open_bound_connection(&bound_a).is_err());
-        assert!(
-            swapped.load(Ordering::SeqCst),
-            "the pre-open swap seam did not run"
+                assert!(open_bound_connection(&bound_a).is_err());
+                assert!(
+                    swapped.load(Ordering::SeqCst),
+                    "the pre-open swap seam did not run"
+                );
+                let retained = unclassified_descriptor_fds();
+                assert_descriptors_have_identity(&retained, b_identity);
+                assert_sqlite_shared_read_lock_is_held(&b_probe);
+                assert_sqlite_shared_read_lock_is_held(&b_probe);
+
+                drop(bound_a);
+                let retained_after_a_drops = unclassified_descriptor_fds();
+                assert_descriptors_have_identity(&retained_after_a_drops, b_identity);
+                assert_sqlite_shared_read_lock_is_held(&b_probe);
+                assert_sqlite_shared_read_lock_is_held(&b_probe);
+
+                drop(b_reader);
+                drop(b_probe);
+                drop(bound_b);
+                assert!(unclassified_descriptor_fds().is_empty());
+                swap.lock().unwrap().restore();
+            },
         );
-        let retained = unclassified_descriptor_fds();
-        assert_descriptors_have_identity(&retained, b_identity);
-        assert_sqlite_shared_read_lock_is_held(&b_probe);
-        assert_sqlite_shared_read_lock_is_held(&b_probe);
-
-        drop(bound_a);
-        let retained_after_a_drops = unclassified_descriptor_fds();
-        assert_descriptors_have_identity(&retained_after_a_drops, b_identity);
-        assert_sqlite_shared_read_lock_is_held(&b_probe);
-        assert_sqlite_shared_read_lock_is_held(&b_probe);
-
-        drop(b_reader);
-        drop(b_probe);
-        drop(bound_b);
-        assert!(unclassified_descriptor_fds().is_empty());
-        swap.lock().unwrap().restore();
     }
 
     #[cfg(all(unix, not(target_os = "linux")))]
     #[test]
-    fn quarantined_descriptors_are_capped_per_inode() {
-        use crate::db::bound_sqlite::{
-            open_bound_leaf_for_test, quarantine_capacity, quarantined_descriptor_fds,
-            retain_mismatched_descriptor_for_test, retain_unclassified_descriptor_for_test,
-            unclassified_descriptor_fds,
-        };
-        use std::os::fd::IntoRawFd;
+    fn full_identity_quarantine_refuses_leaf_opens_without_closing_retained_descriptors() {
+        crate::db::test_support::run_isolated(
+            "db::repository::bound_sqlite_witnesses::full_identity_quarantine_refuses_leaf_opens_without_closing_retained_descriptors",
+            || {
+                use crate::db::bound_sqlite::{
+                    open_bound_leaf_for_test, quarantined_descriptor_fds,
+                    retain_mismatched_descriptor_for_test,
+                };
 
-        let _test_guard = QUARANTINE_WITNESS_LOCK.lock().unwrap();
-        let capacity = quarantine_capacity();
-        let root = tempfile::tempdir().unwrap();
-        let parent = new_database_parent(root.path());
-        let filled_path = parent.join("filled.db3");
-        let foreign_path = parent.join("foreign.db3");
-        let open_path = parent.join("open.db3");
-        let unknown_path = parent.join("unknown.db3");
-        let unclassified_open_path = parent.join("unclassified-open.db3");
-        seed_database(&filled_path, 1, "DELETE");
-        seed_database(&foreign_path, 2, "DELETE");
-        seed_database(&open_path, 3, "DELETE");
-        seed_database(&unknown_path, 4, "DELETE");
-        seed_database(&unclassified_open_path, 5, "DELETE");
+                let root = tempfile::tempdir().unwrap();
+                let parent = new_database_parent(root.path());
+                let filled_path = parent.join("filled.db3");
+                let foreign_path = parent.join("foreign.db3");
+                let open_path = parent.join("open.db3");
+                seed_database(&filled_path, 1, "DELETE");
+                seed_database(&foreign_path, 2, "DELETE");
+                seed_database(&open_path, 3, "DELETE");
 
-        let filled_target = test_target(&filled_path);
-        let open_target = test_target(&open_path);
-        let bound_filled = BoundDatabase::acquire(&filled_target).unwrap();
-        let bound_open = BoundDatabase::acquire(&open_target).unwrap();
-        let filled_identity = filled_target.identity();
-        for _ in 0..capacity {
-            let fd = fs::File::open(&filled_path).unwrap().into_raw_fd();
-            retain_mismatched_descriptor_for_test(fd, filled_identity);
-        }
-        let (filled_probe, filled_reader) = lock_plain_database(&filled_path);
+                let filled_target = test_target(&filled_path);
+                let open_target = test_target(&open_path);
+                let bound_filled = BoundDatabase::acquire(&filled_target).unwrap();
+                let bound_open = BoundDatabase::acquire(&open_target).unwrap();
+                let filled_identity = filled_target.identity();
+                let mut leaf_swap = LeafSwapGuard::new(&open_path, &foreign_path);
+                leaf_swap.swap_to_replacement();
 
-        let mut leaf_swap = LeafSwapGuard::new(&open_path, &foreign_path);
-        leaf_swap.swap_to_replacement();
-        let hook_ran = Arc::new(AtomicBool::new(false));
-        let hook_ran_callback = Arc::clone(&hook_ran);
-        bound_open
-            .set_before_openat_hook(move || {
-                hook_ran_callback.store(true, Ordering::SeqCst);
-            })
-            .unwrap();
-        let refusal_count = bound_open.refusal_count();
-        assert_eq!(open_bound_leaf_for_test(&bound_open), Err(libc::EMFILE));
-        assert_eq!(bound_open.refusal_count(), refusal_count);
-        assert!(!hook_ran.load(Ordering::SeqCst));
-        assert!(bound_open.has_pending_before_openat_hook());
-        let filled_descriptors = quarantined_descriptor_fds(filled_identity);
-        assert_eq!(filled_descriptors.len(), capacity);
-        assert_descriptors_have_identity(&filled_descriptors, filled_identity);
-        assert_sqlite_shared_read_lock_is_held(&filled_probe);
-        assert_sqlite_shared_read_lock_is_held(&filled_probe);
+                let (probe, reader, hook_ran) =
+                    assert_full_quarantine_refuses_leaf_opens_without_closing_retained_descriptors(
+                        &filled_path,
+                        filled_identity,
+                        &bound_open,
+                        |fd| retain_mismatched_descriptor_for_test(fd, filled_identity),
+                        || quarantined_descriptor_fds(filled_identity),
+                    );
 
-        let overflow_fd = fs::File::open(&filled_path).unwrap().into_raw_fd();
-        retain_mismatched_descriptor_for_test(overflow_fd, filled_identity);
-        let over_capacity = quarantined_descriptor_fds(filled_identity);
-        assert_eq!(over_capacity.len(), capacity + 1);
-        assert_descriptors_have_identity(&over_capacity, filled_identity);
-        assert_sqlite_shared_read_lock_is_held(&filled_probe);
-        assert_sqlite_shared_read_lock_is_held(&filled_probe);
-
-        leaf_swap.restore();
-        drop(filled_reader);
-        drop(filled_probe);
-        drop(bound_filled);
-        assert!(quarantined_descriptor_fds(filled_identity).is_empty());
-        let reopened_fd = open_bound_leaf_for_test(&bound_open).unwrap();
-        assert!(hook_ran.load(Ordering::SeqCst));
-        assert_eq!(unsafe { libc::close(reopened_fd) }, 0);
-        drop(bound_open);
-
-        let unknown_target = test_target(&unknown_path);
-        let unclassified_open_target = test_target(&unclassified_open_path);
-        let bound_unknown = BoundDatabase::acquire(&unknown_target).unwrap();
-        let bound_unclassified_open = BoundDatabase::acquire(&unclassified_open_target).unwrap();
-        for _ in 0..capacity {
-            let fd = fs::File::open(&unknown_path).unwrap().into_raw_fd();
-            retain_unclassified_descriptor_for_test(fd);
-        }
-        let (unknown_probe, unknown_reader) = lock_plain_database(&unknown_path);
-
-        let unclassified_hook_ran = Arc::new(AtomicBool::new(false));
-        let unclassified_hook_callback = Arc::clone(&unclassified_hook_ran);
-        bound_unclassified_open
-            .set_before_openat_hook(move || {
-                unclassified_hook_callback.store(true, Ordering::SeqCst);
-            })
-            .unwrap();
-        let refusal_count = bound_unclassified_open.refusal_count();
-        assert_eq!(
-            open_bound_leaf_for_test(&bound_unclassified_open),
-            Err(libc::EMFILE)
+                leaf_swap.restore();
+                drop(reader);
+                drop(probe);
+                drop(bound_filled);
+                assert!(quarantined_descriptor_fds(filled_identity).is_empty());
+                let reopened_fd = open_bound_leaf_for_test(&bound_open).unwrap();
+                assert!(hook_ran.load(Ordering::SeqCst));
+                assert_eq!(unsafe { libc::close(reopened_fd) }, 0);
+                drop(bound_open);
+            },
         );
-        assert_eq!(bound_unclassified_open.refusal_count(), refusal_count);
-        assert!(!unclassified_hook_ran.load(Ordering::SeqCst));
-        assert!(bound_unclassified_open.has_pending_before_openat_hook());
-        let retained_unclassified = unclassified_descriptor_fds();
-        assert_eq!(retained_unclassified.len(), capacity);
-        assert_descriptors_have_identity(&retained_unclassified, unknown_target.identity());
-        assert_sqlite_shared_read_lock_is_held(&unknown_probe);
-        assert_sqlite_shared_read_lock_is_held(&unknown_probe);
+    }
 
-        let overflow_fd = fs::File::open(&unknown_path).unwrap().into_raw_fd();
-        retain_unclassified_descriptor_for_test(overflow_fd);
-        let unclassified_over_capacity = unclassified_descriptor_fds();
-        assert_eq!(unclassified_over_capacity.len(), capacity + 1);
-        assert_descriptors_have_identity(&unclassified_over_capacity, unknown_target.identity());
-        assert_sqlite_shared_read_lock_is_held(&unknown_probe);
-        assert_sqlite_shared_read_lock_is_held(&unknown_probe);
+    #[cfg(all(unix, not(target_os = "linux")))]
+    #[test]
+    fn full_unclassified_bucket_refuses_leaf_opens_without_closing_retained_descriptors() {
+        crate::db::test_support::run_isolated(
+            "db::repository::bound_sqlite_witnesses::full_unclassified_bucket_refuses_leaf_opens_without_closing_retained_descriptors",
+            || {
+                use crate::db::bound_sqlite::{
+                    open_bound_leaf_for_test, retain_unclassified_descriptor_for_test,
+                    unclassified_descriptor_fds,
+                };
 
-        drop(unknown_reader);
-        drop(unknown_probe);
-        drop(bound_unknown);
-        assert_eq!(unclassified_descriptor_fds().len(), capacity + 1);
-        drop(bound_unclassified_open);
-        assert!(unclassified_descriptor_fds().is_empty());
-        let reopened_bound = BoundDatabase::acquire(&unclassified_open_target).unwrap();
-        let reopened_fd = open_bound_leaf_for_test(&reopened_bound).unwrap();
-        assert!(unclassified_hook_ran.load(Ordering::SeqCst));
-        assert_eq!(unsafe { libc::close(reopened_fd) }, 0);
+                let root = tempfile::tempdir().unwrap();
+                let parent = new_database_parent(root.path());
+                let unknown_path = parent.join("unknown.db3");
+                let unclassified_open_path = parent.join("unclassified-open.db3");
+                seed_database(&unknown_path, 4, "DELETE");
+                seed_database(&unclassified_open_path, 5, "DELETE");
+
+                let unknown_target = test_target(&unknown_path);
+                let unclassified_open_target = test_target(&unclassified_open_path);
+                let bound_unknown = BoundDatabase::acquire(&unknown_target).unwrap();
+                let bound_unclassified_open =
+                    BoundDatabase::acquire(&unclassified_open_target).unwrap();
+                let unknown_identity = unknown_target.identity();
+                let (probe, reader, hook_ran) =
+                    assert_full_quarantine_refuses_leaf_opens_without_closing_retained_descriptors(
+                        &unknown_path,
+                        unknown_identity,
+                        &bound_unclassified_open,
+                        retain_unclassified_descriptor_for_test,
+                        unclassified_descriptor_fds,
+                    );
+
+                drop(reader);
+                drop(probe);
+                drop(bound_unknown);
+                let retained = unclassified_descriptor_fds();
+                assert_eq!(
+                    retained.len(),
+                    crate::db::bound_sqlite::quarantine_admission_limit() + 1
+                );
+                assert_descriptors_have_identity(&retained, unknown_identity);
+                drop(bound_unclassified_open);
+                assert!(unclassified_descriptor_fds().is_empty());
+
+                let reopened_bound = BoundDatabase::acquire(&unclassified_open_target).unwrap();
+                let hook_ran_callback = Arc::clone(&hook_ran);
+                reopened_bound
+                    .set_before_openat_hook(move || {
+                        hook_ran_callback.store(true, Ordering::SeqCst);
+                    })
+                    .unwrap();
+                let reopened_fd = open_bound_leaf_for_test(&reopened_bound).unwrap();
+                assert!(hook_ran.load(Ordering::SeqCst));
+                assert_eq!(unsafe { libc::close(reopened_fd) }, 0);
+                drop(reopened_bound);
+            },
+        );
     }
 
     #[cfg(windows)]

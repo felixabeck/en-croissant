@@ -5,6 +5,9 @@
 //! `O_PATH` descriptors before reopening the verified inode; other Unix
 //! platforms quarantine mismatched descriptors and refuse new leaf opens when
 //! that bounded registry is full. Windows locks are handle-scoped.
+//! Production code must not open SQLite by a plain pathname under
+//! `/<chessfable-bound>/`; the only remaining plain-path production open is the private
+//! puzzle snapshot in the temp dir.
 
 use std::{
     collections::HashMap,
@@ -27,8 +30,11 @@ use crate::{
 
 const RESERVED_PREFIX: &str = "/<chessfable-bound>/";
 const RESERVED_URI_PREFIX: &str = "file:/%3Cchessfable-bound%3E/";
+/// While any per-identity or unclassified retained set holds this many descriptors,
+/// every leaf open is refused with `EMFILE`; admitted opens can still push a set past
+/// the limit, and exceeding it never closes descriptors.
 #[cfg(all(unix, not(target_os = "linux")))]
-const MAX_QUARANTINED_DESCRIPTORS_PER_IDENTITY: usize = 8;
+const QUARANTINE_ADMISSION_LIMIT: usize = 8;
 
 type VfsOpenFn = unsafe extern "C" fn(
     *mut ffi::sqlite3_vfs,
@@ -621,13 +627,13 @@ fn leaf_open_is_admitted() -> bool {
     };
     let registry = match registry_mutex.lock() {
         Ok(registry) => registry,
-        Err(_) => return false,
+        Err(poisoned) => poisoned.into_inner(),
     };
     !registry
         .quarantined_descriptors
         .values()
-        .any(|descriptors| descriptors.len() >= MAX_QUARANTINED_DESCRIPTORS_PER_IDENTITY)
-        && registry.unclassified_descriptors.len() < MAX_QUARANTINED_DESCRIPTORS_PER_IDENTITY
+        .any(|descriptors| descriptors.len() >= QUARANTINE_ADMISSION_LIMIT)
+        && registry.unclassified_descriptors.len() < QUARANTINE_ADMISSION_LIMIT
 }
 
 #[cfg(all(test, unix, not(target_os = "linux")))]
@@ -664,8 +670,8 @@ pub(super) fn unclassified_descriptor_fds() -> Vec<std::os::fd::RawFd> {
 }
 
 #[cfg(all(test, unix, not(target_os = "linux")))]
-pub(super) const fn quarantine_capacity() -> usize {
-    MAX_QUARANTINED_DESCRIPTORS_PER_IDENTITY
+pub(super) const fn quarantine_admission_limit() -> usize {
+    QUARANTINE_ADMISSION_LIMIT
 }
 
 #[cfg(all(test, unix, not(target_os = "linux")))]
@@ -1161,34 +1167,26 @@ mod unix_hooks {
             }
         };
         #[cfg(test)]
-        let reopened_fd = {
-            let error = registration
-                .binding
-                .proc_reopen_error
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .take();
-            match error {
-                Some(error) => {
-                    set_errno(error);
-                    -1
-                }
-                None => unsafe {
-                    libc::open(
-                        proc_path.as_ptr(),
-                        flags & !libc::O_NOFOLLOW,
-                        mode as libc::c_uint,
-                    )
-                },
-            }
-        };
+        let reopen_error = registration
+            .binding
+            .proc_reopen_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
         #[cfg(not(test))]
-        let reopened_fd = unsafe {
-            libc::open(
-                proc_path.as_ptr(),
-                flags & !libc::O_NOFOLLOW,
-                mode as libc::c_uint,
-            )
+        let reopen_error: Option<c_int> = None;
+        let reopened_fd = match reopen_error {
+            Some(error) => {
+                set_errno(error);
+                -1
+            }
+            None => unsafe {
+                libc::open(
+                    proc_path.as_ptr(),
+                    flags & !libc::O_NOFOLLOW,
+                    mode as libc::c_uint,
+                )
+            },
         };
         let error = (reopened_fd < 0).then(last_errno);
         drop(path_file);
@@ -1291,14 +1289,12 @@ mod unix_hooks {
                     let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
                     if unsafe { fstat_leaf_descriptor(&registration, fd, stat.as_mut_ptr()) } != 0 {
                         let error = last_errno();
-                        #[cfg(all(unix, not(target_os = "linux")))]
                         retain_unclassified_descriptor(fd);
                         return syscall_failure(error);
                     }
                     let stat = unsafe { stat.assume_init() };
                     if !leaf_identity_matches(&registration, &stat) {
                         increment_refusal(&registration.binding);
-                        #[cfg(all(unix, not(target_os = "linux")))]
                         retain_mismatched_descriptor(fd, raw_libc_stat_identity(&stat));
                         return syscall_failure(libc::ESTALE);
                     }
