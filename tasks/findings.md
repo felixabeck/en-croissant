@@ -11804,6 +11804,8 @@ Rejected: a longer WebDriver timeout, and a full-FEN dedup key.
 * **Why it matters:** master's `test` job is red on every push until this is fixed, which hides any real frontend or tooling regression behind a known failure.
 * **Related:** `f-20260912-03` (the release-surface checker work that added O3.12), `d-20260928-06`, `d-20260901-36`.
 * **Found by:** Claude Code, `$push` red-remote check of the `f-20260912-05` drain run (session `6f9c4b3e-8255-48b2-82b2-497c962dd7df`), 2026-09-29.
+* **Closed, 2026-09-30 (build run for the push-gate parallelism plan, session a3a230ef-7b5b-4be0-82ec-2e5fb8953292):** the release-surface suite was first split into ten files (b3dd9659, a pure move; the two tests now live in `scripts/check-rust-release-surface-clippy-c.test.mjs`), then each O3.12 evaluation got its own timed test (315d8205): the attribute table became a `test.each` over its four rows and the region test became five tests (added, edited, stale, macro twin, macro input replacement), fixtures, guards and assertions unchanged, no timeout raised (d-20260901-36). Every new case takes under 1 s locally; the suite has 293 tests. Decision: d-20260930-06. The CI `test` job on the pushed SHA is the remote proof.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"285c95d32b5c3f1f2dcede4d1c22f3cbc2566e12e3a6eff28e4d1bda1ea75b20","input_sha256":"0af0d65b772a23e3dde0da4e1bb1fcf68f364d6ea03234423ef9faafd508ef51","kind":"mutation-receipt","operation":"e39a3aa372c7a31ba80052878ca3bfa0c2bde6a33c158e690450b8645e437ee5","options":{"section":null},"request_id_sha256":null,"results":["f-20260929-02"],"target":"f-20260929-02","v":1} -->
 
 ---
 
