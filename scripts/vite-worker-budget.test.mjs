@@ -1,4 +1,6 @@
 // @vitest-environment node
+import { readFileSync } from "node:fs";
+import * as os from "node:os";
 import { describe, expect, test, vi } from "vitest";
 import {
   VITEST_BASE_BYTES,
@@ -64,6 +66,49 @@ describe("Vitest worker budget wiring", () => {
         expect(config.test.maxWorkers).toBe(1);
       },
     );
+  });
+
+  test("Vitest cache key includes config-level transform inputs", async () => {
+    await withEnvironment({ VITEST: "true" }, async () => {
+      const { createVitestCacheKeyPlugin, default: config } = await import("../vite.config.ts");
+      const plugin = config.plugins.find(
+        (candidate) => candidate.name === "chessfable:vitest-cache-key",
+      );
+      let generateCacheKey;
+      plugin.configureVitest({
+        experimental_defineCacheKeyGenerator(generator) {
+          generateCacheKey = generator;
+        },
+      });
+
+      const tsconfigText = readFileSync(new URL("../tsconfig.json", import.meta.url), "utf8");
+      const platform = os.platform();
+      const firstKey = generateCacheKey({
+        environment: {},
+        id: "/first/module.ts",
+        sourceCode: "export const value = 1;",
+      });
+      const secondKey = generateCacheKey({
+        environment: {},
+        id: "/second/module.ts",
+        sourceCode: "export const value = 2;",
+      });
+
+      expect(firstKey).toContain(tsconfigText);
+      expect(firstKey).toContain(platform);
+      expect(firstKey).toBe(secondKey);
+      expect(config.define["import.meta.env.VITE_PLATFORM"]).toBe(JSON.stringify(platform));
+
+      let changedCacheKey;
+      createVitestCacheKeyPlugin(`${tsconfigText}\n`, platform).configureVitest({
+        experimental_defineCacheKeyGenerator(generator) {
+          changedCacheKey = generator;
+        },
+      });
+      expect(changedCacheKey({ environment: {}, id: "/module.ts", sourceCode: "" })).not.toBe(
+        firstKey,
+      );
+    });
   });
 
   test("the Stryker path does not read injected unreadable cgroup files", () => {

@@ -1,18 +1,34 @@
 /// <reference types="vitest/config" />
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import react, { reactCompilerPreset } from "@vitejs/plugin-react";
 import babel from "@rolldown/plugin-babel";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import * as os from "node:os";
 import { vitestMaxWorkers } from "./scripts/gate-parallelism.mjs";
 
 const isDebug = !!process.env.TAURI_ENV_DEBUG;
 const host = process.env.TAURI_DEV_HOST;
+const platform = os.platform();
+const tsconfigText = readFileSync(resolve(import.meta.dirname, "tsconfig.json"), "utf8");
+
+// Add tsconfig and resolved define inputs; Vitest hashes config contents and plugin names but omits both.
+export function createVitestCacheKeyPlugin(configText: string, definedPlatform: string): Plugin {
+    const cacheKey = `tsconfig.json:${configText}\nimport.meta.env.VITE_PLATFORM:${definedPlatform}`;
+
+    return {
+        name: "chessfable:vitest-cache-key",
+        configureVitest(context) {
+            context.experimental_defineCacheKeyGenerator(() => cacheKey);
+        },
+    };
+}
 
 // https://vitejs.dev/config/
 export default defineConfig({
     plugins: [
+        createVitestCacheKeyPlugin(tsconfigText, platform),
         tanstackRouter({
             target: "react",
         }),
@@ -81,6 +97,6 @@ export default defineConfig({
         },
     },
     define: {
-        "import.meta.env.VITE_PLATFORM": JSON.stringify(os.platform()),
+        "import.meta.env.VITE_PLATFORM": JSON.stringify(platform),
     },
 });
