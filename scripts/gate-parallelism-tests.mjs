@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import {
@@ -7,6 +8,7 @@ import {
   memoryLimitBytes,
   STRYKER_RUNNER_BYTES,
   VITEST_BASE_BYTES,
+  vitestMaxWorkers,
   VITEST_WORKER_BYTES,
   workerCount,
 } from "./gate-parallelism.mjs";
@@ -289,4 +291,68 @@ test("the exported per-tool byte constants retain their measured budget values",
   assert.equal(STRYKER_RUNNER_BYTES, 640 * MIB);
   assert.equal(VITEST_WORKER_BYTES, 256 * MIB);
   assert.equal(VITEST_BASE_BYTES, 1.5 * GIB);
+});
+
+test("vitestMaxWorkers leaves the production config unset without reading cgroup files", () => {
+  let reads = 0;
+  assert.equal(
+    vitestMaxWorkers({
+      env: {},
+      readFileSync() {
+        reads += 1;
+        throw new Error("must not read cgroup files");
+      },
+      statSync() {
+        reads += 1;
+        throw new Error("must not stat cgroup directories");
+      },
+    }),
+    undefined,
+  );
+  assert.equal(reads, 0);
+});
+
+test("vitestMaxWorkers returns one under Stryker without reading its budget or cgroup", () => {
+  let reads = 0;
+  assert.equal(
+    vitestMaxWorkers({
+      env: { VITEST: "true", STRYKER_MEMORY_BYTES: "256", GATE_MEMORY_BYTES: "" },
+      readFileSync() {
+        reads += 1;
+        throw new Error("must not read cgroup files");
+      },
+      statSync() {
+        reads += 1;
+        throw new Error("must not stat cgroup directories");
+      },
+    }),
+    1,
+  );
+  assert.equal(reads, 0);
+});
+
+test("Vite production config leaves test.maxWorkers undefined without VITEST", () => {
+  const script = `
+    import { loadConfigFromFile } from "vite";
+    const loaded = await loadConfigFromFile(
+      { command: "build", mode: "production" },
+      "vite.config.ts",
+      process.cwd(),
+    );
+    console.log(JSON.stringify(loaded.config.test.maxWorkers === undefined));
+  `;
+  const env = { ...process.env };
+  delete env.GATE_MEMORY_BYTES;
+  delete env.STRYKER_MEMORY_BYTES;
+  delete env.VITEST;
+
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    env,
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.error, undefined);
+  assert.equal(result.stdout.trim().split(/\r?\n/u).at(-1), "true");
 });

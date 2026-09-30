@@ -5,6 +5,7 @@ import babel from "@rolldown/plugin-babel";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import { defineConfig } from "vite";
 import * as os from "node:os";
+import { vitestMaxWorkers } from "./scripts/gate-parallelism.mjs";
 
 const isDebug = !!process.env.TAURI_ENV_DEBUG;
 const host = process.env.TAURI_DEV_HOST;
@@ -55,8 +56,8 @@ export default defineConfig({
         environment: "jsdom",
         include: ["src/**/*.{test,spec}.{ts,tsx}", "scripts/**/*.test.mjs"],
         exclude: ["**/node_modules/**", ".stryker-tmp/**", "e2e/**"],
-        minWorkers: 1,
-        maxWorkers: 4,
+        // Size Vitest workers from the gate memory budget; Stryker forces one worker per runner.
+        maxWorkers: vitestMaxWorkers(),
         coverage: {
             provider: "v8",
             reporter: ["text", "json-summary", "lcov"],

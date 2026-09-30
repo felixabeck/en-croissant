@@ -8,7 +8,7 @@ import { dirname, join, resolve, sep } from "node:path";
 const CGROUP_ROOT = "/sys/fs/cgroup";
 const PROCESS_CGROUP_FILE = "/proc/self/cgroup";
 
-// The agent process measured 0.32 GB RSS in its 8 GiB scope on 2026-09-30; reserve 1 GiB for
+// The agent process measured 0.32 GB RSS in its 8 GiB scope on 2026-09-29; reserve 1 GiB for
 // that process plus headroom for a lens leaf or shell.
 export const AGENT_RESERVE_BYTES = 1024 * 1024 * 1024;
 
@@ -224,4 +224,17 @@ export function workerCount({
   const cpuCap = Math.max(1, Math.floor(cpuCount * share));
   const memoryCap = Math.floor((budget - baseBytes) / perWorkerBytes);
   return Math.max(1, Math.min(cpuCap, memoryCap));
+}
+
+/** Size Vitest workers only while Vitest evaluates the config; production builds leave it unset. */
+export function vitestMaxWorkers({ env = process.env, ...injectables } = {}) {
+  if (env?.VITEST !== "true") return undefined;
+  if (env?.STRYKER_MEMORY_BYTES !== undefined) return 1;
+
+  return workerCount({
+    perWorkerBytes: VITEST_WORKER_BYTES,
+    baseBytes: VITEST_BASE_BYTES,
+    env,
+    ...injectables,
+  });
 }
