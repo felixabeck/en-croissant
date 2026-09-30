@@ -2,15 +2,20 @@
  * Rust source masking shared by the release-surface checker and coverage scanner.
  * Masked characters become spaces; line breaks and UTF-16 offsets are preserved.
  */
-export function maskRustSource(source) {
-  return maskRustSourceWithSpans(source).masked;
+export function maskRustSource(source, cache) {
+  return maskRustSourceWithSpans(source, cache).masked;
 }
 
 /**
  * Return masked code and source spans for comments and literals. Comments and literals are
  * separate because coverage line mapping treats comments as non-code and literals as code.
  */
-export function maskRustSourceWithSpans(source) {
+export function maskRustSourceWithSpans(source, cache) {
+  if (cache !== undefined && !(cache instanceof Map)) {
+    throw new TypeError("Rust source mask cache must be a Map");
+  }
+  if (cache?.has(source)) return cache.get(source);
+
   // Indexed code units keep every source offset stable, including astral characters.
   const masked = source.split("");
   const comments = [];
@@ -122,9 +127,11 @@ export function maskRustSourceWithSpans(source) {
     index += 1;
   }
 
-  return {
+  const result = {
     masked: masked.join(""),
     comments,
     literals,
   };
+  cache?.set(source, result);
+  return result;
 }

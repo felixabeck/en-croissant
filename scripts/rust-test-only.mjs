@@ -10,16 +10,23 @@ const WORD = /[A-Za-z0-9_]/;
 const IDENTIFIER = /^(?:r#)?[A-Za-z_][A-Za-z0-9_]*/;
 const DEFAULT_ATOM_VALUATION = Object.freeze({ test: false });
 
-function hasAttributeMetavariable(text) {
-  return maskRustSourceWithSpans(text).masked.includes("$");
-}
-
 export function lineAt(source, offset) {
   let line = 1;
   for (let index = 0; index < offset; index += 1) {
     if (source[index] === "\n") line += 1;
   }
   return line;
+}
+
+function lineAtFromStarts(offset, lineStarts) {
+  let low = 0;
+  let high = lineStarts.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (lineStarts[middle] <= offset) low = middle + 1;
+    else high = middle;
+  }
+  return low;
 }
 
 function fail(path, source, offset, message) {
@@ -210,32 +217,44 @@ function openerContexts(path, source, code, pairs, includeAnalysis = false) {
   return contexts;
 }
 
-function contextAt(offset, pairs, contexts, includeOpaqueAncestors = false) {
-  let selected;
-  let opaque;
-  for (const [open, close] of pairs) {
-    if (open < close && open < offset && offset < close && (!selected || open > selected.open)) {
-      selected = { open, close, context: contexts.get(open) };
-    }
-    const context = contexts.get(open);
-    if (
-      includeOpaqueAncestors &&
-      open < close &&
-      open < offset &&
-      offset < close &&
-      context?.kind === "opaque" &&
-      (!opaque || open > opaque.open)
-    ) {
-      opaque = { open, close, context };
-    }
+function delimiterContextIndex(code, pairs, contexts) {
+  const openers = [];
+  const stack = [];
+  for (let open = 0; open < code.length; open += 1) {
+    if (!"([{".includes(code[open])) continue;
+    const close = pairs.get(open);
+    if (close === undefined) continue;
+    while (stack.length && stack.at(-1).close < open) stack.pop();
+    const node = { open, close, context: contexts.get(open), parent: stack.at(-1) ?? null };
+    openers.push(node);
+    stack.push(node);
   }
-  return (
-    (includeOpaqueAncestors ? opaque : null) ??
-    selected ?? { open: null, close: null, context: { kind: "item-list", form: "file" } }
-  );
+  for (const node of openers) Object.freeze(node);
+  return Object.freeze(openers);
 }
 
-function attributeGroups(path, source, code, pairs) {
+function contextAt(offset, contextIndex, includeOpaqueAncestors = false) {
+  let low = 0;
+  let high = contextIndex.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (contextIndex[middle].open < offset) low = middle + 1;
+    else high = middle;
+  }
+
+  let selected = contextIndex[low - 1];
+  while (selected && !(selected.open < offset && offset < selected.close)) {
+    selected = selected.parent;
+  }
+  if (includeOpaqueAncestors) {
+    let opaque = selected;
+    while (opaque && opaque.context?.kind !== "opaque") opaque = opaque.parent;
+    if (opaque) selected = opaque;
+  }
+  return selected ?? { open: null, close: null, context: { kind: "item-list", form: "file" } };
+}
+
+function attributeGroups(path, source, code, pairs, maskCache) {
   const groups = [];
   for (let index = 0; index < code.length; index += 1) {
     if (code[index] !== "#" || code[index + 1] !== "[") continue;
@@ -248,7 +267,16 @@ function attributeGroups(path, source, code, pairs) {
       const open = cursor + 1;
       const close = pairs.get(open);
       if (close === undefined) fail(path, source, cursor, "unbalanced attribute delimiter");
-      attributes.push({ start: cursor, open, close, text: source.slice(open + 1, close) });
+      const text = source.slice(open + 1, close);
+      const maskedText = maskRustSourceWithSpans(text, maskCache).masked;
+      attributes.push({
+        start: cursor,
+        open,
+        close,
+        text,
+        maskedText,
+        hasMetavariable: maskedText.includes("$"),
+      });
       end = close + 1;
       let next = skipWhitespace(code, end);
       if (!/^\s*$/.test(source.slice(end, next))) break;
@@ -499,8 +527,17 @@ function evaluateCfgAttribute(attribute, path, source, atomValuation) {
   return excluded;
 }
 
-function parseAttributes(path, source, groups, atomValuation, allowAttributeMetavariables) {
-  for (const group of groups) {
+function parseAttributes(
+  path,
+  source,
+  groups,
+  structuralGroups,
+  atomValuation,
+  allowAttributeMetavariables,
+) {
+  for (let groupIndex = 0; groupIndex < groups.length; groupIndex += 1) {
+    const group = groups[groupIndex];
+    const structuralGroup = structuralGroups[groupIndex];
     for (const attribute of group.attributes) {
       attribute.details = {
         atoms: [],
@@ -509,8 +546,11 @@ function parseAttributes(path, source, groups, atomValuation, allowAttributeMeta
         containsCfgPayload: false,
       };
     }
-    group.testOnly = group.attributes.some((attribute) => {
-      if (allowAttributeMetavariables && hasAttributeMetavariable(attribute.text)) {
+    group.testOnly = group.attributes.some((attribute, attributeIndex) => {
+      if (
+        allowAttributeMetavariables &&
+        structuralGroup.attributes[attributeIndex].hasMetavariable
+      ) {
         attribute.details.kind = "metavariable";
         return false;
       }
@@ -997,10 +1037,12 @@ function moduleDeclarations(
   code,
   pairs,
   contexts,
+  contextIndex,
   groups,
   ranges,
   wholeFile,
   includeAnalysis = false,
+  lineStarts,
 ) {
   const declarations = [];
   const regex = /\bmod\s+((?:r#)?[A-Za-z_][A-Za-z0-9_]*)\s*;/g;
@@ -1008,7 +1050,7 @@ function moduleDeclarations(
   while ((match = regex.exec(code))) {
     const keyword = match.index;
     const name = match[1].replace(/^r#/, "");
-    const context = contextAt(keyword, pairs, contexts, includeAnalysis);
+    const context = contextAt(keyword, contextIndex, includeAnalysis);
     if (context.context?.kind !== "item-list") continue;
     const attributes = attachedAttributes(path, source, code, pairs, keyword);
     const associatedGroups = groups.filter((group) => {
@@ -1023,7 +1065,7 @@ function moduleDeclarations(
     declarations.push({
       name,
       keyword,
-      line: lineAt(source, keyword),
+      line: lineAtFromStarts(keyword, lineStarts),
       testOnly,
       inline: context.open !== null && contexts.get(context.open)?.form === "inline-module",
       attributes,
@@ -1046,12 +1088,23 @@ function commentPosition(spans, cursor) {
   return false;
 }
 
-function lineRanges(path, source, comments, ranges, wholeFile) {
-  const excluded = new Set();
+function sourceLineStarts(source) {
   const lineStarts = [0];
   for (let index = 0; index < source.length; index += 1) {
     if (source[index] === "\n") lineStarts.push(index + 1);
   }
+  return lineStarts;
+}
+
+function lineRanges(
+  path,
+  source,
+  comments,
+  ranges,
+  wholeFile,
+  lineStarts = sourceLineStarts(source),
+) {
+  const excluded = new Set();
   const sortedRanges = wholeFile
     ? [{ start: 0, end: source.length }]
     : [...ranges].sort((a, b) => a.start - b.start);
@@ -1106,11 +1159,15 @@ function lineRanges(path, source, comments, ranges, wholeFile) {
   return excluded;
 }
 
-function analyzeRustFile(path, source, atomValuation, includeAnalysis = false) {
-  const { masked, comments } = maskRustSourceWithSpans(source);
+function buildRustFileStructure(path, source, includeAnalysis = false, maskCache) {
+  const { masked, comments } = maskRustSourceWithSpans(source, maskCache);
   const pairs = delimiterPairs(path, source, masked);
   const contexts = openerContexts(path, source, masked, pairs, includeAnalysis);
-  const groups = attributeGroups(path, source, masked, pairs);
+  const contextIndex = delimiterContextIndex(masked, pairs, contexts);
+  const groups = attributeGroups(path, source, masked, pairs, maskCache).map((group) => ({
+    ...group,
+    context: contextAt(group.start, contextIndex, includeAnalysis),
+  }));
   const macroRegions = [...pairs]
     .filter(([open, close]) => open < close && masked[open] === "{")
     .map(([open, close]) => {
@@ -1120,10 +1177,140 @@ function analyzeRustFile(path, source, atomValuation, includeAnalysis = false) {
       return { start: open, end: close + 1 };
     })
     .filter(Boolean);
-  parseAttributes(path, source, groups, atomValuation, includeAnalysis);
+  const lineStarts = sourceLineStarts(source);
+  const innerAttributeStructures = [];
+  for (let index = 0; index < masked.length; index += 1) {
+    if (masked[index] !== "#" || masked[index + 1] !== "!" || masked[index + 2] !== "[") continue;
+    const open = index + 2;
+    const close = pairs.get(open);
+    if (close === undefined) fail(path, source, index, "unbalanced inner attribute delimiter");
+    const text = source.slice(open + 1, close);
+    const maskedText = maskRustSourceWithSpans(text, maskCache).masked;
+    const context = contextAt(index, contextIndex, includeAnalysis);
+    innerAttributeStructures.push({
+      start: index,
+      end: close + 1,
+      text: source.slice(index, close + 1),
+      attribute: { start: index, text, maskedText, hasMetavariable: maskedText.includes("$") },
+      range: { start: index, end: close + 1 },
+      root: context.open === null,
+      context,
+    });
+  }
+  const functionItems = includeAnalysis
+    ? [...pairs]
+        .filter(([open, close]) => open < close && masked[open] === "{")
+        .map(([open, close]) => {
+          if (contexts.get(open)?.form !== "function-body") return null;
+          const header = headerBeforeBrace(path, source, masked, pairs, open);
+          const name = header.match(/\bfn\s+(?:r#)?([A-Za-z_][A-Za-z0-9_]*)/)?.[1];
+          if (!name) return null;
+          const start = open - header.length;
+          return { name, start, end: close + 1, text: source.slice(start, close + 1) };
+        })
+        .filter(Boolean)
+    : undefined;
+
+  // These records are valuation-independent. Map instances are only read after construction;
+  // evaluation clones groups and attributes before adding cfg-specific fields.
+  for (const span of comments) Object.freeze(span);
+  for (const group of groups) {
+    for (const attribute of group.attributes) Object.freeze(attribute);
+    Object.freeze(group.attributes);
+    Object.freeze(group);
+  }
+  for (const region of macroRegions) Object.freeze(region);
+  for (const candidate of innerAttributeStructures) {
+    Object.freeze(candidate.attribute);
+    Object.freeze(candidate.range);
+    Object.freeze(candidate);
+  }
+  for (const item of functionItems ?? []) Object.freeze(item);
+  for (const context of contexts.values()) Object.freeze(context);
+  Object.freeze(comments);
+  Object.freeze(lineStarts);
+  Object.freeze(groups);
+  Object.freeze(macroRegions);
+  Object.freeze(innerAttributeStructures);
+  if (functionItems) Object.freeze(functionItems);
+  Object.freeze(pairs);
+  Object.freeze(contexts);
+  return Object.freeze({
+    source,
+    masked,
+    comments,
+    pairs,
+    contexts,
+    contextIndex,
+    groups,
+    macroRegions,
+    innerAttributeStructures,
+    functionItems,
+    lineStarts,
+  });
+}
+
+function cachedRustFileStructure(path, source, includeAnalysis, structuralCache, maskCache) {
+  // Release-surface callers allocate this cache once per checker invocation, bounding source and
+  // analysis retention to that call; standalone classifications own a fresh cache of their own.
+  let pathCache = structuralCache.get(path);
+  if (!pathCache) {
+    pathCache = new Map();
+    structuralCache.set(path, pathCache);
+  }
+  let contentCache = pathCache.get(source);
+  if (!contentCache) {
+    contentCache = new Map();
+    pathCache.set(source, contentCache);
+  }
+  const cacheKey = includeAnalysis ? "analysis" : "classification";
+  let structure = contentCache.get(cacheKey);
+  if (!structure) {
+    structure = buildRustFileStructure(path, source, includeAnalysis, maskCache);
+    contentCache.set(cacheKey, structure);
+  }
+  return structure;
+}
+
+function evaluatedAttribute(structuralAttribute) {
+  const attribute = {
+    start: structuralAttribute.start,
+    open: structuralAttribute.open,
+    close: structuralAttribute.close,
+    text: structuralAttribute.text,
+  };
+  Object.defineProperty(attribute, "maskedText", { value: structuralAttribute.maskedText });
+  return attribute;
+}
+
+function analyzeRustFile(
+  path,
+  source,
+  atomValuation,
+  includeAnalysis = false,
+  structuralCache,
+  maskCache,
+) {
+  const structure = cachedRustFileStructure(
+    path,
+    source,
+    includeAnalysis,
+    structuralCache,
+    maskCache,
+  );
+  const { masked, comments, pairs, contexts, contextIndex, macroRegions, lineStarts } = structure;
+  const structuralGroups = structure.groups;
+  const groups = structuralGroups.map(({ start, end, attributes }) => ({
+    start,
+    end,
+    attributes: attributes.map(evaluatedAttribute),
+  }));
+  parseAttributes(path, source, groups, structuralGroups, atomValuation, includeAnalysis);
   const excludedRanges = [];
   const sourceRegions = [];
-  for (const group of groups) {
+  for (let groupIndex = 0; groupIndex < groups.length; groupIndex += 1) {
+    const group = groups[groupIndex];
+    const structuralGroup = structuralGroups[groupIndex];
     if (
       includeAnalysis &&
       excludedRanges.some((range) => range.start <= group.start && group.start < range.end)
@@ -1131,16 +1318,15 @@ function analyzeRustFile(path, source, atomValuation, includeAnalysis = false) {
       continue;
     let relevant = false;
     if (includeAnalysis) {
-      relevant = group.attributes.some((attribute) => {
-        if (hasAttributeMetavariable(attribute.text)) return true;
+      relevant = group.attributes.some((attribute, attributeIndex) => {
+        const structuralAttribute = structuralGroup.attributes[attributeIndex];
+        if (structuralAttribute.hasMetavariable) return true;
         try {
           const meta = metaParts(attribute.text);
           return (
             ["cfg", "cfg_attr", "path"].includes(meta.name) ||
             (["allow", "expect"].includes(meta.name) &&
-              /\bclippy\s*::\s*disallowed_methods\b/.test(
-                maskRustSourceWithSpans(attribute.text).masked,
-              ))
+              /\bclippy\s*::\s*disallowed_methods\b/.test(structuralAttribute.maskedText))
           );
         } catch {
           return false;
@@ -1148,7 +1334,7 @@ function analyzeRustFile(path, source, atomValuation, includeAnalysis = false) {
       });
     }
     if (!group.testOnly && !relevant) continue;
-    const context = contextAt(group.start, pairs, contexts, includeAnalysis);
+    const context = structuralGroup.context;
     if (context.context?.kind === "opaque") {
       const inMacroRulesBody = macroRegions.some(
         ({ start, end }) => start <= group.start && group.start < end,
@@ -1221,37 +1407,35 @@ function analyzeRustFile(path, source, atomValuation, includeAnalysis = false) {
 
   let wholeFile = false;
   const innerAttributes = [];
-  for (let index = 0; index < masked.length; index += 1) {
-    if (masked[index] !== "#" || masked[index + 1] !== "!" || masked[index + 2] !== "[") continue;
-    const open = index + 2;
-    const close = pairs.get(open);
-    if (close === undefined) fail(path, source, index, "unbalanced inner attribute delimiter");
+  for (const candidate of structure.innerAttributeStructures) {
+    const index = candidate.start;
     const attribute = {
-      start: index,
-      text: source.slice(open + 1, close),
+      start: candidate.attribute.start,
+      text: candidate.attribute.text,
       details: { atoms: [], excluded: false, inactive: false, containsCfgPayload: false },
     };
+    Object.defineProperty(attribute, "maskedText", { value: candidate.attribute.maskedText });
     if (
       includeAnalysis &&
       excludedRanges.some((range) => range.start <= index && index < range.end)
     )
       continue;
     const excluded =
-      includeAnalysis && hasAttributeMetavariable(attribute.text)
+      includeAnalysis && candidate.attribute.hasMetavariable
         ? false
         : evaluateCfgAttribute(attribute, path, source, atomValuation);
     if (includeAnalysis) {
       innerAttributes.push({
-        start: index,
-        end: close + 1,
-        text: source.slice(index, close + 1),
+        start: candidate.start,
+        end: candidate.end,
+        text: candidate.text,
         attribute,
-        range: { start: index, end: close + 1 },
-        root: contextAt(index, pairs, contexts, includeAnalysis).open === null,
+        range: { ...candidate.range },
+        root: candidate.root,
       });
     }
     if (!excluded) continue;
-    const context = contextAt(index, pairs, contexts, includeAnalysis);
+    const context = candidate.context;
     if (context.context?.kind === "opaque")
       fail(path, source, index, "unsupported inner cfg attribute context");
     if (context.open === null) {
@@ -1270,12 +1454,14 @@ function analyzeRustFile(path, source, atomValuation, includeAnalysis = false) {
     masked,
     pairs,
     contexts,
+    contextIndex,
     groups,
     excludedRanges,
     wholeFile,
     includeAnalysis,
+    lineStarts,
   );
-  const excludedLines = lineRanges(path, source, comments, excludedRanges, wholeFile);
+  const excludedLines = lineRanges(path, source, comments, excludedRanges, wholeFile, lineStarts);
   const analysis = {
     source,
     masked,
@@ -1291,17 +1477,7 @@ function analyzeRustFile(path, source, atomValuation, includeAnalysis = false) {
     analysis.sourceRegions = sourceRegions;
     analysis.innerAttributes = innerAttributes;
     analysis.macroRegions = macroRegions;
-    analysis.functionItems = [...pairs]
-      .filter(([open, close]) => open < close && masked[open] === "{")
-      .map(([open, close]) => {
-        if (contexts.get(open)?.form !== "function-body") return null;
-        const header = headerBeforeBrace(path, source, masked, pairs, open);
-        const name = header.match(/\bfn\s+(?:r#)?([A-Za-z_][A-Za-z0-9_]*)/)?.[1];
-        if (!name) return null;
-        const start = open - header.length;
-        return { name, start, end: close + 1, text: source.slice(start, close + 1) };
-      })
-      .filter(Boolean);
+    analysis.functionItems = structure.functionItems;
     for (const region of sourceRegions) {
       const containing = analysis.functionItems
         .filter((item) => item.start <= region.start && region.start < item.end)
@@ -1450,6 +1626,14 @@ export function classifyRustTestOnlySources(
   if (options.resolveModule !== undefined && typeof options.resolveModule !== "function") {
     throw new TypeError("Rust test-only module resolver must be a function");
   }
+  if (options.structuralCache !== undefined && !(options.structuralCache instanceof Map)) {
+    throw new TypeError("Rust test-only structural cache must be a Map");
+  }
+  if (options.maskCache !== undefined && !(options.maskCache instanceof Map)) {
+    throw new TypeError("Rust source mask cache must be a Map");
+  }
+  const structuralCache = options.structuralCache ?? new Map();
+  const maskCache = options.maskCache;
   const evaluatedAtoms = prepareAtomValuation(atomValuation);
   const entries = sourceEntries(sources);
   const analyses = new Map();
@@ -1463,7 +1647,14 @@ export function classifyRustTestOnlySources(
     if (analyses.has(path)) throw new Error(`${path}:1: duplicate Rust source path`);
     analyses.set(
       path,
-      analyzeRustFile(path, contents, evaluatedAtoms, options.includeAnalysis === true),
+      analyzeRustFile(
+        path,
+        contents,
+        evaluatedAtoms,
+        options.includeAnalysis === true,
+        structuralCache,
+        maskCache,
+      ),
     );
   }
 
@@ -1507,7 +1698,17 @@ export function classifyRustTestOnlySources(
     [...analyses].map(([path, analysis]) => [path, analysis.excludedLines]),
   );
   for (const path of testOnlyFiles) {
-    excludedLines.set(path, lineRanges(path, sourcesByPath.get(path), [], [], true));
+    excludedLines.set(
+      path,
+      lineRanges(
+        path,
+        sourcesByPath.get(path),
+        [],
+        [],
+        true,
+        sourceLineStarts(sourcesByPath.get(path)),
+      ),
+    );
   }
   const excludedLineCounts = new Map([...excludedLines].map(([path, lines]) => [path, lines.size]));
   const result = { testOnlyFiles, excludedLines, excludedLineCounts };

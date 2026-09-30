@@ -96,12 +96,16 @@ function isFileLevelDeadCodeAllowance(line) {
   return /^\s*#!\s*\[\s*allow\s*\(\s*dead_code\s*\)\s*\]/.test(line);
 }
 
-export function checkDeadCodeSurface(sources, allowlist = DEAD_CODE_ALLOWLIST) {
+export function checkDeadCodeSurface(
+  sources,
+  allowlist = DEAD_CODE_ALLOWLIST,
+  maskCache = new Map(),
+) {
   const entries = sourceEntries(sources);
   const pathsWithAllowance = new Set(
     entries
       .filter(({ contents }) =>
-        maskRustSource(contents).split("\n").some(isFileLevelDeadCodeAllowance),
+        maskRustSource(contents, maskCache).split("\n").some(isFileLevelDeadCodeAllowance),
       )
       .map(({ path }) => path),
   );
@@ -288,8 +292,8 @@ function parseUseBindings(text) {
   return state;
 }
 
-function walkGatedLines(source, onLine, testOnlyLines) {
-  const lines = maskRustSource(source).split("\n");
+function walkGatedLines(source, onLine, testOnlyLines, maskCache) {
+  const lines = maskRustSource(source, maskCache).split("\n");
   let useStatement = null;
 
   for (let index = 0; index < lines.length; index += 1) {
@@ -320,7 +324,7 @@ function walkGatedLines(source, onLine, testOnlyLines) {
   }
 }
 
-function checkFaultInjectionSurfaceWithClassification(path, source, classification) {
+function checkFaultInjectionSurfaceWithClassification(path, source, classification, maskCache) {
   const violations = [];
   const testOnlyLines = classification.excludedLines.get(path) ?? new Set();
 
@@ -340,19 +344,23 @@ function checkFaultInjectionSurfaceWithClassification(path, source, classificati
       }
     },
     testOnlyLines,
+    maskCache,
   );
 
   return [...new Set(violations)];
 }
 
 export function checkFaultInjectionSurface(path, source) {
+  const maskCache = new Map();
   let classification;
   try {
-    classification = classifyRustTestOnlySources([{ path, contents: source }]);
+    classification = classifyRustTestOnlySources([{ path, contents: source }], undefined, {
+      maskCache,
+    });
   } catch (error) {
     return [unclassifiableCfgViolation(error)];
   }
-  return checkFaultInjectionSurfaceWithClassification(path, source, classification);
+  return checkFaultInjectionSurfaceWithClassification(path, source, classification, maskCache);
 }
 
 function isInfraPath(path) {
@@ -370,12 +378,12 @@ function pathnameCall(name, code) {
   return new RegExp(`\\b${escaped}${TURBOFISH_CALL}`).test(code);
 }
 
-function collectFilesystemMatches(path, source, classification) {
+function collectFilesystemMatches(path, source, classification, maskCache) {
   if (isInfraPath(path)) return [];
   const matches = [];
   const events = [];
   const testOnlyLines = classification.excludedLines.get(path) ?? new Set();
-  walkGatedLines(source, (event) => events.push(event), testOnlyLines);
+  walkGatedLines(source, (event) => events.push(event), testOnlyLines, maskCache);
 
   const imports = emptyImportState();
   for (const { useText, useGated } of events) {
@@ -494,6 +502,7 @@ function checkFilesystemSurfaceWithClassification(
   allowlist = FS_SURFACE_ALLOWLIST,
   counts = INITIAL_FS_SURFACE_COUNTS,
   classification,
+  maskCache,
 ) {
   const entries = sourceEntries(sources);
   const violations = [];
@@ -501,7 +510,7 @@ function checkFilesystemSurfaceWithClassification(
   const matchesByPath = new Map();
 
   for (const { path, contents } of entries) {
-    const matches = collectFilesystemMatches(path, contents, classification);
+    const matches = collectFilesystemMatches(path, contents, classification, maskCache);
     matchesByPath.set(path, matches);
     if (allowedPaths.has(path)) {
       continue;
@@ -534,13 +543,20 @@ export function checkFilesystemSurface(
   counts = INITIAL_FS_SURFACE_COUNTS,
 ) {
   const entries = sourceEntries(sources);
+  const maskCache = new Map();
   let classification;
   try {
-    classification = classifyRustTestOnlySources(entries);
+    classification = classifyRustTestOnlySources(entries, undefined, { maskCache });
   } catch (error) {
     return [unclassifiableCfgViolation(error)];
   }
-  return checkFilesystemSurfaceWithClassification(entries, allowlist, counts, classification);
+  return checkFilesystemSurfaceWithClassification(
+    entries,
+    allowlist,
+    counts,
+    classification,
+    maskCache,
+  );
 }
 
 // An allowlist entry whose file has left the working tree is stale: without this rule the entry
@@ -563,12 +579,36 @@ function sha256(text) {
   return createHash("sha256").update(text).digest("hex");
 }
 
-function isTestOnlyOffset(path, source, offset, classification) {
-  return classification.excludedLines.get(path)?.has(lineAt(source, offset)) ?? false;
+function sourceLineStarts(source) {
+  const starts = [0];
+  for (let index = 0; index < source.length; index += 1) {
+    if (source[index] === "\n") starts.push(index + 1);
+  }
+  return starts;
 }
 
-function suppressionForms(attributeText) {
-  const masked = maskRustSource(attributeText);
+function lineStartsByPath(entries) {
+  return new Map(entries.map(({ path, contents }) => [path, sourceLineStarts(contents)]));
+}
+
+function lineAtFromStarts(offset, starts) {
+  let low = 0;
+  let high = starts.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (starts[middle] <= offset) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+function isTestOnlyOffset(path, source, offset, classification, sourceLines) {
+  const starts = sourceLines?.get(path);
+  const line = starts ? lineAtFromStarts(offset, starts) : lineAt(source, offset);
+  return classification.excludedLines.get(path)?.has(line) ?? false;
+}
+
+function suppressionForms(attributeText, masked = maskRustSource(attributeText)) {
   const forms = [];
   for (const match of masked.matchAll(/\b(allow|expect)\s*\(([^)]*)\)/g)) {
     const names = CLIPPY_SUPPRESSING_LINTS.filter((name) =>
@@ -579,20 +619,23 @@ function suppressionForms(attributeText) {
   return forms;
 }
 
-function exactMainTestAllowance(path, innerAttribute) {
+function exactMainTestAllowance(path, innerAttribute, maskCache) {
   return (
     path === "src-tauri/src/main.rs" &&
     innerAttribute.root &&
-    normaliseRustText(maskRustSource(innerAttribute.attribute.text)).replaceAll(" ", "") ===
-      "cfg_attr(test,allow(clippy::disallowed_methods))"
+    normaliseRustText(
+      innerAttribute.attribute.maskedText ??
+        maskRustSource(innerAttribute.attribute.text, maskCache),
+    ).replaceAll(" ", "") === "cfg_attr(test,allow(clippy::disallowed_methods))"
   );
 }
 
-function isCountedPathExpect(path, attribute) {
-  const meta = maskRustSource(attribute.text).trim();
+function isCountedPathExpect(path, attribute, maskCache) {
+  const masked = attribute.maskedText ?? maskRustSource(attribute.text, maskCache);
+  const meta = masked.trim();
   const direct = meta.match(/^expect\s*\(([^)]*)\)/);
   if (!direct) return false;
-  const names = suppressionForms(attribute.text)
+  const names = suppressionForms(attribute.text, masked)
     .filter(({ level }) => level === "expect")
     .flatMap(({ names: suppressions }) => suppressions);
   return (
@@ -603,10 +646,10 @@ function isCountedPathExpect(path, attribute) {
   );
 }
 
-function methodTokens(text) {
+function methodTokens(text, maskCache) {
   const escaped = PATH_METHODS.map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
   const expression = new RegExp(`\\b(?:${escaped.join("|")})\\b`, "g");
-  const masked = maskRustSource(text);
+  const masked = maskRustSource(text, maskCache);
   return [...masked.matchAll(expression)]
     .filter((match) => {
       const before = masked.slice(0, match.index);
@@ -615,14 +658,14 @@ function methodTokens(text) {
     .map((match) => match[0]);
 }
 
-function hasDirectMethodCall(text, name) {
+function hasDirectMethodCall(text, name, maskCache) {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?:\\.|::)\\s*${escaped}\\s*\\(`).test(maskRustSource(text));
+  return new RegExp(`(?:\\.|::)\\s*${escaped}\\s*\\(`).test(maskRustSource(text, maskCache));
 }
 
-function hasMacroInvocation(text) {
+function hasMacroInvocation(text, maskCache) {
   return /\b[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*\s*!\s*[([{]/.test(
-    maskRustSource(text),
+    maskRustSource(text, maskCache),
   );
 }
 
@@ -638,12 +681,16 @@ function inspectAttributeControls({
   allowCountedExpect = false,
   allowCrateRootException = false,
   isCrateRootAttribute = false,
+  maskCache,
+  sourceLines,
 }) {
   const beforeCountViolations = [];
   const afterCountViolations = [];
-  const line = lineAt(source, offset);
-  const forms = suppressionForms(attribute.text);
-  if (maskRustSource(attribute.text).includes("$")) {
+  const starts = sourceLines?.get(path);
+  const line = starts ? lineAtFromStarts(offset, starts) : lineAt(source, offset);
+  const maskedAttribute = attribute.maskedText ?? maskRustSource(attribute.text, maskCache);
+  const forms = suppressionForms(attribute.text, maskedAttribute);
+  if (maskedAttribute.includes("$")) {
     beforeCountViolations.push(
       `${path}:${line}: R5: attribute metavariable can generate an unreviewed rustc or clippy attribute`,
     );
@@ -651,14 +698,18 @@ function inspectAttributeControls({
 
   const suppressionApplies = forms.length > 0 && (!isInfra || inMacroDefinition);
   const countedExpect =
-    suppressionApplies && allowCountedExpect && isCountedPathExpect(path, attribute);
+    suppressionApplies && allowCountedExpect && isCountedPathExpect(path, attribute, maskCache);
   const crateRootException =
     suppressionApplies &&
     allowCrateRootException &&
-    exactMainTestAllowance(path, {
-      root: isCrateRootAttribute,
-      attribute,
-    });
+    exactMainTestAllowance(
+      path,
+      {
+        root: isCrateRootAttribute,
+        attribute,
+      },
+      maskCache,
+    );
   if (suppressionApplies && !countedExpect && !crateRootException) {
     const prefix = isInner ? "inner " : "";
     beforeCountViolations.push(
@@ -667,7 +718,6 @@ function inspectAttributeControls({
   }
 
   if (!skipCfgChecks) {
-    const maskedAttribute = maskRustSource(attribute.text);
     if (/\bclippy\b(?!\s*::)/.test(maskedAttribute)) {
       afterCountViolations.push(
         `${path}:${line}: R5: production cfg attribute may not use the clippy cfg atom`,
@@ -694,8 +744,12 @@ function checkPathMethodExpectationsWithClassification(
     initialBaseline = INITIAL_PATH_EXPECT_BASELINE,
     baseline = PATH_EXPECT_BASELINE,
     presentPaths,
+    sourceLines: suppliedSourceLines,
+    maskCache: suppliedMaskCache,
   } = {},
 ) {
+  const sourceLines = suppliedSourceLines ?? lineStartsByPath(entries);
+  const maskCache = suppliedMaskCache ?? new Map();
   const violations = [];
   const analyses = classification.analysis;
   const observed = new Map();
@@ -706,7 +760,7 @@ function checkPathMethodExpectationsWithClassification(
     if (!analysis) continue;
     const regionByStart = new Map(analysis.sourceRegions.map((region) => [region.start, region]));
     for (const group of analysis.groups) {
-      if (isTestOnlyOffset(path, contents, group.start, classification)) continue;
+      if (isTestOnlyOffset(path, contents, group.start, classification, sourceLines)) continue;
       const region = regionByStart.get(group.start);
       const isInfra = isInfraPath(path);
       for (const attribute of group.attributes) {
@@ -720,8 +774,16 @@ function checkPathMethodExpectationsWithClassification(
           offset: attribute.start,
           isInfra,
           inMacroDefinition,
-          skipCfgChecks: isTestOnlyOffset(path, contents, attribute.start, classification),
+          skipCfgChecks: isTestOnlyOffset(
+            path,
+            contents,
+            attribute.start,
+            classification,
+            sourceLines,
+          ),
           allowCountedExpect: true,
+          maskCache,
+          sourceLines,
         });
         violations.push(...controls.beforeCountViolations);
         if (controls.countedExpect) {
@@ -730,15 +792,16 @@ function checkPathMethodExpectationsWithClassification(
           const key = fn ? `${path}::${fn.name}` : `${path}::<outside-function>`;
           candidateKeys.add(key);
           const maskedStatement = row
-            ? maskRustSource(contents.slice(row.range.start, row.range.end))
+            ? maskRustSource(contents.slice(row.range.start, row.range.end), maskCache)
             : "";
           const statementStart = row
-            ? maskRustSource(contents.slice(group.end, row.range.end)).trimStart()
+            ? maskRustSource(contents.slice(group.end, row.range.end), maskCache).trimStart()
             : "";
-          const tokens = methodTokens(maskedStatement);
-          const direct = tokens.length === 1 && hasDirectMethodCall(maskedStatement, tokens[0]);
+          const tokens = methodTokens(maskedStatement, maskCache);
+          const direct =
+            tokens.length === 1 && hasDirectMethodCall(maskedStatement, tokens[0], maskCache);
           const startsLet = /^let\b/.test(statementStart);
-          const macro = hasMacroInvocation(maskedStatement);
+          const macro = hasMacroInvocation(maskedStatement, maskCache);
           if (!fn || !startsLet || tokens.length !== 1 || !direct || macro) {
             violations.push(
               `${path}:${lineAt(contents, attribute.start)}: R5: counted expect must annotate one direct Path method call in a single let statement without a macro`,
@@ -765,7 +828,7 @@ function checkPathMethodExpectationsWithClassification(
       }
     }
     for (const inner of analysis.innerAttributes) {
-      if (isTestOnlyOffset(path, contents, inner.start, classification)) continue;
+      if (isTestOnlyOffset(path, contents, inner.start, classification, sourceLines)) continue;
       const isInfra = isInfraPath(path);
       const inMacroDefinition = analysis.macroRegions?.some(
         ({ start, end }) => start <= inner.start && inner.start < end,
@@ -780,11 +843,13 @@ function checkPathMethodExpectationsWithClassification(
         inMacroDefinition,
         allowCrateRootException: true,
         isCrateRootAttribute: inner.root,
+        maskCache,
+        sourceLines,
       });
       violations.push(...controls.beforeCountViolations, ...controls.afterCountViolations);
     }
 
-    const masked = maskRustSource(contents);
+    const masked = maskRustSource(contents, maskCache);
     for (const [lineIndex, line] of masked.split("\n").entries()) {
       if (classification.excludedLines.get(path)?.has(lineIndex + 1)) continue;
       if (/\binclude\b/.test(line)) {
@@ -794,8 +859,8 @@ function checkPathMethodExpectationsWithClassification(
       }
     }
     for (const region of analysis.sourceRegions) {
-      if (isTestOnlyOffset(path, contents, region.start, classification)) continue;
-      if (/\bpath\s*=/.test(maskRustSource(region.text))) {
+      if (isTestOnlyOffset(path, contents, region.start, classification, sourceLines)) continue;
+      if (/\bpath\s*=/.test(maskRustSource(region.text, maskCache))) {
         violations.push(
           `${path}:${lineAt(contents, region.start)}: R5: production source may not use a #[path] attribute`,
         );
@@ -891,11 +956,16 @@ function checkPathMethodExpectationsWithClassification(
 
 export function checkPathMethodExpectations(sources, options = {}) {
   const entries = sourceEntries(sources);
+  const maskCache = options.maskCache ?? new Map();
   try {
     const classification = classifyRustTestOnlySources(entries, undefined, {
       includeAnalysis: true,
+      maskCache,
     });
-    return checkPathMethodExpectationsWithClassification(entries, classification, options);
+    return checkPathMethodExpectationsWithClassification(entries, classification, {
+      ...options,
+      maskCache,
+    });
   } catch (error) {
     return [unclassifiableCfgViolation(error)];
   }
@@ -1083,7 +1153,7 @@ function cfgValuationForTarget(atoms, target, features) {
   return valuation;
 }
 
-function cfgAtomsInAnalysis(path, source, analysis, classification) {
+function cfgAtomsInAnalysis(path, source, analysis, classification, sourceLines, maskCache) {
   const atoms = new Set();
   const addAttribute = (attribute) => {
     for (const atom of attribute.details?.atoms ?? []) atoms.add(atom);
@@ -1093,17 +1163,17 @@ function cfgAtomsInAnalysis(path, source, analysis, classification) {
     const region = regions.get(group.start);
     if (
       group.testOnly ||
-      isTestOnlyOffset(path, source, group.start, classification) ||
+      isTestOnlyOffset(path, source, group.start, classification, sourceLines) ||
       !region ||
-      !gateScope(path, source, region, false, analysis)
+      !gateScope(path, source, region, false, analysis, maskCache)
     )
       continue;
     for (const attribute of group.attributes) addAttribute(attribute);
   }
   for (const attribute of analysis.innerAttributes) {
     if (
-      isTestOnlyOffset(path, source, attribute.start, classification) ||
-      !gateScope(path, source, attribute, true, analysis)
+      isTestOnlyOffset(path, source, attribute.start, classification, sourceLines) ||
+      !gateScope(path, source, attribute, true, analysis, maskCache)
     )
       continue;
     addAttribute(attribute.attribute);
@@ -1111,10 +1181,10 @@ function cfgAtomsInAnalysis(path, source, analysis, classification) {
   return atoms;
 }
 
-function gateScope(path, source, region, inner = false, analysis) {
+function gateScope(path, source, region, inner = false, analysis, maskCache) {
   if (!isInfraPath(path)) return true;
   const text = inner ? region.text : source.slice(region.range.start, region.range.end);
-  const masked = maskRustSource(text);
+  const masked = maskRustSource(text, maskCache);
   const insideMacro = analysis?.macroRegions?.some(
     ({ start, end }) => start <= region.start && region.start < end,
   );
@@ -1139,22 +1209,22 @@ function collectModuleRegionText(declaration, analyses, sourcesByPath) {
   return result.join("\n");
 }
 
-function regionIdentity(path, attributeText, regionText) {
-  const attribute = normaliseRustText(maskRustSource(attributeText));
+function regionIdentity(path, attributeText, regionText, maskCache) {
+  const attribute = normaliseRustText(maskRustSource(attributeText, maskCache));
   const regionSha256 = sha256(normaliseRustText(regionText));
   return { path, attribute, regionSha256, id: `${path}|${attribute}|${regionSha256}` };
 }
 
-function gateInvisibleContentViolations(path, line, text) {
+function gateInvisibleContentViolations(path, line, text, maskCache) {
   const violations = [];
-  const masked = maskRustSource(text);
-  const methods = methodTokens(masked);
+  const masked = maskRustSource(text, maskCache);
+  const methods = methodTokens(text, maskCache);
   if (methods.length) {
     violations.push(
       `${path}:${line}: R5: gate-invisible pinned region contains Path method name(s): ${[...new Set(methods)].join(", ")}`,
     );
   }
-  if (hasMacroInvocation(masked)) {
+  if (hasMacroInvocation(text, maskCache)) {
     violations.push(
       `${path}:${line}: R5: gate-invisible pinned region may not contain a macro invocation`,
     );
@@ -1175,9 +1245,15 @@ export function checkGateInvisibleRegions(
     baseline = GATE_REGION_BASELINE,
     workspaceRoot = process.cwd(),
     presentPaths,
+    structuralCache,
+    sourceLines: suppliedSourceLines,
+    maskCache: suppliedMaskCache,
   } = {},
 ) {
   entries = sourceEntries(entries);
+  const callStructuralCache = structuralCache ?? new Map();
+  const sourceLines = suppliedSourceLines ?? lineStartsByPath(entries);
+  const maskCache = suppliedMaskCache ?? new Map();
   const violations = [];
   const sourceByPath = new Map(entries.map(({ path, contents }) => [path, contents]));
   const analyses = classification.analysis;
@@ -1185,7 +1261,14 @@ export function checkGateInvisibleRegions(
   for (const { path, contents } of entries) {
     const analysis = analyses.get(path);
     if (!analysis) continue;
-    for (const atom of cfgAtomsInAnalysis(path, contents, analysis, classification))
+    for (const atom of cfgAtomsInAnalysis(
+      path,
+      contents,
+      analysis,
+      classification,
+      sourceLines,
+      maskCache,
+    ))
       allAtoms.add(atom);
   }
   const unknownAtoms = [];
@@ -1206,9 +1289,9 @@ export function checkGateInvisibleRegions(
     const analysis = analyses.get(path);
     if (!analysis) continue;
     for (const group of analysis.groups) {
-      if (isTestOnlyOffset(path, contents, group.start, classification)) continue;
+      if (isTestOnlyOffset(path, contents, group.start, classification, sourceLines)) continue;
       const region = analysis.sourceRegions.find((item) => item.start === group.start);
-      if (!region || !gateScope(path, contents, region, false, analysis)) continue;
+      if (!region || !gateScope(path, contents, region, false, analysis, maskCache)) continue;
       for (const attribute of group.attributes) {
         if (attribute.details?.containsCfgPayload) {
           violations.push(
@@ -1218,9 +1301,9 @@ export function checkGateInvisibleRegions(
       }
     }
     for (const inner of analysis.innerAttributes) {
-      if (isTestOnlyOffset(path, contents, inner.start, classification)) continue;
+      if (isTestOnlyOffset(path, contents, inner.start, classification, sourceLines)) continue;
       if (
-        gateScope(path, contents, inner, true, analysis) &&
+        gateScope(path, contents, inner, true, analysis, maskCache) &&
         inner.attribute.details?.containsCfgPayload
       ) {
         violations.push(
@@ -1242,7 +1325,13 @@ export function checkGateInvisibleRegions(
   for (const target of GATE_TARGETS) {
     const valuation = cfgValuationForTarget(allAtoms, target, features);
     try {
-      gateResults.push(classifyRustTestOnlySources(entries, valuation, { includeAnalysis: true }));
+      gateResults.push(
+        classifyRustTestOnlySources(entries, valuation, {
+          includeAnalysis: true,
+          structuralCache: callStructuralCache,
+          maskCache,
+        }),
+      );
     } catch (error) {
       violations.push(unclassifiableCfgViolation(error));
       return [...new Set(violations)];
@@ -1264,8 +1353,8 @@ export function checkGateInvisibleRegions(
     const analysis = analyses.get(path);
     if (!analysis) continue;
     for (const region of analysis.sourceRegions) {
-      if (isTestOnlyOffset(path, contents, region.start, classification)) continue;
-      if (!gateScope(path, contents, region, false, analysis)) continue;
+      if (isTestOnlyOffset(path, contents, region.start, classification, sourceLines)) continue;
+      if (!gateScope(path, contents, region, false, analysis, maskCache)) continue;
       const regionLine = lineAt(contents, region.start);
       const allExcluded = commonLines.get(path)?.has(regionLine) === true;
       if (!allExcluded) continue;
@@ -1284,13 +1373,13 @@ export function checkGateInvisibleRegions(
         ? collectModuleRegionText(moduleOwner.declaration, moduleOwner.analyses, sourceByPath)
         : "";
       const regionText = contents.slice(region.range.start, region.range.end) + moduleText;
-      actualRegions.push(regionIdentity(path, region.text, regionText));
-      violations.push(...gateInvisibleContentViolations(path, regionLine, regionText));
+      actualRegions.push(regionIdentity(path, region.text, regionText, maskCache));
+      violations.push(...gateInvisibleContentViolations(path, regionLine, regionText, maskCache));
     }
 
     for (const inner of analysis.innerAttributes) {
-      if (isTestOnlyOffset(path, contents, inner.start, classification)) continue;
-      if (!gateScope(path, contents, inner, true, analysis)) continue;
+      if (isTestOnlyOffset(path, contents, inner.start, classification, sourceLines)) continue;
+      if (!gateScope(path, contents, inner, true, analysis, maskCache)) continue;
       const allExcluded = gateResults.every((result) => {
         const candidate = result.analysis
           .get(path)
@@ -1303,12 +1392,17 @@ export function checkGateInvisibleRegions(
       const pinnedRootAttribute =
         inner.root &&
         ["cfg", "cfg_attr"].includes(inner.attribute.details?.kind) &&
-        !exactMainTestAllowance(path, inner);
+        !exactMainTestAllowance(path, inner, maskCache);
       if (!allExcluded && !pinnedRootAttribute) continue;
-      const identity = regionIdentity(path, inner.text, inner.text);
+      const identity = regionIdentity(path, inner.text, inner.text, maskCache);
       actualRegions.push(identity);
       violations.push(
-        ...gateInvisibleContentViolations(path, lineAt(contents, inner.start), inner.text),
+        ...gateInvisibleContentViolations(
+          path,
+          lineAt(contents, inner.start),
+          inner.text,
+          maskCache,
+        ),
       );
     }
   }
@@ -1317,7 +1411,7 @@ export function checkGateInvisibleRegions(
   for (const region of actualRegions)
     actualCounts.set(region.id, (actualCounts.get(region.id) ?? 0) + 1);
   const baselineId = (entry) =>
-    `${entry.path}|${normaliseRustText(maskRustSource(entry.attribute))}|${entry.regionSha256}`;
+    `${entry.path}|${normaliseRustText(maskRustSource(entry.attribute, maskCache))}|${entry.regionSha256}`;
   const initialIds = initialBaseline.map(baselineId);
   const baselineIds = baseline.map(baselineId);
   const baselineCounts = Object.fromEntries(baselineIds.map((id) => [id, 1]));
@@ -1700,34 +1794,47 @@ function checkRepositoryInputs({ workspaceRoot, runGit = spawnSync }) {
 
 export function checkRustReleaseSurface(sources, allowlist = DEAD_CODE_ALLOWLIST, options = {}) {
   const entries = sourceEntries(sources);
-  const violations = checkDeadCodeSurface(entries, allowlist);
+  // Both mask and structural caches retain only inputs reachable during this checker invocation.
+  const maskCache = new Map();
+  const violations = checkDeadCodeSurface(entries, allowlist, maskCache);
+  // Both the default classification and all gate-target evaluations share this call-bounded cache.
+  const structuralCache = new Map();
+  const sourceLines = lineStartsByPath(entries);
   let classification;
   try {
     classification = classifyRustTestOnlySources(entries, undefined, {
       includeAnalysis: options.includeR5 === true,
+      structuralCache,
+      maskCache,
     });
   } catch (error) {
     return [...violations, unclassifiableCfgViolation(error)];
   }
   violations.push(
     ...entries.flatMap(({ path, contents }) =>
-      checkFaultInjectionSurfaceWithClassification(path, contents, classification),
+      checkFaultInjectionSurfaceWithClassification(path, contents, classification, maskCache),
     ),
     ...checkFilesystemSurfaceWithClassification(
       entries,
       FS_SURFACE_ALLOWLIST,
       INITIAL_FS_SURFACE_COUNTS,
       classification,
+      maskCache,
     ),
   );
   if (options.includeR5) {
     violations.push(
       ...checkPathMethodExpectationsWithClassification(entries, classification, {
         presentPaths: options.checkResidency ? entries.map(({ path }) => path) : undefined,
+        sourceLines,
+        maskCache,
       }),
       ...checkGateInvisibleRegions(entries, classification, {
         workspaceRoot: options.workspaceRoot,
         presentPaths: options.checkResidency ? entries.map(({ path }) => path) : undefined,
+        structuralCache,
+        sourceLines,
+        maskCache,
       }),
     );
     if (options.workspaceRoot) {
