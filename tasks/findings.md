@@ -11925,6 +11925,9 @@ Location correction 2026-09-30 (records review): at `3ed94336` the callers are `
 * **Open question:** which `open_current` consumers need a readable descriptor rather than identity only, and what identity-only primitive (`O_PATH` descriptor vs `fstatat` on the verified parent) keeps the parent-verification and reparse/wrong-kind classification that `open_current` performs today on every platform?
 * **Found by:** Codex `review-correctness`, plan review round 2 of the `f-20260929-06` build run, 2026-09-29 (Claude Code orchestrator session d4edd5c8-b834-46cd-aec7-058afcc03b66); widened by the orchestrator from the classifier to every probe consumer by source reading. Related: `f-20260929-06`, `d-20260929-04`.
 
+Location correction 2026-09-30 (records review): at `3ed94336` the identity-only `open_current` consumers in `src-tauri/src/db/repository.rs` are `entry_probe` (~1015, both attempts; its file becomes `initial_probe` in `entry()` ~819/~847), `pre_build_probe` (~859), the post-build `initial_probe` (~878), `pre_get_probe` (~1051), `post_get_probe` (~1075, returned to the caller and dropped with the connection) and the classifier `classify_bound_open_error` (~1100 → `classify_bound_open_error_result` ~1178). The consumer that keeps the file for reading is `identity_from_probe` (~580), reached from `database_identity` (~488); `:493` in **Where** pointed at that wrapper, not the read. The defect is unchanged.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"4d7dfde52275aeeb73ee8ca5bc9e53ef380c995862dcc70d6ab88fb2e347adea","input_sha256":"a136bc97b8ae7e8ec9154394c210111bf9f8e8b773d07c6e417a1748b187f9d9","kind":"mutation-receipt","operation":"acca8ae7c03ffaa44f1bbce4cb185064ce91b180185621a3b844e0bf71ebdc28","options":{"section":null},"request_id_sha256":null,"results":["f-20260929-11"],"target":"f-20260929-11","v":1} -->
+
 ---
 
 ## 2026-09-29 — filed through the inbox spool
