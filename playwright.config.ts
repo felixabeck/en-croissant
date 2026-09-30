@@ -14,7 +14,10 @@ export default defineConfig({
     fullyParallel: true, // Five green runs at workers 6 on 2026-09-30 with no snapshot changes.
     forbidOnly: true,
     retries: 0,
-    workers: 6, // Measured 2026-09-30 (wall s): 4=[53.79,47.60,52.58,54.28,50.29]; 6=[36.73,44.12,40.86,37.77,39.31,43.78,43.36]; 10=[38.86].
+    // The container runs outside the agent's memory scope (docker daemon cgroup), so these workers do
+    // not consume its budget. Timings under load average 64-90 from other sessions (wall s):
+    // 4=[53.79,47.60,52.58,54.28,50.29]; 6=[36.73,44.12,40.86,37.77,39.31,43.78,43.36]; 10=[38.86].
+    workers: 6,
     reporter: [
         ["list"],
         ["html", { outputFolder: "artifacts/frontend-audit/html", open: "never" }],
