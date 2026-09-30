@@ -38,6 +38,7 @@ describe("Vitest worker budget wiring", () => {
       },
       async () => {
         const { default: config } = await import("../vite.config.ts");
+        expect(config.test.experimental.fsModuleCache).toBe(true);
         expect(config.test.maxWorkers).toBe(
           workerCount({
             perWorkerBytes: VITEST_WORKER_BYTES,
@@ -59,6 +60,7 @@ describe("Vitest worker budget wiring", () => {
       },
       async () => {
         const { default: config } = await import("../vite.config.ts");
+        expect(config.test.experimental.fsModuleCache).toBe(false);
         expect(config.test.maxWorkers).toBe(1);
       },
     );

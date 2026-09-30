@@ -58,6 +58,11 @@ export default defineConfig({
         exclude: ["**/node_modules/**", ".stryker-tmp/**", "e2e/**"],
         // Size Vitest workers from the gate memory budget; Stryker forces one worker per runner.
         maxWorkers: vitestMaxWorkers(),
+        // Persistent transforms keep cold compilation out of timed tests: warm totals fell 112s → 2.45s,
+        // and the first tests fell 2.3s → 0.26s. Stryker sandboxes have random roots, so cache copies
+        // would accumulate per run. Vitest clears this on pnpm-lock.yaml changes; otherwise it holds
+        // one entry per transformed module version (~20 MB for the full suite).
+        experimental: { fsModuleCache: process.env.STRYKER_MEMORY_BYTES === undefined },
         coverage: {
             provider: "v8",
             reporter: ["text", "json-summary", "lcov"],
