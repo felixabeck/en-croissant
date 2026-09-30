@@ -4641,3 +4641,16 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** SQLite documents multiple links to one database file as a corruption hazard; refusing the concurrent cross-directory case is fail-closed and only reachable when a user registered one file through two hard-linked folders. The same-directory hazard is pre-existing SQLite behaviour and filed separately (inbox `20260929-111342-2397783-1790673222462378910-3`). Reversal path: key bindings by (parent identity, leaf identity, leaf name) only and accept the shared-`-shm` hazard.
 * **Decided by:** Claude Code (Opus 5.5), drain `full auto` build run for the `sqlite-pathname-open` cluster (session 1af0f1fc-ab06-4981-9a3d-47a89d71c541), 2026-09-29 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"fc2b2640e47cce58e60f8eac609e1ce8681b5ab5aa0de985b65265382a2062c6","input_sha256":"8ea907929d49eb99e5bd015330c1aa3807161e79cb45de6484dedd1dcd786026","kind":"mutation-receipt","operation":"c3f8225cfc8cfb8c9afd89cb114c9853404065e466d58297262358720554ce9a","options":{"section":null},"request_id_sha256":null,"results":["d-20260929-05"],"target":"decisions-ledger","v":1} -->
+
+## 2026-09-30 — recorded through the decisions lock
+
+### d-20260930-01 — Should the push gate run the Rust tests once, with coverage, instead of twice?
+
+* **Question:** Should the push gate run the Rust tests once, with coverage, instead of twice?
+* **Governs:** -
+* **Chosen:** keep both runs — `pnpm gate:ensure backend-test` (stable toolchain, the one that ships) and `pnpm gate:ensure backend-coverage` (pinned `nightly-2025-06-01`, only for branch coverage) — as two concurrent lanes (`rust-test`, `rust-coverage`) of `pnpm gates:push`. They use different toolchains and target directories (`llvm-cov-target`), so running them side by side costs no wall time.
+* **Rejected:** dropping the stable run (the AgentKit audit's suggestion). CI's Linux job runs only the nightly coverage run (`.github/workflows/test.yml`), and stable tests run in CI only on macOS and Windows, so the local stable run is the only Linux stable-toolchain test execution anywhere.
+* **Reason:** measured 2026-09-29 on atlas: backend-test 32.8 s, backend-coverage 38.5 s serially; concurrent in P2 the pair costs the longer of the two. Plan-review issue PG-43 (Skip, upheld). Reversal path: if CI gains a Linux stable test job, the local stable lane can go.
+* **Review:** `tasks/handoffs/2026-09-30-push-gate-parallelism-review.md`
+* **Decided by:** Claude Code (Opus 5.5), build run for the push-gate parallelism plan (session a3a230ef-7b5b-4be0-82ec-2e5fb8953292), 2026-09-30 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"a18f19266af92692856a2d7c88e60f5119c47144af440be0f2885f71bdadb4a2","input_sha256":"70691212437c90c0acb66da637cec1e02ae902ce4e4c444b9833d9ecc71dd48b","kind":"mutation-receipt","operation":"030d137179e2b2d0239624029687dae3e6ecd23e5198b73408ab48cde8db4387","options":{"section":null},"request_id_sha256":null,"results":["d-20260930-01"],"target":"decisions-ledger","v":1} -->
