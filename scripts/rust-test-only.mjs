@@ -18,7 +18,7 @@ export function lineAt(source, offset) {
   return line;
 }
 
-function lineAtFromStarts(offset, lineStarts) {
+export function lineAtFromStarts(offset, lineStarts) {
   let low = 0;
   let high = lineStarts.length;
   while (low < high) {
@@ -1088,7 +1088,7 @@ function commentPosition(spans, cursor) {
   return false;
 }
 
-function sourceLineStarts(source) {
+export function sourceLineStarts(source) {
   const lineStarts = [0];
   for (let index = 0; index < source.length; index += 1) {
     if (source[index] === "\n") lineStarts.push(index + 1);
@@ -1250,6 +1250,18 @@ function buildRustFileStructure(path, source, includeAnalysis = false, maskCache
   });
 }
 
+/**
+ * Create a structural cache for one classifier/checker invocation. Checkers use a fresh cache per
+ * call, which bounds retained sources and structures; callers that supply one own its lifetime.
+ */
+export function createRustTestOnlyStructuralCache() {
+  const cache = new Map();
+  cache.structureBuilds = 0;
+  cache.structureCacheHits = 0;
+  cache.lineStartsByPath = new Map();
+  return cache;
+}
+
 function cachedRustFileStructure(path, source, includeAnalysis, structuralCache, maskCache) {
   // Release-surface callers allocate this cache once per checker invocation, bounding source and
   // analysis retention to that call; standalone classifications own a fresh cache of their own.
@@ -1268,11 +1280,17 @@ function cachedRustFileStructure(path, source, includeAnalysis, structuralCache,
   if (!structure) {
     structure = buildRustFileStructure(path, source, includeAnalysis, maskCache);
     contentCache.set(cacheKey, structure);
+    structuralCache.structureBuilds = (structuralCache.structureBuilds ?? 0) + 1;
+  } else {
+    structuralCache.structureCacheHits = (structuralCache.structureCacheHits ?? 0) + 1;
   }
+  if (!(structuralCache.lineStartsByPath instanceof Map))
+    structuralCache.lineStartsByPath = new Map();
+  structuralCache.lineStartsByPath.set(path, structure.lineStarts);
   return structure;
 }
 
-function evaluatedAttribute(structuralAttribute) {
+function cloneStructuralAttribute(structuralAttribute) {
   const attribute = {
     start: structuralAttribute.start,
     open: structuralAttribute.open,
@@ -1303,7 +1321,7 @@ function analyzeRustFile(
   const groups = structuralGroups.map(({ start, end, attributes }) => ({
     start,
     end,
-    attributes: attributes.map(evaluatedAttribute),
+    attributes: attributes.map(cloneStructuralAttribute),
   }));
   parseAttributes(path, source, groups, structuralGroups, atomValuation, includeAnalysis);
   const excludedRanges = [];
@@ -1632,7 +1650,7 @@ export function classifyRustTestOnlySources(
   if (options.maskCache !== undefined && !(options.maskCache instanceof Map)) {
     throw new TypeError("Rust source mask cache must be a Map");
   }
-  const structuralCache = options.structuralCache ?? new Map();
+  const structuralCache = options.structuralCache ?? createRustTestOnlyStructuralCache();
   const maskCache = options.maskCache;
   const evaluatedAtoms = prepareAtomValuation(atomValuation);
   const entries = sourceEntries(sources);
@@ -1645,17 +1663,15 @@ export function classifyRustTestOnlySources(
       throw new Error(`${path}:1: excludeTestOnlyItems can scan only .rs files`);
     }
     if (analyses.has(path)) throw new Error(`${path}:1: duplicate Rust source path`);
-    analyses.set(
+    const analysis = analyzeRustFile(
       path,
-      analyzeRustFile(
-        path,
-        contents,
-        evaluatedAtoms,
-        options.includeAnalysis === true,
-        structuralCache,
-        maskCache,
-      ),
+      contents,
+      evaluatedAtoms,
+      options.includeAnalysis === true,
+      structuralCache,
+      maskCache,
     );
+    analyses.set(path, analysis);
   }
 
   const testOnlyFiles = new Set(
@@ -1706,13 +1722,16 @@ export function classifyRustTestOnlySources(
         [],
         [],
         true,
-        sourceLineStarts(sourcesByPath.get(path)),
+        structuralCache.lineStartsByPath.get(path),
       ),
     );
   }
   const excludedLineCounts = new Map([...excludedLines].map(([path, lines]) => [path, lines.size]));
   const result = { testOnlyFiles, excludedLines, excludedLineCounts };
   if (options.includeAnalysis) result.analysis = analyses;
+  Object.defineProperty(result, "lineStartsByPath", {
+    value: structuralCache.lineStartsByPath,
+  });
   return result;
 }
 

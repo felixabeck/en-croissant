@@ -1,7 +1,13 @@
 import { createHash } from "node:crypto";
 import { describe, expect, test } from "vitest";
-import { checkGateInvisibleRegions } from "./check-rust-release-surface.mjs";
-import { classifyRustTestOnlySources } from "./rust-test-only.mjs";
+import {
+  checkGateInvisibleRegions,
+  checkRustReleaseSurface,
+} from "./check-rust-release-surface.mjs";
+import {
+  classifyRustTestOnlySources,
+  createRustTestOnlyStructuralCache,
+} from "./rust-test-only.mjs";
 import {
   CHECKOUT_MAIN,
   expectCliStatus,
@@ -126,6 +132,21 @@ describe("R5 clippy cfg and gate-invisible regions", () => {
         "fn probe(p: &Path) {\n    #[cfg(test)]\n    { p.exists(); }\n}\n",
       ),
     ).toEqual([]);
+  });
+
+  test("one R5 checker invocation builds each source structure once across gate valuations", () => {
+    const path = "src-tauri/src/probe.rs";
+    const contents = "#[cfg(not(debug_assertions))]\nfn probe() {}\n";
+    const structuralCache = createRustTestOnlyStructuralCache();
+
+    checkRustReleaseSurface(new Map([[path, contents]]), undefined, {
+      includeR5: true,
+      structuralCache,
+    });
+
+    expect(structuralCache.structureBuilds).toBe(1);
+    expect(structuralCache.structureCacheHits).toBe(5);
+    expect(structuralCache.get(path)?.get(contents)?.has("analysis")).toBe(true);
   });
 
   test("O3.12 accepts the real fail-analysis macro shape", () => {

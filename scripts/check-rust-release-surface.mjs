@@ -4,7 +4,14 @@ import { createHash } from "node:crypto";
 import { extname, join, resolve } from "node:path";
 import { isEntrypoint } from "./entrypoint.mjs";
 import { maskRustSource } from "./rust-source-mask.mjs";
-import { classifyRustTestOnlySources, lineAt, sourceEntries } from "./rust-test-only.mjs";
+import {
+  classifyRustTestOnlySources,
+  createRustTestOnlyStructuralCache,
+  lineAt,
+  lineAtFromStarts,
+  sourceEntries,
+  sourceLineStarts,
+} from "./rust-test-only.mjs";
 import { listWorkingTreeFiles } from "./working-tree-files.mjs";
 
 // Owner: f-20260830-25. Emptied 2026-09-06 by the finding that owned it;
@@ -579,31 +586,8 @@ function sha256(text) {
   return createHash("sha256").update(text).digest("hex");
 }
 
-function sourceLineStarts(source) {
-  const starts = [0];
-  for (let index = 0; index < source.length; index += 1) {
-    if (source[index] === "\n") starts.push(index + 1);
-  }
-  return starts;
-}
-
-function lineStartsByPath(entries) {
-  return new Map(entries.map(({ path, contents }) => [path, sourceLineStarts(contents)]));
-}
-
-function lineAtFromStarts(offset, starts) {
-  let low = 0;
-  let high = starts.length;
-  while (low < high) {
-    const middle = (low + high) >> 1;
-    if (starts[middle] <= offset) low = middle + 1;
-    else high = middle;
-  }
-  return low;
-}
-
-function isTestOnlyOffset(path, source, offset, classification, sourceLines) {
-  const starts = sourceLines?.get(path);
+function isTestOnlyOffset(path, source, offset, classification, lineStartsByPath) {
+  const starts = lineStartsByPath?.get(path);
   const line = starts ? lineAtFromStarts(offset, starts) : lineAt(source, offset);
   return classification.excludedLines.get(path)?.has(line) ?? false;
 }
@@ -682,11 +666,11 @@ function inspectAttributeControls({
   allowCrateRootException = false,
   isCrateRootAttribute = false,
   maskCache,
-  sourceLines,
+  lineStartsByPath,
 }) {
   const beforeCountViolations = [];
   const afterCountViolations = [];
-  const starts = sourceLines?.get(path);
+  const starts = lineStartsByPath?.get(path);
   const line = starts ? lineAtFromStarts(offset, starts) : lineAt(source, offset);
   const maskedAttribute = attribute.maskedText ?? maskRustSource(attribute.text, maskCache);
   const forms = suppressionForms(attribute.text, maskedAttribute);
@@ -744,11 +728,14 @@ function checkPathMethodExpectationsWithClassification(
     initialBaseline = INITIAL_PATH_EXPECT_BASELINE,
     baseline = PATH_EXPECT_BASELINE,
     presentPaths,
-    sourceLines: suppliedSourceLines,
+    lineStartsByPath: suppliedLineStartsByPath,
     maskCache: suppliedMaskCache,
   } = {},
 ) {
-  const sourceLines = suppliedSourceLines ?? lineStartsByPath(entries);
+  const lineStartsByPath =
+    suppliedLineStartsByPath ??
+    classification.lineStartsByPath ??
+    new Map(entries.map(({ path, contents }) => [path, sourceLineStarts(contents)]));
   const maskCache = suppliedMaskCache ?? new Map();
   const violations = [];
   const analyses = classification.analysis;
@@ -760,7 +747,7 @@ function checkPathMethodExpectationsWithClassification(
     if (!analysis) continue;
     const regionByStart = new Map(analysis.sourceRegions.map((region) => [region.start, region]));
     for (const group of analysis.groups) {
-      if (isTestOnlyOffset(path, contents, group.start, classification, sourceLines)) continue;
+      if (isTestOnlyOffset(path, contents, group.start, classification, lineStartsByPath)) continue;
       const region = regionByStart.get(group.start);
       const isInfra = isInfraPath(path);
       for (const attribute of group.attributes) {
@@ -779,11 +766,11 @@ function checkPathMethodExpectationsWithClassification(
             contents,
             attribute.start,
             classification,
-            sourceLines,
+            lineStartsByPath,
           ),
           allowCountedExpect: true,
           maskCache,
-          sourceLines,
+          lineStartsByPath,
         });
         violations.push(...controls.beforeCountViolations);
         if (controls.countedExpect) {
@@ -828,7 +815,7 @@ function checkPathMethodExpectationsWithClassification(
       }
     }
     for (const inner of analysis.innerAttributes) {
-      if (isTestOnlyOffset(path, contents, inner.start, classification, sourceLines)) continue;
+      if (isTestOnlyOffset(path, contents, inner.start, classification, lineStartsByPath)) continue;
       const isInfra = isInfraPath(path);
       const inMacroDefinition = analysis.macroRegions?.some(
         ({ start, end }) => start <= inner.start && inner.start < end,
@@ -844,7 +831,7 @@ function checkPathMethodExpectationsWithClassification(
         allowCrateRootException: true,
         isCrateRootAttribute: inner.root,
         maskCache,
-        sourceLines,
+        lineStartsByPath,
       });
       violations.push(...controls.beforeCountViolations, ...controls.afterCountViolations);
     }
@@ -859,7 +846,8 @@ function checkPathMethodExpectationsWithClassification(
       }
     }
     for (const region of analysis.sourceRegions) {
-      if (isTestOnlyOffset(path, contents, region.start, classification, sourceLines)) continue;
+      if (isTestOnlyOffset(path, contents, region.start, classification, lineStartsByPath))
+        continue;
       if (/\bpath\s*=/.test(maskRustSource(region.text, maskCache))) {
         violations.push(
           `${path}:${lineAt(contents, region.start)}: R5: production source may not use a #[path] attribute`,
@@ -1153,7 +1141,7 @@ function cfgValuationForTarget(atoms, target, features) {
   return valuation;
 }
 
-function cfgAtomsInAnalysis(path, source, analysis, classification, sourceLines, maskCache) {
+function cfgAtomsInAnalysis(path, source, analysis, classification, lineStartsByPath, maskCache) {
   const atoms = new Set();
   const addAttribute = (attribute) => {
     for (const atom of attribute.details?.atoms ?? []) atoms.add(atom);
@@ -1163,7 +1151,7 @@ function cfgAtomsInAnalysis(path, source, analysis, classification, sourceLines,
     const region = regions.get(group.start);
     if (
       group.testOnly ||
-      isTestOnlyOffset(path, source, group.start, classification, sourceLines) ||
+      isTestOnlyOffset(path, source, group.start, classification, lineStartsByPath) ||
       !region ||
       !gateScope(path, source, region, false, analysis, maskCache)
     )
@@ -1172,7 +1160,7 @@ function cfgAtomsInAnalysis(path, source, analysis, classification, sourceLines,
   }
   for (const attribute of analysis.innerAttributes) {
     if (
-      isTestOnlyOffset(path, source, attribute.start, classification, sourceLines) ||
+      isTestOnlyOffset(path, source, attribute.start, classification, lineStartsByPath) ||
       !gateScope(path, source, attribute, true, analysis, maskCache)
     )
       continue;
@@ -1246,13 +1234,16 @@ export function checkGateInvisibleRegions(
     workspaceRoot = process.cwd(),
     presentPaths,
     structuralCache,
-    sourceLines: suppliedSourceLines,
+    lineStartsByPath: suppliedLineStartsByPath,
     maskCache: suppliedMaskCache,
   } = {},
 ) {
   entries = sourceEntries(entries);
-  const callStructuralCache = structuralCache ?? new Map();
-  const sourceLines = suppliedSourceLines ?? lineStartsByPath(entries);
+  const callStructuralCache = structuralCache ?? createRustTestOnlyStructuralCache();
+  const lineStartsByPath =
+    suppliedLineStartsByPath ??
+    classification.lineStartsByPath ??
+    new Map(entries.map(({ path, contents }) => [path, sourceLineStarts(contents)]));
   const maskCache = suppliedMaskCache ?? new Map();
   const violations = [];
   const sourceByPath = new Map(entries.map(({ path, contents }) => [path, contents]));
@@ -1266,7 +1257,7 @@ export function checkGateInvisibleRegions(
       contents,
       analysis,
       classification,
-      sourceLines,
+      lineStartsByPath,
       maskCache,
     ))
       allAtoms.add(atom);
@@ -1289,7 +1280,7 @@ export function checkGateInvisibleRegions(
     const analysis = analyses.get(path);
     if (!analysis) continue;
     for (const group of analysis.groups) {
-      if (isTestOnlyOffset(path, contents, group.start, classification, sourceLines)) continue;
+      if (isTestOnlyOffset(path, contents, group.start, classification, lineStartsByPath)) continue;
       const region = analysis.sourceRegions.find((item) => item.start === group.start);
       if (!region || !gateScope(path, contents, region, false, analysis, maskCache)) continue;
       for (const attribute of group.attributes) {
@@ -1301,7 +1292,7 @@ export function checkGateInvisibleRegions(
       }
     }
     for (const inner of analysis.innerAttributes) {
-      if (isTestOnlyOffset(path, contents, inner.start, classification, sourceLines)) continue;
+      if (isTestOnlyOffset(path, contents, inner.start, classification, lineStartsByPath)) continue;
       if (
         gateScope(path, contents, inner, true, analysis, maskCache) &&
         inner.attribute.details?.containsCfgPayload
@@ -1353,7 +1344,8 @@ export function checkGateInvisibleRegions(
     const analysis = analyses.get(path);
     if (!analysis) continue;
     for (const region of analysis.sourceRegions) {
-      if (isTestOnlyOffset(path, contents, region.start, classification, sourceLines)) continue;
+      if (isTestOnlyOffset(path, contents, region.start, classification, lineStartsByPath))
+        continue;
       if (!gateScope(path, contents, region, false, analysis, maskCache)) continue;
       const regionLine = lineAt(contents, region.start);
       const allExcluded = commonLines.get(path)?.has(regionLine) === true;
@@ -1378,7 +1370,7 @@ export function checkGateInvisibleRegions(
     }
 
     for (const inner of analysis.innerAttributes) {
-      if (isTestOnlyOffset(path, contents, inner.start, classification, sourceLines)) continue;
+      if (isTestOnlyOffset(path, contents, inner.start, classification, lineStartsByPath)) continue;
       if (!gateScope(path, contents, inner, true, analysis, maskCache)) continue;
       const allExcluded = gateResults.every((result) => {
         const candidate = result.analysis
@@ -1798,8 +1790,7 @@ export function checkRustReleaseSurface(sources, allowlist = DEAD_CODE_ALLOWLIST
   const maskCache = new Map();
   const violations = checkDeadCodeSurface(entries, allowlist, maskCache);
   // Both the default classification and all gate-target evaluations share this call-bounded cache.
-  const structuralCache = new Map();
-  const sourceLines = lineStartsByPath(entries);
+  const structuralCache = options.structuralCache ?? createRustTestOnlyStructuralCache();
   let classification;
   try {
     classification = classifyRustTestOnlySources(entries, undefined, {
@@ -1826,14 +1817,14 @@ export function checkRustReleaseSurface(sources, allowlist = DEAD_CODE_ALLOWLIST
     violations.push(
       ...checkPathMethodExpectationsWithClassification(entries, classification, {
         presentPaths: options.checkResidency ? entries.map(({ path }) => path) : undefined,
-        sourceLines,
+        lineStartsByPath: classification.lineStartsByPath,
         maskCache,
       }),
       ...checkGateInvisibleRegions(entries, classification, {
         workspaceRoot: options.workspaceRoot,
         presentPaths: options.checkResidency ? entries.map(({ path }) => path) : undefined,
         structuralCache,
-        sourceLines,
+        lineStartsByPath: classification.lineStartsByPath,
         maskCache,
       }),
     );
