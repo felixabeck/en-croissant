@@ -1208,7 +1208,7 @@ and arbitrated triage.
 Found by the orchestrator and fixed in the same batch: the multi-child API's leftover
 `"frontend mutation"` default label, the Playwright workers comment losing its reason, and an
 unsupported claim in a constant comment. Found in the same area and handled here: `f-20260929-02`
-(master's CI `test` job red on two O3.12 tests at 7.2 s) → `315d8205`, `d-20260930-06`;
+(master's CI `test` job red on two O3.12 tests at 7.2 s) → `315d8205`, `d-20260930-06` (corrected by `d-20260930-08`);
 `f-20260917-11` (foreign-owner test race) → closed by S3's `writeOwner` refusal plus the rewritten
 test (PG-102).
 
@@ -1226,9 +1226,9 @@ after the S2 split, the ten release-surface files run concurrently on the four-v
 in-process R5 evaluation there took ~2.9 s (≈ 1.45 s before the split). Repairs, all reviewed by
 Codex lenses before this second push:
 
-* `da68a05b` + `98e0a6c0` — the release-surface checker analyses each source once per invocation
-  instead of six times (default classification plus five gate valuations), shares masks and uses
-  indexed line lookup: one `r5Violations` call on `main.rs` 279 → 57 ms, output byte-identical
+* `da68a05b` + `98e0a6c0` — the release-surface checker builds each source's valuation-independent structure
+  once per invocation instead of six times (the default classification and the five gate
+  valuations still evaluate separately), shares masks and uses indexed line lookup: one `r5Violations` call on `main.rs` 279 → 57 ms, output byte-identical
   (allowlist CLI and 38 raw fixture results); a test counts structure builds (1 build, 5 hits;
   6 builds with the reuse removed). The gate (`pnpm rust:surface:check`) gets the same speed-up.
 * `44fa3c3f` — the last two-evaluation O3.12 test split (d-20260930-06).
@@ -1238,7 +1238,7 @@ Codex lenses before this second push:
   transform ran inside the timed test. `sound.test.ts` warms its import statically; the other
   files cannot (import-time side effects, `f-20260930-02`), so Vitest's persistent transform cache
   is enabled (off under Stryker), keyed additionally on `tsconfig.json` and the platform define
-  (`d-20260930-07`): warm, summed transform time 112 s → 2.45 s, coverage 32.7 s → 17.3 s, those
+  (`d-20260930-07`, corrected by `d-20260930-09`): warm, summed transform time 112 s → 2.45 s, coverage 32.7 s → 17.3 s, those
   first tests ≈ 0.26 s, LCOV byte-identical to a run without the cache. The cold-cache residual is
   deferred to `f-20260930-02` with its evidence.
 
