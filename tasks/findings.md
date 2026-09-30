@@ -11908,6 +11908,9 @@ Correction 2026-09-30 (push review of `8b97e423`): the handled note above says t
 * **Proposed fix:** map establish failures by SQLite's extended/system error (`sqlite3_system_errno` or the `SQLITE_CANTOPEN`/`SQLITE_IOERR` family) to `Error::Io` for host failures, keep `InvalidInput` for `NOTADB` and malformed-schema cases; check every caller's handling of the two variants before changing it.
 * **Found by:** Codex `review-error-handling`, plan review round 1 of the `f-20260929-06` build run, 2026-09-29 (Claude Code orchestrator session d4edd5c8-b834-46cd-aec7-058afcc03b66). Related: `f-20260830-08` (renderer error classification).
 
+Location correction 2026-09-30 (records review): at `3ed94336` the callers are `read_revision` (`src-tauri/src/db/repository.rs` ~590) and `classify_bound_open_error` (~1086), which passes through `classify_bound_open_error_result` (~1178); the line numbers in **Where** above were stale when filed. The defect is unchanged.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"4145f284b902c26b983e2b7e1daf68aa283d0c6b66bb49a3bf05b03650b03760","input_sha256":"25c2abd5c956006efb9d06383ead8f4716669527cd9145ceb649f9537124f445","kind":"mutation-receipt","operation":"b100ec84b5ef55517f8f7eea8a05c5000cc87510fc31b93008fe83d61cd6b75e","options":{"section":null},"request_id_sha256":null,"results":["f-20260929-10"],"target":"f-20260929-10","v":1} -->
+
 ---
 
 ## 2026-09-29 — filed through the inbox spool
