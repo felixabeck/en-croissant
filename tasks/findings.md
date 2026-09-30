@@ -10113,7 +10113,7 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 
 ### `the finaliser does not remove a fence it does not own` fails intermittently on the CI runner
 
-* **ID:** f-20260917-11 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260917-11 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `scripts/run-frontend-mutation-tests.mjs:250-259` — the test
   `the finaliser does not remove a fence it does not own`, which asserts
   `result.code === 1` after overwriting `mutants.out/frontend/.mutation-in-progress/owner.json`
