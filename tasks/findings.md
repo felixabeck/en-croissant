@@ -11965,3 +11965,18 @@ Correction 2026-09-30 (records review): "the 2026-09-29 push-gate lane runner ke
 * **Proposed fix:** close the evicted entry's connection gate and drop its pool at eviction without blocking under the state lock, and keep the evicted gates reachable (for example a per-key list of draining gates in `RepositoryState`) so `delete_exclusive_inner` and `entry()` rebuild wait on them through `DrainGate::wait_drained` before unlinking or opening a fresh pool.
 * **Open question:** where do evicted-but-draining gates live and who prunes them — a per-key list in `RepositoryState` pruned on drain, or eviction deferred to a path that may block — without holding the state lock across a wait?
 * **Found by:** Codex write leaf (repair of the `8b97e423` push review), out-of-scope report; confirmed by the orchestrator from source, 2026-09-30. Related: `f-20260929-07`.
+
+---
+
+## 2026-09-30 — filed through the inbox spool
+
+### Frontend tests that call `vi.resetModules()` and dynamically import a large module graph pay its cold transform inside their first timed test, which crosses Vitest's 5 s default when many workers run under load
+
+* **ID:** f-20260930-02 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** test files that reset modules and then `await import(...)` app modules inside a test body — candidates from `grep -l vi.resetModules src`: `src/index.test.tsx`, `src/components/home/Accounts.test.tsx`, `src/i18n.test.ts`, `src/components/databases/FideInfo.test.tsx`, `src/state/pathOwners.test.ts`, `src/state/store/tabStorage.test.ts`, `src/state/atoms.lifecycle.test.ts`, `src/state/workspace.test.ts` (`src/utils/sound.test.ts` is fixed, see below).
+* **Defect:** Vitest transforms a module on first import through one transform server in the main process. A test file whose first test dynamically imports a large graph (e.g. `@/state/atoms`) pays that cold transform inside the test handler, where `testTimeout` (5 s) applies. Since the push gate sizes Vitest workers from the memory budget (`d-20260930-03`, 22 workers on atlas), up to 22 files request transforms at once and queue; under load from other sessions the first test of `src/utils/sound.test.ts` took 5047 ms (2.10 s alone) in `pnpm gate:ensure frontend-coverage` on 2026-09-30, load average 45-65, and its sibling then failed on the leaked call.
+* **Fix pattern (precedent):** `d-20260901-36` option (b) — static top-level side-effect imports of the modules the tests import dynamically, so the transform is paid at collection, which `testTimeout` does not cover; `vi.resetModules()` keeps per-test module freshness. Applied to `src/utils/sound.test.ts` in the push-gate parallelism run. Never raise `testTimeout`.
+* **Open question (lens tier):** which of the candidate files actually import a heavy graph in their first timed test (measure each file alone: first-test duration vs. the rest), and whether a shared warm-up belongs in a Vitest `setupFiles` entry instead of per-file imports.
+* **Why it matters:** a push gate that fails when the machine is busy teaches re-running instead of looking (the failure `f-20260917-11` recorded), and every such file is one more source of a red receipt gate that is not about the diff.
+* **Related:** `f-20260920-13` (an order-dependent frontend test, different cause), `d-20260901-36`, `d-20260930-03`.
+* **Found by:** Claude Code (Opus 5.5), final `frontend-coverage` gate of the push-gate parallelism build run (session a3a230ef-7b5b-4be0-82ec-2e5fb8953292), 2026-09-30.
