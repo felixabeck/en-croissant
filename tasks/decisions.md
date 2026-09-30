@@ -4786,3 +4786,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Review:** `tasks/handoffs/2026-09-30-k5-chessfable-gates-and-review-review.md`
 * **Decided by:** Claude Code (Opus 5.5), K5 ChessFable build run of the 2026-09-30 drain review (session e5e98ba9-1fe9-44b9-97ee-d14fb9375a46), 2026-09-30 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"f7b07c4ec2b9478a467715f8bf0cb52f517398416e403b9acaddd0e84fe6c608","input_sha256":"44166c6df86690e3e73dd0f7eef8ffe213eda666fd4f70a753fd57cbb5992d01","kind":"mutation-receipt","operation":"501a71239e00494752629475671d44ce43c848c9d5075e75afdec25ce13bf6cb","options":{"section":null},"request_id_sha256":null,"results":["d-20261001-03"],"target":"decisions-ledger","v":1} -->
+
+### d-20261001-04 — Which ChessFable review lenses are diff-only (`plan-review: false`)?
+
+* **Question:** Which ChessFable review lenses are diff-only (`plan-review: false`)?
+* **Governs:** -
+* **Chosen:** none. `review-chess-semantics`, `review-engine-protocol`, `review-ipc-contract`, `review-persisted-state`, `review-pgn-index`, `review-tauri-security` and the new `review-platform-semantics` stay plan-capable; the lens contract's `NOT APPLICABLE` exit covers plans outside a lens's class.
+* **Rejected:** marking lenses whose findings are usually line-level (for example `review-ipc-contract` or `review-persisted-state`) as diff-only.
+* **Reason:** each lens owns a design contract that a plan can already get wrong before code exists — tree and position semantics, engine lifecycle and result binding, the command/event and capability contract, persisted-state shape and hydration, the PGN index and encoding, native security boundaries, and platform assumptions of a planned filesystem or process mechanism. The 2026-09-30 drain review's K1 audit reached the same result ("chessfable: none"); its diff-only candidates were raw-color, German-copy and i18n-catalog lenses, whose classes exist only in a diff. Reversal path: set `plan-review: false` on a lens with evidence that it never finds a plan-level defect.
+* **Review:** `tasks/handoffs/2026-09-30-k5-chessfable-gates-and-review-review.md`
+* **Decided by:** Claude Code (Opus 5.5), K5 ChessFable build run of the 2026-09-30 drain review (session e5e98ba9-1fe9-44b9-97ee-d14fb9375a46), 2026-09-30 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"7349c1ac2b912513a91b1c88561e13735c05e2549f72e2c0d42b185017967f07","input_sha256":"adf268840976f1a7b90b48d5e54c3778eab44346313853c813cb351da7388353","kind":"mutation-receipt","operation":"d4ebdba7b5ce03be94b17cf9f36457610900ad42b449d3a6bce8aef1e7b537aa","options":{"section":null},"request_id_sha256":null,"results":["d-20261001-04"],"target":"decisions-ledger","v":1} -->
