@@ -1217,3 +1217,39 @@ CPU injected test-side via a `node --import` preload) and PG-137 (the import tes
 marker in a separate file, stdout and stderr asserted empty) were each confirmed CLOSED against the
 real code by both `review-tests` and `review-correctness` (`scripts/run-frontend-mutation-tests.mjs`,
 config test and import side-effect test). All 137 plan issues are now closed or dispositioned.
+
+## After the first push (ff8e29f8): CI red, repairs, second push
+
+CI run 36714838743 on `ff8e29f8`: every platform job green, the `test` job red on "O3.12 accepts a
+test-only block and the real fail-analysis macro shape" (5884 ms against the 5 s default). Cause:
+after the S2 split, the ten release-surface files run concurrently on the four-vCPU runner, and one
+in-process R5 evaluation there took ~2.9 s (≈ 1.45 s before the split). Repairs, all reviewed by
+Codex lenses before this second push:
+
+* `da68a05b` + `98e0a6c0` — the release-surface checker analyses each source once per invocation
+  instead of six times (default classification plus five gate valuations), shares masks and uses
+  indexed line lookup: one `r5Violations` call on `main.rs` 279 → 57 ms, output byte-identical
+  (allowlist CLI and 38 raw fixture results); a test counts structure builds (1 build, 5 hits;
+  6 builds with the reuse removed). The gate (`pnpm rust:surface:check`) gets the same speed-up.
+* `44fa3c3f` — the last two-evaluation O3.12 test split (d-20260930-06).
+* `70f8a90b`, `4554d0c3`, `f2085cb9` — local frontend-coverage then timed out first tests that
+  dynamically import the atoms graph (`sound.test.ts` 5047 ms, `index.test.tsx` 5040 ms,
+  `Chessground.test.tsx` 5110 ms) under outside load average 45-65 with 22 workers: the cold
+  transform ran inside the timed test. `sound.test.ts` warms its import statically; the other
+  files cannot (import-time side effects, `f-20260930-02`), so Vitest's persistent transform cache
+  is enabled (off under Stryker), keyed additionally on `tsconfig.json` and the platform define
+  (`d-20260930-07`): warm, summed transform time 112 s → 2.45 s, coverage 32.7 s → 17.3 s, those
+  first tests ≈ 0.26 s, LCOV byte-identical to a run without the cache. The cold-cache residual is
+  deferred to `f-20260930-02` with its evidence.
+
+Lens record of these repairs: `review-correctness` and `review-root-cause` APPROVED the checker
+change; code-quality (two names), minimalism (duplicated line helpers, eager line starts, redundant
+warm imports) and tests (no guard on the reuse; cache key missing tsconfig) findings → Fix; the
+root-cause define-value finding → Fix; its cold-cache finding → Defer (`f-20260930-02`).
+
+Final frontend gate run on the repaired tree (`pnpm gates:push -- --frontend`, cold transform cache,
+load average 3-9, 2026-09-30 16:59): green, 0 OOM kills — frontend-build 6.2 s, contract 47.0 s,
+frontend-coverage 25.9 s, bundle 0.4 s, e2e 26.0 s, frontend-mutation 328.5 s. On this quieter
+machine the mutation lane is 328.5 s (397.5 s in the loaded all-blocks run above), so an
+all-blocks run would be ≈ 131 s + 328.5 s ≈ 460 s, inside the audit's 8 minutes; that estimate is
+not a measured all-blocks run.
