@@ -11797,7 +11797,7 @@ Rejected: a longer WebDriver timeout, and a full-FEN dedup key.
 
 ### Two `check-rust-release-surface` O3.12 tests take ~6.7 s on the CI runner and die at vitest's 5 s default, reddening the `test` job on master
 
-* **ID:** f-20260929-02 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260929-02 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `scripts/check-rust-release-surface.test.mjs:2128` (`O3.12 rejects unknown and never-built target cfg atoms`) and `:2165` (`O3.12 rejects added and edited gate-invisible regions and catches stale pins`), suite `R5 clippy cfg and gate-invisible regions`.
 * **Defect:** CI run 36484034989 (`test` job 109136412350, head `c06f66a5`, 2026-09-28) failed only on these two tests: `Test timed out in 5000ms`, measured 6660 ms and 6743 ms; neighbours in the same suite ran 1.0–3.3 s. 2 failed, 2187 passed. The R5/O3.12 evaluation that `d-20260928-06` routed through `rust-test-only.mjs` runs once per gate-configuration valuation, so its per-test cost scales with the valuation count and crossed the default on the runner.
 * **Open question (lens tier):** make the O3.12 evaluation cheaper (cache the per-valuation scan across the fixtures of one test, or narrow the valuation set) versus splitting the fixture loops into one test per case. `d-20260901-36` rejected raising `testTimeout` as a fix for a slow test body — follow it.
