@@ -3,6 +3,7 @@ import { resolve, sep } from "node:path";
 import { globToRegExp, matches } from "./coverage-scope.mjs";
 import { isEntrypoint } from "./entrypoint.mjs";
 import { GATES } from "./gate-receipt.mjs";
+import { PUSH_GATE_SCHEDULE, pushGateScheduleCommands } from "./run-push-gates.mjs";
 import { listWorkingTreeFiles } from "./working-tree-files.mjs";
 
 const PUSH_SKILL = ".claude/skills/push/SKILL.md";
@@ -10,6 +11,14 @@ const PACKAGE_JSON = "package.json";
 const TEST_WORKFLOW = ".github/workflows/test.yml";
 const VITE_CONFIG = "vite.config.ts";
 const CONTRACT_GATE = "gates:contract:check";
+const PUSH_GATE_INVOCATION = "pnpm gates:push -- <blocks>";
+const PUSH_GATE_SECTIONS = Object.freeze([
+  "### Unconditional contract gate",
+  "### Rust/Tauri backend",
+  "### TypeScript/React frontend",
+  "### Cross-layer contracts",
+  "### Findings ledger",
+]);
 // The kit-parity gate must run the RELEASED kit. `kit` on PATH resolves to
 // $HOME/.local/share/agent-kit/current/bin/kit, an immutable release worktree
 // that only a gated agent-kit push publishes. A script spelling out a path into
@@ -377,6 +386,58 @@ function skillSubsection(pushSkill, heading) {
     : pushSkill.slice(start, start + heading.length + nextHeading);
 }
 
+function sectionFenceLines(markdown) {
+  return fencedBlocks(markdown)
+    .filter((block) => ["bash", "sh", "shell"].includes(block.language))
+    .flatMap((block) =>
+      block.contents
+        .split(/\r?\n/u)
+        .map((line) => line.trim())
+        .filter((line) => line && !line.startsWith("#")),
+    );
+}
+
+function pushSkillPreamble(pushSkill) {
+  const sectionStart = pushSkill.search(/^## 2\./mu);
+  if (sectionStart < 0) return "";
+  const section = pushSkill.slice(sectionStart);
+  const nextSection = section.slice(1).search(/^## /mu);
+  const bounded = nextSection < 0 ? section : section.slice(0, nextSection + 1);
+  const firstSubsection = bounded.search(/^### /mu);
+  return firstSubsection < 0 ? bounded : bounded.slice(0, firstSubsection);
+}
+
+export function validatePushGateSchedule(pushSkill, contractRouted, schedule = PUSH_GATE_SCHEDULE) {
+  const findings = [];
+  const preambleLines = sectionFenceLines(pushSkillPreamble(pushSkill));
+  const invocations = preambleLines.filter((line) => line === PUSH_GATE_INVOCATION);
+  if (invocations.length !== 1) {
+    findings.push(
+      `${PUSH_SKILL} §2 must fence ${PUSH_GATE_INVOCATION} exactly once in its preamble`,
+    );
+  }
+
+  const fencedLines = new Set(
+    PUSH_GATE_SECTIONS.flatMap((heading) => sectionFenceLines(skillSubsection(pushSkill, heading))),
+  );
+  const runnerCommands = pushGateScheduleCommands(schedule);
+  for (const command of runnerCommands) {
+    if (fencedLines.has(command)) continue;
+    const references = pnpmReferences(command);
+    if (references.length > 0 && references.every((name) => contractRouted.has(name))) continue;
+    findings.push(
+      `push gate runner command is neither an exact fenced line nor a ${CONTRACT_GATE} member: ${command}`,
+    );
+  }
+
+  for (const command of fencedLines) {
+    if (!runnerCommands.includes(command)) {
+      findings.push(`fenced §2 gate command is not run by the push gate runner: ${command}`);
+    }
+  }
+  return findings;
+}
+
 async function scriptFiles(repoRoot, listedPaths) {
   const files = [];
   for (const path of listedPaths) {
@@ -549,6 +610,7 @@ export async function checkGateRouting(
       : new Set();
   findings.push(...contractFindings);
   contractRouted.delete(CONTRACT_GATE);
+  findings.push(...validatePushGateSchedule(pushSkill, contractRouted));
 
   const directWorkflowScripts = new Set(steps.flatMap((step) => pnpmReferences(step.run)));
   directWorkflowScripts.delete(CONTRACT_GATE);

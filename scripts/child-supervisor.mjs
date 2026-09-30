@@ -86,34 +86,28 @@ function errorMessage(error) {
 }
 
 /** Attempt every child termination and report all failures after every attempt settles. */
-async function terminateChildren(children) {
+async function terminateChildren(children, label) {
   const entries = [...children];
   const results = await Promise.allSettled(entries.map(({ supervisor }) => supervisor.terminate()));
   const failures = results.flatMap((result, index) => {
     if (result.status === "fulfilled") return [];
     const { name } = entries[index];
     return [
-      new Error(
-        `Failed to terminate frontend mutation child ${name}: ${errorMessage(result.reason)}`,
-        {
-          cause: result.reason,
-        },
-      ),
+      new Error(`Failed to terminate ${label} child ${name}: ${errorMessage(result.reason)}`, {
+        cause: result.reason,
+      }),
     ];
   });
   if (failures.length > 0) {
     for (const [index, result] of results.entries()) {
       if (result.status === "rejected") entries[index].supervisor.unref?.();
     }
-    throw new AggregateError(
-      failures,
-      `Failed to terminate ${failures.length} frontend mutation child(s).`,
-    );
+    throw new AggregateError(failures, `Failed to terminate ${failures.length} ${label} child(s).`);
   }
 }
 
 /** Forward runner signals to every attached child and latch attachment into termination. */
-export function installMultiChildSignalForwarding() {
+export function installMultiChildSignalForwarding({ label = "frontend mutation" } = {}) {
   let requestedSignal;
   let resolveSignalRequested;
   const signalRequested = new Promise((resolve) => {
@@ -122,7 +116,7 @@ export function installMultiChildSignalForwarding() {
   const children = [];
   const terminationBatches = [];
   const terminateAll = () => {
-    const termination = terminateChildren(children);
+    const termination = terminateChildren(children, label);
     terminationBatches.push(termination);
     termination.catch(() => {});
     return termination;
@@ -146,7 +140,7 @@ export function installMultiChildSignalForwarding() {
           result.status === "rejected" ? [result.reason] : [],
         );
         if (failures.length > 0) {
-          throw new AggregateError(failures, "Frontend mutation signal cleanup failed.");
+          throw new AggregateError(failures, `${label} signal cleanup failed.`);
         }
       });
     },

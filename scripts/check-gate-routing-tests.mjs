@@ -15,7 +15,7 @@ import { gitInit } from "./test-git-init.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CONTRACT_CHAIN =
-  "pnpm mutation:guard:check && pnpm lint:ci && pnpm tauri:boundary:check && pnpm rust:surface:check && pnpm ui:boundary:check && pnpm skills:check && pnpm skills:bridges:test && pnpm gates:routing:check && pnpm gates:routing:test && pnpm tools:parity:check && pnpm tools:parity:test && pnpm workflows:check && pnpm workflows:permissions:test && pnpm hooks:check && pnpm ui:boundary:report:test && pnpm coverage:report:test && pnpm bundle:report:test && pnpm mutation:runner:test && pnpm gates:receipt:test && pnpm gates:parallelism:test && pnpm rust:windows:test && pnpm entrypoint:test && pnpm e2e:launchers:test && pnpm install:local:test && pnpm app:driver:test && pnpm findings:test && ./scripts/findings.py check && pnpm ipc:consumers:check";
+  "pnpm mutation:guard:check && pnpm lint:ci && pnpm tauri:boundary:check && pnpm rust:surface:check && pnpm ui:boundary:check && pnpm skills:check && pnpm skills:bridges:test && pnpm gates:routing:check && pnpm gates:routing:test && pnpm tools:parity:check && pnpm tools:parity:test && pnpm workflows:check && pnpm workflows:permissions:test && pnpm hooks:check && pnpm ui:boundary:report:test && pnpm coverage:report:test && pnpm bundle:report:test && pnpm mutation:runner:test && pnpm gates:receipt:test && pnpm gates:parallelism:test && pnpm gates:push:test && pnpm rust:windows:test && pnpm entrypoint:test && pnpm e2e:launchers:test && pnpm install:local:test && pnpm app:driver:test && pnpm findings:test && ./scripts/findings.py check && pnpm ipc:consumers:check";
 
 async function write(root, relativePath, contents) {
   const path = join(root, relativePath);
@@ -34,10 +34,14 @@ async function fixture() {
         "all:check": "node scripts/check-example.mjs && pnpm nested:check",
         "nested:check": "node scripts/nested.mjs",
         "example:test": "node --test scripts/example-tests.mjs",
-        "gates:contract:check": "pnpm all:check && pnpm example:test",
+        "gates:contract:check": "pnpm mutation:guard:check && pnpm all:check && pnpm example:test",
+        "gates:push": "node scripts/run-push-gates.mjs",
+        "mutation:guard:check": "true",
+        "findings:kit:check": "env -u KIT_ROOT kit sync --check .",
         "gate:ensure": "node scripts/gate-receipt.mjs ensure",
         "gate:run": "node scripts/gate-receipt.mjs run",
         "gate:check": "node scripts/gate-receipt.mjs check",
+        "rust:windows:check": "true",
         "test:coverage": "true",
         "coverage:frontend:check": "true",
         "build-vite": "true",
@@ -53,12 +57,21 @@ async function fixture() {
   await write(
     root,
     ".claude/skills/push/SKILL.md",
-    "## 2. Gates\n\n```bash\npnpm gates:contract:check\npnpm gate:check\ncargo fmt -- --check\ncargo check --manifest-path src-tauri/Cargo.toml --all-targets --locked\ncargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings\ncargo test\npython3 scripts/tool.py check\n```\n\n### Rust/Tauri backend\n\n```bash\npnpm test:coverage:backend\npnpm coverage:backend:check\n```\n\n### TypeScript/React frontend\n\n```bash\npnpm test:coverage\npnpm coverage:frontend:check\npnpm build-vite\npnpm bundle:check\npnpm test:e2e:container\npnpm mutation:frontend\n```\n\n### Cross-layer contracts\n\n```bash\npnpm bindings:check\n```\n\n## 3. Review\n\n```text\nscripts/**\n```\n\n## 4. Finish\n",
+    "## 2. Gates\n\n```bash\npnpm gates:push -- <blocks>\n```\n\n### Unconditional contract gate\n\n```bash\npnpm gates:contract:check\n```\n\n### Rust/Tauri backend\n\n```bash\nbash scripts/setup-rust.sh\ncargo fmt --manifest-path src-tauri/Cargo.toml -- --check\ncargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings\npnpm rust:windows:check\npnpm gate:ensure backend-test\npnpm gate:ensure backend-coverage\n```\n\n### TypeScript/React frontend\n\n```bash\npnpm gate:ensure frontend-coverage\npnpm gate:ensure frontend-mutation\npnpm gate:run frontend-build\npnpm bundle:check\npnpm gate:ensure e2e-container\n```\n\n### Cross-layer contracts\n\n```bash\npnpm bindings:check\n```\n\n### Findings ledger\n\n```bash\nenv -u KIT_ROOT pnpm findings:kit:check\n```\n\n## 3. Review\n\n```text\nscripts/**\n```\n\n## 4. Finish\n",
   );
   await write(
     root,
     ".github/workflows/test.yml",
-    "steps:\n  - name: Contract\n    run: pnpm gates:contract:check\n  - name: Frontend coverage\n    run: pnpm test:coverage\n  - name: Frontend ratchet\n    run: pnpm coverage:frontend:check\n  - name: Frontend build\n    run: pnpm build-vite\n  - name: Bindings\n    run: pnpm bindings:check\n  - name: Bundle\n    run: pnpm bundle:check\n  - name: Browser\n    run: pnpm test:e2e:container\n  - name: Mutation\n    run: pnpm mutation:frontend\n  - name: Rust gates\n    run: |\n      cargo check --manifest-path src-tauri/Cargo.toml --all-targets --locked\n      cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings\n  - name: Backend coverage\n    run: pnpm test:coverage:backend\n  - name: Backend ratchet\n    run: pnpm coverage:backend:check\n",
+    "steps:\n  - name: Contract\n    run: pnpm gates:contract:check\n  - name: Frontend coverage\n    run: pnpm test:coverage\n  - name: Frontend ratchet\n    run: pnpm coverage:frontend:check\n  - name: Frontend build\n    run: pnpm build-vite\n  - name: Bindings\n    run: pnpm bindings:check\n  - name: Bundle\n    run: pnpm bundle:check\n  - name: Browser\n    run: pnpm test:e2e:container\n  - name: Mutation\n    run: pnpm mutation:frontend\n  - name: Rust gates\n    run: |\n      cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings\n  - name: Backend coverage\n    run: pnpm test:coverage:backend\n  - name: Backend ratchet\n    run: pnpm coverage:backend:check\n",
+  );
+  const skillPath = join(root, ".claude/skills/push/SKILL.md");
+  const skill = await readFile(skillPath, "utf8");
+  await writeFile(
+    skillPath,
+    skill.replace(
+      "## 3. Review",
+      "### Exact-tree gate receipts\n\n```bash\npnpm gate:check frontend-build\n```\n\n## 3. Review",
+    ),
   );
   await write(root, "vite.config.ts", 'test: { include: ["scripts/**/*.test.mjs"] },\n');
   await write(root, "scripts/check-example.mjs", "\n");
@@ -799,6 +812,82 @@ test("accepts Cargo workflow gates with identical fenced lines", async () => {
   );
 });
 
+test("requires every scheduled push gate command to remain an exact skill fence", async () => {
+  const root = await fixture();
+  const skillPath = join(root, ".claude/skills/push/SKILL.md");
+  const skill = await readFile(skillPath, "utf8");
+  await writeFile(
+    skillPath,
+    skill.replace("cargo fmt --manifest-path src-tauri/Cargo.toml -- --check\n", ""),
+  );
+  assert.match(
+    (await checkGateRouting(root, { paths })).join("\n"),
+    /push gate runner command is neither an exact fenced line.*cargo fmt/u,
+  );
+});
+
+test("requires the P0 mutation guard to route through the contract chain (PG-61)", async () => {
+  const root = await fixture();
+  const packagePath = join(root, "package.json");
+  const packageJson = JSON.parse(await readFile(packagePath, "utf8"));
+  packageJson.scripts["gates:contract:check"] = packageJson.scripts["gates:contract:check"].replace(
+    "pnpm mutation:guard:check && ",
+    "",
+  );
+  await writeFile(packagePath, JSON.stringify(packageJson));
+  assert.match(
+    (await checkGateRouting(root, { paths })).join("\n"),
+    /push gate runner command is neither an exact fenced line nor a gates:contract:check member: pnpm mutation:guard:check/u,
+  );
+});
+
+test("rejects a fenced §2 gate command the push runner does not execute", async () => {
+  const root = await fixture();
+  const skillPath = join(root, ".claude/skills/push/SKILL.md");
+  const skill = await readFile(skillPath, "utf8");
+  await writeFile(
+    skillPath,
+    skill.replace(
+      "pnpm gate:run frontend-build\n",
+      "pnpm gate:ensure frontend-build\npnpm gate:run frontend-build\n",
+    ),
+  );
+  assert.match(
+    (await checkGateRouting(root, { paths })).join("\n"),
+    /fenced §2 gate command is not run by the push gate runner: pnpm gate:ensure frontend-build/u,
+  );
+});
+
+test("requires exactly one §2 preamble fence for the push gate runner invocation", async (t) => {
+  await t.test("rejects a missing invocation fence", async () => {
+    const root = await fixture();
+    const skillPath = join(root, ".claude/skills/push/SKILL.md");
+    const skill = await readFile(skillPath, "utf8");
+    await writeFile(skillPath, skill.replace("pnpm gates:push -- <blocks>\n", ""));
+    assert.match(
+      (await checkGateRouting(root, { paths })).join("\n"),
+      /must fence pnpm gates:push -- <blocks> exactly once in its preamble/u,
+    );
+  });
+
+  await t.test("rejects duplicate invocation fences", async () => {
+    const root = await fixture();
+    const skillPath = join(root, ".claude/skills/push/SKILL.md");
+    const skill = await readFile(skillPath, "utf8");
+    await writeFile(
+      skillPath,
+      skill.replace(
+        "pnpm gates:push -- <blocks>\n",
+        "pnpm gates:push -- <blocks>\npnpm gates:push -- <blocks>\n",
+      ),
+    );
+    assert.match(
+      (await checkGateRouting(root, { paths })).join("\n"),
+      /must fence pnpm gates:push -- <blocks> exactly once in its preamble/u,
+    );
+  });
+});
+
 test("reports CI-only scripts hidden in literal and folded block scalars", async () => {
   for (const marker of ["|-", ">-"]) {
     const root = await fixture();
@@ -842,8 +931,11 @@ test("reports a path-scoped CI script fenced only under another subsection", asy
   await writeFile(
     skillPath,
     skill
-      .replace("pnpm mutation:frontend\n", "")
-      .replace("pnpm bindings:check\n", "pnpm bindings:check\npnpm mutation:frontend\n"),
+      .replace("pnpm gate:ensure frontend-mutation\n", "")
+      .replace(
+        "pnpm bindings:check\n",
+        "pnpm bindings:check\npnpm gate:ensure frontend-mutation\n",
+      ),
   );
   assert.match(
     (await checkGateRouting(root, { paths })).join("\n"),

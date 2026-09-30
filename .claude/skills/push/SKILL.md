@@ -53,9 +53,19 @@ Markdown/planning-only changes need no *build* gate; the contract gate still run
 ## 2. Run affected gates
 
 These are the final affected gates. Run them only after review/arbitration and repairs (§3),
-relevant browser verification, and known coordination-record commits. Run commands serially for
-readable failures. A failure returns to `repair`, commit, and the required affected final-gate
-rerun before push.
+relevant browser verification, and known coordination-record commits. Run them through the push
+gate scheduler:
+
+```bash
+pnpm gates:push -- <blocks>
+```
+
+Choose flags from the changed paths: `--rust` for Rust/Tauri changes, `--frontend` for frontend
+changes, and all three flags for cross-layer contracts or changes to workflows, dependencies, or
+toolchain inputs. A Markdown/planning-only push uses no flags. The mutation guard and contract lane
+run on every invocation; the runner also runs the fenced commands below as their lane contents.
+Receipt-backed gates may run concurrently while preserving each lane's command order. A failure
+returns to `repair`, commit, and the required affected final-gate rerun before push.
 
 **Gate on the exit code, never on a line of output.** `pnpm lint:ci && echo green || echo red` reports the failure and still leaves the shell at exit 0, so a `&&`-chained commit behind it proceeds over a red gate. Check `$?` (or `${PIPESTATUS[0]}` behind a pipe, with `set -o pipefail`) and stop. *Measured 2026-08-29: a formatting failure was printed as `lint:ci RED` and the same command committed and pushed anyway, which took a second commit to repair.*
 
@@ -79,12 +89,16 @@ Affected by `src-tauri/**` or root Rust/Tauri configuration:
 ```bash
 bash scripts/setup-rust.sh
 cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
-cargo check --manifest-path src-tauri/Cargo.toml --all-targets --locked
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings
 pnpm rust:windows:check
 pnpm gate:ensure backend-test
 pnpm gate:ensure backend-coverage
 ```
+
+`cargo clippy --all-targets` type-checks test targets as well. The 2026-09-30 probe inserted a
+type error in the `#[cfg(test)]` function `set_test_lexer_hook` in `src-tauri/src/lexer.rs`: the
+fenced clippy command exited 101 with E0308, and exited 0 without the probe. This is why the
+separate `cargo check` step was removed from this block and CI.
 
 `pnpm rust:windows:check` covers GNU-target type-checking and linting only. The MSVC target
 (`rust-platform`) and all Windows tests (`rust-windows-test`) remain CI-only. If the gate is red
@@ -99,10 +113,18 @@ Affected by `src/**`, `public/**`, `index.html`, `package.json`, `pnpm-lock.yaml
 ```bash
 pnpm gate:ensure frontend-coverage
 pnpm gate:ensure frontend-mutation
-pnpm gate:ensure frontend-build
+pnpm gate:run frontend-build
 pnpm bundle:check
 pnpm gate:ensure e2e-container
 ```
+
+The runner always builds `dist/` in P1 before cargo and bundle consumers. Tauri's
+`frontendDist: "../dist"` is a compile input through `generate_context!`; measured 2026-09-29, an
+otherwise no-op cargo check re-checked the crate after `pnpm build-vite`. `gate:run` is required
+because the receipt fingerprints tracked files while `dist/` is ignored, so a receipt cannot prove
+that `dist/` came from this tree. The e2e container runs its own `vite build` into the mounted tree,
+so it starts after bundle and every selected cargo lane finishes. Rust-only and bindings-only runs
+also rebuild `dist/`, even when an ignored directory already exists.
 
 The order is not cosmetic: `coverage:frontend:check` reads `coverage/lcov.info` written by `test:coverage`, and `bundle:check` reads `dist/.vite/manifest.json` written by `build-vite`. `pnpm test` alone is not sufficient — it produces no LCOV, so the coverage ratchet then measures a stale or absent file.
 
@@ -136,11 +158,20 @@ Receipts are reusable only for a clean exact tree with the same command, platfor
 an unexpired timestamp. A miss runs the gate under `ensure`; `check` never starts one. Gate failures
 propagate their own exit codes, and a tree change during a run refuses the receipt.
 
-That refusal keys on tracked-file size and mtime, not only bytes, so **receipt-backed runs
-(`gate:ensure`, `gate:run`) run serially against one another, and no command that can rewrite a
+That refusal keys on tracked-file size and mtime, not only bytes, so **receipt-backed gates may run
+concurrently**: the 2026-09-29 parallel run recorded receipts for all passing gates with no tree
+change refusal. The tracked-file-rewriter prohibition remains: no command that can rewrite a
 tracked file — `pnpm bindings:generate`, a stale `pnpm bindings:check`, `pnpm i18n:extract`,
-`pnpm format`, `pnpm lint:fix` — runs concurrently with any of them**, in this session, a parallel
+`pnpm format`, `pnpm lint:fix` — runs concurrently with any of them, in this session, a parallel
 script, or a review lens working in the checkout (`f-20260906-06`).
+
+`bindings:check` stays in P1 after the `dist/` build and before receipt-backed lanes because it
+compiles against `dist/` and conditionally rewrites `src/bindings/generated.ts` when stale. The
+contract lane's `lint:ci` runs `i18next-cli extract --ci`, which is also a conditional rewriter.
+Measured on a clean tree on 2026-09-30, it exited 0 without changing the size or mtime of any
+tracked translation file; a stale tree makes it write and then fail, so any concurrent receipt
+gate refuses the changed tree and the overall run remains red. The contract gate is also the
+runner's `contract` lane, followed by the required local kit-parity check.
 
 ### Cross-layer contracts
 
@@ -187,7 +218,7 @@ lives beside it rather than inside it for that reason.
 Changes to workflows also run every gate whose toolchain they can affect. Changes to `package.json`,
 `pnpm-lock.yaml`, `src-tauri/Cargo.toml`, or `src-tauri/Cargo.lock` do the same.
 - `pnpm verify:app` is not a push gate: it drives the real Tauri window through `tauri-driver` under an off-screen compositor, so it needs a release build and a compositor that CI does not have. Run it by hand when a diff changes lifecycle, IPC or process teardown — it is the only check in this repository that observes the actual product. `d-20260830-18` and `.claude/skills/verify-ui/SKILL.md` carry the contract and the limits.
-- The frontend mutation suite is a receipt-backed frontend push gate: run it through `pnpm gate:ensure frontend-mutation` (measured 323 s on the runner). The backend suite remains only in `.github/workflows/mutation.yml` (dispatchable, weekly, one job per package) because the eight packages take about an hour. **Never start `pnpm mutation:backend` as part of a push:** it runs `cargo-mutants --in-place`, so it edits tracked source while it runs, every other gate would then measure mutated code, and an interruption leaves an injected mutant behind (`f-20260829-09`).
+- The frontend mutation suite is a receipt-backed frontend push gate: run it through `pnpm gate:ensure frontend-mutation` (re-measured by this change: see the handoff; update this sentence after the all-blocks run). The backend suite remains only in `.github/workflows/mutation.yml` (dispatchable, weekly, one job per package) because the eight packages take about an hour. **Never start `pnpm mutation:backend` as part of a push:** it runs `cargo-mutants --in-place`, so it edits tracked source while it runs, every other gate would then measure mutated code, and an interruption leaves an injected mutant behind (`f-20260829-09`).
 - Exercise changed shell/workflow mechanics against their refusal/error case where locally possible.
 - `$push` never tags, publishes a GitHub release, signs bundles, or deploys. Those require their own explicit workflow.
 

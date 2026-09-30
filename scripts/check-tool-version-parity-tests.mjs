@@ -54,8 +54,6 @@ async function fixture() {
       - name: Install Rust toolchain
         shell: bash
         run: bash scripts/setup-rust.sh
-      - name: Check all Rust targets
-        run: cargo check --manifest-path src-tauri/Cargo.toml --all-targets --locked
       - name: Clippy all Rust targets
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings
   rust-macos-test:
@@ -83,6 +81,9 @@ async function fixture() {
         run: |
           cargo install cargo-llvm-cov --version 0.8.7 --locked
           rustup toolchain install ${nightly}
+      - name: Check and lint all Rust targets
+        run: |
+          cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings
 `,
   );
   await put(
@@ -456,16 +457,32 @@ test("reports each rust-platform contract clause through the CLI", async (t) => 
       "(4) rust-platform must set CARGO_BUILD_TARGET: ${{ matrix.target }}",
     ),
   );
-  await t.test("(5a) missing cargo check", (subtest) =>
+  await t.test("(5a) cargo check is absent while exact clippy remains", async (subtest) => {
+    const root = await checkedInRustFixture(subtest);
+    assertCliSuccess(root);
+  });
+  await t.test("(5a) rejects cargo check restored as a rust-platform step", (subtest) =>
     mutateCheckedInFileAndRunCli(
       subtest,
       ".github/workflows/test.yml",
       (text) =>
         text.replace(
-          "run: cargo check --manifest-path src-tauri/Cargo.toml --all-targets --locked",
-          "run: :",
+          "      - name: Clippy all Rust targets",
+          "      - name: Check all Rust targets\n        run: cargo check --manifest-path src-tauri/Cargo.toml --all-targets --locked\n      - name: Clippy all Rust targets",
         ),
-      "(5a) rust-platform is missing the exact cargo check step",
+      "(5a) rust-platform must not contain a cargo check step",
+    ),
+  );
+  await t.test("(5a) rejects cargo check restored inside the Linux lint step", (subtest) =>
+    mutateCheckedInFileAndRunCli(
+      subtest,
+      ".github/workflows/test.yml",
+      (text) =>
+        text.replace(
+          "      - name: Check and lint all Rust targets\n        run: |\n          cargo clippy",
+          "      - name: Check and lint all Rust targets\n        run: |\n          cargo check --manifest-path src-tauri/Cargo.toml --all-targets --locked\n          cargo clippy",
+        ),
+      "(5a) Linux test job must not contain a cargo check step",
     ),
   );
   await t.test("(5b) missing cargo clippy", (subtest) =>

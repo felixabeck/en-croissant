@@ -48,9 +48,6 @@ jobs:
           workspaces: src-tauri -> target
           key: ${{ matrix.target }}
 
-      - name: Check all Rust targets
-        run: cargo check --manifest-path src-tauri/Cargo.toml --all-targets --locked
-
       - name: Clippy all Rust targets
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings
 
@@ -217,7 +214,6 @@ jobs:
 
       - name: Check and lint all Rust targets
         run: |
-          cargo check --manifest-path src-tauri/Cargo.toml --all-targets --locked
           cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings
 
       - name: Install pinned Rust coverage toolchain

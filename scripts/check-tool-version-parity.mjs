@@ -49,8 +49,6 @@ export const REQUIRED_NON_LINUX_TARGETS = [
   "x86_64-apple-darwin",
   "x86_64-pc-windows-msvc",
 ];
-const RUST_PLATFORM_CHECK =
-  "cargo check --manifest-path src-tauri/Cargo.toml --all-targets --locked";
 const RUST_PLATFORM_CLIPPY =
   "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings";
 const RUST_TEST_COMMAND = "cargo test --manifest-path src-tauri/Cargo.toml --all-targets";
@@ -379,9 +377,9 @@ function checkTargetCoverage(workflows, findings) {
     );
   }
   const platformSteps = workflowSteps(platformJob.body);
-  if (!platformSteps.some((step) => step.run === RUST_PLATFORM_CHECK)) {
+  if (platformSteps.some((step) => hasCargoCheck(step.run))) {
     findings.push(
-      `.github/workflows/test.yml: (5a) rust-platform is missing the exact cargo check step: ${RUST_PLATFORM_CHECK}`,
+      ".github/workflows/test.yml: (5a) rust-platform must not contain a cargo check step; clippy covers every target",
     );
   }
   if (!platformSteps.some((step) => step.run === RUST_PLATFORM_CLIPPY)) {
@@ -389,6 +387,19 @@ function checkTargetCoverage(workflows, findings) {
       `.github/workflows/test.yml: (5b) rust-platform is missing the exact cargo clippy step: ${RUST_PLATFORM_CLIPPY}`,
     );
   }
+
+  const linuxJob = workflows
+    .get(".github/workflows/test.yml")
+    ?.jobs.find((job) => job.name === "test");
+  if (linuxJob && workflowSteps(linuxJob.body).some((step) => hasCargoCheck(step.run))) {
+    findings.push(
+      ".github/workflows/test.yml: (5a) Linux test job must not contain a cargo check step; clippy covers every target",
+    );
+  }
+}
+
+function hasCargoCheck(run) {
+  return run.split(/\r?\n/u).some((line) => /^cargo\s+check(?:\s|$)/u.test(line.trim()));
 }
 
 // Deliberately not part of checkTargetCoverage: that function returns early on four unrelated
