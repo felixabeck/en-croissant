@@ -2545,17 +2545,21 @@ mod tests {
         let path = directory.path().join("database.db3");
         let repository = DatabaseRepository::default();
         let (_target, key, entry) = initialized_target_entry(&repository, &path);
-        let held = entry.get_connection().unwrap();
+        let first = entry.get_connection().unwrap();
+        let second = entry.get_connection().unwrap();
+        assert_eq!(entry.connections.snapshot().outstanding, 2);
 
         std::thread::scope(|scope| {
             scope.spawn(move || {
                 std::thread::sleep(RELEASE_DELAY);
-                drop(held);
+                drop(first);
+                std::thread::sleep(RELEASE_DELAY);
+                drop(second);
             });
 
             let started = Instant::now();
             assert!(repository.retire_replaced(&key, &entry, None).is_ok());
-            assert!(started.elapsed() >= RELEASE_DELAY);
+            assert!(started.elapsed() >= RELEASE_DELAY * 2);
         });
 
         assert_eq!(entry.connections.snapshot().outstanding, 0);
