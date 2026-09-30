@@ -1121,8 +1121,10 @@ plan review was closed above). Sections S1-S5 landed as `756544ec`, `b3dd9659`, 
 The "after" column is one all-blocks run, `pnpm gates:push -- --rust --frontend --bindings`, on the
 clean tree at `315d8205`, started 2026-09-30 13:11:47 +02:00. Other agent sessions were loading the
 machine throughout (load average 13.97 at start, 12.03 at the end, 20-25 over 15 minutes), so every
-"after" number is an upper bound. Every receipt was recorded (`gate:check` exit 0 for all five
-receipt gates afterwards), peak anonymous memory in the scope was 6.45 GiB above idle, and
+"after" number is an upper bound. Every receipt was recorded: the six receipt gates the run
+selects wrote `.gate-receipts/*.json` between 13:11 and 13:20 (P1's `gate:run frontend-build` plus
+the five `gate:ensure` lanes), and `gate:check` exited 0 for the five `gate:ensure` gates right
+after the run. Peak anonymous memory in the scope was 6.72 GiB, 6.45 GiB above idle, and
 `journalctl -k` counted **0 OOM kills** over the run.
 
 | Step | Before (serial) | After (lane, wall) | Notes |
