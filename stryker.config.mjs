@@ -1,8 +1,26 @@
 import { mutationPackages } from "./scripts/frontend-mutation-packages.mjs";
+import {
+  STRYKER_PARENT_BYTES,
+  STRYKER_RUNNER_BYTES,
+  workerCount,
+} from "./scripts/gate-parallelism.mjs";
 
 const mutationPackage = process.env.STRYKER_PACKAGE;
 if (!mutationPackages[mutationPackage])
   throw new Error(`Unknown or missing STRYKER_PACKAGE: ${mutationPackage ?? "<missing>"}`);
+
+const memoryValue = process.env.STRYKER_MEMORY_BYTES;
+const memoryBytes = Number(memoryValue);
+if (
+  typeof memoryValue !== "string" ||
+  !/^\d+$/u.test(memoryValue) ||
+  !Number.isSafeInteger(memoryBytes) ||
+  memoryBytes <= 0
+) {
+  throw new Error(
+    `STRYKER_MEMORY_BYTES must be a positive decimal integer in bytes (received ${JSON.stringify(memoryValue)}).`,
+  );
+}
 
 /** @type {import("@stryker-mutator/api/core").PartialStrykerOptions} */
 const config = {
@@ -14,7 +32,12 @@ const config = {
     related: true,
   },
   coverageAnalysis: "perTest",
-  concurrency: 2,
+  // Each worker receives the measured runner allowance after charging one Stryker parent to budget.
+  concurrency: workerCount({
+    perWorkerBytes: STRYKER_RUNNER_BYTES,
+    baseBytes: STRYKER_PARENT_BYTES,
+    budgetBytes: memoryBytes,
+  }),
   thresholds: {
     high: 100,
     low: 100,
@@ -50,7 +73,7 @@ const config = {
   htmlReporter: {
     fileName: `artifacts/mutation/frontend/${mutationPackage}/index.html`,
   },
-  tempDirName: ".stryker-tmp",
+  tempDirName: `.stryker-tmp/${mutationPackage}`,
 };
 
 export default config;

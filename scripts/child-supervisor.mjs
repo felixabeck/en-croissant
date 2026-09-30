@@ -4,10 +4,11 @@ function childIsRunning(child) {
   return child.exitCode === null && child.signalCode === null;
 }
 
-function signalChild(child, signal, killProcessGroup) {
+function signalChild(child, signal, killProcessGroup, { allowExitedGroup = false } = {}) {
   try {
     if (killProcessGroup) {
       if (child.pid === undefined) return false;
+      if (!allowExitedGroup && !childIsRunning(child)) return false;
       process.kill(-child.pid, signal);
       return true;
     }
@@ -21,7 +22,7 @@ function signalChild(child, signal, killProcessGroup) {
 
 async function sweepProcessGroup(child) {
   if (child.pid === undefined) return;
-  signalChild(child, "SIGKILL", true);
+  signalChild(child, "SIGKILL", true, { allowExitedGroup: true });
   while (true) {
     try {
       process.kill(-child.pid, 0);
@@ -50,6 +51,9 @@ export function superviseChild(child, { terminationTimeoutMs, killProcessGroup =
 
   return {
     done,
+    unref() {
+      child.unref?.();
+    },
     terminate() {
       if (termination) return termination;
       termination = (async () => {
@@ -73,6 +77,87 @@ export function superviseChild(child, { terminationTimeoutMs, killProcessGroup =
         }
       })();
       return termination;
+    },
+  };
+}
+
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** Attempt every child termination and report all failures after every attempt settles. */
+async function terminateChildren(children) {
+  const entries = [...children];
+  const results = await Promise.allSettled(entries.map(({ supervisor }) => supervisor.terminate()));
+  const failures = results.flatMap((result, index) => {
+    if (result.status === "fulfilled") return [];
+    const { name } = entries[index];
+    return [
+      new Error(
+        `Failed to terminate frontend mutation child ${name}: ${errorMessage(result.reason)}`,
+        {
+          cause: result.reason,
+        },
+      ),
+    ];
+  });
+  if (failures.length > 0) {
+    for (const [index, result] of results.entries()) {
+      if (result.status === "rejected") entries[index].supervisor.unref?.();
+    }
+    throw new AggregateError(
+      failures,
+      `Failed to terminate ${failures.length} frontend mutation child(s).`,
+    );
+  }
+}
+
+/** Forward runner signals to every attached child and latch attachment into termination. */
+export function installMultiChildSignalForwarding() {
+  let requestedSignal;
+  let resolveSignalRequested;
+  const signalRequested = new Promise((resolve) => {
+    resolveSignalRequested = resolve;
+  });
+  const children = [];
+  const terminationBatches = [];
+  const terminateAll = () => {
+    const termination = terminateChildren(children);
+    terminationBatches.push(termination);
+    termination.catch(() => {});
+    return termination;
+  };
+  const handler = (signal) => {
+    if (requestedSignal) return;
+    requestedSignal = signal;
+    resolveSignalRequested(signal);
+    terminateAll();
+  };
+  process.on("SIGINT", handler);
+  process.on("SIGTERM", handler);
+  return {
+    get requestedSignal() {
+      return requestedSignal;
+    },
+    signalRequested,
+    get termination() {
+      return Promise.allSettled(terminationBatches).then((results) => {
+        const failures = results.flatMap((result) =>
+          result.status === "rejected" ? [result.reason] : [],
+        );
+        if (failures.length > 0) {
+          throw new AggregateError(failures, "Frontend mutation signal cleanup failed.");
+        }
+      });
+    },
+    attach(supervisor, name) {
+      children.push({ supervisor, name });
+      if (requestedSignal) terminateAll();
+    },
+    terminateAll,
+    uninstall() {
+      process.off("SIGINT", handler);
+      process.off("SIGTERM", handler);
     },
   };
 }

@@ -6,7 +6,9 @@ import {
   AGENT_RESERVE_BYTES,
   gateBudgetBytes,
   memoryLimitBytes,
+  STRYKER_PARENT_BYTES,
   STRYKER_RUNNER_BYTES,
+  strykerSlots,
   VITEST_BASE_BYTES,
   vitestMaxWorkers,
   VITEST_WORKER_BYTES,
@@ -288,9 +290,83 @@ test("workerCount stays between 1 and availableParallelism, including a single a
 });
 
 test("the exported per-tool byte constants retain their measured budget values", () => {
-  assert.equal(STRYKER_RUNNER_BYTES, 640 * MIB);
+  assert.equal(STRYKER_RUNNER_BYTES, Math.round(1.2 * GIB));
+  assert.equal(STRYKER_PARENT_BYTES, 640 * MIB);
   assert.equal(VITEST_WORKER_BYTES, 256 * MIB);
   assert.equal(VITEST_BASE_BYTES, 1.5 * GIB);
+});
+
+test("strykerSlots admits three 24-CPU packages with eight runners each from a large budget", () => {
+  const budgetBytes = 90 * GIB;
+  const plan = strykerSlots({ budgetBytes, availableParallelism: () => 24, env: {} });
+  assert.equal(plan.slots, 3);
+  const runnersPerPackage = workerCount({
+    perWorkerBytes: STRYKER_RUNNER_BYTES,
+    baseBytes: STRYKER_PARENT_BYTES,
+    budgetBytes: Math.floor(budgetBytes / plan.slots),
+    availableParallelism: () => 24,
+    env: { GATE_CPU_SHARE: String(plan.cpuShare) },
+  });
+  assert.equal(runnersPerPackage, 8);
+});
+
+test("strykerSlots gives a single-CPU package the full budget", () => {
+  const budgetBytes = 90 * GIB;
+  const plan = strykerSlots({ budgetBytes, availableParallelism: () => 1, env: {} });
+  assert.equal(plan.slots, 1);
+  assert.equal(Math.floor(budgetBytes / plan.slots), budgetBytes);
+  assert.equal(plan.cpuShare, 1);
+});
+
+test("strykerSlots charges each package parent in the three-CPU discriminating budget", () => {
+  const budgetBytes = 2 * STRYKER_RUNNER_BYTES + STRYKER_PARENT_BYTES;
+  const plan = strykerSlots({ budgetBytes, availableParallelism: () => 3, env: {} });
+  assert.equal(plan.slots, 1);
+  assert.equal(Math.floor(budgetBytes / plan.slots), budgetBytes);
+});
+
+test("strykerSlots chooses five runners in one slot for the 7 GiB regression anchor", () => {
+  const budgetBytes = 7 * GIB;
+  const plan = strykerSlots({ budgetBytes, availableParallelism: () => 24, env: {} });
+  assert.equal(plan.slots, 1);
+  assert.equal(
+    workerCount({
+      perWorkerBytes: STRYKER_RUNNER_BYTES,
+      baseBytes: STRYKER_PARENT_BYTES,
+      budgetBytes: Math.floor(budgetBytes / plan.slots),
+      availableParallelism: () => 24,
+      env: { GATE_CPU_SHARE: String(plan.cpuShare) },
+    }),
+    5,
+  );
+});
+
+test("strykerSlots rejects a budget below one parent plus one runner with both byte counts", () => {
+  const minimumBudget = STRYKER_PARENT_BYTES + STRYKER_RUNNER_BYTES;
+  for (const budgetBytes of [minimumBudget - 1, minimumBudget - minimumBudget]) {
+    assert.throws(
+      () => strykerSlots({ budgetBytes, availableParallelism: () => 24, env: {} }),
+      (error) =>
+        error instanceof Error &&
+        error.message.includes(String(budgetBytes)) &&
+        error.message.includes(String(minimumBudget)),
+    );
+  }
+});
+
+test("strykerSlots keeps the aggregate runner count within 24, 2, and 1 available CPUs", () => {
+  const budgetBytes = 90 * GIB;
+  for (const cpuCount of [24, 2, 1]) {
+    const plan = strykerSlots({ budgetBytes, availableParallelism: () => cpuCount, env: {} });
+    const runnersPerPackage = workerCount({
+      perWorkerBytes: STRYKER_RUNNER_BYTES,
+      baseBytes: STRYKER_PARENT_BYTES,
+      budgetBytes: Math.floor(budgetBytes / plan.slots),
+      availableParallelism: () => cpuCount,
+      env: { GATE_CPU_SHARE: String(plan.cpuShare) },
+    });
+    assert.ok(plan.slots * runnersPerPackage <= cpuCount);
+  }
 });
 
 test("vitestMaxWorkers leaves the production config unset without reading cgroup files", () => {

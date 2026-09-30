@@ -1,18 +1,23 @@
 import { spawn } from "node:child_process";
 import {
+  closeSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
+import { constants as osConstants } from "node:os";
 import { dirname, join } from "node:path";
-import { installSignalForwarding, superviseChild } from "./child-supervisor.mjs";
+import { installMultiChildSignalForwarding, superviseChild } from "./child-supervisor.mjs";
+import { gateBudgetBytes, strykerSlots } from "./gate-parallelism.mjs";
 import { fsyncDirectory } from "./fsync-directory.mjs";
 import { mutationPackages } from "./frontend-mutation-packages.mjs";
+import { isEntrypoint } from "./entrypoint.mjs";
 import {
   currentIdentity,
   identityForPid,
@@ -22,22 +27,70 @@ import {
 
 const fencePath = "mutants.out/frontend/.mutation-in-progress";
 const ownerPath = join(fencePath, "owner.json");
+// Give a Stryker child two seconds to honor SIGTERM before escalating to SIGKILL.
 const terminationTimeoutMs = 2_000;
+// Cap a diagnostic tail at 8 KiB so a failing mutation cannot flood the gate output.
+const logTailBytes = 8 * 1024;
 
-if (process.argv.includes("--list-packages")) {
-  console.log(JSON.stringify(Object.keys(mutationPackages)));
-  process.exit(0);
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function normalizeOwner(owner) {
+  if (!owner || typeof owner !== "object" || !isCompleteIdentity(owner.runner)) return undefined;
+  if (Array.isArray(owner.children)) {
+    if (!owner.children.every(isCompleteIdentity)) return undefined;
+    if (
+      owner.spawning !== undefined &&
+      owner.spawning !== null &&
+      (typeof owner.spawning !== "string" || owner.spawning.length === 0)
+    ) {
+      return undefined;
+    }
+    return {
+      runner: owner.runner,
+      children: owner.children,
+      ...(owner.spawning ? { spawning: owner.spawning } : {}),
+      unknownChild: false,
+    };
+  }
+  if (!Object.hasOwn(owner, "child")) return undefined;
+  if (owner.child === null) {
+    return { runner: owner.runner, children: [], unknownChild: true };
+  }
+  if (!isCompleteIdentity(owner.child)) return undefined;
+  return { runner: owner.runner, children: [owner.child], unknownChild: false, legacy: true };
 }
 
 function readOwner() {
   try {
-    const owner = JSON.parse(readFileSync(ownerPath, "utf8"));
-    if (!owner || typeof owner !== "object" || !isCompleteIdentity(owner.runner)) return undefined;
-    if (owner.child !== null && !isCompleteIdentity(owner.child)) return undefined;
-    return owner;
+    return normalizeOwner(JSON.parse(readFileSync(ownerPath, "utf8")));
   } catch (error) {
     if (error?.code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;
     return undefined;
+  }
+}
+
+function processGroupIsEmpty(identity, kill = process.kill.bind(process)) {
+  try {
+    kill(-identity.pid, 0);
+    return false;
+  } catch (error) {
+    return error?.code === "ESRCH";
+  }
+}
+
+/** Decide whether a dead fence can be safely recovered; probes are injectable for refusal tests. */
+export function recoveryIsSafe(
+  owner,
+  { identityIsLive: isLive = identityIsLive, processGroupProbe = processGroupIsEmpty } = {},
+) {
+  if (!owner || owner.unknownChild || owner.spawning) return false;
+  try {
+    if (isLive(owner.runner)) return false;
+    return owner.children.every((child) => !isLive(child) && processGroupProbe(child));
+  } catch {
+    return false;
   }
 }
 
@@ -47,29 +100,36 @@ function refuseFence(owner, reason = undefined) {
     : " (owner record missing or malformed)";
   console.error(`Frontend mutation fence exists: ${fencePath}${detail}`);
   if (reason) console.error(`Cannot determine whether the fence owner is alive: ${reason}`);
-  let runnerState = "unknown";
-  let childState = owner?.child === null ? "none" : "unknown";
+
   if (owner) {
     try {
-      runnerState = identityIsLive(owner.runner) ? "alive" : "dead";
+      const runnerState = identityIsLive(owner.runner) ? "alive" : "dead";
+      console.error(`Recorded runner pid ${owner.runner.pid}: ${runnerState}`);
     } catch (error) {
-      runnerState = `unknown (${error instanceof Error ? error.message : String(error)})`;
+      console.error(`Recorded runner pid ${owner.runner.pid}: unknown (${errorMessage(error)})`);
     }
-    if (owner.child !== null) {
+    for (const [index, child] of owner.children.entries()) {
       try {
-        childState = identityIsLive(owner.child) ? "alive" : "dead";
+        const childState = identityIsLive(child) ? "alive" : "dead";
+        console.error(`Recorded child ${index + 1} pid ${child.pid}: ${childState}`);
+        if (childState === "dead") {
+          const groupState = processGroupIsEmpty(child) ? "empty" : "not empty or unknown";
+          console.error(`Recorded child ${index + 1} process group: ${groupState}`);
+        }
       } catch (error) {
-        childState = `unknown (${error instanceof Error ? error.message : String(error)})`;
+        console.error(
+          `Recorded child ${index + 1} pid ${child.pid}: unknown (${errorMessage(error)})`,
+        );
       }
     }
-    console.error(`Recorded runner pid ${owner.runner.pid}: ${runnerState}`);
+  }
+
+  if (owner?.spawning || owner?.unknownChild) {
     console.error(
-      owner.child === null
-        ? "Recorded child pid none: none"
-        : `Recorded child pid ${owner.child.pid}: ${childState}`,
+      "A Stryker child may be starting or is not recorded; confirm no stryker process is running first.",
     );
   }
-  if (!owner || (runnerState === "dead" && (childState === "dead" || childState === "none"))) {
+  if (recoveryIsSafe(owner)) {
     console.error("Only after confirming no stryker process is running.");
     console.error(`rm -rf ${fencePath}`);
   }
@@ -83,7 +143,7 @@ function publishFence(runnerIdentity) {
   try {
     writeFileSync(
       join(pending, "owner.json"),
-      `${JSON.stringify({ runner: runnerIdentity, child: null }, null, 2)}\n`,
+      `${JSON.stringify({ runner: runnerIdentity, children: [] }, null, 2)}\n`,
       { encoding: "utf8", flag: "wx", mode: 0o600 },
     );
     fsyncDirectory(pending);
@@ -95,7 +155,7 @@ function publishFence(runnerIdentity) {
       rmSync(published ? fencePath : pending, { recursive: true, force: true });
     } catch (cleanupError) {
       console.error(
-        `Secondary failure while cleaning frontend mutation fence publication: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
+        `Secondary failure while cleaning frontend mutation fence publication: ${errorMessage(cleanupError)}`,
       );
     }
     throw error;
@@ -118,11 +178,7 @@ function acquireFence(runnerIdentity) {
     try {
       owner = readOwner();
     } catch (error) {
-      refuseFence(undefined, error instanceof Error ? error.message : String(error));
-      return false;
-    }
-    if (!owner) {
-      refuseFence(owner);
+      refuseFence(undefined, errorMessage(error));
       return false;
     }
     refuseFence(owner);
@@ -137,13 +193,21 @@ function runnerOwnsFence(runnerIdentity) {
   );
 }
 
-function writeOwner(runnerIdentity, childIdentity) {
+function writeOwner(runnerIdentity, children, spawning = undefined) {
+  if (!runnerOwnsFence(runnerIdentity)) {
+    throw new Error("Frontend mutation fence owner changed during the run");
+  }
   const temporaryPath = join(fencePath, `.owner.json.tmp-${process.pid}`);
-  writeFileSync(
-    temporaryPath,
-    `${JSON.stringify({ runner: runnerIdentity, child: childIdentity }, null, 2)}\n`,
-    { encoding: "utf8", flag: "wx", mode: 0o600 },
-  );
+  const record = {
+    runner: runnerIdentity,
+    children,
+    ...(spawning ? { spawning } : {}),
+  };
+  writeFileSync(temporaryPath, `${JSON.stringify(record, null, 2)}\n`, {
+    encoding: "utf8",
+    flag: "wx",
+    mode: 0o600,
+  });
   renameSync(temporaryPath, ownerPath);
   fsyncDirectory(fencePath);
 }
@@ -166,72 +230,287 @@ function resolveStrykerEntry(cwd) {
   return entry;
 }
 
-async function main() {
+function childEnvironment(mutationPackage, memoryBytes, cpuShare) {
+  const env = {
+    ...process.env,
+    STRYKER_PACKAGE: mutationPackage,
+    STRYKER_MEMORY_BYTES: String(memoryBytes),
+    GATE_CPU_SHARE: String(cpuShare),
+  };
+  delete env.GATE_MEMORY_BYTES;
+  return env;
+}
+
+function packageLogPath(mutationPackage) {
+  return join("artifacts", "mutation", "frontend", mutationPackage, "stryker.log");
+}
+
+function printLogTail(path) {
+  let contents;
+  try {
+    contents = readFileSync(path, "utf8");
+  } catch (error) {
+    console.error(`Could not read ${path}: ${errorMessage(error)}`);
+    return;
+  }
+  const tail = contents.slice(-logTailBytes).trimEnd();
+  if (tail) console.error(`--- ${path} (tail) ---\n${tail}\n--- end ${path} ---`);
+}
+
+function signalExitCode(signal) {
+  const number = osConstants.signals[signal];
+  return typeof number === "number" ? 128 + number : 1;
+}
+
+function describePackageFailure(mutationPackage, result, logPath) {
+  if (result.spawnError) {
+    console.error(
+      `Frontend mutation package ${mutationPackage} failed to spawn: ${errorMessage(result.spawnError)}`,
+    );
+    printLogTail(logPath);
+    return { exitCode: 127, message: errorMessage(result.spawnError) };
+  }
+  if (result.signal) {
+    const exitCode = signalExitCode(result.signal);
+    console.error(
+      `Frontend mutation package ${mutationPackage} was killed by ${result.signal} (exit ${exitCode}).`,
+    );
+    printLogTail(logPath);
+    return { exitCode, message: result.signal };
+  }
+  const exitCode = result.code ?? 1;
+  console.error(`Frontend mutation package ${mutationPackage} failed with exit ${exitCode}.`);
+  printLogTail(logPath);
+  return { exitCode, message: `exit ${exitCode}` };
+}
+
+async function runPackage(
+  mutationPackage,
+  {
+    runnerIdentity,
+    children,
+    memoryBytes,
+    cpuShare,
+    spawnChild,
+    signalForwarding,
+    onSpawnError,
+    onPendingSpawn,
+    onResolvedSpawn,
+  },
+) {
+  const logPath = packageLogPath(mutationPackage);
+  mkdirSync(dirname(logPath), { recursive: true });
+  const logFd = openSync(logPath, "w");
+  let child;
+  let supervisor;
+  console.log(`Frontend mutation package: ${mutationPackage}`);
+  try {
+    if (!runnerOwnsFence(runnerIdentity)) {
+      throw new Error("Frontend mutation fence owner changed during the run");
+    }
+    writeOwner(runnerIdentity, children, mutationPackage);
+    const strykerEntry = resolveStrykerEntry(process.cwd());
+    try {
+      child = spawnChild(process.execPath, [strykerEntry, "run"], {
+        detached: true,
+        env: childEnvironment(mutationPackage, memoryBytes, cpuShare),
+        stdio: ["ignore", logFd, logFd],
+      });
+    } catch (error) {
+      writeOwner(runnerIdentity, children);
+      return { failure: describePackageFailure(mutationPackage, { spawnError: error }, logPath) };
+    }
+
+    supervisor = superviseChild(child, { terminationTimeoutMs, killProcessGroup: true });
+    signalForwarding.attach(supervisor, mutationPackage);
+    child.once("error", (error) => onSpawnError(mutationPackage, error));
+    if (child.pid === undefined) {
+      let unresolved = true;
+      onPendingSpawn();
+      const resolveSpawn = () => {
+        if (!unresolved) return;
+        unresolved = false;
+        onResolvedSpawn();
+      };
+      child.once("spawn", resolveSpawn);
+      child.once("error", resolveSpawn);
+      child.once("close", resolveSpawn);
+    }
+    const childIdentity = child.pid === undefined ? undefined : identityForPid(child.pid);
+    if (childIdentity) {
+      children.push(childIdentity);
+      writeOwner(runnerIdentity, children);
+    }
+
+    const result = await supervisor.done;
+    if (!childIdentity && child.pid === undefined) writeOwner(runnerIdentity, children);
+    if (result.error) {
+      return {
+        failure: describePackageFailure(mutationPackage, { spawnError: result.error }, logPath),
+      };
+    }
+    if (result.code === 0 && !result.signal) return {};
+    return { failure: describePackageFailure(mutationPackage, result, logPath) };
+  } finally {
+    closeSync(logFd);
+  }
+}
+
+/** Run frontend mutation packages; `spawnChild` is injectable for deterministic scheduler tests. */
+export async function runFrontendMutation(spawnChild = spawn) {
   const runnerIdentity = currentIdentity();
   if (!acquireFence(runnerIdentity)) return 1;
 
-  let supervisor;
-  const signalForwarding = installSignalForwarding(() => supervisor);
+  const signalForwarding = installMultiChildSignalForwarding();
+  const children = [];
+  let resolveStopped;
+  const stopRequested = new Promise((resolve) => {
+    resolveStopped = resolve;
+  });
+  const halted = Promise.race([stopRequested, signalForwarding.signalRequested]).then(() => ({
+    halted: true,
+  }));
   let exitCode = 0;
+  let cleanupFailed = false;
   try {
-    // Stryker cannot clean a sandbox after SIGKILL. Only the fence owner may purge
-    // the shared directory, so a concurrent run can never remove a live sandbox.
+    const budgetBytes = gateBudgetBytes();
+    const { slots, cpuShare } = strykerSlots({
+      budgetBytes,
+      packageCount: Object.keys(mutationPackages).length,
+    });
+    const memoryBytes = Math.floor(budgetBytes / slots);
+
+    // Stryker cannot clean a sandbox after SIGKILL; only the fence owner may purge it at start.
     rmSync(".stryker-tmp", { recursive: true, force: true });
 
-    for (const mutationPackage of Object.keys(mutationPackages)) {
-      if (signalForwarding.requestedSignal) break;
-      if (!runnerOwnsFence(runnerIdentity)) {
-        throw new Error("Frontend mutation fence owner changed during the run");
+    let nextPackage = 0;
+    let admissionOpen = true;
+    let firstFailure;
+    let pendingSpawns = 0;
+    const pendingSpawnWaiters = new Set();
+    const onPendingSpawn = () => {
+      pendingSpawns += 1;
+    };
+    const onResolvedSpawn = () => {
+      pendingSpawns -= 1;
+      if (pendingSpawns === 0) {
+        for (const resolve of pendingSpawnWaiters) resolve();
+        pendingSpawnWaiters.clear();
       }
-      console.log(`\nFrontend mutation package: ${mutationPackage}`);
-      writeOwner(runnerIdentity, null);
-      const child = spawn(process.execPath, [resolveStrykerEntry(process.cwd()), "run"], {
-        detached: true,
-        env: { ...process.env, STRYKER_PACKAGE: mutationPackage },
-        stdio: "inherit",
-      });
-      supervisor = superviseChild(child, { terminationTimeoutMs, killProcessGroup: true });
-      signalForwarding.attach(supervisor);
-      const childIdentity = child.pid === undefined ? undefined : identityForPid(child.pid);
-      writeOwner(runnerIdentity, childIdentity ?? null);
-      const result = await supervisor.done;
-      supervisor = undefined;
-      if (signalForwarding.requestedSignal) break;
-      if (result.error) throw result.error;
-      if (result.code !== 0) {
-        exitCode = result.code ?? 1;
-        break;
+    };
+    const waitForPendingSpawns = () => {
+      if (pendingSpawns === 0) return Promise.resolve();
+      return new Promise((resolve) => pendingSpawnWaiters.add(resolve));
+    };
+    const reportCleanupFailure = (error) => {
+      cleanupFailed = true;
+      console.error(error);
+      console.error(`The frontend mutation fence remains at ${fencePath}.`);
+    };
+    const stopForFailure = async (failure) => {
+      if (!firstFailure) {
+        firstFailure = failure;
+        exitCode = failure.exitCode;
+        admissionOpen = false;
+        try {
+          await signalForwarding.terminateAll();
+        } catch (error) {
+          reportCleanupFailure(error);
+        } finally {
+          resolveStopped();
+        }
       }
-    }
+    };
+
+    const runSlot = async () => {
+      while (admissionOpen && !signalForwarding.requestedSignal) {
+        if (nextPackage >= slots) {
+          await Promise.race([waitForPendingSpawns(), halted]);
+          if (!admissionOpen || signalForwarding.requestedSignal) return;
+        }
+        const packageIndex = nextPackage;
+        if (packageIndex >= Object.keys(mutationPackages).length) return;
+        nextPackage += 1;
+        const mutationPackage = Object.keys(mutationPackages)[packageIndex];
+        try {
+          const runningPackage = runPackage(mutationPackage, {
+            runnerIdentity,
+            children,
+            memoryBytes,
+            cpuShare,
+            spawnChild,
+            signalForwarding,
+            onPendingSpawn,
+            onResolvedSpawn,
+            onSpawnError: (name, error) => {
+              void stopForFailure({ exitCode: 127, message: `${name}: ${errorMessage(error)}` });
+            },
+          }).then(
+            (result) => ({ result }),
+            (error) => ({ error }),
+          );
+          const outcome = await Promise.race([runningPackage, halted]);
+          if (outcome.halted) return;
+          if (outcome.error) throw outcome.error;
+          const { result } = outcome;
+          if (signalForwarding.requestedSignal) return;
+          if (result.failure) await stopForFailure(result.failure);
+        } catch (error) {
+          console.error(
+            `Frontend mutation runner failed while starting ${mutationPackage}: ${errorMessage(error)}`,
+          );
+          await stopForFailure({ exitCode: 1, message: errorMessage(error) });
+        }
+      }
+    };
+
+    await Promise.all(Array.from({ length: slots }, () => runSlot()));
   } catch (error) {
     console.error(error);
     exitCode = 1;
-  } finally {
-    if (supervisor) await supervisor.terminate();
-    await signalForwarding.termination;
-    let fenceRemoved = false;
     try {
-      if (runnerOwnsFence(runnerIdentity)) {
-        rmSync(fencePath, { recursive: true });
-        fenceRemoved = true;
-      } else {
-        console.error("Frontend mutation fence owner changed; leaving the fence in place.");
-        exitCode = 1;
-      }
-    } catch (error) {
-      console.error(
-        `Cannot verify frontend mutation fence ownership; leaving the fence in place: ${error instanceof Error ? error.message : String(error)}`,
-      );
-      exitCode = 1;
+      await signalForwarding.terminateAll();
+    } catch (cleanupError) {
+      cleanupFailed = true;
+      console.error(cleanupError);
+    } finally {
+      resolveStopped();
     }
-    if (fenceRemoved) {
+  } finally {
+    try {
+      await signalForwarding.termination;
+    } catch (error) {
+      cleanupFailed = true;
+      console.error(error);
+    }
+    if (cleanupFailed) {
+      console.error(`The frontend mutation fence remains at ${fencePath}.`);
+      exitCode = exitCode || 1;
+    } else {
+      let fenceRemoved = false;
       try {
-        fsyncDirectory(dirname(fencePath));
+        if (runnerOwnsFence(runnerIdentity)) {
+          rmSync(fencePath, { recursive: true });
+          fenceRemoved = true;
+        } else {
+          console.error("Frontend mutation fence owner changed; leaving the fence in place.");
+          exitCode = 1;
+        }
       } catch (error) {
         console.error(
-          `Frontend mutation fence removed, directory sync failed: ${error instanceof Error ? error.message : String(error)}`,
+          `Cannot verify frontend mutation fence ownership; leaving the fence in place: ${errorMessage(error)}`,
         );
         exitCode = 1;
+      }
+      if (fenceRemoved) {
+        try {
+          fsyncDirectory(dirname(fencePath));
+        } catch (error) {
+          console.error(
+            `Frontend mutation fence removed, directory sync failed: ${errorMessage(error)}`,
+          );
+          exitCode = 1;
+        }
       }
     }
     signalForwarding.uninstall();
@@ -243,9 +522,19 @@ async function main() {
   return exitCode;
 }
 
-try {
-  process.exitCode = await main();
-} catch (error) {
-  console.error(error);
-  process.exitCode = 1;
+async function main() {
+  if (process.argv.includes("--list-packages")) {
+    console.log(JSON.stringify(Object.keys(mutationPackages)));
+    return 0;
+  }
+  return runFrontendMutation(spawn);
+}
+
+if (isEntrypoint(import.meta.url)) {
+  try {
+    process.exitCode = await main();
+  } catch (error) {
+    console.error(error);
+    process.exitCode = 1;
+  }
 }

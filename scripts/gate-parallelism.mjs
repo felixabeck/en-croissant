@@ -12,9 +12,15 @@ const PROCESS_CGROUP_FILE = "/proc/self/cgroup";
 // that process plus headroom for a lens leaf or shell.
 export const AGENT_RESERVE_BYTES = 1024 * 1024 * 1024;
 
-// OOM-killed Stryker runners measured 0.40–0.49 GB anonymous memory, with the Stryker parent on
-// top. The 640 MiB estimate will be re-measured before S3 uses it.
-export const STRYKER_RUNNER_BYTES = 640 * 1024 * 1024;
+// Per-runner peak RSS measured 0.80–1.13 GiB; tree-path at concurrency 4 used 4.98 GiB above
+// idle (1.16 GiB per runner), workspace-storage used 7.04 GiB at 8 and 3.60 GiB at 4, and
+// game-practice used 5.44 GiB at 8. Runners grow during a run; maxTestRunnerReuse 40 still used
+// 6.53 GiB at 8. The earlier 640 MiB estimate stopped runners after 12–23 tests and undercounted.
+export const STRYKER_RUNNER_BYTES = Math.round(1.2 * 1024 ** 3);
+
+// The Stryker parent measured 0.34–0.39 GiB RSS plus a 0.11 GiB helper process during the
+// 2026-09-30 dry run; 640 MiB covers both with headroom.
+export const STRYKER_PARENT_BYTES = 640 * 1024 * 1024;
 
 // On 2026-09-30 in the 8 GiB agent scope, `vitest run --coverage.enabled` used 1.88 GiB above
 // idle at 4 workers, 3.23 GiB at 12, and 4.58 GiB at 20: about 173 MiB per worker. 256 MiB keeps
@@ -224,6 +230,60 @@ export function workerCount({
   const cpuCap = Math.max(1, Math.floor(cpuCount * share));
   const memoryCap = Math.floor((budget - baseBytes) / perWorkerBytes);
   return Math.max(1, Math.min(cpuCap, memoryCap));
+}
+
+/** Select package slots that maximize total Stryker runners without oversubscribing CPU or memory. */
+export function strykerSlots({
+  budgetBytes,
+  packageCount = 3,
+  env = process.env,
+  availableParallelism = defaultAvailableParallelism,
+} = {}) {
+  validateByteCount("packageCount", packageCount);
+  const minimumBudget = STRYKER_PARENT_BYTES + STRYKER_RUNNER_BYTES;
+  if (!Number.isSafeInteger(budgetBytes)) {
+    throw new Error(`Gate memory budget ${String(budgetBytes)} bytes must be a safe integer.`);
+  }
+  if (budgetBytes < minimumBudget) {
+    throw new Error(
+      `Gate memory budget ${budgetBytes} bytes is below the minimum ${minimumBudget} bytes ` +
+        `(STRYKER_PARENT_BYTES ${STRYKER_PARENT_BYTES} + STRYKER_RUNNER_BYTES ${STRYKER_RUNNER_BYTES}).`,
+    );
+  }
+  const cpuCount = availableParallelism();
+  if (!Number.isSafeInteger(cpuCount) || cpuCount < 1) {
+    throw new Error(`os.availableParallelism() returned an invalid CPU count ${String(cpuCount)}.`);
+  }
+  const share = configuredCpuShare(env);
+  const maximumSlots = Math.min(packageCount, Math.max(1, Math.floor(cpuCount * share)));
+  let bestSlots = 0;
+  let bestRunnerCount = 0;
+
+  for (let slots = 1; slots <= maximumSlots; slots += 1) {
+    const perSlotBudget = Math.floor(budgetBytes / slots);
+    if (perSlotBudget < minimumBudget) continue;
+    const runnerShare = share / slots;
+    const runnersPerSlot = workerCount({
+      perWorkerBytes: STRYKER_RUNNER_BYTES,
+      baseBytes: STRYKER_PARENT_BYTES,
+      budgetBytes: perSlotBudget,
+      env: { ...env, GATE_CPU_SHARE: String(runnerShare) },
+      availableParallelism,
+    });
+    const totalRunners = slots * runnersPerSlot;
+    if (totalRunners > bestRunnerCount || (totalRunners === bestRunnerCount && slots > bestSlots)) {
+      bestSlots = slots;
+      bestRunnerCount = totalRunners;
+    }
+  }
+
+  if (bestSlots === 0) {
+    throw new Error(
+      `Gate memory budget ${budgetBytes} bytes is below the minimum ${minimumBudget} bytes ` +
+        `(STRYKER_PARENT_BYTES ${STRYKER_PARENT_BYTES} + STRYKER_RUNNER_BYTES ${STRYKER_RUNNER_BYTES}).`,
+    );
+  }
+  return { slots: bestSlots, cpuShare: share / bestSlots };
 }
 
 /** Size Vitest workers only while Vitest evaluates the config; production builds leave it unset. */

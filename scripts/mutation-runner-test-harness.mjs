@@ -16,6 +16,14 @@ export function runMutationRunner(runner, root, env, args = []) {
   });
 }
 
+export function runMutationRunnerWithNodeArgs(runner, root, env, nodeArgs = [], args = []) {
+  return spawnSync(process.execPath, [...nodeArgs, runner, ...args], {
+    cwd: root,
+    env,
+    encoding: "utf8",
+  });
+}
+
 /**
  * Start a runner under test. `t` is the node:test context: a failed assertion
  * must not leave the runner and its blocking shim alive, because node --test
@@ -29,9 +37,9 @@ export function startMutationRunner(
   runner,
   root,
   env,
-  { stdio = ["ignore", "pipe", "pipe"], args = [] } = {},
+  { stdio = ["ignore", "pipe", "pipe"], args = [], nodeArgs = [] } = {},
 ) {
-  const child = spawn(process.execPath, [runner, ...args], {
+  const child = spawn(process.execPath, [...nodeArgs, runner, ...args], {
     cwd: root,
     env,
     stdio,

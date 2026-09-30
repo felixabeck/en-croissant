@@ -1,27 +1,45 @@
 import assert from "node:assert/strict";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { availableParallelism } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import {
+  STRYKER_PARENT_BYTES,
+  STRYKER_RUNNER_BYTES,
+  strykerSlots,
+  workerCount,
+} from "./gate-parallelism.mjs";
 import { mutationPackages } from "./frontend-mutation-packages.mjs";
 import {
   isAlive,
   runMutationRunner,
+  runMutationRunnerWithNodeArgs,
   startMutationRunner,
   waitFor,
   writeShim,
 } from "./mutation-runner-test-harness.mjs";
+import { currentIdentity, identityForPid } from "./process-identity.mjs";
+import { recoveryIsSafe } from "./run-frontend-mutation.mjs";
 
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const runner = join(projectRoot, "scripts", "run-frontend-mutation.mjs");
 const fence = "mutants.out/frontend/.mutation-in-progress";
+const packageNames = Object.keys(mutationPackages);
+const budgetBytes = 90 * 1024 ** 3;
 
-async function fixture() {
-  const root = await mkdtemp(join(tmpdir(), "frontend-mutation-runner-"));
+function cpuShareForSlots(requestedSlots, cpuCount = availableParallelism()) {
+  const slots = Math.min(requestedSlots, cpuCount);
+  return slots === cpuCount ? "1" : String((slots + 0.25) / cpuCount);
+}
+
+async function fixture(t = undefined) {
+  const root = await mkdtemp(join((await import("node:os")).tmpdir(), "frontend-mutation-runner-"));
   const state = join(root, "shim-state");
   await mkdir(state);
+  if (t) t.after(() => rm(root, { recursive: true, force: true }));
   const packageDirectory = join(root, "node_modules", "@stryker-mutator", "core");
   await mkdir(join(packageDirectory, "bin"), { recursive: true });
   await writeFile(
@@ -40,45 +58,50 @@ async function fixture() {
       'import { appendFileSync, existsSync, writeFileSync } from "node:fs";',
       'import { join } from "node:path";',
       "const state = process.env.SHIM_STATE;",
-      'writeFileSync(join(state, "booting"), "");',
-      'if (process.env.SHIM_MODE === "startup-delay") {',
-      "  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5_000);",
-      "}",
-      'appendFileSync(join(state, "packages"), `${process.env.STRYKER_PACKAGE}\\n`);',
-      'writeFileSync(join(state, "pid"), `${process.pid}\\n`);',
-      'if (["block", "grandchild-exit", "ignore-term"].includes(process.env.SHIM_MODE)) {',
+      "const name = process.env.STRYKER_PACKAGE;",
+      "const mode = process.env.SHIM_MODE;",
+      "const marker = (suffix) => join(state, `${suffix}-${name}`);",
+      'writeFileSync(marker("booting"), "");',
+      'if (mode === "startup-delay") Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5_000);',
+      'appendFileSync(join(state, "packages"), `${name}\\n`);',
+      'writeFileSync(marker("pid"), `${process.pid}\\n`);',
+      'writeFileSync(marker("env"), JSON.stringify({',
+      "  memory: process.env.STRYKER_MEMORY_BYTES,",
+      "  cpuShare: process.env.GATE_CPU_SHARE,",
+      '  gateMemoryPresent: Object.hasOwn(process.env, "GATE_MEMORY_BYTES"),',
+      "}));",
+      "console.log(`known stdout from ${name}`);",
+      "console.error(`known stderr from ${name}`);",
+      'if (["block", "grandchild-exit", "ignore-term", "kill-after-peer"].includes(mode)) {',
       '  const grandchild = spawn("/bin/sleep", ["30"], { detached: false, stdio: "ignore" });',
-      '  writeFileSync(join(state, "grandchild-pid"), `${grandchild.pid}\\n`);',
+      '  writeFileSync(marker("grandchild-pid"), `${grandchild.pid}\\n`);',
       "  grandchild.unref();",
       "}",
-      "// `started` is the readiness marker tests wait on; it must follow every state it advertises.",
-      'writeFileSync(join(state, "started"), "");',
+      'writeFileSync(marker("started"), "");',
+      "if (name === process.env.FAIL_PACKAGE) {",
+      "  const peerStarted = join(state, `started-${process.env.FAIL_PEER}`);",
+      "  const failTimer = setInterval(() => { if (!process.env.FAIL_PEER || existsSync(peerStarted)) { clearInterval(failTimer); process.exit(7); } }, 5);",
+      "}",
       "function recordTermination() {",
-      '  if (existsSync("mutants.out/frontend/.mutation-in-progress")) {',
-      '    writeFileSync(join(state, "terminated-with-fence"), "");',
-      "  }",
-      '  writeFileSync(join(state, "terminated"), "");',
+      '  if (existsSync("mutants.out/frontend/.mutation-in-progress")) writeFileSync(marker("terminated-with-fence"), "");',
+      '  writeFileSync(marker("terminated"), "");',
       "  process.exit(0);",
       "}",
-      'if (process.env.SHIM_MODE === "grandchild-exit") {',
+      'if (mode === "grandchild-exit") {',
       "  process.exit(0);",
-      '} else if (process.env.SHIM_MODE === "block") {',
-      '  process.on("SIGTERM", recordTermination);',
-      '  process.on("SIGINT", recordTermination);',
+      '} else if (mode === "kill-after-peer" && name === process.env.KILL_PACKAGE) {',
+      '  const peerStarted = marker("unused").replace(`unused-${name}`, `started-${process.env.KILL_PEER}`);',
       "  const timer = setInterval(() => {",
-      '    if (existsSync(join(state, "release"))) {',
-      "      clearInterval(timer);",
-      "      process.exit(0);",
-      "    }",
+      '    if (existsSync(peerStarted)) { clearInterval(timer); process.kill(process.pid, "SIGKILL"); }',
+      "  }, 5);",
+      '} else if (["block", "ignore-term", "kill-after-peer"].includes(mode)) {',
+      '  if (mode === "ignore-term") { process.on("SIGTERM", () => {}); process.on("SIGINT", () => {}); }',
+      '  else { process.on("SIGTERM", recordTermination); process.on("SIGINT", recordTermination); }',
+      "  const timer = setInterval(() => {",
+      '    if (existsSync(join(state, "release")) || existsSync(marker("release"))) { clearInterval(timer); process.exit(0); }',
       "  }, 20);",
-      '} else if (process.env.SHIM_MODE === "ignore-term") {',
-      '  process.on("SIGTERM", () => {});',
-      '  process.on("SIGINT", () => {});',
-      "  setInterval(() => {}, 1_000);",
-      '} else if (process.env.SHIM_MODE === "record") {',
+      '} else if (mode === "record") {',
       "  process.exit(0);",
-      "} else if (process.env.STRYKER_PACKAGE === process.env.FAIL_PACKAGE) {",
-      "  process.exit(7);",
       "}",
       "",
     ].join("\n"),
@@ -86,28 +109,39 @@ async function fixture() {
   return { root, state };
 }
 
-function environment({ state, mode = "normal", failPackage }) {
-  return {
+function environment({ state, mode = "normal", failPackage, requestedSlots = 3, ...extra }) {
+  const env = {
     ...process.env,
+    GATE_MEMORY_BYTES: String(budgetBytes),
+    GATE_CPU_SHARE: cpuShareForSlots(requestedSlots),
     SHIM_MODE: mode,
     SHIM_STATE: state,
     ...(failPackage ? { FAIL_PACKAGE: failPackage } : {}),
+    ...extra,
   };
+  delete env.STRYKER_MEMORY_BYTES;
+  return env;
 }
 
 const run = (root, env, args = []) => runMutationRunner(runner, root, env, args);
-const start = (t, root, env) => startMutationRunner(t, runner, root, env);
+const start = (t, root, env, options = {}) => startMutationRunner(t, runner, root, env, options);
 
 async function waitForRecordedChild(root, timeoutMs = 5_000) {
   const path = join(root, fence, "owner.json");
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    let source;
     try {
-      const owner = JSON.parse(await readFile(path, "utf8"));
-      if (owner.child) return owner;
-    } catch {
-      // The owner update is published atomically; retry until its child is present.
+      source = await readFile(path, "utf8");
+    } catch (error) {
+      if (error?.code === "ENOENT") {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        continue;
+      }
+      throw error;
     }
+    const owner = JSON.parse(source);
+    if (owner.children?.length > 0 && !owner.spawning) return owner;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   assert.fail(`Timed out waiting for a child identity in ${path}`);
@@ -116,69 +150,174 @@ async function waitForRecordedChild(root, timeoutMs = 5_000) {
 async function seedFence(root, owner) {
   const path = join(root, fence);
   await mkdir(path, { recursive: true });
-  if (owner !== undefined) {
-    await writeFile(join(path, "owner.json"), `${JSON.stringify(owner)}\n`);
-  }
+  if (owner !== undefined) await writeFile(join(path, "owner.json"), `${JSON.stringify(owner)}\n`);
+}
+
+function deadIdentity(pid = 2_000_000_001) {
+  return { pid, startTime: "1" };
 }
 
 function deadOwner(overrides = {}) {
   return {
-    runner: { pid: 2_000_000_000, startTime: "1" },
-    child: { pid: 2_000_000_001, startTime: "1" },
+    runner: deadIdentity(2_000_000_000),
+    children: [deadIdentity()],
     ...overrides,
   };
 }
 
-test("--list-packages prints the shared package map without creating a fence", async () => {
-  const { root, state } = await fixture();
+async function writeCpuPreload(path) {
+  await writeFile(
+    path,
+    [
+      'import os from "node:os";',
+      'import { syncBuiltinESMExports } from "node:module";',
+      "os.availableParallelism = () => Number(process.env.TEST_AVAILABLE_CPUS);",
+      "syncBuiltinESMExports();",
+      "",
+    ].join("\n"),
+  );
+}
+
+function startInjectedRunner(t, root, env, source, nodeArgs = []) {
+  const script = join(root, "injected-runner.mjs");
+  return writeFile(script, source).then(async () => {
+    await chmod(script, 0o755);
+    return startMutationRunner(t, script, root, env, { nodeArgs });
+  });
+}
+
+test("--list-packages prints the shared package map without creating a fence", async (t) => {
+  const { root, state } = await fixture(t);
   const result = run(root, environment({ state }), ["--list-packages"]);
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(JSON.parse(result.stdout), Object.keys(mutationPackages));
+  assert.deepEqual(JSON.parse(result.stdout), packageNames);
   assert.equal(existsSync(join(root, fence)), false);
 });
 
-test("a normal run spawns once per package and removes its fence", async () => {
-  const { root, state } = await fixture();
-  const result = run(root, environment({ state }));
+test("PG-129/132/133/134/137: importing the runner is silent with and without --list-packages", async (t) => {
+  const { root, state } = await fixture(t);
+  const script = [
+    'import { writeFileSync } from "node:fs";',
+    "await import(process.env.RUNNER_URL);",
+    'writeFileSync(process.env.IMPORT_MARKER, JSON.stringify({ exitCode: typeof process.exitCode === "undefined" ? "undefined" : process.exitCode }));',
+    "",
+  ].join("\n");
+  for (const args of [[], ["--list-packages"]]) {
+    const marker = join(state, `import-${args.length}.json`);
+    const env = {
+      ...process.env,
+      RUNNER_URL: pathToFileURL(runner).href,
+      IMPORT_MARKER: marker,
+    };
+    const result = spawnSync(
+      process.execPath,
+      ["--input-type=module", "-e", script, ...(args.length > 0 ? ["--", ...args] : [])],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env,
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(await readFile(marker, "utf8"), JSON.stringify({ exitCode: "undefined" }));
+    assert.equal(result.stdout, "");
+    assert.equal(result.stderr, "");
+  }
+});
+
+test("PG-86/103: normal runs schedule every package and isolate child env and logs", async (t) => {
+  const { root, state } = await fixture(t);
+  const env = environment({ state, mode: "record" });
+  const plan = strykerSlots({ budgetBytes, env, availableParallelism });
+  const result = run(root, env);
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(
-    (await readFile(join(state, "packages"), "utf8")).trim().split("\n"),
-    Object.keys(mutationPackages),
+    (await readFile(join(state, "packages"), "utf8")).trim().split("\n").sort(),
+    [...packageNames].sort(),
   );
+  assert.equal(
+    result.stdout.split(/\r?\n/u).filter((line) => line.startsWith("Frontend mutation package:"))
+      .length,
+    packageNames.length,
+  );
+  for (const name of packageNames) {
+    const childEnv = JSON.parse(await readFile(join(state, `env-${name}`), "utf8"));
+    assert.equal(childEnv.memory, String(Math.floor(budgetBytes / plan.slots)));
+    assert.equal(childEnv.cpuShare, String(plan.cpuShare));
+    assert.equal(childEnv.gateMemoryPresent, false);
+    const log = await readFile(
+      join(root, "artifacts", "mutation", "frontend", name, "stryker.log"),
+      "utf8",
+    );
+    assert.match(log, new RegExp(`known stdout from ${name}`, "u"));
+    assert.match(log, new RegExp(`known stderr from ${name}`, "u"));
+    assert.doesNotMatch(result.stdout, new RegExp(`known stdout from ${name}`, "u"));
+  }
   assert.equal(existsSync(join(root, fence)), false);
 });
 
-test("the runner stops at the first non-zero package and removes its fence", async () => {
-  const { root, state } = await fixture();
-  const packageNames = Object.keys(mutationPackages);
-  const result = run(root, environment({ state, failPackage: packageNames[1] }));
+test("PG-42/57: a one-CPU runner gives each queued child the entire budget", async (t) => {
+  const { root, state } = await fixture(t);
+  const preload = join(state, "one-cpu-preload.mjs");
+  await writeCpuPreload(preload);
+  const env = {
+    ...environment({ state, mode: "record", requestedSlots: 1 }),
+    TEST_AVAILABLE_CPUS: "1",
+    GATE_CPU_SHARE: "1",
+  };
+  const result = runMutationRunnerWithNodeArgs(runner, root, env, ["--import", preload]);
+  assert.equal(result.status, 0, result.stderr);
+  for (const name of packageNames) {
+    const childEnv = JSON.parse(await readFile(join(state, `env-${name}`), "utf8"));
+    assert.equal(childEnv.memory, String(budgetBytes));
+    assert.equal(childEnv.cpuShare, "1");
+  }
+});
+
+test("PG-90/103: the first red package terminates active siblings and never starts queued work", async (t) => {
+  const { root, state } = await fixture(t);
+  const [failed, sibling, queued] = packageNames;
+  const result = run(
+    root,
+    environment({
+      state,
+      mode: "block",
+      failPackage: failed,
+      FAIL_PEER: sibling,
+      requestedSlots: 2,
+    }),
+  );
   assert.equal(result.status, 7, result.stderr);
-  assert.deepEqual(
-    (await readFile(join(state, "packages"), "utf8")).trim().split("\n"),
-    packageNames.slice(0, 2),
-  );
+  assert.match(result.stderr, new RegExp(`package ${failed} failed with exit 7`, "u"));
+  assert.match(result.stderr, new RegExp(`known stdout from ${failed}`, "u"));
+  const started = (await readFile(join(state, "packages"), "utf8")).trim().split("\n");
+  assert.deepEqual(started.sort(), [failed, sibling].sort());
+  assert.equal(existsSync(join(state, `terminated-${sibling}`)), true);
+  assert.equal(isAlive(Number(await readFile(join(state, `pid-${sibling}`), "utf8"))), false);
+  assert.equal(existsSync(join(state, `started-${queued}`)), false);
   assert.equal(existsSync(join(root, fence)), false);
 });
 
-test("a missing Stryker CLI is reported clearly and removes the fence", async () => {
-  const { root, state } = await fixture();
+test("a missing Stryker CLI is reported clearly and removes the fence", async (t) => {
+  const { root, state } = await fixture(t);
   await rm(join(root, "node_modules", "@stryker-mutator", "core", "bin", "stryker.js"));
-  const result = run(root, environment({ state }));
+  const result = run(root, environment({ state, requestedSlots: 1 }));
   assert.equal(result.status, 1);
   assert.match(result.stderr, /Cannot resolve the Stryker CLI.*stryker\.js does not exist/su);
   assert.equal(existsSync(join(root, fence)), false);
 });
 
 test("a concurrent runner refuses a live owner without touching its sandbox", async (t) => {
-  const { root, state } = await fixture();
-  const env = environment({ state, mode: "block" });
+  const { root, state } = await fixture(t);
+  const env = environment({ state, mode: "block", requestedSlots: 1 });
   const first = start(t, root, env);
-  await waitFor(join(state, "started"));
-  const childPid = Number(await readFile(join(state, "pid"), "utf8"));
+  await waitFor(join(state, `started-${packageNames[0]}`));
+  const childPid = Number(await readFile(join(state, `pid-${packageNames[0]}`), "utf8"));
   const owner = await waitForRecordedChild(root);
   assert.equal(owner.runner.pid, first.child.pid);
-  assert.equal(owner.child.pid, childPid);
-  assert.equal(typeof owner.child.startTime, "string");
+  assert.equal(owner.children[0].pid, childPid);
+  assert.equal(typeof owner.children[0].startTime, "string");
+  assert.equal(owner.spawning, undefined);
   await mkdir(join(root, ".stryker-tmp"));
   await writeFile(join(root, ".stryker-tmp", "live"), "keep\n");
   const second = run(root, env);
@@ -189,34 +328,61 @@ test("a concurrent runner refuses a live owner without touching its sandbox", as
   assert.equal((await first.done).code, 0);
 });
 
-test("a dead fence owner is reported as dead with recovery and refused", async () => {
-  const { root, state } = await fixture();
-  await seedFence(root, deadOwner());
+test("PG-112/113/114: waitForRecordedChild retries ENOENT and propagates owner parse errors", async (t) => {
+  const { root } = await fixture(t);
+  await seedFence(root);
+  const waiting = waitForRecordedChild(root, 1_000);
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  await writeFile(
+    join(root, fence, "owner.json"),
+    `${JSON.stringify({ runner: deadIdentity(2_000_000_000), children: [deadIdentity()] })}\n`,
+  );
+  const owner = await waiting;
+  assert.equal(owner.children.length, 1);
+  await writeFile(join(root, fence, "owner.json"), "not json\n");
+  await assert.rejects(waitForRecordedChild(root), SyntaxError);
+});
+
+test("PG-101/122: dead runners with mixed dead and live children withhold recovery", async (t) => {
+  const { root, state } = await fixture(t);
+  await seedFence(root, deadOwner({ children: [deadIdentity(), currentIdentity()] }));
+  const result = run(root, environment({ state }));
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Recorded child 2 pid .*: alive/u);
+  assert.doesNotMatch(result.stderr, /rm -rf mutants\.out\/frontend/u);
+});
+
+test("PG-105: a live legacy {runner, child} fence is refused as alive", async (t) => {
+  const { root, state } = await fixture(t);
+  await seedFence(root, {
+    runner: deadIdentity(2_000_000_000),
+    child: currentIdentity(),
+  });
   const result = run(root, environment({ state }));
   assert.equal(result.status, 1);
   assert.match(result.stderr, /Recorded runner pid 2000000000: dead/u);
-  assert.match(result.stderr, /Recorded child pid 2000000001: dead/u);
-  assert.match(result.stderr, /Only after confirming no stryker process is running\./u);
-  assert.match(result.stderr, /rm -rf mutants\.out\/frontend\/\.mutation-in-progress/u);
-  assert.equal(existsSync(join(root, fence)), true);
+  assert.match(result.stderr, /Recorded child 1 pid .*: alive/u);
+  assert.doesNotMatch(result.stderr, /rm -rf mutants\.out\/frontend/u);
 });
 
-test("a missing owner record is treated as live and refused", async () => {
-  const { root, state } = await fixture();
+test("a missing owner record is treated as unknown and refused without recovery", async (t) => {
+  const { root, state } = await fixture(t);
   await seedFence(root);
   const result = run(root, environment({ state }));
   assert.equal(result.status, 1);
   assert.match(result.stderr, /owner record missing or malformed/u);
+  assert.doesNotMatch(result.stderr, /rm -rf mutants\.out\/frontend/u);
   assert.equal(existsSync(join(root, fence)), true);
 });
 
-test("a malformed owner record is treated as live and refused", async () => {
-  const { root, state } = await fixture();
+test("a malformed owner record is treated as unknown and refused without recovery", async (t) => {
+  const { root, state } = await fixture(t);
   await seedFence(root);
   await writeFile(join(root, fence, "owner.json"), "not json\n");
   const result = run(root, environment({ state }));
   assert.equal(result.status, 1);
   assert.match(result.stderr, /owner record missing or malformed/u);
+  assert.doesNotMatch(result.stderr, /rm -rf mutants\.out\/frontend/u);
 });
 
 test("an unreadable owner record surfaces its cause and is refused", async (t) => {
@@ -224,7 +390,7 @@ test("an unreadable owner record surfaces its cause and is refused", async (t) =
     t.skip("root bypasses the file permission this test relies on");
     return;
   }
-  const { root, state } = await fixture();
+  const { root, state } = await fixture(t);
   await seedFence(root, deadOwner());
   const ownerPath = join(root, fence, "owner.json");
   await chmod(ownerPath, 0o000);
@@ -235,22 +401,65 @@ test("an unreadable owner record surfaces its cause and is refused", async (t) =
     result.stderr,
     /Cannot determine whether the fence owner is alive:.*(?:EACCES|permission denied)/su,
   );
+  assert.doesNotMatch(result.stderr, /rm -rf mutants\.out\/frontend/u);
 });
 
-test("a dead runner with no recorded child is refused with recovery", async () => {
-  const { root, state } = await fixture();
-  await seedFence(root, deadOwner({ child: null }));
+test("PG-101: a dead runner with no recorded children is refused with recovery", async (t) => {
+  const { root, state } = await fixture(t);
+  await seedFence(root, deadOwner({ children: [] }));
   const result = run(root, environment({ state }));
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /Recorded child pid none: none/u);
+  assert.match(result.stderr, /Recorded runner pid 2000000000: dead/u);
+  assert.match(result.stderr, /Only after confirming no stryker process is running\./u);
   assert.match(result.stderr, /rm -rf mutants\.out\/frontend\/\.mutation-in-progress/u);
-  assert.equal(existsSync(join(root, fence)), true);
 });
 
-test("the finaliser does not remove a fence it does not own", async (t) => {
-  const { root, state } = await fixture();
-  const running = start(t, root, environment({ state, mode: "block" }));
-  await waitFor(join(state, "started"));
+test("PG-106: a dead runner with spawning set or legacy child null withholds recovery", async (t) => {
+  const { root, state } = await fixture(t);
+  for (const owner of [
+    { runner: deadIdentity(2_000_000_000), children: [], spawning: packageNames[0] },
+    { runner: deadIdentity(2_000_000_000), child: null },
+  ]) {
+    await seedFence(root, owner);
+    const result = run(root, environment({ state }));
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /may be starting or is not recorded/u);
+    assert.doesNotMatch(result.stderr, /rm -rf mutants\.out\/frontend/u);
+    await rm(join(root, fence), { recursive: true, force: true });
+  }
+});
+
+for (const [name, failure] of [
+  ["EPERM", Object.assign(new Error("permission denied"), { code: "EPERM" })],
+  ["unexpected errors", new Error("unexpected probe failure")],
+]) {
+  test(`PG-125: recovery is withheld when a process-group probe fails with ${name}`, () => {
+    const owner = {
+      runner: deadIdentity(2_000_000_000),
+      children: [deadIdentity()],
+      unknownChild: false,
+    };
+    assert.equal(
+      recoveryIsSafe(owner, {
+        identityIsLive: () => false,
+        processGroupProbe() {
+          throw failure;
+        },
+      }),
+      false,
+    );
+  });
+}
+
+test("PG-102: the finaliser preserves a replaced owner after the child identity is recorded", async (t) => {
+  const { root, state } = await fixture(t);
+  const running = start(t, root, environment({ state, mode: "block", requestedSlots: 1 }));
+  await waitFor(join(state, `started-${packageNames[0]}`));
+  const owner = await waitForRecordedChild(root);
+  assert.equal(
+    owner.children[0].pid,
+    Number(await readFile(join(state, `pid-${packageNames[0]}`), "utf8")),
+  );
   await writeFile(join(root, fence, "owner.json"), `${JSON.stringify(deadOwner())}\n`);
   await writeFile(join(state, "release"), "");
   const result = await running.done;
@@ -259,50 +468,302 @@ test("the finaliser does not remove a fence it does not own", async (t) => {
   assert.equal(existsSync(join(root, fence)), true);
 });
 
-test("a surviving grandchild is swept after the Stryker root exits", async () => {
-  const { root, state } = await fixture();
-  const result = run(root, environment({ state, mode: "grandchild-exit" }));
-  const grandchildPid = Number(await readFile(join(state, "grandchild-pid"), "utf8"));
-  assert.equal(result.status, 0, result.stderr);
-  assert.equal(isAlive(grandchildPid), false, `grandchild pid ${grandchildPid} still exists`);
+test("PG-122: recovery waits for a dead child leader's surviving process group", async (t) => {
+  const { root, state } = await fixture(t);
+  const leaderPath = join(state, "group-leader.mjs");
+  await writeFile(
+    leaderPath,
+    [
+      'import { spawn } from "node:child_process";',
+      'import { existsSync, writeFileSync } from "node:fs";',
+      'import { join } from "node:path";',
+      'const grandchild = spawn("/bin/sleep", ["30"], { detached: false, stdio: "ignore" });',
+      'writeFileSync(join(process.env.SHIM_STATE, "group-grandchild"), `${grandchild.pid}\\n`);',
+      'writeFileSync(join(process.env.SHIM_STATE, "group-ready"), "");',
+      'const timer = setInterval(() => { if (existsSync(join(process.env.SHIM_STATE, "release-leader"))) { clearInterval(timer); process.exit(0); } }, 10);',
+      "",
+    ].join("\n"),
+  );
+  const leader = spawn(process.execPath, [leaderPath], {
+    cwd: root,
+    env: { ...process.env, SHIM_STATE: state },
+    detached: true,
+    stdio: "ignore",
+  });
+  const closed = new Promise((resolve) => leader.once("close", resolve));
+  t.after(() => {
+    try {
+      process.kill(-leader.pid, "SIGKILL");
+    } catch {
+      // The process group has already exited.
+    }
+  });
+  await waitFor(join(state, "group-ready"));
+  const identity = identityForPid(leader.pid);
+  assert.ok(identity);
+  const grandchildPid = Number(await readFile(join(state, "group-grandchild"), "utf8"));
+  await writeFile(join(state, "release-leader"), "");
+  await closed;
+  await seedFence(root, deadOwner({ children: [identity] }));
+  const blocked = run(root, environment({ state }));
+  assert.equal(blocked.status, 1);
+  assert.match(blocked.stderr, /Recorded child 1 process group: not empty or unknown/u);
+  assert.doesNotMatch(blocked.stderr, /rm -rf mutants\.out\/frontend/u);
+  try {
+    process.kill(-leader.pid, "SIGKILL");
+  } catch {
+    // The group may already be gone.
+  }
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline && isAlive(grandchildPid)) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  const recoverable = run(root, environment({ state }));
+  assert.equal(recoverable.status, 1);
+  assert.match(recoverable.stderr, /rm -rf mutants\.out\/frontend\/\.mutation-in-progress/u);
+});
+
+test("PG-107/109/116: production fence records spawning before spawn and child identity after", async (t) => {
+  const { root, state } = await fixture(t);
+  const injectedSource = [
+    'import assert from "node:assert/strict";',
+    'import { spawn } from "node:child_process";',
+    'import { appendFileSync, readFileSync } from "node:fs";',
+    "const { runFrontendMutation } = await import(process.env.RUNNER_URL);",
+    "const result = await runFrontendMutation((command, args, options) => {",
+    '  const owner = JSON.parse(readFileSync("mutants.out/frontend/.mutation-in-progress/owner.json", "utf8"));',
+    "  assert.equal(owner.spawning, options.env.STRYKER_PACKAGE);",
+    '  appendFileSync(process.env.SHIM_STATE + "/spawn-observed", `${options.env.STRYKER_PACKAGE}\\n`);',
+    "  return spawn(command, args, options);",
+    "});",
+    "process.exitCode = result;",
+    "",
+  ].join("\n");
+  const env = environment({
+    state,
+    mode: "block",
+    requestedSlots: 1,
+    RUNNER_URL: pathToFileURL(runner).href,
+  });
+  const running = await startInjectedRunner(t, root, env, injectedSource);
+  await waitFor(join(state, `started-${packageNames[0]}`));
+  const owner = await waitForRecordedChild(root);
+  assert.equal(owner.spawning, undefined);
+  assert.equal(
+    owner.children[0].pid,
+    Number(await readFile(join(state, `pid-${packageNames[0]}`), "utf8")),
+  );
+  await writeFile(join(state, "release"), "");
+  const result = await running.done;
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(
+    (await readFile(join(state, "spawn-observed"), "utf8")).trim().split("\n"),
+    packageNames,
+  );
+});
+
+test("PG-108/110/111: an emitted spawn error exits 127, stops siblings, and leaves queued work idle", async (t) => {
+  const { root, state } = await fixture(t);
+  const [failed, sibling, queued] = packageNames;
+  const injectedSource = [
+    'import { EventEmitter } from "node:events";',
+    'import { spawn } from "node:child_process";',
+    'import { existsSync } from "node:fs";',
+    "const { runFrontendMutation } = await import(process.env.RUNNER_URL);",
+    "const result = await runFrontendMutation((command, args, options) => {",
+    "  if (options.env.STRYKER_PACKAGE !== process.env.INJECT_ERROR_PACKAGE) return spawn(command, args, options);",
+    "  const child = new EventEmitter(); child.pid = undefined; child.exitCode = null; child.signalCode = null; child.kill = () => false;",
+    '  const peerStarted = process.env.SHIM_STATE + "/started-" + process.env.INJECT_ERROR_PEER;',
+    '  const timer = setInterval(() => { if (existsSync(peerStarted)) { clearInterval(timer); child.emit("error", new Error("injected spawn error")); child.emit("close", null, null); } }, 5);',
+    "  return child;",
+    "});",
+    "process.exitCode = result;",
+    "",
+  ].join("\n");
+  const env = environment({
+    state,
+    mode: "block",
+    requestedSlots: 2,
+    RUNNER_URL: pathToFileURL(runner).href,
+    INJECT_ERROR_PACKAGE: failed,
+    INJECT_ERROR_PEER: sibling,
+  });
+  const running = await startInjectedRunner(t, root, env, injectedSource);
+  await waitFor(join(state, `started-${sibling}`));
+  const result = await running.done;
+  assert.equal(result.code, 127, result.stderr);
+  assert.match(result.stderr, new RegExp(`${failed} failed to spawn: injected spawn error`, "u"));
+  assert.equal(existsSync(join(state, `terminated-${sibling}`)), true);
+  assert.equal(existsSync(join(state, `started-${queued}`)), false);
   assert.equal(existsSync(join(root, fence)), false);
 });
 
+test("PG-108: an unresolved spawn error holds admission while another slot completes", async (t) => {
+  const { root, state } = await fixture(t);
+  const [failed, completed, queued] = packageNames;
+  const injectedSource = [
+    'import { EventEmitter } from "node:events";',
+    'import { spawn } from "node:child_process";',
+    'import { existsSync } from "node:fs";',
+    "const { runFrontendMutation } = await import(process.env.RUNNER_URL);",
+    "const result = await runFrontendMutation((command, args, options) => {",
+    "  if (options.env.STRYKER_PACKAGE !== process.env.INJECT_ERROR_PACKAGE) return spawn(command, args, options);",
+    "  const child = new EventEmitter(); child.pid = undefined; child.exitCode = null; child.signalCode = null; child.kill = () => false;",
+    '  const peerStarted = process.env.SHIM_STATE + "/started-" + process.env.INJECT_ERROR_PEER;',
+    '  const timer = setInterval(() => { if (existsSync(peerStarted)) { clearInterval(timer); setTimeout(() => { child.emit("error", new Error("delayed spawn error")); child.emit("close", null, null); }, 250); } }, 5);',
+    "  return child;",
+    "});",
+    "process.exitCode = result;",
+    "",
+  ].join("\n");
+  const env = environment({
+    state,
+    mode: "normal",
+    requestedSlots: 2,
+    RUNNER_URL: pathToFileURL(runner).href,
+    INJECT_ERROR_PACKAGE: failed,
+    INJECT_ERROR_PEER: completed,
+  });
+  const running = await startInjectedRunner(t, root, env, injectedSource);
+  const result = await running.done;
+  assert.equal(result.code, 127, result.stderr);
+  assert.match(result.stderr, /delayed spawn error/u);
+  assert.deepEqual((await readFile(join(state, "packages"), "utf8")).trim().split("\n"), [
+    completed,
+  ]);
+  assert.equal(existsSync(join(state, `started-${queued}`)), false);
+});
+
+test("PG-53: a production owner-record write error terminates the spawned child", async (t) => {
+  const { root, state } = await fixture(t);
+  const target = packageNames[0];
+  const injectedSource = [
+    'import { spawn } from "node:child_process";',
+    'import { mkdirSync, rmSync, writeFileSync } from "node:fs";',
+    "const { runFrontendMutation } = await import(process.env.RUNNER_URL);",
+    "const result = await runFrontendMutation((command, args, options) => {",
+    "  const child = spawn(command, args, options);",
+    "  if (options.env.STRYKER_PACKAGE === process.env.FAIL_OWNER_WRITE_PACKAGE) {",
+    '    writeFileSync(process.env.SHIM_STATE + "/spawned-pid", `${child.pid}\\n`);',
+    '    rmSync("mutants.out/frontend/.mutation-in-progress/owner.json");',
+    '    mkdirSync("mutants.out/frontend/.mutation-in-progress/owner.json");',
+    "  }",
+    "  return child;",
+    "});",
+    "process.exitCode = result;",
+    "",
+  ].join("\n");
+  const env = environment({
+    state,
+    mode: "block",
+    requestedSlots: 1,
+    RUNNER_URL: pathToFileURL(runner).href,
+    FAIL_OWNER_WRITE_PACKAGE: target,
+  });
+  const running = await startInjectedRunner(t, root, env, injectedSource);
+  await waitFor(join(state, "spawned-pid"));
+  const childPid = Number(await readFile(join(state, "spawned-pid"), "utf8"));
+  const result = await running.done;
+  assert.notEqual(result.code, 0);
+  assert.equal(isAlive(childPid), false);
+  assert.equal(existsSync(join(root, fence)), true);
+  assert.match(result.stderr, /EISDIR|illegal operation on a directory/u);
+  try {
+    process.kill(-childPid, "SIGKILL");
+  } catch {
+    // The child group is already gone.
+  }
+});
+
 for (const signal of ["SIGINT", "SIGTERM"]) {
-  test(`${signal} terminates and reaps Stryker before removing the fence`, async (t) => {
-    const { root, state } = await fixture();
-    const running = start(t, root, environment({ state, mode: "block" }));
-    await waitFor(join(state, "started"));
-    const childPid = Number(await readFile(join(state, "pid"), "utf8"));
-    const grandchildPid = Number(await readFile(join(state, "grandchild-pid"), "utf8"));
+  test(`PG-52: ${signal} fans out to every active child before removing the fence`, async (t) => {
+    const { root, state } = await fixture(t);
+    const active = packageNames.slice(0, 2);
+    const running = start(t, root, environment({ state, mode: "block", requestedSlots: 2 }));
+    await Promise.all(active.map((name) => waitFor(join(state, `started-${name}`))));
+    const pids = await Promise.all(
+      active.map(async (name) => Number(await readFile(join(state, `pid-${name}`), "utf8"))),
+    );
     running.child.kill(signal);
     const result = await running.done;
     assert.equal(result.code, signal === "SIGINT" ? 130 : 143, result.stderr);
-    assert.equal(existsSync(join(state, "terminated")), true);
-    assert.equal(existsSync(join(state, "terminated-with-fence")), true);
-    assert.equal(isAlive(childPid), false, `Stryker pid ${childPid} still exists`);
-    assert.equal(isAlive(grandchildPid), false, `grandchild pid ${grandchildPid} still exists`);
+    for (let index = 0; index < active.length; index += 1) {
+      assert.equal(existsSync(join(state, `terminated-${active[index]}`)), true);
+      assert.equal(isAlive(pids[index]), false, `Stryker pid ${pids[index]} still exists`);
+    }
     assert.equal(existsSync(join(root, fence)), false);
   });
 }
 
-test("a signal delivered while the Stryker shim is starting is forwarded", async (t) => {
-  const { root, state } = await fixture();
-  const running = start(t, root, environment({ state, mode: "startup-delay" }));
-  await waitFor(join(state, "booting"));
-  assert.equal(existsSync(join(state, "started")), false);
+test("PG-92/94/96: SIGKILL reports 137, terminates its sibling, and leaves the third package queued", async (t) => {
+  const { root, state } = await fixture(t);
+  const [killed, sibling, queued] = packageNames;
+  const preload = join(state, "two-cpu-preload.mjs");
+  await writeCpuPreload(preload);
+  const env = {
+    ...environment({
+      state,
+      mode: "kill-after-peer",
+      requestedSlots: 2,
+      KILL_PACKAGE: killed,
+      KILL_PEER: sibling,
+    }),
+    TEST_AVAILABLE_CPUS: "2",
+    GATE_CPU_SHARE: "1",
+  };
+  const running = start(t, root, env, { nodeArgs: ["--import", preload] });
+  await Promise.all([
+    waitFor(join(state, `started-${killed}`)),
+    waitFor(join(state, `started-${sibling}`)),
+  ]);
+  const result = await running.done;
+  assert.equal(result.code, 137, result.stderr);
+  assert.match(result.stderr, new RegExp(`${killed} was killed by SIGKILL`, "u"));
+  assert.equal(existsSync(join(state, `terminated-${sibling}`)), true);
+  assert.equal(existsSync(join(state, `started-${queued}`)), false);
+});
+
+test("PG-52: a signal during startup is forwarded before the shim advertises readiness", async (t) => {
+  const { root, state } = await fixture(t);
+  const running = start(t, root, environment({ state, mode: "startup-delay", requestedSlots: 1 }));
+  await waitFor(join(state, `booting-${packageNames[0]}`));
+  assert.equal(existsSync(join(state, `started-${packageNames[0]}`)), false);
   running.child.kill("SIGINT");
   const result = await running.done;
   assert.equal(result.code, 130, result.stderr);
   assert.equal(existsSync(join(root, fence)), false);
 });
 
-test("a Stryker process that ignores SIGTERM is SIGKILLed before fence removal", async (t) => {
-  const { root, state } = await fixture();
-  const running = start(t, root, environment({ state, mode: "ignore-term" }));
-  await waitFor(join(state, "started"));
-  const childPid = Number(await readFile(join(state, "pid"), "utf8"));
-  const grandchildPid = Number(await readFile(join(state, "grandchild-pid"), "utf8"));
+test("PG-52: SIGINT on one CPU latches admission before any queued package starts", async (t) => {
+  const { root, state } = await fixture(t);
+  const preload = join(state, "one-cpu-preload.mjs");
+  await writeCpuPreload(preload);
+  const env = {
+    ...environment({ state, mode: "block", requestedSlots: 1 }),
+    TEST_AVAILABLE_CPUS: "1",
+    GATE_CPU_SHARE: "1",
+  };
+  const running = start(t, root, env, { nodeArgs: ["--import", preload] });
+  await waitFor(join(state, `started-${packageNames[0]}`));
+  running.child.kill("SIGINT");
+  const result = await running.done;
+  assert.equal(result.code, 130, result.stderr);
+  assert.deepEqual((await readFile(join(state, "packages"), "utf8")).trim().split("\n"), [
+    packageNames[0],
+  ]);
+  for (const queued of packageNames.slice(1)) {
+    assert.equal(existsSync(join(state, `started-${queued}`)), false);
+  }
+});
+
+test("a child that ignores SIGTERM is SIGKILLed before fence removal", async (t) => {
+  const { root, state } = await fixture(t);
+  const running = start(t, root, environment({ state, mode: "ignore-term", requestedSlots: 1 }));
+  await waitFor(join(state, `started-${packageNames[0]}`));
+  const childPid = Number(await readFile(join(state, `pid-${packageNames[0]}`), "utf8"));
+  const grandchildPid = Number(
+    await readFile(join(state, `grandchild-pid-${packageNames[0]}`), "utf8"),
+  );
   running.child.kill("SIGTERM");
   const result = await running.done;
   assert.equal(result.code, 143, result.stderr);
@@ -311,16 +772,168 @@ test("a Stryker process that ignores SIGTERM is SIGKILLed before fence removal",
   assert.equal(existsSync(join(root, fence)), false);
 });
 
-test("stryker config resolves every package through the shared map", async () => {
-  const previous = process.env.STRYKER_PACKAGE;
+test("PG-52: a child termination failure does not skip siblings and keeps the fence", async (t) => {
+  const { root, state } = await fixture(t);
+  const [failed, stubborn] = packageNames;
+  const injectedSource = [
+    'import { spawn } from "node:child_process";',
+    "const { runFrontendMutation } = await import(process.env.RUNNER_URL);",
+    "const realKill = process.kill.bind(process);",
+    "const result = await runFrontendMutation((command, args, options) => {",
+    "  const child = spawn(command, args, options);",
+    "  if (options.env.STRYKER_PACKAGE === process.env.STUBBORN_PACKAGE) {",
+    "    const blockedPid = child.pid;",
+    "    process.kill = (pid, signal) => {",
+    '      if (pid === -blockedPid && signal === "SIGTERM") throw Object.assign(new Error("injected EPERM"), { code: "EPERM" });',
+    "      return realKill(pid, signal);",
+    "    };",
+    "  }",
+    "  return child;",
+    "});",
+    "process.exitCode = result;",
+    "",
+  ].join("\n");
+  const env = environment({
+    state,
+    mode: "block",
+    failPackage: failed,
+    FAIL_PEER: stubborn,
+    requestedSlots: 2,
+    RUNNER_URL: pathToFileURL(runner).href,
+    STUBBORN_PACKAGE: stubborn,
+  });
+  const running = await startInjectedRunner(t, root, env, injectedSource);
+  await Promise.all([
+    waitFor(join(state, `started-${failed}`)),
+    waitFor(join(state, `started-${stubborn}`)),
+  ]);
+  const stubbornPid = Number(await readFile(join(state, `pid-${stubborn}`), "utf8"));
+  const result = await running.done;
+  assert.equal(result.code, 7, result.stderr);
+  assert.match(
+    result.stderr,
+    new RegExp(`Failed to terminate frontend mutation child ${stubborn}: injected EPERM`, "u"),
+  );
+  assert.equal(isAlive(Number(await readFile(join(state, `pid-${failed}`), "utf8"))), false);
+  assert.equal(isAlive(stubbornPid), true);
+  assert.equal(existsSync(join(root, fence)), true);
   try {
+    process.kill(-stubbornPid, "SIGKILL");
+  } catch {
+    // The test cleans up the intentionally surviving process group.
+  }
+});
+
+test("the finaliser sweeps a surviving grandchild after its Stryker root exits", async (t) => {
+  const { root, state } = await fixture(t);
+  const result = run(root, environment({ state, mode: "grandchild-exit", requestedSlots: 1 }));
+  const grandchildPid = Number(
+    await readFile(join(state, `grandchild-pid-${packageNames[0]}`), "utf8"),
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(isAlive(grandchildPid), false, `grandchild pid ${grandchildPid} still exists`);
+  assert.equal(existsSync(join(root, fence)), false);
+});
+
+function runConfigImport(env, preloadPath = undefined) {
+  const script = `
+    const config = await import(${JSON.stringify(pathToFileURL(join(projectRoot, "stryker.config.mjs")).href)});
+    console.log(String(config.default.concurrency));
+  `;
+  return spawnSync(
+    process.execPath,
+    [...(preloadPath ? ["--import", preloadPath] : []), "--input-type=module", "-e", script],
+    { cwd: projectRoot, encoding: "utf8", env },
+  );
+}
+
+test("PG-84/87: Stryker config uses the shared package map and memory budget", async () => {
+  const previous = {
+    package: process.env.STRYKER_PACKAGE,
+    memory: process.env.STRYKER_MEMORY_BYTES,
+    share: process.env.GATE_CPU_SHARE,
+  };
+  try {
+    process.env.STRYKER_MEMORY_BYTES = String(STRYKER_PARENT_BYTES + 3 * STRYKER_RUNNER_BYTES);
+    process.env.GATE_CPU_SHARE = "1";
     for (const [name, mutate] of Object.entries(mutationPackages)) {
       process.env.STRYKER_PACKAGE = name;
       const config = await import(`../stryker.config.mjs?package=${name}`);
       assert.deepEqual(config.default.mutate, mutate);
+      assert.ok(config.default.concurrency >= 1);
     }
   } finally {
-    if (previous === undefined) delete process.env.STRYKER_PACKAGE;
-    else process.env.STRYKER_PACKAGE = previous;
+    if (previous.package === undefined) delete process.env.STRYKER_PACKAGE;
+    else process.env.STRYKER_PACKAGE = previous.package;
+    if (previous.memory === undefined) delete process.env.STRYKER_MEMORY_BYTES;
+    else process.env.STRYKER_MEMORY_BYTES = previous.memory;
+    if (previous.share === undefined) delete process.env.GATE_CPU_SHARE;
+    else process.env.GATE_CPU_SHARE = previous.share;
   }
+});
+
+test("PG-119: Stryker config rejects unset and invalid STRYKER_MEMORY_BYTES", () => {
+  for (const value of [undefined, "", "abc", "0"]) {
+    const env = {
+      ...process.env,
+      STRYKER_PACKAGE: packageNames[0],
+      GATE_CPU_SHARE: "1",
+    };
+    if (value === undefined) delete env.STRYKER_MEMORY_BYTES;
+    else env.STRYKER_MEMORY_BYTES = value;
+    const result = runConfigImport(env);
+    assert.notEqual(result.status, 0);
+    assert.match(
+      result.stderr ?? result.error?.message ?? JSON.stringify(result),
+      /STRYKER_MEMORY_BYTES/u,
+    );
+  }
+});
+
+test("PG-135/136: Stryker config concurrency follows injected CPUs and CPU share", async (t) => {
+  const { state } = await fixture(t);
+  const preload = join(state, "config-cpu-preload.mjs");
+  await writeCpuPreload(preload);
+  const cases = [
+    [
+      "24 CPUs, parent plus three runners",
+      24,
+      1,
+      STRYKER_PARENT_BYTES + 3 * STRYKER_RUNNER_BYTES,
+      3,
+    ],
+    ["24 CPUs, parent plus one runner", 24, 1, STRYKER_PARENT_BYTES + STRYKER_RUNNER_BYTES, 1],
+    ["24 CPUs at one-third share", 24, 1 / 3, budgetBytes, 8],
+    ["2 CPUs at one-half share", 2, 0.5, budgetBytes, 1],
+  ];
+  for (const [label, cpus, share, memory, expected] of cases) {
+    const env = {
+      ...process.env,
+      STRYKER_PACKAGE: packageNames[0],
+      STRYKER_MEMORY_BYTES: String(memory),
+      GATE_CPU_SHARE: String(share),
+      TEST_AVAILABLE_CPUS: String(cpus),
+    };
+    const result = runConfigImport(env, preload);
+    assert.equal(
+      result.status,
+      0,
+      `${label}: ${result.stderr ?? result.error?.message ?? JSON.stringify(result)}`,
+    );
+    assert.equal(Number(result.stdout.trim()), expected, label);
+  }
+});
+
+test("the existing per-package budget is consumed by workerCount without a hard-coded cap", () => {
+  const budget = STRYKER_PARENT_BYTES + 3 * STRYKER_RUNNER_BYTES;
+  assert.equal(
+    workerCount({
+      perWorkerBytes: STRYKER_RUNNER_BYTES,
+      baseBytes: STRYKER_PARENT_BYTES,
+      budgetBytes: budget,
+      availableParallelism: () => 24,
+      env: {},
+    }),
+    3,
+  );
 });
