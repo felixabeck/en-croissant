@@ -5,6 +5,7 @@ import {
   chmod,
   mkdtemp,
   mkdir,
+  rm,
   readFile,
   rename as renameFile,
   unlink as unlinkFile,
@@ -845,6 +846,160 @@ async function runCoverageCli(
     },
   );
 }
+
+async function runMappingOnlyCli(
+  root,
+  { config, files = {}, baselineScope = scopeSignature(config), extraArgs = [] },
+) {
+  await writeFile(join(root, "mapping-config.json"), JSON.stringify(config));
+  await writeFile(
+    join(root, "mapping-baseline.json"),
+    JSON.stringify({ version: 1, scope: baselineScope, areas: {} }),
+  );
+  for (const [path, contents] of Object.entries(files)) {
+    const absolute = join(root, path);
+    await mkdir(dirname(absolute), { recursive: true });
+    await writeFile(absolute, contents);
+  }
+  return spawnSync(
+    process.execPath,
+    [
+      join(process.cwd(), "scripts", "coverage-report.mjs"),
+      "--config",
+      "mapping-config.json",
+      "--baseline",
+      "mapping-baseline.json",
+      "--mapping-only",
+      ...extraArgs,
+    ],
+    { cwd: root, encoding: "utf8" },
+  );
+}
+
+function mappingFixtureConfig({ areas = undefined, statementFree = [] } = {}) {
+  return {
+    version: 1,
+    sources: [
+      {
+        id: "frontend",
+        root: "src",
+        include: ["src/**/*.ts"],
+        exclude: [],
+        statementFree,
+      },
+    ],
+    areas: areas ?? [{ id: "utilities", source: "frontend", paths: ["src/utils/**"] }],
+  };
+}
+
+test("mapping-only CLI rejects each invalid mapping and stale baseline scope", async (t) => {
+  const production = { "src/utils/example.ts": "export const example = 1;\n" };
+  const cases = [
+    {
+      name: "unmapped production file",
+      config: mappingFixtureConfig({
+        areas: [{ id: "elsewhere", source: "frontend", paths: ["src/elsewhere/**"] }],
+      }),
+      expected: /Unmapped production file: src\/utils\/example\.ts/u,
+    },
+    {
+      name: "two areas claim one production file",
+      config: mappingFixtureConfig({
+        areas: [
+          { id: "utilities", source: "frontend", paths: ["src/utils/**"] },
+          { id: "duplicate", source: "frontend", paths: ["src/**"] },
+        ],
+      }),
+      expected: /belongs to multiple coverage areas/u,
+    },
+    {
+      name: "area claims the wrong source",
+      config: mappingFixtureConfig({
+        areas: [{ id: "utilities", source: "backend", paths: ["src/utils/**"] }],
+      }),
+      expected: /has the wrong source for src\/utils\/example\.ts/u,
+    },
+    {
+      name: "area claims no production file",
+      config: mappingFixtureConfig({
+        areas: [
+          { id: "utilities", source: "frontend", paths: ["src/utils/**"] },
+          { id: "empty", source: "frontend", paths: ["src/empty/**"] },
+        ],
+      }),
+      expected: /Coverage areas claim no production files: empty/u,
+    },
+    {
+      name: "statementFree lies outside measured production files",
+      config: mappingFixtureConfig({
+        statementFree: [{ path: "src/gone.ts", reason: "No executable statements." }],
+      }),
+      expected:
+        /statementFree declarations are outside the measured production set: src\/gone\.ts/u,
+    },
+    {
+      name: "baseline records a different scope",
+      config: mappingFixtureConfig(),
+      baselineScope: { sources: [], areas: [] },
+      expected: /Coverage measurement scope changed/u,
+    },
+    {
+      name: "mapping-only rejects LCOV arguments",
+      config: mappingFixtureConfig(),
+      extraArgs: ["--lcov", "missing.info"],
+      expected: /--mapping-only cannot be combined with --lcov/u,
+    },
+    {
+      name: "mapping-only rejects baseline writes",
+      config: mappingFixtureConfig(),
+      extraArgs: ["--write-baseline"],
+      expected: /--mapping-only cannot be combined with --write-baseline/u,
+    },
+  ];
+
+  for (const entry of cases) {
+    await t.test(entry.name, async (subtest) => {
+      const scratch = await mkdtemp(join(tmpdir(), "coverage-mapping-case-"));
+      subtest.after(() => rm(scratch, { recursive: true, force: true }));
+      const result = await runMappingOnlyCli(scratch, {
+        config: entry.config,
+        files: production,
+        baselineScope: entry.baselineScope ?? scopeSignature(entry.config),
+        extraArgs: entry.extraArgs ?? [],
+      });
+      assert.equal(result.status, 1, result.stdout);
+      assert.match(result.stderr, entry.expected);
+    });
+  }
+});
+
+test("mapping-only mode passes against both real coverage configurations", async (t) => {
+  const root = process.cwd();
+  for (const [configPath, baselinePath] of [
+    ["coverage-areas.json", "coverage-baselines.json"],
+    ["backend-coverage-areas.json", "backend-coverage-baselines.json"],
+  ]) {
+    await t.test(configPath, () => {
+      const result = spawnSync(
+        process.execPath,
+        [
+          join(root, "scripts", "coverage-report.mjs"),
+          "--config",
+          configPath,
+          "--baseline",
+          baselinePath,
+          "--mapping-only",
+        ],
+        { cwd: root, encoding: "utf8" },
+      );
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(
+        result.stdout,
+        /Coverage mapping passed: \d+ production files across \d+ areas/u,
+      );
+    });
+  }
+});
 
 function writerConfig({ twoAreas = false, exclude = [] } = {}) {
   return {

@@ -1,3 +1,4 @@
+// `--files` takes one comma-separated list of repository-relative production paths.
 import { spawn } from "node:child_process";
 import {
   closeSync,
@@ -18,6 +19,7 @@ import { gateBudgetBytes, strykerSlots } from "./gate-parallelism.mjs";
 import { fsyncDirectory } from "./fsync-directory.mjs";
 import { mutationPackages } from "./frontend-mutation-packages.mjs";
 import { isEntrypoint } from "./entrypoint.mjs";
+import { selectMutationPackages } from "./mutation-package-selection.mjs";
 import {
   currentIdentity,
   identityForPid,
@@ -31,6 +33,12 @@ const ownerPath = join(fencePath, "owner.json");
 const terminationTimeoutMs = 2_000;
 // Cap a diagnostic tail at 8 KiB so a failing mutation cannot flood the gate output.
 const logTailBytes = 8 * 1024;
+const packageRecords = Object.freeze(
+  Object.entries(mutationPackages).map(([id, files]) => Object.freeze({ id, files })),
+);
+const filesByPath = new Map(
+  packageRecords.flatMap(({ id, files }) => files.map((path) => [path, id])),
+);
 
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
@@ -230,13 +238,15 @@ function resolveStrykerEntry(cwd) {
   return entry;
 }
 
-function childEnvironment(mutationPackage, memoryBytes, cpuShare) {
+function childEnvironment(mutationPackage, memoryBytes, cpuShare, files = undefined) {
   const env = {
     ...process.env,
     STRYKER_PACKAGE: mutationPackage,
     STRYKER_MEMORY_BYTES: String(memoryBytes),
     GATE_CPU_SHARE: String(cpuShare),
   };
+  if (files) env.STRYKER_FILES = files.join(",");
+  else delete env.STRYKER_FILES;
   delete env.GATE_MEMORY_BYTES;
   return env;
 }
@@ -291,6 +301,7 @@ async function runPackage(
     children,
     memoryBytes,
     cpuShare,
+    files,
     spawnChild,
     signalForwarding,
     onSpawnError,
@@ -313,7 +324,7 @@ async function runPackage(
     try {
       child = spawnChild(process.execPath, [strykerEntry, "run"], {
         detached: true,
-        env: childEnvironment(mutationPackage, memoryBytes, cpuShare),
+        env: childEnvironment(mutationPackage, memoryBytes, cpuShare, files),
         stdio: ["ignore", logFd, logFd],
       });
     } catch (error) {
@@ -356,8 +367,48 @@ async function runPackage(
   }
 }
 
+export function parseFrontendMutationArguments(argumentsList) {
+  if (argumentsList.length === 0) return { files: undefined };
+  if (argumentsList.length !== 2 || argumentsList[0] !== "--files") {
+    throw new Error("Usage: run-frontend-mutation.mjs [--files <comma-separated-files>]");
+  }
+  const value = argumentsList[1];
+  if (!value || value.startsWith("--")) throw new Error("Missing value for --files");
+  const files = value.split(",");
+  if (files.some((file) => !file)) throw new Error("--files must be a comma-separated file list");
+  if (new Set(files).size !== files.length) throw new Error("--files contains a duplicate path");
+  for (const file of files) {
+    if (!filesByPath.has(file)) {
+      throw new Error(`Frontend mutation file is outside the mutation scope: ${file}`);
+    }
+  }
+  return { files };
+}
+
+export function selectFrontendMutationPackagesById(packageIds = undefined) {
+  return selectMutationPackages(packageRecords, packageIds, "frontend mutation package id");
+}
+
+export function selectFrontendMutationPackages(files = undefined) {
+  if (files !== undefined) {
+    const parsed = parseFrontendMutationArguments(["--files", files.join(",")]);
+    files = parsed.files;
+  }
+  const requestedIds =
+    files === undefined ? undefined : [...new Set(files.map((file) => filesByPath.get(file)))];
+  const selected = selectFrontendMutationPackagesById(requestedIds);
+  if (files === undefined) return selected;
+  const selectedFiles = new Set(files);
+  return selected.map((entry) => ({
+    ...entry,
+    files: entry.files.filter((file) => selectedFiles.has(file)),
+  }));
+}
+
 /** Run frontend mutation packages; `spawnChild` is injectable for deterministic scheduler tests. */
-export async function runFrontendMutation(spawnChild = spawn) {
+export async function runFrontendMutation(spawnChild = spawn, { files = undefined } = {}) {
+  const selectedPackages = selectFrontendMutationPackages(files);
+  if (selectedPackages.length === 0) return 0;
   const runnerIdentity = currentIdentity();
   if (!acquireFence(runnerIdentity)) return 1;
 
@@ -376,7 +427,7 @@ export async function runFrontendMutation(spawnChild = spawn) {
     const budgetBytes = gateBudgetBytes();
     const { slots, cpuShare } = strykerSlots({
       budgetBytes,
-      packageCount: Object.keys(mutationPackages).length,
+      packageCount: selectedPackages.length,
     });
     const memoryBytes = Math.floor(budgetBytes / slots);
 
@@ -429,15 +480,17 @@ export async function runFrontendMutation(spawnChild = spawn) {
           if (!admissionOpen || signalForwarding.requestedSignal) return;
         }
         const packageIndex = nextPackage;
-        if (packageIndex >= Object.keys(mutationPackages).length) return;
+        if (packageIndex >= selectedPackages.length) return;
         nextPackage += 1;
-        const mutationPackage = Object.keys(mutationPackages)[packageIndex];
+        const mutationPackage = selectedPackages[packageIndex];
         try {
-          const runningPackage = runPackage(mutationPackage, {
+          const filesForPackage = files === undefined ? undefined : mutationPackage.files;
+          const runningPackage = runPackage(mutationPackage.id, {
             runnerIdentity,
             children,
             memoryBytes,
             cpuShare,
+            files: filesForPackage,
             spawnChild,
             signalForwarding,
             onPendingSpawn,
@@ -527,7 +580,8 @@ async function main() {
     console.log(JSON.stringify(Object.keys(mutationPackages)));
     return 0;
   }
-  return runFrontendMutation(spawn);
+  const { files } = parseFrontendMutationArguments(process.argv.slice(2));
+  return runFrontendMutation(spawn, { files });
 }
 
 if (isEntrypoint(import.meta.url)) {

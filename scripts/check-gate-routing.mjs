@@ -3,7 +3,12 @@ import { resolve, sep } from "node:path";
 import { globToRegExp, matches } from "./coverage-scope.mjs";
 import { isEntrypoint } from "./entrypoint.mjs";
 import { GATES } from "./gate-receipt.mjs";
-import { PUSH_GATE_SCHEDULE, pushGateScheduleCommands } from "./run-push-gates.mjs";
+import {
+  PRE_REVIEW_GATE_SCHEDULE,
+  PUSH_GATE_SCHEDULE,
+  preReviewGateScheduleCommands,
+  pushGateScheduleCommands,
+} from "./run-push-gates.mjs";
 import { listWorkingTreeFiles } from "./working-tree-files.mjs";
 
 const PUSH_SKILL = ".claude/skills/push/SKILL.md";
@@ -12,6 +17,8 @@ const TEST_WORKFLOW = ".github/workflows/test.yml";
 const VITE_CONFIG = "vite.config.ts";
 const CONTRACT_GATE = "gates:contract:check";
 const PUSH_GATE_INVOCATION = "pnpm gates:push -- <blocks>";
+const PRE_REVIEW_SECTION = "## 2a. Pre-review checks";
+const PRE_REVIEW_INVOCATION = "pnpm checks:pre-review";
 const PUSH_GATE_SECTIONS = Object.freeze([
   "### Unconditional contract gate",
   "### Rust/Tauri backend",
@@ -321,7 +328,12 @@ function routeCommands(commands, scripts, findings) {
   return routed;
 }
 
-function validateGateCommands(pushSkill, scripts, repoRoot) {
+function validateGateCommands(
+  pushSkill,
+  scripts,
+  repoRoot,
+  preReviewCommands = new Set(preReviewGateScheduleCommands()),
+) {
   const findings = [];
   const directGateCommands = shellFencedCommandLines(pushSkill);
   const routedCommands = [];
@@ -334,6 +346,7 @@ function validateGateCommands(pushSkill, scripts, repoRoot) {
     }
     const cargo = /^cargo\s+(\w+)/u.exec(line);
     if (cargo && ALLOWED_CARGO_COMMANDS.has(cargo[1])) continue;
+    if (/^pnpm\s+exec\s+/u.test(line) && preReviewCommands.has(line)) continue;
     const words = shellWords(line);
     if (SCRIPT_RUNNERS.has(words[0]) && words[1]) {
       const target = resolve(repoRoot, words[1]);
@@ -427,6 +440,36 @@ export function validatePushGateSchedule(pushSkill, contractRouted, schedule = P
   for (const command of fencedLines) {
     if (!runnerCommands.includes(command)) {
       findings.push(`fenced §2 gate command is not run by the push gate runner: ${command}`);
+    }
+  }
+  return findings;
+}
+
+export function validatePreReviewGateSchedule(pushSkill, schedule = PRE_REVIEW_GATE_SCHEDULE) {
+  const findings = [];
+  const section = skillSubsection(pushSkill, PRE_REVIEW_SECTION);
+  if (!section) {
+    findings.push(`${PUSH_SKILL} must contain ${PRE_REVIEW_SECTION}`);
+    return findings;
+  }
+  const fencedLines = shellFencedCommandLines(section);
+  const invocations = fencedLines.filter((line) => line === PRE_REVIEW_INVOCATION);
+  if (invocations.length !== 1) {
+    findings.push(
+      `${PUSH_SKILL} ${PRE_REVIEW_SECTION} must fence ${PRE_REVIEW_INVOCATION} exactly once`,
+    );
+  }
+
+  const runnerCommands = preReviewGateScheduleCommands(schedule);
+  const laneCommands = fencedLines.filter((line) => line !== PRE_REVIEW_INVOCATION);
+  for (const command of runnerCommands) {
+    if (!laneCommands.includes(command)) {
+      findings.push(`pre-review runner command is not fenced in ${PRE_REVIEW_SECTION}: ${command}`);
+    }
+  }
+  for (const command of laneCommands) {
+    if (!runnerCommands.includes(command)) {
+      findings.push(`fenced pre-review command is not run by the scheduler: ${command}`);
     }
   }
   return findings;
@@ -605,6 +648,7 @@ export async function checkGateRouting(
   findings.push(...contractFindings);
   contractRouted.delete(CONTRACT_GATE);
   findings.push(...validatePushGateSchedule(pushSkill, contractRouted));
+  findings.push(...validatePreReviewGateSchedule(pushSkill));
 
   const directWorkflowScripts = new Set(steps.flatMap((step) => pnpmReferences(step.run)));
   directWorkflowScripts.delete(CONTRACT_GATE);

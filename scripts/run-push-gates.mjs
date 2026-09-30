@@ -1,17 +1,20 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
-import { closeSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
 import {
   availableParallelism as defaultAvailableParallelism,
   constants as osConstants,
 } from "node:os";
-import { join } from "node:path";
+import { dirname, extname, join, relative, resolve, sep } from "node:path";
 import { performance } from "node:perf_hooks";
 import { isEntrypoint } from "./entrypoint.mjs";
 import { gateBudgetBytes, VITEST_MINIMUM_BUDGET_BYTES } from "./gate-parallelism.mjs";
 import { installMultiChildSignalForwarding, superviseChild } from "./child-supervisor.mjs";
 import { E2E_CONTAINER_MEMORY_BYTES } from "./run-e2e-container.mjs";
+import { mutationPackages } from "./frontend-mutation-packages.mjs";
+import { matches } from "./coverage-scope.mjs";
+import { listWorkingTreeFiles } from "./working-tree-files.mjs";
 
 const GIB = 1024 ** 3;
 
@@ -115,6 +118,121 @@ export const PUSH_GATE_SCHEDULE = Object.freeze({
   ]),
 });
 
+export const PRE_REVIEW_GATE_SCHEDULE = Object.freeze({
+  p1: Object.freeze([
+    Object.freeze({ name: "frontend-build", command: "pnpm gate:run frontend-build" }),
+  ]),
+  lanes: Object.freeze([
+    Object.freeze({
+      name: "format-lint",
+      commands: Object.freeze([
+        "pnpm exec oxfmt --check <changed-format-files>",
+        "pnpm exec oxlint --deny-warnings <changed-js-ts-files>",
+        "pnpm exec tsgo --noEmit",
+        "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check",
+      ]),
+    }),
+    Object.freeze({
+      name: "coverage-mapping-frontend",
+      commands: Object.freeze(["pnpm coverage:mapping:frontend"]),
+    }),
+    Object.freeze({
+      name: "coverage-mapping-backend",
+      commands: Object.freeze(["pnpm coverage:mapping:backend"]),
+    }),
+    Object.freeze({
+      name: "frontend-mutation-changed-files",
+      commands: Object.freeze([
+        "pnpm mutation:frontend -- --files <comma-separated-production-files>",
+      ]),
+    }),
+    Object.freeze({
+      name: "windows-clippy",
+      commands: Object.freeze(["pnpm rust:windows:check"]),
+      requires: Object.freeze(["frontend-build"]),
+    }),
+    Object.freeze({
+      name: "bundle",
+      commands: Object.freeze(["pnpm bundle:check"]),
+      requires: Object.freeze(["frontend-build"]),
+    }),
+  ]),
+});
+
+const FRONTEND_INPUTS = Object.freeze([
+  "src/**",
+  "public/**",
+  "index.html",
+  "package.json",
+  "pnpm-lock.yaml",
+  "pnpm-workspace.yaml",
+  "vite.config.*",
+  "stryker.config.mjs",
+  "scripts/run-frontend-mutation.mjs",
+  "scripts/frontend-mutation-packages.mjs",
+  "i18next.config.*",
+  "src/translation/**",
+  "src/catalogs/**",
+]);
+
+const OXFMT_EXTENSIONS = new Set([
+  ".js",
+  ".jsx",
+  ".ts",
+  ".tsx",
+  ".mjs",
+  ".cjs",
+  ".mts",
+  ".cts",
+  ".json",
+  ".jsonc",
+  ".json5",
+  ".css",
+  ".scss",
+  ".less",
+  ".html",
+  ".vue",
+  ".svelte",
+  ".astro",
+  ".yaml",
+  ".yml",
+]);
+const OXFMT_IGNORES = Object.freeze([
+  "**/*.md",
+  "public/**/*",
+  "src-tauri/**/*",
+  ".github/**/*",
+  "src/catalogs/**/*",
+  "src/bindings/generated.ts",
+  "src/routeTree.gen.ts",
+  "bunfig.toml",
+]);
+const OXLINT_EXTENSIONS = new Set([".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts"]);
+const OXLINT_IGNORES = Object.freeze([
+  "public/**/*",
+  "src-tauri/**/*",
+  ".github/**/*",
+  "src/bindings/generated.ts",
+  "src/routeTree.gen.ts",
+]);
+const TYPESCRIPT_EXTENSIONS = new Set([".ts", ".tsx", ".mts", ".cts"]);
+const WINDOWS_CLIPPY_INPUTS = Object.freeze([
+  ".cargo/**",
+  "Cargo.toml",
+  "Cargo.lock",
+  "build.rs",
+  "rust-toolchain.toml",
+  "tauri.conf.json",
+]);
+const RUST_FORMAT_CONFIGS = Object.freeze([
+  ".cargo/**",
+  "Cargo.toml",
+  "src-tauri/Cargo.toml",
+  "rust-toolchain.toml",
+  "rustfmt.toml",
+  ".rustfmt.toml",
+]);
+
 const BLOCK_FLAGS = Object.freeze({
   "--rust": "rust",
   "--frontend": "frontend",
@@ -157,6 +275,243 @@ export function pushGateScheduleCommands(schedule = PUSH_GATE_SCHEDULE) {
   ];
 }
 
+export function preReviewGateScheduleCommands(schedule = PRE_REVIEW_GATE_SCHEDULE) {
+  return [
+    ...schedule.p1.map(({ command }) => command),
+    ...schedule.lanes.flatMap(({ commands }) => commands),
+  ];
+}
+
+function gitFailure(args, result) {
+  const detail = result.error
+    ? result.error.message
+    : result.stderr?.trim() || `exit status ${result.status ?? "unknown"}`;
+  return new Error(
+    `Cannot determine pre-review changed paths: git ${args.join(" ")} failed (${detail})`,
+    {
+      cause: result.error,
+    },
+  );
+}
+
+export function discoverPreReviewChangedPaths({
+  cwd = process.cwd(),
+  runGit = spawnSync,
+  listUntracked = (workspaceRoot) =>
+    listWorkingTreeFiles({ workspaceRoot, pathspec: ".", untrackedOnly: true }),
+} = {}) {
+  const run = (args) => {
+    const result = runGit("git", args, { cwd, encoding: "utf8" });
+    if (result.error || result.status !== 0) throw gitFailure(args, result);
+    return String(result.stdout ?? "");
+  };
+
+  const mergeBaseArgs = ["merge-base", "HEAD", "@{u}"];
+  const base = run(mergeBaseArgs).trim();
+  if (!base) {
+    throw new Error(
+      `Cannot determine pre-review changed paths: git ${mergeBaseArgs.join(" ")} returned no merge base`,
+    );
+  }
+  const tracked = run(["diff", "--name-only", "-z", base, "--"]).split("\0").filter(Boolean);
+  const untracked = listUntracked(cwd);
+  return [...new Set([...tracked, ...untracked])].sort();
+}
+
+function commandDisplay(executable, args) {
+  return [executable, ...args]
+    .map((argument) => (/[\s'"\\]/u.test(argument) ? JSON.stringify(argument) : argument))
+    .join(" ");
+}
+
+function commandSpec(executable, args) {
+  return { executable, args, display: commandDisplay(executable, args) };
+}
+
+function hasExtension(path, extensions) {
+  return extensions.has(extname(path).toLowerCase());
+}
+
+function isRustChanged(path) {
+  return path.startsWith("src-tauri/") || matches(path, WINDOWS_CLIPPY_INPUTS);
+}
+
+function isRustFormatChanged(path) {
+  return path.endsWith(".rs") || path === "build.rs" || matches(path, RUST_FORMAT_CONFIGS);
+}
+
+function isOxfmtOwned(path) {
+  return hasExtension(path, OXFMT_EXTENSIONS) && !matches(path, OXFMT_IGNORES);
+}
+
+function isOxlintOwned(path) {
+  return hasExtension(path, OXLINT_EXTENSIONS) && !matches(path, OXLINT_IGNORES);
+}
+
+function isTypeScriptChanged(path) {
+  return hasExtension(path, TYPESCRIPT_EXTENSIONS) || /^tsconfig(?:\.[^/]*)?\.json$/u.test(path);
+}
+
+function importSpecifiers(source) {
+  const patterns = [
+    /\b(?:import|export)\s+(?:type\s+)?(?:[^'"`]*?\s+from\s*)?['"]([^'"`]+)['"]/gu,
+    /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/gu,
+    /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/gu,
+  ];
+  return [
+    ...new Set(patterns.flatMap((pattern) => [...source.matchAll(pattern)].map((m) => m[1]))),
+  ];
+}
+
+function resolveLocalImport(root, importer, specifier, exists = existsSync) {
+  let base;
+  if (specifier.startsWith("@/")) base = resolve(root, "src", specifier.slice(2));
+  else if (specifier.startsWith("./") || specifier.startsWith("../")) {
+    base = resolve(root, dirname(importer));
+    base = resolve(base, specifier);
+  } else if (specifier.startsWith("src/")) base = resolve(root, specifier);
+  else return undefined;
+
+  const candidates = extname(base)
+    ? [base]
+    : [
+        base,
+        ...[".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".json"].map(
+          (extension) => `${base}${extension}`,
+        ),
+        ...[".ts", ".tsx", ".js", ".jsx", ".json"].map((extension) =>
+          resolve(base, `index${extension}`),
+        ),
+      ];
+  for (const candidate of candidates) {
+    if (!exists(candidate)) continue;
+    const path = relative(root, candidate).split(sep).join("/");
+    if (!path.startsWith("../")) return path;
+  }
+  return undefined;
+}
+
+export function mutationFilesForChanges(
+  changedPaths,
+  {
+    root = process.cwd(),
+    readSource = (path) => readFileSync(path, "utf8"),
+    exists = existsSync,
+  } = {},
+) {
+  const filesByPackage = new Map(
+    Object.entries(mutationPackages).flatMap(([packageId, files]) =>
+      files.map((path) => [path, packageId]),
+    ),
+  );
+  const changed = new Set(changedPaths);
+  const selectedFiles = new Set(
+    [...changed].filter((path) => filesByPackage.has(path) && exists(resolve(root, path))),
+  );
+
+  const scanQueue = [...changed].filter(
+    (path) => /\.(?:test|spec)\.[cm]?[jt]sx?$/u.test(path) && exists(resolve(root, path)),
+  );
+  const scanned = new Set();
+  while (scanQueue.length > 0) {
+    const importer = scanQueue.pop();
+    if (scanned.has(importer)) continue;
+    scanned.add(importer);
+    let source;
+    try {
+      source = readSource(resolve(root, importer));
+    } catch (error) {
+      throw new Error(
+        `Cannot read changed test ${importer} for mutation selection: ${error.message}`,
+        {
+          cause: error,
+        },
+      );
+    }
+    for (const specifier of importSpecifiers(source)) {
+      const dependency = resolveLocalImport(root, importer, specifier, exists);
+      if (!dependency) continue;
+      if (filesByPackage.has(dependency)) selectedFiles.add(dependency);
+      if (dependency.startsWith("src/") && exists(resolve(root, dependency))) {
+        scanQueue.push(dependency);
+      }
+    }
+  }
+  return [...selectedFiles].sort();
+}
+
+function hasCoverageInputsChanged(changedPaths, { root, config, baseline }) {
+  return changedPaths.some(
+    (path) => path === config || path === baseline || path.startsWith(`${root}/`),
+  );
+}
+
+export function selectPreReviewLanes(changedPaths, { root = process.cwd() } = {}) {
+  const paths = [...new Set(changedPaths)];
+  const existing = (path) => existsSync(resolve(root, path));
+  const formatFiles = paths.filter((path) => isOxfmtOwned(path) && existing(path)).sort();
+  const lintFiles = paths.filter((path) => isOxlintOwned(path) && existing(path)).sort();
+  const typescriptChanged = paths.some(isTypeScriptChanged);
+  const rustChanged = paths.some(isRustChanged);
+  const rustFormatChanged = paths.some(isRustFormatChanged);
+  const commands = [];
+  const selected = [];
+  const addLane = (name, overrides = {}) => {
+    const scheduled = PRE_REVIEW_GATE_SCHEDULE.lanes.find((lane) => lane.name === name);
+    if (!scheduled) throw new Error(`Unknown pre-review lane: ${name}`);
+    selected.push({ ...scheduled, ...overrides });
+  };
+
+  if (formatFiles.length) {
+    commands.push(commandSpec("pnpm", ["exec", "oxfmt", "--check", ...formatFiles]));
+  }
+  if (lintFiles.length) {
+    commands.push(commandSpec("pnpm", ["exec", "oxlint", "--deny-warnings", ...lintFiles]));
+  }
+  if (typescriptChanged) commands.push(commandSpec("pnpm", ["exec", "tsgo", "--noEmit"]));
+  if (rustFormatChanged) {
+    commands.push(
+      commandSpec("cargo", ["fmt", "--manifest-path", "src-tauri/Cargo.toml", "--", "--check"]),
+    );
+  }
+
+  if (commands.length) addLane("format-lint", { commands });
+  if (
+    hasCoverageInputsChanged(paths, {
+      root: "src",
+      config: "coverage-areas.json",
+      baseline: "coverage-baselines.json",
+    })
+  ) {
+    addLane("coverage-mapping-frontend");
+  }
+  if (
+    hasCoverageInputsChanged(paths, {
+      root: "src-tauri/src",
+      config: "backend-coverage-areas.json",
+      baseline: "backend-coverage-baselines.json",
+    })
+  ) {
+    addLane("coverage-mapping-backend");
+  }
+
+  const mutationFiles = mutationFilesForChanges(paths, { root });
+  if (mutationFiles.length) {
+    addLane("frontend-mutation-changed-files", {
+      files: mutationFiles,
+      commands: [
+        commandSpec("pnpm", ["mutation:frontend", "--", "--files", mutationFiles.join(",")]),
+      ],
+      selfSizing: "mutation",
+    });
+  }
+  if (rustChanged) {
+    addLane("windows-clippy");
+  }
+  if (paths.some((path) => matches(path, FRONTEND_INPUTS))) addLane("bundle");
+  return selected;
+}
+
 function selectedByBlocks(entry, blocks) {
   if (entry.always) return true;
   return entry.blocks?.some((block) => blocks.has(block)) ?? false;
@@ -188,8 +543,15 @@ function appendLog(fd, value) {
 }
 
 function commandArgv(command) {
+  if (typeof command !== "string") {
+    return { executable: command.executable, args: command.args };
+  }
   const [executable, ...args] = command.split(" ");
   return { executable, args };
+}
+
+function commandLabel(command) {
+  return typeof command === "string" ? command : command.display;
 }
 
 function createTaskResult(logDirectory, name, kind, fields = {}) {
@@ -216,7 +578,8 @@ async function runCommand(
   { cwd, env, spawnProcess, signalForwarding, writeCapturedOutput = appendLog },
 ) {
   const { executable, args } = commandArgv(command);
-  const fd = writeTaskHeader(task, command);
+  const label = commandLabel(command);
+  const fd = writeTaskHeader(task, label);
   let logError;
   let child;
   try {
@@ -252,8 +615,8 @@ async function runCommand(
   });
   const childLabel =
     task.kind === "lane-step"
-      ? `lane ${task.name} step ${command}`
-      : `${task.phase} step ${task.name} (${command})`;
+      ? `lane ${task.name} step ${label}`
+      : `${task.phase} step ${task.name} (${label})`;
   signalForwarding.attach(supervisor, childLabel);
 
   let completion;
@@ -314,14 +677,14 @@ async function runStep(task, command, context) {
     await context.beforeStep?.({
       phase: task.phase,
       name: task.name,
-      command,
+      command: commandLabel(command),
       index: task.commandIndex ?? 0,
     });
   } catch (error) {
     task.status = "failed";
     task.code = 1;
     task.error = error;
-    const fd = writeTaskHeader(task, command);
+    const fd = writeTaskHeader(task, commandLabel(command));
     try {
       appendLog(fd, `beforeStep failed: ${errorMessage(error)}\n`);
     } finally {
@@ -336,7 +699,7 @@ async function runStep(task, command, context) {
   }
 
   task.startedAt = performance.now();
-  logProgress(task, "start", `command=${command}`);
+  logProgress(task, "start", `command=${commandLabel(command)}`);
   let result;
   try {
     result = await runCommand(command, task, context);
@@ -384,7 +747,7 @@ async function runLane(lane, env, context, results) {
       await context.beforeStep?.({
         phase: "P2",
         name: lane.name,
-        command,
+        command: commandLabel(command),
         index,
       });
       if (context.signalForwarding.requestedSignal) {
@@ -402,7 +765,7 @@ async function runLane(lane, env, context, results) {
     if (result.code !== 0) {
       task.error = result.error;
       task.logError = result.logError;
-      task.failedCommand = command;
+      task.failedCommand = commandLabel(command);
       break;
     }
   }
@@ -461,8 +824,9 @@ function makeLaneEnvironment(
 // The self-sizing Vitest and mutation lanes split CPU evenly when they share P2.
 const P2_CPU_SHARE = 0.5;
 
-function printSummary(results, logDirectory) {
-  process.stdout.write(`Push gate logs: ${logDirectory}\n`);
+function printSummary(results, logDirectory, preReviewMode = false) {
+  const label = preReviewMode ? "Pre-review check" : "Push gate";
+  process.stdout.write(`${label} logs: ${logDirectory}\n`);
   process.stdout.write("Task                 Status       Exit   Duration\n");
   process.stdout.write("-------------------- ------------ ------ --------\n");
   for (const task of results) {
@@ -504,18 +868,30 @@ export async function runPushGates(
     env = process.env,
     availableParallelism = defaultAvailableParallelism,
     getGateBudgetBytes = () => gateBudgetBytes({ env }),
+    discoverChangedPaths = discoverPreReviewChangedPaths,
     beforeStep = undefined,
     writeCapturedOutput = appendLog,
   } = {},
 ) {
-  const parsed = parsePushGateArguments(argumentsList);
+  const args = [...argumentsList];
+  const delimiterCount = args[0] === "--" ? 1 : 0;
+  const preReviewMode = args[delimiterCount] === "--pre-review";
+  const runnerArguments = preReviewMode ? args.slice(delimiterCount + 1) : argumentsList;
+  if (preReviewMode && runnerArguments.length > 0) {
+    const message = `Unknown pre-review argument ${JSON.stringify(runnerArguments[0])}. Usage: pnpm checks:pre-review`;
+    process.stderr.write(`${message}\n`);
+    return { exitCode: 2, results: [], logDirectory: undefined };
+  }
+  const parsed = preReviewMode ? { blocks: new Set() } : parsePushGateArguments(argumentsList);
   if (parsed.error) {
     process.stderr.write(`${parsed.error}\n`);
     return { exitCode: 2, results: [], logDirectory: undefined };
   }
   const { blocks } = parsed;
   const logDirectory = makeLogDirectory(cwd);
-  const signalForwarding = installMultiChildSignalForwarding({ label: "push gate" });
+  const signalForwarding = installMultiChildSignalForwarding({
+    label: preReviewMode ? "pre-review checks" : "push gate",
+  });
   const resultsByName = new Map();
   const stepResults = [];
   let budgetBytes;
@@ -523,6 +899,7 @@ export async function runPushGates(
   let exitCode = 0;
   let cleanupFailed = false;
   let fatalError;
+  const selectedPreReviewLaneNames = new Set();
   const context = {
     cwd,
     env,
@@ -541,149 +918,73 @@ export async function runPushGates(
   };
 
   try {
-    const guard = await runSerialStep(PUSH_GATE_SCHEDULE.p0[0], "P0");
-    if (guard.status !== "passed") {
-      exitCode = signalForwarding.requestedSignal
-        ? signalExitCode(signalForwarding.requestedSignal)
-        : guard.code;
-      for (const lane of PUSH_GATE_SCHEDULE.lanes) {
-        if (!selectedByBlocks(lane, blocks)) continue;
-        const skipped = createTaskResult(logDirectory, lane.name, "lane", { phase: "P2" });
-        skipTask(skipped, "P0 mutation guard failed before any lane started");
-        resultsByName.set(lane.name, skipped);
-      }
-    } else {
-      let setupRust;
-      if (selectedByBlocks(PUSH_GATE_SCHEDULE.p0[1], blocks)) {
-        setupRust = await runSerialStep(PUSH_GATE_SCHEDULE.p0[1], "P0");
-      }
+    if (preReviewMode) {
+      const changedPaths = discoverChangedPaths({ cwd });
+      const lanes = selectPreReviewLanes(changedPaths, { root: cwd });
+      for (const lane of lanes) selectedPreReviewLaneNames.add(lane.name);
+      const laneNames = lanes.map(({ name }) => name);
+      process.stdout.write(`Pre-review changed paths: ${changedPaths.length}\n`);
+      process.stdout.write(
+        `Pre-review selected lanes: ${laneNames.length ? laneNames.join(", ") : "none"}\n`,
+      );
 
-      const frontendBuildEntry = PUSH_GATE_SCHEDULE.p1[0];
+      const buildRequired = lanes.some((lane) => lane.requires?.includes("frontend-build"));
       let frontendBuild;
-      if (selectedByBlocks(frontendBuildEntry, blocks)) {
-        frontendBuild = await runSerialStep(frontendBuildEntry, "P1");
+      if (buildRequired) {
+        frontendBuild = await runSerialStep(PRE_REVIEW_GATE_SCHEDULE.p1[0], "P1");
       }
-
-      const bindingsEntry = PUSH_GATE_SCHEDULE.p1[1];
-      if (selectedByBlocks(bindingsEntry, blocks)) {
-        if (setupRust?.status !== "passed") {
-          const skipped = createTaskResult(logDirectory, bindingsEntry.name, "step", {
-            phase: "P1",
-          });
-          skipTask(skipped, "setup-rust failed, so bindings:check was skipped");
-          stepResults.push(skipped);
-        } else if (frontendBuild?.status !== "passed") {
-          const skipped = createTaskResult(logDirectory, bindingsEntry.name, "step", {
-            phase: "P1",
-          });
-          skipTask(skipped, "frontend-build failed, so bindings:check was skipped");
-          stepResults.push(skipped);
-        } else {
-          await runSerialStep(bindingsEntry, "P1");
-        }
-      }
-
-      const buildReady = !frontendBuild || frontendBuild.status === "passed";
-      const setupReady = !setupRust || setupRust.status === "passed";
-      const rustLanesPresent = blocks.has("rust") && setupReady && buildReady;
-      const lanes = PUSH_GATE_SCHEDULE.lanes.filter((lane) => selectedByBlocks(lane, blocks));
+      const buildReady = !buildRequired || frontendBuild?.status === "passed";
       const runnableLanes = [];
       for (const lane of lanes) {
-        if (lane.requires?.includes("setup-rust") && !setupReady) {
-          const skipped = createTaskResult(logDirectory, lane.name, "lane", { phase: "P2" });
-          skipTask(skipped, "setup-rust failed, so this Rust consumer was skipped");
-          resultsByName.set(lane.name, skipped);
-          continue;
-        }
-        if (lane.requires?.includes("frontend-build") && !buildReady) {
+        if (!buildReady && lane.requires?.includes("frontend-build")) {
           const skipped = createTaskResult(logDirectory, lane.name, "lane", { phase: "P2" });
           skipTask(skipped, "frontend-build failed, so this dist/ consumer was skipped");
           resultsByName.set(lane.name, skipped);
-          continue;
+        } else {
+          runnableLanes.push(lane);
         }
-        runnableLanes.push(lane);
       }
 
-      if (blocks.has("frontend")) {
+      const mutationLane = runnableLanes.find((lane) => lane.selfSizing === "mutation");
+      const baseLanes = runnableLanes.filter((lane) => lane !== mutationLane);
+      let concurrentMutation = false;
+      if (mutationLane) {
         budgetBytes = getGateBudgetBytes();
         cpuCount = availableParallelism();
+        concurrentMutation =
+          budgetBytes >= ONE_WAVE_BYTES && cpuCount >= MIN_CONCURRENT_SELF_SIZING_CPUS;
       }
-      const concurrentMutation =
-        blocks.has("frontend") &&
-        budgetBytes >= ONE_WAVE_BYTES &&
-        cpuCount >= MIN_CONCURRENT_SELF_SIZING_CPUS;
-      const laneByName = new Map(runnableLanes.map((lane) => [lane.name, lane]));
-      const e2eSelected = laneByName.has("e2e");
-      const baseLanes = runnableLanes.filter(
-        (lane) => lane.name !== "e2e" && lane.name !== "frontend-mutation",
-      );
-      const p2Promises = new Map();
-      for (const lane of baseLanes) {
-        const laneEnv = lane.selfSizing
-          ? makeLaneEnvironment(
-              env,
-              lane.name,
-              budgetBytes,
-              concurrentMutation,
-              rustLanesPresent,
-              e2eSelected,
-            )
-          : env;
-        p2Promises.set(lane.name, runLane(lane, laneEnv, context, resultsByName));
-      }
-
-      const e2eLane = laneByName.get("e2e");
-      let e2ePromise;
-      if (e2eLane) {
-        const dependencies = e2eLane.after.map((name) => p2Promises.get(name)).filter(Boolean);
-        e2ePromise = Promise.all(dependencies).then(() =>
-          runLane(e2eLane, env, context, resultsByName),
-        );
-      }
-
-      const mutationLane = laneByName.get("frontend-mutation");
+      const basePromises = baseLanes.map((lane) => runLane(lane, env, context, resultsByName));
       let mutationPromise;
-      if (mutationLane) {
-        if (concurrentMutation) {
-          const laneEnv = makeLaneEnvironment(
-            env,
-            mutationLane.name,
-            budgetBytes,
-            concurrentMutation,
-            rustLanesPresent,
-            e2eSelected,
-          );
-          mutationPromise = runLane(mutationLane, laneEnv, context, resultsByName);
-          p2Promises.set(mutationLane.name, mutationPromise);
-        } else {
-          const dependencies = [
-            ...baseLanes.map((lane) => p2Promises.get(lane.name)).filter(Boolean),
-            ...(e2ePromise ? [e2ePromise] : []),
-          ];
-          mutationPromise = Promise.all(dependencies).then(() => {
-            const laneEnv = makeLaneEnvironment(
-              env,
-              mutationLane.name,
-              budgetBytes,
-              false,
-              rustLanesPresent,
-              e2eSelected,
-            );
-            return runLane(mutationLane, laneEnv, context, resultsByName);
-          });
-        }
+      if (mutationLane && concurrentMutation) {
+        const laneEnv = makeLaneEnvironment(
+          env,
+          "frontend-mutation",
+          budgetBytes,
+          true,
+          false,
+          false,
+        );
+        mutationPromise = runLane(mutationLane, laneEnv, context, resultsByName);
       }
-
-      await Promise.all([
-        ...p2Promises.values(),
-        ...(e2ePromise ? [e2ePromise] : []),
-        ...(mutationPromise && !concurrentMutation ? [mutationPromise] : []),
-      ]);
+      await Promise.all(basePromises);
+      if (mutationLane && !concurrentMutation) {
+        const laneEnv = makeLaneEnvironment(
+          env,
+          "frontend-mutation",
+          budgetBytes,
+          false,
+          false,
+          false,
+        );
+        mutationPromise = runLane(mutationLane, laneEnv, context, resultsByName);
+      }
+      if (mutationPromise) await mutationPromise;
 
       const failedStep = firstFailure(stepResults);
       if (failedStep) exitCode = failedStep.code;
       else {
-        for (const lane of PUSH_GATE_SCHEDULE.lanes) {
+        for (const lane of PRE_REVIEW_GATE_SCHEDULE.lanes) {
           const result = resultsByName.get(lane.name);
           if (result && (result.status === "failed" || result.status === "interrupted")) {
             exitCode = result.code;
@@ -691,10 +992,164 @@ export async function runPushGates(
           }
         }
       }
+    } else {
+      const guard = await runSerialStep(PUSH_GATE_SCHEDULE.p0[0], "P0");
+      if (guard.status !== "passed") {
+        exitCode = signalForwarding.requestedSignal
+          ? signalExitCode(signalForwarding.requestedSignal)
+          : guard.code;
+        for (const lane of PUSH_GATE_SCHEDULE.lanes) {
+          if (!selectedByBlocks(lane, blocks)) continue;
+          const skipped = createTaskResult(logDirectory, lane.name, "lane", { phase: "P2" });
+          skipTask(skipped, "P0 mutation guard failed before any lane started");
+          resultsByName.set(lane.name, skipped);
+        }
+      } else {
+        let setupRust;
+        if (selectedByBlocks(PUSH_GATE_SCHEDULE.p0[1], blocks)) {
+          setupRust = await runSerialStep(PUSH_GATE_SCHEDULE.p0[1], "P0");
+        }
+
+        const frontendBuildEntry = PUSH_GATE_SCHEDULE.p1[0];
+        let frontendBuild;
+        if (selectedByBlocks(frontendBuildEntry, blocks)) {
+          frontendBuild = await runSerialStep(frontendBuildEntry, "P1");
+        }
+
+        const bindingsEntry = PUSH_GATE_SCHEDULE.p1[1];
+        if (selectedByBlocks(bindingsEntry, blocks)) {
+          if (setupRust?.status !== "passed") {
+            const skipped = createTaskResult(logDirectory, bindingsEntry.name, "step", {
+              phase: "P1",
+            });
+            skipTask(skipped, "setup-rust failed, so bindings:check was skipped");
+            stepResults.push(skipped);
+          } else if (frontendBuild?.status !== "passed") {
+            const skipped = createTaskResult(logDirectory, bindingsEntry.name, "step", {
+              phase: "P1",
+            });
+            skipTask(skipped, "frontend-build failed, so bindings:check was skipped");
+            stepResults.push(skipped);
+          } else {
+            await runSerialStep(bindingsEntry, "P1");
+          }
+        }
+
+        const buildReady = !frontendBuild || frontendBuild.status === "passed";
+        const setupReady = !setupRust || setupRust.status === "passed";
+        const rustLanesPresent = blocks.has("rust") && setupReady && buildReady;
+        const lanes = PUSH_GATE_SCHEDULE.lanes.filter((lane) => selectedByBlocks(lane, blocks));
+        const runnableLanes = [];
+        for (const lane of lanes) {
+          if (lane.requires?.includes("setup-rust") && !setupReady) {
+            const skipped = createTaskResult(logDirectory, lane.name, "lane", { phase: "P2" });
+            skipTask(skipped, "setup-rust failed, so this Rust consumer was skipped");
+            resultsByName.set(lane.name, skipped);
+            continue;
+          }
+          if (lane.requires?.includes("frontend-build") && !buildReady) {
+            const skipped = createTaskResult(logDirectory, lane.name, "lane", { phase: "P2" });
+            skipTask(skipped, "frontend-build failed, so this dist/ consumer was skipped");
+            resultsByName.set(lane.name, skipped);
+            continue;
+          }
+          runnableLanes.push(lane);
+        }
+
+        if (blocks.has("frontend")) {
+          budgetBytes = getGateBudgetBytes();
+          cpuCount = availableParallelism();
+        }
+        const concurrentMutation =
+          blocks.has("frontend") &&
+          budgetBytes >= ONE_WAVE_BYTES &&
+          cpuCount >= MIN_CONCURRENT_SELF_SIZING_CPUS;
+        const laneByName = new Map(runnableLanes.map((lane) => [lane.name, lane]));
+        const e2eSelected = laneByName.has("e2e");
+        const baseLanes = runnableLanes.filter(
+          (lane) => lane.name !== "e2e" && lane.name !== "frontend-mutation",
+        );
+        const p2Promises = new Map();
+        for (const lane of baseLanes) {
+          const laneEnv = lane.selfSizing
+            ? makeLaneEnvironment(
+                env,
+                lane.name,
+                budgetBytes,
+                concurrentMutation,
+                rustLanesPresent,
+                e2eSelected,
+              )
+            : env;
+          p2Promises.set(lane.name, runLane(lane, laneEnv, context, resultsByName));
+        }
+
+        const e2eLane = laneByName.get("e2e");
+        let e2ePromise;
+        if (e2eLane) {
+          const dependencies = e2eLane.after.map((name) => p2Promises.get(name)).filter(Boolean);
+          e2ePromise = Promise.all(dependencies).then(() =>
+            runLane(e2eLane, env, context, resultsByName),
+          );
+        }
+
+        const mutationLane = laneByName.get("frontend-mutation");
+        let mutationPromise;
+        if (mutationLane) {
+          if (concurrentMutation) {
+            const laneEnv = makeLaneEnvironment(
+              env,
+              mutationLane.name,
+              budgetBytes,
+              concurrentMutation,
+              rustLanesPresent,
+              e2eSelected,
+            );
+            mutationPromise = runLane(mutationLane, laneEnv, context, resultsByName);
+            p2Promises.set(mutationLane.name, mutationPromise);
+          } else {
+            const dependencies = [
+              ...baseLanes.map((lane) => p2Promises.get(lane.name)).filter(Boolean),
+              ...(e2ePromise ? [e2ePromise] : []),
+            ];
+            mutationPromise = Promise.all(dependencies).then(() => {
+              const laneEnv = makeLaneEnvironment(
+                env,
+                mutationLane.name,
+                budgetBytes,
+                false,
+                rustLanesPresent,
+                e2eSelected,
+              );
+              return runLane(mutationLane, laneEnv, context, resultsByName);
+            });
+          }
+        }
+
+        await Promise.all([
+          ...p2Promises.values(),
+          ...(e2ePromise ? [e2ePromise] : []),
+          ...(mutationPromise && !concurrentMutation ? [mutationPromise] : []),
+        ]);
+
+        const failedStep = firstFailure(stepResults);
+        if (failedStep) exitCode = failedStep.code;
+        else {
+          for (const lane of PUSH_GATE_SCHEDULE.lanes) {
+            const result = resultsByName.get(lane.name);
+            if (result && (result.status === "failed" || result.status === "interrupted")) {
+              exitCode = result.code;
+              break;
+            }
+          }
+        }
+      }
     }
   } catch (error) {
     fatalError = error;
-    process.stderr.write(`Push gate scheduler failed: ${errorMessage(error)}\n`);
+    process.stderr.write(
+      `${preReviewMode ? "Pre-review" : "Push gate"} scheduler failed: ${errorMessage(error)}\n`,
+    );
     exitCode = 1;
     try {
       await signalForwarding.terminateAll();
@@ -714,13 +1169,27 @@ export async function runPushGates(
     signalForwarding.uninstall();
   }
 
+  if (preReviewMode) {
+    for (const lane of PRE_REVIEW_GATE_SCHEDULE.lanes) {
+      if (resultsByName.has(lane.name)) continue;
+      const skipped = createTaskResult(logDirectory, lane.name, "lane", { phase: "P2" });
+      const reason = fatalError
+        ? "pre-review scheduling stopped before this lane started"
+        : selectedPreReviewLaneNames.has(lane.name)
+          ? "cancelled before this lane started"
+          : "no relevant changed paths";
+      skipTask(skipped, reason);
+      resultsByName.set(lane.name, skipped);
+    }
+  }
+
   if (signalForwarding.requestedSignal) {
     exitCode = signalExitCode(signalForwarding.requestedSignal);
   } else if (cleanupFailed) {
     exitCode = exitCode || 1;
   }
   const results = [...stepResults];
-  for (const lane of PUSH_GATE_SCHEDULE.lanes) {
+  for (const lane of preReviewMode ? PRE_REVIEW_GATE_SCHEDULE.lanes : PUSH_GATE_SCHEDULE.lanes) {
     const task = resultsByName.get(lane.name);
     if (task && task.kind === "lane") results.push(task);
   }
@@ -737,7 +1206,7 @@ export async function runPushGates(
     }
     results.push(fatalTask);
   }
-  printSummary(results, logDirectory);
+  printSummary(results, logDirectory, preReviewMode);
   return { exitCode, results, logDirectory, signal: signalForwarding.requestedSignal };
 }
 

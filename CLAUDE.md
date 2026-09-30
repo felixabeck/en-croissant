@@ -191,7 +191,7 @@ authorization.
   `.agents/skills/push/SKILL.md`, whose Codex delta names its own committer; and
   `.grok/rules/grok-chessfable.md` points at the canonical file.
 * Gate scope is split, because the full set is slow enough that running it per commit is not
-  practical. Per commit, run the narrowest affected checks from the mapping in
+  practical. Per commit and after every repair batch, run `pnpm checks:pre-review` from
   `.claude/skills/push/SKILL.md`. Once per task, after the last commit, run the full affected set.
   Never commit on red.
 

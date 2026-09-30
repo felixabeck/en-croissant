@@ -16,7 +16,7 @@
  * from the previous matrix, and each inherited the last one's errors; that is why this one starts
  * from the file.
  *
- * **87 distinct failure paths**, plus one swallowed cleanup path that deliberately produces no
+ * **93 distinct failure paths**, plus one swallowed cleanup path that deliberately produces no
  * failure of its own (row 32) and one shared sink (row 41). No row is *argued*: every one is
  * staged. "Argued" is reserved for a path that could only be reached by editing the verifier,
  * doing harm that outlives the run, or touching something the run may not modify, and none of
@@ -286,6 +286,12 @@
  *     resolveModulePath    a reason other than ENOENT/ENOTDIR   access test-only module candidate
  *                          (parent directory chmod 000)         …: EACCES: permission denied …`
  *                                                             — exit 1
+ * 90  :556   mapping-only an area claims no measured           `Coverage areas claim no production
+ *                           production file                     files: empty` — exit 1
+ * 91  :1075  parse         `--mapping-only` combined with       `--mapping-only cannot be combined
+ *                           `--lcov`                            with --lcov` — exit 1
+ * 92  :1078  parse         `--mapping-only` combined with       `--mapping-only cannot be combined
+ *                           `--write-baseline`                  with --write-baseline` — exit 1
  *
  * **The rows the blank-measurement work added or changed were also staged against the real
  * frontend LCOV**, not only against fixtures, because that is the artefact an operator runs. Rows
@@ -476,7 +482,7 @@ function addMetrics(total, addition) {
   }
 }
 
-export async function buildCoverageReport({ config, configPath, lcov, root }) {
+export async function enumerateProductionFiles({ config, root }) {
   const productionFiles = new Map();
   const scansBySource = new Map();
   for (const source of config.sources) {
@@ -506,22 +512,62 @@ export async function buildCoverageReport({ config, configPath, lcov, root }) {
     }
   }
 
-  // Every production file's area must belong to the source the file came from. This is the only
-  // place that is checked, and the LCOV loop below deliberately does not repeat it: it reaches a
-  // record only when `productionFiles` already holds the file, this loop has run the identical
-  // comparison over every entry of that map, and neither the map nor `assignArea` -- a pure
-  // function of (path, config) -- changes in between. The duplicate copy was therefore dead for
-  // every input and unreachable by any caller, being interior to this function, and was removed
-  // (`f-20260921-02`). `assertAreaFloors`' similar-looking branch is a different case: it is
-  // exported and the tests call it directly, so it stays.
+  const areaByFile = new Map();
+  const productionFilesByArea = new Map(config.areas.map((area) => [area.id, 0]));
   for (const [file, sourceId] of productionFiles) {
     const area = assignArea(file, config);
     if (area.source !== sourceId)
       throw new Error(`Coverage area ${area.id} has the wrong source for ${file}`);
+    areaByFile.set(file, area);
+    productionFilesByArea.set(area.id, productionFilesByArea.get(area.id) + 1);
   }
+  return { productionFiles, scansBySource, areaByFile, productionFilesByArea };
+}
+
+function statementFreeDeclarationsFor(config) {
+  return config.sources.flatMap((source) =>
+    (source.statementFree ?? []).map(({ path }) => ({ path, sourceId: source.id })),
+  );
+}
+
+function assertStatementFreeScope(
+  config,
+  productionFiles,
+  statementFreeDeclarations = statementFreeDeclarationsFor(config),
+) {
+  const deadStatementFree = statementFreeDeclarations
+    .filter(({ path, sourceId }) => productionFiles.get(path) !== sourceId)
+    .map(({ path }) => path)
+    .sort();
+  if (deadStatementFree.length)
+    throw new Error(
+      `Coverage statementFree declarations are outside the measured production set: ${deadStatementFree.join(", ")}. ` +
+        "Remove each dead declaration or restore the file to the measured production set.",
+    );
+  return statementFreeDeclarations;
+}
+
+export async function assertCoverageMapping({ config, root }) {
+  const enumeration = await enumerateProductionFiles({ config, root });
+  const emptyAreas = [...enumeration.productionFilesByArea]
+    .filter(([, count]) => count === 0)
+    .map(([area]) => area);
+  if (emptyAreas.length) {
+    throw new Error(`Coverage areas claim no production files: ${emptyAreas.join(", ")}`);
+  }
+  assertStatementFreeScope(config, enumeration.productionFiles);
+  return enumeration;
+}
+
+export async function buildCoverageReport({ config, configPath, lcov, root }) {
+  const { productionFiles, scansBySource, areaByFile } = await enumerateProductionFiles({
+    config,
+    root,
+  });
 
   const report = Object.fromEntries(config.areas.map((area) => [area.id, emptyMetrics()]));
   const coverageFilesByArea = Object.fromEntries(config.areas.map((area) => [area.id, 0]));
+  const statementFreeDeclarations = statementFreeDeclarationsFor(config);
   // `parseLcov` is given the normaliser, so every spelling of one file arrives as ONE record with
   // its counters unioned. Doing it here instead would be too late twice over: the area totals
   // below would add the same file's records once each, and the blank check further down would see
@@ -536,7 +582,7 @@ export async function buildCoverageReport({ config, configPath, lcov, root }) {
     const file = record.file;
     const sourceId = productionFiles.get(file);
     if (!sourceId) continue;
-    const area = assignArea(file, config);
+    const area = areaByFile.get(file);
     addMetrics(report[area.id], record.metrics);
     coverageFilesByArea[area.id] += 1;
     coverageMetricsByFile.set(file, record.metrics);
@@ -549,9 +595,6 @@ export async function buildCoverageReport({ config, configPath, lcov, root }) {
     throw new Error(`Coverage data missing for production files: ${missingFiles.join(", ")}`);
   const isBlankMeasurement = (metrics) =>
     metrics.lines.total === 0 && metrics.functions.total === 0 && metrics.branches.total === 0;
-  const statementFreeDeclarations = config.sources.flatMap((source) =>
-    (source.statementFree ?? []).map(({ path }) => ({ path, sourceId: source.id })),
-  );
   const declaredStatementFree = new Set(
     statementFreeDeclarations
       .filter(({ path, sourceId }) => productionFiles.get(path) === sourceId)
@@ -567,15 +610,7 @@ export async function buildCoverageReport({ config, configPath, lcov, root }) {
         "A file present in the LCOV with no line, function or branch records has left the denominator without changing any percentage. " +
         `If the file genuinely has no statements, declare it under statementFree in ${configPath}; otherwise something removed it from the measurement (see docs/coverage.md).`,
     );
-  const deadStatementFree = statementFreeDeclarations
-    .filter(({ path, sourceId }) => productionFiles.get(path) !== sourceId)
-    .map(({ path }) => path)
-    .sort();
-  if (deadStatementFree.length)
-    throw new Error(
-      `Coverage statementFree declarations are outside the measured production set: ${deadStatementFree.join(", ")}. ` +
-        "Remove each dead declaration or restore the file to the measured production set.",
-    );
+  assertStatementFreeScope(config, productionFiles, statementFreeDeclarations);
   const nonBlankStatementFree = statementFreeDeclarations
     .filter(({ path, sourceId }) => productionFiles.get(path) === sourceId)
     .filter(({ path }) => !isBlankMeasurement(coverageMetricsByFile.get(path)))
@@ -618,24 +653,28 @@ export function scopeSignature(config) {
   };
 }
 
+export function assertScopeMatchesBaseline(config, baseline) {
+  if (baseline.version !== 1 || !baseline.areas)
+    throw new Error("Unsupported coverage baseline format");
+  const actualScope = JSON.stringify(scopeSignature(config));
+  if (!baseline.scope) throw new Error("Coverage baseline is missing its recorded scope");
+  if (JSON.stringify(baseline.scope) !== actualScope) {
+    throw new Error(
+      "Coverage measurement scope changed: source ids and roots, include globs, exclude globs, " +
+        "statementFree declarations, test-only Rust exclusion, or area ids, sources, and paths no longer match the " +
+        "baseline. Narrowing the measured set hides untested code without changing any " +
+        "percentage. Re-record the scope subtree by hand, leave areas untouched, and prove " +
+        "the edit is scope-only by comparing the parsed committed baseline with the parsed " +
+        "working-tree baseline (see docs/coverage.md).",
+    );
+  }
+}
+
 export function assertBaseline(report, baseline, config) {
   const allowances = [];
   if (baseline.version !== 1 || !baseline.areas)
     throw new Error("Unsupported coverage baseline format");
-  if (config) {
-    const actualScope = JSON.stringify(scopeSignature(config));
-    if (!baseline.scope) throw new Error("Coverage baseline is missing its recorded scope");
-    if (JSON.stringify(baseline.scope) !== actualScope) {
-      throw new Error(
-        "Coverage measurement scope changed: source ids and roots, include globs, exclude globs, " +
-          "statementFree declarations, test-only Rust exclusion, or area ids, sources, and paths no longer match the " +
-          "baseline. Narrowing the measured set hides untested code without changing any " +
-          "percentage. Re-record the scope subtree by hand, leave areas untouched, and prove " +
-          "the edit is scope-only by comparing the parsed committed baseline with the parsed " +
-          "working-tree baseline (see docs/coverage.md).",
-      );
-    }
-  }
+  if (config) assertScopeMatchesBaseline(config, baseline);
   for (const [area, metrics] of Object.entries(report)) {
     const expected = baseline.areas[area];
     if (!expected) throw new Error(`Missing baseline for area: ${area}`);
@@ -1010,10 +1049,11 @@ export async function writeBaseline({ areas, scope, path }, fileSystem = default
 }
 
 function parseArguments(argumentsList) {
-  const options = { lcov: [] };
+  const options = { lcov: [], mappingOnly: false };
   for (let index = 0; index < argumentsList.length; index += 1) {
     const argument = argumentsList[index];
     if (argument === "--write-baseline") options.writeBaseline = true;
+    else if (argument === "--mapping-only") options.mappingOnly = true;
     else if (argument === "--instrument-change" || argument === "--finding") {
       const value = argumentsList[++index];
       if (!value || value.startsWith("--")) throw new Error(`Missing value for ${argument}`);
@@ -1026,10 +1066,16 @@ function parseArguments(argumentsList) {
       else options[argument.slice(2)] = value;
     } else throw new Error(`Unknown argument: ${argument}`);
   }
-  if (!options.config || !options.baseline || options.lcov.length === 0) {
+  if (!options.config || !options.baseline || (!options.mappingOnly && options.lcov.length === 0)) {
     throw new Error(
-      "Usage: coverage-report.mjs --config <file> --baseline <file> --lcov <file> [--lcov <file>] [--write-baseline [--instrument-change <d-id> --finding <f-id>]]",
+      "Usage: coverage-report.mjs --config <file> --baseline <file> --lcov <file> [--lcov <file>] [--mapping-only] [--write-baseline [--instrument-change <d-id> --finding <f-id>]]",
     );
+  }
+  if (options.mappingOnly && options.lcov.length > 0) {
+    throw new Error("--mapping-only cannot be combined with --lcov");
+  }
+  if (options.mappingOnly && options.writeBaseline) {
+    throw new Error("--mapping-only cannot be combined with --write-baseline");
   }
   const hasInstrumentChange = options.instrumentChange !== undefined;
   const hasFinding = options.finding !== undefined;
@@ -1046,6 +1092,15 @@ async function main() {
   const options = parseArguments(process.argv.slice(2));
   const root = process.cwd();
   const config = JSON.parse(await readFile(resolve(root, options.config), "utf8"));
+  if (options.mappingOnly) {
+    const baseline = JSON.parse(await readFile(resolve(root, options.baseline), "utf8"));
+    assertScopeMatchesBaseline(config, baseline);
+    const { productionFiles } = await assertCoverageMapping({ config, root });
+    console.log(
+      `Coverage mapping passed: ${productionFiles.size} production files across ${config.areas.length} areas`,
+    );
+    return;
+  }
   const lcov = (
     await Promise.all(options.lcov.map((file) => readFile(resolve(root, file), "utf8")))
   ).join("\n");

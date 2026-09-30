@@ -5,21 +5,17 @@ export function listWorkingTreeFiles({
   pathspec = "src",
   runGit = spawnSync,
   includeIgnored = false,
+  untrackedOnly = false,
 } = {}) {
-  const commands = [
-    ["ls-files", "--others", "--exclude-standard", "--", pathspec],
-    ["ls-files", "--", pathspec],
-  ];
-  if (includeIgnored) {
-    commands.splice(1, 0, [
-      "ls-files",
-      "--others",
-      "--ignored",
-      "--exclude-standard",
-      "--",
-      pathspec,
-    ]);
-  }
+  const commands = untrackedOnly
+    ? [["ls-files", "--others", "--exclude-standard", "-z", "--", pathspec]]
+    : [
+        ["ls-files", "--others", "--exclude-standard", "-z", "--", pathspec],
+        ...(includeIgnored
+          ? [["ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--", pathspec]]
+          : []),
+        ["ls-files", "-z", "--", pathspec],
+      ];
   const paths = [];
 
   for (const args of commands) {
@@ -33,8 +29,8 @@ export function listWorkingTreeFiles({
         `Cannot enumerate working-tree files: git ${args.join(" ")} failed (${detail})`,
       );
     }
-    paths.push(...String(result.stdout ?? "").split("\n"));
+    paths.push(...String(result.stdout ?? "").split("\0"));
   }
 
-  return [...new Set(paths.map((path) => path.trim()).filter(Boolean))];
+  return [...new Set(paths.filter(Boolean))];
 }

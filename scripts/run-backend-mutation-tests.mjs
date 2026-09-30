@@ -14,7 +14,7 @@ import {
   waitFor,
   writeShim,
 } from "./mutation-runner-test-harness.mjs";
-import { encodingCargoArguments } from "./run-backend-mutation.mjs";
+import { encodingCargoArguments, selectBackendMutationPackages } from "./run-backend-mutation.mjs";
 import { parseRustHostMetadata } from "./rust-host.mjs";
 
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -365,6 +365,13 @@ test("selection and side-effect-free routes do not require containment tools", a
   assert.match(unknown.stderr, /Unknown BACKEND_MUTATION_PACKAGE: unknown-package/);
   await assert.rejects(() => readFile(join(state, "started")));
   assert.equal(existsSync(join(root, fence)), false);
+});
+
+test("backend mutation selector rejects an unknown package id through the shared helper", () => {
+  assert.throws(
+    () => selectBackendMutationPackages("unknown-package"),
+    /Unknown BACKEND_MUTATION_PACKAGE: unknown-package/u,
+  );
 });
 
 test("an uncatchable mid-flight kill leaves the fence and makes the next run refuse", async (t) => {

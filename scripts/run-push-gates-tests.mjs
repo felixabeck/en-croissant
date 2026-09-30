@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
@@ -10,8 +11,12 @@ import {
   ONE_WAVE_BYTES,
   P2_MUTATION_SHARE,
   P2_VITEST_SHARE,
+  PRE_REVIEW_GATE_SCHEDULE,
   PUSH_GATE_SCHEDULE,
+  discoverPreReviewChangedPaths,
+  mutationFilesForChanges,
   runPushGates,
+  selectPreReviewLanes,
 } from "./run-push-gates.mjs";
 import { VITEST_MINIMUM_BUDGET_BYTES, workerCount } from "./gate-parallelism.mjs";
 import { E2E_CONTAINER_MEMORY_BYTES } from "./run-e2e-container.mjs";
@@ -292,6 +297,149 @@ async function temporarySchedulerRoot(t) {
   t.after(() => rm(root, { recursive: true, force: true }));
   return root;
 }
+
+function git(root, args, { allowFailure = false } = {}) {
+  const result = spawnSync("git", args, { cwd: root, encoding: "utf8" });
+  if (!allowFailure) assert.equal(result.status, 0, result.stderr);
+  return result;
+}
+
+async function initializeUpstream(root, { upstream = true } = {}) {
+  git(root, ["init", "--quiet"]);
+  git(root, ["config", "user.name", "Gate fixture"]);
+  git(root, ["config", "user.email", "gate-fixture@example.invalid"]);
+  await writeFile(join(root, "README.md"), "base\n");
+  git(root, ["add", "README.md"]);
+  git(root, ["commit", "--quiet", "-m", "base"]);
+  if (!upstream) return;
+  const remote = join(root, ".git", "upstream.git");
+  git(root, ["init", "--bare", "--quiet", remote]);
+  git(root, ["remote", "add", "origin", remote]);
+  git(root, ["push", "--quiet", "--set-upstream", "origin", "HEAD"]);
+}
+
+test("pre-review changed-path selection covers every lane and excludes unrelated changes", async (t) => {
+  const root = await temporarySchedulerRoot(t);
+  await mkdir(join(root, "src/state"), { recursive: true });
+  await mkdir(join(root, "src-tauri/src"), { recursive: true });
+  await writeFile(join(root, "src/state/workspace.ts"), "export const workspace = 1;\n");
+  await writeFile(join(root, "src-tauri/src/lib.rs"), "pub fn fixture() {}\n");
+  await writeFile(join(root, "coverage-areas.json"), "{}\n");
+  await writeFile(join(root, "backend-coverage-baselines.json"), "{}\n");
+  const paths = ["src/state/workspace.ts", "src-tauri/src/lib.rs", "package.json"];
+  const lanes = selectPreReviewLanes(paths, { root });
+  assert.deepEqual(
+    lanes.map(({ name }) => name),
+    [
+      "format-lint",
+      "coverage-mapping-frontend",
+      "coverage-mapping-backend",
+      "frontend-mutation-changed-files",
+      "windows-clippy",
+      "bundle",
+    ],
+  );
+  const formatCommands = lanes.find(({ name }) => name === "format-lint").commands;
+  assert.deepEqual(
+    formatCommands.map(({ display }) => display),
+    [
+      "pnpm exec oxfmt --check src/state/workspace.ts",
+      "pnpm exec oxlint --deny-warnings src/state/workspace.ts",
+      "pnpm exec tsgo --noEmit",
+      "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check",
+    ],
+  );
+  assert.deepEqual(selectPreReviewLanes(["README.md"], { root }), []);
+  const tauriConfigLanes = selectPreReviewLanes(["src-tauri/tauri.conf.json"], { root });
+  assert.ok(tauriConfigLanes.some(({ name }) => name === "windows-clippy"));
+  assert.ok(!tauriConfigLanes.some(({ name }) => name === "format-lint"));
+  assert.deepEqual(
+    selectPreReviewLanes(["coverage-areas.json"], { root }).map(({ name }) => name),
+    ["format-lint", "coverage-mapping-frontend"],
+  );
+  assert.deepEqual(
+    selectPreReviewLanes(["backend-coverage-baselines.json"], { root }).map(({ name }) => name),
+    ["format-lint", "coverage-mapping-backend"],
+  );
+});
+
+test("untracked-only production input selects its pre-review lanes (CR-6)", async (t) => {
+  const root = await temporarySchedulerRoot(t);
+  await initializeUpstream(root);
+  const sourcePath = "src/state/workspace.ts";
+  await mkdir(dirname(join(root, sourcePath)), { recursive: true });
+  await writeFile(join(root, sourcePath), "export const workspace = 1;\n");
+
+  const changedPaths = discoverPreReviewChangedPaths({ cwd: root });
+  assert.deepEqual(changedPaths, [sourcePath]);
+  assert.ok(
+    selectPreReviewLanes(changedPaths, { root }).some(({ name }) => name === "format-lint"),
+  );
+  assert.ok(
+    selectPreReviewLanes(changedPaths, { root }).some(
+      ({ name }) => name === "coverage-mapping-frontend",
+    ),
+  );
+});
+
+test("pre-review refuses a missing upstream and every failing git call", async (t) => {
+  const root = await temporarySchedulerRoot(t);
+  await initializeUpstream(root, { upstream: false });
+  assert.throws(
+    () => discoverPreReviewChangedPaths({ cwd: root }),
+    /Cannot determine pre-review changed paths: git merge-base HEAD @\{u\} failed/u,
+  );
+
+  const failingRunGit = (executable, args) => {
+    if (args[0] === "merge-base") return { status: 0, stdout: "base-commit\n" };
+    return { status: 128, stdout: "", stderr: "injected diff failure" };
+  };
+  assert.throws(
+    () =>
+      discoverPreReviewChangedPaths({ cwd: root, runGit: failingRunGit, listUntracked: () => [] }),
+    /git diff --name-only -z base-commit -- failed \(injected diff failure\)/u,
+  );
+});
+
+test("a changed Vitest file adds its exercised production file to the mutation list (CR-5)", async (t) => {
+  const root = await temporarySchedulerRoot(t);
+  const sourcePath = "src/state/workspace.ts";
+  const testPath = "src/state/workspace.test.ts";
+  await mkdir(dirname(join(root, sourcePath)), { recursive: true });
+  await writeFile(join(root, sourcePath), "export const workspace = 1;\n");
+  await writeFile(join(root, testPath), 'import { workspace } from "@/state/workspace";\n');
+
+  const files = mutationFilesForChanges([testPath], { root });
+  assert.deepEqual(files, [sourcePath]);
+  const mutationLane = selectPreReviewLanes([testPath], { root }).find(
+    ({ name }) => name === "frontend-mutation-changed-files",
+  );
+  assert.ok(mutationLane.commands[0].args.includes(sourcePath));
+});
+
+test("Rust-only pre-review waits for the frontend build before Windows clippy", async (t) => {
+  const cwd = await temporarySchedulerRoot(t);
+  const events = [];
+  const result = await runPushGates(["--pre-review"], {
+    cwd,
+    env: { ...process.env, GATE_MEMORY_BYTES: String(7 * GIB) },
+    discoverChangedPaths: () => ["src-tauri/src/lib.rs"],
+    spawnProcess: makeMockSpawner({ events }),
+  });
+  assert.equal(result.exitCode, 0);
+  const commands = events.filter(({ type }) => type === "start").map(({ command }) => command);
+  assert.deepEqual(commands, [
+    "pnpm gate:run frontend-build",
+    "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check",
+    "pnpm coverage:mapping:backend",
+    "pnpm rust:windows:check",
+  ]);
+  assert.ok(
+    PRE_REVIEW_GATE_SCHEDULE.p1[0].command === commands[0] &&
+      commands.indexOf("pnpm gate:run frontend-build") <
+        commands.indexOf("pnpm rust:windows:check"),
+  );
+});
 
 test("CLI selection matrix, leading delimiter, and phase ordering (PG-60, PG-64, PG-66, PG-78, PG-88, PG-104)", async (t) => {
   const cases = [

@@ -36,6 +36,8 @@ async function fixture() {
         "example:test": "node --test scripts/example-tests.mjs",
         "gates:contract:check": "pnpm mutation:guard:check && pnpm all:check && pnpm example:test",
         "gates:push": "node scripts/run-push-gates.mjs",
+        "checks:pre-review":
+          "bash scripts/heavy-gate.sh node scripts/run-push-gates.mjs --pre-review",
         "mutation:guard:check": "true",
         "findings:kit:check": "env -u KIT_ROOT kit sync --check .",
         "gate:ensure": "node scripts/gate-receipt.mjs ensure",
@@ -44,6 +46,7 @@ async function fixture() {
         "rust:windows:check": "true",
         "test:coverage": "true",
         "coverage:frontend:check": "true",
+        "coverage:mapping:frontend": "true",
         "build-vite": "true",
         "bindings:check": "true",
         "bundle:check": "true",
@@ -51,13 +54,14 @@ async function fixture() {
         "mutation:frontend": "true",
         "test:coverage:backend": "true",
         "coverage:backend:check": "true",
+        "coverage:mapping:backend": "true",
       },
     }),
   );
   await write(
     root,
     ".claude/skills/push/SKILL.md",
-    "## 2. Gates\n\n```bash\npnpm gates:push -- <blocks>\n```\n\n### Unconditional contract gate\n\n```bash\npnpm gates:contract:check\n```\n\n### Rust/Tauri backend\n\n```bash\nbash scripts/setup-rust.sh\ncargo fmt --manifest-path src-tauri/Cargo.toml -- --check\ncargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings\npnpm rust:windows:check\npnpm gate:ensure backend-test\npnpm gate:ensure backend-coverage\n```\n\n### TypeScript/React frontend\n\n```bash\npnpm gate:ensure frontend-coverage\npnpm gate:ensure frontend-mutation\npnpm gate:run frontend-build\npnpm bundle:check\npnpm gate:ensure e2e-container\n```\n\n### Cross-layer contracts\n\n```bash\npnpm bindings:check\n```\n\n### Findings ledger\n\n```bash\nenv -u KIT_ROOT pnpm findings:kit:check\n```\n\n## 3. Review\n\n```text\nscripts/**\n```\n\n## 4. Finish\n",
+    "## 2. Gates\n\n```bash\npnpm gates:push -- <blocks>\n```\n\n### Unconditional contract gate\n\n```bash\npnpm gates:contract:check\n```\n\n### Rust/Tauri backend\n\n```bash\nbash scripts/setup-rust.sh\ncargo fmt --manifest-path src-tauri/Cargo.toml -- --check\ncargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings\npnpm rust:windows:check\npnpm gate:ensure backend-test\npnpm gate:ensure backend-coverage\n```\n\n### TypeScript/React frontend\n\n```bash\npnpm gate:ensure frontend-coverage\npnpm gate:ensure frontend-mutation\npnpm gate:run frontend-build\npnpm bundle:check\npnpm gate:ensure e2e-container\n```\n\n### Cross-layer contracts\n\n```bash\npnpm bindings:check\n```\n\n### Findings ledger\n\n```bash\nenv -u KIT_ROOT pnpm findings:kit:check\n```\n\n## 2a. Pre-review checks\n\n```bash\npnpm checks:pre-review\n```\n\n```bash\npnpm gate:run frontend-build\npnpm exec oxfmt --check <changed-format-files>\npnpm exec oxlint --deny-warnings <changed-js-ts-files>\npnpm exec tsgo --noEmit\ncargo fmt --manifest-path src-tauri/Cargo.toml -- --check\npnpm coverage:mapping:frontend\npnpm coverage:mapping:backend\npnpm mutation:frontend -- --files <comma-separated-production-files>\npnpm rust:windows:check\npnpm bundle:check\n```\n\n## 3. Review\n\n```text\nscripts/**\n```\n\n## 4. Finish\n",
   );
   await write(
     root,
@@ -85,6 +89,32 @@ const paths = ["scripts/check-example.mjs"];
 test("accepts routed tests, nested scripts, allowed tools, and live sensitive globs", async () => {
   const root = await fixture();
   assert.deepEqual(await checkGateRouting(root, { paths }), []);
+});
+
+test("checks every pre-review runner command against the new skill block in both directions", async () => {
+  const root = await fixture();
+  assert.deepEqual(await checkGateRouting(root, { paths }), []);
+
+  const skillPath = join(root, ".claude/skills/push/SKILL.md");
+  const skill = await readFile(skillPath, "utf8");
+  const laneFence = "pnpm gate:run frontend-build\npnpm exec oxfmt";
+  await writeFile(skillPath, skill.replace(laneFence, "pnpm exec oxfmt"));
+  assert.match(
+    (await checkGateRouting(root, { paths })).join("\n"),
+    /pre-review runner command is not fenced.*pnpm gate:run frontend-build/u,
+  );
+
+  await writeFile(
+    skillPath,
+    skill.replace(
+      "pnpm bundle:check\n```",
+      "pnpm bundle:check\npnpm gate:ensure frontend-build\n```",
+    ),
+  );
+  assert.match(
+    (await checkGateRouting(root, { paths })).join("\n"),
+    /fenced pre-review command is not run by the scheduler: pnpm gate:ensure frontend-build/u,
+  );
 });
 
 test("preserves comment-line handling for path-scoped shell fences", async () => {

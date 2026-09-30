@@ -23,7 +23,11 @@ import {
   writeShim,
 } from "./mutation-runner-test-harness.mjs";
 import { currentIdentity, identityForPid } from "./process-identity.mjs";
-import { recoveryIsSafe } from "./run-frontend-mutation.mjs";
+import {
+  parseFrontendMutationArguments,
+  recoveryIsSafe,
+  selectFrontendMutationPackagesById,
+} from "./run-frontend-mutation.mjs";
 
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const runner = join(projectRoot, "scripts", "run-frontend-mutation.mjs");
@@ -93,6 +97,7 @@ async function fixture(t = undefined) {
       'writeFileSync(marker("env"), JSON.stringify({',
       "  memory: process.env.STRYKER_MEMORY_BYTES,",
       "  cpuShare: process.env.GATE_CPU_SHARE,",
+      "  files: process.env.STRYKER_FILES,",
       '  gateMemoryPresent: Object.hasOwn(process.env, "GATE_MEMORY_BYTES"),',
       "}));",
       "console.log(`known stdout from ${name}`);",
@@ -217,6 +222,60 @@ test("--list-packages prints the shared package map without creating a fence", a
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), packageNames);
   assert.equal(existsSync(join(root, fence)), false);
+});
+
+test("explicit production files select only their package and narrow its Stryker mutate list", async (t) => {
+  const { root, state } = await fixture(t);
+  const files = ["src/components/boards/gameSession.ts", "src/utils/treeReducer.ts"];
+  const result = run(root, environment({ state, mode: "record", requestedSlots: 1 }), [
+    "--files",
+    files.join(","),
+  ]);
+  assert.equal(result.status, 0, result.stderr);
+  const selectedPackages = ["game-practice", "tree-path"];
+  assert.deepEqual(
+    (await readFile(join(state, "packages"), "utf8")).trim().split("\n").sort(),
+    selectedPackages,
+  );
+  for (const [name, file] of [
+    ["game-practice", files[0]],
+    ["tree-path", files[1]],
+  ]) {
+    const childEnv = JSON.parse(await readFile(join(state, `env-${name}`), "utf8"));
+    assert.equal(childEnv.files, file);
+    const config = runConfigImport({
+      ...process.env,
+      STRYKER_PACKAGE: name,
+      STRYKER_MEMORY_BYTES: String(STRYKER_PARENT_BYTES + STRYKER_RUNNER_BYTES),
+      GATE_CPU_SHARE: "1",
+      STRYKER_FILES: file,
+      PRINT_MUTATE: "1",
+    });
+    assert.equal(config.status, 0, config.stderr);
+    assert.deepEqual(JSON.parse(config.stdout.trim()), [file]);
+  }
+  assert.equal(existsSync(join(state, "started-workspace-storage")), false);
+  assert.equal(existsSync(join(root, fence)), false);
+});
+
+test("frontend mutation refuses any file outside its six production paths", async (t) => {
+  const { root, state } = await fixture(t);
+  const result = run(root, environment({ state }), ["--files", "src/state/not-in-scope.ts"]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /outside the mutation scope: src\/state\/not-in-scope\.ts/u);
+  await assert.rejects(() => readFile(join(state, "packages")));
+  assert.equal(existsSync(join(root, fence)), false);
+  assert.throws(
+    () => parseFrontendMutationArguments(["--files", "src/state/not-in-scope.ts"]),
+    /outside the mutation scope/u,
+  );
+});
+
+test("frontend mutation selector rejects an unknown package id through the shared helper", () => {
+  assert.throws(
+    () => selectFrontendMutationPackagesById(["unknown-package"]),
+    /Unknown frontend mutation package id: unknown-package/u,
+  );
 });
 
 test("an invalid gate memory budget starts no Stryker package and removes its fence", async (t) => {
@@ -938,7 +997,7 @@ test("the finaliser sweeps a surviving grandchild after its Stryker root exits",
 function runConfigImport(env, preloadPath = undefined) {
   const script = `
     const config = await import(${JSON.stringify(pathToFileURL(join(projectRoot, "stryker.config.mjs")).href)});
-    console.log(String(config.default.concurrency));
+    console.log(process.env.PRINT_MUTATE ? JSON.stringify(config.default.mutate) : String(config.default.concurrency));
   `;
   return spawnSync(
     process.execPath,
@@ -952,10 +1011,12 @@ test("PG-84/87: Stryker config uses the shared map, memory budget, and temp-tree
     package: process.env.STRYKER_PACKAGE,
     memory: process.env.STRYKER_MEMORY_BYTES,
     share: process.env.GATE_CPU_SHARE,
+    files: process.env.STRYKER_FILES,
   };
   try {
     process.env.STRYKER_MEMORY_BYTES = String(STRYKER_PARENT_BYTES + 3 * STRYKER_RUNNER_BYTES);
     process.env.GATE_CPU_SHARE = "1";
+    delete process.env.STRYKER_FILES;
     for (const [name, mutate] of Object.entries(mutationPackages)) {
       process.env.STRYKER_PACKAGE = name;
       const config = await import(`../stryker.config.mjs?package=${name}`);
@@ -976,6 +1037,8 @@ test("PG-84/87: Stryker config uses the shared map, memory budget, and temp-tree
     else process.env.STRYKER_MEMORY_BYTES = previous.memory;
     if (previous.share === undefined) delete process.env.GATE_CPU_SHARE;
     else process.env.GATE_CPU_SHARE = previous.share;
+    if (previous.files === undefined) delete process.env.STRYKER_FILES;
+    else process.env.STRYKER_FILES = previous.files;
   }
 });
 
@@ -988,6 +1051,7 @@ test("PG-119: Stryker config rejects unset and invalid STRYKER_MEMORY_BYTES", ()
     };
     if (value === undefined) delete env.STRYKER_MEMORY_BYTES;
     else env.STRYKER_MEMORY_BYTES = value;
+    delete env.STRYKER_FILES;
     const result = runConfigImport(env);
     assert.notEqual(result.status, 0);
     assert.match(
@@ -995,6 +1059,18 @@ test("PG-119: Stryker config rejects unset and invalid STRYKER_MEMORY_BYTES", ()
       /STRYKER_MEMORY_BYTES/u,
     );
   }
+});
+
+test("Stryker config refuses a listed file owned by another package", () => {
+  const result = runConfigImport({
+    ...process.env,
+    STRYKER_PACKAGE: "game-practice",
+    STRYKER_MEMORY_BYTES: String(STRYKER_PARENT_BYTES + STRYKER_RUNNER_BYTES),
+    GATE_CPU_SHARE: "1",
+    STRYKER_FILES: "src/utils/treeReducer.ts",
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /STRYKER_FILES path is outside game-practice/u);
 });
 
 test("PG-135/136: Stryker config concurrency follows injected CPUs and CPU share", async (t) => {

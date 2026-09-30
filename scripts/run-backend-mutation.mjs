@@ -21,6 +21,7 @@ import { dirname } from "node:path";
 import { installSignalForwarding, superviseChild } from "./child-supervisor.mjs";
 import { isEntrypoint } from "./entrypoint.mjs";
 import { fsyncDirectory } from "./fsync-directory.mjs";
+import { selectMutationPackages } from "./mutation-package-selection.mjs";
 import { identityForPid, identityIsLive } from "./process-identity.mjs";
 import { parseRustHostMetadata } from "./rust-host.mjs";
 
@@ -32,7 +33,7 @@ const minimumTestTimeoutSeconds = 30;
 const encodingAddressSpaceLimit = "2147483648";
 const suppressMutationCoreEnvironment = "CHESSFABLE_ENCODING_MUTATION_SUPPRESS_CORE";
 
-const mutationPackages = [
+export const backendMutationPackages = Object.freeze([
   {
     id: "database-encoding",
     file: "src/db/encoding.rs",
@@ -82,12 +83,12 @@ const mutationPackages = [
       "is_tag_header|update_brace_comment|read_bounded_line|validate_game_count|scan_games|checked_index|checked_range",
     test: "pgn::tests",
   },
-];
+]);
 
 // `--list-packages` must remain side-effect free: the workflow uses it before a
 // checkout has installed cargo-mutants or created the output directory.
 if (process.argv.includes("--list-packages")) {
-  console.log(JSON.stringify(mutationPackages.map(({ id }) => id)));
+  console.log(JSON.stringify(backendMutationPackages.map(({ id }) => id)));
   process.exit(0);
 }
 
@@ -186,12 +187,15 @@ if (process.argv.includes("--check-guard")) {
   process.exit(1);
 }
 
-const selectedPackage = process.env.BACKEND_MUTATION_PACKAGE;
-const selectedPackages = selectedPackage
-  ? mutationPackages.filter(({ id }) => id === selectedPackage)
-  : mutationPackages;
-if (selectedPackages.length === 0)
-  throw new Error(`Unknown BACKEND_MUTATION_PACKAGE: ${selectedPackage}`);
+export function selectBackendMutationPackages(packageId = process.env.BACKEND_MUTATION_PACKAGE) {
+  return selectMutationPackages(
+    backendMutationPackages,
+    packageId ? [packageId] : undefined,
+    "BACKEND_MUTATION_PACKAGE",
+  );
+}
+
+const selectedPackages = selectBackendMutationPackages();
 
 function assertCleanBackend() {
   let result;

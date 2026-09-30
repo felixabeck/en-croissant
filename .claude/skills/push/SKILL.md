@@ -8,19 +8,21 @@ disable-model-invocation: false
 
 Complete the push autonomously. Read `~/.claude/references/push-review-policy.md` first; it is the single source for authorization, attribution, review lenses, model allocation, triage, remediation, and red-gate behavior. This skill adds only ChessFable mechanics.
 
-**Execution order:** establish the exact push scope (§1) → complete review and arbitration
-with repairs (§3), including any preliminary checks needed to reproduce review claims → run
-relevant browser verification through `verify-ui` → commit implementation changes and known
-coordination records according to `~/.claude/references/coordination-file-commits.md` → run
-the final affected gates (§2) → push (§4) on the unchanged verified tree. A gate repair returns
-to `repair`, commit, and the required affected final-gate rerun before push.
+**Execution order:** establish the exact push scope (§1) → run pre-review checks (§2a) on the last
+implementation phase → complete review and arbitration with repairs (§3), including any preliminary
+checks needed to reproduce review claims → run relevant browser verification through `verify-ui` →
+commit implementation changes and known coordination records according to
+`~/.claude/references/coordination-file-commits.md` → run the final affected gates (§2) → push (§4)
+on the unchanged verified tree. A gate repair returns to `repair`, commit, and the required affected
+final-gate rerun before push.
 
 The workflow owns balanced `drain_stage` start/end records at each boundary: `code-review` for
 §3, `repair` for each repair batch, `browser-verification` for the browser pass, `final-gates`
 for §2, and `push` for §4, each with concise human-readable phase/round/name detail. Parallel
 review fixes use one enclosing repair start/end, closed after every repair proof and inspection.
-A stage is the last reported state; never infer it from a later command. Review fixes still run
-their required per-commit tests immediately, and any changed tree invalidates the final gates. A
+A stage is the last reported state; never infer it from a later command. Review fixes still run the
+§2a pre-review checks (`pnpm checks:pre-review`) immediately after each repair batch, before review
+resumes, and any changed tree invalidates the final gates. A
 build handoff already contains review, repairs, browser verification, and pre-gate coordination-
 record commits; do not restart review or start §2 while build lenses or repairs remain outstanding.
 
@@ -228,6 +230,34 @@ Changes to workflows also run every gate whose toolchain they can affect. Change
 - The frontend mutation suite is a receipt-backed frontend push gate: run it through `pnpm gate:ensure frontend-mutation` (measured 2026-09-30 at 397.5 s as the last lane of an all-blocks `pnpm gates:push`, 0 OOM kills; see `tasks/handoffs/2026-09-30-push-gate-parallelism-review.md`). The backend suite remains only in `.github/workflows/mutation.yml` (dispatchable, weekly, one job per package) because the eight packages take about an hour. **Never start `pnpm mutation:backend` as part of a push:** it runs `cargo-mutants --in-place`, so it edits tracked source while it runs, every other gate would then measure mutated code, and an interruption leaves an injected mutant behind (`f-20260829-09`).
 - Exercise changed shell/workflow mechanics against their refusal/error case where locally possible.
 - `$push` never tags, publishes a GitHub release, signs bundles, or deploys. Those require their own explicit workflow.
+
+## 2a. Pre-review checks
+
+Run this after the last implementation phase and after every repair batch, before code review
+(including build step 6) and before a closure round over a diff. A red pre-review run is repaired
+before review starts or resumes. These cheap, changed-path checks do not replace the final affected
+gates in §2.
+
+```bash
+pnpm checks:pre-review
+```
+
+The scheduler selects only lanes whose inputs changed. The frontend build runs first whenever the
+Windows clippy or bundle lane is selected; those lanes consume its `dist/` output. Commands in the
+selected lanes are:
+
+```bash
+pnpm gate:run frontend-build
+pnpm exec oxfmt --check <changed-format-files>
+pnpm exec oxlint --deny-warnings <changed-js-ts-files>
+pnpm exec tsgo --noEmit
+cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+pnpm coverage:mapping:frontend
+pnpm coverage:mapping:backend
+pnpm mutation:frontend -- --files <comma-separated-production-files>
+pnpm rust:windows:check
+pnpm bundle:check
+```
 
 ## 3. Independent review and remediation
 
