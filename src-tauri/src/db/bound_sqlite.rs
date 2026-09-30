@@ -1220,7 +1220,7 @@ mod unix_hooks {
         }
     }
 
-    unsafe fn open_hook_inner(path: *const c_char, flags: c_int, mode: c_int) -> c_int {
+    pub(super) unsafe fn open_hook_inner(path: *const c_char, flags: c_int, mode: c_int) -> c_int {
         match resolve(path) {
             Resolution::Unbound => match ORIGINALS.get() {
                 Some(originals) => unsafe { (originals.open)(path, flags, mode) },
