@@ -461,6 +461,18 @@ test("reports each rust-platform contract clause through the CLI", async (t) => 
     const root = await checkedInRustFixture(subtest);
     assertCliSuccess(root);
   });
+  await t.test("(5a) does not match cargo checkout-like", async (subtest) => {
+    const root = await checkedInRustFixture(subtest);
+    const path = ".github/workflows/test.yml";
+    const contents = await readFile(join(root, path), "utf8");
+    const changed = contents.replace(
+      "      - name: Check and lint all Rust targets\n        run: |\n          cargo clippy",
+      "      - name: Check and lint all Rust targets\n        run: |\n          cargo checkout-like\n          cargo clippy",
+    );
+    assert.notEqual(changed, contents);
+    await put(root, path, changed);
+    assertCliSuccess(root);
+  });
   await t.test("(5a) rejects cargo check restored as a rust-platform step", (subtest) =>
     mutateCheckedInFileAndRunCli(
       subtest,
@@ -507,6 +519,30 @@ test("reports each rust-platform contract clause through the CLI", async (t) => 
           "      - name: Check and lint all Rust targets\n        run: |\n          cargo +stable check --all-targets --locked\n          cargo clippy",
         ),
       "(5a) Linux test job must not contain a cargo check step",
+    ),
+  );
+  await t.test("(5a) detects bash -c cargo check in the Linux lint step", (subtest) =>
+    mutateCheckedInFileAndRunCli(
+      subtest,
+      ".github/workflows/test.yml",
+      (text) =>
+        text.replace(
+          "      - name: Check and lint all Rust targets\n        run: |\n          cargo clippy",
+          "      - name: Check and lint all Rust targets\n        run: |\n          bash -c 'cargo check --all-targets --locked'\n          cargo clippy",
+        ),
+      "(5a) Linux test job must not contain a cargo check step",
+    ),
+  );
+  await t.test("(5a) detects sh -c cargo +stable check in a rust-platform step", (subtest) =>
+    mutateCheckedInFileAndRunCli(
+      subtest,
+      ".github/workflows/test.yml",
+      (text) =>
+        text.replace(
+          "      - name: Clippy all Rust targets",
+          '      - name: Wrapped shell check\n        run: sh -c "cargo +stable check"\n      - name: Clippy all Rust targets',
+        ),
+      "(5a) rust-platform must not contain a cargo check step",
     ),
   );
   await t.test("(5b) missing cargo clippy", (subtest) =>
