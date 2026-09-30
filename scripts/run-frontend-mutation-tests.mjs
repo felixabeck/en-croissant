@@ -504,6 +504,70 @@ test("PG-102: the finaliser preserves a replaced owner after the child identity 
   assert.equal(existsSync(join(root, fence)), true);
 });
 
+test("PG-102 regression: a foreign owner written inside spawn is preserved and stops the run", async (t) => {
+  const { root, state } = await fixture(t);
+  const firstPackage = packageNames[0];
+  const foreignOwner = deadOwner();
+  const shimPath = join(root, "node_modules", "@stryker-mutator", "core", "bin", "stryker.js");
+  await writeShim(
+    shimPath,
+    [
+      'import { writeFileSync } from "node:fs";',
+      "const state = process.env.SHIM_STATE;",
+      "const name = process.env.STRYKER_PACKAGE;",
+      'process.on("SIGTERM", () => { writeFileSync(`${state}/terminated-${name}`, ""); process.exit(0); });',
+      'process.on("SIGINT", () => { writeFileSync(`${state}/terminated-${name}`, ""); process.exit(0); });',
+      'writeFileSync(`${state}/ready-${name}`, "");',
+      "setTimeout(() => process.exit(0), 3_000);",
+      "",
+    ].join("\n"),
+  );
+  const injectedSource = [
+    'import { spawn } from "node:child_process";',
+    'import { appendFileSync, existsSync, writeFileSync } from "node:fs";',
+    "const { runFrontendMutation } = await import(process.env.RUNNER_URL);",
+    "const result = await runFrontendMutation((command, args, options) => {",
+    "  const name = options.env.STRYKER_PACKAGE;",
+    '  appendFileSync(process.env.SHIM_STATE + "/spawned-packages", `${name}\\n`);',
+    "  const child = spawn(command, args, options);",
+    "  if (name === process.env.FOREIGN_OWNER_PACKAGE) {",
+    '    const ready = process.env.SHIM_STATE + "/ready-" + name;',
+    "    const deadline = Date.now() + 5_000;",
+    "    const pause = new Int32Array(new SharedArrayBuffer(4));",
+    "    while (!existsSync(ready) && Date.now() < deadline) Atomics.wait(pause, 0, 0, 5);",
+    '    if (!existsSync(ready)) { child.kill("SIGKILL"); throw new Error("fake child did not become ready"); }',
+    '    writeFileSync("mutants.out/frontend/.mutation-in-progress/owner.json", `${process.env.FOREIGN_OWNER_JSON}\\n`);',
+    '    writeFileSync(process.env.SHIM_STATE + "/foreign-child-pid", `${child.pid}\\n`);',
+    "  }",
+    "  return child;",
+    "});",
+    "process.exitCode = result;",
+    "",
+  ].join("\n");
+  const env = environment({
+    state,
+    requestedSlots: 1,
+    RUNNER_URL: pathToFileURL(runner).href,
+    FOREIGN_OWNER_PACKAGE: firstPackage,
+    FOREIGN_OWNER_JSON: JSON.stringify(foreignOwner),
+  });
+  const running = await startInjectedRunner(t, root, env, injectedSource);
+  const result = await running.done;
+  const childPid = Number(await readFile(join(state, "foreign-child-pid"), "utf8"));
+  assert.notEqual(result.code, 0, result.stderr);
+  assert.match(result.stderr, /fence owner changed/u);
+  assert.equal(existsSync(join(root, fence)), true);
+  assert.deepEqual(
+    JSON.parse(await readFile(join(root, fence, "owner.json"), "utf8")),
+    foreignOwner,
+  );
+  assert.equal(existsSync(join(state, `terminated-${firstPackage}`)), true);
+  assert.equal(isAlive(childPid), false, `fake child pid ${childPid} is still alive`);
+  assert.deepEqual((await readFile(join(state, "spawned-packages"), "utf8")).trim().split("\n"), [
+    firstPackage,
+  ]);
+});
+
 test("PG-122: recovery waits for a dead child leader's surviving process group", async (t) => {
   const { root, state } = await fixture(t);
   const leaderPath = join(state, "group-leader.mjs");
