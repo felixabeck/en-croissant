@@ -47,6 +47,8 @@ use super::{
 };
 
 const MAX_OPEN_DATABASES: usize = 16;
+#[cfg(test)]
+const RELEASE_DELAY: Duration = Duration::from_millis(150);
 // Maximum number of pooled SQLite connections per database.
 const MAX_CONNECTIONS_PER_DATABASE: u32 = 16;
 // r2d2 retries a failed pooled open until this timeout; tests that drive a refused bound open
@@ -800,7 +802,6 @@ impl DatabaseRepository {
             .state
             .lock()
             .map_err(|_| Error::Conflict("database repository state poisoned".into()))?;
-        state.entries.remove(&key);
         state.tombstones.remove(&path);
         tombstone.disarm();
         result
@@ -1606,7 +1607,6 @@ impl DatabaseEntry {
 #[cfg(test)]
 mod drain_gate_tests {
     use super::*;
-    use std::sync::mpsc;
 
     #[test]
     fn close_refuses_tickets_until_reopened() {
@@ -1622,22 +1622,19 @@ mod drain_gate_tests {
         let gate = Arc::new(DrainGate::default());
         let ticket = gate.enter().expect("open gate issues a ticket");
         gate.close();
-        let worker_gate = Arc::clone(&gate);
-        let (done, done_rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let result = worker_gate.wait_drained(Duration::from_secs(10), None, "t");
-            done.send(result).unwrap();
-        });
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                std::thread::sleep(RELEASE_DELAY);
+                drop(ticket);
+            });
 
-        assert!(matches!(
-            done_rx.recv_timeout(Duration::from_millis(150)),
-            Err(mpsc::RecvTimeoutError::Timeout)
-        ));
-        drop(ticket);
-        assert!(matches!(
-            done_rx.recv_timeout(Duration::from_secs(10)),
-            Ok(Ok(()))
-        ));
+            let started = Instant::now();
+            assert!(gate
+                .wait_drained(Duration::from_secs(10), None, "t")
+                .is_ok());
+            assert!(started.elapsed() >= RELEASE_DELAY);
+        });
+        assert_eq!(gate.snapshot().outstanding, 0);
     }
 
     #[test]
@@ -2435,15 +2432,55 @@ mod tests {
     }
 
     #[test]
+    fn delete_cancellation_during_connection_drain_unwinds() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("database.db3");
+        let repository = DatabaseRepository::default();
+        let (target, key, entry) = initialized_target_entry(&repository, &path);
+        let held = entry.get_connection().unwrap();
+        let cancellation = CancellationToken::new();
+        let operation_ran = std::sync::atomic::AtomicBool::new(false);
+
+        std::thread::scope(|scope| {
+            let release_token = cancellation.clone();
+            scope.spawn(move || {
+                std::thread::sleep(RELEASE_DELAY);
+                release_token.cancel();
+            });
+
+            let started = Instant::now();
+            let result = repository.delete_exclusive_cancellable(
+                &target,
+                &cancellation,
+                || -> Result<(), Error> {
+                    operation_ran.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Ok(())
+                },
+            );
+            assert!(matches!(result, Err(Error::Cancellation)));
+            assert!(started.elapsed() >= RELEASE_DELAY);
+        });
+
+        assert!(!operation_ran.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(!repository
+            .state
+            .lock()
+            .unwrap()
+            .tombstones
+            .contains(target.path()));
+        assert!(!repository.state.lock().unwrap().entries.contains_key(&key));
+        assert!(!entry.leases.snapshot().closed);
+
+        drop(held);
+        assert!(repository.connection(&test_target(&path), None).is_ok());
+    }
+
+    #[test]
     fn retire_wait_timeout_unwinds_tombstone_and_retiring_flag() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("database.db3");
         let repository = DatabaseRepository::with_retire_wait(Duration::from_millis(200));
-        let target = test_target(&path);
-        let mut setup = repository.initialization_connection(&target, None).unwrap();
-        migrations::prepare_database(&mut setup, "title", "description").unwrap();
-        drop(setup);
-        repository.mark_schema_validated(&target).unwrap();
+        let (target, key, _entry) = initialized_target_entry(&repository, &path);
         let held_lease = repository.connection(&target, None).unwrap();
 
         let result = repository.delete_exclusive(&target, || Ok(()));
@@ -2452,7 +2489,6 @@ mod tests {
             "held lease must expire retire_and_wait: {result:?}"
         );
 
-        let key = entry_key(&target).unwrap();
         let state = repository.state.lock().unwrap();
         assert!(
             !state.tombstones.contains(target.path()),
@@ -2511,25 +2547,15 @@ mod tests {
         let (_target, key, entry) = initialized_target_entry(&repository, &path);
         let held = entry.get_connection().unwrap();
 
-        let repository_ref = &repository;
         std::thread::scope(|scope| {
-            let (done, done_rx) = mpsc::channel();
-            let key = key.clone();
-            let entry = Arc::clone(&entry);
             scope.spawn(move || {
-                let result = repository_ref.retire_replaced(&key, &entry, None);
-                done.send(result).unwrap();
+                std::thread::sleep(RELEASE_DELAY);
+                drop(held);
             });
 
-            assert!(matches!(
-                done_rx.recv_timeout(Duration::from_millis(150)),
-                Err(mpsc::RecvTimeoutError::Timeout)
-            ));
-            drop(held);
-            assert!(matches!(
-                done_rx.recv_timeout(Duration::from_secs(10)),
-                Ok(Ok(()))
-            ));
+            let started = Instant::now();
+            assert!(repository.retire_replaced(&key, &entry, None).is_ok());
+            assert!(started.elapsed() >= RELEASE_DELAY);
         });
 
         assert_eq!(entry.connections.snapshot().outstanding, 0);
@@ -2544,26 +2570,17 @@ mod tests {
         let (target, _key, entry) = initialized_target_entry(&repository, &path);
         let held = entry.get_connection().unwrap();
 
-        let repository_ref = &repository;
         std::thread::scope(|scope| {
-            let (done, done_rx) = mpsc::channel();
-            let entry_connections = Arc::clone(&entry.connections);
             scope.spawn(move || {
-                let result = repository_ref.delete_exclusive(&target, move || {
-                    Ok(entry_connections.snapshot().outstanding)
-                });
-                done.send(result).unwrap();
+                std::thread::sleep(RELEASE_DELAY);
+                drop(held);
             });
 
-            assert!(matches!(
-                done_rx.recv_timeout(Duration::from_millis(150)),
-                Err(mpsc::RecvTimeoutError::Timeout)
-            ));
-            drop(held);
-            assert!(matches!(
-                done_rx.recv_timeout(Duration::from_secs(10)),
-                Ok(Ok(0))
-            ));
+            let started = Instant::now();
+            let result = repository
+                .delete_exclusive(&target, || Ok(entry.connections.snapshot().outstanding));
+            assert!(matches!(result, Ok(0)));
+            assert!(started.elapsed() >= RELEASE_DELAY);
         });
     }
 
@@ -2612,6 +2629,48 @@ mod tests {
             MAX_OPEN_DATABASES + 1
         );
         drop(leases);
+    }
+
+    #[test]
+    fn lru_evicts_the_least_recently_used_idle_entry() {
+        let directory = tempfile::tempdir().unwrap();
+        let repository = DatabaseRepository::default();
+
+        for index in 0..=MAX_OPEN_DATABASES {
+            let path = directory.path().join(format!("{index}.db3"));
+            drop(
+                repository
+                    .initialization_connection(&test_target(&path), None)
+                    .unwrap(),
+            );
+        }
+
+        let state = repository.state.lock().unwrap();
+        assert_eq!(state.entries.len(), MAX_OPEN_DATABASES);
+        assert!(!state
+            .entries
+            .contains_key(&entry_key(&test_target(&directory.path().join("0.db3"))).unwrap()));
+        assert!(state.entries.contains_key(
+            &entry_key(&test_target(
+                &directory.path().join(format!("{}.db3", MAX_OPEN_DATABASES))
+            ))
+            .unwrap()
+        ));
+    }
+
+    #[test]
+    fn acquire_refuses_a_retired_entry() {
+        let directory = tempfile::tempdir().unwrap();
+        let repository = DatabaseRepository::default();
+        let (_target, _key, entry) =
+            initialized_target_entry(&repository, &directory.path().join("database.db3"));
+
+        entry.retire_and_wait(Duration::from_secs(1)).unwrap();
+
+        assert!(matches!(
+            entry.acquire(),
+            Err(Error::Conflict(message)) if message == "database is being replaced or deleted"
+        ));
     }
 
     #[test]
@@ -3663,7 +3722,7 @@ mod bound_sqlite_witnesses {
 
         assert!(matches!(
             repository.initialization_connection(&target, None),
-            Err(Error::Conflict(_))
+            Err(Error::Conflict(message)) if message == "database changed after capability resolution"
         ));
         assert!(failed_hook_seen.load(Ordering::SeqCst));
         assert!(refusal_hook_seen.load(Ordering::SeqCst));
@@ -3885,6 +3944,35 @@ mod bound_sqlite_witnesses {
             .contains("mode=rw"));
         let plain = Connection::open(&path).unwrap();
         plain.execute_batch("SELECT 1;").unwrap();
+    }
+
+    #[test]
+    fn failed_bound_connect_releases_its_ticket_and_closed_gate_refuses_connects() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("bound-existing.db3");
+        seed_database(&path, 1, "DELETE");
+        let target = test_target(&path);
+        let database = BoundDatabase::acquire(&target).unwrap();
+        let missing_path = root.path().join("missing.db3");
+        assert!(!missing_path.exists());
+        let connections = Arc::new(DrainGate::default());
+        let manager = BoundConnectionManager {
+            database,
+            uri: format!("file:{}?mode=ro", missing_path.to_string_lossy()),
+            connections: Arc::clone(&connections),
+        };
+
+        assert!(<BoundConnectionManager as ManageConnection>::connect(&manager).is_err());
+        assert_eq!(connections.snapshot().outstanding, 0);
+
+        connections.close();
+        assert!(matches!(
+            <BoundConnectionManager as ManageConnection>::connect(&manager),
+            Err(diesel::r2d2::Error::ConnectionError(
+                diesel::ConnectionError::BadConnection(message)
+            )) if message == "database pool is retiring"
+        ));
+        assert_eq!(connections.snapshot().outstanding, 0);
     }
 
     #[test]
