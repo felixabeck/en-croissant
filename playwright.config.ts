@@ -11,10 +11,10 @@ export default defineConfig({
     testDir: "./e2e",
     timeout: 45_000,
     expect: { timeout: 8_000 },
-    fullyParallel: false,
+    fullyParallel: true, // Five green runs at workers 6 on 2026-09-30 with no snapshot changes.
     forbidOnly: true,
     retries: 0,
-    workers: 1,
+    workers: 6, // Measured 2026-09-30 (wall s): 4=[53.79,47.60,52.58,54.28,50.29]; 6=[36.73,44.12,40.86,37.77,39.31,43.78,43.36]; 10=[38.86].
     reporter: [
         ["list"],
         ["html", { outputFolder: "artifacts/frontend-audit/html", open: "never" }],
