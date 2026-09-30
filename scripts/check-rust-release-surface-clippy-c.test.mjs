@@ -99,21 +99,16 @@ describe("R5 clippy cfg and gate-invisible regions", () => {
       "unclassifiable cfg (unsupported cfg attribute inside a macro input)",
     );
   });
-  test("O3.12 rejects unknown and never-built target cfg atoms", () => {
-    for (const [attribute, diagnostic] of [
-      ['#[cfg(panic = "abort")]', "gate-invisible pinned region"],
-      ["#[cfg(not(overflow_checks))]", "gate-invisible pinned region"],
-      ["#[cfg(foo)]", "unknown cfg atom foo"],
-      ['#[cfg(all(windows, target_arch = "aarch64"))]', "gate-invisible pinned region"],
-    ]) {
-      expectR5Diagnostic(
-        r5Violations(
-          "src-tauri/src/probe.rs",
-          `${attribute}\nfn probe(p: &Path) { p.exists(); }\n`,
-        ),
-        diagnostic,
-      );
-    }
+  test.each([
+    ['#[cfg(panic = "abort")]', "gate-invisible pinned region"],
+    ["#[cfg(not(overflow_checks))]", "gate-invisible pinned region"],
+    ["#[cfg(foo)]", "unknown cfg atom foo"],
+    ['#[cfg(all(windows, target_arch = "aarch64"))]', "gate-invisible pinned region"],
+  ])("O3.12 rejects unknown and never-built target cfg atom %s", (attribute, diagnostic) => {
+    expectR5Diagnostic(
+      r5Violations("src-tauri/src/probe.rs", `${attribute}\nfn probe(p: &Path) { p.exists(); }\n`),
+      diagnostic,
+    );
   });
   test("O3.12 rejects gate-invisible attributes at mid-line positions", () => {
     expectR5Diagnostic(
@@ -133,20 +128,24 @@ describe("R5 clippy cfg and gate-invisible regions", () => {
     ).toEqual([]);
     expect(r5Violations("src-tauri/src/main.rs", CHECKOUT_MAIN)).toEqual([]);
   });
-  test("O3.12 rejects added and edited gate-invisible regions and catches stale pins", () => {
+  test("O3.12 rejects an added gate-invisible region", () => {
     const added = `${CHECKOUT_MAIN}\n#[cfg(not(debug_assertions))]\nfn added_region() {}\n`;
     expectR5Diagnostic(
       r5Violations("src-tauri/src/main.rs", added),
       "gate-invisible region src-tauri/src/main.rs is not in the pinned shrink-only baseline",
     );
+  });
 
+  test("O3.12 rejects an edited gate-invisible region", () => {
     const edited = CHECKOUT_MAIN.replace(
       "#[cfg(not(debug_assertions))]\n    {\n        NATIVE_LOG_SINKS\n    }",
       "#[cfg(not(debug_assertions))]\n    {\n        NATIVE_LOG_SINKS;\n        let _extra = 1;\n    }",
     );
     expect(edited).not.toBe(CHECKOUT_MAIN);
     expectR5Diagnostic(r5Violations("src-tauri/src/main.rs", edited), "pinned gate region");
+  });
 
+  test("O3.12 rejects a stale gate-invisible pin", () => {
     const stale = CHECKOUT_MAIN.replace(
       "#[cfg(not(debug_assertions))]\n    {\n        NATIVE_LOG_SINKS\n    }",
       "#[cfg(not(debug_assertions))]\n    {\n        &NATIVE_LOG_SINKS[..1]\n    }",
@@ -155,14 +154,18 @@ describe("R5 clippy cfg and gate-invisible regions", () => {
       r5Violations("src-tauri/src/main.rs", stale),
       "no longer exists and must be removed",
     );
+  });
 
+  test("O3.12 rejects a macro twin of a gate-invisible region", () => {
     const macroTwin = CHECKOUT_MAIN.replace(
       "#[cfg(not(debug_assertions))]\n    {\n        NATIVE_LOG_SINKS\n    }",
       "#[cfg(not(debug_assertions))]\n    macro_rules! native_log_sinks { () => { NATIVE_LOG_SINKS }; }",
     );
     expect(macroTwin).not.toBe(CHECKOUT_MAIN);
     expectR5Diagnostic(r5Violations("src-tauri/src/main.rs", macroTwin), "pinned gate region");
+  });
 
+  test("O3.12 rejects a macro input replacement", () => {
     const macroInputReplacement = CHECKOUT_MAIN.replace(
       "#[cfg(not(debug_assertions))]\n    {\n        NATIVE_LOG_SINKS\n    }",
       "wrap!(#[cfg(not(debug_assertions))] mod release_paths;);",
