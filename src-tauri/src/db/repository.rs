@@ -181,9 +181,6 @@ impl DrainGate {
                     deadline.saturating_duration_since(now)
                 },
             );
-            if state.outstanding != 0 && Instant::now() >= deadline {
-                return Err(Error::Conflict(timeout_message.into()));
-            }
         }
         if cancellation.is_some_and(CancellationToken::is_cancelled) {
             return Err(Error::Cancellation);
@@ -769,6 +766,17 @@ impl DatabaseRepository {
         cancellation: Option<&CancellationToken>,
         operation: impl FnOnce() -> Result<T, Error>,
     ) -> Result<T, Error> {
+        let tombstone = self.reserve_for_deletion(target, cancellation)?;
+        let result = operation();
+        self.release_deletion(tombstone)?;
+        result
+    }
+
+    fn reserve_for_deletion(
+        &self,
+        target: &crate::infra::path_authority::DatabaseFileTarget,
+        cancellation: Option<&CancellationToken>,
+    ) -> Result<TombstoneGuard<'_>, Error> {
         if cancellation.is_some_and(CancellationToken::is_cancelled) {
             return Err(Error::Cancellation);
         }
@@ -787,7 +795,7 @@ impl DatabaseRepository {
             }
             state.entries.get(&key).cloned()
         };
-        let mut tombstone = TombstoneGuard::new(self, path.clone(), entry.clone());
+        let tombstone = TombstoneGuard::new(self, path.clone(), entry.clone());
         if let Some(entry) = &entry {
             entry.retire_and_wait_cancellable(self.retire_wait, cancellation)?;
         }
@@ -797,14 +805,17 @@ impl DatabaseRepository {
         if let Some(entry) = &entry {
             self.close_retired_entry(&key, entry, cancellation)?;
         }
-        let result = operation();
+        Ok(tombstone)
+    }
+
+    fn release_deletion(&self, mut tombstone: TombstoneGuard<'_>) -> Result<(), Error> {
         let mut state = self
             .state
             .lock()
             .map_err(|_| Error::Conflict("database repository state poisoned".into()))?;
-        state.tombstones.remove(&path);
+        state.tombstones.remove(&tombstone.path);
         tombstone.disarm();
-        result
+        Ok(())
     }
 
     fn entry(
@@ -1664,6 +1675,19 @@ mod drain_gate_tests {
 
         assert!(matches!(
             gate.wait_drained(Duration::from_secs(10), Some(&cancellation), "t"),
+            Err(Error::Cancellation)
+        ));
+    }
+
+    #[test]
+    fn wait_drained_reports_cancellation_even_when_already_drained() {
+        let gate = Arc::new(DrainGate::default());
+        gate.close();
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+
+        assert!(matches!(
+            gate.wait_drained(Duration::from_secs(1), Some(&cancellation), "t"),
             Err(Error::Cancellation)
         ));
     }
