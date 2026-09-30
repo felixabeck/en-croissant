@@ -87,6 +87,21 @@ test("accepts routed tests, nested scripts, allowed tools, and live sensitive gl
   assert.deepEqual(await checkGateRouting(root, { paths }), []);
 });
 
+test("preserves comment-line handling for path-scoped shell fences", async () => {
+  const root = await fixture();
+  const skillPath = join(root, ".claude/skills/push/SKILL.md");
+  const skill = await readFile(skillPath, "utf8");
+  const frontendFence =
+    "### TypeScript/React frontend\n\n```bash\npnpm gate:ensure frontend-coverage";
+  assert.ok(skill.includes(frontendFence));
+  const fenceOpening = "### TypeScript/React frontend\n\n```bash\n";
+  await writeFile(skillPath, skill.replace(fenceOpening, `${fenceOpening}# pnpm missing:check\n`));
+
+  const problems = (await checkGateRouting(root, { paths })).join("\n");
+  assert.match(problems, /package script missing:check/u);
+  assert.doesNotMatch(problems, /unresolved gate command.*# pnpm missing:check/u);
+});
+
 test("resolves direct script commands for every supported runner", async () => {
   for (const [runner, path] of [
     ["node", "scripts/x.mjs"],

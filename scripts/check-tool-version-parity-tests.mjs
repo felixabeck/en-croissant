@@ -485,6 +485,30 @@ test("reports each rust-platform contract clause through the CLI", async (t) => 
       "(5a) Linux test job must not contain a cargo check step",
     ),
   );
+  await t.test("(5a) detects cargo check after a directory change", (subtest) =>
+    mutateCheckedInFileAndRunCli(
+      subtest,
+      ".github/workflows/test.yml",
+      (text) =>
+        text.replace(
+          "      - name: Check and lint all Rust targets\n        run: |\n          cargo clippy",
+          "      - name: Check and lint all Rust targets\n        run: |\n          cd src-tauri && cargo check --all-targets --locked\n          cargo clippy",
+        ),
+      "(5a) Linux test job must not contain a cargo check step",
+    ),
+  );
+  await t.test("(5a) detects cargo +stable check", (subtest) =>
+    mutateCheckedInFileAndRunCli(
+      subtest,
+      ".github/workflows/test.yml",
+      (text) =>
+        text.replace(
+          "      - name: Check and lint all Rust targets\n        run: |\n          cargo clippy",
+          "      - name: Check and lint all Rust targets\n        run: |\n          cargo +stable check --all-targets --locked\n          cargo clippy",
+        ),
+      "(5a) Linux test job must not contain a cargo check step",
+    ),
+  );
   await t.test("(5b) missing cargo clippy", (subtest) =>
     mutateCheckedInFileAndRunCli(
       subtest,

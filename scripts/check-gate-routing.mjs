@@ -323,35 +323,27 @@ function routeCommands(commands, scripts, findings) {
 
 function validateGateCommands(pushSkill, scripts, repoRoot) {
   const findings = [];
-  const bashBlocks = fencedBlocks(pushSkill).filter((block) =>
-    ["bash", "sh", "shell"].includes(block.language),
-  );
-  const directGateCommands = [];
+  const directGateCommands = shellFencedCommandLines(pushSkill);
   const routedCommands = [];
 
-  for (const block of bashBlocks) {
-    for (const rawLine of block.contents.split(/\r?\n/u)) {
-      const line = rawLine.trim();
-      if (!line || line.startsWith("#")) continue;
-      directGateCommands.push(line);
-      const pnpmScripts = pnpmReferences(line);
-      if (pnpmScripts.length > 0) {
-        routedCommands.push({ command: line, source: `${PUSH_SKILL}: ${line}` });
-        continue;
-      }
-      const cargo = /^cargo\s+(\w+)/u.exec(line);
-      if (cargo && ALLOWED_CARGO_COMMANDS.has(cargo[1])) continue;
-      const words = shellWords(line);
-      if (SCRIPT_RUNNERS.has(words[0]) && words[1]) {
-        const target = resolve(repoRoot, words[1]);
-        const scriptsDirectory = resolve(repoRoot, "scripts");
-        if (target !== scriptsDirectory && !target.startsWith(`${scriptsDirectory}${sep}`)) {
-          findings.push(`gate command escapes scripts/: ${line}; use a path inside scripts/`);
-        }
-        continue;
-      }
-      findings.push(`unresolved gate command in ${PUSH_SKILL}: ${line}`);
+  for (const line of directGateCommands) {
+    const pnpmScripts = pnpmReferences(line);
+    if (pnpmScripts.length > 0) {
+      routedCommands.push({ command: line, source: `${PUSH_SKILL}: ${line}` });
+      continue;
     }
+    const cargo = /^cargo\s+(\w+)/u.exec(line);
+    if (cargo && ALLOWED_CARGO_COMMANDS.has(cargo[1])) continue;
+    const words = shellWords(line);
+    if (SCRIPT_RUNNERS.has(words[0]) && words[1]) {
+      const target = resolve(repoRoot, words[1]);
+      const scriptsDirectory = resolve(repoRoot, "scripts");
+      if (target !== scriptsDirectory && !target.startsWith(`${scriptsDirectory}${sep}`)) {
+        findings.push(`gate command escapes scripts/: ${line}; use a path inside scripts/`);
+      }
+      continue;
+    }
+    findings.push(`unresolved gate command in ${PUSH_SKILL}: ${line}`);
   }
 
   const routed = routeCommands(routedCommands, scripts, findings);
@@ -386,14 +378,14 @@ function skillSubsection(pushSkill, heading) {
     : pushSkill.slice(start, start + heading.length + nextHeading);
 }
 
-function sectionFenceLines(markdown) {
+function shellFencedCommandLines(markdown, { includeCommentLines = false } = {}) {
   return fencedBlocks(markdown)
     .filter((block) => ["bash", "sh", "shell"].includes(block.language))
     .flatMap((block) =>
       block.contents
         .split(/\r?\n/u)
         .map((line) => line.trim())
-        .filter((line) => line && !line.startsWith("#")),
+        .filter((line) => line && (includeCommentLines || !line.startsWith("#"))),
     );
 }
 
@@ -409,7 +401,7 @@ function pushSkillPreamble(pushSkill) {
 
 export function validatePushGateSchedule(pushSkill, contractRouted, schedule = PUSH_GATE_SCHEDULE) {
   const findings = [];
-  const preambleLines = sectionFenceLines(pushSkillPreamble(pushSkill));
+  const preambleLines = shellFencedCommandLines(pushSkillPreamble(pushSkill));
   const invocations = preambleLines.filter((line) => line === PUSH_GATE_INVOCATION);
   if (invocations.length !== 1) {
     findings.push(
@@ -418,7 +410,9 @@ export function validatePushGateSchedule(pushSkill, contractRouted, schedule = P
   }
 
   const fencedLines = new Set(
-    PUSH_GATE_SECTIONS.flatMap((heading) => sectionFenceLines(skillSubsection(pushSkill, heading))),
+    PUSH_GATE_SECTIONS.flatMap((heading) =>
+      shellFencedCommandLines(skillSubsection(pushSkill, heading)),
+    ),
   );
   const runnerCommands = pushGateScheduleCommands(schedule);
   for (const command of runnerCommands) {
@@ -617,15 +611,9 @@ export async function checkGateRouting(
   const subsectionRoutes = new Map();
   for (const heading of new Set(Object.values(PATH_SCOPED_CI_SCRIPTS))) {
     const subsection = skillSubsection(pushSkill, heading);
-    const commands = fencedBlocks(subsection)
-      .filter((block) => ["bash", "sh", "shell"].includes(block.language))
-      .flatMap((block) =>
-        block.contents
-          .split(/\r?\n/u)
-          .map((line) => line.trim())
-          .filter(Boolean)
-          .map((command) => ({ command, source: `${PUSH_SKILL} ${heading}` })),
-      );
+    const commands = shellFencedCommandLines(subsection, { includeCommentLines: true }).map(
+      (command) => ({ command, source: `${PUSH_SKILL} ${heading}` }),
+    );
     subsectionRoutes.set(heading, routeCommands(commands, scripts, findings));
   }
   for (const name of [...directWorkflowScripts].sort()) {

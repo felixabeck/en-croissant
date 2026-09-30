@@ -399,7 +399,18 @@ function checkTargetCoverage(workflows, findings) {
 }
 
 function hasCargoCheck(run) {
-  return run.split(/\r?\n/u).some((line) => /^cargo\s+check(?:\s|$)/u.test(line.trim()));
+  return run.split(/&&|\|\||[;|\r\n]/u).some((segment) => {
+    const words = [...segment.matchAll(/"(?:\\.|[^"])*"|'[^']*'|[^\s]+/gu)].map((match) => {
+      const word = match[0];
+      return /^("|').*\1$/su.test(word) ? word.slice(1, -1) : word;
+    });
+    return words.some(
+      (word, index) =>
+        word === "cargo" &&
+        (words[index + 1] === "check" ||
+          (/^\+\S+$/u.test(words[index + 1] ?? "") && words[index + 2] === "check")),
+    );
+  });
 }
 
 // Deliberately not part of checkTargetCoverage: that function returns early on four unrelated
