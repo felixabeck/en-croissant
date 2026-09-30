@@ -119,13 +119,16 @@ describe("R5 clippy cfg and gate-invisible regions", () => {
       "R5: unclassifiable cfg",
     );
   });
-  test("O3.12 accepts a test-only block and the real fail-analysis macro shape", () => {
+  test("O3.12 accepts a test-only block", () => {
     expect(
       r5Violations(
         "src-tauri/src/probe.rs",
         "fn probe(p: &Path) {\n    #[cfg(test)]\n    { p.exists(); }\n}\n",
       ),
     ).toEqual([]);
+  });
+
+  test("O3.12 accepts the real fail-analysis macro shape", () => {
     expect(r5Violations("src-tauri/src/main.rs", CHECKOUT_MAIN)).toEqual([]);
   });
   test("O3.12 rejects an added gate-invisible region", () => {
