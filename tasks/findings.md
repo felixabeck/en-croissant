@@ -11993,3 +11993,16 @@ Correction 2026-09-30 (records review): "the 2026-09-29 push-gate lane runner ke
 
 * **Open question, restated (2026-09-30):** the entry's original question (which files, and per-file warm imports vs. a setup file) is answered by the sweep annotated above: static warm-ups are unsafe in every affected file except `sound.test.ts`. What remains open is only the design question — move storage snapshot/repair, `document-dir` cleanup and app start-up out of module evaluation (an explicit init called by the app and by each test), so these modules can be imported without side effects and a cold transform cache cannot put a transform inside a timed test. Decision in force: d-20260930-09.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"9307b9d626417004ed9fc5c56b1ddbcb3be68a402e1dfbdca55e977342e7ce30","input_sha256":"2edf4ded70822f2a8d3e766395ea6eab2cac4ee72ca0d3c566d392508217992f","kind":"mutation-receipt","operation":"d32439ca0d4cd78b92fc352469be79162a2268240853c76beb0bfbe1ce86dd1f","options":{"section":null},"request_id_sha256":null,"results":["f-20260930-02"],"target":"f-20260930-02","v":1} -->
+
+---
+
+## 2026-09-30 — filed through the inbox spool
+
+### Push gates still run inside the 8G agent session scope; wrap them in tuxedo-config's agent-gate
+
+* **ID:** f-20260930-03 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `.claude/skills/push/SKILL.md` gate entry (`pnpm gates:push -- <blocks>`, ~59-67) and standalone receipt gate invocations; `scripts/gate-parallelism.mjs` (cgroup `memory.max` sizing).
+* **Defect:** measured 2026-09-29 (tuxedo-config f-20260929-01): Stryker was cgroup-OOM-killed in the 8G session `run-*.scope` at 12, 18 and 23 runners, and four concurrent receipt gates peaked at 6.06 GB there. tuxedo-config (commit dc95d84, f-20260929-01) now provides `agent-gate <command>`, which from a capped session starts the command in `agents.slice/agent-gate-*.scope` bound to the session, capped at 70 % of the slice's `MemoryHigh` (tower 28 GiB), `OOMPolicy=stop`, falling back to in-place execution with a warning.
+* **Why it matters:** `gate-parallelism.mjs` already sizes workers from its own cgroup's `memory.max`; inside a gate scope it reads 28 GiB instead of 8 GiB, so the push gates can use the cores without being OOM-killed.
+* **Change:** run the gate scheduler as `if command -v agent-gate >/dev/null 2>&1; then agent-gate pnpm gates:push -- …; else pnpm gates:push -- …; fi` (availability only, never exit status), and the same for standalone receipt gates the skill routes; re-measure Stryker's runner count inside the gate scope.
+* **Found by:** Claude Code, tuxedo-config f-20260929-01 build run, 2026-09-30.
