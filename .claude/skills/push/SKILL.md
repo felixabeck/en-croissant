@@ -268,6 +268,11 @@ gets a `Fix` / `Defer` / `Skip(reason)` verdict. Out-of-area findings are `Defer
 through the project ledger/inbox workflow (policy §4, universal rule 4b); ledger-backed deferrals
 need no manual handoff prompt. Never ask Felix which.
 
+Records-only pushes use policy §1b's single records lens instead of this fan-out. For a mixed range,
+run the §3 fan-out over a DIFF excluding the record paths and, in parallel, the records lens over
+the record paths, as §1b specifies. ChessFable's record paths are `tasks/findings.md`,
+`tasks/decisions.md`, `tasks/build-ledger.md` and `tasks/handoffs/**`.
+
 A path below is a Sensitive-Path glob: a hit is `--role sensitive` for that lens (and for
 fixes); everything else is `--role normal`. The globs do not replace named-lens selection.
 
@@ -346,14 +351,21 @@ Use the exact-string override keywords from
 - Require `git diff --check`, all affected gates green on the final tree, and no unresolved `Fix` finding.
 - If a final gate requires a repair, return to `repair`, commit the repair, and rerun the affected
   final gates on the changed tree before push. The push then uses the unchanged verified tree.
-- Before pushing, apply the shared policy §8 "A red remote is a red gate". The §2 gate locally
-  type-checks and lints the `x86_64-pc-windows-gnu` target; the jobs this machine cannot reproduce
-  remain `rust-windows-test`, `rust-macos-test` and the `rust-platform` matrix of the `Test`
-  workflow, including the MSVC target. All Windows tests stay CI-only. Read those jobs from the
-  newest run in which they have
-  completed — they finish about fifteen minutes before the run does:
-  `gh run list --branch <branch> --workflow Test --limit 3 --json databaseId,headSha,status`, then
-  `gh run view <id> --json jobs`; if one of them is red and this push does not repair it, refuse.
+- Before pushing, apply the shared policy §8 "A red remote is a red gate" by running:
+
+```bash
+pnpm ci:remote:check
+```
+
+  Exit 1 refuses the push unless this push's commits repair the finding that owns every listed red
+  job. If any listed red job has no owning finding, file it first through `./scripts/findings.py file`;
+  filing a finding alone never licenses the push. Exit 2 refuses the push and reports its
+  cause. Only `success` passes: `skipped`, `neutral` and every other non-success conclusion are red
+  because no `Test` workflow job is skipped by design. Policy §8 is the source of this refusal
+  rule. The §2 gate locally type-checks and lints the `x86_64-pc-windows-gnu` target; the jobs this
+  machine cannot reproduce remain `rust-windows-test`, `rust-macos-test` and the `rust-platform`
+  matrix of the `Test` workflow, including the MSVC target. All Windows tests stay CI-only. These
+  named jobs only decide what to wait for after the push.
 - Run ordinary non-force `git push` to the configured upstream.
 - Verify local `HEAD` equals `@{u}` and report commits, destination, gate results, review findings/verdicts, and that no release/deployment occurred.
 - Wait for those jobs on the pushed SHA (measured at about five minutes; the whole run takes about
