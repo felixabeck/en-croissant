@@ -11941,6 +11941,9 @@ Location correction 2026-09-30 (records review): at `3ed94336` the identity-only
 * **Open question:** should a push-gate run hold a shared "gates running" lease that the backend mutation runner refuses on (and vice versa), and where does that lease live so a crashed gate run cannot block mutation forever?
 * **Found by:** Codex `review-plan` lens, round 5 of `tasks/plans/2026-09-29-push-gate-parallelism.md`, 2026-09-29.
 
+Correction 2026-09-30 (records review): "the 2026-09-29 push-gate lane runner keeps the same one-shot check" describes a planned runner, not code at HEAD — `scripts/run-push-gates.mjs` exists only in the untracked plan `tasks/plans/2026-09-29-push-gate-parallelism.md`, and `$push` still runs its gates serially. The defect stands for the serial chain today and for the runner if it lands with the same guard.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"34ab7244a0cb31626348319743e0b735b58f68839cae88233a7080f71ef69366","input_sha256":"4431a3bc07758e15fef0f165bd79d3bda4f64f18fe659e3b287818ca4824e55e","kind":"mutation-receipt","operation":"9cc7fbfc48254d234401fa2132e19e7240bd165b1d83635174e454f37fbc9ea0","options":{"section":null},"request_id_sha256":null,"results":["f-20260929-12"],"target":"f-20260929-12","v":1} -->
+
 ---
 
 ## 2026-09-30 — filed through the inbox spool
