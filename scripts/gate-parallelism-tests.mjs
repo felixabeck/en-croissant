@@ -4,6 +4,9 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import {
   AGENT_RESERVE_BYTES,
+  CONSERVATIVE_CGROUP_LIMIT_BYTES,
+  CONSERVATIVE_STRYKER_RUNNERS,
+  CONSERVATIVE_VITEST_WORKERS,
   gateBudgetBytes,
   memoryLimitBytes,
   STRYKER_PARENT_BYTES,
@@ -41,16 +44,24 @@ function linuxFixture({
   directories = ancestors(CGROUP_DIRECTORY),
   memory = {},
   fileContents = {},
+  missingFiles = [],
   readFailures = {},
-  totalmemBytes = 32 * GIB,
 } = {}) {
   const directorySet = new Set(directories);
   const files = new Map(Object.entries(fileContents));
   const failures = new Map(Object.entries(readFailures));
   if (includeProc) files.set(PROCESS_CGROUP_FILE, procContents);
-  for (const [directory, contents] of Object.entries(memory)) {
-    files.set(join(directory, "memory.max"), `${contents}\n`);
+  for (const directory of directories) {
+    files.set(join(directory, "memory.high"), "max\n");
+    files.set(join(directory, "memory.max"), "max\n");
   }
+  for (const [directory, limits] of Object.entries(memory)) {
+    const entries = typeof limits === "string" ? { max: limits } : limits;
+    for (const [filename, contents] of Object.entries(entries)) {
+      files.set(join(directory, `memory.${filename}`), `${contents}\n`);
+    }
+  }
+  for (const path of missingFiles) files.delete(path);
 
   return {
     readFileSync(path) {
@@ -62,7 +73,6 @@ function linuxFixture({
       if (!directorySet.has(path)) throw fakeFsError("ENOENT", path);
       return { isDirectory: () => true };
     },
-    totalmem: () => totalmemBytes,
     platform: "linux",
   };
 }
@@ -74,46 +84,49 @@ function detectionErrorAt(path) {
     error.message.includes("GATE_MEMORY_BYTES");
 }
 
-test("memoryLimitBytes selects the minimum memory.max along the process cgroup path", () => {
+test("memoryLimitBytes selects the minimum memory.high or memory.max along the whole chain", () => {
   const fixture = linuxFixture({
     memory: {
-      [CGROUP_DIRECTORY]: `${6 * GIB}`,
-      [CGROUP_PARENT]: `${5 * GIB}`,
-      [CGROUP_ROOT]: `${12 * GIB}`,
+      [CGROUP_DIRECTORY]: { high: `${6 * GIB}`, max: `${7 * GIB}` },
+      [CGROUP_PARENT]: { high: `${5 * GIB}`, max: `${8 * GIB}` },
+      [CGROUP_ROOT]: { high: "max", max: `${12 * GIB}` },
     },
   });
   assert.equal(memoryLimitBytes(fixture), 5 * GIB);
 });
 
-test("memoryLimitBytes treats max as unlimited", () => {
+test("memoryLimitBytes skips max and allows a missing limit file only at the mount root", () => {
   const fixture = linuxFixture({
-    totalmemBytes: 8 * GIB,
     memory: {
-      [CGROUP_DIRECTORY]: "max",
-      [CGROUP_PARENT]: "max",
-      [CGROUP_ROOT]: "max",
+      [CGROUP_DIRECTORY]: { high: "max", max: `${6 * GIB}` },
+      [CGROUP_PARENT]: { high: `${5 * GIB}`, max: "max" },
+      [CGROUP_ROOT]: { high: "max", max: "max" },
     },
+    missingFiles: [join(CGROUP_ROOT, "memory.max")],
   });
-  assert.equal(memoryLimitBytes(fixture), 8 * GIB);
+  assert.equal(memoryLimitBytes(fixture), 5 * GIB);
 });
 
-test("memoryLimitBytes bounds a finite cgroup limit by os.totalmem()", () => {
+test("memoryLimitBytes uses the cgroup limit without consulting physical memory", () => {
   const fixture = linuxFixture({
-    totalmemBytes: 8 * GIB,
-    memory: { [CGROUP_DIRECTORY]: `${12 * GIB}` },
+    memory: { [CGROUP_DIRECTORY]: { high: `${12 * GIB}`, max: `${14 * GIB}` } },
   });
-  assert.equal(memoryLimitBytes(fixture), 8 * GIB);
+  assert.equal(
+    memoryLimitBytes({ ...fixture, totalmem: () => assert.fail("must not read total memory") }),
+    12 * GIB,
+  );
 });
 
-test("memoryLimitBytes skips ENOENT memory.max files while retaining a lower existing limit", () => {
+test("memoryLimitBytes reports ENOENT below the mount root as an incomplete chain", () => {
+  const path = join(CGROUP_DIRECTORY, "memory.high");
   const fixture = linuxFixture({
-    memory: { [CGROUP_DIRECTORY]: `${4 * GIB}` },
+    readFailures: { [path]: fakeFsError("ENOENT", path) },
   });
-  assert.equal(memoryLimitBytes(fixture), 4 * GIB);
+  assert.throws(() => memoryLimitBytes(fixture), detectionErrorAt(path));
 });
 
-test("memoryLimitBytes reports EACCES on memory.max with its path and override guidance", () => {
-  const path = join(CGROUP_DIRECTORY, "memory.max");
+test("memoryLimitBytes reports EACCES on memory.high with its path and override guidance", () => {
+  const path = join(CGROUP_PARENT, "memory.high");
   const fixture = linuxFixture({
     readFailures: { [path]: fakeFsError("EACCES", path) },
   });
@@ -122,7 +135,7 @@ test("memoryLimitBytes reports EACCES on memory.max with its path and override g
 
 test("memoryLimitBytes rejects an unparsable memory.max value with its path", () => {
   const path = join(CGROUP_DIRECTORY, "memory.max");
-  const fixture = linuxFixture({ memory: { [CGROUP_DIRECTORY]: "not-a-number" } });
+  const fixture = linuxFixture({ memory: { [CGROUP_DIRECTORY]: { max: "not-a-number" } } });
   assert.throws(() => memoryLimitBytes(fixture), detectionErrorAt(path));
 });
 
@@ -149,23 +162,23 @@ test("memoryLimitBytes rejects cgroup-v1 content without a 0:: line", () => {
   assert.throws(() => memoryLimitBytes(fixture), detectionErrorAt(PROCESS_CGROUP_FILE));
 });
 
-test("memoryLimitBytes uses os.totalmem() without cgroup reads on non-Linux platforms", () => {
+test("non-Linux cgroup detection fails instead of using physical memory", () => {
   let reads = 0;
-  const totalmemBytes = 12 * GIB;
-  assert.equal(
-    memoryLimitBytes({
-      platform: "darwin",
-      totalmem: () => totalmemBytes,
-      readFileSync() {
-        reads += 1;
-        throw new Error("must not read cgroup files");
-      },
-      statSync() {
-        reads += 1;
-        throw new Error("must not stat cgroup directories");
-      },
-    }),
-    totalmemBytes,
+  assert.throws(
+    () =>
+      memoryLimitBytes({
+        platform: "darwin",
+        totalmem: () => assert.fail("must not read total memory"),
+        readFileSync() {
+          reads += 1;
+          throw new Error("must not read cgroup files");
+        },
+        statSync() {
+          reads += 1;
+          throw new Error("must not stat cgroup directories");
+        },
+      }),
+    detectionErrorAt(PROCESS_CGROUP_FILE),
   );
   assert.equal(reads, 0);
 });
@@ -208,9 +221,84 @@ test("gateBudgetBytes does not read an unreadable cgroup when GATE_MEMORY_BYTES 
   assert.equal(reads, 0);
 });
 
-test("gateBudgetBytes subtracts AGENT_RESERVE_BYTES exactly from the injected cgroup limit", () => {
-  const fixture = linuxFixture({ memory: { [CGROUP_DIRECTORY]: `${7 * GIB}` } });
+test("gateBudgetBytes subtracts AGENT_RESERVE_BYTES from the minimum high/max limit", () => {
+  const fixture = linuxFixture({
+    memory: { [CGROUP_DIRECTORY]: { high: `${7 * GIB}`, max: `${9 * GIB}` } },
+  });
   assert.equal(gateBudgetBytes({ ...fixture, env: {} }), 7 * GIB - AGENT_RESERVE_BYTES);
+});
+
+test("an unreadable ancestor uses the conservative worker counts and prints its cause once", () => {
+  const path = join(CGROUP_PARENT, "memory.max");
+  const fixture = linuxFixture({
+    memory: { [CGROUP_DIRECTORY]: { high: `${16 * GIB}`, max: `${16 * GIB}` } },
+    readFailures: { [path]: fakeFsError("EACCES", path) },
+  });
+  let stderr = "";
+  const budgetBytes = gateBudgetBytes({
+    ...fixture,
+    env: {},
+    stderr: { write: (line) => (stderr += line) },
+  });
+  assert.equal(budgetBytes, CONSERVATIVE_CGROUP_LIMIT_BYTES - AGENT_RESERVE_BYTES);
+  assert.equal(stderr.split("\n").filter(Boolean).length, 1);
+  assert.match(stderr, /memory\.max/u);
+  assert.equal(
+    workerCount({
+      perWorkerBytes: VITEST_WORKER_BYTES,
+      baseBytes: VITEST_BASE_BYTES,
+      budgetBytes,
+      availableParallelism: () => 24,
+      env: {},
+    }),
+    CONSERVATIVE_VITEST_WORKERS,
+  );
+  const slots = strykerSlots({ budgetBytes, availableParallelism: () => 24, env: {} });
+  assert.equal(slots.slots, 1);
+  assert.equal(
+    workerCount({
+      perWorkerBytes: STRYKER_RUNNER_BYTES,
+      baseBytes: STRYKER_PARENT_BYTES,
+      budgetBytes,
+      availableParallelism: () => 24,
+      env: {},
+    }),
+    CONSERVATIVE_STRYKER_RUNNERS,
+  );
+});
+
+test("an all-max chain uses the conservative worker counts instead of physical memory", () => {
+  const fixture = linuxFixture();
+  let stderr = "";
+  const budgetBytes = gateBudgetBytes({
+    ...fixture,
+    env: {},
+    stderr: { write: (line) => (stderr += line) },
+  });
+  assert.equal(budgetBytes, CONSERVATIVE_CGROUP_LIMIT_BYTES - AGENT_RESERVE_BYTES);
+  assert.match(stderr, /no finite memory\.high or memory\.max limit/u);
+  assert.equal(
+    workerCount({
+      perWorkerBytes: VITEST_WORKER_BYTES,
+      baseBytes: VITEST_BASE_BYTES,
+      budgetBytes,
+      availableParallelism: () => 24,
+      env: {},
+    }),
+    CONSERVATIVE_VITEST_WORKERS,
+  );
+  const slots = strykerSlots({ budgetBytes, availableParallelism: () => 24, env: {} });
+  assert.equal(slots.slots, 1);
+  assert.equal(
+    workerCount({
+      perWorkerBytes: STRYKER_RUNNER_BYTES,
+      baseBytes: STRYKER_PARENT_BYTES,
+      budgetBytes,
+      availableParallelism: () => 24,
+      env: {},
+    }),
+    CONSERVATIVE_STRYKER_RUNNERS,
+  );
 });
 
 test("workerCount rejects a budget below baseBytes plus one worker and names both byte counts", () => {

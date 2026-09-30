@@ -64,9 +64,13 @@ the contract-only run). For the selected blocks, it runs the mutation guard firs
 `bindings:check` with `--bindings`, then the contract, Rust lint, Rust test, Rust coverage, frontend
 coverage and bundle lanes concurrently; e2e waits for bundle and every cargo lane because its
 container build rewrites `dist/`, a Rust compile input, and frontend mutation runs last unless the
-budget allows one wave. Worker counts come from the cgroup memory budget
-(`scripts/gate-parallelism.mjs`), because every agent session runs in an 8 GiB scope where
-core-count sizing was measured to OOM-kill Stryker. The schedule and its constants are
+budget allows one wave. `scripts/heavy-gate.sh` holds the machine-wide heavy-gate lock (a waiting
+gate prints the holder) and runs the full heavy part in its own transient
+`chessfable-gate-*.scope` under `agents.slice`. `scripts/gate-parallelism.mjs` sizes workers from
+that scope's complete cgroup chain, including the `agents.slice` budget, and uses the recorded
+conservative 8 GiB configuration if an ancestor limit cannot be read or no finite limit exists.
+The e2e container runs with a 4 GiB limit reserved from frontend coverage and from frontend
+mutation only when mutation shares its concurrent schedule. The schedule and its constants are
 `d-20260930-03` and `d-20260930-04`.
 
 Gate scripts live in `package.json`; the path mapping and any direct tool invocations live in the

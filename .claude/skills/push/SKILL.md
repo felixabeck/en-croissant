@@ -67,6 +67,13 @@ run on every invocation; the runner also runs the fenced commands below as their
 Receipt-backed gates may run concurrently while preserving each lane's command order. A failure
 returns to `repair`, commit, and the required affected final-gate rerun before push.
 
+The runner holds the machine-wide heavy-gate lock for the full run; a waiting gate prints the
+holder. It runs in its own transient `chessfable-gate-*.scope` under `agents.slice`, and sizes
+workers from that scope's complete cgroup chain (the `agents.slice` budget), with the recorded
+conservative 8 GiB fallback if the chain is unreadable or has no finite limit. The e2e container has a 4 GiB
+memory limit reserved from frontend coverage and, when mutation runs concurrently, frontend
+mutation.
+
 **Gate on the exit code, never on a line of output.** `pnpm lint:ci && echo green || echo red` reports the failure and still leaves the shell at exit 0, so a `&&`-chained commit behind it proceeds over a red gate. Check `$?` (or `${PIPESTATUS[0]}` behind a pipe, with `set -o pipefail`) and stop. *Measured 2026-08-29: a formatting failure was printed as `lint:ci RED` and the same command committed and pushed anyway, which took a second commit to repair.*
 
 ### Unconditional contract gate

@@ -9,8 +9,9 @@ import {
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { isEntrypoint } from "./entrypoint.mjs";
-import { gateBudgetBytes } from "./gate-parallelism.mjs";
+import { gateBudgetBytes, VITEST_MINIMUM_BUDGET_BYTES } from "./gate-parallelism.mjs";
 import { installMultiChildSignalForwarding, superviseChild } from "./child-supervisor.mjs";
+import { E2E_CONTAINER_MEMORY_BYTES } from "./run-e2e-container.mjs";
 
 const GIB = 1024 ** 3;
 
@@ -417,22 +418,40 @@ async function runLane(lane, env, context, results) {
   return task;
 }
 
-function makeLaneEnvironment(env, laneName, budgetBytes, concurrentMutation, cargoLanesPresent) {
+function makeLaneEnvironment(
+  env,
+  laneName,
+  budgetBytes,
+  concurrentMutation,
+  cargoLanesPresent,
+  e2eSelected,
+) {
   if (laneName === "frontend-coverage") {
     const memoryShare = cargoLanesPresent || concurrentMutation ? P2_VITEST_SHARE : 1;
     const cpuShare = concurrentMutation ? P2_CPU_SHARE : 1;
+    const budgetAfterContainer = budgetBytes - (e2eSelected ? E2E_CONTAINER_MEMORY_BYTES : 0);
+    const sharedBudget = Math.floor(budgetAfterContainer * memoryShare);
+    const laneBudget =
+      e2eSelected && budgetAfterContainer >= VITEST_MINIMUM_BUDGET_BYTES
+        ? Math.max(sharedBudget, VITEST_MINIMUM_BUDGET_BYTES)
+        : sharedBudget;
     return {
       ...env,
-      GATE_MEMORY_BYTES: String(Math.floor(budgetBytes * memoryShare)),
+      GATE_MEMORY_BYTES: String(laneBudget),
       GATE_CPU_SHARE: String(cpuShare),
     };
   }
   if (laneName === "frontend-mutation") {
     const memoryShare = concurrentMutation ? P2_MUTATION_SHARE : 1;
     const cpuShare = concurrentMutation ? P2_CPU_SHARE : 1;
+    const reserveContainer = e2eSelected && concurrentMutation;
     return {
       ...env,
-      GATE_MEMORY_BYTES: String(Math.floor(budgetBytes * memoryShare)),
+      GATE_MEMORY_BYTES: String(
+        Math.floor(
+          (budgetBytes - (reserveContainer ? E2E_CONTAINER_MEMORY_BYTES : 0)) * memoryShare,
+        ),
+      ),
       GATE_CPU_SHARE: String(cpuShare),
     };
   }
@@ -594,13 +613,21 @@ export async function runPushGates(
         budgetBytes >= ONE_WAVE_BYTES &&
         cpuCount >= MIN_CONCURRENT_SELF_SIZING_CPUS;
       const laneByName = new Map(runnableLanes.map((lane) => [lane.name, lane]));
+      const e2eSelected = laneByName.has("e2e");
       const baseLanes = runnableLanes.filter(
         (lane) => lane.name !== "e2e" && lane.name !== "frontend-mutation",
       );
       const p2Promises = new Map();
       for (const lane of baseLanes) {
         const laneEnv = lane.selfSizing
-          ? makeLaneEnvironment(env, lane.name, budgetBytes, concurrentMutation, rustLanesPresent)
+          ? makeLaneEnvironment(
+              env,
+              lane.name,
+              budgetBytes,
+              concurrentMutation,
+              rustLanesPresent,
+              e2eSelected,
+            )
           : env;
         p2Promises.set(lane.name, runLane(lane, laneEnv, context, resultsByName));
       }
@@ -624,6 +651,7 @@ export async function runPushGates(
             budgetBytes,
             concurrentMutation,
             rustLanesPresent,
+            e2eSelected,
           );
           mutationPromise = runLane(mutationLane, laneEnv, context, resultsByName);
           p2Promises.set(mutationLane.name, mutationPromise);
@@ -639,6 +667,7 @@ export async function runPushGates(
               budgetBytes,
               false,
               rustLanesPresent,
+              e2eSelected,
             );
             return runLane(mutationLane, laneEnv, context, resultsByName);
           });

@@ -13,7 +13,8 @@ import {
   PUSH_GATE_SCHEDULE,
   runPushGates,
 } from "./run-push-gates.mjs";
-import { workerCount } from "./gate-parallelism.mjs";
+import { VITEST_MINIMUM_BUDGET_BYTES, workerCount } from "./gate-parallelism.mjs";
+import { E2E_CONTAINER_MEMORY_BYTES } from "./run-e2e-container.mjs";
 import { startNodeCli } from "./mutation-runner-test-harness.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -149,6 +150,7 @@ async function makeHarness(
     root,
     bin,
     state,
+    budgetBytes,
     configPath,
     env: {
       ...process.env,
@@ -1018,7 +1020,10 @@ test("P2 memory/CPU placement, concurrency anchor and cgroup-read guards (PG-47,
       );
       assert.equal(mutation.env.GATE_MEMORY_BYTES, String(ONE_WAVE_BYTES * 2));
       assert.equal(mutation.env.GATE_CPU_SHARE, "1");
-      assert.equal(coverage.env.GATE_MEMORY_BYTES, String(ONE_WAVE_BYTES * 2));
+      assert.equal(
+        coverage.env.GATE_MEMORY_BYTES,
+        String(ONE_WAVE_BYTES * 2 - E2E_CONTAINER_MEMORY_BYTES),
+      );
       assert.equal(coverage.env.GATE_CPU_SHARE, "1");
     },
   );
@@ -1315,13 +1320,24 @@ test("frontend self-sizing lane environment and P1 schedule anchor (PG-17, PG-58
         );
         const cargoLanesRun =
           cargo && events.some((event) => event.command === "pnpm gate:ensure backend-test");
+        const budgetAfterContainer = budgetBytes - E2E_CONTAINER_MEMORY_BYTES;
         const coverageMemory = Math.floor(
-          budgetBytes * (cargoLanesRun || concurrent ? P2_VITEST_SHARE : 1),
+          budgetAfterContainer * (cargoLanesRun || concurrent ? P2_VITEST_SHARE : 1),
         );
-        const mutationMemory = Math.floor(budgetBytes * (concurrent ? P2_MUTATION_SHARE : 1));
-        assert.equal(coverage.env.GATE_MEMORY_BYTES, String(coverageMemory));
+        const minimumWorkerFloor =
+          budgetAfterContainer >= VITEST_MINIMUM_BUDGET_BYTES ? VITEST_MINIMUM_BUDGET_BYTES : 0;
+        const reservedCoverageMemory = Math.max(coverageMemory, minimumWorkerFloor);
+        const mutationMemory = Math.floor(
+          (budgetBytes - (concurrent ? E2E_CONTAINER_MEMORY_BYTES : 0)) *
+            (concurrent ? P2_MUTATION_SHARE : 1),
+        );
+        assert.equal(coverage.env.GATE_MEMORY_BYTES, String(reservedCoverageMemory));
         assert.equal(mutation.env.GATE_MEMORY_BYTES, String(mutationMemory));
-        if (concurrent) assert.ok(coverageMemory + mutationMemory <= budgetBytes);
+        if (concurrent) {
+          assert.ok(
+            reservedCoverageMemory + mutationMemory <= budgetBytes - E2E_CONTAINER_MEMORY_BYTES,
+          );
+        }
         assert.equal(coverage.env.GATE_CPU_SHARE, concurrent ? "0.5" : "1");
         assert.equal(mutation.env.GATE_CPU_SHARE, concurrent ? "0.5" : "1");
       }

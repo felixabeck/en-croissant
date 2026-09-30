@@ -1,14 +1,117 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { spawn, spawnSync } from "node:child_process";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { delimiter, dirname, join, resolve } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
-import { playwrightArguments } from "./run-e2e-container.mjs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import {
+  E2E_CONTAINER_MEMORY,
+  E2E_CONTAINER_MEMORY_BYTES,
+  playwrightArguments,
+} from "./run-e2e-container.mjs";
 
 const scripts = dirname(fileURLToPath(import.meta.url));
+const projectRoot = resolve(scripts, "..");
+const launcherPath = join(scripts, "run-e2e-container.mjs");
 const directoryTrash = "--grep=localizes directory-trash";
+const EVENT_WAIT_TIMEOUT_MS = 5_000;
+
+const FAKE_DOCKER = String.raw`#!/usr/bin/env node
+import { appendFileSync } from "node:fs";
+
+const args = process.argv.slice(2);
+const action = args[0];
+const record = (entry) => appendFileSync(
+  process.env.FAKE_DOCKER_RECORD,
+  JSON.stringify({ ...entry, pid: process.pid }) + "\n",
+);
+record({ action, args });
+
+if (action === "info") {
+  if (process.env.FAKE_DOCKER_INFO_EXIT) {
+    process.stderr.write(process.env.FAKE_DOCKER_INFO_ERROR ?? "injected info failure\n");
+    process.exit(Number(process.env.FAKE_DOCKER_INFO_EXIT));
+  }
+  process.stdout.write((process.env.FAKE_DOCKER_MEMORY_SUPPORT ?? "true") + "\n");
+} else if (action === "run") {
+  const mode = process.env.FAKE_DOCKER_RUN_MODE ?? "success";
+  if (mode === "hold") {
+    const finish = () => process.exit(143);
+    process.on("SIGTERM", finish);
+    process.on("SIGINT", finish);
+    setInterval(() => {}, 1000);
+  } else if (mode === "fail") {
+    process.stderr.write("injected runner failure\n");
+    process.exit(Number(process.env.FAKE_DOCKER_RUN_EXIT ?? 17));
+  }
+} else if (action === "rm") {
+  if (process.env.FAKE_DOCKER_RM_MODE === "fail") {
+    process.stderr.write("injected cleanup refusal\n");
+    process.exit(23);
+  }
+}
+`;
+
+async function makeHarness(t, overrides = {}) {
+  const root = await mkdtemp(join("/tmp", "e2e-launcher-"));
+  const bin = join(root, "bin");
+  await mkdir(bin);
+  const docker = join(bin, "docker");
+  const record = join(root, "docker.jsonl");
+  await writeFile(docker, FAKE_DOCKER);
+  await chmod(docker, 0o755);
+  await writeFile(record, "");
+  t.after(() => rm(root, { recursive: true, force: true }));
+  return {
+    root,
+    record,
+    env: {
+      ...process.env,
+      PATH: `${bin}${delimiter}${process.env.PATH}`,
+      FAKE_DOCKER_RECORD: record,
+      ...overrides,
+    },
+  };
+}
+
+function startNode(args, env) {
+  const child = spawn(process.execPath, args, {
+    cwd: projectRoot,
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => (stdout += chunk.toString("utf8")));
+  child.stderr.on("data", (chunk) => (stderr += chunk.toString("utf8")));
+  const done = new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (code, signal) => resolve({ code, signal, stdout, stderr }));
+  });
+  return { child, done };
+}
+
+async function readEvents(harness) {
+  const contents = await readFile(harness.record, "utf8");
+  return contents
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+}
+
+async function waitForEvent(harness, predicate) {
+  const deadline = Date.now() + EVENT_WAIT_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const event = (await readEvents(harness)).find(predicate);
+    if (event) return event;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail(`Timed out waiting for fake Docker event after ${EVENT_WAIT_TIMEOUT_MS} ms`);
+}
+
+function pnpm(args, env = process.env) {
+  return spawnSync("pnpm", ["--silent", ...args], { cwd: projectRoot, encoding: "utf8", env });
+}
 
 // pnpm retains a caller's `--` (measured 2026-09-27, pnpm 10.34.5); these are the argv tails
 // the package scripts actually receive, not hypothetical inputs (`f-20260910-07`).
@@ -36,36 +139,75 @@ test("only the first separator is pnpm's; a later one is the caller's own", () =
   ]);
 });
 
-// The package scripts themselves, through pnpm, not only the helper: a launcher that stopped
-// calling it, or a package script that bypassed its launcher, would leave the unit tests above
-// green while the scoped run widened to the whole suite again.
-const projectRoot = resolve(scripts, "..");
-function pnpm(args, env = process.env) {
-  return spawnSync("pnpm", ["--silent", ...args], { cwd: projectRoot, encoding: "utf8", env });
-}
-
-test("the container snapshot command hands Playwright the selection as options", async () => {
-  const bin = await mkdtemp(join(tmpdir(), "fake-docker-"));
-  const record = join(bin, "argv.json");
-  const docker = join(bin, "docker");
-  await writeFile(
-    docker,
-    [
-      "#!/usr/bin/env node",
-      'const { writeFileSync } = require("node:fs");',
-      'if (process.argv[2] === "run") {',
-      `  writeFileSync(${JSON.stringify(record)}, JSON.stringify(process.argv.slice(2)));`,
-      "}",
-      "",
-    ].join("\n"),
-  );
-  await chmod(docker, 0o755);
-  const run = pnpm(["test:e2e:update", "--", "--project=async-errors", directoryTrash], {
-    ...process.env,
-    PATH: `${bin}${delimiter}${process.env.PATH}`,
+test("a supported Docker launch uses the recorded limit, a unique name, and every existing flag", async (t) => {
+  assert.equal(E2E_CONTAINER_MEMORY, "4g");
+  assert.equal(E2E_CONTAINER_MEMORY_BYTES, 4 * 1024 ** 3);
+  const harness = await makeHarness(t);
+  const result = await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [launcherPath, "--project=async-errors"], {
+      cwd: projectRoot,
+      env: harness.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => (stdout += chunk.toString("utf8")));
+    child.stderr.on("data", (chunk) => (stderr += chunk.toString("utf8")));
+    child.once("error", reject);
+    child.once("close", (code) => resolve({ code, stdout, stderr }));
   });
-  assert.equal(run.status, 0, run.stderr);
-  const argv = JSON.parse(await readFile(record, "utf8"));
+  assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
+  const events = await readEvents(harness);
+  assert.deepEqual(
+    events.map(({ action }) => action),
+    ["info", "run"],
+  );
+  assert.deepEqual(events[0].args, ["info", "--format", "{{.MemoryLimit}}"]);
+  const argv = events[1].args;
+  assert.ok(argv.includes("--rm"));
+  assert.equal(argv[argv.indexOf("--memory") + 1], "4g");
+  assert.equal(argv[argv.indexOf("--memory") + 1], E2E_CONTAINER_MEMORY);
+  const name = argv[argv.indexOf("--name") + 1];
+  assert.match(name, /^chessfable-e2e-\d+-[0-9a-f-]{36}$/u);
+  assert.equal(argv[argv.indexOf("--init")], "--init");
+  assert.ok(argv.includes("--ipc=host"));
+  assert.ok(argv.includes("--user"));
+  assert.ok(argv.includes("--volume"));
+  assert.ok(argv.includes("--workdir"));
+  assert.ok(argv.includes("HOME=/tmp"));
+  assert.ok(argv.includes("CI=1"));
+  assert.deepEqual(argv.slice(argv.indexOf("test")), ["test", "--project=async-errors"]);
+});
+
+test("container names differ across launches from the same process", async (t) => {
+  const harness = await makeHarness(t);
+  const moduleUrl = pathToFileURL(launcherPath).href;
+  const source = [
+    `import { runE2eContainer } from ${JSON.stringify(moduleUrl)};`,
+    "const first = await runE2eContainer([]);",
+    "const second = await runE2eContainer([]);",
+    "process.exitCode = first.exitCode || second.exitCode;",
+  ].join("\n");
+  const result = await startNode(["--input-type=module", "-e", source], harness.env).done;
+  assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
+  const runs = (await readEvents(harness)).filter((event) => event.action === "run");
+  assert.equal(runs.length, 2);
+  const names = runs.map((event) => event.args[event.args.indexOf("--name") + 1]);
+  assert.notEqual(names[0], names[1]);
+});
+
+test("the package snapshot command forwards its selection after Docker memory preflight", async (t) => {
+  const harness = await makeHarness(t);
+  const run = pnpm(
+    ["test:e2e:update", "--", "--project=async-errors", directoryTrash],
+    harness.env,
+  );
+  assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}`);
+  const events = await readEvents(harness);
+  assert.equal(events[0].action, "info");
+  assert.equal(events[1].action, "run");
+  const argv = events[1].args;
+  assert.equal(argv[argv.indexOf("--memory") + 1], E2E_CONTAINER_MEMORY);
   assert.deepEqual(argv.slice(argv.indexOf("test")), [
     "test",
     "--update-snapshots",
@@ -74,14 +216,163 @@ test("the container snapshot command hands Playwright the selection as options",
   ]);
 });
 
-test("the native e2e command selects only the named test through pnpm's separator", () => {
+test("Docker without memory-limit support is refused before any container is started", async (t) => {
+  const harness = await makeHarness(t, { FAKE_DOCKER_MEMORY_SUPPORT: "false" });
+  const result = await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [launcherPath], {
+      cwd: projectRoot,
+      env: harness.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => (stderr += chunk.toString("utf8")));
+    child.once("error", reject);
+    child.once("close", (code) => resolve({ code, stderr }));
+  });
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /does not support memory-limited containers/u);
+  assert.deepEqual(
+    (await readEvents(harness)).map(({ action }) => action),
+    ["info"],
+  );
+});
+
+test("unavailable Docker prints the native-run guidance and starts no container", async (t) => {
+  await t.test("probe spawn error", async (subtest) => {
+    const harness = await makeHarness(subtest);
+    const env = { ...harness.env, PATH: join(harness.root, "missing-bin") };
+    const result = await startNode([launcherPath], env).done;
+    assert.equal(result.code, 1, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stderr, /docker is required for the containerized e2e run/u);
+    assert.match(
+      result.stderr,
+      /native `pnpm test:e2e` compares against snapshots recorded in the container/u,
+    );
+    assert.match(
+      result.stderr,
+      /font rasterization alone on most machines.*Install docker, or run\s+the suite in CI/u,
+    );
+    assert.match(result.stderr, /Docker probe error:.*ENOENT/u);
+    assert.deepEqual(await readEvents(harness), []);
+  });
+
+  await t.test("probe non-zero exit", async (subtest) => {
+    const harness = await makeHarness(subtest, {
+      FAKE_DOCKER_INFO_EXIT: "42",
+      FAKE_DOCKER_INFO_ERROR: "injected daemon refusal\n",
+    });
+    const result = await startNode([launcherPath], harness.env).done;
+    assert.equal(result.code, 1, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stderr, /docker is required for the containerized e2e run/u);
+    assert.match(result.stderr, /Docker probe error: docker exited 42: injected daemon refusal/u);
+    assert.deepEqual(
+      (await readEvents(harness)).map(({ action }) => action),
+      ["info"],
+    );
+  });
+});
+
+test("a failed runner removes exactly its named container", async (t) => {
+  const harness = await makeHarness(t, { FAKE_DOCKER_RUN_MODE: "fail" });
+  const result = await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [launcherPath], {
+      cwd: projectRoot,
+      env: harness.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => (stdout += chunk.toString("utf8")));
+    child.stderr.on("data", (chunk) => (stderr += chunk.toString("utf8")));
+    child.once("error", reject);
+    child.once("close", (code) => resolve({ code, stdout, stderr }));
+  });
+  assert.equal(result.code, 17, `${result.stdout}\n${result.stderr}`);
+  const events = await readEvents(harness);
+  assert.deepEqual(
+    events.map(({ action }) => action),
+    ["info", "run", "rm"],
+  );
+  const name = events[1].args[events[1].args.indexOf("--name") + 1];
+  assert.deepEqual(events[2].args, ["rm", "-f", name]);
+});
+
+test("SIGINT and SIGTERM stop and remove the active container before the launcher exits", async (t) => {
+  for (const [signal, expectedCode] of [
+    ["SIGINT", 130],
+    ["SIGTERM", 143],
+  ]) {
+    await t.test(signal, async (subtest) => {
+      const harness = await makeHarness(subtest, { FAKE_DOCKER_RUN_MODE: "hold" });
+      const running = startNode([launcherPath], harness.env);
+      const runner = await waitForEvent(harness, (event) => event.action === "run");
+      running.child.kill(signal);
+      const result = await running.done;
+      assert.equal(result.code, expectedCode, `${result.stdout}\n${result.stderr}`);
+      const events = await readEvents(harness);
+      assert.deepEqual(
+        events.map(({ action }) => action),
+        ["info", "run", "rm"],
+      );
+      const name = events[1].args[events[1].args.indexOf("--name") + 1];
+      assert.deepEqual(events[2].args, ["rm", "-f", name]);
+      assert.ok(runner.pid > 0);
+    });
+  }
+});
+
+test("an abort signal stops and removes the active container", async (t) => {
+  const harness = await makeHarness(t, { FAKE_DOCKER_RUN_MODE: "hold" });
+  const moduleUrl = pathToFileURL(launcherPath).href;
+  const source = [
+    `import { runE2eContainer } from ${JSON.stringify(moduleUrl)};`,
+    "const controller = new AbortController();",
+    "setTimeout(() => controller.abort(), 250);",
+    "const result = await runE2eContainer([], { abortSignal: controller.signal });",
+    "process.exitCode = result.exitCode;",
+  ].join("\n");
+  const running = startNode(["--input-type=module", "-e", source], harness.env);
+  const result = await running.done;
+  assert.equal(result.code, 1, `${result.stdout}\n${result.stderr}`);
+  const events = await readEvents(harness);
+  assert.deepEqual(
+    events.map(({ action }) => action),
+    ["info", "run", "rm"],
+  );
+  const name = events[1].args[events[1].args.indexOf("--name") + 1];
+  assert.deepEqual(events[2].args, ["rm", "-f", name]);
+});
+
+test("cleanup failure names the container and says a retry is not known to be clean", async (t) => {
+  const harness = await makeHarness(t, {
+    FAKE_DOCKER_RUN_MODE: "fail",
+    FAKE_DOCKER_RM_MODE: "fail",
+  });
+  const result = await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [launcherPath], {
+      cwd: projectRoot,
+      env: harness.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => (stderr += chunk.toString("utf8")));
+    child.once("error", reject);
+    child.once("close", (code) => resolve({ code, stderr }));
+  });
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /Failed to stop and remove e2e container chessfable-e2e-/u);
+  assert.match(result.stderr, /injected cleanup refusal/u);
+  assert.match(result.stderr, /retry is not known to be clean/u);
+});
+
+test("the native e2e command still selects only the named test through pnpm's separator", () => {
   // `--list` sits before the separator, so a regression lists the whole suite instead of
   // running it.
   const run = pnpm(["test:e2e", "--list", "--", "--project=async-errors", directoryTrash]);
   assert.equal(run.status, 0, run.stderr);
   assert.match(
     run.stdout,
-    /\[async-errors\] › async-errors\.spec\.ts:\d+:\d+ › async-errors: localizes directory-trash/,
+    /\[async-errors\] › async-errors\.spec\.ts:\d+:\d+ › async-errors: localizes directory-trash/u,
   );
-  assert.match(run.stdout, /Total: 1 test in 1 file/);
+  assert.match(run.stdout, /Total: 1 test in 1 file/u);
 });

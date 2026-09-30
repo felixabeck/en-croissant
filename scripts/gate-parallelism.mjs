@@ -1,8 +1,5 @@
 import { readFileSync as defaultReadFileSync, statSync as defaultStatSync } from "node:fs";
-import {
-  availableParallelism as defaultAvailableParallelism,
-  totalmem as defaultTotalmem,
-} from "node:os";
+import { availableParallelism as defaultAvailableParallelism } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 
 const CGROUP_ROOT = "/sys/fs/cgroup";
@@ -31,6 +28,13 @@ export const VITEST_WORKER_BYTES = 256 * 1024 * 1024;
 // The same 2026-09-30 Vitest measurements imply about 1.20 GiB of base memory; 1.5 GiB keeps
 // headroom above that measured base.
 export const VITEST_BASE_BYTES = 1536 * 1024 * 1024;
+export const VITEST_MINIMUM_BUDGET_BYTES = VITEST_BASE_BYTES + VITEST_WORKER_BYTES;
+
+// A detected chain failure uses the measured-safe 8 GiB agent-scope configuration from
+// d-20260930-03: after the 1 GiB agent reserve, Vitest gets 22 workers and Stryker gets five.
+export const CONSERVATIVE_CGROUP_LIMIT_BYTES = 8 * 1024 ** 3;
+export const CONSERVATIVE_VITEST_WORKERS = 22;
+export const CONSERVATIVE_STRYKER_RUNNERS = 5;
 
 function detectionError(path, detail, cause = undefined) {
   const error = new Error(
@@ -73,38 +77,37 @@ function cgroupDirectoryFrom(contents) {
   return directory;
 }
 
-function parseMemoryMax(contents, path) {
+function parseMemoryLimit(contents, path, filename) {
   if (typeof contents !== "string") {
-    throw detectionError(path, "memory.max did not contain text");
+    throw detectionError(path, `${filename} did not contain text`);
   }
   const value = contents.trim();
   if (value === "max") return undefined;
   if (!/^\d+$/u.test(value)) {
-    throw detectionError(path, `unparsable memory.max value ${JSON.stringify(value)}`);
+    throw detectionError(path, `unparsable ${filename} value ${JSON.stringify(value)}`);
   }
-  return BigInt(value);
-}
-
-function physicalMemoryLimit(totalmem, path) {
-  const value = totalmem();
-  if (!Number.isSafeInteger(value) || value < 0) {
-    throw detectionError(path, `os.totalmem() returned an invalid byte count ${String(value)}`);
+  const limit = BigInt(value);
+  if (limit > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw detectionError(path, `${filename} exceeds the safe integer byte range`);
   }
-  return BigInt(value);
+  return limit;
 }
 
 /**
- * Return the smallest cgroup-v2 memory.max from the process cgroup through the mount root,
- * bounded by physical memory. Non-Linux systems have no cgroup-v2 lookup and use total memory.
- * Dependencies are supplied in the options object for deterministic tests.
+ * Return the smallest finite memory.high or memory.max from the process cgroup through the
+ * mount root. Dependencies are supplied in the options object for deterministic tests.
  */
 export function memoryLimitBytes({
   readFileSync = defaultReadFileSync,
   statSync = defaultStatSync,
-  totalmem = defaultTotalmem,
   platform = process.platform,
 } = {}) {
-  if (platform !== "linux") return totalmem();
+  if (platform !== "linux") {
+    throw detectionError(
+      PROCESS_CGROUP_FILE,
+      `cgroup-v2 memory limits are unavailable on ${platform}`,
+    );
+  }
 
   let cgroupContents;
   try {
@@ -113,8 +116,7 @@ export function memoryLimitBytes({
     throw detectionError(PROCESS_CGROUP_FILE, `could not be read: ${errorMessage(error)}`, error);
   }
   const processCgroupDirectory = cgroupDirectoryFrom(cgroupContents);
-  const physicalLimit = physicalMemoryLimit(totalmem, PROCESS_CGROUP_FILE);
-  let minimum = physicalLimit;
+  let minimum;
 
   for (const directory of directoryChain(processCgroupDirectory)) {
     let directoryStats;
@@ -131,19 +133,27 @@ export function memoryLimitBytes({
       throw detectionError(directory, "cgroup path is not a directory");
     }
 
-    const memoryMaxPath = join(directory, "memory.max");
-    let contents;
-    try {
-      contents = readFileSync(memoryMaxPath, "utf8");
-    } catch (error) {
-      if (error?.code === "ENOENT") continue;
-      throw detectionError(memoryMaxPath, `could not be read: ${errorMessage(error)}`, error);
-    }
+    for (const filename of ["memory.high", "memory.max"]) {
+      const memoryPath = join(directory, filename);
+      let contents;
+      try {
+        contents = readFileSync(memoryPath, "utf8");
+      } catch (error) {
+        if (error?.code === "ENOENT" && directory === CGROUP_ROOT) continue;
+        throw detectionError(memoryPath, `could not be read: ${errorMessage(error)}`, error);
+      }
 
-    const limit = parseMemoryMax(contents, memoryMaxPath);
-    if (limit !== undefined && limit < minimum) minimum = limit;
+      const limit = parseMemoryLimit(contents, memoryPath, filename);
+      if (limit !== undefined && (minimum === undefined || limit < minimum)) minimum = limit;
+    }
   }
 
+  if (minimum === undefined) {
+    throw detectionError(
+      CGROUP_ROOT,
+      "no finite memory.high or memory.max limit exists in the cgroup chain",
+    );
+  }
   return Number(minimum);
 }
 
@@ -169,11 +179,23 @@ function configuredMemoryBudget(env) {
   return positiveByteCountFromEnv("GATE_MEMORY_BYTES", env);
 }
 
-/** Return the available gate budget, honoring the explicit override without reading cgroups. */
-export function gateBudgetBytes({ env = process.env, ...memoryOptions } = {}) {
+/** Return the available gate budget, honoring the override and using the recorded fallback. */
+export function gateBudgetBytes({
+  env = process.env,
+  stderr = process.stderr,
+  ...memoryOptions
+} = {}) {
   const override = configuredMemoryBudget(env);
   if (override !== undefined) return override;
-  return memoryLimitBytes(memoryOptions) - AGENT_RESERVE_BYTES;
+  try {
+    return memoryLimitBytes(memoryOptions) - AGENT_RESERVE_BYTES;
+  } catch (error) {
+    const reason = errorMessage(error).replaceAll(/[\r\n]+/gu, " ");
+    stderr.write(
+      `Gate memory detection failed (${reason}); using the conservative 8 GiB agent-scope configuration.\n`,
+    );
+    return CONSERVATIVE_CGROUP_LIMIT_BYTES - AGENT_RESERVE_BYTES;
+  }
 }
 
 function configuredCpuShare(env) {
