@@ -98,89 +98,103 @@ type AcquiredConnection = (
 );
 
 /// Keeps the binding alive until after the SQLite connection closes. Field
-/// order is deliberate: Rust drops `connection` before `_binding`.
+/// order is deliberate: Rust drops `connection`, then `_binding`, before the ticket.
 struct BoundSqliteConnection {
     connection: SqliteConnection,
     _binding: BoundDatabase,
-    // Drop the tracker only after SQLite has closed and released its binding.
-    _lifecycle: ConnectionLease,
+    // The ticket drops last, after SQLite has closed and the binding is released.
+    _connection: DrainTicket,
 }
 
+/// Admission gate with an outstanding-ticket count. `close` refuses new tickets; `wait_drained`
+/// blocks until every ticket issued before the close has been dropped, bounded by a deadline and
+/// an optional cancellation token. Entries use one gate for caller leases and one for SQLite
+/// connections; the connection ticket spans `connect` through the handle's close, including a
+/// close on an r2d2 worker thread that still holds an upgraded pool reference (f-20260929-07).
 #[derive(Debug, Default)]
-struct ConnectionTracker {
-    state: ParkingMutex<ConnectionTrackerState>,
+struct DrainGate {
+    state: ParkingMutex<DrainState>,
     changed: ParkingCondvar,
 }
 
-#[derive(Debug, Default)]
-struct ConnectionTrackerState {
-    retiring: bool,
-    connecting: usize,
-    open: usize,
+#[derive(Clone, Copy, Debug, Default)]
+struct DrainState {
+    closed: bool,
+    outstanding: usize,
 }
 
-struct ConnectionAttempt {
-    tracker: Arc<ConnectionTracker>,
-    connecting: bool,
+struct DrainTicket {
+    gate: Arc<DrainGate>,
 }
 
-struct ConnectionLease {
-    tracker: Arc<ConnectionTracker>,
-}
-
-impl ConnectionTracker {
-    fn begin_connect(self: &Arc<Self>) -> Option<ConnectionAttempt> {
+impl DrainGate {
+    fn enter(self: &Arc<Self>) -> Option<DrainTicket> {
         let mut state = self.state.lock();
-        if state.retiring {
+        if state.closed {
             return None;
         }
-        state.connecting = state.connecting.saturating_add(1);
-        Some(ConnectionAttempt {
-            tracker: Arc::clone(self),
-            connecting: true,
+        state.outstanding = state.outstanding.saturating_add(1);
+        Some(DrainTicket {
+            gate: Arc::clone(self),
         })
     }
 
-    fn begin_retirement(&self) {
-        self.state.lock().retiring = true;
+    fn close(&self) {
+        self.state.lock().closed = true;
+        self.changed.notify_all();
     }
 
-    fn wait_until_closed(&self) {
+    fn reopen(&self) {
+        self.state.lock().closed = false;
+        self.changed.notify_all();
+    }
+
+    fn snapshot(&self) -> DrainState {
+        *self.state.lock()
+    }
+
+    fn wait_drained(
+        &self,
+        timeout: Duration,
+        cancellation: Option<&CancellationToken>,
+        timeout_message: &'static str,
+    ) -> Result<(), Error> {
         let mut state = self.state.lock();
-        while state.connecting != 0 || state.open != 0 {
-            self.changed.wait(&mut state);
+        let deadline = Instant::now() + timeout;
+        while state.outstanding != 0 {
+            if cancellation.is_some_and(CancellationToken::is_cancelled) {
+                return Err(Error::Cancellation);
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(Error::Conflict(timeout_message.into()));
+            }
+            self.changed.wait_for(
+                &mut state,
+                if cancellation.is_some() {
+                    deadline
+                        .saturating_duration_since(now)
+                        .min(RETIRE_CANCELLATION_POLL)
+                } else {
+                    deadline.saturating_duration_since(now)
+                },
+            );
+            if state.outstanding != 0 && Instant::now() >= deadline {
+                return Err(Error::Conflict(timeout_message.into()));
+            }
         }
+        if cancellation.is_some_and(CancellationToken::is_cancelled) {
+            return Err(Error::Cancellation);
+        }
+        Ok(())
     }
 }
 
-impl ConnectionAttempt {
-    fn connection_opened(mut self) -> ConnectionLease {
-        let mut state = self.tracker.state.lock();
-        state.connecting = state.connecting.saturating_sub(1);
-        state.open = state.open.saturating_add(1);
-        self.connecting = false;
-        self.tracker.changed.notify_all();
-        ConnectionLease {
-            tracker: Arc::clone(&self.tracker),
-        }
-    }
-}
-
-impl Drop for ConnectionAttempt {
+impl Drop for DrainTicket {
     fn drop(&mut self) {
-        if self.connecting {
-            let mut state = self.tracker.state.lock();
-            state.connecting = state.connecting.saturating_sub(1);
-            self.tracker.changed.notify_all();
-        }
-    }
-}
-
-impl Drop for ConnectionLease {
-    fn drop(&mut self) {
-        let mut state = self.tracker.state.lock();
-        state.open = state.open.saturating_sub(1);
-        self.tracker.changed.notify_all();
+        let mut state = self.gate.state.lock();
+        state.outstanding = state.outstanding.saturating_sub(1);
+        self.gate.changed.notify_all();
     }
 }
 
@@ -202,7 +216,7 @@ impl DerefMut for BoundSqliteConnection {
 struct BoundConnectionManager {
     database: BoundDatabase,
     uri: String,
-    connections: Arc<ConnectionTracker>,
+    connections: Arc<DrainGate>,
 }
 
 impl ManageConnection for BoundConnectionManager {
@@ -210,7 +224,7 @@ impl ManageConnection for BoundConnectionManager {
     type Error = diesel::r2d2::Error;
 
     fn connect(&self) -> Result<Self::Connection, Self::Error> {
-        let attempt = self.connections.begin_connect().ok_or_else(|| {
+        let ticket = self.connections.enter().ok_or_else(|| {
             diesel::r2d2::Error::ConnectionError(diesel::ConnectionError::BadConnection(
                 "database pool is retiring".into(),
             ))
@@ -220,7 +234,7 @@ impl ManageConnection for BoundConnectionManager {
         Ok(BoundSqliteConnection {
             connection,
             _binding: self.database.clone(),
-            _lifecycle: attempt.connection_opened(),
+            _connection: ticket,
         })
     }
 
@@ -298,31 +312,16 @@ struct DatabaseEntry {
     // entry's binding handle is released.
     pool: ParkingRwLock<Option<SqlitePool>>,
     bound: BoundDatabase,
-    connection_tracker: Arc<ConnectionTracker>,
+    connections: Arc<DrainGate>,
     write_lock: Arc<ParkingMutex<()>>,
     index_lock: Arc<ParkingMutex<()>>,
     state: Mutex<EntryState>,
-    lifecycle: Mutex<LifecycleState>,
-    lifecycle_changed: Condvar,
-}
-
-#[derive(Default)]
-struct LifecycleState {
-    retiring: bool,
-    active: usize,
+    leases: Arc<DrainGate>,
 }
 
 struct EntryLease {
-    entry: Arc<DatabaseEntry>,
-}
-
-impl Drop for EntryLease {
-    fn drop(&mut self) {
-        if let Ok(mut lifecycle) = self.entry.lifecycle.lock() {
-            lifecycle.active = lifecycle.active.saturating_sub(1);
-            self.entry.lifecycle_changed.notify_all();
-        }
-    }
+    _entry: Arc<DatabaseEntry>,
+    _ticket: DrainTicket,
 }
 
 #[derive(Default)]
@@ -699,6 +698,7 @@ impl DatabaseRepository {
         let entry = self.remove_entry(&key)?;
         if let Some(entry) = entry {
             entry.retire_and_wait(self.retire_wait)?;
+            entry.close_connections(self.retire_wait, None)?;
         }
         Ok(())
     }
@@ -717,11 +717,8 @@ impl DatabaseRepository {
             .get(&key)
             .cloned();
         Ok(entry.is_some_and(|entry| {
-            entry
-                .lifecycle
-                .lock()
-                .map(|lifecycle| lifecycle.retiring && lifecycle.active != 0)
-                .unwrap_or(false)
+            let snapshot = entry.leases.snapshot();
+            snapshot.closed && snapshot.outstanding != 0
         }))
     }
 
@@ -795,6 +792,9 @@ impl DatabaseRepository {
         if cancellation.is_some_and(CancellationToken::is_cancelled) {
             return Err(Error::Cancellation);
         }
+        if let Some(entry) = &entry {
+            self.close_retired_entry(&key, entry, cancellation)?;
+        }
         let result = operation();
         let mut state = self
             .state
@@ -828,11 +828,7 @@ impl DatabaseRepository {
             state.clock = state.clock.saturating_add(1);
             let now = state.clock;
             if let Some(entry) = state.entries.get(&key).cloned() {
-                let retiring = entry
-                    .lifecycle
-                    .lock()
-                    .map_err(|_| Error::Conflict("database lifecycle lock poisoned".into()))?
-                    .retiring;
+                let retiring = entry.leases.snapshot().closed;
                 if retiring {
                     return Err(Error::Conflict(
                         "database is being replaced or deleted".into(),
@@ -866,7 +862,7 @@ impl DatabaseRepository {
             run_test_hook(TestHook::PreBuild, target.path());
             let bound = BoundDatabase::acquire(target)?;
             let uri = bound.uri(SqliteMode::ReadWrite)?;
-            let connection_tracker = Arc::new(ConnectionTracker::default());
+            let connections = Arc::new(DrainGate::default());
             let pool = Pool::builder()
                 .max_size(MAX_CONNECTIONS_PER_DATABASE)
                 .min_idle(Some(0))
@@ -875,7 +871,7 @@ impl DatabaseRepository {
                 .build(BoundConnectionManager {
                     database: bound.clone(),
                     uri,
-                    connections: Arc::clone(&connection_tracker),
+                    connections: Arc::clone(&connections),
                 })?;
             #[cfg(all(test, unix))]
             run_test_hook(TestHook::PostBuild, target.path());
@@ -901,15 +897,14 @@ impl DatabaseRepository {
             let entry = Arc::new(DatabaseEntry {
                 pool: ParkingRwLock::new(Some(pool)),
                 bound,
-                connection_tracker,
+                connections,
                 write_lock: Arc::new(ParkingMutex::new(())),
                 index_lock: Arc::new(ParkingMutex::new(())),
                 state: Mutex::new(EntryState {
                     last_used: state.clock,
                     ..EntryState::default()
                 }),
-                lifecycle: Mutex::new(LifecycleState::default()),
-                lifecycle_changed: Condvar::new(),
+                leases: Arc::new(DrainGate::default()),
             });
             state.entries.insert(key.clone(), entry.clone());
             self.evict_idle_entries(&mut state, &key);
@@ -951,9 +946,16 @@ impl DatabaseRepository {
         cancellation: Option<&CancellationToken>,
     ) -> Result<(), Error> {
         entry.retire_and_wait_cancellable(self.retire_wait, cancellation)?;
-        entry.connection_tracker.begin_retirement();
-        entry.close_pool();
-        entry.connection_tracker.wait_until_closed();
+        self.close_retired_entry(key, entry, cancellation)
+    }
+
+    fn close_retired_entry(
+        &self,
+        key: &EntryKey,
+        entry: &Arc<DatabaseEntry>,
+        cancellation: Option<&CancellationToken>,
+    ) -> Result<(), Error> {
+        let result = entry.close_connections(self.retire_wait, cancellation);
         let mut state = self
             .state
             .lock()
@@ -965,7 +967,7 @@ impl DatabaseRepository {
         {
             state.entries.remove(key);
         }
-        Ok(())
+        result
     }
 
     fn evict_idle_entries(&self, state: &mut RepositoryState, protected: &EntryKey) {
@@ -1023,13 +1025,7 @@ impl DatabaseRepository {
                         .get(key)
                         .cloned();
                     if let Some(entry) = stale_entry {
-                        let active = entry
-                            .lifecycle
-                            .lock()
-                            .map_err(|_| {
-                                Error::Conflict("database lifecycle lock poisoned".into())
-                            })?
-                            .active;
+                        let active = entry.leases.snapshot().outstanding;
                         if active == 0 {
                             self.retire_replaced(key, &entry, cancellation)?;
                         }
@@ -1116,11 +1112,7 @@ impl DatabaseRepository {
         if !matches!(&error, Error::Conflict(_)) {
             return Err(error);
         }
-        let active = entry
-            .lifecycle
-            .lock()
-            .map_err(|_| Error::Conflict("database lifecycle lock poisoned".into()))?
-            .active;
+        let active = entry.leases.snapshot().outstanding;
         if active == 0 {
             self.retire_replaced(key, entry, cancellation)?;
         }
@@ -1302,7 +1294,7 @@ impl Drop for TombstoneGuard<'_> {
             return;
         }
         if let Some(entry) = &self.entry {
-            let _ = entry.cancel_retirement();
+            entry.cancel_retirement();
         }
         if let Ok(mut state) = self.repository.state.lock() {
             state.tombstones.remove(&self.path);
@@ -1556,25 +1548,29 @@ impl DatabaseEntry {
         pool.get().map_err(Error::from)
     }
 
-    fn close_pool(&self) {
-        let pool = self.pool.write().take();
-        drop(pool);
+    fn close_connections(
+        &self,
+        timeout: Duration,
+        cancellation: Option<&CancellationToken>,
+    ) -> Result<(), Error> {
+        // Refuse new connects before dropping the pool, so an r2d2 worker cannot open one after it.
+        self.connections.close();
+        drop(self.pool.write().take());
+        self.connections.wait_drained(
+            timeout,
+            cancellation,
+            "database connections did not close before retirement timed out",
+        )
     }
 
     fn acquire(self: &Arc<Self>) -> Result<EntryLease, Error> {
-        let mut lifecycle = self
-            .lifecycle
-            .lock()
-            .map_err(|_| Error::Conflict("database lifecycle lock poisoned".into()))?;
-        if lifecycle.retiring {
-            return Err(Error::Conflict(
-                "database is being replaced or deleted".into(),
-            ));
-        }
-        lifecycle.active = lifecycle.active.saturating_add(1);
-        Ok(EntryLease {
-            entry: self.clone(),
-        })
+        self.leases
+            .enter()
+            .map(|_ticket| EntryLease {
+                _entry: self.clone(),
+                _ticket,
+            })
+            .ok_or_else(|| Error::Conflict("database is being replaced or deleted".into()))
     }
 
     #[cfg(all(test, unix))]
@@ -1587,67 +1583,92 @@ impl DatabaseEntry {
         timeout: Duration,
         cancellation: Option<&CancellationToken>,
     ) -> Result<(), Error> {
-        let mut lifecycle = self
-            .lifecycle
-            .lock()
-            .map_err(|_| Error::Conflict("database lifecycle lock poisoned".into()))?;
-        lifecycle.retiring = true;
-        let deadline = Instant::now() + timeout;
-        while lifecycle.active != 0 {
-            if cancellation.is_some_and(CancellationToken::is_cancelled) {
-                lifecycle.retiring = false;
-                self.lifecycle_changed.notify_all();
-                return Err(Error::Cancellation);
-            }
-            let now = Instant::now();
-            if now >= deadline {
-                lifecycle.retiring = false;
-                self.lifecycle_changed.notify_all();
-                return Err(Error::Conflict("database retirement timed out".into()));
-            }
-            let (guard, wait_result) = self
-                .lifecycle_changed
-                .wait_timeout(
-                    lifecycle,
-                    if cancellation.is_some() {
-                        deadline
-                            .saturating_duration_since(now)
-                            .min(RETIRE_CANCELLATION_POLL)
-                    } else {
-                        deadline.saturating_duration_since(now)
-                    },
-                )
-                .map_err(|_| Error::Conflict("database lifecycle lock poisoned".into()))?;
-            lifecycle = guard;
-            if wait_result.timed_out() && lifecycle.active != 0 && Instant::now() >= deadline {
-                lifecycle.retiring = false;
-                self.lifecycle_changed.notify_all();
-                return Err(Error::Conflict("database retirement timed out".into()));
-            }
+        self.leases.close();
+        let result =
+            self.leases
+                .wait_drained(timeout, cancellation, "database retirement timed out");
+        if result.is_err() {
+            self.leases.reopen();
         }
-        if cancellation.is_some_and(CancellationToken::is_cancelled) {
-            lifecycle.retiring = false;
-            self.lifecycle_changed.notify_all();
-            return Err(Error::Cancellation);
-        }
-        Ok(())
+        result
     }
 
-    fn cancel_retirement(&self) -> Result<(), Error> {
-        let mut lifecycle = self
-            .lifecycle
-            .lock()
-            .map_err(|_| Error::Conflict("database lifecycle lock poisoned".into()))?;
-        lifecycle.retiring = false;
-        self.lifecycle_changed.notify_all();
-        Ok(())
+    fn cancel_retirement(&self) {
+        self.leases.reopen();
     }
 
     fn is_idle(&self) -> bool {
-        self.lifecycle
-            .lock()
-            .map(|lifecycle| lifecycle.active == 0 && !lifecycle.retiring)
-            .unwrap_or(false)
+        let snapshot = self.leases.snapshot();
+        snapshot.outstanding == 0 && !snapshot.closed
+    }
+}
+
+#[cfg(test)]
+mod drain_gate_tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    #[test]
+    fn close_refuses_tickets_until_reopened() {
+        let gate = Arc::new(DrainGate::default());
+        gate.close();
+        assert!(gate.enter().is_none());
+        gate.reopen();
+        assert!(gate.enter().is_some());
+    }
+
+    #[test]
+    fn wait_drained_blocks_until_the_held_ticket_is_dropped() {
+        let gate = Arc::new(DrainGate::default());
+        let ticket = gate.enter().expect("open gate issues a ticket");
+        gate.close();
+        let worker_gate = Arc::clone(&gate);
+        let (done, done_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = worker_gate.wait_drained(Duration::from_secs(10), None, "t");
+            done.send(result).unwrap();
+        });
+
+        assert!(matches!(
+            done_rx.recv_timeout(Duration::from_millis(150)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        drop(ticket);
+        assert!(matches!(
+            done_rx.recv_timeout(Duration::from_secs(10)),
+            Ok(Ok(()))
+        ));
+    }
+
+    #[test]
+    fn wait_drained_reports_deadline_without_reopening_gate() {
+        let gate = Arc::new(DrainGate::default());
+        let _ticket = gate.enter().expect("open gate issues a ticket");
+        gate.close();
+
+        assert!(matches!(
+            gate.wait_drained(
+                Duration::from_millis(50),
+                None,
+                "drain timed out"
+            ),
+            Err(Error::Conflict(message)) if message == "drain timed out"
+        ));
+        assert!(gate.snapshot().closed);
+    }
+
+    #[test]
+    fn wait_drained_observes_an_already_cancelled_token() {
+        let gate = Arc::new(DrainGate::default());
+        let _ticket = gate.enter().expect("open gate issues a ticket");
+        gate.close();
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+
+        assert!(matches!(
+            gate.wait_drained(Duration::from_secs(10), Some(&cancellation), "t"),
+            Err(Error::Cancellation)
+        ));
     }
 }
 
@@ -2152,7 +2173,7 @@ mod tests {
             .cloned()
             .unwrap();
         assert!(Arc::ptr_eq(&old_entry, &current_entry));
-        assert!(!old_entry.lifecycle.lock().unwrap().retiring);
+        assert!(!old_entry.leases.snapshot().closed);
 
         drop(_hooks);
         std::fs::remove_file(&path).unwrap();
@@ -2444,7 +2465,7 @@ mod tests {
             .clone();
         drop(state);
         assert!(
-            !entry.lifecycle.lock().unwrap().retiring,
+            !entry.leases.snapshot().closed,
             "timeout must clear the retiring flag"
         );
 
@@ -2453,6 +2474,124 @@ mod tests {
         repository
             .delete_exclusive(&test_target(&path), || Ok(()))
             .unwrap();
+    }
+
+    fn initialized_target_entry(
+        repository: &DatabaseRepository,
+        path: &Path,
+    ) -> (
+        crate::infra::path_authority::DatabaseFileTarget,
+        EntryKey,
+        Arc<DatabaseEntry>,
+    ) {
+        let target = test_target(path);
+        let mut setup = repository.initialization_connection(&target, None).unwrap();
+        migrations::prepare_database(&mut setup, "title", "description").unwrap();
+        drop(setup);
+        repository.mark_schema_validated(&target).unwrap();
+        drop(repository.connection(&target, None).unwrap());
+
+        let key = entry_key(&target).unwrap();
+        let entry = repository
+            .state
+            .lock()
+            .unwrap()
+            .entries
+            .get(&key)
+            .expect("initialized database entry")
+            .clone();
+        (target, key, entry)
+    }
+
+    #[test]
+    fn retire_replaced_waits_until_every_pooled_connection_has_closed() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("database.db3");
+        let repository = DatabaseRepository::default();
+        let (_target, key, entry) = initialized_target_entry(&repository, &path);
+        let held = entry.get_connection().unwrap();
+
+        let repository_ref = &repository;
+        std::thread::scope(|scope| {
+            let (done, done_rx) = mpsc::channel();
+            let key = key.clone();
+            let entry = Arc::clone(&entry);
+            scope.spawn(move || {
+                let result = repository_ref.retire_replaced(&key, &entry, None);
+                done.send(result).unwrap();
+            });
+
+            assert!(matches!(
+                done_rx.recv_timeout(Duration::from_millis(150)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ));
+            drop(held);
+            assert!(matches!(
+                done_rx.recv_timeout(Duration::from_secs(10)),
+                Ok(Ok(()))
+            ));
+        });
+
+        assert_eq!(entry.connections.snapshot().outstanding, 0);
+        assert!(!repository.state.lock().unwrap().entries.contains_key(&key));
+    }
+
+    #[test]
+    fn delete_waits_for_pooled_connections_before_unlinking() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("database.db3");
+        let repository = DatabaseRepository::default();
+        let (target, _key, entry) = initialized_target_entry(&repository, &path);
+        let held = entry.get_connection().unwrap();
+
+        let repository_ref = &repository;
+        std::thread::scope(|scope| {
+            let (done, done_rx) = mpsc::channel();
+            let entry_connections = Arc::clone(&entry.connections);
+            scope.spawn(move || {
+                let result = repository_ref.delete_exclusive(&target, move || {
+                    Ok(entry_connections.snapshot().outstanding)
+                });
+                done.send(result).unwrap();
+            });
+
+            assert!(matches!(
+                done_rx.recv_timeout(Duration::from_millis(150)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ));
+            drop(held);
+            assert!(matches!(
+                done_rx.recv_timeout(Duration::from_secs(10)),
+                Ok(Ok(0))
+            ));
+        });
+    }
+
+    #[test]
+    fn delete_connection_drain_timeout_unwinds_and_drops_the_entry() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("database.db3");
+        let repository = DatabaseRepository::with_retire_wait(Duration::from_millis(200));
+        let (target, key, entry) = initialized_target_entry(&repository, &path);
+        let held = entry.get_connection().unwrap();
+
+        let result = repository.delete_exclusive(&target, || Ok(()));
+        assert!(matches!(
+            result,
+            Err(Error::Conflict(message)) if message.contains("did not close")
+        ));
+        assert!(!repository
+            .state
+            .lock()
+            .unwrap()
+            .tombstones
+            .contains(target.path()));
+        assert!(!repository.state.lock().unwrap().entries.contains_key(&key));
+        assert!(!entry.leases.snapshot().closed);
+
+        drop(held);
+        let fresh = repository.connection(&test_target(&path), None);
+        assert!(fresh.is_ok());
     }
 
     #[test]
@@ -3781,7 +3920,7 @@ mod bound_sqlite_witnesses {
         let bound = BoundDatabase::acquire(&target).unwrap();
         let token = bound.token();
         let uri = bound.uri(SqliteMode::ReadWrite).unwrap();
-        let connection_tracker = Arc::new(ConnectionTracker::default());
+        let connections = Arc::new(DrainGate::default());
         let pool = Pool::builder()
             .max_size(MAX_CONNECTIONS_PER_DATABASE)
             .min_idle(Some(0))
@@ -3790,7 +3929,7 @@ mod bound_sqlite_witnesses {
             .build(BoundConnectionManager {
                 database: bound.clone(),
                 uri,
-                connections: Arc::clone(&connection_tracker),
+                connections: Arc::clone(&connections),
             })
             .unwrap();
         let mut pooled = pool.get().unwrap();
