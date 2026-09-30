@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { availableParallelism } from "node:os";
+import { createRequire } from "node:module";
+import { availableParallelism, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -29,14 +30,38 @@ const runner = join(projectRoot, "scripts", "run-frontend-mutation.mjs");
 const fence = "mutants.out/frontend/.mutation-in-progress";
 const packageNames = Object.keys(mutationPackages);
 const budgetBytes = 90 * 1024 ** 3;
+const requireFromProject = createRequire(import.meta.url);
+const requireFromStryker = createRequire(
+  requireFromProject.resolve("@stryker-mutator/core/package.json"),
+);
+const { Minimatch } = requireFromStryker("minimatch");
+
+function strykerIgnoresFile(pattern, filePath) {
+  const rule = new Minimatch(pattern, { dot: true, flipNegate: true, nocase: true });
+  const directories = filePath.split("/").slice(0, -1);
+  return directories.some((_, index) => {
+    const entryName = directories[index];
+    const entryPath = directories.slice(0, index + 1).join("/");
+    return (
+      rule.match(entryName) ||
+      rule.match(entryPath) ||
+      rule.match(`/${entryPath}`) ||
+      rule.match(`/${entryPath}/`) ||
+      rule.match(`${entryPath}/`)
+    );
+  });
+}
+
+// The quarter-CPU bias keeps floor(cpuCount × share) at the requested slots despite floating-point rounding.
+const CPU_SHARE_ROUNDING_BIAS = 0.25;
 
 function cpuShareForSlots(requestedSlots, cpuCount = availableParallelism()) {
   const slots = Math.min(requestedSlots, cpuCount);
-  return slots === cpuCount ? "1" : String((slots + 0.25) / cpuCount);
+  return slots === cpuCount ? "1" : String((slots + CPU_SHARE_ROUNDING_BIAS) / cpuCount);
 }
 
 async function fixture(t = undefined) {
-  const root = await mkdtemp(join((await import("node:os")).tmpdir(), "frontend-mutation-runner-"));
+  const root = await mkdtemp(join(tmpdir(), "frontend-mutation-runner-"));
   const state = join(root, "shim-state");
   await mkdir(state);
   if (t) t.after(() => rm(root, { recursive: true, force: true }));
@@ -191,6 +216,17 @@ test("--list-packages prints the shared package map without creating a fence", a
   const result = run(root, environment({ state }), ["--list-packages"]);
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), packageNames);
+  assert.equal(existsSync(join(root, fence)), false);
+});
+
+test("an invalid gate memory budget starts no Stryker package and removes its fence", async (t) => {
+  const { root, state } = await fixture(t);
+  const result = run(root, environment({ state, GATE_MEMORY_BYTES: "abc" }));
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /GATE_MEMORY_BYTES/u);
+  for (const name of packageNames) {
+    assert.equal(existsSync(join(state, `booting-${name}`)), false);
+  }
   assert.equal(existsSync(join(root, fence)), false);
 });
 
@@ -847,7 +883,7 @@ function runConfigImport(env, preloadPath = undefined) {
   );
 }
 
-test("PG-84/87: Stryker config uses the shared package map and memory budget", async () => {
+test("PG-84/87: Stryker config uses the shared map, memory budget, and temp-tree ignore", async () => {
   const previous = {
     package: process.env.STRYKER_PACKAGE,
     memory: process.env.STRYKER_MEMORY_BYTES,
@@ -861,6 +897,13 @@ test("PG-84/87: Stryker config uses the shared package map and memory budget", a
       const config = await import(`../stryker.config.mjs?package=${name}`);
       assert.deepEqual(config.default.mutate, mutate);
       assert.ok(config.default.concurrency >= 1);
+      for (const sibling of packageNames.filter((other) => other !== name)) {
+        const sandboxFile = `.stryker-tmp/${sibling}/sandbox-x/file`;
+        assert.ok(
+          config.default.ignorePatterns.some((pattern) => strykerIgnoresFile(pattern, sandboxFile)),
+          `${name} config does not ignore sibling sandbox ${sandboxFile}`,
+        );
+      }
     }
   } finally {
     if (previous.package === undefined) delete process.env.STRYKER_PACKAGE;

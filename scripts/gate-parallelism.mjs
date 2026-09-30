@@ -15,7 +15,8 @@ export const AGENT_RESERVE_BYTES = 1024 * 1024 * 1024;
 // Per-runner peak RSS measured 0.80–1.13 GiB; tree-path at concurrency 4 used 4.98 GiB above
 // idle (1.16 GiB per runner), workspace-storage used 7.04 GiB at 8 and 3.60 GiB at 4, and
 // game-practice used 5.44 GiB at 8. Runners grow during a run; maxTestRunnerReuse 40 still used
-// 6.53 GiB at 8. The earlier 640 MiB estimate stopped runners after 12–23 tests and undercounted.
+// 6.53 GiB at 8. The earlier 0.40–0.49 GB readings came from runners OOM-killed while 12–23 of
+// them ran at once, before they had grown, so they undercounted.
 export const STRYKER_RUNNER_BYTES = Math.round(1.2 * 1024 ** 3);
 
 // The Stryker parent measured 0.34–0.39 GiB RSS plus a 0.11 GiB helper process during the
@@ -146,21 +147,26 @@ export function memoryLimitBytes({
   return Number(minimum);
 }
 
-function configuredMemoryBudget(env) {
-  const value = env?.GATE_MEMORY_BYTES;
-  if (value === undefined) return undefined;
+/** Parse a named environment variable as a positive safe integer byte count. */
+export function positiveByteCountFromEnv(name, env = process.env) {
+  const value = env?.[name];
   if (typeof value !== "string" || !/^\d+$/u.test(value)) {
     throw new Error(
-      `GATE_MEMORY_BYTES must be a positive decimal integer in bytes (received ${JSON.stringify(value)}).`,
+      `${name} must be a positive decimal integer in bytes (received ${JSON.stringify(value)}).`,
     );
   }
   const bytes = Number(value);
   if (!Number.isSafeInteger(bytes) || bytes <= 0) {
     throw new Error(
-      `GATE_MEMORY_BYTES must be a positive decimal integer in bytes (received ${JSON.stringify(value)}).`,
+      `${name} must be a positive decimal integer in bytes (received ${JSON.stringify(value)}).`,
     );
   }
   return bytes;
+}
+
+function configuredMemoryBudget(env) {
+  if (env?.GATE_MEMORY_BYTES === undefined) return undefined;
+  return positiveByteCountFromEnv("GATE_MEMORY_BYTES", env);
 }
 
 /** Return the available gate budget, honoring the explicit override without reading cgroups. */

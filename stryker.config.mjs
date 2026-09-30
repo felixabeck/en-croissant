@@ -2,6 +2,7 @@ import { mutationPackages } from "./scripts/frontend-mutation-packages.mjs";
 import {
   STRYKER_PARENT_BYTES,
   STRYKER_RUNNER_BYTES,
+  positiveByteCountFromEnv,
   workerCount,
 } from "./scripts/gate-parallelism.mjs";
 
@@ -9,18 +10,7 @@ const mutationPackage = process.env.STRYKER_PACKAGE;
 if (!mutationPackages[mutationPackage])
   throw new Error(`Unknown or missing STRYKER_PACKAGE: ${mutationPackage ?? "<missing>"}`);
 
-const memoryValue = process.env.STRYKER_MEMORY_BYTES;
-const memoryBytes = Number(memoryValue);
-if (
-  typeof memoryValue !== "string" ||
-  !/^\d+$/u.test(memoryValue) ||
-  !Number.isSafeInteger(memoryBytes) ||
-  memoryBytes <= 0
-) {
-  throw new Error(
-    `STRYKER_MEMORY_BYTES must be a positive decimal integer in bytes (received ${JSON.stringify(memoryValue)}).`,
-  );
-}
+const memoryBytes = positiveByteCountFromEnv("STRYKER_MEMORY_BYTES");
 
 /** @type {import("@stryker-mutator/api/core").PartialStrykerOptions} */
 const config = {
@@ -52,10 +42,11 @@ const config = {
   // Note this cannot help when the process is killed outright — dispose() never
   // runs then. run-frontend-mutation.mjs purges the temp dir on start for that.
   cleanTempDir: "always",
-  // LOAD-BEARING, do not trim. Stryker only ever ignores node_modules, .git,
-  // /reports, *.tsbuildinfo, /stryker.log and .stryker-tmp by itself —
-  // src-tauri/target is NOT among them. Without the entry below, every sandbox
-  // gets a full copy of the Rust target directory, three per frontend run.
+  // LOAD-BEARING, do not trim. Stryker always ignores node_modules, .git,
+  // *.tsbuildinfo, /stryker.log, .next, .nuxt and .svelte-kit. It also adds only
+  // this package's tempDirName; the root rule below excludes sibling sandboxes.
+  // src-tauri/target is NOT among these rules, so every sandbox would otherwise
+  // get a full copy of the Rust target directory, three per frontend run.
   ignorePatterns: [
     "artifacts/**",
     "backend-coverage/**",
@@ -64,6 +55,8 @@ const config = {
     "e2e/**",
     "mutants.out/**",
     "playwright-report/**",
+    // Ignore the shared root so every package's sandbox stays out of sibling copies.
+    ".stryker-tmp",
     "src-tauri/target/**",
     "test-results/**",
   ],
