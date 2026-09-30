@@ -11931,3 +11931,17 @@ Handled 2026-09-29 in 8b97e423. Mechanism confirmed by close-thread instrumentat
 * **Why it matters:** a green gate or receipt over a tree that briefly contained an injected mutant.
 * **Open question:** should a push-gate run hold a shared "gates running" lease that the backend mutation runner refuses on (and vice versa), and where does that lease live so a crashed gate run cannot block mutation forever?
 * **Found by:** Codex `review-plan` lens, round 5 of `tasks/plans/2026-09-29-push-gate-parallelism.md`, 2026-09-29.
+
+---
+
+## 2026-09-30 — filed through the inbox spool
+
+### LRU eviction drops a database entry without draining its SQLite connections, so one can close after a later delete of the same file
+
+* **ID:** f-20260930-01 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/db/repository.rs` `evict_idle_entries` (~line 973, called under the repository state lock from `entry()` ~915); `close_retired_entry` (~952) and `DrainGate` (~109) are the drain every other retirement path uses since `3ed94336`.
+* **Defect:** eviction removes an idle entry (`Arc::strong_count == 1`, no lease, not retiring) from `RepositoryState.entries` and drops it without closing its connection gate or waiting for outstanding connection tickets. An r2d2 `add_connection` job started by an earlier `get` can still hold an upgraded pool reference and a live or in-flight SQLite handle (the f-20260929-07 mechanism). A later `delete_exclusive_cancellable` of the same file then finds no entry, drains nothing, and unlinks while that handle is still open. The window is small (a replenishment job outliving the `get` that spawned it), reported by the repair leaf of the 2026-09-30 push review.
+* **Why it matters:** it is the last retirement path that can close an SQLite handle (and unlink WAL/SHM) after the file was deleted or replaced, which every other path now excludes.
+* **Proposed fix:** close the evicted entry's connection gate and drop its pool at eviction without blocking under the state lock, and keep the evicted gates reachable (for example a per-key list of draining gates in `RepositoryState`) so `delete_exclusive_inner` and `entry()` rebuild wait on them through `DrainGate::wait_drained` before unlinking or opening a fresh pool.
+* **Open question:** where do evicted-but-draining gates live and who prunes them — a per-key list in `RepositoryState` pruned on drain, or eviction deferred to a path that may block — without holding the state lock across a wait?
+* **Found by:** Codex write leaf (repair of the `8b97e423` push review), out-of-scope report; confirmed by the orchestrator from source, 2026-09-30. Related: `f-20260929-07`.
