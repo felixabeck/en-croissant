@@ -4775,3 +4775,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Review:** `tasks/handoffs/2026-09-30-k5-chessfable-gates-and-review-review.md`
 * **Decided by:** Claude Code (Opus 5.5), K5 ChessFable build run of the 2026-09-30 drain review (session e5e98ba9-1fe9-44b9-97ee-d14fb9375a46), 2026-09-30 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"e03e659722bdb1d1271cca6e69507e9d8d1b7795530b480f81cd8a36707301f4","input_sha256":"3374ef08c8b36602b318eaeb404110eab6a1d6701087b450a125178675c323ed","kind":"mutation-receipt","operation":"b7fef9b755f08635f784c16b9b951090485808d3474b2a291a02a82aaa8f2716","options":{"section":null},"request_id_sha256":null,"results":["d-20261001-02"],"target":"decisions-ledger","v":1} -->
+
+### d-20261001-03 — How does `$push` decide that the remote CI state refuses a push?
+
+* **Question:** How does `$push` decide that the remote CI state refuses a push?
+* **Governs:** -
+* **Chosen:** the push skill runs `pnpm ci:remote:check` (`scripts/check-remote-ci.mjs`) before every push. It reads the `Test` workflow's recent runs on the upstream branch through `gh`, takes each job's newest completed result across those runs, and exits non-zero on any job whose newest completed result is not success; a failed or unparsable `gh` call, an empty run or job list, or a job with no completed result in the window also refuses. The named platform jobs only decide what to wait for after the push.
+* **Rejected:** keeping the check as prose with example `gh` commands, reading only the named platform jobs (the 2026-09-28 unnamed `test` job was red for every later push, f-20260929-02), and reading only the newest run (its jobs may still be running).
+* **Reason:** the drain review's R3 A4 and the kit's policy §8 now refuse on any red job; the "newest completed result per job across runs" reading was done by hand and missed red jobs twice (2026-09-19: seventeen pushes over a red Windows job; 2026-09-28: the unnamed `test` job), and a script's refusal cases are testable where prose is not. Reversal path: delete the script and fall back to policy §8's prose.
+* **Review:** `tasks/handoffs/2026-09-30-k5-chessfable-gates-and-review-review.md`
+* **Decided by:** Claude Code (Opus 5.5), K5 ChessFable build run of the 2026-09-30 drain review (session e5e98ba9-1fe9-44b9-97ee-d14fb9375a46), 2026-09-30 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"f7b07c4ec2b9478a467715f8bf0cb52f517398416e403b9acaddd0e84fe6c608","input_sha256":"44166c6df86690e3e73dd0f7eef8ffe213eda666fd4f70a753fd57cbb5992d01","kind":"mutation-receipt","operation":"501a71239e00494752629475671d44ce43c848c9d5075e75afdec25ce13bf6cb","options":{"section":null},"request_id_sha256":null,"results":["d-20261001-03"],"target":"decisions-ledger","v":1} -->
