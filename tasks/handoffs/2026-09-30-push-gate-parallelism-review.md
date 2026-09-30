@@ -1105,3 +1105,113 @@ issue PG-01…PG-135 is closed by its witnessing lenses or dispositioned (Skip: 
 Final lens standing: `review-plan` APPROVED r29 (REVISE r30 on PG-137 only) · `review-tests`
 APPROVED r28 (REVISE r30 on PG-136 only) · `review-correctness` APPROVED r25 · `review-error-handling`
 APPROVED r20 · `review-minimalism` APPROVED r24. 30 rounds, 137 issue IDs.
+
+---
+
+# Implementation run (2026-09-30)
+
+Build run, Claude Code (Opus 5.5) orchestrating, Codex (`gpt-6-luna`) write and lens leaves, `full
+auto`, session `a3a230ef-7b5b-4be0-82ec-2e5fb8953292`. No further plan-review round was run (the
+plan review was closed above). Sections S1-S5 landed as `756544ec`, `b3dd9659`, `49daff0c`,
+`62c02b75`, `e83c9223`; cumulative-review repairs as `0d81548a`, `01e93a58`, `4d8f4933`,
+`ea2cbe5c`, `e649bbda`, `315d8205`; records as `d-20260930-01` … `-06`.
+
+## Before / after (tuxedo-atlas, 8 GiB agent scope, warm caches)
+
+The "after" column is one all-blocks run, `pnpm gates:push -- --rust --frontend --bindings`, on the
+clean tree at `315d8205`, started 2026-09-30 13:11:47 +02:00. Other agent sessions were loading the
+machine throughout (load average 13.97 at start, 12.03 at the end, 20-25 over 15 minutes), so every
+"after" number is an upper bound. Every receipt was recorded (`gate:check` exit 0 for all five
+receipt gates afterwards), peak anonymous memory in the scope was 6.45 GiB above idle, and
+`journalctl -k` counted **0 OOM kills** over the run.
+
+| Step | Before (serial) | After (lane, wall) | Notes |
+| --- | --- | --- | --- |
+| `pnpm gates:contract:check` (+ `findings:kit:check` after) | 43.8 s | 74.2 s (`contract` lane) | runs beside the other lanes; now includes `gates:parallelism:test` and `gates:push:test` |
+| `cargo fmt` / `cargo check` / `clippy` / `rust:windows:check` | 0.8 / 5.2 / 4.6 / 4.7 s | 46.5 s (`rust-lint` lane) | `cargo check` dropped (`d-20260930-02`); compiles contend with the cargo lanes |
+| `backend-test` (`cargo test --all-targets`) | 32.8 s | 57.2 s (`rust-test` lane) | concurrent with `rust-coverage` (`d-20260930-01`) |
+| `backend-coverage` + check | 38.5 + 0.8 s | 63.6 s (`rust-coverage` lane) | own target dir |
+| `frontend-coverage` (`test:coverage` + check) | 120.5 + 0.3 s | 59.9 s (lane, half budget → 8 workers) | alone at 22 workers: 40.2 s, 5.25 GiB (measured after S2) |
+| `build-vite` / `bundle:check` | 6.4 / 0.4 s | 8.1 s (P1 `gate:run frontend-build`) / 0.5 s (`bundle` lane) | |
+| `bindings:check` | — (not in the baseline) | 38.6 s (P1, serial) | stays serial: conditional rewriter, compiles against `dist/` |
+| `test:e2e:container` | 46.1 s | 20.6 s (`e2e` lane, 6 workers, fully parallel) | after `bundle` and every cargo lane |
+| `mutation:frontend` | 549.1 s (concurrency 2, serial packages) | 397.5 s (last lane, 1 slot × 5 runners) | 0 OOM kills |
+| **Total** | **≈ 853 s serial sum** | **528.8 s wall** | |
+
+Phase timeline of the after-run: P0 (mutation guard 0.3 s, `setup-rust` < 0.1 s) and P1
+(`frontend-build` 8.1 s, `bindings:check` 38.6 s) took ≈ 47 s; P2 ran ≈ 84 s (e2e finished last,
+after `rust-coverage`); frontend mutation then ran 397.5 s on the whole 7 GiB budget.
+
+**Acceptance #2 is not met as measured**: 528.8 s is above the audit's ≤ 8 min (480 s) and far from
+the plan's ≈ 4.5 min target. The shortfall is the mutation lane (75 % of the wall time). The plan's
+≈ 210 s mutation estimate assumed three packages × four runners at ~0.5 GiB each; measured
+Stryker runners peak at 0.80-1.13 GiB and grow during a run (`d-20260930-03`), so the 7 GiB agent
+budget admits five runners on one package at a time. What remains is outside this plan and
+already filed: the 281 static mutants that dominate `workspace-storage` (`f-20260929-09`) and the
+8 GiB scope cap itself (tuxedo-config `f-20260929-01`). Everything before the mutation lane now
+takes ≈ 131 s instead of ≈ 304 s serially.
+
+## Measured constants (re-measured before use, as the plan required)
+
+* Vitest (`scripts/gate-parallelism.mjs`): `vitest run --coverage.enabled` peak anon above idle
+  1.88 / 3.23 / 4.58 GiB at 4 / 12 / 20 workers → ≈ 173 MiB per worker, ≈ 1.20 GiB base;
+  `VITEST_WORKER_BYTES` 256 MiB and `VITEST_BASE_BYTES` 1.5 GiB kept as headroom.
+* Stryker, per-process RSS sampling: tree-path 4.98 GiB at `--concurrency 4`, 6.76 GiB at 8;
+  workspace-storage 3.60 GiB at 4, 7.04 GiB at 8 (runners 0.85-1.09 GiB each); game-practice
+  5.44 GiB at 8; `--maxTestRunnerReuse 40` at 8: 6.53 GiB. Parent 0.34-0.39 GiB plus a 0.11 GiB
+  helper. → `STRYKER_RUNNER_BYTES` 1.2 GiB, `STRYKER_PARENT_BYTES` 640 MiB (the plan's 640 MiB
+  runner figure came from runners OOM-killed before they had grown).
+* `ONE_WAVE_BYTES` 40 GiB, `P2_VITEST_SHARE` 0.5, `P2_MUTATION_SHARE` 0.35 (derivation in their
+  comments; `d-20260930-04`). The after-run peak of 6.45 GiB is below the 7 GiB budget.
+* e2e (pinned container, load average 64-90): 4 workers 47.6-54.3 s (five runs), 6 workers
+  36.7-44.1 s (seven runs), 10 workers 38.9 s; 55/55 each, no snapshot moved → `workers: 6`,
+  `fullyParallel: true`.
+* Clippy covers `cargo check` (rule 12b probe): a type error in the `#[cfg(test)]` fn
+  `set_test_lexer_hook` made `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets
+  --locked -- -D warnings` exit 101 with `E0308`; exit 0 without it.
+
+## Deviations from the reviewed plan (orchestrator decisions, recorded)
+
+1. **Stryker slot rule** (`d-20260930-03`): the admitted package count maximises total runners
+   (ties → more packages) instead of `min(3, cpu, floor(budget / (parent + runner)))`, which with
+   the measured runner size would admit three one-runner packages at 7 GiB. The plan's own cases
+   are kept (24 CPUs + large budget → 3 slots; 1 CPU → 1; budget `2R + P` on 3 CPUs → 1), plus the
+   regression anchor 24 CPUs / 7 GiB → 1 slot.
+2. **S2 pure-move proof** (`d-20260930-05`): describe-scope declarations that a split suite repeats
+   in several files are compared as a set per describe path; tests and top-level statements stay
+   multisets. The first leaf split by hand, hoisted two describe-scope declarations into the
+   fixture and later misplaced tests; the proof caught both. The phase was re-run from a
+   partition computed from measured per-registration durations and generated from AST byte
+   slices. Result: ten files, 2.8-12.4 s each alone, 286/286 before and after, proof IDENTICAL.
+   One-off commands (not committed): `/tmp/build-a3a230ef/s2-generate-split.mjs` and
+   `/tmp/build-a3a230ef/s2-pure-move-proof.mjs`, both run from the repository root.
+3. **S4**: `workers: 6` instead of 4 (faster and five-times green, as the plan allowed).
+
+## Cumulative diff review (`5ca46acd..e83c9223`)
+
+Six Codex lenses at the sensitive rung (the diff touches `.github/workflows/**` and
+`package.json`). Detection ran on a different model family than this orchestrator; the code was
+written by Codex leaves, so detection shared the writer's family. This context wrote the briefs
+and arbitrated triage.
+
+| Lens | Verdict | Findings → disposition |
+| --- | --- | --- |
+| `review-correctness` | REVISE | coverage + concurrent mutation shares summed to 1.35 × budget on a frontend-only one-wave run → Fix `0d81548a`; `(5a)` missed a wrapped `cargo check` → Fix `4d8f4933`; **PG-136 CLOSED, PG-137 CLOSED** |
+| `review-tests` | REVISE | signal test held one lane, so a surviving sibling went unseen → Fix `0d81548a`; no test of a frontend run with an undeterminable budget → Fix `0d81548a` (runner) and `01e93a58` (mutation runner); **PG-136 CLOSED, PG-137 CLOSED** |
+| `review-error-handling` | REVISE | runner could hang when a signal-driven termination failed → Fix; nested cleanup errors dropped → Fix; log-write failure hid the child's exit → Fix (all `0d81548a`) |
+| `review-root-cause` | REVISE | per-package `tempDirName` let a package copy a sibling's live sandbox (verified in Stryker 9.6.1 `project-reader.js`: `ALWAYS_IGNORE` has no `.stryker-tmp`) → Fix `01e93a58`; after-run timing not yet recorded → Fix (this record) |
+| `review-minimalism` | REVISE | duplicated fence-line parser → Fix `4d8f4933`; duplicated byte-count validator → Fix `01e93a58`; duplicated CLI test launcher → Fix `0d81548a`; unused `Set` input → Fix `0d81548a`; one-caller `readFileForWiring` → Fix `e649bbda` |
+| `review-code-quality` | APPROVED | three nits (dynamic `tmpdir` import, unexplained 0.25 share margin, blank-separated imports) → Fix `01e93a58`, `e649bbda` |
+
+Found by the orchestrator and fixed in the same batch: the multi-child API's leftover
+`"frontend mutation"` default label, the Playwright workers comment losing its reason, and an
+unsupported claim in a constant comment. Found in the same area and handled here: `f-20260929-02`
+(master's CI `test` job red on two O3.12 tests at 7.2 s) → `315d8205`, `d-20260930-06`;
+`f-20260917-11` (foreign-owner test race) → closed by S3's `writeOwner` refusal plus the rewritten
+test (PG-102).
+
+**Closure of the two carried plan issues:** PG-136 (the contrasting 2-CPU × 1/2 Stryker config case,
+CPU injected test-side via a `node --import` preload) and PG-137 (the import test's completion
+marker in a separate file, stdout and stderr asserted empty) were each confirmed CLOSED against the
+real code by both `review-tests` and `review-correctness` (`scripts/run-frontend-mutation-tests.mjs`,
+config test and import side-effect test). All 137 plan issues are now closed or dispositioned.
