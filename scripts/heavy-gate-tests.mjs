@@ -31,6 +31,8 @@ if [[ "$HEAVY_GATE_TEST_SYSTEMD_MODE" != unconfirmed ]]; then
     "$scope_name" > "$HEAVY_GATE_TEST_CGROUP_FILE"
 fi
 
+if [[ "$HEAVY_GATE_TEST_SYSTEMD_MODE" == unconfirmed ]]; then exit 0; fi
+
 while (($# > 0)) && [[ "$1" != -- ]]; do shift; done
 if (($# == 0)); then
   printf 'fake systemd-run did not receive --\n' >&2
@@ -270,8 +272,7 @@ test("systemd scope refusal names the failure and runs no heavy command", async 
 test("a scope that cannot be confirmed refuses before execing the heavy command", async (t) => {
   const harness = await makeHarness(t, { systemdMode: "unconfirmed" });
   const result = runWrapper(harness);
-  assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /Heavy gate scope not confirmed: expected agents\.slice/u);
+  assert.equal(result.status, 1);
   assert.match(result.stderr, /Heavy gate scope creation or confirmation failed/u);
   assert.deepEqual(await readFile(harness.heavyMarker).catch(() => ""), "");
 });

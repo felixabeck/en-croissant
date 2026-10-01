@@ -134,7 +134,8 @@ done
 if [[ ! -s "$confirmation_file" ]]; then
   printf 'Heavy gate scope creation or confirmation failed for %s (systemd-run exited %s).\n' \
     "$scope_name" "$scope_status" >&2
-  exit "${scope_status:-1}"
+  if (( scope_status != 0 )); then exit "$scope_status"; fi
+  exit 1
 fi
 
 if [[ "$requested_signal" == SIGINT ]]; then exit 130; fi

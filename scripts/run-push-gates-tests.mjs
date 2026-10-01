@@ -1730,11 +1730,12 @@ test("interrupted lanes retain shutdown output and record the child's exit", asy
     const done = new Promise((resolve) => {
       resolveDone = resolve;
     });
+    const exitOrTerminationFailure = () => done.then((result) => ({ type: "exit", result }));
     if (child.command === interruptedCommand) {
       let terminating = false;
       return {
         done,
-        exitOrTerminationFailure: () => done.then((result) => ({ type: "exit", result })),
+        exitOrTerminationFailure,
         terminate() {
           if (!terminating) {
             terminating = true;
@@ -1757,7 +1758,7 @@ test("interrupted lanes retain shutdown output and record the child's exit", asy
     });
     return {
       done,
-      exitOrTerminationFailure: () => done.then((result) => ({ type: "exit", result })),
+      exitOrTerminationFailure,
       terminate: () => done,
       unref() {},
     };

@@ -300,6 +300,23 @@ test("Docker without memory-limit support is refused before any container is sta
   );
 });
 
+test("invalid Docker info timeout values are refused before Docker is started", async (t) => {
+  for (const timeout of ["-1", "abc"]) {
+    await t.test(`E2E_TEST_DOCKER_INFO_TIMEOUT_MS=${timeout}`, async (subtest) => {
+      const harness = await makeHarness(subtest, {
+        E2E_TEST_DOCKER_INFO_TIMEOUT_MS: timeout,
+      });
+      const result = await startNode([launcherPath], harness.env).done;
+      assert.equal(result.code, 1, `${result.stdout}\n${result.stderr}`);
+      assert.match(
+        result.stderr,
+        /E2E_TEST_DOCKER_INFO_TIMEOUT_MS must be a finite non-negative number\./u,
+      );
+      assert.deepEqual(await readEvents(harness), []);
+    });
+  }
+});
+
 test("docker info preflight has a bounded timeout that refuses with its cause", async (t) => {
   assert.equal(DOCKER_INFO_TIMEOUT_MS, 10_000);
   const harness = await makeHarness(t, { FAKE_DOCKER_INFO_MODE: "hold" });

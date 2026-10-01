@@ -397,18 +397,17 @@ export async function runE2eContainer(
   }
 }
 
-function entrypointOptions() {
-  const testTimeout = process.env.E2E_TEST_DOCKER_INFO_TIMEOUT_MS;
-  if (testTimeout === undefined) return {};
-  const preflightTimeoutMs = Number(testTimeout);
-  if (!Number.isFinite(preflightTimeoutMs) || preflightTimeoutMs < 0) {
-    throw new Error("E2E_TEST_DOCKER_INFO_TIMEOUT_MS must be a finite non-negative number.");
-  }
-  return { preflightTimeoutMs };
-}
-
 async function main() {
-  const result = await runE2eContainer(process.argv.slice(2), entrypointOptions());
+  const options = {};
+  const testTimeout = process.env.E2E_TEST_DOCKER_INFO_TIMEOUT_MS;
+  if (testTimeout !== undefined) {
+    const preflightTimeoutMs = Number(testTimeout);
+    if (!Number.isFinite(preflightTimeoutMs) || preflightTimeoutMs < 0) {
+      throw new Error("E2E_TEST_DOCKER_INFO_TIMEOUT_MS must be a finite non-negative number.");
+    }
+    options.preflightTimeoutMs = preflightTimeoutMs;
+  }
+  const result = await runE2eContainer(process.argv.slice(2), options);
   process.exitCode = result.exitCode;
 }
 
