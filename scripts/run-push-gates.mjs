@@ -16,6 +16,7 @@ import { performance } from "node:perf_hooks";
 import { isEntrypoint } from "./entrypoint.mjs";
 import { gateBudgetBytes, VITEST_MINIMUM_BUDGET_BYTES } from "./gate-parallelism.mjs";
 import {
+  formatNestedError,
   installMultiChildSignalForwarding,
   signalExitCode,
   superviseChild as defaultSuperviseChild,
@@ -257,12 +258,10 @@ function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
-function nestedErrorMessage(error, depth = 0) {
-  const lines = [`${"  ".repeat(depth)}${errorMessage(error)}`];
-  const nested = error instanceof AggregateError ? [...error.errors] : [];
-  if (error?.cause !== undefined) nested.push(error.cause);
-  for (const cause of nested) lines.push(nestedErrorMessage(cause, depth + 1));
-  return lines.join("\n");
+function nestedErrorMessage(error) {
+  return formatNestedError(error, (message, nested, _error, depth) =>
+    [`${"  ".repeat(depth)}${message}`, ...nested].join("\n"),
+  );
 }
 
 export function parsePushGateArguments(argumentsList) {
@@ -508,7 +507,7 @@ export function mutationFilesForChanges(
       wrapReadError: (_importer, error) => error,
     });
   }
-  return [...selectedFiles].sort();
+  return [...selectedFiles].filter((path) => exists(resolve(root, path))).sort();
 }
 
 function hasCoverageInputsChanged(changedPaths, { root, config, baseline }) {
@@ -695,20 +694,45 @@ async function runCommand(
     task.kind === "lane-step"
       ? `lane ${task.name} step ${label}`
       : `${task.phase} step ${task.name} (${label})`;
-  signalForwarding.attach(supervisor, childLabel);
+  const terminationFailure = signalForwarding.attach(supervisor, childLabel);
 
   let completion;
   try {
     completion = await Promise.race([
       supervisor.done.then((result) => ({ type: "completed", result })),
-      signalForwarding.signalRequested.then(() => ({ type: "interrupted" })),
+      signalForwarding.signalRequested.then(async (reason) => {
+        const outcome = await Promise.race([
+          supervisor.done.then((result) => ({ type: "completed", result })),
+          terminationFailure.then((error) => ({ type: "termination-failed", error })),
+        ]);
+        return { type: "interrupted", reason, outcome };
+      }),
     ]);
   } finally {
     closeSync(fd);
   }
 
   if (completion.type === "interrupted") {
-    return { signal: signalForwarding.requestedSignal, logError };
+    if (completion.outcome.type === "termination-failed") {
+      return {
+        interruptionSignal: completion.reason,
+        terminationError: completion.outcome.error,
+        logError,
+      };
+    }
+    const result = completion.outcome.result;
+    const commandResult = result.error
+      ? { code: 127, error: result.error }
+      : result.code !== null
+        ? { code: result.code, signal: result.signal }
+        : { code: signalExitCode(result.signal), signal: result.signal };
+    return {
+      ...commandResult,
+      interruptionSignal: completion.reason,
+      childExitCode: result.code,
+      childSignal: result.signal,
+      logError,
+    };
   }
   const { result } = completion;
   let commandResult;
@@ -724,7 +748,12 @@ async function runCommand(
       logError,
     };
   }
-  return { ...commandResult, logError };
+  return {
+    ...commandResult,
+    childExitCode: result.code,
+    childSignal: result.signal,
+    logError,
+  };
 }
 
 function skipTask(task, reason) {
@@ -788,6 +817,9 @@ async function runStep(task, command, context) {
   task.error = result.error;
   task.logError = result.logError;
   task.signal = result.signal;
+  task.childExitCode = result.childExitCode;
+  task.childSignal = result.childSignal;
+  task.terminationError = result.terminationError;
   if (context.signalForwarding.requestedSignal) {
     task.code = signalExitCode(context.signalForwarding.requestedSignal);
     task.status = "interrupted";
@@ -814,7 +846,10 @@ async function runLane(lane, env, context, results) {
   let result = { code: 0 };
   for (const [index, command] of lane.commands.entries()) {
     if (context.signalForwarding.requestedSignal) {
-      result = { code: signalExitCode(context.signalForwarding.requestedSignal) };
+      result = {
+        ...result,
+        code: signalExitCode(context.signalForwarding.requestedSignal),
+      };
       break;
     }
     const step = createTaskResult(context.logDirectory, lane.name, "lane-step", {
@@ -837,7 +872,10 @@ async function runLane(lane, env, context, results) {
       result = { code: 1, error };
     }
     if (context.signalForwarding.requestedSignal) {
-      result = { code: signalExitCode(context.signalForwarding.requestedSignal) };
+      result = {
+        ...result,
+        code: signalExitCode(context.signalForwarding.requestedSignal),
+      };
       break;
     }
     if (result.code !== 0) {
@@ -855,6 +893,11 @@ async function runLane(lane, env, context, results) {
       ? "passed"
       : "failed";
   task.error ??= result.error;
+  task.logError ??= result.logError;
+  task.signal = result.signal;
+  task.childExitCode = result.childExitCode;
+  task.childSignal = result.childSignal;
+  task.terminationError = result.terminationError;
   logProgress(task, "finish", result.error ? `error=${errorMessage(result.error)}` : "");
   return task;
 }
@@ -905,11 +948,19 @@ const P2_CPU_SHARE = 0.5;
 function printSummary(results, logDirectory, preReviewMode = false) {
   const label = preReviewMode ? "Pre-review check" : "Push gate";
   process.stdout.write(`${label} logs: ${logDirectory}\n`);
-  process.stdout.write("Task                 Status       Exit   Duration\n");
-  process.stdout.write("-------------------- ------------ ------ --------\n");
+  process.stdout.write("Task                 Status                       Exit   Duration\n");
+  process.stdout.write("-------------------- ---------------------------- ------ --------\n");
   for (const task of results) {
+    const status =
+      task.status === "interrupted" &&
+      task.childExitCode !== undefined &&
+      task.childExitCode !== null &&
+      task.childExitCode !== 0 &&
+      !task.childSignal
+        ? `interrupted; child exit ${task.childExitCode}`
+        : task.status;
     process.stdout.write(
-      `${task.name.padEnd(20)} ${task.status.padEnd(12)} ${String(task.code ?? "-").padEnd(6)} ${formatDuration(task.durationMs)}\n`,
+      `${task.name.padEnd(20)} ${status.padEnd(28)} ${String(task.code ?? "-").padEnd(6)} ${formatDuration(task.durationMs)}\n`,
     );
     if (task.reason) process.stdout.write(`  reason: ${task.reason}\n`);
   }
@@ -927,6 +978,11 @@ function printSummary(results, logDirectory, preReviewMode = false) {
       process.stdout.write(`Unable to read log tail: ${errorMessage(error)}\n`);
     }
     if (task.error) process.stdout.write(`Spawn or runner error: ${errorMessage(task.error)}\n`);
+    if (task.terminationError) {
+      process.stdout.write(
+        `Child termination failed:\n${nestedErrorMessage(task.terminationError)}\n`,
+      );
+    }
     if (task.logError) {
       process.stdout.write(`Gate log write failed: ${errorMessage(task.logError)}\n`);
     }

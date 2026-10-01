@@ -2,6 +2,15 @@ import { constants as osConstants } from "node:os";
 
 const PROCESS_GROUP_POLL_MS = 10;
 
+/** Traverse nested errors once while letting each caller choose how to format their tree. */
+export function formatNestedError(error, format, depth = 0) {
+  const message = error instanceof Error ? error.message : String(error);
+  const nested = error instanceof AggregateError ? [...error.errors] : [];
+  if (error?.cause !== undefined) nested.push(error.cause);
+  const formattedNested = nested.map((cause) => formatNestedError(cause, format, depth + 1));
+  return format(message, formattedNested, error, depth);
+}
+
 /** Translate a child signal to its conventional shell status. Unknown signals default to 128. */
 export function signalExitCode(signal, unknownSignalCode = 128) {
   const number = osConstants.signals[signal];
@@ -96,7 +105,7 @@ function errorMessage(error) {
 /** Attempt every child termination and report all failures after every attempt settles. */
 async function terminateChildren(children, label) {
   const entries = [...children];
-  const results = await Promise.allSettled(entries.map(({ supervisor }) => supervisor.terminate()));
+  const results = await Promise.allSettled(entries.map(startChildTermination));
   const failures = results.flatMap((result, index) => {
     if (result.status === "fulfilled") return [];
     const { name } = entries[index];
@@ -112,6 +121,14 @@ async function terminateChildren(children, label) {
     }
     throw new AggregateError(failures, `Failed to terminate ${failures.length} ${label} child(s).`);
   }
+}
+
+function startChildTermination(entry) {
+  if (!entry.termination) {
+    entry.termination = Promise.resolve().then(() => entry.supervisor.terminate());
+    entry.termination.catch(entry.reportTerminationFailure);
+  }
+  return entry.termination;
 }
 
 /** Forward runner signals to every attached child and latch attachment into termination. */
@@ -166,8 +183,14 @@ export function installMultiChildSignalForwarding({ label, abortSignal = undefin
       });
     },
     attach(supervisor, name) {
-      children.push({ supervisor, name });
+      let reportTerminationFailure;
+      const terminationFailure = new Promise((resolve) => {
+        reportTerminationFailure = resolve;
+      });
+      const entry = { supervisor, name, reportTerminationFailure, terminationFailure };
+      children.push(entry);
       if (requestedReason !== undefined) terminateAll();
+      return terminationFailure;
     },
     terminateAll,
     uninstall() {

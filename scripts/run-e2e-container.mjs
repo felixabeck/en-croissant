@@ -21,6 +21,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isEntrypoint } from "./entrypoint.mjs";
 import {
+  formatNestedError,
   installMultiChildSignalForwarding,
   signalExitCode,
   superviseChild,
@@ -28,7 +29,7 @@ import {
 import { playwrightImage } from "./playwright-image.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-export const DOCKER_RUN_TERMINATION_TIMEOUT_MS = 2_000;
+export const DOCKER_COMMAND_TERMINATION_TIMEOUT_MS = 2_000;
 // Leave time inside the scheduler's 15-second e2e lane window for the Docker client to terminate.
 export const DOCKER_REMOVE_TIMEOUT_MS = 10_000;
 // Docker daemon discovery should respond within ten seconds; this also bounds preflight cleanup
@@ -58,10 +59,9 @@ export function playwrightArguments(forwarded) {
 }
 
 function errorMessage(error) {
-  const message = error instanceof Error ? error.message : String(error);
-  const causes = error instanceof AggregateError ? [...error.errors] : [];
-  if (error?.cause) causes.push(error.cause);
-  return causes.length ? `${message}: ${causes.map(errorMessage).join("; ")}` : message;
+  return formatNestedError(error, (message, nested) =>
+    nested.length ? `${message}: ${nested.join("; ")}` : message,
+  );
 }
 
 function startDockerCommand(
@@ -69,7 +69,7 @@ function startDockerCommand(
   {
     spawnProcess = spawn,
     forwardOutput = false,
-    terminationTimeoutMs = DOCKER_RUN_TERMINATION_TIMEOUT_MS,
+    terminationTimeoutMs = DOCKER_COMMAND_TERMINATION_TIMEOUT_MS,
     superviseProcess = superviseChild,
     timeoutMs = undefined,
     timeoutLabel = undefined,
@@ -192,7 +192,7 @@ export async function runE2eContainer(
     abortSignal = undefined,
     preflightTimeoutMs = DOCKER_INFO_TIMEOUT_MS,
     removeTimeoutMs = DOCKER_REMOVE_TIMEOUT_MS,
-    dockerTerminationTimeoutMs = DOCKER_RUN_TERMINATION_TIMEOUT_MS,
+    dockerTerminationTimeoutMs = DOCKER_COMMAND_TERMINATION_TIMEOUT_MS,
   } = {},
 ) {
   const cancellation = installMultiChildSignalForwarding({
@@ -327,16 +327,22 @@ export async function runE2eContainer(
           : new Error(
               `Failed to stop and remove e2e container ${containerName}: ${errorMessage(cleanupOutcome.reason)}; a retry is not known to be clean.`,
             );
+      let failed = false;
       if (cleanupError) {
         reportCleanupFailure(cleanupError);
-        exitCode = 1;
-      } else if (terminationOutcome.status === "rejected") {
+        failed = true;
+      }
+      if (terminationOutcome.status === "rejected") {
         process.stderr.write(
           `Failed to terminate e2e Docker client: ${errorMessage(terminationOutcome.reason)}\n`,
         );
-        exitCode = 1;
-      } else if (runOutcome.status === "rejected") {
+        failed = true;
+      }
+      if (runOutcome.status === "rejected") {
         process.stderr.write(`E2E container runner failed: ${errorMessage(runOutcome.reason)}\n`);
+        failed = true;
+      }
+      if (failed) {
         exitCode = 1;
       } else {
         exitCode = cancellationExitCode(outcome.reason);

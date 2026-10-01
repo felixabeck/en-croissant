@@ -461,6 +461,14 @@ test("pre-review scans merge-base test contents for deleted and removed imports 
       [sourcePath],
     );
   });
+
+  await t.test("deleted production targets are not selected", async () => {
+    await rm(join(root, sourcePath), { force: true });
+    assert.deepEqual(
+      mutationFilesForChanges([testPath, barrelPath], { root, mergeBase: "merge-base", runGit }),
+      [],
+    );
+  });
 });
 
 test("pre-review mutation reads use the path-discovery git runner and merge base", async (t) => {
@@ -502,6 +510,45 @@ test("pre-review mutation reads use the path-discovery git runner and merge base
   assert.deepEqual(
     calls.map(([command]) => command),
     ["merge-base", "diff", "ls-tree", "show", "show"],
+  );
+});
+
+test("pre-review stops when merge-base tree lookup fails", async (t) => {
+  const cwd = await temporarySchedulerRoot(t);
+  const sourcePath = "src/state/workspace.ts";
+  const testPath = "src/state/workspace.test.ts";
+  await mkdir(dirname(join(cwd, sourcePath)), { recursive: true });
+  await writeFile(join(cwd, sourcePath), "export const workspace = 1;\n");
+  await writeFile(join(cwd, testPath), 'import { workspace } from "@/state/workspace";\n');
+
+  const gitCalls = [];
+  const runGit = (executable, args) => {
+    assert.equal(executable, "git");
+    gitCalls.push(args);
+    if (args[0] === "ls-tree") {
+      return { status: 128, stdout: "", stderr: "injected base-tree failure" };
+    }
+    assert.fail(`Unexpected git invocation: ${args.join(" ")}`);
+  };
+  const spawnedCommands = [];
+  const result = await runPushGates(["--pre-review"], {
+    cwd,
+    env: { ...process.env },
+    runGit,
+    discoverChanges: () => ({ mergeBase: "merge-base", paths: [testPath] }),
+    spawnProcess(executable, args) {
+      spawnedCommands.push([executable, ...args]);
+      assert.fail("a gate must not start after merge-base tree lookup fails");
+    },
+  });
+
+  assert.equal(result.exitCode, 1);
+  assert.ok(gitCalls.some(([command]) => command === "ls-tree"));
+  assert.deepEqual(spawnedCommands, []);
+  const scheduler = result.results.find((task) => task.name === "scheduler");
+  assert.match(
+    scheduler.error.message,
+    /git ls-tree -r -z merge-base failed \(injected base-tree failure\)/u,
   );
 });
 
@@ -1658,6 +1705,88 @@ test("signal cleanup failure stops waiting on the child and reports nested termi
       },
     );
   }
+});
+
+test("interrupted lanes retain shutdown output and record the child's exit", async (t) => {
+  const cwd = await temporarySchedulerRoot(t);
+  const interruptedCommand = "pnpm gates:contract:check";
+  const cleanupOutput =
+    "Failed to stop and remove e2e container fixture: injected cleanup refusal; a retry is not known to be clean.";
+  const spawnProcess = (executable, args) => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.pid = undefined;
+    child.exitCode = null;
+    child.signalCode = null;
+    child.command = [executable, ...args].join(" ");
+    if (child.command === interruptedCommand) {
+      setImmediate(() => process.emit("SIGTERM", "SIGTERM"));
+    }
+    return child;
+  };
+  const superviseProcess = (child) => {
+    let resolveDone;
+    const done = new Promise((resolve) => {
+      resolveDone = resolve;
+    });
+    if (child.command === interruptedCommand) {
+      let terminating = false;
+      return {
+        done,
+        terminate() {
+          if (!terminating) {
+            terminating = true;
+            child.stdout.write(`${cleanupOutput}\n`);
+            child.stdout.end();
+            child.stderr.end();
+            child.exitCode = 1;
+            setImmediate(() => resolveDone({ code: 1, signal: null }));
+          }
+          return done;
+        },
+        unref() {},
+      };
+    }
+    setImmediate(() => {
+      child.stdout.end();
+      child.stderr.end();
+      child.exitCode = 0;
+      resolveDone({ code: 0, signal: null });
+    });
+    return { done, terminate: () => done, unref() {} };
+  };
+
+  let summary = "";
+  const originalStdoutWrite = process.stdout.write;
+  process.stdout.write = function (chunk, encoding, callback) {
+    summary += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+    if (typeof encoding === "function") encoding();
+    if (typeof callback === "function") callback();
+    return true;
+  };
+  let result;
+  try {
+    result = await runPushGates([], {
+      cwd,
+      env: { ...process.env },
+      spawnProcess,
+      superviseProcess,
+    });
+  } finally {
+    process.stdout.write = originalStdoutWrite;
+  }
+
+  const contract = result.results.find((task) => task.name === "contract");
+  assert.equal(result.exitCode, 143);
+  assert.equal(contract.status, "interrupted");
+  assert.equal(contract.code, 143);
+  assert.equal(contract.childExitCode, 1);
+  assert.equal(contract.childSignal, null);
+  assert.match(summary, /contract\s+interrupted; child exit 1\s+143/u);
+  assert.ok(summary.includes(`contract log tail (${contract.logPath}):`));
+  assert.ok(summary.includes(cleanupOutput));
+  assert.match(await readFile(contract.logPath, "utf8"), /injected cleanup refusal/u);
 });
 
 test("scheduler-level beforeStep cancellation and injected spawn failures (PG-51, PG-55, PG-58)", async (t) => {

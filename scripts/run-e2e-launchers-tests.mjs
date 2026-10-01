@@ -6,7 +6,7 @@ import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   DOCKER_REMOVE_TIMEOUT_MS,
-  DOCKER_RUN_TERMINATION_TIMEOUT_MS,
+  DOCKER_COMMAND_TERMINATION_TIMEOUT_MS,
   DOCKER_INFO_TIMEOUT_MS,
   E2E_CONTAINER_MEMORY,
   E2E_CONTAINER_MEMORY_BYTES,
@@ -460,6 +460,50 @@ test("cancellation cleanup failure reports the named container and dirty retry s
   assert.match(result.stderr, /retry is not known to be clean/u);
 });
 
+test("cancellation reports cleanup and Docker client termination failures", async (t) => {
+  const harness = await makeHarness(t, {
+    FAKE_DOCKER_RUN_MODE: "delayed-term",
+    FAKE_DOCKER_RM_MODE: "fail",
+  });
+  const moduleUrl = pathToFileURL(launcherPath).href;
+  const supervisorUrl = pathToFileURL(join(scripts, "child-supervisor.mjs")).href;
+  const source = [
+    `import { runE2eContainer } from ${JSON.stringify(moduleUrl)};`,
+    `import { superviseChild } from ${JSON.stringify(supervisorUrl)};`,
+    "const result = await runE2eContainer([], {",
+    "  superviseProcess(child, options) {",
+    "    const supervisor = superviseChild(child, options);",
+    '    if (child.spawnargs?.[1] !== "run") return supervisor;',
+    "    return {",
+    "      ...supervisor,",
+    "      terminate() {",
+    "        supervisor.terminate().catch(() => {});",
+    '        return Promise.reject(new Error("injected Docker client termination failure"));',
+    "      },",
+    "    };",
+    "  },",
+    "});",
+    "process.exitCode = result.exitCode;",
+  ].join("\n");
+  const running = startNode(["--input-type=module", "-e", source], harness.env);
+  const runner = await waitForEvent(harness, (event) => event.action === "run");
+  const containerName = runner.args[runner.args.indexOf("--name") + 1];
+  running.child.kill("SIGTERM");
+  const result = await running.done;
+
+  assert.equal(result.code, 1, `${result.stdout}\n${result.stderr}`);
+  assert.match(
+    result.stderr,
+    new RegExp(
+      `Failed to stop and remove e2e container ${containerName}.*injected cleanup refusal`,
+      "u",
+    ),
+  );
+  assert.match(result.stderr, /retry is not known to be clean/u);
+  assert.match(result.stderr, /Failed to terminate e2e Docker client:/u);
+  assert.match(result.stderr, /injected Docker client termination failure/u);
+});
+
 test("an abort signal stops and removes the active container", async (t) => {
   const harness = await makeHarness(t, { FAKE_DOCKER_RUN_MODE: "hold" });
   const moduleUrl = pathToFileURL(launcherPath).href;
@@ -506,7 +550,8 @@ test("cleanup failure names the container and says a retry is not known to be cl
 
 test("a hung docker rm reports the named cleanup failure before the e2e lane window", async (t) => {
   assert.ok(
-    DOCKER_REMOVE_TIMEOUT_MS + DOCKER_RUN_TERMINATION_TIMEOUT_MS < E2E_LANE_TERMINATION_TIMEOUT_MS,
+    DOCKER_REMOVE_TIMEOUT_MS + DOCKER_COMMAND_TERMINATION_TIMEOUT_MS <
+      E2E_LANE_TERMINATION_TIMEOUT_MS,
   );
   const harness = await makeHarness(t, {
     FAKE_DOCKER_RUN_MODE: "fail",
