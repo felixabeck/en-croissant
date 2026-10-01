@@ -12228,6 +12228,8 @@ Correction 2026-09-30 (records review): "the 2026-09-29 push-gate lane runner ke
 * **Open question:** does cancel reuse the download-job ticket registry (`cancelDownloadJob`) or get its own operation ticket, and does a cancelled import of a *new* database delete the file in the backend or in the renderer flow that created it.
 * **Why `build`:** IPC contract change (new ticket parameter, regenerated bindings) plus renderer UI.
 * **Found by:** Claude, session 617a946f, 2026-10-01, while diagnosing Felix's vanished Mega Database import.
+* **Correction (2026-10-01, records review):** the Defect sentence overstates the blocking. During a local conversion only "Add New" and local-conversion submission are disabled and the target database is hidden from the list (`DatabasesPage.tsx` ~86 and ~225, `AddDatabase.tsx` ~168); the rest of the Databases page stays usable and the add modal can be closed while the import continues. What is missing is unchanged: there is no control that stops the running import short of quitting the app.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"921b641dc5700ec4c6cc7c107f986dc210eb6f4c717adfb050ce585eba155553","input_sha256":"89e8e004f73b8af238c7964e4334b0837c82a1b549a5ccec7cdc7aac4c860725","kind":"mutation-receipt","operation":"c844203648185560c975a34c0f80d7fd93113a4798cca7f925fe5e87a966beee","options":{"section":null},"request_id_sha256":null,"results":["f-20261001-19"],"target":"f-20261001-19","v":1} -->
 
 ---
 
