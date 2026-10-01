@@ -168,3 +168,26 @@ Lenses: correctness, root-cause, tests, code-quality, minimalism, error-handling
 Repairs: one Codex write leaf for P1-1..P1-11 (commit `acf1dbfa`; leaf proofs: vitest set 18 files
 / 153 tests, `pnpm checks:pre-review` green), the `f-20261001-20` annotation (`89aa2161`) and this
 record's correction.
+
+### Round 2 (closure, `REVIEWED_THROUGH=fb617c83`, delta `d2f3f0a5..fb617c83`)
+
+Lenses: correctness, tests, code-quality, minimalism, error-handling, records. All APPROVED;
+P1-1..P1-13 CLOSED. New from tests: R2-1 (92) the cleanup success branch had no assertion; R2-2 (90)
+the index success chain and the `deleteIndexes` branch had no assertions. Both Fix. While closing
+R2-2 the leaf measured two list fetches after a successful index change: `IndexInput` called
+`getDatabases()` outside the page's owned, cancellable SWR fetcher and then passed the result to SWR
+`mutate`, which revalidated. Fixed at the cause in `5fa8a9d8` (`IndexInput` takes the page's `reload`
+and awaits it), not by loosening the test.
+
+### Round 3 (closure, `REVIEWED_THROUGH=5fa8a9d8`)
+
+Lenses: correctness, tests, error-handling. All APPROVED; R2-1 and R2-2 CLOSED. Two nits from tests:
+R3-1 (85) the `Button` mock dropped `loading`, so a cleanup that never cleared loading passed — Fix
+(`5028ae45`, each `setLoading(false)` removal goes red); R3-2 (82) no failed-delete index case —
+Skip: it runs the same `.catch`/`.finally` node as the tested failed-create case, and the delete
+routing is proven by the success case.
+
+### Round 4 (closure, `REVIEWED_THROUGH=5028ae45`)
+
+Lenses: correctness, tests. Both APPROVED; R3-1 CLOSED. Review converged:
+`diff_adopted_per_round r1=13 r2=2 r3=1 r4=0`.
