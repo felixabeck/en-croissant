@@ -12184,3 +12184,17 @@ Correction 2026-09-30 (records review): "the 2026-09-29 push-gate lane runner ke
 * **Fix shape:** detect a tar stream inside the gzip (ustar magic at offset 257 of the decompressed head) and extract it through `extract_tar_cancellable` with the same entry, ratio and expanded-size limits; plain `.gz` single files keep today's path. Prove with a gzip-of-tar fixture through the download-install core and a registration of the nested path, red on today's code.
 * **Planned:** obligation O2 of `tasks/plans/2026-10-01-stockfish-19-upgrade.md`.
 * **Found by:** Codex `review-plan` lens, round 2 of the Stockfish 19 upgrade plan review, confirmed by the orchestrator reading `fs.rs:589-640,1681-1710`, 2026-10-01.
+
+---
+
+## 2026-10-01 — filed through the inbox spool
+
+### `enginesAtom` publishes a new engine list before its owner save resolves, so a refused save leaves memory ahead of storage
+
+* **ID:** f-20261001-17 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src/state/atoms.ts:244-260` (`set(storedEnginesAtom, next)` publishes in memory first), `src/state/engineOwnerStorage.ts:166-228` (receipt `saved:false` without restoring), callers `src/components/engines/EnginesPage.tsx:385-397` (settings edits), `:649-662` (Duplicate selects `selected + 1` immediately), `:676-683` (Remove retires the id before the save, per `d-20260901-17`).
+* **Defect:** after a refused save (attachment prepare failure, quota, invalid record) the in-memory list keeps the unsaved value for the rest of the session while storage holds the old one. The refusal is notified (`reportPersistError` → `notifyListenerError`), but the UI keeps showing and using state that will vanish on restart.
+* **Why it matters:** violates the persisted-state write/read symmetry the rules ask for; the user acts on a list that is not durable.
+* **Open question:** a general fix interacts with three callers: restoring the old value after refusal makes Remove (which retires the id first, `d-20260901-17`) leave a visible but tombstoned engine and makes Duplicate's immediate selection index a missing entry; publishing only after the save makes per-keystroke settings edits wait on an IPC round trip. Which contract — optimistic with restore plus reordered Remove/Duplicate, or staged publication with a local draft for edits — and does it supersede `d-20260901-17`'s ordering?
+* **Context:** the Stockfish 19 upgrade plan (`tasks/plans/2026-10-01-stockfish-19-upgrade.md`) gives catalog install and upgrade a publish-after-save path of their own; this finding covers every other caller.
+* **Found by:** Codex lenses `review-correctness`, `review-persisted-state`, `review-error-handling`, `review-plan` (rounds 1-2 of that plan review), confirmed by the orchestrator from source, 2026-10-01.
