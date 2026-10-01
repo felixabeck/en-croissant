@@ -394,6 +394,8 @@
     "Databases.ImportUnfinished": "L’importazione non è terminata — elimina il database e importalo di nuovo",
     "Databases.LoadError": "Impossibile caricare i database. Riprova.",
     "Databases.LoadError.Description": "Controlla che il file esista e che non sia corrotto.",
+    "Databases.LoadError.Missing": "Questo file di database non esiste più",
+    "Databases.LoadError.Permission": "ChessFable non ha il permesso di leggere questo file di database",
     "Databases.LoadError.Title": "Si è verificato un errore durante il caricamento del database.",
     "Databases.NoSelection": "Nessun database selezionato",
     "Databases.Player.MaxELO": "ELO massimo",

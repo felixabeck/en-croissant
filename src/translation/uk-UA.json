@@ -399,6 +399,8 @@
     "Databases.ImportUnfinished": "Імпорт не завершено — видаліть базу даних та імпортуйте її знову",
     "Databases.LoadError": "Не вдалося завантажити бази даних. Спробуйте ще раз.",
     "Databases.LoadError.Description": "Перевірте, чи існує файл і чи не пошкоджений він.",
+    "Databases.LoadError.Missing": "Цей файл бази даних більше не існує",
+    "Databases.LoadError.Permission": "ChessFable не має дозволу на читання цього файлу бази даних",
     "Databases.LoadError.Title": "Помилка завантаження цієї бази даних",
     "Databases.NoSelection": "Базу даних не вибрано",
     "Databases.Player.MaxELO": "Макс. Ело",

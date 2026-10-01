@@ -159,9 +159,30 @@ describe("production database metadata pipeline", () => {
         );
     });
 
-    it.each(supportedLocales)(
-        "uses fixed safe text for a SQLite open failure in the shipped %s catalogue",
-        async (locale) => {
+    it.each(
+        supportedLocales.flatMap((locale) =>
+            [
+                {
+                    category: "invalid-input",
+                    message:
+                        "Invalid input: could not open SQLite database: unable to open database file",
+                    key: "Databases.LoadError.Title",
+                },
+                {
+                    category: "permission",
+                    message: "Permission denied: cannot read /private/database.db3",
+                    key: "Databases.LoadError.Permission",
+                },
+                {
+                    category: "missing-resource",
+                    message: "Missing resource: /private/database.db3 no longer exists",
+                    key: "Databases.LoadError.Missing",
+                },
+            ].map((failure) => ({ locale, ...failure })),
+        ),
+    )(
+        "uses fixed safe text for $category in the shipped $locale catalogue without fallback",
+        async ({ locale, category, message, key }) => {
             const { default: catalogue } = await import(`../translation/${locale}.json`);
             const translator = i18n.createInstance();
             await translator.init({
@@ -170,8 +191,6 @@ describe("production database metadata pipeline", () => {
                 resources: { [locale]: catalogue },
             });
             const t = vi.spyOn(i18n, "t").mockImplementation(translator.t);
-            const message =
-                "Invalid input: could not open SQLite database: unable to open database file";
             mocks.listWorkspaceDatabases.mockResolvedValue([
                 {
                     handle: handle("unreadable"),
@@ -181,7 +200,7 @@ describe("production database metadata pipeline", () => {
             ]);
             mocks.getDbInfo.mockRejectedValueOnce({
                 tag: "backend-error",
-                category: "invalid-input",
+                category,
                 message,
             });
 
@@ -192,16 +211,15 @@ describe("production database metadata pipeline", () => {
                     file: handle("unreadable"),
                     filename: "unreadable.db3",
                     indexed: false,
-                    error: catalogue.translation["Databases.LoadError.Title"],
+                    error: catalogue.translation[key],
                 },
             ]);
             expect(JSON.stringify(result)).not.toContain(message);
-            expect(result[0].type === "error" && result[0].error).not.toBe(
-                "Databases.LoadError.Title",
-            );
-            expect(catalogue.translation["Databases.LoadError.Title"]).toBeTruthy();
+            expect(JSON.stringify(result)).not.toContain("/private/database.db3");
+            expect(result[0].type === "error" && result[0].error).not.toBe(key);
+            expect(catalogue.translation[key]).toBeTruthy();
             expect(mocks.logError).toHaveBeenCalledExactlyOnceWith(
-                `getDatabases metadata item 0 (unreadable.db3) failed: ${message}`,
+                `getDatabases metadata item 0 (unreadable.db3) failed: ${message.replace("/private/database.db3", "[path]")}`,
             );
             t.mockRestore();
         },
@@ -210,6 +228,9 @@ describe("production database metadata pipeline", () => {
     it.each(supportedLocales)(
         "localizes an unfinished import in the shipped %s catalogue without fallback",
         async (locale) => {
+            expect(DATABASE_NOT_INITIALIZED).toBe(
+                "Invalid input: Database has not been initialized yet",
+            );
             const { default: catalogue } = await import(`../translation/${locale}.json`);
             const translator = i18n.createInstance();
             await translator.init({
@@ -228,7 +249,7 @@ describe("production database metadata pipeline", () => {
             mocks.getDbInfo.mockRejectedValueOnce({
                 tag: "backend-error",
                 category: "invalid-input",
-                message: DATABASE_NOT_INITIALIZED,
+                message: "Invalid input: Database has not been initialized yet",
             });
             const result = await getDatabases();
             expect(result).toEqual([
@@ -244,6 +265,9 @@ describe("production database metadata pipeline", () => {
                 "Databases.ImportUnfinished",
             );
             expect(catalogue.translation["Databases.ImportUnfinished"]).toBeTruthy();
+            expect(JSON.stringify(result)).not.toContain(
+                "Invalid input: Database has not been initialized yet",
+            );
             t.mockRestore();
         },
     );

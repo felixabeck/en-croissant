@@ -389,6 +389,8 @@
     "Databases.ImportUnfinished": "Importen ble ikke fullført — slett databasen og importer den på nytt",
     "Databases.LoadError": "Kunne ikke laste databaser. Prøv igjen.",
     "Databases.LoadError.Description": "Kontroller at filen finnes og ikke er skadet.",
+    "Databases.LoadError.Missing": "Denne databasefilen finnes ikke lenger",
+    "Databases.LoadError.Permission": "ChessFable har ikke tillatelse til å lese denne databasefilen",
     "Databases.LoadError.Title": "Det oppsto en feil ved lasting av denne databasen",
     "Databases.NoSelection": "Ingen database valgt",
     "Databases.Player.MaxELO": "Maks. ELO",

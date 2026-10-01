@@ -389,6 +389,8 @@
     "Databases.ImportUnfinished": "İçe aktarma tamamlanmadı — veritabanını silip yeniden içe aktarın",
     "Databases.LoadError": "Veritabanları yüklenemedi. Lütfen tekrar deneyin.",
     "Databases.LoadError.Description": "Veritabanı yüklenirken bir hata oluştu.",
+    "Databases.LoadError.Missing": "Bu veritabanı dosyası artık mevcut değil",
+    "Databases.LoadError.Permission": "ChessFable'ın bu veritabanı dosyasını okuma izni yok",
     "Databases.LoadError.Title": "Veritabanı yüklenemedi",
     "Databases.NoSelection": "Veritabanı seçilmedi",
     "Databases.Player.MaxELO": "En yüksek ELO",

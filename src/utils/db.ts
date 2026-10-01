@@ -261,15 +261,22 @@ async function getDatabase(
             logContext,
             "Database metadata logging failed",
         );
+        let error: string;
+        if (primaryFailure.message === DATABASE_NOT_INITIALIZED) {
+            error = i18n.t("Databases.ImportUnfinished");
+        } else if (primaryFailure.category === "permission") {
+            error = i18n.t("Databases.LoadError.Permission");
+        } else if (primaryFailure.category === "not-found") {
+            error = i18n.t("Databases.LoadError.Missing");
+        } else {
+            error = i18n.t("Databases.LoadError.Title");
+        }
         return {
             type: "error",
             file,
             filename,
             indexed: false,
-            error:
-                primaryFailure.message === DATABASE_NOT_INITIALIZED
-                    ? i18n.t("Databases.ImportUnfinished")
-                    : i18n.t("Databases.LoadError.Title"),
+            error,
         };
     }
 }

@@ -384,6 +384,8 @@
     "Databases.ImportUnfinished": "가져오기가 완료되지 않았습니다 — 데이터베이스를 삭제하고 다시 가져오세요",
     "Databases.LoadError": "데이터베이스를 불러올 수 없습니다. 다시 시도하세요.",
     "Databases.LoadError.Description": "데이터베이스를 불러오는 중 오류가 발생했습니다.",
+    "Databases.LoadError.Missing": "이 데이터베이스 파일이 더 이상 존재하지 않습니다",
+    "Databases.LoadError.Permission": "ChessFable에 이 데이터베이스 파일을 읽을 권한이 없습니다",
     "Databases.LoadError.Title": "데이터베이스 로드 실패",
     "Databases.NoSelection": "선택된 데이터베이스 없음",
     "Databases.Player.MaxELO": "최대 ELO",

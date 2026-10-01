@@ -384,6 +384,8 @@
     "Databases.ImportUnfinished": "匯入未完成 — 請刪除資料庫並重新匯入",
     "Databases.LoadError": "無法載入資料庫。請再試一次。",
     "Databases.LoadError.Description": "请检查文件是否存在且未损坏",
+    "Databases.LoadError.Missing": "此資料庫檔案已不存在",
+    "Databases.LoadError.Permission": "ChessFable 沒有權限讀取此資料庫檔案",
     "Databases.LoadError.Title": "加载此数据库时出错",
     "Databases.NoSelection": "未选择数据库",
     "Databases.Player.MaxELO": "最高等级分",
