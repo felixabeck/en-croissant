@@ -789,7 +789,10 @@ where
             if matches!(error, Error::Cancellation | Error::AnalysisCancelled) {
                 log::debug!("native operation cancelled id={operation_id} label={label}");
             } else {
-                log::error!("native operation failed id={operation_id} label={label}: {error}");
+                log::error!(
+                    "native operation failed id={operation_id} label={label}: {}",
+                    error.diagnostic()
+                );
             }
         }
         // The workflow, including all async cleanup, is complete before its lease is released.
@@ -850,6 +853,38 @@ impl Drop for OperationLease {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn import_failure_operations_log_preserves_source_chain() {
+        #[derive(Debug, thiserror::Error)]
+        #[error("operation source failure")]
+        struct SourceFailure(#[source] std::io::Error);
+
+        // The current-thread runtime lets the existing thread-local capture see the task log.
+        let capture = crate::error::LogCaptureScope::start();
+        let registry = OperationRegistry::default();
+        let lease = registry.accept("import-failure-chain").unwrap();
+        let error = run_native_operation::<(), _>(lease, "import-failure-chain", async {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                SourceFailure(std::io::Error::other("operation root cause")),
+            )
+            .into())
+        })
+        .await
+        .unwrap_err();
+        let messages = capture.messages();
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        assert!(messages[0].contains("native operation failed id="));
+        assert!(messages[0].contains("label=import-failure-chain: I/O failure:"));
+        assert!(messages[0].contains("operation source failure"));
+        assert!(messages[0].contains("operation root cause"));
+        assert_eq!(
+            serde_json::to_value(&error).unwrap()["message"],
+            "I/O failure"
+        );
+        assert!(registry.outstanding_diagnostics().unwrap().is_empty());
+    }
 
     #[test]
     fn reservations_are_owner_bound_single_use_and_late_cancel_is_safe() {

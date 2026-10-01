@@ -9,6 +9,42 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::Error;
 
+/// Tracks decompressed bytes delivered to the parser and failures from below it.
+/// Keep this inside `CancellableRead` so cancellation is not recorded as source I/O.
+#[derive(Default)]
+pub(crate) struct SourceReadState {
+    pub bytes_read: std::cell::Cell<u64>,
+    pub failed: std::cell::Cell<bool>,
+}
+
+pub(crate) struct SourceRead<'a, R> {
+    inner: R,
+    state: &'a SourceReadState,
+}
+
+impl<'a, R> SourceRead<'a, R> {
+    pub(crate) fn new(inner: R, state: &'a SourceReadState) -> Self {
+        Self { inner, state }
+    }
+}
+
+impl<R: Read> Read for SourceRead<'_, R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        match self.inner.read(buffer) {
+            Ok(bytes) => {
+                self.state
+                    .bytes_read
+                    .set(self.state.bytes_read.get() + bytes as u64);
+                Ok(bytes)
+            }
+            Err(error) => {
+                self.state.failed.set(true);
+                Err(error)
+            }
+        }
+    }
+}
+
 pub struct CancellableRead<R> {
     inner: R,
     cancellation: CancellationToken,

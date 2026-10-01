@@ -19,7 +19,7 @@ mod search_index;
 pub(crate) mod sqlite_cancellation;
 
 use crate::{
-    cancellable_read::{map_read_error, CancellableRead},
+    cancellable_read::{map_read_error, CancellableRead, SourceRead, SourceReadState},
     db::{
         encoding::{
             decode_game_to_movetext, decode_game_to_movetext_cancellable, decode_move,
@@ -393,6 +393,7 @@ impl TempGame {
 
 struct Importer {
     game: TempGame,
+    games_started: usize,
     timestamp: Option<i64>,
     skip: bool,
     frames: Vec<ImportFrame>,
@@ -416,6 +417,7 @@ impl Importer {
     fn new(timestamp: Option<i64>) -> Importer {
         Importer {
             game: TempGame::default(),
+            games_started: 0,
             timestamp,
             skip: false,
             frames: Vec::new(),
@@ -427,6 +429,7 @@ impl Visitor for Importer {
     type Result = Option<TempGame>;
 
     fn begin_game(&mut self) {
+        self.games_started += 1;
         self.game = TempGame::default();
         self.skip = false;
         self.frames.clear();
@@ -785,6 +788,81 @@ async fn convert_pgn_command_core<R: tauri::Runtime>(
     .await
 }
 
+#[derive(Default)]
+struct ImportFileContext {
+    capability_id: Option<String>,
+    display_name: Option<String>,
+    game: usize,
+    source: SourceReadState,
+    parser_diagnostic: Option<String>,
+}
+
+impl ImportFileContext {
+    fn run(&mut self, work: impl FnOnce(&mut Self) -> Result<(), Error>) -> Result<(), Error> {
+        let result = work(self);
+        if let Err(error) = &result {
+            if matches!(error, Error::Cancellation | Error::AnalysisCancelled) {
+                return result;
+            }
+            let diagnostic = error.diagnostic();
+            let diagnostic = match &self.parser_diagnostic {
+                Some(cause) => format!("{diagnostic}; parser cause: {cause}"),
+                None => diagnostic,
+            };
+            log::error!(
+                "PGN import failed capability_id={:?} file={:?} game={} byte_offset={}: {}",
+                self.capability_id,
+                self.display_name.as_deref().unwrap_or("unknown PGN"),
+                self.game,
+                self.source.bytes_read.get(),
+                diagnostic,
+            );
+        }
+        result
+    }
+}
+
+fn read_import_games(
+    source: impl std::io::Read,
+    context: &mut ImportFileContext,
+    timestamp: Option<i32>,
+    cancellation: &CancellationToken,
+    mut insert: impl FnMut(TempGame) -> Result<(), Error>,
+) -> Result<(), Error> {
+    let mut importer = Importer::new(timestamp.map(i64::from));
+    let mut reader = BufferedReader::new(CancellableRead::new(
+        SourceRead::new(source, &context.source),
+        cancellation,
+    ));
+    loop {
+        context.source.failed.set(false);
+        let parsed = reader.read_game(&mut importer);
+        context.game = importer.games_started;
+        let parsed = parsed.map_err(|error| {
+            match map_read_error(error, cancellation) {
+                Error::Cancellation => Error::Cancellation,
+                Error::Io(error) if context.source.failed.get() => Error::Io(error),
+                error => {
+                    // Preserve the parser cause locally before replacing the wire message.
+                    context.parser_diagnostic = Some(error.diagnostic());
+                    Error::InvalidInput(format!(
+                        "{}: game {} could not be read (unterminated comment or tag)",
+                        context.display_name.as_deref().unwrap_or("unknown PGN"),
+                        context.game,
+                    ))
+                }
+            }
+        })?;
+        let Some(parsed_game) = parsed else {
+            return Ok(());
+        };
+        cancellation_check(cancellation)?;
+        if let Some(game) = parsed_game {
+            insert(game)?;
+        }
+    }
+}
+
 // Individual Arc handles the closure must own: BlockingGateway::spawn is
 // `'static` and AppState is not Clone. A bundle type was rejected (plan
 // decision D-B).
@@ -822,56 +900,57 @@ fn convert_pgn_blocking<R: tauri::Runtime>(
                 let database_was_created = migrations::prepare_database(db, &title, &description)?;
 
                 for file_handle in files {
-                    cancellation_check(cancellation)?;
-                    let (file, current_file_name) = {
-                        let mut authority = authority.lock().map_err(|_| {
-                            Error::Conflict("path authority lock was poisoned".into())
-                        })?;
-                        let authority = authority.as_mut().ok_or_else(|| {
-                            Error::Conflict("path authority is not initialized".into())
-                        })?;
-                        let display_name = authority.display_name(file_handle.path_ref())?;
-                        let resolved = authority.resolve(
-                            file_handle.path_ref(),
-                            PathOperation::ReadPgn,
-                            &[],
-                        )?;
-                        (resolved.into_read_file()?, Some(display_name))
+                    let mut context = ImportFileContext {
+                        capability_id: Some(file_handle.path_ref().id.clone()),
+                        ..Default::default()
                     };
-                    let extension = current_file_name
-                        .as_deref()
-                        .and_then(|name| std::path::Path::new(name).extension())
-                        .map(std::ffi::OsStr::to_os_string);
-                    let uncompressed: Box<dyn std::io::Read + Send> =
-                        if extension.as_deref() == Some("bz2".as_ref()) {
-                            Box::new(bzip2::read::MultiBzDecoder::new(file))
-                        } else if extension.as_deref() == Some("zst".as_ref()) {
-                            Box::new(zstd::Decoder::new(file)?)
-                        } else {
-                            Box::new(file)
-                        };
-
-                    let mut importer = Importer::new(timestamp.map(|t| t as i64));
-                    let mut reader =
-                        BufferedReader::new(CancellableRead::new(uncompressed, cancellation));
-                    while let Some(parsed_game) = reader
-                        .read_game(&mut importer)
-                        .map_err(|error| map_read_error(error, cancellation))?
-                    {
+                    context.run(|context| {
                         cancellation_check(cancellation)?;
-                        let Some(game) = parsed_game else { continue };
-                        if imported_games.is_multiple_of(1000) {
-                            let _ = ConvertProgress {
-                                id: progress_id.clone(),
-                                imported_games: imported_games as u32,
-                                elapsed_ms: start.elapsed().as_millis() as u32,
-                                source_file_name: current_file_name.clone(),
+                        let file = {
+                            let mut authority = authority.lock().map_err(|_| {
+                                Error::Conflict("path authority lock was poisoned".into())
+                            })?;
+                            let authority = authority.as_mut().ok_or_else(|| {
+                                Error::Conflict("path authority is not initialized".into())
+                            })?;
+                            context.display_name =
+                                Some(authority.display_name(file_handle.path_ref())?);
+                            let resolved = authority.resolve(
+                                file_handle.path_ref(),
+                                PathOperation::ReadPgn,
+                                &[],
+                            )?;
+                            resolved.into_read_file()?
+                        };
+                        let current_file_name = context.display_name.clone();
+                        let extension = current_file_name
+                            .as_deref()
+                            .and_then(|name| std::path::Path::new(name).extension())
+                            .map(std::ffi::OsStr::to_os_string);
+                        let uncompressed: Box<dyn std::io::Read + Send> =
+                            if extension.as_deref() == Some("bz2".as_ref()) {
+                                Box::new(bzip2::read::MultiBzDecoder::new(file))
+                            } else if extension.as_deref() == Some("zst".as_ref()) {
+                                Box::new(zstd::Decoder::new(file)?)
+                            } else {
+                                Box::new(file)
+                            };
+
+                        read_import_games(uncompressed, context, timestamp, cancellation, |game| {
+                            if imported_games.is_multiple_of(1000) {
+                                let _ = ConvertProgress {
+                                    id: progress_id.clone(),
+                                    imported_games: imported_games as u32,
+                                    elapsed_ms: start.elapsed().as_millis() as u32,
+                                    source_file_name: current_file_name.clone(),
+                                }
+                                .emit(&app);
                             }
-                            .emit(&app);
-                        }
-                        game.insert_to_db(db)?;
-                        imported_games += 1;
-                    }
+                            game.insert_to_db(db)?;
+                            imported_games += 1;
+                            Ok(())
+                        })
+                    })?;
                 }
 
                 if database_was_created {
@@ -7242,6 +7321,245 @@ mod tests {
         )
     }
 
+    fn import_failure_unterminated_fixture(prefix: &str) -> String {
+        format!(
+            "{prefix}[Event \"Unreadable\"]\n\n1. e4 {{{}",
+            "x".repeat(10 * 1024 * 1024 + 1)
+        )
+    }
+
+    fn import_failure_assert_message(error: &Error, name: &str, game: usize) {
+        let expected =
+            format!("{name}: game {game} could not be read (unterminated comment or tag)");
+        assert!(matches!(error, Error::InvalidInput(message) if message == &expected));
+        let payload = serde_json::to_value(error).unwrap();
+        assert_eq!(payload["message"], format!("Invalid input: {expected}"));
+        assert_eq!(payload["category"], "invalid-input");
+        assert_eq!(payload["tag"], "backend-error");
+    }
+
+    #[tokio::test]
+    async fn import_failure_parser_payload_at_command_boundary() {
+        let (dir, app, handle, database) = empty_database_case();
+        mount_convert_progress_events(&app);
+        // The registered display name, rather than the native path, reaches the wire.
+        let source = dir.path().join("private-native-name.pgn");
+        std::fs::write(&source, import_failure_unterminated_fixture("")).unwrap();
+        let file = grant_pgn_file(
+            &app,
+            &source,
+            "Selected games.pgn",
+            vec![PathOperation::ReadPgn],
+        );
+        let state = app.state::<AppState>();
+        let error = convert_pgn_command_core(
+            "import-failure-command".into(),
+            vec![file],
+            handle,
+            None,
+            app.clone(),
+            "Test".into(),
+            None,
+            &state,
+        )
+        .await
+        .unwrap_err();
+        import_failure_assert_message(&error, "Selected games.pgn", 1);
+        assert!(!serde_json::to_string(&error)
+            .unwrap()
+            .contains("private-native-name"));
+        assert!(!database_has_games_table(&database));
+    }
+
+    #[test]
+    fn import_failure_physical_ordinal_counts_skipped_games() {
+        let (dir, app, handle, database) = empty_database_case();
+        mount_convert_progress_events(&app);
+        let source = dir.path().join("skipped-games.pgn");
+        let skipped = "[Event \"Illegal\"]\n\n1. e5 *\n\n";
+        // Prove both preceding games actually take the Importer's None branch.
+        let mut importer = Importer::new(None);
+        let mut reader = BufferedReader::new_cursor(skipped.repeat(2));
+        assert!(matches!(reader.read_game(&mut importer), Ok(Some(None))));
+        assert!(matches!(reader.read_game(&mut importer), Ok(Some(None))));
+        std::fs::write(
+            &source,
+            import_failure_unterminated_fixture(&skipped.repeat(2)),
+        )
+        .unwrap();
+        let capture = crate::error::LogCaptureScope::start();
+        let error =
+            run_import(&app, handle, vec![grant_import_file(&app, &source)], None).unwrap_err();
+        import_failure_assert_message(&error, "skipped-games.pgn", 3);
+        let messages = capture.messages();
+        let failures: Vec<_> = messages
+            .iter()
+            .filter(|line| line.contains("PGN import failed"))
+            .collect();
+        assert_eq!(failures.len(), 1, "{messages:?}");
+        assert!(failures[0].contains("game=3"));
+        assert!(failures[0].contains("parser cause: I/O failure:"));
+        assert!(!database_has_games_table(&database));
+    }
+
+    #[test]
+    fn import_failure_second_file_has_its_own_ordinal() {
+        let (dir, app, handle, database) = empty_database_case();
+        mount_convert_progress_events(&app);
+        let first = dir.path().join("first.pgn");
+        let second = dir.path().join("second.pgn");
+        std::fs::write(&first, REPLACEMENT_PGN.repeat(2)).unwrap();
+        std::fs::write(&second, import_failure_unterminated_fixture("")).unwrap();
+        let error = run_import(
+            &app,
+            handle,
+            vec![
+                grant_import_file(&app, &first),
+                grant_import_file(&app, &second),
+            ],
+            None,
+        )
+        .unwrap_err();
+        import_failure_assert_message(&error, "second.pgn", 1);
+        assert!(!database_has_games_table(&database));
+    }
+
+    #[test]
+    fn import_failure_source_invalid_data_retains_io_and_logs_context_and_chain() {
+        #[derive(Debug, thiserror::Error)]
+        #[error("source read failed")]
+        struct SourceFailure(#[source] std::io::Error);
+
+        struct FailingRead {
+            remaining: std::io::Cursor<Vec<u8>>,
+        }
+        impl std::io::Read for FailingRead {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                let bytes = std::io::Read::read(&mut self.remaining, buffer)?;
+                if bytes == 0 {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        SourceFailure(std::io::Error::other("underlying source cause")),
+                    ))
+                } else {
+                    Ok(bytes)
+                }
+            }
+        }
+
+        // A comment spanning multiple parser refills fails inside the first game.
+        let bytes = format!(
+            "[Event \"Source failure\"]\n\n1. e4 {{{}",
+            "x".repeat(32 * 1024)
+        )
+        .into_bytes();
+        let offset = bytes.len();
+        let source = FailingRead {
+            remaining: std::io::Cursor::new(bytes),
+        };
+        let mut context = ImportFileContext {
+            display_name: Some("source.pgn".into()),
+            ..Default::default()
+        };
+        let capture = crate::error::LogCaptureScope::start();
+        let error = context
+            .run(|context| {
+                read_import_games(source, context, None, &CancellationToken::new(), |_| {
+                    panic!("an incomplete game must not be inserted")
+                })
+            })
+            .unwrap_err();
+        assert!(
+            matches!(&error, Error::Io(cause) if cause.kind() == std::io::ErrorKind::InvalidData)
+        );
+        let payload = serde_json::to_value(&error).unwrap();
+        assert_eq!(payload["category"], "io");
+        assert_eq!(payload["message"], "I/O failure");
+        let messages = capture.messages();
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        assert!(messages[0].contains("file=\"source.pgn\" game=1"));
+        assert!(messages[0].contains(&format!("byte_offset={offset}:")));
+        assert!(messages[0].contains("source read failed"));
+        assert!(messages[0].contains("underlying source cause"));
+    }
+
+    #[test]
+    fn import_failure_corrupt_zstd_header_logs_game_zero() {
+        let (dir, app, handle, database) = empty_database_case();
+        mount_convert_progress_events(&app);
+        let source = dir.path().join("corrupt.pgn.zst");
+        std::fs::write(&source, b"not a zstd header").unwrap();
+        let capture = crate::error::LogCaptureScope::start();
+        let error =
+            run_import(&app, handle, vec![grant_import_file(&app, &source)], None).unwrap_err();
+        assert!(matches!(&error, Error::Io(_)), "{error:?}");
+        let messages = capture.messages();
+        let failures: Vec<_> = messages
+            .iter()
+            .filter(|line| line.contains("PGN import failed"))
+            .collect();
+        assert_eq!(failures.len(), 1, "{messages:?}");
+        assert!(failures[0].contains("file=\"corrupt.pgn.zst\" game=0 byte_offset=0:"));
+        assert!(failures[0].contains(&error.diagnostic()));
+        assert_ne!(error.diagnostic(), "I/O failure");
+        assert!(!database_has_games_table(&database));
+    }
+
+    #[test]
+    fn import_failure_unavailable_source_logs_capability_and_game_zero() {
+        let (dir, app, handle, database) = empty_database_case();
+        mount_convert_progress_events(&app);
+        let source = dir.path().join("removed.pgn");
+        std::fs::write(&source, REPLACEMENT_PGN).unwrap();
+        let file = grant_import_file(&app, &source);
+        let capability_id = file.path_ref().id.clone();
+        std::fs::remove_file(&source).unwrap();
+        let capture = crate::error::LogCaptureScope::start();
+        let error = run_import(&app, handle, vec![file], None).unwrap_err();
+        assert!(
+            matches!(&error, Error::InvalidInput(message) if message == "unknown or unavailable path capability")
+        );
+        let messages = capture.messages();
+        let failures: Vec<_> = messages
+            .iter()
+            .filter(|line| line.contains("PGN import failed"))
+            .collect();
+        assert_eq!(failures.len(), 1, "{messages:?}");
+        assert!(failures[0].contains(&format!("capability_id=Some(\"{capability_id}\")")));
+        assert!(failures[0].contains("file=\"unknown PGN\" game=0 byte_offset=0:"));
+        assert!(failures[0].contains(&error.diagnostic()));
+        assert!(!database_has_games_table(&database));
+    }
+
+    #[test]
+    fn import_failure_insert_error_logs_context_without_conversion() {
+        let mut context = ImportFileContext {
+            display_name: Some("insert.pgn".into()),
+            ..Default::default()
+        };
+        let capture = crate::error::LogCaptureScope::start();
+        let error = context
+            .run(|context| {
+                read_import_games(
+                    REPLACEMENT_PGN.as_bytes(),
+                    context,
+                    None,
+                    &CancellationToken::new(),
+                    |_| Err(Error::Conflict("insert failure".into())),
+                )
+            })
+            .unwrap_err();
+        assert!(matches!(&error, Error::Conflict(message) if message == "insert failure"));
+        let messages = capture.messages();
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        assert!(messages[0].contains("file=\"insert.pgn\" game=1"));
+        assert!(messages[0].contains(&format!(
+            "byte_offset={}: {}",
+            REPLACEMENT_PGN.len(),
+            error.diagnostic()
+        )));
+    }
+
     #[test]
     fn long_token_import_preserves_middle_game_comments_through_export() {
         for size in [8 * 1024usize, 16 * 1024, 26_158, 1024 * 1024] {
@@ -10317,9 +10635,7 @@ mod tests {
         assert!(!database_has_data_revision(&database));
     }
 
-    #[test]
-    fn convert_pgn_cancel_mid_game_interrupts_the_parser() {
-        let (dir, app, handle, database) = empty_database_case();
+    fn write_mid_game_cancel_source(dir: &Path) -> PathBuf {
         // One bz2 stream holding a small game and a game far larger than the
         // parser's buffer, followed by bytes that are no bz2 stream. Reading
         // that tail fails with an I/O error, so only a reader that observes
@@ -10337,8 +10653,36 @@ mod tests {
         .unwrap();
         let mut bytes = encoder.finish().unwrap();
         bytes.extend_from_slice(b"not a bz2 stream");
-        let source = dir.path().join("cancel-mid-game.pgn.bz2");
+        let source = dir.join("cancel-mid-game.pgn.bz2");
         std::fs::write(&source, bytes).unwrap();
+        source
+    }
+
+    #[test]
+    fn import_failure_mid_game_cancellation_has_no_error_failure_log() {
+        let (dir, app, handle, database) = empty_database_case();
+        let source = write_mid_game_cancel_source(dir.path());
+        let file = grant_import_file(&app, &source);
+        let capture = crate::error::LogCaptureScope::start();
+        let (result, frame_count) = convert_cancelled_at_first_frame(&app, handle, vec![file]);
+        assert!(matches!(result, Err(Error::Cancellation)), "{result:?}");
+        assert_eq!(frame_count, 1, "no progress may be emitted after cancel");
+        let records = capture.records();
+        assert!(
+            !records
+                .iter()
+                .any(|record| record.level == log::Level::Error
+                    && record.message.contains("PGN import failed")),
+            "cancellation must not produce an error-level failure log: {records:?}"
+        );
+        assert!(!database_has_games_table(&database));
+        assert!(!database_has_data_revision(&database));
+    }
+
+    #[test]
+    fn convert_pgn_cancel_mid_game_interrupts_the_parser() {
+        let (dir, app, handle, database) = empty_database_case();
+        let source = write_mid_game_cancel_source(dir.path());
 
         let (result, frame_count) = convert_cancelled_at_first_frame(
             &app,
