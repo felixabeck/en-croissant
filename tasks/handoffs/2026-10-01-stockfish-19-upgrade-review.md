@@ -135,8 +135,9 @@ Locate evidence (three read-only research leaves plus orchestrator source reads,
    - `AddEngine.tsx:229` ignores the receipt and still shows "Installed".
    - Probe, quoted: the install-shaped record yields `null`. The same record without those keys
      yields `{"capabilityIds":["h"],"attachmentIds":[]}`.
-   - Every later `engines` save in that session is refused too, because the list still holds the
-     invalid entry.
+   - Later `engines` saves in that session are refused too while the invalid entry stays in the list;
+     removing that engine on the Engines page filters it out, after which the remaining valid list can
+     be saved again.
 6. **Engine supervisor.**
    - `retire_engine` tombstones an engine id and reaps its actors (`process.rs:1567-1597`).
    - `retire_executables` tombstones a PathRef everywhere (`process.rs:1601-…`), and only
@@ -254,7 +255,8 @@ install path, and premise 5 shows its record is refused by owner storage.
   same relative path now has a new file identity (`path_authority/mod.rs:5331-5334`).
   - The shared install therefore extracts every catalog entry into a directory unique to that
     entry's verified artefact: the archive name plus the entry's **full** signed sha256, never a
-    prefix, so two distinct artefacts cannot collide (R2-05).
+    prefix, so two distinct artefacts do not collide in
+    practice (a full SHA-256 collision is computationally infeasible) (R2-05).
   - If that directory already exists, an earlier install of the same verified artefact is
     **adopted**: its executable is registered, or looked up by `register_installed_engine`'s
     get-or-create, and it is never re-extracted over a tree a running engine may be using
@@ -539,7 +541,8 @@ These are filed as findings through `findings.py file` during this run, not fixe
 ids: `f-20261001-07` (termination), `f-20261001-03` (`swapMove`), `f-20261001-04`
 (`EditEngine`), `f-20261001-05` (portraits), `f-20261001-14` (failed-terminate drop),
 `f-20261001-15` (staging pathname), `f-20261001-17` (optimistic publish for other callers).
-`f-20261001-06` (catalog persistence) and `f-20261001-16` (tar.gz extraction) are fixed by O2.
+`f-20261001-06` (catalog persistence) and `f-20261001-16` (tar.gz extraction) are to be fixed by O2
+(planned; implementation has not started).
 
 - Engine termination is not surfaced. The analysis panel spins forever, the `CRITICAL ERROR`
   reason is lost because the Logs panel's supervisor entry is removed, and a game blames the
