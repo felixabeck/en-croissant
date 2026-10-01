@@ -12228,3 +12228,18 @@ Correction 2026-09-30 (records review): "the 2026-09-29 push-gate lane runner ke
 * **Open question:** does cancel reuse the download-job ticket registry (`cancelDownloadJob`) or get its own operation ticket, and does a cancelled import of a *new* database delete the file in the backend or in the renderer flow that created it.
 * **Why `build`:** IPC contract change (new ticket parameter, regenerated bindings) plus renderer UI.
 * **Found by:** Claude, session 617a946f, 2026-10-01, while diagnosing Felix's vanished Mega Database import.
+
+---
+
+## 2026-10-01 — filed through the inbox spool
+
+### Database storage size is declared `bigint` but crosses IPC as a JSON number
+
+* **ID:** f-20261001-20 · **Status:** open · **Area:** bindings-ipc · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src/bindings/generated.ts:1135` (`DatabaseInfo.storage_size: bigint`), its Rust source field in `src-tauri/src/db/**`, `src/state/store/database.ts:201-204` (the persisted `database-view` store that serializes a `SuccessDatabaseInfo` with `JSON.stringify`), and test fixtures that cast around it (`src/components/Sidebar.test.tsx`, `src/components/databases/ConcurrentConversion.test.tsx`: `storage_size: 1 as unknown as bigint`).
+* **Defect:** Specta declares the Rust `u64` storage size as `bigint`, but Tauri serializes it as a JSON number, so every runtime `DatabaseInfo` carries a number while the type says `bigint`. A value that really is a `bigint` (as the declared type invites, e.g. a fixture `1n`) makes the persisted `database-view` store throw `TypeError: Do not know how to serialize a BigInt` on `setDatabase`. The tests of the database Back fix (2026-10-01) had to cast `1 as unknown as bigint` to store a database at all. Same class as `f-20260925-02` (progress generations) for a different field; `src/utils/db.ts` already documents it once for the downloadable catalog ("JSON cannot represent the native bigint storage size").
+* **Evidence:** In the Back-fix phase, the write leaf changed the `ConcurrentConversion.test.tsx` fixture from `storage_size: 1n` to a number cast once that suite started calling `activeDatabaseViewStore.getState().setDatabase(...)`. The store persists through `createJSONStorage(() => sessionStorage)`. No runtime defect is observed today because production values are numbers.
+* **Open question:** Should the binding declare the wire type honestly (a Specta type override to `number`, with a documented 2^53 bound for byte counts), or should the renderer normalize at the `getDatabases` facade? Decide together with `f-20260925-02` so `u64` fields follow one rule.
+* **Scope:** `DatabaseInfo.storage_size` and any other `u64` field of `DatabaseInfo`; no change to the persisted store schema beyond what the type fix requires.
+* **Related:** `f-20260925-02` (same `u64` → `bigint` wire mismatch, progress generations); no shared Root assigned until the two are decided together.
+* **Proof sought:** A fixture built from the generated type with no cast can be stored in `activeDatabaseViewStore` and round-trips through sessionStorage; `pnpm bindings:check` stays green.
