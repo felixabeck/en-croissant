@@ -191,3 +191,16 @@ routing is proven by the success case.
 
 Lenses: correctness, tests. Both APPROVED; R3-1 CLOSED. Review converged:
 `diff_adopted_per_round r1=13 r2=2 r3=1 r4=0`.
+
+### Release
+
+* Records closure over `61454dbd` (records lens): APPROVED, no findings. `REVIEWED_THROUGH=61454dbd`
+  = HEAD at the final gates.
+* `pnpm gates:push -- --frontend` on `61454dbd`: mutation-guard, frontend-build, contract (incl.
+  `findings.py check` and kit parity), frontend-coverage, bundle, e2e (fresh run, 58 passed, no
+  snapshot moved) and frontend-mutation all passed.
+* `pnpm ci:remote:check`: OK. Pushed `99b78e70..61454dbd` to `origin/master`; CI run 36884175917
+  (Test) green on all six jobs: test, rust-macos-test, rust-windows-test and the three
+  rust-platform targets.
+* `scripts/install-local.sh`: installed `61454dbd` to `~/.local/opt/chessfable/current`
+  (provenance reviewed). No tag, release or deployment.
