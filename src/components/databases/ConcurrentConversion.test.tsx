@@ -146,8 +146,12 @@ vi.mock("@mantine/core", () => ({
   Alert: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   Badge: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
   Box: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  Button: ({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
-    <button type="button" {...props}>
+  Button: ({
+    children,
+    loading,
+    ...props
+  }: React.ButtonHTMLAttributes<HTMLButtonElement> & { loading?: boolean }) => (
+    <button type="button" {...props} data-loading={loading ? "true" : undefined}>
       {children}
     </button>
   ),
@@ -630,14 +634,27 @@ test.each(
 )(
   "a $outcome $label cleanup reloads the list and reports only errors",
   async ({ label, action, outcome }) => {
+    let resolveCleanup!: () => void;
+    let rejectCleanup!: (error: unknown) => void;
+    action.mockReturnValueOnce(
+      new Promise<void>((resolve, reject) => {
+        resolveCleanup = resolve;
+        rejectCleanup = reject;
+      }),
+    );
     await renderRoute();
     await selectExistingDatabase();
     const reloads = mocks.getDatabases.mock.calls.length;
-    if (outcome === "failed") {
-      action.mockRejectedValueOnce(new Error("cleanup failed"));
-    }
-    await act(async () => buttonByText(label)!.click());
+    const button = buttonByText(label)!;
+    await act(async () => button.click());
     expect(action).toHaveBeenCalledExactlyOnceWith(handleB);
+    expect(button.getAttribute("data-loading")).toBe("true");
+    if (outcome === "failed") {
+      await act(async () => rejectCleanup(new Error("cleanup failed")));
+    } else {
+      await act(async () => resolveCleanup());
+    }
+    expect(buttonByText(label)?.getAttribute("data-loading")).toBeNull();
     expect(mocks.notify.mock.calls).toEqual(
       outcome === "failed"
         ? [[{ color: "red", title: "Common.Error", message: "cleanup failed" }]]
