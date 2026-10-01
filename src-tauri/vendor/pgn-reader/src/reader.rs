@@ -54,6 +54,25 @@ trait ReadPgn {
         self.buffer().len()
     }
 
+    /// Find a delimiter while retaining the token, bounded by MAX_TOKEN_BYTES.
+    /// Returns None at EOF or when the delimiter would exceed the cap.
+    fn find_bounded<F>(&mut self, needle: F) -> Result<Option<usize>, Self::Err>
+    where
+        F: Fn(&[u8]) -> Option<usize>,
+    {
+        let mut searched = 0;
+        loop {
+            if let Some(delta) = needle(&self.buffer()[searched..]) {
+                let pos = searched + delta;
+                return Ok((pos <= MAX_TOKEN_BYTES).then_some(pos));
+            }
+            searched = self.remaining();
+            if !self.fill_more()? {
+                return Ok(None);
+            }
+        }
+    }
+
     fn consume_all(&mut self) {
         let remaining = self.remaining();
         self.consume(remaining);
@@ -133,24 +152,15 @@ trait ReadPgn {
                 b'[' => {
                     self.bump();
 
-                    let mut searched = 0;
-                    let delimiter = loop {
-                        if let Some(delta) =
-                            memchr::memchr3(b'"', b'\n', b']', &self.buffer()[searched..])
-                        {
-                            let pos = searched + delta;
-                            if pos <= MAX_TOKEN_BYTES {
-                                break pos;
-                            }
-                        } else {
-                            searched = self.remaining();
-                            if self.fill_more()? {
-                                continue;
-                            }
+                    let delimiter = match self
+                        .find_bounded(|bytes| memchr::memchr3(b'"', b'\n', b']', bytes))?
+                    {
+                        Some(pos) => pos,
+                        None => {
+                            self.consume_all();
+                            self.skip_line()?;
+                            return Err(Self::invalid_data());
                         }
-                        self.consume_all();
-                        self.skip_line()?;
-                        return Err(Self::invalid_data());
                     };
                     let left_quote = if self.buffer()[delimiter] == b'"' {
                         delimiter
@@ -274,23 +284,14 @@ trait ReadPgn {
                 b'{' => {
                     self.bump();
 
-                    let mut searched = 0;
-                    let right_brace = loop {
-                        if let Some(delta) = memchr::memchr(b'}', &self.buffer()[searched..]) {
-                            let pos = searched + delta;
-                            if pos <= MAX_TOKEN_BYTES {
-                                break pos;
-                            }
-                        } else {
-                            searched = self.remaining();
-                            if self.fill_more()? {
-                                continue;
-                            }
+                    let right_brace = match self.find_bounded(|bytes| memchr::memchr(b'}', bytes))? {
+                        Some(pos) => pos,
+                        None => {
+                            self.consume_all();
+                            self.skip_until(b'}')?;
+                            self.bump();
+                            return Err(Self::invalid_data());
                         }
-                        self.consume_all();
-                        self.skip_until(b'}')?;
-                        self.bump();
-                        return Err(Self::invalid_data());
                     };
 
                     visitor.comment(RawComment(&self.buffer()[..right_brace]));

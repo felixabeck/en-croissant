@@ -10,6 +10,7 @@ use tokio_util::sync::CancellationToken;
 use crate::error::Error;
 
 /// Tracks decompressed bytes delivered to the parser and failures from below it.
+/// The byte count is the decompressed-stream offset, not a compressed file offset.
 /// Keep this inside `CancellableRead` so cancellation is not recorded as source I/O.
 #[derive(Default)]
 pub(crate) struct SourceReadState {

@@ -810,7 +810,7 @@ impl ImportFileContext {
                 None => diagnostic,
             };
             log::error!(
-                "PGN import failed capability_id={:?} file={:?} game={} byte_offset={}: {}",
+                "PGN import failed capability_id={:?} file={:?} game={} decompressed_offset={}: {}",
                 self.capability_id,
                 self.display_name.as_deref().unwrap_or("unknown PGN"),
                 self.game,
@@ -2682,7 +2682,7 @@ fn delete_database_blocking(
     let expected_source = IndexSource::from_database_identity(&identity)?;
     let mut primary_gone = false;
     let mut unlinked = 0;
-    let mut deletion_durability = None;
+    let mut deletion_error = None;
     let unlink_result = repository.delete_exclusive_cancellable(&target, cancellation, || {
         let replace_guard = search_cache.begin_preferred_replace(target.path(), cancellation)?;
         let result = unlink_database_files(&target, &expected_source);
@@ -2690,7 +2690,7 @@ fn delete_database_blocking(
         let result = result?;
         unlinked = result.0;
         primary_gone = true;
-        deletion_durability = result.1;
+        deletion_error = result.1;
         Ok(())
     });
     if let Err(error) = unlink_result {
@@ -2706,10 +2706,15 @@ fn delete_database_blocking(
             .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
             .remove_database(&file)
     })();
-    if let Some(error) = deletion_durability {
+    if let Some(error) = deletion_error {
         if let Err(cleanup_error) = registry_result {
+            let failure = if matches!(error, Error::CommittedDurabilityUncertain(_)) {
+                "durability uncertainty"
+            } else {
+                "partial removal"
+            };
             log::warn!(
-                "database registry cleanup failed after durability uncertainty for {}: {cleanup_error}",
+                "database registry cleanup failed after {failure} for {}: {cleanup_error}",
                 target.path().display()
             );
         }
@@ -2745,6 +2750,8 @@ fn set_unlink_sidecar_after_identity_probe_hook(hook: Option<Box<dyn FnOnce()>>)
     UNLINK_SIDECAR_AFTER_IDENTITY_PROBE_HOOK.with(|slot| *slot.borrow_mut() = hook);
 }
 
+/// An Ok result means the primary is gone; any retained error must be reported
+/// after cache and registry cleanup, including a later SQLite sidecar failure.
 fn unlink_database_files(
     target: &DatabaseFileTarget,
     expected_source: &IndexSource,
@@ -2823,21 +2830,28 @@ fn unlink_database_files(
     let mut unlinked = 0;
     let mut durability = None;
 
-    let sqlite_sidecars = ["-wal", "-shm"].map(|suffix| {
+    // Refuse unsafe SQLite sidecars before deleting anything, but retain their
+    // identities so they can only be unlinked after the primary is removed.
+    let mut sqlite_sidecars = Vec::with_capacity(2);
+    for suffix in ["-wal", "-shm"] {
         let mut leaf = target.leaf().to_os_string();
         leaf.push(suffix);
-        leaf
-    });
-    for leaf in std::iter::once(&preferred_leaf).chain(sqlite_sidecars.iter()) {
-        match entry_identity_at(target.parent(), leaf, false) {
-            Ok(identity) => remove_sidecar(
-                target.parent(),
-                leaf,
-                identity,
-                &mut unlinked,
-                &mut durability,
-            )?,
-            Err(error) => remember_sidecar_error(error, target.parent(), leaf, &mut durability)?,
+        match entry_identity_at(target.parent(), &leaf, false) {
+            Ok(identity) => sqlite_sidecars.push((leaf, identity)),
+            Err(error) => remember_sidecar_error(error, target.parent(), &leaf, &mut durability)?,
+        }
+    }
+
+    match entry_identity_at(target.parent(), &preferred_leaf, false) {
+        Ok(identity) => remove_sidecar(
+            target.parent(),
+            &preferred_leaf,
+            identity,
+            &mut unlinked,
+            &mut durability,
+        )?,
+        Err(error) => {
+            remember_sidecar_error(error, target.parent(), &preferred_leaf, &mut durability)?
         }
     }
 
@@ -2886,6 +2900,19 @@ fn unlink_database_files(
                 );
             }
             return Err(error);
+        }
+    }
+    for (leaf, identity) in sqlite_sidecars {
+        if let Err(error) = remove_sidecar(
+            target.parent(),
+            &leaf,
+            identity,
+            &mut unlinked,
+            &mut durability,
+        ) {
+            // The primary is already gone. Keep the completed count so the
+            // caller performs cleanup and reports this as partial removal.
+            return Ok((unlinked, Some(error)));
         }
     }
     Ok((unlinked, durability))
@@ -7483,7 +7510,7 @@ mod tests {
         let messages = capture.messages();
         assert_eq!(messages.len(), 1, "{messages:?}");
         assert!(messages[0].contains("file=\"source.pgn\" game=1"));
-        assert!(messages[0].contains(&format!("byte_offset={offset}:")));
+        assert!(messages[0].contains(&format!("decompressed_offset={offset}:")));
         assert!(messages[0].contains("source read failed"));
         assert!(messages[0].contains("underlying source cause"));
     }
@@ -7504,7 +7531,7 @@ mod tests {
             .filter(|line| line.contains("PGN import failed"))
             .collect();
         assert_eq!(failures.len(), 1, "{messages:?}");
-        assert!(failures[0].contains("file=\"corrupt.pgn.zst\" game=0 byte_offset=0:"));
+        assert!(failures[0].contains("file=\"corrupt.pgn.zst\" game=0 decompressed_offset=0:"));
         assert!(failures[0].contains(&error.diagnostic()));
         assert_ne!(error.diagnostic(), "I/O failure");
         assert!(!database_has_games_table(&database));
@@ -7531,7 +7558,7 @@ mod tests {
             .collect();
         assert_eq!(failures.len(), 1, "{messages:?}");
         assert!(failures[0].contains(&format!("capability_id=Some(\"{capability_id}\")")));
-        assert!(failures[0].contains("file=\"unknown PGN\" game=0 byte_offset=0:"));
+        assert!(failures[0].contains("file=\"unknown PGN\" game=0 decompressed_offset=0:"));
         assert!(failures[0].contains(&error.diagnostic()));
         assert!(!database_has_games_table(&database));
     }
@@ -7559,7 +7586,7 @@ mod tests {
         assert_eq!(messages.len(), 1, "{messages:?}");
         assert!(messages[0].contains("file=\"insert.pgn\" game=1"));
         assert!(messages[0].contains(&format!(
-            "byte_offset={}: {}",
+            "decompressed_offset={}: {}",
             REPLACEMENT_PGN.len(),
             error.diagnostic()
         )));
@@ -7577,6 +7604,105 @@ mod tests {
             };
             assert_long_token_import_export(&[comment]);
         }
+    }
+
+    #[test]
+    fn long_token_invalid_utf8_comment_imports_lists_and_exports() {
+        let (dir, app, handle, database) = blocking_database_case();
+        mount_convert_progress_events(&app);
+        let (prefix, suffix) = REPLACEMENT_PGN.split_once("e4 e5").unwrap();
+        let mut fixture = format!("{prefix}e4 {{").into_bytes();
+        fixture.extend(std::iter::repeat_n(0xff, 4 * 1024 * 1024));
+        fixture.extend_from_slice(format!("}} e5{suffix}").as_bytes());
+        let source = dir.path().join("invalid-utf8-comment.pgn");
+        std::fs::write(&source, fixture).unwrap();
+        run_import(
+            &app,
+            handle.clone(),
+            vec![grant_import_file(&app, &source)],
+            None,
+        )
+        .unwrap();
+        assert_eq!(database_row_counts(&app, &database).games, 1);
+
+        let state = app.state::<AppState>();
+        let response = get_games_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle.clone(),
+            GameQuery::new(),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        let comment = "\u{fffd}".repeat(4 * 1024 * 1024);
+        let expected_moves = format!("1. e4 {{{comment}}} e5 1-0");
+        assert_eq!(response.data.len(), 1);
+        assert_eq!(response.data[0].moves, expected_moves);
+
+        let destination_path = dir.path().join("lossy-round-trip.pgn");
+        std::fs::write(&destination_path, b"").unwrap();
+        export_to_pgn_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle,
+            grant_pgn_destination(&app, &destination_path),
+        )
+        .unwrap();
+        let exported = std::fs::read_to_string(destination_path).unwrap();
+        assert!(exported.contains(&expected_moves));
+    }
+
+    #[test]
+    fn long_token_unterminated_tag_value_beyond_cap_fails_import() {
+        assert_long_token_header_cap_failure(&format!(
+            "[Event \"{}\n",
+            "v".repeat(10 * 1024 * 1024 + 1)
+        ));
+    }
+
+    #[test]
+    fn long_token_tag_without_delimiter_beyond_cap_fails_import() {
+        assert_long_token_header_cap_failure(&format!("[{}\n", "T".repeat(10 * 1024 * 1024 + 1)));
+    }
+
+    fn assert_long_token_header_cap_failure(header: &str) {
+        let fixture = format!("{REPLACEMENT_PGN}\n{header}\n{REPLACEMENT_PGN}");
+        let mut importer = Importer::new(None);
+        let mut reader = BufferedReader::new(fixture.as_bytes());
+        assert!(reader.read_game(&mut importer).unwrap().unwrap().is_some());
+        let error = reader.read_game(&mut importer).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+
+        let mut context = ImportFileContext {
+            display_name: Some("over-cap-tag.pgn".into()),
+            ..Default::default()
+        };
+        let mut inserted = 0;
+        let error = read_import_games(
+            fixture.as_bytes(),
+            &mut context,
+            None,
+            &CancellationToken::new(),
+            |_| {
+                inserted += 1;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        import_failure_assert_message(&error, "over-cap-tag.pgn", 2);
+        assert_eq!(
+            inserted, 1,
+            "neither the malformed nor following game is inserted"
+        );
+
+        let (dir, app, handle, database) = empty_database_case();
+        mount_convert_progress_events(&app);
+        let source = dir.path().join("over-cap-tag.pgn");
+        std::fs::write(&source, fixture).unwrap();
+        let error =
+            run_import(&app, handle, vec![grant_import_file(&app, &source)], None).unwrap_err();
+        import_failure_assert_message(&error, "over-cap-tag.pgn", 2);
+        assert!(!database_has_games_table(&database));
     }
 
     fn assert_long_token_import_export(expected: &[String]) {
@@ -11214,6 +11340,89 @@ mod tests {
             PathOperation::DatabaseRead
         )
         .is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn zero_table_delete_preserves_sqlite_sidecars_after_primary_substitution() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("swap.db3");
+        let replacement = dir.path().join("replacement.db3");
+        let wal = database.with_extension("db3-wal");
+        let shm = database.with_extension("db3-shm");
+        std::fs::write(&database, b"database").unwrap();
+        std::fs::write(&replacement, b"replacement").unwrap();
+        let expected_source = IndexSource::from_database(&database, 0).unwrap();
+        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
+        std::fs::rename(&replacement, &database).unwrap();
+        std::fs::write(&wal, b"committed replacement WAL").unwrap();
+        std::fs::write(&shm, b"replacement shared memory").unwrap();
+
+        let error = unlink_database_files(&target, &expected_source).unwrap_err();
+        assert!(matches!(error, Error::Conflict(_)));
+        assert_eq!(std::fs::read(&database).unwrap(), b"replacement");
+        assert!(wal.exists());
+        assert_eq!(std::fs::read(&wal).unwrap(), b"committed replacement WAL");
+        assert!(shm.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn zero_table_delete_sidecar_failure_reports_partial_removal_and_cleans_up() {
+        let (dir, app, handle, database) = arbitrary_database_case(b"");
+        {
+            let mut connection = SqliteConnection::establish(database.to_str().unwrap()).unwrap();
+            connection.batch_execute("VACUUM;").unwrap();
+        }
+        let cache_key = seed_search_cache_for_database(&app, &database);
+        // Keep the hook for the SQLite sidecar, rather than the preferred index.
+        std::fs::remove_file(get_index_path(&database)).unwrap();
+        let wal = database.with_extension("db3-wal");
+        let replacement = dir.path().join("replacement-wal");
+        std::fs::write(&wal, b"").unwrap();
+        std::fs::write(&replacement, b"keep replacement WAL").unwrap();
+        let registry_path = dir.path().join("registry.json");
+        let registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+        let database_id = &handle.path_ref().id;
+        assert!(registry["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["id"]["id"] == *database_id));
+
+        let database_for_hook = database.clone();
+        let wal_for_hook = wal.clone();
+        set_unlink_sidecar_after_identity_probe_hook(Some(Box::new(move || {
+            assert!(
+                !database_for_hook.exists(),
+                "the primary must be gone before unlinking SQLite sidecars"
+            );
+            std::fs::rename(&replacement, &wal_for_hook).unwrap();
+        })));
+        let state = app.state::<AppState>();
+        let result = delete_database_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle.clone(),
+            &CancellationToken::new(),
+        );
+        assert!(matches!(
+            result,
+            Err(Error::PartialRemoval { removed_entries: 1, cause })
+                if matches!(*cause, Error::Conflict(_))
+        ));
+        assert!(!database.exists());
+        assert_eq!(std::fs::read(&wal).unwrap(), b"keep replacement WAL");
+        assert!(state.search_cache.get_result(&cache_key).is_none());
+        let registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(registry_path).unwrap()).unwrap();
+        assert!(!registry["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["id"]["id"] == *database_id));
     }
 
     #[test]

@@ -10,8 +10,6 @@ pub const VARIATION_END_MARKER: u8 = 254;
 pub const COMMENT_MARKER: u8 = 253;
 pub const NAG_MARKER: u8 = 252;
 const ANNOTATION_CHECKPOINT_BYTES: usize = 4 * 1024;
-// Matches the parser's per-token cap and pgn.rs's per-game MAX_PGN_BYTES.
-const MAX_COMMENT_BYTES: usize = 10 * 1024 * 1024;
 
 #[cfg(test)]
 thread_local! {
@@ -338,10 +336,8 @@ fn decode_game_cancellable_with_checkpoint(
                     if cursor + len > moves_bytes.len() {
                         return Err(invalid_data("Truncated comment payload"));
                     }
-                    if payload.len() + len > MAX_COMMENT_BYTES {
-                        return Err(invalid_data("Comment exceeds parser token cap"));
-                    }
-                    // Continued comments are bounded by the 10 MiB parser token cap.
+                    // The combined payload is bounded by the in-memory moves blob:
+                    // every chunk copies only bytes from moves_bytes.
                     // Check around each chunk allocation, before UTF-8 decoding, and
                     // again before the combined comment is rendered.
                     cancellation_check(cancellation, checkpoint)?;
@@ -725,10 +721,14 @@ mod tests {
     }
 
     #[test]
-    fn long_token_encoding_rejects_over_cap_continued_comment() {
+    fn long_token_encoding_decodes_continued_comment_longer_than_parser_cap() {
+        let comment = "x".repeat(10 * 1024 * 1024 + 1);
         let mut bytes = Vec::new();
-        encode_comment(&"x".repeat(MAX_COMMENT_BYTES + 1), &mut bytes);
-        assert!(decode_game(&bytes, Fen::default()).is_err());
+        encode_comment(&comment, &mut bytes);
+        assert_eq!(
+            decode_game(&bytes, Fen::default()).unwrap().nodes,
+            vec![DecodedGameNode::Comment(comment)]
+        );
     }
 
     #[test]

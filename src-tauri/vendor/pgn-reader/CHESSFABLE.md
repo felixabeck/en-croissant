@@ -7,7 +7,8 @@ rustfmt.toml, src/, docs/, examples/, and upstream metadata.
 The parser patch is in src/reader.rs. Comments and headers that
 outgrow the buffered window shift their retained bytes, double the buffer when
 full, and read more before searching again. Header escapes crossing a read
-boundary retain their meaning. The existing InvalidData recovery remains for
+boundary retain their meaning. The initial header delimiter and comment delimiter
+scans share one private bounded-search helper. The existing InvalidData recovery remains for
 EOF and tokens over the cap, including terminated tokens. The buffer remains
 grown until the reader is dropped.
 
