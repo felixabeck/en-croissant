@@ -17,11 +17,11 @@
  * from the file.
  *
  * **93 distinct failure paths**, plus one swallowed cleanup path that deliberately produces no
- * failure of its own (row 32) and one shared sink (row 41). No row is *argued*: every one is
- * staged. "Argued" is reserved for a path that could only be reached by editing the verifier,
- * doing harm that outlives the run, or touching something the run may not modify, and none of
- * these is. Rows are staged against scratch directories and scratch configs; nothing here names
- * `coverage-baselines.json` or `backend-coverage-baselines.json` as a target.
+ * failure of its own (row 32) and one shared sink (row 41). Rows 8–13, 15–17, 19–20, 22–26,
+ * and 33–40 are not staged by a test; every other path is staged. No row is *argued*: that is
+ * reserved for a path reachable only by editing the verifier, doing harm that outlives the run,
+ * or touching something the run may not modify. Failure-case CLI tests use scratch inputs;
+ * writer tests target only scratch baselines.
  *
  * Module-level rows are reached by calling the exported function directly, which is a real caller:
  * `scripts/coverage-report-tests.mjs` does the same. Their exit status is the CLI's only when they
@@ -30,195 +30,195 @@
  *
  *  #  site                what fails                          message (to its distinguishing part)
  * --- ------------------- ---------------------------------- ------------------------------------
- *  1  :454    assignArea   no area claims a production file   `Unmapped production file: src/other.ts`
- *  2  :455    assignArea   two areas claim the same file      `Production file belongs to multiple
+ *  1  :471    assignArea   no area claims a production file   `Unmapped production file: src/other.ts`
+ *  2  :472    assignArea   two areas claim the same file      `Production file belongs to multiple
  *                                                             coverage areas: src/utils/a.ts
  *                                                             (utilities, second)`
- *  3  :509                 an area's declared source is not   `Coverage area utilities has the
+ *  3  :520                 an area's declared source is not   `Coverage area utilities has the
  *                          the source the file came from      wrong source for src/utils/example.ts`
- *  4  :538                 a production file has no LCOV      `Coverage data missing for production
+ *  4  :595                 a production file has no LCOV      `Coverage data missing for production
  *                          record at all                      files: src/utils/example.ts`
- *  5  :554                 an undeclared blank record         `Coverage measurement is blank for
+ *  5  :609                 an undeclared blank record         `Coverage measurement is blank for
  *                          (condition 1)                      production files: src/utils/blank.ts.`
- *  6  :564                 a declared path outside the        `Coverage statementFree declarations
+ *  6  :544                 a declared path outside the        `Coverage statementFree declarations
  *                          measured set (condition 2)         are outside the measured production
  *                                                             set: src/gone.ts.`
- *  7  :574                 a declared path that is measured   `Coverage statementFree declarations
+ *  7  :621                 a declared path that is measured   `Coverage statementFree declarations
  *                          and not blank (condition 3)        are no longer blank:
  *                                                             src/utils/example.ts.`
- *  8  :580                 a configured area with no          `Coverage data missing for area:
- *                          measured file at all               empty`
- *  9  :475    ->           the source root is unreadable      `EACCES: permission denied, scandir
- *      files-below.mjs:5   (readdir at the root)              '<root>/src'`
+ *  8  :626                 a configured area with no          `Coverage data missing for area:
+ *                          measured file at all               empty` — not staged by a test
+ *  9  :494    ->           the source root is unreadable      `EACCES: permission denied, scandir
+ *      files-below.mjs:5   (readdir at the root)              '<root>/src'` — not staged by a test
  * 10  files-below.mjs:5    a directory *below* the source     `EACCES: permission denied, scandir
- *      via :9 recursion    root is unreadable                 '<root>/src/locked'`
- * 11  :471                 config of the wrong shape: `{}`    TypeError: `config.sources is not
- *                                                             iterable`
- * 12  :512                 `{"sources":[],"areas":null}`      TypeError: `Cannot read properties of
- *                                                             null (reading 'map')`
- * 13  :490    ->           a source with no `include` list    TypeError: `Cannot read properties of
- *      coverage-scope.mjs:34                                   undefined (reading 'some')`
- * 14  :491    ->           a source with no `exclude` list    TypeError: `Cannot read properties of
- *      coverage-scope.mjs:39                                   undefined (reading 'map')`
- * 14a :542                 a `statementFree` that is not an    TypeError: `(source.statementFree ??
+ *      via :9 recursion    root is unreadable                 '<root>/src/locked'` — not staged by a test
+ * 11  :488                 config of the wrong shape: `{}`    TypeError: `config.sources is not
+ *                                                             iterable` — not staged by a test
+ * 12  :516                 `{"sources":[],"areas":null}`      TypeError: `Cannot read properties of
+ *                                                             null (reading 'map')` — not staged by a test
+ * 13  :507    ->           a source with no `include` list    TypeError: `Cannot read properties of
+ *      coverage-scope.mjs:34                                   undefined (reading 'some')` — not staged by a test
+ * 14  :508    ->           a source with no `exclude` list    TypeError: `Cannot read properties of
+ *      coverage-scope.mjs:39                                   undefined (reading 'map')` — not staged by a test
+ * 14a :529                 a `statementFree` that is not an    TypeError: `(source.statementFree ??
  *                          array: `{}`                        []).map is not a function`
- * 14b :542                 a `statementFree` entry that is     TypeError: `Cannot destructure
+ * 14b :529                 a `statementFree` entry that is     TypeError: `Cannot destructure
  *                          not an object: `[null]`            property 'path' of 'object null' as
  *                                                             it is null.`
- * 15  :365    parseLcov    given something not a string       TypeError: `Cannot read properties of
- *                                                             null (reading 'replaceAll')`
- * 16  :613                 the baseline's version is not 1    `Unsupported coverage baseline format`
- *                          or it carries no `areas`
- * 17  :616                 no recorded scope, checked         `Coverage baseline is missing its
- *                          against a config                   recorded scope`
- * 18  :618                 the recorded scope no longer       `Coverage measurement scope changed:
+ * 15  :382    parseLcov    given something not a string       TypeError: `Cannot read properties of
+ *                                                             null (reading 'replaceAll')` — not staged by a test
+ * 16  :676                 the baseline's version is not 1    `Unsupported coverage baseline format`
+ *                          or it carries no `areas` — not staged by a test
+ * 17  :660                 no recorded scope, checked         `Coverage baseline is missing its
+ *                          against a config                   recorded scope` — not staged by a test
+ * 18  :663                 the recorded scope no longer       `Coverage measurement scope changed:
  *                          matches the config                 source ids and roots, include globs,
  *                                                             exclude globs, statementFree
  *                                                             declarations, or area ids, sources,
  *                                                             and paths ... Re-record the scope
  *                                                             subtree by hand ...`
- * 19  :630                 a measured area the baseline       `Missing baseline for area: utilities`
- *                          does not carry
- * 20  :635                 a baseline area missing one        `Missing functions baseline for area:
- *                          metric                             utilities`
- * 21  :667                 a covered count or ratio           `utilities lines regressed: 1/2,
+ * 19  :680                 a measured area the baseline       `Missing baseline for area: utilities`
+ *                          does not carry — not staged by a test
+ * 20  :685                 a baseline area missing one        `Missing functions baseline for area:
+ *                          metric                             utilities` — not staged by a test
+ * 21  :718                 a covered count or ratio           `utilities lines regressed: 1/2,
  *                          regressed                          baseline 2/2`
- * 22  :674                 a baseline area absent from the    `Baseline references unknown area:
- *                          report                             ghost`
- * 23  :612                 a baseline of the wrong shape:     TypeError: `Cannot read properties of
- *                          `null`                             null (reading 'version')`
- * 24  :682                 an area with no                    `Missing minimum coverage for area:
- *                          `minimumCoverage`                  utilities`
- * 25  :684                 an area with no entry in the       `Missing coverage report for area:
+ * 22  :724                 a baseline area absent from the    `Baseline references unknown area:
+ *                          report                             ghost` — not staged by a test
+ * 23  :675                 a baseline of the wrong shape:     TypeError: `Cannot read properties of
+ *                          `null`                             null (reading 'version')` — not staged by a test
+ * 24  :736                 an area with no                    `Missing minimum coverage for area:
+ *                          `minimumCoverage`                  utilities` — not staged by a test
+ * 25  :738                 an area with no entry in the       `Missing coverage report for area:
  *                          report. Reachable through the      utilities`
  *                          exported API, not through the
- *                          CLI, and it stays for that
- * 26  :688                 a minimum that is not a            `Invalid lines minimum coverage for
- *                          percentage                         area: utilities`
- * 27  :693                 a measured area below its floor    `utilities lines is below minimum
+ *                          CLI, and it stays for that — not staged by a test
+ * 26  :742                 a minimum that is not a            `Invalid lines minimum coverage for
+ *                          percentage                         area: utilities` — not staged by a test
+ * 27  :748                 a measured area below its floor    `utilities lines is below minimum
  *                                                             coverage: 50.00% < 80.00%`
- * 28  :972                 the temporary write rejects        the rejection, unchanged:
+ * 28  :1022                the temporary write rejects        the rejection, unchanged:
  *                                                             `writeFile refused`
- * 29  :989                 the formatter exits non-zero       `Failed to format coverage baseline
+ * 29  :1040                the formatter exits non-zero       `Failed to format coverage baseline
  *                                                             with <path>: status=23; signal=null;
  *                                                             stderr="rejected"`
- * 29b :989                 the formatter is killed by a       `... status=null; signal=SIGTERM;
+ * 29b :1040                the formatter is killed by a       `... status=null; signal=SIGTERM;
  *                          signal                             stderr=""` -- `status !== 0` is true
  *                                                             for `null`, so a kill is caught
  *                                                             rather than reported as success
- * 30  :989                 the formatter binary is missing    `... status=null; signal=null;
+ * 30  :1040                the formatter binary is missing    `... status=null; signal=null;
  *                                                             stderr=""; error.code=ENOENT;
  *                                                             error.message="spawnSync <path>
  *                                                             ENOENT"`
- * 31  :994                 the rename into place rejects      the rejection, unchanged:
+ * 31  :1044                the rename into place rejects      the rejection, unchanged:
  *                                                             `rename refused`
- * 32  :963                 cleanup's unlink rejects after a   **no failure of its own**: the
+ * 32  :1013                cleanup's unlink rejects after a   **no failure of its own**: the
  *                          failure. Deliberately swallowed    primary error is rethrown unchanged
  *                          so it cannot replace the           (`rename refused`) and the temporary
  *                          actionable error                   file survives as evidence
- * 33  :1013                an option with no value            `Missing value for --config`
- *                                                             — exit 1
- * 34  :1016                an unknown argument                `Unknown argument: --nope` — exit 1
- * 35  :1019                a required option omitted          `Usage: coverage-report.mjs --config
- *                                                             <file> ...` — exit 1
- * 36  :1037                the config file does not exist     `ENOENT: no such file or directory,
- *                                                             open '<root>/missing.json'` — exit 1
- * 37  :1037                the config file is not JSON        SyntaxError: `Expected property name
- *                                                             or '}' in JSON at position 2` — exit 1
- * 38  :1039                an LCOV file does not exist        `ENOENT: ... '<root>/missing.info'`
- *                                                             — exit 1
- * 39  :1059                the baseline file does not exist   `ENOENT: ... '<root>/missing.json'`
- *                                                             — exit 1
- * 40  :1059                the baseline file is not JSON      SyntaxError, as row 37 — exit 1
- * 41  :1074                `main().catch` — the shared sink,  every CLI throw, reached through
+ * 33  :1064                an option with no value            `Missing value for --config`
+ *                                                             — exit 1; not staged by a test
+ * 34  :1067                an unknown argument                `Unknown argument: --nope` — exit 1; not staged by a test
+ * 35  :1071                a required option omitted          `Usage: coverage-report.mjs --config
+ *                                                             <file> ...` — exit 1; not staged by a test
+ * 36  :1094                the config file does not exist     `ENOENT: no such file or directory,
+ *                                                             open '<root>/missing.json'` — exit 1; not staged by a test
+ * 37  :1094                the config file is not JSON        SyntaxError: `Expected property name
+ *                                                             or '}' in JSON at position 2` — exit 1; not staged by a test
+ * 38  :1105                an LCOV file does not exist        `ENOENT: ... '<root>/missing.info'`
+ *                                                             — exit 1; not staged by a test
+ * 39  :1125                the baseline file does not exist   `ENOENT: ... '<root>/missing.json'`
+ *                                                             — exit 1; not staged by a test
+ * 40  :1125                the baseline file is not JSON      SyntaxError, as row 37 — exit 1; not staged by a test
+ * 41  :1138                `main().catch` — the shared sink,  every CLI throw, reached through
  *                          **not an independent failure**     the CLI, prints `error.message` on
  *                                                             stderr and exits **1**. Measured with
- *                                                             row 17's throw: exit 1, message on
+ *                                                             row 18's throw: exit 1, message on
  *                                                             stderr, nothing on stdout
- * 42  :761    write guard  prior baseline is not JSON          `Invalid prior coverage baseline at
+ * 42  :815    write guard  prior baseline is not JSON          `Invalid prior coverage baseline at
  *                                                             <path>: <JSON parse message>` — exit 1
- * 43  :709    validate     prior version or `areas` is         `Invalid prior coverage baseline
+ * 43  :764    validate     prior version or `areas` is         `Invalid prior coverage baseline
  *                          wrong-shaped                        from <path>: expected version 1
  *                                                             and an areas object` — exit 1
- * 44  :715    validate     a prior area's metrics container    `Invalid prior coverage baseline
+ * 44  :770    validate     a prior area's metrics container    `Invalid prior coverage baseline
  *                          is not an object                     from <path>: utilities must
  *                                                             contain all metrics` — exit 1
- * 45  :729    validate     a prior area is missing one metric  `Invalid prior coverage baseline
+ * 45  :784    validate     a prior area is missing one metric  `Invalid prior coverage baseline
  *                                                             from <path>: utilities lines must
  *                                                             have non-negative integer covered
  *                                                             and total counts with covered <=
  *                                                             total` — exit 1
- * 46  :729    validate     prior `covered` is not an integer  same invalid-count message, with
+ * 46  :784    validate     prior `covered` is not an integer  same invalid-count message, with
  *                                                             `covered: "bad"` — exit 1
- * 47  :729    validate     prior `covered` is negative        same invalid-count message, with
+ * 47  :784    validate     prior `covered` is negative        same invalid-count message, with
  *                                                             `covered: -1` — exit 1
- * 48  :729    validate     prior `covered > total`             same invalid-count message, with
+ * 48  :784    validate     prior `covered > total`             same invalid-count message, with
  *                                                             `covered: 2, total: 1` — exit 1
- * 49  :729    validate     prior `covered` is fractional      same invalid-count message, with
+ * 49  :784    validate     prior `covered` is fractional      same invalid-count message, with
  *                                                             `covered: 1.5` — exit 1
- * 50  :729    validate     prior `total` is fractional        same invalid-count message, with
+ * 50  :784    validate     prior `total` is fractional        same invalid-count message, with
  *                                                             `total: 2.5` — exit 1
- * 51  :729    validate     prior `total` is negative          same invalid-count message, with
+ * 51  :784    validate     prior `total` is negative          same invalid-count message, with
  *                                                             `total: -1` — exit 1
- * 52  :951    write guard  covered count decreases while the  `Coverage baseline write refused
+ * 52  :1002   write guard  covered count decreases while the  `Coverage baseline write refused
  *                          ratio stays level                    (decreases: utilities lines
  *                                                             (covered count 10 → 9)); ...` — exit 1
- * 53  :951    write guard  ratio decreases while `covered`   `Coverage baseline write refused
+ * 53  :1002   write guard  ratio decreases while `covered`   `Coverage baseline write refused
  *                          rises                                (decreases: utilities lines
  *                                                             (ratio 50.00% → 46.15%)); ...` — exit 1
- * 54  :951    write guard  an area is removed                 `Coverage baseline write refused
+ * 54  :1002   write guard  an area is removed                 `Coverage baseline write refused
  *                                                             (... retired lines (area removed)
  *                                                             ...); ...` — exit 1
- * 55  :840→951 ratio check `0/0 → 0/1` is a decrease          `Coverage baseline write refused
+ * 55  :890→1002 ratio check `0/0 → 0/1` is a decrease          `Coverage baseline write refused
  *                                                             (... utilities lines (ratio
  *                                                             100.00% → 0.00%)); ...` — exit 1
- * 56  :951    write guard  recorded scope changes             `Coverage baseline write refused
+ * 56  :1002   write guard  recorded scope changes             `Coverage baseline write refused
  *                                                             (... scope keys changed:
  *                                                             sources[0].exclude[0]); ...` — exit 1
- * 57  :951    write guard  an area is added                   `Coverage baseline write refused
+ * 57  :1002   write guard  an area is added                   `Coverage baseline write refused
  *                                                             (... areas changed: added=[puzzles],
  *                                                             removed=[]); ...` — exit 1
- * 58  :901    authorize    `tasks/decisions.md` is missing    `Instrument change authorization
+ * 58  :952    authorize    `tasks/decisions.md` is missing    `Instrument change authorization
  *                                                             requires tasks/decisions.md for
  *                                                             decision d-20260927-23 governing
  *                                                             f-20260829-04` — exit 1
- * 59  :909    authorize    decision id has no entry           `No decision entry found for
+ * 59  :960    authorize    decision id has no entry           `No decision entry found for
  *                                                             --instrument-change d-20260927-23
  *                                                             in tasks/decisions.md` — exit 1
- * 60  :914    authorize    `Governs:` misses the exact finding `Decision d-20260927-23 does not
+ * 60  :964    authorize    `Governs:` misses the exact finding `Decision d-20260927-23 does not
  *                                                             govern finding f-20260829-04` — exit 1
- * 61  :1008   parse         `--instrument-change` has no value `Missing value for
+ * 61  :1059   parse         `--instrument-change` has no value `Missing value for
  *                                                             --instrument-change` — exit 1
- * 62  :1008   parse         `--finding` has no value           `Missing value for --finding` — exit 1
- * 63  :1026   parse         authorization flags without       `--instrument-change and --finding
+ * 62  :1059   parse         `--finding` has no value           `Missing value for --finding` — exit 1
+ * 63  :1083   parse         authorization flags without       `--instrument-change and --finding
  *                          `--write-baseline`                 require --write-baseline` — exit 1
- * 64  :1029   parse         only `--instrument-change`        `--instrument-change and --finding
+ * 64  :1086   parse         only `--instrument-change`        `--instrument-change and --finding
  *                                                             must be used together` — exit 1
- * 65  :1029   parse         only `--finding`                  `--instrument-change and --finding
+ * 65  :1086   parse         only `--finding`                  `--instrument-change and --finding
  *                                                             must be used together` — exit 1
- * 66  :777    git           `rev-parse` fails for another     `Failed to inspect prior coverage
+ * 66  :831    git           `rev-parse` fails for another     `Failed to inspect prior coverage
  *                          reason than not-a-repository        baseline with git rev-parse
  *                                                             --is-inside-work-tree: status=37;
  *                                                             stderr="fatal: simulated repository
  *                                                             metadata error\n"` — exit 1
- * 67  :750    git           git cannot be spawned             `Failed to inspect prior coverage
+ * 67  :804    git           git cannot be spawned             `Failed to inspect prior coverage
  *                                                             baseline with git rev-parse
  *                                                             --is-inside-work-tree: status=null;
  *                                                             stderr=""; error.code=ENOENT;
  *                                                             error.message="spawnSync git
  *                                                             ENOENT"` — exit 1
- * 68  :782    git           `ls-tree` fails for unborn `HEAD` `Failed to inspect prior coverage
+ * 68  :836    git           `ls-tree` fails for unborn `HEAD` `Failed to inspect prior coverage
  *                                                             baseline with git ls-tree
  *                                                             --full-name HEAD -- scratch-
  *                                                             baseline.json: status=128;
  *                                                             stderr="fatal: Not a valid object
  *                                                             name HEAD\n"` — exit 1
- * 69  :786    git           `ls-tree` output is ambiguous or  `Failed to inspect prior coverage
+ * 69  :841    git           `ls-tree` output is ambiguous or  `Failed to inspect prior coverage
  *                          malformed                            baseline with git ls-tree
  *                                                             --full-name HEAD -- scratch-
  *                                                             baseline.json: expected one tracked
  *                                                             file entry; stderr=""` — exit 1
- * 70  :794    git           `show` fails for a tracked path    `Failed to inspect prior coverage
+ * 70  :848    git           `show` fails for a tracked path    `Failed to inspect prior coverage
  *                                                             baseline with git show
  *                                                             HEAD:scratch-baseline.json:
  *                                                             status=38; stderr="fatal: simulated
@@ -286,12 +286,12 @@
  *     resolveModulePath    a reason other than ENOENT/ENOTDIR   access test-only module candidate
  *                          (parent directory chmod 000)         …: EACCES: permission denied …`
  *                                                             — exit 1
- * 90  :556   mapping-only an area claims no measured           `Coverage areas claim no production
- *                           production file                     files: empty` — exit 1
- * 91  :1075  parse         `--mapping-only` combined with       `--mapping-only cannot be combined
- *                           `--lcov`                            with --lcov` — exit 1
- * 92  :1078  parse         `--mapping-only` combined with       `--mapping-only cannot be combined
- *                           `--write-baseline`                  with --write-baseline` — exit 1
+ * 90  :556   mapping-only an area has no production files; test "area claims no production file":
+ *                          `Coverage areas claim no production files: empty` — exit 1
+ * 91  :1075  parse         `--mapping-only` with `--lcov`; test "mapping-only rejects LCOV arguments":
+ *                          `--mapping-only cannot be combined with --lcov` — exit 1
+ * 92  :1078  parse         `--mapping-only` with `--write-baseline`; test "mapping-only rejects baseline writes":
+ *                          `--mapping-only cannot be combined with --write-baseline` — exit 1
  *
  * **The rows the blank-measurement work added or changed were also staged against the real
  * frontend LCOV**, not only against fixtures, because that is the artefact an operator runs. Rows
