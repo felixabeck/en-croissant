@@ -31,6 +31,7 @@ import useSWR, { useSWRConfig } from "swr";
 import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import type { DatabaseHandle, DatabaseInfo } from "@/bindings";
 import { IconAction } from "@/components/common/IconAction";
+import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { clearOwnedConversion, databaseConversionStateAtom, referenceDbAtom } from "@/state/atoms";
 import { activeDatabaseViewStore, useActiveDatabaseViewStore } from "@/state/store/database";
 import {
@@ -548,10 +549,26 @@ function GeneralSettings({
   const [debouncedDescription] = useDebouncedValue(description, 300);
 
   useEffect(() => {
+    if (
+      debouncedTitle === "" ||
+      (debouncedTitle === selectedDatabase.title &&
+        debouncedDescription === selectedDatabase.description)
+    ) {
+      return;
+    }
     tauri
       .editDbInfo(selectedDatabase.file, debouncedTitle ?? null, debouncedDescription ?? null)
-      .then(() => mutate());
-  }, [debouncedTitle, debouncedDescription, mutate, selectedDatabase.file]);
+      .then(() => mutate())
+      .catch((error) => notifyUnlessCancelled(t("Common.Error"), error));
+  }, [
+    debouncedTitle,
+    debouncedDescription,
+    mutate,
+    selectedDatabase.file,
+    selectedDatabase.title,
+    selectedDatabase.description,
+    t,
+  ]);
 
   return (
     <>
@@ -660,9 +677,10 @@ function DuplicateRemover({
                 setLoading(false);
                 reload();
               })
-              .catch(() => {
+              .catch((error) => {
                 setLoading(false);
                 reload();
+                notifyUnlessCancelled(t("Common.Error"), error);
               });
           }}
         >
@@ -679,9 +697,10 @@ function DuplicateRemover({
                 setLoading(false);
                 reload();
               })
-              .catch(() => {
+              .catch((error) => {
                 setLoading(false);
                 reload();
+                notifyUnlessCancelled(t("Common.Error"), error);
               });
           }}
         >

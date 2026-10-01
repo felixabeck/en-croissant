@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { getDefaultStore, Provider, useAtomValue } from "jotai";
 import type { DatabaseHandle } from "@/bindings";
 import { databaseConversionStateAtom } from "@/state/atoms";
-import { conversionProgressId, databaseHandleKey, type ManagedDatabaseInfo } from "@/utils/db";
+import { conversionProgressId, databaseHandleKey, type SuccessDatabaseInfo } from "@/utils/db";
 import { useConversionProgress } from "@/hooks/useConversionProgress";
 
 const mocks = vi.hoisted(() => ({
@@ -71,15 +71,18 @@ vi.mock("@/utils/files", async () => {
 vi.mock("@/utils/chess.com/api", () => ({ downloadChessCom: mocks.downloadChessCom }));
 vi.mock("@/utils/lichess/api", () => ({ downloadLichess: vi.fn() }));
 vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.notify } }));
-vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock("react-i18next", () => {
+  const t = (key: string) => key;
+  return { useTranslation: () => ({ t }) };
+});
 vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => vi.fn(),
   Link: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
-vi.mock("@mantine/hooks", () => ({
-  useDebouncedValue: (value: unknown) => [value],
-  useToggle: () => [false, vi.fn()],
-}));
+vi.mock("@mantine/hooks", async () => {
+  const actual = await vi.importActual<typeof import("@mantine/hooks")>("@mantine/hooks");
+  return { ...actual, useToggle: () => [false, vi.fn()] };
+});
 vi.mock("../common/AppModal", () => ({
   default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
@@ -214,7 +217,7 @@ const workspaceRoot = { id: { id: "database-root" }, kind: "databaseRoot" as con
 const localPgn = { id: { id: "local-pgn" }, kind: "fileWorkspace" as const };
 const addGamesPgn = { id: { id: "add-games-pgn" }, kind: "fileWorkspace" as const };
 
-function successDatabase(file: DatabaseHandle, title: string): ManagedDatabaseInfo {
+function successDatabase(file: DatabaseHandle, title: string): SuccessDatabaseInfo {
   return {
     type: "success",
     title,
@@ -476,4 +479,81 @@ test("AccountCard convert() throw does not wipe a concurrent Add Games conversio
     expect(conversionState().targetDatabase).toEqual(handleB);
     expect(conversionState().inProgress).toBe(true);
   });
+});
+
+async function waitForSettingsDebounce() {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 350));
+  });
+}
+
+async function editDatabaseName(value: string) {
+  const label = [...host.querySelectorAll("label")]
+    .filter((element) => element.textContent === "Common.Name")
+    .at(-1)!;
+  const input = label.querySelector("input")!;
+  expect(input.value).toBe("Existing");
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  expect(input.value).toBe(value);
+}
+
+test("selecting an existing database does not write its settings", async () => {
+  await renderRoute();
+  await selectExistingDatabase();
+  await waitForSettingsDebounce();
+  expect(mocks.editDbInfo).not.toHaveBeenCalled();
+});
+
+test("editing the database name writes once after the debounce and reloads the list", async () => {
+  let database = successDatabase(handleB, "Existing");
+  mocks.getDatabases.mockImplementation(async () => [database]);
+  mocks.editDbInfo.mockImplementation(async (_file: DatabaseHandle, title: string) => {
+    database = { ...database, title };
+  });
+  await renderRoute();
+  await selectExistingDatabase();
+  await editDatabaseName("Renamed");
+  expect(mocks.editDbInfo).not.toHaveBeenCalled();
+
+  await waitForSettingsDebounce();
+  expect(mocks.editDbInfo).toHaveBeenCalledExactlyOnceWith(handleB, "Renamed", "");
+  expect(mocks.getDatabases).toHaveBeenCalledTimes(2);
+});
+
+test("clearing the database name does not write an empty title", async () => {
+  await renderRoute();
+  await selectExistingDatabase();
+  await editDatabaseName("");
+  await waitForSettingsDebounce();
+  expect(mocks.editDbInfo).not.toHaveBeenCalled();
+});
+
+test("a failed database rename surfaces an error notification", async () => {
+  await renderRoute();
+  await selectExistingDatabase();
+  mocks.editDbInfo.mockRejectedValueOnce(new Error("rename failed"));
+  await editDatabaseName("Renamed");
+  await waitForSettingsDebounce();
+  expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
+    color: "red",
+    title: "Common.Error",
+    message: "rename failed",
+  });
+});
+
+test("a failed empty-game cleanup surfaces an error notification and reloads the list", async () => {
+  await renderRoute();
+  await selectExistingDatabase();
+  const reloads = mocks.getDatabases.mock.calls.length;
+  mocks.deleteEmptyGames.mockRejectedValueOnce(new Error("cleanup failed"));
+  await act(async () => buttonByText("Databases.Settings.RemoveEmpty")!.click());
+  expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
+    color: "red",
+    title: "Common.Error",
+    message: "cleanup failed",
+  });
+  expect(mocks.getDatabases).toHaveBeenCalledTimes(reloads + 1);
 });
