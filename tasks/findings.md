@@ -12245,3 +12245,15 @@ Correction 2026-09-30 (records review): "the 2026-09-29 push-gate lane runner ke
 * **Proof sought:** A fixture built from the generated type with no cast can be stored in `activeDatabaseViewStore` and round-trips through sessionStorage; `pnpm bindings:check` stays green.
 * **Correction (2026-10-01, push review):** the **Where** line overstates one detail: `src/components/Sidebar.test.tsx` casts `storage_size: 0 as unknown as bigint`, and `src/components/databases/ConcurrentConversion.test.tsx` casts `1 as unknown as bigint`. Both are the same `as unknown as bigint` workaround; the finding is otherwise unchanged.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"5c1dd2eca967d3f572dbeeda4bda65bfc8e007e916a55b14ce679d8c6328b368","input_sha256":"b8add73c8b1a75f2251d95da47667b0c425c243c79e92cae64693c5e82269acd","kind":"mutation-receipt","operation":"02fe9f58a17cdc0442a7e43683dfee6a0e9a8bcf3bce35b90af883ce4e48a58a","options":{"section":null},"request_id_sha256":null,"results":["f-20261001-20"],"target":"f-20261001-20","v":1} -->
+
+---
+
+## 2026-10-01 — filed through the inbox spool
+
+### Two conversions into the same database share one progress id, so one import's progress can show as the other's
+
+* **ID:** f-20261001-21 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src/utils/db.ts` (~117-118, `conversionProgressId(handle)` derives the id from the database handle alone), `src/hooks/useConversionProgress.ts` (~35-45 accepts any `ConvertProgress` whose id matches the target handle), callers `src/components/home/AccountCard.tsx` (account sync) and `src/components/databases/DatabasesPage.tsx` "Add games" (`databaseMutation.ts`); Rust emits the caller's id unchanged (`src-tauri/src/db/mod.rs` `convert_pgn_blocking`).
+* **Defect:** if "Add games" is still converting into a database when account sync starts a conversion into the same database (or the reverse), both send the same progress id. The conversion line then shows whichever frame arrived last: the other import's game count, elapsed time or source file name. Rule `async-resource-invariants.md`: "Assume a response belongs to the most recent request because it arrived last — use a discriminator, never timing."
+* **Fix shape:** make the progress id per conversion (handle + a per-call nonce minted by the caller), carried through the existing `progressId` parameter; the renderer owner state stores the full id, not only the handle. No IPC signature change is needed.
+* **Found by:** Codex `review-ipc-contract` lens over the cumulative diff of the PGN long-comment import fix, 2026-10-01 (pre-existing; not introduced by that diff).
