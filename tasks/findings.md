@@ -12158,3 +12158,15 @@ Correction 2026-09-30 (records review): "the 2026-09-29 push-gate lane runner ke
 * **Why it matters:** `.claude/rules/async-resource-invariants.md` requires cleanup on every exit path; an engine with a large hash (8 GB in Felix's configuration) can outlive its owner unseen.
 * **Open question:** keep failed actors in a bounded "reaping" set that shutdown and later retirements retry, or make termination escalate (kill, wait with deadline) until it is confirmed before removal — and how the renderer learns that a process could not be confirmed dead.
 * **Found by:** Codex `review-engine-protocol` lens, round 2 of the Stockfish 19 upgrade plan review (`tasks/plans/2026-10-01-stockfish-19-upgrade.md`, issue R2 retirement-failure), confirmed by the orchestrator from source, 2026-10-01.
+
+---
+
+## 2026-10-01 — filed through the inbox spool
+
+### Engine archive staging reopens the destination parent by pathname
+
+* **ID:** f-20261001-15 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src-tauri/src/fs.rs:1319-1329` (`download_engine_archive_core`: `destination_parent = resolved.target().parent().to_path_buf()`, then `private_tempdir_in(".archive", &destination_parent)`).
+* **Defect:** the staging directory is created under a pathname derived from the resolved destination rather than through the verified directory descriptor. If the engine root is renamed and its path replaced by a symlink between resolution and `private_tempdir_in`, download and extraction write staging data under the symlink target; the later atomic install refuses publication, but only after those out-of-authority writes happened.
+* **Why it matters:** every other path-authority write door binds to a verified inode; this one is a pathname re-open in the same class the path-authority work closed elsewhere. Reaching it needs a local actor racing the rename, so it is outside accidental-input threat models.
+* **Found by:** Codex `review-tauri-security` lens, round 2 of the Stockfish 19 upgrade plan review, 2026-10-01; confirmed by the orchestrator reading `fs.rs:1319-1329`.
