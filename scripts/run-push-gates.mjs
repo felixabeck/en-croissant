@@ -714,7 +714,7 @@ async function runCommand(
     completion = await Promise.race([
       supervisor.done.then((result) => ({ type: "completed", result })),
       signalForwarding.signalRequested.then(async () => {
-        return { type: "interrupted", outcome: await supervisor.settled() };
+        return { type: "interrupted", outcome: await supervisor.exitOrTerminationFailure() };
       }),
     ]);
   } finally {

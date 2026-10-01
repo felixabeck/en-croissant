@@ -69,15 +69,18 @@ export function superviseChild(child, { terminationTimeoutMs, killProcessGroup =
   const terminationFailure = new Promise((resolve) => {
     resolveTerminationFailure = resolve;
   });
+  const unref = () => {
+    child.unref?.();
+    child.stdout?.destroy?.();
+    child.stderr?.destroy?.();
+  };
 
   return {
     done,
-    settled() {
+    exitOrTerminationFailure() {
       return Promise.race([done.then((result) => ({ type: "exit", result })), terminationFailure]);
     },
-    unref() {
-      child.unref?.();
-    },
+    unref,
     terminate() {
       if (termination) return termination;
       termination = (async () => {
@@ -100,9 +103,10 @@ export function superviseChild(child, { terminationTimeoutMs, killProcessGroup =
           clearTimeout(escalationTimer);
         }
       })();
-      termination.catch((error) =>
-        resolveTerminationFailure({ type: "termination-failed", error }),
-      );
+      termination.catch((error) => {
+        unref();
+        resolveTerminationFailure({ type: "termination-failed", error });
+      });
       return termination;
     },
   };

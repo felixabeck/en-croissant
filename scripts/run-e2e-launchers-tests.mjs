@@ -136,6 +136,46 @@ function pnpm(args, env = process.env) {
   return spawnSync("pnpm", ["--silent", ...args], { cwd: projectRoot, encoding: "utf8", env });
 }
 
+function killFailureSource(diagnostic, body) {
+  return [
+    "const fakePid = 987654321;",
+    "const originalKill = process.kill;",
+    "process.kill = function(pid, signal) {",
+    "  if (pid === -fakePid && signal !== 0) {",
+    `    const error = Object.assign(new Error(${JSON.stringify(diagnostic)}), { code: "EPERM" });`,
+    "    throw error;",
+    "  }",
+    "  return Reflect.apply(originalKill, process, [pid, signal]);",
+    "};",
+    "try {",
+    ...body,
+    "} finally { process.kill = originalKill; }",
+  ];
+}
+
+async function cleanupHeldDocker(running, dockerPidFile) {
+  let dockerPid;
+  try {
+    dockerPid = Number(await readFile(dockerPidFile, "utf8"));
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  if (Number.isInteger(dockerPid) && dockerPid > 0) {
+    for (const pid of [-dockerPid, dockerPid]) {
+      try {
+        process.kill(pid, "SIGKILL");
+        break;
+      } catch (error) {
+        if (error.code !== "ESRCH") throw error;
+      }
+    }
+  }
+  if (running.child.exitCode === null && running.child.signalCode === null) {
+    running.child.kill("SIGKILL");
+  }
+  await running.done;
+}
+
 // pnpm retains a caller's `--` (measured 2026-09-27, pnpm 10.34.5); these are the argv tails
 // the package scripts actually receive, not hypothetical inputs (`f-20260910-07`).
 test("the separator pnpm retains is dropped so selection reaches Playwright as options", () => {
@@ -278,6 +318,67 @@ test("docker info preflight has a bounded timeout that refuses with its cause", 
   );
 });
 
+test("the entrypoint exits after a Docker kill failure and releases child pipes", async (t) => {
+  const harness = await makeHarness(t);
+  const dockerPidFile = join(harness.root, "docker.pid");
+  const preloadPath = join(harness.root, "reject-docker-kill.mjs");
+  const dockerPath = join(harness.root, "bin", "docker");
+  await writeFile(
+    dockerPath,
+    String.raw`#!/bin/sh
+if [ "$1" = info ]; then
+  printf '%s\n' "$$" > "$FAKE_DOCKER_PID_FILE"
+  exec sleep 300
+fi
+exit 0
+`,
+  );
+  await chmod(dockerPath, 0o755);
+  await writeFile(
+    preloadPath,
+    String.raw`import { readFileSync } from "node:fs";
+
+const originalKill = process.kill;
+process.kill = function (pid, signal) {
+  let dockerPid;
+  try {
+    dockerPid = Number(readFileSync(process.env.FAKE_DOCKER_PID_FILE, "utf8"));
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  if (dockerPid > 0 && (pid === dockerPid || pid === -dockerPid) && signal !== 0) {
+    throw Object.assign(new Error("injected fake Docker EPERM"), { code: "EPERM" });
+  }
+  return Reflect.apply(originalKill, process, [pid, signal]);
+};
+`,
+  );
+
+  const running = startNode(["--import", preloadPath, launcherPath], {
+    ...harness.env,
+    E2E_TEST_DOCKER_INFO_TIMEOUT_MS: "50",
+    FAKE_DOCKER_PID_FILE: dockerPidFile,
+  });
+  let timeout;
+  try {
+    const result = await Promise.race([
+      running.done,
+      new Promise((resolve) => {
+        timeout = setTimeout(() => resolve(undefined), 3_000);
+      }),
+    ]);
+    assert.ok(result, "launcher did not exit within three seconds");
+    assert.equal(result.code, 1, `${result.stdout}\n${result.stderr}`);
+    assert.match(
+      result.stderr,
+      /Docker probe error: docker info preflight timed out after 50 ms and could not be terminated: injected fake Docker EPERM/u,
+    );
+  } finally {
+    clearTimeout(timeout);
+    await cleanupHeldDocker(running, dockerPidFile);
+  }
+});
+
 test("SIGTERM cancels a hung docker info preflight without starting the container", async (t) => {
   const harness = await makeHarness(t, { FAKE_DOCKER_INFO_MODE: "hold" });
   const running = startNode([launcherPath], harness.env);
@@ -302,12 +403,12 @@ test("preflight cancellation reports a rejected child termination and its cause"
     "controller.abort();",
     "const done = new Promise(() => {});",
     'const terminationError = new Error("injected termination failure");',
-    'const settled = Promise.resolve({ type: "termination-failed", error: terminationError });',
+    'const outcome = Promise.resolve({ type: "termination-failed", error: terminationError });',
     "const result = await runE2eContainer([], {",
     "  abortSignal: controller.signal,",
     "  preflightTimeoutMs: 50,",
     "  spawnProcess: () => Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough() }),",
-    "  superviseProcess: () => ({ done, settled: () => settled, terminate: () => Promise.reject(terminationError), unref() {} }),",
+    "  superviseProcess: () => ({ done, exitOrTerminationFailure: () => outcome, terminate: () => Promise.reject(terminationError), unref() {} }),",
     "});",
     "process.exitCode = result.exitCode;",
   ].join("\n");
@@ -328,12 +429,12 @@ test("preflight cancellation bounds a child that never settles", async (t) => {
     "controller.abort();",
     "const started = Date.now();",
     "const done = new Promise(() => {});",
-    "const settled = new Promise(() => {});",
+    "const outcome = new Promise(() => {});",
     "const result = await runE2eContainer([], {",
     "  abortSignal: controller.signal,",
     "  preflightTimeoutMs: 50,",
     "  spawnProcess: () => Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough() }),",
-    "  superviseProcess: () => ({ done, settled: () => settled, terminate: () => new Promise(() => {}), unref() {} }),",
+    "  superviseProcess: () => ({ done, exitOrTerminationFailure: () => outcome, terminate: () => new Promise(() => {}), unref() {} }),",
     "});",
     "console.log(`elapsed=${Date.now() - started}`);",
     "process.exitCode = result.exitCode;",
@@ -516,33 +617,24 @@ test("a Docker client kill failure still waits for named container cleanup", asy
     `import { EventEmitter } from "node:events";`,
     `import { PassThrough } from "node:stream";`,
     `import { runE2eContainer } from ${JSON.stringify(moduleUrl)};`,
-    "const fakePid = 987654321;",
-    "const originalKill = process.kill;",
-    "process.kill = function(pid, signal) {",
-    "  if (pid === -fakePid && signal !== 0) {",
-    '    const error = Object.assign(new Error("injected docker client EPERM"), { code: "EPERM" });',
-    "    throw error;",
-    "  }",
-    "  return Reflect.apply(originalKill, process, [pid, signal]);",
-    "};",
-    "const controller = new AbortController();",
-    "const spawnProcess = (_command, args) => {",
-    "  const action = args[0];",
-    "  const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough() });",
-    '  child.pid = action === "run" ? fakePid : undefined;',
-    "  child.exitCode = null;",
-    "  child.signalCode = null;",
-    '  if (action === "info") setImmediate(() => { child.stdout.write("true\\n"); child.stdout.end(); child.stderr.end(); child.exitCode = 0; child.emit("close", 0, null); });',
-    '  if (action === "rm") setImmediate(() => { child.stderr.write("injected cleanup refusal\\n"); child.stdout.end(); child.stderr.end(); child.exitCode = 23; child.emit("close", 23, null); });',
-    "  return child;",
-    "};",
-    "setTimeout(() => controller.abort(), 40);",
-    "const started = Date.now();",
-    "try {",
-    "  const result = await runE2eContainer([], { abortSignal: controller.signal, spawnProcess, preflightTimeoutMs: 500, removeTimeoutMs: 500 });",
-    "  console.log(`elapsed=${Date.now() - started}`);",
-    "  process.exitCode = result.exitCode;",
-    "} finally { process.kill = originalKill; }",
+    ...killFailureSource("injected docker client EPERM", [
+      "const controller = new AbortController();",
+      "const spawnProcess = (_command, args) => {",
+      "  const action = args[0];",
+      "  const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough() });",
+      '  child.pid = action === "run" ? fakePid : undefined;',
+      "  child.exitCode = null;",
+      "  child.signalCode = null;",
+      '  if (action === "info") setImmediate(() => { child.stdout.write("true\\n"); child.stdout.end(); child.stderr.end(); child.exitCode = 0; child.emit("close", 0, null); });',
+      '  if (action === "rm") setImmediate(() => { child.stderr.write("injected cleanup refusal\\n"); child.stdout.end(); child.stderr.end(); child.exitCode = 23; child.emit("close", 23, null); });',
+      "  return child;",
+      "};",
+      "setTimeout(() => controller.abort(), 40);",
+      "const started = Date.now();",
+      "const result = await runE2eContainer([], { abortSignal: controller.signal, spawnProcess, preflightTimeoutMs: 500, removeTimeoutMs: 500 });",
+      "console.log(`elapsed=${Date.now() - started}`);",
+      "process.exitCode = result.exitCode;",
+    ]),
   ].join("\n");
   const result = await startNode(["--input-type=module", "-e", source], harness.env).done;
 
@@ -569,22 +661,13 @@ test("docker info timeout reports when a hung client cannot be terminated", asyn
     `import { EventEmitter } from "node:events";`,
     `import { PassThrough } from "node:stream";`,
     `import { runE2eContainer } from ${JSON.stringify(moduleUrl)};`,
-    "const fakePid = 987654321;",
-    "const originalKill = process.kill;",
-    "process.kill = function(pid, signal) {",
-    "  if (pid === -fakePid && signal !== 0) {",
-    '    const error = Object.assign(new Error("injected docker info EPERM"), { code: "EPERM" });',
-    "    throw error;",
-    "  }",
-    "  return Reflect.apply(originalKill, process, [pid, signal]);",
-    "};",
-    "const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), pid: fakePid, exitCode: null, signalCode: null });",
-    "const started = Date.now();",
-    "try {",
-    "  const result = await runE2eContainer([], { preflightTimeoutMs: 40, spawnProcess: () => child });",
-    "  console.log(`elapsed=${Date.now() - started}`);",
-    "  process.exitCode = result.exitCode;",
-    "} finally { process.kill = originalKill; }",
+    ...killFailureSource("injected docker info EPERM", [
+      "const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), pid: fakePid, exitCode: null, signalCode: null });",
+      "const started = Date.now();",
+      "const result = await runE2eContainer([], { preflightTimeoutMs: 40, spawnProcess: () => child });",
+      "console.log(`elapsed=${Date.now() - started}`);",
+      "process.exitCode = result.exitCode;",
+    ]),
   ].join("\n");
   const result = await startNode(["--input-type=module", "-e", source], harness.env).done;
 
@@ -604,27 +687,18 @@ test("docker rm timeout reports when a hung cleanup client cannot be terminated"
     `import { EventEmitter } from "node:events";`,
     `import { PassThrough } from "node:stream";`,
     `import { runE2eContainer } from ${JSON.stringify(moduleUrl)};`,
-    "const fakePid = 987654321;",
-    "const originalKill = process.kill;",
-    "process.kill = function(pid, signal) {",
-    "  if (pid === -fakePid && signal !== 0) {",
-    '    const error = Object.assign(new Error("injected docker rm EPERM"), { code: "EPERM" });',
-    "    throw error;",
-    "  }",
-    "  return Reflect.apply(originalKill, process, [pid, signal]);",
-    "};",
-    "const spawnProcess = (_command, args) => {",
-    "  const action = args[0];",
-    '  const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), pid: action === "rm" ? fakePid : undefined, exitCode: null, signalCode: null });',
-    '  if (action !== "rm") setImmediate(() => { if (action === "info") child.stdout.write("true\\n"); else child.stderr.write("injected runner failure\\n"); child.stdout.end(); child.stderr.end(); child.exitCode = action === "info" ? 0 : 17; child.emit("close", child.exitCode, null); });',
-    "  return child;",
-    "};",
-    "const started = Date.now();",
-    "try {",
-    "  const result = await runE2eContainer([], { preflightTimeoutMs: 500, removeTimeoutMs: 40, spawnProcess });",
-    "  console.log(`elapsed=${Date.now() - started}`);",
-    "  process.exitCode = result.exitCode;",
-    "} finally { process.kill = originalKill; }",
+    ...killFailureSource("injected docker rm EPERM", [
+      "const spawnProcess = (_command, args) => {",
+      "  const action = args[0];",
+      '  const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), pid: action === "rm" ? fakePid : undefined, exitCode: null, signalCode: null });',
+      '  if (action !== "rm") setImmediate(() => { if (action === "info") child.stdout.write("true\\n"); else child.stderr.write("injected runner failure\\n"); child.stdout.end(); child.stderr.end(); child.exitCode = action === "info" ? 0 : 17; child.emit("close", child.exitCode, null); });',
+      "  return child;",
+      "};",
+      "const started = Date.now();",
+      "const result = await runE2eContainer([], { preflightTimeoutMs: 500, removeTimeoutMs: 40, spawnProcess });",
+      "console.log(`elapsed=${Date.now() - started}`);",
+      "process.exitCode = result.exitCode;",
+    ]),
   ].join("\n");
   const result = await startNode(["--input-type=module", "-e", source], harness.env).done;
 

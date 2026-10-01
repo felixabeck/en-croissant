@@ -8,6 +8,14 @@ import {
   superviseChild,
 } from "./child-supervisor.mjs";
 
+function makeChild(kill = undefined) {
+  const child = new EventEmitter();
+  child.exitCode = null;
+  child.signalCode = null;
+  if (kill) child.kill = kill;
+  return child;
+}
+
 test("multi-child forwarding treats an already-aborted signal as cancellation", async () => {
   const controller = new AbortController();
   controller.abort();
@@ -35,55 +43,47 @@ test("signal exit codes retain 128 plus signal number and default unknowns to 12
   assert.equal(signalExitCode("SIG_NOT_A_REAL_SIGNAL", 1), 1);
 });
 
-test("supervisor settlement reports a child exit", async () => {
-  const child = new EventEmitter();
-  child.exitCode = null;
-  child.signalCode = null;
+test("supervisor outcome reports a child exit", async () => {
+  const child = makeChild();
   const supervisor = superviseChild(child, { terminationTimeoutMs: 10 });
-  const settled = supervisor.settled();
+  const outcome = supervisor.exitOrTerminationFailure();
   child.exitCode = 0;
   child.emit("close", 0, null);
 
-  assert.deepEqual(await settled, {
+  assert.deepEqual(await outcome, {
     type: "exit",
     result: { code: 0, signal: null, error: undefined },
   });
 });
 
-test("supervisor settlement reports a termination failure before a later child exit", async () => {
-  const child = new EventEmitter();
-  child.exitCode = null;
-  child.signalCode = null;
+test("supervisor outcome reports a termination failure before a later child exit", async () => {
   const terminationError = Object.assign(new Error("injected EPERM"), { code: "EPERM" });
-  child.kill = () => {
+  const child = makeChild(() => {
     throw terminationError;
-  };
+  });
   const supervisor = superviseChild(child, { terminationTimeoutMs: 10 });
-  const settled = supervisor.settled();
+  const outcome = supervisor.exitOrTerminationFailure();
   const termination = supervisor.terminate();
 
-  assert.deepEqual(await settled, { type: "termination-failed", error: terminationError });
+  assert.deepEqual(await outcome, { type: "termination-failed", error: terminationError });
   await assert.rejects(termination, /injected EPERM/u);
   child.exitCode = 1;
   child.emit("close", 1, null);
   assert.deepEqual(await supervisor.done, { code: 1, signal: null, error: undefined });
 });
 
-test("supervisor settlement does not wait for a child after termination fails", async () => {
-  const child = new EventEmitter();
-  child.exitCode = null;
-  child.signalCode = null;
-  child.kill = () => {
+test("supervisor outcome does not wait for a child after termination fails", async () => {
+  const child = makeChild(() => {
     const error = new Error("injected kill failure");
     error.code = "EPERM";
     throw error;
-  };
+  });
   const supervisor = superviseChild(child, { terminationTimeoutMs: 10 });
   const termination = supervisor.terminate();
   const terminationRejected = assert.rejects(termination, /injected kill failure/u);
   let timer;
   const outcome = await Promise.race([
-    supervisor.settled(),
+    supervisor.exitOrTerminationFailure(),
     new Promise((resolve) => {
       timer = setTimeout(() => resolve({ type: "timeout" }), 250);
     }),

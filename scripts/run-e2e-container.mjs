@@ -14,6 +14,7 @@
 // The image tag is derived from the installed @playwright/test version rather than
 // written down twice, because a container one minor behind the library is exactly the
 // silent drift this script exists to prevent.
+// Subprocess tests may set E2E_TEST_DOCKER_INFO_TIMEOUT_MS to shorten the real entrypoint's preflight.
 
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
@@ -131,7 +132,7 @@ function startDockerCommand(
     ]);
     if (first.type === "exit") return resultForExit(first.result);
 
-    const outcome = await supervisor.settled();
+    const outcome = await supervisor.exitOrTerminationFailure();
     if (outcome.type === "termination-failed") {
       const error = new Error(
         `${commandLabel} timed out after ${timeoutMs} ms and could not be terminated: ${errorMessage(outcome.error)}`,
@@ -141,7 +142,7 @@ function startDockerCommand(
     }
     return resultForExit(outcome.result);
   })().finally(() => clearTimeout(timeout));
-  return { done, settled: () => supervisor.settled(), supervisor };
+  return { done, supervisor };
 }
 
 function dockerError(result) {
@@ -219,7 +220,7 @@ export async function runE2eContainer(
     if ("reason" in preflightOutcome) {
       let timer;
       const terminationError = await Promise.race([
-        preflight.settled().then(
+        preflight.supervisor.exitOrTerminationFailure().then(
           (outcome) => (outcome.type === "termination-failed" ? outcome.error : undefined),
           (error) => error,
         ),
@@ -328,7 +329,7 @@ export async function runE2eContainer(
       // stop the container.
       const cleanupPromise = cleanupContainer(containerName, spawnOptions);
       const [runOutcome, cleanupOutcome, terminationOutcome] = await Promise.allSettled([
-        run.settled(),
+        run.supervisor.exitOrTerminationFailure(),
         cleanupPromise,
         cancellation.termination,
       ]);
@@ -396,8 +397,18 @@ export async function runE2eContainer(
   }
 }
 
+function entrypointOptions() {
+  const testTimeout = process.env.E2E_TEST_DOCKER_INFO_TIMEOUT_MS;
+  if (testTimeout === undefined) return {};
+  const preflightTimeoutMs = Number(testTimeout);
+  if (!Number.isFinite(preflightTimeoutMs) || preflightTimeoutMs < 0) {
+    throw new Error("E2E_TEST_DOCKER_INFO_TIMEOUT_MS must be a finite non-negative number.");
+  }
+  return { preflightTimeoutMs };
+}
+
 async function main() {
-  const result = await runE2eContainer(process.argv.slice(2));
+  const result = await runE2eContainer(process.argv.slice(2), entrypointOptions());
   process.exitCode = result.exitCode;
 }
 
