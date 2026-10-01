@@ -381,6 +381,7 @@
     "Databases.Game.Delete": "删除对局",
     "Databases.Game.NoSelection": "未选择对局",
     "Databases.Game.Plies": "半步",
+    "Databases.ImportUnfinished": "匯入未完成 — 請刪除資料庫並重新匯入",
     "Databases.LoadError": "無法載入資料庫。請再試一次。",
     "Databases.LoadError.Description": "请检查文件是否存在且未损坏",
     "Databases.LoadError.Title": "加载此数据库时出错",

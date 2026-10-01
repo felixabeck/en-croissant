@@ -37,6 +37,24 @@ const database = (id: string, title = "Same title"): SuccessDatabaseInfo => ({
 });
 
 describe("database route resolution", () => {
+    it("does not open an error entry even when its route key and persisted handle match", () => {
+        const staleDatabase = database("broken");
+        expect(
+            resolveDatabaseRoute(
+                [
+                    {
+                        type: "error",
+                        file: staleDatabase.file,
+                        filename: "broken.db3",
+                        error: "unfinished",
+                        indexed: false,
+                    },
+                ],
+                "broken",
+                staleDatabase,
+            ),
+        ).toEqual({ status: "not_found" });
+    });
     it("never renders persisted database B for a deep-link to database A, even with the same title", () => {
         const routeDatabase = database("A");
         const persistedDatabase = database("B");

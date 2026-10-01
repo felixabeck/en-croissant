@@ -396,6 +396,7 @@
     "Databases.Game.Delete": "Usuń partię",
     "Databases.Game.NoSelection": "Nie wybrano partii",
     "Databases.Game.Plies": "Półruchy",
+    "Databases.ImportUnfinished": "Import nie został ukończony — usuń bazę danych i zaimportuj ją ponownie",
     "Databases.LoadError": "Nie udało się wczytać baz danych. Spróbuj ponownie.",
     "Databases.LoadError.Description": "Sprawdź, czy plik istnieje i nie jest uszkodzony.",
     "Databases.LoadError.Title": "Wystąpił błąd podczas wczytywania tej bazy danych",

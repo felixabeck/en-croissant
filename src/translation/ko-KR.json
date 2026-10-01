@@ -381,6 +381,7 @@
     "Databases.Game.Delete": "게임 삭제",
     "Databases.Game.NoSelection": "선택된 게임 없음",
     "Databases.Game.Plies": "반수",
+    "Databases.ImportUnfinished": "가져오기가 완료되지 않았습니다 — 데이터베이스를 삭제하고 다시 가져오세요",
     "Databases.LoadError": "데이터베이스를 불러올 수 없습니다. 다시 시도하세요.",
     "Databases.LoadError.Description": "데이터베이스를 불러오는 중 오류가 발생했습니다.",
     "Databases.LoadError.Title": "데이터베이스 로드 실패",

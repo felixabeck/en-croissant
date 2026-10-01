@@ -2823,16 +2823,21 @@ fn unlink_database_files(
     let mut unlinked = 0;
     let mut durability = None;
 
-    match entry_identity_at(target.parent(), &preferred_leaf, false) {
-        Ok(identity) => remove_sidecar(
-            target.parent(),
-            &preferred_leaf,
-            identity,
-            &mut unlinked,
-            &mut durability,
-        )?,
-        Err(error) => {
-            remember_sidecar_error(error, target.parent(), &preferred_leaf, &mut durability)?
+    let sqlite_sidecars = ["-wal", "-shm"].map(|suffix| {
+        let mut leaf = target.leaf().to_os_string();
+        leaf.push(suffix);
+        leaf
+    });
+    for leaf in std::iter::once(&preferred_leaf).chain(sqlite_sidecars.iter()) {
+        match entry_identity_at(target.parent(), leaf, false) {
+            Ok(identity) => remove_sidecar(
+                target.parent(),
+                leaf,
+                identity,
+                &mut unlinked,
+                &mut durability,
+            )?,
+            Err(error) => remember_sidecar_error(error, target.parent(), leaf, &mut durability)?,
         }
     }
 
@@ -11165,6 +11170,53 @@ mod tests {
     }
 
     #[test]
+    fn zero_table_delete_removes_database_and_sqlite_sidecars() {
+        let (_dir, app, handle, database) = arbitrary_database_case(b"");
+        {
+            let mut connection = SqliteConnection::establish(database.to_str().unwrap()).unwrap();
+            connection.batch_execute("VACUUM;").unwrap();
+            #[derive(QueryableByName)]
+            struct TableCount {
+                #[diesel(sql_type = diesel::sql_types::BigInt)]
+                count: i64,
+            }
+            let tables =
+                sql_query("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table'")
+                    .get_result::<TableCount>(&mut connection)
+                    .unwrap();
+            assert_eq!(tables.count, 0);
+        }
+        assert_eq!(
+            &std::fs::read(&database).unwrap()[..16],
+            b"SQLite format 3\0"
+        );
+        let wal = database.with_extension("db3-wal");
+        let shm = database.with_extension("db3-shm");
+        std::fs::write(&wal, b"").unwrap();
+        std::fs::write(&shm, b"").unwrap();
+        assert!(wal.exists());
+        assert!(shm.exists());
+        let state = app.state::<AppState>();
+        delete_database_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle.clone(),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert!(!database.exists());
+        assert!(!wal.exists());
+        assert!(!shm.exists());
+        assert!(resolve_database(
+            &state.pgn_path_authority,
+            &handle,
+            PathOperation::DatabaseRead
+        )
+        .is_err());
+    }
+
+    #[test]
     fn delete_database_junk_file_still_unlinks() {
         let (_dir, app, handle, database) = arbitrary_database_case(b"junk file");
         let state = app.state::<AppState>();
@@ -11177,6 +11229,35 @@ mod tests {
         )
         .unwrap();
         assert!(!database.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn zero_table_delete_refuses_symlinked_sqlite_sidecars() {
+        for suffix in ["-wal", "-shm"] {
+            let (dir, app, handle, database) = arbitrary_database_case(b"");
+            {
+                let mut connection =
+                    SqliteConnection::establish(database.to_str().unwrap()).unwrap();
+                connection.batch_execute("VACUUM;").unwrap();
+            }
+            let foreign_file = dir.path().join("foreign-file");
+            std::fs::write(&foreign_file, b"keep me").unwrap();
+            let sidecar = database.with_file_name(format!("arbitrary.db3{suffix}"));
+            std::os::unix::fs::symlink(&foreign_file, &sidecar).unwrap();
+            let state = app.state::<AppState>();
+            let result = delete_database_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                &state.search_cache,
+                handle,
+                &CancellationToken::new(),
+            );
+            assert!(result.is_err());
+            assert!(database.exists());
+            assert!(sidecar.symlink_metadata().unwrap().file_type().is_symlink());
+            assert_eq!(std::fs::read(&foreign_file).unwrap(), b"keep me");
+        }
     }
 
     #[test]

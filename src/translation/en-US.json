@@ -386,6 +386,7 @@
     "Databases.Game.Delete": "Delete game",
     "Databases.Game.NoSelection": "No game selected",
     "Databases.Game.Plies": "Plies",
+    "Databases.ImportUnfinished": "Import did not finish — delete it and import again",
     "Databases.LoadError": "Could not load databases. Please try again.",
     "Databases.LoadError.Description": "Check if the file exists and that it is not corrupted.",
     "Databases.LoadError.Title": "There was an error loading this database",

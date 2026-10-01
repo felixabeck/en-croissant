@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DatabaseHandle, GameQuery } from "@/bindings";
 import type { LocalOptions } from "@/components/panels/database/DatabasePanel";
+import i18n from "i18next";
+import { supportedLocales } from "@/i18n";
 
 const mocks = vi.hoisted(() => ({
     getDatabaseWorkspace: vi.fn(),
@@ -120,7 +122,7 @@ describe("production database metadata pipeline", () => {
         expect(maximumActive).toBe(1);
     });
 
-    it("retains successful siblings and diagnoses ordinary metadata rejection", async () => {
+    it("returns a renderer-safe error entry while retaining successful siblings", async () => {
         const descriptors = ["one", "failed", "three"].map((id) => ({
             handle: handle(id),
             filename: `${id}.db3`,
@@ -128,7 +130,8 @@ describe("production database metadata pipeline", () => {
         }));
         mocks.listWorkspaceDatabases.mockResolvedValue(descriptors);
         mocks.getDbInfo.mockImplementation(async (file: DatabaseHandle) => {
-            if (file.id.id === "failed") throw new Error("metadata unavailable");
+            if (file.id.id === "failed")
+                throw new Error("metadata unavailable at /private/database.db3");
             return {
                 title: file.id.id,
                 description: "",
@@ -141,8 +144,118 @@ describe("production database metadata pipeline", () => {
         });
 
         const result = await getDatabases();
-        expect(result.map((item) => item.file.id.id)).toEqual(["one", "three"]);
-        expect(mocks.logError).toHaveBeenCalledOnce();
+        expect(result.map((item) => item.file.id.id)).toEqual(["one", "failed", "three"]);
+        expect(result.map((item) => item.type)).toEqual(["success", "error", "success"]);
+        expect(result[1]).toEqual({
+            type: "error",
+            file: handle("failed"),
+            filename: "failed.db3",
+            indexed: false,
+            error: "metadata unavailable at [path]",
+        });
+        expect(mocks.logError).toHaveBeenCalledExactlyOnceWith(
+            "getDatabases metadata item 1 failed: metadata unavailable at [path]",
+        );
+    });
+
+    it.each(supportedLocales)(
+        "localizes an unfinished import in the shipped %s catalogue without fallback",
+        async (locale) => {
+            const { default: catalogue } = await import(`../translation/${locale}.json`);
+            const translator = i18n.createInstance();
+            await translator.init({
+                lng: locale,
+                fallbackLng: false,
+                resources: { [locale]: catalogue },
+            });
+            const t = vi.spyOn(i18n, "t").mockImplementation(translator.t);
+            mocks.listWorkspaceDatabases.mockResolvedValue([
+                {
+                    handle: handle("unfinished"),
+                    filename: "unfinished.db3",
+                    availability: "available",
+                },
+            ]);
+            mocks.getDbInfo.mockRejectedValueOnce({
+                tag: "backend-error",
+                category: "invalid-input",
+                message: "Invalid input: Database has not been initialized yet",
+            });
+            const result = await getDatabases();
+            expect(result).toEqual([
+                {
+                    type: "error",
+                    file: handle("unfinished"),
+                    filename: "unfinished.db3",
+                    indexed: false,
+                    error: catalogue.translation["Databases.ImportUnfinished"],
+                },
+            ]);
+            expect(result[0].type === "error" && result[0].error).not.toBe(
+                "Databases.ImportUnfinished",
+            );
+            expect(catalogue.translation["Databases.ImportUnfinished"]).toBeTruthy();
+            t.mockRestore();
+        },
+    );
+
+    it("propagates a metadata cancellation without returning an error card or logging", async () => {
+        mocks.listWorkspaceDatabases.mockResolvedValue(
+            ["one", "two"].map((id) => ({
+                handle: handle(id),
+                filename: `${id}.db3`,
+                availability: "available",
+            })),
+        );
+        const cancellation = {
+            tag: "backend-error",
+            category: "cancellation",
+            message: "Cancellation",
+        };
+        mocks.getDbInfo.mockRejectedValueOnce(cancellation);
+        await expect(getDatabases()).rejects.toBe(cancellation);
+        expect(mocks.getDbInfo).toHaveBeenCalledOnce();
+        expect(mocks.logError).not.toHaveBeenCalled();
+    });
+
+    it("keeps an error entry when diagnostic logging rejects and sanitizes its fallback", async () => {
+        mocks.listWorkspaceDatabases.mockResolvedValue([
+            { handle: handle("broken"), filename: "broken.db3", availability: "available" },
+        ]);
+        mocks.getDbInfo.mockRejectedValueOnce(new Error("unreadable /private/database.db3"));
+        mocks.logError.mockRejectedValueOnce(new Error("logger failed /private/log.txt"));
+        const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+        expect(await getDatabases()).toEqual([
+            {
+                type: "error",
+                file: handle("broken"),
+                filename: "broken.db3",
+                indexed: false,
+                error: "unreadable [path]",
+            },
+        ]);
+        expect(consoleError).toHaveBeenCalledExactlyOnceWith("Database metadata logging failed", {
+            operation: "getDatabases metadata",
+            itemIndex: 0,
+            primaryFailure: { category: "unexpected", message: "unreadable [path]" },
+            loggerFailure: { category: "unexpected", message: "logger failed [path]" },
+        });
+        consoleError.mockRestore();
+    });
+
+    it("owner cancellation during rejected metadata propagates without diagnostics", async () => {
+        const controller = new AbortController();
+        mocks.listWorkspaceDatabases.mockResolvedValue([
+            { handle: handle("one"), filename: "one.db3", availability: "available" },
+        ]);
+        mocks.getDbInfo.mockImplementationOnce(async () => {
+            controller.abort();
+            throw new Error("metadata unavailable");
+        });
+        await expect(getDatabases({ signal: controller.signal })).rejects.toMatchObject({
+            name: "AbortError",
+        });
+        expect(mocks.logError).not.toHaveBeenCalled();
     });
 
     it("owner cancellation between metadata entries rejects without partial publication", async () => {

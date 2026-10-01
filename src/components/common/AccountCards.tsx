@@ -217,7 +217,11 @@ function LichessOrChessCom({
         authenticated={Boolean(lichessSession.handle)}
         accountHandle={lichessSession.handle}
         type="lichess"
-        database={databases.find((db) => db.filename === `${account.username}_lichess.db3`) ?? null}
+        database={
+          databases.find(
+            (db) => db.type === "success" && db.filename === `${account.username}_lichess.db3`,
+          ) ?? null
+        }
         title={account.username}
         updatedAt={session.updatedAt}
         total={totalGames}
@@ -278,8 +282,10 @@ function LichessOrChessCom({
         type="chesscom"
         title={session.chessCom.username}
         database={
-          databases.find((db) => db.filename === `${session.chessCom?.username}_chesscom.db3`) ??
-          null
+          databases.find(
+            (db) =>
+              db.type === "success" && db.filename === `${session.chessCom?.username}_chesscom.db3`,
+          ) ?? null
         }
         updatedAt={session.updatedAt}
         total={totalGames}

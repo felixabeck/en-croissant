@@ -77,6 +77,42 @@ const databaseScenario: MockScenario = {
     },
 };
 
+test("database-files: an unfinished import stays visible with Delete and no reference star", async ({
+    page,
+    mockScenario,
+    assertAccessible,
+    assertNoHorizontalOverflow,
+    capture,
+}) => {
+    await mockScenario({
+        commands: {
+            ...databaseScenario.commands,
+            get_db_info: {
+                error: {
+                    tag: "backend-error",
+                    category: "invalid-input",
+                    message: "Invalid input: Database has not been initialized yet",
+                },
+            },
+        },
+    });
+    await page.goto("/databases");
+    const card = page
+        .getByRole("button")
+        .filter({ hasText: "Import did not finish — delete it and import again" });
+    await expect(card).toBeVisible();
+    await expect(card).toContainText("navigation.db3");
+    await expect(card.locator(".mantine-Rating-root")).toHaveCount(0);
+    await card.dblclick();
+    await expect(page).toHaveURL("/databases");
+    await expect(page.getByRole("button", { name: "Delete", exact: true })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Explore", exact: true })).toHaveCount(0);
+    await assertNoHorizontalOverflow();
+    await assertAccessible();
+    await capture("database-unfinished-import");
+    await expect(page).toHaveScreenshot("database-unfinished-import.png", { fullPage: true });
+});
+
 test("database-files: Back opens the overview and ends the active database session", async ({
     page,
     mockScenario,

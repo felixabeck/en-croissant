@@ -3,10 +3,12 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { sessionsAtom } from "@/state/atoms";
+import type { ManagedDatabaseInfo } from "@/utils/db";
 
 const mocks = vi.hoisted(() => ({
   removeLichessAccount: vi.fn(),
   notificationsShow: vi.fn(),
+  accountCard: vi.fn(),
 }));
 
 vi.mock("@/platform/tauri", () => ({
@@ -19,11 +21,14 @@ vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => k
 vi.mock("@/utils/chess.com/api", () => ({ getChessComAccount: vi.fn(), getStats: vi.fn() }));
 vi.mock("@/utils/lichess/api", () => ({ getLichessAccount: vi.fn() }));
 vi.mock("../home/AccountCard", () => ({
-  AccountCard: ({ logout }: { logout: () => Promise<void> }) => (
-    <button type="button" onClick={() => void logout()}>
-      Log out
-    </button>
-  ),
+  AccountCard: (props: { logout: () => Promise<void> }) => {
+    mocks.accountCard(props);
+    return (
+      <button type="button" onClick={() => void props.logout()}>
+        Log out
+      </button>
+    );
+  },
 }));
 vi.mock("../home/EmptyAccounts", () => ({ EmptyAccounts: () => <div>Empty</div> }));
 import AccountCards from "./AccountCards";
@@ -58,9 +63,11 @@ const session = {
   },
 };
 
-async function renderCards() {
+async function renderCards(databases: ManagedDatabaseInfo[] = []) {
   await act(async () => {
-    root.render(<AccountCards databases={[]} setDatabases={vi.fn()} onAddAccount={vi.fn()} />);
+    root.render(
+      <AccountCards databases={databases} setDatabases={vi.fn()} onAddAccount={vi.fn()} />,
+    );
   });
 }
 
@@ -113,3 +120,44 @@ describe("Lichess account removal", () => {
     expect(mocks.notificationsShow).not.toHaveBeenCalled();
   });
 });
+
+test.each(["lichess", "chesscom"] as const)(
+  "%s filename matches ignore unreadable databases and retain usable matches",
+  async (type) => {
+    if (type === "chesscom")
+      getDefaultStore().set(sessionsAtom, [
+        { player: "Player", updatedAt: 1, chessCom: { username: "Player", stats: {} } },
+      ]);
+    const broken: ManagedDatabaseInfo = {
+      type: "error",
+      file: { id: { id: "broken" }, kind: "database" },
+      filename: `Player_${type}.db3`,
+      indexed: false,
+      error: "unfinished",
+    };
+    await renderCards([broken]);
+    expect(mocks.accountCard).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type, database: null }),
+    );
+    const usable: ManagedDatabaseInfo = {
+      type: "success",
+      file: { id: { id: "usable" }, kind: "database" },
+      filename: broken.filename,
+      title: "Player",
+      description: "",
+      indexed: false,
+      player_count: 0,
+      game_count: 0,
+      event_count: 0,
+      storage_size: 0n,
+    };
+    await renderCards([broken, usable]);
+    expect(mocks.accountCard).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type, database: usable }),
+    );
+    await renderCards([{ ...usable, filename: "Other.db3" }]);
+    expect(mocks.accountCard).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type, database: null }),
+    );
+  },
+);

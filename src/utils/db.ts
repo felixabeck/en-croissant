@@ -19,6 +19,8 @@ import type { LocalOptions } from "@/components/panels/database/DatabasePanel";
 import { capabilityKey } from "@/utils/pathCapabilities";
 import { collectSequential } from "@/utils/collectSequential";
 import { loadSignedCatalog } from "@/utils/signedCatalog";
+import { logFailureSafely, safeFailureContext } from "@/platform/errors";
+import i18n from "i18next";
 
 export type SuccessDatabaseInfo = Extract<DatabaseInfo, { type: "success" }>;
 export type ManagedDatabaseInfo = DatabaseInfo & { file: DatabaseHandle };
@@ -228,13 +230,38 @@ export async function getDatabases(
     const databases = await tauri.listWorkspaceDatabases(root, options);
     return collectSequential(
         databases,
-        (database) => getDatabase(database.handle, database.filename),
+        (database, index) => getDatabase(database.handle, database.filename, index, options.signal),
         { signal: options.signal, operation: "getDatabases metadata" },
     );
 }
 
-async function getDatabase(file: DatabaseHandle, _filename: string): Promise<ManagedDatabaseInfo> {
-    return { type: "success", ...(await tauri.getDbInfo(file)), file };
+async function getDatabase(
+    file: DatabaseHandle,
+    filename: string,
+    itemIndex: number,
+    signal?: AbortSignal,
+): Promise<ManagedDatabaseInfo> {
+    try {
+        return { type: "success", ...(await tauri.getDbInfo(file)), file };
+    } catch (cause) {
+        const primaryFailure = safeFailureContext(cause);
+        if (signal?.aborted || primaryFailure.category === "cancelled") throw cause;
+        await logFailureSafely(
+            `getDatabases metadata item ${itemIndex} failed: ${primaryFailure.message}`,
+            { operation: "getDatabases metadata", itemIndex, primaryFailure },
+            "Database metadata logging failed",
+        );
+        return {
+            type: "error",
+            file,
+            filename,
+            indexed: false,
+            error:
+                primaryFailure.message === "Invalid input: Database has not been initialized yet"
+                    ? i18n.t("Databases.ImportUnfinished")
+                    : primaryFailure.message,
+        };
+    }
 }
 
 export function useDefaultDatabases(opened: boolean) {

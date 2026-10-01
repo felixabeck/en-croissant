@@ -396,6 +396,7 @@
     "Databases.Game.Delete": "Удалить партию",
     "Databases.Game.NoSelection": "Партия не выбрана",
     "Databases.Game.Plies": "Полуходы",
+    "Databases.ImportUnfinished": "Импорт не завершён — удалите базу данных и импортируйте её снова",
     "Databases.LoadError": "Не удалось загрузить базы данных. Повторите попытку.",
     "Databases.LoadError.Description": "Проверьте, существует ли файл и не повреждён ли он.",
     "Databases.LoadError.Title": "Ошибка загрузки этой базы данных",

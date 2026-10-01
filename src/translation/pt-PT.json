@@ -391,6 +391,7 @@
     "Databases.Game.Delete": "Eliminar partida",
     "Databases.Game.NoSelection": "Não foi selecionada nenhuma partida",
     "Databases.Game.Plies": "Meias-jogadas",
+    "Databases.ImportUnfinished": "A importação não terminou — elimina a base de dados e importa-a novamente",
     "Databases.LoadError": "Não foi possível carregar as bases de dados. Tente novamente.",
     "Databases.LoadError.Description": "Verifique se o ficheiro existe e não está corrompido.",
     "Databases.LoadError.Title": "Ocorreu um erro ao carregar esta base de dados",

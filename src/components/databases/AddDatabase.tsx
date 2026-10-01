@@ -31,7 +31,7 @@ import {
   useDefaultDatabases,
 } from "@/utils/db";
 import { capitalize, formatBytes, formatNumber } from "@/utils/format";
-import { runWithAppliedRecovery } from "@/platform/errors";
+import { logFailureSafely, runWithAppliedRecovery, safeFailureContext } from "@/platform/errors";
 import { runUnlessCancelled } from "@/components/files/notifyError";
 import { cancelDownloadJob, runDownloadJob, useDownloadJob } from "@/hooks/downloadJobs";
 import { CatalogVerificationError } from "@/utils/signedCatalog";
@@ -62,14 +62,28 @@ export async function convertLocalDatabase(
       )?.handle,
   );
   onCreated(dbPath);
-  await tauri.convertPgn(
-    conversionProgressId(dbPath),
-    paths,
-    dbPath,
-    null,
-    title,
-    description ?? null,
-  );
+  try {
+    await tauri.convertPgn(
+      conversionProgressId(dbPath),
+      paths,
+      dbPath,
+      null,
+      title,
+      description ?? null,
+    );
+  } catch (cause) {
+    try {
+      await tauri.deleteDatabase(dbPath);
+    } catch (cleanupCause) {
+      const primaryFailure = safeFailureContext(cleanupCause);
+      await logFailureSafely(
+        `Failed import database cleanup failed: ${primaryFailure.message}`,
+        { operation: "failed import database cleanup", primaryFailure },
+        "Import cleanup logging failed",
+      );
+    }
+    throw cause;
+  }
   return dbPath;
 }
 
@@ -102,13 +116,27 @@ function AddDatabase({
         targetDatabaseTitle: title,
         sourceFileName,
       }));
-      await convertLocalDatabase(paths, title, description, (dbPath) => {
-        thisHandle = dbPath;
-        setConversionState((prev) => ({
-          ...prev,
-          targetDatabase: dbPath,
-        }));
-      });
+      try {
+        await convertLocalDatabase(paths, title, description, (dbPath) => {
+          thisHandle = dbPath;
+          setConversionState((prev) => ({
+            ...prev,
+            targetDatabase: dbPath,
+          }));
+        });
+      } catch (cause) {
+        try {
+          await setDatabases(await getDatabases());
+        } catch (refreshCause) {
+          const primaryFailure = safeFailureContext(refreshCause);
+          await logFailureSafely(
+            `Failed import database refresh failed: ${primaryFailure.message}`,
+            { operation: "failed import database refresh", primaryFailure },
+            "Import refresh logging failed",
+          );
+        }
+        throw cause;
+      }
       await setDatabases(await getDatabases());
     } finally {
       setConversionState(clearOwnedConversion(thisHandle));

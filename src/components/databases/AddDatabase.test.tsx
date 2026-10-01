@@ -1,5 +1,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { getDefaultStore } from "jotai";
+import { databaseConversionStateAtom } from "@/state/atoms";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { CatalogVerificationError } from "@/utils/signedCatalog";
 import { conversionProgressId, defaultDatabaseProgressId } from "@/utils/db";
@@ -10,6 +12,8 @@ const mocks = vi.hoisted(() => ({
   createWorkspaceDatabase: vi.fn(),
   listWorkspaceDatabases: vi.fn(),
   convertPgn: vi.fn(),
+  deleteDatabase: vi.fn(),
+  logError: vi.fn(),
   issuePgnWorkspace: vi.fn(),
   databaseDownloadDestination: vi.fn(),
   downloadFile: vi.fn(),
@@ -56,10 +60,7 @@ vi.mock("@/utils/db", async () => {
 });
 vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.notify } }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
-vi.mock("jotai", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("jotai")>()),
-  useSetAtom: () => vi.fn(),
-}));
+vi.mock("@/platform/native", () => ({ error: mocks.logError }));
 vi.mock("../common/AppModal", () => ({
   default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
@@ -148,6 +149,17 @@ beforeEach(() => {
   mocks.progressButtonProps = null;
   mocks.cancelDownload.mockResolvedValue(true);
   mocks.clearProgress.mockResolvedValue(1n);
+  mocks.deleteDatabase.mockReset().mockResolvedValue(undefined);
+  mocks.logError.mockReset().mockResolvedValue(undefined);
+  mocks.getDatabases.mockReset().mockResolvedValue([]);
+  getDefaultStore().set(databaseConversionStateAtom, {
+    inProgress: false,
+    targetDatabase: null,
+    targetDatabaseTitle: null,
+    sourceFileName: null,
+    totalGames: 0,
+    elapsedSeconds: 0,
+  });
   vi.spyOn(crypto, "randomUUID").mockReturnValue("00000000-0000-4000-8000-000000000001");
   host = document.createElement("div");
   document.body.append(host);
@@ -432,6 +444,173 @@ test("keeps the modal open when local conversion fails", async () => {
     message: "permission denied",
   });
 });
+
+async function submitLocalImport() {
+  const pick = [...host.querySelectorAll("button")].find((button) =>
+    button.textContent?.includes("pick-pgn"),
+  )!;
+  await act(async () => pick.click());
+  const convert = [...host.querySelectorAll("button")].find(
+    (button) => button.textContent === "Databases.Add.Convert",
+  )!;
+  await act(async () => convert.click());
+}
+
+const importHandle = { id: { id: "import-db" }, kind: "database" } as const;
+const importSource = { id: { id: "pgn" }, kind: "fileWorkspace" } as const;
+
+function setupLocalImport() {
+  mocks.issuePgnWorkspace.mockResolvedValue({ handle: importSource, displayName: "games.pgn" });
+  mocks.getDatabaseWorkspace.mockResolvedValue({ id: { id: "root" }, kind: "databaseRoot" });
+  mocks.createWorkspaceDatabase.mockResolvedValue(importHandle);
+}
+
+test.each(["none", "delete", "getDatabases", "setDatabases", "logger", "refreshLogger"])(
+  "failed conversion preserves the backend message and clears state with %s failure",
+  async (secondaryFailure) => {
+    setupLocalImport();
+    const failure = new TauriCommandError({
+      tag: "backend-error",
+      category: "invalid-input",
+      message: "Invalid input: games.pgn: game 2 could not be read (unterminated comment or tag)",
+    });
+    mocks.convertPgn.mockRejectedValueOnce(failure);
+    const remaining = [
+      {
+        type: "error",
+        file: importHandle,
+        filename: "orphan.db3",
+        error: "unfinished",
+        indexed: false,
+      },
+    ];
+    mocks.getDatabases.mockResolvedValue(remaining);
+    const setDatabases = vi.fn().mockResolvedValue(undefined);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    if (secondaryFailure === "delete" || secondaryFailure === "logger") {
+      mocks.deleteDatabase.mockRejectedValueOnce(
+        new Error("cleanup denied at /private/orphan.db3"),
+      );
+    }
+    if (secondaryFailure === "getDatabases" || secondaryFailure === "refreshLogger") {
+      mocks.getDatabases.mockRejectedValueOnce(new Error("refresh denied"));
+    }
+    if (secondaryFailure === "setDatabases") {
+      setDatabases.mockRejectedValueOnce(new Error("refresh denied"));
+    }
+    if (secondaryFailure === "logger" || secondaryFailure === "refreshLogger")
+      mocks.logError.mockRejectedValueOnce(new Error("logger denied"));
+    const { setOpened } = await renderAddDatabase([], { setDatabases });
+    await submitLocalImport();
+
+    expect(mocks.deleteDatabase).toHaveBeenCalledExactlyOnceWith(importHandle);
+    expect(mocks.getDatabases).toHaveBeenCalledOnce();
+    expect(setDatabases.mock.calls).toEqual(
+      secondaryFailure === "getDatabases" || secondaryFailure === "refreshLogger"
+        ? []
+        : [[remaining]],
+    );
+    expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
+      color: "red",
+      title: "Common.Error",
+      message: failure.message,
+    });
+    expect(setOpened).not.toHaveBeenCalledWith(false);
+    expect(getDefaultStore().get(databaseConversionStateAtom)).toEqual({
+      inProgress: false,
+      targetDatabase: null,
+      targetDatabaseTitle: null,
+      sourceFileName: null,
+      totalGames: 0,
+      elapsedSeconds: 0,
+    });
+    const cleanupFailed = secondaryFailure === "delete" || secondaryFailure === "logger";
+    expect(mocks.logError.mock.calls).toEqual(
+      secondaryFailure === "none"
+        ? []
+        : [
+            [
+              cleanupFailed
+                ? "Failed import database cleanup failed: cleanup denied at [path]"
+                : "Failed import database refresh failed: refresh denied",
+            ],
+          ],
+    );
+    const fallbackCalls =
+      secondaryFailure === "logger"
+        ? [
+            [
+              "Import cleanup logging failed",
+              {
+                operation: "failed import database cleanup",
+                primaryFailure: { category: "permission", message: "cleanup denied at [path]" },
+                loggerFailure: { category: "permission", message: "logger denied" },
+              },
+            ],
+          ]
+        : secondaryFailure === "refreshLogger"
+          ? [
+              [
+                "Import refresh logging failed",
+                {
+                  operation: "failed import database refresh",
+                  primaryFailure: { category: "permission", message: "refresh denied" },
+                  loggerFailure: { category: "permission", message: "logger denied" },
+                },
+              ],
+            ]
+          : [];
+    expect(consoleError.mock.calls).toEqual(fallbackCalls);
+    consoleError.mockRestore();
+  },
+);
+
+test("cancellation deletes the created database and rethrows the same error", async () => {
+  setupLocalImport();
+  const cancellation = new Error("Cancellation");
+  mocks.convertPgn.mockRejectedValueOnce(cancellation);
+  await expect(convertLocalDatabase([importSource], "Games", undefined, vi.fn())).rejects.toBe(
+    cancellation,
+  );
+  expect(mocks.deleteDatabase).toHaveBeenCalledExactlyOnceWith(importHandle);
+  expect(mocks.convertPgn).toHaveBeenCalledWith(
+    conversionProgressId(importHandle),
+    [importSource],
+    importHandle,
+    null,
+    "Games",
+    null,
+  );
+});
+
+test.each([false, true])(
+  "successful conversion surfaces refresh failure=%s without deleting the database",
+  async (refreshFails) => {
+    setupLocalImport();
+    mocks.convertPgn.mockResolvedValueOnce(undefined);
+    if (refreshFails) mocks.getDatabases.mockRejectedValueOnce(new Error("success refresh failed"));
+    const { setOpened, setDatabases } = await renderAddDatabase();
+    await submitLocalImport();
+    expect(mocks.deleteDatabase).not.toHaveBeenCalled();
+    expect(mocks.getDatabases).toHaveBeenCalledOnce();
+    expect(getDefaultStore().get(databaseConversionStateAtom).inProgress).toBe(false);
+    expect(setOpened.mock.calls).toEqual(refreshFails ? [] : [[false]]);
+    expect(setDatabases.mock.calls).toEqual(refreshFails ? [] : [[[]]]);
+    expect(mocks.notify.mock.calls).toEqual(
+      refreshFails
+        ? [
+            [
+              {
+                color: "red",
+                title: "Common.Error",
+                message: "success refresh failed",
+              },
+            ],
+          ]
+        : [],
+    );
+  },
+);
 
 test("shows the catalog verification error instead of the fetch error", async () => {
   mocks.catalogError = new CatalogVerificationError(new Error("bad signature"));

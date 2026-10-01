@@ -386,6 +386,7 @@
     "Databases.Game.Delete": "Oyunu sil",
     "Databases.Game.NoSelection": "Oyun seçilmedi",
     "Databases.Game.Plies": "Yarım hamle",
+    "Databases.ImportUnfinished": "İçe aktarma tamamlanmadı — veritabanını silip yeniden içe aktarın",
     "Databases.LoadError": "Veritabanları yüklenemedi. Lütfen tekrar deneyin.",
     "Databases.LoadError.Description": "Veritabanı yüklenirken bir hata oluştu.",
     "Databases.LoadError.Title": "Veritabanı yüklenemedi",

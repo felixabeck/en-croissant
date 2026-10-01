@@ -301,13 +301,15 @@ export default function DatabasesPage() {
                               </Text>
                             </Box>
                           </Group>
-                          <Rating
-                            value={sameDatabaseHandle(referenceDatabase, item.file) ? 1 : 0}
-                            count={1}
-                            onChange={() => {
-                              changeReferenceDatabase(item.file);
-                            }}
-                          />
+                          {item.type === "success" && (
+                            <Rating
+                              value={sameDatabaseHandle(referenceDatabase, item.file) ? 1 : 0}
+                              count={1}
+                              onChange={() => {
+                                changeReferenceDatabase(item.file);
+                              }}
+                            />
+                          )}
                         </Group>
                       }
                       stats={[

@@ -396,6 +396,7 @@
     "Databases.Game.Delete": "Выдаліць гульню",
     "Databases.Game.NoSelection": "Гульня не выбрана",
     "Databases.Game.Plies": "Паўхады",
+    "Databases.ImportUnfinished": "Імпарт не завершаны — выдаліце базу даных і імпартуйце зноў",
     "Databases.LoadError": "Не ўдалося загрузіць базы дадзеных. Паўтарыце спробу.",
     "Databases.LoadError.Description": "Праверце, ці існуе файл і ці не пашкоджаны ён.",
     "Databases.LoadError.Title": "Адбылася памылка пры загрузцы гэтай базы дадзеных",

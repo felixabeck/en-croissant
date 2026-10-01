@@ -391,6 +391,7 @@
     "Databases.Game.Delete": "Supprimer la partie",
     "Databases.Game.NoSelection": "Aucune partie sélectionnée",
     "Databases.Game.Plies": "Demi-coups",
+    "Databases.ImportUnfinished": "L’importation n’est pas terminée — supprimez la base de données et importez-la à nouveau",
     "Databases.LoadError": "Impossible de charger les bases de données. Veuillez réessayer.",
     "Databases.LoadError.Description": "Vérifiez si le fichier existe et qu'il n'est pas corrompu.",
     "Databases.LoadError.Title": "Une erreur s'est produite lors du chargement de cette base de données",

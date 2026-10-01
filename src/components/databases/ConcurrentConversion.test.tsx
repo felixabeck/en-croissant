@@ -4,7 +4,7 @@ import { SWRConfig } from "swr";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { getDefaultStore, Provider, useAtomValue } from "jotai";
 import type { DatabaseHandle } from "@/bindings";
-import { databaseConversionStateAtom } from "@/state/atoms";
+import { databaseConversionStateAtom, referenceDbAtom } from "@/state/atoms";
 import { activeDatabaseViewStore } from "@/state/store/database";
 import { conversionProgressId, databaseHandleKey, type SuccessDatabaseInfo } from "@/utils/db";
 import { useConversionProgress } from "@/hooks/useConversionProgress";
@@ -171,7 +171,15 @@ vi.mock("@mantine/core", () => ({
   Loader: () => null,
   Paper: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   Progress: () => null,
-  Rating: () => null,
+  Rating: ({ value, count, onChange }: { value: number; count: number; onChange: () => void }) => (
+    <input
+      type="checkbox"
+      data-reference-toggle
+      data-count={count}
+      checked={value === 1}
+      onChange={onChange}
+    />
+  ),
   ScrollArea: Object.assign(
     ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
     { Autosize: ({ children }: { children: React.ReactNode }) => <div>{children}</div> },
@@ -401,6 +409,47 @@ test("the database overview preserves a database set after mount", async () => {
   await act(async () => activeDatabaseViewStore.getState().setDatabase(database));
   await renderRoute();
   expect(activeDatabaseViewStore.getState().database).toEqual(database);
+});
+
+test("DatabasesPage error cards have Delete but no reference toggle; successful cards retain the toggle", async () => {
+  mocks.getDatabases.mockResolvedValue([
+    {
+      type: "error",
+      file: handleA,
+      filename: "unfinished.db3",
+      error: "Import unfinished",
+      indexed: false,
+    },
+    successDatabase(handleB, "Existing"),
+  ]);
+  store.set(referenceDbAtom, null);
+  await renderRoute();
+  const errorCard = host.querySelector<HTMLButtonElement>(
+    `[data-testid='select-${databaseHandleKey(handleA)}']`,
+  )!;
+  const successCard = host.querySelector<HTMLButtonElement>(
+    `[data-testid='select-${databaseHandleKey(handleB)}']`,
+  )!;
+  expect(errorCard.textContent).toContain("Import unfinished");
+  expect(errorCard.textContent).toContain("unfinished.db3");
+  expect(errorCard.querySelector("[data-reference-toggle]")).toBeNull();
+  const toggle = successCard.querySelector<HTMLInputElement>("[data-reference-toggle]")!;
+  expect(toggle.getAttribute("data-count")).toBe("1");
+  expect(toggle.checked).toBe(false);
+  await act(async () => toggle.click());
+  expect(store.get(referenceDbAtom)).toEqual(handleB);
+  expect(successCard.querySelector<HTMLInputElement>("[data-reference-toggle]")!.checked).toBe(
+    true,
+  );
+  await act(async () =>
+    successCard.querySelector<HTMLInputElement>("[data-reference-toggle]")!.click(),
+  );
+  expect(store.get(referenceDbAtom)).toBeNull();
+  await act(async () => errorCard.click());
+  expect(buttonByText("Common.Delete")).toBeTruthy();
+  expect(buttonByText("Databases.Settings.Explore")).toBeUndefined();
+  expect(buttonByText("Databases.Settings.AddGames")).toBeUndefined();
+  expect(host.querySelector("[aria-label='Databases.Settings.Indexed']")).toBeNull();
 });
 
 async function selectExistingDatabase() {
