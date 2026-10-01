@@ -12214,3 +12214,17 @@ Correction 2026-09-30 (records review): "the 2026-09-29 push-gate lane runner ke
 * **Defect:** the dropdown narrows to `type === "success"` entries, but the persisted `referenceDbAtom` handle is never checked against the current database list. A reference database that later becomes unreadable (uninitialised after a failed import, corrupt, deleted outside the app) is still queried by the local explorer, which then fails on every position instead of showing "no reference database".
 * **Fix shape:** resolve the persisted handle against the current `getDatabases` result; treat a missing or error entry as no selection (and say so in the panel) without silently clearing the user's stored choice on a transient list failure.
 * **Found by:** Codex `review-correctness` and `review-plan` lenses, round 2 of the plan review for the PGN long-comment import fix (`tasks/plans/2026-10-01-pgn-long-comment-import.md`, issue P13), 2026-10-01. Pre-existing; identical before that plan (the entry was dropped from the list, the handle stayed persisted).
+
+---
+
+## 2026-10-01 — filed through the inbox spool
+
+### A running local PGN import cannot be cancelled from the UI
+
+* **ID:** f-20261001-19 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src/components/databases/DatabasesPage.tsx` (~222-244: the "Convert: …" progress line has no cancel control), `src/components/databases/AddDatabase.tsx` (`convertLocalDatabase`), `src-tauri/src/db/mod.rs` (`convert_pgn`, ~727-786: no ticket parameter; only application shutdown cancels it through `state.operations`), also "Add games" (`DatabasesPage.tsx` ~471-498, `databaseMutation.ts` ~57-75).
+* **Defect:** importing a reference database (Mega Database 2025: 11.4 M games, ~10 min) blocks the "+" button and the Databases page for the whole run with no way to stop it short of quitting the app. Downloadable databases in the same modal already offer cancel (`cancelDownloadJob`, `AddDatabase.tsx` ~318). The backend already rolls a cancelled import back as one unit (`f-20260912-04`).
+* **Fix shape:** give `convert_pgn` a cancellation ticket like the download jobs, add a cancel control to the progress line, and make the renderer flow delete the freshly created database on cancel (the cleanup path the long-comment import fix adds for failures).
+* **Open question:** does cancel reuse the download-job ticket registry (`cancelDownloadJob`) or get its own operation ticket, and does a cancelled import of a *new* database delete the file in the backend or in the renderer flow that created it.
+* **Why `build`:** IPC contract change (new ticket parameter, regenerated bindings) plus renderer UI.
+* **Found by:** Claude, session 617a946f, 2026-10-01, while diagnosing Felix's vanished Mega Database import.
