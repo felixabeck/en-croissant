@@ -65,3 +65,16 @@ Totals: 4 issues opened, 4 closed, 0 open. Final lens verdicts: all APPROVED.
   `async-errors-async-errors.png` (Settings → Databases),
   `file-freshness-conflict-file-freshness.png` and `file-freshness-unavailable-file-freshness.png`
   (Files → Board).
+
+## Push review
+
+* Pre-review checks (`pnpm checks:pre-review`): green.
+* Code fan-out over the code paths of the pushed range (Codex, `normal`): review-correctness,
+  review-root-cause, review-tests, review-code-quality, review-minimalism — all APPROVED with no
+  findings.
+* Records lens (Codex, `mechanical`) over the record paths, which included other agents'
+  unpushed records (findings f-20261001-14..17 and the Stockfish 19 plan handoff): REVISE with
+  three findings in the Stockfish 19 records — "fixed by O2" for still-open findings, an overbroad
+  "every later engines save is refused", and "cannot collide" for SHA-256. All three were fixed:
+  an appended correction on `f-20261001-06` and a three-sentence prose repair of the handoff.
+  Closure round: R1–R3 CLOSED, VERDICT APPROVED.
