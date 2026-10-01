@@ -12170,3 +12170,17 @@ Correction 2026-09-30 (records review): "the 2026-09-29 push-gate lane runner ke
 * **Defect:** the staging directory is created under a pathname derived from the resolved destination rather than through the verified directory descriptor. If the engine root is renamed and its path replaced by a symlink between resolution and `private_tempdir_in`, download and extraction write staging data under the symlink target; the later atomic install refuses publication, but only after those out-of-authority writes happened.
 * **Why it matters:** every other path-authority write door binds to a verified inode; this one is a pathname re-open in the same class the path-authority work closed elsewhere. Reaching it needs a local actor racing the rename, so it is outside accidental-input threat models.
 * **Found by:** Codex `review-tauri-security` lens, round 2 of the Stockfish 19 upgrade plan review, 2026-10-01; confirmed by the orchestrator reading `fs.rs:1319-1329`.
+
+---
+
+## 2026-10-01 — filed through the inbox spool
+
+### A `.tar.gz` engine archive is only gunzipped, never untarred, so no Linux or macOS catalog Stockfish can install
+
+* **ID:** f-20261001-16 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src-tauri/src/fs.rs:589-640` (format detection from the first 512 bytes: zip magic, gzip magic, or raw `ustar`), `src-tauri/src/fs.rs:1681-1710` (`extract_gz_cancellable` decompresses into one file via `atomic_replace`), `src/utils/engines.ts:323-331` (`installDefaultEngine` then registers the manifest's nested `path`), `src/catalogs/engines.json` (Stockfish 19 linux and macOS entries are `.tar.gz`).
+* **Defect:** a gzip payload is classified as `is_gz` before any tar check, and the decompressed stream is written as a single file. The tar members (`stockfish/stockfish-linux-x86-64-universal` and siblings) are never extracted, so `registerInstalledEngine(root, "stockfish/stockfish-linux-x86-64-universal")` cannot find the executable. Only zip assets (Windows Stockfish, RubiChess, Lc0) can reach registration.
+* **Why it matters:** the default-engine catalog's flagship entry cannot be installed on Linux or macOS; together with `f-20261001-06` the catalog install path is unusable on those platforms.
+* **Fix shape:** detect a tar stream inside the gzip (ustar magic at offset 257 of the decompressed head) and extract it through `extract_tar_cancellable` with the same entry, ratio and expanded-size limits; plain `.gz` single files keep today's path. Prove with a gzip-of-tar fixture through the download-install core and a registration of the nested path, red on today's code.
+* **Planned:** obligation O2 of `tasks/plans/2026-10-01-stockfish-19-upgrade.md`.
+* **Found by:** Codex `review-plan` lens, round 2 of the Stockfish 19 upgrade plan review, confirmed by the orchestrator reading `fs.rs:589-640,1681-1710`, 2026-10-01.
