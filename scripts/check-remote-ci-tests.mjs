@@ -1,6 +1,92 @@
 import assert from "node:assert/strict";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { delimiter, dirname, join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { checkRemoteCi, REMOTE_RUN_LIMIT } from "./check-remote-ci.mjs";
+
+const scriptsDirectory = dirname(fileURLToPath(import.meta.url));
+const projectRoot = resolve(scriptsDirectory, "..");
+const cliPath = join(scriptsDirectory, "check-remote-ci.mjs");
+const upstreamArgs = ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"];
+
+function listRunsArgs(branch) {
+  return [
+    "run",
+    "list",
+    "--workflow",
+    "Test",
+    "--branch",
+    branch,
+    "--limit",
+    String(REMOTE_RUN_LIMIT),
+    "--json",
+    "databaseId,headSha,status,conclusion,createdAt",
+  ];
+}
+
+function writeFakeExecutable(binDirectory, command, responses) {
+  const path = join(binDirectory, command);
+  const source = `#!/usr/bin/env node
+const responses = new Map(${JSON.stringify([...responses])});
+const args = process.argv.slice(2);
+const response = responses.get(JSON.stringify(args));
+if (!response) {
+  process.stderr.write("unexpected " + ${JSON.stringify(command)} + " invocation: " + JSON.stringify(args) + "\\n");
+  process.exitCode = 90;
+} else {
+  process.stdout.write(response.stdout);
+  process.stderr.write(response.stderr);
+  process.exitCode = response.status;
+}
+`;
+  writeFileSync(path, source);
+  chmodSync(path, 0o755);
+}
+
+function runRemoteCiCli({ runs, jobsByRun, ghFailure = false }) {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "check-remote-ci-cli-"));
+  try {
+    const binDirectory = join(temporaryDirectory, "bin");
+    mkdirSync(binDirectory);
+
+    const gitResponses = new Map([
+      [JSON.stringify(upstreamArgs), { status: 0, stdout: "origin/master\n", stderr: "" }],
+    ]);
+    const ghResponses = new Map([
+      [
+        JSON.stringify(listRunsArgs("master")),
+        ghFailure
+          ? { status: 1, stdout: "", stderr: "API rate limit exceeded\n" }
+          : { status: 0, stdout: `${JSON.stringify(runs)}\n`, stderr: "" },
+      ],
+    ]);
+    for (const remoteRun of runs) {
+      const args = ["run", "view", String(remoteRun.databaseId), "--json", "jobs"];
+      ghResponses.set(JSON.stringify(args), {
+        status: 0,
+        stdout: `${JSON.stringify({ jobs: jobsByRun[remoteRun.databaseId] })}\n`,
+        stderr: "",
+      });
+    }
+
+    writeFakeExecutable(binDirectory, "git", gitResponses);
+    writeFakeExecutable(binDirectory, "gh", ghResponses);
+    return spawnSync(process.execPath, [cliPath], {
+      cwd: projectRoot,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: [binDirectory, process.env.PATH].filter(Boolean).join(delimiter),
+      },
+      timeout: 30_000,
+    });
+  } finally {
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+}
 
 function run(databaseId, createdAt, { status = "completed", conclusion = "success" } = {}) {
   return {
@@ -148,18 +234,7 @@ test("filters the gh query to the upstream branch and Test workflow", () => {
   const listCall = calls.find(
     ({ command, args }) => command === "gh" && args[0] === "run" && args[1] === "list",
   );
-  assert.deepEqual(listCall.args, [
-    "run",
-    "list",
-    "--workflow",
-    "Test",
-    "--branch",
-    "release/ci-remote",
-    "--limit",
-    String(REMOTE_RUN_LIMIT),
-    "--json",
-    "databaseId,headSha,status,conclusion,createdAt",
-  ]);
+  assert.deepEqual(listCall.args, listRunsArgs("release/ci-remote"));
 });
 
 test("refuses with the gh failure cause", () => {
@@ -264,4 +339,32 @@ test("refuses when no job in the window has a completed result", () => {
   const result = checkRemoteCi({ runner });
   assert.equal(result.exitCode, 2);
   assert.match(result.error, /No completed Test workflow jobs/u);
+});
+
+test("CLI exits 0 when all newest completed jobs succeed", () => {
+  const result = runRemoteCiCli({
+    runs: [run(201, recent)],
+    jobsByRun: { 201: [job("test"), job("rust-platform (MSVC)")] },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Remote CI check: OK/u);
+});
+
+test("CLI exits 1 and names a red job", () => {
+  const result = runRemoteCiCli({
+    runs: [run(202, recent)],
+    jobsByRun: { 202: [job("required-linux-tests", { conclusion: "failure" })] },
+  });
+
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /Remote CI check: RED/u);
+  assert.match(result.stderr, /required-linux-tests: failure/u);
+});
+
+test("CLI exits 2 and prints the gh failure cause", () => {
+  const result = runRemoteCiCli({ runs: [], jobsByRun: {}, ghFailure: true });
+
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /API rate limit exceeded/u);
 });
