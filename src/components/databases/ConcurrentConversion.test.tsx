@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   deleteDuplicatedGames: vi.fn(),
   mergePlayers: vi.fn(),
   createIndexes: vi.fn(),
+  deleteIndexes: vi.fn(),
   convertProgress: vi.fn(),
   progress: vi.fn(),
   notify: vi.fn(),
@@ -54,7 +55,7 @@ vi.mock("@/platform/tauri", async () => {
       mergePlayers: mocks.mergePlayers,
       deleteDuplicatedGames: mocks.deleteDuplicatedGames,
       createIndexes: mocks.createIndexes,
-      deleteIndexes: vi.fn(),
+      deleteIndexes: mocks.deleteIndexes,
       getPlayer: vi.fn(),
     },
     tauriSubscriptions: {
@@ -334,6 +335,7 @@ beforeEach(() => {
   mocks.deleteDuplicatedGames.mockResolvedValue(undefined);
   mocks.mergePlayers.mockResolvedValue(undefined);
   mocks.createIndexes.mockResolvedValue(undefined);
+  mocks.deleteIndexes.mockResolvedValue(undefined);
   vi.spyOn(crypto, "randomUUID").mockReturnValue("00000000-0000-4000-8000-000000000001");
   host = document.createElement("div");
   document.body.append(host);
@@ -616,23 +618,31 @@ test("a failed database rename surfaces an error notification", async () => {
   });
 });
 
-test.each([
-  ["Databases.Settings.RemoveEmpty", mocks.deleteEmptyGames],
-  ["Databases.Settings.RemoveDup", mocks.deleteDuplicatedGames],
-] as const)(
-  "a failed %s cleanup surfaces an error notification and reloads the list",
-  async (label, action) => {
+test.each(
+  (
+    [
+      ["Databases.Settings.RemoveEmpty", mocks.deleteEmptyGames],
+      ["Databases.Settings.RemoveDup", mocks.deleteDuplicatedGames],
+    ] as const
+  ).flatMap(([label, action]) =>
+    (["successful", "failed"] as const).map((outcome) => ({ label, action, outcome })),
+  ),
+)(
+  "a $outcome $label cleanup reloads the list and reports only errors",
+  async ({ label, action, outcome }) => {
     await renderRoute();
     await selectExistingDatabase();
     const reloads = mocks.getDatabases.mock.calls.length;
-    action.mockRejectedValueOnce(new Error("cleanup failed"));
+    if (outcome === "failed") {
+      action.mockRejectedValueOnce(new Error("cleanup failed"));
+    }
     await act(async () => buttonByText(label)!.click());
     expect(action).toHaveBeenCalledExactlyOnceWith(handleB);
-    expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
-      color: "red",
-      title: "Common.Error",
-      message: "cleanup failed",
-    });
+    expect(mocks.notify.mock.calls).toEqual(
+      outcome === "failed"
+        ? [[{ color: "red", title: "Common.Error", message: "cleanup failed" }]]
+        : [],
+    );
     expect(mocks.getDatabases).toHaveBeenCalledTimes(reloads + 1);
   },
 );
@@ -655,34 +665,58 @@ test("a failed player merge surfaces an error notification", async () => {
   });
 });
 
-test("a failed index toggle surfaces an error notification and re-enables the checkbox", async () => {
-  mocks.getDatabases.mockResolvedValue([
-    { ...successDatabase(handleB, "Existing"), indexed: false },
-  ]);
-  let rejectIndex!: (error: unknown) => void;
-  mocks.createIndexes.mockReturnValueOnce(
-    new Promise<void>((_, reject) => {
-      rejectIndex = reject;
-    }),
-  );
-  await renderRoute();
-  await selectExistingDatabase();
-  const reloads = mocks.getDatabases.mock.calls.length;
-  const checkbox = host.querySelector<HTMLInputElement>(
-    '[aria-label="Databases.Settings.Indexed"]',
-  )!;
-  expect(checkbox.checked).toBe(false);
-  expect(checkbox.disabled).toBe(false);
-  await act(async () => checkbox.click());
-  expect(mocks.createIndexes).toHaveBeenCalledExactlyOnceWith(handleB);
-  expect(checkbox.disabled).toBe(true);
+function indexCheckbox() {
+  return host.querySelector<HTMLInputElement>('[aria-label="Databases.Settings.Indexed"]')!;
+}
 
-  await act(async () => rejectIndex(new Error("index failed")));
-  expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
-    color: "red",
-    title: "Common.Error",
-    message: "index failed",
-  });
-  expect(checkbox.disabled).toBe(false);
-  expect(mocks.getDatabases).toHaveBeenCalledTimes(reloads);
-});
+test.each([
+  { outcome: "failed", indexed: false },
+  { outcome: "successful", indexed: false },
+  { outcome: "successful", indexed: true },
+] as const)(
+  "a $outcome index toggle from indexed=$indexed re-enables the checkbox",
+  async ({ outcome, indexed }) => {
+    const database = { ...successDatabase(handleB, "Existing"), indexed };
+    mocks.getDatabases.mockResolvedValue([database]);
+    const action = indexed ? mocks.deleteIndexes : mocks.createIndexes;
+    const otherAction = indexed ? mocks.createIndexes : mocks.deleteIndexes;
+    let resolveIndex!: () => void;
+    let rejectIndex!: (error: unknown) => void;
+    action.mockReturnValueOnce(
+      new Promise<void>((resolve, reject) => {
+        resolveIndex = resolve;
+        rejectIndex = reject;
+      }),
+    );
+    await renderRoute();
+    await selectExistingDatabase();
+    const reloads = mocks.getDatabases.mock.calls.length;
+    const checkbox = indexCheckbox();
+    expect(checkbox.checked).toBe(indexed);
+    expect(checkbox.disabled).toBe(false);
+    await act(async () => checkbox.click());
+    expect(action).toHaveBeenCalledExactlyOnceWith(handleB);
+    expect(otherAction).not.toHaveBeenCalled();
+    expect(checkbox.disabled).toBe(true);
+    expect(mocks.getDatabases).toHaveBeenCalledTimes(reloads);
+
+    if (outcome === "failed") {
+      await act(async () => rejectIndex(new Error("index failed")));
+    } else {
+      mocks.getDatabases.mockResolvedValue([{ ...database, indexed: !indexed }]);
+      await act(async () => resolveIndex());
+    }
+    expect(mocks.getDatabases).toHaveBeenCalledTimes(reloads + (outcome === "failed" ? 0 : 1));
+    const reloadOptions = { signal: expect.any(AbortSignal) };
+    expect(mocks.getDatabases.mock.calls.slice(reloads)).toEqual(
+      outcome === "failed" ? [] : [[reloadOptions]],
+    );
+    expect(indexCheckbox().checked).toBe(outcome === "failed" ? indexed : !indexed);
+    expect(mocks.notify.mock.calls).toEqual(
+      outcome === "failed"
+        ? [[{ color: "red", title: "Common.Error", message: "index failed" }]]
+        : [],
+    );
+    expect(indexCheckbox().disabled).toBe(false);
+  },
+);

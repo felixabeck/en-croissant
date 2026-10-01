@@ -409,7 +409,7 @@ export default function DatabasesPage() {
                     <IndexInput
                       indexed={selectedDatabase.indexed}
                       file={selectedDatabase.file}
-                      setDatabases={mutate}
+                      reload={mutate}
                     />
 
                     <Divider variant="dashed" label={t("Common.Data")} />
@@ -701,11 +701,11 @@ function DuplicateRemover({
 function IndexInput({
   indexed,
   file,
-  setDatabases,
+  reload,
 }: {
   indexed: boolean;
   file: DatabaseHandle;
-  setDatabases: (dbs: DatabaseInfo[]) => void;
+  reload: () => Promise<unknown>;
 }) {
   const { t } = useTranslation();
 
@@ -721,8 +721,7 @@ function IndexInput({
             setLoading(true);
             const fn = e.currentTarget.checked ? tauri.createIndexes : tauri.deleteIndexes;
             void fn(file)
-              .then(() => getDatabases())
-              .then((dbs) => setDatabases(dbs))
+              .then(() => reload())
               .catch((error) => notifyUnlessCancelled(t("Common.Error"), error))
               .finally(() => setLoading(false));
           }}
