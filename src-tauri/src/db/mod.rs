@@ -2912,6 +2912,11 @@ fn unlink_database_files(
         ) {
             // The primary is already gone. Keep the completed count so the
             // caller performs cleanup and reports this as partial removal.
+            log::warn!(
+                "database SQLite sidecar removal failed after primary deletion for {}: {}",
+                leaf.to_string_lossy(),
+                error.diagnostic()
+            );
             return Ok((unlinked, Some(error)));
         }
     }
@@ -11369,6 +11374,17 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn zero_table_delete_sidecar_failure_reports_partial_removal_and_cleans_up() {
+        assert_zero_table_delete_sidecar_failure(false);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn zero_table_delete_sidecar_and_registry_cleanup_failures_log_partial_removal() {
+        assert_zero_table_delete_sidecar_failure(true);
+    }
+
+    #[cfg(unix)]
+    fn assert_zero_table_delete_sidecar_failure(fail_registry_cleanup: bool) {
         let (dir, app, handle, database) = arbitrary_database_case(b"");
         {
             let mut connection = SqliteConnection::establish(database.to_str().unwrap()).unwrap();
@@ -11400,6 +11416,10 @@ mod tests {
             );
             std::fs::rename(&replacement, &wal_for_hook).unwrap();
         })));
+        let capture = crate::error::LogCaptureScope::start();
+        let _atomic = fail_registry_cleanup.then(|| {
+            install_atomic_export_failure(crate::infra::fs::AtomicFileFaultPoint::TempfileCreate)
+        });
         let state = app.state::<AppState>();
         let result = delete_database_blocking(
             &state.pgn_path_authority,
@@ -11418,11 +11438,36 @@ mod tests {
         assert!(state.search_cache.get_result(&cache_key).is_none());
         let registry: serde_json::Value =
             serde_json::from_slice(&std::fs::read(registry_path).unwrap()).unwrap();
-        assert!(!registry["entries"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|entry| entry["id"]["id"] == *database_id));
+        assert_eq!(
+            registry["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["id"]["id"] == *database_id),
+            fail_registry_cleanup
+        );
+        let records = capture.records();
+        assert!(records.iter().any(|record| {
+            record.level == log::Level::Warn
+                && record.message.contains(&format!(
+                    "database SQLite sidecar removal failed after primary deletion for {}:",
+                    wal.file_name().unwrap().to_string_lossy()
+                ))
+                && record.message.contains("Conflict: ")
+        }));
+        if fail_registry_cleanup {
+            let warning = records
+                .iter()
+                .find(|record| {
+                    record.level == log::Level::Warn
+                        && record
+                            .message
+                            .contains("database registry cleanup failed after")
+                })
+                .expect("registry cleanup failure must be logged");
+            assert!(warning.message.contains("after partial removal"));
+            assert!(!warning.message.contains("durability uncertainty"));
+        }
     }
 
     #[test]

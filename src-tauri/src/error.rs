@@ -386,7 +386,8 @@ pub(crate) fn map_sqlite_establish(error: diesel::ConnectionError) -> Error {
     if notadb {
         Error::InvalidInput("SQLite file is not a database".into())
     } else {
-        Error::InvalidInput(format!("could not open SQLite database: {error}"))
+        log::warn!("could not open SQLite database: {error}");
+        Error::InvalidInput("could not open SQLite database".into())
     }
 }
 
@@ -651,6 +652,31 @@ mod tests {
             "every serialized Error must carry the wire discriminant"
         );
         payload
+    }
+
+    #[test]
+    fn sqlite_establish_serializes_fixed_message_and_logs_native_cause() {
+        const NATIVE_CAUSE: &str = "/private/sqlite-database: native OS diagnostic";
+        let capture = LogCaptureScope::start();
+        let error =
+            map_sqlite_establish(diesel::ConnectionError::BadConnection(NATIVE_CAUSE.into()));
+        assert!(matches!(
+            &error,
+            Error::InvalidInput(message) if message == "could not open SQLite database"
+        ));
+        let serialized = serde_json::to_string(&error).unwrap();
+        let payload = parsed_payload(&serialized);
+        assert_eq!(payload["category"], "invalid-input");
+        assert_eq!(
+            payload["message"],
+            "Invalid input: could not open SQLite database"
+        );
+        for native_fragment in NATIVE_CAUSE.split_whitespace() {
+            assert!(!serialized.contains(native_fragment));
+        }
+        assert!(capture.records().iter().any(|record| {
+            record.level == log::Level::Warn && record.message.contains(NATIVE_CAUSE)
+        }));
     }
 
     #[test]
