@@ -66,10 +66,21 @@ const RETIRE_CANCELLATION_POLL: Duration = Duration::from_millis(25);
 #[cfg(test)]
 thread_local! {
     static SNAPSHOT_COPY_HOOK: std::cell::RefCell<Option<Box<dyn FnMut()>>> = const { std::cell::RefCell::new(None) };
+    static SNAPSHOT_OPEN_HOOK: std::cell::RefCell<Option<Box<dyn FnMut() -> String>>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
 struct SnapshotCopyHookGuard;
+
+#[cfg(test)]
+struct SnapshotOpenHookGuard;
+
+#[cfg(test)]
+impl Drop for SnapshotOpenHookGuard {
+    fn drop(&mut self) {
+        SNAPSHOT_OPEN_HOOK.with(|hook| *hook.borrow_mut() = None);
+    }
+}
 
 #[cfg(test)]
 impl Drop for SnapshotCopyHookGuard {
@@ -440,6 +451,8 @@ impl DatabaseRepository {
     ) -> Result<DatabaseConnection, Error> {
         #[cfg(test)]
         let _copy_hook_guard = SnapshotCopyHookGuard;
+        #[cfg(test)]
+        let _open_hook_guard = SnapshotOpenHookGuard;
         super::sqlite_cancellation::install()?;
         if crate::infra::path_authority::opened_file_identity(&file)? != expected_object {
             return Err(Error::Conflict(
@@ -471,6 +484,12 @@ impl DatabaseRepository {
         }
         snapshot.as_file_mut().sync_all()?;
         let snapshot_path = snapshot.path().to_string_lossy().into_owned();
+        #[cfg(test)]
+        let snapshot_path = SNAPSHOT_OPEN_HOOK.with(|hook| {
+            hook.borrow_mut()
+                .as_mut()
+                .map_or(snapshot_path, |hook| hook())
+        });
         let connection = SqliteConnection::establish(&snapshot_path)
             .map_err(crate::error::map_sqlite_establish)?;
         Ok(DatabaseConnection {
@@ -1693,6 +1712,53 @@ mod tests {
     struct TestText {
         #[diesel(sql_type = diesel::sql_types::Text)]
         value: String,
+    }
+
+    #[test]
+    fn snapshot_open_establish_failure_sanitizes_payload_and_logs_native_cause() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("database.db3");
+        drop(SqliteConnection::establish(path.to_str().unwrap()).unwrap());
+        let file = std::fs::File::open(&path).unwrap();
+        let identity = crate::infra::path_authority::opened_file_identity(&file).unwrap();
+        let forced_path = directory.path().join("private-snapshot-open");
+        std::fs::create_dir(&forced_path).unwrap();
+        let override_path = forced_path.to_str().unwrap().to_owned();
+        let native_cause = SqliteConnection::establish(&override_path)
+            .err()
+            .expect("SQLite must refuse a directory")
+            .to_string();
+        SNAPSHOT_OPEN_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || override_path.clone()));
+        });
+        let capture = crate::error::LogCaptureScope::start();
+
+        let error = DatabaseRepository::default()
+            .schema_specific_connection_expected_file_cancellable(
+                file,
+                identity,
+                &CancellationToken::new(),
+            )
+            .err()
+            .expect("the forced snapshot path must fail to open");
+
+        assert!(matches!(
+            &error,
+            Error::InvalidInput(message) if message == "could not open SQLite database"
+        ));
+        let payload = serde_json::to_value(&error).unwrap();
+        assert_eq!(payload["category"], "invalid-input");
+        let message = payload["message"].as_str().unwrap();
+        assert_eq!(message, "Invalid input: could not open SQLite database");
+        for component in forced_path.components() {
+            if let std::path::Component::Normal(fragment) = component {
+                assert!(!message.contains(fragment.to_str().unwrap()));
+            }
+        }
+        assert!(capture.records().iter().any(|record| {
+            record.level == log::Level::Warn && record.message.contains(&native_cause)
+        }));
+        SNAPSHOT_OPEN_HOOK.with(|hook| assert!(hook.borrow().is_none()));
     }
 
     #[test]
