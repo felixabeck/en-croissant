@@ -12272,3 +12272,15 @@ Correction 2026-09-30 (records review): "the 2026-09-29 push-gate lane runner ke
 * **Fix shape:** move the platform-independent deletion tests into a module that also runs on Windows (fixtures without unix-only helpers), or add Windows-specific variants; run them in the existing `rust-windows-test` lane.
 * **Related:** `f-20260914-08` (workspace delete refused on Windows, handled) carries the earlier Windows deletion decisions.
 * **Found by:** Codex `review-platform-semantics` lens over the cumulative diff of the PGN long-comment import fix, 2026-10-01 (pre-existing gating).
+
+---
+
+## 2026-10-01 — filed through the inbox spool
+
+### "Add games" overwrites the single shared conversion state, so a running local import loses its progress line and its guards
+
+* **ID:** f-20261001-23 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src/state/atoms.ts` (~488-500: `databaseConversionStateAtom` is one slot; `clearOwnedConversion(handle)` resets it when `targetDatabase` matches), `src/components/databases/DatabasesPage.tsx` (~494-503: "Add games" sets `targetDatabase: dest` over whatever conversion is running and clears it with `clearOwnedConversion(dest)` when it finishes), `src/components/databases/AddDatabase.tsx` (local conversion owns the same slot).
+* **Defect:** if "Add games" starts while a local PGN import is still converting, it replaces the slot's owner with its own target. When it finishes first, its cleanup resets the slot to idle while the local import is still running: the "Convert: …" progress line disappears and "Add New" plus local-conversion submission are enabled again, so a second import can start beside the first. The local import's own `clearOwnedConversion` later finds a different owner and does nothing. Distinct from `f-20261001-21` (same-database progress-id collision): this is two different databases sharing one state slot.
+* **Fix shape:** key conversion state by owner (a map of running conversions, or refuse to start a second conversion while one is running); the progress line and the guards read "any conversion running".
+* **Found by:** Codex records lens, closure round d3 of the PGN long-comment import fix, 2026-10-01 (pre-existing).
