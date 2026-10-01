@@ -12145,3 +12145,16 @@ Correction 2026-09-30 (records review): "the 2026-09-29 push-gate lane runner ke
 * **Change:** validate the hydrated `database` at the store boundary (persist `merge`/`migrate` with a shape check of `type === "success"` and a handle whose key is a non-empty string; drop it otherwise), so every consumer can trust it; prove with a test that seeds `sessionStorage["database-view"]` with a malformed `database` and asserts the store hydrates with `database: undefined`.
 * **Context:** surfaced by the `review-persisted-state` lens on the 2026-10-01 database Back-button plan (`tasks/plans/2026-10-01-database-back-button.md`, issue R1-I1). That plan keeps its own sidebar resume link from widening the crash to every page; the pre-existing view/route crash is this finding.
 * **Found by:** Claude Code, database Back-button plan review, 2026-10-01.
+
+---
+
+## 2026-10-01 — filed through the inbox spool
+
+### A failed engine termination drops the actor from the supervisor, so no later owner can retry or confirm cleanup
+
+* **ID:** f-20261001-14 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/engine/process.rs:1448-1461` (`terminate_exact`: `let result = current.actor.terminate().await; self.actors.remove(key); result`), used by `retire_engine`, `retire_executables`, `kill_engine`, `kill_engines` and tab termination.
+* **Defect:** when `actor.terminate()` returns an error, the actor is removed from the registry anyway. The child process may still be alive (kill-on-drop is best effort), and nothing — tab close, app shutdown via `RunEvent::ExitRequested`, a later retirement — can find it again.
+* **Why it matters:** `.claude/rules/async-resource-invariants.md` requires cleanup on every exit path; an engine with a large hash (8 GB in Felix's configuration) can outlive its owner unseen.
+* **Open question:** keep failed actors in a bounded "reaping" set that shutdown and later retirements retry, or make termination escalate (kill, wait with deadline) until it is confirmed before removal — and how the renderer learns that a process could not be confirmed dead.
+* **Found by:** Codex `review-engine-protocol` lens, round 2 of the Stockfish 19 upgrade plan review (`tasks/plans/2026-10-01-stockfish-19-upgrade.md`, issue R2 retirement-failure), confirmed by the orchestrator from source, 2026-10-01.
