@@ -1,4 +1,12 @@
+import { constants as osConstants } from "node:os";
+
 const PROCESS_GROUP_POLL_MS = 10;
+
+/** Translate a child signal to its conventional shell status. Unknown signals default to 128. */
+export function signalExitCode(signal, unknownSignalCode = 128) {
+  const number = osConstants.signals[signal];
+  return typeof number === "number" ? 128 + number : unknownSignalCode;
+}
 
 function childIsRunning(child) {
   return child.exitCode === null && child.signalCode === null;
@@ -107,12 +115,13 @@ async function terminateChildren(children, label) {
 }
 
 /** Forward runner signals to every attached child and latch attachment into termination. */
-export function installMultiChildSignalForwarding({ label } = {}) {
+export function installMultiChildSignalForwarding({ label, abortSignal = undefined } = {}) {
   if (typeof label !== "string" || label.trim() === "") {
     throw new TypeError("A non-empty child label is required for signal forwarding.");
   }
 
   let requestedSignal;
+  let requestedReason;
   let resolveSignalRequested;
   const signalRequested = new Promise((resolve) => {
     resolveSignalRequested = resolve;
@@ -125,17 +134,25 @@ export function installMultiChildSignalForwarding({ label } = {}) {
     termination.catch(() => {});
     return termination;
   };
-  const handler = (signal) => {
-    if (requestedSignal) return;
-    requestedSignal = signal;
-    resolveSignalRequested(signal);
+  const requestTermination = (reason) => {
+    if (requestedReason !== undefined) return;
+    requestedReason = reason;
+    if (reason === "SIGINT" || reason === "SIGTERM") requestedSignal = reason;
+    resolveSignalRequested(reason);
     terminateAll();
   };
+  const handler = (signal) => requestTermination(signal);
+  const onAbort = () => requestTermination("abort");
   process.on("SIGINT", handler);
   process.on("SIGTERM", handler);
+  if (abortSignal?.aborted) onAbort();
+  else abortSignal?.addEventListener("abort", onAbort, { once: true });
   return {
     get requestedSignal() {
       return requestedSignal;
+    },
+    get requestedReason() {
+      return requestedReason;
     },
     signalRequested,
     get termination() {
@@ -150,12 +167,13 @@ export function installMultiChildSignalForwarding({ label } = {}) {
     },
     attach(supervisor, name) {
       children.push({ supervisor, name });
-      if (requestedSignal) terminateAll();
+      if (requestedReason !== undefined) terminateAll();
     },
     terminateAll,
     uninstall() {
       process.off("SIGINT", handler);
       process.off("SIGTERM", handler);
+      abortSignal?.removeEventListener("abort", onAbort);
     },
   };
 }

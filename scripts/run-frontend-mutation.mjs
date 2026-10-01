@@ -12,9 +12,12 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
-import { constants as osConstants } from "node:os";
 import { dirname, join } from "node:path";
-import { installMultiChildSignalForwarding, superviseChild } from "./child-supervisor.mjs";
+import {
+  installMultiChildSignalForwarding,
+  signalExitCode,
+  superviseChild,
+} from "./child-supervisor.mjs";
 import { gateBudgetBytes, strykerSlots } from "./gate-parallelism.mjs";
 import { fsyncDirectory } from "./fsync-directory.mjs";
 import { mutationPackages } from "./frontend-mutation-packages.mjs";
@@ -267,11 +270,6 @@ function printLogTail(path) {
   if (tail) console.error(`--- ${path} (tail) ---\n${tail}\n--- end ${path} ---`);
 }
 
-function signalExitCode(signal) {
-  const number = osConstants.signals[signal];
-  return typeof number === "number" ? 128 + number : 1;
-}
-
 function describePackageFailure(mutationPackage, result, logPath) {
   if (result.spawnError) {
     console.error(
@@ -281,7 +279,7 @@ function describePackageFailure(mutationPackage, result, logPath) {
     return { exitCode: 127, message: errorMessage(result.spawnError) };
   }
   if (result.signal) {
-    const exitCode = signalExitCode(result.signal);
+    const exitCode = signalExitCode(result.signal, 1);
     console.error(
       `Frontend mutation package ${mutationPackage} was killed by ${result.signal} (exit ${exitCode}).`,
     );
@@ -368,11 +366,13 @@ async function runPackage(
 }
 
 export function parseFrontendMutationArguments(argumentsList) {
-  if (argumentsList.length === 0) return { files: undefined };
-  if (argumentsList.length !== 2 || argumentsList[0] !== "--files") {
+  const args = [...argumentsList];
+  if (args[0] === "--") args.shift();
+  if (args.length === 0) return { files: undefined };
+  if (args.length !== 2 || args[0] !== "--files") {
     throw new Error("Usage: run-frontend-mutation.mjs [--files <comma-separated-files>]");
   }
-  const value = argumentsList[1];
+  const value = args[1];
   if (!value || value.startsWith("--")) throw new Error("Missing value for --files");
   const files = value.split(",");
   if (files.some((file) => !file)) throw new Error("--files must be a comma-separated file list");

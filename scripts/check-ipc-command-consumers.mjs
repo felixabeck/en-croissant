@@ -31,7 +31,7 @@
 
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { posix, resolve } from "node:path";
+import { resolve } from "node:path";
 import { traverse } from "@babel/core";
 import { isEntrypoint } from "./entrypoint.mjs";
 import { listWorkingTreeFiles } from "./working-tree-files.mjs";
@@ -42,6 +42,7 @@ import {
   parseTsSource,
   resolveChain,
 } from "./parse-ts-source.mjs";
+import { importSpecifierBasePath } from "./import-path.mjs";
 
 const GENERATED_PATH = "src/bindings/generated.ts";
 const ALLOWLIST_PATH = "ipc-command-consumer-allowlist.json";
@@ -73,11 +74,8 @@ function nodeLine(node) {
 }
 
 function resolveSpecifier(specifier, importingPath) {
-  if (typeof specifier !== "string") return null;
-  if (specifier.startsWith("@/")) return `${posix.normalize(`src/${specifier.slice(2)}`)}.ts`;
-  if (specifier.startsWith("."))
-    return `${posix.normalize(posix.join(posix.dirname(importingPath), specifier))}.ts`;
-  return null;
+  const basePath = importSpecifierBasePath(importingPath, specifier, { allowAnyDotRelative: true });
+  return basePath === undefined ? null : `${basePath}.ts`;
 }
 
 function acceptedModule(specifier, importingPath) {

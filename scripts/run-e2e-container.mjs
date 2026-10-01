@@ -17,15 +17,21 @@
 
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { constants as osConstants } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isEntrypoint } from "./entrypoint.mjs";
-import { superviseChild } from "./child-supervisor.mjs";
+import {
+  installMultiChildSignalForwarding,
+  signalExitCode,
+  superviseChild,
+} from "./child-supervisor.mjs";
 import { playwrightImage } from "./playwright-image.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DOCKER_TERMINATION_TIMEOUT_MS = 2_000;
+// Docker daemon discovery can block while it starts or reconnects; bound the preflight so a stuck
+// daemon cannot hold the heavy-gate lock indefinitely.
+export const DOCKER_INFO_TIMEOUT_MS = 30_000;
 
 // The container peaked at 2.3 GiB on 2026-09-30 (gate-performance measurements); 4 GiB
 // gives about 1.7x headroom and is reserved from overlapping gate lanes.
@@ -53,11 +59,16 @@ function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
-function exitCodeForSignal(signal) {
-  return 128 + (osConstants.signals[signal] ?? 0);
-}
-
-function startDockerCommand(args, { spawnProcess = spawn, forwardOutput = false } = {}) {
+function startDockerCommand(
+  args,
+  {
+    spawnProcess = spawn,
+    forwardOutput = false,
+    terminationTimeoutMs = DOCKER_TERMINATION_TIMEOUT_MS,
+    timeoutMs = undefined,
+    timeoutLabel = undefined,
+  } = {},
+) {
   const child = spawnProcess("docker", args, {
     cwd: projectRoot,
     stdio: ["ignore", "pipe", "pipe"],
@@ -75,62 +86,50 @@ function startDockerCommand(args, { spawnProcess = spawn, forwardOutput = false 
   });
 
   const supervisor = superviseChild(child, {
-    terminationTimeoutMs: DOCKER_TERMINATION_TIMEOUT_MS,
+    terminationTimeoutMs,
     killProcessGroup: true,
   });
-  const done = supervisor.done.then(({ code, signal, error }) => ({
-    code: code ?? (signal ? exitCodeForSignal(signal) : 1),
-    signal,
-    error,
-    stdout,
-    stderr,
-  }));
+  let timedOut = false;
+  let timeoutTerminationError;
+  const timeout =
+    timeoutMs === undefined
+      ? undefined
+      : setTimeout(() => {
+          timedOut = true;
+          supervisor.terminate().catch((error) => {
+            timeoutTerminationError = error;
+          });
+        }, timeoutMs);
+  const done = supervisor.done
+    .then(({ code, signal, error }) => ({
+      code: code ?? (signal ? signalExitCode(signal) : 1),
+      signal,
+      error:
+        error ??
+        (timedOut
+          ? new Error(
+              `${timeoutLabel ?? `docker ${args[0]}`} timed out after ${timeoutMs} ms`,
+              timeoutTerminationError ? { cause: timeoutTerminationError } : undefined,
+            )
+          : undefined),
+      timedOut,
+      stdout,
+      stderr,
+    }))
+    .finally(() => clearTimeout(timeout));
   return { done, supervisor };
-}
-
-function installLauncherCancellation(abortSignal) {
-  let requested;
-  let resolveRequested;
-  const requestedPromise = new Promise((resolve) => {
-    resolveRequested = resolve;
-  });
-  const supervisors = new Set();
-  const request = (reason) => {
-    if (requested !== undefined) return;
-    requested = reason;
-    resolveRequested(reason);
-    for (const supervisor of supervisors) supervisor.terminate().catch(() => {});
-  };
-  const onSigint = () => request("SIGINT");
-  const onSigterm = () => request("SIGTERM");
-  const onAbort = () => request("abort");
-
-  process.on("SIGINT", onSigint);
-  process.on("SIGTERM", onSigterm);
-  if (abortSignal?.aborted) onAbort();
-  else abortSignal?.addEventListener("abort", onAbort, { once: true });
-
-  return {
-    get requested() {
-      return requested;
-    },
-    requestedPromise,
-    attach(supervisor) {
-      supervisors.add(supervisor);
-      if (requested !== undefined) supervisor.terminate().catch(() => {});
-    },
-    uninstall() {
-      process.off("SIGINT", onSigint);
-      process.off("SIGTERM", onSigterm);
-      abortSignal?.removeEventListener("abort", onAbort);
-    },
-  };
 }
 
 function dockerError(result) {
   return result.error
-    ? `docker ${result.error.message}`
+    ? result.error.message.startsWith("docker ")
+      ? result.error.message
+      : `docker ${result.error.message}`
     : `docker exited ${result.code}${result.stderr.trim() ? `: ${result.stderr.trim()}` : ""}`;
+}
+
+function cancellationExitCode(reason) {
+  return reason === "abort" ? 1 : signalExitCode(reason, 1);
 }
 
 async function cleanupContainer(containerName, options) {
@@ -157,15 +156,35 @@ function reportCleanupFailure(error) {
 /** Run one bounded e2e container and clean it after every failed or interrupted run. */
 export async function runE2eContainer(
   forwarded = process.argv.slice(2),
-  { spawnProcess = spawn, abortSignal = undefined } = {},
+  {
+    spawnProcess = spawn,
+    abortSignal = undefined,
+    preflightTimeoutMs = DOCKER_INFO_TIMEOUT_MS,
+  } = {},
 ) {
-  const cancellation = installLauncherCancellation(abortSignal);
+  const cancellation = installMultiChildSignalForwarding({
+    label: "e2e container launcher",
+    abortSignal,
+  });
   const spawnOptions = { spawnProcess };
   let exitCode = 0;
   let containerName;
   try {
-    const support = await startDockerCommand(["info", "--format", "{{.MemoryLimit}}"], spawnOptions)
-      .done;
+    const preflight = startDockerCommand(["info", "--format", "{{.MemoryLimit}}"], {
+      ...spawnOptions,
+      timeoutMs: preflightTimeoutMs,
+      timeoutLabel: "docker info preflight",
+    });
+    cancellation.attach(preflight.supervisor, "docker info preflight");
+    const preflightOutcome = await Promise.race([
+      preflight.done.then((result) => ({ result })),
+      cancellation.signalRequested.then((reason) => ({ reason })),
+    ]);
+    if ("reason" in preflightOutcome) {
+      await Promise.allSettled([preflight.done, cancellation.termination]);
+      return { exitCode: cancellationExitCode(preflightOutcome.reason), containerName };
+    }
+    const support = preflightOutcome.result;
     if (support.error || support.code !== 0) {
       process.stderr.write(
         "docker is required for the containerized e2e run and is not available.\n" +
@@ -181,12 +200,9 @@ export async function runE2eContainer(
       );
       return { exitCode: 1, containerName };
     }
-    if (cancellation.requested !== undefined) {
+    if (cancellation.requestedReason !== undefined) {
       return {
-        exitCode:
-          cancellation.requested === "SIGINT" || cancellation.requested === "SIGTERM"
-            ? exitCodeForSignal(cancellation.requested)
-            : 1,
+        exitCode: cancellationExitCode(cancellation.requestedReason),
         containerName,
       };
     }
@@ -239,26 +255,50 @@ export async function runE2eContainer(
       ],
       { ...spawnOptions, forwardOutput: true },
     );
-    cancellation.attach(run.supervisor);
+    cancellation.attach(run.supervisor, "docker run client");
 
     const outcome = await Promise.race([
       run.done.then((result) => ({ result })),
-      cancellation.requestedPromise.then((reason) => ({ reason })),
+      cancellation.signalRequested.then((reason) => ({ reason })),
     ]);
     let result;
     if ("reason" in outcome) {
-      await run.supervisor.terminate();
-      result = await run.done;
-      exitCode =
-        outcome.reason === "SIGINT" || outcome.reason === "SIGTERM"
-          ? exitCodeForSignal(outcome.reason)
-          : 1;
+      // Start removal as soon as cancellation is observed. It runs alongside termination of the
+      // detached Docker client so the lane cannot wait for that client before asking Docker to
+      // stop the container.
+      const cleanupPromise = cleanupContainer(containerName, spawnOptions);
+      const [runOutcome, cleanupOutcome, terminationOutcome] = await Promise.allSettled([
+        run.done,
+        cleanupPromise,
+        cancellation.termination,
+      ]);
+      result = runOutcome.status === "fulfilled" ? runOutcome.value : undefined;
+      const cleanupError =
+        cleanupOutcome.status === "fulfilled"
+          ? cleanupOutcome.value
+          : new Error(
+              `Failed to stop and remove e2e container ${containerName}: ${errorMessage(cleanupOutcome.reason)}; a retry is not known to be clean.`,
+            );
+      if (cleanupError) {
+        reportCleanupFailure(cleanupError);
+        exitCode = 1;
+      } else if (terminationOutcome.status === "rejected") {
+        process.stderr.write(
+          `Failed to terminate e2e Docker client: ${errorMessage(terminationOutcome.reason)}\n`,
+        );
+        exitCode = 1;
+      } else if (runOutcome.status === "rejected") {
+        process.stderr.write(`E2E container runner failed: ${errorMessage(runOutcome.reason)}\n`);
+        exitCode = 1;
+      } else {
+        exitCode = cancellationExitCode(outcome.reason);
+      }
     } else {
       result = outcome.result;
       if (result.error || result.code !== 0) exitCode = result.code || 1;
     }
 
-    if (exitCode !== 0) {
+    if (!("reason" in outcome) && exitCode !== 0) {
       const cleanupError = await cleanupContainer(containerName, spawnOptions);
       if (cleanupError) {
         reportCleanupFailure(cleanupError);

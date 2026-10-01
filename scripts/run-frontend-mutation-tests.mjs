@@ -271,6 +271,23 @@ test("frontend mutation refuses any file outside its six production paths", asyn
   );
 });
 
+test("frontend mutation arguments accept the pnpm-preserved separator", () => {
+  const file = Object.values(mutationPackages)[0][0];
+  assert.deepEqual(parseFrontendMutationArguments(["--files", file]), { files: [file] });
+  assert.deepEqual(parseFrontendMutationArguments(["--", "--files", file]), { files: [file] });
+});
+
+test("the CLI refuses an out-of-scope file after pnpm's separator", () => {
+  const result = spawnSync(
+    process.execPath,
+    [runner, "--", "--files", "src/state/not-in-scope.ts"],
+    { cwd: projectRoot, encoding: "utf8" },
+  );
+  assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+  assert.match(result.stderr, /outside the mutation scope: src\/state\/not-in-scope\.ts/u);
+  assert.doesNotMatch(result.stderr, /Usage: run-frontend-mutation/u);
+});
+
 test("frontend mutation selector rejects an unknown package id through the shared helper", () => {
   assert.throws(
     () => selectFrontendMutationPackagesById(["unknown-package"]),

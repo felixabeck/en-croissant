@@ -5,6 +5,7 @@ import { delimiter, dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
+  DOCKER_INFO_TIMEOUT_MS,
   E2E_CONTAINER_MEMORY,
   E2E_CONTAINER_MEMORY_BYTES,
   playwrightArguments,
@@ -28,7 +29,12 @@ const record = (entry) => appendFileSync(
 record({ action, args });
 
 if (action === "info") {
-  if (process.env.FAKE_DOCKER_INFO_EXIT) {
+  if (process.env.FAKE_DOCKER_INFO_MODE === "hold") {
+    const finish = () => process.exit(143);
+    process.on("SIGTERM", finish);
+    process.on("SIGINT", finish);
+    setInterval(() => {}, 1000);
+  } else if (process.env.FAKE_DOCKER_INFO_EXIT) {
     process.stderr.write(process.env.FAKE_DOCKER_INFO_ERROR ?? "injected info failure\n");
     process.exit(Number(process.env.FAKE_DOCKER_INFO_EXIT));
   }
@@ -37,6 +43,16 @@ if (action === "info") {
   const mode = process.env.FAKE_DOCKER_RUN_MODE ?? "success";
   if (mode === "hold") {
     const finish = () => process.exit(143);
+    process.on("SIGTERM", finish);
+    process.on("SIGINT", finish);
+    setInterval(() => {}, 1000);
+  } else if (mode === "delayed-term") {
+    const finish = () => {
+      setTimeout(() => {
+        record({ action: "run-settled" });
+        process.exit(143);
+      }, 300);
+    };
     process.on("SIGTERM", finish);
     process.on("SIGINT", finish);
     setInterval(() => {}, 1000);
@@ -237,6 +253,37 @@ test("Docker without memory-limit support is refused before any container is sta
   );
 });
 
+test("docker info preflight has a bounded timeout that refuses with its cause", async (t) => {
+  assert.equal(DOCKER_INFO_TIMEOUT_MS, 30_000);
+  const harness = await makeHarness(t, { FAKE_DOCKER_INFO_MODE: "hold" });
+  const moduleUrl = pathToFileURL(launcherPath).href;
+  const source = [
+    `import { runE2eContainer } from ${JSON.stringify(moduleUrl)};`,
+    "const result = await runE2eContainer([], { preflightTimeoutMs: 50 });",
+    "process.exitCode = result.exitCode;",
+  ].join("\n");
+  const result = await startNode(["--input-type=module", "-e", source], harness.env).done;
+  assert.equal(result.code, 1, `${result.stdout}\n${result.stderr}`);
+  assert.match(result.stderr, /Docker probe error: docker info preflight timed out after 50 ms/u);
+  assert.deepEqual(
+    (await readEvents(harness)).map(({ action }) => action),
+    ["info"],
+  );
+});
+
+test("SIGTERM cancels a hung docker info preflight without starting the container", async (t) => {
+  const harness = await makeHarness(t, { FAKE_DOCKER_INFO_MODE: "hold" });
+  const running = startNode([launcherPath], harness.env);
+  await waitForEvent(harness, (event) => event.action === "info");
+  running.child.kill("SIGTERM");
+  const result = await running.done;
+  assert.equal(result.code, 143, `${result.stdout}\n${result.stderr}`);
+  assert.deepEqual(
+    (await readEvents(harness)).map(({ action }) => action),
+    ["info"],
+  );
+});
+
 test("unavailable Docker prints the native-run guidance and starts no container", async (t) => {
   await t.test("probe spawn error", async (subtest) => {
     const harness = await makeHarness(subtest);
@@ -319,6 +366,42 @@ test("SIGINT and SIGTERM stop and remove the active container before the launche
       assert.ok(runner.pid > 0);
     });
   }
+});
+
+test("container cleanup starts before the detached docker run client settles on cancellation", async (t) => {
+  const harness = await makeHarness(t, { FAKE_DOCKER_RUN_MODE: "delayed-term" });
+  const running = startNode([launcherPath], harness.env);
+  const runner = await waitForEvent(harness, (event) => event.action === "run");
+  running.child.kill("SIGTERM");
+  const result = await running.done;
+  assert.equal(result.code, 143, `${result.stdout}\n${result.stderr}`);
+  const events = await readEvents(harness);
+  const removeIndex = events.findIndex((event) => event.action === "rm");
+  const settledIndex = events.findIndex((event) => event.action === "run-settled");
+  assert.ok(removeIndex >= 0);
+  assert.ok(settledIndex >= 0);
+  assert.ok(removeIndex < settledIndex, JSON.stringify(events));
+  const name = runner.args[runner.args.indexOf("--name") + 1];
+  assert.deepEqual(events[removeIndex].args, ["rm", "-f", name]);
+});
+
+test("cancellation cleanup failure reports the named container and dirty retry status", async (t) => {
+  const harness = await makeHarness(t, {
+    FAKE_DOCKER_RUN_MODE: "delayed-term",
+    FAKE_DOCKER_RM_MODE: "fail",
+  });
+  const running = startNode([launcherPath], harness.env);
+  const runner = await waitForEvent(harness, (event) => event.action === "run");
+  const containerName = runner.args[runner.args.indexOf("--name") + 1];
+  running.child.kill("SIGTERM");
+  const result = await running.done;
+  assert.equal(result.code, 1, `${result.stdout}\n${result.stderr}`);
+  assert.match(
+    result.stderr,
+    new RegExp(`Failed to stop and remove e2e container ${containerName}`),
+  );
+  assert.match(result.stderr, /injected cleanup refusal/u);
+  assert.match(result.stderr, /retry is not known to be clean/u);
 });
 
 test("an abort signal stops and removes the active container", async (t) => {

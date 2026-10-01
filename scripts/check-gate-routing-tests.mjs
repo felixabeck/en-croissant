@@ -15,7 +15,7 @@ import { gitInit } from "./test-git-init.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CONTRACT_CHAIN =
-  "pnpm mutation:guard:check && pnpm lint:ci && pnpm tauri:boundary:check && pnpm rust:surface:check && pnpm ui:boundary:check && pnpm skills:check && pnpm skills:bridges:test && pnpm gates:routing:check && pnpm gates:routing:test && pnpm ci:remote:test && pnpm tools:parity:check && pnpm tools:parity:test && pnpm workflows:check && pnpm workflows:permissions:test && pnpm hooks:check && pnpm ui:boundary:report:test && pnpm coverage:report:test && pnpm bundle:report:test && pnpm mutation:runner:test && pnpm gates:receipt:test && pnpm gates:parallelism:test && pnpm gates:heavy:test && pnpm gates:push:test && pnpm rust:windows:test && pnpm entrypoint:test && pnpm e2e:launchers:test && pnpm install:local:test && pnpm app:driver:test && pnpm findings:test && ./scripts/findings.py check && pnpm ipc:consumers:check";
+  "pnpm mutation:guard:check && pnpm lint:ci && pnpm tauri:boundary:check && pnpm rust:surface:check && pnpm ui:boundary:check && pnpm skills:check && pnpm skills:bridges:test && pnpm gates:routing:check && pnpm gates:routing:test && pnpm ci:remote:test && pnpm tools:parity:check && pnpm tools:parity:test && pnpm workflows:check && pnpm workflows:permissions:test && pnpm hooks:check && pnpm ui:boundary:report:test && pnpm coverage:report:test && pnpm bundle:report:test && pnpm mutation:runner:test && pnpm gates:receipt:test && pnpm gates:parallelism:test && pnpm gates:heavy:test && pnpm gates:push:test && pnpm gates:child-supervisor:test && pnpm gates:imports:test && pnpm rust:windows:test && pnpm entrypoint:test && pnpm e2e:launchers:test && pnpm install:local:test && pnpm app:driver:test && pnpm findings:test && ./scripts/findings.py check && pnpm ipc:consumers:check";
 
 async function write(root, relativePath, contents) {
   const path = join(root, relativePath);
@@ -34,10 +34,13 @@ async function fixture() {
         "all:check": "node scripts/check-example.mjs && pnpm nested:check",
         "nested:check": "node scripts/nested.mjs",
         "example:test": "node --test scripts/example-tests.mjs",
-        "gates:contract:check": "pnpm mutation:guard:check && pnpm all:check && pnpm example:test",
-        "gates:push": "node scripts/run-push-gates.mjs",
+        "gates:contract:check":
+          "pnpm mutation:guard:check && pnpm gates:child-supervisor:test && pnpm gates:imports:test && pnpm all:check && pnpm example:test",
+        "gates:push": "bash scripts/heavy-gate.sh node scripts/run-push-gates.mjs",
         "checks:pre-review":
           "bash scripts/heavy-gate.sh node scripts/run-push-gates.mjs --pre-review",
+        "gates:child-supervisor:test": "node --test scripts/child-supervisor-tests.mjs",
+        "gates:imports:test": "node --test scripts/import-path-tests.mjs",
         "mutation:guard:check": "true",
         "findings:kit:check": "env -u KIT_ROOT kit sync --check .",
         "gate:ensure": "node scripts/gate-receipt.mjs ensure",
@@ -89,6 +92,35 @@ const paths = ["scripts/check-example.mjs"];
 test("accepts routed tests, nested scripts, allowed tools, and live sensitive globs", async () => {
   const root = await fixture();
   assert.deepEqual(await checkGateRouting(root, { paths }), []);
+});
+
+test("push gate package scripts preserve the heavy-gate wrapper and pre-review mode", async (t) => {
+  await t.test("gates:push without the wrapper is rejected", async () => {
+    const root = await fixture();
+    const packagePath = join(root, "package.json");
+    const packageJson = JSON.parse(await readFile(packagePath, "utf8"));
+    packageJson.scripts["gates:push"] = "node scripts/run-push-gates.mjs";
+    await writeFile(packagePath, `${JSON.stringify(packageJson)}\n`);
+
+    assert.match(
+      (await checkGateRouting(root, { paths })).join("\n"),
+      /package\.json gates:push must invoke bash scripts\/heavy-gate\.sh node scripts\/run-push-gates\.mjs/u,
+    );
+  });
+
+  await t.test("checks:pre-review without --pre-review is rejected", async () => {
+    const root = await fixture();
+    const packagePath = join(root, "package.json");
+    const packageJson = JSON.parse(await readFile(packagePath, "utf8"));
+    packageJson.scripts["checks:pre-review"] =
+      "bash scripts/heavy-gate.sh node scripts/run-push-gates.mjs";
+    await writeFile(packagePath, `${JSON.stringify(packageJson)}\n`);
+
+    assert.match(
+      (await checkGateRouting(root, { paths })).join("\n"),
+      /package\.json checks:pre-review must invoke bash scripts\/heavy-gate\.sh node scripts\/run-push-gates\.mjs --pre-review/u,
+    );
+  });
 });
 
 test("checks every pre-review runner command against the new skill block in both directions", async () => {

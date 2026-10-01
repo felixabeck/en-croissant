@@ -10,33 +10,36 @@ import {
   statSync,
   writeSync,
 } from "node:fs";
-import {
-  availableParallelism as defaultAvailableParallelism,
-  constants as osConstants,
-} from "node:os";
-import { dirname, extname, join, relative, resolve, sep } from "node:path";
+import { availableParallelism as defaultAvailableParallelism } from "node:os";
+import { extname, join, relative, resolve, sep } from "node:path";
 import { performance } from "node:perf_hooks";
 import { isEntrypoint } from "./entrypoint.mjs";
 import { gateBudgetBytes, VITEST_MINIMUM_BUDGET_BYTES } from "./gate-parallelism.mjs";
-import { installMultiChildSignalForwarding, superviseChild } from "./child-supervisor.mjs";
+import {
+  installMultiChildSignalForwarding,
+  signalExitCode,
+  superviseChild as defaultSuperviseChild,
+} from "./child-supervisor.mjs";
 import { E2E_CONTAINER_MEMORY_BYTES } from "./run-e2e-container.mjs";
 import { mutationPackages } from "./frontend-mutation-packages.mjs";
 import { matches } from "./coverage-scope.mjs";
 import { listWorkingTreeFiles } from "./working-tree-files.mjs";
+import { importSpecifierBasePath } from "./import-path.mjs";
 
 const GIB = 1024 ** 3;
 
-// While cargo lanes or mutation run with P2, frontend coverage gets half the budget; with only
-// non-self-sizing lanes it gets all of it. The remaining share covers cargo/contract peaks
-// (2026-09-29: clippy 1.5, backend-test 1.8, backend-coverage 2.0, contract 0.5 GB) or mutation.
+// Shares apply after the selected e2e container reservation. Coverage gets half when cargo or
+// concurrent mutation shares P2 and the full remainder otherwise. With e2e selected, it is raised
+// to VITEST_MINIMUM_BUDGET_BYTES when the post-reservation budget can fund that floor.
 export const P2_VITEST_SHARE = 0.5;
 
-// Mutation's P2 slice; 0.5 + 0.35 leaves 0.15 for the measured cargo/contract/receipt peak.
+// Concurrent mutation gets 35% of the post-container remainder, leaving 15% beside coverage's
+// 50% share for cargo/contract/receipt peaks. A coverage floor that raises its share consumes
+// that nominal remainder. Below the one-wave budget, mutation runs after P2 with the full remainder.
 export const P2_MUTATION_SHARE = 0.35;
 
-// 0.15 × 40 GiB covers the 6.06 GB four-receipt-gate peak (2026-09-29), and 0.35 × 40 GiB
-// covers the Stryker parent plus eight measured 1.2 GiB runners. Below this budget, including
-// the 7 GiB agent budget, mutation follows P2 with the whole budget.
+// This is the raw gate budget threshold for two concurrent self-sizing lanes, before container
+// reservation. Below it, including the 7 GiB agent budget, mutation follows P2 with the remainder.
 export const ONE_WAVE_BYTES = 40 * GIB;
 
 // Two self-sizing lanes split the available CPU evenly; one CPU cannot run both without
@@ -44,6 +47,8 @@ export const ONE_WAVE_BYTES = 40 * GIB;
 const MIN_CONCURRENT_SELF_SIZING_CPUS = 2;
 // Two seconds lets gates handle SIGTERM cleanly before their process group is escalated.
 const CHILD_TERMINATION_TIMEOUT_MS = 2_000;
+// E2E cleanup starts a detached `docker rm -f`; this window lets it finish before killing the lane.
+const E2E_LANE_TERMINATION_TIMEOUT_MS = 15_000;
 // Failed command output is bounded so one noisy gate cannot flood the summary.
 const LOG_TAIL_BYTES = 8 * 1024;
 
@@ -276,18 +281,17 @@ export function parsePushGateArguments(argumentsList) {
 }
 
 export function pushGateScheduleCommands(schedule = PUSH_GATE_SCHEDULE) {
-  return [
-    ...schedule.p0.map(({ command }) => command),
-    ...schedule.p1.map(({ command }) => command),
-    ...schedule.lanes.flatMap(({ commands }) => commands),
-  ];
+  return flattenGateSchedule(schedule, ["p0", "p1", "lanes"]);
 }
 
 export function preReviewGateScheduleCommands(schedule = PRE_REVIEW_GATE_SCHEDULE) {
-  return [
-    ...schedule.p1.map(({ command }) => command),
-    ...schedule.lanes.flatMap(({ commands }) => commands),
-  ];
+  return flattenGateSchedule(schedule, ["p1", "lanes"]);
+}
+
+function flattenGateSchedule(schedule, phases) {
+  return phases.flatMap((phase) =>
+    schedule[phase].flatMap((entry) => entry.commands ?? [entry.command]),
+  );
 }
 
 function gitFailure(args, result) {
@@ -297,12 +301,12 @@ function gitFailure(args, result) {
   return new Error(
     `Cannot determine pre-review changed paths: git ${args.join(" ")} failed (${detail})`,
     {
-      cause: result.error,
+      cause: result.error ?? new Error(detail),
     },
   );
 }
 
-export function discoverPreReviewChangedPaths({
+export function discoverPreReviewChanges({
   cwd = process.cwd(),
   runGit = spawnSync,
   listUntracked = (workspaceRoot) =>
@@ -323,7 +327,11 @@ export function discoverPreReviewChangedPaths({
   }
   const tracked = run(["diff", "--name-only", "-z", base, "--"]).split("\0").filter(Boolean);
   const untracked = listUntracked(cwd);
-  return [...new Set([...tracked, ...untracked])].sort();
+  return { mergeBase: base, paths: [...new Set([...tracked, ...untracked])].sort() };
+}
+
+export function discoverPreReviewChangedPaths(options = {}) {
+  return discoverPreReviewChanges(options).paths;
 }
 
 function commandDisplay(executable, args) {
@@ -381,13 +389,9 @@ function isRegularFile(path) {
 }
 
 function resolveLocalImport(root, importer, specifier, isFile = isRegularFile) {
-  let base;
-  if (specifier.startsWith("@/")) base = resolve(root, "src", specifier.slice(2));
-  else if (specifier.startsWith("./") || specifier.startsWith("../")) {
-    base = resolve(root, dirname(importer));
-    base = resolve(base, specifier);
-  } else if (specifier.startsWith("src/")) base = resolve(root, specifier);
-  else return undefined;
+  const basePath = importSpecifierBasePath(importer, specifier, { allowSourceRoot: true });
+  if (basePath === undefined) return undefined;
+  const base = resolve(root, basePath);
 
   const candidates = extname(base)
     ? [base]
@@ -415,6 +419,8 @@ export function mutationFilesForChanges(
     readSource = (path) => readFileSync(path, "utf8"),
     exists = existsSync,
     isFile = isRegularFile,
+    mergeBase = undefined,
+    runGit = spawnSync,
   } = {},
 ) {
   const filesByPackage = new Map(
@@ -427,31 +433,54 @@ export function mutationFilesForChanges(
     [...changed].filter((path) => filesByPackage.has(path) && exists(resolve(root, path))),
   );
 
-  const scanQueue = [...changed].filter(
-    (path) => /\.(?:test|spec)\.[cm]?[jt]sx?$/u.test(path) && exists(resolve(root, path)),
-  );
+  const changedTests = [...changed].filter((path) => /\.(?:test|spec)\.[cm]?[jt]sx?$/u.test(path));
+  const scanQueue = changedTests
+    .filter((path) => exists(resolve(root, path)))
+    .map((importer) => ({ importer, kind: "working" }));
+  if (mergeBase !== undefined) {
+    for (const importer of changedTests) {
+      const args = ["show", `${mergeBase}:${importer}`];
+      const result = runGit("git", args, { cwd: root, encoding: "utf8" });
+      if (result.error || result.status !== 0) {
+        const missingAtBase =
+          !result.error &&
+          /fatal: path .+ (?:does not exist|exists on disk, but not in) .+/iu.test(
+            String(result.stderr ?? ""),
+          );
+        if (missingAtBase) continue;
+        throw gitFailure(args, result);
+      }
+      scanQueue.push({ importer, kind: "merge-base", source: String(result.stdout ?? "") });
+    }
+  }
   const scanned = new Set();
   while (scanQueue.length > 0) {
-    const importer = scanQueue.pop();
-    if (scanned.has(importer)) continue;
-    scanned.add(importer);
+    const entry = scanQueue.pop();
+    const { importer } = entry;
+    const scanId = `${entry.kind}:${importer}`;
+    if (scanned.has(scanId)) continue;
+    scanned.add(scanId);
     let source;
-    try {
-      source = readSource(resolve(root, importer));
-    } catch (error) {
-      throw new Error(
-        `Cannot read changed test ${importer} for mutation selection: ${error.message}`,
-        {
-          cause: error,
-        },
-      );
+    if (entry.source !== undefined) {
+      source = entry.source;
+    } else {
+      try {
+        source = readSource(resolve(root, importer));
+      } catch (error) {
+        throw new Error(
+          `Cannot read changed test ${importer} for mutation selection: ${error.message}`,
+          {
+            cause: error,
+          },
+        );
+      }
     }
     for (const specifier of importSpecifiers(source)) {
       const dependency = resolveLocalImport(root, importer, specifier, isFile);
       if (!dependency) continue;
       if (filesByPackage.has(dependency)) selectedFiles.add(dependency);
       if (dependency.startsWith("src/") && exists(resolve(root, dependency))) {
-        scanQueue.push(dependency);
+        scanQueue.push({ importer: dependency, kind: "working" });
       }
     }
   }
@@ -464,7 +493,10 @@ function hasCoverageInputsChanged(changedPaths, { root, config, baseline }) {
   );
 }
 
-export function selectPreReviewLanes(changedPaths, { root = process.cwd() } = {}) {
+export function selectPreReviewLanes(
+  changedPaths,
+  { root = process.cwd(), mergeBase = undefined, runGit = spawnSync } = {},
+) {
   const paths = [...new Set(changedPaths)];
   const existing = (path) => existsSync(resolve(root, path));
   const formatFiles = paths.filter((path) => isOxfmtOwned(path) && existing(path)).sort();
@@ -513,7 +545,7 @@ export function selectPreReviewLanes(changedPaths, { root = process.cwd() } = {}
     addLane("coverage-mapping-backend");
   }
 
-  const mutationFiles = mutationFilesForChanges(paths, { root });
+  const mutationFiles = mutationFilesForChanges(paths, { root, mergeBase, runGit });
   if (mutationFiles.length) {
     addLane("frontend-mutation-changed-files", {
       files: mutationFiles,
@@ -533,10 +565,6 @@ export function selectPreReviewLanes(changedPaths, { root = process.cwd() } = {}
 function selectedByBlocks(entry, blocks) {
   if (entry.always) return true;
   return entry.blocks?.some((block) => blocks.has(block)) ?? false;
-}
-
-function signalExitCode(signal) {
-  return 128 + (osConstants.signals[signal] ?? 0);
 }
 
 function formatDuration(durationMs) {
@@ -593,7 +621,14 @@ function writeTaskHeader(task, command, append = task.kind === "lane-step") {
 async function runCommand(
   command,
   task,
-  { cwd, env, spawnProcess, signalForwarding, writeCapturedOutput = appendLog },
+  {
+    cwd,
+    env,
+    spawnProcess,
+    signalForwarding,
+    superviseProcess = defaultSuperviseChild,
+    writeCapturedOutput = appendLog,
+  },
 ) {
   const { executable, args } = commandArgv(command);
   const label = commandLabel(command);
@@ -627,8 +662,9 @@ async function runCommand(
   };
   child.stdout?.on("data", capture);
   child.stderr?.on("data", capture);
-  const supervisor = superviseChild(child, {
-    terminationTimeoutMs: CHILD_TERMINATION_TIMEOUT_MS,
+  const supervisor = superviseProcess(child, {
+    terminationTimeoutMs:
+      task.name === "e2e" ? E2E_LANE_TERMINATION_TIMEOUT_MS : CHILD_TERMINATION_TIMEOUT_MS,
     killProcessGroup: true,
   });
   const childLabel =
@@ -882,11 +918,14 @@ export async function runPushGates(
   argumentsList = [],
   {
     spawnProcess = spawn,
+    superviseProcess = defaultSuperviseChild,
     cwd = process.cwd(),
     env = process.env,
     availableParallelism = defaultAvailableParallelism,
     getGateBudgetBytes = () => gateBudgetBytes({ env }),
-    discoverChangedPaths = discoverPreReviewChangedPaths,
+    discoverChangedPaths = undefined,
+    discoverChanges = discoverPreReviewChanges,
+    runGit = spawnSync,
     beforeStep = undefined,
     writeCapturedOutput = appendLog,
   } = {},
@@ -922,6 +961,7 @@ export async function runPushGates(
     cwd,
     env,
     spawnProcess,
+    superviseProcess,
     signalForwarding,
     beforeStep,
     logDirectory,
@@ -937,8 +977,11 @@ export async function runPushGates(
 
   try {
     if (preReviewMode) {
-      const changedPaths = discoverChangedPaths({ cwd });
-      const lanes = selectPreReviewLanes(changedPaths, { root: cwd });
+      const changes = discoverChangedPaths
+        ? { paths: discoverChangedPaths({ cwd }), mergeBase: undefined }
+        : discoverChanges({ cwd, runGit });
+      const { paths: changedPaths, mergeBase } = changes;
+      const lanes = selectPreReviewLanes(changedPaths, { root: cwd, mergeBase, runGit });
       for (const lane of lanes) selectedPreReviewLaneNames.add(lane.name);
       const laneNames = lanes.map(({ name }) => name);
       process.stdout.write(`Pre-review changed paths: ${changedPaths.length}\n`);

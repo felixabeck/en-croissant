@@ -16,6 +16,11 @@ const PACKAGE_JSON = "package.json";
 const TEST_WORKFLOW = ".github/workflows/test.yml";
 const VITE_CONFIG = "vite.config.ts";
 const CONTRACT_GATE = "gates:contract:check";
+const HEAVY_GATE_RUNNER = "bash scripts/heavy-gate.sh node scripts/run-push-gates.mjs";
+const GATE_RUNNER_SCRIPTS = Object.freeze({
+  "gates:push": HEAVY_GATE_RUNNER,
+  "checks:pre-review": `${HEAVY_GATE_RUNNER} --pre-review`,
+});
 const PUSH_GATE_INVOCATION = "pnpm gates:push -- <blocks>";
 const PRE_REVIEW_SECTION = "## 2a. Pre-review checks";
 const PRE_REVIEW_INVOCATION = "pnpm checks:pre-review";
@@ -428,20 +433,18 @@ export function validatePushGateSchedule(pushSkill, contractRouted, schedule = P
     ),
   );
   const runnerCommands = pushGateScheduleCommands(schedule);
-  for (const command of runnerCommands) {
-    if (fencedLines.has(command)) continue;
-    const references = pnpmReferences(command);
-    if (references.length > 0 && references.every((name) => contractRouted.has(name))) continue;
-    findings.push(
-      `push gate runner command is neither an exact fenced line nor a ${CONTRACT_GATE} member: ${command}`,
-    );
-  }
-
-  for (const command of fencedLines) {
-    if (!runnerCommands.includes(command)) {
-      findings.push(`fenced §2 gate command is not run by the push gate runner: ${command}`);
-    }
-  }
+  findings.push(
+    ...compareScheduleToFence(runnerCommands, fencedLines, {
+      runnerCommandIsCovered(command) {
+        const references = pnpmReferences(command);
+        return references.length > 0 && references.every((name) => contractRouted.has(name));
+      },
+      missingFenceMessage: (command) =>
+        `push gate runner command is neither an exact fenced line nor a ${CONTRACT_GATE} member: ${command}`,
+      extraFenceMessage: (command) =>
+        `fenced §2 gate command is not run by the push gate runner: ${command}`,
+    }),
+  );
   return findings;
 }
 
@@ -462,15 +465,43 @@ export function validatePreReviewGateSchedule(pushSkill, schedule = PRE_REVIEW_G
 
   const runnerCommands = preReviewGateScheduleCommands(schedule);
   const laneCommands = fencedLines.filter((line) => line !== PRE_REVIEW_INVOCATION);
+  findings.push(
+    ...compareScheduleToFence(runnerCommands, laneCommands, {
+      missingFenceMessage: (command) =>
+        `pre-review runner command is not fenced in ${PRE_REVIEW_SECTION}: ${command}`,
+      extraFenceMessage: (command) =>
+        `fenced pre-review command is not run by the scheduler: ${command}`,
+    }),
+  );
+  return findings;
+}
+
+function compareScheduleToFence(
+  runnerCommands,
+  fencedCommands,
+  { runnerCommandIsCovered = () => false, missingFenceMessage, extraFenceMessage },
+) {
+  const findings = [];
+  const fenced = new Set(fencedCommands);
+  const scheduled = new Set(runnerCommands);
   for (const command of runnerCommands) {
-    if (!laneCommands.includes(command)) {
-      findings.push(`pre-review runner command is not fenced in ${PRE_REVIEW_SECTION}: ${command}`);
-    }
+    if (fenced.has(command) || runnerCommandIsCovered(command)) continue;
+    findings.push(missingFenceMessage(command));
   }
-  for (const command of laneCommands) {
-    if (!runnerCommands.includes(command)) {
-      findings.push(`fenced pre-review command is not run by the scheduler: ${command}`);
-    }
+  for (const command of fenced) {
+    if (!scheduled.has(command)) findings.push(extraFenceMessage(command));
+  }
+  return findings;
+}
+
+function validateGateRunnerScripts(scripts) {
+  const findings = [];
+  for (const [name, expected] of Object.entries(GATE_RUNNER_SCRIPTS)) {
+    const actual = scripts[name];
+    if (typeof actual === "string" && actual.trim() === expected) continue;
+    findings.push(
+      `package.json ${name} must invoke ${expected}; found ${JSON.stringify(actual ?? "<missing>")}`,
+    );
   }
   return findings;
 }
@@ -555,6 +586,7 @@ export async function checkGateRouting(
     scripts,
     repoRoot,
   );
+  findings.push(...validateGateRunnerScripts(scripts));
 
   if (!(CONTRACT_GATE in scripts)) {
     findings.push(`package.json is missing ${CONTRACT_GATE}; add the shared contract chain`);

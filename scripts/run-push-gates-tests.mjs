@@ -14,6 +14,7 @@ import {
   PRE_REVIEW_GATE_SCHEDULE,
   PUSH_GATE_SCHEDULE,
   discoverPreReviewChangedPaths,
+  discoverPreReviewChanges,
   mutationFilesForChanges,
   runPushGates,
   selectPreReviewLanes,
@@ -21,6 +22,7 @@ import {
 import { VITEST_MINIMUM_BUDGET_BYTES, workerCount } from "./gate-parallelism.mjs";
 import { E2E_CONTAINER_MEMORY_BYTES } from "./run-e2e-container.mjs";
 import { startNodeCli } from "./mutation-runner-test-harness.mjs";
+import { superviseChild } from "./child-supervisor.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const runnerPath = join(repositoryRoot, "scripts/run-push-gates.mjs");
@@ -417,6 +419,107 @@ test("a changed Vitest file adds its exercised production file to the mutation l
   assert.ok(mutationLane.commands[0].args.includes(sourcePath));
 });
 
+test("pre-review scans merge-base test contents for deleted and removed imports (DC-03)", async (t) => {
+  const root = await temporarySchedulerRoot(t);
+  const sourcePath = "src/state/workspace.ts";
+  const testPath = "src/state/workspace.test.ts";
+  await mkdir(dirname(join(root, sourcePath)), { recursive: true });
+  await writeFile(join(root, sourcePath), "export const workspace = 1;\n");
+
+  const formerTest = 'import { workspace } from "@/state/workspace";\n';
+  const runGit = (executable, args, options) => {
+    assert.equal(executable, "git");
+    assert.deepEqual(args, ["show", `merge-base:${testPath}`]);
+    assert.equal(options.cwd, root);
+    return { status: 0, stdout: formerTest };
+  };
+
+  await t.test("deleted test", () => {
+    assert.deepEqual(
+      mutationFilesForChanges([testPath], { root, mergeBase: "merge-base", runGit }),
+      [sourcePath],
+    );
+  });
+
+  await t.test("removed import", async () => {
+    await writeFile(join(root, testPath), "export {};\n");
+    assert.deepEqual(
+      mutationFilesForChanges([testPath], { root, mergeBase: "merge-base", runGit }),
+      [sourcePath],
+    );
+  });
+});
+
+test("pre-review mutation reads use the path-discovery git runner and merge base", async (t) => {
+  const root = await temporarySchedulerRoot(t);
+  const sourcePath = "src/state/workspace.ts";
+  const testPath = "src/state/workspace.test.ts";
+  await mkdir(dirname(join(root, sourcePath)), { recursive: true });
+  await writeFile(join(root, sourcePath), "export const workspace = 1;\n");
+  const calls = [];
+  const runGit = (executable, args) => {
+    calls.push(args);
+    if (args[0] === "merge-base") return { status: 0, stdout: "merge-base\n" };
+    if (args[0] === "diff") return { status: 0, stdout: `${testPath}\0` };
+    if (args[0] === "show") {
+      return { status: 0, stdout: 'import { workspace } from "@/state/workspace";\n' };
+    }
+    assert.fail(`Unexpected git invocation: ${executable} ${args.join(" ")}`);
+  };
+  const changes = discoverPreReviewChanges({
+    cwd: root,
+    runGit,
+    listUntracked: () => [],
+  });
+  assert.deepEqual(changes, { mergeBase: "merge-base", paths: [testPath] });
+  assert.deepEqual(
+    mutationFilesForChanges(changes.paths, {
+      root,
+      mergeBase: changes.mergeBase,
+      runGit,
+    }),
+    [sourcePath],
+  );
+  assert.deepEqual(
+    calls.map(([command]) => command),
+    ["merge-base", "diff", "show"],
+  );
+});
+
+test("pre-review skips a test absent at merge-base and stops on other git show failures", async (t) => {
+  const root = await temporarySchedulerRoot(t);
+  const testPath = "src/state/new.test.ts";
+  await mkdir(dirname(join(root, testPath)), { recursive: true });
+  await writeFile(join(root, testPath), "export {};\n");
+  const absentRunGit = () => ({
+    status: 128,
+    stderr: `fatal: path '${testPath}' exists on disk, but not in 'merge-base'`,
+  });
+  assert.deepEqual(
+    mutationFilesForChanges([testPath], {
+      root,
+      mergeBase: "merge-base",
+      runGit: absentRunGit,
+    }),
+    [],
+  );
+
+  const gitError = new Error("injected git spawn failure");
+  assert.throws(
+    () =>
+      mutationFilesForChanges([testPath], {
+        root,
+        mergeBase: "merge-base",
+        runGit: () => ({ error: gitError, status: null }),
+      }),
+    (error) => {
+      assert.match(error.message, /git show merge-base:src\/state\/new\.test\.ts failed/u);
+      assert.strictEqual(error.cause, gitError);
+      return true;
+    },
+  );
+});
+
 test("a changed test follows a directory import through its index file", async (t) => {
   const root = await temporarySchedulerRoot(t);
   const testPath = "src/state/directory-import.test.ts";
@@ -493,6 +596,64 @@ test("Rust-only pre-review waits for the frontend build before Windows clippy", 
       commands.indexOf("pnpm gate:run frontend-build") <
         commands.indexOf("pnpm rust:windows:check"),
   );
+});
+
+test("pre-review frontend-build failure skips Windows clippy and bundle (DC-06)", async (t) => {
+  const cwd = await temporarySchedulerRoot(t);
+  await mkdir(join(cwd, "src/state"), { recursive: true });
+  await writeFile(join(cwd, "src/state/workspace.ts"), "export const workspace = 1;\n");
+  const events = [];
+  const result = await runPushGates(["--pre-review"], {
+    cwd,
+    env: { ...process.env, GATE_MEMORY_BYTES: String(7 * GIB) },
+    discoverChangedPaths: () => ["src-tauri/src/lib.rs", "src/state/workspace.ts"],
+    spawnProcess: makeMockSpawner({
+      events,
+      exits: { "pnpm gate:run frontend-build": 9 },
+    }),
+  });
+  assert.equal(result.exitCode, 9);
+  const commands = commandSet(events);
+  assert.ok(commands.includes("pnpm gate:run frontend-build"));
+  assert.ok(commands.includes("pnpm coverage:mapping:backend"));
+  assert.ok(commands.some((command) => command.startsWith("pnpm mutation:frontend -- --files ")));
+  assert.ok(!commands.includes("pnpm rust:windows:check"));
+  assert.ok(!commands.includes("pnpm bundle:check"));
+  for (const laneName of ["windows-clippy", "bundle"]) {
+    const lane = result.results.find(({ name }) => name === laneName);
+    assert.equal(lane.status, "skipped");
+    assert.match(lane.reason, /frontend-build failed/u);
+  }
+});
+
+test("the e2e lane gets a longer termination timeout only for its Docker cleanup", async (t) => {
+  const cwd = await temporarySchedulerRoot(t);
+  const events = [];
+  const commandByChild = new WeakMap();
+  const terminationTimeouts = new Map();
+  const spawnProcess = (executable, args, options) => {
+    const child = makeMockSpawner({ events })(executable, args, options);
+    commandByChild.set(child, [executable, ...args].join(" "));
+    return child;
+  };
+  const superviseProcess = (child, options) => {
+    terminationTimeouts.set(commandByChild.get(child), options.terminationTimeoutMs);
+    return superviseChild(child, options);
+  };
+  const result = await runPushGates(["--frontend"], {
+    cwd,
+    env: { ...process.env, GATE_MEMORY_BYTES: String(7 * GIB) },
+    getGateBudgetBytes: () => 7 * GIB,
+    spawnProcess,
+    superviseProcess,
+  });
+  assert.equal(result.exitCode, 0);
+  assert.equal(terminationTimeouts.get("pnpm gate:ensure e2e-container"), 15_000);
+  assert.ok(terminationTimeouts.size > 1);
+  for (const [command, timeout] of terminationTimeouts) {
+    if (command === "pnpm gate:ensure e2e-container") continue;
+    assert.equal(timeout, 2_000, `${command} should keep the default timeout`);
+  }
 });
 
 test("CLI selection matrix, leading delimiter, and phase ordering (PG-60, PG-64, PG-66, PG-78, PG-88, PG-104)", async (t) => {
