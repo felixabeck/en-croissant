@@ -12202,3 +12202,15 @@ Correction 2026-09-30 (records review): "the 2026-09-29 push-gate lane runner ke
 * **Open question:** a general fix interacts with three callers: restoring the old value after refusal makes Remove (which retires the id first, `d-20260901-17`) leave a visible but tombstoned engine and makes Duplicate's immediate selection index a missing entry; publishing only after the save makes per-keystroke settings edits wait on an IPC round trip. Which contract — optimistic with restore plus reordered Remove/Duplicate, or staged publication with a local draft for edits — and does it supersede `d-20260901-17`'s ordering?
 * **Context:** the Stockfish 19 upgrade plan (`tasks/plans/2026-10-01-stockfish-19-upgrade.md`) gives catalog install and upgrade a publish-after-save path of their own; this finding covers every other caller.
 * **Found by:** Codex lenses `review-correctness`, `review-persisted-state`, `review-error-handling`, `review-plan` (rounds 1-2 of that plan review), confirmed by the orchestrator from source, 2026-10-01.
+
+---
+
+## 2026-10-01 — filed through the inbox spool
+
+### The persisted reference database handle is searched even when that database is no longer readable
+
+* **ID:** f-20261001-18 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src/components/panels/database/DatabasePanel.tsx` (~161-165: `setLocalOptions((q) => ({ ...q, path: referenceDatabase }))` copies the persisted handle into the local search options; `fetchOpening` ~120-126 then calls `searchPosition` with it), `src/state/atoms.ts` (~457-460: `referenceDbAtom` persisted in localStorage).
+* **Defect:** the dropdown narrows to `type === "success"` entries, but the persisted `referenceDbAtom` handle is never checked against the current database list. A reference database that later becomes unreadable (uninitialised after a failed import, corrupt, deleted outside the app) is still queried by the local explorer, which then fails on every position instead of showing "no reference database".
+* **Fix shape:** resolve the persisted handle against the current `getDatabases` result; treat a missing or error entry as no selection (and say so in the panel) without silently clearing the user's stored choice on a transient list failure.
+* **Found by:** Codex `review-correctness` and `review-plan` lenses, round 2 of the plan review for the PGN long-comment import fix (`tasks/plans/2026-10-01-pgn-long-comment-import.md`, issue P13), 2026-10-01. Pre-existing; identical before that plan (the entry was dropped from the list, the handle stayed persisted).
