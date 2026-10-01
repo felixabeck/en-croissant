@@ -61,3 +61,36 @@ test("accounts-puzzles-engines: navigates empty account, puzzle, and engine stat
     await capture("accounts-puzzles-engines");
     await expect(page).toHaveScreenshot("accounts-puzzles-engines.png", { fullPage: true });
 });
+
+test("accounts-puzzles-engines: moves the active sidebar marker with navigation", async ({
+    page,
+    mockScenario,
+}) => {
+    await mockScenario({ commands: {} });
+    await page.goto("/");
+
+    const navbar = page.locator("nav.mantine-AppShell-navbar");
+    const linkNames = ["User", "Files", "Databases", "Engines", "Settings", "Board"];
+    const transparent = "rgba(0, 0, 0, 0)";
+    await expect(navbar.getByRole("link")).toHaveCount(linkNames.length);
+
+    for (const name of linkNames) {
+        const clickedLink = navbar.getByRole("link", { name, exact: true });
+        await clickedLink.click();
+        await expect(clickedLink).toHaveAttribute("aria-current", "page");
+        await expect(navbar.locator('a[aria-current="page"]')).toHaveCount(1);
+        await expect
+            .poll(() => clickedLink.evaluate((link) => getComputedStyle(link).borderLeftColor))
+            .not.toBe(transparent);
+
+        for (const otherName of linkNames) {
+            if (otherName === name) continue;
+
+            const otherLink = navbar.getByRole("link", { name: otherName, exact: true });
+            await expect(otherLink).not.toHaveAttribute("aria-current", "page");
+            await expect
+                .poll(() => otherLink.evaluate((link) => getComputedStyle(link).borderLeftColor))
+                .toBe(transparent);
+        }
+    }
+});

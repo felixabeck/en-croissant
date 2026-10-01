@@ -8,8 +8,7 @@ import {
   IconSettings,
   IconUser,
 } from "@tabler/icons-react";
-import { Link, useMatchRoute } from "@tanstack/react-router";
-import cx from "clsx";
+import { Link } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
 import classes from "./Sidebar.module.css";
 
@@ -17,21 +16,17 @@ interface NavbarLinkProps {
   icon: Icon;
   label: string;
   url: string;
-  active?: boolean;
 }
 
 function NavbarLink({ url, icon: Icon, label }: NavbarLinkProps) {
-  const match = useMatchRoute();
   return (
     <Tooltip label={label} position="right">
       <Link
         to={url}
         preload="intent"
         aria-label={label}
-        aria-current={match({ to: url, fuzzy: true }) !== false ? "page" : undefined}
-        className={cx(classes.link, {
-          [classes.active]: match({ to: url, fuzzy: true }) !== false,
-        })}
+        className={classes.link}
+        activeProps={{ className: classes.active }}
       >
         <Icon size="1.5rem" stroke={1.5} />
       </Link>
