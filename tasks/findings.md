@@ -12069,6 +12069,8 @@ Correction 2026-09-30 (records review): "the 2026-09-29 push-gate lane runner ke
 * **Why it matters:** the default-engine catalog (including Stockfish 19) cannot be used at all; the failure is silent.
 * **Planned:** obligation O2 of `tasks/plans/2026-10-01-stockfish-19-upgrade.md` (schema-exact record from one shared install function; `AddEngine` honours the receipt).
 * **Found by:** Claude Code (Opus 5.5) Stockfish 19 upgrade planning run, research leaf confirmed by the orchestrator's own probe run, 2026-10-01.
+* **Correction (2026-10-01, `$push` records review of the sidebar active-marker push):** "every later `engines` save in that session is refused as well" is too broad. Later saves are refused only while the invalid entry is still in the list; removing that engine on the Engines page filters it out (`src/components/engines/EnginesPage.tsx:682`, `setEngines(... .filter((e) => e.id !== engine.id))`), after which the remaining valid list can be saved again.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"a66a2ba78def5353b4fdfbde8faedc455eb36c189760b4e784eb16e44937e5c3","input_sha256":"051549f65fad12c985e3f77cfadc7986cf9be4d430862b8188aae2422e575387","kind":"mutation-receipt","operation":"9bebbbb8c4216ee6d6a30732590548bb4fc878e6a1aa883c9a58f55c146710d7","options":{"section":null},"request_id_sha256":null,"results":["f-20261001-06"],"target":"f-20261001-06","v":1} -->
 
 ### Engine termination is not surfaced: analysis spins forever, the engine's last `info string` reason is lost, and a game blames the engine with "Abandonment"
 
