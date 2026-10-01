@@ -125,6 +125,19 @@ Open diff-review findings: none. Carried items: none.
 * Runtime on macOS and Windows: the `rust-macos-test` and `rust-windows-test` jobs on the pushed
   SHA (plan Phase 1 PROOF 7).
 
+## Records review
+
+One records lens (Codex, `mechanical`) over the record commits `487c8807`, `8d2f6453`, `02eafa6e`,
+`62c627b8`; verdict REVISE.
+
+| ID | Claim | Disposition | Status |
+|---|---|---|---|
+| RR-01 | `d-20261001-05` states the `AT_EACCESS` fallback without its uid/gid precondition | Fix — `d-20261001-06` restates the decision with the precondition and supersedes `d-20261001-05` (`ed56e4c9`, `f15022ef`) | closed |
+| RR-02 | the `f-20260929-11` closure omits the same precondition | Fix — precision annotation (`a0edf484`) | closed |
+| RR-03 | `f-20260929-11` still carries its original **Open question** above the closure | Skip — the ledger is append-only by contract: filing text is history, the header `Status: handled` and the closing annotation supersede it, as on every handled finding (e.g. `f-20260929-06`) | closed |
+
+The decision of record for this run is `d-20261001-06`.
+
 ## Raw lens reports (verbatim)
 
 ### probe-1
@@ -630,4 +643,20 @@ VERDICT: APPROVED
 D-09 CLOSED — evidence: rustix 1.1.4 documents that pre-5.8 `faccessat` lacks flag support, and its Linux implementation returns `NOSYS` when `faccessat2` is unavailable and `AT_SYMLINK_NOFOLLOW` prevents the `AT_EACCESS` fallback. The replacement comment states that limitation accurately.
 
 VERDICT: APPROVED
+```
+
+### lens-records
+
+```text
+[should-fix] tasks/decisions.md:4805 — The Linux <5.8 `AT_EACCESS` fallback also requires matching real and effective UIDs and GIDs. Otherwise Rustix returns `ENOSYS`, so `PermissionDenied` is not guaranteed as stated. (confidence: 99)
+
+[should-fix] tasks/findings.md:11944 — The same fallback condition is omitted here; Rustix 1.1.4 confirms the UID/GID requirement in `accessat` (lines 1441–1451). (confidence: 99)
+
+[should-fix] tasks/findings.md:11938 — This still labels the consumer and probe choice an “Open question,” while the appended closure says the question was answered and `open_current` was replaced because no consumer reads bytes. The preceding proposed fix at line 11937 also remains unmarked as superseded. (confidence: 98)
+
+Unverifiable from committed repository evidence: the run’s session/model lineage, atlas syscall measurements, reported gate results, and local inbox filing. I did not query any live service or database.
+
+Ledger contract check passed: `ok: 396 findings, 122 pickable, 2 blocked`.
+
+VERDICT: REVISE
 ```
