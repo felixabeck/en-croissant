@@ -131,7 +131,40 @@ was the property `d-20261001-07` needed; `useMatchRoute` stays excluded. Recorde
   passed. Fix restored afterwards.
 * Filed, not fixed (different area): `f-20261001-20` — `DatabaseInfo.storage_size` is declared
   `bigint` but crosses IPC as a JSON number; the persisted store would throw on a real bigint, so
-  the new fixtures cast `1 as unknown as bigint`.
+  the new fixtures cast the value `as unknown as bigint` (`0` in `Sidebar.test.tsx`, `1` in
+  `ConcurrentConversion.test.tsx`).
 * Commits: `4a1d1aa9` fix(databases): write database info only after an edit; `560174d7`
   fix(databases): Back returns to the database overview; `a458ba1e` / `11acc776` decision
   `d-20261001-08` and the supersession trailer on `d-20261001-07`.
+
+## Push review
+
+Executor selection `gemini`: every lens ran on agy (Gemini), every write leaf on Codex, so detection
+was family-separated from the code author. The arbitration was not independent: the arbitrating
+session also wrote this implementation's briefs and amended the plan's P8 drift.
+
+### Round 1 (`REVIEWED_THROUGH=d2f3f0a5`, range `99b78e70..d2f3f0a5`)
+
+Lenses: correctness, root-cause, tests, code-quality, minimalism, error-handling, persisted-state
+(code paths, role normal) and the records lens (record paths, role mechanical). All eight returned
+`VERDICT: APPROVED`; correctness, root-cause and persisted-state reported no findings.
+
+| ID | Lens (confidence) | Finding | Verdict |
+| --- | --- | --- | --- |
+| P1-1 | tests (92) | duplicate-cleanup failure notification untested | Fix |
+| P1-2 | tests (88) | description-only edit untested | Fix |
+| P1-3 | tests (85) | Explore route target exercised by no test | Fix — second e2e journey opens via Explore |
+| P1-4 | tests (82) | InfoPanel database-card navigation untested | Fix |
+| P1-5 | code-quality (85) | anonymous route-target union type | Fix — `DatabaseRouteTarget` |
+| P1-6 | code-quality (85) | mount-only session clear lacks its reason | Fix — comment |
+| P1-7 | code-quality (90, nit) | two `@/utils/db` imports in `databaseRoute.ts` | Fix |
+| P1-8 | minimalism (90) | two near-identical cleanup handlers | Fix — `runCleanup` |
+| P1-9 | minimalism (85, nit) | sidebar target repeats the match path | Fix — optional, defaults to it |
+| P1-10 | error-handling (94) | `IndexInput` failure leaves loading stuck, unreported (pre-existing) | Fix |
+| P1-11 | error-handling (90) | `mergePlayers` rejection unhandled (pre-existing) | Fix |
+| P1-12 | records (95, nit) | `f-20261001-20` says both fixtures cast `1`; the Sidebar fixture casts `0` | Fix — appended correction |
+| P1-13 | records (95, nit) | same claim in this record | Fix — line corrected |
+
+Repairs: one Codex write leaf for P1-1..P1-11 (commit `acf1dbfa`; leaf proofs: vitest set 18 files
+/ 153 tests, `pnpm checks:pre-review` green), the `f-20261001-20` annotation (`89aa2161`) and this
+record's correction.
