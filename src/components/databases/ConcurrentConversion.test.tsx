@@ -23,6 +23,9 @@ const mocks = vi.hoisted(() => ({
   startProgress: vi.fn(),
   setProgressState: vi.fn(),
   deleteEmptyGames: vi.fn(),
+  deleteDuplicatedGames: vi.fn(),
+  mergePlayers: vi.fn(),
+  createIndexes: vi.fn(),
   convertProgress: vi.fn(),
   progress: vi.fn(),
   notify: vi.fn(),
@@ -48,9 +51,9 @@ vi.mock("@/platform/tauri", async () => {
       exportToPgn: vi.fn(),
       issuePgnExportDestination: vi.fn(),
       clearGames: vi.fn(),
-      mergePlayers: vi.fn(),
-      deleteDuplicatedGames: vi.fn(),
-      createIndexes: vi.fn(),
+      mergePlayers: mocks.mergePlayers,
+      deleteDuplicatedGames: mocks.deleteDuplicatedGames,
+      createIndexes: mocks.createIndexes,
       deleteIndexes: vi.fn(),
       getPlayer: vi.fn(),
     },
@@ -80,10 +83,6 @@ vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => vi.fn(),
   Link: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
-vi.mock("@mantine/hooks", async () => {
-  const actual = await vi.importActual<typeof import("@mantine/hooks")>("@mantine/hooks");
-  return { ...actual, useToggle: () => [false, vi.fn()] };
-});
 vi.mock("../common/AppModal", () => ({
   default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
@@ -128,7 +127,19 @@ vi.mock("../common/IconAction", () => ({
 vi.mock("../common/ProgressButton", () => ({
   default: () => null,
 }));
-vi.mock("./PlayerSearchInput", () => ({ PlayerSearchInput: () => null }));
+vi.mock("./PlayerSearchInput", () => ({
+  PlayerSearchInput: ({
+    label,
+    setValue,
+  }: {
+    label: string;
+    setValue: (value: number | undefined) => void;
+  }) => (
+    <button type="button" onClick={() => setValue(label === "Databases.Player.One" ? 1 : 2)}>
+      {label}
+    </button>
+  ),
+}));
 vi.mock("@/components/home/LichessLogo", () => ({ default: () => null }));
 vi.mock("@mantine/core", () => ({
   Alert: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
@@ -143,7 +154,12 @@ vi.mock("@mantine/core", () => ({
     Section: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   }),
   Center: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  Checkbox: () => null,
+  Checkbox: ({
+    label,
+    ...props
+  }: { label: string } & React.InputHTMLAttributes<HTMLInputElement>) => (
+    <input type="checkbox" aria-label={label} {...props} />
+  ),
   Divider: () => <hr />,
   Group: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   Input: (props: React.InputHTMLAttributes<HTMLInputElement>) => <input {...props} />,
@@ -164,7 +180,15 @@ vi.mock("@mantine/core", () => ({
     Panel: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   }),
   Text: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
-  Textarea: () => null,
+  Textarea: ({
+    label,
+    ...props
+  }: { label?: string } & React.TextareaHTMLAttributes<HTMLTextAreaElement>) => (
+    <label>
+      {label}
+      <textarea {...props} />
+    </label>
+  ),
   TextInput: ({
     label,
     ...props
@@ -307,6 +331,9 @@ beforeEach(() => {
   mocks.startProgress.mockResolvedValue({ id: "chesscom_Felix", generation: 1n });
   mocks.setProgressState.mockResolvedValue(undefined);
   mocks.deleteEmptyGames.mockResolvedValue(undefined);
+  mocks.deleteDuplicatedGames.mockResolvedValue(undefined);
+  mocks.mergePlayers.mockResolvedValue(undefined);
+  mocks.createIndexes.mockResolvedValue(undefined);
   vi.spyOn(crypto, "randomUUID").mockReturnValue("00000000-0000-4000-8000-000000000001");
   host = document.createElement("div");
   document.body.append(host);
@@ -505,14 +532,19 @@ async function waitForSettingsDebounce() {
   });
 }
 
-async function editDatabaseName(value: string) {
+async function editDatabaseSetting(
+  labelText: string,
+  elementType: "input" | "textarea",
+  value: string,
+) {
   const label = [...host.querySelectorAll("label")]
-    .filter((element) => element.textContent === "Common.Name")
+    .filter((element) => element.textContent === labelText)
     .at(-1)!;
-  const input = label.querySelector("input")!;
-  expect(input.value).toBe("Existing");
+  const input = label.querySelector(elementType)!;
+  const prototype =
+    elementType === "input" ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
   await act(async () => {
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+    Object.getOwnPropertyDescriptor(prototype, "value")!.set!.call(input, value);
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
   expect(input.value).toBe(value);
@@ -533,7 +565,7 @@ test("editing the database name writes once after the debounce and reloads the l
   });
   await renderRoute();
   await selectExistingDatabase();
-  await editDatabaseName("Renamed");
+  await editDatabaseSetting("Common.Name", "input", "Renamed");
   expect(mocks.editDbInfo).not.toHaveBeenCalled();
 
   await waitForSettingsDebounce();
@@ -541,10 +573,32 @@ test("editing the database name writes once after the debounce and reloads the l
   expect(mocks.getDatabases).toHaveBeenCalledTimes(2);
 });
 
+test("editing only the database description writes once after the debounce with the unchanged title", async () => {
+  let database = successDatabase(handleB, "Existing");
+  mocks.getDatabases.mockImplementation(async () => [database]);
+  mocks.editDbInfo.mockImplementation(
+    async (_file: DatabaseHandle, _title: string, description: string) => {
+      database = { ...database, description };
+    },
+  );
+  await renderRoute();
+  await selectExistingDatabase();
+  await editDatabaseSetting("Common.Description", "textarea", "Updated description");
+  expect(mocks.editDbInfo).not.toHaveBeenCalled();
+
+  await waitForSettingsDebounce();
+  expect(mocks.editDbInfo).toHaveBeenCalledExactlyOnceWith(
+    handleB,
+    "Existing",
+    "Updated description",
+  );
+  expect(mocks.getDatabases).toHaveBeenCalledTimes(2);
+});
+
 test("clearing the database name does not write an empty title", async () => {
   await renderRoute();
   await selectExistingDatabase();
-  await editDatabaseName("");
+  await editDatabaseSetting("Common.Name", "input", "");
   await waitForSettingsDebounce();
   expect(mocks.editDbInfo).not.toHaveBeenCalled();
 });
@@ -553,7 +607,7 @@ test("a failed database rename surfaces an error notification", async () => {
   await renderRoute();
   await selectExistingDatabase();
   mocks.editDbInfo.mockRejectedValueOnce(new Error("rename failed"));
-  await editDatabaseName("Renamed");
+  await editDatabaseSetting("Common.Name", "input", "Renamed");
   await waitForSettingsDebounce();
   expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
     color: "red",
@@ -562,16 +616,73 @@ test("a failed database rename surfaces an error notification", async () => {
   });
 });
 
-test("a failed empty-game cleanup surfaces an error notification and reloads the list", async () => {
+test.each([
+  ["Databases.Settings.RemoveEmpty", mocks.deleteEmptyGames],
+  ["Databases.Settings.RemoveDup", mocks.deleteDuplicatedGames],
+] as const)(
+  "a failed %s cleanup surfaces an error notification and reloads the list",
+  async (label, action) => {
+    await renderRoute();
+    await selectExistingDatabase();
+    const reloads = mocks.getDatabases.mock.calls.length;
+    action.mockRejectedValueOnce(new Error("cleanup failed"));
+    await act(async () => buttonByText(label)!.click());
+    expect(action).toHaveBeenCalledExactlyOnceWith(handleB);
+    expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
+      color: "red",
+      title: "Common.Error",
+      message: "cleanup failed",
+    });
+    expect(mocks.getDatabases).toHaveBeenCalledTimes(reloads + 1);
+  },
+);
+
+test("a failed player merge surfaces an error notification", async () => {
   await renderRoute();
   await selectExistingDatabase();
-  const reloads = mocks.getDatabases.mock.calls.length;
-  mocks.deleteEmptyGames.mockRejectedValueOnce(new Error("cleanup failed"));
-  await act(async () => buttonByText("Databases.Settings.RemoveEmpty")!.click());
+  await act(async () => {
+    buttonByText("Databases.Player.One")!.click();
+    buttonByText("Databases.Player.Two")!.click();
+  });
+  mocks.mergePlayers.mockRejectedValueOnce(new Error("merge failed"));
+  await act(async () => buttonByText("Databases.Settings.Merge")!.click());
+
+  expect(mocks.mergePlayers).toHaveBeenCalledExactlyOnceWith(handleB, 1, 2);
   expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
     color: "red",
     title: "Common.Error",
-    message: "cleanup failed",
+    message: "merge failed",
   });
-  expect(mocks.getDatabases).toHaveBeenCalledTimes(reloads + 1);
+});
+
+test("a failed index toggle surfaces an error notification and re-enables the checkbox", async () => {
+  mocks.getDatabases.mockResolvedValue([
+    { ...successDatabase(handleB, "Existing"), indexed: false },
+  ]);
+  let rejectIndex!: (error: unknown) => void;
+  mocks.createIndexes.mockReturnValueOnce(
+    new Promise<void>((_, reject) => {
+      rejectIndex = reject;
+    }),
+  );
+  await renderRoute();
+  await selectExistingDatabase();
+  const reloads = mocks.getDatabases.mock.calls.length;
+  const checkbox = host.querySelector<HTMLInputElement>(
+    '[aria-label="Databases.Settings.Indexed"]',
+  )!;
+  expect(checkbox.checked).toBe(false);
+  expect(checkbox.disabled).toBe(false);
+  await act(async () => checkbox.click());
+  expect(mocks.createIndexes).toHaveBeenCalledExactlyOnceWith(handleB);
+  expect(checkbox.disabled).toBe(true);
+
+  await act(async () => rejectIndex(new Error("index failed")));
+  expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
+    color: "red",
+    title: "Common.Error",
+    message: "index failed",
+  });
+  expect(checkbox.disabled).toBe(false);
+  expect(mocks.getDatabases).toHaveBeenCalledTimes(reloads);
 });

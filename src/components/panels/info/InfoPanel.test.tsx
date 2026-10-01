@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { Provider as JotaiProvider, createStore as createJotaiStore } from "jotai";
 import { MantineProvider } from "@mantine/core";
+import { SWRConfig } from "swr";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import { closeTreeStore, createTreeStore, type TreeStore } from "@/state/store/tree";
 import { activeTabAtom, currentTabAtom, tabsAtom } from "@/state/atoms";
@@ -11,7 +12,10 @@ import { cancellationError, TauriCommandError } from "@/platform/tauri";
 import type { Tab } from "@/state/workspaceTypes";
 import { defaultTree } from "@/utils/treeReducer";
 import { installMatchMediaStub } from "@/tests/matchMedia";
+import { activeDatabaseViewStore } from "@/state/store/database";
+import type { SuccessDatabaseInfo } from "@/utils/db";
 import InfoPanel from "./InfoPanel";
+import classes from "./InfoPanel.module.css";
 
 const mocks = vi.hoisted(() => ({
   deleteGame: vi.fn(),
@@ -23,6 +27,8 @@ const mocks = vi.hoisted(() => ({
   notify: vi.fn(),
   logError: vi.fn(),
   beforeDelete: vi.fn(),
+  getDatabases: vi.fn(),
+  navigate: vi.fn(),
   useActualGameSelector: false,
 }));
 
@@ -31,7 +37,7 @@ vi.mock("react-i18next", () => ({
 }));
 
 vi.mock("@tanstack/react-router", () => ({
-  useNavigate: () => vi.fn(),
+  useNavigate: () => mocks.navigate,
 }));
 
 vi.mock("@mantine/notifications", () => ({
@@ -67,6 +73,10 @@ vi.mock("@/utils/chess", async () => {
     parsePGN: mocks.parsePGN,
   };
 });
+vi.mock("@/utils/db", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/utils/db")>()),
+  getDatabases: mocks.getDatabases,
+}));
 vi.mock("@/utils/files", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/utils/files")>()),
   loadFileGame: mocks.loadFileGame,
@@ -232,6 +242,7 @@ describe("InfoPanel game loading and cancellation", () => {
   beforeEach(() => {
     sessionStorage.clear();
     localStorage.clear();
+    activeDatabaseViewStore.getState().clearDatabase();
     sessionStorage.setItem(
       "workspace",
       JSON.stringify({ version: 1, tabs: [tabA, tabB], activeTab: tabAId }),
@@ -260,6 +271,8 @@ describe("InfoPanel game loading and cancellation", () => {
     mocks.notify.mockReset();
     mocks.logError.mockReset().mockResolvedValue(undefined);
     mocks.beforeDelete.mockReset();
+    mocks.getDatabases.mockReset().mockResolvedValue([]);
+    mocks.navigate.mockReset().mockResolvedValue(undefined);
     mocks.useActualGameSelector = false;
   });
 
@@ -270,6 +283,7 @@ describe("InfoPanel game loading and cancellation", () => {
     container?.remove();
     closeTreeStore(tabAId);
     closeTreeStore(tabBId);
+    activeDatabaseViewStore.getState().clearDatabase();
     mocks.useActualGameSelector = false;
     vi.restoreAllMocks();
   });
@@ -346,6 +360,56 @@ describe("InfoPanel game loading and cancellation", () => {
       </MantineProvider>
     );
   }
+
+  test("the database card navigates by handle key before setting the active database", async () => {
+    const database: SuccessDatabaseInfo = {
+      type: "success",
+      file: { id: { id: "info-database" }, kind: "database" },
+      filename: "info-database.db3",
+      title: "Info database",
+      description: "Database card",
+      player_count: 0,
+      event_count: 0,
+      game_count: 0,
+      storage_size: 0 as unknown as bigint,
+      indexed: false,
+    };
+    mocks.getDatabases.mockResolvedValue([database]);
+    let resolveNavigation!: () => void;
+    mocks.navigate.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        resolveNavigation = resolve;
+      }),
+    );
+    jotaiStore.set(tabsAtom, [
+      {
+        ...tabA,
+        gameOrigin: { kind: "database", database: database.file, gameId: 1 },
+      },
+    ]);
+    await act(async () =>
+      root.render(
+        <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+          {renderPanel()}
+        </SWRConfig>,
+      ),
+    );
+    await vi.waitFor(() =>
+      expect(container.querySelector(`.${classes.databaseCard}`)).not.toBeNull(),
+    );
+
+    await act(async () =>
+      container.querySelector<HTMLElement>(`.${classes.databaseCard}`)!.click(),
+    );
+    expect(mocks.navigate).toHaveBeenCalledExactlyOnceWith({
+      to: "/databases/$databaseId",
+      params: { databaseId: "info-database" },
+    });
+    expect(activeDatabaseViewStore.getState().database).toBeUndefined();
+
+    await act(async () => resolveNavigation());
+    expect(activeDatabaseViewStore.getState().database).toEqual(database);
+  });
 
   test("successful setPage loads game and updates tab and tree state", async () => {
     const mockTree = defaultTree();

@@ -53,11 +53,12 @@ import {
   runPgnExport,
 } from "./databaseMutation";
 import { PlayerSearchInput } from "./PlayerSearchInput";
-import { databaseRouteTarget } from "./databaseRoute";
+import { databaseRouteTarget, type DatabaseRouteTarget } from "./databaseRoute";
 
 export default function DatabasesPage() {
   const { t } = useTranslation();
 
+  // Opening the overview ends the active session; mount-only lets double-click and Explore restore the sidebar's database target.
   useEffect(() => {
     if (activeDatabaseViewStore.getState().database) {
       activeDatabaseViewStore.getState().clearDatabase();
@@ -442,9 +443,7 @@ export default function DatabasesPage() {
                     <div>
                       {selectedDatabase.type === "success" && (
                         <Button
-                          component={
-                            Link<RegisteredRouter, string, "/databases" | "/databases/$databaseId">
-                          }
+                          component={Link<RegisteredRouter, string, DatabaseRouteTarget["to"]>}
                           {...databaseRouteTarget(selectedDatabase)}
                           onClick={() => setActiveDatabase(selectedDatabase)}
                           fullWidth
@@ -620,6 +619,8 @@ function PlayerMerger({ selectedDatabase }: { selectedDatabase: DatabaseInfo }) 
     setLoading(true);
     try {
       await tauri.mergePlayers(selectedDatabase.file, player1, player2);
+    } catch (error) {
+      notifyUnlessCancelled(t("Common.Error"), error);
     } finally {
       setLoading(false);
     }
@@ -664,6 +665,20 @@ function DuplicateRemover({
   const { t } = useTranslation();
 
   const [loading, setLoading] = useState(false);
+  function runCleanup(action: (file: DatabaseHandle) => Promise<unknown>) {
+    setLoading(true);
+    void action(selectedDatabase.file)
+      .then(() => {
+        setLoading(false);
+        reload();
+      })
+      .catch((error) => {
+        setLoading(false);
+        reload();
+        notifyUnlessCancelled(t("Common.Error"), error);
+      });
+  }
+
   return (
     <Stack>
       <Text fz="lg" fw="bold">
@@ -671,43 +686,11 @@ function DuplicateRemover({
       </Text>
       <Text fz="sm">{t("Databases.Settings.BatchDelete.Desc")}</Text>
       <Group>
-        <Button
-          loading={loading}
-          onClick={async () => {
-            setLoading(true);
-            void tauri
-              .deleteDuplicatedGames(selectedDatabase.file)
-              .then(() => {
-                setLoading(false);
-                reload();
-              })
-              .catch((error) => {
-                setLoading(false);
-                reload();
-                notifyUnlessCancelled(t("Common.Error"), error);
-              });
-          }}
-        >
+        <Button loading={loading} onClick={() => runCleanup(tauri.deleteDuplicatedGames)}>
           {t("Databases.Settings.RemoveDup")}
         </Button>
 
-        <Button
-          loading={loading}
-          onClick={async () => {
-            setLoading(true);
-            void tauri
-              .deleteEmptyGames(selectedDatabase.file)
-              .then(() => {
-                setLoading(false);
-                reload();
-              })
-              .catch((error) => {
-                setLoading(false);
-                reload();
-                notifyUnlessCancelled(t("Common.Error"), error);
-              });
-          }}
-        >
+        <Button loading={loading} onClick={() => runCleanup(tauri.deleteEmptyGames)}>
           {t("Databases.Settings.RemoveEmpty")}
         </Button>
       </Group>
@@ -737,12 +720,11 @@ function IndexInput({
           onChange={(e) => {
             setLoading(true);
             const fn = e.currentTarget.checked ? tauri.createIndexes : tauri.deleteIndexes;
-            void fn(file).then(() => {
-              getDatabases().then((dbs) => {
-                setDatabases(dbs);
-                setLoading(false);
-              });
-            });
+            void fn(file)
+              .then(() => getDatabases())
+              .then((dbs) => setDatabases(dbs))
+              .catch((error) => notifyUnlessCancelled(t("Common.Error"), error))
+              .finally(() => setLoading(false));
           }}
         />
       </Tooltip>

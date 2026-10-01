@@ -106,7 +106,8 @@ test("database-files: the sidebar resumes the active database view", async ({
 }) => {
     await mockScenario(databaseScenario);
     await page.goto("/databases");
-    await page.getByRole("button").filter({ hasText: databaseTitle }).dblclick();
+    await page.getByRole("button").filter({ hasText: databaseTitle }).click();
+    await page.getByRole("link", { name: "Explore", exact: true }).click();
     await expect(page).toHaveURL(`/databases/${databaseKey}`);
     await expect(page.getByRole("heading", { name: databaseTitle, exact: true })).toBeVisible();
 

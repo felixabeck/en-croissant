@@ -1,10 +1,18 @@
-import type { SuccessDatabaseInfo } from "@/utils/db";
-import { databaseHandleKey, sameDatabaseHandle, type ManagedDatabaseInfo } from "@/utils/db";
+import {
+    databaseHandleKey,
+    sameDatabaseHandle,
+    type ManagedDatabaseInfo,
+    type SuccessDatabaseInfo,
+} from "@/utils/db";
 import { databaseHandleSchema } from "@/utils/pathCapabilities";
+
+export type DatabaseRouteTarget =
+    | { to: "/databases/$databaseId"; params: { databaseId: string } }
+    | { to: "/databases" };
 
 export function databaseRouteTarget(
     database: SuccessDatabaseInfo | null | undefined,
-): { to: "/databases/$databaseId"; params: { databaseId: string } } | { to: "/databases" } {
+): DatabaseRouteTarget {
     const parsed = databaseHandleSchema.safeParse(database?.file);
     return parsed.success
         ? { to: "/databases/$databaseId", params: { databaseId: databaseHandleKey(parsed.data) } }

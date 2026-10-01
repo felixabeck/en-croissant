@@ -11,7 +11,10 @@ import {
 import { Link, useRouterState } from "@tanstack/react-router";
 import cx from "clsx";
 import { useTranslation } from "react-i18next";
-import { databaseRouteTarget } from "@/components/databases/databaseRoute";
+import {
+  databaseRouteTarget,
+  type DatabaseRouteTarget,
+} from "@/components/databases/databaseRoute";
 import { useActiveDatabaseViewStore } from "@/state/store/database";
 import classes from "./Sidebar.module.css";
 
@@ -20,7 +23,7 @@ type SidebarPath = "/" | "/accounts" | "/files" | "/databases" | "/engines" | "/
 interface NavbarLinkProps {
   icon: Icon;
   label: string;
-  target: ReturnType<typeof databaseRouteTarget> | { to: SidebarPath };
+  target?: DatabaseRouteTarget | { to: SidebarPath };
   matchPath: SidebarPath;
 }
 
@@ -29,7 +32,7 @@ function matchesSidebarPath(pathname: string, matchPath: SidebarPath): boolean {
   return path === matchPath || (matchPath !== "/" && path.startsWith(`${matchPath}/`));
 }
 
-function NavbarLink({ target, matchPath, icon: Icon, label }: NavbarLinkProps) {
+function NavbarLink({ matchPath, target = { to: matchPath }, icon: Icon, label }: NavbarLinkProps) {
   const active = useRouterState({
     select: (state) => matchesSidebarPath(state.location.pathname, matchPath),
   });
@@ -67,9 +70,7 @@ export function SideBar() {
   const links = linksdata.map((link) => (
     <NavbarLink
       {...link}
-      target={
-        link.matchPath === "/databases" ? databaseRouteTarget(database) : { to: link.matchPath }
-      }
+      {...(link.matchPath === "/databases" ? { target: databaseRouteTarget(database) } : {})}
       label={t(link.labelKey)}
       key={link.labelKey}
     />
@@ -84,12 +85,7 @@ export function SideBar() {
       </AppShellSection>
       <AppShellSection>
         <Stack justify="center" gap={0}>
-          <NavbarLink
-            icon={IconSettings}
-            label={t("SideBar.Settings")}
-            target={{ to: "/settings" }}
-            matchPath="/settings"
-          />
+          <NavbarLink icon={IconSettings} label={t("SideBar.Settings")} matchPath="/settings" />
         </Stack>
       </AppShellSection>
     </>
