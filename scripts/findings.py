@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: 476d93bb82717615181368ec19b0adada5c0f4657363517f56b577925dbaf434
+# agent-kit-sha256: beec4b413b8f861c0855d7bf7828c82ed8cb900252f89ce3c795878a1444f8d0
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -44,6 +44,7 @@ Subcommands
 ``drain-status`` exit 0 if a drain holds this repo's lock, 1 otherwise
 ``set-header``  mutate selected fields of one finding header
 ``annotate``    append file contents to one finding entry
+``close``       mark a finding handled and append its closing note atomically
 ``record-decision`` append decisions through the decisions ledger lock
 ``set-trailer`` set decision supersession references, adding the trailer where an
                  entry predates it, and refresh their covering receipt
@@ -91,6 +92,7 @@ _READ_ERRORS = (OSError, UnicodeError)
 # `leaf_terminal.py` carry the other two — because this file imports no
 # supervisor module and must stay a single vendorable script.
 _JSON_ERRORS = (ValueError, RecursionError)
+_READ_JSON_ERRORS = _READ_ERRORS + _JSON_ERRORS
 _MERGE_INTENT_ERRORS = _READ_ERRORS + _JSON_ERRORS + (KeyError, TypeError)
 
 # Keep one failed breadcrumb report, including its final newline, within this
@@ -326,10 +328,13 @@ SCRATCH_GRACE_SECONDS = 3600.0
 _GENERATED_SCRATCH_RE = re.compile(r"^(?P<target>.+)\.(?:tmp|candidate)-\d+-\d+-\d+$")
 _GENERATED_INBOX_PART_RE = re.compile(r"^\.\d{8}-\d{6}-\d+-\d+-\d+\.part$")
 MERGE_INTENT_NAME = ".merge-intent.json"
+ANSWER_RETURNING_FIELD = "returning_to_spool"
 
 STATUSES = frozenset({"open", "handled", "rejected"})
 ENTRIES = frozenset({"inline", "lens", "build"})
 ENTRY_RANK = {"inline": 0, "lens": 1, "build": 2}
+ROOT_CLUSTER_MIN_CARRIERS = 2
+CO_LOCATED_MAX = 2
 
 # One grammar for a finding id, so the validator that rejects a malformed one and
 # the allocator that mints a new one cannot drift apart.
@@ -396,6 +401,8 @@ FINALIZE_OUTCOME_NONE = "none"
 FINALIZE_OUTCOME_REPLAY = "replay"
 FINALIZE_OUTCOME_FINALIZED = "finalized"
 FINALIZE_OUTCOME_CLEANUP_FAILED = "cleanup-failed"
+FINALIZE_OUTCOME_MANUAL_REPAIR = "manual-repair"
+MANUAL_REPAIR_RETURN_CODE = 4
 # Every CLI verb is classified once so plan-only mode cannot silently miss a
 # newly added writer. ``file`` is guarded except for its read-only ``--status``
 # form and its explicitly authorised planner spool form.
@@ -415,6 +422,7 @@ COMMAND_CLASSIFICATION = {
     "commit-ledger": "guarded",
     "set-header": "guarded",
     "annotate": "guarded",
+    "close": "guarded",
     "record-decision": "guarded",
     "set-trailer": "guarded",
     "merge-driver": "guarded",
@@ -425,6 +433,12 @@ PLAN_INBOX_ENV = "DRAIN_PLAN_INBOX"
 # must agree on the accepted bullet class or a gated entry can be reported as
 # having no Sentry short-ID.
 _BULLET = r"[*+-]"
+FILED_FROM_RE = re.compile(
+    rf"^[ \t]*{_BULLET}[ \t]+\*\*Filed from:\*\*[ \t]*\S.*$", re.MULTILINE
+)
+PROOF_BULLET_RE = re.compile(
+    rf"^[ \t]*{_BULLET}[ \t]+\*\*Proof:\*\*", re.MULTILINE
+)
 BULLET_LINE_RE = re.compile(rf"^[ \t]*{_BULLET}[ \t]+\S")
 CONTINUATION_LINE_RE = re.compile(r"^[ \t]+\S")
 REJECTED_RE = re.compile(
@@ -814,20 +828,22 @@ def _metadata_schema_issues(meta: LedgerMeta, path: Path) -> list[str]:
         return [f"{where}: invalid field 'v' (expected {LEDGER_META_VERSION})"]
     common = {"v", "kind"}
     if kind == MUTATION_RECEIPT_KIND:
+        command = data.get("command")
         expected = common | {
             "command", "operation", "request_id_sha256", "target",
             "input_sha256", "options", "results", "effect_lines",
             "effect_sha256",
         }
+        if command == "close":
+            expected |= {"header_sha256", "header_status"}
         issues: list[str] = []
         if set(data) != expected:
             issues.append(
                 f"{where}: invalid fields for kind {kind}: "
                 f"{sorted(set(data) ^ expected)}"
             )
-        command = data.get("command")
         if not isinstance(command, str) or command not in (
-            "annotate", "record-decision"
+            "annotate", "record-decision", "close"
         ):
             issues.append(f"{where}: invalid field 'command'")
         for field_name in ("operation", "input_sha256", "effect_sha256"):
@@ -842,6 +858,13 @@ def _metadata_schema_issues(meta: LedgerMeta, path: Path) -> list[str]:
             issues.append(f"{where}: invalid field 'request_id_sha256'")
         if not isinstance(data.get("target"), str):
             issues.append(f"{where}: invalid field 'target'")
+        if command == "close":
+            header_hash = data.get("header_sha256")
+            if not isinstance(header_hash, str) or SHA256_RE.fullmatch(header_hash) is None:
+                issues.append(f"{where}: invalid field 'header_sha256'")
+            header_status = data.get("header_status")
+            if not isinstance(header_status, str) or header_status not in STATUSES:
+                issues.append(f"{where}: invalid field 'header_status'")
         options = data.get("options")
         if not isinstance(options, dict) or set(options) != {"section"}:
             issues.append(f"{where}: invalid field 'options'")
@@ -1044,18 +1067,41 @@ def _receipt_effect_issues(
             continue
         results = cast(list[str], data["results"])
         target = str(data["target"])
-        if command == "annotate":
+        if command in {"annotate", "close"}:
             if results != [target] or ID_RE.fullmatch(target) is None:
                 issues.append(
-                    f"{path}:{meta.line}: annotate receipt has inconsistent "
+                    f"{path}:{meta.line}: {command} receipt has inconsistent "
                     "target/results"
                 )
             effect_lines = range(start + 1, meta.line + 1)
             if any(finding_at_line.get(number) != target for number in effect_lines):
                 issues.append(
-                    f"{path}:{meta.line}: annotate receipt/effect is outside "
+                    f"{path}:{meta.line}: {command} receipt/effect is outside "
                     f"target finding {target}"
                 )
+            if command == "close":
+                target_headers = [
+                    (index, match)
+                    for _heading, index, match in _unfenced_header_matches(
+                        text, fence_states
+                    )[1]
+                    if match.group("id") == target
+                ]
+                if len(target_headers) != 1:
+                    issues.append(
+                        f"{path}:{meta.line}: close receipt target {target} has "
+                        "no unique finding header"
+                    )
+                else:
+                    header_index, header_match = target_headers[0]
+                    if (
+                        _sha256_text(lines[header_index]) != data.get("header_sha256")
+                        or header_match.group("status") != data.get("header_status")
+                    ):
+                        issues.append(
+                            f"{path}:{meta.line}: close receipt header effect does "
+                            f"not match finding {target}"
+                        )
         else:
             if target != "decisions-ledger" or not results:
                 issues.append(
@@ -1294,7 +1340,10 @@ class Finding:
 
     @property
     def cluster_key(self) -> tuple[str, str]:
-        """Group by an evidenced root; otherwise identify this finding alone."""
+        """Return the raw Root relation.
+
+        Queue ranking applies its two-carrier rule separately.
+        """
         return ("root", self.root) if self.root != "-" else ("finding", self.id)
 
     def paths(self) -> set[str]:
@@ -1513,6 +1562,28 @@ class LedgerSupersededError(LedgerError):
     """A foreign ledger commit superseded this command's saved replacement."""
 
 
+class KeptAnswersClaimError(LedgerError):
+    """An answers claim has an inconsistent durable effect and needs repair."""
+
+    def __init__(self, claim: Path, ids: Collection[str]) -> None:
+        self.claim = claim
+        self.ids = tuple(sorted(set(ids)))
+        super().__init__(
+            f"answers claim {claim} has an inconsistent HEAD effect for "
+            f"{', '.join(self.ids)}; kept for manual repair"
+        )
+
+
+class ManualRepairAnswersClaimError(LedgerError):
+    """An answers claim was marked for repair while a consumer was starting."""
+
+    def __init__(self, ids: Collection[str]) -> None:
+        self.ids = tuple(sorted(set(ids)))
+        super().__init__(
+            "answers claim kept for manual repair: " + ",".join(self.ids)
+        )
+
+
 @dataclass
 class LedgerCommitIntent:
     """One CLI command's semantic obligation for a replaced ledger."""
@@ -1549,6 +1620,14 @@ class LedgerCommitResult:
 
 
 @dataclass(frozen=True)
+class AnswerSpoolReturn:
+    """A crash-recoverable answer-file move back to its published spool."""
+
+    identifier: str | None
+    sha256: str
+
+
+@dataclass(frozen=True)
 class ClaimIntent:
     """The validated durable state describing one inbox or answers claim."""
 
@@ -1561,6 +1640,8 @@ class ClaimIntent:
     claimed: tuple[Path, ...]
     files: dict[str, dict[str, object]] | None = None
     quarantined: dict[str, str] = field(default_factory=dict)
+    manual_repair: bool = False
+    returning_to_spool: dict[str, AnswerSpoolReturn] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -2374,6 +2455,11 @@ def load_tooling_areas(
 def load_tooling_areas_from_path(path: Path) -> frozenset[str]:
     """Load tooling areas from a ledger path already proven readable by ``parse``."""
     text = path.read_text(encoding="utf-8")
+    return load_tooling_areas_from_text(text)
+
+
+def load_tooling_areas_from_text(text: str) -> frozenset[str]:
+    """Load tooling areas from already-read ledger text."""
     lines = text.splitlines()
     return load_tooling_areas(lines, _fence_mask(lines))
 
@@ -2619,8 +2705,36 @@ def parse_controller_export(
     return findings, problems, vocabulary
 
 
-def parse(path: Path = LEDGER) -> tuple[list[Finding], list[str], frozenset[str]]:
-    text = path.read_text(encoding="utf-8")
+def _body_line_kind(line: str, fence_state: FenceState) -> bool | None:
+    """Return whether one parser line is body text and if it is fenced."""
+    if fence_state is FenceState.CONTENT:
+        return True if line.strip() else None
+    if fence_state is FenceState.DELIMITER:
+        return None
+    if line.strip() and not HRULE_RE.fullmatch(line):
+        return False
+    return None
+
+
+def _entry_body(
+    lines: list[str], fence_states: list[FenceState], start: int, end: int
+) -> tuple[list[str], list[bool]]:
+    """Collect parser-normalized body lines from one already-located entry span."""
+    body: list[str] = []
+    body_fenced: list[bool] = []
+    for index in range(start, end):
+        fenced = _body_line_kind(lines[index], fence_states[index])
+        if fenced is not None:
+            body.append(lines[index])
+            body_fenced.append(fenced)
+    return body, body_fenced
+
+
+def parse(
+    path: Path = LEDGER, *, text: str | None = None
+) -> tuple[list[Finding], list[str], frozenset[str]]:
+    if text is None:
+        text = path.read_text(encoding="utf-8")
     controller = _controller_export_payload(text)
     if controller is not None:
         # The manifest sits beside ``tasks/``; derived from the ledger's own path
@@ -2652,12 +2766,11 @@ def parse(path: Path = LEDGER) -> tuple[list[Finding], list[str], frozenset[str]
 
     for idx, line in enumerate(lines, start=1):
         fence_state = fence_states[idx - 1]
-        if fence_state is FenceState.CONTENT:
-            if pending is not None and line.strip():
+        if fence_state is not FenceState.OUTSIDE:
+            body_kind = _body_line_kind(line, fence_state)
+            if pending is not None and body_kind is not None:
                 pending.body.append(line)
-                pending.body_fenced.append(True)
-            continue
-        if fence_state is FenceState.DELIMITER:
+                pending.body_fenced.append(body_kind)
             continue
         if line.startswith("# "):
             pending = None
@@ -2717,9 +2830,10 @@ def parse(path: Path = LEDGER) -> tuple[list[Finding], list[str], frozenset[str]
                 "the contract allows exactly one"
             )
             continue
-        if line.strip() and not HRULE_RE.fullmatch(line):
+        body_kind = _body_line_kind(line, fence_state)
+        if body_kind is not None:
             pending.body.append(line)
-            pending.body_fenced.append(False)
+            pending.body_fenced.append(body_kind)
 
     return findings, problems, vocabulary
 
@@ -3014,24 +3128,69 @@ def malformed_superseded_trailers(decisions_path: Path) -> list[str]:
     return issues
 
 
+def _effective_queue_cluster_keys(
+    findings: list[Finding],
+) -> list[tuple[str, str]]:
+    """Apply the two-carrier Root rule once to every finding for queue grouping."""
+    root_counts: dict[str, int] = {}
+    for finding in findings:
+        if finding.root != "-":
+            root_counts[finding.root] = root_counts.get(finding.root, 0) + 1
+
+    return [
+        (
+            ("root", finding.root)
+            if finding.root != "-"
+            and root_counts.get(finding.root, 0) >= ROOT_CLUSTER_MIN_CARRIERS
+            else ("finding", finding.id)
+        )
+        for finding in findings
+    ]
+
+
 def cluster_members(findings: list[Finding], key: tuple[str, str]) -> list[Finding]:
-    return [f for f in findings if f.pickable and f.cluster_key == key]
+    return _ranked_clusters(findings)[2].get(key, [])
+
+
+def _ranked_clusters(
+    findings: list[Finding],
+    *,
+    excluded_ids: Collection[str] = (),
+) -> tuple[
+    list[tuple[tuple[str, str], list[Finding]]],
+    list[Finding],
+    dict[tuple[str, str], list[Finding]],
+    dict[str, tuple[str, str]],
+]:
+    """Evaluate pickability once and group evidenced roots in one queue pass."""
+    queue_keys = _effective_queue_cluster_keys(findings)
+
+    grouped: dict[tuple[str, str], list[Finding]] = {}
+    pickable: list[Finding] = []
+    key_by_id: dict[str, tuple[str, str]] = {}
+    excluded = set(excluded_ids)
+    for finding, key in zip(findings, queue_keys, strict=True):
+        is_pickable = finding.pickable
+        if not is_pickable or finding.id in excluded:
+            continue
+        pickable.append(finding)
+        key_by_id[finding.id] = key
+        grouped.setdefault(key, []).append(finding)
+
+    clusters = list(grouped.items())
+
+    def sort_key(item: tuple[tuple[str, str], list[Finding]]) -> tuple[int, str]:
+        (kind, _name), members = item
+        return (0 if kind == "root" else 1, min(member.id for member in members))
+
+    clusters.sort(key=sort_key)
+    return clusters, pickable, grouped, key_by_id
 
 
 def rank(findings: list[Finding]) -> list[tuple[tuple[str, str], list[Finding]]]:
     """Pickable root clusters and singletons, ordered by relation then age."""
-    keys: list[tuple[str, str]] = []
-    for f in findings:
-        if f.pickable and f.cluster_key not in keys:
-            keys.append(f.cluster_key)
-    clusters = [(key, cluster_members(findings, key)) for key in keys]
-
-    def sort_key(item: tuple[tuple[str, str], list[Finding]]) -> tuple[int, str]:
-        (kind, _name), members = item
-        # Root relation comes first, then the oldest member; size never ranks work.
-        return (0 if kind == "root" else 1, min(m.id for m in members))
-
-    return sorted(clusters, key=sort_key)
+    clusters, _pickable, _grouped, _key_by_id = _ranked_clusters(findings)
+    return clusters
 
 
 def _warn_problems(issues: list[str], command: str) -> None:
@@ -3726,7 +3885,13 @@ def cmd_summary(args: argparse.Namespace) -> int:
     return 0
 
 
-def _raw_entry_records(path: Path, findings: list[Finding]) -> dict[int, dict[str, str]]:
+def _raw_entry_records(
+    path: Path,
+    findings: list[Finding],
+    *,
+    raw_bytes: bytes | None = None,
+    text: str | None = None,
+) -> dict[int, dict[str, str]]:
     """Hash each entry's exact source-byte slice and retain its section.
 
     A Controller finding has no byte slice of its own (the export is one JSON
@@ -3738,8 +3903,8 @@ def _raw_entry_records(path: Path, findings: list[Finding]) -> dict[int, dict[st
     chunks only to recover their byte offsets; UTF-8 is round-tripping here, and
     the hash itself is taken from the original bytes, including CRLF and spaces.
     """
-    raw = path.read_bytes()
-    text = raw.decode("utf-8")
+    raw = path.read_bytes() if raw_bytes is None else raw_bytes
+    text = raw.decode("utf-8") if text is None else text
     lines = text.splitlines()
     chunks = text.splitlines(keepends=True)
     if len(lines) != len(chunks):
@@ -3811,7 +3976,14 @@ def _list_json_records(
 
 
 def cmd_list(args: argparse.Namespace) -> int:
-    findings, problems, vocabulary = parse(args.ledger)
+    ledger_bytes: bytes | None = None
+    ledger_text: str | None = None
+    if _json_requested(args):
+        ledger_bytes = args.ledger.read_bytes()
+        ledger_text = ledger_bytes.decode("utf-8")
+        findings, problems, vocabulary = parse(args.ledger, text=ledger_text)
+    else:
+        findings, problems, vocabulary = parse(args.ledger)
     # Full validation, not just parse problems: an entry with an invented area
     # parses fine, so a structural-only warning would let `related` answer
     # "looks new" about a finding that is already recorded.
@@ -3828,14 +4000,19 @@ def cmd_list(args: argparse.Namespace) -> int:
         rows = [f for f in rows if f.root == args.root]
     if _json_requested(args):
         raw_records = (
-            _raw_entry_records(args.ledger, findings)
+            _raw_entry_records(
+                args.ledger,
+                findings,
+                raw_bytes=ledger_bytes,
+                text=ledger_text,
+            )
             if getattr(args, "raw", False)
             else None
         )
         return _print_json(
             _list_json_records(
                 rows,
-                load_tooling_areas_from_path(args.ledger),
+                load_tooling_areas_from_text(cast(str, ledger_text)),
                 include_body=getattr(args, "body", False),
                 raw_records=raw_records,
             )
@@ -4052,6 +4229,130 @@ def _next_exclusion_keys(values: list[str]) -> set[tuple[str, str]]:
     return keys
 
 
+def _read_answers_claim_intent(
+    claim: Path,
+    *,
+    error_context: Literal["inspect", "read"],
+    allow_missing_ids: bool,
+    validate_ids_only_when_manual_repair: bool = False,
+    require_valid_ids: bool = False,
+) -> tuple[dict[str, object], bool, list[str] | None]:
+    """Read and validate the shared answers-claim intent fields."""
+    intent_path = _claim_intent_path(claim)
+    try:
+        record = json.loads(intent_path.read_text(encoding="utf-8"))
+    except _READ_JSON_ERRORS as exc:
+        if error_context == "inspect":
+            message = f"could not inspect answers claim {claim}: {exc}"
+        else:
+            message = f"could not read {intent_path}: {exc}"
+        raise LedgerError(message) from exc
+    if not isinstance(record, dict):
+        raise LedgerError(f"answers claim intent {intent_path} is not an object")
+    manual_value = record.get("manual_repair", False)
+    if not isinstance(manual_value, bool):
+        raise LedgerError(
+            f"answers claim intent {intent_path} has an invalid manual_repair field"
+        )
+
+    manual_repair = manual_value
+    validate_ids = not validate_ids_only_when_manual_repair or manual_repair
+    raw_ids = record.get("ids", [] if allow_missing_ids else None)
+    if validate_ids:
+        if not isinstance(raw_ids, list) or not all(
+            isinstance(identifier, str)
+            and (not require_valid_ids or ID_RE.fullmatch(identifier) is not None)
+            for identifier in raw_ids
+        ):
+            raise LedgerError(f"answers claim intent {intent_path} has invalid ids")
+        identifiers = cast(list[str], raw_ids)
+    else:
+        identifiers = None
+    return record, manual_repair, identifiers
+
+
+def _standing_answers_claim(
+    spool: Path,
+) -> tuple[Path, set[str], bool]:
+    """Read ids and the repair marker from an answers claim without mutating it."""
+    claim = spool.with_name(f"{spool.name}.claim")
+    if not claim.exists():
+        return claim, set(), False
+    if not claim.is_dir():
+        raise LedgerError(f"answers claim {claim} exists but is not a directory")
+
+    intent_path = _claim_intent_path(claim)
+    manual_repair = False
+    identifiers: set[str] = set()
+    if intent_path.exists():
+        record, manual_repair, raw_ids = _read_answers_claim_intent(
+            claim,
+            error_context="inspect",
+            allow_missing_ids=True,
+        )
+        raw_ids = cast(list[str], raw_ids)
+        identifiers.update(
+            identifier for identifier in raw_ids if ID_RE.fullmatch(identifier)
+        )
+        raw_files = record.get("files", {})
+        if raw_files is not None and not isinstance(raw_files, dict):
+            raise LedgerError(f"answers claim intent {intent_path} has invalid files")
+        if isinstance(raw_files, dict):
+            for value in raw_files.values():
+                if isinstance(value, dict):
+                    identifier = value.get("id")
+                    if isinstance(identifier, str) and ID_RE.fullmatch(identifier):
+                        identifiers.add(identifier)
+        raw_receipts = record.get("receipt_ids", {})
+        if raw_receipts is not None and not isinstance(raw_receipts, dict):
+            raise LedgerError(
+                f"answers claim intent {intent_path} has invalid receipt_ids"
+            )
+        if isinstance(raw_receipts, dict):
+            for value in raw_receipts.values():
+                identifier = value.get("id") if isinstance(value, dict) else value
+                if isinstance(identifier, str) and ID_RE.fullmatch(identifier):
+                    identifiers.add(identifier)
+
+    for answer_path in sorted(claim.glob("*.md")):
+        try:
+            lines = answer_path.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeError) as exc:
+            raise LedgerError(
+                f"could not inspect answer file {answer_path}: {exc}"
+            ) from exc
+        states = _fence_mask(lines)
+        identifiers.update(
+            match.group("id")
+            for line, state in zip(lines, states, strict=True)
+            if state is FenceState.OUTSIDE
+            and (match := ANSWER_ID_RE.match(line)) is not None
+        )
+
+    if not identifiers:
+        raise LedgerError(f"answers claim {claim} contains no readable finding ids")
+    return claim, identifiers, manual_repair
+
+
+def _manual_repair_answers_claim_ids(spool: Path) -> tuple[str, ...]:
+    """Read the durable manual-repair marker without touching an answers claim."""
+    claim = spool.with_name(f"{spool.name}.claim")
+    intent_path = _claim_intent_path(claim)
+    if not intent_path.is_file():
+        return ()
+    _record, marker, raw_ids = _read_answers_claim_intent(
+        claim,
+        error_context="read",
+        allow_missing_ids=False,
+        validate_ids_only_when_manual_repair=True,
+        require_valid_ids=True,
+    )
+    if not marker:
+        return ()
+    identifiers = cast(list[str], raw_ids)
+    return tuple(sorted(set(identifiers)))
+
+
 def _next_json_payload(
     *,
     outcome: str,
@@ -4059,9 +4360,10 @@ def _next_json_payload(
     entry: str | None,
     ids: list[str],
     waiting: list[tuple[str, str]],
+    co_located: list[str] | None = None,
 ) -> dict[str, object]:
     """D4 next object. ``cluster_key.value`` is the same string the text line prints."""
-    return {
+    payload: dict[str, object] = {
         "outcome": outcome,
         "cluster_key": (
             {"by": cluster_key[0], "value": cluster_key[1]}
@@ -4072,6 +4374,40 @@ def _next_json_payload(
         "ids": ids,
         "waiting": [{"id": fid, "on": slug} for fid, slug in waiting],
     }
+    if co_located is not None:
+        payload["co_located"] = co_located
+    return payload
+
+
+def _co_located_singletons(
+    selected_key: tuple[str, str],
+    selected_entry: str,
+    selected_members: list[Finding],
+    pickable: list[Finding],
+    key_by_id: dict[str, tuple[str, str]],
+) -> list[str] | None:
+    """Find up to two older unrooted singletons sharing a full source path."""
+    if selected_entry == "build":
+        return None
+    selected_full: set[str] = set()
+    for finding in selected_members:
+        full, _bare = source_file_keys(finding.paths())
+        selected_full.update(full)
+    if not selected_full:
+        return []
+
+    candidates: list[str] = []
+    selected_files = (selected_full, set())
+    for finding in pickable:
+        if finding.root != "-" or finding.entry not in {"inline", "lens"}:
+            continue
+        key = key_by_id[finding.id]
+        if key[0] != "finding" or key == selected_key:
+            continue
+        candidate_full, _candidate_bare = source_file_keys(finding.paths())
+        if shared_source_files(selected_files, (candidate_full, set())):
+            candidates.append(finding.id)
+    return sorted(candidates)[:CO_LOCATED_MAX]
 
 
 def cmd_next(args: argparse.Namespace) -> int:
@@ -4081,22 +4417,55 @@ def cmd_next(args: argparse.Namespace) -> int:
         print("refusing to pick from an invalid ledger; run `check`", file=sys.stderr)
         return 1
 
+    try:
+        answers_claim, answers_claim_ids, answers_claim_kept = _standing_answers_claim(
+            args.ledger.parent / "findings-answers"
+        )
+    except LedgerError as exc:
+        print(f"refusing to pick while {exc}", file=sys.stderr)
+        return 1
     waiting_rows = _waiting_rows(findings)
+    clusters, pickable, grouped, key_by_id = _ranked_clusters(
+        findings, excluded_ids=answers_claim_ids
+    )
 
     if args.pin:
         chosen = next((f for f in findings if f.id == args.pin), None)
         if chosen is None:
             print(f"no finding with id {args.pin}", file=sys.stderr)
             return 1
-        if not chosen.pickable:
+        if args.pin in answers_claim_ids:
+            claim_reason = (
+                "answers claim kept for manual repair"
+                if answers_claim_kept
+                else "finding is held by a standing answers claim"
+            )
+            sentry_detail = (
+                f", sentry_verification={chosen.sentry_verification}"
+                if chosen.sentry_verification is not None
+                else ""
+            )
             print(
-                f"{args.pin} is not pickable (status={chosen.status}, "
-                f"blocked={chosen.blocked})",
+                f"{args.pin} is not pickable ({claim_reason}: {answers_claim}"
+                f"{sentry_detail})",
                 file=sys.stderr,
             )
             return 1
-        members = cluster_members(findings, chosen.cluster_key)
-        key = chosen.cluster_key
+        key = key_by_id.get(args.pin)
+        if key is None:
+            sentry_state = chosen.sentry_verification
+            sentry_detail = (
+                f", sentry_verification={sentry_state}"
+                if sentry_state is not None
+                else ""
+            )
+            print(
+                f"{args.pin} is not pickable (status={chosen.status}, "
+                f"blocked={chosen.blocked}{sentry_detail})",
+                file=sys.stderr,
+            )
+            return 1
+        members = grouped[key]
         reason = f"pinned: {args.pin}"
     else:
         try:
@@ -4107,7 +4476,6 @@ def cmd_next(args: argparse.Namespace) -> int:
             print(f"invalid next filter: {exc}", file=sys.stderr)
             return 1
         requested_entry = getattr(args, "entry", None)
-        clusters = rank(findings)
         remaining: list[tuple[tuple[str, str], list[Finding]]] = []
         for candidate_key, candidate_members in clusters:
             effective_entry, _candidate_ids = _cluster_entry_and_ids(
@@ -4146,6 +4514,9 @@ def cmd_next(args: argparse.Namespace) -> int:
         )
 
     entry, ids = _cluster_entry_and_ids(members)
+    co_located = _co_located_singletons(
+        key, entry, members, pickable, key_by_id
+    )
     if _json_requested(args):
         return _print_json(
             _next_json_payload(
@@ -4154,11 +4525,14 @@ def cmd_next(args: argparse.Namespace) -> int:
                 entry=entry,
                 ids=ids,
                 waiting=[],
+                co_located=co_located,
             )
         )
     print(f"CLUSTER {key[1]}  entry={entry}")
     print(f"WHY     {reason}")
     print(f"IDS     {' '.join(ids)}")
+    if co_located:
+        print(f"CO-LOCATED {' '.join(co_located)}")
     print()
     for f in members:
         print(f.summary())
@@ -4753,22 +5127,34 @@ def _sweep_scratch(
             continue
 
 
-def _validate_text(candidate: str, near: Path) -> list[str]:
-    """Validate ledger text without a scratch path two runs could collide on."""
+def _validate_text_with_metadata(
+    candidate: str, near: Path
+) -> tuple[list[str], list[LedgerMeta]]:
+    """Validate ledger text and return the metadata scanned during validation."""
     metadata, metadata_issues = _scan_ledger_metadata(candidate, near)
     metadata_issues += _receipt_effect_issues(candidate, near, metadata)
     try:
         with _candidate_scratch(candidate, near) as scratch:
             if "**Area vocabulary:**" not in candidate.split("### ", 1)[0]:
-                return metadata_issues + (
+                issues = metadata_issues + (
                     malformed_decision_headings(scratch)
                     + malformed_superseded_trailers(scratch)
                     + duplicate_decision_ids(scratch)
                 )
+                return issues, metadata
             findings, problems, vocabulary = parse(scratch)
-            return metadata_issues + validate(findings, problems, vocabulary)
+            return (
+                metadata_issues + validate(findings, problems, vocabulary),
+                metadata,
+            )
     except LedgerError as exc:
-        return [*metadata_issues, str(exc)]
+        return [*metadata_issues, str(exc)], metadata
+
+
+def _validate_text(candidate: str, near: Path) -> list[str]:
+    """Validate ledger text without a scratch path two runs could collide on."""
+    issues, _metadata = _validate_text_with_metadata(candidate, near)
+    return issues
 
 
 def _parse_text(
@@ -4848,9 +5234,29 @@ def _read_and_validate_entry(
     and the manual intake path would stop filing.
     """
     try:
-        entry = _normalise_sentry_origin_entry(
-            entry_path.read_text(encoding="utf-8"), ledger
-        )
+        entry = entry_path.read_text(encoding="utf-8")
+        session_id = os.environ.get("DRAIN_SESSION_ID")
+        if session_id and FILED_FROM_RE.search(_unfenced_text(entry)) is None:
+            output = os.environ.get("DRAIN_CODEX_OUTPUT")
+            filed_from = f"* **Filed from:** {session_id}"
+            if output:
+                filed_from += f" · output {output}"
+            lines = entry.splitlines()
+            fence_states = _fence_mask(lines)
+            header_index = next(
+                (
+                    index
+                    for index, (line, state) in enumerate(
+                        zip(lines, fence_states, strict=True)
+                    )
+                    if state is FenceState.OUTSIDE and HEADER_RE.match(line)
+                ),
+                None,
+            )
+            if header_index is not None:
+                lines.insert(header_index + 1, filed_from)
+                entry = "\n".join(lines) + ("\n" if entry.endswith("\n") else "")
+        entry = _normalise_sentry_origin_entry(entry, ledger)
         ledger_text = ledger.read_text(encoding="utf-8")
         candidate = _entry_candidate_text(entry, ledger_text)
         findings, problems, vocabulary = _parse_text(candidate, ledger)
@@ -4896,6 +5302,47 @@ def _read_and_validate_entry(
                 "write **Approved:** or **Decision made:**"
             )
     return entry, issues
+
+
+def _warn_filing_entry(entry: str, ledger: Path, decisions: Path) -> None:
+    """Emit advisory filing context; none of these checks blocks publication."""
+    try:
+        ledger_text = ledger.read_text(encoding="utf-8")
+        candidate = _entry_candidate_text(entry, ledger_text)
+        findings, problems, vocabulary = _parse_text(candidate, ledger)
+        existing, _existing_problems, _existing_vocabulary = parse(ledger)
+    except (LedgerError, OSError, UnicodeError) as exc:
+        print(f"WARN could not inspect filing context: {exc}", file=sys.stderr)
+        return
+    if len(findings) != 1 or problems or validate(
+        findings, problems, vocabulary, allow_pending=True
+    ):
+        return
+
+    finding = findings[0]
+    if finding.root != "-" and not any(
+        other.root == finding.root for other in existing
+    ):
+        print(
+            f"WARN Root slug '{finding.root}' has no other ledger entry; "
+            "it will not form a cluster until another finding carries it.",
+            file=sys.stderr,
+        )
+    body = _unfenced_body(finding)
+    if finding.entry in {"inline", "lens"} and PROOF_BULLET_RE.search(body) is None:
+        print(
+            f"WARN {finding.id} is Entry: {finding.entry} and has no **Proof:** bullet.",
+            file=sys.stderr,
+        )
+    if finding.entry == "build":
+        try:
+            with redirect_stdout(sys.stderr):
+                _print_related_decisions([finding], decisions, ledger)
+        except (LedgerError, OSError, UnicodeError) as exc:
+            print(
+                f"WARN could not read related decisions for {finding.id}: {exc}",
+                file=sys.stderr,
+            )
 
 
 def drain_lock_path() -> Path:
@@ -5082,7 +5529,7 @@ def _allocate_pending(
     """Allocate high-water ids for either ledger's pending headings."""
     lines, matches = locate(text)
     assigned: list[str] = []
-    for _heading_idx, idx, match in matches:
+    for heading_idx, idx, match in matches:
         if match.group("id") != pending_token:
             continue
         used = sorted(
@@ -5100,6 +5547,13 @@ def _allocate_pending(
         taken.add(candidate)
         assigned.append(candidate)
         lines[idx] = lines[idx].replace(pending_token, candidate, 1)
+        if prefix == "f":
+            lines[heading_idx] = re.sub(
+                r"^( {0,3}### )f-PENDING(?: — | - )",
+                r"\g<1>",
+                lines[heading_idx],
+                count=1,
+            )
     return "\n".join(lines), assigned
 
 
@@ -5433,6 +5887,38 @@ def _receipt_matches_request(data: dict[str, object], request: MutationRequest) 
     )
 
 
+def _close_receipt_updates(
+    original: str,
+    finding_id: str,
+    header_line: str,
+    path: Path,
+    *,
+    close_receipts: Collection[LedgerMeta] | None = None,
+) -> dict[int, str]:
+    """Keep close receipts coupled when a later locked write changes a header."""
+    match = HEADER_RE.match(header_line)
+    if match is None or match.group("id") != finding_id:
+        raise LedgerError(f"could not refresh close receipts for {finding_id}")
+    metadata = (
+        _validated_mutation_metadata(original, path)
+        if close_receipts is None
+        else close_receipts
+    )
+    updates: dict[int, str] = {}
+    for meta in metadata:
+        if (
+            meta.data.get("kind") != MUTATION_RECEIPT_KIND
+            or meta.data.get("command") != "close"
+            or meta.data.get("target") != finding_id
+        ):
+            continue
+        refreshed = dict(meta.data)
+        refreshed["header_sha256"] = _sha256_text(header_line)
+        refreshed["header_status"] = match.group("status")
+        updates[meta.line - 1] = _metadata_line(refreshed)
+    return updates
+
+
 def _place_receipt(candidate: str, receipt_line: str) -> str:
     """Replace the single unfenced receipt anchor and leave quoted examples intact."""
     lines = candidate.splitlines()
@@ -5460,7 +5946,11 @@ def _validated_mutation_metadata(text: str, path: Path) -> list[LedgerMeta]:
 def _locked_receipted_mutation(
     path: Path,
     request: MutationRequest,
-    build: Callable[[str], tuple[str, list[str], list[str]]],
+    build: Callable[
+        [str],
+        tuple[str, list[str], list[str]]
+        | tuple[str, list[str], list[str], dict[str, object]],
+    ],
 ) -> list[str]:
     """Run or replay one receipt-bearing ledger mutation under its lock."""
     path = _canonical_ledger_path(path)
@@ -5482,10 +5972,17 @@ def _locked_receipted_mutation(
                 )
             _fsync_directory(path.parent)
             return list(cast(list[str], receipt["results"]))
-        candidate, results, effect = build(original)
+        built = build(original)
+        if len(built) == 3:
+            candidate, results, effect = built
+            receipt_fields: dict[str, object] = {}
+        else:
+            candidate, results, effect, receipt_fields = built
         if not effect:
             raise LedgerError("receipt-bearing mutation produced an empty effect")
-        receipt_line = _metadata_line(_receipt_for(request, results, effect))
+        receipt = _receipt_for(request, results, effect)
+        receipt.update(receipt_fields)
+        receipt_line = _metadata_line(receipt)
         candidate = _place_receipt(candidate, receipt_line)
         issues = _validate_text(candidate, path)
         if issues:
@@ -5520,6 +6017,7 @@ def claim_spool(
     legacy: Path | None = None,
     *,
     into_existing: bool = False,
+    exclude_names: Collection[str] = (),
 ) -> list[Path] | None:
     """Take exclusive ownership of a spool's published files, by rename.
 
@@ -5547,7 +6045,10 @@ def claim_spool(
     if claim.exists() and not into_existing:
         return None
 
-    published = sorted(spool.glob("*.md"))
+    excluded = set(exclude_names)
+    published = [
+        path for path in sorted(spool.glob("*.md")) if path.name not in excluded
+    ]
     if legacy is not None and legacy.exists():
         published.append(legacy)
     if not published:
@@ -5614,11 +6115,13 @@ def _write_claim_intent(
     claim: Path,
     phase: str,
     ids: set[str] | None = None,
-    receipt_ids: dict[str, dict[str, str]] | None = None,
+    receipt_ids: dict[str, str | dict[str, str]] | None = None,
     fixed: Collection[str] | None = None,
     *,
     files: dict[str, dict[str, object]] | None = None,
     quarantined: dict[str, str] | None = None,
+    manual_repair: bool = False,
+    returning_to_spool: dict[str, AnswerSpoolReturn] | None = None,
 ) -> None:
     payload: dict[str, object] = {"phase": phase}
     if ids is not None:
@@ -5631,9 +6134,266 @@ def _write_claim_intent(
         payload["files"] = dict(sorted(files.items()))
     if quarantined:
         payload["quarantined"] = dict(sorted(quarantined.items()))
+    if manual_repair:
+        payload["manual_repair"] = True
+    if returning_to_spool:
+        payload[ANSWER_RETURNING_FIELD] = {
+            name: {
+                "id": value.identifier,
+                "sha256": value.sha256,
+            }
+            for name, value in sorted(returning_to_spool.items())
+        }
     intent = _claim_intent_path(claim)
     serialized = json.dumps(payload, sort_keys=True)
     _atomic_write(intent, serialized, durable_directory=True)
+
+
+def _write_answers_claim_state(
+    claim: Path,
+    intent: ClaimIntent,
+    *,
+    ids: Collection[str],
+    files: dict[str, dict[str, object]] | None,
+    returning_to_spool: dict[str, AnswerSpoolReturn] | None,
+) -> None:
+    """Rewrite an answers intent while preserving its legacy optional fields."""
+    _write_claim_intent(
+        claim,
+        intent.phase,
+        set(ids),
+        intent.receipt_ids if intent.has_receipt_ids else None,
+        fixed=intent.fixed if intent.has_fixed else None,
+        files=files,
+        quarantined=intent.quarantined or None,
+        manual_repair=intent.manual_repair,
+        returning_to_spool=returning_to_spool,
+    )
+
+
+def _relocate_claim_file_durably(
+    claim: Path,
+    destination_dir: Path,
+    name: str,
+    *,
+    conflict_message: str,
+    missing_message: str,
+    expected_sha256: str | None = None,
+    on_move: Callable[[], None] | None = None,
+) -> None:
+    """Move one claimed file and make either side of a replay durable."""
+    source = claim / name
+    destination = destination_dir / name
+    source_exists = source.exists()
+    destination_exists = destination.exists()
+    if source_exists and destination_exists:
+        raise LedgerError(conflict_message)
+    if not source_exists and not destination_exists:
+        raise LedgerError(missing_message)
+
+    current = source if source_exists else destination
+    if (
+        expected_sha256 is not None
+        and _sha256_bytes(current.read_bytes()) != expected_sha256
+    ):
+        raise LedgerError(
+            f"answer return {current} changed after its intent was recorded; "
+            "restore the recorded bytes before retrying"
+        )
+
+    moved = source_exists
+    if moved:
+        os.rename(source, destination)
+        if on_move is not None:
+            on_move()
+    _fsync_directory(claim)
+    _fsync_directory(destination_dir)
+
+
+def _finish_answers_claim_returns(
+    claim: Path,
+    spool: Path,
+    intent: ClaimIntent,
+    *,
+    strict: bool,
+) -> ClaimIntent:
+    """Finish an intent-recorded return, accepting either side of each rename."""
+    if not intent.returning_to_spool:
+        return intent
+    if intent.manual_repair:
+        raise LedgerError(
+            f"answers claim {claim} has a pending return and manual-repair state"
+        )
+
+    spool.mkdir(parents=True, exist_ok=True)
+    for name, returning in sorted(intent.returning_to_spool.items()):
+        source = claim / name
+        try:
+            _relocate_claim_file_durably(
+                claim,
+                spool,
+                name,
+                conflict_message=(
+                    f"cannot recover answer return {name}: it exists in both "
+                    f"{claim} and {spool}; inspect both copies by hand"
+                ),
+                missing_message=(
+                    f"cannot recover answer return {name}: it is missing from both "
+                    f"{claim} and {spool}; restore it before retrying"
+                ),
+                expected_sha256=returning.sha256,
+            )
+        except LedgerError:
+            raise
+        except OSError as exc:
+            raise LedgerError(
+                f"could not return verifier answer {source} to {spool}: {exc}"
+            ) from exc
+
+    files = dict(intent.files) if intent.files is not None else None
+    ids = set(intent.ids)
+    for name, returning in intent.returning_to_spool.items():
+        if files is not None:
+            value = files.pop(name, None)
+            recorded_id = value.get("id") if value is not None else None
+            if isinstance(recorded_id, str):
+                ids.discard(recorded_id)
+        if returning.identifier is not None:
+            ids.discard(returning.identifier)
+    if files is not None:
+        ids = {
+            cast(str, value["id"])
+            for value in files.values()
+            if isinstance(value.get("id"), str)
+        }
+    _write_answers_claim_state(
+        claim,
+        intent,
+        ids=ids,
+        files=files,
+        returning_to_spool=None,
+    )
+    updated = _read_claim_intent(claim, strict=strict)
+    if updated is None:
+        raise LedgerError(
+            f"answers claim {claim} disappeared while finishing answer returns"
+        )
+    return updated
+
+
+def _recover_answers_claim_return_intent(
+    claim: Path, spool: Path, *, strict: bool
+) -> ClaimIntent | None:
+    """Resume any intent-first return before normal claim reconciliation."""
+    intent = _read_claim_intent(claim, strict=strict)
+    if intent is not None and intent.returning_to_spool:
+        return _finish_answers_claim_returns(
+            claim, spool, intent, strict=strict
+        )
+    return intent
+
+
+def _return_answers_claim_files_to_spool(
+    claim: Path,
+    spool: Path,
+    files_to_return: dict[str, str | None],
+    *,
+    strict: bool,
+) -> ClaimIntent:
+    """Journal verifier files before atomically returning them to the spool."""
+    intent = _read_claim_intent(claim, strict=strict)
+    if intent is None:
+        raise LedgerError(f"answers claim {claim} has no intent to update")
+    if intent.manual_repair:
+        raise LedgerError(
+            f"answers claim {claim} is kept for manual repair and cannot return files"
+        )
+    if intent.returning_to_spool:
+        intent = _finish_answers_claim_returns(
+            claim, spool, intent, strict=strict
+        )
+
+    returning = dict(intent.returning_to_spool)
+    for name, identifier in sorted(files_to_return.items()):
+        if name in intent.quarantined:
+            raise LedgerError(
+                f"cannot return quarantined answer {name} from {claim}"
+            )
+        source = claim / name
+        destination = spool / name
+        if not source.exists():
+            raise LedgerError(
+                f"cannot return answer {name}: it is not present in {claim}"
+            )
+        if os.path.lexists(destination):
+            raise LedgerError(
+                f"cannot return answer {name}: destination {destination} already "
+                "exists; the claim and spool are unchanged"
+            )
+        recorded_id = identifier
+        if intent.files is not None:
+            record = intent.files.get(name)
+            if record is None:
+                raise LedgerError(
+                    f"cannot return answer {name}: it is absent from the claim intent"
+                )
+            intent_id = record.get("id")
+            if isinstance(intent_id, str):
+                if identifier is not None and identifier != intent_id:
+                    raise LedgerError(
+                        f"cannot return answer {name}: its id differs from the intent"
+                    )
+                recorded_id = intent_id
+        try:
+            digest = _sha256_bytes(source.read_bytes())
+        except OSError as exc:
+            raise LedgerError(f"could not read answer file {source}: {exc}") from exc
+        returning[name] = AnswerSpoolReturn(recorded_id, digest)
+
+    if not returning:
+        return intent
+    _write_answers_claim_state(
+        claim,
+        intent,
+        ids=intent.ids,
+        files=intent.files,
+        returning_to_spool=returning,
+    )
+    marked = _read_claim_intent(claim, strict=strict)
+    if marked is None:
+        raise LedgerError(
+            f"answers claim {claim} disappeared after recording answer returns"
+        )
+    return _finish_answers_claim_returns(claim, spool, marked, strict=strict)
+
+
+def _mark_answers_claim_manual_repair(claim: Path, ids: Collection[str]) -> None:
+    """Durably type an inconsistent prepared answers claim for later readers."""
+    intent = _read_claim_intent(claim)
+    if intent is None or intent.phase != "prepared" or intent.files is None:
+        raise LedgerError(
+            f"cannot mark answers claim {claim} for manual repair: "
+            "its prepared intent is missing"
+        )
+    sorted_ids = sorted(set(ids))
+    if not sorted_ids or not set(sorted_ids).issubset(intent.ids):
+        raise LedgerError(
+            f"cannot mark answers claim {claim} for manual repair: "
+            "its intent does not record the inconsistent finding ids"
+        )
+    _write_claim_intent(
+        claim,
+        intent.phase,
+        set(intent.ids),
+        cast(dict[str, dict[str, str]], intent.receipt_ids)
+        if intent.has_receipt_ids
+        else None,
+        fixed=intent.fixed if intent.has_fixed else None,
+        files=intent.files,
+        quarantined=intent.quarantined,
+        manual_repair=True,
+        returning_to_spool=intent.returning_to_spool or None,
+    )
 
 
 def _remove_claim_intent(claim: Path) -> None:
@@ -5667,23 +6427,22 @@ def _relocate_quarantined_files(
             )
         _fsync_directory(refused.parent)
         for name, reason in sorted(quarantined.items()):
-            source = claim / name
-            destination = refused / name
-            if source.exists():
-                if destination.exists():
-                    raise LedgerError(
-                        f"cannot quarantine {source.name}: destination "
-                        f"{destination} already exists"
-                    )
-                os.rename(source, destination)
-                print(f"quarantined {name}: {reason}")
-            elif not destination.exists():
-                raise LedgerError(
+            _relocate_claim_file_durably(
+                claim,
+                refused,
+                name,
+                conflict_message=(
+                    f"cannot quarantine {name}: destination {refused / name} "
+                    "already exists"
+                ),
+                missing_message=(
                     f"quarantined {missing_kind} {name} is missing from both "
                     f"{claim} and {refused}; the claim is kept"
-                )
-        _fsync_directory(refused)
-        _fsync_directory(claim)
+                ),
+                on_move=lambda name=name, reason=reason: print(
+                    f"quarantined {name}: {reason}"
+                ),
+            )
     except LedgerError:
         raise
     except OSError as exc:
@@ -5821,6 +6580,7 @@ def _recover_inbox_quarantines(
         kept_ids,
         kept_receipts,
         fixed=kept_fixed if intent.has_fixed else None,
+        **({"manual_repair": True} if intent.manual_repair else {}),
     )
     updated = _read_claim_intent(claim)
     if updated is None:
@@ -6121,6 +6881,35 @@ def _read_claim_intent(
         phase = record["phase"]
         if phase not in {"claimed", "prepared"}:
             raise ValueError(f"unknown phase {phase!r}")
+        manual_repair = record.get("manual_repair", False)
+        if not isinstance(manual_repair, bool):
+            raise ValueError("manual_repair must be a boolean")
+        raw_returning = record.get(ANSWER_RETURNING_FIELD)
+        returning_to_spool: dict[str, AnswerSpoolReturn] = {}
+        if raw_returning is not None:
+            if not isinstance(raw_returning, dict):
+                raise TypeError(f"{ANSWER_RETURNING_FIELD} must be an object")
+            for name, raw_return in raw_returning.items():
+                if (
+                    not isinstance(name, str)
+                    or not name.endswith(".md")
+                    or Path(name).name != name
+                    or name in {".", ".."}
+                    or not isinstance(raw_return, dict)
+                    or set(raw_return) != {"id", "sha256"}
+                ):
+                    raise ValueError(f"invalid {ANSWER_RETURNING_FIELD} record")
+                identifier = raw_return.get("id")
+                digest = raw_return.get("sha256")
+                if (
+                    identifier is not None
+                    and (
+                        not isinstance(identifier, str)
+                        or ID_RE.fullmatch(identifier) is None
+                    )
+                ) or not isinstance(digest, str) or SHA256_RE.fullmatch(digest) is None:
+                    raise ValueError(f"invalid {ANSWER_RETURNING_FIELD} record")
+                returning_to_spool[name] = AnswerSpoolReturn(identifier, digest)
 
         raw_receipts = record.get("receipt_ids")
         receipt_ids: dict[str, str | dict[str, str]] = {}
@@ -6227,6 +7016,16 @@ def _read_claim_intent(
             # quarantine-only intent is the one explicit empty-files case.
             if any(name not in files for name in quarantined):
                 raise ValueError("quarantined file is absent from files")
+            if any(name not in files for name in returning_to_spool):
+                raise ValueError("returning answer file is absent from files")
+            for name, returning in returning_to_spool.items():
+                if (
+                    returning.identifier is not None
+                    and files[name].get("id") != returning.identifier
+                ):
+                    raise ValueError("returning answer id does not match files")
+            if set(returning_to_spool) & set(quarantined):
+                raise ValueError("returning answer file is quarantined")
             # Persist unreadable-file discoveries before a recovery caller can
             # move or replay any member of this claim.
             if quarantined and raw_quarantined != quarantined:
@@ -6238,6 +7037,8 @@ def _read_claim_intent(
                     fixed if raw_fixed is not None else None,
                     files=files,
                     quarantined=quarantined,
+                    **({"manual_repair": True} if manual_repair else {}),
+                    returning_to_spool=(returning_to_spool or None),
                 )
         elif quarantined:
             raise ValueError("quarantined requires files")
@@ -6251,6 +7052,8 @@ def _read_claim_intent(
             claimed,
             files,
             quarantined,
+            manual_repair,
+            returning_to_spool,
         )
     except _MERGE_INTENT_ERRORS as exc:
         raise LedgerError(f"could not read {intent_path}: {exc}") from exc
@@ -6273,6 +7076,15 @@ def _recover_claim(
         _remove_claim_intent(claim)
         claim.rmdir()
         return
+    if answers and intent.returning_to_spool:
+        if not publish_locked:
+            raise LedgerError(
+                f"cannot recover pending answer returns in {claim} without its "
+                "publish lock"
+            )
+        intent = _finish_answers_claim_returns(
+            claim, spool, intent, strict=False
+        )
     if not answers:
         intent = _recover_inbox_quarantines(claim, spool, intent)
     else:
@@ -7015,6 +7827,7 @@ def _reconcile_prepared_claim(
             if remaining_receipts
             else None,
             fixed=intent.fixed,
+            **({"manual_repair": True} if intent.manual_repair else {}),
             **intent_kwargs,
         )
         for path, path_state in path_states.items():
@@ -7270,6 +8083,11 @@ def _reconcile_answers_claim(
     intent = _read_claim_intent(claim)
     if intent is None:
         return Reconciliation([], {}, set(), False)
+    if intent.returning_to_spool:
+        raise LedgerError(
+            f"answers claim {claim} has a pending return; finish it under the "
+            "answers publish lock before reconciliation"
+        )
     if intent.files is None:
         raise LedgerError(_answers_legacy_intent_message(claim, answers, ledger, mode))
     _quarantine_claim_files(claim, answers, intent)
@@ -7329,6 +8147,7 @@ def _reconcile_answers_claim(
             fixed=intent.fixed if intent.has_fixed else None,
             files=intent.files,
             quarantined=quarantined,
+            **({"manual_repair": True} if intent.manual_repair else {}),
         )
         intent = _read_claim_intent(claim)
         if intent is None:
@@ -7394,11 +8213,7 @@ def _reconcile_answers_claim(
             if head_state == "complete":
                 return "present"
             if head_state != "untouched":
-                raise LedgerError(
-                    f"answer {next(name for name, value in records.items() if value[1] is record)} "
-                    f"for {identifier} is {head_state} in HEAD; the claim is kept — "
-                    "inspect the entry and the answer by hand"
-                )
+                raise KeptAnswersClaimError(claim, intent.ids)
         working_state = _answer_effect_state(parsed(working), record)
         if working_state == "complete":
             return "waiting" if head_text is not None else "present"
@@ -7569,6 +8384,7 @@ def cmd_finalize_claims(args: argparse.Namespace) -> int:
     if not acquired:
         return _report_ledger_lock_busy(lock, waited_seconds)
     outcomes: list[tuple[Path, str | None]] = []
+    manual_repair_ids: dict[Path, tuple[str, ...]] = {}
     try:
         if mode == "immediate":
             try:
@@ -7600,9 +8416,29 @@ def cmd_finalize_claims(args: argparse.Namespace) -> int:
         ):
             try:
                 with _publish_lock(publish_lock_path(spool)):
+                    if claim == answers_claim:
+                        _recover_answers_claim_return_intent(
+                            claim, spool, strict=mode == "deferred"
+                        )
                     outcome = finalizer(
                         claim, spool, args.ledger, decisions, mode
                     )
+            except KeptAnswersClaimError as exc:
+                try:
+                    with _publish_lock(publish_lock_path(args.answers)):
+                        _mark_answers_claim_manual_repair(claim, exc.ids)
+                except (LedgerError, OSError, UnicodeError) as mark_exc:
+                    print(
+                        f"FAIL {claim}: could not record manual-repair state: "
+                        f"{mark_exc}",
+                        file=sys.stderr,
+                    )
+                    outcomes.append((claim, None))
+                    continue
+                else:
+                    outcomes.append((claim, FINALIZE_OUTCOME_MANUAL_REPAIR))
+                    manual_repair_ids[claim] = exc.ids
+                    continue
             except (LedgerError, OSError, UnicodeError) as exc:
                 print(f"FAIL {claim}: {exc}", file=sys.stderr)
                 outcomes.append((claim, None))
@@ -7612,9 +8448,12 @@ def cmd_finalize_claims(args: argparse.Namespace) -> int:
         release_ledger_lock(lock)
 
     return_code = 0
+    kept_for_manual_repair = False
+    nonbenign_failure = False
     for claim, outcome in outcomes:
         if outcome is None:
             return_code = 1
+            nonbenign_failure = True
         elif outcome == FINALIZE_OUTCOME_NONE:
             print(f"none {claim}")
         elif outcome == FINALIZE_OUTCOME_FINALIZED:
@@ -7622,13 +8461,24 @@ def cmd_finalize_claims(args: argparse.Namespace) -> int:
         elif outcome == FINALIZE_OUTCOME_CLEANUP_FAILED:
             print(f"cleanup failed {claim}: remove it by hand")
             return_code = 1
+            nonbenign_failure = True
+        elif outcome == FINALIZE_OUTCOME_MANUAL_REPAIR:
+            print(
+                f"kept {claim} for manual repair: "
+                f"{','.join(manual_repair_ids[claim])}"
+            )
+            kept_for_manual_repair = True
         else:
             # `merge` (not `merge-inbox`) is a record token the drain supervisor
             # parses; renaming it is a running-drain contract change.
             next_command = "apply-answers" if claim == answers_claim else "merge"
             print(f"will be replayed by the next {next_command} {claim}")
             return_code = 1
-    return return_code
+    return (
+        MANUAL_REPAIR_RETURN_CODE
+        if kept_for_manual_repair and not nonbenign_failure
+        else return_code
+    )
 
 
 def merge_inbox(
@@ -8367,6 +9217,8 @@ def cmd_file(args: argparse.Namespace) -> int:
             print(f"FAIL {issue}", file=sys.stderr)
         return 1
     assert entry is not None
+    decisions = _args_decisions(args)
+    _warn_filing_entry(entry, args.ledger, decisions)
 
     inbox: Path = args.inbox
     receipt_path = _receipt_path(inbox, entry)
@@ -8380,7 +9232,6 @@ def cmd_file(args: argparse.Namespace) -> int:
         except LedgerError as exc:
             receipt_error = exc
 
-    decisions = _args_decisions(args)
     try:
         citation_candidate = (
             args.ledger.read_text(encoding="utf-8").rstrip()
@@ -9062,6 +9913,10 @@ def cmd_set_header(args: argparse.Namespace) -> int:
                 line[: match.start()] + match.group(1) + checked + line[match.end() :]
             )
         lines[index] = line
+        for receipt_line, refreshed in _close_receipt_updates(
+            text, args.id, line, args.ledger
+        ).items():
+            lines[receipt_line] = refreshed
         return _with_final_newline(text, lines)
 
     _locked_ledger_mutation(args.ledger, build)
@@ -9157,47 +10012,134 @@ def _needs_blank_before_block(
     return not BULLET_LINE_RE.match(lines[index])
 
 
-def cmd_annotate(args: argparse.Namespace) -> int:
-    """Insert a file's lines into one finding entry under the ledger lock."""
-    raw_annotation, annotation = _read_mutation_input(args.file)
-    if not any(line.strip() for line in annotation.splitlines()):
-        raise LedgerError(f"{args.file} contains no content to annotate")
+def _mutate_finding_note(
+    args: argparse.Namespace,
+    *,
+    command: Literal["annotate", "close"],
+    note_path: Path,
+    status: str | None = None,
+) -> int:
+    """Append a validated note, optionally transitioning the same entry's status."""
+    if status is not None:
+        findings, _problems, _vocabulary = parse(args.ledger)
+        refusal = _answerable_header_change_refusal(
+            findings, args.id, blocked=None, status=status
+        )
+        if refusal is not None:
+            print(refusal, file=sys.stderr)
+            return 1
+
+    raw_note, note = _read_mutation_input(note_path)
+    if not any(line.strip() for line in note.splitlines()):
+        raise LedgerError(f"{note_path} contains no content to annotate")
     request = _mutation_request(
-        "annotate", args.id, raw_annotation, None, getattr(args, "request_id", None)
+        command, args.id, raw_note, None, getattr(args, "request_id", None)
     )
 
-    def build(text: str) -> tuple[str, list[str], list[str]]:
+    def build(
+        text: str,
+    ) -> tuple[str, list[str], list[str]] | tuple[
+        str, list[str], list[str], dict[str, object]
+    ]:
         lines, index = _locate_finding_header(text, args.id)
         findings, _problems, _vocabulary = _parse_text(text, args.ledger)
         target = next((finding for finding in findings if finding.id == args.id), None)
         if target is None:
             raise LedgerError(f"finding id {args.id} is not present in the ledger")
-        refusal = _annotation_refusal(annotation, target, args.file)
+        if status is not None:
+            refusal = _answerable_header_change_refusal(
+                findings, args.id, blocked=None, status=status
+            )
+            if refusal is not None:
+                raise LedgerError(refusal)
+        refusal = _annotation_refusal(note, target, note_path)
         if refusal is not None:
             raise LedgerError(refusal)
-        fence_states = _fence_mask(lines)
-        end = _find_entry_span(lines, fence_states, index)
-        effect = annotation.splitlines()
+
+        header_line: str | None = None
+        if status is not None:
+            header_line = lines[index]
+            status_match = re.search(r"(\*\*Status:\*\* )\S+", header_line)
+            if status_match is None:
+                raise LedgerError(
+                    f"header for {args.id} carries no Status field to update"
+                )
+            header_line = (
+                header_line[: status_match.start()]
+                + status_match.group(1)
+                + status
+                + header_line[status_match.end() :]
+            )
+            lines[index] = header_line
+
+        effect = note.splitlines()
+        end = _find_entry_span(lines, _fence_mask(lines), index)
         block = list(effect)
         if _needs_blank_before_block(lines, end, block):
             block.insert(0, "")
         block.append(RECEIPT_PLACEHOLDER)
         lines[end:end] = block
-        _register_ledger_commit(
-            f"docs(findings): annotate {args.id}",
-            [args.id],
-            _receipt_postcondition(
-                command="annotate",
-                operation=request.operation,
-                results=[args.id],
-                decisions=False,
-            ),
+
+        receipt_postcondition = _receipt_postcondition(
+            command=command,
+            operation=request.operation,
+            results=[args.id],
+            decisions=False,
         )
-        return _with_final_newline(text, lines), [args.id], effect
+        if status is not None:
+            status_postcondition = _finding_header_postcondition(
+                args.id, {"status": status}
+            )
+
+            def close_postcondition(
+                findings_path: Path, decisions_path: Path
+            ) -> bool:
+                return status_postcondition(
+                    findings_path, decisions_path
+                ) and receipt_postcondition(findings_path, decisions_path)
+
+            postcondition = close_postcondition
+        else:
+            postcondition = receipt_postcondition
+        _register_ledger_commit(
+            f"docs(findings): {command} {args.id}",
+            [args.id],
+            postcondition,
+        )
+        candidate = _with_final_newline(text, lines)
+        if header_line is None:
+            return candidate, [args.id], effect
+        return (
+            candidate,
+            [args.id],
+            effect,
+            {
+                "header_sha256": _sha256_text(header_line),
+                "header_status": status,
+            },
+        )
 
     _locked_receipted_mutation(args.ledger, request, build)
-    print(f"annotated {args.id} from {args.file}")
+    if command == "close":
+        append_drain_breadcrumb(f"step 10 finding closed {args.id}", "handled")
+        print(f"closed {args.id} with note from {note_path}")
+    else:
+        print(f"annotated {args.id} from {note_path}")
     return 0
+
+
+def cmd_annotate(args: argparse.Namespace) -> int:
+    """Insert a file's lines into one finding entry under the ledger lock."""
+    return _mutate_finding_note(
+        args, command="annotate", note_path=args.file
+    )
+
+
+def cmd_close(args: argparse.Namespace) -> int:
+    """Mark one finding handled and append its closing note under one receipt."""
+    return _mutate_finding_note(
+        args, command="close", note_path=args.note_file, status="handled"
+    )
 
 
 def _append_decision_entry(ledger_text: str, entry: str, section: str | None) -> str:
@@ -9503,11 +10445,10 @@ def _decision_bullets(
     return bullets
 
 
-def _parse_answer_file(path: Path) -> tuple[str, list[str]] | None:
-    """Parse one claimed answer into its id and complete decision payload."""
-    answer = path.read_text(encoding="utf-8")
-    answer_lines = answer.splitlines()
-    answer_fence_states = _fence_mask(answer_lines)
+def _parse_answer_contents(
+    answer: str, answer_lines: list[str], answer_fence_states: list[FenceState]
+) -> tuple[str, list[str]] | None:
+    """Parse one answer's contents into its id and complete decision payload."""
     ids = [
         match.group("id")
         for line, fence_state in zip(answer_lines, answer_fence_states, strict=True)
@@ -9524,6 +10465,36 @@ def _parse_answer_file(path: Path) -> tuple[str, list[str]] | None:
     if len(ids) != 1 or bullet is None or len(decision_matches) != 1:
         return None
     return ids[0], bullet
+
+
+def _parse_answer_file(path: Path) -> tuple[str, list[str]] | None:
+    """Parse one claimed answer into its id and complete decision payload."""
+    answer = path.read_text(encoding="utf-8")
+    answer_lines = answer.splitlines()
+    answer_fence_states = _fence_mask(answer_lines)
+    return _parse_answer_contents(answer, answer_lines, answer_fence_states)
+
+
+def _is_verifier_actor_answer(bullet: list[str]) -> bool:
+    """Identify the automated verifier actor independently of target state."""
+    decision = bullet[0].split(DECIDED_MARKER, 1)[1].strip()
+    match = re.match(r"^(?:approve|reject) — (?P<actor>[^:]+):", decision)
+    return (
+        match is not None
+        and VERIFIER_ACTOR_FULL_RE.fullmatch(match.group("actor")) is not None
+    )
+
+
+def _inspect_answer_file(path: Path) -> tuple[tuple[str, list[str]] | None, bool]:
+    """Parse one published answer and detect verifier authorship in one fence pass."""
+    answer = path.read_text(encoding="utf-8")
+    lines = answer.splitlines()
+    states = _fence_mask(lines)
+    record = _parse_answer_contents(answer, lines, states)
+    has_verifier_actor = any(
+        _is_verifier_actor_answer(bullet) for bullet in _decision_bullets(lines, states)
+    )
+    return record, has_verifier_actor
 
 
 def _sentry_answer_kind(
@@ -9751,6 +10722,19 @@ def cmd_answer(args: argparse.Namespace) -> int:
 
 def cmd_apply_answers(args: argparse.Namespace) -> int:
     """Fold answers through the shared locked mutation pipeline."""
+    spool: Path = args.answers
+    try:
+        kept_ids = _manual_repair_answers_claim_ids(spool)
+    except LedgerError as exc:
+        print(f"FAIL {exc}", file=sys.stderr)
+        return 1
+    if kept_ids:
+        print(
+            "FAIL answers claim kept for manual repair: " + ",".join(kept_ids),
+            file=sys.stderr,
+        )
+        return MANUAL_REPAIR_RETURN_CODE
+
     hold_consumer_lock = bool(getattr(args, "hold_consumer_lock", False))
     if hold_consumer_lock:
         consumer_fd, consumer_lock, consumer_error = _try_consumer_lock()
@@ -9765,7 +10749,6 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
             )
             return 75
         args._consumer_lock_fd = consumer_fd
-    spool: Path = args.answers
     claim = spool.with_name(f"{spool.name}.claim")
     decisions = _args_decisions(args)
     # Before the deferred preconditions, which commit pending ledger dirt.
@@ -9791,9 +10774,13 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
     skipped: list[str] = []
     quarantined: list[Path] = []
     unreadable_current: dict[str, str] = {}
+    skip_verifier_answers = bool(getattr(args, "skip_verifier_answers", False))
 
     def build(text: str) -> str:
         nonlocal claimed
+        kept_ids = _manual_repair_answers_claim_ids(spool)
+        if kept_ids:
+            raise ManualRepairAnswersClaimError(kept_ids)
         if hold_consumer_lock:
             # This check runs inside _locked_ledger_mutation's writer lock,
             # before claiming or settling anything. It prevents foreign bytes
@@ -9814,7 +10801,7 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
                     "could not inspect ledger dirt against HEAD: "
                     + _git_failure_detail(dirty_probe)
                 )
-        issues = _validate_text(text, args.ledger)
+        issues, validated_metadata = _validate_text_with_metadata(text, args.ledger)
         if issues:
             raise LedgerError(
                 f"the working ledger does not validate: {'; '.join(issues)}; "
@@ -9822,6 +10809,35 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
             )
         with _publish_lock(publish_lock_path(spool)):
             _refuse_unapplied_answers(spool)
+            if claim.exists():
+                _recover_answers_claim_return_intent(
+                    claim, spool, strict=mode == "deferred"
+                )
+            if skip_verifier_answers and claim.exists():
+                verifier_files: dict[str, str | None] = {}
+                for answer_path in sorted(claim.glob("*.md")):
+                    try:
+                        answer_record, has_verifier_actor = _inspect_answer_file(
+                            answer_path
+                        )
+                    except (OSError, UnicodeError, LedgerError):
+                        continue
+                    if has_verifier_actor:
+                        answer_ids = _answer_ids_in_path(answer_path)
+                        if answer_record is not None:
+                            identifier = answer_record[0]
+                        elif len(answer_ids) == 1:
+                            identifier = next(iter(answer_ids))
+                        else:
+                            identifier = None
+                        verifier_files[answer_path.name] = identifier
+                if verifier_files:
+                    _return_answers_claim_files_to_spool(
+                        claim,
+                        spool,
+                        verifier_files,
+                        strict=mode == "deferred",
+                    )
             if not _adopt_orphan_parts(spool):
                 raise LedgerError(
                     f"could not adopt every orphan in answers spool {spool}"
@@ -9865,10 +10881,25 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
             existing_claimed = (
                 sorted(claim.glob("*.md")) if claim.exists() else []
             )
+            excluded_names: set[str] = set()
+            inspected_answers: dict[str, tuple[str, list[str]] | None] = {}
+            if skip_verifier_answers:
+                for answer_path in sorted(spool.glob("*.md")):
+                    try:
+                        answer_record, has_verifier_actor = _inspect_answer_file(
+                            answer_path
+                        )
+                    except (OSError, UnicodeError, LedgerError):
+                        continue
+                    if has_verifier_actor:
+                        excluded_names.add(answer_path.name)
+                    else:
+                        inspected_answers[answer_path.name] = answer_record
             newly_claimed = claim_spool(
                 spool,
                 claim,
                 into_existing=claim.exists(),
+                exclude_names=excluded_names,
             )
             claimed = (
                 sorted(existing_claimed + newly_claimed)
@@ -9900,11 +10931,14 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
         answer_records: list[tuple[Path, str, list[str]]] = []
         paths_by_id: dict[str, list[Path]] = {}
         for answer_path in claimed:
-            try:
-                record = _parse_answer_file(answer_path)
-            except (OSError, UnicodeError):
-                unreadable_current[answer_path.name] = "unreadable"
-                continue
+            if answer_path.name in inspected_answers:
+                record = inspected_answers[answer_path.name]
+            else:
+                try:
+                    record = _parse_answer_file(answer_path)
+                except (OSError, UnicodeError):
+                    unreadable_current[answer_path.name] = "unreadable"
+                    continue
             if record is None:
                 raise LedgerError(
                     f"{answer_path.name} needs exactly one finding id and one "
@@ -9997,16 +11031,23 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
                         continue
                     decision = bullet[0].split(DECIDED_MARKER, 1)[1].strip()
                     verifier_match = VERIFIER_DECISION_RE.match(decision)
-                    target_finding = next(
-                        (finding for finding in _parse_text(text, args.ledger)[0]
-                         if finding.id == finding_id),
-                        None,
+                    target_body, target_body_fenced = _entry_body(
+                        lines, ledger_fence_states, header_index + 1, end
                     )
-                    expected_digest = (
-                        verified_body_sha256(target_finding)
-                        if target_finding is not None
-                        else ""
+                    target_finding = Finding(
+                        id=finding_id,
+                        status=header_match.group("status"),
+                        area=header_match.group("area"),
+                        root=header_match.group("root"),
+                        entry=header_match.group("entry"),
+                        blocked=blocked,
+                        title="",
+                        section="",
+                        line=header_index + 1,
+                        body=target_body,
+                        body_fenced=target_body_fenced,
                     )
+                    expected_digest = verified_body_sha256(target_finding)
                     if verifier_match is None:
                         destination = spool.with_name(f"{spool.name}.refused") / answer_path.name
                         verifier_quarantine.append((answer_path, "invalid verifier actor", destination))
@@ -10131,12 +11172,46 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
                 _answers_postcondition(expected_answers),
             )
 
+        close_receipt_updates: dict[int, str] = {}
+        close_receipts_by_id: dict[str, list[LedgerMeta]] = {}
+        if header_updates:
+            # ``text`` passed _validate_text_with_metadata above. Index its
+            # validated close receipts instead of scanning the same bytes again.
+            for meta in validated_metadata:
+                if (
+                    meta.data.get("kind") == MUTATION_RECEIPT_KIND
+                    and meta.data.get("command") == "close"
+                    and isinstance(meta.data.get("target"), str)
+                ):
+                    close_receipts_by_id.setdefault(
+                        cast(str, meta.data["target"]), []
+                    ).append(meta)
+        for updated_header in header_updates.values():
+            updated_match = HEADER_RE.match(updated_header)
+            if updated_match is None:
+                continue
+            close_receipt_updates.update(
+                _close_receipt_updates(
+                    text,
+                    updated_match.group("id"),
+                    updated_header,
+                    args.ledger,
+                    close_receipts=close_receipts_by_id.get(
+                        updated_match.group("id"), []
+                    ),
+                )
+            )
+
         result_lines: list[str] = []
         for index in range(len(lines) + 1):
             if index in insertions:
                 result_lines.extend(insertions[index])
             if index < len(lines):
-                result_lines.append(header_updates.get(index, lines[index]))
+                result_lines.append(
+                    header_updates.get(
+                        index, close_receipt_updates.get(index, lines[index])
+                    )
+                )
 
         if waiting_records or unreadable_current or verifier_quarantine:
             existing_intent = _read_claim_intent(claim, strict=mode == "deferred")
@@ -10191,7 +11266,31 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
         if claimed and (mode != "deferred" or not applied):
             release_spool(claim, spool, claimed)
 
-    _locked_ledger_mutation(args.ledger, build, post_commit=clean_committed_claim)
+    try:
+        _locked_ledger_mutation(
+            args.ledger, build, post_commit=clean_committed_claim
+        )
+    except KeptAnswersClaimError as exc:
+        try:
+            with _publish_lock(publish_lock_path(spool)):
+                _mark_answers_claim_manual_repair(claim, exc.ids)
+        except (LedgerError, OSError, UnicodeError) as mark_exc:
+            print(
+                f"FAIL {claim}: could not record manual-repair state: {mark_exc}",
+                file=sys.stderr,
+            )
+            return 1
+        print(
+            "FAIL answers claim kept for manual repair: " + ",".join(exc.ids),
+            file=sys.stderr,
+        )
+        return MANUAL_REPAIR_RETURN_CODE
+    except ManualRepairAnswersClaimError as exc:
+        print(
+            "FAIL answers claim kept for manual repair: " + ",".join(exc.ids),
+            file=sys.stderr,
+        )
+        return MANUAL_REPAIR_RETURN_CODE
     if applied:
         print(f"applied {len(applied)} decision(s): {', '.join(applied)}")
     for note in skipped:
@@ -10251,12 +11350,13 @@ LEDGER_COMMIT_COMMANDS = frozenset(
         "apply-answers",
         "set-header",
         "annotate",
+        "close",
         "record-decision",
         "set-trailer",
     }
 )
-LEDGER_COMMIT_RETRY_SECONDS = 0.1
-LEDGER_INDEX_REFRESH_ATTEMPTS = 2
+INDEX_LOCK_WAIT_SECONDS = 300.0
+INDEX_LOCK_POLL_SECONDS = 0.1
 LEDGER_HOOK_TIMEOUT_SECONDS = 600.0
 LEDGER_HOOK_TERM_GRACE_SECONDS = 30.0
 LEDGER_INDEX_FILE_MODE = 0o600
@@ -10687,7 +11787,41 @@ def _refresh_ledger_index(
 ) -> tuple[bool, str]:
     """Refresh only ledger index entries, preserving unrelated staged work."""
     last = "index refresh not attempted"
-    for attempt in range(LEDGER_INDEX_REFRESH_ATTEMPTS):
+    wait_seconds = INDEX_LOCK_WAIT_SECONDS
+    poll_seconds = INDEX_LOCK_POLL_SECONDS
+    configured_index = os.environ.get("GIT_INDEX_FILE")
+    if configured_index:
+        index_path = Path(configured_index)
+        if not index_path.is_absolute():
+            index_path = root / index_path
+        index_lock = index_path.with_name(index_path.name + ".lock")
+    else:
+        lock_result = _git_for_ledger(root, "rev-parse", "--git-path", "index.lock")
+        index_lock = Path(lock_result.stdout.strip()) if lock_result.returncode == 0 else None
+        if index_lock is not None and not index_lock.is_absolute():
+            index_lock = root / index_lock
+    deadline = time.monotonic() + wait_seconds
+
+    def wait_for_index_lock() -> bool:
+        if index_lock is None:
+            return True
+        while index_lock.exists():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(poll_seconds, remaining))
+        return True
+
+    def lock_timeout() -> tuple[bool, str]:
+        lock_name = str(index_lock) if index_lock is not None else "the Git index lock"
+        return False, (
+            f"timed out after {wait_seconds:.1f}s waiting for "
+            f"{lock_name} to disappear"
+        )
+
+    if not wait_for_index_lock():
+        return lock_timeout()
+    while True:
         last_result: subprocess.CompletedProcess[str] | None = None
         for relative, mode, blob in relative_modes_blobs:
             last_result = _git_for_ledger(
@@ -10704,8 +11838,14 @@ def _refresh_ledger_index(
         last = _git_failure_detail(last_result)
         if "index.lock" not in last and "index.lock" not in (last_result.stderr or ""):
             break
-        if attempt < LEDGER_INDEX_REFRESH_ATTEMPTS - 1:
-            time.sleep(LEDGER_COMMIT_RETRY_SECONDS)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return lock_timeout()
+        # A peer may acquire the lock after the initial absence check. Give it
+        # the same bounded window to finish, then retry the path-scoped update.
+        time.sleep(min(poll_seconds, remaining))
+        if not wait_for_index_lock():
+            return lock_timeout()
     return False, last
 
 
@@ -10746,6 +11886,70 @@ def _attempt_ledger_commit(
                 intent, cause, scratch, companion_scratch, durable_head=durable_head)
         return LedgerCommitResult(False, cause, durable_head, phase)
 
+    def already_durable(head: str) -> LedgerCommitResult:
+        """Heal only this commit-ledger path when its worktree still equals HEAD."""
+        if intent.command != "commit-ledger" or not head:
+            return LedgerCommitResult(True, durable_head=head)
+        relative = _repo_relative(_resolved_repo_path(intent.ledger), root)
+        try:
+            blob = _head_file_blob(root, head, relative)
+            if blob is None:
+                return LedgerCommitResult(True, durable_head=head)
+            head_bytes = _git_for_ledger_bytes(root, "cat-file", "blob", blob)
+            if head_bytes.returncode != 0:
+                detail = (head_bytes.stderr or head_bytes.stdout).decode(
+                    "utf-8", errors="replace"
+                ).strip().replace("\n", "; ")
+                return failed(
+                    f"ledger commit is durable but index refresh failed: "
+                    f"could not read HEAD blob for {relative}: "
+                    f"{detail or f'git exited {head_bytes.returncode} without a diagnostic'}",
+                    durable_head=head,
+                    phase="after-update-ref",
+                )
+            if _resolved_repo_path(intent.ledger).read_bytes() != head_bytes.stdout:
+                return LedgerCommitResult(True, durable_head=head)
+            mode = _head_file_mode(root, head, relative)
+            staged = _git_for_ledger(root, "ls-files", "--stage", "--", relative)
+            if staged.returncode != 0:
+                return failed(
+                    f"ledger commit is durable but index refresh failed: "
+                    f"could not inspect index entry for {relative}: "
+                    f"{_git_failure_detail(staged)}",
+                    durable_head=head,
+                    phase="after-update-ref",
+                )
+            index_blob = None
+            for record in staged.stdout.splitlines():
+                metadata, separator, indexed_path = record.partition("\t")
+                fields = metadata.split()
+                if (
+                    separator
+                    and indexed_path == relative
+                    and len(fields) == 3
+                    and fields[2] == "0"
+                ):
+                    index_blob = fields[1]
+                    break
+            if index_blob == blob:
+                return LedgerCommitResult(True, durable_head=head)
+            refreshed, detail = _refresh_ledger_index(
+                root, [(relative, mode, blob)]
+            )
+            if not refreshed:
+                return failed(
+                    f"ledger commit is durable but index refresh failed: {detail}",
+                    durable_head=head,
+                    phase="after-update-ref",
+                )
+        except (LedgerError, OSError, UnicodeError, ValueError) as exc:
+            return failed(
+                f"ledger commit is durable but index refresh failed: {exc}",
+                durable_head=head,
+                phase="after-update-ref",
+            )
+        return LedgerCommitResult(True, durable_head=head)
+
     root = cast(Path, REPO_ROOT).resolve()
     lock = ledger_lock_path(_resolved_repo_path(intent.ledger))
     acquired_here = False
@@ -10771,7 +11975,7 @@ def _attempt_ledger_commit(
                 durable_head = _resolve_head(root)
             except LedgerError:
                 durable_head = ""
-            return LedgerCommitResult(True, durable_head=durable_head)
+            return already_durable(durable_head)
         if tracked.returncode != 0:
             return failed(f"fatal tracked-file probe: {_git_failure_detail(tracked)}")
         if intent.companion is not None:
@@ -10844,7 +12048,7 @@ def _attempt_ledger_commit(
             if exact_head:
                 _discard_scratch(scratch)
                 _discard_scratch(companion_scratch)
-                return LedgerCommitResult(True, durable_head=old_head)
+                return already_durable(old_head)
 
         # The worktree may have returned to its old HEAD bytes after this
         # command's replacement, or may have moved independently while the
@@ -10856,7 +12060,7 @@ def _attempt_ledger_commit(
         if holds:
             _discard_scratch(scratch)
             _discard_scratch(companion_scratch)
-            return LedgerCommitResult(True, durable_head=old_head)
+            return already_durable(old_head)
         superseded = _ledger_superseded_error(root, intent, current_head)
         if superseded is not None:
             return failed(str(superseded))
@@ -10935,8 +12139,7 @@ def _attempt_ledger_commit(
                 durable_head = _resolve_head(root)
                 _discard_scratch(scratch)
                 _discard_scratch(companion_scratch)
-                return LedgerCommitResult(
-                    True, durable_head=durable_head, phase="before-update-ref")
+                return already_durable(durable_head)
             return failed(
                 f"HEAD moved during commit: {_git_failure_detail(update_ref)}",
                 phase="before-update-ref")
@@ -11170,6 +12373,11 @@ def build_parser() -> argparse.ArgumentParser:
         "apply-answers", help="fold answered decisions in and unblock them"
     )
     p_answers.add_argument("--answers", type=Path, default=None, help=argparse.SUPPRESS)
+    p_answers.add_argument(
+        "--skip-verifier-answers",
+        action="store_true",
+        help="leave automated Sentry verifier answers in the spool",
+    )
     p_answers.add_argument("--hold-consumer-lock", action="store_true", help=argparse.SUPPRESS)
     p_answers.set_defaults(func=cmd_apply_answers)
 
@@ -11209,6 +12417,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--request-id", help="stable caller identity for one intentional repeat"
     )
     p_annotate.set_defaults(func=cmd_annotate)
+
+    p_close = sub.add_parser("close", help="mark a finding handled and append its note")
+    p_close.add_argument("id")
+    p_close.add_argument("--note-file", type=Path, required=True)
+    p_close.add_argument(
+        "--request-id", help="stable caller identity for one intentional repeat"
+    )
+    p_close.set_defaults(func=cmd_close)
 
     p_record = sub.add_parser(
         "record-decision", help="append decisions through the decisions ledger lock"
