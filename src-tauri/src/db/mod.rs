@@ -34,6 +34,7 @@ use crate::{
         blocking::BLOCKING_GATEWAY,
         path_authority::{
             DatabaseFileTarget, DatabaseHandle, FileWorkspaceHandle, PathAuthority, PathOperation,
+            RegularFileMetadata,
         },
     },
     opening::get_opening_from_setup,
@@ -164,13 +165,12 @@ pub(crate) struct DatabaseSchemaIdentity {
 }
 
 impl DatabaseSchemaIdentity {
-    fn from_file(file: &File) -> Result<Self, Error> {
-        let metadata = file.metadata()?;
-        Ok(Self {
-            object: crate::infra::path_authority::opened_file_identity(file)?,
-            length: metadata.len(),
-            modified: metadata.modified()?,
-        })
+    fn from_probe(probe: &RegularFileMetadata) -> Self {
+        Self {
+            object: probe.identity,
+            length: probe.length,
+            modified: probe.modified,
+        }
     }
 }
 

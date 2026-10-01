@@ -10,6 +10,8 @@
 //! link or leave the opened parent directory.
 
 use crate::error::Error;
+#[cfg(unix)]
+use std::time::Duration;
 // `temp.flush()` in replace_at_driver is platform-neutral, so this trait must be in scope on
 // every target, not only unix.
 use std::io::Write;
@@ -20,6 +22,7 @@ use std::{
     fs::File,
     io::Read,
     path::Path,
+    time::SystemTime,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -50,6 +53,34 @@ pub(crate) enum DirectoryEntryKind {
     Directory,
     RegularFile,
     Other,
+}
+
+/// Metadata for a verified regular file without retaining a readable leaf descriptor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RegularFileMetadata {
+    pub(crate) identity: (u64, u64),
+    pub(crate) length: u64,
+    pub(crate) modified: SystemTime,
+}
+
+#[cfg(all(test, unix))]
+std::thread_local! {
+    static REGULAR_FILE_PROBE_AFTER_ACCESS_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn set_regular_file_probe_after_access_hook(hook: Option<Box<dyn FnOnce()>>) {
+    REGULAR_FILE_PROBE_AFTER_ACCESS_HOOK.with(|slot| *slot.borrow_mut() = hook);
+}
+
+#[cfg(all(test, unix))]
+fn run_regular_file_probe_after_access_hook() {
+    REGULAR_FILE_PROBE_AFTER_ACCESS_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
 }
 
 /// A directory entry snapshot carrying no pathname.
@@ -4464,6 +4495,96 @@ pub(crate) fn open_directory_at(
     writable: bool,
 ) -> Result<File, Error> {
     win::open_directory_child(parent, name, writable)
+}
+
+/// On Unix this uses stat → access → stat and creates no descriptor for the leaf, because
+/// closing any descriptor of its inode would release this process's POSIX locks
+/// (f-20260929-11). On Windows, the corresponding probe opens and closes a read handle, whose
+/// byte-range locks are handle-scoped.
+#[cfg(unix)]
+pub(crate) fn probe_regular_file_at(
+    parent: &File,
+    name: &OsStr,
+) -> Result<RegularFileMetadata, Error> {
+    use rustix::fs::{self as rfs, Access, AtFlags, FileType};
+
+    single_leaf(name)?;
+    let first = rfs::statat(parent, name, AtFlags::SYMLINK_NOFOLLOW)
+        .map_err(|error| Error::Io(Box::new(error.into())))?;
+    if FileType::from_raw_mode(first.st_mode) != FileType::RegularFile {
+        return Err(Error::InvalidInput("target must be a regular file".into()));
+    }
+
+    let access = rfs::accessat(
+        parent,
+        name,
+        Access::READ_OK,
+        AtFlags::EACCESS | AtFlags::SYMLINK_NOFOLLOW,
+    )
+    .map_err(|error| Error::Io(Box::new(error.into())));
+    #[cfg(test)]
+    run_regular_file_probe_after_access_hook();
+
+    let second = rfs::statat(parent, name, AtFlags::SYMLINK_NOFOLLOW)
+        .map_err(|error| Error::Io(Box::new(error.into())))?;
+    if FileType::from_raw_mode(second.st_mode) != FileType::RegularFile {
+        return Err(Error::InvalidInput("target must be a regular file".into()));
+    }
+    let identity = unix::raw_stat_identity(&second);
+    if identity != unix::raw_stat_identity(&first) {
+        return Err(Error::Conflict(
+            "workspace entry changed concurrently".into(),
+        ));
+    }
+    access?;
+
+    let invalid_length = || {
+        Error::Io(Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "regular file has an out-of-range length",
+        )))
+    };
+    let invalid_mtime = || {
+        Error::Io(Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "regular file has an out-of-range modification time",
+        )))
+    };
+    let length = u64::try_from(second.st_size).map_err(|_| invalid_length())?;
+    let nanoseconds = u32::try_from(second.st_mtime_nsec).map_err(|_| invalid_mtime())?;
+    if nanoseconds >= 1_000_000_000 {
+        return Err(invalid_mtime());
+    }
+    let modified = if second.st_mtime >= 0 {
+        let seconds = u64::try_from(second.st_mtime).map_err(|_| invalid_mtime())?;
+        SystemTime::UNIX_EPOCH.checked_add(Duration::new(seconds, nanoseconds))
+    } else {
+        let seconds = second.st_mtime.unsigned_abs();
+        SystemTime::UNIX_EPOCH
+            .checked_sub(Duration::from_secs(seconds))
+            .and_then(|time| time.checked_add(Duration::from_nanos(u64::from(nanoseconds))))
+    }
+    .ok_or_else(invalid_mtime)?;
+
+    Ok(RegularFileMetadata {
+        identity,
+        length,
+        modified,
+    })
+}
+
+#[cfg(windows)]
+pub(crate) fn probe_regular_file_at(
+    parent: &File,
+    name: &OsStr,
+) -> Result<RegularFileMetadata, Error> {
+    let file = open_regular_at(parent, name, RegularFileAccess::ReadOnly)?;
+    let metadata = file.metadata()?;
+    Ok(RegularFileMetadata {
+        identity: crate::infra::path_authority::opened_file_identity(&file)?,
+        length: metadata.len(),
+        modified: metadata.modified()?,
+    })
 }
 
 #[cfg(unix)]

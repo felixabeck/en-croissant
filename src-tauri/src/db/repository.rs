@@ -43,7 +43,7 @@ use crate::error::Error;
 
 use super::{
     bound_sqlite::{BoundDatabase, SqliteMode},
-    migrations, ConnectionOptions, DatabaseSchemaIdentity,
+    migrations, ConnectionOptions, DatabaseSchemaIdentity, RegularFileMetadata,
 };
 
 const MAX_OPEN_DATABASES: usize = 16;
@@ -96,7 +96,7 @@ type AcquiredConnection = (
     Arc<DatabaseEntry>,
     EntryLease,
     PooledConnection<BoundConnectionManager>,
-    std::fs::File,
+    RegularFileMetadata,
 );
 
 /// Keeps the binding alive until after the SQLite connection closes. Field
@@ -382,7 +382,7 @@ impl DatabaseRepository {
     ) -> Result<DatabaseConnection, Error> {
         super::sqlite_cancellation::install()?;
         let (entry, lease, mut connection, probe) = self.acquire_probed(target, cancellation)?;
-        let identity = DatabaseSchemaIdentity::from_file(&probe)?;
+        let identity = DatabaseSchemaIdentity::from_probe(&probe);
         let requires_validation = entry
             .state
             .lock()
@@ -576,8 +576,8 @@ impl DatabaseRepository {
     ) -> Result<DatabaseSchemaIdentity, Error> {
         super::cancellation_check(cancellation)?;
         self.tombstone_conflict(target)?;
-        let file = self.open_current(target)?;
-        let identity = DatabaseSchemaIdentity::from_file(&file)?;
+        let probe = self.probe_current(target)?;
+        let identity = DatabaseSchemaIdentity::from_probe(&probe);
         if identity.object != target.identity() {
             return Err(Error::Conflict(
                 "database changed after capability resolution".into(),
@@ -633,8 +633,8 @@ impl DatabaseRepository {
         &self,
         target: &crate::infra::path_authority::DatabaseFileTarget,
     ) -> Result<(), Error> {
-        let (_key, entry, file) = self.entry(target, None)?;
-        self.mark_schema_validated_entry(&entry, DatabaseSchemaIdentity::from_file(&file)?)
+        let (_key, entry, probe) = self.entry(target, None)?;
+        self.mark_schema_validated_entry(&entry, DatabaseSchemaIdentity::from_probe(&probe))
     }
 
     #[cfg(all(test, unix))]
@@ -822,7 +822,7 @@ impl DatabaseRepository {
         &self,
         target: &crate::infra::path_authority::DatabaseFileTarget,
         cancellation: Option<&CancellationToken>,
-    ) -> Result<(EntryKey, Arc<DatabaseEntry>, std::fs::File), Error> {
+    ) -> Result<(EntryKey, Arc<DatabaseEntry>, RegularFileMetadata), Error> {
         // Identity and lock-only callers can create the pool before `connection()` is reached.
         // Register the SQLite auto-extension at the one shared construction boundary so every
         // pooled connection receives the cancellation progress handler.
@@ -867,9 +867,7 @@ impl DatabaseRepository {
                 finished: false,
             };
 
-            drop(initial_probe);
-            let pre_build_probe = self.open_current(target)?;
-            drop(pre_build_probe);
+            self.probe_current(target)?;
             #[cfg(all(test, unix))]
             run_test_hook(TestHook::PreBuild, target.path());
             let bound = BoundDatabase::acquire(target)?;
@@ -887,7 +885,7 @@ impl DatabaseRepository {
                 })?;
             #[cfg(all(test, unix))]
             run_test_hook(TestHook::PostBuild, target.path());
-            initial_probe = self.open_current(target)?;
+            initial_probe = self.probe_current(target)?;
 
             let mut state = self
                 .state
@@ -1008,13 +1006,13 @@ impl DatabaseRepository {
         }
     }
 
-    fn open_current(
+    fn probe_current(
         &self,
         target: &crate::infra::path_authority::DatabaseFileTarget,
-    ) -> Result<std::fs::File, Error> {
-        let result = target.open_current();
+    ) -> Result<RegularFileMetadata, Error> {
+        let result = target.probe_current();
         #[cfg(test)]
-        run_test_hook(TestHook::AfterOpenCurrent, target.path());
+        run_test_hook(TestHook::AfterProbeCurrent, target.path());
         result
     }
 
@@ -1023,11 +1021,11 @@ impl DatabaseRepository {
         target: &crate::infra::path_authority::DatabaseFileTarget,
         key: &EntryKey,
         cancellation: Option<&CancellationToken>,
-    ) -> Result<std::fs::File, Error> {
-        match self.open_current(target) {
-            Ok(file) => Ok(file),
-            Err(error @ Error::Conflict(_)) => match self.open_current(target) {
-                Ok(file) => Ok(file),
+    ) -> Result<RegularFileMetadata, Error> {
+        match self.probe_current(target) {
+            Ok(probe) => Ok(probe),
+            Err(error @ Error::Conflict(_)) => match self.probe_current(target) {
+                Ok(probe) => Ok(probe),
                 Err(Error::Conflict(_)) => {
                     let stale_entry = self
                         .state
@@ -1055,19 +1053,14 @@ impl DatabaseRepository {
         target: &crate::infra::path_authority::DatabaseFileTarget,
         cancellation: Option<&CancellationToken>,
     ) -> Result<AcquiredConnection, Error> {
-        let (key, entry, initial_probe) = self.entry(target, cancellation)?;
-        drop(initial_probe);
+        let (key, entry, _) = self.entry(target, cancellation)?;
         let lease = entry.acquire()?;
         #[cfg(all(test, unix))]
         run_test_hook(TestHook::PreGet, target.path());
-        let pre_get_probe = match self.open_current(target) {
-            Ok(file) => file,
-            Err(error) => {
-                drop(lease);
-                return Err(self.retire_after_probe_conflict(&key, &entry, error, cancellation)?);
-            }
-        };
-        drop(pre_get_probe);
+        if let Err(error) = self.probe_current(target) {
+            drop(lease);
+            return Err(self.retire_after_probe_conflict(&key, &entry, error, cancellation)?);
+        }
         let refusal_count = entry.bound.refusal_count();
         #[cfg(test)]
         run_test_hook(TestHook::BeforePoolGet, target.path());
@@ -1084,8 +1077,8 @@ impl DatabaseRepository {
         };
         #[cfg(test)]
         run_test_hook(TestHook::PostGet, target.path());
-        let post_get_probe = match self.open_current(target) {
-            Ok(file) => file,
+        let post_get_probe = match self.probe_current(target) {
+            Ok(probe) => probe,
             Err(error) => {
                 drop(connection);
                 drop(lease);
@@ -1109,7 +1102,7 @@ impl DatabaseRepository {
         }
         classify_bound_open_error_result(
             refused_identity,
-            || target.open_current().map(drop),
+            || target.probe_current().map(|_| ()),
             error,
         )
     }
@@ -1189,13 +1182,13 @@ fn entry_key(target: &crate::infra::path_authority::DatabaseFileTarget) -> Resul
 
 fn classify_bound_open_error_result(
     refused_identity: bool,
-    open_current: impl FnOnce() -> Result<(), Error>,
+    probe_current: impl FnOnce() -> Result<(), Error>,
     original: Error,
 ) -> Error {
     if refused_identity {
         return Error::Conflict("database changed after capability resolution".into());
     }
-    match open_current() {
+    match probe_current() {
         Err(Error::Conflict(_)) => {
             Error::Conflict("database changed after capability resolution".into())
         }
@@ -1329,7 +1322,7 @@ pub(crate) enum TestHook {
     PoolGetFailed,
     BoundRefusal,
     PostGet,
-    AfterOpenCurrent,
+    AfterProbeCurrent,
     AfterReadRevision,
     #[cfg(unix)]
     AfterBumpOp,
@@ -1354,13 +1347,13 @@ pub(crate) struct TestHooks {
     pub(crate) pool_get_failed: Option<Box<dyn FnMut() + Send>>,
     pub(crate) bound_refusal: Option<Box<dyn FnMut() + Send>>,
     pub(crate) post_get: Option<Box<dyn FnMut() + Send>>,
-    pub(crate) after_open_current: Option<Box<dyn FnMut(usize) + Send>>,
+    pub(crate) after_probe_current: Option<Box<dyn FnMut(usize) + Send>>,
     pub(crate) after_read_revision: Option<Box<dyn FnMut() + Send>>,
     #[cfg(unix)]
     pub(crate) after_bump_op: Option<Box<dyn FnMut() + Send>>,
     #[cfg(unix)]
     pub(crate) before_revision_bump: Option<Box<dyn FnMut() + Send>>,
-    pub(crate) open_current_count: usize,
+    pub(crate) probe_current_count: usize,
 }
 
 #[cfg(test)]
@@ -1457,7 +1450,7 @@ pub(crate) fn run_test_hook(hook: TestHook, path: &Path) {
         | TestHook::PoolGetFailed
         | TestHook::BoundRefusal
         | TestHook::PostGet => run_noarg_test_hook(hook, path),
-        TestHook::AfterOpenCurrent => run_after_open_current_test_hook(path),
+        TestHook::AfterProbeCurrent => run_after_probe_current_test_hook(path),
         TestHook::AfterReadRevision => run_noarg_test_hook(hook, path),
         #[cfg(unix)]
         TestHook::AfterBumpOp => run_noarg_test_hook(hook, path),
@@ -1488,7 +1481,7 @@ fn run_noarg_test_hook(hook: TestHook, path: &Path) {
         TestHook::PoolGetFailed => hooks.pool_get_failed.take(),
         TestHook::BoundRefusal => hooks.bound_refusal.take(),
         TestHook::PostGet => hooks.post_get.take(),
-        TestHook::AfterOpenCurrent => None,
+        TestHook::AfterProbeCurrent => None,
         TestHook::AfterReadRevision => hooks.after_read_revision.take(),
         #[cfg(unix)]
         TestHook::AfterBumpOp => hooks.after_bump_op.take(),
@@ -1513,7 +1506,7 @@ fn run_noarg_test_hook(hook: TestHook, path: &Path) {
                 #[cfg(unix)]
                 TestHook::PreGet => hooks.pre_get = Some(callback_fn),
                 TestHook::BeforePoolGet | TestHook::PoolGetFailed | TestHook::BoundRefusal => {}
-                TestHook::PostGet | TestHook::AfterOpenCurrent => {}
+                TestHook::PostGet | TestHook::AfterProbeCurrent => {}
                 TestHook::AfterReadRevision => hooks.after_read_revision = Some(callback_fn),
                 #[cfg(unix)]
                 TestHook::AfterBumpOp => hooks.after_bump_op = Some(callback_fn),
@@ -1525,7 +1518,7 @@ fn run_noarg_test_hook(hook: TestHook, path: &Path) {
 }
 
 #[cfg(test)]
-fn run_after_open_current_test_hook(path: &Path) {
+fn run_after_probe_current_test_hook(path: &Path) {
     let hooks_mutex = TEST_HOOKS.get_or_init(|| std::sync::Mutex::new(TestHooks::default()));
     let mut hooks = hooks_mutex
         .lock()
@@ -1533,10 +1526,10 @@ fn run_after_open_current_test_hook(path: &Path) {
     if !test_hook_scope_matches(&hooks, path) {
         return;
     }
-    hooks.open_current_count = hooks.open_current_count.saturating_add(1);
+    hooks.probe_current_count = hooks.probe_current_count.saturating_add(1);
     let (mut callback, count, generation) = (
-        hooks.after_open_current.take(),
-        hooks.open_current_count,
+        hooks.after_probe_current.take(),
+        hooks.probe_current_count,
         hooks.generation,
     );
     drop(hooks);
@@ -1546,7 +1539,7 @@ fn run_after_open_current_test_hook(path: &Path) {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if hooks.generation == generation {
-            hooks.after_open_current = Some(callback_fn);
+            hooks.after_probe_current = Some(callback_fn);
         }
     }
 }
@@ -1877,7 +1870,7 @@ mod tests {
         let opens = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let observed = Arc::clone(&opens);
         let _hooks = configure_test_hooks(&path_a, move |hooks| {
-            hooks.after_open_current = Some(Box::new(move |_| {
+            hooks.after_probe_current = Some(Box::new(move |_| {
                 observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }));
         });
@@ -1923,8 +1916,8 @@ mod tests {
 
     fn install_stale_hook(hooks: &mut TestHooks, hook: TestHook, callback: StaleHookCallback) {
         match hook {
-            TestHook::AfterOpenCurrent => {
-                hooks.after_open_current = Some(Box::new(move |_| callback.invoke()));
+            TestHook::AfterProbeCurrent => {
+                hooks.after_probe_current = Some(Box::new(move |_| callback.invoke()));
             }
             TestHook::AfterReadRevision => {
                 hooks.after_read_revision = Some(Box::new(move || callback.invoke()));
@@ -1939,8 +1932,8 @@ mod tests {
         calls: Arc<std::sync::atomic::AtomicUsize>,
     ) {
         match hook {
-            TestHook::AfterOpenCurrent => {
-                hooks.after_open_current = Some(Box::new(move |_| {
+            TestHook::AfterProbeCurrent => {
+                hooks.after_probe_current = Some(Box::new(move |_| {
                     calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 }));
             }
@@ -2005,7 +1998,7 @@ mod tests {
 
     #[test]
     fn stale_hook_callback_cannot_overwrite_new_configuration() {
-        stale_hook_writeback_case(TestHook::AfterOpenCurrent);
+        stale_hook_writeback_case(TestHook::AfterProbeCurrent);
     }
 
     #[test]
@@ -2022,7 +2015,7 @@ mod tests {
         let observed_calls = Arc::clone(&calls);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _hooks = configure_test_hooks(&path, move |hooks| {
-                hooks.after_open_current = Some(Box::new(move |_| {
+                hooks.after_probe_current = Some(Box::new(move |_| {
                     observed_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 }));
                 panic!("injected hook configuration panic");
@@ -2042,11 +2035,11 @@ mod tests {
         let fresh_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let observed_fresh_calls = Arc::clone(&fresh_calls);
         let _hooks = configure_test_hooks(&fresh_path, move |hooks| {
-            hooks.after_open_current = Some(Box::new(move |_| {
+            hooks.after_probe_current = Some(Box::new(move |_| {
                 observed_fresh_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }));
         });
-        run_test_hook(TestHook::AfterOpenCurrent, &fresh_path);
+        run_test_hook(TestHook::AfterProbeCurrent, &fresh_path);
         assert_eq!(
             fresh_calls.load(std::sync::atomic::Ordering::SeqCst),
             1,
@@ -2219,7 +2212,7 @@ mod tests {
         let expected_thread = Arc::new(std::sync::Mutex::new(None));
         let expected_thread_callback = Arc::clone(&expected_thread);
         let _hooks = configure_test_hooks(&path, |hooks| {
-            hooks.after_open_current = Some(Box::new(move |_| {
+            hooks.after_probe_current = Some(Box::new(move |_| {
                 let is_expected_thread =
                     expected_thread_callback.lock().ok().is_some_and(|thread| {
                         thread
@@ -2777,7 +2770,7 @@ mod tests {
             let path = path.clone();
             let replacement = replacement.clone();
             move |hooks| {
-                hooks.after_open_current = Some(Box::new(move |count| {
+                hooks.after_probe_current = Some(Box::new(move |count| {
                     if count == 1 {
                         std::fs::rename(&replacement, &path).unwrap();
                     }
@@ -2851,7 +2844,7 @@ mod tests {
         let _hooks = configure_test_hooks(&path, {
             let path = path.clone();
             move |hooks| {
-                hooks.after_open_current = Some(Box::new(move |count| {
+                hooks.after_probe_current = Some(Box::new(move |count| {
                     if count == 3 {
                         std::fs::rename(&replacement, &path).unwrap();
                     }
@@ -2895,7 +2888,7 @@ mod tests {
             let opens = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let observed = std::sync::Arc::clone(&opens);
             let _hooks = configure_test_hooks(&path, |hooks| {
-                hooks.after_open_current = Some(Box::new(move |_| {
+                hooks.after_probe_current = Some(Box::new(move |_| {
                     observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 }));
             });
@@ -2916,7 +2909,7 @@ mod tests {
             let observed_opens = std::sync::Arc::clone(&opens);
             let observed_reads = std::sync::Arc::clone(&reads);
             let _hooks = configure_test_hooks(&path, move |hooks| {
-                hooks.after_open_current = Some(Box::new(move |_| {
+                hooks.after_probe_current = Some(Box::new(move |_| {
                     observed_opens.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 }));
                 hooks.after_read_revision = Some(Box::new(move || {
@@ -2984,7 +2977,7 @@ mod tests {
         let callback_repository = std::sync::Arc::clone(&repository);
         let callback_path = path.clone();
         let _hooks = configure_test_hooks(&path, move |hooks| {
-            hooks.after_open_current = Some(Box::new(move |count| {
+            hooks.after_probe_current = Some(Box::new(move |count| {
                 if count == 1 {
                     callback_repository
                         .state
@@ -3091,7 +3084,7 @@ mod tests {
         let opens = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let observed = std::sync::Arc::clone(&opens);
         let _hooks = configure_test_hooks(&path, |hooks| {
-            hooks.after_open_current = Some(Box::new(move |_| {
+            hooks.after_probe_current = Some(Box::new(move |_| {
                 observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }));
         });
@@ -3423,6 +3416,58 @@ mod bound_sqlite_witnesses {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn database_probe_current_keeps_pooled_sqlite_shared_read_lock_held() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = new_database_parent(root.path());
+        let path = parent.join("probe-lock.db3");
+        let target = test_target(&path);
+        let repository = DatabaseRepository::default();
+        let mut setup = repository.initialization_connection(&target, None).unwrap();
+        migrations::prepare_database(&mut setup, "title", "description").unwrap();
+        drop(setup);
+        repository.mark_schema_validated(&target).unwrap();
+
+        let probe = fs::File::open(&path).expect("open persistent probe descriptor");
+        let key = entry_key(&target).unwrap();
+        let bound = repository
+            .state
+            .lock()
+            .unwrap()
+            .entries
+            .get(&key)
+            .expect("repository database entry")
+            .bound
+            .clone();
+        let refusal_count = bound.refusal_count();
+
+        let mut held_connection = repository.connection(&target, None).unwrap();
+        held_connection
+            .batch_execute("BEGIN; SELECT Value FROM Info WHERE Name='DataRevision';")
+            .unwrap();
+        assert_sqlite_shared_read_lock_is_held(&probe);
+
+        let second_connection = repository.connection(&target, None).unwrap();
+        assert_sqlite_shared_read_lock_is_held(&probe);
+        drop(second_connection);
+
+        repository.database_identity(&target).unwrap();
+        assert_sqlite_shared_read_lock_is_held(&probe);
+
+        let classified = repository.classify_bound_open_error(
+            &target,
+            &bound,
+            refusal_count,
+            Error::InvalidInput("simulated SQLite open failure".into()),
+        );
+        assert!(matches!(
+            classified,
+            Error::InvalidInput(message) if message == "simulated SQLite open failure"
+        ));
+        assert_sqlite_shared_read_lock_is_held(&probe);
+    }
+
+    #[cfg(unix)]
     fn open_bound_connection(bound: &BoundDatabase) -> rusqlite::Result<Connection> {
         Connection::open_with_flags(
             bound
@@ -3567,7 +3612,7 @@ mod bound_sqlite_witnesses {
         let observed_after_read = Arc::clone(&observed);
         let leaf = "revision.db3".to_owned();
         let _hooks = configure_test_hooks(&path, move |hooks| {
-            hooks.after_open_current = Some(Box::new(move |count| {
+            hooks.after_probe_current = Some(Box::new(move |count| {
                 if count == 1 {
                     *swap_after_probe.lock().unwrap() = Some(ParentSwapGuard::replace(&swap_path));
                 }
@@ -3579,8 +3624,7 @@ mod bound_sqlite_witnesses {
             }));
         });
 
-        let pre_swap = repository.open_current(&target).unwrap();
-        drop(pre_swap);
+        repository.probe_current(&target).unwrap();
         assert_eq!(
             repository
                 .read_revision(&target, &CancellationToken::new())
@@ -3753,14 +3797,13 @@ mod bound_sqlite_witnesses {
         let hot_path = fixture.path.clone();
         let swap_after_probe = Arc::clone(&swap);
         let _hooks = configure_test_hooks(&fixture.path, move |hooks| {
-            hooks.after_open_current = Some(Box::new(move |count| {
+            hooks.after_probe_current = Some(Box::new(move |count| {
                 if count == 1 {
                     *swap_after_probe.lock().unwrap() = Some(ParentSwapGuard::replace(&hot_path));
                 }
             }));
         });
-        let pre_swap = repository.open_current(&target).unwrap();
-        drop(pre_swap);
+        repository.probe_current(&target).unwrap();
         let result = repository.read_revision(&target, &CancellationToken::new());
         assert!(
             !matches!(result, Ok(2)),
@@ -3841,7 +3884,7 @@ mod bound_sqlite_witnesses {
         let refusal_seen = Arc::new(AtomicBool::new(false));
         let refusal_seen_hook = Arc::clone(&refusal_seen);
         let _hooks = configure_test_hooks(&path, move |hooks| {
-            hooks.after_open_current = Some(Box::new(move |_| {
+            hooks.after_probe_current = Some(Box::new(move |_| {
                 after_open.lock().unwrap().swap_to_replacement();
             }));
             hooks.after_read_revision = Some(Box::new(move || {
@@ -3933,6 +3976,7 @@ mod bound_sqlite_witnesses {
                 permission_error,
             );
             fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+            assert_eq!(target.probe_current().unwrap().identity, target.identity());
             assert!(matches!(
                 result,
                 Err(Error::Io(source))

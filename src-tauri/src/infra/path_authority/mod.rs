@@ -8,8 +8,8 @@
 //! `VerifiedIdentity`: that path re-registers the new inode rather than staying wedged.
 
 use crate::infra::fs::{
-    assert_entry_identity, open_directory_at, open_regular_at, read_directory_entries_at,
-    ParentAccess, RegularFileAccess,
+    assert_entry_identity, open_directory_at, open_regular_at, probe_regular_file_at,
+    read_directory_entries_at, ParentAccess, RegularFileAccess,
 };
 use crate::{
     error::Error,
@@ -47,6 +47,7 @@ mod resolved;
 pub use resolved::ResolvedPath;
 pub(crate) use resolved::{PgnSnapshot, PgnSnapshotIdentity};
 mod verified;
+pub(crate) use crate::infra::fs::RegularFileMetadata;
 pub(crate) use verified::VerifiedFile;
 
 const SCHEMA_VERSION: u32 = 1;
@@ -808,10 +809,11 @@ impl DatabaseFileTarget {
         &self.path
     }
 
-    /// Opens the exact regular file authorized by this carrier after rechecking its retained
-    /// parent and inode. The pathname walk is deliberately kept beside the carrier so repository
-    /// callers cannot substitute a pathname while probing a pooled SQLite connection.
-    pub(crate) fn open_current(&self) -> Result<fs::File, Error> {
+    /// Probes the regular file authorized by this carrier after rechecking its retained parent
+    /// and inode. Unix must not open the leaf: closing any descriptor for an inode can release
+    /// this process's POSIX locks held by a pooled SQLite connection (`f-20260929-11`). The
+    /// pathname walk stays beside the carrier so repository callers cannot substitute a path.
+    pub(crate) fn probe_current(&self) -> Result<RegularFileMetadata, Error> {
         const CONFLICT: &str = "database changed after capability resolution";
 
         fn map_probe_error(class: ProbeErrorClass, error: Error) -> Error {
@@ -838,15 +840,13 @@ impl DatabaseFileTarget {
         if opened_file_identity(&parent_now)? != opened_file_identity(&self.parent)? {
             return Err(Error::Conflict(CONFLICT.into()));
         }
-        let file =
-            crate::infra::fs::open_regular_at(&parent_now, &leaf, RegularFileAccess::ReadOnly)
-                .map_err(|error| {
-                    map_probe_error(classify_probe_error(&error, &parent_now, &leaf), error)
-                })?;
-        if opened_file_identity(&file)? != self.identity {
+        let metadata = probe_regular_file_at(&parent_now, &leaf).map_err(|error| {
+            map_probe_error(classify_probe_error(&error, &parent_now, &leaf), error)
+        })?;
+        if metadata.identity != self.identity {
             return Err(Error::Conflict(CONFLICT.into()));
         }
-        Ok(file)
+        Ok(metadata)
     }
 
     #[cfg(test)]
@@ -8956,6 +8956,43 @@ mod portable_tests {
         opened.read_to_end(&mut bytes).unwrap();
         assert_eq!(bytes, b"nested bytes");
     }
+
+    #[test]
+    fn database_file_target_probe_current_preserves_full_precision_mtime() {
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("database.db3");
+        fs::write(&path, b"database").unwrap();
+        let target = DatabaseFileTarget::for_test_path(&path).unwrap();
+
+        let first_time = UNIX_EPOCH + Duration::new(1_700_000_000, 123_456_789);
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(first_time)
+            .unwrap();
+        let first = target.probe_current().unwrap();
+        assert_eq!(
+            first.modified,
+            fs::metadata(&path).unwrap().modified().unwrap()
+        );
+
+        let second_time = UNIX_EPOCH + Duration::new(1_700_000_000, 987_654_321);
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(second_time)
+            .unwrap();
+        let second = target.probe_current().unwrap();
+        assert_eq!(
+            second.modified,
+            fs::metadata(&path).unwrap().modified().unwrap()
+        );
+        assert_ne!(first.modified, second.modified);
+    }
 }
 
 #[cfg(unix)]
@@ -10245,25 +10282,26 @@ mod tests {
     }
 
     #[test]
-    fn database_file_target_open_current_authenticates_the_authorized_file() {
+    fn database_file_target_probe_current_returns_authorized_identity_and_length() {
         const CONFLICT: &str = "database changed after capability resolution";
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("database.db3");
         fs::write(&path, b"database").unwrap();
         let target = DatabaseFileTarget::for_test_path(&path).unwrap();
 
-        let opened = target.open_current().unwrap();
-        assert_eq!(opened_file_identity(&opened).unwrap(), target.identity());
+        let metadata = target.probe_current().unwrap();
+        assert_eq!(metadata.identity, target.identity());
+        assert_eq!(metadata.length, b"database".len() as u64);
 
         fs::remove_file(&path).unwrap();
         assert!(matches!(
-            target.open_current(),
+            target.probe_current(),
             Err(Error::Conflict(message)) if message == CONFLICT
         ));
     }
 
     #[test]
-    fn database_file_target_open_current_rejects_directory_and_parent_replacements() {
+    fn database_file_target_probe_current_rejects_directory_and_parent_replacements() {
         const CONFLICT: &str = "database changed after capability resolution";
         let dir = tempfile::tempdir().unwrap();
         let directory_path = dir.path().join("directory-leaf");
@@ -10276,7 +10314,7 @@ mod tests {
             directory_path.clone(),
         );
         assert!(matches!(
-            directory_target.open_current(),
+            directory_target.probe_current(),
             Err(Error::Conflict(message)) if message == CONFLICT
         ));
 
@@ -10289,7 +10327,7 @@ mod tests {
         fs::rename(&parent, &moved_parent).unwrap();
         fs::write(&parent, b"not a directory").unwrap();
         assert!(matches!(
-            target.open_current(),
+            target.probe_current(),
             Err(Error::Conflict(message)) if message == CONFLICT
         ));
 
@@ -10307,9 +10345,80 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            hardlink_target.open_current(),
+            hardlink_target.probe_current(),
             Err(Error::Conflict(message)) if message == CONFLICT
         ));
+    }
+
+    #[test]
+    fn database_file_target_probe_current_preserves_pre_epoch_mtime() {
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("database.db3");
+        fs::write(&path, b"database").unwrap();
+        let target = DatabaseFileTarget::for_test_path(&path).unwrap();
+        let expected = UNIX_EPOCH - Duration::new(86_400, 0) + Duration::from_nanos(250_000_000);
+
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(expected)
+            .unwrap();
+
+        assert_eq!(
+            target.probe_current().unwrap().modified,
+            fs::metadata(&path).unwrap().modified().unwrap()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_file_target_probe_current_rejects_a_fifo_leaf_without_blocking() {
+        use std::{ffi::CString, os::unix::ffi::OsStrExt};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("database.db3");
+        fs::write(&path, b"database").unwrap();
+        let target = DatabaseFileTarget::for_test_path(&path).unwrap();
+        fs::remove_file(&path).unwrap();
+        let fifo_path = CString::new(path.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo_path.as_ptr(), 0o600) }, 0);
+
+        assert!(matches!(target.probe_current(), Err(Error::Conflict(_))));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_file_target_probe_current_rejects_swaps_between_access_and_second_stat() {
+        use std::os::unix::fs::symlink;
+
+        for replace_with_symlink in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("database.db3");
+            let original = dir.path().join("database.original");
+            let replacement = dir.path().join("replacement.db3");
+            fs::write(&path, b"authorized database").unwrap();
+            fs::write(&replacement, b"replacement database").unwrap();
+            let target = DatabaseFileTarget::for_test_path(&path).unwrap();
+            let hook_path = path.clone();
+            let hook_original = original.clone();
+            let hook_replacement = replacement.clone();
+            crate::infra::fs::set_regular_file_probe_after_access_hook(Some(Box::new(move || {
+                fs::rename(&hook_path, &hook_original).unwrap();
+                if replace_with_symlink {
+                    symlink(&hook_replacement, &hook_path).unwrap();
+                } else {
+                    fs::hard_link(&hook_replacement, &hook_path).unwrap();
+                }
+            })));
+
+            let result = target.probe_current();
+            assert!(matches!(result, Err(Error::Conflict(_))));
+            fs::remove_file(&path).unwrap();
+            fs::rename(original, path).unwrap();
+        }
     }
 
     #[cfg(unix)]

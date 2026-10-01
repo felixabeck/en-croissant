@@ -430,14 +430,14 @@ mod tests {
         let authority = compact(
             &source_for("infra/path_authority/mod.rs")[braced_body(
                 source_for("infra/path_authority/mod.rs"),
-                "pub(crate) fn open_current(",
+                "pub(crate) fn probe_current(",
             )],
         );
         assert!(
             authority.contains(
                 "ProbeErrorClass::NotFound|ProbeErrorClass::Reparse|ProbeErrorClass::WrongKind"
             ),
-            "open_current must map Reparse with absence and wrong-kind to Conflict"
+            "probe_current must map Reparse with absence and wrong-kind to Conflict"
         );
 
         let search_source = source_for("db/search.rs");
@@ -1491,7 +1491,7 @@ mod tests {
         let dialog = compact(&authority[braced_body(authority, "pub fn grant_dialog_operations(")]);
         let promote = compact(&authority[braced_body(authority, "pub fn promote_dialog(")]);
         let registration = compact(&authority[braced_body(authority, "fn registration_target(")]);
-        let current = compact(&authority[braced_body(authority, "pub(crate) fn open_current(")]);
+        let current = compact(&authority[braced_body(authority, "pub(crate) fn probe_current(")]);
         let retained = compact(&authority[braced_body(authority, "fn retained_workspace_target(")]);
         let fs_open_directory =
             compact(&fs_source[braced_body(fs_source, "pub(crate) fn open_verified_directory(")]);
@@ -1516,7 +1516,7 @@ mod tests {
                 registration.contains("parent_access_for_operations(operations)"),
                 "registration acquisition",
             ),
-            (current.contains("ParentAccess::Readable"), "open_current access"),
+            (current.contains("ParentAccess::Readable"), "probe_current access"),
             (retained.contains("ParentAccess::Writable"), "retained workspace access"),
             (
                 fs_open_directory.contains("ParentAccess::Writable"),
@@ -1669,7 +1669,10 @@ mod tests {
         assert_removed_rows_are_ungated(
             "Phase A",
             &[
-                ("infra/path_authority/mod.rs", "pub(crate) fn open_current("),
+                (
+                    "infra/path_authority/mod.rs",
+                    "pub(crate) fn probe_current(",
+                ),
                 (
                     "infra/path_authority/mod.rs",
                     "pub(crate) fn capability_directory(",
