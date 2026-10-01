@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { getDefaultStore, Provider, useAtomValue } from "jotai";
 import type { DatabaseHandle } from "@/bindings";
 import { databaseConversionStateAtom } from "@/state/atoms";
+import { activeDatabaseViewStore } from "@/state/store/database";
 import { conversionProgressId, databaseHandleKey, type SuccessDatabaseInfo } from "@/utils/db";
 import { useConversionProgress } from "@/hooks/useConversionProgress";
 
@@ -225,7 +226,8 @@ function successDatabase(file: DatabaseHandle, title: string): SuccessDatabaseIn
     player_count: 2,
     event_count: 2,
     game_count: 1,
-    storage_size: 1n,
+    // Native JSON represents this counter as a number.
+    storage_size: 1 as unknown as bigint,
     filename: `${databaseHandleKey(file)}.db3`,
     indexed: true,
     file,
@@ -314,6 +316,8 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   host.remove();
+  activeDatabaseViewStore.getState().clearDatabase();
+  sessionStorage.clear();
 });
 
 async function renderRoute(account = false) {
@@ -351,6 +355,20 @@ async function startAddDatabase() {
   await act(async () => convert.click());
   await vi.waitFor(() => expect(convertCalls.length).toBeGreaterThanOrEqual(1));
 }
+
+test("the database overview ends the active database session on mount", async () => {
+  activeDatabaseViewStore.getState().setDatabase(successDatabase(handleB, "Existing"));
+  await renderRoute();
+  expect(activeDatabaseViewStore.getState().database).toBeUndefined();
+});
+
+test("the database overview preserves a database set after mount", async () => {
+  await renderRoute();
+  const database = successDatabase(handleB, "Existing");
+  await act(async () => activeDatabaseViewStore.getState().setDatabase(database));
+  await renderRoute();
+  expect(activeDatabaseViewStore.getState().database).toEqual(database);
+});
 
 async function selectExistingDatabase() {
   await act(async () => {

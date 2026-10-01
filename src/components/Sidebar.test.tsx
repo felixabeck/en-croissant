@@ -12,6 +12,8 @@ import {
 } from "@tanstack/react-router";
 import { installMatchMediaStub } from "@/tests/matchMedia";
 import { installResizeObserverStub } from "@/tests/resizeObserver";
+import { activeDatabaseViewStore } from "@/state/store/database";
+import type { SuccessDatabaseInfo } from "@/utils/db";
 import { SideBar } from "./Sidebar";
 import classes from "./Sidebar.module.css";
 
@@ -29,9 +31,11 @@ afterEach(() => {
   host?.remove();
   root = undefined;
   host = undefined;
+  activeDatabaseViewStore.getState().clearDatabase();
+  sessionStorage.clear();
 });
 
-test("keeps the active sidebar marker aligned with client navigation", async () => {
+async function renderSidebar(initialPath = "/") {
   const rootRoute = createRootRoute({
     component: () => (
       <AppShell navbar={{ width: "3rem", breakpoint: 0 }}>
@@ -50,6 +54,7 @@ test("keeps the active sidebar marker aligned with client navigation", async () 
     "/files",
     "/databases",
     "/databases/$databaseId",
+    "/databasesX",
     "/engines",
     "/settings",
   ];
@@ -58,7 +63,7 @@ test("keeps the active sidebar marker aligned with client navigation", async () 
   );
   const router = createRouter({
     routeTree: rootRoute.addChildren(routes),
-    history: createMemoryHistory({ initialEntries: ["/"] }),
+    history: createMemoryHistory({ initialEntries: [initialPath] }),
   });
 
   host = document.createElement("div");
@@ -74,6 +79,29 @@ test("keeps the active sidebar marker aligned with client navigation", async () 
       </MantineProvider>,
     ),
   );
+  return router;
+}
+
+const database: SuccessDatabaseInfo = {
+  type: "success",
+  file: { id: { id: "database-A" }, kind: "database" },
+  filename: "database-A.db3",
+  title: "Database A",
+  description: "",
+  player_count: 0,
+  event_count: 0,
+  game_count: 0,
+  // Native JSON represents this counter as a number.
+  storage_size: 0 as unknown as bigint,
+  indexed: false,
+};
+
+function databasesLink() {
+  return host!.querySelector<HTMLAnchorElement>('a[aria-label="SideBar.Databases"]')!;
+}
+
+test("keeps the active sidebar marker aligned with client navigation", async () => {
+  const router = await renderSidebar();
 
   const expectActiveLink = (label: string) => {
     const links = [...host!.querySelectorAll<HTMLAnchorElement>("a[aria-label]")];
@@ -110,4 +138,40 @@ test("keeps the active sidebar marker aligned with client navigation", async () 
   await navigateAndExpect("/databases/abc", "SideBar.Databases");
   await navigateAndExpect("/settings", "SideBar.Settings");
   await navigateAndExpect("/", "SideBar.Board");
+});
+
+test("reactively resumes the active database in the sidebar", async () => {
+  await renderSidebar("/files");
+  expect(databasesLink().getAttribute("href")).toBe("/databases");
+  await act(async () => activeDatabaseViewStore.getState().setDatabase(database));
+  expect(databasesLink().getAttribute("href")).toBe("/databases/database-A");
+});
+
+test.each([undefined, null, {}, { file: {} }, { file: { id: { id: "" }, kind: "database" } }])(
+  "renders safely and targets the overview with stored value %j",
+  async (value) => {
+    activeDatabaseViewStore.setState({ database: value as never });
+    await expect(renderSidebar()).resolves.toBeDefined();
+    expect(databasesLink().getAttribute("href")).toBe("/databases");
+  },
+);
+
+test("marks all database routes active independently of the resume target", async () => {
+  activeDatabaseViewStore.getState().setDatabase(database);
+  const router = await renderSidebar();
+  for (const [to, active] of [
+    ["/databases", true],
+    ["/databases/", true],
+    ["/databases/database-A", true],
+    ["/databases/database-B", true],
+    ["/files", false],
+    ["/databasesX", false],
+  ] as const) {
+    await act(async () => {
+      await router.navigate({ to: to as string });
+    });
+    expect(databasesLink().getAttribute("href")).toBe("/databases/database-A");
+    expect(databasesLink().getAttribute("aria-current")).toBe(active ? "page" : null);
+    expect(databasesLink().classList.contains(classes.active)).toBe(active);
+  }
 });

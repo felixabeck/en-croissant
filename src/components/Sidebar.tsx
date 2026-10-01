@@ -8,25 +8,39 @@ import {
   IconSettings,
   IconUser,
 } from "@tabler/icons-react";
-import { Link } from "@tanstack/react-router";
+import { Link, useRouterState } from "@tanstack/react-router";
+import cx from "clsx";
 import { useTranslation } from "react-i18next";
+import { databaseRouteTarget } from "@/components/databases/databaseRoute";
+import { useActiveDatabaseViewStore } from "@/state/store/database";
 import classes from "./Sidebar.module.css";
+
+type SidebarPath = "/" | "/accounts" | "/files" | "/databases" | "/engines" | "/settings";
 
 interface NavbarLinkProps {
   icon: Icon;
   label: string;
-  url: string;
+  target: ReturnType<typeof databaseRouteTarget> | { to: SidebarPath };
+  matchPath: SidebarPath;
 }
 
-function NavbarLink({ url, icon: Icon, label }: NavbarLinkProps) {
+function matchesSidebarPath(pathname: string, matchPath: SidebarPath): boolean {
+  const path = pathname.replace(/\/+$/, "") || "/";
+  return path === matchPath || (matchPath !== "/" && path.startsWith(`${matchPath}/`));
+}
+
+function NavbarLink({ target, matchPath, icon: Icon, label }: NavbarLinkProps) {
+  const active = useRouterState({
+    select: (state) => matchesSidebarPath(state.location.pathname, matchPath),
+  });
   return (
     <Tooltip label={label} position="right">
       <Link
-        to={url}
+        {...target}
         preload="intent"
         aria-label={label}
-        className={classes.link}
-        activeProps={{ className: classes.active }}
+        className={cx(classes.link, active && classes.active)}
+        aria-current={active ? "page" : undefined}
       >
         <Icon size="1.5rem" stroke={1.5} />
       </Link>
@@ -35,22 +49,30 @@ function NavbarLink({ url, icon: Icon, label }: NavbarLinkProps) {
 }
 
 const linksdata = [
-  { icon: IconChess, labelKey: "SideBar.Board", url: "/" },
-  { icon: IconUser, labelKey: "SideBar.User", url: "/accounts" },
-  { icon: IconFiles, labelKey: "SideBar.Files", url: "/files" },
+  { icon: IconChess, labelKey: "SideBar.Board", matchPath: "/" },
+  { icon: IconUser, labelKey: "SideBar.User", matchPath: "/accounts" },
+  { icon: IconFiles, labelKey: "SideBar.Files", matchPath: "/files" },
   {
     icon: IconDatabase,
     labelKey: "SideBar.Databases",
-    url: "/databases",
+    matchPath: "/databases",
   },
-  { icon: IconCpu, labelKey: "SideBar.Engines", url: "/engines" },
-];
+  { icon: IconCpu, labelKey: "SideBar.Engines", matchPath: "/engines" },
+] as const;
 
 export function SideBar() {
   const { t } = useTranslation();
+  const database = useActiveDatabaseViewStore((s) => s.database);
 
   const links = linksdata.map((link) => (
-    <NavbarLink {...link} label={t(link.labelKey)} key={link.labelKey} />
+    <NavbarLink
+      {...link}
+      target={
+        link.matchPath === "/databases" ? databaseRouteTarget(database) : { to: link.matchPath }
+      }
+      label={t(link.labelKey)}
+      key={link.labelKey}
+    />
   ));
 
   return (
@@ -62,7 +84,12 @@ export function SideBar() {
       </AppShellSection>
       <AppShellSection>
         <Stack justify="center" gap={0}>
-          <NavbarLink icon={IconSettings} label={t("SideBar.Settings")} url="/settings" />
+          <NavbarLink
+            icon={IconSettings}
+            label={t("SideBar.Settings")}
+            target={{ to: "/settings" }}
+            matchPath="/settings"
+          />
         </Stack>
       </AppShellSection>
     </>

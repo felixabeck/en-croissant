@@ -22,7 +22,6 @@ function DatabaseView() {
   const { t } = useTranslation();
   const database = useActiveDatabaseViewStore((s) => s.database);
   const mode = useActiveDatabaseViewStore((s) => s.activeTab);
-  const clearDatabase = useActiveDatabaseViewStore((s) => s.clearDatabase);
   const setActiveTab = useActiveDatabaseViewStore((s) => s.setActiveTab);
   const { databaseId } = useParams({ from: "/databases/$databaseId" });
   const databaseOwner = useNativeRequestOwner("databases");
@@ -73,7 +72,7 @@ function DatabaseView() {
       <DatabaseViewStateContext.Provider value={activeDatabaseViewStore}>
         <Stack h="100%" style={{ overflow: "hidden" }}>
           <Group align="center">
-            <Link onClick={() => clearDatabase()} to={"/databases"}>
+            <Link to="/databases">
               <IconAction label={t("Common.Back")} variant="default">
                 <IconArrowBackUp size="1rem" />
               </IconAction>

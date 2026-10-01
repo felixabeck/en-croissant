@@ -23,7 +23,7 @@ import {
 } from "@mantine/core";
 import { useDebouncedValue, useToggle } from "@mantine/hooks";
 import { IconArrowRight, IconDatabase, IconPlus, IconSearch } from "@tabler/icons-react";
-import { Link, useNavigate } from "@tanstack/react-router";
+import { Link, useNavigate, type RegisteredRouter } from "@tanstack/react-router";
 import { useAtom } from "jotai";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -53,9 +53,16 @@ import {
   runPgnExport,
 } from "./databaseMutation";
 import { PlayerSearchInput } from "./PlayerSearchInput";
+import { databaseRouteTarget } from "./databaseRoute";
 
 export default function DatabasesPage() {
   const { t } = useTranslation();
+
+  useEffect(() => {
+    if (activeDatabaseViewStore.getState().database) {
+      activeDatabaseViewStore.getState().clearDatabase();
+    }
+  }, []);
 
   const databaseOwner = useNativeRequestOwner("databases");
   const {
@@ -274,12 +281,7 @@ export default function DatabasesPage() {
                       error={item.type === "error" ? item.error : ""}
                       onDoubleClick={() => {
                         if (item.type === "error") return;
-                        navigate({
-                          to: "/databases/$databaseId",
-                          params: {
-                            databaseId: databaseHandleKey(item.file),
-                          },
-                        });
+                        navigate(databaseRouteTarget(item));
                         setActiveDatabase(item);
                         //setStorageSelected(item);
                       }}
@@ -440,8 +442,10 @@ export default function DatabasesPage() {
                     <div>
                       {selectedDatabase.type === "success" && (
                         <Button
-                          component={Link}
-                          to={`/databases/${databaseHandleKey(selectedDatabase.file)}`}
+                          component={
+                            Link<RegisteredRouter, string, "/databases" | "/databases/$databaseId">
+                          }
+                          {...databaseRouteTarget(selectedDatabase)}
                           onClick={() => setActiveDatabase(selectedDatabase)}
                           fullWidth
                           variant="default"

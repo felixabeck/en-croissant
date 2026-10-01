@@ -1,5 +1,15 @@
 import type { SuccessDatabaseInfo } from "@/utils/db";
 import { databaseHandleKey, sameDatabaseHandle, type ManagedDatabaseInfo } from "@/utils/db";
+import { databaseHandleSchema } from "@/utils/pathCapabilities";
+
+export function databaseRouteTarget(
+    database: SuccessDatabaseInfo | null | undefined,
+): { to: "/databases/$databaseId"; params: { databaseId: string } } | { to: "/databases" } {
+    const parsed = databaseHandleSchema.safeParse(database?.file);
+    return parsed.success
+        ? { to: "/databases/$databaseId", params: { databaseId: databaseHandleKey(parsed.data) } }
+        : { to: "/databases" };
+}
 
 export type DatabaseRouteResolution =
     | { status: "loading" }

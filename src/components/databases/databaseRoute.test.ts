@@ -1,7 +1,26 @@
 import { describe, expect, it } from "vitest";
 import type { DatabaseHandle } from "@/bindings";
 import type { ManagedDatabaseInfo, SuccessDatabaseInfo } from "@/utils/db";
-import { resolveDatabaseRoute } from "./databaseRoute";
+import { databaseRouteTarget, resolveDatabaseRoute } from "./databaseRoute";
+
+describe("database route target", () => {
+    it("targets the database view using the handle key", () => {
+        expect(databaseRouteTarget(database("db-1"))).toEqual({
+            to: "/databases/$databaseId",
+            params: { databaseId: "db-1" },
+        });
+    });
+
+    it.each([undefined, null, {}, { file: {} }, { file: { id: { id: "" }, kind: "database" } }])(
+        "safely targets the overview for %j",
+        (value) => {
+            const target = () =>
+                databaseRouteTarget(value as SuccessDatabaseInfo | null | undefined);
+            expect(target).not.toThrow();
+            expect(target()).toEqual({ to: "/databases" });
+        },
+    );
+});
 
 const handle = (id: string): DatabaseHandle => ({ id: { id }, kind: "database" });
 const database = (id: string, title = "Same title"): SuccessDatabaseInfo => ({

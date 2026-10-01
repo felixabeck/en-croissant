@@ -26,7 +26,7 @@ import { getStats } from "@/utils/repertoire";
 import useSWR from "swr";
 import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import { getDatabases, sameDatabaseHandle } from "@/utils/db";
-import { databaseHandleKey } from "@/utils/db";
+import { databaseRouteTarget } from "@/components/databases/databaseRoute";
 import { useNavigate } from "@tanstack/react-router";
 import { useActiveDatabaseViewStore } from "@/state/store/database";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
@@ -115,12 +115,7 @@ function DatabaseInfo({ path, id: _id }: { path: DatabaseHandle; id: number }) {
       <Box
         className={classes.databaseCard}
         onClick={async () => {
-          await navigate({
-            to: "/databases/$databaseId",
-            params: {
-              databaseId: databaseHandleKey(dbInfo.file),
-            },
-          });
+          await navigate(databaseRouteTarget(dbInfo));
           setActiveDatabase(dbInfo);
         }}
       >
