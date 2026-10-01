@@ -2714,8 +2714,9 @@ fn delete_database_blocking(
                 "partial removal"
             };
             log::warn!(
-                "database registry cleanup failed after {failure} for {}: {cleanup_error}",
-                target.path().display()
+                "database registry cleanup failed after {failure} for {}: {}",
+                target.path().display(),
+                cleanup_error.diagnostic()
             );
         }
         return finish_database_deletion(primary_gone, unlinked, Err(error));
@@ -11467,6 +11468,9 @@ mod tests {
                 .expect("registry cleanup failure must be logged");
             assert!(warning.message.contains("after partial removal"));
             assert!(!warning.message.contains("durability uncertainty"));
+            assert!(warning
+                .message
+                .contains("I/O failure: injected TempfileCreate failure"));
         }
     }
 
