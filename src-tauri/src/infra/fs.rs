@@ -4515,8 +4515,10 @@ pub(crate) fn probe_regular_file_at(
         return Err(Error::InvalidInput("target must be a regular file".into()));
     }
 
-    // Keep this to EACCESS: rustix has no flagged faccessat fallback on Linux < 5.8.
-    // The no-follow stat sandwich, not accessat, decides the entry's kind and identity.
+    // Adding AT_SYMLINK_NOFOLLOW (or any flag besides AT_EACCESS) needs faccessat2, which Linux
+    // < 5.8 lacks and rustix then reports ENOSYS; the exact flags are pinned by
+    // `platform_support::tests::unix_regular_file_probe_uses_only_eaccess_for_access_check`.
+    // The no-follow stat sandwich, not this check, decides the entry's kind and identity.
     let access = rfs::accessat(parent, name, Access::READ_OK, AtFlags::EACCESS)
         .map_err(|error| Error::Io(Box::new(error.into())));
     #[cfg(test)]

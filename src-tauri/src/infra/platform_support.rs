@@ -340,6 +340,23 @@ mod tests {
     };
 
     #[test]
+    fn unix_regular_file_probe_uses_only_eaccess_for_access_check() {
+        let source = source_for("infra/fs.rs");
+        let body = compact(&source[braced_body(source, "pub(crate) fn probe_regular_file_at(")]);
+        let message = "probe access check must pass exactly AT_EACCESS: rustix 1.1.4 has no faccessat fallback for other flag sets on Linux < 5.8 (f-20260929-11)";
+        assert!(body.contains("statat"), "{message}");
+        assert!(
+            body.contains("rfs::accessat(parent,name,Access::READ_OK,AtFlags::EACCESS)"),
+            "{message}"
+        );
+        assert_eq!(
+            body.matches("AtFlags::SYMLINK_NOFOLLOW").count(),
+            2,
+            "{message}"
+        );
+    }
+
+    #[test]
     fn probe_error_classifier_table_and_directory_split_are_explicit() {
         use crate::infra::path_authority::{
             classify_probe_error, classify_probe_error_kind, ProbeErrorClass,
