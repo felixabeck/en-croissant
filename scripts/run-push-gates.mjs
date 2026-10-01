@@ -259,9 +259,22 @@ function errorMessage(error) {
 }
 
 function nestedErrorMessage(error) {
-  return formatNestedError(error, (message, nested, _error, depth) =>
+  return formatNestedError(error, (message, nested, depth) =>
     [`${"  ".repeat(depth)}${message}`, ...nested].join("\n"),
   );
+}
+
+function commandResult(result) {
+  if (result.error) return { code: 127, error: result.error };
+  if (result.code !== null) return { code: result.code, signal: result.signal };
+  return { code: signalExitCode(result.signal), signal: result.signal };
+}
+
+function recordChildOutcome(task, result) {
+  task.signal = result.signal;
+  task.childExitCode = result.childExitCode;
+  task.childSignal = result.childSignal;
+  task.terminationError = result.terminationError;
 }
 
 export function parsePushGateArguments(argumentsList) {
@@ -694,18 +707,14 @@ async function runCommand(
     task.kind === "lane-step"
       ? `lane ${task.name} step ${label}`
       : `${task.phase} step ${task.name} (${label})`;
-  const terminationFailure = signalForwarding.attach(supervisor, childLabel);
+  signalForwarding.attach(supervisor, childLabel);
 
   let completion;
   try {
     completion = await Promise.race([
       supervisor.done.then((result) => ({ type: "completed", result })),
-      signalForwarding.signalRequested.then(async (reason) => {
-        const outcome = await Promise.race([
-          supervisor.done.then((result) => ({ type: "completed", result })),
-          terminationFailure.then((error) => ({ type: "termination-failed", error })),
-        ]);
-        return { type: "interrupted", reason, outcome };
+      signalForwarding.signalRequested.then(async () => {
+        return { type: "interrupted", outcome: await supervisor.settled() };
       }),
     ]);
   } finally {
@@ -715,41 +724,31 @@ async function runCommand(
   if (completion.type === "interrupted") {
     if (completion.outcome.type === "termination-failed") {
       return {
-        interruptionSignal: completion.reason,
         terminationError: completion.outcome.error,
         logError,
       };
     }
     const result = completion.outcome.result;
-    const commandResult = result.error
-      ? { code: 127, error: result.error }
-      : result.code !== null
-        ? { code: result.code, signal: result.signal }
-        : { code: signalExitCode(result.signal), signal: result.signal };
     return {
-      ...commandResult,
-      interruptionSignal: completion.reason,
+      ...commandResult(result),
       childExitCode: result.code,
       childSignal: result.signal,
       logError,
     };
   }
   const { result } = completion;
-  let commandResult;
-  if (result.error) commandResult = { code: 127, error: result.error };
-  else if (result.code !== null) commandResult = { code: result.code, signal: result.signal };
-  else commandResult = { code: signalExitCode(result.signal), signal: result.signal };
+  const mappedResult = commandResult(result);
 
-  if (logError && commandResult.code === 0) {
+  if (logError && mappedResult.code === 0) {
     return {
-      ...commandResult,
+      ...mappedResult,
       code: 1,
       error: new Error(`cannot write gate log: ${errorMessage(logError)}`),
       logError,
     };
   }
   return {
-    ...commandResult,
+    ...mappedResult,
     childExitCode: result.code,
     childSignal: result.signal,
     logError,
@@ -816,10 +815,7 @@ async function runStep(task, command, context) {
   task.durationMs = performance.now() - task.startedAt;
   task.error = result.error;
   task.logError = result.logError;
-  task.signal = result.signal;
-  task.childExitCode = result.childExitCode;
-  task.childSignal = result.childSignal;
-  task.terminationError = result.terminationError;
+  recordChildOutcome(task, result);
   if (context.signalForwarding.requestedSignal) {
     task.code = signalExitCode(context.signalForwarding.requestedSignal);
     task.status = "interrupted";
@@ -894,10 +890,7 @@ async function runLane(lane, env, context, results) {
       : "failed";
   task.error ??= result.error;
   task.logError ??= result.logError;
-  task.signal = result.signal;
-  task.childExitCode = result.childExitCode;
-  task.childSignal = result.childSignal;
-  task.terminationError = result.terminationError;
+  recordChildOutcome(task, result);
   logProgress(task, "finish", result.error ? `error=${errorMessage(result.error)}` : "");
   return task;
 }

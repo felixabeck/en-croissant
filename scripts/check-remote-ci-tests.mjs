@@ -274,6 +274,26 @@ test("refuses with the git failure cause", () => {
   assert.match(result.error, /no upstream configured/u);
 });
 
+test("reports when spawnSync terminated the command by signal", () => {
+  const { runner } = cannedRunner({
+    runs: [],
+    jobsByRun: {},
+    overrides: {
+      "git rev-parse --abbrev-ref --symbolic-full-name @{u}": {
+        status: null,
+        signal: "SIGTERM",
+        stdout: "",
+        stderr: "",
+      },
+    },
+  });
+
+  const result = checkRemoteCi({ runner });
+  assert.equal(result.exitCode, 2);
+  assert.match(result.error, /terminated by SIGTERM/u);
+  assert.doesNotMatch(result.error, /no exit status/u);
+});
+
 test("refuses an unparsable upstream result", () => {
   const { runner } = cannedRunner({ upstream: "not-an-upstream" });
   const result = checkRemoteCi({ runner });

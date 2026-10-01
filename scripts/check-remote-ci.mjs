@@ -42,7 +42,11 @@ function runChecked(runner, command, args, cwd) {
   if (!isRecord(result)) throw new Error(`${label} returned no process result`);
   if (result.error) throw new Error(`${label} could not run: ${result.error.message}`);
   if (result.status !== 0) {
-    const status = Number.isInteger(result.status) ? `exit ${result.status}` : "no exit status";
+    const status = Number.isInteger(result.status)
+      ? `exit ${result.status}`
+      : result.signal
+        ? `terminated by ${result.signal}`
+        : "no exit status";
     const stderr = typeof result.stderr === "string" ? result.stderr.trim() : "";
     throw new Error(`${label} failed (${status})${stderr ? `: ${stderr}` : ""}`);
   }

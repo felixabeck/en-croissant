@@ -1734,6 +1734,7 @@ test("interrupted lanes retain shutdown output and record the child's exit", asy
       let terminating = false;
       return {
         done,
+        settled: () => done.then((result) => ({ type: "exit", result })),
         terminate() {
           if (!terminating) {
             terminating = true;
@@ -1754,7 +1755,12 @@ test("interrupted lanes retain shutdown output and record the child's exit", asy
       child.exitCode = 0;
       resolveDone({ code: 0, signal: null });
     });
-    return { done, terminate: () => done, unref() {} };
+    return {
+      done,
+      settled: () => done.then((result) => ({ type: "exit", result })),
+      terminate: () => done,
+      unref() {},
+    };
   };
 
   let summary = "";

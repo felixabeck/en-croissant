@@ -96,34 +96,52 @@ function startDockerCommand(
     killProcessGroup: true,
   });
   let timedOut = false;
-  let timeoutTerminationError;
-  const timeout =
+  let timeout;
+  let resolveTimeout;
+  const timeoutRequested =
     timeoutMs === undefined
       ? undefined
-      : setTimeout(() => {
-          timedOut = true;
-          supervisor.terminate().catch((error) => {
-            timeoutTerminationError = error;
-          });
-        }, timeoutMs);
-  const done = supervisor.done
-    .then(({ code, signal, error }) => ({
-      code: code ?? (signal ? signalExitCode(signal) : 1),
-      signal,
-      error:
-        error ??
-        (timedOut
-          ? new Error(
-              `${timeoutLabel ?? `docker ${args[0]}`} timed out after ${timeoutMs} ms`,
-              timeoutTerminationError ? { cause: timeoutTerminationError } : undefined,
-            )
-          : undefined),
-      timedOut,
-      stdout,
-      stderr,
-    }))
-    .finally(() => clearTimeout(timeout));
-  return { done, supervisor };
+      : new Promise((resolve) => {
+          resolveTimeout = resolve;
+          timeout = setTimeout(() => {
+            timedOut = true;
+            try {
+              Promise.resolve(supervisor.terminate()).catch(() => {});
+            } catch {}
+            resolveTimeout();
+          }, timeoutMs);
+        });
+  const commandLabel = timeoutLabel ?? `docker ${args[0]}`;
+  const resultForExit = ({ code, signal, error }) => ({
+    code: code ?? (signal ? signalExitCode(signal) : 1),
+    signal,
+    error:
+      error ??
+      (timedOut ? new Error(`${commandLabel} timed out after ${timeoutMs} ms`) : undefined),
+    timedOut,
+    stdout,
+    stderr,
+  });
+  const done = (async () => {
+    if (timeoutRequested === undefined) return resultForExit(await supervisor.done);
+
+    const first = await Promise.race([
+      supervisor.done.then((result) => ({ type: "exit", result })),
+      timeoutRequested.then(() => ({ type: "timeout" })),
+    ]);
+    if (first.type === "exit") return resultForExit(first.result);
+
+    const outcome = await supervisor.settled();
+    if (outcome.type === "termination-failed") {
+      const error = new Error(
+        `${commandLabel} timed out after ${timeoutMs} ms and could not be terminated: ${errorMessage(outcome.error)}`,
+        { cause: outcome.error },
+      );
+      return { code: 1, signal: null, error, timedOut: true, stdout, stderr };
+    }
+    return resultForExit(outcome.result);
+  })().finally(() => clearTimeout(timeout));
+  return { done, settled: () => supervisor.settled(), supervisor };
 }
 
 function dockerError(result) {
@@ -163,26 +181,6 @@ function reportCleanupFailure(error) {
   process.stderr.write(`${error.message}\n`);
 }
 
-async function waitForPreflightCancellation(preflight, termination, timeoutMs) {
-  let timer;
-  const settled = Promise.all([preflight, termination]).then(
-    () => undefined,
-    (error) => error,
-  );
-  const timeout = new Promise((resolve) => {
-    timer = setTimeout(
-      () =>
-        resolve(new Error(`Docker info preflight cancellation timed out after ${timeoutMs} ms`)),
-      timeoutMs,
-    );
-  });
-  try {
-    return await Promise.race([settled, timeout]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 /** Run one bounded e2e container and clean it after every failed or interrupted run. */
 export async function runE2eContainer(
   forwarded = process.argv.slice(2),
@@ -219,11 +217,25 @@ export async function runE2eContainer(
       cancellation.signalRequested.then((reason) => ({ reason })),
     ]);
     if ("reason" in preflightOutcome) {
-      const terminationError = await waitForPreflightCancellation(
-        preflight.done,
-        cancellation.termination,
-        preflightTimeoutMs,
-      );
+      let timer;
+      const terminationError = await Promise.race([
+        preflight.settled().then(
+          (outcome) => (outcome.type === "termination-failed" ? outcome.error : undefined),
+          (error) => error,
+        ),
+        new Promise((resolve) => {
+          timer = setTimeout(
+            () =>
+              resolve(
+                new Error(
+                  `Docker info preflight cancellation timed out after ${preflightTimeoutMs} ms`,
+                ),
+              ),
+            preflightTimeoutMs,
+          );
+        }),
+      ]);
+      clearTimeout(timer);
       if (terminationError) {
         process.stderr.write(
           `Failed to stop docker info preflight after cancellation: ${errorMessage(terminationError)}\n`,
@@ -316,11 +328,10 @@ export async function runE2eContainer(
       // stop the container.
       const cleanupPromise = cleanupContainer(containerName, spawnOptions);
       const [runOutcome, cleanupOutcome, terminationOutcome] = await Promise.allSettled([
-        run.done,
+        run.settled(),
         cleanupPromise,
         cancellation.termination,
       ]);
-      result = runOutcome.status === "fulfilled" ? runOutcome.value : undefined;
       const cleanupError =
         cleanupOutcome.status === "fulfilled"
           ? cleanupOutcome.value
@@ -332,9 +343,13 @@ export async function runE2eContainer(
         reportCleanupFailure(cleanupError);
         failed = true;
       }
-      if (terminationOutcome.status === "rejected") {
+      const runTerminationError =
+        runOutcome.status === "fulfilled" && runOutcome.value.type === "termination-failed"
+          ? runOutcome.value.error
+          : undefined;
+      if (terminationOutcome.status === "rejected" || runTerminationError) {
         process.stderr.write(
-          `Failed to terminate e2e Docker client: ${errorMessage(terminationOutcome.reason)}\n`,
+          `Failed to terminate e2e Docker client: ${errorMessage(terminationOutcome.reason ?? runTerminationError)}\n`,
         );
         failed = true;
       }

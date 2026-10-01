@@ -8,7 +8,7 @@ export function formatNestedError(error, format, depth = 0) {
   const nested = error instanceof AggregateError ? [...error.errors] : [];
   if (error?.cause !== undefined) nested.push(error.cause);
   const formattedNested = nested.map((cause) => formatNestedError(cause, format, depth + 1));
-  return format(message, formattedNested, error, depth);
+  return format(message, formattedNested, depth);
 }
 
 /** Translate a child signal to its conventional shell status. Unknown signals default to 128. */
@@ -65,9 +65,16 @@ export function superviseChild(child, { terminationTimeoutMs, killProcessGroup =
     return result;
   })();
   let termination;
+  let resolveTerminationFailure;
+  const terminationFailure = new Promise((resolve) => {
+    resolveTerminationFailure = resolve;
+  });
 
   return {
     done,
+    settled() {
+      return Promise.race([done.then((result) => ({ type: "exit", result })), terminationFailure]);
+    },
     unref() {
       child.unref?.();
     },
@@ -93,6 +100,9 @@ export function superviseChild(child, { terminationTimeoutMs, killProcessGroup =
           clearTimeout(escalationTimer);
         }
       })();
+      termination.catch((error) =>
+        resolveTerminationFailure({ type: "termination-failed", error }),
+      );
       return termination;
     },
   };
@@ -105,7 +115,14 @@ function errorMessage(error) {
 /** Attempt every child termination and report all failures after every attempt settles. */
 async function terminateChildren(children, label) {
   const entries = [...children];
-  const results = await Promise.allSettled(entries.map(startChildTermination));
+  const results = await Promise.allSettled(
+    entries.map((entry) => {
+      if (!entry.termination) {
+        entry.termination = Promise.resolve().then(() => entry.supervisor.terminate());
+      }
+      return entry.termination;
+    }),
+  );
   const failures = results.flatMap((result, index) => {
     if (result.status === "fulfilled") return [];
     const { name } = entries[index];
@@ -121,14 +138,6 @@ async function terminateChildren(children, label) {
     }
     throw new AggregateError(failures, `Failed to terminate ${failures.length} ${label} child(s).`);
   }
-}
-
-function startChildTermination(entry) {
-  if (!entry.termination) {
-    entry.termination = Promise.resolve().then(() => entry.supervisor.terminate());
-    entry.termination.catch(entry.reportTerminationFailure);
-  }
-  return entry.termination;
 }
 
 /** Forward runner signals to every attached child and latch attachment into termination. */
@@ -183,14 +192,8 @@ export function installMultiChildSignalForwarding({ label, abortSignal = undefin
       });
     },
     attach(supervisor, name) {
-      let reportTerminationFailure;
-      const terminationFailure = new Promise((resolve) => {
-        reportTerminationFailure = resolve;
-      });
-      const entry = { supervisor, name, reportTerminationFailure, terminationFailure };
-      children.push(entry);
+      children.push({ supervisor, name });
       if (requestedReason !== undefined) terminateAll();
-      return terminationFailure;
     },
     terminateAll,
     uninstall() {
