@@ -14,6 +14,15 @@ import { AccountCard } from "../home/AccountCard";
 import { EmptyAccounts } from "../home/EmptyAccounts";
 import IconAction from "./IconAction";
 
+function findAccountDatabase(databases: ManagedDatabaseInfo[], filename: string) {
+  return (
+    databases.find(
+      (db): db is Extract<ManagedDatabaseInfo, { type: "success" }> =>
+        db.type === "success" && db.filename === filename,
+    ) ?? null
+  );
+}
+
 function AccountCards({
   databases,
   setDatabases,
@@ -217,11 +226,7 @@ function LichessOrChessCom({
         authenticated={Boolean(lichessSession.handle)}
         accountHandle={lichessSession.handle}
         type="lichess"
-        database={
-          databases.find(
-            (db) => db.type === "success" && db.filename === `${account.username}_lichess.db3`,
-          ) ?? null
-        }
+        database={findAccountDatabase(databases, `${account.username}_lichess.db3`)}
         title={account.username}
         updatedAt={session.updatedAt}
         total={totalGames}
@@ -281,12 +286,7 @@ function LichessOrChessCom({
         key={session.chessCom.username}
         type="chesscom"
         title={session.chessCom.username}
-        database={
-          databases.find(
-            (db) =>
-              db.type === "success" && db.filename === `${session.chessCom?.username}_chesscom.db3`,
-          ) ?? null
-        }
+        database={findAccountDatabase(databases, `${session.chessCom.username}_chesscom.db3`)}
         updatedAt={session.updatedAt}
         total={totalGames}
         stats={getStats(session.chessCom.stats)}

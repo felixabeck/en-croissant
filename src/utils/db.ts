@@ -24,6 +24,10 @@ import i18n from "i18next";
 
 export type SuccessDatabaseInfo = Extract<DatabaseInfo, { type: "success" }>;
 export type ManagedDatabaseInfo = DatabaseInfo & { file: DatabaseHandle };
+
+/** Error::InvalidInput from src-tauri/src/db/migrations.rs validate_existing_database. */
+export const DATABASE_NOT_INITIALIZED = "Invalid input: Database has not been initialized yet";
+
 export type DownloadableDatabaseInfo = {
     title: string;
     description: string;
@@ -246,9 +250,15 @@ async function getDatabase(
     } catch (cause) {
         const primaryFailure = safeFailureContext(cause);
         if (signal?.aborted || primaryFailure.category === "cancelled") throw cause;
+        const logContext = {
+            operation: "getDatabases metadata",
+            itemIndex,
+            filename,
+            primaryFailure,
+        };
         await logFailureSafely(
-            `getDatabases metadata item ${itemIndex} failed: ${primaryFailure.message}`,
-            { operation: "getDatabases metadata", itemIndex, primaryFailure },
+            `getDatabases metadata item ${itemIndex} (${filename}) failed: ${primaryFailure.message}`,
+            logContext,
             "Database metadata logging failed",
         );
         return {
@@ -257,9 +267,9 @@ async function getDatabase(
             filename,
             indexed: false,
             error:
-                primaryFailure.message === "Invalid input: Database has not been initialized yet"
+                primaryFailure.message === DATABASE_NOT_INITIALIZED
                     ? i18n.t("Databases.ImportUnfinished")
-                    : primaryFailure.message,
+                    : i18n.t("Databases.LoadError.Title"),
         };
     }
 }

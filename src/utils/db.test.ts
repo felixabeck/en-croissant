@@ -31,6 +31,7 @@ import puzzleCatalogDocument from "@/catalogs/puzzles.json?raw";
 import puzzleCatalogSignature from "@/catalogs/puzzles.json.minisig?raw";
 import { CatalogVerificationError } from "@/utils/signedCatalog";
 import {
+    DATABASE_NOT_INITIALIZED,
     conversionProgressId,
     databaseHandleFromKey,
     databaseHandleKey,
@@ -151,12 +152,60 @@ describe("production database metadata pipeline", () => {
             file: handle("failed"),
             filename: "failed.db3",
             indexed: false,
-            error: "metadata unavailable at [path]",
+            error: i18n.t("Databases.LoadError.Title"),
         });
         expect(mocks.logError).toHaveBeenCalledExactlyOnceWith(
-            "getDatabases metadata item 1 failed: metadata unavailable at [path]",
+            "getDatabases metadata item 1 (failed.db3) failed: metadata unavailable at [path]",
         );
     });
+
+    it.each(supportedLocales)(
+        "uses fixed safe text for a SQLite open failure in the shipped %s catalogue",
+        async (locale) => {
+            const { default: catalogue } = await import(`../translation/${locale}.json`);
+            const translator = i18n.createInstance();
+            await translator.init({
+                lng: locale,
+                fallbackLng: false,
+                resources: { [locale]: catalogue },
+            });
+            const t = vi.spyOn(i18n, "t").mockImplementation(translator.t);
+            const message =
+                "Invalid input: could not open SQLite database: unable to open database file";
+            mocks.listWorkspaceDatabases.mockResolvedValue([
+                {
+                    handle: handle("unreadable"),
+                    filename: "unreadable.db3",
+                    availability: "available",
+                },
+            ]);
+            mocks.getDbInfo.mockRejectedValueOnce({
+                tag: "backend-error",
+                category: "invalid-input",
+                message,
+            });
+
+            const result = await getDatabases();
+            expect(result).toEqual([
+                {
+                    type: "error",
+                    file: handle("unreadable"),
+                    filename: "unreadable.db3",
+                    indexed: false,
+                    error: catalogue.translation["Databases.LoadError.Title"],
+                },
+            ]);
+            expect(JSON.stringify(result)).not.toContain(message);
+            expect(result[0].type === "error" && result[0].error).not.toBe(
+                "Databases.LoadError.Title",
+            );
+            expect(catalogue.translation["Databases.LoadError.Title"]).toBeTruthy();
+            expect(mocks.logError).toHaveBeenCalledExactlyOnceWith(
+                `getDatabases metadata item 0 (unreadable.db3) failed: ${message}`,
+            );
+            t.mockRestore();
+        },
+    );
 
     it.each(supportedLocales)(
         "localizes an unfinished import in the shipped %s catalogue without fallback",
@@ -179,7 +228,7 @@ describe("production database metadata pipeline", () => {
             mocks.getDbInfo.mockRejectedValueOnce({
                 tag: "backend-error",
                 category: "invalid-input",
-                message: "Invalid input: Database has not been initialized yet",
+                message: DATABASE_NOT_INITIALIZED,
             });
             const result = await getDatabases();
             expect(result).toEqual([
@@ -231,12 +280,13 @@ describe("production database metadata pipeline", () => {
                 file: handle("broken"),
                 filename: "broken.db3",
                 indexed: false,
-                error: "unreadable [path]",
+                error: i18n.t("Databases.LoadError.Title"),
             },
         ]);
         expect(consoleError).toHaveBeenCalledExactlyOnceWith("Database metadata logging failed", {
             operation: "getDatabases metadata",
             itemIndex: 0,
+            filename: "broken.db3",
             primaryFailure: { category: "unexpected", message: "unreadable [path]" },
             loggerFailure: { category: "unexpected", message: "logger failed [path]" },
         });
