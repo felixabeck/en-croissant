@@ -12257,3 +12257,16 @@ Correction 2026-09-30 (records review): "the 2026-09-29 push-gate lane runner ke
 * **Defect:** if "Add games" is still converting into a database when account sync starts a conversion into the same database (or the reverse), both send the same progress id. The conversion line then shows whichever frame arrived last: the other import's game count, elapsed time or source file name. Rule `async-resource-invariants.md`: "Assume a response belongs to the most recent request because it arrived last — use a discriminator, never timing."
 * **Fix shape:** make the progress id per conversion (handle + a per-call nonce minted by the caller), carried through the existing `progressId` parameter; the renderer owner state stores the full id, not only the handle. No IPC signature change is needed.
 * **Found by:** Codex `review-ipc-contract` lens over the cumulative diff of the PGN long-comment import fix, 2026-10-01 (pre-existing; not introduced by that diff).
+
+---
+
+## 2026-10-01 — filed through the inbox spool
+
+### Database deletion, including its new -wal/-shm cleanup, has no Windows runtime test
+
+* **ID:** f-20261001-22 · **Status:** open · **Area:** native-fs · **Root:** non-linux-platform-port · **Entry:** lens · **Blocked:** none
+* **Where:** `src-tauri/src/db/mod.rs` — the database test module is gated `#[cfg(all(test, unix))]` (~3656), so `delete_database_blocking` / `unlink_database_files` tests (including `zero_table_delete_removes_database_and_sqlite_sidecars`, added 2026-10-01) never run on the Windows CI target.
+* **Defect:** deletion of a database and its sidecars (search index, legacy index, SQLite `-wal`/`-shm`) relies on identity probes and unlink semantics that differ on Windows (open handles, sharing modes, delete-pending). Windows CI compiles this code but executes none of its tests, so a Windows-only failure to remove a sidecar, or a sharing violation from a still-open pool connection, would pass every gate.
+* **Fix shape:** move the platform-independent deletion tests into a module that also runs on Windows (fixtures without unix-only helpers), or add Windows-specific variants; run them in the existing `rust-windows-test` lane.
+* **Related:** `f-20260914-08` (workspace delete refused on Windows, handled) carries the earlier Windows deletion decisions.
+* **Found by:** Codex `review-platform-semantics` lens over the cumulative diff of the PGN long-comment import fix, 2026-10-01 (pre-existing gating).
