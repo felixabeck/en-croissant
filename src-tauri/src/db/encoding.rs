@@ -10,6 +10,8 @@ pub const VARIATION_END_MARKER: u8 = 254;
 pub const COMMENT_MARKER: u8 = 253;
 pub const NAG_MARKER: u8 = 252;
 const ANNOTATION_CHECKPOINT_BYTES: usize = 4 * 1024;
+// Matches the parser's per-token cap and pgn.rs's per-game MAX_PGN_BYTES.
+const MAX_COMMENT_BYTES: usize = 10 * 1024 * 1024;
 
 #[cfg(test)]
 thread_local! {
@@ -71,6 +73,11 @@ pub fn encode_comment(comment: &str, output: &mut Vec<u8>) {
         output.push(COMMENT_MARKER);
         output.extend_from_slice(&(chunk.len() as u16).to_le_bytes());
         output.extend_from_slice(chunk);
+    }
+    // A full chunk continues into the next comment chunk. Terminate exact
+    // multiples explicitly, and retain genuine empty comments as their own chunk.
+    if comment.len().is_multiple_of(u16::MAX as usize) {
+        output.extend_from_slice(&[COMMENT_MARKER, 0, 0]);
     }
 }
 
@@ -320,22 +327,35 @@ fn decode_game_cancellable_with_checkpoint(
                 }
             }
             COMMENT_MARKER => {
-                if cursor + 2 > moves_bytes.len() {
-                    return Err(invalid_data("Truncated comment length marker"));
+                let mut payload = Vec::new();
+                loop {
+                    if cursor + 2 > moves_bytes.len() {
+                        return Err(invalid_data("Truncated comment length marker"));
+                    }
+                    let len =
+                        u16::from_le_bytes([moves_bytes[cursor], moves_bytes[cursor + 1]]) as usize;
+                    cursor += 2;
+                    if cursor + len > moves_bytes.len() {
+                        return Err(invalid_data("Truncated comment payload"));
+                    }
+                    if payload.len() + len > MAX_COMMENT_BYTES {
+                        return Err(invalid_data("Comment exceeds parser token cap"));
+                    }
+                    // Continued comments are bounded by the 10 MiB parser token cap.
+                    // Check around each chunk allocation, before UTF-8 decoding, and
+                    // again before the combined comment is rendered.
+                    cancellation_check(cancellation, checkpoint)?;
+                    payload.extend_from_slice(&moves_bytes[cursor..cursor + len]);
+                    cursor += len;
+                    cancellation_check(cancellation, checkpoint)?;
+                    if len != u16::MAX as usize || moves_bytes.get(cursor) != Some(&COMMENT_MARKER)
+                    {
+                        break;
+                    }
+                    cursor += 1;
                 }
-                let len =
-                    u16::from_le_bytes([moves_bytes[cursor], moves_bytes[cursor + 1]]) as usize;
-                cursor += 2;
-                if cursor + len > moves_bytes.len() {
-                    return Err(invalid_data("Truncated comment payload"));
-                }
-                let payload = &moves_bytes[cursor..cursor + len];
-                cursor += len;
-
-                // Encoded annotations are capped at u16::MAX bytes. Check immediately before
-                // and after that bounded allocation, then again before the payload is rendered.
                 cancellation_check(cancellation, checkpoint)?;
-                let comment = String::from_utf8_lossy(payload).to_string();
+                let comment = String::from_utf8_lossy(&payload).to_string();
                 cancellation_check(cancellation, checkpoint)?;
                 if let Some(frame) = stack.last_mut() {
                     frame.nodes.push(DecodedGameNode::Comment(comment));
@@ -639,6 +659,105 @@ mod tests {
         let byte = encode_move(&m, &chess).unwrap();
         let m2 = decode_move(byte, &chess).unwrap();
         assert_eq!(m, m2);
+    }
+
+    #[test]
+    fn long_token_encoding_pins_comment_chunk_layout() {
+        for (size, expected_lengths) in [
+            (0, vec![0]),
+            (3, vec![3]),
+            (65_534, vec![65_534]),
+            (65_535, vec![65_535, 0]),
+            (65_536, vec![65_535, 1]),
+            (131_070, vec![65_535, 65_535, 0]),
+        ] {
+            let comment = "x".repeat(size);
+            let mut bytes = Vec::new();
+            encode_comment(&comment, &mut bytes);
+            let mut cursor = 0;
+            let mut payload = Vec::new();
+            for expected in expected_lengths {
+                assert_eq!(bytes[cursor], COMMENT_MARKER);
+                let length = u16::from_le_bytes([bytes[cursor + 1], bytes[cursor + 2]]) as usize;
+                assert_eq!(length, expected);
+                cursor += 3;
+                payload.extend_from_slice(&bytes[cursor..cursor + length]);
+                cursor += length;
+            }
+            assert_eq!(cursor, bytes.len());
+            assert_eq!(payload, comment.as_bytes());
+            assert_eq!(
+                decode_game(&bytes, Fen::default()).unwrap().nodes,
+                vec![DecodedGameNode::Comment(comment)]
+            );
+            assert_mainline_move_bytes(&bytes, &[]);
+            assert_eq!(try_iter_mainline_move_bytes(&bytes).unwrap().count(), 0);
+        }
+    }
+
+    #[test]
+    fn long_token_encoding_joins_utf8_before_decoding() {
+        let comment = "ä".repeat(512 * 1024);
+        let mut bytes = Vec::new();
+        encode_comment(&comment, &mut bytes);
+        assert_eq!(&bytes[..3], &[COMMENT_MARKER, 255, 255]);
+        assert!(std::str::from_utf8(&bytes[3..3 + 65_535]).is_err());
+        assert_eq!(
+            decode_game(&bytes, Fen::default()).unwrap().nodes,
+            vec![DecodedGameNode::Comment(comment)]
+        );
+    }
+
+    #[test]
+    fn long_token_encoding_preserves_adjacent_and_empty_comments() {
+        for comments in [
+            vec!["x".repeat(65_535), "second".into()],
+            vec!["short".into(), String::new()],
+            vec!["x".repeat(65_535), String::new()],
+        ] {
+            let mut bytes = Vec::new();
+            for comment in &comments {
+                encode_comment(comment, &mut bytes);
+            }
+            let expected: Vec<_> = comments.into_iter().map(DecodedGameNode::Comment).collect();
+            assert_eq!(decode_game(&bytes, Fen::default()).unwrap().nodes, expected);
+        }
+    }
+
+    #[test]
+    fn long_token_encoding_rejects_over_cap_continued_comment() {
+        let mut bytes = Vec::new();
+        encode_comment(&"x".repeat(MAX_COMMENT_BYTES + 1), &mut bytes);
+        assert!(decode_game(&bytes, Fen::default()).is_err());
+    }
+
+    #[test]
+    fn long_token_encoding_rejects_truncated_continuation() {
+        let mut bytes = Vec::new();
+        encode_comment(&"x".repeat(65_535), &mut bytes);
+        bytes.pop();
+        assert!(decode_game(&bytes, Fen::default()).is_err());
+    }
+
+    #[test]
+    fn long_token_encoding_cancels_during_continued_comment() {
+        let mut bytes = Vec::new();
+        encode_comment(&"x".repeat(131_070), &mut bytes);
+        let cancellation = CancellationToken::new();
+        let mut checkpoints = 0;
+        let result = decode_game_cancellable_with_checkpoint(
+            &bytes,
+            Fen::default(),
+            &cancellation,
+            &mut || {
+                checkpoints += 1;
+                if checkpoints == 5 {
+                    cancellation.cancel();
+                }
+            },
+        );
+        assert!(matches!(result, Err(Error::Cancellation)));
+        assert_eq!(checkpoints, 5);
     }
 
     #[test]

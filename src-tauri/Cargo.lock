@@ -3840,8 +3840,6 @@ dependencies = [
 [[package]]
 name = "pgn-reader"
 version = "0.26.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1994b0ce2a74829bff0462e229b3f0a138cfb293e22c6a65f7966ff26d304e74"
 dependencies = [
  "btoi",
  "circular",

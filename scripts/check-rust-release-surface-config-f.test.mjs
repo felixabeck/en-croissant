@@ -66,4 +66,30 @@ describe("R5 config, test-only scope, and physical source surface", () => {
     ]);
     expectCliStatus(result, 0);
   });
+  test.each(["../pgn-reader", "vendor/other-reader"])(
+    "rejects a changed pgn-reader patch destination %s",
+    async (destination) => {
+      const result = await runCheckerOver([
+        {
+          path: "src-tauri/Cargo.toml",
+          contents: packageManifest.replace(
+            'path = "vendor/pgn-reader"',
+            `path = "${destination}"`,
+          ),
+        },
+      ]);
+      expectCliStatus(result, 1);
+      expect(result.output).toContain("Cargo manifest path keys may add Rust code");
+    },
+  );
+  test("rejects the approved spelling outside the patch table", async () => {
+    const result = await runCheckerOver([
+      {
+        path: "src-tauri/Cargo.toml",
+        contents: packageManifest.replace("[patch.crates-io]", "[dependencies.other]"),
+      },
+    ]);
+    expectCliStatus(result, 1);
+    expect(result.output).toContain("Cargo manifest path keys may add Rust code");
+  });
 });

@@ -1438,12 +1438,13 @@ export function checkGateInvisibleRegions(
   return [...new Set(violations)];
 }
 
-function scanToml(contents) {
+function scanToml(contents, allowPgnReaderPatch = false) {
   const bareCode = [];
   const keySegments = [];
   const basicStringBackslashes = [];
   const lines = contents.split("\n");
   let multilineQuote = null;
+  let tableSegments = [];
 
   const parseSegments = (text) => {
     const segments = [];
@@ -1529,9 +1530,11 @@ function scanToml(contents) {
     if (!startedInMultiline) {
       const trimmed = line.slice(0, comment).trim();
       if (trimmed.startsWith("[[") && trimmed.endsWith("]]")) {
-        keySegments.push(...parseSegments(trimmed.slice(2, -2)));
+        tableSegments = parseSegments(trimmed.slice(2, -2));
+        keySegments.push(...tableSegments);
       } else if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
-        keySegments.push(...parseSegments(trimmed.slice(1, -1)));
+        tableSegments = parseSegments(trimmed.slice(1, -1));
+        keySegments.push(...tableSegments);
       }
     }
 
@@ -1560,7 +1563,16 @@ function scanToml(contents) {
         let boundary = startAt;
         while (boundary > 0 && !/[{,]/.test(line[boundary - 1])) boundary -= 1;
         const keyText = line.slice(boundary, endAt);
-        keySegments.push(...parseSegments(keyText));
+        const segments = parseSegments(keyText);
+        // This reviewed third-party patch is outside the application's source scope.
+        // Keep every other path key subject to R5, including changes to this destination.
+        const approvedPatchPath =
+          allowPgnReaderPatch &&
+          tableSegments.join(".") === "patch.crates-io" &&
+          line.trim() === 'pgn-reader = { path = "vendor/pgn-reader" }' &&
+          segments.length === 1 &&
+          segments[0] === "path";
+        if (!approvedPatchPath) keySegments.push(...segments);
       }
     }
   }
@@ -1577,7 +1589,7 @@ function scanToml(contents) {
 
 function manifestViolations(path, contents, packageManifest) {
   const violations = [];
-  const scanned = scanToml(contents);
+  const scanned = scanToml(contents, packageManifest);
   const keys = new Set(scanned.keySegments);
   // scanToml records both bare and quoted TOML keys in keySegments.
   const hasManifestControlKey = scanned.keySegments.some(

@@ -218,6 +218,75 @@ mod tests {
     use super::*;
 
     #[test]
+    fn long_token_lex_returns_full_comment() {
+        let comment = "c".repeat(26_158);
+        let tokens = lex_pgn_sync(&format!("1. e4 {{{comment}}} e5 *")).unwrap();
+        assert_eq!(tokens[1], Token::Comment(comment));
+        assert_eq!(tokens.len(), 4);
+    }
+
+    #[test]
+    fn long_token_tag_value_parses() {
+        let value = "v".repeat(20 * 1024);
+        let tokens = lex_pgn_sync(&format!("[Event \"{value}\"]\n\n1. e4 *")).unwrap();
+        assert_eq!(
+            tokens[0],
+            Token::Header {
+                tag: "Event".into(),
+                value
+            }
+        );
+        assert_eq!(tokens.len(), 3);
+    }
+
+    #[test]
+    fn long_token_tag_name_parses() {
+        let tag = "T".repeat(20 * 1024);
+        let tokens = lex_pgn_sync(&format!("[{tag} \"value\"]\n\n1. e4 *")).unwrap();
+        assert_eq!(
+            tokens[0],
+            Token::Header {
+                tag,
+                value: "value".into()
+            }
+        );
+        assert_eq!(tokens.len(), 3);
+    }
+
+    #[test]
+    fn long_token_tag_escape_across_read_boundary_parses() {
+        struct ShortReads<'a>(&'a [u8]);
+        impl std::io::Read for ShortReads<'_> {
+            fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+                let size = output.len().min(self.0.len()).min(127);
+                output[..size].copy_from_slice(&self.0[..size]);
+                self.0 = &self.0[size..];
+                Ok(size)
+            }
+        }
+        let value = "a\\\"".repeat(10 * 1024);
+        let pgn = format!("[Event \"{value}\"]\n\n1. e4 *");
+        let mut lexer = Lexer {
+            tokens: Vec::new(),
+            cancellation: None,
+            cancelled: false,
+        };
+        let tokens = BufferedReader::new(ShortReads(pgn.as_bytes()))
+            .read_game(&mut lexer)
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            tokens[0],
+            Token::Header {
+                tag: "Event".into(),
+                value
+            }
+        );
+        assert_eq!(tokens.len(), 3);
+    }
+
+    #[test]
     fn test_lex_pgn_sync_representative() {
         let pgn = "[Event \"Test\"]\n\n1. e4 {Best by test} (1. d4) 1... e5 $1 1-0";
         let tokens = lex_pgn_sync(pgn).unwrap();

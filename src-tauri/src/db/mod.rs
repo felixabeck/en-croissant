@@ -7242,6 +7242,173 @@ mod tests {
         )
     }
 
+    #[test]
+    fn long_token_import_preserves_middle_game_comments_through_export() {
+        for size in [8 * 1024usize, 16 * 1024, 26_158, 1024 * 1024] {
+            let comment = if size == 1024 * 1024 {
+                "ä".repeat(size / 2)
+            } else {
+                let mut comment = "abcdefgh".repeat(size.div_ceil(8));
+                comment.truncate(size);
+                comment
+            };
+            assert_long_token_import_export(&[comment]);
+        }
+    }
+
+    fn assert_long_token_import_export(expected: &[String]) {
+        let (dir, app, handle, database) = blocking_database_case();
+        mount_convert_progress_events(&app);
+        let annotations = expected
+            .iter()
+            .map(|comment| format!("{{{comment}}}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let middle = REPLACEMENT_PGN.replace("e4 e5", &format!("e4 {annotations} e5"));
+        let source = dir.path().join("long-comment.pgn");
+        std::fs::write(
+            &source,
+            format!("{REPLACEMENT_PGN}\n{middle}\n{REPLACEMENT_PGN}"),
+        )
+        .unwrap();
+        run_import(
+            &app,
+            handle.clone(),
+            vec![grant_import_file(&app, &source)],
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            database_row_counts(&app, &database).games,
+            3,
+            "the game following the annotated middle game must also import"
+        );
+
+        let destination_path = dir.path().join("round-trip.pgn");
+        std::fs::write(&destination_path, b"").unwrap();
+        let destination = grant_pgn_destination(&app, &destination_path);
+        let state = app.state::<AppState>();
+        export_to_pgn_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle,
+            destination,
+        )
+        .unwrap();
+        let exported = std::fs::read_to_string(destination_path).unwrap();
+        let tokens = crate::lexer::lex_pgn_sync(
+            exported
+                .split("\n\n")
+                .find(|part| part.contains('{'))
+                .unwrap(),
+        )
+        .unwrap();
+        let comments: Vec<_> = tokens
+            .into_iter()
+            .filter_map(|token| match token {
+                crate::lexer::Token::Comment(text) => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(comments.as_slice(), expected);
+        let mut importer = Importer::new(None);
+        let games: Vec<_> = BufferedReader::new(exported.as_bytes())
+            .into_iter(&mut importer)
+            .map(|game| game.unwrap().unwrap())
+            .collect();
+        assert_eq!(games.len(), 3);
+    }
+
+    #[test]
+    fn long_token_exact_chunk_multiples_round_trip() {
+        for size in [65_535, 131_070] {
+            assert_long_token_import_export(&["x".repeat(size)]);
+        }
+    }
+
+    #[test]
+    fn long_token_full_chunk_followed_by_second_comment_round_trips() {
+        assert_long_token_import_export(&["x".repeat(65_535), "second".into()]);
+    }
+
+    #[test]
+    fn long_token_empty_comment_after_short_comment_round_trips() {
+        assert_long_token_import_export(&["short".into(), String::new()]);
+    }
+
+    #[test]
+    fn long_token_save_replaces_game_with_full_comment() {
+        let (_dir, app, handle, database) = blocking_database_case();
+        let game_id = insert_named_game(&app, &database, "Old", "Black", "Event", "Site");
+        let comment = "s".repeat(26_158);
+        let pgn = REPLACEMENT_PGN.replace("e4 e5", &format!("e4 {{{comment}}} e5"));
+        let state = app.state::<AppState>();
+        write_db_game_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle.clone(),
+            game_id,
+            pgn,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        let response = get_games_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle,
+            GameQuery::new(),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert_eq!(response.data.len(), 1);
+        assert_eq!(response.data[0].id, game_id);
+        assert_eq!(
+            response.data[0].moves,
+            format!("1. e4 {{{comment}}} e5 1-0")
+        );
+    }
+
+    #[test]
+    fn long_token_unterminated_comment_has_bounded_heap() {
+        const CAP: usize = 10 * 1024 * 1024;
+        // The buffer reserves the exact capped size, plus one delimiter byte.
+        // Allow 64 KiB for fixed reader, visitor, and error allocations.
+        const MARGIN: usize = 64 * 1024;
+        let fixture = format!("1. e4 {{{}", "x".repeat(4 * CAP));
+        let (result, peak) = allocation_probe::measure(|| {
+            BufferedReader::new(fixture.as_bytes()).read_game(&mut Importer::new(None))
+        });
+        assert!(matches!(result, Err(error) if error.kind() == std::io::ErrorKind::InvalidData));
+        eprintln!(
+            "long token fixture_bytes={} rust_heap_peak={peak} limit={}",
+            fixture.len(),
+            CAP + MARGIN
+        );
+        assert!(
+            peak < CAP + MARGIN,
+            "Rust heap peak {peak} exceeded {}",
+            CAP + MARGIN
+        );
+    }
+
+    #[test]
+    fn long_token_terminated_comment_beyond_cap_fails() {
+        let fixture = format!("1. e4 {{{}}} e5 *", "x".repeat(10 * 1024 * 1024 + 1));
+        let error = BufferedReader::new(fixture.as_bytes())
+            .read_game(&mut Importer::new(None))
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn long_token_comment_at_cap_parses() {
+        let comment = "x".repeat(10 * 1024 * 1024);
+        let fixture = format!("1. e4 {{{comment}}} e5 *");
+        let tokens = crate::lexer::lex_pgn_sync(&fixture).unwrap();
+        assert_eq!(tokens[1], crate::lexer::Token::Comment(comment));
+    }
+
     #[derive(Debug, PartialEq, Eq)]
     struct DatabaseRowCounts {
         games: i64,

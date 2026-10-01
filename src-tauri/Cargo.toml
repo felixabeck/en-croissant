@@ -97,3 +97,6 @@ custom-protocol = ["tauri/custom-protocol"]
 [dev-dependencies]
 tauri = { version = "2.10.2", features = ["test"] }
 tokio = { version = "1.33", features = ["test-util"] }
+
+[patch.crates-io]
+pgn-reader = { path = "vendor/pgn-reader" }
