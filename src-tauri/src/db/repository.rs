@@ -577,13 +577,7 @@ impl DatabaseRepository {
         super::cancellation_check(cancellation)?;
         self.tombstone_conflict(target)?;
         let probe = self.probe_current(target)?;
-        let identity = DatabaseSchemaIdentity::from_probe(&probe);
-        if identity.object != target.identity() {
-            return Err(Error::Conflict(
-                "database changed after capability resolution".into(),
-            ));
-        }
-        Ok(identity)
+        Ok(DatabaseSchemaIdentity::from_probe(&probe))
     }
 
     fn read_revision(
@@ -1867,19 +1861,19 @@ mod tests {
         let path_b = linked_parent.join("database-b.db3");
         let target_a = test_target(&path_a);
         let repository = Arc::new(DatabaseRepository::default());
-        let opens = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let observed = Arc::clone(&opens);
+        let probes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed_probes = Arc::clone(&probes);
         let _hooks = configure_test_hooks(&path_a, move |hooks| {
             hooks.after_probe_current = Some(Box::new(move |_| {
-                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                observed_probes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }));
         });
 
         repository
             .initialization_connection(&target_a, None)
             .unwrap();
-        let a_opens_before_b = opens.load(std::sync::atomic::Ordering::SeqCst);
-        assert!(a_opens_before_b > 0, "database A's hook must fire");
+        let a_probes_before_b = probes.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(a_probes_before_b > 0, "database A's hook must fire");
 
         let worker_repository = Arc::clone(&repository);
         let worker = std::thread::spawn(move || {
@@ -1888,9 +1882,9 @@ mod tests {
         worker.join().unwrap().unwrap();
 
         assert_eq!(
-            opens.load(std::sync::atomic::Ordering::SeqCst),
-            a_opens_before_b,
-            "opening an unrelated database must not run or count database A's hook"
+            probes.load(std::sync::atomic::Ordering::SeqCst),
+            a_probes_before_b,
+            "probing an unrelated database must not run or count database A's hook"
         );
     }
 
@@ -2885,18 +2879,18 @@ mod tests {
             let target = test_target(&path);
             let cancellation = CancellationToken::new();
             cancellation.cancel();
-            let opens = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-            let observed = std::sync::Arc::clone(&opens);
+            let probes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let observed_probes = std::sync::Arc::clone(&probes);
             let _hooks = configure_test_hooks(&path, |hooks| {
                 hooks.after_probe_current = Some(Box::new(move |_| {
-                    observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    observed_probes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 }));
             });
             assert!(matches!(
                 repository.identity_from_probe(&target, &cancellation, true),
                 Err(Error::Cancellation)
             ));
-            assert_eq!(opens.load(std::sync::atomic::Ordering::SeqCst), 0);
+            assert_eq!(probes.load(std::sync::atomic::Ordering::SeqCst), 0);
         }
 
         {
@@ -2904,13 +2898,13 @@ mod tests {
             let target = test_target(&path);
             let cancellation = CancellationToken::new();
             let callback_token = cancellation.clone();
-            let opens = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let probes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-            let observed_opens = std::sync::Arc::clone(&opens);
+            let observed_probes = std::sync::Arc::clone(&probes);
             let observed_reads = std::sync::Arc::clone(&reads);
             let _hooks = configure_test_hooks(&path, move |hooks| {
                 hooks.after_probe_current = Some(Box::new(move |_| {
-                    observed_opens.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    observed_probes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 }));
                 hooks.after_read_revision = Some(Box::new(move || {
                     observed_reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -2921,7 +2915,7 @@ mod tests {
                 repository.identity_from_probe(&target, &cancellation, true),
                 Err(Error::Cancellation)
             ));
-            assert_eq!(opens.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert_eq!(probes.load(std::sync::atomic::Ordering::SeqCst), 1);
             assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
         }
 
@@ -3081,11 +3075,11 @@ mod tests {
     fn identity_from_probe_tombstone() {
         let (_directory, path, repository) = revision_fixture(0);
         let target = test_target(&path);
-        let opens = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let observed = std::sync::Arc::clone(&opens);
+        let probes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed_probes = std::sync::Arc::clone(&probes);
         let _hooks = configure_test_hooks(&path, |hooks| {
             hooks.after_probe_current = Some(Box::new(move |_| {
-                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                observed_probes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }));
         });
         repository
@@ -3098,7 +3092,7 @@ mod tests {
             repository.identity_from_probe(&target, &CancellationToken::new(), true),
             Err(Error::Conflict(message)) if message == "database is being deleted"
         ));
-        assert_eq!(opens.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(probes.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
     #[test]
@@ -3878,14 +3872,14 @@ mod bound_sqlite_witnesses {
         let target = test_target(&path);
         let repository = DatabaseRepository::default();
         let leaf_swap = Arc::new(Mutex::new(LeafSwapGuard::new(&path, &b_path)));
-        let after_open = Arc::clone(&leaf_swap);
+        let after_probe = Arc::clone(&leaf_swap);
         let after_read = Arc::clone(&leaf_swap);
         let on_refusal = Arc::clone(&leaf_swap);
         let refusal_seen = Arc::new(AtomicBool::new(false));
         let refusal_seen_hook = Arc::clone(&refusal_seen);
         let _hooks = configure_test_hooks(&path, move |hooks| {
             hooks.after_probe_current = Some(Box::new(move |_| {
-                after_open.lock().unwrap().swap_to_replacement();
+                after_probe.lock().unwrap().swap_to_replacement();
             }));
             hooks.after_read_revision = Some(Box::new(move || {
                 #[cfg(unix)]
@@ -4001,6 +3995,47 @@ mod bound_sqlite_witnesses {
                 Error::Io(source) if source.kind() == std::io::ErrorKind::PermissionDenied
             ));
         }
+    }
+
+    #[test]
+    fn bound_open_error_checks_the_probe_when_refusal_count_is_unchanged() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = new_database_parent(root.path());
+        let path = parent.join("authorized.db3");
+        let replacement = parent.join("replacement.db3");
+        let original = parent.join("authorized.db3.original");
+        seed_database(&path, 1, "DELETE");
+        seed_database(&replacement, 2, "DELETE");
+        let target = test_target(&path);
+        let repository = DatabaseRepository::default();
+        let bound = BoundDatabase::acquire(&target).unwrap();
+        let refusal_count = bound.refusal_count();
+
+        fs::rename(&path, &original).unwrap();
+        fs::rename(&replacement, &path).unwrap();
+        let changed = repository.classify_bound_open_error(
+            &target,
+            &bound,
+            refusal_count,
+            Error::InvalidInput("simulated SQLite open failure".into()),
+        );
+        assert!(matches!(
+            changed,
+            Error::Conflict(message) if message == "database changed after capability resolution"
+        ));
+
+        fs::remove_file(&path).unwrap();
+        fs::rename(&original, &path).unwrap();
+        let unchanged = repository.classify_bound_open_error(
+            &target,
+            &bound,
+            refusal_count,
+            Error::InvalidInput("simulated SQLite open failure".into()),
+        );
+        assert!(matches!(
+            unchanged,
+            Error::InvalidInput(message) if message == "simulated SQLite open failure"
+        ));
     }
 
     #[cfg(unix)]
