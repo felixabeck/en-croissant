@@ -177,36 +177,3 @@ export function installMultiChildSignalForwarding({ label, abortSignal = undefin
     },
   };
 }
-
-export function installSignalForwarding(getSupervisor) {
-  let requestedSignal;
-  let termination = Promise.resolve();
-  const handler = (signal) => {
-    if (requestedSignal) return;
-    requestedSignal = signal;
-    const supervisor = getSupervisor();
-    if (supervisor) {
-      termination = supervisor.terminate();
-      termination.catch(() => {});
-    }
-  };
-  process.on("SIGINT", handler);
-  process.on("SIGTERM", handler);
-  return {
-    get requestedSignal() {
-      return requestedSignal;
-    },
-    get termination() {
-      return termination;
-    },
-    attach(supervisor) {
-      if (!requestedSignal) return;
-      termination = supervisor.terminate();
-      termination.catch(() => {});
-    },
-    uninstall() {
-      process.off("SIGINT", handler);
-      process.off("SIGTERM", handler);
-    },
-  };
-}

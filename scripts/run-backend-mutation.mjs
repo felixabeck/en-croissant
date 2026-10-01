@@ -18,7 +18,7 @@ import {
   writeSync,
 } from "node:fs";
 import { dirname } from "node:path";
-import { installSignalForwarding, superviseChild } from "./child-supervisor.mjs";
+import { installMultiChildSignalForwarding, superviseChild } from "./child-supervisor.mjs";
 import { isEntrypoint } from "./entrypoint.mjs";
 import { fsyncDirectory } from "./fsync-directory.mjs";
 import { selectMutationPackages } from "./mutation-package-selection.mjs";
@@ -407,7 +407,7 @@ export async function runBackendMutation({ recordChild = recordSpawnedChild } = 
   }
 
   let supervisor;
-  const signalForwarding = installSignalForwarding(() => supervisor);
+  const signalForwarding = installMultiChildSignalForwarding({ label: "backend mutation" });
   let exitCode = 0;
   try {
     for (const mutationPackage of selectedPackages) {
@@ -422,7 +422,7 @@ export async function runBackendMutation({ recordChild = recordSpawnedChild } = 
         { stdio: "inherit", env: mutationChildEnvironment(mutationPackage) },
       );
       supervisor = superviseChild(child, { terminationTimeoutMs });
-      signalForwarding.attach(supervisor);
+      signalForwarding.attach(supervisor, mutationPackage.id);
       try {
         recordChild(child);
       } catch (error) {

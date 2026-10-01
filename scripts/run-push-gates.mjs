@@ -47,8 +47,9 @@ export const ONE_WAVE_BYTES = 40 * GIB;
 const MIN_CONCURRENT_SELF_SIZING_CPUS = 2;
 // Two seconds lets gates handle SIGTERM cleanly before their process group is escalated.
 const CHILD_TERMINATION_TIMEOUT_MS = 2_000;
-// E2E cleanup starts a detached `docker rm -f`; this window lets it finish before killing the lane.
-const E2E_LANE_TERMINATION_TIMEOUT_MS = 15_000;
+// This 15-second window covers the 10-second `docker rm -f` timeout and 2-second client
+// termination grace, with 3 seconds left to report cleanup before the lane is killed.
+export const E2E_LANE_TERMINATION_TIMEOUT_MS = 15_000;
 // Failed command output is bounded so one noisy gate cannot flood the summary.
 const LOG_TAIL_BYTES = 8 * 1024;
 
@@ -294,16 +295,13 @@ function flattenGateSchedule(schedule, phases) {
   );
 }
 
-function gitFailure(args, result) {
+function gitFailure(args, result, headline = "Cannot determine pre-review changed paths") {
   const detail = result.error
     ? result.error.message
     : result.stderr?.trim() || `exit status ${result.status ?? "unknown"}`;
-  return new Error(
-    `Cannot determine pre-review changed paths: git ${args.join(" ")} failed (${detail})`,
-    {
-      cause: result.error ?? new Error(detail),
-    },
-  );
+  return new Error(`${headline}: git ${args.join(" ")} failed (${detail})`, {
+    cause: result.error ?? new Error(detail),
+  });
 }
 
 export function discoverPreReviewChanges({
@@ -328,10 +326,6 @@ export function discoverPreReviewChanges({
   const tracked = run(["diff", "--name-only", "-z", base, "--"]).split("\0").filter(Boolean);
   const untracked = listUntracked(cwd);
   return { mergeBase: base, paths: [...new Set([...tracked, ...untracked])].sort() };
-}
-
-export function discoverPreReviewChangedPaths(options = {}) {
-  return discoverPreReviewChanges(options).paths;
 }
 
 function commandDisplay(executable, args) {
@@ -434,55 +428,85 @@ export function mutationFilesForChanges(
   );
 
   const changedTests = [...changed].filter((path) => /\.(?:test|spec)\.[cm]?[jt]sx?$/u.test(path));
-  const scanQueue = changedTests
-    .filter((path) => exists(resolve(root, path)))
-    .map((importer) => ({ importer, kind: "working" }));
+  const scanTests = ({ readTreeSource, treeIsFile, treeExists, wrapReadError }) => {
+    const scanQueue = changedTests
+      .filter((path) => treeExists(resolve(root, path)))
+      .map((importer) => ({ importer }));
+    const scanned = new Set();
+    while (scanQueue.length > 0) {
+      const { importer } = scanQueue.pop();
+      if (scanned.has(importer)) continue;
+      scanned.add(importer);
+      let source;
+      try {
+        source = readTreeSource(resolve(root, importer));
+      } catch (error) {
+        throw wrapReadError(importer, error);
+      }
+      for (const specifier of importSpecifiers(source)) {
+        const dependency = resolveLocalImport(root, importer, specifier, treeIsFile);
+        if (!dependency) continue;
+        if (filesByPackage.has(dependency)) selectedFiles.add(dependency);
+        if (dependency.startsWith("src/") && treeExists(resolve(root, dependency))) {
+          scanQueue.push({ importer: dependency });
+        }
+      }
+    }
+  };
+  const workingReadError = (importer, error) =>
+    new Error(`Cannot read changed test ${importer} for mutation selection: ${error.message}`, {
+      cause: error,
+    });
+
+  scanTests({
+    readTreeSource: readSource,
+    treeIsFile: isFile,
+    treeExists: exists,
+    wrapReadError: workingReadError,
+  });
+
   if (mergeBase !== undefined) {
-    for (const importer of changedTests) {
-      const args = ["show", `${mergeBase}:${importer}`];
+    const treeArgs = ["ls-tree", "-r", "-z", mergeBase];
+    const treeResult = runGit("git", treeArgs, { cwd: root, encoding: "utf8" });
+    if (treeResult.error || treeResult.status !== 0) {
+      throw gitFailure(
+        treeArgs,
+        treeResult,
+        `Cannot inspect merge-base tree ${mergeBase} for mutation selection`,
+      );
+    }
+    const baseFiles = new Set(
+      String(treeResult.stdout ?? "")
+        .split("\0")
+        .flatMap((entry) => {
+          const [metadata, path] = entry.split("\t");
+          return metadata?.split(" ")[1] === "blob" && path ? [path] : [];
+        }),
+    );
+    const baseRelativePath = (absolutePath) => relative(root, absolutePath).split(sep).join("/");
+    const baseIsFile = (absolutePath) => {
+      const path = baseRelativePath(absolutePath);
+      return !path.startsWith("../") && baseFiles.has(path);
+    };
+    const readBaseSource = (absolutePath) => {
+      const path = baseRelativePath(absolutePath);
+      const args = ["show", `${mergeBase}:${path}`];
       const result = runGit("git", args, { cwd: root, encoding: "utf8" });
       if (result.error || result.status !== 0) {
-        const missingAtBase =
-          !result.error &&
-          /fatal: path .+ (?:does not exist|exists on disk, but not in) .+/iu.test(
-            String(result.stderr ?? ""),
-          );
-        if (missingAtBase) continue;
-        throw gitFailure(args, result);
-      }
-      scanQueue.push({ importer, kind: "merge-base", source: String(result.stdout ?? "") });
-    }
-  }
-  const scanned = new Set();
-  while (scanQueue.length > 0) {
-    const entry = scanQueue.pop();
-    const { importer } = entry;
-    const scanId = `${entry.kind}:${importer}`;
-    if (scanned.has(scanId)) continue;
-    scanned.add(scanId);
-    let source;
-    if (entry.source !== undefined) {
-      source = entry.source;
-    } else {
-      try {
-        source = readSource(resolve(root, importer));
-      } catch (error) {
-        throw new Error(
-          `Cannot read changed test ${importer} for mutation selection: ${error.message}`,
-          {
-            cause: error,
-          },
+        throw gitFailure(
+          args,
+          result,
+          `Cannot read ${path} at ${mergeBase} for mutation selection`,
         );
       }
-    }
-    for (const specifier of importSpecifiers(source)) {
-      const dependency = resolveLocalImport(root, importer, specifier, isFile);
-      if (!dependency) continue;
-      if (filesByPackage.has(dependency)) selectedFiles.add(dependency);
-      if (dependency.startsWith("src/") && exists(resolve(root, dependency))) {
-        scanQueue.push({ importer: dependency, kind: "working" });
-      }
-    }
+      return String(result.stdout ?? "");
+    };
+    scanTests({
+      readTreeSource: readBaseSource,
+      treeIsFile: baseIsFile,
+      treeExists: baseIsFile,
+      wrapReadError: (_importer, error) => error,
+    });
   }
   return [...selectedFiles].sort();
 }

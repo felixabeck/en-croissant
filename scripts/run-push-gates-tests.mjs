@@ -13,7 +13,6 @@ import {
   P2_VITEST_SHARE,
   PRE_REVIEW_GATE_SCHEDULE,
   PUSH_GATE_SCHEDULE,
-  discoverPreReviewChangedPaths,
   discoverPreReviewChanges,
   mutationFilesForChanges,
   runPushGates,
@@ -306,12 +305,16 @@ function git(root, args, { allowFailure = false } = {}) {
   return result;
 }
 
-async function initializeUpstream(root, { upstream = true } = {}) {
+async function initializeUpstream(root, { upstream = true, files = {} } = {}) {
   git(root, ["init", "--quiet"]);
   git(root, ["config", "user.name", "Gate fixture"]);
   git(root, ["config", "user.email", "gate-fixture@example.invalid"]);
   await writeFile(join(root, "README.md"), "base\n");
-  git(root, ["add", "README.md"]);
+  for (const [path, source] of Object.entries(files)) {
+    await mkdir(dirname(join(root, path)), { recursive: true });
+    await writeFile(join(root, path), source);
+  }
+  git(root, ["add", "README.md", ...Object.keys(files)]);
   git(root, ["commit", "--quiet", "-m", "base"]);
   if (!upstream) return;
   const remote = join(root, ".git", "upstream.git");
@@ -372,7 +375,7 @@ test("untracked-only production input selects its pre-review lanes (CR-6)", asyn
   await mkdir(dirname(join(root, sourcePath)), { recursive: true });
   await writeFile(join(root, sourcePath), "export const workspace = 1;\n");
 
-  const changedPaths = discoverPreReviewChangedPaths({ cwd: root });
+  const changedPaths = discoverPreReviewChanges({ cwd: root }).paths;
   assert.deepEqual(changedPaths, [sourcePath]);
   assert.ok(
     selectPreReviewLanes(changedPaths, { root }).some(({ name }) => name === "format-lint"),
@@ -388,7 +391,7 @@ test("pre-review refuses a missing upstream and every failing git call", async (
   const root = await temporarySchedulerRoot(t);
   await initializeUpstream(root, { upstream: false });
   assert.throws(
-    () => discoverPreReviewChangedPaths({ cwd: root }),
+    () => discoverPreReviewChanges({ cwd: root }),
     /Cannot determine pre-review changed paths: git merge-base HEAD @\{u\} failed/u,
   );
 
@@ -397,8 +400,7 @@ test("pre-review refuses a missing upstream and every failing git call", async (
     return { status: 128, stdout: "", stderr: "injected diff failure" };
   };
   assert.throws(
-    () =>
-      discoverPreReviewChangedPaths({ cwd: root, runGit: failingRunGit, listUntracked: () => [] }),
+    () => discoverPreReviewChanges({ cwd: root, runGit: failingRunGit, listUntracked: () => [] }),
     /git diff --name-only -z base-commit -- failed \(injected diff failure\)/u,
   );
 });
@@ -421,22 +423,33 @@ test("a changed Vitest file adds its exercised production file to the mutation l
 
 test("pre-review scans merge-base test contents for deleted and removed imports (DC-03)", async (t) => {
   const root = await temporarySchedulerRoot(t);
-  const sourcePath = "src/state/workspace.ts";
-  const testPath = "src/state/workspace.test.ts";
+  const sourcePath = "src/components/boards/gameSession.ts";
+  const barrelPath = "src/components/boards/index.ts";
+  const testPath = "src/components/boards/gameSession.test.ts";
   await mkdir(dirname(join(root, sourcePath)), { recursive: true });
-  await writeFile(join(root, sourcePath), "export const workspace = 1;\n");
+  await writeFile(join(root, sourcePath), "export const gameSession = 1;\n");
 
-  const formerTest = 'import { workspace } from "@/state/workspace";\n';
+  const baseSources = new Map([
+    [testPath, 'import { gameSession } from "@/components/boards";\n'],
+    [barrelPath, 'export { gameSession } from "./gameSession";\n'],
+    [sourcePath, "export const gameSession = 1;\n"],
+  ]);
   const runGit = (executable, args, options) => {
     assert.equal(executable, "git");
-    assert.deepEqual(args, ["show", `merge-base:${testPath}`]);
     assert.equal(options.cwd, root);
-    return { status: 0, stdout: formerTest };
+    if (args[0] === "ls-tree") {
+      return {
+        status: 0,
+        stdout: [...baseSources.keys()].map((path) => `100644 blob fixture\t${path}\0`).join(""),
+      };
+    }
+    assert.equal(args[0], "show");
+    return { status: 0, stdout: baseSources.get(args[1].slice("merge-base:".length)) };
   };
 
   await t.test("deleted test", () => {
     assert.deepEqual(
-      mutationFilesForChanges([testPath], { root, mergeBase: "merge-base", runGit }),
+      mutationFilesForChanges([testPath, barrelPath], { root, mergeBase: "merge-base", runGit }),
       [sourcePath],
     );
   });
@@ -444,7 +457,7 @@ test("pre-review scans merge-base test contents for deleted and removed imports 
   await t.test("removed import", async () => {
     await writeFile(join(root, testPath), "export {};\n");
     assert.deepEqual(
-      mutationFilesForChanges([testPath], { root, mergeBase: "merge-base", runGit }),
+      mutationFilesForChanges([testPath, barrelPath], { root, mergeBase: "merge-base", runGit }),
       [sourcePath],
     );
   });
@@ -461,6 +474,12 @@ test("pre-review mutation reads use the path-discovery git runner and merge base
     calls.push(args);
     if (args[0] === "merge-base") return { status: 0, stdout: "merge-base\n" };
     if (args[0] === "diff") return { status: 0, stdout: `${testPath}\0` };
+    if (args[0] === "ls-tree") {
+      return {
+        status: 0,
+        stdout: `${[sourcePath, testPath].map((path) => `100644 blob fixture\t${path}\0`).join("")}`,
+      };
+    }
     if (args[0] === "show") {
       return { status: 0, stdout: 'import { workspace } from "@/state/workspace";\n' };
     }
@@ -482,8 +501,47 @@ test("pre-review mutation reads use the path-discovery git runner and merge base
   );
   assert.deepEqual(
     calls.map(([command]) => command),
-    ["merge-base", "diff", "show"],
+    ["merge-base", "diff", "ls-tree", "show", "show"],
   );
+});
+
+test("runPushGates passes discovered merge base into deleted-test mutation selection (DC-03)", async (t) => {
+  const cwd = await temporarySchedulerRoot(t);
+  const sourcePath = "src/components/boards/gameSession.ts";
+  const barrelPath = "src/components/boards/index.ts";
+  const testPath = "src/components/boards/gameSession.test.ts";
+  await initializeUpstream(cwd, {
+    files: {
+      [sourcePath]: "export const gameSession = 1;\n",
+      [barrelPath]: 'export { gameSession } from "./gameSession";\n',
+      [testPath]: 'import { gameSession } from "@/components/boards";\n',
+    },
+  });
+  await rm(join(cwd, barrelPath), { force: true });
+  await rm(join(cwd, testPath), { force: true });
+
+  const gitCalls = [];
+  const runGit = (executable, args, options) => {
+    gitCalls.push(args);
+    return spawnSync(executable, args, options);
+  };
+  const events = [];
+  const result = await runPushGates(["--pre-review"], {
+    cwd,
+    env: { ...process.env, GATE_MEMORY_BYTES: String(7 * GIB) },
+    runGit,
+    spawnProcess: makeMockSpawner({ events }),
+  });
+
+  assert.equal(result.exitCode, 0);
+  assert.ok(gitCalls.some(([command]) => command === "merge-base"));
+  assert.ok(gitCalls.some(([command]) => command === "ls-tree"));
+  const mutationCommand = events
+    .filter(({ type }) => type === "start")
+    .map(({ command }) => command)
+    .find((command) => command.startsWith("pnpm mutation:frontend -- --files "));
+  assert.ok(mutationCommand, JSON.stringify(events));
+  assert.ok(mutationCommand.includes(sourcePath), mutationCommand);
 });
 
 test("pre-review skips a test absent at merge-base and stops on other git show failures", async (t) => {
@@ -491,10 +549,10 @@ test("pre-review skips a test absent at merge-base and stops on other git show f
   const testPath = "src/state/new.test.ts";
   await mkdir(dirname(join(root, testPath)), { recursive: true });
   await writeFile(join(root, testPath), "export {};\n");
-  const absentRunGit = () => ({
-    status: 128,
-    stderr: `fatal: path '${testPath}' exists on disk, but not in 'merge-base'`,
-  });
+  const absentRunGit = (_executable, args) => {
+    assert.deepEqual(args, ["ls-tree", "-r", "-z", "merge-base"]);
+    return { status: 0, stdout: "" };
+  };
   assert.deepEqual(
     mutationFilesForChanges([testPath], {
       root,
@@ -510,10 +568,18 @@ test("pre-review skips a test absent at merge-base and stops on other git show f
       mutationFilesForChanges([testPath], {
         root,
         mergeBase: "merge-base",
-        runGit: () => ({ error: gitError, status: null }),
+        runGit: (_executable, args) => {
+          if (args[0] === "ls-tree") {
+            return { status: 0, stdout: `100644 blob fixture\t${testPath}\0` };
+          }
+          return { error: gitError, status: null };
+        },
       }),
     (error) => {
-      assert.match(error.message, /git show merge-base:src\/state\/new\.test\.ts failed/u);
+      assert.match(
+        error.message,
+        /Cannot read src\/state\/new\.test\.ts at merge-base for mutation selection: git show merge-base:src\/state\/new\.test\.ts failed/u,
+      );
       assert.strictEqual(error.cause, gitError);
       return true;
     },

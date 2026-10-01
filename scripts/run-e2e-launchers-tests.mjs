@@ -5,11 +5,14 @@ import { delimiter, dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
+  DOCKER_REMOVE_TIMEOUT_MS,
+  DOCKER_RUN_TERMINATION_TIMEOUT_MS,
   DOCKER_INFO_TIMEOUT_MS,
   E2E_CONTAINER_MEMORY,
   E2E_CONTAINER_MEMORY_BYTES,
   playwrightArguments,
 } from "./run-e2e-container.mjs";
+import { E2E_LANE_TERMINATION_TIMEOUT_MS } from "./run-push-gates.mjs";
 
 const scripts = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(scripts, "..");
@@ -64,6 +67,10 @@ if (action === "info") {
   if (process.env.FAKE_DOCKER_RM_MODE === "fail") {
     process.stderr.write("injected cleanup refusal\n");
     process.exit(23);
+  } else if (process.env.FAKE_DOCKER_RM_MODE === "hold") {
+    process.on("SIGTERM", () => {});
+    process.on("SIGINT", () => {});
+    setInterval(() => {}, 1000);
   }
 }
 `;
@@ -254,7 +261,7 @@ test("Docker without memory-limit support is refused before any container is sta
 });
 
 test("docker info preflight has a bounded timeout that refuses with its cause", async (t) => {
-  assert.equal(DOCKER_INFO_TIMEOUT_MS, 30_000);
+  assert.equal(DOCKER_INFO_TIMEOUT_MS, 10_000);
   const harness = await makeHarness(t, { FAKE_DOCKER_INFO_MODE: "hold" });
   const moduleUrl = pathToFileURL(launcherPath).href;
   const source = [
@@ -282,6 +289,55 @@ test("SIGTERM cancels a hung docker info preflight without starting the containe
     (await readEvents(harness)).map(({ action }) => action),
     ["info"],
   );
+});
+
+test("preflight cancellation reports a rejected child termination and its cause", async (t) => {
+  const harness = await makeHarness(t);
+  const moduleUrl = pathToFileURL(launcherPath).href;
+  const source = [
+    `import { EventEmitter } from "node:events";`,
+    `import { PassThrough } from "node:stream";`,
+    `import { runE2eContainer } from ${JSON.stringify(moduleUrl)};`,
+    "const controller = new AbortController();",
+    "controller.abort();",
+    "const result = await runE2eContainer([], {",
+    "  abortSignal: controller.signal,",
+    "  preflightTimeoutMs: 50,",
+    "  spawnProcess: () => Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough() }),",
+    '  superviseProcess: () => ({ done: new Promise(() => {}), terminate: () => Promise.reject(new Error("injected termination failure")), unref() {} }),',
+    "});",
+    "process.exitCode = result.exitCode;",
+  ].join("\n");
+  const result = await startNode(["--input-type=module", "-e", source], harness.env).done;
+  assert.equal(result.code, 1, `${result.stdout}\n${result.stderr}`);
+  assert.match(result.stderr, /Failed to stop docker info preflight after cancellation/u);
+  assert.match(result.stderr, /injected termination failure/u);
+});
+
+test("preflight cancellation bounds a child that never settles", async (t) => {
+  const harness = await makeHarness(t);
+  const moduleUrl = pathToFileURL(launcherPath).href;
+  const source = [
+    `import { EventEmitter } from "node:events";`,
+    `import { PassThrough } from "node:stream";`,
+    `import { runE2eContainer } from ${JSON.stringify(moduleUrl)};`,
+    "const controller = new AbortController();",
+    "controller.abort();",
+    "const started = Date.now();",
+    "const result = await runE2eContainer([], {",
+    "  abortSignal: controller.signal,",
+    "  preflightTimeoutMs: 50,",
+    "  spawnProcess: () => Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough() }),",
+    "  superviseProcess: () => ({ done: new Promise(() => {}), terminate: () => new Promise(() => {}), unref() {} }),",
+    "});",
+    "console.log(`elapsed=${Date.now() - started}`);",
+    "process.exitCode = result.exitCode;",
+  ].join("\n");
+  const result = await startNode(["--input-type=module", "-e", source], harness.env).done;
+  assert.equal(result.code, 1, `${result.stdout}\n${result.stderr}`);
+  assert.match(result.stderr, /Docker info preflight cancellation timed out after 50 ms/u);
+  const elapsed = Number(result.stdout.match(/elapsed=(\d+)/u)?.[1]);
+  assert.ok(Number.isFinite(elapsed) && elapsed < 1_000, result.stdout);
 });
 
 test("unavailable Docker prints the native-run guidance and starts no container", async (t) => {
@@ -446,6 +502,36 @@ test("cleanup failure names the container and says a retry is not known to be cl
   assert.match(result.stderr, /Failed to stop and remove e2e container chessfable-e2e-/u);
   assert.match(result.stderr, /injected cleanup refusal/u);
   assert.match(result.stderr, /retry is not known to be clean/u);
+});
+
+test("a hung docker rm reports the named cleanup failure before the e2e lane window", async (t) => {
+  assert.ok(
+    DOCKER_REMOVE_TIMEOUT_MS + DOCKER_RUN_TERMINATION_TIMEOUT_MS < E2E_LANE_TERMINATION_TIMEOUT_MS,
+  );
+  const harness = await makeHarness(t, {
+    FAKE_DOCKER_RUN_MODE: "fail",
+    FAKE_DOCKER_RM_MODE: "hold",
+  });
+  const moduleUrl = pathToFileURL(launcherPath).href;
+  const source = [
+    `import { runE2eContainer } from ${JSON.stringify(moduleUrl)};`,
+    "const started = Date.now();",
+    "const result = await runE2eContainer([], { removeTimeoutMs: 40, dockerTerminationTimeoutMs: 40 });",
+    "console.log(`elapsed=${Date.now() - started}`);",
+    "process.exitCode = result.exitCode;",
+  ].join("\n");
+  const result = await startNode(["--input-type=module", "-e", source], harness.env).done;
+  assert.equal(result.code, 1, `${result.stdout}\n${result.stderr}`);
+  assert.match(
+    result.stderr,
+    /Failed to stop and remove e2e container chessfable-e2e-.*docker rm cleanup .* timed out after 40 ms/u,
+  );
+  assert.match(result.stderr, /retry is not known to be clean/u);
+  const elapsed = Number(result.stdout.match(/elapsed=(\d+)/u)?.[1]);
+  assert.ok(
+    Number.isFinite(elapsed) && elapsed < E2E_LANE_TERMINATION_TIMEOUT_MS,
+    `launcher elapsed ${elapsed} ms`,
+  );
 });
 
 test("the native e2e command still selects only the named test through pnpm's separator", () => {

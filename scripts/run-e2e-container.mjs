@@ -28,10 +28,12 @@ import {
 import { playwrightImage } from "./playwright-image.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const DOCKER_TERMINATION_TIMEOUT_MS = 2_000;
-// Docker daemon discovery can block while it starts or reconnects; bound the preflight so a stuck
-// daemon cannot hold the heavy-gate lock indefinitely.
-export const DOCKER_INFO_TIMEOUT_MS = 30_000;
+export const DOCKER_RUN_TERMINATION_TIMEOUT_MS = 2_000;
+// Leave time inside the scheduler's 15-second e2e lane window for the Docker client to terminate.
+export const DOCKER_REMOVE_TIMEOUT_MS = 10_000;
+// Docker daemon discovery should respond within ten seconds; this also bounds preflight cleanup
+// after cancellation so it can report before the scheduler escalates the e2e lane.
+export const DOCKER_INFO_TIMEOUT_MS = 10_000;
 
 // The container peaked at 2.3 GiB on 2026-09-30 (gate-performance measurements); 4 GiB
 // gives about 1.7x headroom and is reserved from overlapping gate lanes.
@@ -56,7 +58,10 @@ export function playwrightArguments(forwarded) {
 }
 
 function errorMessage(error) {
-  return error instanceof Error ? error.message : String(error);
+  const message = error instanceof Error ? error.message : String(error);
+  const causes = error instanceof AggregateError ? [...error.errors] : [];
+  if (error?.cause) causes.push(error.cause);
+  return causes.length ? `${message}: ${causes.map(errorMessage).join("; ")}` : message;
 }
 
 function startDockerCommand(
@@ -64,7 +69,8 @@ function startDockerCommand(
   {
     spawnProcess = spawn,
     forwardOutput = false,
-    terminationTimeoutMs = DOCKER_TERMINATION_TIMEOUT_MS,
+    terminationTimeoutMs = DOCKER_RUN_TERMINATION_TIMEOUT_MS,
+    superviseProcess = superviseChild,
     timeoutMs = undefined,
     timeoutLabel = undefined,
   } = {},
@@ -85,7 +91,7 @@ function startDockerCommand(
     if (forwardOutput) process.stderr.write(chunk);
   });
 
-  const supervisor = superviseChild(child, {
+  const supervisor = superviseProcess(child, {
     terminationTimeoutMs,
     killProcessGroup: true,
   });
@@ -134,7 +140,11 @@ function cancellationExitCode(reason) {
 
 async function cleanupContainer(containerName, options) {
   try {
-    const result = await startDockerCommand(["rm", "-f", containerName], options).done;
+    const result = await startDockerCommand(["rm", "-f", containerName], {
+      ...options,
+      timeoutMs: options.removeTimeoutMs ?? DOCKER_REMOVE_TIMEOUT_MS,
+      timeoutLabel: `docker rm cleanup for e2e container ${containerName}`,
+    }).done;
     if (result.code === 0) return undefined;
     if (/no such container/iu.test(`${result.stdout}\n${result.stderr}`)) return undefined;
 
@@ -153,20 +163,48 @@ function reportCleanupFailure(error) {
   process.stderr.write(`${error.message}\n`);
 }
 
+async function waitForPreflightCancellation(preflight, termination, timeoutMs) {
+  let timer;
+  const settled = Promise.all([preflight, termination]).then(
+    () => undefined,
+    (error) => error,
+  );
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(
+      () =>
+        resolve(new Error(`Docker info preflight cancellation timed out after ${timeoutMs} ms`)),
+      timeoutMs,
+    );
+  });
+  try {
+    return await Promise.race([settled, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Run one bounded e2e container and clean it after every failed or interrupted run. */
 export async function runE2eContainer(
   forwarded = process.argv.slice(2),
   {
     spawnProcess = spawn,
+    superviseProcess = superviseChild,
     abortSignal = undefined,
     preflightTimeoutMs = DOCKER_INFO_TIMEOUT_MS,
+    removeTimeoutMs = DOCKER_REMOVE_TIMEOUT_MS,
+    dockerTerminationTimeoutMs = DOCKER_RUN_TERMINATION_TIMEOUT_MS,
   } = {},
 ) {
   const cancellation = installMultiChildSignalForwarding({
     label: "e2e container launcher",
     abortSignal,
   });
-  const spawnOptions = { spawnProcess };
+  const spawnOptions = {
+    spawnProcess,
+    superviseProcess,
+    terminationTimeoutMs: dockerTerminationTimeoutMs,
+    removeTimeoutMs,
+  };
   let exitCode = 0;
   let containerName;
   try {
@@ -181,7 +219,17 @@ export async function runE2eContainer(
       cancellation.signalRequested.then((reason) => ({ reason })),
     ]);
     if ("reason" in preflightOutcome) {
-      await Promise.allSettled([preflight.done, cancellation.termination]);
+      const terminationError = await waitForPreflightCancellation(
+        preflight.done,
+        cancellation.termination,
+        preflightTimeoutMs,
+      );
+      if (terminationError) {
+        process.stderr.write(
+          `Failed to stop docker info preflight after cancellation: ${errorMessage(terminationError)}\n`,
+        );
+        return { exitCode: 1, containerName };
+      }
       return { exitCode: cancellationExitCode(preflightOutcome.reason), containerName };
     }
     const support = preflightOutcome.result;
