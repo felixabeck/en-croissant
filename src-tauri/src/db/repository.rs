@@ -471,11 +471,8 @@ impl DatabaseRepository {
         }
         snapshot.as_file_mut().sync_all()?;
         let snapshot_path = snapshot.path().to_string_lossy().into_owned();
-        let connection = SqliteConnection::establish(&snapshot_path).map_err(|error| {
-            Error::InvalidInput(format!(
-                "could not open authority-pinned SQLite database snapshot: {error}"
-            ))
-        })?;
+        let connection = SqliteConnection::establish(&snapshot_path)
+            .map_err(crate::error::map_sqlite_establish)?;
         Ok(DatabaseConnection {
             connection: DatabaseConnectionInner::Pinned(connection),
             _lease: None,
