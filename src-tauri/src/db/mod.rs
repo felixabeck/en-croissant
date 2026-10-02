@@ -1212,7 +1212,7 @@ fn generate_search_index_locked(
     Ok(())
 }
 
-#[derive(Debug, Serialize, Type)]
+#[derive(Serialize, Type)]
 pub struct DatabaseInfo {
     title: String,
     description: String,
@@ -1359,7 +1359,6 @@ pub async fn get_db_info<R: tauri::Runtime>(
     Ok(metadata.info)
 }
 
-#[derive(Debug)]
 struct DatabaseMetadata {
     info: DatabaseInfo,
     scan: Option<(std::path::PathBuf, DatabaseIdentity)>,

@@ -67,7 +67,13 @@ vi.mock("@/bindings/generated", () => ({
         listFileWorkspace: mocks.listFileWorkspace,
     },
     events: Object.fromEntries(
-        ["clockUpdateEvent", "gameMoveEvent", "gameOverEvent", "progressEvent"].map((name) => [
+        [
+            "clockUpdateEvent",
+            "gameMoveEvent",
+            "gameOverEvent",
+            "progressEvent",
+            "databaseContentFailure",
+        ].map((name) => [
             name,
             {
                 listen: vi.fn(async (callback) => {
@@ -134,6 +140,13 @@ describe("tauri command facade", () => {
             payload: { ...payload, generation: 7n },
             id: 9,
         });
+        unlisten();
+    });
+
+    test("database content failure subscriptions register the callback", async () => {
+        const callback = vi.fn();
+        const unlisten = await tauriSubscriptions.databaseContentFailure(callback);
+        expect(mocks.listeners.get("databaseContentFailure")).toBe(callback);
         unlisten();
     });
 
