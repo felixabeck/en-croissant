@@ -8418,13 +8418,22 @@ Handled 2026-09-19 together with f-20260905-14. The Files controls fit 320px / 2
 
 ### `unlink_database_files` removes the preferred sidecar before it checks the primary leaf, so a database replaced after the caller's probe loses the replacement's index
 
-* **ID:** f-20260912-09 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260912-09 · **Status:** handled · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/db/mod.rs:2257-2282` (`unlink_database_files`: `remove_optional_regular_at(preferred)`, then the legacy sidecar, then the primary's `statat` identity check, then `unlinkat`), the caller `delete_database_blocking` (`:2188-2215`, which probes through `database_identity_expected` first), and `d-20260831-24` (sidecar first, then legacy, then primary — the recorded order).
 * **Defect:** the caller's probe and the function's own primary check both happen at instants; between the probe and `remove_optional_regular_at`, or between a moved-up `statat` and that removal, an external rename can install database B and B's `.ecsi` at the same pathname. The preferred sidecar removed is then B's, and only afterwards does the primary check return `Conflict`. Sidecars are regenerable, so nothing is lost permanently, but a valid index is destroyed for a database the user did not ask to touch. Moving the `statat` before the sidecar removal narrows the window without closing it (measured in plan review, 2026-09-12: four lenses independently described the same post-check swap).
 * **Open question:** what closes the window — removing sidecars only after the primary has been unlinked (`d-20260831-24` chose sidecar-first so a failed primary unlink never leaves an orphaned index; the inverse leaves a sidecar whose provenance no longer matches, which the loader already rejects), or a sidecar identity/provenance check through the retained parent immediately before each `unlinkat` (the legacy path already does `legacy_sidecar_matches`)?
 * **Why it matters:** the deletion path's contract is "delete exactly the database the capability names"; an index for a different database is collateral.
 * **Related:** `f-20260831-08` (governed by `d-20260831-24`), `f-20260905-03` (whose plan review surfaced this and explicitly does not change the order).
 * **Found by:** Codex `review-root-cause`, `review-pgn-index`, `review-tauri-security`, `review-correctness` lenses during plan review of `tasks/plans/2026-09-12-repository-identity-key.md`, 2026-09-12.
+
+Provenance check through the retained parent, before the preferred sidecar is removed. Reordering sidecars to after the primary was rejected.
+
+Commits: `29bcb8b6`, `18ea5cff`, `41b7fd31`, `35f06e0a`, `c1ce2558`, `6f69d55c`, `d07f575d`. Review record: `tasks/handoffs/2026-10-02-f-20260912-09-review.md`.
+
+The preferred sidecar is removed when its recorded `IndexSource.object` is this database, or when its header and source are not a decodable archive. It is kept when that object names another database. `PermissionDenied` at any probe stage keeps either index name and deletion continues. The same undecodable defect on the legacy name keeps that file. `d-20261002-08` supersedes `d-20260831-24` and `d-20261002-06`. It restates the order, `PartialRemoval` only when the primary is gone, and the legacy full-provenance rule.
+
+Out of scope: the `statat` to `unlinkat` instant inside `remove_entry_at`. POSIX has no pathname compare-and-unlink. Windows deletes the checked handle. The primary leaf already carries that residual.
+<!-- ledger-meta {"command":"close","effect_lines":7,"effect_sha256":"70f54afaf5acf4e744f9c389a1fb080012cd7a467325a5de625ff84eefd6ab83","header_sha256":"8b48a290630f8033c1bb8e93bce43e2d9780dfd9603318bf6f2c3cfcb104857c","header_status":"handled","input_sha256":"c1db3bf90a5e5491739297ff8e305268ad3f5f4115bac7abc30deb735cd14468","kind":"mutation-receipt","operation":"b717207dc0c22776c506db14273dafa1cbec20717674cb581c2039b4ea572ac5","options":{"section":null},"request_id_sha256":null,"results":["f-20260912-09"],"target":"f-20260912-09","v":1} -->
 
 ### The backend no longer compiles on non-unix targets: ungated callers of `#[cfg(unix)]` descriptor APIs
 
