@@ -70,12 +70,12 @@ and runs the whole run in its own `agents.slice/agent-gate-*.scope`, capped at 7
 `MemoryHigh`. It fails closed: exit 125 (`agent-gate: REFUSED — …`) means nothing started and a
 retry is safe; a missing launcher fails the gate with no in-place fallback. `gate:ensure` and
 `gate:run` are wrapped too; a nested `agent-gate` runs in place. Never add another `flock` on
-`heavy-gate.lock`: it deadlocks against the launcher's own lock. `scripts/gate-parallelism.mjs` sizes workers from
-that scope's complete cgroup chain, including the `agents.slice` budget, and uses the recorded
-conservative 8 GiB configuration if an ancestor limit cannot be read or no finite limit exists.
-The e2e container runs with a 4 GiB limit reserved from frontend coverage and from frontend
+`heavy-gate.lock`: it deadlocks against the launcher's own lock. `scripts/gate-parallelism.mjs` sizes
+workers from that scope's complete cgroup chain, including the `agents.slice` budget, and uses the
+recorded conservative 8 GiB configuration if an ancestor limit cannot be read or no finite limit
+exists. The e2e container runs with a 4 GiB limit reserved from frontend coverage and from frontend
 mutation only when mutation shares its concurrent schedule. The schedule and its constants are
-`d-20260930-03`, `d-20260930-04`, `d-20261002-01` (placement), and `d-20261002-02` (reserve).
+`d-20260930-03`, `d-20260930-04`, `d-20261002-01` (placement), and `d-20261002-03` (reserve).
 
 Gate scripts live in `package.json`; the path mapping and any direct tool invocations live in the
 canonical push contract. Two properties worth knowing before planning any change:
@@ -99,11 +99,14 @@ canonical push contract. Two properties worth knowing before planning any change
   regression — see `docs/coverage.md`.
 
 **Frontend mutation testing is a receipt-backed frontend push gate.** It runs its three packages
-through `gate:ensure frontend-mutation` in memory-sized slots: in the 8 GiB agent budget one package
-at a time with five Stryker runners. Measured 2026-09-30 as the last lane of an all-blocks
-`pnpm gates:push`: 397.5 s with 0 OOM kills, under load average 12-20 from other sessions (549.1 s
-serially at the old fixed concurrency of 2). The backend suite
-stays in `.github/workflows/mutation.yml`, dispatchable and scheduled weekly, with the eight backend
+through `gate:ensure frontend-mutation` in memory-sized slots: inside the `agent-gate` scope (28 GiB
+`memory.max` on tuxedo-atlas, a 27 GiB budget after the reserve) one package at a time with 21 Stryker
+runners. Measured 2026-10-02 as the last lane of an all-blocks `pnpm gates:push` on `c49a852c`: 346.9 s
+for the mutation lane and 444 s for the whole gate, the three packages strictly sequential, with no
+observed OOM event and no swap use, under load average 14.9 / 19.8 / 21.0 at start. The scope's
+`memory.peak` reached `memory.max` because it includes page cache (post-exit split 0.75 MB anonymous
+against 8.48 GB file); a second run that day took 382.3 s and 481 s. The backend suite stays in
+`.github/workflows/mutation.yml`, dispatchable and scheduled weekly, with the eight backend
 packages as a matrix over the runner's `BACKEND_MUTATION_PACKAGE` selector. A single sequential
 backend run is slow enough to crowd GitHub's 6-hour per-job limit, so `test.yml` and local pushes
 never run `mutation:backend`.
