@@ -4870,3 +4870,22 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** new evidence `d-20261002-02` did not have, measured 2026-10-02 inside real `agent-gate` scopes (`memory.max` 30064771072, 24 CPUs) on `c49a852c`: run M2 green, 481 s, `memory.peak` 30064771072, `oom 0 oom_kill 0`; run M3 green, 444 s, `memory.peak` 30064771072, `memory.events` `max 401 oom 0 oom_kill 0`, `memory.swap.peak` 0, post-exit `anon` 753664 / `file` 8477736960. Plan and review record (rounds r11-r12): `tasks/handoffs/2026-10-02-agent-gate-convergence-review.md`. Supersedes `d-20261002-02` (its chosen value and coverage stand; its validation clause is replaced). Reversal path: the constant and its comment in `scripts/gate-parallelism.mjs`.
 * **Decided by:** Claude Code (Opus 5.5), drain build run for f-20260930-03 (session 021d2888-c904-44b0-af74-a8f4604318bd), 2026-10-02 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"b4f00e92bf9bfb860336bc4a3b8deab0054b970d7f4bc07324cb1778b8fef426","input_sha256":"1cf19470b65231753837eedaa3901b9fdaf3954c458b042138ef1ee3c753521c","kind":"mutation-receipt","operation":"e8d23ad0e9efc9ecaf6a50e7a24048f3ca2e3d75b4aa695a1c0c43246db4b7c9","options":{"section":null},"request_id_sha256":null,"results":["d-20261002-03"],"target":"decisions-ledger","v":1} -->
+
+### d-20261002-04 — Should the database list wait for the content scan?
+
+* **Question:** Should the database list wait for the content scan?
+* **Governs:** -
+* **Chosen:** No. Ordinary open keeps the cheap schema checks, including rejection of an uninitialized file. `PRAGMA integrity_check` and `PRAGMA foreign_key_check` stay on create and migration. A missing or stale stamp schedules one background read-only scan that does not block `get_db_info`.
+* **Rejected:** Keep both pragmas on ordinary open and cache the pass only in memory.
+* **Reason:** The in-memory `DatabaseSchemaIdentity` dies with the process, so a relaunch of Mega Database 2025 waits about two minutes again. The stored Info row already supplies the card counts.
+* **Decided by:** Grok build 2026-10-02 database-list-integrity · **Superseded-by:** -
+
+### d-20261002-05 — Should a failed content scan use a new error sentence?
+
+* **Question:** Should a failed content scan use a new error sentence?
+* **Governs:** -
+* **Chosen:** No. Reuse `SQLite integrity_check failed` and `SQLite foreign_key_check failed`, and the existing database error card. Home keeps its `type === "success"` filter and gets no error card.
+* **Rejected:** A new explanation of the background scan.
+* **Reason:** The existing card already says the database could not be loaded. The accepted window is that a corrupt file may show its stored title until the scan fails.
+* **Decided by:** Grok build 2026-10-02 database-list-integrity · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":17,"effect_sha256":"28db97e75b34aee28c1a43b27c666be33810ef5635779f74c4cdc372bfde8c06","input_sha256":"66efe29497453e1f8bf471df1a40a5183be62744047c40240b8b58b991f502a2","kind":"mutation-receipt","operation":"54d7579e61b85c45ac6c599fbeb473efe795cf38099a0b65b0155d5ca86c00b4","options":{"section":null},"request_id_sha256":null,"results":["d-20261002-04","d-20261002-05"],"target":"decisions-ledger","v":1} -->
