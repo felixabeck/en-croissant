@@ -65,6 +65,31 @@ test("accounts-puzzles-engines: local settings and catalog upgrade modal", async
     await expect(dialog).toHaveScreenshot("engine-upgrade-modal.png");
 });
 
+test("accounts-puzzles-engines: add engine download catalog", async ({ page, mockScenario }) => {
+    await page.addInitScript(() => {
+        localStorage.setItem("font-size", "100");
+    });
+    // The engine catalog is bundled; only its native signature check is mocked.
+    await mockScenario({
+        commands: {
+            is_bmi2_compatible: { result: false },
+            verify_signed_bytes: { result: null },
+            get_progress: { result: null },
+        },
+    });
+    await page.goto("/engines");
+    await page.getByRole("button", { name: "Add New", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Add Engine", exact: true });
+    await expect(dialog.getByRole("tab", { name: "Download", exact: true })).toHaveAttribute(
+        "aria-selected",
+        "true",
+    );
+    await expect(
+        dialog.getByRole("button", { name: "Install", exact: true }).first(),
+    ).toBeVisible();
+    await expect(dialog).toHaveScreenshot("engine-add-catalog.png");
+});
+
 test("accounts-puzzles-engines: local engine validation is visible before any native issuance", async ({
     page,
     mockScenario,
