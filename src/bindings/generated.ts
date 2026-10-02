@@ -1087,6 +1087,7 @@ export const events = __makeEvents__<{
 bestMovesPayload: BestMovesPayload,
 clockUpdateEvent: ClockUpdateEvent,
 convertProgress: ConvertProgress,
+databaseContentFailure: DatabaseContentFailure,
 gameMoveEvent: GameMoveEvent,
 gameOverEvent: GameOverEvent,
 progressEvent: ProgressEvent
@@ -1094,6 +1095,7 @@ progressEvent: ProgressEvent
 bestMovesPayload: "best-moves-payload",
 clockUpdateEvent: "clock-update-event",
 convertProgress: "convert-progress",
+databaseContentFailure: "database-content-failure",
 gameMoveEvent: "game-move-event",
 gameOverEvent: "game-over-event",
 progressEvent: "progress-event"
@@ -1132,6 +1134,7 @@ export type CommitDurability = "Durable" | { DurabilityUncertain: DurabilityStag
  */
 export type ConvertProgress = { id: string; imported_games: number; elapsed_ms: number; source_file_name: string | null }
 export type DailyStatsData = { date: string; time_control: string; won: number; drawn: number; lost: number; max_player_elo: number }
+export type DatabaseContentFailure = { filename: string; message: string }
 export type DatabaseDescriptor = { handle: DatabaseHandle; filename: string; availability: PathAvailability }
 /**
  * Opaque handle for one exact database file.  It is deliberately a distinct

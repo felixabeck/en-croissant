@@ -309,7 +309,7 @@ impl DerefMut for DatabaseConnection {
 /// Canonical object identity used by caches that consume non-game SQLite
 /// databases as well. The filesystem component catches replacement outside
 /// this process; `data_revision` is persisted in the database's Info table.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DatabaseIdentity {
     pub data_revision: u64,
     pub object: (u64, u64),
@@ -337,6 +337,7 @@ struct EntryLease {
 #[derive(Default)]
 struct EntryState {
     schema_identity: Option<DatabaseSchemaIdentity>,
+    passed_stamp_due: Option<DatabaseIdentity>,
     last_used: u64,
 }
 
@@ -361,6 +362,7 @@ struct EntryKey {
 /// pools, locks, revisions, or cache invalidations. The bounded LRU eviction
 /// only releases idle entries; live callers keep their entry alive via Arc.
 pub struct DatabaseRepository {
+    pub(super) content_validation: super::content_validation::ContentValidationState,
     state: Mutex<RepositoryState>,
     build_changed: Condvar,
     retire_wait: Duration,
@@ -369,6 +371,7 @@ pub struct DatabaseRepository {
 impl Default for DatabaseRepository {
     fn default() -> Self {
         Self {
+            content_validation: Default::default(),
             state: Mutex::new(RepositoryState::default()),
             build_changed: Condvar::new(),
             retire_wait: RETIRE_WAIT_TIMEOUT,
@@ -380,6 +383,7 @@ impl DatabaseRepository {
     #[cfg(all(test, unix))]
     fn with_retire_wait(retire_wait: Duration) -> Self {
         Self {
+            content_validation: Default::default(),
             state: Mutex::new(RepositoryState::default()),
             build_changed: Condvar::new(),
             retire_wait,
@@ -402,7 +406,23 @@ impl DatabaseRepository {
             .as_ref()
             != Some(&identity);
         if requires_validation {
-            migrations::validate_existing_database(&mut connection)?;
+            if migrations::validate_existing_database(&mut connection)? {
+                match self.database_identity(target) {
+                    Ok(validated_identity) => {
+                        entry
+                            .state
+                            .lock()
+                            .map_err(|_| {
+                                Error::Conflict("database repository state poisoned".into())
+                            })?
+                            .passed_stamp_due = Some(validated_identity)
+                    }
+                    Err(error) => log::warn!(
+                        "passed content validation identity lookup failed: {}",
+                        error.diagnostic()
+                    ),
+                }
+            }
             self.mark_schema_validated_entry(&entry, identity)?;
         }
         Ok(DatabaseConnection {
@@ -411,6 +431,45 @@ impl DatabaseRepository {
             _pinned_file: None,
             _authority_snapshot: None,
         })
+    }
+
+    /// Consumes a committed migration's publication record only for that identity.
+    pub(super) fn take_passed_stamp_due(
+        &self,
+        target: &crate::infra::path_authority::DatabaseFileTarget,
+    ) -> Result<Option<DatabaseIdentity>, Error> {
+        let entry = self
+            .state
+            .lock()
+            .map_err(|_| Error::Conflict("database repository state poisoned".into()))?
+            .entries
+            .get(&entry_key(target)?)
+            .cloned();
+        let Some(entry) = entry else {
+            return Ok(None);
+        };
+        let due = entry
+            .state
+            .lock()
+            .map_err(|_| Error::Conflict("database repository state poisoned".into()))?
+            .passed_stamp_due
+            .clone();
+        let Some(identity) = due else {
+            return Ok(None);
+        };
+        if self.database_identity(target)? != identity {
+            return Ok(None);
+        }
+        let mut state = entry
+            .state
+            .lock()
+            .map_err(|_| Error::Conflict("database repository state poisoned".into()))?;
+        if state.passed_stamp_due.as_ref() == Some(&identity) {
+            state.passed_stamp_due = None;
+            Ok(Some(identity))
+        } else {
+            Ok(None)
+        }
     }
 
     pub fn initialization_connection(

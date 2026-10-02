@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => {
     },
     attachConsole: vi.fn(),
     useConversionProgress: vi.fn(),
+    useDatabaseContentValidation: vi.fn(),
     useDocumentLanguage: vi.fn(),
     closeSplashscreen: vi.fn(),
     getDefaultStore: vi.fn(),
@@ -100,6 +101,10 @@ vi.mock("@/components/ErrorComponent", () => ({ default: () => null }));
 vi.mock("@/hooks/useConversionProgress", () => ({
   useConversionProgress: mocks.useConversionProgress,
 }));
+
+vi.mock("@/hooks/useDatabaseContentValidation", () => ({
+  useDatabaseContentValidation: mocks.useDatabaseContentValidation,
+}));
 vi.mock("@/hooks/useDocumentLanguage", () => ({
   useDocumentLanguage: mocks.useDocumentLanguage,
 }));
@@ -164,6 +169,7 @@ beforeEach(() => {
 
   mocks.createAppTheme.mockReset().mockReturnValue({});
   mocks.useConversionProgress.mockReset();
+  mocks.useDatabaseContentValidation.mockReset();
   mocks.useDocumentLanguage.mockReset();
   mocks.useAtomValue.mockReset();
 
@@ -567,6 +573,7 @@ describe("App", () => {
     await act(async () => root.render(<App />));
 
     expect(mocks.useConversionProgress).toHaveBeenCalled();
+    expect(mocks.useDatabaseContentValidation).toHaveBeenCalled();
     expect(mocks.useDocumentLanguage).toHaveBeenCalled();
   });
 });

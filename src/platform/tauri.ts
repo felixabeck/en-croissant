@@ -416,6 +416,9 @@ export const tauriSubscriptions = {
     ),
     convertProgress: (callback: Parameters<typeof events.convertProgress.listen>[0]) =>
         events.convertProgress.listen(callback),
+    databaseContentFailure: (
+        callback: Parameters<typeof events.databaseContentFailure.listen>[0],
+    ) => events.databaseContentFailure.listen(callback),
     gameMove: eventSubscription(
         (callback) => events.gameMoveEvent.listen(callback),
         normalizeGameMoveEvent,

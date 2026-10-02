@@ -49,6 +49,7 @@ const colorSchemeManager = localStorageColorSchemeManager({
 
 import ErrorComponent from "@/components/ErrorComponent";
 import { useConversionProgress } from "@/hooks/useConversionProgress";
+import { useDatabaseContentValidation } from "@/hooks/useDatabaseContentValidation";
 import { useDocumentLanguage } from "@/hooks/useDocumentLanguage";
 import { routeTree } from "./routeTree.gen";
 import { appCssVariablesResolver, createAppTheme } from "./styles/theme";
@@ -204,6 +205,7 @@ export default function App() {
   useAppStartup();
   useDocumentLanguage();
   useConversionProgress();
+  useDatabaseContentValidation();
 
   useEffect(() => {
     document.documentElement.style.fontSize = `${fontSize}%`;

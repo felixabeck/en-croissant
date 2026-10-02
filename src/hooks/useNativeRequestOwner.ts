@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef } from "react";
-import { unstable_serialize, useSWRConfig } from "swr";
+import { type Key, unstable_serialize, useSWRConfig } from "swr";
 
 type RequestGeneration = { controller: AbortController; promise: Promise<unknown> };
 type SharedRequest = {
@@ -31,6 +31,19 @@ function requestFor(cache: object, identity: string): SharedRequest {
 export type NativeRequestOwner = {
     run: <T>(request: (signal: AbortSignal) => Promise<T>) => Promise<T>;
 };
+
+/** Observes existing generations without starting or sharing a revalidation fetch. */
+export function runningNativeRequest(cache: object, key: Key): Promise<void> | undefined {
+    const shared = requestsByCache.get(cache)?.get(unstable_serialize(key));
+    if (!shared?.generations.size) return undefined;
+    return Promise.allSettled(
+        Array.from(shared.generations, (generation) => generation.promise),
+    ).then(() => undefined);
+}
+
+export function hasNativeRequestSubscribers(cache: object, key: Key): boolean {
+    return (requestsByCache.get(cache)?.get(unstable_serialize(key))?.subscribers.size ?? 0) > 0;
+}
 
 /** Shares each actual SWR fetch generation until its final committed subscriber leaves. */
 export function useNativeRequestOwner(key: unknown | null): NativeRequestOwner | null {

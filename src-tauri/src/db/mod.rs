@@ -1,6 +1,7 @@
 #[cfg(all(test, unix))]
 pub(crate) mod allocation_probe;
 mod bound_sqlite;
+mod content_validation;
 mod encoding;
 mod migrations;
 mod models;
@@ -195,8 +196,21 @@ pub(crate) fn get_db_or_create(
     repository: &crate::db::DatabaseRepository,
     target: &DatabaseFileTarget,
     cancellation: Option<&CancellationToken>,
+    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    file: &DatabaseHandle,
 ) -> Result<repository::DatabaseConnection, Error> {
-    repository.connection(target, cancellation)
+    let connection = repository.connection(target, cancellation)?;
+    match repository.take_passed_stamp_due(target) {
+        Ok(Some(identity)) => {
+            content_validation::publish_passed_stamp(repository, authority, file, &identity)
+        }
+        Ok(None) => {}
+        Err(error) => log::warn!(
+            "passed content validation stamp lookup failed: {}",
+            error.diagnostic()
+        ),
+    }
+    Ok(connection)
 }
 
 /// The sole database capability boundary.  Native repository code receives a
@@ -283,16 +297,23 @@ fn with_validated_mutation(
     search_cache: &SearchCache,
     target: &DatabaseFileTarget,
     cancellation: &CancellationToken,
+    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    file: &DatabaseHandle,
     operation: impl FnOnce(&mut SqliteConnection) -> Result<(), Error>,
 ) -> Result<(), Error> {
+    let mut content_validated = false;
     let result = repository.with_write_lock_cancellable(target, cancellation, || {
         let mut connection = repository.initialization_connection(target, Some(cancellation))?;
         connection.transaction::<_, Error, _>(|db| {
             bump_revision_in_transaction(db, target.path(), cancellation, |db| {
-                migrations::validate_existing_database(db)?;
+                content_validated = migrations::validate_existing_database(db)?;
                 operation(db)
             })
-        })
+        })?;
+        if content_validated {
+            content_validation::publish_committed_pass(repository, authority, file, target);
+        }
+        Ok(())
     });
     finish_search_cache_after_transaction(result, search_cache, target.path())
 }
@@ -977,13 +998,16 @@ fn convert_pgn_blocking<R: tauri::Runtime>(
     let description = description.unwrap_or_default();
     let start = Instant::now();
     let mut imported_games = 0usize;
+    let mut content_validated = false;
     let result = repository.with_write_lock_cancellable(&target, cancellation, || {
         let mut database_connection =
             repository.initialization_connection(&target, Some(cancellation))?;
         let db = &mut *database_connection;
         db.transaction::<_, Error, _>(|db| {
             bump_revision_in_transaction(db, target.path(), cancellation, |db| {
-                let database_was_created = migrations::prepare_database(db, &title, &description)?;
+                let (database_was_created, validated) =
+                    migrations::prepare_database_with_validation(db, &title, &description)?;
+                content_validated = validated;
 
                 for file_handle in files {
                     let mut context = ImportFileContext {
@@ -1045,7 +1069,11 @@ fn convert_pgn_blocking<R: tauri::Runtime>(
                 update_database_counts(db)?;
                 Ok(())
             })
-        })
+        })?;
+        if content_validated {
+            content_validation::publish_committed_pass(repository, authority, &database, &target);
+        }
+        Ok(())
     });
     finish_search_cache_after_transaction(result, search_cache, target.path())?;
 
@@ -1071,7 +1099,14 @@ pub fn generate_search_index(
     info!("Preparing search index for {:?}", target.path());
     repository.with_write_lock_cancellable(&target, cancellation, || {
         repository.with_index_lock_cancellable(&target, cancellation, || {
-            generate_search_index_locked(&target, repository, search_cache, cancellation)
+            generate_search_index_locked(
+                &target,
+                repository,
+                search_cache,
+                cancellation,
+                authority,
+                handle,
+            )
         })
     })
 }
@@ -1097,9 +1132,12 @@ fn generate_search_index_locked(
     repository: &DatabaseRepository,
     search_cache: &SearchCache,
     cancellation: &CancellationToken,
+    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    file: &DatabaseHandle,
 ) -> Result<(), Error> {
     cancellation_check(cancellation)?;
-    let mut database_connection = get_db_or_create(repository, target, Some(cancellation))?;
+    let mut database_connection =
+        get_db_or_create(repository, target, Some(cancellation), authority, file)?;
     let db = &mut *database_connection;
     let index_leaf = search_index::preferred_sidecar_leaf(target.leaf());
 
@@ -1173,7 +1211,7 @@ fn generate_search_index_locked(
     Ok(())
 }
 
-#[derive(Serialize, Type)]
+#[derive(Debug, Serialize, Type)]
 pub struct DatabaseInfo {
     title: String,
     description: String,
@@ -1289,28 +1327,60 @@ fn drop_required_indexes(conn: &mut SqliteConnection) -> Result<(), Error> {
 
 #[tauri::command]
 #[specta::specta]
-pub async fn get_db_info(
+pub async fn get_db_info<R: tauri::Runtime>(
     file: DatabaseHandle,
+    app: tauri::AppHandle<R>,
     state: tauri::State<'_, AppState>,
 ) -> Result<DatabaseInfo, Error> {
     let authority = Arc::clone(&state.pgn_path_authority);
     let repository = Arc::clone(&state.database_repository);
-    crate::infra::operations::run_accepted_blocking(&state.operations, "get_db_info", move || {
-        get_db_info_blocking(&authority, &repository, file)
-    })
-    .await
+    let read_file = file.clone();
+    let read_repository = Arc::clone(&repository);
+    let read_authority = Arc::clone(&authority);
+    let metadata = crate::infra::operations::run_accepted_blocking(
+        &state.operations,
+        "get_db_info",
+        move || get_db_info_blocking(&read_authority, &read_repository, read_file),
+    )
+    .await?;
+    if let Some((path, identity)) = metadata.scan {
+        content_validation::schedule(
+            repository,
+            authority,
+            &state.operations,
+            app,
+            file,
+            path,
+            identity,
+        )
+        .await;
+    }
+    Ok(metadata.info)
+}
+
+#[derive(Debug)]
+struct DatabaseMetadata {
+    info: DatabaseInfo,
+    scan: Option<(std::path::PathBuf, DatabaseIdentity)>,
+}
+
+impl std::ops::Deref for DatabaseMetadata {
+    type Target = DatabaseInfo;
+    fn deref(&self) -> &Self::Target {
+        &self.info
+    }
 }
 
 fn get_db_info_blocking(
     authority: &std::sync::Mutex<Option<PathAuthority>>,
     repository: &DatabaseRepository,
     file: DatabaseHandle,
-) -> Result<DatabaseInfo, Error> {
+) -> Result<DatabaseMetadata, Error> {
     let target = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
 
     info!("get_db_info {:?}", target.path());
 
-    let mut database_connection = get_db_or_create(repository, &target, None)?;
+    let mut database_connection = get_db_or_create(repository, &target, None, authority, &file)?;
     let db = &mut *database_connection;
 
     let info_records: Vec<Info> = info::table.load(db)?;
@@ -1334,7 +1404,10 @@ fn get_db_info_blocking(
         .and_then(|v| v.parse::<i32>().ok())
         .unwrap_or(0);
 
-    let storage_size = repository.database_identity(&target)?.length;
+    let identity = repository.database_identity(&target)?;
+    let storage_size = identity.length;
+    let scan = content_validation::inspect(repository, &target, &identity, authority, &file)?
+        .then(|| (target.path().to_path_buf(), identity));
     let filename = target
         .path()
         .file_name()
@@ -1342,15 +1415,18 @@ fn get_db_info_blocking(
         .to_string_lossy();
 
     let is_indexed = check_index_exists(db)?;
-    Ok(DatabaseInfo {
-        title,
-        description,
-        player_count,
-        game_count,
-        event_count,
-        storage_size,
-        filename: filename.to_string(),
-        indexed: is_indexed,
+    Ok(DatabaseMetadata {
+        scan,
+        info: DatabaseInfo {
+            title,
+            description,
+            player_count,
+            game_count,
+            event_count,
+            storage_size,
+            filename: filename.to_string(),
+            indexed: is_indexed,
+        },
     })
 }
 
@@ -1384,7 +1460,8 @@ fn create_indexes_blocking(
     let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
 
     repository.with_index_lock(&target, || {
-        let mut database_connection = get_db_or_create(repository, &target, None)?;
+        let mut database_connection =
+            get_db_or_create(repository, &target, None, authority, &file)?;
         let db = &mut *database_connection;
         create_required_indexes(db)
     })
@@ -1419,7 +1496,8 @@ fn delete_indexes_blocking(
     database_command_checkpoint("delete_indexes", &file);
     let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
     repository.with_index_lock(&target, || {
-        let mut database_connection = get_db_or_create(repository, &target, None)?;
+        let mut database_connection =
+            get_db_or_create(repository, &target, None, authority, &file)?;
         let db = &mut *database_connection;
         drop_required_indexes(db)
     })
@@ -1469,29 +1547,37 @@ fn edit_db_info_blocking(
     database_command_checkpoint("edit_db_info", &file);
     let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
 
-    with_validated_mutation(repository, search_cache, &target, cancellation, |db| {
-        if let Some(title) = title {
-            diesel::insert_into(info::table)
-                .values((info::name.eq("Title"), info::value.eq(title.clone())))
-                .on_conflict(info::name)
-                .do_update()
-                .set(info::value.eq(title))
-                .execute(db)?;
-        }
+    with_validated_mutation(
+        repository,
+        search_cache,
+        &target,
+        cancellation,
+        authority,
+        &file,
+        |db| {
+            if let Some(title) = title {
+                diesel::insert_into(info::table)
+                    .values((info::name.eq("Title"), info::value.eq(title.clone())))
+                    .on_conflict(info::name)
+                    .do_update()
+                    .set(info::value.eq(title))
+                    .execute(db)?;
+            }
 
-        if let Some(description) = description {
-            diesel::insert_into(info::table)
-                .values((
-                    info::name.eq("Description"),
-                    info::value.eq(description.clone()),
-                ))
-                .on_conflict(info::name)
-                .do_update()
-                .set(info::value.eq(description))
-                .execute(db)?;
-        }
-        Ok(())
-    })
+            if let Some(description) = description {
+                diesel::insert_into(info::table)
+                    .values((
+                        info::name.eq("Description"),
+                        info::value.eq(description.clone()),
+                    ))
+                    .on_conflict(info::name)
+                    .do_update()
+                    .set(info::value.eq(description))
+                    .execute(db)?;
+            }
+            Ok(())
+        },
+    )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Type)]
@@ -1642,7 +1728,8 @@ fn get_games_blocking(
     cancellation_check(cancellation)?;
     let target = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
 
-    let mut database_connection = get_db_or_create(repository, &target, Some(cancellation))?;
+    let mut database_connection =
+        get_db_or_create(repository, &target, Some(cancellation), authority, &file)?;
     let db = &mut *database_connection;
 
     let mut count: Option<i64> = None;
@@ -1880,7 +1967,7 @@ fn get_latest_game_timestamp_blocking(
 ) -> Result<Option<f64>, Error> {
     let target = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
 
-    let mut database_connection = get_db_or_create(repository, &target, None)?;
+    let mut database_connection = get_db_or_create(repository, &target, None, authority, &file)?;
     let db = &mut *database_connection;
     Ok(get_latest_game_timestamp_in_db(db)?.map(|timestamp| timestamp as f64))
 }
@@ -1986,7 +2073,7 @@ fn get_player_blocking(
 ) -> Result<Option<Player>, Error> {
     let target = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
 
-    let mut database_connection = get_db_or_create(repository, &target, None)?;
+    let mut database_connection = get_db_or_create(repository, &target, None, authority, &file)?;
     let db = &mut *database_connection;
     let player = players::table
         .filter(players::id.eq(id))
@@ -2028,7 +2115,8 @@ fn get_players_blocking(
     cancellation_check(cancellation)?;
     let target = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
 
-    let mut database_connection = get_db_or_create(repository, &target, Some(cancellation))?;
+    let mut database_connection =
+        get_db_or_create(repository, &target, Some(cancellation), authority, &file)?;
     let db = &mut *database_connection;
     let mut count: Option<i64> = None;
 
@@ -2136,7 +2224,8 @@ fn get_tournaments_blocking(
     cancellation_check(cancellation)?;
     let target = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
 
-    let mut database_connection = get_db_or_create(repository, &target, Some(cancellation))?;
+    let mut database_connection =
+        get_db_or_create(repository, &target, Some(cancellation), authority, &file)?;
     let db = &mut *database_connection;
     let mut count: Option<i64> = None;
 
@@ -2260,6 +2349,12 @@ pub struct ConvertProgress {
     pub source_file_name: Option<String>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Type, tauri_specta::Event)]
+pub struct DatabaseContentFailure {
+    pub filename: String,
+    pub message: String,
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn get_players_game_info(
@@ -2313,7 +2408,8 @@ fn get_players_game_info_blocking<R: tauri::Runtime>(
     cancellation_check(cancellation)?;
     let target = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
 
-    let mut database_connection = get_db_or_create(repository, &target, Some(cancellation))?;
+    let mut database_connection =
+        get_db_or_create(repository, &target, Some(cancellation), authority, &file)?;
     let db = &mut *database_connection;
     let timer = Instant::now();
 
@@ -2758,6 +2854,8 @@ fn delete_database_blocking(
     #[cfg(test)]
     database_command_checkpoint("delete_database", &file);
     let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
+    let _content_deletion =
+        content_validation::begin_delete(repository, target.path(), cancellation)?;
     let identity = match repository.identity_from_probe(&target, cancellation, true) {
         Ok(identity) => identity,
         Err(error) if crate::error::is_sqlite_notadb(&error) => {
@@ -2779,6 +2877,9 @@ fn delete_database_blocking(
         deletion_error = result.1;
         Ok(())
     });
+    if primary_gone {
+        content_validation::forget(repository, target.path());
+    }
     if let Err(error) = unlink_result {
         return finish_database_deletion(primary_gone, unlinked, Err(error));
     }
@@ -2913,6 +3014,7 @@ fn unlink_database_files(
     }
 
     let preferred_leaf = search_index::preferred_sidecar_leaf(target.leaf());
+    let integrity_leaf = search_index::integrity_stamp_leaf(target.leaf());
     let legacy_leaf = search_index::legacy_sidecar_leaf(target.leaf());
     let mut unlinked = 0;
     let mut durability = None;
@@ -2929,16 +3031,16 @@ fn unlink_database_files(
         }
     }
 
-    match entry_identity_at(target.parent(), &preferred_leaf, false) {
-        Ok(identity) => remove_sidecar(
-            target.parent(),
-            &preferred_leaf,
-            identity,
-            &mut unlinked,
-            &mut durability,
-        )?,
-        Err(error) => {
-            remember_sidecar_error(error, target.parent(), &preferred_leaf, &mut durability)?
+    for leaf in [&preferred_leaf, &integrity_leaf] {
+        match entry_identity_at(target.parent(), leaf, false) {
+            Ok(identity) => remove_sidecar(
+                target.parent(),
+                leaf,
+                identity,
+                &mut unlinked,
+                &mut durability,
+            )?,
+            Err(error) => remember_sidecar_error(error, target.parent(), leaf, &mut durability)?,
         }
     }
 
@@ -3116,9 +3218,15 @@ fn delete_duplicated_games_blocking(
     database_command_checkpoint("delete_duplicated_games", &file);
     let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
 
-    with_validated_mutation(repository, search_cache, &target, cancellation, |db| {
-        delete_duplicated_games_transaction(db)
-    })
+    with_validated_mutation(
+        repository,
+        search_cache,
+        &target,
+        cancellation,
+        authority,
+        &file,
+        delete_duplicated_games_transaction,
+    )
 }
 
 fn delete_duplicated_games_transaction(db: &mut SqliteConnection) -> Result<(), Error> {
@@ -3174,9 +3282,15 @@ fn delete_empty_games_blocking(
     database_command_checkpoint("delete_empty_games", &file);
     let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
 
-    with_validated_mutation(repository, search_cache, &target, cancellation, |db| {
-        delete_empty_games_transaction(db)
-    })
+    with_validated_mutation(
+        repository,
+        search_cache,
+        &target,
+        cancellation,
+        authority,
+        &file,
+        delete_empty_games_transaction,
+    )
 }
 
 fn delete_empty_games_transaction(db: &mut SqliteConnection) -> Result<(), Error> {
@@ -3328,7 +3442,7 @@ fn export_to_pgn_blocking(
         (resolved, snapshot)
     };
 
-    let mut database_connection = get_db_or_create(repository, &target, None)?;
+    let mut database_connection = get_db_or_create(repository, &target, None, authority, &file)?;
     let db = &mut *database_connection;
 
     let installed = resolved.replace_pgn_atomic(&snapshot, |_, temporary| {
@@ -3455,9 +3569,15 @@ fn delete_db_game_blocking(
     database_command_checkpoint("delete_db_game", &file);
     let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
 
-    with_validated_mutation(repository, search_cache, &target, cancellation, |db| {
-        delete_db_game_transaction(db, game_id)
-    })
+    with_validated_mutation(
+        repository,
+        search_cache,
+        &target,
+        cancellation,
+        authority,
+        &file,
+        |db| delete_db_game_transaction(db, game_id),
+    )
 }
 
 fn delete_db_game_transaction(db: &mut SqliteConnection, game_id: i32) -> Result<(), Error> {
@@ -3518,9 +3638,15 @@ fn write_db_game_blocking(
         .map_err(|error| map_read_error(error, cancellation))?
         .flatten()
         .ok_or(Error::NoMovesFound)?;
-    with_validated_mutation(repository, search_cache, &target, cancellation, |db| {
-        write_parsed_db_game(db, game_id, &temp_game, remove_orphans_and_update_counts)
-    })
+    with_validated_mutation(
+        repository,
+        search_cache,
+        &target,
+        cancellation,
+        authority,
+        &file,
+        |db| write_parsed_db_game(db, game_id, &temp_game, remove_orphans_and_update_counts),
+    )
 }
 
 fn write_parsed_db_game(
@@ -3640,9 +3766,15 @@ fn merge_players_blocking(
     database_command_checkpoint("merge_players", &file);
     let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
 
-    with_validated_mutation(repository, search_cache, &target, cancellation, |db| {
-        merge_players_transaction(db, player1, player2)
-    })
+    with_validated_mutation(
+        repository,
+        search_cache,
+        &target,
+        cancellation,
+        authority,
+        &file,
+        |db| merge_players_transaction(db, player1, player2),
+    )
 }
 
 fn merge_players_transaction(
@@ -10875,6 +11007,9 @@ mod tests {
             .unwrap_or(false)
     }
 }
+
+#[cfg(test)]
+mod content_validation_tests;
 
 /// Database deletion tests that run on every target, Windows included. Tests that need the
 /// Unix-only removal fault injector stay in `mod tests`.

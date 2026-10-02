@@ -181,6 +181,11 @@ where
     result
 }
 
+#[cfg(test)]
+pub(crate) fn set_callback_hook(hook: impl FnMut() + 'static) {
+    CALLBACK_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+}
+
 #[cfg(all(test, unix))]
 pub(crate) fn cancel_on_callback(
     cancellation: CancellationToken,

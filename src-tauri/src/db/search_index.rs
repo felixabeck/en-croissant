@@ -853,6 +853,12 @@ pub(crate) fn preferred_sidecar_leaf(database_leaf: &OsStr) -> OsString {
     leaf
 }
 
+pub(crate) fn integrity_stamp_leaf(database_leaf: &OsStr) -> OsString {
+    let mut leaf = database_leaf.to_os_string();
+    leaf.push(".integrity");
+    leaf
+}
+
 /// Pre-2.0 builds replaced the database extension (`foo.db3` → `foo.ecsi`).
 /// Keep discovery separate from new writes, which always use `foo.db3.ecsi`
 /// and therefore cannot collide with a database whose base name differs only

@@ -10,6 +10,16 @@ const CURRENT_DATABASE_VERSION: &str = "2.0.0";
 const LEGACY_DATABASE_VERSION: &str = "1.0.0";
 const CREATE_TABLES_SQL: &str = include_str!("create.sql");
 
+#[cfg(test)]
+thread_local! {
+    static CONTENT_PRAGMA_COUNTS: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+#[cfg(test)]
+pub(super) fn take_content_pragma_counts() -> (usize, usize) {
+    CONTENT_PRAGMA_COUNTS.with(|counts| counts.replace((0, 0)))
+}
+
 #[derive(QueryableByName)]
 struct CountRow {
     #[diesel(sql_type = BigInt)]
@@ -108,25 +118,37 @@ struct MigratedGame {
 /// An empty SQLite file is safe to retry after an interrupted first creation because
 /// the complete DDL and metadata marker are committed in one transaction. Any other
 /// partial schema is rejected instead of being mistaken for a usable database.
+#[cfg(test)]
 pub fn prepare_database(
     conn: &mut SqliteConnection,
     title: &str,
     description: &str,
 ) -> Result<bool, Error> {
+    Ok(prepare_database_with_validation(conn, title, description)?.0)
+}
+
+/// Returns (created, content_validated). The second flag is true only when both
+/// content pragmas ran, so publication can follow the outermost commit.
+pub fn prepare_database_with_validation(
+    conn: &mut SqliteConnection,
+    title: &str,
+    description: &str,
+) -> Result<(bool, bool), Error> {
     let table_count = non_internal_table_count(conn)?;
     if table_count == 0 {
         initialize_database(conn, title, description)?;
-        return Ok(true);
+        return Ok((true, true));
     }
 
-    migrate_database(conn)?;
-    Ok(false)
+    Ok((false, migrate_database(conn)?))
 }
 
 /// Verifies an existing database before it is handed to an ordinary command.
 /// Creation is intentionally excluded: only the import command has the title
 /// and description required to initialize a new database.
-pub fn validate_existing_database(conn: &mut SqliteConnection) -> Result<(), Error> {
+/// Returns true only when migration ran both content pragmas; false means only
+/// the cheap schema contract was checked.
+pub fn validate_existing_database(conn: &mut SqliteConnection) -> Result<bool, Error> {
     if non_internal_table_count(conn)? == 0 {
         return Err(Error::InvalidInput(
             "Database has not been initialized yet".into(),
@@ -161,7 +183,7 @@ fn initialize_database(
     })
 }
 
-fn migrate_database(conn: &mut SqliteConnection) -> Result<(), Error> {
+fn migrate_database(conn: &mut SqliteConnection) -> Result<bool, Error> {
     if !table_exists(conn, "Info")? || !table_exists(conn, "Games")? {
         return Err(Error::InvalidInput(
             "Database schema is incomplete; refusing to use a partial database".into(),
@@ -176,8 +198,8 @@ fn migrate_database(conn: &mut SqliteConnection) -> Result<(), Error> {
     let canonical = games_schema_is_canonical(conn)?;
 
     match (version.as_str(), canonical) {
-        (CURRENT_DATABASE_VERSION, true) => validate_database(conn),
-        (LEGACY_DATABASE_VERSION, _) => migrate_legacy_database(conn),
+        (CURRENT_DATABASE_VERSION, true) => validate_schema(conn).map(|()| false),
+        (LEGACY_DATABASE_VERSION, _) => migrate_legacy_database(conn).map(|()| true),
         (CURRENT_DATABASE_VERSION, false) => Err(Error::InvalidInput(
             "Database Version does not match its Games schema".into(),
         )),
@@ -287,20 +309,38 @@ fn games_schema_is_canonical(conn: &mut SqliteConnection) -> Result<bool, Error>
 }
 
 fn validate_database(conn: &mut SqliteConnection) -> Result<(), Error> {
+    validate_schema(conn)?;
+    validate_content(conn)
+}
+
+fn validate_schema(conn: &mut SqliteConnection) -> Result<(), Error> {
     validate_games_schema(conn)?;
     validate_reference_schema(conn)?;
     validate_sentinel_records_and_triggers(conn)?;
+    Ok(())
+}
+
+pub(super) fn validate_content(conn: &mut SqliteConnection) -> Result<(), Error> {
+    #[cfg(test)]
+    CONTENT_PRAGMA_COUNTS.with(|counts| {
+        let (integrity, foreign) = counts.get();
+        counts.set((integrity + 1, foreign));
+    });
     let integrity: Vec<TextRow> =
         sql_query("SELECT integrity_check AS value FROM pragma_integrity_check").load(conn)?;
+    let foreign_key_violations = {
+        #[cfg(test)]
+        CONTENT_PRAGMA_COUNTS.with(|counts| {
+            let (integrity, foreign) = counts.get();
+            counts.set((integrity, foreign + 1));
+        });
+        sql_query("SELECT COUNT(*) AS count FROM pragma_foreign_key_check")
+            .get_result::<CountRow>(conn)
+    };
     if integrity.iter().any(|row| row.value != "ok") {
         return Err(Error::InvalidInput("SQLite integrity_check failed".into()));
     }
-
-    let foreign_key_violations =
-        sql_query("SELECT COUNT(*) AS count FROM pragma_foreign_key_check")
-            .get_result::<CountRow>(conn)?
-            .count;
-    if foreign_key_violations != 0 {
+    if foreign_key_violations?.count != 0 {
         return Err(Error::InvalidInput(
             "SQLite foreign_key_check failed".into(),
         ));

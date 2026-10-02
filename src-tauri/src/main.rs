@@ -40,7 +40,9 @@ use std::{
 
 use chess::BestMovesPayload;
 use dashmap::DashMap;
-use db::{ConvertProgress, GameQuery, IndexSource, NormalizedGame, PositionStats};
+use db::{
+    ConvertProgress, DatabaseContentFailure, GameQuery, IndexSource, NormalizedGame, PositionStats,
+};
 use engine::EngineSupervisor;
 use game::GameManager;
 use progress::{clear_progress, get_progress, set_progress_state, start_progress, ProgressEvent};
@@ -2374,7 +2376,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             prepare_download,
             release_download,
             get_tournaments,
-            get_db_info,
+            get_db_info::<tauri::Wry>,
             get_games,
             get_latest_game_timestamp,
             search_position,
@@ -2401,6 +2403,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .events(tauri_specta::collect_events!(
             BestMovesPayload,
             ConvertProgress,
+            DatabaseContentFailure,
             ProgressEvent,
             GameMoveEvent,
             ClockUpdateEvent,
@@ -3682,7 +3685,13 @@ mod blocking_offload_scans {
     }
 
     fn command_dispatch_body(source: &'static str, name: &str) -> &'static str {
-        let body = body_at_indent(source, &format!("pub async fn {name}("));
+        let generic = format!("pub async fn {name}<");
+        let signature = if source.contains(&generic) {
+            generic
+        } else {
+            format!("pub async fn {name}(")
+        };
+        let body = body_at_indent(source, &signature);
         let core_call = format!("{name}_command_core(");
         if body.contains(&core_call) {
             assert_eq!(body.matches(&core_call).count(), 1, "{body}");

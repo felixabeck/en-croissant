@@ -653,7 +653,13 @@ fn search_position_blocking<R: tauri::Runtime>(
     let collision_lease = search_cache.collision_lock(query.clone(), target.path().to_path_buf());
     let _guard = collision_lease.lock_cancellable(cancellation)?;
 
-    let mut database_connection = get_db_or_create(repository, &target, Some(cancellation))?;
+    let mut database_connection = get_db_or_create(
+        repository,
+        &target,
+        Some(cancellation),
+        authority,
+        &database_handle,
+    )?;
     let db = &mut *database_connection;
 
     let start = Instant::now();
