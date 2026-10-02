@@ -10987,18 +10987,20 @@ mod deletion_tests {
     use std::path::Path;
     use tauri::Manager;
 
-    fn symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
+    fn symlink(target: &Path, link: &Path, target_is_dir: bool) -> std::io::Result<()> {
         #[cfg(unix)]
-        return std::os::unix::fs::symlink(target, link);
+        {
+            let _ = target_is_dir;
+            std::os::unix::fs::symlink(target, link)
+        }
         #[cfg(windows)]
-        return std::os::windows::fs::symlink_file(target, link);
-    }
-
-    fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
-        #[cfg(unix)]
-        return std::os::unix::fs::symlink(target, link);
-        #[cfg(windows)]
-        return std::os::windows::fs::symlink_dir(target, link);
+        {
+            if target_is_dir {
+                std::os::windows::fs::symlink_dir(target, link)
+            } else {
+                std::os::windows::fs::symlink_file(target, link)
+            }
+        }
     }
 
     /// A linked ancestor is accepted on every platform because `acquire_target` canonicalises
@@ -11022,33 +11024,24 @@ mod deletion_tests {
         link_directory(&real_dir, &link_dir);
 
         let mut authority = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+        let operations = vec![
+            PathOperation::DatabaseRead,
+            PathOperation::DatabaseMutate,
+            PathOperation::DatabaseCreate,
+            PathOperation::DatabaseExport,
+        ];
         let grant = authority
             .grant_dialog_operations(
                 &registered_path,
                 "games",
                 PathClass::BoundedDialogGrant,
-                vec![
-                    PathOperation::DatabaseRead,
-                    PathOperation::DatabaseMutate,
-                    PathOperation::DatabaseCreate,
-                    PathOperation::DatabaseExport,
-                ],
+                operations.clone(),
                 std::time::Duration::from_secs(30),
                 1,
             )
             .unwrap();
         let committed = authority
-            .promote_dialog(
-                &grant,
-                PathClass::PersistentFile,
-                "games",
-                vec![
-                    PathOperation::DatabaseRead,
-                    PathOperation::DatabaseMutate,
-                    PathOperation::DatabaseCreate,
-                    PathOperation::DatabaseExport,
-                ],
-            )
+            .promote_dialog(&grant, PathClass::PersistentFile, "games", operations)
             .unwrap();
         let handle = DatabaseHandle::new(committed.id);
         let state = AppState::default();
@@ -11115,7 +11108,7 @@ mod deletion_tests {
     #[test]
     fn symlinked_ancestor_database_indexes_and_deletes_through_its_real_directory() {
         assert_linked_ancestor_database_indexes_and_deletes(|target, link| {
-            symlink_dir(target, link).unwrap();
+            symlink(target, link, true).unwrap();
         });
     }
 
@@ -11574,7 +11567,7 @@ mod deletion_tests {
             let foreign_file = dir.path().join("foreign-file");
             std::fs::write(&foreign_file, b"keep me").unwrap();
             let sidecar = database.with_file_name(format!("arbitrary.db3{suffix}"));
-            symlink_file(&foreign_file, &sidecar).unwrap();
+            symlink(&foreign_file, &sidecar, false).unwrap();
             let state = app.state::<AppState>();
             let result = delete_database_blocking(
                 &state.pgn_path_authority,
