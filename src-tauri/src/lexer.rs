@@ -379,4 +379,56 @@ mod tests {
         let result = worker.join().expect("worker thread must complete");
         assert!(matches!(result, Err(Error::Cancellation)));
     }
+
+    #[test]
+    fn test_lex_visitor_cancels_at_first_san_without_reader_error() {
+        let pgn = "[Event \"Test\"]\n\n1. e4 e5 2. Nf3 Nc6 *";
+        let token = CancellationToken::new();
+        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let thread_token = token.clone();
+        let pgn_owned = pgn.to_string();
+        let worker = std::thread::spawn(move || {
+            set_test_lexer_hook(Some(LexerTestHook {
+                entered: entered_tx,
+                release: release_rx,
+            }));
+            struct Cleanup;
+            impl Drop for Cleanup {
+                fn drop(&mut self) {
+                    set_test_lexer_hook(None);
+                }
+            }
+            let _cleanup = Cleanup;
+            let mut lexer = Lexer {
+                tokens: Vec::new(),
+                cancellation: Some(thread_token),
+                cancelled: false,
+            };
+            // Plain reader: CancellableRead would return Interrupted after cancel, and
+            // lex_pgn_cancellable would map that to Cancellation even if check_cancellation
+            // were constantly false.
+            let parsed = BufferedReader::new(pgn_owned.as_bytes()).read_game(&mut lexer);
+            (parsed, lexer.tokens)
+        });
+
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("worker must reach the first SAN callback");
+        token.cancel();
+        let _ = release_tx.send(());
+
+        let (parsed, tokens) = worker.join().expect("worker thread must complete");
+        assert!(
+            matches!(parsed, Ok(Some(Err(Error::Cancellation)))),
+            "visitor end_game must return Cancellation without a reader error, got {parsed:?}"
+        );
+        assert_eq!(
+            tokens,
+            vec![Token::Header {
+                tag: "Event".to_string(),
+                value: "Test".to_string(),
+            }]
+        );
+    }
 }
