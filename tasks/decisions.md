@@ -4889,3 +4889,22 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The existing card already says the database could not be loaded. The accepted window is that a corrupt file may show its stored title until the scan fails.
 * **Decided by:** Grok build 2026-10-02 database-list-integrity · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":17,"effect_sha256":"28db97e75b34aee28c1a43b27c666be33810ef5635779f74c4cdc372bfde8c06","input_sha256":"66efe29497453e1f8bf471df1a40a5183be62744047c40240b8b58b991f502a2","kind":"mutation-receipt","operation":"54d7579e61b85c45ac6c599fbeb473efe795cf38099a0b65b0155d5ca86c00b4","options":{"section":null},"request_id_sha256":null,"results":["d-20261002-04","d-20261002-05"],"target":"decisions-ledger","v":1} -->
+
+### d-20261002-06 — What closes the preferred-sidecar deletion window: reorder, or a provenance check?
+
+* **Question:** What closes `f-20260912-09`'s window: removing sidecars after the primary, or a provenance check immediately before each sidecar unlink?
+* **Governs:** f-20260912-09
+* **Chosen:** A provenance check. The preferred sidecar's recorded `IndexSource.object` is read through the retained parent with a header-only reader, and the removal is bound to the identity of the file that was read. The file is kept when it records another database's object, and removed when it records this database or is not a decodable current-version archive. The `d-20260831-24` order (preferred, then legacy, then primary, then SQLite sidecars) is kept, and the legacy check moves onto the same reader with its predicate unchanged. A preferred file this process may not read is kept and the deletion continues, because its provenance cannot be judged.
+* **Rejected:** Removing sidecars after the primary, because a swap after the primary unlink still deletes the replacement's index and the reorder reverses `d-20260831-24` without new evidence. Also rejected: full `IndexSource` equality for the preferred sidecar, which would orphan every stale index of a deleted database; and reusing the full-validation `probe_legacy_index_sidecar_at`, whose cost grows with index size and which maps a file that is about to be deleted.
+* **Reason:** `IndexSource.object` is the provenance field that names the database, it is recorded in every archive, and it is available before any chunk is read. The recorded order stays because the provenance check closes the probe-to-unlink window in either order.
+* **Decided by:** Grok, drain session 1f678668-c21e-4c25-8200-a7808f5d4209, adopting the reviewed plan for f-20260912-09 · **Superseded-by:** -
+
+### d-20261002-07 — Does the integrity stamp beside the preferred sidecar get the same provenance check as the index?
+
+* **Question:** Does the integrity stamp that NEW-BASE removes beside the preferred sidecar get the same provenance check as the index?
+* **Governs:** f-20260912-09
+* **Chosen:** No. The stamp keeps today's identity-only removal in the position the current `unlink_database_files` shows, and the header-only reader applies only to the preferred `.ecsi` leaf. The hook does not run for the stamp.
+* **Rejected:** A second reader that keeps a stamp whose `Stamp.identity.object` is foreign, and moving the stamp to after the primary unlink. The finding's collateral clause names an index, not this JSON scan record, and a post-primary unlink leaves the same swap window the plan already refused for the index.
+* **Reason:** The stamp is regenerable content-validation metadata (`content_validation.rs` `Stamp { version, identity, verdict }`), and folding it into the archive reader would parse a non-archive as `IndexSource`.
+* **Decided by:** Grok, drain session 1f678668-c21e-4c25-8200-a7808f5d4209, adopting the reviewed plan for f-20260912-09 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":17,"effect_sha256":"38194faf7d49924433de9d961ad220cc1ca9ea2ea13eb4b928e9115b9942d2d3","input_sha256":"e91efdb62500f5106cd73f63c0b2a13a8939a34be94a28673095299a1db1b73e","kind":"mutation-receipt","operation":"06547740b799881557a505e32775ac54a9d5104a83bf77fd06ddc945f3c0c7df","options":{"section":null},"request_id_sha256":null,"results":["d-20261002-06","d-20261002-07"],"target":"decisions-ledger","v":1} -->
