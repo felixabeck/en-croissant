@@ -12401,3 +12401,16 @@ Handled by `f19e14ac` (Stockfish 19 upgrade build, phase P2, obligation O2). A g
 
 * **Precision (2026-10-02, records lens round 9):** the 5-minute TTL bounds retrieval, not display. A card that remounts within the TTL loads the stale record through `getProgress` and keeps showing it while mounted (`useProgress.ts` holds fetched state without an expiry timer; `ProgressButton.tsx` renders it) until it unmounts or its action is started again; a remount after the TTL shows nothing.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"9ee53078394a71d1663e5ae20eb814f99883bb35359d443ef9b77bbbb53254ba","input_sha256":"fd03495f705723bc355a4f9fbe47fbbbb0a310f1701ed69b638c28ec2662f858","kind":"mutation-receipt","operation":"7bef53cab0ec343a4ac33faa9df02fbc3670f4996d6fc271945ff544f5e9d7dc","options":{"section":null},"request_id_sha256":null,"results":["f-20261002-07"],"target":"f-20261002-07","v":1} -->
+
+---
+
+## 2026-10-02 — filed through the inbox spool
+
+### No repeatable check installs the real signed catalog engines and talks UCI to them
+
+* **ID:** f-20261002-08 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src/catalogs/engines.json` (+ `.minisig`), `src-tauri/src/fs.rs` `download_engine_archive_core`, the removed `#[ignore]` test `real_stockfish19_catalog_install_answers_uci` (added in `f19e14ac`, removed in `32c4be8f`).
+* **Defect:** every automated test exercises the install chain with fixtures (`accept_any_integrity`, generated tar/zip payloads, shell-script engines). Nothing repeatable downloads the real signed catalog artefacts, verifies them, installs them into the version-unique directory, registers the nested executable and completes a `uci`/`uciok` handshake. The Stockfish 19 build proved that chain once (commit `f19e14ac` message, handoff `tasks/handoffs/2026-10-01-stockfish-19-upgrade-review.md`), but a later catalog edit (SF20, a changed archive layout, a moved nested path) would only be caught by a user.
+* **Why it matters:** the catalog is the trust root of the "Upgrade from catalog" flow; a wrong nested `path` or archive layout makes install or upgrade fail for every user on that platform.
+* **Open question:** where a network-dependent check belongs without distorting the backend coverage ratchet — an `#[ignore]` unit test inside the crate instantiates its own uncovered copy of the generic infra chain (22 records, which reddened `app-infrastructure` functions in that build) — e.g. a scheduled workflow job running a dedicated binary/script against every catalog entry for the runner's OS, or a mode of `scripts/app-driver.mjs`; and whether it should run on every catalog change (path filter on `src/catalogs/**`).
+* **Found by:** Stockfish 19 upgrade build, closure round 10 (`review-correctness`, `review-tests`) after the coverage-gate repair, 2026-10-02.
