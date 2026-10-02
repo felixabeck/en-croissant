@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: beec4b413b8f861c0855d7bf7828c82ed8cb900252f89ce3c795878a1444f8d0
+# agent-kit-sha256: 4988373bed8ce9a1606297c2a1c38a29d321db45ca79907354f5cca08240ae97
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -409,6 +409,7 @@ MANUAL_REPAIR_RETURN_CODE = 4
 COMMAND_CLASSIFICATION = {
     "check": "read-only",
     "drain-status": "read-only",
+    "inbox-filed-by": "read-only",
     "list": "read-only",
     "summary": "read-only",
     "next": "read-only",
@@ -9039,6 +9040,40 @@ def _args_decisions(args: argparse.Namespace) -> Path:
     return _canonical_ledger_path(target)
 
 
+def inbox_filed_by(inbox: Path, sessions: set[str]) -> list[str]:
+    """List attributed entries and parts completely, without locks or writes."""
+    try:
+        paths = sorted(inbox.iterdir())
+    except FileNotFoundError:
+        return []
+    except OSError as exc:
+        raise LedgerError(f"could not enumerate findings inbox {inbox}: {exc}") from exc
+    names = []
+    for path in paths:
+        if path.suffix not in {".md", ".part"}:
+            continue
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+            with os.fdopen(fd, "rb") as stream:
+                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    raise LedgerError(f"findings inbox {path}: not a regular file")
+                contents = stream.read().decode("utf-8")
+            for match in FILED_FROM_RE.finditer(_unfenced_text(contents)):
+                stamp = match.group().split("**Filed from:**", 1)[1].strip().split()[0]
+                if stamp in sessions:
+                    names.append(path.name)
+                    break
+        except (OSError, UnicodeError) as exc:
+            raise LedgerError(f"could not read findings inbox {path}: {exc}") from exc
+    return names
+
+
+def cmd_inbox_filed_by(args: argparse.Namespace) -> int:
+    names = inbox_filed_by(args.inbox, set(args.session))
+    print(json.dumps(names, ensure_ascii=True))
+    return 0
+
+
 def cmd_merge_inbox(args: argparse.Namespace) -> int:
     """CLI entry point over the shared inbox merge implementation."""
     return merge_inbox(args.inbox, args.ledger, decisions=_args_decisions(args)).returncode
@@ -12355,6 +12390,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_merge = sub.add_parser("merge-inbox", help="fold the inbox into the ledger")
     p_merge.add_argument("--inbox", type=Path, default=None, help=argparse.SUPPRESS)
     p_merge.set_defaults(func=cmd_merge_inbox)
+
+    p_filed = sub.add_parser("inbox-filed-by", help="list pending filings by session")
+    p_filed.add_argument("--inbox", type=Path, default=None)
+    p_filed.add_argument("--session", action="append", required=True)
+    p_filed.set_defaults(func=cmd_inbox_filed_by)
 
     p_finalize = sub.add_parser(
         "finalize-claims", help="release prepared claims proven durable in HEAD"
