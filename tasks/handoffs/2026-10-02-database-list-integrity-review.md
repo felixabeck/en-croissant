@@ -2,7 +2,7 @@
 
 Plan: `tasks/plans/2026-10-02-database-list-integrity.md` (git-ignored). This file is the durable review history. Orchestrator: Grok. Executor: Codex (`gpt-6.1-sol`, high for the write leaf, low for read-only lenses). Detection is same-family model separation, not family separation. The plan review was already closed; this run did not reopen it.
 
-Code reviewed through `d3c738b071b1a4b42217c2b38ead48bdf20ed87e`. The commits are `b3f0bcbc` (decisions), `7b0145d2` (implementation), `1485577b` (stamp recheck and Home cache), and `d3c738b0` (leaf warning and Windows probe fixture).
+Code reviewed through `065dc21d5e580e1e71b1091258fde5fb8388144b`. The earlier closure stopped at `d3c738b071b1a4b42217c2b38ead48bdf20ed87e`. The commits through that point are `b3f0bcbc` (decisions), `7b0145d2` (implementation), `1485577b` (stamp recheck and Home cache), and `d3c738b0` (leaf warning and Windows probe fixture). The gate repair is `065dc21d`.
 
 ## Plan review
 
@@ -56,7 +56,21 @@ Six of seven lenses approved. `review-platform-semantics` returned REVISE. `revi
 
 One should-fix was skipped. `review-tests`, confidence 99: no test drives the unresolved `mutate_target` warning, so changing that sentence would stay green. The arm was read. It logs the opaque handle and says the database could not be resolved. It does not invent a filename. The resolved leaf, which is the value a caller can get wrong, is pinned. Forcing an authority-resolution failure is a separate fault injection and does not change the list, the stamp, or the card.
 
-`REVIEWED_THROUGH=d3c738b071b1a4b42217c2b38ead48bdf20ed87e`
+The closure of `d3c738b0` recorded `REVIEWED_THROUGH=d3c738b071b1a4b42217c2b38ead48bdf20ed87e`. The current pointer is at the end of the gate-repair closure.
+
+### Gate repair closure over `065dc21d`
+
+Final gates on `9d6ec868` exited 1. `rust-test` and `rust-coverage` failed `search_index_generation_uses_fd_relative_atomic_writer`: the pin splits on the exact text `#[derive(Serialize, Type)]`, and `7b0145d2` had changed `DatabaseInfo` to `#[derive(Debug, Serialize, Type)]`, so the slice ran through the rest of the file and saw later `resolve_database(` calls. `DatabaseMetadata` derived `Debug` only because its `info` field did. Nothing logs that struct. `065dc21d` restores `#[derive(Serialize, Type)]` on `DatabaseInfo` and drops the unused `Debug` derive on `DatabaseMetadata`. The pin delimiter is unchanged, and `generate_search_index_locked` is unchanged.
+
+`frontend-coverage` failed `tauri-ipc-platform` lines `351/366` against baseline `337/351`. The new uncovered record was `tauriSubscriptions.databaseContentFailure` in `src/platform/tauri.ts`. The same commit covers that subscription from `src/platform/tauri.test.ts`. Baselines and floors were not edited. Full frontend coverage has not been re-measured since that test landed; the ratio arithmetic says `352/366` clears the line ratchet and `91/98` clears the function ratchet.
+
+The contract lane failed because `scripts/findings.py` does not match the released kit (`f44495a1`). `git diff origin/master -- scripts/findings.py` is empty on the product commits. That drift is outside this review.
+
+Pre-review-6 exited 0 on the repair tree before the commit (`gate-pre-review-6`, recorded HEAD `9d6ec868` because the repair was still unstaged). Orchestrator proof on that tree: `db::tests::search_index_generation_uses_fd_relative_atomic_writer` passed, and vitest `src/platform/tauri.test.ts` passed 28 tests.
+
+`review-correctness`, `review-tests`, `review-root-cause`, and `review-minimalism` each returned `VERDICT: APPROVED` on `9d6ec868..065dc21d`. No findings. The skipped unresolved `mutate_target` warning test from the previous closure stays skipped.
+
+`REVIEWED_THROUGH=065dc21d5e580e1e71b1091258fde5fb8388144b`
 
 ## Proof before this record
 
