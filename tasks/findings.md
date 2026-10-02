@@ -12184,13 +12184,16 @@ Handled by `f19e14ac` (Stockfish 19 upgrade build, phase P2, obligation O2). `in
 
 ### A `.tar.gz` engine archive is only gunzipped, never untarred, so no Linux or macOS catalog Stockfish can install
 
-* **ID:** f-20261001-16 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261001-16 · **Status:** handled · **Area:** native-fs · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `src-tauri/src/fs.rs:589-640` (format detection from the first 512 bytes: zip magic, gzip magic, or raw `ustar`), `src-tauri/src/fs.rs:1681-1710` (`extract_gz_cancellable` decompresses into one file via `atomic_replace`), `src/utils/engines.ts:323-331` (`installDefaultEngine` then registers the manifest's nested `path`), `src/catalogs/engines.json` (Stockfish 19 linux and macOS entries are `.tar.gz`).
 * **Defect:** a gzip payload is classified as `is_gz` before any tar check, and the decompressed stream is written as a single file. The tar members (`stockfish/stockfish-linux-x86-64-universal` and siblings) are never extracted, so `registerInstalledEngine(root, "stockfish/stockfish-linux-x86-64-universal")` cannot find the executable. Only zip assets (Windows Stockfish, RubiChess, Lc0) can reach registration.
 * **Why it matters:** the default-engine catalog's flagship entry cannot be installed on Linux or macOS; together with `f-20261001-06` the catalog install path is unusable on those platforms.
 * **Fix shape:** detect a tar stream inside the gzip (ustar magic at offset 257 of the decompressed head) and extract it through `extract_tar_cancellable` with the same entry, ratio and expanded-size limits; plain `.gz` single files keep today's path. Prove with a gzip-of-tar fixture through the download-install core and a registration of the nested path, red on today's code.
 * **Planned:** obligation O2 of `tasks/plans/2026-10-01-stockfish-19-upgrade.md`.
 * **Found by:** Codex `review-plan` lens, round 2 of the Stockfish 19 upgrade plan review, confirmed by the orchestrator reading `fs.rs:589-640,1681-1710`, 2026-10-01.
+
+Handled by `f19e14ac` (Stockfish 19 upgrade build, phase P2, obligation O2). A gzip whose decompressed head carries the ustar magic is extracted through `extract_tar_cancellable`, with the whole decompressed stream bounded by the expanded-size and compression-ratio limits; a plain single-file `.gz` keeps its path. Red-first Rust tests: gzip-of-tar install plus nested registration, and ratio and expanded-size rejections. Real proof: `fs::tests::real_stockfish19_catalog_install_answers_uci` (ignored, network) installed the signed SF19 Linux artefact into `stockfish-linux-x86-64-universal.tar.gz-<full sha256>/`, registered `stockfish/stockfish-linux-x86-64-universal`, and the binary answered `id name Stockfish 19` / `uciok` with exit 0.
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"1ee919b9635fa6ae300368ca7903bb1f21081fae896db95df3986a8aad0614cd","header_sha256":"5004bf42718e52600f1eff7f801fef61f5df43c90a8f76695e225fbe8b59fe5e","header_status":"handled","input_sha256":"bd639b2c532b737fb2f2e024cf21c72cbf1d82e4de6d4b7dff9208e17b5fc6cb","kind":"mutation-receipt","operation":"e8272bc54e589357b63c02e3844fe7a750045d6cafda36179639d4f1aa80e5a2","options":{"section":null},"request_id_sha256":null,"results":["f-20261001-16"],"target":"f-20261001-16","v":1} -->
 
 ---
 
