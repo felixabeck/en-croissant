@@ -12440,9 +12440,12 @@ Handled by `f19e14ac` (Stockfish 19 upgrade build, phase P2, obligation O2). A g
 
 ### CI `test` is red on `04f43c1b`: the engine-archive adoption test compiles an unexecuted copy of the download chain
 
-* **ID:** f-20261002-10 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20261002-10 · **Status:** handled · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src-tauri/src/fs.rs` `download_engine_archive_core<R, V>` (generic over the integrity validator `V`), test `catalog_digest_directories_are_distinct_and_same_artifact_is_adopted` (its adoption call passes a capturing `move |_, _, _| {…}` validator and returns before downloading); CI run 36993984299, job `test` (110796371899), step `pnpm coverage:backend:check`.
 * **Defect:** `filesystem-native-boundaries functions regressed: 359/673, baseline 340/634`. Each distinct validator closure type instantiates its own copy of `download_file_core_control_with_integrity`, `await_staging_deadline` and the publish spawn; the adoption call's copy never runs, leaving 8 uncovered function records in the area (measured by diffing the CI LCOV artifact against a clean local run, which reproduces 359/673 exactly). The local push gate passed only because of stale profiles (`f-20261002-09`).
 * **Why it matters:** master's `test` job is red; every later push lands on a red remote until this is repaired.
 * **Fix shape:** type-erase the validator parameter (`Box<dyn Fn(OpClass, &str, &ArtifactIntegrity) -> Result<(), Error> + Send + Sync>`), so every MockRuntime caller shares one instance; no baseline change.
 * **Found by:** Stockfish 19 upgrade build, post-push CI verification, 2026-10-02.
+
+Handled by the commit after `f-20261002-10`'s filing that type-erases `download_engine_archive_core`'s validator (`ArtifactIntegrityValidator`, a boxed `dyn Fn`). Measured on a cleared `.profraw` set: `filesystem-native-boundaries` functions 359/673 before (reproducing CI run 36993984299) and 355/648 after, above the 340/634 baseline; `pnpm coverage:backend:check` passes. CI confirmation follows on the next push.
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"4e6905698890e24bd120af6751c699ec97343835690e47663d6d0db16f32d745","header_sha256":"f9d0ce98802b6204ceee37f926be04cd2fba1a7120fd301214d7d304ca0e374c","header_status":"handled","input_sha256":"6ddc2caab27a8b6060e386826afe442b6d8a88b157091e2fdb5111c3d506e66a","kind":"mutation-receipt","operation":"2897cb3bf77cb78221fb2a2675c268e2701d8c21353a19617084e2cc58bbe018","options":{"section":null},"request_id_sha256":null,"results":["f-20261002-10"],"target":"f-20261002-10","v":1} -->
