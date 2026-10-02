@@ -24,6 +24,25 @@ beforeEach(() => {
     mocks.logError.mockReset().mockResolvedValue(undefined);
 });
 
+test("typed engine-position refusal uses its own localized game-start message", async () => {
+    const result = createGameCommandError(
+        "start",
+        new TauriCommandError({
+            tag: "backend-error",
+            category: "engine-position-rejected",
+            message: "Position cannot be played against an engine",
+        }),
+    );
+    expect(result).toMatchObject({ kind: "validation", code: "engine-position-rejected" });
+    const i18n = await catalogueI18n("en-US");
+    expect(translateGameCommandError(i18n.t.bind(i18n), result)).toBe(
+        "This position cannot be played against an engine.",
+    );
+    expect(translateGameCommandError(i18n.t.bind(i18n), result)).not.toBe(
+        i18n.t("Board.Opponent.Error.Start"),
+    );
+});
+
 afterEach(() => {
     vi.restoreAllMocks();
 });
@@ -120,6 +139,13 @@ test("all semantic errors translate through every shipped catalogue without fall
         });
         expect(validation).toBe(translation["Board.Opponent.Error.MissingEngine"]);
         expect(validation).not.toContain("private");
+        const enginePosition = translateGameCommandError(t, {
+            kind: "validation",
+            code: "engine-position-rejected",
+            diagnostic: "private",
+        });
+        expect(enginePosition).toBe(translation["Board.Opponent.Error.EnginePosition"]);
+        expect(enginePosition).not.toContain("private");
         for (const operation of Object.keys(operationKeys) as GameCommand[]) {
             const message = translateGameCommandError(t, {
                 kind: "operation",

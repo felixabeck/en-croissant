@@ -149,6 +149,7 @@
     "Board.Opponent.EnableOpeningBook": "Включить дебютную книгу",
     "Board.Opponent.EngineSettings": "Настройки движка",
     "Board.Opponent.Error.Abort": "Не удалось прервать партию.",
+    "Board.Opponent.Error.EnginePosition": "Эту позицию нельзя играть против движка.",
     "Board.Opponent.Error.MissingEngine": "Выберите локальный движок для игрока-движка.",
     "Board.Opponent.Error.Move": "Ход отклонён. Попробуйте ещё раз.",
     "Board.Opponent.Error.Resign": "Не удалось сдаться.",

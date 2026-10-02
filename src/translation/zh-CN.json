@@ -146,6 +146,7 @@
     "Board.Opponent.EnableOpeningBook": "启用开局库",
     "Board.Opponent.EngineSettings": "引擎设置",
     "Board.Opponent.Error.Abort": "无法中止对局。",
+    "Board.Opponent.Error.EnginePosition": "此局面无法与引擎对弈。",
     "Board.Opponent.Error.MissingEngine": "请为引擎玩家选择本地引擎。",
     "Board.Opponent.Error.Move": "着法被拒绝，请重试。",
     "Board.Opponent.Error.Resign": "无法认输。",

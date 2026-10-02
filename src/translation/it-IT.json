@@ -148,6 +148,7 @@
     "Board.Opponent.EnableOpeningBook": "Abilita libro delle aperture",
     "Board.Opponent.EngineSettings": "Impostazioni motore",
     "Board.Opponent.Error.Abort": "Impossibile interrompere la partita.",
+    "Board.Opponent.Error.EnginePosition": "Questa posizione non può essere giocata contro un motore.",
     "Board.Opponent.Error.MissingEngine": "Seleziona un motore locale per il giocatore del motore.",
     "Board.Opponent.Error.Move": "Mossa rifiutata. Riprova.",
     "Board.Opponent.Error.Resign": "Impossibile arrendersi.",

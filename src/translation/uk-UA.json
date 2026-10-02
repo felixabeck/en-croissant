@@ -149,6 +149,7 @@
     "Board.Opponent.EnableOpeningBook": "Увімкнути дебютну книгу",
     "Board.Opponent.EngineSettings": "Налаштування рушія",
     "Board.Opponent.Error.Abort": "Не вдалося перервати партію.",
+    "Board.Opponent.Error.EnginePosition": "Цю позицію не можна грати проти рушія.",
     "Board.Opponent.Error.MissingEngine": "Виберіть локальний рушій для гравця-рушія.",
     "Board.Opponent.Error.Move": "Хід відхилено. Спробуйте ще раз.",
     "Board.Opponent.Error.Resign": "Не вдалося здатися.",

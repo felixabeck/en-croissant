@@ -149,6 +149,7 @@
     "Board.Opponent.EnableOpeningBook": "Уключыць дэбютную кнігу",
     "Board.Opponent.EngineSettings": "Налады рухавіка",
     "Board.Opponent.Error.Abort": "Не ўдалося перарваць партыю.",
+    "Board.Opponent.Error.EnginePosition": "Гэтую пазіцыю нельга гуляць супраць рухавіка.",
     "Board.Opponent.Error.MissingEngine": "Выберыце лакальны рухавік для гульца-рухавіка.",
     "Board.Opponent.Error.Move": "Ход адхілены. Паспрабуйце яшчэ раз.",
     "Board.Opponent.Error.Resign": "Не ўдалося здацца.",

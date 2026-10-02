@@ -82,6 +82,7 @@ pub enum ErrorCategory {
     PartialRemoval,
     OperationAndCleanup,
     EngineTimeout,
+    EnginePositionRejected,
     Permission,
     PuzzleThemesUnavailable,
 }
@@ -107,6 +108,7 @@ impl std::fmt::Display for ErrorCategory {
             Self::PartialRemoval => "partial removal",
             Self::OperationAndCleanup => "operation and cleanup failure",
             Self::EngineTimeout => "engine timeout",
+            Self::EnginePositionRejected => "engine position rejected",
             Self::Permission => "permission denied",
             Self::PuzzleThemesUnavailable => "puzzle themes unavailable",
         })
@@ -220,6 +222,9 @@ pub enum Error {
 
     #[error("Engine timeout: {0}")]
     EngineTimeout(String),
+
+    #[error("Position cannot be played against an engine")]
+    EnginePositionRejected(#[source] Box<Error>),
 
     #[error("Analysis cancelled")]
     AnalysisCancelled,
@@ -343,6 +348,7 @@ impl Error {
             Self::PartialRemoval { .. } => ErrorCategory::PartialRemoval,
             Self::OperationAndCleanup { .. } => ErrorCategory::OperationAndCleanup,
             Self::EngineTimeout(_) => ErrorCategory::EngineTimeout,
+            Self::EnginePositionRejected(_) => ErrorCategory::EnginePositionRejected,
             Self::PuzzleThemesUnavailable => ErrorCategory::PuzzleThemesUnavailable,
         }
     }

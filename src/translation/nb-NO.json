@@ -147,6 +147,7 @@
     "Board.Opponent.EnableOpeningBook": "Aktiver åpningsbok",
     "Board.Opponent.EngineSettings": "Motorinnstillinger",
     "Board.Opponent.Error.Abort": "Kunne ikke avbryte partiet.",
+    "Board.Opponent.Error.EnginePosition": "Denne stillingen kan ikke spilles mot en motor.",
     "Board.Opponent.Error.MissingEngine": "Velg en lokal motor for motor-spilleren.",
     "Board.Opponent.Error.Move": "Trekket ble avvist. Prøv igjen.",
     "Board.Opponent.Error.Resign": "Kunne ikke gi opp.",

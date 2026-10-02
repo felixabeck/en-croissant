@@ -1,5 +1,10 @@
 import type { TFunction } from "i18next";
-import { logFailureSafely, safeFailureContext, type GameFailureContext } from "@/platform/errors";
+import {
+    logFailureSafely,
+    normalizeError,
+    safeFailureContext,
+    type GameFailureContext,
+} from "@/platform/errors";
 import { MissingLocalEngineError } from "./playerConfig";
 
 export type GameCommand = "start" | "move" | "takeback" | "abort" | "resign";
@@ -19,7 +24,7 @@ export type GameCommandLogContext =
 export type GameCommandError =
     | {
           kind: "validation";
-          code: "missing-local-engine";
+          code: "missing-local-engine" | "engine-position-rejected";
           diagnostic: string;
       }
     | {
@@ -34,6 +39,12 @@ export type GameCommandError =
  */
 export function createGameCommandError(operation: GameCommand, cause: unknown): GameCommandError {
     const diagnostic = safeFailureContext(cause).message;
+    if (
+        operation === "start" &&
+        normalizeError(cause).backendCategory === "engine-position-rejected"
+    ) {
+        return { kind: "validation", code: "engine-position-rejected", diagnostic };
+    }
     if (cause instanceof MissingLocalEngineError) {
         return { kind: "validation", code: cause.code, diagnostic };
     }
@@ -76,6 +87,9 @@ export function recordGameCommandError(
 /** Translate semantic command errors at render time so a locale change updates the alert. */
 export function translateGameCommandError(t: TFunction, error: GameCommandError): string {
     if (error.kind === "validation") {
+        if (error.code === "engine-position-rejected") {
+            return t("Board.Opponent.Error.EnginePosition");
+        }
         return t("Board.Opponent.Error.MissingEngine");
     }
     switch (error.operation) {

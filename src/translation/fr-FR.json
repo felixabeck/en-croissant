@@ -148,6 +148,7 @@
     "Board.Opponent.EnableOpeningBook": "Activer le livre d'ouvertures",
     "Board.Opponent.EngineSettings": "Réglages du moteur",
     "Board.Opponent.Error.Abort": "Impossible d’interrompre la partie.",
+    "Board.Opponent.Error.EnginePosition": "Cette position ne peut pas être jouée contre un moteur.",
     "Board.Opponent.Error.MissingEngine": "Sélectionnez un moteur local pour le joueur moteur.",
     "Board.Opponent.Error.Move": "Coup refusé. Veuillez réessayer.",
     "Board.Opponent.Error.Resign": "Impossible d’abandonner la partie.",

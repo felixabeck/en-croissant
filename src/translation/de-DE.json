@@ -147,6 +147,7 @@
     "Board.Opponent.EnableOpeningBook": "Eröffnungsbuch",
     "Board.Opponent.EngineSettings": "Einstellungen",
     "Board.Opponent.Error.Abort": "Die Partie konnte nicht abgebrochen werden.",
+    "Board.Opponent.Error.EnginePosition": "Diese Stellung kann nicht gegen eine Engine gespielt werden.",
     "Board.Opponent.Error.MissingEngine": "Wähle eine lokale Engine für den Engine-Spieler aus.",
     "Board.Opponent.Error.Move": "Zug abgelehnt. Bitte versuche es erneut.",
     "Board.Opponent.Error.Resign": "Aufgeben ist nicht möglich.",

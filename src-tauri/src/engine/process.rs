@@ -33,7 +33,7 @@ use crate::infra::{
 };
 
 use super::{
-    normalize_uci_moves_for_fen,
+    canonicalize_engine_position,
     types::{
         resolve_engine_option_leases, validate_uci_text, EngineDeadlines, EngineKey, EngineOption,
         EngineRequestId, EngineState, GoMode, ResolvedEngineOption,
@@ -2434,14 +2434,8 @@ impl EngineRuntime {
     }
 
     pub async fn set_position(&mut self, fen: &str, moves: &[String]) -> Result<(), Error> {
-        validate_uci_text("FEN", fen)?;
-        let normalized_moves = normalize_uci_moves_for_fen(fen, moves)?;
-        let command = if normalized_moves.is_empty() {
-            format!("position fen {fen}")
-        } else {
-            format!("position fen {fen} moves {}", normalized_moves.join(" "))
-        };
-        self.send(&command).await
+        let position = canonicalize_engine_position(fen, moves)?;
+        self.send(&position.command()).await
     }
 
     pub async fn start_search(&mut self, mode: &GoMode) -> Result<EngineRequestId, Error> {
@@ -3549,6 +3543,42 @@ fn reject_command_during_search(command: EngineCommand) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn set_position_writes_only_the_canonical_root_and_normalized_moves() {
+        let (actor, writes) = EngineActor::recording_test_actor(&[]);
+        actor
+            .set_position(
+                "r3k2r/8/8/8/8/8/8/R3K2R_w_HAha_-_-1_200000",
+                &["e1h1".into(), "e8a8".into()],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            *writes.lock().await,
+            ["position fen r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 100000 moves e1g1 e8c8"]
+        );
+        actor.terminate().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn set_position_rejection_writes_nothing() {
+        let (actor, writes) = EngineActor::recording_test_actor(&[]);
+        for (fen, moves) in [
+            ("4k3/8/8/8/8/8/PPPPPPPP/QQQ1K3 w - - 0 1", vec![]),
+            (
+                "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+                vec!["e2e5".into()],
+            ),
+        ] {
+            assert!(matches!(
+                actor.set_position(fen, &moves).await,
+                Err(Error::EnginePositionRejected(_))
+            ));
+        }
+        assert!(writes.lock().await.is_empty());
+        actor.terminate().await.unwrap();
+    }
     use std::{
         collections::VecDeque,
         io,

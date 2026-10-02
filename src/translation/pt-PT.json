@@ -148,6 +148,7 @@
     "Board.Opponent.EnableOpeningBook": "Ativar livro de aberturas",
     "Board.Opponent.EngineSettings": "Definições do motor",
     "Board.Opponent.Error.Abort": "Não foi possível abortar o jogo.",
+    "Board.Opponent.Error.EnginePosition": "Esta posição não pode ser jogada contra um motor.",
     "Board.Opponent.Error.MissingEngine": "Selecione um motor local para o jogador do motor.",
     "Board.Opponent.Error.Move": "Movimento rejeitado. Tente novamente.",
     "Board.Opponent.Error.Resign": "Não foi possível desistir.",

@@ -289,7 +289,13 @@ impl GameController {
             "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1".to_string()
         });
 
-        let position = parse_fen_to_position(&initial_fen)?;
+        let position = if matches!(config.white, PlayerConfig::Engine { .. })
+            || matches!(config.black, PlayerConfig::Engine { .. })
+        {
+            crate::engine::canonicalize_engine_position(&initial_fen, &[])?.position
+        } else {
+            parse_fen_to_position(&initial_fen)?
+        };
 
         let clock = if config.white_time_control.is_some() || config.black_time_control.is_some() {
             Some(ClockState {
@@ -1597,17 +1603,8 @@ impl GameManager {
             polyglot_book,
             polyglot_max_ply,
         } = apply_opening_book(config, &authority).await?;
-        let castling_mode = CastlingMode::detect(
-            config
-                .clone()
-                .initial_fen
-                .unwrap_or_default()
-                .parse::<Fen>()
-                .unwrap_or_default()
-                .as_setup(),
-        );
-
         let mut controller = GameController::new(game_id.clone(), session, config.clone())?;
+        let castling_mode = controller.position.castles().mode();
         controller.polyglot_book = polyglot_book;
         controller.polyglot_max_ply = polyglot_max_ply;
         let mut construction = GameEngineConstruction::new(game_id.clone(), session);
@@ -3416,6 +3413,39 @@ pub async fn get_game_engine_logs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn engine_games_refuse_excess_material_at_creation_but_human_games_keep_it() {
+        let mut config = human_config();
+        config.initial_fen = Some("4k3/8/8/8/8/8/PPPPPPPP/QQQ1K3 w - - 0 1".into());
+        assert!(GameController::new("human".into(), 1, config.clone()).is_ok());
+        for side in [Color::White, Color::Black] {
+            let mut engine_config = config.clone();
+            match side {
+                Color::White => engine_config.white = fake_engine_player(),
+                Color::Black => engine_config.black = fake_engine_player(),
+            }
+            assert!(matches!(
+                GameController::new("engine".into(), 1, engine_config),
+                Err(Error::EnginePositionRejected(_))
+            ));
+        }
+        config.black = fake_engine_player();
+        config.initial_fen = Some("4k3/8/8/8/8/NNNNNNNN/NN6/4K3 w - - 0 1".into());
+        assert!(GameController::new("ten-knights".into(), 1, config).is_ok());
+    }
+
+    #[test]
+    fn engine_game_clamps_wire_counters_without_replacing_request_state() {
+        let mut config = human_config();
+        config.black = fake_engine_player();
+        let fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 150 200000";
+        config.initial_fen = Some(fen.into());
+        let game = GameController::new("clocks".into(), 1, config).unwrap();
+        let state = game.get_state();
+        assert_eq!(state.initial_fen, fen);
+        assert_eq!(state.current_fen, fen);
+    }
     use std::io::Write;
 
     use crate::engine::CLEANUP_FAILURE_LOG;

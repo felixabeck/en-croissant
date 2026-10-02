@@ -147,6 +147,7 @@
     "Board.Opponent.EnableOpeningBook": "Açılış kitabını etkinleştir",
     "Board.Opponent.EngineSettings": "Motor ayarları",
     "Board.Opponent.Error.Abort": "Oyun durdurulamadı.",
+    "Board.Opponent.Error.EnginePosition": "Bu konum bir motora karşı oynanamaz.",
     "Board.Opponent.Error.MissingEngine": "Motor oyuncusu için yerel bir motor seçin.",
     "Board.Opponent.Error.Move": "Hamle reddedildi. Lütfen tekrar deneyin.",
     "Board.Opponent.Error.Resign": "Oyundan vazgeçilemedi.",

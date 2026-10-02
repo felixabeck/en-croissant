@@ -147,6 +147,7 @@
     "Board.Opponent.EnableOpeningBook": "Enable opening book",
     "Board.Opponent.EngineSettings": "Engine Settings",
     "Board.Opponent.Error.Abort": "Unable to abort the game.",
+    "Board.Opponent.Error.EnginePosition": "This position cannot be played against an engine.",
     "Board.Opponent.Error.MissingEngine": "Select a local engine for the engine player.",
     "Board.Opponent.Error.Move": "Move rejected. Please try again.",
     "Board.Opponent.Error.Resign": "Unable to resign the game.",

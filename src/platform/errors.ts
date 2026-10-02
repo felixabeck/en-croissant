@@ -46,6 +46,7 @@ const BACKEND_CATEGORY: Record<ErrorCategory, AppErrorCategory> = {
     "partial-removal": "applied-despite-error",
     "operation-and-cleanup": "unexpected",
     "engine-timeout": "unexpected",
+    "engine-position-rejected": "validation",
     permission: "permission",
     "puzzle-themes-unavailable": "not-found",
 };

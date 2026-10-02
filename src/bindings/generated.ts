@@ -1186,7 +1186,7 @@ export type EngineResourceHandleKind = "file" | "directory"
  */
 export type EngineRootHandle = { id: PathRef; kind: EngineRootHandleKind }
 export type EngineRootHandleKind = "engineRoot"
-export type ErrorCategory = "io" | "parsing" | "platform" | "network" | "chess-data" | "database" | "invalid-input" | "stale-game" | "missing-resource" | "conflict" | "resource-limit" | "authentication" | "credential" | "cancellation" | "durability" | "partial-removal" | "operation-and-cleanup" | "engine-timeout" | "permission" | "puzzle-themes-unavailable"
+export type ErrorCategory = "io" | "parsing" | "platform" | "network" | "chess-data" | "database" | "invalid-input" | "stale-game" | "missing-resource" | "conflict" | "resource-limit" | "authentication" | "credential" | "cancellation" | "durability" | "partial-removal" | "operation-and-cleanup" | "engine-timeout" | "engine-position-rejected" | "permission" | "puzzle-themes-unavailable"
 export type ErrorPayload = { tag: ErrorPayloadTag; category: ErrorCategory; message: string }
 export type ErrorPayloadTag = "backend-error"
 export type Event = { id: number; name: string | null }

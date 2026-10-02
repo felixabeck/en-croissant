@@ -1,6 +1,64 @@
 import { expect, test } from "./fixtures";
 import type { ErrorPayload } from "../src/bindings/generated";
 
+test("board-keyboard: refuses an excess-material engine game with its localized position message", async ({
+    page,
+    mockScenario,
+}) => {
+    const fen = "4k3/8/8/8/8/8/PPPPPPPP/QQQ1K3 w - - 0 1";
+    await page.addInitScript(() => {
+        localStorage.setItem(
+            "engines",
+            JSON.stringify([
+                {
+                    type: "local",
+                    id: "e2e-engine",
+                    name: "Stockfish 19",
+                    version: "19",
+                    filename: "stockfish",
+                    handle: { id: { id: "e2e-engine-handle" }, kind: "engine" },
+                    settings: [],
+                    go: { t: "Depth", c: 1 },
+                },
+            ]),
+        );
+    });
+    await mockScenario({
+        commands: {
+            start_game: {
+                error: {
+                    tag: "backend-error",
+                    category: "engine-position-rejected",
+                    message: "Position cannot be played against an engine",
+                } satisfies ErrorPayload,
+            },
+        },
+    });
+    await page.goto("/");
+    await page.getByRole("button", { name: /^import$/i }).click();
+    const modal = page.getByRole("dialog", { name: /import game/i });
+    await modal.getByText("FEN", { exact: true }).click();
+    await modal.getByRole("textbox", { name: "FEN" }).fill(fen);
+    await modal.getByRole("button", { name: /^import$/i }).click();
+    await page.getByRole("button", { name: "Play from here", exact: true }).click();
+    await page.getByText("Engine", { exact: true }).last().click();
+    await expect(page.locator("input[value='Stockfish 19']")).toBeVisible();
+    const start = page.getByRole("button", { name: "Start game", exact: true });
+    await start.click();
+    await expect(page.getByRole("alert")).toHaveText(
+        "This position cannot be played against an engine.",
+    );
+    await expect(page.getByRole("alert")).not.toContainText("Unable to start the game.");
+    await expect(start).toBeEnabled();
+    const invocations = await page.evaluate(() =>
+        window.__E2E_TAURI__.invocations().filter(({ command }) => command === "start_game"),
+    );
+    expect(invocations).toHaveLength(1);
+    expect(invocations[0].args).toMatchObject({
+        config: { initialFen: fen, black: { type: "engine", engineId: "e2e-engine" } },
+    });
+});
+
 test("board-keyboard: opens analysis and exposes a keyboard-operable board", async ({
     page,
     assertAccessible,

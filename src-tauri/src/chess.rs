@@ -27,9 +27,9 @@ use vampirc_uci::{
 use crate::{
     db::{DatabaseRepository, GameQuery, PositionQueryJs},
     engine::{
-        parse_fen_and_apply_moves, resolve_launch, resolve_option_leases, spawn_registered,
-        verify_option_resources, AdmissionLease, EngineActor, EngineDeadlines, EngineKey,
-        EngineLog, EngineOption, EngineRequestId, GoMode, ResolvedEngineOption, SupervisedEngine,
+        resolve_launch, resolve_option_leases, spawn_registered, verify_option_resources,
+        AdmissionLease, EngineActor, EngineDeadlines, EngineKey, EngineLog, EngineOption,
+        EngineRequestId, GoMode, ResolvedEngineOption, SupervisedEngine,
     },
     error::Error,
     infra::{
@@ -100,6 +100,7 @@ impl EngineProcess {
         resolved: Vec<ResolvedEngineOption>,
         operation_cancellation: Option<CancellationToken>,
     ) -> Result<(), Error> {
+        let canonical = crate::engine::canonicalize_engine_position(&options.fen, &options.moves)?;
         let effective_options = crate::engine::effective_engine_options(&options.extra_options);
         if resolved.len() != effective_options.len() {
             return Err(Error::Conflict(
@@ -110,10 +111,8 @@ impl EngineProcess {
         #[cfg(all(test, unix))]
         run_after_resource_verification_hook().await;
         let fen_changed = options.fen != self.options.fen;
-        let fen: Fen = options.fen.parse()?;
-        let setup = fen.as_setup();
-        let castling_mode = CastlingMode::detect(setup);
-        let pos = parse_fen_and_apply_moves(&options.fen, &options.moves)?;
+        let castling_mode = canonical.castling_mode;
+        let pos = canonical.position;
 
         if fen_changed {
             if castling_mode.is_chess960() {
@@ -271,13 +270,13 @@ fn invert_score(score: Score) -> Score {
 
 fn parse_uci_attrs(
     attrs: Vec<UciInfoAttribute>,
-    fen: &Fen,
+    fen: &str,
     moves: &[String],
 ) -> Result<BestMoves, Error> {
     let mut best_moves = BestMoves::default();
     let mut score_seen = false;
 
-    let mut pos = parse_fen_and_apply_moves(&fen.to_string(), moves)?;
+    let mut pos = crate::engine::canonicalize_engine_position(fen, moves)?.position;
     let turn = pos.turn();
 
     for a in attrs {
@@ -545,8 +544,7 @@ async fn process_interactive_search_output<R: tauri::Runtime>(
         observe_dequeued_search_line(&line);
         match parse_one(&line) {
             UciMessage::Info(attrs) => {
-                match parse_uci_attrs(attrs, &process.options.fen.parse()?, &process.options.moves)
-                {
+                match parse_uci_attrs(attrs, &process.options.fen, &process.options.moves) {
                     Ok(best_moves) => {
                         if let Some(set) = ingest_info_line(
                             &mut process.best_moves,
@@ -1032,25 +1030,23 @@ async fn analyze_position_with_owner(
         #[cfg(test)]
         observe_dequeued_search_line(&line);
         match parse_one(&line) {
-            UciMessage::Info(attrs) => {
-                match parse_uci_attrs(attrs, &proc.options.fen.parse()?, moves) {
-                    Ok(best_moves) => {
-                        if let Some(set) = ingest_info_line(
-                            &mut proc.best_moves,
-                            proc.last_depth,
-                            proc.real_multipv,
-                            best_moves,
-                        ) {
-                            if set.publishable {
-                                current_analysis.best = set.lines;
-                                proc.last_depth = set.depth;
-                            }
+            UciMessage::Info(attrs) => match parse_uci_attrs(attrs, &proc.options.fen, moves) {
+                Ok(best_moves) => {
+                    if let Some(set) = ingest_info_line(
+                        &mut proc.best_moves,
+                        proc.last_depth,
+                        proc.real_multipv,
+                        best_moves,
+                    ) {
+                        if set.publishable {
+                            current_analysis.best = set.lines;
+                            proc.last_depth = set.depth;
                         }
                     }
-                    Err(Error::NoMovesFound) => {}
-                    Err(error) => warn!("Failed to parse info line: {line}, error: {error:?}"),
                 }
-            }
+                Err(Error::NoMovesFound) => {}
+                Err(error) => warn!("Failed to parse info line: {line}, error: {error:?}"),
+            },
             UciMessage::BestMove { .. } => {
                 ensure_analysis_owner_active(supervised, cancellation)?;
                 break;
@@ -1504,6 +1500,61 @@ mod tests {
     use tauri::{Listener, Manager};
 
     use super::*;
+
+    #[tokio::test]
+    async fn configure_preflight_is_strict_and_canonical_fen_is_wire_only() {
+        let (actor, writes) = EngineActor::recording_test_actor(&["readyok"]);
+        let mut process = EngineProcess {
+            base: actor,
+            last_depth: 0,
+            best_moves: Vec::new(),
+            last_best_moves: Vec::new(),
+            last_progress: 0.0,
+            options: EngineOptions::default(),
+            resource_leases: Vec::new(),
+            go_mode: GoMode::Infinite,
+            running: false,
+            request_id: None,
+            real_multipv: 0,
+            start: Instant::now(),
+        };
+        let previous = process.options.clone();
+        let rejected = EngineOptions {
+            fen: "4k3/8/8/8/8/8/PPPPPPPP/QQQ1K3 w - - 0 1".into(),
+            moves: Vec::new(),
+            extra_options: vec![string_option("MultiPV", "4")],
+        };
+        assert!(matches!(
+            process
+                .set_options(rejected, vec![resolved_option("MultiPV", "4")], None)
+                .await,
+            Err(Error::EnginePositionRejected(_))
+        ));
+        assert!(writes.lock().await.is_empty());
+        assert_eq!(process.options, previous);
+        assert_eq!(process.real_multipv, 0);
+
+        let requested = EngineOptions {
+            fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - -1 200000".into(),
+            moves: vec!["e2e4".into()],
+            extra_options: Vec::new(),
+        };
+        process
+            .set_options(requested.clone(), Vec::new(), None)
+            .await
+            .unwrap();
+        assert!(writes.lock().await.iter().any(|line| line == "position fen rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 100000 moves e2e4"));
+        assert_eq!(process.options, requested);
+        let payload = interactive_best_moves_payload(&process, "engine", "tab", 1, Vec::new(), 0.0);
+        assert_eq!(payload.fen, requested.fen);
+        assert_eq!(payload.moves, requested.moves);
+        let UciMessage::Info(attrs) = parse_one("info depth 1 score cp 10 pv e7e5") else {
+            panic!("test fixture must be an info line");
+        };
+        let parsed = parse_uci_attrs(attrs, &requested.fen, &requested.moves).unwrap();
+        assert_eq!(parsed.san_moves, ["e5"]);
+        process.base.terminate().await.unwrap();
+    }
 
     #[test]
     fn analysis_cancellation_uses_cancelled_terminal_state() {
@@ -3110,7 +3161,9 @@ done
 
     fn parsed_info(line: &str) -> BestMoves {
         match parse_one(line) {
-            UciMessage::Info(attrs) => parse_uci_attrs(attrs, &start_fen(), &[]).unwrap(),
+            UciMessage::Info(attrs) => {
+                parse_uci_attrs(attrs, &start_fen().to_string(), &[]).unwrap()
+            }
             other => panic!("expected info, got {other:?}"),
         }
     }
@@ -3254,7 +3307,7 @@ done
             other => panic!("expected info, got {other:?}"),
         };
         assert!(matches!(
-            parse_uci_attrs(attrs, &start_fen(), &[]),
+            parse_uci_attrs(attrs, &start_fen().to_string(), &[]),
             Err(Error::NoMovesFound)
         ));
     }
