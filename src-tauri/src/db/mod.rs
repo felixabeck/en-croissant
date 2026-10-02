@@ -2938,6 +2938,57 @@ fn set_unlink_sidecar_after_identity_probe_hook(hook: Option<Box<dyn FnOnce()>>)
     UNLINK_SIDECAR_AFTER_IDENTITY_PROBE_HOOK.with(|slot| *slot.borrow_mut() = hook);
 }
 
+#[cfg(test)]
+fn run_unlink_sidecar_after_identity_probe_hook() {
+    UNLINK_SIDECAR_AFTER_IDENTITY_PROBE_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UnlinkProbeStage {
+    Identity,
+    ReadOpen,
+    OpenedIdentity,
+    SourceRead,
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static UNLINK_PROBE_FAULT:
+        std::cell::RefCell<Option<(UnlinkProbeStage, std::ffi::OsString, std::io::ErrorKind)>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn inject_unlink_probe_fault<T, E: From<std::io::Error>>(
+    stage: UnlinkProbeStage,
+    leaf: Option<&OsStr>,
+    result: Result<T, E>,
+) -> Result<T, E> {
+    UNLINK_PROBE_FAULT.with(|slot| {
+        let mut fault = slot.borrow_mut();
+        match fault.as_ref() {
+            Some((point, fault_leaf, kind))
+                if *point == stage && leaf.is_none_or(|leaf| leaf == fault_leaf) =>
+            {
+                let kind = *kind;
+                *fault = None;
+                return Err(std::io::Error::new(kind, "injected sidecar probe failure").into());
+            }
+            _ => {}
+        }
+        result
+    })
+}
+
+/// Judges provenance and binds removal to the identity of that same file. POSIX retains
+/// the `statat` → `unlinkat` instant inside `remove_entry_at`; Windows deletes through the
+/// checked handle and has no such window. A sidecar written under a database object that
+/// has since changed is kept as foreign; loaders reject it and later generation replaces it.
+/// Either index name is kept when this process cannot read its provenance.
 /// An Ok result means the primary is gone; any retained error must be reported
 /// after cache and registry cleanup, including a later SQLite sidecar failure.
 fn unlink_database_files(
@@ -2992,12 +3043,6 @@ fn unlink_database_files(
         unlinked: &mut usize,
         retained: &mut Option<Error>,
     ) -> Result<(), Error> {
-        #[cfg(test)]
-        UNLINK_SIDECAR_AFTER_IDENTITY_PROBE_HOOK.with(|slot| {
-            if let Some(hook) = slot.borrow_mut().take() {
-                hook();
-            }
-        });
         match remove_entry_at(parent, leaf, identity, false) {
             Ok(()) => {
                 *unlinked += 1;
@@ -3031,16 +3076,30 @@ fn unlink_database_files(
         }
     }
 
-    for leaf in [&preferred_leaf, &integrity_leaf] {
-        match entry_identity_at(target.parent(), leaf, false) {
-            Ok(identity) => remove_sidecar(
-                target.parent(),
-                leaf,
-                identity,
-                &mut unlinked,
-                &mut durability,
-            )?,
-            Err(error) => remember_sidecar_error(error, target.parent(), leaf, &mut durability)?,
+    match index_sidecar_matches(target.parent(), &preferred_leaf, expected_source, true) {
+        Ok(Some(identity)) => remove_sidecar(
+            target.parent(),
+            &preferred_leaf,
+            identity,
+            &mut unlinked,
+            &mut durability,
+        )?,
+        Ok(None) => {}
+        Err(error) => {
+            remember_sidecar_error(error, target.parent(), &preferred_leaf, &mut durability)?
+        }
+    }
+
+    match entry_identity_at(target.parent(), &integrity_leaf, false) {
+        Ok(identity) => remove_sidecar(
+            target.parent(),
+            &integrity_leaf,
+            identity,
+            &mut unlinked,
+            &mut durability,
+        )?,
+        Err(error) => {
+            remember_sidecar_error(error, target.parent(), &integrity_leaf, &mut durability)?
         }
     }
 
@@ -3055,12 +3114,7 @@ fn unlink_database_files(
             )?,
             Ok(None) => {}
             Err(error) => {
-                if let Some(sidecar_error) = durability.as_ref() {
-                    log::warn!(
-                        "database sidecar removal failed after durability uncertainty: {sidecar_error}"
-                    );
-                }
-                return Err(error);
+                remember_sidecar_error(error, target.parent(), &legacy_leaf, &mut durability)?;
             }
         }
     }
@@ -3092,6 +3146,8 @@ fn unlink_database_files(
         }
     }
     for (leaf, identity) in sqlite_sidecars {
+        #[cfg(test)]
+        run_unlink_sidecar_after_identity_probe_hook();
         if let Err(error) = remove_sidecar(
             target.parent(),
             &leaf,
@@ -3117,24 +3173,72 @@ fn legacy_sidecar_matches(
     leaf: &OsStr,
     expected_source: &IndexSource,
 ) -> Result<Option<(u64, u64)>, Error> {
-    let probe =
-        match search_index::probe_legacy_index_sidecar_at(parent, leaf, expected_source, None) {
-            Ok(probe) => probe,
-            Err(error) => {
-                match crate::infra::path_authority::classify_probe_error(&error, parent, leaf) {
-                    crate::infra::path_authority::ProbeErrorClass::NotFound
-                    | crate::infra::path_authority::ProbeErrorClass::Reparse
-                    | crate::infra::path_authority::ProbeErrorClass::WrongKind
-                    | crate::infra::path_authority::ProbeErrorClass::Malformed => return Ok(None),
-                    crate::infra::path_authority::ProbeErrorClass::MappedFile
-                    | crate::infra::path_authority::ProbeErrorClass::Other => return Err(error),
-                }
+    index_sidecar_matches(parent, leaf, expected_source, false)
+}
+
+fn index_sidecar_matches(
+    parent: &File,
+    leaf: &OsStr,
+    expected_source: &IndexSource,
+    preferred: bool,
+) -> Result<Option<(u64, u64)>, Error> {
+    use crate::infra::path_authority::{
+        classify_probe_error, opened_file_identity, ProbeErrorClass,
+    };
+
+    let mut judged_identity = None;
+    let probe = (|| {
+        let result = entry_identity_at(parent, leaf, false);
+        #[cfg(test)]
+        let result = inject_unlink_probe_fault(UnlinkProbeStage::Identity, Some(leaf), result);
+        let identity = result?;
+        judged_identity = Some(identity);
+        let result = crate::infra::fs::open_regular_at(
+            parent,
+            leaf,
+            crate::infra::fs::RegularFileAccess::ReadOnly,
+        );
+        #[cfg(test)]
+        let result = inject_unlink_probe_fault(UnlinkProbeStage::ReadOpen, Some(leaf), result);
+        let mut file = result?;
+        let result = opened_file_identity(&file);
+        #[cfg(test)]
+        let result =
+            inject_unlink_probe_fault(UnlinkProbeStage::OpenedIdentity, Some(leaf), result);
+        if result? != identity {
+            return Err(Error::Conflict(
+                "index sidecar changed before deletion".into(),
+            ));
+        }
+        let source = search_index::read_index_source(&mut file).map_err(Error::from);
+        drop(file);
+        source
+    })();
+
+    let remove = match probe {
+        Ok(source) => {
+            if preferred {
+                source.object == expected_source.object
+            } else {
+                source == *expected_source
             }
-        };
-    if !probe.source_matches {
+        }
+        Err(error) => match classify_probe_error(&error, parent, leaf) {
+            ProbeErrorClass::NotFound => false,
+            ProbeErrorClass::Malformed => preferred,
+            ProbeErrorClass::Reparse | ProbeErrorClass::WrongKind if !preferred => false,
+            ProbeErrorClass::Other if matches!(&error, Error::Io(error) if error.kind() == std::io::ErrorKind::PermissionDenied) => {
+                false
+            }
+            _ => return Err(error),
+        },
+    };
+    if !remove {
         return Ok(None);
     }
-    Ok(Some(probe.identity))
+    #[cfg(test)]
+    run_unlink_sidecar_after_identity_probe_hook();
+    Ok(judged_identity)
 }
 
 fn delete_orphaned_data(db: &mut SqliteConnection) -> Result<(), Error> {
@@ -4023,7 +4127,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_sidecar_read_permission_failure_propagates() {
+    fn legacy_sidecar_read_permission_failure_keeps_sidecar_and_deletes_database() {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().unwrap();
@@ -4040,11 +4144,39 @@ mod tests {
             legacy.file_name().unwrap(),
             &expected_source,
         );
+        assert!(matches!(result, Ok(None)));
+        let result = unlink_database_files(&target, &expected_source).unwrap();
         std::fs::set_permissions(&legacy, std::fs::Permissions::from_mode(0o600)).unwrap();
-        assert!(matches!(
-            result,
-            Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::PermissionDenied
-        ));
+        assert_eq!(result.0, 1);
+        assert!(result.1.is_none());
+        assert!(!database.exists());
+        assert_eq!(std::fs::read(&legacy).unwrap(), b"unreadable");
+    }
+
+    #[test]
+    fn unlink_database_files_keeps_unreadable_foreign_preferred_sidecar() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("preferred-permission.db3");
+        let foreign = dir.path().join("foreign.db3");
+        std::fs::write(&database, b"database").unwrap();
+        std::fs::write(&foreign, b"foreign database").unwrap();
+        let preferred = get_index_path(&database);
+        SearchIndexChunk::default()
+            .write_to_with_source(&preferred, IndexSource::from_database(&foreign, 0).unwrap())
+            .unwrap()
+            .expect_durable();
+        let bytes = std::fs::read(&preferred).unwrap();
+        let source = IndexSource::from_database(&database, 0).unwrap();
+        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
+        std::fs::set_permissions(&preferred, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let result = unlink_database_files(&target, &source).unwrap();
+        std::fs::set_permissions(&preferred, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(result.0, 1);
+        assert!(result.1.is_none());
+        assert!(!database.exists());
+        assert_eq!(std::fs::read(&preferred).unwrap(), bytes);
     }
 
     #[test]
@@ -11024,6 +11156,239 @@ mod deletion_tests {
     use std::path::Path;
     use tauri::Manager;
 
+    struct UnlinkProbeFaultGuard;
+
+    impl UnlinkProbeFaultGuard {
+        fn permission_denied(stage: UnlinkProbeStage, leaf: &OsStr) -> Self {
+            UNLINK_PROBE_FAULT.with(|slot| {
+                *slot.borrow_mut() = Some((
+                    stage,
+                    leaf.to_os_string(),
+                    std::io::ErrorKind::PermissionDenied,
+                ));
+            });
+            Self
+        }
+    }
+
+    impl Drop for UnlinkProbeFaultGuard {
+        fn drop(&mut self) {
+            UNLINK_PROBE_FAULT.with(|slot| *slot.borrow_mut() = None);
+        }
+    }
+
+    #[test]
+    fn unlink_database_files_keeps_replacement_database_and_its_preferred_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("a.db3");
+        let replacement = dir.path().join("b.db3");
+        std::fs::write(&database, b"database A").unwrap();
+        std::fs::write(&replacement, b"database B").unwrap();
+        let expected_source = IndexSource::from_database(&database, 0).unwrap();
+        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
+        let preferred = get_index_path(&database);
+        let replacement_index = get_index_path(&replacement);
+        SearchIndexChunk::default()
+            .write_to_with_source(&preferred, expected_source.clone())
+            .unwrap()
+            .expect_durable();
+        SearchIndexChunk::default()
+            .write_to_with_source(
+                &replacement_index,
+                IndexSource::from_database(&replacement, 0).unwrap(),
+            )
+            .unwrap()
+            .expect_durable();
+        let index_bytes = std::fs::read(&replacement_index).unwrap();
+        std::fs::rename(&replacement, &database).unwrap();
+        std::fs::rename(&replacement_index, &preferred).unwrap();
+
+        assert!(matches!(unlink_database_files(&target, &expected_source),
+            Err(Error::Conflict(message)) if message == "database changed before deletion"));
+        assert_eq!(std::fs::read(&database).unwrap(), b"database B");
+        assert_eq!(std::fs::read(&preferred).unwrap(), index_bytes);
+    }
+
+    #[test]
+    fn unlink_database_files_removes_stale_preferred_index_of_the_same_object() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("stale.db3");
+        std::fs::write(&database, b"database").unwrap();
+        let expected_source = IndexSource::from_database(&database, 2).unwrap();
+        let mut stale_source = expected_source.clone();
+        stale_source.revision = 1;
+        stale_source.database_length += 1;
+        let preferred = get_index_path(&database);
+        SearchIndexChunk::default()
+            .write_to_with_source(&preferred, stale_source)
+            .unwrap()
+            .expect_durable();
+        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
+        let result = unlink_database_files(&target, &expected_source).unwrap();
+        assert_eq!(result.0, 2);
+        assert!(result.1.is_none());
+        assert!(!database.exists());
+        assert!(!preferred.exists());
+    }
+
+    #[test]
+    fn unlink_database_files_removes_malformed_preferred_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("malformed.db3");
+        std::fs::write(&database, b"database").unwrap();
+        let expected_source = IndexSource::from_database(&database, 0).unwrap();
+        let preferred = get_index_path(&database);
+        std::fs::write(&preferred, b"not an archive").unwrap();
+        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
+        let result = unlink_database_files(&target, &expected_source).unwrap();
+        assert_eq!(result.0, 2);
+        assert!(result.1.is_none());
+        assert!(!database.exists());
+        assert!(!preferred.exists());
+    }
+
+    #[test]
+    fn unlink_database_files_removes_preferred_file_with_undecodable_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("undecodable.db3");
+        std::fs::write(&database, b"database").unwrap();
+        let expected_source = IndexSource::from_database(&database, 0).unwrap();
+        let preferred = get_index_path(&database);
+        SearchIndexChunk::default()
+            .write_to_with_source(&preferred, expected_source.clone())
+            .unwrap()
+            .expect_durable();
+        let mut bytes = std::fs::read(&preferred).unwrap();
+        // In-bounds and aligned, but too short to contain an archived IndexSource.
+        bytes[8..16].copy_from_slice(&16_u64.to_le_bytes());
+        std::fs::write(&preferred, bytes).unwrap();
+        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
+        let result = unlink_database_files(&target, &expected_source).unwrap();
+        assert_eq!(result.0, 2);
+        assert!(result.1.is_none());
+        assert!(!database.exists());
+        assert!(!preferred.exists());
+    }
+
+    #[test]
+    fn unlink_database_files_keeps_colliding_foreign_preferred_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("foo.db3");
+        let owner = dir.path().join("foo.db3.bak");
+        std::fs::write(&database, b"database").unwrap();
+        std::fs::write(&owner, b"backup").unwrap();
+        let preferred = get_index_path(&database);
+        assert_eq!(preferred, legacy_index_path(&owner));
+        SearchIndexChunk::default()
+            .write_to_with_source(&preferred, IndexSource::from_database(&owner, 0).unwrap())
+            .unwrap()
+            .expect_durable();
+        let bytes = std::fs::read(&preferred).unwrap();
+        let expected_source = IndexSource::from_database(&database, 0).unwrap();
+        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
+        let result = unlink_database_files(&target, &expected_source).unwrap();
+        assert_eq!(result.0, 1);
+        assert!(result.1.is_none());
+        assert!(!database.exists());
+        assert_eq!(std::fs::read(&preferred).unwrap(), bytes);
+    }
+
+    #[test]
+    fn unlink_database_files_keeps_permission_denied_sidecars_at_every_probe_stage() {
+        for stage in [
+            UnlinkProbeStage::Identity,
+            UnlinkProbeStage::ReadOpen,
+            UnlinkProbeStage::OpenedIdentity,
+            UnlinkProbeStage::SourceRead,
+        ] {
+            for preferred in [true, false] {
+                let dir = tempfile::tempdir().unwrap();
+                let database = dir.path().join("permission.db3");
+                std::fs::write(&database, b"database").unwrap();
+                let source = IndexSource::from_database(&database, 0).unwrap();
+                let sidecar = if preferred {
+                    get_index_path(&database)
+                } else {
+                    legacy_index_path(&database)
+                };
+                SearchIndexChunk::default()
+                    .write_to_with_source(&sidecar, source.clone())
+                    .unwrap()
+                    .expect_durable();
+                let bytes = std::fs::read(&sidecar).unwrap();
+                let target = DatabaseFileTarget::for_test_path(&database).unwrap();
+                let _fault =
+                    UnlinkProbeFaultGuard::permission_denied(stage, sidecar.file_name().unwrap());
+                let result = unlink_database_files(&target, &source);
+                assert!(
+                    UNLINK_PROBE_FAULT.with(|slot| slot.borrow().is_none()),
+                    "{stage:?}, preferred={preferred}"
+                );
+                assert!(
+                    matches!(result, Ok((1, None))),
+                    "{stage:?}, preferred={preferred}: {result:?}"
+                );
+                assert!(!database.exists());
+                assert_eq!(std::fs::read(&sidecar).unwrap(), bytes);
+            }
+        }
+    }
+
+    #[test]
+    fn unlink_database_files_removes_matching_legacy_index_with_corrupt_chunks() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("corrupt-chunks.db3");
+        std::fs::write(&database, b"database").unwrap();
+        let source = IndexSource::from_database(&database, 0).unwrap();
+        let legacy = legacy_index_path(&database);
+        SearchIndexChunk::default()
+            .write_to_with_source(&legacy, source.clone())
+            .unwrap()
+            .expect_durable();
+        let mut bytes = std::fs::read(&legacy).unwrap();
+        bytes[24..32].copy_from_slice(&1_u64.to_le_bytes());
+        bytes.extend_from_slice(&[0; 32]);
+        std::fs::write(&legacy, bytes).unwrap();
+        assert!(MmapSearchIndex::open_file(File::open(&legacy).unwrap()).is_err());
+        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
+        let result = unlink_database_files(&target, &source).unwrap();
+        assert_eq!(result.0, 2);
+        assert!(result.1.is_none());
+        assert!(!database.exists());
+        assert!(!legacy.exists());
+    }
+
+    #[test]
+    fn unlink_database_files_counts_stamp_without_consuming_index_probe_hook() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("stamp-hook.db3");
+        std::fs::write(&database, b"database").unwrap();
+        let source = IndexSource::from_database(&database, 0).unwrap();
+        let legacy = legacy_index_path(&database);
+        SearchIndexChunk::default()
+            .write_to_with_source(&legacy, source.clone())
+            .unwrap()
+            .expect_durable();
+        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
+        let stamp = database.with_file_name(search_index::integrity_stamp_leaf(target.leaf()));
+        std::fs::write(&stamp, b"stamp").unwrap();
+        let stamp_for_hook = stamp.clone();
+        let legacy_for_hook = legacy.clone();
+        set_unlink_sidecar_after_identity_probe_hook(Some(Box::new(move || {
+            assert!(
+                !stamp_for_hook.exists(),
+                "stamp removal precedes the legacy probe hook"
+            );
+            assert!(legacy_for_hook.exists());
+        })));
+        let result = unlink_database_files(&target, &source).unwrap();
+        assert_eq!(result.0, 3);
+        assert!(result.1.is_none());
+        assert!(!database.exists());
+        assert!(!legacy.exists());
+        assert!(!stamp.exists());
+    }
+
     fn symlink(target: &Path, link: &Path, target_is_dir: bool) -> std::io::Result<()> {
         #[cfg(unix)]
         {
@@ -11319,7 +11684,13 @@ mod deletion_tests {
         let database = dir.path().join("preferred-swap.db3");
         std::fs::write(&database, b"database").unwrap();
         let preferred = get_index_path(&database);
-        std::fs::write(&preferred, b"original").unwrap();
+        SearchIndexChunk::default()
+            .write_to_with_source(
+                &preferred,
+                IndexSource::from_database(&database, 0).unwrap(),
+            )
+            .unwrap()
+            .expect_durable();
         let preferred_replacement = dir.path().join("preferred-replacement");
         std::fs::write(&preferred_replacement, b"replacement").unwrap();
         let target = DatabaseFileTarget::for_test_path(&database).unwrap();

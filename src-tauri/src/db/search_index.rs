@@ -104,6 +104,61 @@ fn verify_header(header: &[u8]) -> io::Result<ArchiveHeader> {
     })
 }
 
+fn decode_index_source<B: AsRef<[u8]>>(
+    header_bytes: &[u8],
+    read_source: impl FnOnce(usize) -> io::Result<B>,
+) -> io::Result<(ArchiveHeader, IndexSource, usize)> {
+    let header = verify_header(header_bytes)?;
+    if header.source_len > MAX_SOURCE_BYTES {
+        return Err(invalid_data("index source exceeds the metadata limit"));
+    }
+    if !header.source_len.is_multiple_of(ARCHIVE_ALIGNMENT) {
+        return Err(invalid_data("misaligned index source length"));
+    }
+    let source_end = HEADER_SIZE
+        .checked_add(header.source_len)
+        .ok_or_else(|| invalid_data("source bounds overflow"))?;
+    let source = read_source(header.source_len)?;
+    let source_bytes = source.as_ref();
+    if source_bytes.len() != header.source_len {
+        return Err(invalid_data("truncated index source"));
+    }
+    if !(source_bytes.as_ptr() as usize).is_multiple_of(ARCHIVE_ALIGNMENT) {
+        return Err(invalid_data("misaligned index source"));
+    }
+    let source = rkyv::from_bytes::<IndexSource, rkyv::rancor::Error>(source_bytes)
+        .map_err(|error| invalid_data(format!("invalid index source archive: {error}")))?;
+    Ok((header, source, source_end))
+}
+
+fn read_source_exact(reader: &mut impl Read, bytes: &mut [u8], truncation: &str) -> io::Result<()> {
+    let result = reader.read_exact(bytes);
+    #[cfg(test)]
+    let result =
+        super::inject_unlink_probe_fault(super::UnlinkProbeStage::SourceRead, None, result);
+    result.map_err(|error| {
+        if error.kind() == io::ErrorKind::UnexpectedEof {
+            invalid_data(truncation)
+        } else {
+            error
+        }
+    })
+}
+
+/// Reads only the header and recorded source from an opened archive, without mapping it
+/// or reading any chunks. The caller owns and closes the read handle before deletion.
+pub(crate) fn read_index_source(reader: &mut impl Read) -> io::Result<IndexSource> {
+    let mut header_bytes = [0; HEADER_SIZE];
+    read_source_exact(reader, &mut header_bytes, "File too small for header")?;
+    let (_, source, _) = decode_index_source(&header_bytes, |source_len| {
+        let mut bytes = rkyv::util::AlignedVec::<ARCHIVE_ALIGNMENT>::with_capacity(source_len);
+        bytes.resize(source_len, 0);
+        read_source_exact(reader, &mut bytes, "truncated index source")?;
+        Ok(bytes)
+    })?;
+    Ok(source)
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Archive, Serialize, Deserialize)]
 #[rkyv(compare(PartialEq), derive(Debug))]
 #[repr(u8)]
@@ -632,24 +687,10 @@ impl MmapSearchIndex {
         // type owns it, never exposes mutable bytes, and validates every rkyv
         // offset before any archive data is read.
         let mmap = Arc::new(unsafe { Mmap::map(&file)? });
-        let header = verify_header(&mmap)?;
-        if header.source_len > MAX_SOURCE_BYTES {
-            return Err(invalid_data("index source exceeds the metadata limit"));
-        }
-        if !header.source_len.is_multiple_of(ARCHIVE_ALIGNMENT) {
-            return Err(invalid_data("misaligned index source length"));
-        }
-        let source_end = HEADER_SIZE
-            .checked_add(header.source_len)
-            .ok_or_else(|| invalid_data("source bounds overflow"))?;
-        let source_bytes = mmap
-            .get(HEADER_SIZE..source_end)
-            .ok_or_else(|| invalid_data("truncated index source"))?;
-        if !(source_bytes.as_ptr() as usize).is_multiple_of(ARCHIVE_ALIGNMENT) {
-            return Err(invalid_data("misaligned index source"));
-        }
-        let source = rkyv::from_bytes::<IndexSource, rkyv::rancor::Error>(source_bytes)
-            .map_err(|error| invalid_data(format!("invalid index source archive: {error}")))?;
+        let (header, source, source_end) = decode_index_source(&mmap, |source_len| {
+            mmap.get(HEADER_SIZE..HEADER_SIZE + source_len)
+                .ok_or_else(|| invalid_data("truncated index source"))
+        })?;
 
         let mut cursor = source_end;
         let minimum_chunk_bytes = CHUNK_HEADER_SIZE + ARCHIVE_ALIGNMENT;
@@ -1036,6 +1077,132 @@ mod tests {
     use crate::infra::fs::open_verified_parent;
     use crate::infra::fs::set_test_atomic_file_injector;
     use tempfile::tempdir;
+
+    #[test]
+    fn source_reader_reads_exactly_header_and_source_without_a_mapping_or_chunks() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("source-only.ecsi");
+        let source = IndexSource {
+            object: (17, 29),
+            revision: 3,
+            ..IndexSource::default()
+        };
+        SearchIndexChunk {
+            entries: vec![test_entry(1, vec![12, 12])],
+        }
+        .write_to_with_source(&path, source.clone())
+        .unwrap()
+        .expect_durable();
+        assert_eq!(
+            read_index_source(&mut File::open(&path).unwrap()).unwrap(),
+            source
+        );
+        let mut bytes = std::fs::read(&path).unwrap();
+        let source_end = HEADER_SIZE + read_u64(&bytes, 8, "source").unwrap() as usize;
+        // Corrupt the first chunk while leaving its header and source intact.
+        bytes[source_end..source_end + 8].copy_from_slice(&0_u64.to_le_bytes());
+        std::fs::write(&path, &bytes).unwrap();
+        assert_eq!(
+            read_index_source(&mut File::open(&path).unwrap()).unwrap(),
+            source
+        );
+        assert_eq!(
+            MmapSearchIndex::open_file(File::open(&path).unwrap())
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+
+        // A cursor has no file handle to map. Its position measures actual bytes consumed.
+        let mut reader = io::Cursor::new(bytes.clone());
+        assert_eq!(read_index_source(&mut reader).unwrap(), source);
+        assert_eq!(reader.position(), source_end as u64);
+        bytes.truncate(source_end);
+        let mut reader = io::Cursor::new(bytes);
+        assert_eq!(read_index_source(&mut reader).unwrap(), source);
+        assert_eq!(reader.position(), source_end as u64);
+    }
+
+    #[test]
+    fn source_reader_rejects_the_same_header_and_source_defects_as_the_mapping() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("source-defects.ecsi");
+        SearchIndexChunk::default()
+            .write_to_with_source(&path, IndexSource::default())
+            .unwrap()
+            .expect_durable();
+        let valid = std::fs::read(&path).unwrap();
+        let mutations: [fn(&mut Vec<u8>); 7] = [
+            |bytes| bytes.truncate(HEADER_SIZE - 1),
+            |bytes| bytes[0..4].copy_from_slice(b"NOPE"),
+            |bytes| bytes[4..8].copy_from_slice(&(VERSION + 1).to_le_bytes()),
+            |bytes| {
+                bytes.pop();
+            },
+            |bytes| bytes[8..16].copy_from_slice(&((MAX_SOURCE_BYTES + 1) as u64).to_le_bytes()),
+            |bytes| bytes[8..16].copy_from_slice(&17_u64.to_le_bytes()),
+            // Valid, aligned and in-bounds length, but too short for IndexSource.
+            |bytes| bytes[8..16].copy_from_slice(&16_u64.to_le_bytes()),
+        ];
+        for mutate in mutations {
+            let mut bytes = valid.clone();
+            mutate(&mut bytes);
+            std::fs::write(&path, &bytes).unwrap();
+            let read_error = read_index_source(&mut io::Cursor::new(bytes)).unwrap_err();
+            let mapped_error = MmapSearchIndex::open_file(File::open(&path).unwrap()).unwrap_err();
+            assert_eq!(read_error.kind(), io::ErrorKind::InvalidData);
+            assert_eq!(read_error.kind(), mapped_error.kind());
+            let without_addresses = |message: &str| {
+                let mut parts = message.split("0x");
+                let mut result = parts.next().unwrap_or_default().to_string();
+                for part in parts {
+                    let digits = part.bytes().take_while(u8::is_ascii_hexdigit).count();
+                    if digits == 0 {
+                        result.push_str("0x");
+                    }
+                    result.push_str(&part[digits..]);
+                }
+                result
+            };
+            assert_eq!(
+                without_addresses(&read_error.to_string()),
+                without_addresses(&mapped_error.to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn source_reader_preserves_non_truncation_io_errors() {
+        struct FailingReader {
+            prefix: io::Cursor<Vec<u8>>,
+            kind: io::ErrorKind,
+        }
+        impl Read for FailingReader {
+            fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+                if self.prefix.position() == self.prefix.get_ref().len() as u64 {
+                    Err(io::Error::new(self.kind, "read failed"))
+                } else {
+                    self.prefix.read(bytes)
+                }
+            }
+        }
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("read-errors.ecsi");
+        SearchIndexChunk::default()
+            .write_to_with_source(&path, IndexSource::default())
+            .unwrap()
+            .expect_durable();
+        let bytes = std::fs::read(&path).unwrap();
+        for prefix_len in [0, HEADER_SIZE, HEADER_SIZE + 1] {
+            for kind in [io::ErrorKind::PermissionDenied, io::ErrorKind::Other] {
+                let mut reader = FailingReader {
+                    prefix: io::Cursor::new(bytes[..prefix_len].to_vec()),
+                    kind,
+                };
+                assert_eq!(read_index_source(&mut reader).unwrap_err().kind(), kind);
+            }
+        }
+    }
 
     #[test]
     fn test_roundtrip() {
