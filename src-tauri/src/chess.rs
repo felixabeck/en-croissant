@@ -412,25 +412,10 @@ pub async fn kill_engines(
     }
 }
 
-async fn retire_engine_with_supervisor(
-    engine: String,
-    supervisor: &crate::engine::EngineSupervisor,
-) -> Result<(), Error> {
-    supervisor.retire_engine(engine).await
-}
-
 #[tauri::command]
 #[specta::specta]
 pub async fn retire_engine(engine: String, state: tauri::State<'_, AppState>) -> Result<(), Error> {
-    retire_engine_with_supervisor(engine, &state.engine_supervisor).await
-}
-
-async fn retire_engine_binary_with_supervisor(
-    engine: String,
-    handle: EngineHandle,
-    supervisor: &crate::engine::EngineSupervisor,
-) -> Result<(), Error> {
-    supervisor.retire_engine_binary(engine, handle.id).await
+    state.engine_supervisor.retire_engine(engine).await
 }
 
 #[tauri::command]
@@ -440,7 +425,10 @@ pub async fn retire_engine_binary(
     handle: EngineHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    retire_engine_binary_with_supervisor(engine, handle, &state.engine_supervisor).await
+    state
+        .engine_supervisor
+        .retire_engine_binary(engine, handle.id)
+        .await
 }
 
 #[tauri::command]
@@ -3046,8 +3034,10 @@ done
     }
 
     #[tokio::test]
-    async fn retire_engine_command_delegate_reaps_and_tombstones_owner() {
-        let supervisor = crate::engine::EngineSupervisor::default();
+    async fn retire_engine_command_reaps_and_tombstones_owner() {
+        let app = engine_test_app();
+        let state = app.state::<AppState>();
+        let supervisor = &state.engine_supervisor;
         let key = EngineKey::new("tab".into(), "engine-id".into()).unwrap();
         let (actor, _) = EngineActor::recording_test_actor(&[]);
         supervisor
@@ -3062,7 +3052,7 @@ done
             .await
             .unwrap();
 
-        retire_engine_with_supervisor("engine-id".into(), &supervisor)
+        retire_engine("engine-id".into(), app.state::<AppState>())
             .await
             .unwrap();
 
@@ -3080,24 +3070,20 @@ done
             .await
             .is_err());
 
-        let source = include_str!("chess.rs");
-        let command = source
-            .split_once("pub async fn retire_engine(")
-            .map(|(_, suffix)| suffix)
-            .expect("retire_engine command must exist");
-        let body = command
-            .split_once("#[tauri::command]")
-            .map(|(body, _)| body)
-            .unwrap_or(command);
         assert!(
-            body.contains("retire_engine_with_supervisor(engine, &state.engine_supervisor).await"),
-            "the Specta command must delegate to the tested supervisor retirement"
+            matches!(
+                retire_engine("engine-id\n".into(), app.state::<AppState>()).await,
+                Err(Error::InvalidInput(_))
+            ),
+            "the command must propagate invalid engine id errors"
         );
     }
 
     #[tokio::test]
     async fn retire_engine_binary_command_retires_pair_and_keeps_new_binary() {
-        let supervisor = crate::engine::EngineSupervisor::default();
+        let app = engine_test_app();
+        let state = app.state::<AppState>();
+        let supervisor = &state.engine_supervisor;
         let key = EngineKey::new("tab".into(), "engine-id".into()).unwrap();
         let handle = EngineHandle {
             id: crate::infra::path_authority::PathRef {
@@ -3110,10 +3096,22 @@ done
             .replace_handle(key.clone(), actor, "engine-id".into(), handle.id.clone())
             .await
             .unwrap();
-        retire_engine_binary_with_supervisor("engine-id".into(), handle.clone(), &supervisor)
+        retire_engine_binary("engine-id".into(), handle.clone(), app.state::<AppState>())
             .await
             .unwrap();
         assert!(supervisor.get_exact(&key).is_none());
+        assert!(
+            matches!(
+                retire_engine_binary(
+                    "engine-id\n".into(),
+                    handle.clone(),
+                    app.state::<AppState>()
+                )
+                .await,
+                Err(Error::InvalidInput(_))
+            ),
+            "the command must propagate invalid engine id errors"
+        );
         let (actor, _) = EngineActor::recording_test_actor(&[]);
         assert!(supervisor
             .replace_handle(key.clone(), actor, "engine-id".into(), handle.id)
@@ -3132,15 +3130,6 @@ done
             .await
             .unwrap();
         supervisor.terminate_all().await.unwrap();
-        let source = include_str!("chess.rs");
-        let command = source
-            .split_once("pub async fn retire_engine_binary(")
-            .unwrap()
-            .1;
-        let body = command.split_once("#[tauri::command]").unwrap().0;
-        assert!(body.contains(
-            "retire_engine_binary_with_supervisor(engine, handle, &state.engine_supervisor).await"
-        ));
     }
 
     #[tokio::test]
