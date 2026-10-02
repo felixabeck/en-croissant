@@ -254,9 +254,8 @@ async fn content_validation_current_version_returns_stored_metadata_without_prag
         &target(&app, &handle),
         &identity,
         &CancellationToken::new(),
-        |_| {},
     );
-    assert!(matches!(result, Ok(())));
+    assert!(matches!(result.result, Ok(())));
     assert!(
         matches!(get_db_info_blocking(&state.pgn_path_authority, &state.database_repository, handle), Err(Error::InvalidInput(message)) if message == "SQLite integrity_check failed")
     );
@@ -412,18 +411,15 @@ async fn content_validation_worker_rechecks_completed_stamp_without_pragmas_writ
         let identity = warm(&app, &handle);
         let state = app.state::<AppState>();
         let target = target(&app, &handle);
-        let emitted = AtomicUsize::new(0);
         migrations::take_content_pragma_counts();
-        content_validation::scan_worker(
+        let outcome = content_validation::scan_worker(
             &state.database_repository,
             &target,
             &identity,
             &CancellationToken::new(),
-            |_| {
-                emitted.fetch_add(1, Ordering::SeqCst);
-            },
-        )
-        .unwrap();
+        );
+        outcome.result.unwrap();
+        assert_eq!(outcome.event.is_some(), failure.is_some());
         assert_eq!(migrations::take_content_pragma_counts(), (1, 1));
         let stamp = stamp_path(&path);
         let bytes = std::fs::read(&stamp).unwrap();
@@ -435,16 +431,14 @@ async fn content_validation_worker_rechecks_completed_stamp_without_pragmas_writ
             .set_modified(pinned)
             .unwrap();
         let modified = std::fs::metadata(&stamp).unwrap().modified().unwrap();
-        content_validation::scan_worker(
+        let repeated = content_validation::scan_worker(
             &state.database_repository,
             &target,
             &identity,
             &CancellationToken::new(),
-            |_| {
-                emitted.fetch_add(1, Ordering::SeqCst);
-            },
-        )
-        .unwrap();
+        );
+        repeated.result.unwrap();
+        assert!(repeated.event.is_none());
         assert_eq!(migrations::take_content_pragma_counts(), (0, 0));
         assert_eq!(std::fs::read(&stamp).unwrap(), bytes);
         assert_eq!(
@@ -452,7 +446,7 @@ async fn content_validation_worker_rechecks_completed_stamp_without_pragmas_writ
             modified
         );
         assert_eq!(
-            emitted.load(Ordering::SeqCst),
+            usize::from(outcome.event.is_some()) + usize::from(repeated.event.is_some()),
             usize::from(failure.is_some())
         );
     }
@@ -486,17 +480,13 @@ async fn content_validation_pre_epoch_modified_time_round_trips_and_pass_stamp_s
             .unwrap();
         assert_eq!(identity.modified, expected);
         migrations::take_content_pragma_counts();
-        let emitted = AtomicUsize::new(0);
-        content_validation::scan_worker(
+        let outcome = content_validation::scan_worker(
             &state.database_repository,
             &target,
             &identity,
             &CancellationToken::new(),
-            |_| {
-                emitted.fetch_add(1, Ordering::SeqCst);
-            },
-        )
-        .unwrap();
+        );
+        outcome.result.unwrap();
         assert_eq!(migrations::take_content_pragma_counts(), (1, 1));
         assert!(stamp_path(&path).is_file());
         let encoded: serde_json::Value =
@@ -511,7 +501,7 @@ async fn content_validation_pre_epoch_modified_time_round_trips_and_pass_stamp_s
         .unwrap();
         assert!(metadata.scan.is_none());
         assert_eq!(migrations::take_content_pragma_counts(), (0, 0));
-        assert_eq!(emitted.load(Ordering::SeqCst), 0);
+        assert!(outcome.event.is_none());
         // An unreadable timestamp remains a missing stamp, never a corruption verdict.
         let mut malformed = encoded;
         malformed["identity"]["modified"]["nanoseconds"] = serde_json::json!(1_000_000_000_u32);
@@ -702,7 +692,6 @@ async fn content_validation_older_scan_finishing_after_newer_cannot_replace_stam
             &old_target,
             &identity,
             &CancellationToken::new(),
-            |_| {},
         )
     });
     wait_until(|| pause.0.started.load(Ordering::SeqCst) == 1).await;
@@ -719,12 +708,12 @@ async fn content_validation_older_scan_finishing_after_newer_cannot_replace_stam
         &target(&app, &handle),
         &new_identity,
         &CancellationToken::new(),
-        |_| {},
     )
+    .result
     .unwrap();
     let newer_stamp = std::fs::read(stamp_path(&path)).unwrap();
     pause.0.release.store(true, Ordering::SeqCst);
-    assert!(older.join().unwrap().is_err());
+    assert!(older.join().unwrap().result.is_err());
     assert_eq!(std::fs::read(stamp_path(&path)).unwrap(), newer_stamp);
 }
 
@@ -743,19 +732,15 @@ async fn content_validation_transient_execution_error_writes_no_corruption_stamp
         .database_repository
         .database_identity(&target)
         .unwrap();
-    let emitted = AtomicUsize::new(0);
     let result = content_validation::scan_worker(
         &state.database_repository,
         &target,
         &identity,
         &CancellationToken::new(),
-        |_| {
-            emitted.fetch_add(1, Ordering::SeqCst);
-        },
     );
-    assert!(matches!(result, Err(Error::Diesel(_))));
+    assert!(matches!(result.result, Err(Error::Diesel(_))));
     assert!(!stamp_path(&path).exists());
-    assert_eq!(emitted.load(Ordering::SeqCst), 0);
+    assert!(result.event.is_none());
 }
 
 #[tokio::test]
@@ -857,12 +842,12 @@ async fn content_validation_failed_stamp_write_and_identity_probe_keep_pending_v
             &target,
             &identity,
             &CancellationToken::new(),
-            |event| {
-                let _ = event.emit(&app);
-            },
         );
+        if let Some(event) = result.event {
+            let _ = event.emit(&app);
+        }
         assert!(
-            matches!(result, Err(Error::Io(error)) if error.to_string() == "injected stamp write failure")
+            matches!(result.result, Err(Error::Io(error)) if error.to_string() == "injected stamp write failure")
         );
         assert!(failed_probe.load(Ordering::SeqCst));
         assert_eq!(events.lock().unwrap().len(), 1);

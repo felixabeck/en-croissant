@@ -509,9 +509,11 @@ pub(super) async fn schedule<R: tauri::Runtime>(
             let result = BLOCKING_GATEWAY
                 .spawn_cancellable(token, move |cancellation| {
                     let target = mutate_target(&authority, &file)?;
-                    scan_worker(&repository, &target, &identity, cancellation, |event| {
+                    let outcome = scan_worker(&repository, &target, &identity, cancellation);
+                    if let Some(event) = outcome.event {
                         let _ = event.emit(&app);
-                    })
+                    }
+                    outcome.result
                 })
                 .await;
             drop(slot);
@@ -521,47 +523,21 @@ pub(super) async fn schedule<R: tauri::Runtime>(
     });
 }
 
+pub(super) struct ContentScanOutcome {
+    pub event: Option<DatabaseContentFailure>,
+    pub result: Result<(), Error>,
+}
+
 pub(super) fn scan_worker(
     repository: &DatabaseRepository,
     target: &DatabaseFileTarget,
     identity: &DatabaseIdentity,
     cancellation: &CancellationToken,
-    emit: impl FnOnce(DatabaseContentFailure),
-) -> Result<(), Error> {
-    cancellation_check(cancellation)?;
-    super::sqlite_cancellation::install()?;
-    if repository.database_identity_expected(target, identity.object, Some(cancellation))?
-        != *identity
-    {
-        return Err(Error::Conflict(
-            "database changed after capability resolution".into(),
-        ));
-    }
-    if read_stamp(target)
-        .ok()
-        .flatten()
-        .is_some_and(|stamp| stamp.identity == *identity)
-    {
+) -> ContentScanOutcome {
+    let mut event = None;
+    let result = (|| {
         cancellation_check(cancellation)?;
-        return Ok(());
-    }
-    let bound = BoundDatabase::acquire(target)?;
-    // SQLite 3.39 ignores stored CHECK violations on SQLITE_OPEN_READONLY.
-    // mode=rw never creates the primary; query_only prevents scan mutations.
-    let mut connection = SqliteConnection::establish(&bound.uri(SqliteMode::ReadWrite)?)
-        .map_err(crate::error::map_sqlite_establish)?;
-    connection.batch_execute("PRAGMA query_only=ON;")?;
-    #[cfg(test)]
-    test_checkpoint(target.path(), cancellation);
-    let verdict = Verdict::from_result(super::sqlite_cancellation::with_sqlite_cancellation(
-        cancellation,
-        || migrations::validate_content(&mut connection),
-    ))?;
-    drop(connection);
-    drop(bound);
-    {
-        let mut state = repository.content_validation.state.lock();
-        cancellation_check(cancellation)?;
+        super::sqlite_cancellation::install()?;
         if repository.database_identity_expected(target, identity.object, Some(cancellation))?
             != *identity
         {
@@ -569,62 +545,96 @@ pub(super) fn scan_worker(
                 "database changed after capability resolution".into(),
             ));
         }
-        if let Some(message) = verdict.message() {
-            if state.failures.len() >= MAX_CONTENT_ENTRIES
-                && !state.failures.contains_key(target.path())
+        if read_stamp(target)
+            .ok()
+            .flatten()
+            .is_some_and(|stamp| stamp.identity == *identity)
+        {
+            cancellation_check(cancellation)?;
+            return Ok(());
+        }
+        let bound = BoundDatabase::acquire(target)?;
+        // SQLite 3.39 ignores stored CHECK violations on SQLITE_OPEN_READONLY.
+        // mode=rw never creates the primary; query_only prevents scan mutations.
+        let mut connection = SqliteConnection::establish(&bound.uri(SqliteMode::ReadWrite)?)
+            .map_err(crate::error::map_sqlite_establish)?;
+        connection.batch_execute("PRAGMA query_only=ON;")?;
+        #[cfg(test)]
+        test_checkpoint(target.path(), cancellation);
+        let verdict = Verdict::from_result(super::sqlite_cancellation::with_sqlite_cancellation(
+            cancellation,
+            || migrations::validate_content(&mut connection),
+        ))?;
+        drop(connection);
+        drop(bound);
+        {
+            let mut state = repository.content_validation.state.lock();
+            cancellation_check(cancellation)?;
+            if repository.database_identity_expected(target, identity.object, Some(cancellation))?
+                != *identity
             {
-                return Err(Error::ResourceLimit(
-                    "too many content validation verdicts".into(),
+                return Err(Error::Conflict(
+                    "database changed after capability resolution".into(),
                 ));
             }
-            state.failures.insert(
-                target.path().to_path_buf(),
-                Failure {
-                    identity: identity.clone(),
-                    verdict: verdict.clone(),
-                    pending: true,
-                },
-            );
-            let result = write_stamp(repository, target, identity, &verdict, cancellation);
-            if result.is_err() && cancellation.is_cancelled() {
-                state.failures.remove(target.path());
-                return Err(Error::Cancellation);
-            }
-            if result.is_err() {
-                match repository.database_identity_expected(
-                    target,
-                    identity.object,
-                    Some(cancellation),
-                ) {
-                    Ok(current) if current != *identity => {
-                        state.failures.remove(target.path());
-                        return Err(Error::Conflict(
-                            "database changed after capability resolution".into(),
-                        ));
-                    }
-                    _ => {}
+            if let Some(message) = verdict.message() {
+                if state.failures.len() >= MAX_CONTENT_ENTRIES
+                    && !state.failures.contains_key(target.path())
+                {
+                    return Err(Error::ResourceLimit(
+                        "too many content validation verdicts".into(),
+                    ));
                 }
-                if cancellation.is_cancelled() {
+                state.failures.insert(
+                    target.path().to_path_buf(),
+                    Failure {
+                        identity: identity.clone(),
+                        verdict: verdict.clone(),
+                        pending: true,
+                    },
+                );
+                let result = write_stamp(repository, target, identity, &verdict, cancellation);
+                if result.is_err() && cancellation.is_cancelled() {
                     state.failures.remove(target.path());
                     return Err(Error::Cancellation);
                 }
-            }
-            if result.is_ok() {
-                if let Some(failure) = state.failures.get_mut(target.path()) {
-                    failure.pending = false;
+                if result.is_err() {
+                    match repository.database_identity_expected(
+                        target,
+                        identity.object,
+                        Some(cancellation),
+                    ) {
+                        Ok(current) if current != *identity => {
+                            state.failures.remove(target.path());
+                            return Err(Error::Conflict(
+                                "database changed after capability resolution".into(),
+                            ));
+                        }
+                        _ => {}
+                    }
+                    if cancellation.is_cancelled() {
+                        state.failures.remove(target.path());
+                        return Err(Error::Cancellation);
+                    }
                 }
+                if result.is_ok() {
+                    if let Some(failure) = state.failures.get_mut(target.path()) {
+                        failure.pending = false;
+                    }
+                }
+                // The in-process verdict is committed before the event is returned.
+                drop(state);
+                event = Some(DatabaseContentFailure {
+                    filename: target.leaf().to_string_lossy().into_owned(),
+                    message: message.into(),
+                });
+                result
+            } else {
+                write_stamp(repository, target, identity, &verdict, cancellation)
             }
-            // The in-process verdict is committed before the best-effort event.
-            drop(state);
-            emit(DatabaseContentFailure {
-                filename: target.leaf().to_string_lossy().into_owned(),
-                message: message.into(),
-            });
-            result
-        } else {
-            write_stamp(repository, target, identity, &verdict, cancellation)
         }
-    }
+    })();
+    ContentScanOutcome { event, result }
 }
 
 #[cfg(test)]
