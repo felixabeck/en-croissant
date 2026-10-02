@@ -1,9 +1,4 @@
-import {
-  decodeGameCounter,
-  tauri,
-  tauriSubscriptions,
-  type GameConfigInput,
-} from "@/platform/tauri";
+import { decodeCounter, tauri, tauriSubscriptions, type GameConfigInput } from "@/platform/tauri";
 import {
   Box,
   Button,
@@ -902,7 +897,7 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
       const payload = event.payload as { gameId?: unknown; session?: unknown };
       if (payload.gameId !== ownedGameId) return;
       try {
-        if (decodeGameCounter(payload.session, "session") !== ownedSession) return;
+        if (decodeCounter(payload.session, "session") !== ownedSession) return;
       } catch {
         // The current valid owner pair plus its unique game id correlate this error;
         // the malformed counter itself is never accepted as a session identity.

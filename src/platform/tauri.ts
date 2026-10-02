@@ -40,7 +40,7 @@ type NumericOpeningBookConfig = Omit<OpeningBookConfig, "maxPly"> & {
     maxPly?: number;
 };
 
-export function decodeGameCounter(value: unknown, field: string): bigint {
+export function decodeCounter(value: unknown, field: string): bigint {
     if (typeof value === "bigint") {
         if (value >= 0 && value <= MAX_SAFE_COUNTER) return value;
     } else if (typeof value === "number") {
@@ -49,7 +49,7 @@ export function decodeGameCounter(value: unknown, field: string): bigint {
     throw new TypeError(`${field} must be a nonnegative safe integer`);
 }
 
-export function encodeGameCounter(value: bigint, field = "expectedSession"): number {
+export function encodeCounter(value: bigint, field: string): number {
     if (typeof value !== "bigint" || value < 0 || value > MAX_SAFE_COUNTER) {
         throw new TypeError(`${field} must be a nonnegative safe integer`);
     }
@@ -79,13 +79,13 @@ function normalizeCounterPair<T extends GameCounterFields>(
 ): Omit<T, keyof GameCounterFields> & GameCounterFields {
     return {
         ...value,
-        session: decodeGameCounter(value.session, "session"),
-        revision: decodeGameCounter(value.revision, "revision"),
+        session: decodeCounter(value.session, "session"),
+        revision: decodeCounter(value.revision, "revision"),
     };
 }
 
 function normalizeProgressGeneration<T extends { generation: bigint }>(value: T): T {
-    return { ...value, generation: decodeGameCounter(value.generation, "generation") };
+    return { ...value, generation: decodeCounter(value.generation, "generation") };
 }
 
 type CommandResult<T> = GeneratedResult<T, unknown>;
@@ -371,18 +371,18 @@ export const tauri: TauriCommands = new Proxy(commands, {
                     return isCommandResult(result) ? unwrapCommand(result) : result;
                 }
                 if (EXPECTED_SESSION_COMMANDS.has(property)) {
-                    args[1] = encodeGameCounter(args[1] as bigint);
+                    args[1] = encodeCounter(args[1] as bigint, "expectedSession");
                 }
                 if (property === "setProgressState") {
                     const lease = args[0] as ProgressLease;
                     args[0] = {
                         ...lease,
-                        generation: encodeGameCounter(lease.generation, "generation"),
+                        generation: encodeCounter(lease.generation, "generation"),
                     };
                 }
                 const result = await command(...args);
                 const value = isCommandResult(result) ? unwrapCommand(result) : result;
-                if (property === "clearProgress") return decodeGameCounter(value, "generation");
+                if (property === "clearProgress") return decodeCounter(value, "generation");
                 if (property === "getProgress") {
                     return value === null ? null : normalizeProgressGeneration(value);
                 }

@@ -100,9 +100,8 @@ vi.mock("@/platform/tauri", async () => {
       return vi.fn();
     });
   return {
-    decodeGameCounter: (
-      await vi.importActual<typeof import("@/platform/tauri")>("@/platform/tauri")
-    ).decodeGameCounter,
+    decodeCounter: (await vi.importActual<typeof import("@/platform/tauri")>("@/platform/tauri"))
+      .decodeCounter,
     tauri: {
       abortGame: fixtures.abortGame,
       getGameEngineLogs: fixtures.getGameEngineLogs,

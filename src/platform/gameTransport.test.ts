@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
-    decodeGameCounter,
-    encodeGameCounter,
+    decodeCounter,
+    encodeCounter,
     normalizeClockUpdateEvent,
     normalizeGameMoveEvent,
     normalizeGameOverEvent,
@@ -26,24 +26,26 @@ const baseState = {
 
 describe("game counter transport", () => {
     test("accepts zero, max-safe wire numbers and valid bigint fixtures", () => {
-        expect(decodeGameCounter(0, "session")).toBe(0n);
-        expect(decodeGameCounter(Number.MAX_SAFE_INTEGER, "revision")).toBe(
+        expect(decodeCounter(0, "session")).toBe(0n);
+        expect(decodeCounter(Number.MAX_SAFE_INTEGER, "revision")).toBe(
             BigInt(Number.MAX_SAFE_INTEGER),
         );
-        expect(decodeGameCounter(7n, "session")).toBe(7n);
-        expect(encodeGameCounter(0n)).toBe(0);
-        expect(encodeGameCounter(BigInt(Number.MAX_SAFE_INTEGER))).toBe(Number.MAX_SAFE_INTEGER);
+        expect(decodeCounter(7n, "session")).toBe(7n);
+        expect(encodeCounter(0n, "expectedSession")).toBe(0);
+        expect(encodeCounter(BigInt(Number.MAX_SAFE_INTEGER), "expectedSession")).toBe(
+            Number.MAX_SAFE_INTEGER,
+        );
     });
 
     test.each([-1, -1n, 1.5, Number.MAX_SAFE_INTEGER + 1, "1", null])(
         "rejects malformed counter %s",
         (value) => {
-            expect(() => decodeGameCounter(value, "session")).toThrow(/nonnegative safe integer/);
+            expect(() => decodeCounter(value, "session")).toThrow(/nonnegative safe integer/);
         },
     );
 
     test.each([-1n, BigInt(Number.MAX_SAFE_INTEGER) + 1n])("refuses outgoing counter %s", (value) =>
-        expect(() => encodeGameCounter(value)).toThrow(/nonnegative safe integer/),
+        expect(() => encodeCounter(value, "expectedSession")).toThrow(/nonnegative safe integer/),
     );
 
     test("normalizes command and all game event counter pairs", () => {
