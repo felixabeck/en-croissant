@@ -12006,7 +12006,7 @@ Correction 2026-09-30 (records review): "the 2026-09-29 push-gate lane runner ke
 
 ### Push gates still run inside the 8G agent session scope; wrap them in tuxedo-config's agent-gate
 
-* **ID:** f-20260930-03 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260930-03 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `.claude/skills/push/SKILL.md` gate entry (`pnpm gates:push -- <blocks>`, ~59-67) and standalone receipt gate invocations; `scripts/gate-parallelism.mjs` (cgroup `memory.max` sizing).
 * **Defect:** measured 2026-09-29 (tuxedo-config f-20260929-01): Stryker was cgroup-OOM-killed in the 8G session `run-*.scope` at 12, 18 and 23 runners, and four concurrent receipt gates peaked at 6.06 GB there. tuxedo-config (commit dc95d84, f-20260929-01) now provides `agent-gate <command>`, which from a capped session starts the command in `agents.slice/agent-gate-*.scope` bound to the session, capped at 70 % of the slice's `MemoryHigh` (tower 28 GiB), `OOMPolicy=stop`, falling back to in-place execution with a warning.
 * **Why it matters:** `gate-parallelism.mjs` already sizes workers from its own cgroup's `memory.max`; inside a gate scope it reads 28 GiB instead of 8 GiB, so the push gates can use the cores without being OOM-killed.
