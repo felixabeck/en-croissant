@@ -206,7 +206,8 @@ pub(crate) fn get_db_or_create(
         }
         Ok(None) => {}
         Err(error) => log::warn!(
-            "passed content validation stamp lookup failed: {}",
+            "passed content validation stamp lookup failed for {:?}: {}",
+            target.leaf(),
             error.diagnostic()
         ),
     }
@@ -10306,6 +10307,11 @@ mod tests {
         .load(&mut connection)
         .unwrap();
         assert!(tables.is_empty());
+        assert!(!database
+            .with_file_name(search_index::integrity_stamp_leaf(
+                database.file_name().unwrap()
+            ))
+            .exists());
     }
 
     fn convert_cancel_before_bump_case() -> (Result<(), Error>, PathBuf, usize, bool) {

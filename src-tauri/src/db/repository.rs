@@ -418,7 +418,8 @@ impl DatabaseRepository {
                             .passed_stamp_due = Some(validated_identity)
                     }
                     Err(error) => log::warn!(
-                        "passed content validation identity lookup failed: {}",
+                        "passed content validation identity lookup failed for {:?}: {}",
+                        target.leaf(),
                         error.diagnostic()
                     ),
                 }

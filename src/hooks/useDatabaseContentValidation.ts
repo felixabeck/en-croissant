@@ -30,7 +30,11 @@ export function useDatabaseContentValidation() {
                     if (hasNativeRequestSubscribers(cache, key)) {
                         await mutate(key);
                     } else {
-                        cache.delete(unstable_serialize(key));
+                        // Public revalidation clears SWR's completed-fetch dedupe marker.
+                        await mutate(key);
+                        if (!signal.aborted && !hasNativeRequestSubscribers(cache, key)) {
+                            cache.delete(unstable_serialize(key));
+                        }
                     }
                 }),
             );

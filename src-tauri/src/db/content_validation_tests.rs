@@ -40,6 +40,32 @@ fn warm(app: &App, handle: &DatabaseHandle) -> DatabaseIdentity {
         .unwrap()
 }
 
+fn import_example(app: &App, handle: &DatabaseHandle, directory: &Path) -> Result<(), Error> {
+    let pgn = directory.join("games.pgn");
+    std::fs::write(&pgn, "[Event \"Example\"]\n[Result \"*\"]\n\n1. e4 *\n").unwrap();
+    let state = app.state::<AppState>();
+    let commit = state
+        .pgn_path_authority
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .grant_persistent_file_for_test(&pgn, "games.pgn", vec![PathOperation::ReadPgn]);
+    convert_pgn_blocking(
+        &state.pgn_path_authority,
+        &state.database_repository,
+        &state.search_cache,
+        vec![FileWorkspaceHandle::new(commit.id)],
+        handle.clone(),
+        None,
+        app.clone(),
+        "created".into(),
+        None,
+        "create".into(),
+        &CancellationToken::new(),
+    )
+}
+
 fn corrupt(app: &App, handle: &DatabaseHandle, foreign_key: bool) {
     let state = app.state::<AppState>();
     let target = target(app, handle);
@@ -354,6 +380,130 @@ async fn content_validation_stamp_for_another_file_identity_does_not_suppress_sc
 }
 
 #[tokio::test]
+async fn content_validation_worker_rechecks_completed_stamp_without_pragmas_write_or_event() {
+    let _serial = SERIAL.lock().await;
+    for failure in [None, Some(false), Some(true)] {
+        let (_dir, app, handle, path) = blocking_database_case();
+        if let Some(foreign) = failure {
+            corrupt(&app, &handle, foreign);
+        }
+        let identity = warm(&app, &handle);
+        let state = app.state::<AppState>();
+        let target = target(&app, &handle);
+        let emitted = AtomicUsize::new(0);
+        migrations::take_content_pragma_counts();
+        content_validation::scan_worker(
+            &state.database_repository,
+            &target,
+            &identity,
+            &CancellationToken::new(),
+            |_| {
+                emitted.fetch_add(1, Ordering::SeqCst);
+            },
+        )
+        .unwrap();
+        assert_eq!(migrations::take_content_pragma_counts(), (1, 1));
+        let stamp = stamp_path(&path);
+        let bytes = std::fs::read(&stamp).unwrap();
+        let pinned = std::time::UNIX_EPOCH + Duration::from_secs(100);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&stamp)
+            .unwrap()
+            .set_modified(pinned)
+            .unwrap();
+        let modified = std::fs::metadata(&stamp).unwrap().modified().unwrap();
+        content_validation::scan_worker(
+            &state.database_repository,
+            &target,
+            &identity,
+            &CancellationToken::new(),
+            |_| {
+                emitted.fetch_add(1, Ordering::SeqCst);
+            },
+        )
+        .unwrap();
+        assert_eq!(migrations::take_content_pragma_counts(), (0, 0));
+        assert_eq!(std::fs::read(&stamp).unwrap(), bytes);
+        assert_eq!(
+            std::fs::metadata(&stamp).unwrap().modified().unwrap(),
+            modified
+        );
+        assert_eq!(
+            emitted.load(Ordering::SeqCst),
+            usize::from(failure.is_some())
+        );
+    }
+}
+
+#[tokio::test]
+async fn content_validation_pre_epoch_modified_time_round_trips_and_pass_stamp_suppresses_scan() {
+    let _serial = SERIAL.lock().await;
+    let (_dir, app, handle, path) = blocking_database_case();
+    warm(&app, &handle);
+    let state = app.state::<AppState>();
+    let target = target(&app, &handle);
+    {
+        let mut writer = state.database_repository.connection(&target, None).unwrap();
+        writer
+            .batch_execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            .unwrap();
+    }
+    let expected =
+        std::time::UNIX_EPOCH - Duration::from_secs(86_400) + Duration::from_nanos(250_000_000);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(expected)
+        .unwrap();
+    let identity = state
+        .database_repository
+        .database_identity(&target)
+        .unwrap();
+    assert_eq!(identity.modified, expected);
+    migrations::take_content_pragma_counts();
+    let emitted = AtomicUsize::new(0);
+    content_validation::scan_worker(
+        &state.database_repository,
+        &target,
+        &identity,
+        &CancellationToken::new(),
+        |_| {
+            emitted.fetch_add(1, Ordering::SeqCst);
+        },
+    )
+    .unwrap();
+    assert_eq!(migrations::take_content_pragma_counts(), (1, 1));
+    assert!(stamp_path(&path).is_file());
+    let encoded: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(stamp_path(&path)).unwrap()).unwrap();
+    assert_eq!(encoded["identity"]["modified"]["seconds"], -86_400);
+    assert_eq!(encoded["identity"]["modified"]["nanoseconds"], 250_000_000);
+    let metadata = get_db_info_blocking(
+        &state.pgn_path_authority,
+        &state.database_repository,
+        handle.clone(),
+    )
+    .unwrap();
+    assert!(metadata.scan.is_none());
+    assert_eq!(migrations::take_content_pragma_counts(), (0, 0));
+    assert_eq!(emitted.load(Ordering::SeqCst), 0);
+    // An unreadable timestamp remains a missing stamp, never a corruption verdict.
+    let mut malformed = encoded;
+    malformed["identity"]["modified"]["nanoseconds"] = serde_json::json!(1_000_000_000_u32);
+    std::fs::write(stamp_path(&path), serde_json::to_vec(&malformed).unwrap()).unwrap();
+    assert!(get_db_info_blocking(
+        &state.pgn_path_authority,
+        &state.database_repository,
+        handle
+    )
+    .unwrap()
+    .scan
+    .is_some());
+}
+
+#[tokio::test]
 async fn content_validation_create_and_migration_run_both_pragmas_and_publish_passed_stamps() {
     let _serial = SERIAL.lock().await;
     let dir = tempfile::tempdir().unwrap();
@@ -362,31 +512,9 @@ async fn content_validation_create_and_migration_run_both_pragmas_and_publish_pa
     let (app, handle) =
         database_app_with_grant(dir.path(), &path, "created", full_database_operations());
     frames(&app);
-    let pgn = dir.path().join("games.pgn");
-    std::fs::write(&pgn, "[Event \"Example\"]\n[Result \"*\"]\n\n1. e4 *\n").unwrap();
     let state = app.state::<AppState>();
-    let commit = state
-        .pgn_path_authority
-        .lock()
-        .unwrap()
-        .as_mut()
-        .unwrap()
-        .grant_persistent_file_for_test(&pgn, "games.pgn", vec![PathOperation::ReadPgn]);
     migrations::take_content_pragma_counts();
-    convert_pgn_blocking(
-        &state.pgn_path_authority,
-        &state.database_repository,
-        &state.search_cache,
-        vec![FileWorkspaceHandle::new(commit.id)],
-        handle.clone(),
-        None,
-        app.clone(),
-        "created".into(),
-        None,
-        "create".into(),
-        &CancellationToken::new(),
-    )
-    .unwrap();
+    import_example(&app, &handle, dir.path()).unwrap();
     assert_eq!(migrations::take_content_pragma_counts(), (1, 1));
     let metadata = get_db_info_blocking(
         &state.pgn_path_authority,
@@ -432,6 +560,40 @@ async fn content_validation_create_and_migration_run_both_pragmas_and_publish_pa
 }
 
 #[tokio::test]
+async fn content_validation_rolled_back_create_leaves_no_integrity_stamp() {
+    let _serial = SERIAL.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("created.db3");
+    File::create(&path).unwrap();
+    let (app, handle) =
+        database_app_with_grant(dir.path(), &path, "created", full_database_operations());
+    frames(&app);
+    let source = dir.path().join("games.pgn");
+    migrations::take_content_pragma_counts();
+    {
+        // Remove the granted input after the pool opens. Creation's nested
+        // transaction succeeds, but the import's outer transaction rolls back.
+        let _hooks = repository::configure_test_hooks(&path, |hooks| {
+            hooks.post_get = Some(Box::new(move || std::fs::remove_file(&source).unwrap()));
+        });
+        assert!(import_example(&app, &handle, dir.path()).is_err());
+    }
+    assert_eq!(migrations::take_content_pragma_counts(), (1, 1));
+    assert!(!stamp_path(&path).exists());
+    let state = app.state::<AppState>();
+    let mut connection = state
+        .database_repository
+        .initialization_connection(&target(&app, &handle), None)
+        .unwrap();
+    let tables: Vec<IndexInfo> = sql_query(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+    )
+    .load(&mut *connection)
+    .unwrap();
+    assert!(tables.is_empty());
+}
+
+#[tokio::test]
 async fn content_validation_committed_import_survives_failed_pass_stamp_and_metadata_schedules_scan(
 ) {
     let _serial = SERIAL.lock().await;
@@ -442,31 +604,9 @@ async fn content_validation_committed_import_survives_failed_pass_stamp_and_meta
     let (app, handle) =
         database_app_with_grant(dir.path(), &path, "created", full_database_operations());
     frames(&app);
-    let pgn = dir.path().join("games.pgn");
-    std::fs::write(&pgn, "[Event \"Example\"]\n[Result \"*\"]\n\n1. e4 *\n").unwrap();
     let state = app.state::<AppState>();
-    let commit = state
-        .pgn_path_authority
-        .lock()
-        .unwrap()
-        .as_mut()
-        .unwrap()
-        .grant_persistent_file_for_test(&pgn, "games.pgn", vec![PathOperation::ReadPgn]);
     migrations::take_content_pragma_counts();
-    convert_pgn_blocking(
-        &state.pgn_path_authority,
-        &state.database_repository,
-        &state.search_cache,
-        vec![FileWorkspaceHandle::new(commit.id)],
-        handle.clone(),
-        None,
-        app.clone(),
-        "created".into(),
-        None,
-        "create".into(),
-        &CancellationToken::new(),
-    )
-    .unwrap();
+    import_example(&app, &handle, dir.path()).unwrap();
     assert_eq!(migrations::take_content_pragma_counts(), (1, 1));
     assert!(path.is_file());
     let metadata = get_db_info_blocking(
@@ -592,6 +732,99 @@ async fn content_validation_transient_execution_error_writes_no_corruption_stamp
     assert!(matches!(result, Err(Error::Diesel(_))));
     assert!(!stamp_path(&path).exists());
     assert_eq!(emitted.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn content_validation_failed_stamp_write_and_identity_probe_keep_pending_verdict() {
+    use crate::infra::fs::{self, AtomicFileFaultPoint, AtomicWriterInjector};
+
+    struct MissingDuringWrite {
+        path: PathBuf,
+        backup: PathBuf,
+    }
+    impl AtomicWriterInjector for MissingDuringWrite {
+        fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+            if point == AtomicFileFaultPoint::Write {
+                std::fs::rename(&self.path, &self.backup)?;
+                return Err(std::io::Error::other("injected stamp write failure"));
+            }
+            Ok(())
+        }
+    }
+    struct Restore {
+        path: PathBuf,
+        backup: PathBuf,
+        previous: Option<Arc<dyn AtomicWriterInjector + Send + Sync>>,
+    }
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            fs::set_test_atomic_file_injector(self.previous.take());
+            if self.backup.exists() {
+                let _ = std::fs::rename(&self.backup, &self.path);
+            }
+        }
+    }
+
+    let _serial = SERIAL.lock().await;
+    let (_dir, app, handle, path) = blocking_database_case();
+    corrupt(&app, &handle, false);
+    let identity = warm(&app, &handle);
+    let state = app.state::<AppState>();
+    let target = target(&app, &handle);
+    let events = frames(&app);
+    let failed_probe = Arc::new(AtomicBool::new(false));
+    {
+        let observed = Arc::clone(&failed_probe);
+        let probe_path = path.clone();
+        let _hooks = repository::configure_test_hooks(&path, |hooks| {
+            hooks.after_probe_current = Some(Box::new(move |_| {
+                if !probe_path.exists() {
+                    observed.store(true, Ordering::SeqCst);
+                }
+            }));
+        });
+        let backup = path.with_extension("held");
+        let _restore = Restore {
+            path: path.clone(),
+            backup: backup.clone(),
+            previous: fs::current_test_atomic_file_injector(),
+        };
+        fs::set_test_atomic_file_injector(Some(Arc::new(MissingDuringWrite {
+            path: path.clone(),
+            backup,
+        })));
+        let result = content_validation::scan_worker(
+            &state.database_repository,
+            &target,
+            &identity,
+            &CancellationToken::new(),
+            |event| {
+                let _ = event.emit(&app);
+            },
+        );
+        assert!(
+            matches!(result, Err(Error::Io(error)) if error.to_string() == "injected stamp write failure")
+        );
+        assert!(failed_probe.load(Ordering::SeqCst));
+        assert_eq!(events.lock().unwrap().len(), 1);
+        assert!(!stamp_path(&path).exists());
+    }
+    assert_eq!(
+        state
+            .database_repository
+            .database_identity(&target)
+            .unwrap(),
+        identity
+    );
+    migrations::take_content_pragma_counts();
+    assert!(
+        matches!(get_db_info_blocking(&state.pgn_path_authority, &state.database_repository, handle.clone()), Err(Error::InvalidInput(message)) if message == "SQLite integrity_check failed")
+    );
+    assert_eq!(migrations::take_content_pragma_counts(), (0, 0));
+    assert!(stamp_path(&path).is_file());
+    assert!(fetch(&app, &handle).await.is_err());
+    assert!(state.operations.outstanding_labels().unwrap().is_empty());
+    assert_eq!(events.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]

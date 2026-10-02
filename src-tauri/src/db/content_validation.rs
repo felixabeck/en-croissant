@@ -73,8 +73,76 @@ impl Verdict {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct Stamp {
     version: u8,
+    #[serde(with = "StampIdentity")]
     identity: DatabaseIdentity,
     verdict: Verdict,
+}
+
+// Keep DatabaseIdentity's public serde contract unchanged; only stamps use signed time.
+#[derive(Serialize, Deserialize)]
+#[serde(remote = "DatabaseIdentity")]
+struct StampIdentity {
+    data_revision: u64,
+    object: (u64, u64),
+    length: u64,
+    #[serde(with = "signed_modified")]
+    modified: std::time::SystemTime,
+}
+
+mod signed_modified {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    #[derive(Serialize, Deserialize)]
+    struct ModifiedTime {
+        seconds: i64,
+        nanoseconds: u32,
+    }
+
+    pub(super) fn serialize<S: Serializer>(
+        time: &SystemTime,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let (seconds, nanoseconds) = match time.duration_since(UNIX_EPOCH) {
+            Ok(duration) => (i128::from(duration.as_secs()), duration.subsec_nanos()),
+            Err(error) => {
+                let duration = error.duration();
+                if duration.subsec_nanos() == 0 {
+                    (-i128::from(duration.as_secs()), 0)
+                } else {
+                    (
+                        -i128::from(duration.as_secs()) - 1,
+                        1_000_000_000 - duration.subsec_nanos(),
+                    )
+                }
+            }
+        };
+        ModifiedTime {
+            seconds: i64::try_from(seconds).map_err(serde::ser::Error::custom)?,
+            nanoseconds,
+        }
+        .serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<SystemTime, D::Error> {
+        let time = ModifiedTime::deserialize(deserializer)?;
+        if time.nanoseconds >= 1_000_000_000 {
+            return Err(serde::de::Error::custom(
+                "invalid stamp nanosecond fraction",
+            ));
+        }
+        let seconds = Duration::from_secs(time.seconds.unsigned_abs());
+        let whole = if time.seconds < 0 {
+            UNIX_EPOCH.checked_sub(seconds)
+        } else {
+            UNIX_EPOCH.checked_add(seconds)
+        };
+        whole
+            .and_then(|whole| whole.checked_add(Duration::from_nanos(u64::from(time.nanoseconds))))
+            .ok_or_else(|| serde::de::Error::custom("stamp modified time is out of range"))
+    }
 }
 
 struct Failure {
@@ -187,7 +255,7 @@ pub(super) fn publish_passed_stamp(
         .and_then(|target| write_passed_stamp(repository, &target, identity))
     {
         log::warn!(
-            "passed content validation stamp publication failed: {}",
+            "passed content validation stamp publication failed for {file:?}: {}",
             error.diagnostic()
         );
     }
@@ -202,7 +270,8 @@ pub(super) fn publish_committed_pass(
     match repository.database_identity(target) {
         Ok(identity) => publish_passed_stamp(repository, authority, file, &identity),
         Err(error) => log::warn!(
-            "passed content validation identity lookup failed: {}",
+            "passed content validation identity lookup failed for {:?}: {}",
+            target.leaf(),
             error.diagnostic()
         ),
     }
@@ -460,6 +529,14 @@ pub(super) fn scan_worker(
         return Err(Error::Conflict(
             "database changed after capability resolution".into(),
         ));
+    }
+    if read_stamp(target)
+        .ok()
+        .flatten()
+        .is_some_and(|stamp| stamp.identity == *identity)
+    {
+        cancellation_check(cancellation)?;
+        return Ok(());
     }
     let bound = BoundDatabase::acquire(target)?;
     // SQLite 3.39 ignores stored CHECK violations on SQLITE_OPEN_READONLY.

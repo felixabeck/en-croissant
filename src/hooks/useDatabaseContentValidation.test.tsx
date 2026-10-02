@@ -28,7 +28,7 @@ function deferred() {
   return { promise, resolve };
 }
 
-async function mount(pending?: "databases" | "personalDatabases") {
+async function mount(pending?: "databases" | "personalDatabases", dedupingInterval = 0) {
   const gate = deferred();
   let failedStamp = false;
   const reads = { databases: 0, personalDatabases: 0, other: 0 };
@@ -71,7 +71,7 @@ async function mount(pending?: "databases" | "personalDatabases") {
   root = createRoot(container);
   await act(async () =>
     root.render(
-      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval }}>
         <Probe />
       </SWRConfig>,
     ),
@@ -135,7 +135,7 @@ test("a passed scan emits no failure and does not revalidate", async () => {
 });
 
 test("failure while Home is unmounted evicts its immutable cache so remount reads the failed stamp", async () => {
-  const { reads, fail, showHome } = await mount();
+  const { reads, fail, showHome } = await mount(undefined, 60000);
   expect(reads).toEqual({ databases: 1, personalDatabases: 1, other: 1 });
   await showHome(false);
   await fail();
