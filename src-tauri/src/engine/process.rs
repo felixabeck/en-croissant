@@ -988,6 +988,32 @@ impl RetiredEngineIds {
     }
 }
 
+#[derive(Default)]
+struct RetiredEngineBinaries {
+    order: VecDeque<(String, PathRef)>,
+    pairs: HashSet<(String, PathRef)>,
+}
+
+impl RetiredEngineBinaries {
+    fn insert(&mut self, pair: (String, PathRef)) {
+        if !self.pairs.insert(pair.clone()) {
+            return;
+        }
+        self.order.push_back(pair);
+        if self.order.len() > MAX_RETIRED_ENGINE_IDS {
+            if let Some(oldest) = self.order.pop_front() {
+                self.pairs.remove(&oldest);
+            }
+        }
+    }
+}
+
+// GameManager constructs this namespace natively (game.rs::game_engine_key).
+// Pair retirement preserves a game's original binary until its exact-key cleanup.
+fn is_game_engine_key(key: &EngineKey) -> bool {
+    key.tab.starts_with("game:")
+}
+
 /// Owns the registry boundary for interactive, report, config-probe, and game
 /// engines. Replacement removes exactly one opaque key, shuts down that actor,
 /// then publishes the new generation. `retire_engine` reaps every actor owned
@@ -1003,6 +1029,7 @@ pub struct EngineSupervisor {
     registration: Mutex<()>,
     retired: StdMutex<RetiredEngineIds>,
     retired_executables: StdMutex<RetiredExecutables>,
+    retired_binaries: StdMutex<RetiredEngineBinaries>,
     // `lifecycle` provides the per-key transition locks. Lifecycle transitions
     // may capture actor snapshots before awaiting the exact-key lock, but they
     // recheck under that lock before mutation. `actors` itself is concurrent,
@@ -1097,6 +1124,7 @@ impl EngineSupervisor {
 
     fn validate_admission_policy(
         &self,
+        key: &EngineKey,
         engine_id: &str,
         executable: &PathRef,
     ) -> Result<(), Error> {
@@ -1108,6 +1136,9 @@ impl EngineSupervisor {
         }
         if self.is_retired_executable(executable) {
             return Err(Error::Conflict("engine executable is retired".into()));
+        }
+        if !is_game_engine_key(key) && self.is_retired_binary(engine_id, executable) {
+            return Err(Error::Conflict("engine binary pair is retired".into()));
         }
         Ok(())
     }
@@ -1141,7 +1172,7 @@ impl EngineSupervisor {
         prepared: bool,
     ) -> Result<AdmissionLease, Error> {
         validate_uci_text("engine", &engine_id)?;
-        self.validate_admission_policy(&engine_id, &executable)?;
+        self.validate_admission_policy(&key, &engine_id, &executable)?;
         let generation = self.allocate_generation()?;
         let admission = EngineAdmission {
             generation,
@@ -1163,6 +1194,7 @@ impl EngineSupervisor {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             self.validate_admission_policy(
+                &lease.key,
                 &lease.admission.engine_id,
                 &lease.admission.executable,
             )?;
@@ -1189,7 +1221,11 @@ impl EngineSupervisor {
         if let Some(error) = lease.cancel_error() {
             return Err(error);
         }
-        self.validate_admission_policy(&lease.admission.engine_id, &lease.admission.executable)?;
+        self.validate_admission_policy(
+            &lease.key,
+            &lease.admission.engine_id,
+            &lease.admission.executable,
+        )?;
         Ok(lease)
     }
 
@@ -1315,6 +1351,25 @@ impl EngineSupervisor {
         self.with_retired_executables(|retired| retired.ids.contains(executable))
     }
 
+    fn with_retired_binaries<T>(
+        &self,
+        operation: impl FnOnce(&mut RetiredEngineBinaries) -> T,
+    ) -> T {
+        let mut retired = self
+            .retired_binaries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        operation(&mut retired)
+    }
+
+    fn is_retired_binary(&self, engine_id: &str, executable: &PathRef) -> bool {
+        self.with_retired_binaries(|retired| {
+            retired
+                .pairs
+                .contains(&(engine_id.into(), executable.clone()))
+        })
+    }
+
     fn lifecycle_lease(&self, key: &EngineKey) -> KeyedLockLease<'_, EngineKey> {
         self.lifecycle.lease(key.clone())
     }
@@ -1382,6 +1437,7 @@ impl EngineSupervisor {
             return Err(reject_actor(&actor, error).await);
         }
         if let Err(error) = self.validate_admission_policy(
+            &key,
             &admission.admission.engine_id,
             &admission.admission.executable,
         ) {
@@ -1399,6 +1455,7 @@ impl EngineSupervisor {
         }
         let registration = self.registration.lock().await;
         if let Err(error) = self.validate_admission_policy(
+            &key,
             &admission.admission.engine_id,
             &admission.admission.executable,
         ) {
@@ -1567,33 +1624,23 @@ impl EngineSupervisor {
     pub async fn retire_engine(&self, engine_id: String) -> Result<(), Error> {
         validate_uci_text("engine", &engine_id)?;
         self.with_retired(|retired| retired.insert(engine_id.clone()));
-        // Synchronize with admission and the final `publish_admitted` check.
-        // Once this barrier is crossed, a retired id cannot be published.
-        let registration = self.registration.lock().await;
-        let _coordination = self
-            .admission_coordination
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.cancel_admissions_matching(|key, admission| {
-            key.engine == engine_id || admission.engine_id == engine_id
+        self.retire_matching(|key, owner, _| key.engine == engine_id || owner == engine_id)
+            .await
+    }
+
+    pub async fn retire_engine_binary(
+        &self,
+        engine_id: String,
+        executable: PathRef,
+    ) -> Result<(), Error> {
+        validate_uci_text("engine", &engine_id)?;
+        self.with_retired_binaries(|retired| {
+            retired.insert((engine_id.clone(), executable.clone()))
         });
-        drop(_coordination);
-        drop(registration);
-        let mut failures = Vec::new();
-        loop {
-            failures.extend(
-                self.terminate_matching(|key, engine| {
-                    key.engine == engine_id || engine.engine_id == engine_id
-                })
-                .await,
-            );
-            if !self.actors.iter().any(|entry| {
-                entry.key().engine == engine_id || entry.value().engine_id == engine_id
-            }) {
-                break;
-            }
-        }
-        aggregate_shutdown_failures(failures)
+        self.retire_matching(|key, owner, path| {
+            !is_game_engine_key(key) && owner == engine_id && path == &executable
+        })
+        .await
     }
 
     pub async fn retire_executables(&self, executables: Vec<PathRef>) -> Result<(), Error> {
@@ -1606,28 +1653,41 @@ impl EngineSupervisor {
                 retired.insert(executable);
             }
         });
-        // Synchronize with admission and the final `publish_admitted` check.
+        self.retire_matching(|_, _, executable| executable_set.contains(executable))
+            .await
+    }
+
+    /// All tombstone operations cross the same admission/publication barrier before draining.
+    async fn retire_matching(
+        &self,
+        matches: impl Fn(&EngineKey, &str, &PathRef) -> bool,
+    ) -> Result<(), Error> {
         let registration = self.registration.lock().await;
-        let _coordination = self
-            .admission_coordination
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.cancel_admissions_matching(|_, admission| {
-            executable_set.contains(&admission.executable)
-        });
-        drop(_coordination);
+        {
+            let _coordination = self
+                .admission_coordination
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            self.cancel_admissions_matching(|key, admission| {
+                matches(key, &admission.engine_id, &admission.executable)
+            });
+        }
         drop(registration);
         let mut failures = Vec::new();
         loop {
             failures.extend(
-                self.terminate_matching(|_, engine| executable_set.contains(&engine.executable))
-                    .await,
+                self.terminate_matching(|key, engine| {
+                    matches(key, &engine.engine_id, &engine.executable)
+                })
+                .await,
             );
-            if !self
-                .actors
-                .iter()
-                .any(|entry| executable_set.contains(&entry.value().executable))
-            {
+            if !self.actors.iter().any(|entry| {
+                matches(
+                    entry.key(),
+                    &entry.value().engine_id,
+                    &entry.value().executable,
+                )
+            }) {
                 break;
             }
         }
@@ -7053,6 +7113,125 @@ mod tests {
         assert!(supervisor.get_exact(&survivor_key).is_some());
         assert_eq!(survivor_terminated.load(AtomicOrdering::SeqCst), 0);
         supervisor.terminate_all().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn retire_binary_pair_tombstone_preserves_id_and_duplicate_and_bounds_retention() {
+        let supervisor = EngineSupervisor::default();
+        let old = path_ref("old-binary");
+        let key = EngineKey::new("analysis".into(), "operation".into()).unwrap();
+        let ((actor, _), terminated) = actor_with(&[], false, None);
+        supervisor
+            .replace_handle(key.clone(), Arc::new(actor), "owner".into(), old.clone())
+            .await
+            .unwrap();
+        supervisor
+            .retire_engine_binary("owner".into(), old.clone())
+            .await
+            .unwrap();
+        assert_eq!(terminated.load(AtomicOrdering::SeqCst), 1);
+        assert!(supervisor.get_exact(&key).is_none());
+        let ((actor, _), _) = actor_with(&[], false, None);
+        assert!(supervisor
+            .replace_handle(key.clone(), Arc::new(actor), "owner".into(), old.clone())
+            .await
+            .is_err());
+        for (id, executable) in [
+            ("owner", path_ref("new-binary")),
+            ("duplicate", old.clone()),
+        ] {
+            let ((actor, _), _) = actor_with(&[], false, None);
+            supervisor
+                .replace_handle(key.clone(), Arc::new(actor), id.into(), executable)
+                .await
+                .unwrap();
+        }
+        for index in 0..=MAX_RETIRED_ENGINE_IDS {
+            supervisor
+                .retire_engine_binary(format!("bounded-{index}"), old.clone())
+                .await
+                .unwrap();
+        }
+        assert!(!supervisor.is_retired_binary("bounded-0", &old));
+        assert!(supervisor.is_retired_binary(&format!("bounded-{MAX_RETIRED_ENGINE_IDS}"), &old));
+        supervisor.terminate_all().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn retire_binary_race_cancels_in_flight_admission_and_refuses_late_publication() {
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let key = EngineKey::new("tab".into(), "owner".into()).unwrap();
+        let old = path_ref("old-binary");
+        let registration = supervisor.registration.lock().await;
+        let ((actor, _), terminated) = actor_with(&[], false, None);
+        let replacement = tokio::spawn({
+            let supervisor = supervisor.clone();
+            let key = key.clone();
+            let old = old.clone();
+            async move {
+                supervisor
+                    .replace_handle(key, Arc::new(actor), "owner".into(), old)
+                    .await
+            }
+        });
+        timeout(Duration::from_secs(2), async {
+            while !supervisor.admissions.contains_key(&key) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let retirement = tokio::spawn({
+            let supervisor = supervisor.clone();
+            let old = old.clone();
+            async move { supervisor.retire_engine_binary("owner".into(), old).await }
+        });
+        timeout(Duration::from_secs(2), async {
+            while !supervisor.is_retired_binary("owner", &old) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        drop(registration);
+        retirement.await.unwrap().unwrap();
+        assert!(replacement.await.unwrap().is_err());
+        assert_eq!(terminated.load(AtomicOrdering::SeqCst), 1);
+        assert!(supervisor.get_exact(&key).is_none());
+        assert!(supervisor
+            .admit(key.clone(), "owner".into(), old, false)
+            .await
+            .is_err());
+        // A stale pair cannot publish, but this identity can immediately use its new binary.
+        assert!(supervisor
+            .admit(key, "owner".into(), path_ref("new-binary"), false)
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn retire_binary_game_actor_survives_answers_and_keeps_own_key_admission() {
+        let supervisor = EngineSupervisor::default();
+        let key = EngineKey::new("game:game-id:42:white".into(), "owner".into()).unwrap();
+        let old = path_ref("old-binary");
+        let ((actor, _), terminated) = actor_with(&[], false, None);
+        let registered = supervisor
+            .replace_handle(key.clone(), Arc::new(actor), "owner".into(), old.clone())
+            .await
+            .unwrap();
+        supervisor
+            .retire_engine_binary("owner".into(), old.clone())
+            .await
+            .unwrap();
+        assert_eq!(terminated.load(AtomicOrdering::SeqCst), 0);
+        assert!(supervisor.get_exact(&key).is_some());
+        assert!(registered.actor.logs().await.is_ok());
+        assert!(supervisor
+            .admit(key, "owner".into(), old, false)
+            .await
+            .is_ok());
+        supervisor.terminate_all().await.unwrap();
+        assert_eq!(terminated.load(AtomicOrdering::SeqCst), 1);
     }
 
     #[tokio::test]

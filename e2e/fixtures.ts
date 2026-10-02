@@ -14,6 +14,23 @@ export type MockScenario = {
     commands?: Record<string, MockCommand>;
 };
 
+export const upgradeEngineFixture = {
+    type: "local",
+    id: "stockfish-entry",
+    name: "Stockfish 18",
+    version: "18",
+    handle: { id: { id: "stockfish-18" }, kind: "engine" },
+    filename: "Stockfish 18",
+    elo: 3650,
+    loaded: true,
+    go: { t: "Infinite" },
+    settings: [
+        { type: "string", name: "Threads", value: "20" },
+        { type: "string", name: "Hash", value: "8192" },
+        { type: "string", name: "MultiPV", value: "4" },
+    ],
+} as const;
+
 export const filesWorkspaceFixture = {
     workspace: { id: { id: "files-workspace" }, kind: "fileWorkspace" },
     openingDirectory: {

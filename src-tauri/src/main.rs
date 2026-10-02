@@ -55,7 +55,7 @@ use tauri_plugin_log::{Target, TargetKind};
 
 use crate::chess::{
     analyze_game, cancel_analysis, get_engine_config, get_engine_logs, kill_engine, kill_engines,
-    prepare_analysis, prepare_engine_search, retire_engine, stop_engine,
+    prepare_analysis, prepare_engine_search, retire_engine, retire_engine_binary, stop_engine,
 };
 use crate::chesscom::{download_chess_com_games, get_public_chess_com_json};
 use crate::db::{
@@ -2315,6 +2315,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             kill_engine,
             kill_engines,
             retire_engine,
+            retire_engine_binary,
             get_engine_logs,
             memory_size,
             get_puzzle,

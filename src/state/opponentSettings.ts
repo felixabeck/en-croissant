@@ -8,6 +8,10 @@ import {
     localEngineSchema,
     type EngineSettings,
     type LocalEngine,
+    upgradeEngineFromCatalog,
+    upgradeEngineSettings,
+    type DefaultEngine,
+    type installCatalogEngine,
 } from "@/utils/engines";
 
 const timeControlSchema: z.ZodType<TimeControlField> = z.object({
@@ -67,6 +71,22 @@ export const defaultPlayerSettings: OpponentSettings = {
 };
 
 const DEFAULT_ENGINE_GO: GoMode = { t: "Depth", c: 24 };
+
+export function upgradeOpponentEngine(
+    opponent: OpponentSettings,
+    engineId: string,
+    catalog: DefaultEngine,
+    installed: Awaited<ReturnType<typeof installCatalogEngine>>,
+): OpponentSettings {
+    if (opponent.type !== "engine" || opponent.engine?.id !== engineId) return opponent;
+    return {
+        ...opponent,
+        engine: upgradeEngineFromCatalog(opponent.engine, catalog, installed),
+        ...(opponent.engineSettings == null
+            ? {}
+            : { engineSettings: upgradeEngineSettings(opponent.engineSettings, installed.config) }),
+    };
+}
 
 /** Switches discriminated branches without carrying fields owned by the previous branch. */
 export function switchOpponentType(

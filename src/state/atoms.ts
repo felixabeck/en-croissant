@@ -548,7 +548,7 @@ function createPlayerSettingsAtom(key: "game-player1-settings" | "game-player2-s
         async (get, set, update: SetStateAction<OpponentSettings>) => {
             const current = get(stored);
             const next = typeof update === "function" ? update(current) : update;
-            await set(stored, next);
+            return (await set(stored, next)) as unknown as EngineOwnerSaveReceipt;
         },
     );
 }

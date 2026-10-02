@@ -121,6 +121,8 @@ type NativeReadFacade<T> = T extends (
     ? (...args: [...Args, NativeReadOptions?]) => Promise<Result>
     : never;
 type TauriCommands = Omit<GeneratedCommands, "startGame" | NativeReadCommandName> & {
+    /** Pair retirement uses the standard proxy normalization and preserves the engine id. */
+    retireEngineBinary: GeneratedCommands["retireEngineBinary"];
     startGame: (
         gameId: string,
         config: GameConfigInput,

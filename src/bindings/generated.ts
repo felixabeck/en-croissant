@@ -424,6 +424,14 @@ async retireEngine(engine: string) : Promise<Result<null, ErrorPayload>> {
     else return { status: "error", error: e  as any };
 }
 },
+async retireEngineBinary(engine: string, handle: EngineHandle) : Promise<Result<null, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("retire_engine_binary", { engine, handle }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async getEngineLogs(engine: string, tab: string) : Promise<Result<EngineLog[], ErrorPayload>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_engine_logs", { engine, tab }) };

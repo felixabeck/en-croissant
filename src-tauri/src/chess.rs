@@ -425,6 +425,24 @@ pub async fn retire_engine(engine: String, state: tauri::State<'_, AppState>) ->
     retire_engine_with_supervisor(engine, &state.engine_supervisor).await
 }
 
+async fn retire_engine_binary_with_supervisor(
+    engine: String,
+    handle: EngineHandle,
+    supervisor: &crate::engine::EngineSupervisor,
+) -> Result<(), Error> {
+    supervisor.retire_engine_binary(engine, handle.id).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn retire_engine_binary(
+    engine: String,
+    handle: EngineHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), Error> {
+    retire_engine_binary_with_supervisor(engine, handle, &state.engine_supervisor).await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn kill_engine(
@@ -3075,6 +3093,54 @@ done
             body.contains("retire_engine_with_supervisor(engine, &state.engine_supervisor).await"),
             "the Specta command must delegate to the tested supervisor retirement"
         );
+    }
+
+    #[tokio::test]
+    async fn retire_engine_binary_command_retires_pair_and_keeps_new_binary() {
+        let supervisor = crate::engine::EngineSupervisor::default();
+        let key = EngineKey::new("tab".into(), "engine-id".into()).unwrap();
+        let handle = EngineHandle {
+            id: crate::infra::path_authority::PathRef {
+                id: "old-path".into(),
+            },
+            kind: crate::infra::path_authority::EngineHandleKind::Engine,
+        };
+        let (actor, _) = EngineActor::recording_test_actor(&[]);
+        supervisor
+            .replace_handle(key.clone(), actor, "engine-id".into(), handle.id.clone())
+            .await
+            .unwrap();
+        retire_engine_binary_with_supervisor("engine-id".into(), handle.clone(), &supervisor)
+            .await
+            .unwrap();
+        assert!(supervisor.get_exact(&key).is_none());
+        let (actor, _) = EngineActor::recording_test_actor(&[]);
+        assert!(supervisor
+            .replace_handle(key.clone(), actor, "engine-id".into(), handle.id)
+            .await
+            .is_err());
+        let (actor, _) = EngineActor::recording_test_actor(&[]);
+        supervisor
+            .replace_handle(
+                key,
+                actor,
+                "engine-id".into(),
+                crate::infra::path_authority::PathRef {
+                    id: "new-path".into(),
+                },
+            )
+            .await
+            .unwrap();
+        supervisor.terminate_all().await.unwrap();
+        let source = include_str!("chess.rs");
+        let command = source
+            .split_once("pub async fn retire_engine_binary(")
+            .unwrap()
+            .1;
+        let body = command.split_once("#[tauri::command]").unwrap().0;
+        assert!(body.contains(
+            "retire_engine_binary_with_supervisor(engine, handle, &state.engine_supervisor).await"
+        ));
     }
 
     #[tokio::test]

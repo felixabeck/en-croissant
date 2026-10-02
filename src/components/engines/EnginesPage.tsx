@@ -62,6 +62,7 @@ import LocalImage from "../common/LocalImage";
 import OpenFolderButton from "../common/OpenFolderButton";
 import LinesSlider from "../panels/analysis/LinesSlider";
 import AddEngine from "./AddEngine";
+import UpgradeEngineModal from "./UpgradeEngineModal";
 
 export default function EnginesPage() {
   const { t } = useTranslation();
@@ -282,6 +283,7 @@ function EngineSettings({
 }) {
   const { t } = useTranslation();
   const errorTitle = t("Common.Error");
+  const [upgradeOpened, setUpgradeOpened] = useState(false);
 
   const [engines, setEngines] = useAtom(enginesAtom);
   const engine = engines![selected] as LocalEngine;
@@ -616,6 +618,9 @@ function EngineSettings({
         </SimpleGrid>
 
         <Group justify="end">
+          <Button variant="default" onClick={() => setUpgradeOpened(true)}>
+            {t("Engines.Upgrade.Title")}
+          </Button>
           <Button variant="default" onClick={() => toggleJSONModal(true)}>
             {t("Engines.Settings.EditJSON")}
           </Button>
@@ -677,6 +682,12 @@ function EngineSettings({
         toggleOpened={toggleJSONModal}
         engine={engine}
         setEngine={(v) => setEngines(async (prev) => replaceEngineById(await prev, targetId, v))}
+      />
+      <UpgradeEngineModal
+        key={engine.id}
+        engine={engine}
+        opened={upgradeOpened}
+        setOpened={setUpgradeOpened}
       />
     </ScrollArea>
   );

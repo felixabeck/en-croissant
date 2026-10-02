@@ -291,6 +291,14 @@ export class EngineCatalogVerificationError extends CatalogVerificationError {
     }
 }
 
+/** The local CPU-capability IPC failed; no catalog build can safely be offered. */
+export class EngineCapabilityQueryError extends Error {
+    constructor(cause: unknown) {
+        super("engine CPU-capability query failed", { cause });
+        this.name = "EngineCapabilityQueryError";
+    }
+}
+
 export async function loadDefaultEngineCatalog(
     document: string = engineCatalogDocument,
     signature: string = engineCatalogSignature,
@@ -313,7 +321,12 @@ export async function loadDefaultEngineCatalog(
 
 export function useDefaultEngines(os: Platform | undefined, opened: boolean) {
     const { data, error, isLoading } = useSWR(opened ? os : null, async (os: Platform) => {
-        const bmi2: boolean = await tauri.isBmi2Compatible();
+        let bmi2: boolean;
+        try {
+            bmi2 = await tauri.isBmi2Compatible();
+        } catch (error) {
+            throw new EngineCapabilityQueryError(error);
+        }
         const engines = await loadDefaultEngineCatalog();
         return engines.filter((engine) => engine.os === os && engine.bmi2 === bmi2);
     });
@@ -365,5 +378,39 @@ export async function installDefaultEngine(
         filename,
         loaded: true,
         settings: requiredEngineSettingsDefaults(config),
+    });
+}
+
+/** Preserve advertised preferences and fill missing required options from the new binary. */
+export function upgradeEngineSettings(
+    settings: EngineOption[] | null | undefined,
+    config: EngineConfig,
+): EngineOption[] {
+    const names = new Set(config.options.map((option) => option.value.name));
+    const kept = (settings ?? []).filter((option) => names.has(option.name));
+    return [
+        ...kept,
+        ...requiredEngineSettingsDefaults(config).filter(
+            (option) => !kept.some((stored) => stored.name === option.name),
+        ),
+    ];
+}
+
+/** Swaps binary metadata while retaining this entry's identity and user preferences. */
+export function upgradeEngineFromCatalog(
+    engine: LocalEngine,
+    catalogEntry: DefaultEngine,
+    installed: Awaited<ReturnType<typeof installCatalogEngine>>,
+): LocalEngine {
+    return localEngineSchema.parse({
+        ...engine,
+        handle: installed.handle,
+        filename: installed.filename,
+        name: installed.config.name,
+        version: catalogEntry.version,
+        elo: catalogEntry.elo,
+        downloadLink: catalogEntry.downloadLink,
+        downloadSize: catalogEntry.downloadSize,
+        settings: upgradeEngineSettings(engine.settings, installed.config),
     });
 }

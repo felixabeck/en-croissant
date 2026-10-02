@@ -1,4 +1,49 @@
-import { expect, test } from "./fixtures";
+import { expect, test, upgradeEngineFixture } from "./fixtures";
+
+test("accounts-puzzles-engines: local settings and catalog upgrade modal", async ({
+    page,
+    mockScenario,
+    capture,
+}) => {
+    await page.addInitScript((engine) => {
+        localStorage.setItem("engines", JSON.stringify([engine]));
+        // This new settings proof uses the normal product font scale so all actions fit.
+        localStorage.setItem("font-size", "100");
+    }, upgradeEngineFixture);
+    await mockScenario({
+        commands: {
+            is_bmi2_compatible: { result: false },
+            file_exists: { result: true },
+            verify_signed_bytes: { result: null },
+            get_engine_config: {
+                result: {
+                    name: "Stockfish 18",
+                    options: [
+                        { type: "spin", value: { name: "Threads", default: 1, min: 1, max: 1024 } },
+                        {
+                            type: "spin",
+                            value: { name: "Hash", default: 16, min: 1, max: 33554432 },
+                        },
+                        { type: "spin", value: { name: "MultiPV", default: 1, min: 1, max: 256 } },
+                    ],
+                },
+            },
+        },
+    });
+    await page.goto("/engines?selected=0");
+    const upgrade = page.getByRole("button", { name: "Upgrade from catalog", exact: true });
+    await expect(upgrade).toBeVisible();
+    await upgrade.scrollIntoViewIfNeeded();
+    await capture("engine-settings-upgrade");
+    await expect(page).toHaveScreenshot("engine-settings-upgrade.png", { fullPage: true });
+    await upgrade.click();
+    const dialog = page.getByRole("dialog", { name: "Upgrade from catalog", exact: true });
+    await expect(
+        dialog.getByRole("button", { name: "Install", exact: true }).first(),
+    ).toBeVisible();
+    await capture("engine-upgrade-modal");
+    await expect(dialog).toHaveScreenshot("engine-upgrade-modal.png");
+});
 
 test("accounts-puzzles-engines: local engine validation is visible before any native issuance", async ({
     page,
