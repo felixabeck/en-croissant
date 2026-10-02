@@ -74,6 +74,9 @@ pub struct ArtifactIntegrity {
     pub signature: String,
 }
 
+type ArtifactIntegrityValidator =
+    Box<dyn Fn(OpClass, &str, &ArtifactIntegrity) -> Result<(), Error> + Send + Sync + 'static>;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum OpClass {
     Lichess,
@@ -1290,7 +1293,7 @@ pub async fn download_engine_archive(
             state,
             cancellation,
             commit_gate,
-            |op, url, integrity| validate_artifact_integrity(op, url, Some(integrity)),
+            Box::new(|op, url, integrity| validate_artifact_integrity(op, url, Some(integrity))),
         )
         .await
         .map_err(sanitize_download_error)
@@ -1299,7 +1302,7 @@ pub async fn download_engine_archive(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn download_engine_archive_core<R, V>(
+async fn download_engine_archive_core<R: tauri::Runtime>(
     id: String,
     url: String,
     destination: crate::infra::path_authority::PathRef,
@@ -1310,12 +1313,8 @@ async fn download_engine_archive_core<R, V>(
     state: AppState,
     cancellation: CancellationToken,
     commit_gate: crate::infra::operations::OperationCommitGate,
-    validate_integrity: V,
-) -> Result<(), Error>
-where
-    R: tauri::Runtime,
-    V: Fn(OpClass, &str, &ArtifactIntegrity) -> Result<(), Error> + Send + 'static,
-{
+    validate_integrity: ArtifactIntegrityValidator,
+) -> Result<(), Error> {
     let result = async {
         let directory_name = std::ffi::OsString::from(directory_name);
         let (op, resolved) =
@@ -3987,7 +3986,7 @@ mod tests {
                 state.clone(),
                 lease.token(),
                 lease.commit_gate(),
-                accept_any_integrity,
+                Box::new(accept_any_integrity),
             )
             .await
             .unwrap();
@@ -4029,10 +4028,10 @@ mod tests {
                 adoption,
                 lease.token(),
                 lease.commit_gate(),
-                move |_, _, _| {
+                Box::new(move |_, _, _| {
                     verify.store(true, Ordering::SeqCst);
                     Ok(())
-                },
+                }),
             )
             .await
             .unwrap();
@@ -4288,7 +4287,7 @@ mod tests {
                 task_state,
                 cancellation,
                 commit_gate,
-                accept_any_integrity,
+                Box::new(accept_any_integrity),
             ),
         ));
         tokio::time::timeout(Duration::from_secs(2), async {
@@ -4441,7 +4440,7 @@ mod tests {
                     (*state).clone(),
                     cancellation,
                     commit_gate,
-                    accept_any_integrity,
+                    Box::new(accept_any_integrity),
                 ),
             ));
             tokio::time::timeout(Duration::from_secs(2), entered)
@@ -4487,7 +4486,7 @@ mod tests {
                     (*state).clone(),
                     cancellation,
                     commit_gate,
-                    accept_any_integrity,
+                    Box::new(accept_any_integrity),
                 ),
             ));
             tokio::time::timeout(Duration::from_secs(2), entered)
