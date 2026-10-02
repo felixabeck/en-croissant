@@ -947,10 +947,11 @@ same session wrote the briefs and arbitrated every finding.
 Carried items: **CR-1** — closed for the ordinary path in round 1 (correctness, error-handling,
 ipc-contract, root-cause), its test bound to the job id by D1-19. **Named known limit (CR-1 as
 qualified by the round-7 judgment):** clearing the discarded job's terminal record is best
-effort; if that progress clear fails, the stale succeeded record can show a retained 100 % bar
-when the card remounts (dialog reopened, route left and re-entered) — for at most the backend's
-5-minute terminal TTL (`src-tauri/src/progress.rs:16`, purged on every read) or until the action
-is started again, which replaces the record. The entry is never changed and nothing is retired
+effort; if that progress clear fails, a card that remounts (dialog reopened, route left and
+re-entered) within the backend's 5-minute terminal TTL (`src-tauri/src/progress.rs:16`, purged on
+the next read after expiry) loads the stale succeeded record and shows a retained 100 % bar; that
+mounted card keeps showing it until it unmounts or its action is started again, which replaces
+the record. A remount after the TTL shows nothing. The entry is never changed and nothing is retired
 in that case. Tracked as `f-20261002-07`. *Round 8 (correctness, error-handling, tests; all
 APPROVED) showed one failed clear suffices — e.g. a cancel whose native work had already finished
 returns `Ok(false)`, or the route unmount records intent without a cancel request — so the
