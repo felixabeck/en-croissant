@@ -3195,6 +3195,7 @@ fn unlink_database_files(
     Ok((unlinked, durability))
 }
 
+#[cfg(all(test, unix))]
 fn legacy_sidecar_removal_identity(
     parent: &File,
     leaf: &OsStr,
