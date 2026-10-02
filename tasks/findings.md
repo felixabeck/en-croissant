@@ -12290,3 +12290,26 @@ Correction 2026-09-30 (records review): "the 2026-09-29 push-gate lane runner ke
 * **Defect:** if "Add games" starts while a local PGN import is still converting, it replaces the slot's owner with its own target. When it finishes first, its cleanup resets the slot to idle while the local import is still running: the "Convert: …" progress line disappears and "Add New" plus local-conversion submission are enabled again, so a second import can start beside the first. The local import's own `clearOwnedConversion` later finds a different owner and does nothing. Distinct from `f-20261001-21` (same-database progress-id collision): this is two different databases sharing one state slot.
 * **Fix shape:** key conversion state by owner (a map of running conversions, or refuse to start a second conversion while one is running); the progress line and the guards read "any conversion running".
 * **Found by:** Codex records lens, closure round d3 of the PGN long-comment import fix, 2026-10-01 (pre-existing).
+
+---
+
+## 2026-10-02 — filed through the inbox spool
+
+### The symlinked-ancestor database index-and-delete test never runs on Windows
+
+* **ID:** f-20261002-01 · **Status:** open · **Area:** native-fs · **Root:** non-linux-platform-port · **Entry:** lens · **Blocked:** none
+* **Filed from:** 837e01c1-7c21-4f1a-83e3-7e56d2b8a9d1
+* **Where:** `src-tauri/src/db/mod.rs` — `symlinked_ancestor_database_indexes_and_deletes_through_its_real_directory` sits in the `#[cfg(all(test, unix))] mod tests` and creates its fixture with `std::os::unix::fs::symlink` on a directory.
+* **Defect:** the test grants a database through a symlinked parent directory, builds and loads its search index, and deletes the database and its index sidecar through the real directory. None of that runs in `rust-windows-test`, so a Windows-only failure of a directory-symlink (or junction) ancestor in grant, promotion, canonical resolution, index generation or deletion passes every gate. The f-20261001-22 slice moved the 22 deletion tests that need no unix-only machinery into the cross-platform `mod deletion_tests`; this one was left because its substance is Windows path-authority ancestor resolution (`f-20260914-33`, `f-20260914-36` settled the unix-side spelling), not deletion.
+* **Fix shape:** a per-platform directory-symlink helper (`std::os::windows::fs::symlink_dir` on Windows; the CI runner can create symlinks, precedent `windows_reparse_sidecar_is_reported_as_present_but_never_followed` in `db/repository.rs`), move the test into `mod deletion_tests` or a Windows variant beside it, and decide from the Windows path-authority code whether a symlinked ancestor must be accepted or refused there — then assert that.
+* **Found by:** Codex `review-platform-semantics` lens over the f-20261001-22 diff, 2026-10-02.
+
+### Parallel tests can collide in the process-global SQLite binding registry through a reused inode
+
+* **ID:** f-20261002-02 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **Filed from:** 837e01c1-7c21-4f1a-83e3-7e56d2b8a9d1
+* **Where:** `src-tauri/src/db/bound_sqlite.rs` (~175-200: `REGISTRY` is process-global, and `BoundDatabase::acquire` refuses with `Conflict("database is open through another directory")` when any live binding has the same `(dev, ino)` identity under a different parent, `d-20260929-05`); `src-tauri/src/db/repository.rs` (~2712 `lru_evicts_the_least_recently_used_idle_entry`, the observed victim).
+* **Defect:** the `pnpm gates:push -- --rust` coverage lane on `7f1488f9` (2026-10-02, f-20261001-22 drain release) failed once with `db::repository::tests::lru_evicts_the_least_recently_used_idle_entry` panicking at `repository.rs:2722` on `Conflict("database is open through another directory")`; the plain `rust-test` lane of the same run, and the rerun of all lanes, passed. All unit tests share one process and therefore one binding registry. If any test keeps a binding alive after its database file is unlinked (tempdir dropped, test-owned deletion), the freed inode can be reused by another test's new database in a different tempdir, and that test's acquire is refused. Which test outlives its file with a live binding is not yet determined. Commit `46950c4b` moved 22 database deletion tests into `db::deletion_tests`, which changes the test name ordering and so the interleaving; it did not add any binding holder.
+* **Open question:** is the fix test-side isolation (per-test registry scope, or tests guaranteeing every binding is dropped before their file is removed) or a product-side refinement of the identity key (e.g. also refusing only while the leaf inode is still linked), given that in the product an inode cannot be reused while a SQLite connection holds the leaf open?
+* **Fix shape:** first find the binding holder that outlives its file (instrument `Registry` in tests to report bindings whose leaf no longer exists at test end), then decide the question above; a reproduction can force inode reuse by creating and deleting files in a loop on the same filesystem.
+* **Found by:** Claude Code drain session 837e01c1-7c21-4f1a-83e3-7e56d2b8a9d1 (next-finding f-20261001-22), final push gate, 2026-10-02. Gate log: `artifacts/gates/20261002T022755619Z-3234038/rust-coverage.log`.
