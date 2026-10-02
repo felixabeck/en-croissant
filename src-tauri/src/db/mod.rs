@@ -10,7 +10,7 @@ mod repository;
 mod test_support;
 #[cfg(all(test, unix))]
 pub(crate) use repository::cancel_snapshot_copy_after_chunks;
-#[cfg(all(test, unix))]
+#[cfg(test)]
 pub(crate) use repository::test_target;
 mod schema;
 mod search;
@@ -114,7 +114,7 @@ fn cancellation_check(cancellation: &CancellationToken) -> Result<(), Error> {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 const CREATE_TABLES_SQL: &str = include_str!("create.sql");
 
 const WHITE_PAWN: Piece = Piece {
@@ -672,7 +672,7 @@ pub(crate) fn take_resolve_database_operations() -> Vec<PathOperation> {
     RESOLVE_DATABASE_OPERATIONS.with(|operations| std::mem::take(&mut *operations.borrow_mut()))
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 pub(crate) fn schema_database_case(
     file_stem: &str,
     operations: Vec<PathOperation>,
@@ -722,6 +722,128 @@ pub(crate) fn schema_database_case(
         DatabaseHandle::new(commit.id),
         database,
     )
+}
+
+#[cfg(test)]
+fn blocking_database_case() -> (
+    tempfile::TempDir,
+    tauri::AppHandle<tauri::test::MockRuntime>,
+    DatabaseHandle,
+    std::path::PathBuf,
+) {
+    schema_database_case(
+        "games",
+        vec![
+            PathOperation::DatabaseRead,
+            PathOperation::DatabaseMutate,
+            PathOperation::DatabaseCreate,
+            PathOperation::DatabaseExport,
+        ],
+    )
+}
+
+#[cfg(test)]
+fn arbitrary_database_case(
+    contents: &[u8],
+) -> (
+    tempfile::TempDir,
+    tauri::AppHandle<tauri::test::MockRuntime>,
+    DatabaseHandle,
+    std::path::PathBuf,
+) {
+    use tauri::Manager;
+
+    let dir = tempfile::tempdir().unwrap();
+    let database = dir.path().join("arbitrary.db3");
+    std::fs::write(&database, contents).unwrap();
+    let mut authority = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+    let operations = vec![
+        PathOperation::DatabaseRead,
+        PathOperation::DatabaseMutate,
+        PathOperation::DatabaseCreate,
+        PathOperation::DatabaseExport,
+    ];
+    let grant = authority
+        .grant_dialog_operations(
+            &database,
+            "arbitrary",
+            crate::infra::path_authority::PathClass::BoundedDialogGrant,
+            operations.clone(),
+            std::time::Duration::from_secs(30),
+            1,
+        )
+        .unwrap();
+    let commit = authority
+        .promote_dialog(
+            &grant,
+            crate::infra::path_authority::PathClass::PersistentFile,
+            "arbitrary",
+            operations,
+        )
+        .unwrap();
+    let state = AppState::default();
+    *state.pgn_path_authority.lock().unwrap() = Some(authority);
+    let app = tauri::test::mock_app();
+    app.manage(state);
+    (
+        dir,
+        app.handle().clone(),
+        DatabaseHandle::new(commit.id),
+        database,
+    )
+}
+
+#[cfg(test)]
+fn seed_search_cache_for_database(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    database: &std::path::Path,
+) -> crate::SearchResultKey {
+    use tauri::Manager;
+
+    let source = IndexSource::from_database(database, 0).unwrap();
+    let index_path = get_index_path(database);
+    SearchIndexChunk::default()
+        .write_to_with_source(&index_path, source.clone())
+        .unwrap()
+        .expect_durable();
+    let identity = crate::SearchIndexIdentity::for_database(database, source).unwrap();
+    let key = crate::SearchResultKey::new(GameQuery::new(), identity);
+    app.state::<AppState>()
+        .search_cache
+        .insert_result(key.clone(), (Vec::new(), Vec::new()));
+    key
+}
+
+#[cfg(test)]
+struct AtomicInjectorReset;
+
+#[cfg(test)]
+impl Drop for AtomicInjectorReset {
+    fn drop(&mut self) {
+        crate::infra::fs::set_test_atomic_file_injector(None);
+    }
+}
+
+#[cfg(test)]
+struct FailAtomicExportAt(crate::infra::fs::AtomicFileFaultPoint);
+
+#[cfg(test)]
+impl crate::infra::fs::AtomicWriterInjector for FailAtomicExportAt {
+    fn inject(&self, point: crate::infra::fs::AtomicFileFaultPoint) -> std::io::Result<()> {
+        if point == self.0 {
+            Err(std::io::Error::other(format!("injected {point:?} failure")))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[cfg(test)]
+fn install_atomic_export_failure(
+    point: crate::infra::fs::AtomicFileFaultPoint,
+) -> AtomicInjectorReset {
+    crate::infra::fs::set_test_atomic_file_injector(Some(Arc::new(FailAtomicExportAt(point))));
+    AtomicInjectorReset
 }
 
 #[tauri::command]
@@ -2746,7 +2868,7 @@ std::thread_local! {
         std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 fn set_unlink_sidecar_after_identity_probe_hook(hook: Option<Box<dyn FnOnce()>>) {
     UNLINK_SIDECAR_AFTER_IDENTITY_PROBE_HOOK.with(|slot| *slot.borrow_mut() = hook);
 }
@@ -3802,243 +3924,6 @@ mod tests {
                     .is_ok()
             });
         registered
-    }
-
-    #[test]
-    fn finish_database_deletion_returns_ok_when_the_tail_succeeds() {
-        assert!(finish_database_deletion(true, 2, Ok(())).is_ok());
-    }
-
-    #[test]
-    fn finish_database_deletion_preserves_sidecar_only_error() {
-        let result = finish_database_deletion(
-            false,
-            1,
-            Err(Error::from(std::io::Error::other("sidecar failure"))),
-        );
-        let error = result.unwrap_err();
-        assert!(matches!(error, Error::Io(_)));
-        assert!(!error.to_string().starts_with("Partially removed:"));
-    }
-
-    #[test]
-    fn finish_database_deletion_wraps_post_primary_failure() {
-        let error =
-            finish_database_deletion(true, 1, Err(Error::Conflict("x".into()))).unwrap_err();
-        assert!(matches!(error, Error::PartialRemoval { .. }));
-        assert!(error.to_string().starts_with("Partially removed:"));
-    }
-
-    #[test]
-    fn finish_database_deletion_preserves_durability_uncertainty() {
-        let error = finish_database_deletion(
-            true,
-            1,
-            Err(Error::CommittedDurabilityUncertain(
-                crate::error::DurabilityStage::RegistryReplacement,
-            )),
-        )
-        .unwrap_err();
-        assert!(matches!(
-            error,
-            Error::CommittedDurabilityUncertain(crate::error::DurabilityStage::RegistryReplacement)
-        ));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn delete_database_stops_at_invalid_preferred_sidecar_before_primary() {
-        let dir = tempfile::tempdir().unwrap();
-        let database = dir.path().join("ordered.db3");
-        std::fs::write(&database, b"database").unwrap();
-        let expected_source = IndexSource::from_database(&database, 0).unwrap();
-        std::fs::create_dir(get_index_path(&database)).unwrap();
-        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
-
-        let error = unlink_database_files(&target, &expected_source).unwrap_err();
-        assert!(matches!(error, Error::InvalidInput(_)));
-        assert!(database.exists());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn delete_database_leaves_colliding_legacy_sidecar() {
-        let dir = tempfile::tempdir().unwrap();
-        let collision_owner = dir.path().join("foo");
-        let database = dir.path().join("foo.db3");
-        std::fs::write(&collision_owner, b"database").unwrap();
-        std::fs::write(&database, b"database").unwrap();
-        let shared_sidecar = get_index_path(&collision_owner);
-        assert_eq!(shared_sidecar, legacy_index_path(&database));
-        SearchIndexChunk::default()
-            .write_to_with_source(
-                &shared_sidecar,
-                IndexSource::from_database(&collision_owner, 0).unwrap(),
-            )
-            .unwrap()
-            .expect_durable();
-        let expected_source = IndexSource::from_database(&database, 0).unwrap();
-        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
-
-        assert_eq!(
-            unlink_database_files(&target, &expected_source).unwrap().0,
-            1
-        );
-        assert!(!database.exists());
-        assert!(shared_sidecar.exists());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn unlink_database_files_skips_duplicate_legacy_leaf_on_extensionless_names() {
-        let dir = tempfile::tempdir().unwrap();
-        let database = dir.path().join("foo");
-        std::fs::write(&database, b"database").unwrap();
-        let expected_source = IndexSource::from_database(&database, 0).unwrap();
-        let preferred = get_index_path(&database);
-        assert_eq!(preferred, legacy_index_path(&database));
-        SearchIndexChunk::default()
-            .write_to_with_source(&preferred, expected_source.clone())
-            .unwrap()
-            .expect_durable();
-        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
-
-        assert_eq!(
-            unlink_database_files(&target, &expected_source).unwrap().0,
-            2
-        );
-        assert!(!database.exists());
-        assert!(!preferred.exists());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn unlink_database_files_rejects_a_substituted_primary() {
-        let dir = tempfile::tempdir().unwrap();
-        let database = dir.path().join("swap.db3");
-        std::fs::write(&database, b"database").unwrap();
-        let expected_source = IndexSource::from_database(&database, 0).unwrap();
-        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
-        std::fs::remove_file(&database).unwrap();
-        std::fs::create_dir(&database).unwrap();
-
-        let error = unlink_database_files(&target, &expected_source).unwrap_err();
-        assert!(matches!(error, Error::Conflict(_)));
-        assert!(database.is_dir());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn unlink_database_files_rejects_an_identity_mismatch() {
-        let dir = tempfile::tempdir().unwrap();
-        let database = dir.path().join("mismatch.db3");
-        let replacement = dir.path().join("replacement.db3");
-        std::fs::write(&database, b"database").unwrap();
-        std::fs::write(&replacement, b"replacement").unwrap();
-        let expected_source = IndexSource::from_database(&database, 0).unwrap();
-        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
-        std::fs::rename(&replacement, &database).unwrap();
-
-        let error = unlink_database_files(&target, &expected_source).unwrap_err();
-        assert!(matches!(
-            error,
-            Error::Conflict(message) if message == "database changed before deletion"
-        ));
-        assert!(database.exists());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn unlink_database_files_skips_a_legacy_directory() {
-        let dir = tempfile::tempdir().unwrap();
-        let database = dir.path().join("legacy-dir.db3");
-        std::fs::write(&database, b"database").unwrap();
-        std::fs::create_dir(legacy_index_path(&database)).unwrap();
-        let expected_source = IndexSource::from_database(&database, 0).unwrap();
-        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
-
-        assert_eq!(
-            unlink_database_files(&target, &expected_source).unwrap().0,
-            1
-        );
-        assert!(!database.exists());
-        assert!(legacy_index_path(&database).is_dir());
-    }
-
-    #[test]
-    fn unlink_database_files_rechecks_preferred_sidecar_identity_and_ignores_vanishing_sidecars() {
-        let dir = tempfile::tempdir().unwrap();
-        let database = dir.path().join("preferred-swap.db3");
-        std::fs::write(&database, b"database").unwrap();
-        let preferred = get_index_path(&database);
-        std::fs::write(&preferred, b"original").unwrap();
-        let preferred_replacement = dir.path().join("preferred-replacement");
-        std::fs::write(&preferred_replacement, b"replacement").unwrap();
-        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
-        let preferred_for_hook = preferred.clone();
-        let preferred_replacement_for_hook = preferred_replacement.clone();
-        set_unlink_sidecar_after_identity_probe_hook(Some(Box::new(move || {
-            std::fs::remove_file(&preferred_for_hook).unwrap();
-            std::fs::rename(&preferred_replacement_for_hook, &preferred_for_hook).unwrap();
-        })));
-
-        let error =
-            unlink_database_files(&target, &IndexSource::from_database(&database, 0).unwrap())
-                .unwrap_err();
-        assert!(matches!(error, Error::Conflict(_)));
-        assert_eq!(std::fs::read(&preferred).unwrap(), b"replacement");
-        assert!(database.exists());
-
-        let vanished_database = dir.path().join("vanished.db3");
-        std::fs::write(&vanished_database, b"database").unwrap();
-        let vanished_source = IndexSource::from_database(&vanished_database, 0).unwrap();
-        let vanished_preferred = get_index_path(&vanished_database);
-        std::fs::write(&vanished_preferred, b"sidecar").unwrap();
-        let vanished_target = DatabaseFileTarget::for_test_path(&vanished_database).unwrap();
-        std::fs::remove_file(&vanished_preferred).unwrap();
-
-        let result = unlink_database_files(&vanished_target, &vanished_source).unwrap();
-        assert_eq!(result.0, 1);
-        assert!(!vanished_database.exists());
-    }
-
-    #[test]
-    fn legacy_sidecar_removal_uses_the_verified_identity_and_skips_corrupt_archives() {
-        let dir = tempfile::tempdir().unwrap();
-        let database = dir.path().join("legacy-swap.db3");
-        std::fs::write(&database, b"database").unwrap();
-        let expected_source = IndexSource::from_database(&database, 0).unwrap();
-        let legacy = legacy_index_path(&database);
-        SearchIndexChunk::default()
-            .write_to_with_source(&legacy, expected_source.clone())
-            .unwrap()
-            .expect_durable();
-        let legacy_replacement = dir.path().join("legacy-replacement");
-        std::fs::write(&legacy_replacement, b"replacement").unwrap();
-        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
-        let legacy_for_hook = legacy.clone();
-        let legacy_replacement_for_hook = legacy_replacement.clone();
-        set_unlink_sidecar_after_identity_probe_hook(Some(Box::new(move || {
-            std::fs::remove_file(&legacy_for_hook).unwrap();
-            std::fs::rename(&legacy_replacement_for_hook, &legacy_for_hook).unwrap();
-        })));
-
-        let error = unlink_database_files(&target, &expected_source).unwrap_err();
-        assert!(matches!(error, Error::Conflict(_)));
-        assert_eq!(std::fs::read(&legacy).unwrap(), b"replacement");
-        assert!(database.exists());
-
-        let corrupt_database = dir.path().join("legacy-corrupt.db3");
-        std::fs::write(&corrupt_database, b"database").unwrap();
-        let corrupt_source = IndexSource::from_database(&corrupt_database, 0).unwrap();
-        let corrupt_legacy = legacy_index_path(&corrupt_database);
-        std::fs::write(&corrupt_legacy, b"corrupt archive").unwrap();
-        let corrupt_target = DatabaseFileTarget::for_test_path(&corrupt_database).unwrap();
-
-        let result = unlink_database_files(&corrupt_target, &corrupt_source).unwrap();
-        assert_eq!(result.0, 1);
-        assert!(!corrupt_database.exists());
-        assert!(corrupt_legacy.exists());
     }
 
     #[test]
@@ -5346,23 +5231,6 @@ mod tests {
         );
         assert_eq!(database_state(db).1, 3);
         assert_info_counts_match_tables(db);
-    }
-
-    fn blocking_database_case() -> (
-        tempfile::TempDir,
-        tauri::AppHandle<tauri::test::MockRuntime>,
-        DatabaseHandle,
-        PathBuf,
-    ) {
-        schema_database_case(
-            "games",
-            vec![
-                PathOperation::DatabaseRead,
-                PathOperation::DatabaseMutate,
-                PathOperation::DatabaseCreate,
-                PathOperation::DatabaseExport,
-            ],
-        )
     }
 
     #[cfg(unix)]
@@ -6814,33 +6682,6 @@ mod tests {
             .promote_dialog(&grant, PathClass::PersistentFile, "export.pgn", operations)
             .unwrap();
         FileWorkspaceHandle::new(commit.id)
-    }
-
-    struct AtomicInjectorReset;
-
-    impl Drop for AtomicInjectorReset {
-        fn drop(&mut self) {
-            crate::infra::fs::set_test_atomic_file_injector(None);
-        }
-    }
-
-    struct FailAtomicExportAt(crate::infra::fs::AtomicFileFaultPoint);
-
-    impl crate::infra::fs::AtomicWriterInjector for FailAtomicExportAt {
-        fn inject(&self, point: crate::infra::fs::AtomicFileFaultPoint) -> std::io::Result<()> {
-            if point == self.0 {
-                Err(std::io::Error::other(format!("injected {point:?} failure")))
-            } else {
-                Ok(())
-            }
-        }
-    }
-
-    fn install_atomic_export_failure(
-        point: crate::infra::fs::AtomicFileFaultPoint,
-    ) -> AtomicInjectorReset {
-        crate::infra::fs::set_test_atomic_file_injector(Some(Arc::new(FailAtomicExportAt(point))));
-        AtomicInjectorReset
     }
 
     fn assert_no_atomic_export_residue(directory: &Path) {
@@ -10451,24 +10292,6 @@ mod tests {
         (dir, cache, database, key)
     }
 
-    fn seed_search_cache_for_database(
-        app: &tauri::AppHandle<tauri::test::MockRuntime>,
-        database: &Path,
-    ) -> crate::SearchResultKey {
-        let source = IndexSource::from_database(database, 0).unwrap();
-        let index_path = get_index_path(database);
-        SearchIndexChunk::default()
-            .write_to_with_source(&index_path, source.clone())
-            .unwrap()
-            .expect_durable();
-        let identity = crate::SearchIndexIdentity::for_database(database, source).unwrap();
-        let key = crate::SearchResultKey::new(GameQuery::new(), identity);
-        app.state::<AppState>()
-            .search_cache
-            .insert_result(key.clone(), (Vec::new(), Vec::new()));
-        key
-    }
-
     fn seed_search_index_cache_for_database(
         app: &tauri::AppHandle<tauri::test::MockRuntime>,
         database: &Path,
@@ -11258,47 +11081,278 @@ mod tests {
         value: String,
     }
 
-    fn arbitrary_database_case(
-        contents: &[u8],
-    ) -> (
-        tempfile::TempDir,
-        tauri::AppHandle<tauri::test::MockRuntime>,
-        DatabaseHandle,
-        PathBuf,
-    ) {
-        let dir = tempfile::tempdir().unwrap();
-        let database = dir.path().join("arbitrary.db3");
-        std::fs::write(&database, contents).unwrap();
-        let mut authority = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
-        let operations = vec![
-            PathOperation::DatabaseRead,
-            PathOperation::DatabaseMutate,
-            PathOperation::DatabaseCreate,
-            PathOperation::DatabaseExport,
-        ];
-        let grant = authority
-            .grant_dialog_operations(
-                &database,
-                "arbitrary",
-                PathClass::BoundedDialogGrant,
-                operations.clone(),
-                std::time::Duration::from_secs(30),
-                1,
-            )
-            .unwrap();
-        let commit = authority
-            .promote_dialog(&grant, PathClass::PersistentFile, "arbitrary", operations)
-            .unwrap();
-        let state = AppState::default();
-        *state.pgn_path_authority.lock().unwrap() = Some(authority);
-        let app = tauri::test::mock_app();
-        app.manage(state);
-        (
-            dir,
-            app.handle().clone(),
-            DatabaseHandle::new(commit.id),
-            database,
+    fn database_has_games_table(path: &Path) -> bool {
+        #[derive(QueryableByName)]
+        struct TableCount {
+            #[diesel(sql_type = diesel::sql_types::BigInt)]
+            count: i64,
+        }
+        let Ok(mut connection) = SqliteConnection::establish(path.to_str().unwrap()) else {
+            return false;
+        };
+        sql_query(
+            "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'Games'",
         )
+        .get_result::<TableCount>(&mut connection)
+        .map(|row| row.count > 0)
+        .unwrap_or(false)
+    }
+
+    fn database_has_data_revision(path: &Path) -> bool {
+        let Ok(mut connection) = SqliteConnection::establish(path.to_str().unwrap()) else {
+            return false;
+        };
+        sql_query("SELECT Value AS value FROM Info WHERE Name = 'DataRevision'")
+            .load::<InfoValue>(&mut connection)
+            .map(|rows| !rows.is_empty())
+            .unwrap_or(false)
+    }
+}
+
+/// Database deletion tests that run on every target, Windows included. Tests that need the
+/// Unix-only removal fault injector stay in `mod tests`.
+#[cfg(test)]
+mod deletion_tests {
+    use super::*;
+    use std::path::Path;
+    use tauri::Manager;
+
+    fn symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
+        #[cfg(unix)]
+        return std::os::unix::fs::symlink(target, link);
+        #[cfg(windows)]
+        return std::os::windows::fs::symlink_file(target, link);
+    }
+
+    #[test]
+    fn finish_database_deletion_returns_ok_when_the_tail_succeeds() {
+        assert!(finish_database_deletion(true, 2, Ok(())).is_ok());
+    }
+
+    #[test]
+    fn finish_database_deletion_preserves_sidecar_only_error() {
+        let result = finish_database_deletion(
+            false,
+            1,
+            Err(Error::from(std::io::Error::other("sidecar failure"))),
+        );
+        let error = result.unwrap_err();
+        assert!(matches!(error, Error::Io(_)));
+        assert!(!error.to_string().starts_with("Partially removed:"));
+    }
+
+    #[test]
+    fn finish_database_deletion_wraps_post_primary_failure() {
+        let error =
+            finish_database_deletion(true, 1, Err(Error::Conflict("x".into()))).unwrap_err();
+        assert!(matches!(error, Error::PartialRemoval { .. }));
+        assert!(error.to_string().starts_with("Partially removed:"));
+    }
+
+    #[test]
+    fn finish_database_deletion_preserves_durability_uncertainty() {
+        let error = finish_database_deletion(
+            true,
+            1,
+            Err(Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::RegistryReplacement,
+            )),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::CommittedDurabilityUncertain(crate::error::DurabilityStage::RegistryReplacement)
+        ));
+    }
+
+    #[test]
+    fn delete_database_stops_at_invalid_preferred_sidecar_before_primary() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("ordered.db3");
+        std::fs::write(&database, b"database").unwrap();
+        let expected_source = IndexSource::from_database(&database, 0).unwrap();
+        std::fs::create_dir(get_index_path(&database)).unwrap();
+        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
+
+        let error = unlink_database_files(&target, &expected_source).unwrap_err();
+        assert!(matches!(error, Error::InvalidInput(_)));
+        assert!(database.exists());
+    }
+
+    #[test]
+    fn delete_database_leaves_colliding_legacy_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let collision_owner = dir.path().join("foo");
+        let database = dir.path().join("foo.db3");
+        std::fs::write(&collision_owner, b"database").unwrap();
+        std::fs::write(&database, b"database").unwrap();
+        let shared_sidecar = get_index_path(&collision_owner);
+        assert_eq!(shared_sidecar, legacy_index_path(&database));
+        SearchIndexChunk::default()
+            .write_to_with_source(
+                &shared_sidecar,
+                IndexSource::from_database(&collision_owner, 0).unwrap(),
+            )
+            .unwrap()
+            .expect_durable();
+        let expected_source = IndexSource::from_database(&database, 0).unwrap();
+        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
+
+        assert_eq!(
+            unlink_database_files(&target, &expected_source).unwrap().0,
+            1
+        );
+        assert!(!database.exists());
+        assert!(shared_sidecar.exists());
+    }
+
+    #[test]
+    fn unlink_database_files_skips_duplicate_legacy_leaf_on_extensionless_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("foo");
+        std::fs::write(&database, b"database").unwrap();
+        let expected_source = IndexSource::from_database(&database, 0).unwrap();
+        let preferred = get_index_path(&database);
+        assert_eq!(preferred, legacy_index_path(&database));
+        SearchIndexChunk::default()
+            .write_to_with_source(&preferred, expected_source.clone())
+            .unwrap()
+            .expect_durable();
+        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
+
+        assert_eq!(
+            unlink_database_files(&target, &expected_source).unwrap().0,
+            2
+        );
+        assert!(!database.exists());
+        assert!(!preferred.exists());
+    }
+
+    #[test]
+    fn unlink_database_files_rejects_a_substituted_primary() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("swap.db3");
+        std::fs::write(&database, b"database").unwrap();
+        let expected_source = IndexSource::from_database(&database, 0).unwrap();
+        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
+        std::fs::remove_file(&database).unwrap();
+        std::fs::create_dir(&database).unwrap();
+
+        let error = unlink_database_files(&target, &expected_source).unwrap_err();
+        assert!(matches!(error, Error::Conflict(_)));
+        assert!(database.is_dir());
+    }
+
+    #[test]
+    fn unlink_database_files_rejects_an_identity_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("mismatch.db3");
+        let replacement = dir.path().join("replacement.db3");
+        std::fs::write(&database, b"database").unwrap();
+        std::fs::write(&replacement, b"replacement").unwrap();
+        let expected_source = IndexSource::from_database(&database, 0).unwrap();
+        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
+        std::fs::rename(&replacement, &database).unwrap();
+
+        let error = unlink_database_files(&target, &expected_source).unwrap_err();
+        assert!(matches!(
+            error,
+            Error::Conflict(message) if message == "database changed before deletion"
+        ));
+        assert!(database.exists());
+    }
+
+    #[test]
+    fn unlink_database_files_skips_a_legacy_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("legacy-dir.db3");
+        std::fs::write(&database, b"database").unwrap();
+        std::fs::create_dir(legacy_index_path(&database)).unwrap();
+        let expected_source = IndexSource::from_database(&database, 0).unwrap();
+        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
+
+        assert_eq!(
+            unlink_database_files(&target, &expected_source).unwrap().0,
+            1
+        );
+        assert!(!database.exists());
+        assert!(legacy_index_path(&database).is_dir());
+    }
+
+    #[test]
+    fn unlink_database_files_rechecks_preferred_sidecar_identity_and_ignores_vanishing_sidecars() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("preferred-swap.db3");
+        std::fs::write(&database, b"database").unwrap();
+        let preferred = get_index_path(&database);
+        std::fs::write(&preferred, b"original").unwrap();
+        let preferred_replacement = dir.path().join("preferred-replacement");
+        std::fs::write(&preferred_replacement, b"replacement").unwrap();
+        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
+        let preferred_for_hook = preferred.clone();
+        let preferred_replacement_for_hook = preferred_replacement.clone();
+        set_unlink_sidecar_after_identity_probe_hook(Some(Box::new(move || {
+            std::fs::remove_file(&preferred_for_hook).unwrap();
+            std::fs::rename(&preferred_replacement_for_hook, &preferred_for_hook).unwrap();
+        })));
+
+        let error =
+            unlink_database_files(&target, &IndexSource::from_database(&database, 0).unwrap())
+                .unwrap_err();
+        assert!(matches!(error, Error::Conflict(_)));
+        assert_eq!(std::fs::read(&preferred).unwrap(), b"replacement");
+        assert!(database.exists());
+
+        let vanished_database = dir.path().join("vanished.db3");
+        std::fs::write(&vanished_database, b"database").unwrap();
+        let vanished_source = IndexSource::from_database(&vanished_database, 0).unwrap();
+        let vanished_preferred = get_index_path(&vanished_database);
+        std::fs::write(&vanished_preferred, b"sidecar").unwrap();
+        let vanished_target = DatabaseFileTarget::for_test_path(&vanished_database).unwrap();
+        std::fs::remove_file(&vanished_preferred).unwrap();
+
+        let result = unlink_database_files(&vanished_target, &vanished_source).unwrap();
+        assert_eq!(result.0, 1);
+        assert!(!vanished_database.exists());
+    }
+
+    #[test]
+    fn legacy_sidecar_removal_uses_the_verified_identity_and_skips_corrupt_archives() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("legacy-swap.db3");
+        std::fs::write(&database, b"database").unwrap();
+        let expected_source = IndexSource::from_database(&database, 0).unwrap();
+        let legacy = legacy_index_path(&database);
+        SearchIndexChunk::default()
+            .write_to_with_source(&legacy, expected_source.clone())
+            .unwrap()
+            .expect_durable();
+        let legacy_replacement = dir.path().join("legacy-replacement");
+        std::fs::write(&legacy_replacement, b"replacement").unwrap();
+        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
+        let legacy_for_hook = legacy.clone();
+        let legacy_replacement_for_hook = legacy_replacement.clone();
+        set_unlink_sidecar_after_identity_probe_hook(Some(Box::new(move || {
+            std::fs::remove_file(&legacy_for_hook).unwrap();
+            std::fs::rename(&legacy_replacement_for_hook, &legacy_for_hook).unwrap();
+        })));
+
+        let error = unlink_database_files(&target, &expected_source).unwrap_err();
+        assert!(matches!(error, Error::Conflict(_)));
+        assert_eq!(std::fs::read(&legacy).unwrap(), b"replacement");
+        assert!(database.exists());
+
+        let corrupt_database = dir.path().join("legacy-corrupt.db3");
+        std::fs::write(&corrupt_database, b"database").unwrap();
+        let corrupt_source = IndexSource::from_database(&corrupt_database, 0).unwrap();
+        let corrupt_legacy = legacy_index_path(&corrupt_database);
+        std::fs::write(&corrupt_legacy, b"corrupt archive").unwrap();
+        let corrupt_target = DatabaseFileTarget::for_test_path(&corrupt_database).unwrap();
+
+        let result = unlink_database_files(&corrupt_target, &corrupt_source).unwrap();
+        assert_eq!(result.0, 1);
+        assert!(!corrupt_database.exists());
+        assert!(corrupt_legacy.exists());
     }
 
     #[test]
@@ -11348,7 +11402,6 @@ mod tests {
         .is_err());
     }
 
-    #[cfg(unix)]
     #[test]
     fn zero_table_delete_preserves_sqlite_sidecars_after_primary_substitution() {
         let dir = tempfile::tempdir().unwrap();
@@ -11372,19 +11425,16 @@ mod tests {
         assert!(shm.exists());
     }
 
-    #[cfg(unix)]
     #[test]
     fn zero_table_delete_sidecar_failure_reports_partial_removal_and_cleans_up() {
         assert_zero_table_delete_sidecar_failure(false);
     }
 
-    #[cfg(unix)]
     #[test]
     fn zero_table_delete_sidecar_and_registry_cleanup_failures_log_partial_removal() {
         assert_zero_table_delete_sidecar_failure(true);
     }
 
-    #[cfg(unix)]
     fn assert_zero_table_delete_sidecar_failure(fail_registry_cleanup: bool) {
         let (dir, app, handle, database) = arbitrary_database_case(b"");
         {
@@ -11489,7 +11539,6 @@ mod tests {
         assert!(!database.exists());
     }
 
-    #[cfg(unix)]
     #[test]
     fn zero_table_delete_refuses_symlinked_sqlite_sidecars() {
         for suffix in ["-wal", "-shm"] {
@@ -11502,7 +11551,7 @@ mod tests {
             let foreign_file = dir.path().join("foreign-file");
             std::fs::write(&foreign_file, b"keep me").unwrap();
             let sidecar = database.with_file_name(format!("arbitrary.db3{suffix}"));
-            std::os::unix::fs::symlink(&foreign_file, &sidecar).unwrap();
+            symlink_file(&foreign_file, &sidecar).unwrap();
             let state = app.state::<AppState>();
             let result = delete_database_blocking(
                 &state.pgn_path_authority,
@@ -11561,7 +11610,6 @@ mod tests {
         assert!(database.exists());
     }
 
-    #[cfg(unix)]
     #[test]
     fn delete_database_io_error_does_not_unlink() {
         let (_dir, app, handle, database) = blocking_database_case();
@@ -11615,32 +11663,5 @@ mod tests {
         .unwrap();
         assert!(!database.exists());
         assert!(!legacy.exists());
-    }
-
-    fn database_has_games_table(path: &Path) -> bool {
-        #[derive(QueryableByName)]
-        struct TableCount {
-            #[diesel(sql_type = diesel::sql_types::BigInt)]
-            count: i64,
-        }
-        let Ok(mut connection) = SqliteConnection::establish(path.to_str().unwrap()) else {
-            return false;
-        };
-        sql_query(
-            "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'Games'",
-        )
-        .get_result::<TableCount>(&mut connection)
-        .map(|row| row.count > 0)
-        .unwrap_or(false)
-    }
-
-    fn database_has_data_revision(path: &Path) -> bool {
-        let Ok(mut connection) = SqliteConnection::establish(path.to_str().unwrap()) else {
-            return false;
-        };
-        sql_query("SELECT Value AS value FROM Info WHERE Name = 'DataRevision'")
-            .load::<InfoValue>(&mut connection)
-            .map(|rows| !rows.is_empty())
-            .unwrap_or(false)
     }
 }
