@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   clear: vi.fn(),
   report: vi.fn(),
   notify: vi.fn(),
+  close: undefined as (() => void) | undefined,
   catalogError: undefined as unknown,
   progress: new Map<string, number>(),
 }));
@@ -76,7 +77,10 @@ vi.mock("@/hooks/useProgress", () => ({
   }),
 }));
 vi.mock("../common/AppModal", () => ({
-  default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  default: ({ children, onClose }: { children: React.ReactNode; onClose: () => void }) => {
+    mocks.close = onClose;
+    return <div>{children}</div>;
+  },
 }));
 vi.mock("../common/IconAction", () => ({
   default: ({ label, onClick }: { label: string; onClick: () => void }) => (
@@ -173,6 +177,7 @@ beforeEach(async () => {
   resetEngineOwnerCoordinatorForTests();
   vi.clearAllMocks();
   mocks.catalogError = undefined;
+  mocks.close = undefined;
   mocks.progress.clear();
   mocks.reconcile.mockReset().mockResolvedValue(undefined);
   mocks.download.mockReset().mockResolvedValue(undefined);
@@ -220,6 +225,52 @@ test("success saves once before retiring the old pair and keeps the same list po
   expect(engines[0]).toEqual(first);
   expect(engines[1]).toMatchObject({ id: old.id, name: "Stockfish 19" });
   expect(engines[2]).toEqual(last);
+  expect(mocks.notify).not.toHaveBeenCalled();
+});
+
+test("committing withdraws cancel and ignores cancellation while save and retirement are pending", async () => {
+  let finishSave!: () => void;
+  let finishRetirement!: () => void;
+  mocks.reconcile.mockImplementationOnce(() => {
+    // Invoke cancel in the save's first tick, before React can render the committing state.
+    mocks.close!();
+    return new Promise<void>((resolve) => {
+      finishSave = resolve;
+    });
+  });
+  mocks.retire.mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        finishRetirement = resolve;
+      }),
+  );
+  await render();
+  await click("Common.Install");
+  expect(finishSave).toEqual(expect.any(Function));
+  expect(host.textContent).not.toContain("Common.Cancel");
+  expect(host.textContent).toContain("Common.Extracting");
+  expect(store.get(enginesAtom)).toEqual([old]);
+  expect(mocks.retire).not.toHaveBeenCalled();
+  await act(async () => mocks.close!());
+  expect(mocks.cancel).not.toHaveBeenCalled();
+  expect(mocks.clear).not.toHaveBeenCalled();
+
+  await act(async () => finishSave());
+  expect(store.get(enginesAtom)?.[0]).toMatchObject({ handle: { id: { id: "new" } } });
+  expect(decodeCompressedOrJson(localStorage.getItem("engines")!)).toMatchObject([
+    { id: old.id, handle: { id: { id: "new" } } },
+  ]);
+  expect(mocks.retire).toHaveBeenCalledWith(old.id, old.handle);
+  expect(host.textContent).not.toContain("Common.Cancel");
+  expect(host.textContent).not.toContain("Engines.Upgrade.Current");
+  expect(host.textContent).toContain("Common.Extracting");
+  await act(async () => mocks.close!());
+  expect(mocks.cancel).not.toHaveBeenCalled();
+
+  await act(async () => finishRetirement());
+  expect(host.textContent).toContain("Engines.Upgrade.Current");
+  expect(host.textContent).not.toContain("Common.Extracting");
+  expect(mocks.clear).not.toHaveBeenCalled();
   expect(mocks.notify).not.toHaveBeenCalled();
 });
 

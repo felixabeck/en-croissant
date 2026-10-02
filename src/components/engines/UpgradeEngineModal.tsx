@@ -43,6 +43,8 @@ export default function UpgradeEngineModal({
   const savePlayer2 = useSetAtom(gamePlayer2SettingsAtom);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [upgradedLink, setUpgradedLink] = useState<string | null>(null);
+  const [isCommitting, setIsCommitting] = useState(false);
+  const committing = useRef(false);
   const cancelIntent = useRef(false);
   const active = useRef<string | null>(null);
   useEffect(
@@ -53,6 +55,7 @@ export default function UpgradeEngineModal({
   );
 
   async function cancel() {
+    if (committing.current) return;
     // Intent precedes IPC: a failed request must never let the completed artefact be applied.
     cancelIntent.current = true;
     if (active.current) return cancelDownloadJob(active.current, t("Common.Error"));
@@ -68,6 +71,8 @@ export default function UpgradeEngineModal({
         const installed = await installCatalogEngine(catalog, progressId, ticket);
         // Reject inside the job owner so its terminal progress is cleared before idle (CR-1).
         if (cancelIntent.current) throw cancellationError();
+        committing.current = true;
+        setIsCommitting(true);
         let previous: LocalEngine | undefined;
         const receipt = await saveEngines(
           (current) =>
@@ -109,6 +114,8 @@ export default function UpgradeEngineModal({
     } catch (cause) {
       notifyUnlessCancelled(t("Common.Error"), cause);
     } finally {
+      committing.current = false;
+      setIsCommitting(false);
       active.current = null;
       setActiveId(null);
     }
@@ -153,6 +160,7 @@ export default function UpgradeEngineModal({
                   current={catalog.downloadLink === (upgradedLink ?? engine.downloadLink)}
                   busy={activeId !== null}
                   active={activeId === id}
+                  committing={isCommitting && activeId === id}
                   upgrade={() => {
                     void upgrade(catalog, id);
                   }}
@@ -173,6 +181,7 @@ function UpgradeCard({
   current,
   busy,
   active,
+  committing,
   upgrade,
   cancel,
 }: {
@@ -181,6 +190,7 @@ function UpgradeCard({
   current: boolean;
   busy: boolean;
   active: boolean;
+  committing: boolean;
   upgrade: () => void;
   cancel: () => Promise<void | { clearedGeneration: bigint | null }>;
 }) {
@@ -191,15 +201,15 @@ function UpgradeCard({
       engine={catalog}
       layout="upgrade"
       progressId={id}
-      initInstalled={current}
+      initInstalled={current && !committing}
       labels={{
         completed: t("Engines.Upgrade.Current"),
         action: t("Common.Install"),
-        inProgress: t("Common.Downloading"),
+        inProgress: t(committing ? "Common.Extracting" : "Common.Downloading"),
         finalizing: t("Common.Extracting"),
       }}
       onClick={upgrade}
-      onCancel={active || hasJob ? cancel : undefined}
+      onCancel={!committing && (active || hasJob) ? cancel : undefined}
       inProgress={active || hasJob}
       setInProgress={() => undefined}
       disabled={busy}
