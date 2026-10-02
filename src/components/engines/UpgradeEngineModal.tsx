@@ -1,21 +1,9 @@
-import {
-  Alert,
-  Box,
-  Center,
-  Group,
-  Image,
-  Loader,
-  Paper,
-  ScrollArea,
-  SimpleGrid,
-  Text,
-} from "@mantine/core";
-import { IconAlertCircle, IconDatabase, IconTrophy } from "@tabler/icons-react";
+import { Alert, Center, Loader, ScrollArea, SimpleGrid } from "@mantine/core";
+import { IconAlertCircle } from "@tabler/icons-react";
 import { useSetAtom } from "jotai";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import AppModal from "@/components/common/AppModal";
-import ProgressButton from "@/components/common/ProgressButton";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { cancelDownloadJob, runDownloadJob, useDownloadJob } from "@/hooks/downloadJobs";
 import { cancellationError, tauri } from "@/platform/tauri";
@@ -36,7 +24,7 @@ import {
   type LocalEngine,
 } from "@/utils/engines";
 import { usePlatform } from "@/utils/files";
-import { formatBytes } from "@/utils/format";
+import CatalogEngineCard from "./CatalogEngineCard";
 
 export default function UpgradeEngineModal({
   engine,
@@ -199,47 +187,22 @@ function UpgradeCard({
   const { t } = useTranslation();
   const hasJob = useDownloadJob(id);
   return (
-    <Paper withBorder radius="md" p={0}>
-      <Group wrap="nowrap" gap={0}>
-        {catalog.imageUrl && (
-          <Box w="4rem" px="xs" style={{ flexShrink: 0 }}>
-            <Image src={catalog.imageUrl} alt={catalog.name} fit="contain" />
-          </Box>
-        )}
-        <Box p="sm" flex={1}>
-          <Text tt="uppercase" c="dimmed" fw={700} size="xs">
-            {t("Common.Engine")}
-          </Text>
-          <Text fw="bold" size="sm" mb="xs">
-            {catalog.name} {catalog.version}
-          </Text>
-          <Group wrap="nowrap" gap="xs">
-            <IconTrophy size="1rem" />
-            <Text size="xs">{`${catalog.elo} ELO`}</Text>
-          </Group>
-          <Group wrap="nowrap" gap="xs" mb="xs">
-            <IconDatabase size="1rem" />
-            <Text size="xs">{formatBytes(catalog.downloadSize ?? 0)}</Text>
-          </Group>
-          <ProgressButton
-            id={id}
-            initInstalled={current}
-            completeOnProgressSuccess={false}
-            labels={{
-              completed: t("Engines.Upgrade.Current"),
-              action: t("Common.Install"),
-              inProgress: t("Common.Downloading"),
-              finalizing: t("Common.Extracting"),
-            }}
-            onClick={upgrade}
-            onCancel={active || hasJob ? cancel : undefined}
-            clearOnCancel={false}
-            inProgress={active || hasJob}
-            setInProgress={() => undefined}
-            disabled={busy}
-          />
-        </Box>
-      </Group>
-    </Paper>
+    <CatalogEngineCard
+      engine={catalog}
+      layout="upgrade"
+      progressId={id}
+      initInstalled={current}
+      labels={{
+        completed: t("Engines.Upgrade.Current"),
+        action: t("Common.Install"),
+        inProgress: t("Common.Downloading"),
+        finalizing: t("Common.Extracting"),
+      }}
+      onClick={upgrade}
+      onCancel={active || hasJob ? cancel : undefined}
+      inProgress={active || hasJob}
+      setInProgress={() => undefined}
+      disabled={busy}
+    />
   );
 }

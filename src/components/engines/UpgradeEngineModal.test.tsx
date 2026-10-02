@@ -25,7 +25,7 @@ const mocks = vi.hoisted(() => ({
   report: vi.fn(),
   notify: vi.fn(),
   catalogError: undefined as unknown,
-  progress: 0,
+  progress: new Map<string, number>(),
 }));
 vi.mock("@/platform/tauri", async (original) => ({
   ...(await original<typeof import("@/platform/tauri")>()),
@@ -66,12 +66,12 @@ vi.mock("@/components/files/notifyError", async () => {
 });
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("@/hooks/useProgress", () => ({
-  useProgress: () => ({
-    progress: mocks.progress,
-    finished: mocks.progress === 100,
+  useProgress: (id: string) => ({
+    progress: mocks.progress.get(id) ?? 0,
+    finished: mocks.progress.get(id) === 100,
     isActive: false,
-    item: mocks.progress === 100 ? { state: "succeeded" } : null,
-    clear: mocks.clear,
+    item: mocks.progress.get(id) === 100 ? { state: "succeeded" } : null,
+    clear: () => mocks.clear(id),
     fence: vi.fn(),
   }),
 }));
@@ -173,15 +173,15 @@ beforeEach(async () => {
   resetEngineOwnerCoordinatorForTests();
   vi.clearAllMocks();
   mocks.catalogError = undefined;
-  mocks.progress = 0;
+  mocks.progress.clear();
   mocks.reconcile.mockReset().mockResolvedValue(undefined);
   mocks.download.mockReset().mockResolvedValue(undefined);
   mocks.register.mockReset().mockResolvedValue({ id: { id: "new" }, kind: "engine" });
   mocks.config.mockReset().mockResolvedValue(config);
   mocks.retire.mockReset().mockResolvedValue(undefined);
   mocks.cancel.mockReset().mockResolvedValue(true);
-  mocks.clear.mockReset().mockImplementation(async () => {
-    mocks.progress = 0;
+  mocks.clear.mockReset().mockImplementation(async (id: string) => {
+    mocks.progress.delete(id);
     return 1n;
   });
   store = createStore();
@@ -198,6 +198,9 @@ afterEach(async () => {
 });
 
 test("success saves once before retiring the old pair and keeps the same list position", async () => {
+  const first: LocalEngine = { ...old, id: "first", name: "First engine" };
+  const last: LocalEngine = { ...old, id: "last", name: "Last engine" };
+  await store.set(enginesAtom, [first, old, last], "after-save");
   const events: string[] = [];
   const write = Storage.prototype.setItem;
   vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key, value) {
@@ -206,13 +209,17 @@ test("success saves once before retiring the old pair and keeps the same list po
   });
   mocks.retire.mockImplementation(async () => {
     events.push("retired");
-    expect(store.get(enginesAtom)?.[0]).toMatchObject({ handle: { id: { id: "new" } } });
+    expect(store.get(enginesAtom)?.[1]).toMatchObject({ handle: { id: { id: "new" } } });
   });
   await render();
   await click("Common.Install");
   expect(events).toEqual(["saved", "retired"]);
   expect(mocks.retire).toHaveBeenCalledWith(old.id, old.handle);
-  expect(store.get(enginesAtom)?.[0]).toMatchObject({ id: old.id, name: "Stockfish 19" });
+  const engines = store.get(enginesAtom)!;
+  expect(engines).toHaveLength(3);
+  expect(engines[0]).toEqual(first);
+  expect(engines[1]).toMatchObject({ id: old.id, name: "Stockfish 19" });
+  expect(engines[2]).toEqual(last);
   expect(mocks.notify).not.toHaveBeenCalled();
 });
 
@@ -322,6 +329,9 @@ test("a refused player receipt reports an error without undoing the entry", asyn
 test.each([false, true])(
   "cancel intent keeps the old entry when request fails=%s; discarded completion clears progress to idle",
   async (fails) => {
+    const progressId = `engine-upgrade:${old.id}:${catalog.downloadLink}`;
+    const otherProgressId = "another-download";
+    mocks.progress.set(otherProgressId, 73);
     let complete!: () => void;
     mocks.download.mockImplementation(
       () =>
@@ -341,14 +351,19 @@ test.each([false, true])(
     await click("Common.Cancel");
     expect(mocks.notify).toHaveBeenCalledTimes(fails ? 1 : 0);
     if (fails) {
-      mocks.progress = 100;
+      mocks.progress.set(progressId, 100);
       await act(async () => complete());
     }
-    await vi.waitFor(() => expect(mocks.clear).toHaveBeenCalled());
+    await vi.waitFor(() => expect(mocks.clear).toHaveBeenCalledWith(progressId));
+    expect(mocks.clear).toHaveBeenCalledTimes(1);
+    expect(mocks.progress.has(progressId)).toBe(false);
+    expect(mocks.progress.get(otherProgressId)).toBe(73);
     expect(store.get(enginesAtom)).toEqual([old]);
     expect(mocks.retire).not.toHaveBeenCalled();
     expect(mocks.reconcile).not.toHaveBeenCalled();
-    expect(host.textContent).toContain("Common.Install");
+    const button = host.querySelector("button")!;
+    expect(button.textContent).toBe("Common.Install");
+    expect(button.disabled).toBe(false);
     expect(host.querySelector("[data-progress]")).toBeNull();
     expect(host.textContent).not.toContain("Common.Downloading");
     expect(host.textContent).not.toContain("Common.Extracting");

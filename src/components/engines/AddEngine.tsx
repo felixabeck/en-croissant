@@ -4,7 +4,6 @@ import {
   Button,
   Center,
   Group,
-  Image,
   Loader,
   Paper,
   ScrollArea,
@@ -13,7 +12,7 @@ import {
   Text,
 } from "@mantine/core";
 import { useForm } from "@mantine/form";
-import { IconAlertCircle, IconDatabase, IconTrophy } from "@tabler/icons-react";
+import { IconAlertCircle } from "@tabler/icons-react";
 import { useAtom } from "jotai";
 import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -31,8 +30,7 @@ import {
   useDefaultEngines,
 } from "@/utils/engines";
 import { usePlatform } from "@/utils/files";
-import { formatBytes } from "@/utils/format";
-import ProgressButton from "../common/ProgressButton";
+import CatalogEngineCard from "./CatalogEngineCard";
 import EngineForm from "./EngineForm";
 import { createEngineFormValidation } from "./engineFormValidation";
 
@@ -237,51 +235,26 @@ function EngineCard({
   }, [engine, progressId, setEngines, t]);
 
   return (
-    <Paper withBorder radius="md" p={0} key={engine.name}>
-      <Group wrap="nowrap" gap={0} grow>
-        {engine.imageUrl && (
-          <Box w="1.75rem" px="xs">
-            <Image src={engine.imageUrl} alt={engine.name} fit="contain" />
-          </Box>
-        )}
-        <Box p="sm" flex={1}>
-          <Text tt="uppercase" c="dimmed" fw={700} size="xs">
-            {t("Common.Engine")}
-          </Text>
-          <Text fw="bold" size="sm" mb="xs">
-            {engine.name} {engine.version}
-          </Text>
-          <Group wrap="nowrap" gap="xs" fz="xs">
-            <IconTrophy size="1rem" />
-            <Text size="xs">{`${engine.elo} ELO`}</Text>
-          </Group>
-          <Group wrap="nowrap" gap="xs" mb="xs" fz="xs">
-            <IconDatabase size="1rem" />
-            <Text size="xs">{formatBytes(engine.downloadSize ?? 0)}</Text>
-          </Group>
-          {progressId && (
-            <ProgressButton
-              id={progressId}
-              initInstalled={initInstalled || installedThisSession}
-              completeOnProgressSuccess={false}
-              labels={{
-                completed: t("Common.Installed"),
-                action: t("Common.Install"),
-                inProgress: t("Common.Downloading"),
-                finalizing: t("Common.Extracting"),
-              }}
-              onClick={() => {
-                void downloadEngine();
-              }}
-              onCancel={hasJob ? () => cancelDownloadJob(progressId, t("Common.Error")) : undefined}
-              clearOnCancel={false}
-              inProgress={inProgress || hasJob}
-              setInProgress={setInProgress}
-            />
-          )}
-        </Box>
-      </Group>
-    </Paper>
+    <CatalogEngineCard
+      engine={engine}
+      layout="add"
+      progressId={progressId}
+      initInstalled={initInstalled || installedThisSession}
+      labels={{
+        completed: t("Common.Installed"),
+        action: t("Common.Install"),
+        inProgress: t("Common.Downloading"),
+        finalizing: t("Common.Extracting"),
+      }}
+      onClick={() => {
+        void downloadEngine();
+      }}
+      onCancel={
+        hasJob && progressId ? () => cancelDownloadJob(progressId, t("Common.Error")) : undefined
+      }
+      inProgress={inProgress || hasJob}
+      setInProgress={setInProgress}
+    />
   );
 }
 

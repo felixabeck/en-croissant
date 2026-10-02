@@ -1,15 +1,35 @@
-import { expect, test, upgradeEngineFixture } from "./fixtures";
+import { expect, test } from "./fixtures";
 
 test("accounts-puzzles-engines: local settings and catalog upgrade modal", async ({
     page,
     mockScenario,
     capture,
 }) => {
-    await page.addInitScript((engine) => {
-        localStorage.setItem("engines", JSON.stringify([engine]));
+    await page.addInitScript(() => {
+        localStorage.setItem(
+            "engines",
+            JSON.stringify([
+                {
+                    type: "local",
+                    id: "stockfish-entry",
+                    name: "Stockfish 18",
+                    version: "18",
+                    handle: { id: { id: "stockfish-18" }, kind: "engine" },
+                    filename: "Stockfish 18",
+                    elo: 3650,
+                    loaded: true,
+                    go: { t: "Infinite" },
+                    settings: [
+                        { type: "string", name: "Threads", value: "20" },
+                        { type: "string", name: "Hash", value: "8192" },
+                        { type: "string", name: "MultiPV", value: "4" },
+                    ],
+                },
+            ]),
+        );
         // This new settings proof uses the normal product font scale so all actions fit.
         localStorage.setItem("font-size", "100");
-    }, upgradeEngineFixture);
+    });
     await mockScenario({
         commands: {
             is_bmi2_compatible: { result: false },
