@@ -12433,3 +12433,16 @@ Handled by `f19e14ac` (Stockfish 19 upgrade build, phase P2, obligation O2). A g
 * **Why it matters:** the backend ratchet's local green — the push gate — can be inflated by history and disagree with CI, which is the next reader's first suspicion of "machine dependence" (`CLAUDE.md`, `f-20260829-01`) when it is in fact stale input. A push can pass every local gate and turn CI red.
 * **Open question:** clear `.profraw` files under `coverageTarget` before the run (and fail if any survive), or merge only the profiles whose binary signature matches the binary just built; plus the staged-failure matrix row for the new refusal (push-review-policy §2, the script is read as evidence).
 * **Found by:** Stockfish 19 upgrade build, CI red after push, 2026-10-02 (orchestrator measurement above).
+
+---
+
+## 2026-10-02 — filed through the inbox spool
+
+### CI `test` is red on `04f43c1b`: the engine-archive adoption test compiles an unexecuted copy of the download chain
+
+* **ID:** f-20261002-10 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src-tauri/src/fs.rs` `download_engine_archive_core<R, V>` (generic over the integrity validator `V`), test `catalog_digest_directories_are_distinct_and_same_artifact_is_adopted` (its adoption call passes a capturing `move |_, _, _| {…}` validator and returns before downloading); CI run 36993984299, job `test` (110796371899), step `pnpm coverage:backend:check`.
+* **Defect:** `filesystem-native-boundaries functions regressed: 359/673, baseline 340/634`. Each distinct validator closure type instantiates its own copy of `download_file_core_control_with_integrity`, `await_staging_deadline` and the publish spawn; the adoption call's copy never runs, leaving 8 uncovered function records in the area (measured by diffing the CI LCOV artifact against a clean local run, which reproduces 359/673 exactly). The local push gate passed only because of stale profiles (`f-20261002-09`).
+* **Why it matters:** master's `test` job is red; every later push lands on a red remote until this is repaired.
+* **Fix shape:** type-erase the validator parameter (`Box<dyn Fn(OpClass, &str, &ArtifactIntegrity) -> Result<(), Error> + Send + Sync>`), so every MockRuntime caller shares one instance; no baseline change.
+* **Found by:** Stockfish 19 upgrade build, post-push CI verification, 2026-10-02.
