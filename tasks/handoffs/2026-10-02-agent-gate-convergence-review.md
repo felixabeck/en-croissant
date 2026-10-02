@@ -9654,7 +9654,7 @@ UNCHANGED
 @@ -321,11 +321,11 @@
    `tasks/handoffs/2026-10-02-agent-gate-convergence-review.md`; f-20260930-03 closed through
    `./scripts/findings.py close` naming the commits and M's figures.
- 
+
 -## Review summary (plan review closed 2026-10-02)
 -
 -* Rounds: 8 completed (r8 an evidence-only closure check at revision r7). Wall time per round (s): r1 467 · r2 487 · r3 548 · r4 507 · r5 1114 · r6 586 · r7 709 + 367 (first-look coverage) · r8 506 — ≈ 1 h 34 min of review wall time; orchestrator probing and triage between rounds not included.
