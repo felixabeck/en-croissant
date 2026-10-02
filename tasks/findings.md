@@ -12459,3 +12459,17 @@ Handled by `f19e14ac` (Stockfish 19 upgrade build, phase P2, obligation O2). A g
 
 Handled by the commit after `f-20261002-10`'s filing that type-erases `download_engine_archive_core`'s validator (`ArtifactIntegrityValidator`, a boxed `dyn Fn`). Measured on a cleared `.profraw` set: `filesystem-native-boundaries` functions 359/673 before (reproducing CI run 36993984299) and 355/648 after, above the 340/634 baseline; `pnpm coverage:backend:check` passes. CI confirmation follows on the next push.
 <!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"4e6905698890e24bd120af6751c699ec97343835690e47663d6d0db16f32d745","header_sha256":"f9d0ce98802b6204ceee37f926be04cd2fba1a7120fd301214d7d304ca0e374c","header_status":"handled","input_sha256":"6ddc2caab27a8b6060e386826afe442b6d8a88b157091e2fdb5111c3d506e66a","kind":"mutation-receipt","operation":"2897cb3bf77cb78221fb2a2675c268e2701d8c21353a19617084e2cc58bbe018","options":{"section":null},"request_id_sha256":null,"results":["f-20261002-10"],"target":"f-20261002-10","v":1} -->
+
+---
+
+## 2026-10-02 — filed through the inbox spool
+
+### `tasks/decisions.md` header says rule 4c makes every decision reversible only by Felix, contradicting the ledger contract
+
+* **ID:** f-20261002-11 · **Status:** open · **Area:** docs-agent-config · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Filed from:** 021d2888-c904-44b0-af74-a8f4604318bd
+* **Where:** `tasks/decisions.md` header, lines 10-12 ("Universal rule 4c applies without exception: a recorded decision is reversed by Felix, in the chat, and by nothing else, …").
+* **Defect:** the header states rule 4c as absolute over this file. Global `~/.claude/CLAUDE.md` rule 4c now says it "Governs records attributed to Felix", that `tasks/decisions.md` holds decisions made *without* him and is superseded under the ledger contract's clause 2 (new evidence, prior named, `superseded-by`), and "Do not read this rule as absolute over that file (clauses 2 and 4 would become dead letters)"; `~/.claude/references/findings-ledger-contract.md` clause 2 says the same. A session that reads the header first gets the opposite instruction and either refuses an evidence-backed supersession or routes a technical refinement to Felix. Found by the records lens of the f-20260930-03 cumulative diff review (2026-10-02), which superseded `d-20261001-01`, `d-20261001-02` and `d-20261002-02` under clause 2.
+* **Change:** replace that sentence with the current rule: rule 4c governs records attributed to Felix; entries here are agent decisions, reversed only with new evidence through `superseded-by` (contract clause 2), and a second reversal of one question parks it (clause 4). Edit the header only while no drain holds the decisions lock, through the locked writer if `findings.py` gains one for headers; keep the "no session writes `(Felix, <date>)`" clause.
+* **Proof:** `./scripts/findings.py check` and `pnpm gates:contract:check` green; `grep -n 'without exception' tasks/decisions.md` prints nothing.
+* **Found by:** Claude Code, drain build run for f-20260930-03 (session 021d2888-c904-44b0-af74-a8f4604318bd), records lens, 2026-10-02.
