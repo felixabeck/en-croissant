@@ -4756,6 +4756,28 @@ impl PathAuthority {
     pub(crate) fn has_persistent_id(&self, id: &str) -> bool {
         self.persistent.contains_key(id)
     }
+    /// Grants `path` through a one-use bounded dialog grant and promotes it to a persistent file,
+    /// the two-step route a user's dialog selection takes.
+    #[cfg(test)]
+    pub(crate) fn grant_persistent_file_for_test(
+        &mut self,
+        path: &Path,
+        display_name: &str,
+        operations: Vec<PathOperation>,
+    ) -> PathCommit {
+        let grant = self
+            .grant_dialog_operations(
+                path,
+                display_name,
+                PathClass::BoundedDialogGrant,
+                operations.clone(),
+                Duration::from_secs(30),
+                1,
+            )
+            .expect("test dialog grant");
+        self.promote_dialog(&grant, PathClass::PersistentFile, display_name, operations)
+            .expect("test grant promotion")
+    }
     #[cfg(test)]
     pub(crate) fn parent_identity_for_test(&self, id: &PathRef) -> Option<(u64, u64)> {
         let parent = self

@@ -673,6 +673,35 @@ pub(crate) fn take_resolve_database_operations() -> Vec<PathOperation> {
 }
 
 #[cfg(test)]
+fn full_database_operations() -> Vec<PathOperation> {
+    vec![
+        PathOperation::DatabaseRead,
+        PathOperation::DatabaseMutate,
+        PathOperation::DatabaseCreate,
+        PathOperation::DatabaseExport,
+    ]
+}
+
+#[cfg(test)]
+fn database_app_with_grant(
+    registry_dir: &std::path::Path,
+    registered_path: &std::path::Path,
+    display_name: &str,
+    operations: Vec<PathOperation>,
+) -> (tauri::AppHandle<tauri::test::MockRuntime>, DatabaseHandle) {
+    use tauri::Manager;
+
+    let mut authority = PathAuthority::open(registry_dir.join("registry.json"), vec![]).unwrap();
+    let commit =
+        authority.grant_persistent_file_for_test(registered_path, display_name, operations);
+    let state = AppState::default();
+    *state.pgn_path_authority.lock().unwrap() = Some(authority);
+    let app = tauri::test::mock_app();
+    app.manage(state);
+    (app.handle().clone(), DatabaseHandle::new(commit.id))
+}
+
+#[cfg(test)]
 pub(crate) fn schema_database_case(
     file_stem: &str,
     operations: Vec<PathOperation>,
@@ -693,35 +722,8 @@ pub(crate) fn schema_database_case(
         .unwrap();
     drop(connection);
 
-    let mut authority = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
-    let grant = authority
-        .grant_dialog_operations(
-            &database,
-            file_stem,
-            crate::infra::path_authority::PathClass::BoundedDialogGrant,
-            operations.clone(),
-            std::time::Duration::from_secs(30),
-            1,
-        )
-        .unwrap();
-    let commit = authority
-        .promote_dialog(
-            &grant,
-            crate::infra::path_authority::PathClass::PersistentFile,
-            file_stem,
-            operations,
-        )
-        .unwrap();
-    let state = AppState::default();
-    *state.pgn_path_authority.lock().unwrap() = Some(authority);
-    let app = tauri::test::mock_app();
-    app.manage(state);
-    (
-        dir,
-        app.handle().clone(),
-        DatabaseHandle::new(commit.id),
-        database,
-    )
+    let (app, handle) = database_app_with_grant(dir.path(), &database, file_stem, operations);
+    (dir, app, handle, database)
 }
 
 #[cfg(test)]
@@ -731,15 +733,7 @@ fn blocking_database_case() -> (
     DatabaseHandle,
     std::path::PathBuf,
 ) {
-    schema_database_case(
-        "games",
-        vec![
-            PathOperation::DatabaseRead,
-            PathOperation::DatabaseMutate,
-            PathOperation::DatabaseCreate,
-            PathOperation::DatabaseExport,
-        ],
-    )
+    schema_database_case("games", full_database_operations())
 }
 
 #[cfg(test)]
@@ -751,46 +745,16 @@ fn arbitrary_database_case(
     DatabaseHandle,
     std::path::PathBuf,
 ) {
-    use tauri::Manager;
-
     let dir = tempfile::tempdir().unwrap();
     let database = dir.path().join("arbitrary.db3");
     std::fs::write(&database, contents).unwrap();
-    let mut authority = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
-    let operations = vec![
-        PathOperation::DatabaseRead,
-        PathOperation::DatabaseMutate,
-        PathOperation::DatabaseCreate,
-        PathOperation::DatabaseExport,
-    ];
-    let grant = authority
-        .grant_dialog_operations(
-            &database,
-            "arbitrary",
-            crate::infra::path_authority::PathClass::BoundedDialogGrant,
-            operations.clone(),
-            std::time::Duration::from_secs(30),
-            1,
-        )
-        .unwrap();
-    let commit = authority
-        .promote_dialog(
-            &grant,
-            crate::infra::path_authority::PathClass::PersistentFile,
-            "arbitrary",
-            operations,
-        )
-        .unwrap();
-    let state = AppState::default();
-    *state.pgn_path_authority.lock().unwrap() = Some(authority);
-    let app = tauri::test::mock_app();
-    app.manage(state);
-    (
-        dir,
-        app.handle().clone(),
-        DatabaseHandle::new(commit.id),
-        database,
-    )
+    let (app, handle) = database_app_with_grant(
+        dir.path(),
+        &database,
+        "arbitrary",
+        full_database_operations(),
+    );
+    (dir, app, handle, database)
 }
 
 #[cfg(test)]
@@ -6045,19 +6009,7 @@ mod tests {
         let state = app.state::<AppState>();
         let mut guard = state.pgn_path_authority.lock().unwrap();
         let authority = guard.as_mut().unwrap();
-        let grant = authority
-            .grant_dialog_operations(
-                path,
-                display_name,
-                PathClass::BoundedDialogGrant,
-                operations.clone(),
-                std::time::Duration::from_secs(30),
-                1,
-            )
-            .unwrap();
-        let commit = authority
-            .promote_dialog(&grant, PathClass::PersistentFile, display_name, operations)
-            .unwrap();
+        let commit = authority.grant_persistent_file_for_test(path, display_name, operations);
         FileWorkspaceHandle::new(commit.id)
     }
 
@@ -6536,20 +6488,11 @@ mod tests {
         let state = app.state::<AppState>();
         let mut guard = state.pgn_path_authority.lock().unwrap();
         let authority = guard.as_mut().unwrap();
-        let operations = vec![PathOperation::WritePgn];
-        let grant = authority
-            .grant_dialog_operations(
-                path,
-                "export.pgn",
-                PathClass::BoundedDialogGrant,
-                operations.clone(),
-                std::time::Duration::from_secs(30),
-                1,
-            )
-            .unwrap();
-        let commit = authority
-            .promote_dialog(&grant, PathClass::PersistentFile, "export.pgn", operations)
-            .unwrap();
+        let commit = authority.grant_persistent_file_for_test(
+            path,
+            "export.pgn",
+            vec![PathOperation::WritePgn],
+        );
         FileWorkspaceHandle::new(commit.id)
     }
 
@@ -7608,36 +7551,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let database = dir.path().join("games.db3");
         File::create(&database).unwrap();
-        let mut authority = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
-        let operations = vec![
-            PathOperation::DatabaseRead,
-            PathOperation::DatabaseMutate,
-            PathOperation::DatabaseCreate,
-            PathOperation::DatabaseExport,
-        ];
-        let grant = authority
-            .grant_dialog_operations(
-                &database,
-                "games",
-                PathClass::BoundedDialogGrant,
-                operations.clone(),
-                std::time::Duration::from_secs(30),
-                1,
-            )
-            .unwrap();
-        let commit = authority
-            .promote_dialog(&grant, PathClass::PersistentFile, "games", operations)
-            .unwrap();
-        let state = AppState::default();
-        *state.pgn_path_authority.lock().unwrap() = Some(authority);
-        let app = tauri::test::mock_app();
-        app.manage(state);
-        (
-            dir,
-            app.handle().clone(),
-            DatabaseHandle::new(commit.id),
-            database,
-        )
+        let (app, handle) =
+            database_app_with_grant(dir.path(), &database, "games", full_database_operations());
+        (dir, app, handle, database)
     }
 
     #[test]
@@ -9890,30 +9806,12 @@ mod tests {
         let (dir, app, handle, _database) = blocking_database_case();
         let pgn_path = dir.path().join("one-game.pgn");
         std::fs::write(&pgn_path, REPLACEMENT_PGN).unwrap();
-        let pgn_handle = {
-            let state = app.state::<AppState>();
-            let mut guard = state.pgn_path_authority.lock().unwrap();
-            let authority = guard.as_mut().unwrap();
-            let grant = authority
-                .grant_dialog_operations(
-                    &pgn_path,
-                    "one-game.pgn",
-                    PathClass::BoundedDialogGrant,
-                    vec![PathOperation::ReadPgn, PathOperation::WritePgn],
-                    std::time::Duration::from_secs(30),
-                    1,
-                )
-                .unwrap();
-            let commit = authority
-                .promote_dialog(
-                    &grant,
-                    PathClass::PersistentFile,
-                    "one-game.pgn",
-                    vec![PathOperation::ReadPgn, PathOperation::WritePgn],
-                )
-                .unwrap();
-            FileWorkspaceHandle::new(commit.id)
-        };
+        let pgn_handle = grant_pgn_file(
+            &app,
+            &pgn_path,
+            "one-game.pgn",
+            vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+        );
         mount_convert_progress_events(&app);
         let frames = capture_events::<ConvertProgress>(&app);
         let progress_id = "convert-one-game";
@@ -10983,7 +10881,6 @@ mod tests {
 #[cfg(test)]
 mod deletion_tests {
     use super::*;
-    use crate::infra::path_authority::PathClass;
     use std::path::Path;
     use tauri::Manager;
 
@@ -11023,31 +10920,12 @@ mod deletion_tests {
         drop(connection);
         link_directory(&real_dir, &link_dir);
 
-        let mut authority = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
-        let operations = vec![
-            PathOperation::DatabaseRead,
-            PathOperation::DatabaseMutate,
-            PathOperation::DatabaseCreate,
-            PathOperation::DatabaseExport,
-        ];
-        let grant = authority
-            .grant_dialog_operations(
-                &registered_path,
-                "games",
-                PathClass::BoundedDialogGrant,
-                operations.clone(),
-                std::time::Duration::from_secs(30),
-                1,
-            )
-            .unwrap();
-        let committed = authority
-            .promote_dialog(&grant, PathClass::PersistentFile, "games", operations)
-            .unwrap();
-        let handle = DatabaseHandle::new(committed.id);
-        let state = AppState::default();
-        *state.pgn_path_authority.lock().unwrap() = Some(authority);
-        let app = tauri::test::mock_app();
-        app.manage(state);
+        let (app, handle) = database_app_with_grant(
+            dir.path(),
+            &registered_path,
+            "games",
+            full_database_operations(),
+        );
         let state = app.state::<AppState>();
 
         let resolved = resolve_database(
