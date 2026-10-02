@@ -70,6 +70,24 @@ fn corrupt(app: &App, handle: &DatabaseHandle, foreign_key: bool) {
     let state = app.state::<AppState>();
     let target = target(app, handle);
     let mut connection = state.database_repository.connection(&target, None).unwrap();
+    corrupt_connection(&mut connection, foreign_key);
+    drop(connection);
+    if !foreign_key {
+        let bound = bound_sqlite::BoundDatabase::acquire(&target).unwrap();
+        let mut read_only =
+            SqliteConnection::establish(&bound.uri(bound_sqlite::SqliteMode::ReadOnly).unwrap())
+                .unwrap();
+        let result =
+            sqlite_cancellation::with_sqlite_cancellation(&CancellationToken::new(), || {
+                migrations::validate_content(&mut read_only)
+            });
+        assert!(
+            matches!(result, Err(Error::InvalidInput(message)) if message == "SQLite integrity_check failed")
+        );
+    }
+}
+
+fn corrupt_connection(connection: &mut SqliteConnection, foreign_key: bool) {
     if foreign_key {
         connection.batch_execute("PRAGMA foreign_keys=OFF; INSERT INTO Games (WhiteID) VALUES (999); PRAGMA foreign_keys=ON;").unwrap();
     } else {
@@ -89,20 +107,6 @@ fn corrupt(app: &App, handle: &DatabaseHandle, foreign_key: bool) {
             .unwrap();
     }
     connection.batch_execute("INSERT OR REPLACE INTO Info VALUES ('Title', 'Stored title'), ('GameCount', '42'), ('PlayerCount', '9'), ('EventCount', '3');").unwrap();
-    drop(connection);
-    if !foreign_key {
-        let bound = bound_sqlite::BoundDatabase::acquire(&target).unwrap();
-        let mut read_only =
-            SqliteConnection::establish(&bound.uri(bound_sqlite::SqliteMode::ReadOnly).unwrap())
-                .unwrap();
-        let result =
-            sqlite_cancellation::with_sqlite_cancellation(&CancellationToken::new(), || {
-                migrations::validate_content(&mut read_only)
-            });
-        assert!(
-            matches!(result, Err(Error::InvalidInput(message)) if message == "SQLite integrity_check failed")
-        );
-    }
 }
 
 fn frames(app: &App) -> Arc<std::sync::Mutex<Vec<DatabaseContentFailure>>> {
@@ -153,6 +157,24 @@ async fn drain(app: &App) {
             .is_empty()
     })
     .await;
+}
+
+async fn assert_pending_integrity_retry(
+    app: &App,
+    handle: &DatabaseHandle,
+    path: &Path,
+    events: &std::sync::Mutex<Vec<DatabaseContentFailure>>,
+) {
+    migrations::take_content_pragma_counts();
+    let state = app.state::<AppState>();
+    assert!(
+        matches!(get_db_info_blocking(&state.pgn_path_authority, &state.database_repository, handle.clone()), Err(Error::InvalidInput(message)) if message == "SQLite integrity_check failed")
+    );
+    assert_eq!(migrations::take_content_pragma_counts(), (0, 0));
+    assert!(stamp_path(path).is_file());
+    assert!(fetch(app, handle).await.is_err());
+    assert!(state.operations.outstanding_labels().unwrap().is_empty());
+    assert_eq!(events.lock().unwrap().len(), 1);
 }
 
 #[derive(Default)]
@@ -439,68 +461,70 @@ async fn content_validation_worker_rechecks_completed_stamp_without_pragmas_writ
 #[tokio::test]
 async fn content_validation_pre_epoch_modified_time_round_trips_and_pass_stamp_suppresses_scan() {
     let _serial = SERIAL.lock().await;
-    let (_dir, app, handle, path) = blocking_database_case();
-    warm(&app, &handle);
-    let state = app.state::<AppState>();
-    let target = target(&app, &handle);
-    {
-        let mut writer = state.database_repository.connection(&target, None).unwrap();
-        writer
-            .batch_execute("PRAGMA wal_checkpoint(TRUNCATE);")
+    for nanoseconds in [250_000_000, 0] {
+        let (_dir, app, handle, path) = blocking_database_case();
+        warm(&app, &handle);
+        let state = app.state::<AppState>();
+        let target = target(&app, &handle);
+        {
+            let mut writer = state.database_repository.connection(&target, None).unwrap();
+            writer
+                .batch_execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                .unwrap();
+        }
+        let expected =
+            std::time::UNIX_EPOCH - Duration::from_secs(86_400) + Duration::from_nanos(nanoseconds);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(expected)
             .unwrap();
-    }
-    let expected =
-        std::time::UNIX_EPOCH - Duration::from_secs(86_400) + Duration::from_nanos(250_000_000);
-    std::fs::OpenOptions::new()
-        .write(true)
-        .open(&path)
+        let identity = state
+            .database_repository
+            .database_identity(&target)
+            .unwrap();
+        assert_eq!(identity.modified, expected);
+        migrations::take_content_pragma_counts();
+        let emitted = AtomicUsize::new(0);
+        content_validation::scan_worker(
+            &state.database_repository,
+            &target,
+            &identity,
+            &CancellationToken::new(),
+            |_| {
+                emitted.fetch_add(1, Ordering::SeqCst);
+            },
+        )
+        .unwrap();
+        assert_eq!(migrations::take_content_pragma_counts(), (1, 1));
+        assert!(stamp_path(&path).is_file());
+        let encoded: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(stamp_path(&path)).unwrap()).unwrap();
+        assert_eq!(encoded["identity"]["modified"]["seconds"], -86_400);
+        assert_eq!(encoded["identity"]["modified"]["nanoseconds"], nanoseconds);
+        let metadata = get_db_info_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle.clone(),
+        )
+        .unwrap();
+        assert!(metadata.scan.is_none());
+        assert_eq!(migrations::take_content_pragma_counts(), (0, 0));
+        assert_eq!(emitted.load(Ordering::SeqCst), 0);
+        // An unreadable timestamp remains a missing stamp, never a corruption verdict.
+        let mut malformed = encoded;
+        malformed["identity"]["modified"]["nanoseconds"] = serde_json::json!(1_000_000_000_u32);
+        std::fs::write(stamp_path(&path), serde_json::to_vec(&malformed).unwrap()).unwrap();
+        assert!(get_db_info_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle
+        )
         .unwrap()
-        .set_modified(expected)
-        .unwrap();
-    let identity = state
-        .database_repository
-        .database_identity(&target)
-        .unwrap();
-    assert_eq!(identity.modified, expected);
-    migrations::take_content_pragma_counts();
-    let emitted = AtomicUsize::new(0);
-    content_validation::scan_worker(
-        &state.database_repository,
-        &target,
-        &identity,
-        &CancellationToken::new(),
-        |_| {
-            emitted.fetch_add(1, Ordering::SeqCst);
-        },
-    )
-    .unwrap();
-    assert_eq!(migrations::take_content_pragma_counts(), (1, 1));
-    assert!(stamp_path(&path).is_file());
-    let encoded: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(stamp_path(&path)).unwrap()).unwrap();
-    assert_eq!(encoded["identity"]["modified"]["seconds"], -86_400);
-    assert_eq!(encoded["identity"]["modified"]["nanoseconds"], 250_000_000);
-    let metadata = get_db_info_blocking(
-        &state.pgn_path_authority,
-        &state.database_repository,
-        handle.clone(),
-    )
-    .unwrap();
-    assert!(metadata.scan.is_none());
-    assert_eq!(migrations::take_content_pragma_counts(), (0, 0));
-    assert_eq!(emitted.load(Ordering::SeqCst), 0);
-    // An unreadable timestamp remains a missing stamp, never a corruption verdict.
-    let mut malformed = encoded;
-    malformed["identity"]["modified"]["nanoseconds"] = serde_json::json!(1_000_000_000_u32);
-    std::fs::write(stamp_path(&path), serde_json::to_vec(&malformed).unwrap()).unwrap();
-    assert!(get_db_info_blocking(
-        &state.pgn_path_authority,
-        &state.database_repository,
-        handle
-    )
-    .unwrap()
-    .scan
-    .is_some());
+        .scan
+        .is_some());
+    }
 }
 
 #[tokio::test]
@@ -735,6 +759,28 @@ async fn content_validation_transient_execution_error_writes_no_corruption_stamp
 }
 
 #[tokio::test]
+async fn content_validation_resolved_pass_stamp_warning_names_database_leaf() {
+    let _serial = SERIAL.lock().await;
+    let (_dir, app, handle, path) = blocking_database_case();
+    let identity = warm(&app, &handle);
+    std::fs::create_dir(stamp_path(&path)).unwrap();
+    let state = app.state::<AppState>();
+    let capture = crate::error::LogCaptureScope::start();
+    content_validation::publish_passed_stamp(
+        &state.database_repository,
+        &state.pgn_path_authority,
+        &handle,
+        &identity,
+    );
+    let leaf = path.file_name().unwrap().to_string_lossy();
+    assert!(capture.messages().iter().any(|message| {
+        message.contains("passed content validation stamp publication failed")
+            && message.contains(leaf.as_ref())
+    }));
+    assert!(stamp_path(&path).is_dir());
+}
+
+#[tokio::test]
 async fn content_validation_failed_stamp_write_and_identity_probe_keep_pending_verdict() {
     use crate::infra::fs::{self, AtomicFileFaultPoint, AtomicWriterInjector};
 
@@ -767,10 +813,23 @@ async fn content_validation_failed_stamp_write_and_identity_probe_keep_pending_v
 
     let _serial = SERIAL.lock().await;
     let (_dir, app, handle, path) = blocking_database_case();
-    corrupt(&app, &handle, false);
-    let identity = warm(&app, &handle);
     let state = app.state::<AppState>();
     let target = target(&app, &handle);
+    {
+        // Close every SQLite handle before the fault renames the primary on Windows.
+        let bound = bound_sqlite::BoundDatabase::acquire(&target).unwrap();
+        let mut connection =
+            SqliteConnection::establish(&bound.uri(bound_sqlite::SqliteMode::ReadWrite).unwrap())
+                .unwrap();
+        connection
+            .batch_execute("PRAGMA journal_mode=WAL;")
+            .unwrap();
+        corrupt_connection(&mut connection, false);
+    }
+    let identity = state
+        .database_repository
+        .database_identity(&target)
+        .unwrap();
     let events = frames(&app);
     let failed_probe = Arc::new(AtomicBool::new(false));
     {
@@ -816,15 +875,7 @@ async fn content_validation_failed_stamp_write_and_identity_probe_keep_pending_v
             .unwrap(),
         identity
     );
-    migrations::take_content_pragma_counts();
-    assert!(
-        matches!(get_db_info_blocking(&state.pgn_path_authority, &state.database_repository, handle.clone()), Err(Error::InvalidInput(message)) if message == "SQLite integrity_check failed")
-    );
-    assert_eq!(migrations::take_content_pragma_counts(), (0, 0));
-    assert!(stamp_path(&path).is_file());
-    assert!(fetch(&app, &handle).await.is_err());
-    assert!(state.operations.outstanding_labels().unwrap().is_empty());
-    assert_eq!(events.lock().unwrap().len(), 1);
+    assert_pending_integrity_retry(&app, &handle, &path, &events).await;
 }
 
 #[tokio::test]
@@ -838,16 +889,7 @@ async fn content_validation_failed_stamp_write_keeps_verdict_retries_on_metadata
     drain(&app).await;
     assert_eq!(events.lock().unwrap().len(), 1);
     std::fs::remove_dir(stamp_path(&path)).unwrap();
-    migrations::take_content_pragma_counts();
-    let state = app.state::<AppState>();
-    assert!(
-        matches!(get_db_info_blocking(&state.pgn_path_authority, &state.database_repository, handle.clone()), Err(Error::InvalidInput(message)) if message == "SQLite integrity_check failed")
-    );
-    assert_eq!(migrations::take_content_pragma_counts(), (0, 0));
-    assert!(stamp_path(&path).is_file());
-    assert!(fetch(&app, &handle).await.is_err());
-    assert!(state.operations.outstanding_labels().unwrap().is_empty());
-    assert_eq!(events.lock().unwrap().len(), 1);
+    assert_pending_integrity_retry(&app, &handle, &path, &events).await;
 }
 
 #[tokio::test]

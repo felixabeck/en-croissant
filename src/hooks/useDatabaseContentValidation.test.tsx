@@ -1,6 +1,6 @@
 import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import useSWR, { SWRConfig } from "swr";
+import useSWR, { SWRConfig, unstable_serialize } from "swr";
 import useSWRImmutable from "swr/immutable";
 import { afterEach, expect, test, vi } from "vitest";
 import type { DatabaseContentFailure } from "@/bindings";
@@ -28,7 +28,12 @@ function deferred() {
   return { promise, resolve };
 }
 
-async function mount(pending?: "databases" | "personalDatabases", dedupingInterval = 0) {
+async function mount(
+  pending?: "databases" | "personalDatabases",
+  dedupingInterval = 0,
+  observeUnmountedRevalidation = false,
+) {
+  const cache = new Map();
   const gate = deferred();
   let failedStamp = false;
   const reads = { databases: 0, personalDatabases: 0, other: 0 };
@@ -36,6 +41,9 @@ async function mount(pending?: "databases" | "personalDatabases", dedupingInterv
     const failedAtRead = failedStamp;
     reads[name] += 1;
     if (name === pending && reads[name] === 1) await gate.promise;
+    if (observeUnmountedRevalidation && name === "personalDatabases" && reads[name] === 2) {
+      await gate.promise;
+    }
     return failedAtRead ? "SQLite integrity_check failed" : "stored title";
   };
   const databaseFetch = fetch("databases");
@@ -48,17 +56,31 @@ async function mount(pending?: "databases" | "personalDatabases", dedupingInterv
     const other = useSWRImmutable(otherPersonalKey, () => otherOwner!.run(otherFetch));
     return <output data-personal={home.data} data-other={other.data} />;
   }
-  let setHomeMounted: (mounted: boolean) => void;
-  function Probe() {
+  // Keep SWR's fetcher mounted without a native request owner so public mutate
+  // can be paused while Home has no committed subscriber.
+  function CacheRevalidator() {
+    useSWRImmutable(personalKey, personalFetch);
+    return null;
+  }
+  function ValidationListener() {
     useDatabaseContentValidation();
+    return null;
+  }
+  let setHomeMounted: (mounted: boolean) => void;
+  let setListenerMounted: (mounted: boolean) => void;
+  function Probe() {
     const [homeMounted, setMounted] = useState(true);
+    const [listenerMounted, setListening] = useState(true);
     setHomeMounted = setMounted;
+    setListenerMounted = setListening;
     const dbOwner = useNativeRequestOwner("databases");
     const databases = useSWR("databases", () => dbOwner!.run(databaseFetch));
     return (
       <>
+        {listenerMounted && <ValidationListener />}
         <output data-databases={databases.data} />
         {homeMounted && <Home />}
+        {observeUnmountedRevalidation && <CacheRevalidator />}
       </>
     );
   }
@@ -71,7 +93,7 @@ async function mount(pending?: "databases" | "personalDatabases", dedupingInterv
   root = createRoot(container);
   await act(async () =>
     root.render(
-      <SWRConfig value={{ provider: () => new Map(), dedupingInterval }}>
+      <SWRConfig value={{ provider: () => cache, dedupingInterval }}>
         <Probe />
       </SWRConfig>,
     ),
@@ -79,8 +101,12 @@ async function mount(pending?: "databases" | "personalDatabases", dedupingInterv
   return {
     reads,
     gate,
+    cache,
     showHome: async (mounted: boolean) => {
       await act(async () => setHomeMounted(mounted));
+    },
+    showListener: async (mounted: boolean) => {
+      await act(async () => setListenerMounted(mounted));
     },
     fail: async () => {
       failedStamp = true;
@@ -135,11 +161,12 @@ test("a passed scan emits no failure and does not revalidate", async () => {
 });
 
 test("failure while Home is unmounted evicts its immutable cache so remount reads the failed stamp", async () => {
-  const { reads, fail, showHome } = await mount(undefined, 60000);
+  const { reads, fail, showHome, cache } = await mount(undefined, 60000);
   expect(reads).toEqual({ databases: 1, personalDatabases: 1, other: 1 });
   await showHome(false);
   await fail();
   expect(reads).toEqual({ databases: 2, personalDatabases: 1, other: 1 });
+  expect(cache.has(unstable_serialize(personalKey))).toBe(false);
   await showHome(true);
   expect(reads).toEqual({ databases: 2, personalDatabases: 2, other: 2 });
   for (const attribute of ["data-personal", "data-other"]) {
@@ -147,4 +174,29 @@ test("failure while Home is unmounted evicts its immutable cache so remount read
       "SQLite integrity_check failed",
     );
   }
+});
+
+test("Home subscribing during unmounted revalidation preserves its cache key", async () => {
+  const { reads, fail, showHome, gate, cache } = await mount(undefined, 60000, true);
+  await showHome(false);
+  await fail();
+  expect(reads.personalDatabases).toBe(2);
+  await showHome(true);
+  await act(async () => gate.resolve());
+  expect(reads.personalDatabases).toBe(2);
+  expect(cache.has(unstable_serialize(personalKey))).toBe(true);
+  expect(container.querySelector("output[data-personal]")?.getAttribute("data-personal")).toBe(
+    "SQLite integrity_check failed",
+  );
+});
+
+test("aborting the failure listener during unmounted revalidation preserves the cache key", async () => {
+  const { reads, fail, showHome, showListener, gate, cache } = await mount(undefined, 60000, true);
+  await showHome(false);
+  await fail();
+  expect(reads.personalDatabases).toBe(2);
+  await showListener(false);
+  await act(async () => gate.resolve());
+  expect(reads.personalDatabases).toBe(2);
+  expect(cache.has(unstable_serialize(personalKey))).toBe(true);
 });

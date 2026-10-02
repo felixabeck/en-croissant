@@ -251,13 +251,20 @@ pub(super) fn publish_passed_stamp(
     file: &DatabaseHandle,
     identity: &DatabaseIdentity,
 ) {
-    if let Err(error) = mutate_target(authority, file)
-        .and_then(|target| write_passed_stamp(repository, &target, identity))
-    {
-        log::warn!(
-            "passed content validation stamp publication failed for {file:?}: {}",
+    match mutate_target(authority, file) {
+        Ok(target) => {
+            if let Err(error) = write_passed_stamp(repository, &target, identity) {
+                log::warn!(
+                    "passed content validation stamp publication failed for {:?}: {}",
+                    target.leaf(),
+                    error.diagnostic()
+                );
+            }
+        }
+        Err(error) => log::warn!(
+            "passed content validation stamp publication failed because database {file:?} could not be resolved: {}",
             error.diagnostic()
-        );
+        ),
     }
 }
 
