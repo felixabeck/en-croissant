@@ -35,7 +35,8 @@ export type GameCommandError =
 
 /**
  * Retains only the semantic identity needed by the UI while preserving a redacted diagnostic
- * for native logging. Unknown and backend failures deliberately use the operation fallback.
+ * for native logging. Unknown and backend failures use the operation fallback, except that
+ * engine-position-rejected during start is a validation error.
  */
 export function createGameCommandError(operation: GameCommand, cause: unknown): GameCommandError {
     const diagnostic = safeFailureContext(cause).message;

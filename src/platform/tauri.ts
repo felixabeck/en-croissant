@@ -7,6 +7,8 @@ import {
     type GameOverEvent,
     type GameState,
     type OpeningBookConfig,
+    type ProgressEvent,
+    type ProgressLease,
     type Result as GeneratedResult,
     type TimeControl,
 } from "@/bindings/generated";
@@ -80,6 +82,10 @@ function normalizeCounterPair<T extends GameCounterFields>(
         session: decodeGameCounter(value.session, "session"),
         revision: decodeGameCounter(value.revision, "revision"),
     };
+}
+
+function normalizeProgressGeneration<T extends { generation: bigint }>(value: T): T {
+    return { ...value, generation: decodeGameCounter(value.generation, "generation") };
 }
 
 type CommandResult<T> = GeneratedResult<T, unknown>;
@@ -172,7 +178,7 @@ const GAME_STATE_COMMANDS = new Set<PropertyKey>([
 type EventEnvelope<T> = { payload: T };
 type EventAdapterError<T> = (error: unknown, event: EventEnvelope<T>) => void;
 
-function gameEventSubscription<T>(
+function eventSubscription<T>(
     subscribe: (callback: (event: EventEnvelope<T>) => void) => Promise<() => void>,
     normalize: (payload: T) => T,
 ) {
@@ -367,8 +373,20 @@ export const tauri: TauriCommands = new Proxy(commands, {
                 if (EXPECTED_SESSION_COMMANDS.has(property)) {
                     args[1] = encodeGameCounter(args[1] as bigint);
                 }
+                if (property === "setProgressState") {
+                    const lease = args[0] as ProgressLease;
+                    args[0] = {
+                        ...lease,
+                        generation: encodeGameCounter(lease.generation, "generation"),
+                    };
+                }
                 const result = await command(...args);
                 const value = isCommandResult(result) ? unwrapCommand(result) : result;
+                if (property === "clearProgress") return decodeGameCounter(value, "generation");
+                if (property === "getProgress") {
+                    return value === null ? null : normalizeProgressGeneration(value);
+                }
+                if (property === "startProgress") return normalizeProgressGeneration(value);
                 return GAME_STATE_COMMANDS.has(property) ? normalizeGameState(value) : value;
             } catch (error) {
                 if (error instanceof TauriCommandError) throw error;
@@ -392,20 +410,22 @@ export const tauriSubscriptions = {
     windowFocus: (callback: () => void) => getCurrentWindow().listen("tauri://focus", callback),
     bestMoves: (callback: Parameters<typeof events.bestMovesPayload.listen>[0]) =>
         events.bestMovesPayload.listen(callback),
-    clockUpdate: gameEventSubscription(
+    clockUpdate: eventSubscription(
         (callback) => events.clockUpdateEvent.listen(callback),
         normalizeClockUpdateEvent,
     ),
     convertProgress: (callback: Parameters<typeof events.convertProgress.listen>[0]) =>
         events.convertProgress.listen(callback),
-    gameMove: gameEventSubscription(
+    gameMove: eventSubscription(
         (callback) => events.gameMoveEvent.listen(callback),
         normalizeGameMoveEvent,
     ),
-    gameOver: gameEventSubscription(
+    gameOver: eventSubscription(
         (callback) => events.gameOverEvent.listen(callback),
         normalizeGameOverEvent,
     ),
-    progress: (callback: Parameters<typeof events.progressEvent.listen>[0]) =>
-        events.progressEvent.listen(callback),
+    progress: eventSubscription<ProgressEvent>(
+        (callback) => events.progressEvent.listen(callback),
+        normalizeProgressGeneration,
+    ),
 };

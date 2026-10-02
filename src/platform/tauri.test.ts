@@ -9,6 +9,11 @@ const mocks = vi.hoisted(() => ({
     resignGame: vi.fn(),
     abortGame: vi.fn(),
     getGameEngineLogs: vi.fn(),
+    getProgress: vi.fn(),
+    startProgress: vi.fn(),
+    setProgressState: vi.fn(),
+    clearProgress: vi.fn(),
+    cancelDownload: vi.fn(),
     prepareNativeRead: vi.fn(),
     cancelNativeRead: vi.fn(),
     prepareDownload: vi.fn(),
@@ -41,6 +46,11 @@ vi.mock("@/bindings/generated", () => ({
         resignGame: mocks.resignGame,
         abortGame: mocks.abortGame,
         getGameEngineLogs: mocks.getGameEngineLogs,
+        getProgress: mocks.getProgress,
+        startProgress: mocks.startProgress,
+        setProgressState: mocks.setProgressState,
+        clearProgress: mocks.clearProgress,
+        cancelDownload: mocks.cancelDownload,
         prepareNativeRead: mocks.prepareNativeRead,
         cancelNativeRead: mocks.cancelNativeRead,
         prepareDownload: mocks.prepareDownload,
@@ -57,7 +67,7 @@ vi.mock("@/bindings/generated", () => ({
         listFileWorkspace: mocks.listFileWorkspace,
     },
     events: Object.fromEntries(
-        ["clockUpdateEvent", "gameMoveEvent", "gameOverEvent"].map((name) => [
+        ["clockUpdateEvent", "gameMoveEvent", "gameOverEvent", "progressEvent"].map((name) => [
             name,
             {
                 listen: vi.fn(async (callback) => {
@@ -108,6 +118,59 @@ describe("tauri command facade", () => {
         mocks.windowListen.mockReset().mockResolvedValue(vi.fn());
         mocks.getCurrentWindow.mockReset().mockReturnValue({ listen: mocks.windowListen });
     });
+    test("normalizes progress event generations from numeric wire values", async () => {
+        const callback = vi.fn();
+        const payload = {
+            id: "job",
+            generation: 7,
+            progress: 100,
+            finished: true,
+            state: "succeeded",
+            cleared: false,
+        };
+        const unlisten = await tauriSubscriptions.progress(callback);
+        mocks.listeners.get("progressEvent")?.({ payload, id: 9 });
+        expect(callback).toHaveBeenCalledWith({
+            payload: { ...payload, generation: 7n },
+            id: 9,
+        });
+        unlisten();
+    });
+
+    test("normalizes progress snapshots, leases and the generation used by download cancellation", async () => {
+        const item = {
+            id: "job",
+            generation: 7,
+            progress: 20,
+            finished: false,
+            state: "running",
+        };
+        mocks.getProgress.mockResolvedValueOnce({ status: "ok", data: item });
+        await expect(tauri.getProgress("job")).resolves.toEqual({ ...item, generation: 7n });
+        mocks.getProgress.mockResolvedValueOnce({ status: "ok", data: null });
+        await expect(tauri.getProgress("missing")).resolves.toBeNull();
+        mocks.startProgress.mockResolvedValueOnce({
+            status: "ok",
+            data: { id: "job", generation: 8 },
+        });
+        const lease = await tauri.startProgress("job");
+        expect(lease).toEqual({ id: "job", generation: 8n });
+        mocks.setProgressState.mockResolvedValueOnce({ status: "ok", data: null });
+        await tauri.setProgressState(lease, 100, "succeeded");
+        expect(mocks.setProgressState).toHaveBeenCalledWith(
+            { id: "job", generation: 8 },
+            100,
+            "succeeded",
+        );
+        expect(() => JSON.stringify(mocks.setProgressState.mock.calls[0])).not.toThrow();
+
+        // cancelDownload returns only a boolean; downloadJobs obtains clearedGeneration here.
+        mocks.cancelDownload.mockResolvedValueOnce({ status: "ok", data: true });
+        await expect(tauri.cancelDownload("ticket")).resolves.toBe(true);
+        mocks.clearProgress.mockResolvedValueOnce({ status: "ok", data: 9 });
+        await expect(tauri.clearProgress("job")).resolves.toBe(9n);
+    });
+
     test("a signal reserves a ticket and passes it outside positional arguments", async () => {
         mocks.prepareNativeRead.mockResolvedValue({ status: "ok", data: "ticket-1" });
         mocks.getGames.mockResolvedValue({ status: "ok", data: { data: [], count: 0 } });

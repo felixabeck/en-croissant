@@ -231,13 +231,12 @@ export const enginesSchema = zodArray(engineSchema).transform((engines) => {
     });
 });
 
-const storedEnginesAtom = unwrap(
-    atomWithStorage<Engine[]>(
-        "engines",
-        [],
-        createEngineOwnerStorage("engines", enginesSchema, []),
-    ),
+const asyncStoredEnginesAtom = atomWithStorage<Engine[]>(
+    "engines",
+    [],
+    createEngineOwnerStorage("engines", enginesSchema, []),
 );
+const storedEnginesAtom = unwrap(asyncStoredEnginesAtom);
 
 type EngineUpdate =
     | Engine[]
@@ -257,7 +256,7 @@ export const enginesAtom = atom(
         publication?: "after-save",
     ): Promise<EngineOwnerSaveReceipt> => {
         const run = engineOwnerUpdateSequence.then(async () => {
-            const current = get(enginesAtom) ?? [];
+            const current = get(publishedEnginesAtom) ?? (await get(asyncStoredEnginesAtom));
             const next = await (typeof update === "function" ? update(current) : update);
             if (publication === "after-save") {
                 const receipt = await saveEngineOwnerValue("engines", serializeStorageValue(next));

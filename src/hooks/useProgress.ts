@@ -57,8 +57,10 @@ export function useProgress(id: string) {
     }, [id, listenerSettled]);
 
     const subscribeProgress = useCallback(
-        (listener: (event: { payload: ProgressEvent }) => void) =>
-            tauriSubscriptions.progress(listener),
+        (
+            listener: (event: { payload: ProgressEvent }) => void,
+            onError?: (error: unknown, event: { payload: ProgressEvent }) => void,
+        ) => tauriSubscriptions.progress(listener, onError),
         [],
     );
 

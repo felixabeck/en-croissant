@@ -1,12 +1,12 @@
 import { beforeEach, expect, test, vi } from "vitest";
 import { z } from "zod";
-import { engineSchema } from "@/utils/engines";
+import { engineSchema, type Engine } from "@/utils/engines";
 import {
     opponentSettingsSchema,
     switchOpponentType,
     type OpponentSettings,
 } from "@/state/opponentSettings";
-import { serializeStorageValue } from "./store/debouncedStorage";
+import { decodeCompressedOrJson, serializeStorageValue } from "./store/debouncedStorage";
 
 const mocks = vi.hoisted(() => ({
     reconcile: vi.fn(),
@@ -179,6 +179,56 @@ test("the real engines atom hydrates and restarts duplicate identities", async (
     unsubscribeRestarted();
     unsubscribe();
 });
+
+test.each(["after-save", undefined] as const)(
+    "real atom append waits for pending storage hydration (%s)",
+    async (publication) => {
+        const duplicate = { ...engine, name: "Twin" };
+        localStorage.setItem("engines", serializeStorageValue([engine, duplicate]));
+        let releaseHydration!: () => void;
+        mocks.reconcile.mockImplementationOnce(
+            () =>
+                new Promise<void>((resolve) => {
+                    releaseHydration = resolve;
+                }),
+        );
+        const { createStore } = await import("jotai");
+        const { enginesAtom } = await import("./atoms");
+        const store = createStore();
+        const unsubscribe = store.sub(enginesAtom, () => undefined);
+        await vi.waitFor(() => expect(releaseHydration).toEqual(expect.any(Function)));
+        expect(store.get(enginesAtom)).toBeUndefined();
+
+        const added = { type: "chessdb" as const, id: "remote", name: "Cloud", url: "https://x" };
+        const append = vi.fn((current: Engine[]) => [...current, added]);
+        let settled = false;
+        const saving = store.set(enginesAtom, append, publication).then((receipt) => {
+            settled = true;
+            return receipt;
+        });
+        // Let the serialized writer run while the real storage migration remains pending.
+        for (let turn = 0; turn < 10; turn++) await Promise.resolve();
+        const calculatedBeforeHydration = append.mock.calls.length > 0;
+        const settledBeforeHydration = settled;
+        releaseHydration();
+        try {
+            expect((await saving).saved).toBe(true);
+            expect(calculatedBeforeHydration).toBe(false);
+            expect(settledBeforeHydration).toBe(false);
+            const hydrated = append.mock.calls[0][0];
+            expect(hydrated).toHaveLength(2);
+            expect(hydrated.map(({ name }) => name)).toEqual(["Stockfish", "Twin"]);
+            expect(hydrated[1].id).not.toBe(engine.id);
+            expect(decodeCompressedOrJson(localStorage.getItem("engines")!)).toEqual([
+                ...hydrated,
+                added,
+            ]);
+            expect(store.get(enginesAtom)).toEqual([...hydrated, added]);
+        } finally {
+            unsubscribe();
+        }
+    },
+);
 
 test("real overlapping atom writes preserve updates and return their own receipts", async () => {
     mocks.reconcile.mockRejectedValueOnce(new Error("ordinary write failed"));

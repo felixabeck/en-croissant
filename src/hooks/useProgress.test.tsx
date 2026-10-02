@@ -27,7 +27,7 @@ import { useProgress } from "./useProgress";
 
 type Progress = {
   id: string;
-  generation: bigint;
+  generation: bigint | number;
   progress: number;
   finished: boolean;
   state: "running" | "succeeded" | "failed" | "cancelled";
@@ -74,6 +74,52 @@ afterEach(async () => {
 });
 
 describe("useProgress", () => {
+  test("fence(null) discards terminal progress from a numeric wire event", async () => {
+    mocks.getProgress.mockResolvedValue(null);
+    await act(async () => root.render(<Probe id="job" />));
+    await act(async () => {
+      eventHandler?.({
+        payload: {
+          id: "job",
+          generation: 5,
+          progress: 100,
+          finished: true,
+          state: "failed",
+          cleared: false,
+        },
+      });
+    });
+    expect(container.querySelector("output")?.textContent).toBe("100:true");
+    await act(async () => container.querySelectorAll("button")[2]?.click());
+    expect(container.querySelector("output")?.dataset.generation).toBe("none");
+    await act(async () => {
+      eventHandler?.({
+        payload: {
+          id: "job",
+          generation: 5,
+          progress: 100,
+          finished: true,
+          state: "failed",
+          cleared: false,
+        },
+      });
+    });
+    expect(container.querySelector("output")?.dataset.generation).toBe("none");
+    await act(async () => {
+      eventHandler?.({
+        payload: {
+          id: "job",
+          generation: 6,
+          progress: 10,
+          finished: false,
+          state: "running",
+          cleared: false,
+        },
+      });
+    });
+    expect(container.querySelector("output")?.dataset.generation).toBe("6");
+  });
+
   test("keeps the newest generation when the initial lookup resolves late", async () => {
     let resolveInitial: (value: Progress) => void = () => undefined;
     mocks.getProgress.mockReturnValue(
@@ -337,7 +383,7 @@ describe("useProgress", () => {
 
   test("clear establishes a generation floor that ignores an old producer", async () => {
     mocks.getProgress.mockResolvedValue(null);
-    mocks.clearProgress.mockResolvedValue({ status: "ok", data: BigInt(8) });
+    mocks.clearProgress.mockResolvedValue({ status: "ok", data: 8 });
     await act(async () => root.render(<Probe id="job" />));
     await act(async () => {
       container.querySelector("button")?.click();
