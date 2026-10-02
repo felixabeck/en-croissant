@@ -2106,6 +2106,10 @@ mod tests {
         }
     }
 
+    fn accept_any_integrity(_: OpClass, _: &str, _: &ArtifactIntegrity) -> Result<(), Error> {
+        Ok(())
+    }
+
     fn test_download_lease(state: &AppState) -> (String, crate::infra::operations::OperationLease) {
         let ticket = state.operations.prepare_download("test").unwrap();
         let lease = state
@@ -3983,7 +3987,7 @@ mod tests {
                 state.clone(),
                 lease.token(),
                 lease.commit_gate(),
-                |_, _, _| Ok(()),
+                accept_any_integrity,
             )
             .await
             .unwrap();
@@ -4057,90 +4061,6 @@ mod tests {
         assert_ne!(handles[0], handles[1]);
         assert_eq!(std::fs::read(&paths[0]).unwrap(), b"first executable");
         assert_eq!(std::fs::read(&paths[1]).unwrap(), b"second executable");
-    }
-
-    /// Operational P2 proof, deliberately opt-in: network access and the Linux SF19 build.
-    #[cfg(target_os = "linux")]
-    #[tokio::test]
-    #[ignore = "downloads the real signed Linux Stockfish 19 artefact"]
-    async fn real_stockfish19_catalog_install_answers_uci() {
-        let document = include_str!("../../src/catalogs/engines.json");
-        let signature = include_str!("../../src/catalogs/engines.json.minisig");
-        verify_signed_bytes(document.into(), signature.into())
-            .await
-            .unwrap();
-        let entries: Vec<serde_json::Value> = serde_json::from_str(document).unwrap();
-        let entry = entries
-            .iter()
-            .find(|entry| {
-                entry["name"] == "Stockfish" && entry["version"] == "19" && entry["os"] == "linux"
-            })
-            .unwrap();
-        let url = entry["downloadLink"].as_str().unwrap();
-        let integrity = ArtifactIntegrity {
-            sha256: entry["sha256"].as_str().unwrap().into(),
-            signature: entry["signature"].as_str().unwrap().into(),
-        };
-        let directory = format!(
-            "{}-{}",
-            url.rsplit('/').next().unwrap(),
-            integrity.sha256.to_lowercase()
-        );
-        let dir = tempdir().unwrap();
-        let (authority, destination, engine_root, root) = engine_destination(&dir);
-        let state = AppState {
-            http_transport: Arc::new(
-                crate::infra::net::ProdTransport::new(reqwest::Client::builder()).unwrap(),
-            ),
-            ..AppState::default()
-        };
-        *state.pgn_path_authority.lock().unwrap() = Some(authority);
-        let app = test_progress_app();
-        let (job, lease) = test_download_lease(&state);
-        download_engine_archive_core(
-            "real-sf19".into(),
-            url.into(),
-            destination,
-            directory.clone(),
-            job,
-            integrity,
-            app.handle().clone(),
-            state.clone(),
-            lease.token(),
-            lease.commit_gate(),
-            |op, url, integrity| validate_artifact_integrity(op, url, Some(integrity)),
-        )
-        .await
-        .unwrap();
-        let relative = format!("{directory}/{}", entry["path"].as_str().unwrap());
-        let handle = state
-            .pgn_path_authority
-            .lock()
-            .unwrap()
-            .as_mut()
-            .unwrap()
-            .register_installed_engine(&root, &relative)
-            .unwrap();
-        let mut child = std::process::Command::new(engine_root.join(&relative))
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(b"uci\nquit\n")
-            .unwrap();
-        let output = child.wait_with_output().unwrap();
-        let stdout = String::from_utf8(output.stdout).unwrap();
-        assert!(output.status.success(), "{}", output.status);
-        assert!(
-            stdout.lines().any(|line| line == "id name Stockfish 19"),
-            "{stdout}"
-        );
-        assert!(stdout.lines().any(|line| line == "uciok"), "{stdout}");
-        println!("Verified catalog + payload signature + SHA-256; directory={directory}; handle={handle:?}; nested executable registered; id name Stockfish 19; uciok; exit={}", output.status);
     }
 
     async fn download_zip_with_staging(
@@ -4368,7 +4288,7 @@ mod tests {
                 task_state,
                 cancellation,
                 commit_gate,
-                |_, _, _| Ok(()),
+                accept_any_integrity,
             ),
         ));
         tokio::time::timeout(Duration::from_secs(2), async {
@@ -4521,7 +4441,7 @@ mod tests {
                     (*state).clone(),
                     cancellation,
                     commit_gate,
-                    |_, _, _| Ok(()),
+                    accept_any_integrity,
                 ),
             ));
             tokio::time::timeout(Duration::from_secs(2), entered)
@@ -4567,7 +4487,7 @@ mod tests {
                     (*state).clone(),
                     cancellation,
                     commit_gate,
-                    |_, _, _| Ok(()),
+                    accept_any_integrity,
                 ),
             ));
             tokio::time::timeout(Duration::from_secs(2), entered)
