@@ -2,7 +2,7 @@
 
 Plan: `tasks/plans/2026-10-02-database-list-integrity.md` (git-ignored). This file is the durable review history. Orchestrator: Grok. Executor: Codex (`gpt-6.1-sol`, high for the write leaf, low for read-only lenses). Detection is same-family model separation, not family separation. The plan review was already closed; this run did not reopen it.
 
-Code reviewed through `065dc21d5e580e1e71b1091258fde5fb8388144b`. The earlier closure stopped at `d3c738b071b1a4b42217c2b38ead48bdf20ed87e`. The commits through that point are `b3f0bcbc` (decisions), `7b0145d2` (implementation), `1485577b` (stamp recheck and Home cache), and `d3c738b0` (leaf warning and Windows probe fixture). The gate repair is `065dc21d`.
+Code reviewed through `330c57a4dbf1cfd5a29e05ccda8b4de3678f78b7`. The earlier closure stopped at `d3c738b071b1a4b42217c2b38ead48bdf20ed87e`. The commits through that point are `b3f0bcbc` (decisions), `7b0145d2` (implementation), `1485577b` (stamp recheck and Home cache), and `d3c738b0` (leaf warning and Windows probe fixture). The first gate repair is `065dc21d`. The coverage repair is `330c57a4`.
 
 ## Plan review
 
@@ -70,7 +70,23 @@ Pre-review-6 exited 0 on the repair tree before the commit (`gate-pre-review-6`,
 
 `review-correctness`, `review-tests`, `review-root-cause`, and `review-minimalism` each returned `VERDICT: APPROVED` on `9d6ec868..065dc21d`. No findings. The skipped unresolved `mutate_target` warning test from the previous closure stays skipped.
 
-`REVIEWED_THROUGH=065dc21d5e580e1e71b1091258fde5fb8388144b`
+The gate-repair closure recorded `REVIEWED_THROUGH=065dc21d5e580e1e71b1091258fde5fb8388144b`.
+
+### Coverage repair closure over `330c57a4`
+
+Final gates on `d8ec1a35` passed every lane except rust-coverage: `database-search` branches `951/1454`, baseline `721/1014`. `scan_worker` was generic over its callback. The test binary had nine copies, and LLVM recorded each copy on the production lines. Line 589 had 36 branch records, nine call sites times the four edges of `is_err() && is_cancelled()`.
+
+`330c57a4` makes `scan_worker` return `ContentScanOutcome`. The scheduler emits `outcome.event` and then returns `outcome.result`. The verdict is still stored before the event exists. The eight test callers keep their assertions.
+
+`pnpm gate:ensure backend-coverage` on that tree printed `Coverage ratchet and area floors passed`. `content_validation` tests: 20 passed. Pre-review-7 exited 0.
+
+`review-correctness`, `review-tests`, `review-root-cause`, and `review-minimalism` each returned `VERDICT: APPROVED`.
+
+Skipped should-fix, `review-tests`, confidence 98: no test would fail if `schedule` returned `Ok(())` after emitting. The previous closure returned `scan_worker`'s `Result` from that same blocking closure, and no test asserted that forward either. The worker tests still assert the result variants, including the stamp-write error.
+
+Skipped nit, `review-minimalism`, confidence 100: the summed event count repeats the two per-call assertions. It is the old counter check, split across the two calls.
+
+`REVIEWED_THROUGH=330c57a4dbf1cfd5a29e05ccda8b4de3678f78b7`
 
 ## Proof before this record
 
