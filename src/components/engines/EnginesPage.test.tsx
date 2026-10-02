@@ -240,6 +240,43 @@ describe("EngineName binary inspection state", () => {
   });
 });
 
+test.each([false, true])(
+  "settings defaults settle without Hash support (advertised settings already stored: %s)",
+  async (alreadyStored) => {
+    const engine = makeEngine(`engine-defaults-without-hash-${alreadyStored}`);
+    engine.settings = alreadyStored
+      ? [
+          { type: "string", name: "Threads", value: "4" },
+          { type: "string", name: "MultiPV", value: "3" },
+        ]
+      : [];
+    atomEngines = [engine];
+    mocks.getEngineConfig.mockResolvedValue({
+      name: "Stockfish",
+      options: [
+        { type: "spin", value: { name: "Threads", default: 1, min: 1, max: 32 } },
+        { type: "spin", value: { name: "MultiPV", default: 1, min: 1, max: 256 } },
+      ],
+    });
+
+    await renderSettings();
+    // Publish the mock atom's saved engine back into the effect on subsequent renders.
+    for (let publication = 0; publication < 3; publication++) {
+      await renderSettings();
+    }
+
+    expect(atomEngines[0].settings).toEqual(
+      alreadyStored
+        ? engine.settings
+        : [
+            { type: "string", name: "Threads", value: "1" },
+            { type: "string", name: "MultiPV", value: "1" },
+          ],
+    );
+    expect(setAtomEngines).toHaveBeenCalledTimes(alreadyStored ? 0 : 1);
+  },
+);
+
 test("directory resource picker stores a real path option", async () => {
   const engine = makeEngine("engine-resource-directory");
   const selected = resource("tables", "directory");

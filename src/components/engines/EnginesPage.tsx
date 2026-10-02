@@ -337,14 +337,11 @@ function EngineSettings({
   useEffect(() => {
     if (options) {
       const settings = [...(engine.settings || [])];
-      const missing = requiredEngineSettings.filter(
-        (field) => !settings.find((setting) => setting.name === field),
+      const defaults = requiredEngineSettingsDefaults(options).filter(
+        (setting) => !settings.some((stored) => stored.name === setting.name),
       );
-      for (const setting of requiredEngineSettingsDefaults(options)) {
-        if (!settings.find((stored) => stored.name === setting.name)) settings.push(setting);
-      }
-      if (missing.length > 0) {
-        setEngine({ ...engine, settings });
+      if (defaults.length > 0) {
+        setEngine({ ...engine, settings: [...settings, ...defaults] });
       }
     }
   }, [engine, options, setEngine]);
