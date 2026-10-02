@@ -7103,6 +7103,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retire_binary_pair_preserves_live_same_owner_new_binary() {
+        let supervisor = EngineSupervisor::default();
+        let old = path_ref("old-binary");
+        let new = path_ref("new-binary");
+        let old_key = EngineKey::new("old-analysis".into(), "owner".into()).unwrap();
+        let new_key = EngineKey::new("new-analysis".into(), "owner".into()).unwrap();
+        let ((old_actor, _), old_terminated) = actor_with(&[], false, None);
+        let ((new_actor, _), new_terminated) = actor_with(&[], false, None);
+        supervisor
+            .replace_handle(
+                old_key.clone(),
+                Arc::new(old_actor),
+                "owner".into(),
+                old.clone(),
+            )
+            .await
+            .unwrap();
+        let registered = supervisor
+            .replace_handle(
+                new_key.clone(),
+                Arc::new(new_actor),
+                "owner".into(),
+                new.clone(),
+            )
+            .await
+            .unwrap();
+
+        supervisor
+            .retire_engine_binary("owner".into(), old)
+            .await
+            .unwrap();
+
+        assert_eq!(old_terminated.load(AtomicOrdering::SeqCst), 1);
+        assert!(supervisor.get_exact(&old_key).is_none());
+        assert_eq!(new_terminated.load(AtomicOrdering::SeqCst), 0);
+        assert_eq!(
+            supervisor.get_exact(&new_key).unwrap().generation,
+            registered.generation
+        );
+        assert!(registered.actor.logs().await.is_ok());
+        let fresh_key = EngineKey::new("fresh-analysis".into(), "owner".into()).unwrap();
+        assert!(supervisor
+            .admit(fresh_key, "owner".into(), new, false)
+            .await
+            .is_ok());
+        supervisor.terminate_all().await.unwrap();
+        assert_eq!(new_terminated.load(AtomicOrdering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn retire_binary_pair_tombstone_preserves_id_and_duplicate_and_bounds_retention() {
         let supervisor = EngineSupervisor::default();
         let old = path_ref("old-binary");
