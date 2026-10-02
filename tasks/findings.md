@@ -12420,3 +12420,16 @@ Handled by `f19e14ac` (Stockfish 19 upgrade build, phase P2, obligation O2). A g
 * **Why it matters:** the catalog is the trust root of the "Upgrade from catalog" flow; a wrong nested `path` or archive layout makes install or upgrade fail for every user on that platform.
 * **Open question:** where a network-dependent check belongs without distorting the backend coverage ratchet — an `#[ignore]` unit test inside the crate instantiates its own uncovered copy of the generic infra chain (22 records, which reddened `app-infrastructure` functions in that build) — e.g. a scheduled workflow job running a dedicated binary/script against every catalog entry for the runner's OS, or a mode of `scripts/app-driver.mjs`; and whether it should run on every catalog change (path filter on `src/catalogs/**`).
 * **Found by:** Stockfish 19 upgrade build, closure round 10 (`review-correctness`, `review-tests`) after the coverage-gate repair, 2026-10-02.
+
+---
+
+## 2026-10-02 — filed through the inbox spool
+
+### The local backend coverage gate merges stale `.profraw` files from every earlier build, so its green is not evidence
+
+* **ID:** f-20261002-09 · **Status:** open · **Area:** gate-scripts · **Root:** machine-dependent-measurement · **Entry:** build · **Blocked:** none
+* **Where:** `scripts/rust-branch-coverage.mjs` (`coverageTarget = src-tauri/target/llvm-cov-target`; after `cargo +nightly llvm-cov … --no-report` it merges `filesBelow(coverageTarget, path.endsWith(".profraw"))` with `llvm-profdata merge -sparse`), used by `pnpm test:coverage:backend` and the receipt-backed `backend-coverage` gate.
+* **Defect:** nothing removes profiles from earlier runs. On atlas on 2026-10-02 the directory held 1 517 `.profraw` files with binary signatures dating back to 2026-08-29. Every unchanged function (same name and structural hash) accumulates counts from all of them, so code that the current tests no longer execute stays "covered". Measured: on tree `04f43c1b` the local `pnpm coverage:backend:check` passed while CI (fresh checkout) failed `filesystem-native-boundaries functions regressed: 359/673, baseline 340/634`; the 8 records covered locally but not on CI were all one instance chain that the current test never runs. After deleting every `.profraw` below `llvm-cov-target` and rerunning, the local result reproduced CI exactly (359/673, red).
+* **Why it matters:** the backend ratchet's local green — the push gate — can be inflated by history and disagree with CI, which is the next reader's first suspicion of "machine dependence" (`CLAUDE.md`, `f-20260829-01`) when it is in fact stale input. A push can pass every local gate and turn CI red.
+* **Open question:** clear `.profraw` files under `coverageTarget` before the run (and fail if any survive), or merge only the profiles whose binary signature matches the binary just built; plus the staged-failure matrix row for the new refusal (push-review-policy §2, the script is read as evidence).
+* **Found by:** Stockfish 19 upgrade build, CI red after push, 2026-10-02 (orchestrator measurement above).
