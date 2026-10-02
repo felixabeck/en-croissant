@@ -219,7 +219,10 @@ test("success saves once before retiring the old pair and keeps the same list po
   await render();
   await click("Common.Install");
   expect(events).toEqual(["saved", "retired"]);
-  expect(mocks.retire).toHaveBeenCalledWith(old.id, old.handle);
+  expect(mocks.retire).toHaveBeenCalledWith(old.id, old.handle, {
+    id: { id: "new" },
+    kind: "engine",
+  });
   const engines = store.get(enginesAtom)!;
   expect(engines).toHaveLength(3);
   expect(engines[0]).toEqual(first);
@@ -275,7 +278,10 @@ test("committing withdraws cancel and ignores cancellation while save, retiremen
   expect(decodeCompressedOrJson(localStorage.getItem("engines")!)).toMatchObject([
     { id: old.id, handle: { id: { id: "new" } } },
   ]);
-  expect(mocks.retire).toHaveBeenCalledWith(old.id, old.handle);
+  expect(mocks.retire).toHaveBeenCalledWith(old.id, old.handle, {
+    id: { id: "new" },
+    kind: "engine",
+  });
   expect(host.textContent).not.toContain("Common.Cancel");
   expect(host.textContent).not.toContain("Engines.Upgrade.Current");
   expect(host.textContent).toContain("Common.Extracting");

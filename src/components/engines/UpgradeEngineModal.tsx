@@ -86,7 +86,7 @@ export default function UpgradeEngineModal({
         if (!receipt.saved || !previous) throw new Error(t("Engines.SaveError"));
         setUpgradedLink(catalog.downloadLink ?? null);
         try {
-          await tauri.retireEngineBinary(previous.id, previous.handle);
+          await tauri.retireEngineBinary(previous.id, previous.handle, installed.handle);
         } catch (cause) {
           notifyUnlessCancelled(t("Common.Error"), cause);
         }

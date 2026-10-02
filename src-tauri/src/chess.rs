@@ -422,12 +422,13 @@ pub async fn retire_engine(engine: String, state: tauri::State<'_, AppState>) ->
 #[specta::specta]
 pub async fn retire_engine_binary(
     engine: String,
-    handle: EngineHandle,
+    retired: EngineHandle,
+    current: EngineHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
     state
         .engine_supervisor
-        .retire_engine_binary(engine, handle.id)
+        .retire_engine_binary(engine, retired.id, current.id)
         .await
 }
 
@@ -3094,19 +3095,31 @@ done
             },
             kind: crate::infra::path_authority::EngineHandleKind::Engine,
         };
+        let current = EngineHandle {
+            id: crate::infra::path_authority::PathRef {
+                id: "new-path".into(),
+            },
+            kind: crate::infra::path_authority::EngineHandleKind::Engine,
+        };
         let (actor, _) = EngineActor::recording_test_actor(&[]);
         supervisor
             .replace_handle(key.clone(), actor, "engine-id".into(), handle.id.clone())
             .await
             .unwrap();
-        retire_engine_binary("engine-id".into(), handle.clone(), app.state::<AppState>())
-            .await
-            .unwrap();
+        retire_engine_binary(
+            "engine-id".into(),
+            handle.clone(),
+            current.clone(),
+            app.state::<AppState>(),
+        )
+        .await
+        .unwrap();
         assert!(supervisor.get_exact(&key).is_none());
         assert_rejects_invalid_engine_id(
             retire_engine_binary(
                 "engine-id\n".into(),
                 handle.clone(),
+                current.clone(),
                 app.state::<AppState>(),
             )
             .await,
@@ -3118,14 +3131,7 @@ done
             .is_err());
         let (actor, _) = EngineActor::recording_test_actor(&[]);
         supervisor
-            .replace_handle(
-                key,
-                actor,
-                "engine-id".into(),
-                crate::infra::path_authority::PathRef {
-                    id: "new-path".into(),
-                },
-            )
+            .replace_handle(key, actor, "engine-id".into(), current.id)
             .await
             .unwrap();
         supervisor.terminate_all().await.unwrap();

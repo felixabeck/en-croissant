@@ -977,6 +977,12 @@ impl<T: Eq + Hash + Clone> RetiredSet<T> {
             }
         }
     }
+
+    fn remove(&mut self, entry: &T) {
+        if self.entries.remove(entry) {
+            self.order.retain(|queued| queued != entry);
+        }
+    }
 }
 
 // EngineKey::new reserves this namespace for native EngineKey::game construction.
@@ -1618,14 +1624,19 @@ impl EngineSupervisor {
     pub async fn retire_engine_binary(
         &self,
         engine_id: String,
-        executable: PathRef,
+        retired: PathRef,
+        current: PathRef,
     ) -> Result<(), Error> {
         validate_uci_text("engine", &engine_id)?;
-        self.with_retired_binaries(|retired| {
-            retired.insert((engine_id.clone(), executable.clone()))
+        if retired == current {
+            return Ok(());
+        }
+        self.with_retired_binaries(|binaries| {
+            binaries.remove(&(engine_id.clone(), current));
+            binaries.insert((engine_id.clone(), retired.clone()));
         });
         self.retire_matching(|key, owner, path| {
-            !is_game_engine_key(key) && owner == engine_id && path == &executable
+            !is_game_engine_key(key) && owner == engine_id && path == &retired
         })
         .await
     }
@@ -7103,6 +7114,116 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retire_binary_round_trip_readmits_current_and_preserves_game_actors() {
+        let supervisor = EngineSupervisor::default();
+        let a = path_ref("binary-a");
+        let b = path_ref("binary-b");
+        let mut games = Vec::new();
+        for (side, executable) in [("white", a.clone()), ("black", b.clone())] {
+            let key = EngineKey::game("game-id", 42, side, "owner").unwrap();
+            let ((actor, _), terminated) = actor_with(&[], false, None);
+            let registered = supervisor
+                .replace_handle(key.clone(), Arc::new(actor), "owner".into(), executable)
+                .await
+                .unwrap();
+            games.push((key, registered, terminated));
+        }
+        supervisor
+            .retire_engine_binary("owner".into(), a.clone(), b.clone())
+            .await
+            .unwrap();
+        supervisor
+            .retire_engine_binary("owner".into(), b.clone(), a.clone())
+            .await
+            .unwrap();
+
+        let key = EngineKey::new("analysis".into(), "owner".into()).unwrap();
+        let admission = supervisor
+            .admit(key.clone(), "owner".into(), a, false)
+            .await;
+        assert!(
+            admission.is_ok(),
+            "returning to binary A must admit analysis"
+        );
+        assert!(matches!(
+            supervisor.admit(key, "owner".into(), b, false).await,
+            Err(Error::Conflict(message)) if message == "engine binary pair is retired"
+        ));
+        for (key, registered, terminated) in &games {
+            assert_eq!(terminated.load(AtomicOrdering::SeqCst), 0);
+            assert_eq!(
+                supervisor.get_exact(key).unwrap().generation,
+                registered.generation
+            );
+            assert!(registered.actor.logs().await.is_ok());
+        }
+        supervisor.terminate_all().await.unwrap();
+        for (_, _, terminated) in games {
+            assert_eq!(terminated.load(AtomicOrdering::SeqCst), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn retire_binary_same_pair_is_noop_for_actors_admissions_and_tombstones() {
+        let supervisor = EngineSupervisor::default();
+        let executable = path_ref("binary");
+        let key = EngineKey::new("analysis".into(), "owner".into()).unwrap();
+        let ((actor, _), terminated) = actor_with(&[], false, None);
+        let registered = supervisor
+            .replace_handle(
+                key.clone(),
+                Arc::new(actor),
+                "owner".into(),
+                executable.clone(),
+            )
+            .await
+            .unwrap();
+        let pending_key = EngineKey::new("pending".into(), "owner".into()).unwrap();
+        let admission = supervisor
+            .admit(pending_key, "owner".into(), executable.clone(), false)
+            .await
+            .unwrap();
+        supervisor
+            .retire_engine_binary("owner".into(), executable.clone(), executable.clone())
+            .await
+            .unwrap();
+        assert_eq!(terminated.load(AtomicOrdering::SeqCst), 0);
+        assert_eq!(
+            supervisor.get_exact(&key).unwrap().generation,
+            registered.generation
+        );
+        assert!(admission.cancel_error().is_none());
+        assert!(!supervisor.is_retired_binary("owner", &executable));
+
+        supervisor
+            .retire_engine_binary("owner".into(), executable.clone(), path_ref("other"))
+            .await
+            .unwrap();
+        supervisor
+            .retire_engine_binary("owner".into(), executable.clone(), executable.clone())
+            .await
+            .unwrap();
+        assert!(supervisor.is_retired_binary("owner", &executable));
+        assert_eq!(terminated.load(AtomicOrdering::SeqCst), 1);
+        assert!(admission.cancel_error().is_some());
+        supervisor.terminate_all().await.unwrap();
+    }
+
+    #[test]
+    fn retired_set_readmission_removes_eviction_order_before_reinsertion() {
+        let mut retired = RetiredSet::new(2);
+        retired.insert("a");
+        retired.insert("b");
+        retired.remove(&"a");
+        retired.insert("a");
+        retired.insert("c");
+        assert!(retired.entries.contains("a"));
+        assert!(!retired.entries.contains("b"));
+        assert!(retired.entries.contains("c"));
+        assert_eq!(retired.order.len(), 2);
+    }
+
+    #[tokio::test]
     async fn retire_binary_pair_preserves_live_same_owner_new_binary() {
         let supervisor = EngineSupervisor::default();
         let old = path_ref("old-binary");
@@ -7131,7 +7252,7 @@ mod tests {
             .unwrap();
 
         supervisor
-            .retire_engine_binary("owner".into(), old)
+            .retire_engine_binary("owner".into(), old, new.clone())
             .await
             .unwrap();
 
@@ -7163,7 +7284,7 @@ mod tests {
             .await
             .unwrap();
         supervisor
-            .retire_engine_binary("owner".into(), old.clone())
+            .retire_engine_binary("owner".into(), old.clone(), path_ref("new-binary"))
             .await
             .unwrap();
         assert_eq!(terminated.load(AtomicOrdering::SeqCst), 1);
@@ -7185,7 +7306,11 @@ mod tests {
         }
         for index in 0..=MAX_RETIRED_ENGINE_BINARIES {
             supervisor
-                .retire_engine_binary(format!("bounded-{index}"), old.clone())
+                .retire_engine_binary(
+                    format!("bounded-{index}"),
+                    old.clone(),
+                    path_ref("new-binary"),
+                )
                 .await
                 .unwrap();
         }
@@ -7223,7 +7348,11 @@ mod tests {
         let retirement = tokio::spawn({
             let supervisor = supervisor.clone();
             let old = old.clone();
-            async move { supervisor.retire_engine_binary("owner".into(), old).await }
+            async move {
+                supervisor
+                    .retire_engine_binary("owner".into(), old, path_ref("new-binary"))
+                    .await
+            }
         });
         timeout(Duration::from_secs(2), async {
             while !supervisor.is_retired_binary("owner", &old) {
@@ -7269,7 +7398,7 @@ mod tests {
             .await
             .unwrap();
         supervisor
-            .retire_engine_binary("owner".into(), old.clone())
+            .retire_engine_binary("owner".into(), old.clone(), path_ref("new-binary"))
             .await
             .unwrap();
         assert_eq!(terminated.load(AtomicOrdering::SeqCst), 0);
