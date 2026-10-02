@@ -12353,6 +12353,8 @@ Handled by `f19e14ac` (Stockfish 19 upgrade build, phase P2, obligation O2). A g
 * **Open question:** which directories are safe to delete and when: only directories under the app-owned engine workspace that no registry entry references after pruning, and never while an engine child (including a running game that keeps its old binary until it ends, plan O3) may still be executing from them. Delete at startup after pruning, or on the next upgrade? Windows refuses to delete a running executable.
 * **Measured:** the P2 write leaf of the Stockfish 19 upgrade read the pruning path (lines above) and found no tree deletion; the plan's "Risks / open questions" required this check and a filed finding rather than a reaper in that run.
 * **Found by:** Stockfish 19 upgrade build, phase P2, 2026-10-02 (Codex leaf investigation, confirmed by the orchestrator's review of the cited lines' role).
+* **Correction (2026-10-02, records lens):** the size claim above was not measured. Measured: the extracted Stockfish 19 Linux release tree (`stockfish/`, including sources, wiki and scripts that ship in the archive) is 101 MB (`du -sh`), from an 81 MB download. The Windows sentence is an expectation from plan `D9` (replacing a tree fails while its binary runs), not a measured deletion attempt.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"05628af4227b8ee14232b07fbbec6d86ccfddeffaa682fd0ff666c06ffef25b7","input_sha256":"74277d58130b3b7f54ad99c2ead503168f4844caf629f5e0bf9da736c029116b","kind":"mutation-receipt","operation":"a313756fbed85b5e90d49c0bb99f97f3c2c220f2e2cdffdc02fe88c1ef7536d1","options":{"section":null},"request_id_sha256":null,"results":["f-20261002-04"],"target":"f-20261002-04","v":1} -->
 
 ---
 
