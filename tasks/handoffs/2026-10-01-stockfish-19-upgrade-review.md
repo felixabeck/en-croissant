@@ -963,7 +963,8 @@ unchanged.*
 Findings filed by this implementation: `f-20261002-04` (superseded install directories never
 deleted), `f-20261002-05` (first-run profile: no catalog install possible), `f-20261002-06`
 (three `include_str!` structure tests in `chess.rs`), `f-20261002-07` (stale progress record after
-a failed clear), `f-20261002-08` (no repeatable real-catalog install check); annotations on `f-20261002-03`, `-04`, `-05`; agent-kit `f-20261002-15`
+a failed clear), `f-20261002-08` (no repeatable real-catalog install check), `f-20261002-09` (stale
+`.profraw` merge in the coverage script), `f-20261002-10` (CI red, handled by `0b63b563`); annotations on `f-20261002-03`, `-04`, `-05`; agent-kit `f-20261002-15`
 (resumed Codex leaves lack the user D-Bus). Closed: `f-20261001-06`, `f-20261001-16`.
 
 ### Final gates and the gate repair
@@ -979,6 +980,33 @@ ignored test (its proof stays recorded above) and routed the four sites through 
 Closure round 10 (correctness, tests; both APPROVED) noted that no repeatable real-artefact check
 remains → filed `f-20261002-08`.
 
-`diff_adopted_per_round`: r1=17 r2=5 r3=3 r4=3 r5=1 r6=2 r7=0 r8=0 r9=0 r10=1 (round 7's CR-1
-residual was resolved by the lineage judgment: one withdrawal, one filed finding; rounds 8-9
-corrected records only; r10 is the gate repair).
+### First push, CI red, and rounds 11-13
+
+`04f43c1b` was pushed after green local gates; the platform jobs passed, but CI's `test` job failed
+`filesystem-native-boundaries functions regressed: 359/673, baseline 340/634`. The local gate had
+passed only because `scripts/rust-branch-coverage.mjs` merges every `.profraw` below
+`src-tauri/target/llvm-cov-target` — 1 517 stale profiles since 2026-08-29 (filed
+`f-20261002-09`); after deleting them the local run reproduced CI exactly. Cause: the adoption
+call in `catalog_digest_directories_are_distinct_and_same_artifact_is_adopted` compiled its own
+never-executed copy of the download chain through the generic validator of
+`download_engine_archive_core` (owning finding `f-20261002-10`, closed). Repair `0b63b563`
+type-erased the validator (`ArtifactIntegrityValidator`); clean measurement 355/648.
+
+- **Round 11** (correctness, tests, code-quality, tauri-security over `0b63b563`): type erasure
+  approved by three; correctness found D11-01 — switching one entry A → B → A re-adopts A's
+  install directory and gets A's handle back (get-or-create by identity,
+  `infra/path_authority/mod.rs:5779`), which the first switch had tombstoned → `417bd8fd`:
+  `retire_engine_binary(engine, retired, current)` lifts (engine, current) and tombstones (engine,
+  retired); equal handles are a no-op.
+- **Round 12** (correctness, tests, engine-protocol, ipc-contract): D11-01 closed by all four; new
+  D12-01 (correctness 96, engine-protocol 94): an earlier drain could terminate an actor of a pair
+  a later switch had readmitted; D12-02/-03 test gaps → `4fab7819` (the drain predicate requires the
+  pair to be tombstoned at evaluation time; race, other-owner and command-level A → B → A tests).
+- **Round 13** (correctness, engine-protocol, tests): D12-01..-03 closed, all APPROVED.
+
+Felix's P4 ran on `04f43c1b`; the A → B → A defect could not affect his path (SF18 is a local file,
+not a catalog build).
+
+`diff_adopted_per_round`: r1=17 r2=5 r3=3 r4=3 r5=1 r6=2 r7=0 r8=0 r9=0 r10=1 r11=1 r12=3 r13=0
+(round 7's CR-1 residual was resolved by the lineage judgment: one withdrawal, one filed finding;
+rounds 8-9 corrected records only; r10 and the CI repair are gate repairs).
