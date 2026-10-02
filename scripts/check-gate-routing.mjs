@@ -16,10 +16,14 @@ const PACKAGE_JSON = "package.json";
 const TEST_WORKFLOW = ".github/workflows/test.yml";
 const VITE_CONFIG = "vite.config.ts";
 const CONTRACT_GATE = "gates:contract:check";
-const HEAVY_GATE_RUNNER = "bash scripts/heavy-gate.sh node scripts/run-push-gates.mjs";
+// The strict launcher takes the machine-wide heavy-gate lock and its own agents.slice scope;
+// it fails closed, nests in place, and permits no command -v fallback (d-20261002-01).
+const GATE_LAUNCHER = "agent-gate";
 const GATE_RUNNER_SCRIPTS = Object.freeze({
-  "gates:push": HEAVY_GATE_RUNNER,
-  "checks:pre-review": `${HEAVY_GATE_RUNNER} --pre-review`,
+  "gates:push": `${GATE_LAUNCHER} node scripts/run-push-gates.mjs`,
+  "checks:pre-review": `${GATE_LAUNCHER} node scripts/run-push-gates.mjs --pre-review`,
+  "gate:ensure": `${GATE_LAUNCHER} node scripts/gate-receipt.mjs ensure`,
+  "gate:run": `${GATE_LAUNCHER} node scripts/gate-receipt.mjs run`,
 });
 const PUSH_GATE_INVOCATION = "pnpm gates:push -- <blocks>";
 const PRE_REVIEW_SECTION = "## 2a. Pre-review checks";

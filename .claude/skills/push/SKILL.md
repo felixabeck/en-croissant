@@ -69,10 +69,16 @@ run on every invocation; the runner also runs the fenced commands below as their
 Receipt-backed gates may run concurrently while preserving each lane's command order. A failure
 returns to `repair`, commit, and the required affected final-gate rerun before push.
 
-The runner holds the machine-wide heavy-gate lock for the full run; a waiting gate prints the
-holder. It runs in its own transient `chessfable-gate-*.scope` under `agents.slice`, and sizes
-workers from that scope's complete cgroup chain (the `agents.slice` budget), with the recorded
-conservative 8 GiB fallback if the chain is unreadable or has no finite limit. The e2e container has a 4 GiB
+`pnpm gates:push` and `pnpm checks:pre-review` are `agent-gate` commands (tuxedo-config's strict
+launcher, `d-20261002-01`). The launcher takes the machine-wide heavy-gate lock
+(`~/.cache/agent-kit/heavy-gate.lock`; a waiting gate prints the holder from `heavy-gate.holder`)
+and runs the whole run in its own `agents.slice/agent-gate-*.scope`, capped at 70 % of the slice's
+`MemoryHigh`. Workers are sized from that scope's complete cgroup chain (the `agents.slice`
+budget), with the recorded conservative 8 GiB fallback if the chain is unreadable or has no finite
+limit. Exit 125 (`agent-gate: REFUSED — …`) means nothing started and a retry is safe; a missing
+`agent-gate` fails the gate, with no in-place fallback. Never wrap a gate command in another
+`flock` on `heavy-gate.lock`: it deadlocks against the launcher's own lock. A nested `agent-gate`
+is safe and runs in place. The e2e container has a 4 GiB
 memory limit reserved from frontend coverage and, when mutation runs concurrently, frontend
 mutation.
 
@@ -162,6 +168,10 @@ pnpm gate:ensure tauri-build
 pnpm gate:run frontend-build
 pnpm gate:check frontend-build
 ```
+
+`gate:ensure` and `gate:run` enter the gate scope themselves through `agent-gate` (in place when
+already inside one), so a standalone receipt run is placed and locked like the scheduler;
+`gate:check` only reads the cache and starts no scope.
 
 Receipts are reusable only for a clean exact tree with the same command, platform, toolchain, and
 an unexpired timestamp. A miss runs the gate under `ensure`; `check` never starts one. Gate failures

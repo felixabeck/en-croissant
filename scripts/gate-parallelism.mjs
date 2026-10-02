@@ -5,9 +5,11 @@ import { dirname, join, resolve, sep } from "node:path";
 const CGROUP_ROOT = "/sys/fs/cgroup";
 const PROCESS_CGROUP_FILE = "/proc/self/cgroup";
 
-// The agent process measured 0.32 GB RSS in its 8 GiB scope on 2026-09-29; reserve 1 GiB for
-// that process plus headroom for a lens leaf or shell.
-export const AGENT_RESERVE_BYTES = 1024 * 1024 * 1024;
+// In a session scope (plain vitest), reserve 1 GiB for the agent sharing the cgroup
+// (0.32 GB RSS measured 2026-09-29) plus headroom. Inside the agent-gate scope, it covers
+// the scheduler, per-lane pnpm and gate-receipt parents, and the launcher's Node processes,
+// which no worker count sizes (d-20261002-02).
+export const UNSIZED_PROCESS_RESERVE_BYTES = 1024 * 1024 * 1024;
 
 // Per-runner peak RSS measured 0.80–1.13 GiB; tree-path at concurrency 4 used 4.98 GiB above
 // idle (1.16 GiB per runner), workspace-storage used 7.04 GiB at 8 and 3.60 GiB at 4, and
@@ -188,13 +190,13 @@ export function gateBudgetBytes({
   const override = configuredMemoryBudget(env);
   if (override !== undefined) return override;
   try {
-    return memoryLimitBytes(memoryOptions) - AGENT_RESERVE_BYTES;
+    return memoryLimitBytes(memoryOptions) - UNSIZED_PROCESS_RESERVE_BYTES;
   } catch (error) {
     const reason = errorMessage(error).replaceAll(/[\r\n]+/gu, " ");
     stderr.write(
       `Gate memory detection failed (${reason}); using the conservative 8 GiB agent-scope configuration.\n`,
     );
-    return CONSERVATIVE_CGROUP_LIMIT_BYTES - AGENT_RESERVE_BYTES;
+    return CONSERVATIVE_CGROUP_LIMIT_BYTES - UNSIZED_PROCESS_RESERVE_BYTES;
   }
 }
 

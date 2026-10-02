@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import {
-  AGENT_RESERVE_BYTES,
+  UNSIZED_PROCESS_RESERVE_BYTES,
   CONSERVATIVE_CGROUP_LIMIT_BYTES,
   CONSERVATIVE_STRYKER_RUNNERS,
   CONSERVATIVE_VITEST_WORKERS,
@@ -221,11 +221,11 @@ test("gateBudgetBytes does not read an unreadable cgroup when GATE_MEMORY_BYTES 
   assert.equal(reads, 0);
 });
 
-test("gateBudgetBytes subtracts AGENT_RESERVE_BYTES from the minimum high/max limit", () => {
+test("gateBudgetBytes subtracts UNSIZED_PROCESS_RESERVE_BYTES from the minimum high/max limit", () => {
   const fixture = linuxFixture({
     memory: { [CGROUP_DIRECTORY]: { high: `${7 * GIB}`, max: `${9 * GIB}` } },
   });
-  assert.equal(gateBudgetBytes({ ...fixture, env: {} }), 7 * GIB - AGENT_RESERVE_BYTES);
+  assert.equal(gateBudgetBytes({ ...fixture, env: {} }), 7 * GIB - UNSIZED_PROCESS_RESERVE_BYTES);
 });
 
 test("an unreadable ancestor uses the conservative worker counts and prints its cause once", () => {
@@ -240,7 +240,7 @@ test("an unreadable ancestor uses the conservative worker counts and prints its 
     env: {},
     stderr: { write: (line) => (stderr += line) },
   });
-  assert.equal(budgetBytes, CONSERVATIVE_CGROUP_LIMIT_BYTES - AGENT_RESERVE_BYTES);
+  assert.equal(budgetBytes, CONSERVATIVE_CGROUP_LIMIT_BYTES - UNSIZED_PROCESS_RESERVE_BYTES);
   assert.equal(stderr.split("\n").filter(Boolean).length, 1);
   assert.match(stderr, /memory\.max/u);
   assert.equal(
@@ -275,7 +275,7 @@ test("an all-max chain uses the conservative worker counts instead of physical m
     env: {},
     stderr: { write: (line) => (stderr += line) },
   });
-  assert.equal(budgetBytes, CONSERVATIVE_CGROUP_LIMIT_BYTES - AGENT_RESERVE_BYTES);
+  assert.equal(budgetBytes, CONSERVATIVE_CGROUP_LIMIT_BYTES - UNSIZED_PROCESS_RESERVE_BYTES);
   assert.match(stderr, /no finite memory\.high or memory\.max limit/u);
   assert.equal(
     workerCount({

@@ -64,14 +64,18 @@ the contract-only run). For the selected blocks, it runs the mutation guard firs
 `bindings:check` with `--bindings`, then the contract, Rust lint, Rust test, Rust coverage, frontend
 coverage and bundle lanes concurrently; e2e waits for bundle and every cargo lane because its
 container build rewrites `dist/`, a Rust compile input, and frontend mutation runs last unless the
-budget allows one wave. `scripts/heavy-gate.sh` holds the machine-wide heavy-gate lock (a waiting
-gate prints the holder) and runs the full heavy part in its own transient
-`chessfable-gate-*.scope` under `agents.slice`. `scripts/gate-parallelism.mjs` sizes workers from
+budget allows one wave. `agent-gate` (tuxedo-config's strict launcher) takes the machine-wide
+heavy-gate lock (`~/.cache/agent-kit/heavy-gate.lock`; a waiting gate prints `heavy-gate.holder`)
+and runs the whole run in its own `agents.slice/agent-gate-*.scope`, capped at 70 % of the slice's
+`MemoryHigh`. It fails closed: exit 125 (`agent-gate: REFUSED — …`) means nothing started and a
+retry is safe; a missing launcher fails the gate with no in-place fallback. `gate:ensure` and
+`gate:run` are wrapped too; a nested `agent-gate` runs in place. Never add another `flock` on
+`heavy-gate.lock`: it deadlocks against the launcher's own lock. `scripts/gate-parallelism.mjs` sizes workers from
 that scope's complete cgroup chain, including the `agents.slice` budget, and uses the recorded
 conservative 8 GiB configuration if an ancestor limit cannot be read or no finite limit exists.
 The e2e container runs with a 4 GiB limit reserved from frontend coverage and from frontend
 mutation only when mutation shares its concurrent schedule. The schedule and its constants are
-`d-20260930-03` and `d-20260930-04`.
+`d-20260930-03`, `d-20260930-04`, `d-20261002-01` (placement), and `d-20261002-02` (reserve).
 
 Gate scripts live in `package.json`; the path mapping and any direct tool invocations live in the
 canonical push contract. Two properties worth knowing before planning any change:
