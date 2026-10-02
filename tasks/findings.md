@@ -12383,3 +12383,16 @@ Handled by `f19e14ac` (Stockfish 19 upgrade build, phase P2, obligation O2). A g
 * **Why it matters:** `~/.claude/references/push-review-policy.md` "Proof selection before custom source verification" requires the behavioural route first; these three are evidence that cannot go red for the class of regression they are named after.
 * **Open question:** which behavioural proof replaces each — the mock app from `engine_test_app()` invoking the command with a recording engine, a supervisor-level assertion on the registered `EngineKey`, or a shared ingest seam observed through a test hook — and whether any of the three pins a property that only source structure can express (then document it with its staged-failure matrix instead).
 * **Found by:** Stockfish 19 upgrade build, cumulative review closure round 3 (`review-tests` on the `retire_engine_binary` command test), 2026-10-02; the remaining three identified by the orchestrator reading `chess.rs` at the cited lines.
+
+---
+
+## 2026-10-02 — filed through the inbox spool
+
+### A failed progress clear leaves a stale terminal record that every remounted progress bar shows again
+
+* **ID:** f-20261002-07 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src/hooks/downloadJobs.ts:41-48` (`clearDownloadProgress` is best effort: on failure it logs and returns `null`), `:84-85` (the job owner's failure cleanup swallows that result), `src/components/common/ProgressButton.tsx:~65` (a failed cancel request returns before any fence), `src/hooks/useProgress.ts` (the fence is a per-hook-instance ref reset on every mount), `src-tauri/src/progress.rs` (the backend keeps the terminal record until a clear succeeds).
+* **Defect:** when `clearProgress` fails after a job ended — a discarded catalog download whose cancel request also failed (Upgrade from catalog, CR-1 of the Stockfish 19 plan), or an Add Engine install whose configuration probe failed after the download completed (pre-existing, already at `1a8ee277`: `src/utils/engines.ts:326-331` → the same cleanup) — the backend keeps the succeeded record. The hook that was showing it may fence it, but any remount (reopening the dialog) reads it again through `getProgress` and shows a retained 100 % bar beside the action until the app restarts.
+* **Why it matters:** a bar that claims a finished download for something that was discarded or failed; it is cosmetic in effect (`CatalogEngineCard.tsx:53` keeps the completed label tied to native success), but it is state the user cannot clear.
+* **Open question:** who owns the cleanup guarantee: the backend (a discarded or failed job never stays "succeeded", e.g. the job owner reports the outcome and the backend clears or marks it), the job owner (retry the clear with backoff before releasing the job), or the renderer (a fence that survives remounts, with a global bound). A renderer-only fence map was tried in the Stockfish 19 build (`cd8c72c5`) and withdrawn by a focused `review-plan` judgment: it added global mutable state for a pre-existing hazard and still missed the path where the cancel request itself failed.
+* **Found by:** Stockfish 19 upgrade build, cumulative review closure rounds 6-7 (`review-error-handling`, CR-1 residual) and the focused `review-plan` judgment, 2026-10-02.
