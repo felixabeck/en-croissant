@@ -4,7 +4,7 @@ import type { UseFormReturnType } from "@mantine/form";
 import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { notifyUnlessCancelled, runUnlessCancelled } from "@/components/files/notifyError";
-import { type LocalEngine, requiredEngineSettings } from "@/utils/engines";
+import { type LocalEngine, requiredEngineSettingsDefaults } from "@/utils/engines";
 import { EngineAttachmentDraft } from "./engineAttachments";
 import type { EngineOwnerSaveReceipt } from "@/state/engineOwnerStorage";
 import FileInput from "../common/FileInput";
@@ -62,14 +62,7 @@ export default function EngineForm({
             form.setFieldValue("handle", handle);
             const config = await tauri.getEngineConfig(handle);
             if (generation !== pickerGeneration.current.value) return handle;
-            const settings = config.options
-              .filter((option) => requiredEngineSettings.includes(option.value.name))
-              .filter((option) => option.type !== "button")
-              .map((option) => ({
-                type: "string" as const,
-                name: option.value.name,
-                value: String(option.value.default ?? ""),
-              }));
+            const settings = requiredEngineSettingsDefaults(config);
             form.setFieldValue("filename", config.name || "Engine");
             form.setFieldValue("name", config.name);
             form.setFieldValue("settings", settings);

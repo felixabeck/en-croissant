@@ -201,6 +201,60 @@ test("real overlapping atom writes preserve updates and return their own receipt
     expect((store.get(enginesAtom) ?? []).map(({ id }) => id)).toEqual(["remote", "engine-id"]);
 });
 
+test("catalog atom publication waits for its one durable save and serializes with ordinary writes", async () => {
+    const { createStore } = await import("jotai");
+    const { enginesAtom } = await import("./atoms");
+    const store = createStore();
+    await store.set(enginesAtom, []);
+    const writes = vi.spyOn(Storage.prototype, "setItem");
+    let rejectPrepare!: (error: Error) => void;
+    mocks.reconcile.mockImplementationOnce(
+        () =>
+            new Promise((_resolve, reject) => {
+                rejectPrepare = reject;
+            }),
+    );
+    const refused = store.set(enginesAtom, [engine], "after-save");
+    await vi.waitFor(() => expect(rejectPrepare).toEqual(expect.any(Function)));
+    expect(store.get(enginesAtom)).toEqual([]);
+    expect(writes).not.toHaveBeenCalled();
+    rejectPrepare(new Error("prepare refused"));
+    expect((await refused).saved).toBe(false);
+    expect(store.get(enginesAtom)).toEqual([]);
+    expect(writes).not.toHaveBeenCalled();
+
+    let releasePrepare!: () => void;
+    mocks.reconcile.mockImplementationOnce(
+        () =>
+            new Promise<void>((resolve) => {
+                releasePrepare = resolve;
+            }),
+    );
+    const saved = store.set(enginesAtom, (current) => [...current, engine], "after-save");
+    let releaseOrdinary!: () => void;
+    const ordinary = store.set(enginesAtom, async (current) => {
+        await new Promise<void>((resolve) => {
+            releaseOrdinary = resolve;
+        });
+        return [
+            ...current,
+            { type: "chessdb" as const, id: "remote", name: "Cloud", url: "https://x" },
+        ];
+    });
+    await vi.waitFor(() => expect(releasePrepare).toEqual(expect.any(Function)));
+    expect(store.get(enginesAtom)).toEqual([]);
+    releasePrepare();
+    expect((await saved).saved).toBe(true);
+    expect(store.get(enginesAtom)).toEqual([engine]);
+    await vi.waitFor(() => expect(releaseOrdinary).toEqual(expect.any(Function)));
+    expect(writes.mock.calls.filter(([key]) => key === "engines")).toHaveLength(1);
+    releaseOrdinary();
+    await ordinary;
+    expect((store.get(enginesAtom) ?? []).map(({ id }) => id)).toEqual([engine.id, "remote"]);
+    expect(writes.mock.calls.filter(([key]) => key === "engines")).toHaveLength(2);
+    writes.mockRestore();
+});
+
 test("invalid hydration returns the safe fallback without overwriting raw bytes", async () => {
     const raw = "{broken";
     localStorage.setItem("engines", raw);

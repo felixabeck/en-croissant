@@ -226,7 +226,8 @@ function EngineCard({
       const installed = await runDownloadJob(progressId, (ticket) =>
         installDefaultEngine(engine, progressId, ticket),
       );
-      setEngines(async (prev) => [...(await prev), installed]);
+      const receipt = await setEngines((prev) => [...prev, installed], "after-save");
+      if (!receipt.saved) throw new Error(t("Engines.SaveError"));
       setInstalledThisSession(true);
     } catch (error) {
       notifyUnlessCancelled(t("Common.Error"), error);

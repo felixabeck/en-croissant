@@ -217,6 +217,18 @@ pub(crate) enum ParentAccess {
     Writable,
 }
 
+/// Checks whether an archive destination can be adopted without following its leaf link.
+pub(crate) fn archive_destination_directory_exists(path: &Path) -> Result<bool, Error> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => Ok(true),
+        Ok(_) => Err(Error::Conflict(
+            "archive destination is not a directory".into(),
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
 pub(crate) fn read_bounded_bytes<R: Read>(
     reader: &mut R,
     declared: u64,
@@ -5261,6 +5273,30 @@ mod tests {
         path::PathBuf,
         sync::{Arc, Mutex},
     };
+
+    #[test]
+    fn archive_destination_directory_exists_without_following_links() {
+        let root = tempfile::tempdir().expect("root");
+        let directory = root.path().join("directory");
+        let regular = root.path().join("regular");
+        let link = root.path().join("link");
+        assert!(!archive_destination_directory_exists(&directory).expect("missing directory"));
+        std::fs::create_dir(&directory).expect("directory");
+        assert!(archive_destination_directory_exists(&directory).expect("existing directory"));
+        std::fs::write(&regular, b"regular").expect("regular file");
+        assert!(matches!(
+            archive_destination_directory_exists(&regular),
+            Err(Error::Conflict(message)) if message == "archive destination is not a directory"
+        ));
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&directory, &link).expect("directory symlink");
+        #[cfg(windows)]
+        windows_test_junction(&link, &directory);
+        assert!(matches!(
+            archive_destination_directory_exists(&link),
+            Err(Error::Conflict(message)) if message == "archive destination is not a directory"
+        ));
+    }
 
     #[test]
     fn write_if_changed_leaves_identical_bytes_untouched() {

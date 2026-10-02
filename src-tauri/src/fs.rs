@@ -636,6 +636,9 @@ where
                         )?;
                     }
                 } else {
+                    if gzip_is_tar(&mut file)? {
+                        archive_install_names(&path, &staging)?;
+                    }
                     extract_gz_cancellable(file, &path, limits, cancellation)?;
                 }
             } else {
@@ -1316,6 +1319,26 @@ where
         let (op, resolved) =
             resolve_engine_archive_destination(&state, &destination, &directory_name)?;
         validate_integrity(op, &url, &integrity)?;
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
+        // A verified artefact has a stable directory name. Never replace an existing tree:
+        // it may be registered already, and an engine may still be executing from it.
+        let existing_target = resolved
+            .target()
+            .ok_or_else(|| {
+                Error::InvalidInput("archive destination needs a target directory".into())
+            })?
+            .to_path_buf();
+        let exists = crate::infra::blocking::BLOCKING_GATEWAY
+            .spawn(move || crate::infra::fs::archive_destination_directory_exists(&existing_target))
+            .await?;
+        if exists {
+            commit_gate.begin_commit()?;
+            let progress_lease = begin_progress(&state.progress_state, &app, id.clone())?;
+            report_download_success(&state, &app, &progress_lease, &job_id);
+            return Ok(());
+        }
         let destination_parent = resolved
             .target()
             .and_then(|target| target.parent())
@@ -1387,6 +1410,18 @@ pub(crate) fn publish_engine_archive_tree(
     resolved: &crate::infra::path_authority::ResolvedPath,
     staging_dir: &Path,
 ) -> Result<(), Error> {
+    // Serialize the existence check with publication so concurrent installs of the same
+    // verified artefact adopt the first tree instead of replacing its registered executable.
+    static PUBLICATION: Mutex<()> = Mutex::new(());
+    let _publication = PUBLICATION
+        .lock()
+        .map_err(|_| Error::Conflict("engine archive publication lock was poisoned".into()))?;
+    let target = resolved.target().ok_or_else(|| {
+        Error::InvalidInput("archive destination needs a target directory".into())
+    })?;
+    if crate::infra::fs::archive_destination_directory_exists(target)? {
+        return Ok(());
+    }
     resolved.atomic_install_download_dir(staging_dir)
 }
 
@@ -1678,14 +1713,60 @@ fn install_extracted_tree(
     crate::infra::fs::install_owned_staging_dir(source, dest_leaf)
 }
 
+/// Peeks at the decompressed header, leaving the compressed file rewound for extraction.
+fn gzip_is_tar(file: &mut std::fs::File) -> Result<bool, Error> {
+    use std::io::{Seek, SeekFrom};
+    file.seek(SeekFrom::Start(0))?;
+    let mut head = Vec::with_capacity(512);
+    flate2::read::GzDecoder::new(&mut *file)
+        .take(512)
+        .read_to_end(&mut head)?;
+    file.seek(SeekFrom::Start(0))?;
+    Ok(head.len() == 512 && &head[257..262] == b"ustar")
+}
+
 fn extract_gz_cancellable(
-    file: std::fs::File,
+    mut file: std::fs::File,
     target_path: &Path,
     limits: ArchiveLimits,
     cancellation: &CancellationToken,
 ) -> Result<(), Error> {
     let target_dir = target_path.parent().unwrap_or_else(|| Path::new("."));
     create_private_dir_all(target_dir)?;
+
+    if gzip_is_tar(&mut file)? {
+        use std::io::{Seek, SeekFrom};
+        let compressed = file.metadata()?.len();
+        let ratio_limit = compressed.saturating_mul(limits.ratio);
+        let stream_limit = limits.expanded.min(ratio_limit);
+        // Bound the entire decompressed stream (headers and padding included) before tar
+        // publication. The tar extractor still enforces entry count and per-entry limits.
+        let mut tar_file = tempfile::tempfile_in(target_dir)?;
+        let mut decoder = flate2::read::GzDecoder::new(file);
+        let mut total = 0;
+        bounded_copy(
+            &mut decoder,
+            &mut tar_file,
+            u64::MAX,
+            &mut total,
+            stream_limit,
+            cancellation,
+        )
+        .map_err(|error| match error {
+            Error::ResourceLimit(_) if ratio_limit < limits.expanded => {
+                Error::ResourceLimit("High tar-in-gzip compression ratio detected".into())
+            }
+            Error::ResourceLimit(_) => {
+                Error::ResourceLimit("Tar-in-gzip expansion limit exceeded".into())
+            }
+            other => other,
+        })?;
+        tar_file.seek(SeekFrom::Start(0))?;
+        let leaf = target_path
+            .file_name()
+            .ok_or_else(|| Error::InvalidInput("archive destination needs a leaf name".into()))?;
+        return extract_tar_cancellable(tar_file, target_dir, leaf, limits, cancellation);
+    }
 
     let outcome = atomic_replace(target_path, |target_file| {
         let mut decoder = flate2::read::GzDecoder::new(file);
@@ -3617,6 +3698,303 @@ mod tests {
         let path = archives.path().join("payload.zip");
         write_zip(&path, &[("engine.bin", b"engine")]);
         std::fs::read(path).unwrap()
+    }
+
+    fn gzip_tar_payload(content: &[u8]) -> Vec<u8> {
+        let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        let mut header = tar::Header::new_ustar();
+        header.set_size(content.len() as u64);
+        header.set_mode(0o600);
+        header.set_cksum();
+        archive
+            .append_data(&mut header, "stockfish/engine", content)
+            .unwrap();
+        archive.into_inner().unwrap().finish().unwrap()
+    }
+
+    #[tokio::test]
+    async fn gzip_tar_download_installs_and_registers_nested_executable() {
+        let dir = tempdir().unwrap();
+        let (mut authority, _, engine_root, root) = engine_destination(&dir);
+        let target = engine_root.join("stockfish.tar.gz");
+        let bytes = gzip_tar_payload(b"#!/bin/sh\necho fixture\n");
+        let integrity = unsigned_test_integrity(&bytes);
+        download_file_core_control_with_integrity(
+            OpClass::Engine,
+            "https://example.com/stockfish.tar.gz",
+            &target,
+            Some((target.clone(), None)),
+            &zip_response(bytes),
+            None,
+            None,
+            CancellationToken::new(),
+            Some(&integrity.sha256),
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+        let handle = authority
+            .register_installed_engine(&root, "stockfish.tar.gz/stockfish/engine")
+            .unwrap();
+        assert_eq!(
+            std::fs::read(target.join("stockfish/engine")).unwrap(),
+            b"#!/bin/sh\necho fixture\n"
+        );
+        let adopted = authority
+            .register_installed_engine(&root, "stockfish.tar.gz/stockfish/engine")
+            .unwrap();
+        assert_eq!(handle, adopted);
+    }
+
+    #[test]
+    fn gzip_tar_ratio_rejection() {
+        let dir = tempdir().unwrap();
+        let archive = dir.path().join("archive.gz");
+        std::fs::write(&archive, gzip_tar_payload(&vec![0; 64 * 1024])).unwrap();
+        let limits = ArchiveLimits {
+            ratio: 2,
+            ..OpClass::Engine.limits()
+        };
+        let target = dir.path().join("target");
+        let error = extract_gz(std::fs::File::open(archive).unwrap(), &target, limits).unwrap_err();
+        assert!(
+            matches!(error, Error::ResourceLimit(ref message) if message == "High tar-in-gzip compression ratio detected"),
+            "{error}"
+        );
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn gzip_tar_expanded_size_rejection() {
+        let dir = tempdir().unwrap();
+        let archive = dir.path().join("archive.gz");
+        std::fs::write(&archive, gzip_tar_payload(&vec![0; 512])).unwrap();
+        let limits = ArchiveLimits {
+            expanded: 1024,
+            ratio: u64::MAX,
+            ..OpClass::Engine.limits()
+        };
+        let target = dir.path().join("target");
+        let error = extract_gz(std::fs::File::open(archive).unwrap(), &target, limits).unwrap_err();
+        assert!(
+            matches!(error, Error::ResourceLimit(ref message) if message == "Tar-in-gzip expansion limit exceeded"),
+            "{error}"
+        );
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn single_file_gzip_still_installs_one_file() {
+        let dir = tempdir().unwrap();
+        let archive = dir.path().join("archive.gz");
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(b"single engine payload").unwrap();
+        std::fs::write(&archive, encoder.finish().unwrap()).unwrap();
+        let target = dir.path().join("engine");
+        extract_gz(
+            std::fs::File::open(archive).unwrap(),
+            &target,
+            OpClass::Engine.limits(),
+        )
+        .unwrap();
+        assert!(target.is_file());
+        assert_eq!(std::fs::read(target).unwrap(), b"single engine payload");
+    }
+
+    #[tokio::test]
+    async fn catalog_digest_directories_are_distinct_and_same_artifact_is_adopted() {
+        let dir = tempdir().unwrap();
+        let (authority, destination, engine_root, root) = engine_destination(&dir);
+        let payloads = [
+            gzip_tar_payload(b"first executable"),
+            gzip_tar_payload(b"second executable"),
+        ];
+        let state = AppState {
+            http_transport: Arc::new(zip_response(payloads[0].clone())),
+            ..AppState::default()
+        };
+        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        let app = test_progress_app();
+        let mut paths = Vec::new();
+        let mut handles = Vec::new();
+        for payload in payloads {
+            let integrity = unsigned_test_integrity(&payload);
+            let directory = format!("engine.tar.gz-{}", integrity.sha256);
+            let state = AppState {
+                http_transport: Arc::new(zip_response(payload)),
+                ..state.clone()
+            };
+            let (job, lease) = test_download_lease(&state);
+            download_engine_archive_core(
+                directory.clone(),
+                "https://example.com/engine.tar.gz".into(),
+                destination.clone(),
+                directory.clone(),
+                job,
+                integrity.clone(),
+                app.handle().clone(),
+                state.clone(),
+                lease.token(),
+                lease.commit_gate(),
+                |_, _, _| Ok(()),
+            )
+            .await
+            .unwrap();
+            let relative = format!("{directory}/stockfish/engine");
+            let handle = state
+                .pgn_path_authority
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .register_installed_engine(&root, &relative)
+                .unwrap();
+            let installed_path = engine_root.join(&relative);
+            let identity = crate::infra::path_authority::opened_file_identity(
+                &std::fs::File::open(&installed_path).unwrap(),
+            )
+            .unwrap();
+            let marker = engine_root.join(&directory).join("adoption-marker");
+            std::fs::write(&marker, b"keep tree").unwrap();
+            // Empty transport refuses if adoption tries to download or re-extract anything.
+            let adoption = AppState {
+                http_transport: Arc::new(MockTransport {
+                    responses: Mutex::new(vec![]),
+                    requests_seen: Mutex::new(vec![]),
+                }),
+                ..state.clone()
+            };
+            let (job, lease) = test_download_lease(&adoption);
+            let verified = Arc::new(AtomicBool::new(false));
+            let verify = Arc::clone(&verified);
+            download_engine_archive_core(
+                directory.clone(),
+                "https://example.com/engine.tar.gz".into(),
+                destination.clone(),
+                directory.clone(),
+                job,
+                integrity,
+                app.handle().clone(),
+                adoption,
+                lease.token(),
+                lease.commit_gate(),
+                move |_, _, _| {
+                    verify.store(true, Ordering::SeqCst);
+                    Ok(())
+                },
+            )
+            .await
+            .unwrap();
+            assert!(verified.load(Ordering::SeqCst));
+            assert_eq!(std::fs::read(marker).unwrap(), b"keep tree");
+            assert_eq!(
+                crate::infra::path_authority::opened_file_identity(
+                    &std::fs::File::open(&installed_path).unwrap()
+                )
+                .unwrap(),
+                identity
+            );
+            let adopted = state
+                .pgn_path_authority
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .register_installed_engine(&root, &relative)
+                .unwrap();
+            assert_eq!(handle, adopted);
+            handles.push(handle);
+            paths.push(installed_path);
+        }
+        assert_ne!(paths[0], paths[1]);
+        assert_ne!(handles[0], handles[1]);
+        assert_eq!(std::fs::read(&paths[0]).unwrap(), b"first executable");
+        assert_eq!(std::fs::read(&paths[1]).unwrap(), b"second executable");
+    }
+
+    /// Operational P2 proof, deliberately opt-in: network access and the Linux SF19 build.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    #[ignore = "downloads the real signed Linux Stockfish 19 artefact"]
+    async fn real_stockfish19_catalog_install_answers_uci() {
+        let document = include_str!("../../src/catalogs/engines.json");
+        let signature = include_str!("../../src/catalogs/engines.json.minisig");
+        verify_signed_bytes(document.into(), signature.into())
+            .await
+            .unwrap();
+        let entries: Vec<serde_json::Value> = serde_json::from_str(document).unwrap();
+        let entry = entries
+            .iter()
+            .find(|entry| {
+                entry["name"] == "Stockfish" && entry["version"] == "19" && entry["os"] == "linux"
+            })
+            .unwrap();
+        let url = entry["downloadLink"].as_str().unwrap();
+        let integrity = ArtifactIntegrity {
+            sha256: entry["sha256"].as_str().unwrap().into(),
+            signature: entry["signature"].as_str().unwrap().into(),
+        };
+        let directory = format!(
+            "{}-{}",
+            url.rsplit('/').next().unwrap(),
+            integrity.sha256.to_lowercase()
+        );
+        let dir = tempdir().unwrap();
+        let (authority, destination, engine_root, root) = engine_destination(&dir);
+        let state = AppState {
+            http_transport: Arc::new(
+                crate::infra::net::ProdTransport::new(reqwest::Client::builder()).unwrap(),
+            ),
+            ..AppState::default()
+        };
+        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        let app = test_progress_app();
+        let (job, lease) = test_download_lease(&state);
+        download_engine_archive_core(
+            "real-sf19".into(),
+            url.into(),
+            destination,
+            directory.clone(),
+            job,
+            integrity,
+            app.handle().clone(),
+            state.clone(),
+            lease.token(),
+            lease.commit_gate(),
+            |op, url, integrity| validate_artifact_integrity(op, url, Some(integrity)),
+        )
+        .await
+        .unwrap();
+        let relative = format!("{directory}/{}", entry["path"].as_str().unwrap());
+        let handle = state
+            .pgn_path_authority
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .register_installed_engine(&root, &relative)
+            .unwrap();
+        let mut child = std::process::Command::new(engine_root.join(&relative))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"uci\nquit\n")
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(output.status.success(), "{}", output.status);
+        assert!(
+            stdout.lines().any(|line| line == "id name Stockfish 19"),
+            "{stdout}"
+        );
+        assert!(stdout.lines().any(|line| line == "uciok"), "{stdout}");
+        println!("Verified catalog + payload signature + SHA-256; directory={directory}; handle={handle:?}; nested executable registered; id name Stockfish 19; uciok; exit={}", output.status);
     }
 
     async fn download_zip_with_staging(

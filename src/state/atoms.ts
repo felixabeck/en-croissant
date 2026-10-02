@@ -48,7 +48,12 @@ import {
 import { persistStorageWriteError, tabStorage } from "./store/tabStorage";
 import { reportPersistError } from "./persistError";
 import { originalPathOwnersSnapshot } from "./pathOwners";
-import { createEngineOwnerStorage, type EngineOwnerSaveReceipt } from "./engineOwnerStorage";
+import {
+    createEngineOwnerStorage,
+    saveEngineOwnerValue,
+    type EngineOwnerSaveReceipt,
+} from "./engineOwnerStorage";
+import { serializeStorageValue } from "./store/debouncedStorage";
 import { defaultPlayerSettings, opponentSettingsSchema } from "@/state/opponentSettings";
 import { createPracticeDeckAtom, type PracticeData } from "./practiceStorage";
 import { removeFileFreshness } from "./fileFreshness";
@@ -239,15 +244,32 @@ type EngineUpdate =
     | Promise<Engine[]>
     | ((current: Engine[]) => Engine[] | Promise<Engine[]>);
 let engineOwnerUpdateSequence = Promise.resolve();
+// Once a write publishes, its value takes precedence over asynchronous storage hydration.
+const publishedEnginesAtom = atom<Engine[] | undefined>(undefined);
 
 /** Serializes functional calculation, renderer persistence and native synchronization together. */
 export const enginesAtom = atom(
-    (get) => get(storedEnginesAtom),
-    (get, set, update: EngineUpdate): Promise<EngineOwnerSaveReceipt> => {
+    (get) => get(publishedEnginesAtom) ?? get(storedEnginesAtom),
+    (
+        get,
+        set,
+        update: EngineUpdate,
+        publication?: "after-save",
+    ): Promise<EngineOwnerSaveReceipt> => {
         const run = engineOwnerUpdateSequence.then(async () => {
-            const current = get(storedEnginesAtom) ?? [];
+            const current = get(enginesAtom) ?? [];
             const next = await (typeof update === "function" ? update(current) : update);
-            return set(storedEnginesAtom, next) as unknown as Promise<EngineOwnerSaveReceipt>;
+            if (publication === "after-save") {
+                const receipt = await saveEngineOwnerValue("engines", serializeStorageValue(next));
+                if (receipt.saved) set(publishedEnginesAtom, next);
+                return receipt;
+            }
+            const receipt = set(
+                storedEnginesAtom,
+                next,
+            ) as unknown as Promise<EngineOwnerSaveReceipt>;
+            set(publishedEnginesAtom, next);
+            return receipt;
         });
         engineOwnerUpdateSequence = run.then(
             () => undefined,

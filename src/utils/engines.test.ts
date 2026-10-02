@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { inspectEngineOwnerValue } from "@/state/engineOwnerStorage";
 
 const installMocks = vi.hoisted(() => ({
     downloadEngineArchive: vi.fn(),
@@ -30,6 +31,8 @@ import {
     isEngineResourcePathOptionName,
     isManifestEngineInstalled,
     installDefaultEngine,
+    installCatalogEngine,
+    requiredEngineSettingsDefaults,
     manifestEngineInstallCard,
     parsePersistedEngineJson,
     type LocalEngine,
@@ -214,7 +217,7 @@ describe("default-engine download cancellation", () => {
             "progress-id",
             manifestEntry.downloadLink,
             { id: { id: "destination" } },
-            "stockfish.zip",
+            `stockfish.zip-${manifestEntry.sha256}`,
             "ticket-id",
             { sha256: manifestEntry.sha256, signature: manifestEntry.signature },
         );
@@ -224,6 +227,84 @@ describe("default-engine download cancellation", () => {
 });
 
 describe("engine persistence", () => {
+    it("shares required defaults and excludes button and non-required options", () => {
+        expect(
+            requiredEngineSettingsDefaults({
+                name: "Engine",
+                options: [
+                    { type: "spin", value: { name: "Threads", default: 4n, min: 1n, max: 128n } },
+                    { type: "spin", value: { name: "Hash", default: 32n, min: 1n, max: 1024n } },
+                    { type: "button", value: { name: "MultiPV" } },
+                    { type: "check", value: { name: "Ponder", default: false } },
+                ],
+            }),
+        ).toEqual([
+            { type: "string", name: "Threads", value: "4" },
+            { type: "string", name: "Hash", value: "32" },
+        ]);
+    });
+
+    it("the shared installer returns config and uses the full digest in extraction and registration", async () => {
+        installMocks.getEngineWorkspace.mockReset().mockResolvedValue({ id: { id: "root" } });
+        installMocks.engineArchiveDestination.mockReset().mockResolvedValue({ id: "destination" });
+        installMocks.downloadEngineArchive.mockReset().mockResolvedValue(undefined);
+        const handle = { id: { id: "installed" }, kind: "engine" };
+        const config = { name: "Stockfish 19", options: [] };
+        installMocks.registerInstalledEngine.mockReset().mockResolvedValue(handle);
+        installMocks.getEngineConfig.mockReset().mockResolvedValue(config);
+        for (const sha256 of ["A".repeat(64), `${"a".repeat(63)}b`]) {
+            const installed = await installCatalogEngine(
+                { ...manifestEntry, path: "stockfish/engine", sha256 } as never,
+                "progress",
+                "ticket",
+            );
+            const directory = `stockfish.zip-${sha256.toLowerCase()}`;
+            expect(installMocks.downloadEngineArchive).toHaveBeenLastCalledWith(
+                "progress",
+                manifestEntry.downloadLink,
+                { id: "destination" },
+                directory,
+                "ticket",
+                { sha256, signature: manifestEntry.signature },
+            );
+            expect(installMocks.registerInstalledEngine).toHaveBeenLastCalledWith(
+                { id: { id: "root" } },
+                `${directory}/stockfish/engine`,
+            );
+            expect(installed).toEqual({ handle, config, filename: "engine" });
+        }
+    });
+
+    it("installDefaultEngine produces a record accepted by real owner inspection", async () => {
+        installMocks.getEngineWorkspace.mockReset().mockResolvedValue({ id: { id: "root" } });
+        installMocks.engineArchiveDestination.mockReset().mockResolvedValue({ id: "destination" });
+        installMocks.downloadEngineArchive.mockReset().mockResolvedValue(undefined);
+        installMocks.registerInstalledEngine.mockReset().mockResolvedValue({
+            id: { id: "installed" },
+            kind: "engine",
+        });
+        installMocks.getEngineConfig
+            .mockReset()
+            .mockResolvedValue({ name: "Stockfish 19", options: [] });
+        const installed = await installDefaultEngine(
+            {
+                ...manifestEntry,
+                path: "stockfish/stockfish",
+                image: "/engines/stockfish.png",
+                imageUrl: "/engines/stockfish.png",
+                elo: 3635,
+                downloadSize: 100,
+            } as never,
+            "progress",
+            "ticket",
+        );
+        expect(inspectEngineOwnerValue("engines", [installed])).toEqual({
+            capabilityIds: ["installed"],
+            attachmentIds: [],
+        });
+        expect(engineSchema.parse(installed)).toStrictEqual(installed);
+    });
+
     it("accepts public metadata with an opaque native handle", () => {
         expect(
             engineSchema.safeParse({

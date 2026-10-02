@@ -194,7 +194,7 @@ describe("engine registration recovery", () => {
 
         try {
             const installed = await installDefaultEngine(manifest, "engine_0", "download-ticket");
-            expect(installed.handle).toBe(handle);
+            expect(installed.handle).toStrictEqual(handle);
             expect(installed.id).toBe("00000000-0000-4000-8000-00000000000a");
             expect(installed.filename).toBe("stockfish");
             expect(installed.downloadLink).toBe(manifest.downloadLink);

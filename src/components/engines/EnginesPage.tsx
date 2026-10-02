@@ -52,6 +52,7 @@ import {
   engineOptionValue,
   retireEngine,
   requiredEngineSettings,
+  requiredEngineSettingsDefaults,
 } from "@/utils/engines";
 import { capabilityKey } from "@/utils/pathCapabilities";
 import ConfirmModal from "../common/ConfirmModal";
@@ -337,17 +338,8 @@ function EngineSettings({
       const missing = requiredEngineSettings.filter(
         (field) => !settings.find((setting) => setting.name === field),
       );
-      for (const field of requiredEngineSettings) {
-        if (!settings.find((setting) => setting.name === field)) {
-          const option = options.options.find((option) => option.value.name === field);
-          if (option && option.type !== "button") {
-            settings.push({
-              type: "string",
-              name: field,
-              value: String(option.value.default ?? ""),
-            });
-          }
-        }
+      for (const setting of requiredEngineSettingsDefaults(options)) {
+        if (!settings.find((stored) => stored.name === setting.name)) settings.push(setting);
       }
       if (missing.length > 0) {
         setEngine({ ...engine, settings });
@@ -632,14 +624,7 @@ function EngineSettings({
             onClick={() =>
               setEngine({
                 ...engine,
-                settings: options?.options
-                  .filter((option) => requiredEngineSettings.includes(option.value.name))
-                  .filter((option) => option.type !== "button")
-                  .map((option) => ({
-                    type: "string" as const,
-                    name: option.value.name,
-                    value: String(option.value.default ?? ""),
-                  })),
+                settings: options ? requiredEngineSettingsDefaults(options) : undefined,
               })
             }
           >
