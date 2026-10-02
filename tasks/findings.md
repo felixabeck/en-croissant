@@ -12318,3 +12318,16 @@ Correction 2026-09-30 (records review): "the 2026-09-29 push-gate lane runner ke
 * **Open question:** is the fix test-side isolation (per-test registry scope, or tests guaranteeing every binding is dropped before their file is removed) or a product-side refinement of the identity key (e.g. also refusing only while the leaf inode is still linked), given that in the product an inode cannot be reused while a SQLite connection holds the leaf open?
 * **Fix shape:** first find the binding holder that outlives its file (instrument `Registry` in tests to report bindings whose leaf no longer exists at test end), then decide the question above; a reproduction can force inode reuse by creating and deleting files in a loop on the same filesystem.
 * **Found by:** Claude Code drain session 837e01c1-7c21-4f1a-83e3-7e56d2b8a9d1 (next-finding f-20261001-22), final push gate, 2026-10-02. Gate log: `artifacts/gates/20261002T022755619Z-3234038/rust-coverage.log`.
+
+---
+
+## 2026-10-02 — filed through the inbox spool
+
+### The dialog grant-then-promote test fixture is still copied in pgn.rs, file_workspace.rs and the path-authority tests
+
+* **ID:** f-20261002-03 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Filed from:** 83be2012-20c1-4d5e-ae1d-97d4eba12728
+* **Where:** `src-tauri/src/pgn.rs` (~1530 `promote_pgn_file`, ~1555 `promote_pgn_workspace`), `src-tauri/src/file_workspace.rs` (~2005 `promoted_workspace_state`), and the 28 `promote_dialog(` call sites in the tests of `src-tauri/src/infra/path_authority/mod.rs`.
+* **Defect:** each site spells out the two-step `grant_dialog_operations(path, name, PathClass::BoundedDialogGrant, operations.clone(), <ttl>, <uses>)` then `promote_dialog(&grant, <persistent class>, name, operations)` sequence by hand. The f-20261002-01 push extracted `PathAuthority::grant_persistent_file_for_test` (`#[cfg(test)]`, path-authority `impl`) and routed all seven `db/mod.rs` copies through it, but these files belong to other areas of the run and were left. Each copy is one more place a change to the grant contract (TTL, use count, persistent class) must be repeated, which is the rule-11 update surface.
+* **Fix shape:** generalise the helper with the per-site differences as parameters (persistent class — `PersistentFile` vs `PersistentCustomRoot` — and, where a test depends on it, the use count; the TTL is irrelevant to every test that was read), keep `grant_persistent_file_for_test` as the common case, and route every test copy above through it. Production callers (`main.rs` dialog commands) are out of scope: they are the contract, not a fixture.
+* **Found by:** Codex `review-minimalism` lens, push round 2 of the f-20261002-01 drain release, 2026-10-02.
