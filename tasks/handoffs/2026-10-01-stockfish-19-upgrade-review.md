@@ -963,8 +963,22 @@ unchanged.*
 Findings filed by this implementation: `f-20261002-04` (superseded install directories never
 deleted), `f-20261002-05` (first-run profile: no catalog install possible), `f-20261002-06`
 (three `include_str!` structure tests in `chess.rs`), `f-20261002-07` (stale progress record after
-a failed clear); annotations on `f-20261002-03`, `-04`, `-05`; agent-kit `f-20261002-15`
+a failed clear), `f-20261002-08` (no repeatable real-catalog install check); annotations on `f-20261002-03`, `-04`, `-05`; agent-kit `f-20261002-15`
 (resumed Codex leaves lack the user D-Bus). Closed: `f-20261001-06`, `f-20261001-16`.
 
-`diff_adopted_per_round`: r1=17 r2=5 r3=3 r4=3 r5=1 r6=2 r7=0 (round 7's CR-1 residual was resolved
-by the lineage judgment: one withdrawal, one filed finding).
+### Final gates and the gate repair
+
+The first `pnpm gates:push -- --rust --frontend --bindings` run on `d2edd67f` was red on one lane:
+`backend-coverage` — `app-infrastructure functions regressed: 2010/2774, baseline 1925/2635`. A
+`origin/master` LCOV built in a throwaway worktree showed the new records were monomorphised
+instances of generic infra functions instantiated per test closure type through
+`download_engine_archive_core<R, V>`: the `#[ignore]` network test from P2 (22 records, none
+covered) and four identical `|_, _, _| Ok(())` validator literals. Repair `32c4be8f` removed the
+ignored test (its proof stays recorded above) and routed the four sites through one named
+`accept_any_integrity` fn; no baseline, floor or script changed, and the coverage check passed.
+Closure round 10 (correctness, tests; both APPROVED) noted that no repeatable real-artefact check
+remains → filed `f-20261002-08`.
+
+`diff_adopted_per_round`: r1=17 r2=5 r3=3 r4=3 r5=1 r6=2 r7=0 r8=0 r9=0 r10=1 (round 7's CR-1
+residual was resolved by the lineage judgment: one withdrawal, one filed finding; rounds 8-9
+corrected records only; r10 is the gate repair).
