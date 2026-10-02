@@ -12331,3 +12331,17 @@ Correction 2026-09-30 (records review): "the 2026-09-29 push-gate lane runner ke
 * **Defect:** each site spells out the two-step `grant_dialog_operations(path, name, PathClass::BoundedDialogGrant, operations.clone(), <ttl>, <uses>)` then `promote_dialog(&grant, <persistent class>, name, operations)` sequence by hand. The f-20261002-01 push extracted `PathAuthority::grant_persistent_file_for_test` (`#[cfg(test)]`, path-authority `impl`) and routed all seven `db/mod.rs` copies through it, but these files belong to other areas of the run and were left. Each copy is one more place a change to the grant contract (TTL, use count, persistent class) must be repeated, which is the rule-11 update surface.
 * **Fix shape:** generalise the helper with the per-site differences as parameters (persistent class — `PersistentFile` vs `PersistentCustomRoot` — and, where a test depends on it, the use count; the TTL is irrelevant to every test that was read), keep `grant_persistent_file_for_test` as the common case, and route every test copy above through it. Production callers (`main.rs` dialog commands) are out of scope: they are the contract, not a fixture.
 * **Found by:** Codex `review-minimalism` lens, push round 2 of the f-20261002-01 drain release, 2026-10-02.
+
+---
+
+## 2026-10-02 — filed through the inbox spool
+
+### Superseded catalog engine install directories stay on disk forever once their handle is pruned
+
+* **ID:** f-20261002-04 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/infra/path_authority/mod.rs:6594` (startup pruning filters unowned registry entries), `:6623` (commits the pruned registry), `:8096` (the commit body saves registry state and deletes no file or tree); `src/utils/engines.ts` `installCatalogEngine` (each verified artefact installs into its own `<archive>-<full sha256>` directory under the engine workspace, commit `f19e14ac`).
+* **Defect:** catalog installs are now version-unique and are never replaced (adoption, `D9`). After an upgrade (Stockfish 18 → 19, later 19 → 20) the old entry's handle becomes unowned and is pruned from the path registry at the next startup, but nothing ever removes the app-owned install directory it pointed at. The same holds for an install whose save was refused, and for an artefact downloaded and then discarded after a cancel intent.
+* **Why it matters:** an unbounded retention: every catalog version installed stays on disk (the Stockfish 19 Linux tree alone is about 80 MB extracted plus its NNUE files), invisible in the UI. The async-resource rule requires every registry that holds a resource to have a bounded retention policy.
+* **Open question:** which directories are safe to delete and when: only directories under the app-owned engine workspace that no registry entry references after pruning, and never while an engine child (including a running game that keeps its old binary until it ends, plan O3) may still be executing from them. Delete at startup after pruning, or on the next upgrade? Windows refuses to delete a running executable.
+* **Measured:** the P2 write leaf of the Stockfish 19 upgrade read the pruning path (lines above) and found no tree deletion; the plan's "Risks / open questions" required this check and a filed finding rather than a reaper in that run.
+* **Found by:** Stockfish 19 upgrade build, phase P2, 2026-10-02 (Codex leaf investigation, confirmed by the orchestrator's review of the cited lines' role).
