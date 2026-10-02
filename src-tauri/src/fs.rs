@@ -25,6 +25,10 @@ pub(crate) const MAX_ACTIVE_DOWNLOADS: usize = 32;
 const DOWNLOAD_DEADLINE: Duration = Duration::from_secs(60 * 60);
 const MAX_ARCHIVE_PATH_BYTES: usize = 1024;
 const DOWNLOAD_STAGING_PAYLOAD_LEAF: &str = "payload";
+const TAR_BLOCK_SIZE: usize = 512;
+const USTAR_MAGIC_OFFSET: usize = 257;
+const USTAR_MAGIC: &[u8; 5] = b"ustar";
+const TAR_CHECKSUM_FIELD: std::ops::Range<usize> = 148..156;
 #[cfg(unix)]
 const MAX_ARCHIVE_PATH_COMPONENTS: usize = crate::infra::fs::MAX_REMOVE_TREE_DEPTH - 1;
 /// Standard minisign public-key file of the fork release key: an `untrusted comment:` line, then
@@ -587,7 +591,7 @@ where
             use std::io::Seek;
             file.seek(std::io::SeekFrom::Start(0))?;
 
-            let mut magic = [0u8; 512];
+            let mut magic = [0u8; TAR_BLOCK_SIZE];
             let n = std::io::Read::read(&mut file, &mut magic)?;
             file.seek(std::io::SeekFrom::Start(0))?;
 
@@ -603,9 +607,7 @@ where
                 if n >= 2 && magic[0] == 0x1F && magic[1] == 0x8B {
                     is_gz = true;
                 } else {
-                    if n >= 512 && &magic[257..262] == b"ustar" {
-                        is_tar = true;
-                    }
+                    is_tar = is_ustar_header(&magic[..n]);
                     file.seek(std::io::SeekFrom::Start(0))?;
                 }
             }
@@ -1713,16 +1715,59 @@ fn install_extracted_tree(
     crate::infra::fs::install_owned_staging_dir(source, dest_leaf)
 }
 
+/// Recognizes a full ustar header using the POSIX unsigned checksum.
+fn is_ustar_header(block: &[u8]) -> bool {
+    let Some(block) = block.get(..TAR_BLOCK_SIZE) else {
+        return false;
+    };
+    if &block[USTAR_MAGIC_OFFSET..USTAR_MAGIC_OFFSET + USTAR_MAGIC.len()] != USTAR_MAGIC {
+        return false;
+    }
+
+    let field = &block[TAR_CHECKSUM_FIELD];
+    let start = field
+        .iter()
+        .position(|&byte| byte != b' ')
+        .unwrap_or(field.len());
+    let field = &field[start..];
+    let digits = field
+        .iter()
+        .take_while(|&&byte| matches!(byte, b'0'..=b'7'))
+        .count();
+    if digits == 0
+        || field[digits..]
+            .iter()
+            .any(|&byte| !matches!(byte, 0 | b' '))
+    {
+        return false;
+    }
+    let stored_checksum = field[..digits]
+        .iter()
+        .fold(0_u32, |sum, &byte| sum * 8 + u32::from(byte - b'0'));
+    let checksum: u32 = block
+        .iter()
+        .enumerate()
+        .map(|(index, &byte)| {
+            u32::from(if TAR_CHECKSUM_FIELD.contains(&index) {
+                b' '
+            } else {
+                byte
+            })
+        })
+        .sum();
+    stored_checksum == checksum
+}
+
 /// Peeks at the decompressed header, leaving the compressed file rewound for extraction.
 fn gzip_is_tar(file: &mut std::fs::File) -> Result<bool, Error> {
     use std::io::{Seek, SeekFrom};
     file.seek(SeekFrom::Start(0))?;
-    let mut head = Vec::with_capacity(512);
+    let mut head = Vec::with_capacity(TAR_BLOCK_SIZE);
     flate2::read::GzDecoder::new(&mut *file)
-        .take(512)
+        .take(TAR_BLOCK_SIZE as u64)
         .read_to_end(&mut head)?;
     file.seek(SeekFrom::Start(0))?;
-    Ok(head.len() == 512 && &head[257..262] == b"ustar")
+    Ok(is_ustar_header(&head))
 }
 
 fn extract_gz_cancellable(
@@ -3713,6 +3758,86 @@ mod tests {
         archive.into_inner().unwrap().finish().unwrap()
     }
 
+    #[test]
+    fn ustar_header_requires_full_block_magic_and_valid_octal_checksum() {
+        let mut header = tar::Header::new_ustar();
+        header.set_size(0);
+        header.set_mode(0o600);
+        header.set_cksum();
+        let block = *header.as_bytes();
+        assert!(is_ustar_header(&block));
+        assert!(!is_ustar_header(&block[..TAR_BLOCK_SIZE - 1]));
+
+        let checksum = header.cksum().unwrap();
+        for terminators in [*b"\0 ", *b"  ", *b"\0\0", *b" \0"] {
+            let mut variant = block;
+            variant[TAR_CHECKSUM_FIELD.start..TAR_CHECKSUM_FIELD.end - 2]
+                .copy_from_slice(format!("{checksum:06o}").as_bytes());
+            variant[TAR_CHECKSUM_FIELD.end - 2..TAR_CHECKSUM_FIELD.end]
+                .copy_from_slice(&terminators);
+            assert!(is_ustar_header(&variant), "{terminators:?}");
+        }
+        let mut leading_space = block;
+        leading_space[TAR_CHECKSUM_FIELD].copy_from_slice(format!("{checksum:7o}\0").as_bytes());
+        assert!(is_ustar_header(&leading_space));
+
+        for field in [
+            *b"000000\0 ",
+            *b"        ",
+            *b"\0       ",
+            *b"000008\0 ",
+            *b"0\x000000\0 ",
+            *b"000000x ",
+        ] {
+            let mut invalid = block;
+            invalid[TAR_CHECKSUM_FIELD].copy_from_slice(&field);
+            assert!(!is_ustar_header(&invalid), "{field:?}");
+        }
+        let mut wrong_checksum = block;
+        wrong_checksum[0] ^= 1;
+        assert!(!is_ustar_header(&wrong_checksum));
+        header.as_mut_bytes()[USTAR_MAGIC_OFFSET] = b'x';
+        header.set_cksum();
+        assert!(!is_ustar_header(header.as_bytes()));
+    }
+
+    #[tokio::test]
+    async fn raw_tar_download_requires_valid_header_checksum() {
+        let mut payload = Vec::new();
+        flate2::read::GzDecoder::new(gzip_tar_payload(b"engine").as_slice())
+            .read_to_end(&mut payload)
+            .unwrap();
+        for valid_checksum in [true, false] {
+            let dir = tempdir().unwrap();
+            let target = dir.path().join("installed");
+            let mut bytes = payload.clone();
+            if !valid_checksum {
+                bytes[TAR_CHECKSUM_FIELD].copy_from_slice(b"000000\0 ");
+            }
+            download_file_core(
+                OpClass::Engine,
+                "https://example.com/engine.tar",
+                &target,
+                valid_checksum.then(|| (target.clone(), None)),
+                &zip_response(bytes.clone()),
+                None,
+                None,
+                |_| Ok(()),
+            )
+            .await
+            .unwrap();
+            if valid_checksum {
+                assert_eq!(
+                    std::fs::read(target.join("stockfish/engine")).unwrap(),
+                    b"engine"
+                );
+            } else {
+                assert!(target.is_file());
+                assert_eq!(std::fs::read(target).unwrap(), bytes);
+            }
+        }
+    }
+
     #[tokio::test]
     async fn gzip_tar_download_installs_and_registers_nested_executable() {
         let dir = tempdir().unwrap();
@@ -3800,6 +3925,27 @@ mod tests {
         .unwrap();
         assert!(target.is_file());
         assert_eq!(std::fs::read(target).unwrap(), b"single engine payload");
+    }
+
+    #[test]
+    fn single_file_gzip_with_ustar_magic_and_wrong_checksum_installs_one_file() {
+        let dir = tempdir().unwrap();
+        let archive = dir.path().join("archive.gz");
+        let mut payload = [b'x'; 512];
+        payload[257..262].copy_from_slice(b"ustar");
+        payload[148..156].copy_from_slice(b"000000\0 ");
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&payload).unwrap();
+        std::fs::write(&archive, encoder.finish().unwrap()).unwrap();
+        let target = dir.path().join("engine");
+        extract_gz(
+            std::fs::File::open(archive).unwrap(),
+            &target,
+            OpClass::Engine.limits(),
+        )
+        .unwrap();
+        assert!(target.is_file());
+        assert_eq!(std::fs::read(target).unwrap(), payload);
     }
 
     #[tokio::test]
