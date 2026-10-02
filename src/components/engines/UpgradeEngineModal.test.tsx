@@ -228,16 +228,31 @@ test("success saves once before retiring the old pair and keeps the same list po
   expect(mocks.notify).not.toHaveBeenCalled();
 });
 
-test("committing withdraws cancel and ignores cancellation while save and retirement are pending", async () => {
+test("committing withdraws cancel and ignores cancellation while save, retirement and snapshot save are pending", async () => {
+  const snapshotKey = "game-player1-settings";
+  localStorage.setItem(
+    snapshotKey,
+    serializeStorageValue({ type: "engine", engine: old, go: { t: "Infinite" } }),
+  );
+  const oldSnapshot = localStorage.getItem(snapshotKey);
   let finishSave!: () => void;
   let finishRetirement!: () => void;
-  mocks.reconcile.mockImplementationOnce(() => {
-    // Invoke cancel in the save's first tick, before React can render the committing state.
-    mocks.close!();
-    return new Promise<void>((resolve) => {
-      finishSave = resolve;
-    });
-  });
+  let finishSnapshotSave!: () => void;
+  mocks.reconcile
+    .mockImplementationOnce(() => {
+      // Invoke cancel in the save's first tick, before React can render the committing state.
+      mocks.close!();
+      return new Promise<void>((resolve) => {
+        finishSave = resolve;
+      });
+    })
+    .mockResolvedValueOnce(undefined)
+    .mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishSnapshotSave = resolve;
+        }),
+    );
   mocks.retire.mockImplementationOnce(
     () =>
       new Promise<void>((resolve) => {
@@ -268,6 +283,23 @@ test("committing withdraws cancel and ignores cancellation while save and retire
   expect(mocks.cancel).not.toHaveBeenCalled();
 
   await act(async () => finishRetirement());
+  expect(finishSnapshotSave).toEqual(expect.any(Function));
+  expect(mocks.reconcile).toHaveBeenNthCalledWith(
+    3,
+    expect.objectContaining({ action: "prepare" }),
+  );
+  expect(localStorage.getItem(snapshotKey)).toBe(oldSnapshot);
+  expect(host.textContent).not.toContain("Common.Cancel");
+  expect(host.textContent).not.toContain("Engines.Upgrade.Current");
+  expect(host.textContent).toContain("Common.Extracting");
+  await act(async () => mocks.close!());
+  expect(mocks.cancel).not.toHaveBeenCalled();
+  expect(mocks.clear).not.toHaveBeenCalled();
+
+  await act(async () => finishSnapshotSave());
+  expect(decodeCompressedOrJson(localStorage.getItem(snapshotKey)!)).toMatchObject({
+    engine: { id: old.id, handle: { id: { id: "new" } } },
+  });
   expect(host.textContent).toContain("Engines.Upgrade.Current");
   expect(host.textContent).not.toContain("Common.Extracting");
   expect(mocks.clear).not.toHaveBeenCalled();

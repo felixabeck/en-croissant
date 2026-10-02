@@ -4,11 +4,19 @@ import { notifyListenerError } from "@/components/files/notifyError";
 import { tauri, tauriSubscriptions } from "@/platform/tauri";
 import { useTauriListener } from "@/platform/useTauriListener";
 
+// Retain fences only until the id observes its next job or a successful progress clear.
+const generationFloors = new Map<string, bigint>();
+
 function newestProgress(
     current: ProgressItem | null,
     incoming: ProgressItem,
     minimumGeneration: bigint,
 ): ProgressItem | null {
+    const storedFloor = generationFloors.get(incoming.id);
+    if (storedFloor !== undefined) {
+        if (incoming.generation >= storedFloor) generationFloors.delete(incoming.id);
+        if (storedFloor > minimumGeneration) minimumGeneration = storedFloor;
+    }
     if (incoming.generation < minimumGeneration) {
         return current;
     }
@@ -30,13 +38,13 @@ function newestProgress(
 export function useProgress(id: string) {
     const [item, setItem] = useState<ProgressItem | null>(null);
     const [listenerSettled, setListenerSettled] = useState<boolean | null>(null);
-    const minimumGeneration = useRef<bigint>(BigInt(0));
+    const minimumGeneration = useRef<bigint>(generationFloors.get(id) ?? BigInt(0));
     const currentId = useRef(id);
     currentId.current = id;
 
     useEffect(() => {
         let active = true;
-        minimumGeneration.current = BigInt(0);
+        minimumGeneration.current = generationFloors.get(id) ?? BigInt(0);
         setItem(null);
         if (listenerSettled === null) return () => undefined;
         tauri
@@ -69,6 +77,10 @@ export function useProgress(id: string) {
         ({ payload }) => {
             if (payload.id === id) {
                 if (payload.cleared) {
+                    const storedFloor = generationFloors.get(id);
+                    if (storedFloor !== undefined && payload.generation >= storedFloor) {
+                        generationFloors.delete(id);
+                    }
                     minimumGeneration.current =
                         minimumGeneration.current > payload.generation
                             ? minimumGeneration.current
@@ -89,20 +101,29 @@ export function useProgress(id: string) {
      * one - everything up to and including what is displayed. A later job's items stay visible,
      * because the progress clock only moves forward.
      */
-    const fence = useCallback((generation: bigint | null) => {
-        setItem((current) => {
-            const floor = generation ?? (current ? current.generation + BigInt(1) : null);
-            if (floor === null) return current;
-            if (minimumGeneration.current < floor) minimumGeneration.current = floor;
-            return current && current.generation < floor ? null : current;
-        });
-    }, []);
+    const fence = useCallback(
+        (generation: bigint | null) => {
+            setItem((current) => {
+                const floor = generation ?? (current ? current.generation + BigInt(1) : null);
+                if (floor === null) return current;
+                if (minimumGeneration.current < floor) minimumGeneration.current = floor;
+                const storedFloor = generationFloors.get(id) ?? BigInt(0);
+                if (storedFloor < floor) generationFloors.set(id, floor);
+                return current && current.generation < floor ? null : current;
+            });
+        },
+        [id],
+    );
 
     const clear = useCallback(async () => {
         const clearingId = id;
         const generation = await tauri.clearProgress(id);
-        if (currentId.current === clearingId) fence(generation);
-    }, [fence, id]);
+        generationFloors.delete(clearingId);
+        if (currentId.current === clearingId) {
+            if (minimumGeneration.current < generation) minimumGeneration.current = generation;
+            setItem((current) => (current && current.generation < generation ? null : current));
+        }
+    }, [id]);
 
     return {
         progress: item?.progress ?? 0,
