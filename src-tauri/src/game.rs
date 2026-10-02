@@ -1395,13 +1395,7 @@ pub(crate) fn game_side_engine_key(
     // Side lives in `tab` so `retire_engine` can match `key.engine` against the
     // application id. Using `"white"`/`"black"` as the engine field would reap
     // every white-side game if a user ever stored that string as an engine id.
-    EngineKey::new(
-        format!(
-            "{}{game_id}:{session}:{side}",
-            crate::engine::GAME_ENGINE_KEY_PREFIX
-        ),
-        engine_id.into(),
-    )
+    EngineKey::game(game_id, session, side, engine_id)
 }
 
 async fn terminate_game_engines(

@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::time::Duration;
 
+use super::GAME_ENGINE_KEY_PREFIX;
 use crate::{
     error::Error,
     infra::path_authority::{EngineResourceHandle, EngineResourceHandleKind},
@@ -18,6 +19,29 @@ pub struct EngineKey {
 
 impl EngineKey {
     pub fn new(tab: String, engine: String) -> Result<Self, Error> {
+        if tab.starts_with(GAME_ENGINE_KEY_PREFIX) {
+            return Err(Error::InvalidInput(format!(
+                "tab prefix {GAME_ENGINE_KEY_PREFIX:?} is reserved for native game engines"
+            )));
+        }
+        Self::validated(tab, engine)
+    }
+
+    pub(crate) fn game(
+        game_id: &str,
+        session: u64,
+        side: &str,
+        engine: &str,
+    ) -> Result<Self, Error> {
+        validate_uci_text("game id", game_id)?;
+        validate_uci_text("side", side)?;
+        Self::validated(
+            format!("{GAME_ENGINE_KEY_PREFIX}{game_id}:{session}:{side}"),
+            engine.into(),
+        )
+    }
+
+    fn validated(tab: String, engine: String) -> Result<Self, Error> {
         validate_uci_text("tab", &tab)?;
         validate_uci_text("engine", &engine)?;
         Ok(Self { tab, engine })
@@ -340,6 +364,32 @@ impl PlayersTime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn analysis_key_rejects_reserved_game_prefix() {
+        assert!(matches!(
+            EngineKey::new("game:analysis".into(), "engine".into()),
+            Err(Error::InvalidInput(message))
+                if message.contains("reserved") && message.contains(GAME_ENGINE_KEY_PREFIX)
+        ));
+    }
+
+    #[test]
+    fn game_key_validates_native_identity_text() {
+        for (game_id, side, engine) in [
+            ("", "white", "engine"),
+            ("game\nquit", "white", "engine"),
+            ("game", "", "engine"),
+            ("game", "white\nquit", "engine"),
+            ("game", "white", ""),
+            ("game", "white", "engine\nquit"),
+        ] {
+            assert!(matches!(
+                EngineKey::game(game_id, 42, side, engine),
+                Err(Error::InvalidInput(_))
+            ));
+        }
+    }
 
     #[test]
     fn rejects_protocol_injection_and_invalid_limits() {

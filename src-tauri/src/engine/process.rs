@@ -979,7 +979,7 @@ impl<T: Eq + Hash + Clone> RetiredSet<T> {
     }
 }
 
-// GameManager constructs this namespace natively (game.rs::game_side_engine_key).
+// EngineKey::new reserves this namespace for native EngineKey::game construction.
 // Pair retirement preserves a game's original binary until its exact-key cleanup.
 fn is_game_engine_key(key: &EngineKey) -> bool {
     key.tab.starts_with(GAME_ENGINE_KEY_PREFIX)
@@ -7246,6 +7246,16 @@ mod tests {
             .admit(key, "owner".into(), path_ref("new-binary"), false)
             .await
             .is_ok());
+    }
+
+    #[test]
+    fn native_game_constructor_produces_game_engine_key() {
+        let key = EngineKey::game("game-id", 42, "white", "owner").unwrap();
+        assert_eq!(key.tab, "game:game-id:42:white");
+        assert_eq!(key.engine, "owner");
+        assert!(is_game_engine_key(&key));
+        let analysis_key = EngineKey::new("analysis".into(), "owner".into()).unwrap();
+        assert!(!is_game_engine_key(&analysis_key));
     }
 
     #[tokio::test]
