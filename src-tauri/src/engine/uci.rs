@@ -19,6 +19,10 @@ const MAX_UCI_HALFMOVES: u32 = 32767;
 // shakmaty serialises fullmove 0 as 1, which has the same ply semantics.
 const MAX_UCI_FULLMOVES: u32 = 100000;
 
+// FEN orders board, turn, castling, en passant, then clocks; Three-check inserts checks before clocks.
+const HALFMOVE_FIELD: usize = 4;
+const THREE_CHECK_HALFMOVE_FIELD: usize = 5;
+
 pub struct CanonicalEnginePosition {
     pub fen: String,
     pub moves: Vec<String>,
@@ -58,10 +62,13 @@ fn canonicalize_engine_position_inner(
         .filter(|field| !field.is_empty())
         .map(str::to_owned)
         .collect();
-    let clocks = if fields.get(4).is_some_and(|field| field.contains('+')) {
-        5
+    let clocks = if fields
+        .get(HALFMOVE_FIELD)
+        .is_some_and(|field| field.contains('+'))
+    {
+        THREE_CHECK_HALFMOVE_FIELD
     } else {
-        4
+        HALFMOVE_FIELD
     };
     for index in [clocks, clocks + 1] {
         if let Some(field) = fields.get_mut(index) {

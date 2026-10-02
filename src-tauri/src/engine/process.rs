@@ -1,5 +1,6 @@
 use std::{
     collections::{HashSet, VecDeque},
+    hash::Hash,
     process::Stdio,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -38,6 +39,7 @@ use super::{
         resolve_engine_option_leases, validate_uci_text, EngineDeadlines, EngineKey, EngineOption,
         EngineRequestId, EngineState, GoMode, ResolvedEngineOption,
     },
+    GAME_ENGINE_KEY_PREFIX,
 };
 
 #[cfg(target_os = "windows")]
@@ -51,6 +53,7 @@ const MAX_ENGINE_LINE_BYTES: usize = 64 * 1024;
 const MAX_ENGINE_STDERR_BYTES: usize = 512 * 1024;
 const MAX_RETIRED_ENGINE_IDS: usize = 4096;
 const MAX_RETIRED_PATH_REFS: usize = 4096;
+const MAX_RETIRED_ENGINE_BINARIES: usize = 4096;
 const MAX_PENDING_ENGINE_SEARCHES: usize = 256;
 /// Join budget for the stderr drain after `io.terminate` returns. A stuck
 /// drain is then aborted so `terminate` cannot stall on a logging task.
@@ -948,70 +951,38 @@ impl SupervisedEngine {
     }
 }
 
-#[derive(Default)]
-struct RetiredExecutables {
-    order: VecDeque<PathRef>,
-    ids: HashSet<PathRef>,
+struct RetiredSet<T> {
+    order: VecDeque<T>,
+    entries: HashSet<T>,
+    capacity: usize,
 }
 
-impl RetiredExecutables {
-    fn insert(&mut self, executable: PathRef) {
-        if !self.ids.insert(executable.clone()) {
+impl<T: Eq + Hash + Clone> RetiredSet<T> {
+    fn new(capacity: usize) -> Self {
+        Self {
+            order: VecDeque::new(),
+            entries: HashSet::new(),
+            capacity,
+        }
+    }
+
+    fn insert(&mut self, entry: T) {
+        if !self.entries.insert(entry.clone()) {
             return;
         }
-        self.order.push_back(executable);
-        if self.order.len() > MAX_RETIRED_PATH_REFS {
+        self.order.push_back(entry);
+        if self.order.len() > self.capacity {
             if let Some(oldest) = self.order.pop_front() {
-                self.ids.remove(&oldest);
+                self.entries.remove(&oldest);
             }
         }
     }
 }
 
-#[derive(Default)]
-struct RetiredEngineIds {
-    order: VecDeque<String>,
-    ids: HashSet<String>,
-}
-
-impl RetiredEngineIds {
-    fn insert(&mut self, engine_id: String) {
-        if !self.ids.insert(engine_id.clone()) {
-            return;
-        }
-        self.order.push_back(engine_id);
-        if self.order.len() > MAX_RETIRED_ENGINE_IDS {
-            if let Some(oldest) = self.order.pop_front() {
-                self.ids.remove(&oldest);
-            }
-        }
-    }
-}
-
-#[derive(Default)]
-struct RetiredEngineBinaries {
-    order: VecDeque<(String, PathRef)>,
-    pairs: HashSet<(String, PathRef)>,
-}
-
-impl RetiredEngineBinaries {
-    fn insert(&mut self, pair: (String, PathRef)) {
-        if !self.pairs.insert(pair.clone()) {
-            return;
-        }
-        self.order.push_back(pair);
-        if self.order.len() > MAX_RETIRED_ENGINE_IDS {
-            if let Some(oldest) = self.order.pop_front() {
-                self.pairs.remove(&oldest);
-            }
-        }
-    }
-}
-
-// GameManager constructs this namespace natively (game.rs::game_engine_key).
+// GameManager constructs this namespace natively (game.rs::game_side_engine_key).
 // Pair retirement preserves a game's original binary until its exact-key cleanup.
 fn is_game_engine_key(key: &EngineKey) -> bool {
-    key.tab.starts_with("game:")
+    key.tab.starts_with(GAME_ENGINE_KEY_PREFIX)
 }
 
 /// Owns the registry boundary for interactive, report, config-probe, and game
@@ -1019,7 +990,6 @@ fn is_game_engine_key(key: &EngineKey) -> bool {
 /// then publishes the new generation. `retire_engine` reaps every actor owned
 /// by an application engine id. `retire_executables` tombstones PathRefs and
 /// terminates matching actors without retiring the application id.
-#[derive(Default)]
 pub struct EngineSupervisor {
     next_generation: AtomicU64,
     sealed: AtomicBool,
@@ -1027,14 +997,31 @@ pub struct EngineSupervisor {
     admissions: Arc<DashMap<EngineKey, EngineAdmission>>,
     admission_coordination: StdMutex<()>,
     registration: Mutex<()>,
-    retired: StdMutex<RetiredEngineIds>,
-    retired_executables: StdMutex<RetiredExecutables>,
-    retired_binaries: StdMutex<RetiredEngineBinaries>,
+    retired: StdMutex<RetiredSet<String>>,
+    retired_executables: StdMutex<RetiredSet<PathRef>>,
+    retired_binaries: StdMutex<RetiredSet<(String, PathRef)>>,
     // `lifecycle` provides the per-key transition locks. Lifecycle transitions
     // may capture actor snapshots before awaiting the exact-key lock, but they
     // recheck under that lock before mutation. `actors` itself is concurrent,
     // but cannot make remove → await shutdown → insert atomic.
     lifecycle: KeyedLocks<EngineKey>,
+}
+
+impl Default for EngineSupervisor {
+    fn default() -> Self {
+        Self {
+            next_generation: AtomicU64::default(),
+            sealed: AtomicBool::default(),
+            actors: DashMap::default(),
+            admissions: Arc::default(),
+            admission_coordination: StdMutex::default(),
+            registration: Mutex::default(),
+            retired: StdMutex::new(RetiredSet::new(MAX_RETIRED_ENGINE_IDS)),
+            retired_executables: StdMutex::new(RetiredSet::new(MAX_RETIRED_PATH_REFS)),
+            retired_binaries: StdMutex::new(RetiredSet::new(MAX_RETIRED_ENGINE_BINARIES)),
+            lifecycle: KeyedLocks::default(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -1326,7 +1313,7 @@ impl EngineSupervisor {
         })
     }
 
-    fn with_retired<T>(&self, operation: impl FnOnce(&mut RetiredEngineIds) -> T) -> T {
+    fn with_retired<T>(&self, operation: impl FnOnce(&mut RetiredSet<String>) -> T) -> T {
         match self.retired.lock() {
             Ok(mut retired) => operation(&mut retired),
             Err(poisoned) => operation(&mut poisoned.into_inner()),
@@ -1334,12 +1321,12 @@ impl EngineSupervisor {
     }
 
     fn is_retired(&self, engine_id: &str) -> bool {
-        self.with_retired(|retired| retired.ids.contains(engine_id))
+        self.with_retired(|retired| retired.entries.contains(engine_id))
     }
 
     fn with_retired_executables<T>(
         &self,
-        operation: impl FnOnce(&mut RetiredExecutables) -> T,
+        operation: impl FnOnce(&mut RetiredSet<PathRef>) -> T,
     ) -> T {
         match self.retired_executables.lock() {
             Ok(mut retired) => operation(&mut retired),
@@ -1348,12 +1335,12 @@ impl EngineSupervisor {
     }
 
     fn is_retired_executable(&self, executable: &PathRef) -> bool {
-        self.with_retired_executables(|retired| retired.ids.contains(executable))
+        self.with_retired_executables(|retired| retired.entries.contains(executable))
     }
 
     fn with_retired_binaries<T>(
         &self,
-        operation: impl FnOnce(&mut RetiredEngineBinaries) -> T,
+        operation: impl FnOnce(&mut RetiredSet<(String, PathRef)>) -> T,
     ) -> T {
         let mut retired = self
             .retired_binaries
@@ -1365,7 +1352,7 @@ impl EngineSupervisor {
     fn is_retired_binary(&self, engine_id: &str, executable: &PathRef) -> bool {
         self.with_retired_binaries(|retired| {
             retired
-                .pairs
+                .entries
                 .contains(&(engine_id.into(), executable.clone()))
         })
     }
@@ -7146,14 +7133,16 @@ mod tests {
                 .await
                 .unwrap();
         }
-        for index in 0..=MAX_RETIRED_ENGINE_IDS {
+        for index in 0..=MAX_RETIRED_ENGINE_BINARIES {
             supervisor
                 .retire_engine_binary(format!("bounded-{index}"), old.clone())
                 .await
                 .unwrap();
         }
         assert!(!supervisor.is_retired_binary("bounded-0", &old));
-        assert!(supervisor.is_retired_binary(&format!("bounded-{MAX_RETIRED_ENGINE_IDS}"), &old));
+        assert!(
+            supervisor.is_retired_binary(&format!("bounded-{MAX_RETIRED_ENGINE_BINARIES}"), &old)
+        );
         supervisor.terminate_all().await.unwrap();
     }
 
@@ -7212,7 +7201,7 @@ mod tests {
     #[tokio::test]
     async fn retire_binary_game_actor_survives_answers_and_keeps_own_key_admission() {
         let supervisor = EngineSupervisor::default();
-        let key = EngineKey::new("game:game-id:42:white".into(), "owner".into()).unwrap();
+        let key = crate::game::game_side_engine_key("game-id", 42, "white", "owner").unwrap();
         let old = path_ref("old-binary");
         let ((actor, _), terminated) = actor_with(&[], false, None);
         let registered = supervisor

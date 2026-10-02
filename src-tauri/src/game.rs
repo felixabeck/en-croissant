@@ -252,6 +252,7 @@ struct GameController {
     next_engine_request: u64,
     config: GameConfig,
     initial_fen: String,
+    root_position: Chess,
     moves: Vec<GameMove>,
     position: Chess,
     position_history: HashMap<String, u32>,
@@ -331,6 +332,7 @@ impl GameController {
             next_engine_request: 0,
             config,
             initial_fen,
+            root_position: position.clone(),
             moves: Vec::new(),
             position,
             position_history,
@@ -595,7 +597,7 @@ impl GameController {
     }
 
     fn rebuild_position_from_moves(&mut self) -> Result<(), Error> {
-        self.position = parse_fen_to_position(&self.initial_fen)?;
+        self.position = self.root_position.clone();
 
         self.position_history.clear();
         let initial_key = Self::position_key(&self.position);
@@ -1384,7 +1386,7 @@ async fn spawn_configured_game_engine_with_executable(
     })
 }
 
-fn game_side_engine_key(
+pub(crate) fn game_side_engine_key(
     game_id: &str,
     session: u64,
     side: &str,
@@ -1393,7 +1395,13 @@ fn game_side_engine_key(
     // Side lives in `tab` so `retire_engine` can match `key.engine` against the
     // application id. Using `"white"`/`"black"` as the engine field would reap
     // every white-side game if a user ever stored that string as an engine id.
-    EngineKey::new(format!("game:{game_id}:{session}:{side}"), engine_id.into())
+    EngineKey::new(
+        format!(
+            "{}{game_id}:{session}:{side}",
+            crate::engine::GAME_ENGINE_KEY_PREFIX
+        ),
+        engine_id.into(),
+    )
 }
 
 async fn terminate_game_engines(
@@ -3433,6 +3441,23 @@ mod tests {
         config.black = fake_engine_player();
         config.initial_fen = Some("4k3/8/8/8/8/NNNNNNNN/NN6/4K3 w - - 0 1".into());
         assert!(GameController::new("ten-knights".into(), 1, config).is_ok());
+    }
+
+    #[test]
+    fn engine_game_takeback_restores_root_with_normalized_negative_halfmove() {
+        let mut config = human_config();
+        config.black = fake_engine_player();
+        let fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - -1 1";
+        config.initial_fen = Some(fen.into());
+        let mut game = GameController::new("takeback".into(), 1, config).unwrap();
+        let root = game.position.clone();
+
+        game.apply_move("e2e4").unwrap();
+        game.take_back_moves(1).unwrap();
+
+        assert!(game.moves.is_empty());
+        assert_eq!(game.position, root);
+        assert_eq!(game.get_state().initial_fen, fen);
     }
 
     #[test]

@@ -2,6 +2,8 @@ mod process;
 mod types;
 mod uci;
 
+pub(crate) const GAME_ENGINE_KEY_PREFIX: &str = "game:";
+
 #[cfg(test)]
 pub(crate) use process::CLEANUP_FAILURE_LOG;
 #[cfg(all(test, unix))]
