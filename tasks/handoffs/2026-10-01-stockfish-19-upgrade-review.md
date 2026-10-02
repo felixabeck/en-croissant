@@ -5,8 +5,9 @@ closed revision plan-r4, including the complete `## Reviews` history (four Codex
 `## Carried to diff review`. The ignored plan and the raw lens reports under the session
 scratchpad may disappear; this file alone suffices to resume implementation.
 
-- **State:** plan review CLOSED. Implementation has NOT started; Felix stopped the run before
-  implementation by request.
+- **State:** plan review CLOSED (2026-10-01). Implemented, reviewed and gated on 2026-10-02
+  (session df7f9ee6-6638-4f18-9d15-e97d16e28a14); see "Implementation record" at the end. The
+  plan body below is the frozen plan-r4 text and still speaks in the future tense.
 - **Findings filed by this run:**
   - to be fixed by the plan (O2): `f-20261001-06` (catalog install never persisted) and
     `f-20261001-16` (`.tar.gz` never untarred);
@@ -542,7 +543,8 @@ ids: `f-20261001-07` (termination), `f-20261001-03` (`swapMove`), `f-20261001-04
 (`EditEngine`), `f-20261001-05` (portraits), `f-20261001-14` (failed-terminate drop),
 `f-20261001-15` (staging pathname), `f-20261001-17` (optimistic publish for other callers).
 `f-20261001-06` (catalog persistence) and `f-20261001-16` (tar.gz extraction) are to be fixed by O2
-(planned; implementation has not started).
+(planned; implementation has not started). *2026-10-02: both handled by `f19e14ac`, see the
+implementation record.*
 
 - Engine termination is not surfaced. The analysis panel spins forever, the `CRITICAL ERROR`
   reason is lost because the Logs panel's supervisor entry is removed, and a game blames the
@@ -814,3 +816,147 @@ New: error-handling nit 84 (discarded-download progress cleanup) → `Fix — ca
 - Carried items: CR-1, CR-2.
 - No rewrite and no split.
 - The non-convergence trigger did not fire: adoptions fell 16 → 12 → 4 → 0.
+
+## Implementation record (2026-10-02)
+
+Orchestrator: Claude Code (Opus 5.5), session df7f9ee6-6638-4f18-9d15-e97d16e28a14, `full auto`,
+executor `codex`. Plan review was not re-run (closed at plan-r4). Preflight: no drain running,
+build lock acquired, tree clean, `f-20261001-06` and `f-20261001-16` still open (P2 unshrunk),
+`codex-cli 0.159.3`.
+
+### Phases
+
+| Phase | Commit | Leaf | Fix rounds | Wall time |
+|---|---|---|---|---|
+| P1 — O1 strict-engine positions | `7dabe563` | Codex write, `sensitive` (OpenAI high tier) | 1 (corpus dump had to emit the derived `UCI_Chess960` line) | ~36 min |
+| P2 — O2 catalog install record, tar-in-gzip, version-unique directory | `f19e14ac` | Codex write, `sensitive` | 1 (release-surface R3: two new `std::fs` reaches moved into one `infra/fs.rs` helper) | ~26 min |
+| P3 — O3 Upgrade from catalog, `retire_engine_binary`, snapshot rewrite | `8d13c38c` | Codex write, `sensitive` | 1 (an absent player `engineSettings` override became a defaults-only override; found in the orchestrator's phase review) | ~37 min |
+
+Each phase ended green under `pnpm checks:pre-review`, run by the orchestrator itself (two resumed
+leaves could not run it: their sandbox had no user D-Bus for `systemd-run`).
+
+### P1 real-engine proof (R1-01)
+
+Binary: `stockfish/stockfish-linux-x86-64-universal` from the sf_19 Linux archive, sha256
+`9defc0d4e55d49c65a6d042f3e571a39fcea499ade6dbe741b53b8c65e03611f` (equal to the catalog entry),
+`id name Stockfish 19`. Corpus: `SF19_CORPUS_OUT=<file> cargo test --manifest-path
+src-tauri/Cargo.toml engine::uci::tests::dump_sf19_canonical_corpus -- --ignored --exact`, which
+writes, for every fixture the production canonicaliser accepts, the derived
+`setoption name UCI_Chess960 value …` line and the canonical `position` line. Each pair ran in a
+fresh process: `{ echo uci; echo "$opt"; echo isready; echo "$pos"; echo "go depth 1"; sleep 0.3;
+echo quit; } | stockfish`.
+
+```text
+ 1 rc=0 critical=0 bestmove d2d4             | UCI_Chess960 value false | position fen rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1
+ 2 rc=0 critical=0 bestmove e1f2             | UCI_Chess960 value false | position fen 4k3/8/8/8/8/8/8/4K3 w - - 0 1
+ 3 rc=0 critical=0 bestmove e8f7             | UCI_Chess960 value false | position fen 4k3/8/8/8/8/8/8/4K3 b - - 0 1
+ 4 rc=0 critical=0 bestmove d2d4             | UCI_Chess960 value false | position fen rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1
+ 5 rc=0 critical=0 bestmove e1f2             | UCI_Chess960 value false | position fen 4k3/8/8/8/8/8/8/4K3 w - - 0 1
+ 6 rc=0 critical=0 bestmove e8d7             | UCI_Chess960 value false | position fen 4k3/8/8/8/8/8/8/4K3 b - - 150 100000
+ 7 rc=0 critical=0 bestmove e1d1             | UCI_Chess960 value false | position fen 4k3/8/8/8/8/8/8/4K3 w - - 32767 1
+ 8 rc=0 critical=0 bestmove e8d7             | UCI_Chess960 value false | position fen 4k3/8/8/8/8/8/8/4K3 b - - 32767 100000
+ 9 rc=0 critical=0 bestmove f1b1             | UCI_Chess960 value false | position fen r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1 moves e1g1 e8c8
+10 rc=0 critical=0 bestmove b1a1             | UCI_Chess960 value true | position fen 1r1k3r/8/8/8/8/8/8/1R1K3R w KQkq - 0 1 moves d1h1 d8b8
+11 rc=0 critical=0 bestmove b1b8 ponder a8b8 | UCI_Chess960 value true | position fen rr1k3r/8/8/8/8/8/8/1R1K3R w KQkb - 0 1
+12 rc=0 critical=0 bestmove e8d8             | UCI_Chess960 value false | position fen 4k3/8/8/8/4P3/8/8/4K3 b - - 0 1
+13 rc=0 critical=0 bestmove e1f2             | UCI_Chess960 value false | position fen 4k3/8/8/8/8/8/8/4K3 w - - 0 1
+14 rc=0 critical=0 bestmove e1f2             | UCI_Chess960 value false | position fen 4k3/8/8/8/8/8/8/4K3 w - - 0 1
+15 rc=0 critical=0 bestmove e1f2             | UCI_Chess960 value false | position fen 4k3/8/8/8/8/8/8/4K3 w - - 0 1
+16 rc=0 critical=0 bestmove e1f2             | UCI_Chess960 value false | position fen 4k3/8/8/8/8/8/8/4K3 w - - 0 1
+17 rc=0 critical=0 bestmove c3d5             | UCI_Chess960 value false | position fen 4k3/8/8/8/8/NNNNNNNN/NN6/4K3 w - - 0 1
+18 rc=0 critical=0 bestmove g1f3             | UCI_Chess960 value false | position fen rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1 moves e2e4 e7e5
+entries=18 failures=0
+```
+
+The derived option is load-bearing: entry 9 exits 1 with `CRITICAL ERROR` under
+`UCI_Chess960=true`, entry 10 under `false`. Pinned SF19 bounds (read in `position.cpp`):
+halfmove 0..32767 (`:425-426`), input fullmove 0..100000 (`:428-433`).
+
+### P2 real-artefact proof
+
+`cargo test --manifest-path src-tauri/Cargo.toml fs::tests::real_stockfish19_catalog_install_answers_uci -- --ignored --exact`
+(network): verified catalog + payload signature + SHA-256; installed into
+`stockfish-linux-x86-64-universal.tar.gz-9defc0d4e55d49c65a6d042f3e571a39fcea499ade6dbe741b53b8c65e03611f/`;
+nested `stockfish/stockfish-linux-x86-64-universal` registered; `id name Stockfish 19`, `uciok`,
+exit 0. Startup pruning does not delete unowned install directories
+(`infra/path_authority/mod.rs:6594`, `:6623`, `:8096`) → filed `f-20261002-04`.
+
+### P3 real-app run (the `verify:app` reach decided at preflight)
+
+`verify-app.mjs` was not extended (each assertion there needs its own staged-failure row).
+Instead a one-off scratch script used `scripts/app-driver.mjs` against the release build of
+`8d13c38c` in a throwaway `HOME`, off-screen: Add Engine → install RubiChess from the catalog (as
+the "old" engine; the catalog has no SF18) → set Threads to 3 → Upgrade from catalog → Stockfish
+19. Result: same id `7a1c7778-…`, settings `Hash 16 / MultiPV 1 / Threads 3` kept, name
+`Stockfish 19`, version `19`, elo 3635, sf_19 download link, new handle registered; the RubiChess
+card was marked "Current" in the modal; the installed
+`…/engines/stockfish-linux-x86-64-universal.tar.gz-<full sha256>/stockfish/stockfish-linux-x86-64-universal`
+answered `id name Stockfish 19` / `uciok`. The first attempts exposed a pre-existing first-run
+defect: with no `~/.config/com.chessriddle.encroissant/`, `get_engine_workspace` fails
+(`missing-resource`), so no catalog install can start on a new profile → filed `f-20261002-05`
+(Felix's profile has the directory and is unaffected). Running engines are not covered by this
+run; that is P4.
+
+### Cumulative diff review
+
+Range `1a8ee277..HEAD` (the drain commit `ffce589f` plus this run). Lenses on the Codex executor
+(OpenAI low tier at max; diff lenses at `--role sensitive`, records lens at `mechanical`). The
+writing leaves ran on the OpenAI high tier, so review is model-separated within one family; this
+same session wrote the briefs and arbitrated every finding.
+
+- **Round 1** (`8d13c38c`): 12 code lenses + records lens. APPROVED: error-handling, ipc-contract,
+  persisted-state, platform-semantics, root-cause. 20 issues D1-01..D1-20; 17 Fix, 3 Skip:
+  D1-09 (a game whose start resolved the old handle before the upgrade keeps its binary — by
+  design, O3/R1-07), D1-13 (pass-through helper — later reopened and fixed), D1-17 (adopted
+  install directory not re-hashed — outside the frozen threat model; a local actor who can write
+  the app data dir can replace any engine binary in place; precedent R2-13). Fixes: `c368f9f0`,
+  `868a5102`, `fc6cf807`, `39f13741`, ledger annotations `a9aec794`, `14b685b0`.
+- **Round 2** (closure over the round-1 repair delta `8d13c38c..39f13741`): 11 lenses. New: D2-01 counter
+  converter naming (`c7716abd`), D2-02 Skip (test literals are the oracle), D2-03 defaults-fill save
+  loop (`34927823`), D2-04 Add Engine catalog snapshot (`82e2669e`), D2-05 concurrent old/new actor
+  retirement test (`e4926f37`), D2-06 records wording (annotation `42b47627`). D1-15/D1-16 records
+  "NOT CLOSED" because superseded sentences remain → Skip: the ledger is append-only and
+  `annotate` is its correction route.
+- **Round 3**: 4 lenses. D3-01 retire command tests proved by source text (`0574ed75`, real
+  command through `engine_test_app()`; the other three `include_str!` tests filed as
+  `f-20261002-06`); D3-02 e2e mock comment (`cfc92b35`); D1-13 reopened (helpers inlined,
+  `0574ed75`).
+- **Round 4**: 5 lenses. D4-01 second stale mock comment and D4-02 duplicated `InvalidInput`
+  assertion (fix-11); D4-03 renderer-supplied `game:` tab could pass as a game key (fix-12:
+  namespace reserved in `EngineKey::new`, native game constructor); records nit on approximate
+  line numbers in `f-20261002-06` → Skip (tests are cited by name). Fixes `50c2e608`,
+  `b5fe7f28`.
+- **Round 5**: 5 lenses; D4-01..D4-03 closed. New D5-01 (correctness): the upgrade card still
+  offered Cancel after the post-download intent check, while the save, retirement and snapshot
+  writes were pending, so a click there was ignored → `10643303` (a committing flag set in the
+  same tick as the intent check; Cancel withdrawn until the job settles).
+- **Round 6**: 3 lenses; D5-01 closed. D6-01 (error-handling, CR-1 residual: a failed progress
+  clear was fenced only per hook instance) and D6-02 (tests: deferred commit test skipped the
+  snapshot writes) → `cd8c72c5`.
+- **Round 7**: 3 lenses; D6-02 closed; error-handling reported CR-1 NOT CLOSED a second time (the
+  path where the cancel request also fails never fences) and the new fence map unbounded. Lineage
+  escalation (§4a.3): focused fresh-context `review-plan` judgment (Codex, OpenAI high tier, raw
+  report `lens-plan-judgment-cr1.txt` in the run scratch) chose option B with confidence 97 —
+  withdraw the renderer fence map (`d785b225`, restored byte-exact from `cd8c72c5^`), keep the
+  committing-guard test, record the limit below, and file the shared progress-subsystem class as
+  `f-20261002-07`, because the hazard predates the plan (Add Engine's config-probe failure takes
+  the same best-effort cleanup at `1a8ee277`; build §4 "not worse than today"). The judgment also
+  corrected one claim: a stale record alone cannot produce the "Current" label
+  (`CatalogEngineCard.tsx:53`).
+
+Carried items: **CR-1** — closed for the ordinary path in round 1 (correctness, error-handling,
+ipc-contract, root-cause), its test bound to the job id by D1-19. **Named known limit (CR-1 as
+qualified by the round-7 judgment):** clearing the discarded job's terminal record is best
+effort; if the cancel request and the progress clear both fail (two local IPC failures), the
+stale succeeded record can show a retained 100 % bar after the dialog is reopened, until restart.
+The entry is never changed and nothing is retired in that case. Tracked as `f-20261002-07`.
+**CR-2** is operational and is taken first in P4.
+
+Findings filed by this implementation: `f-20261002-04` (superseded install directories never
+deleted), `f-20261002-05` (first-run profile: no catalog install possible), `f-20261002-06`
+(three `include_str!` structure tests in `chess.rs`), `f-20261002-07` (stale progress record after
+a failed clear); annotations on `f-20261002-03`, `-04`, `-05`; agent-kit `f-20261002-15`
+(resumed Codex leaves lack the user D-Bus). Closed: `f-20261001-06`, `f-20261001-16`.
+
+`diff_adopted_per_round`: r1=17 r2=5 r3=3 r4=3 r5=1 r6=2 r7=0 (round 7's CR-1 residual was resolved
+by the lineage judgment: one withdrawal, one filed finding).
