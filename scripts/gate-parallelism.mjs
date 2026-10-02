@@ -7,8 +7,9 @@ const PROCESS_CGROUP_FILE = "/proc/self/cgroup";
 
 // In a session scope (plain vitest), reserve 1 GiB for the agent sharing the cgroup
 // (0.32 GB RSS measured 2026-09-29) plus headroom. Inside the agent-gate scope, it covers
-// the scheduler, per-lane pnpm and gate-receipt parents, and the launcher's Node processes,
-// which no worker count sizes (d-20261002-03). On 2026-10-02 the all-blocks gate completed
+// the scheduler (`node scripts/run-push-gates.mjs`), per-lane pnpm and sh parents, and
+// gate-receipt processes, which no worker count sizes (d-20261002-03).
+// On 2026-10-02 the all-blocks gate completed
 // in a 28 GiB agent-gate scope without observed OOM events or swap use; that checks the
 // whole run, not this reserve on its own.
 export const UNSIZED_PROCESS_RESERVE_BYTES = 1024 * 1024 * 1024;

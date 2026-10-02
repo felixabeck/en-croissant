@@ -169,6 +169,29 @@ test("a repo git cannot observe refuses the receipt as unobservable, not as a tr
   assert.doesNotMatch(messages.join("\n"), /tree changed during the gate/u);
 });
 
+test("a gate terminated by SIGTERM returns 143 and names the signal", async () => {
+  const { root } = await fixture();
+  const messages = [];
+  assert.equal(
+    await executeAction({
+      action: "run",
+      gate: "frontend-build",
+      repoRoot: root,
+      fingerprintToolchain: fakeToolchain(),
+      // Replace the shell so spawnSync observes the gate's signal directly.
+      command: `exec ${nodeCommand("process.kill(process.pid, 'SIGTERM')")}`,
+      output: {
+        error(message) {
+          messages.push(message);
+        },
+        log() {},
+      },
+    }),
+    143,
+  );
+  assert.match(messages.join("\n"), /gate failed: frontend-build \(exit 143, signal SIGTERM\)/u);
+});
+
 test("1. hit on a clean, unchanged tree", async () => {
   const { directory, root } = await fixture();
   const marker = join(directory, "runs.txt");

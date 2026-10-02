@@ -16,6 +16,7 @@ import {
 import { arch, platform, release, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { signalExitCode } from "./child-supervisor.mjs";
 import { isEntrypoint } from "./entrypoint.mjs";
 import { playwrightImage } from "./playwright-image.mjs";
 import { RUST_COVERAGE_TOOLCHAIN } from "./toolchain-versions.mjs";
@@ -282,8 +283,9 @@ function runGate({ gate, repoRoot, now, fingerprintToolchain, command, output })
     return EXIT_USAGE;
   }
   if (result.status !== 0) {
-    const status = result.status ?? (result.signal ? 128 : EXIT_USAGE);
-    output.error(`gate failed: ${gate} (exit ${status})`);
+    const status = result.status ?? (result.signal ? signalExitCode(result.signal) : EXIT_USAGE);
+    const signal = result.signal ? `, signal ${result.signal}` : "";
+    output.error(`gate failed: ${gate} (exit ${status}${signal})`);
     return status;
   }
 

@@ -94,71 +94,55 @@ test("accepts routed tests, nested scripts, allowed tools, and live sensitive gl
 });
 
 test("heavy gate package scripts preserve the strict agent-gate wrapper and pre-review mode", async (t) => {
-  await t.test("gates:push without the wrapper is rejected", async () => {
-    const root = await fixture();
-    const packagePath = join(root, "package.json");
-    const packageJson = JSON.parse(await readFile(packagePath, "utf8"));
-    packageJson.scripts["gates:push"] = "node scripts/run-push-gates.mjs";
-    await writeFile(packagePath, `${JSON.stringify(packageJson)}\n`);
+  const cases = [
+    {
+      title: "gates:push without the wrapper is rejected",
+      script: "gates:push",
+      replacement: "node scripts/run-push-gates.mjs",
+      expected:
+        /package\.json gates:push must invoke agent-gate node scripts\/run-push-gates\.mjs/u,
+    },
+    {
+      title: "checks:pre-review without --pre-review is rejected",
+      script: "checks:pre-review",
+      replacement: "agent-gate node scripts/run-push-gates.mjs",
+      expected:
+        /package\.json checks:pre-review must invoke agent-gate node scripts\/run-push-gates\.mjs --pre-review/u,
+    },
+    {
+      title: "gate:ensure without the wrapper is rejected",
+      script: "gate:ensure",
+      replacement: "node scripts/gate-receipt.mjs ensure",
+      expected:
+        /package\.json gate:ensure must invoke agent-gate node scripts\/gate-receipt\.mjs ensure/u,
+    },
+    {
+      title: "gate:run without the wrapper is rejected",
+      script: "gate:run",
+      replacement: "node scripts/gate-receipt.mjs run",
+      expected:
+        /package\.json gate:run must invoke agent-gate node scripts\/gate-receipt\.mjs run/u,
+    },
+    {
+      title: "gates:push with a command -v fallback is rejected",
+      script: "gates:push",
+      replacement:
+        "if command -v agent-gate >/dev/null 2>&1; then agent-gate node scripts/run-push-gates.mjs; else node scripts/run-push-gates.mjs; fi",
+      expected:
+        /package\.json gates:push must invoke agent-gate node scripts\/run-push-gates\.mjs/u,
+    },
+  ];
+  for (const { title, script, replacement, expected } of cases) {
+    await t.test(title, async () => {
+      const root = await fixture();
+      const packagePath = join(root, "package.json");
+      const packageJson = JSON.parse(await readFile(packagePath, "utf8"));
+      packageJson.scripts[script] = replacement;
+      await writeFile(packagePath, `${JSON.stringify(packageJson)}\n`);
 
-    assert.match(
-      (await checkGateRouting(root, { paths })).join("\n"),
-      /package\.json gates:push must invoke agent-gate node scripts\/run-push-gates\.mjs/u,
-    );
-  });
-
-  await t.test("checks:pre-review without --pre-review is rejected", async () => {
-    const root = await fixture();
-    const packagePath = join(root, "package.json");
-    const packageJson = JSON.parse(await readFile(packagePath, "utf8"));
-    packageJson.scripts["checks:pre-review"] = "agent-gate node scripts/run-push-gates.mjs";
-    await writeFile(packagePath, `${JSON.stringify(packageJson)}\n`);
-
-    assert.match(
-      (await checkGateRouting(root, { paths })).join("\n"),
-      /package\.json checks:pre-review must invoke agent-gate node scripts\/run-push-gates\.mjs --pre-review/u,
-    );
-  });
-
-  await t.test("gate:ensure without the wrapper is rejected", async () => {
-    const root = await fixture();
-    const packagePath = join(root, "package.json");
-    const packageJson = JSON.parse(await readFile(packagePath, "utf8"));
-    packageJson.scripts["gate:ensure"] = "node scripts/gate-receipt.mjs ensure";
-    await writeFile(packagePath, `${JSON.stringify(packageJson)}\n`);
-
-    assert.match(
-      (await checkGateRouting(root, { paths })).join("\n"),
-      /package\.json gate:ensure must invoke agent-gate node scripts\/gate-receipt\.mjs ensure/u,
-    );
-  });
-
-  await t.test("gate:run without the wrapper is rejected", async () => {
-    const root = await fixture();
-    const packagePath = join(root, "package.json");
-    const packageJson = JSON.parse(await readFile(packagePath, "utf8"));
-    packageJson.scripts["gate:run"] = "node scripts/gate-receipt.mjs run";
-    await writeFile(packagePath, `${JSON.stringify(packageJson)}\n`);
-
-    assert.match(
-      (await checkGateRouting(root, { paths })).join("\n"),
-      /package\.json gate:run must invoke agent-gate node scripts\/gate-receipt\.mjs run/u,
-    );
-  });
-
-  await t.test("gates:push with a command -v fallback is rejected", async () => {
-    const root = await fixture();
-    const packagePath = join(root, "package.json");
-    const packageJson = JSON.parse(await readFile(packagePath, "utf8"));
-    packageJson.scripts["gates:push"] =
-      "if command -v agent-gate >/dev/null 2>&1; then agent-gate node scripts/run-push-gates.mjs; else node scripts/run-push-gates.mjs; fi";
-    await writeFile(packagePath, `${JSON.stringify(packageJson)}\n`);
-
-    assert.match(
-      (await checkGateRouting(root, { paths })).join("\n"),
-      /package\.json gates:push must invoke agent-gate node scripts\/run-push-gates\.mjs/u,
-    );
-  });
+      assert.match((await checkGateRouting(root, { paths })).join("\n"), expected);
+    });
+  }
 });
 
 test("checks every pre-review runner command against the new skill block in both directions", async () => {
@@ -303,8 +287,8 @@ test("rejects a missing package script named by a fenced gate command", async ()
 test("rejects a fenced gate command that is none of the accepted forms", async () => {
   // Pins the `unresolved gate command` branch: pnpm <script>, allowed cargo
   // forms, and the five supported script runners are accepted; anything else (including a
-  // raw `kit …` line) must fail. Deleting that branch keeps this suite green
-  // while `pnpm gates:routing:check` would accept an unroutable fence.
+  // raw `kit …` line) must fail. Without this test, deleting that branch kept the suite green
+  // while `pnpm gates:routing:check` accepted an unroutable fence.
   const root = await fixture();
   const path = join(root, ".claude/skills/push/SKILL.md");
   await writeFile(
