@@ -11254,7 +11254,7 @@ mod deletion_tests {
             .write_to_with_source(&preferred, stale_source)
             .unwrap()
             .expect_durable();
-        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
+        let target = DatabaseFileTarget::for_test_deletion(&database).unwrap();
         let result = unlink_database_files(&target, &expected_source).unwrap();
         assert_eq!(result.0, 2);
         assert!(result.1.is_none());
@@ -11275,7 +11275,7 @@ mod deletion_tests {
             .expect_durable();
         let database_bytes = std::fs::read(&database).unwrap();
         let index_bytes = std::fs::read(&preferred).unwrap();
-        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
+        let target = DatabaseFileTarget::for_test_deletion(&database).unwrap();
         set_unlink_probe_opened_identity_mismatch(Some(
             preferred.file_name().unwrap().to_os_string(),
         ));
@@ -11300,7 +11300,7 @@ mod deletion_tests {
         let expected_source = IndexSource::from_database(&database, 0).unwrap();
         let preferred = get_index_path(&database);
         std::fs::write(&preferred, b"not an archive").unwrap();
-        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
+        let target = DatabaseFileTarget::for_test_deletion(&database).unwrap();
         let result = unlink_database_files(&target, &expected_source).unwrap();
         assert_eq!(result.0, 2);
         assert!(result.1.is_none());
@@ -11323,7 +11323,7 @@ mod deletion_tests {
         // In-bounds and aligned, but too short to contain an archived IndexSource.
         bytes[8..16].copy_from_slice(&16_u64.to_le_bytes());
         std::fs::write(&preferred, bytes).unwrap();
-        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
+        let target = DatabaseFileTarget::for_test_deletion(&database).unwrap();
         let result = unlink_database_files(&target, &expected_source).unwrap();
         assert_eq!(result.0, 2);
         assert!(result.1.is_none());
@@ -11346,7 +11346,7 @@ mod deletion_tests {
             .expect_durable();
         let bytes = std::fs::read(&preferred).unwrap();
         let expected_source = IndexSource::from_database(&database, 0).unwrap();
-        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
+        let target = DatabaseFileTarget::for_test_deletion(&database).unwrap();
         let result = unlink_database_files(&target, &expected_source).unwrap();
         assert_eq!(result.0, 1);
         assert!(result.1.is_none());
@@ -11377,7 +11377,7 @@ mod deletion_tests {
                     .unwrap()
                     .expect_durable();
                 let bytes = std::fs::read(&sidecar).unwrap();
-                let target = DatabaseFileTarget::for_test_path(&database).unwrap();
+                let target = DatabaseFileTarget::for_test_deletion(&database).unwrap();
                 let _fault =
                     UnlinkProbeFaultGuard::permission_denied(stage, sidecar.file_name().unwrap());
                 let result = unlink_database_files(&target, &source);
@@ -11411,7 +11411,7 @@ mod deletion_tests {
         bytes.extend_from_slice(&[0; 32]);
         std::fs::write(&legacy, bytes).unwrap();
         assert!(MmapSearchIndex::open_file(File::open(&legacy).unwrap()).is_err());
-        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
+        let target = DatabaseFileTarget::for_test_deletion(&database).unwrap();
         let result = unlink_database_files(&target, &source).unwrap();
         assert_eq!(result.0, 2);
         assert!(result.1.is_none());
@@ -11430,7 +11430,7 @@ mod deletion_tests {
             .write_to_with_source(&legacy, source.clone())
             .unwrap()
             .expect_durable();
-        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
+        let target = DatabaseFileTarget::for_test_deletion(&database).unwrap();
         let stamp = database.with_file_name(search_index::integrity_stamp_leaf(target.leaf()));
         std::fs::write(&stamp, b"stamp").unwrap();
         let stamp_for_hook = stamp.clone();

@@ -839,6 +839,21 @@ impl DatabaseFileTarget {
 
     #[cfg(test)]
     pub(crate) fn for_test_path(path: &Path) -> Result<Self, Error> {
+        Self::for_test_with_parent_access(path, ParentAccess::Readable)
+    }
+
+    // Deletion tests need the writable parent retained by production DatabaseMutate:
+    // Windows sync_all on a read-only directory handle is durability-uncertain.
+    #[cfg(test)]
+    pub(crate) fn for_test_deletion(path: &Path) -> Result<Self, Error> {
+        Self::for_test_with_parent_access(path, ParentAccess::Writable)
+    }
+
+    #[cfg(test)]
+    fn for_test_with_parent_access(
+        path: &Path,
+        parent_access: ParentAccess,
+    ) -> Result<Self, Error> {
         path.file_name()
             .filter(|name| !name.is_empty())
             .ok_or_else(|| Error::InvalidInput("database path needs a leaf name".into()))?;
@@ -848,12 +863,7 @@ impl DatabaseFileTarget {
             .create(true)
             .truncate(false)
             .open(path)?;
-        let acquired = acquire_target(
-            path,
-            AcquireShape::File {
-                parent_access: ParentAccess::Readable,
-            },
-        )?;
+        let acquired = acquire_target(path, AcquireShape::File { parent_access })?;
         let (parent, leaf) = acquired
             .parent_and_leaf
             .ok_or_else(|| Error::InvalidInput("database path needs a leaf name".into()))?;
