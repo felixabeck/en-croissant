@@ -69,7 +69,7 @@ test("accounts-puzzles-engines: add engine download catalog", async ({ page, moc
     await page.addInitScript(() => {
         localStorage.setItem("font-size", "100");
     });
-    // The engine catalog is bundled; only its native signature check is mocked.
+    // The engine catalog is bundled; mock its native signature check, the CPU-capability query and idle progress.
     await mockScenario({
         commands: {
             is_bmi2_compatible: { result: false },
