@@ -12482,3 +12482,29 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
 * **Change:** replace that sentence with the current rule: rule 4c governs records attributed to Felix; entries here are agent decisions, reversed only with new evidence through `superseded-by` (contract clause 2), and a second reversal of one question parks it (clause 4). Edit the header only while no drain holds the decisions lock, through the locked writer if `findings.py` gains one for headers; keep the "no session writes `(Felix, <date>)`" clause.
 * **Proof:** `./scripts/findings.py check` and `pnpm gates:contract:check` green; `grep -n 'without exception' tasks/decisions.md` prints nothing.
 * **Found by:** Claude Code, drain build run for f-20260930-03 (session 021d2888-c904-44b0-af74-a8f4604318bd), records lens, 2026-10-02.
+
+---
+
+## 2026-10-03 — filed through the inbox spool
+
+### Search-index identity uses Path::exists, which treats a preferred-sidecar stat error as absence
+
+* **ID:** f-20261002-12 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/main.rs:185-199` (`SearchIndexIdentity::for_database`: `preferred_index.exists()` then `legacy.exists()`), called from `src-tauri/src/db/search.rs:360` (`cache_loaded_index`) after `open_valid_preferred` has already opened the preferred sidecar (`src-tauri/src/db/search.rs:214-222`).
+* **Defect:** `Path::exists` returns false when metadata cannot be read. Measured 2026-10-02 on this machine: a file inside a mode-0 directory gives `exists=Ok(false)` and `try_exists=Err(PermissionDenied)` (os error 13). If that check fails while the legacy sidecar is accessible, `for_database` selects the legacy path and returns `Ok`. The caller has already opened the preferred mmap, so the preferred bytes can be cached under the legacy identity. This is the behavior today. Moving the same calls into `infra/fs.rs` under the `f-20260912-03` plan does not change it.
+* **Open question:** when the preferred sidecar's metadata cannot be read, should `for_database` return that I/O error, or keep treating an unverifiable preferred path as absent and fall through to the legacy sidecar?
+* **Why it matters:** a permission or stat failure can publish the already-opened preferred index under the legacy cache key instead of failing the load.
+* **Proof:** there is no failing command today, because this is the current `Path::exists` result. After a decision, the anchor is a unix test that places the preferred sidecar in a mode-0 directory, leaves the legacy sidecar readable, and asserts either `Err(PermissionDenied)` or the legacy identity, matching that decision.
+* **Related:** `f-20260912-07` (open; the loader trusts a sidecar validated against an earlier probe — a different TOCTOU, not this stat-error fallback; its Root is `-`, so this entry does not reuse a slug), `f-20260912-03` (the gate-scripts plan that moves these `exists` calls unchanged and files this question instead of changing the failure semantic).
+* **Found by:** Codex `review-error-handling` during plan review of `tasks/plans/2026-10-02-pathname-method-surface.md` for `f-20260912-03`, 2026-10-02.
+
+### `pnpm ci:remote:check` parses color-forced `gh` JSON and refuses a green remote
+
+* **ID:** f-20261003-01 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Filed from:** 1f678668-c21e-4c25-8200-a7808f5d4209
+* **Where:** `scripts/check-remote-ci.mjs:59` (`parseJson`) and `:122-139` (`runsForBranch` runs `gh run list --json` and parses stdout as JSON). The same parse is used for `gh run view` at `:150-153`.
+* **Defect:** The checker spawns `gh` with the parent environment. When `FORCE_COLOR=1` or `CLICOLOR_FORCE=1` is set, `gh --json` writes ANSI into stdout even though the pipe is not a terminal. `JSON.parse` then throws and the checker exits 2 (`REFUSED: gh run list returned invalid JSON`). Measured 2026-10-03: `env -u NO_COLOR FORCE_COLOR=1 CLICOLOR_FORCE=1 gh run list --workflow Test --branch master --limit 1 --json conclusion` wrote 101 bytes starting `\x1b[1;38m[\x1b[m`, and `JSON.parse` failed at column 1. The same command with both variables unset returns a JSON array. `NO_COLOR=1` does not stop this: Node warns that `NO_COLOR` is ignored when `FORCE_COLOR` is set, and the bytes above were captured with `NO_COLOR` unset. This session's first `pnpm ci:remote:check` before pushing `bfb7b901` exited 2 for that reason while the newest completed Test jobs were success; unsetting `FORCE_COLOR` and `CLICOLOR_FORCE` made the same check print `Remote CI check: OK` and exit 0. The pending inbox entry about `Path::exists` on a search-index sidecar is a different defect.
+* **Why it matters:** A drain or any shell that exports `FORCE_COLOR` cannot push. Exit 2 refuses the push, and the refusal names invalid JSON rather than a red job.
+* **Proof:** From a clean checkout, `env FORCE_COLOR=1 CLICOLOR_FORCE=1 pnpm ci:remote:check` exits 2 and its stderr contains `gh run list returned invalid JSON` while `env -u FORCE_COLOR -u CLICOLOR_FORCE pnpm ci:remote:check` exits 0 on the same green remote. After the fix, the forced-color invocation parses `gh` output and exits 0 on that green remote, or exits 1 only when a completed Test job is actually red.
+* **Related:** none in the ledger share this cause. `f-20260924-07` is the missing Windows type-check, not this parser.
+* **Found by:** drain session `1f678668-c21e-4c25-8200-a7808f5d4209` while running `pnpm ci:remote:check` before the ordinary push of `bfb7b901`, 2026-10-03.
