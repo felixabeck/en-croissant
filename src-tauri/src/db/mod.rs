@@ -4068,26 +4068,6 @@ mod tests {
     }
 
     #[test]
-    fn delete_database_uses_fd_relative_target_and_outcome_mapper() {
-        let source = include_str!("mod.rs");
-        let body = source
-            .split("fn delete_database_blocking")
-            .nth(1)
-            .unwrap()
-            .split("fn finish_database_deletion")
-            .next()
-            .unwrap();
-        assert!(body.contains("finish_database_deletion"));
-        assert!(body.contains("resolve_database("));
-        assert!(!body.contains("database_file_target("));
-        assert!(!body.contains("database_path("));
-        assert!(!body.contains("workspace_entry_path("));
-        assert!(!body.contains("canonicalize("));
-        assert!(body.contains("target.path()"));
-        assert!(!body.contains("remove_file"));
-    }
-
-    #[test]
     fn search_index_generation_evicts_cache_before_replacement() {
         let (_dir, app, handle, database) = blocking_database_case();
         let state = app.state::<AppState>();
@@ -11166,6 +11146,26 @@ mod deletion_tests {
     }
 
     #[test]
+    fn delete_database_uses_fd_relative_target_and_outcome_mapper() {
+        let source = include_str!("mod.rs");
+        let body = source
+            .split("fn delete_database_blocking")
+            .nth(1)
+            .unwrap()
+            .split("fn finish_database_deletion")
+            .next()
+            .unwrap();
+        assert!(body.contains("finish_database_deletion"));
+        assert!(body.contains("resolve_database("));
+        assert!(!body.contains("database_file_target("));
+        assert!(!body.contains("database_path("));
+        assert!(!body.contains("workspace_entry_path("));
+        assert!(!body.contains("canonicalize("));
+        assert!(body.contains("target.path()"));
+        assert!(!body.contains("remove_file"));
+    }
+
+    #[test]
     fn delete_database_stops_at_invalid_preferred_sidecar_before_primary() {
         let dir = tempfile::tempdir().unwrap();
         let database = dir.path().join("ordered.db3");
@@ -11403,7 +11403,7 @@ mod deletion_tests {
     }
 
     #[test]
-    fn zero_table_delete_preserves_sqlite_sidecars_after_primary_substitution() {
+    fn unlink_database_files_preserves_sqlite_sidecars_after_primary_substitution() {
         let dir = tempfile::tempdir().unwrap();
         let database = dir.path().join("swap.db3");
         let replacement = dir.path().join("replacement.db3");
