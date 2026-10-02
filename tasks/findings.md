@@ -12370,3 +12370,16 @@ Handled by `f19e14ac` (Stockfish 19 upgrade build, phase P2, obligation O2). A g
 * **Found by:** Stockfish 19 upgrade build, real-app upgrade run in a throwaway profile, 2026-10-02 (orchestrator measurement above).
 * **Correction (2026-10-02, records lens):** "silently" is wrong. `AddEngine.tsx:230-233` passes the failure to `notifyUnlessCancelled`, so an error notification is raised; the measurement sampled the page text only every 20 s and missed the transient toast. The card itself does return from "Downloading" to "Install" without adding an engine.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"7470dad2f1e4934765328a3c243354ade4c5174c996b6be04fe5207af22f7b91","input_sha256":"e3287655ae45a5b25f3625b47342b7c16fe4f130148f159c9ea88d4341a5c056","kind":"mutation-receipt","operation":"4d9677d973277effcef18dad61922c0dd6c94bdf914d770c24e138b6911bd396","options":{"section":null},"request_id_sha256":null,"results":["f-20261002-05"],"target":"f-20261002-05","v":1} -->
+
+---
+
+## 2026-10-02 — filed through the inbox spool
+
+### Three chess.rs tests prove engine structure by matching source text instead of behaviour
+
+* **ID:** f-20261002-06 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/chess.rs` tests `interactive_commands_register_through_engine_process_new` (~3181, asserts `get_best_moves`/`analyze_game` bodies contain a call), `config_probe_uses_a_unique_supervised_key` (~3206, asserts `get_engine_config` contains `Uuid::new_v4()` and `EngineKey::new("engine-config"`), `production_uci_paths_share_ingest_and_live_publish` (~3383, splits the file at `mod tests {` and matches function names), all via `include_str!("chess.rs")`.
+* **Defect:** each test passes as long as the asserted text is present, whatever the code around it does — e.g. a call kept but its result discarded, or a unique key built and then not used. The two analogous delegation scans for `retire_engine` and `retire_engine_binary` were replaced in the Stockfish 19 upgrade push by calls of the real command through `engine_test_app()`, after a review lens showed a wrapper returning `Ok(())` over a failed delegate would still pass the scan.
+* **Why it matters:** `~/.claude/references/push-review-policy.md` "Proof selection before custom source verification" requires the behavioural route first; these three are evidence that cannot go red for the class of regression they are named after.
+* **Open question:** which behavioural proof replaces each — the mock app from `engine_test_app()` invoking the command with a recording engine, a supervisor-level assertion on the registered `EngineKey`, or a shared ingest seam observed through a test hook — and whether any of the three pins a property that only source structure can express (then document it with its staged-failure matrix instead).
+* **Found by:** Stockfish 19 upgrade build, cumulative review closure round 3 (`review-tests` on the `retire_engine_binary` command test), 2026-10-02; the remaining three identified by the orchestrator reading `chess.rs` at the cited lines.
