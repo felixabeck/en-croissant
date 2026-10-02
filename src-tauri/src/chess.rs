@@ -3084,7 +3084,7 @@ done
     }
 
     #[tokio::test]
-    async fn retire_engine_binary_command_retires_pair_and_keeps_new_binary() {
+    async fn retire_engine_binary_command_round_trip_readmits_current_pair() {
         let app = engine_test_app();
         let state = app.state::<AppState>();
         let supervisor = &state.engine_supervisor;
@@ -3126,14 +3126,37 @@ done
         );
         let (actor, _) = EngineActor::recording_test_actor(&[]);
         assert!(supervisor
-            .replace_handle(key.clone(), actor, "engine-id".into(), handle.id)
+            .replace_handle(key.clone(), actor, "engine-id".into(), handle.id.clone())
             .await
             .is_err());
         let (actor, _) = EngineActor::recording_test_actor(&[]);
         supervisor
-            .replace_handle(key, actor, "engine-id".into(), current.id)
+            .replace_handle(key.clone(), actor, "engine-id".into(), current.id.clone())
             .await
             .unwrap();
+        retire_engine_binary(
+            "engine-id".into(),
+            current.clone(),
+            handle.clone(),
+            app.state::<AppState>(),
+        )
+        .await
+        .unwrap();
+        assert!(supervisor.get_exact(&key).is_none());
+        let (actor, _) = EngineActor::recording_test_actor(&[]);
+        supervisor
+            .replace_handle(key.clone(), actor, "engine-id".into(), handle.id.clone())
+            .await
+            .unwrap();
+        assert_eq!(supervisor.get_exact(&key).unwrap().executable, handle.id);
+        let (actor, _) = EngineActor::recording_test_actor(&[]);
+        assert!(matches!(
+            supervisor
+                .replace_handle(key.clone(), actor, "engine-id".into(), current.id)
+                .await,
+            Err(Error::Conflict(message)) if message == "engine binary pair is retired"
+        ));
+        assert_eq!(supervisor.get_exact(&key).unwrap().executable, handle.id);
         supervisor.terminate_all().await.unwrap();
     }
 

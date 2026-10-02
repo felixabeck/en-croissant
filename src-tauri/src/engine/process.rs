@@ -1636,7 +1636,10 @@ impl EngineSupervisor {
             binaries.insert((engine_id.clone(), retired.clone()));
         });
         self.retire_matching(|key, owner, path| {
-            !is_game_engine_key(key) && owner == engine_id && path == &retired
+            !is_game_engine_key(key)
+                && owner == engine_id
+                && path == &retired
+                && self.is_retired_binary(owner, path)
         })
         .await
     }
@@ -7114,6 +7117,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retire_binary_earlier_drain_preserves_readmitted_actor() {
+        let supervisor = EngineSupervisor::default();
+        let a = path_ref("binary-a");
+        let b = path_ref("binary-b");
+        let old_key = EngineKey::new("old-analysis".into(), "owner".into()).unwrap();
+        let ((old_actor, _), old_terminated) = actor_with(&[], false, None);
+        supervisor
+            .replace_handle(
+                old_key.clone(),
+                Arc::new(old_actor),
+                "owner".into(),
+                a.clone(),
+            )
+            .await
+            .unwrap();
+        let pending = supervisor
+            .admit(
+                EngineKey::new("pending-analysis".into(), "owner".into()).unwrap(),
+                "owner".into(),
+                a.clone(),
+                false,
+            )
+            .await
+            .unwrap();
+
+        // Stop the first drain after its admission scan and actor snapshot.
+        let lifecycle = supervisor.lifecycle_lease(&old_key);
+        let transition = lifecycle.lock().await;
+        let retirement = supervisor.retire_engine_binary("owner".into(), a.clone(), b.clone());
+        tokio::pin!(retirement);
+        assert!(futures_util::poll!(retirement.as_mut()).is_pending());
+        assert!(pending.cancel_error().is_some());
+        assert!(supervisor.is_retired_binary("owner", &a));
+        assert_eq!(old_terminated.load(AtomicOrdering::SeqCst), 0);
+
+        supervisor
+            .retire_engine_binary("owner".into(), b, a.clone())
+            .await
+            .unwrap();
+        let new_key = EngineKey::new("new-analysis".into(), "owner".into()).unwrap();
+        let ((new_actor, _), new_terminated) = actor_with(&[], false, None);
+        let registered = supervisor
+            .replace_handle(new_key.clone(), Arc::new(new_actor), "owner".into(), a)
+            .await
+            .unwrap();
+
+        drop(transition);
+        retirement.await.unwrap();
+        assert_eq!(old_terminated.load(AtomicOrdering::SeqCst), 1);
+        assert!(supervisor.get_exact(&old_key).is_none());
+        assert_eq!(
+            new_terminated.load(AtomicOrdering::SeqCst),
+            0,
+            "an earlier retirement drain must preserve the readmitted A actor"
+        );
+        assert_eq!(
+            supervisor.get_exact(&new_key).unwrap().generation,
+            registered.generation
+        );
+        assert!(registered.actor.logs().await.is_ok());
+        supervisor.terminate_all().await.unwrap();
+        assert_eq!(new_terminated.load(AtomicOrdering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn retire_binary_round_trip_readmits_current_and_preserves_game_actors() {
         let supervisor = EngineSupervisor::default();
         let a = path_ref("binary-a");
@@ -7129,6 +7197,10 @@ mod tests {
             games.push((key, registered, terminated));
         }
         supervisor
+            .retire_engine_binary("other-owner".into(), a.clone(), b.clone())
+            .await
+            .unwrap();
+        supervisor
             .retire_engine_binary("owner".into(), a.clone(), b.clone())
             .await
             .unwrap();
@@ -7139,7 +7211,7 @@ mod tests {
 
         let key = EngineKey::new("analysis".into(), "owner".into()).unwrap();
         let admission = supervisor
-            .admit(key.clone(), "owner".into(), a, false)
+            .admit(key.clone(), "owner".into(), a.clone(), false)
             .await;
         assert!(
             admission.is_ok(),
@@ -7147,6 +7219,17 @@ mod tests {
         );
         assert!(matches!(
             supervisor.admit(key, "owner".into(), b, false).await,
+            Err(Error::Conflict(message)) if message == "engine binary pair is retired"
+        ));
+        assert!(matches!(
+            supervisor
+                .admit(
+                    EngineKey::new("other-analysis".into(), "other-owner".into()).unwrap(),
+                    "other-owner".into(),
+                    a,
+                    false,
+                )
+                .await,
             Err(Error::Conflict(message)) if message == "engine binary pair is retired"
         ));
         for (key, registered, terminated) in &games {
