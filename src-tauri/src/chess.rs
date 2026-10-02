@@ -1507,6 +1507,13 @@ mod tests {
 
     use super::*;
 
+    fn assert_rejects_invalid_engine_id(result: Result<(), Error>) {
+        assert!(
+            matches!(result, Err(Error::InvalidInput(_))),
+            "the command must propagate invalid engine id errors"
+        );
+    }
+
     #[tokio::test]
     async fn configure_preflight_is_strict_and_canonical_fen_is_wire_only() {
         let (actor, writes) = EngineActor::recording_test_actor(&["readyok"]);
@@ -3070,12 +3077,8 @@ done
             .await
             .is_err());
 
-        assert!(
-            matches!(
-                retire_engine("engine-id\n".into(), app.state::<AppState>()).await,
-                Err(Error::InvalidInput(_))
-            ),
-            "the command must propagate invalid engine id errors"
+        assert_rejects_invalid_engine_id(
+            retire_engine("engine-id\n".into(), app.state::<AppState>()).await,
         );
     }
 
@@ -3100,17 +3103,13 @@ done
             .await
             .unwrap();
         assert!(supervisor.get_exact(&key).is_none());
-        assert!(
-            matches!(
-                retire_engine_binary(
-                    "engine-id\n".into(),
-                    handle.clone(),
-                    app.state::<AppState>()
-                )
-                .await,
-                Err(Error::InvalidInput(_))
-            ),
-            "the command must propagate invalid engine id errors"
+        assert_rejects_invalid_engine_id(
+            retire_engine_binary(
+                "engine-id\n".into(),
+                handle.clone(),
+                app.state::<AppState>(),
+            )
+            .await,
         );
         let (actor, _) = EngineActor::recording_test_actor(&[]);
         assert!(supervisor

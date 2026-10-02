@@ -95,7 +95,7 @@ test("accounts-puzzles-engines: local engine validation is visible before any na
     mockScenario,
     capture,
 }) => {
-    // The engine catalog is bundled; only its native signature check is mocked.
+    // The engine catalog is bundled; mock its native signature check and CPU-capability query.
     await mockScenario({
         commands: {
             is_bmi2_compatible: { result: false },
