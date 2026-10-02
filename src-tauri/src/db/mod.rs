@@ -2960,6 +2960,26 @@ enum UnlinkProbeStage {
 std::thread_local! {
     static UNLINK_PROBE_FAULT:
         std::cell::RefCell<Option<(UnlinkProbeStage, std::ffi::OsString, std::io::ErrorKind)>> = const { std::cell::RefCell::new(None) };
+    static UNLINK_PROBE_OPENED_IDENTITY_MISMATCH:
+        std::cell::RefCell<Option<std::ffi::OsString>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn set_unlink_probe_opened_identity_mismatch(leaf: Option<std::ffi::OsString>) {
+    UNLINK_PROBE_OPENED_IDENTITY_MISMATCH.with(|slot| *slot.borrow_mut() = leaf);
+}
+
+#[cfg(test)]
+fn inject_unlink_probe_opened_identity_mismatch(leaf: &OsStr, identity: (u64, u64)) -> (u64, u64) {
+    UNLINK_PROBE_OPENED_IDENTITY_MISMATCH.with(|slot| {
+        let mut armed_leaf = slot.borrow_mut();
+        if armed_leaf.as_deref() == Some(leaf) {
+            *armed_leaf = None;
+            (identity.0, identity.1.wrapping_add(1))
+        } else {
+            identity
+        }
+    })
 }
 
 #[cfg(test)]
@@ -2988,7 +3008,9 @@ fn inject_unlink_probe_fault<T, E: From<std::io::Error>>(
 /// the `statat` → `unlinkat` instant inside `remove_entry_at`; Windows deletes through the
 /// checked handle and has no such window. A sidecar written under a database object that
 /// has since changed is kept as foreign; loaders reject it and later generation replaces it.
-/// Either index name is kept when this process cannot read its provenance.
+/// `PermissionDenied` at any probe stage keeps either index name and deletion continues.
+/// A preferred file whose header and source are not a decodable archive is removed;
+/// the same defect on the legacy name keeps that file.
 /// An Ok result means the primary is gone; any retained error must be reported
 /// after cache and registry cleanup, including a later SQLite sidecar failure.
 fn unlink_database_files(
@@ -3058,6 +3080,21 @@ fn unlink_database_files(
         }
     }
 
+    fn unlink_judged_sidecar(
+        parent: &File,
+        leaf: &OsStr,
+        expected_source: &IndexSource,
+        preferred: bool,
+        unlinked: &mut usize,
+        retained: &mut Option<Error>,
+    ) -> Result<(), Error> {
+        match index_sidecar_removal_identity(parent, leaf, expected_source, preferred) {
+            Ok(Some(identity)) => remove_sidecar(parent, leaf, identity, unlinked, retained),
+            Ok(None) => Ok(()),
+            Err(error) => remember_sidecar_error(error, parent, leaf, retained),
+        }
+    }
+
     let preferred_leaf = search_index::preferred_sidecar_leaf(target.leaf());
     let integrity_leaf = search_index::integrity_stamp_leaf(target.leaf());
     let legacy_leaf = search_index::legacy_sidecar_leaf(target.leaf());
@@ -3076,19 +3113,14 @@ fn unlink_database_files(
         }
     }
 
-    match index_sidecar_matches(target.parent(), &preferred_leaf, expected_source, true) {
-        Ok(Some(identity)) => remove_sidecar(
-            target.parent(),
-            &preferred_leaf,
-            identity,
-            &mut unlinked,
-            &mut durability,
-        )?,
-        Ok(None) => {}
-        Err(error) => {
-            remember_sidecar_error(error, target.parent(), &preferred_leaf, &mut durability)?
-        }
-    }
+    unlink_judged_sidecar(
+        target.parent(),
+        &preferred_leaf,
+        expected_source,
+        true,
+        &mut unlinked,
+        &mut durability,
+    )?;
 
     match entry_identity_at(target.parent(), &integrity_leaf, false) {
         Ok(identity) => remove_sidecar(
@@ -3104,19 +3136,14 @@ fn unlink_database_files(
     }
 
     if legacy_leaf != preferred_leaf {
-        match legacy_sidecar_matches(target.parent(), &legacy_leaf, expected_source) {
-            Ok(Some(identity)) => remove_sidecar(
-                target.parent(),
-                &legacy_leaf,
-                identity,
-                &mut unlinked,
-                &mut durability,
-            )?,
-            Ok(None) => {}
-            Err(error) => {
-                remember_sidecar_error(error, target.parent(), &legacy_leaf, &mut durability)?;
-            }
-        }
+        unlink_judged_sidecar(
+            target.parent(),
+            &legacy_leaf,
+            expected_source,
+            false,
+            &mut unlinked,
+            &mut durability,
+        )?;
     }
 
     match remove_entry_at(target.parent(), target.leaf(), target.identity(), false) {
@@ -3168,15 +3195,15 @@ fn unlink_database_files(
     Ok((unlinked, durability))
 }
 
-fn legacy_sidecar_matches(
+fn legacy_sidecar_removal_identity(
     parent: &File,
     leaf: &OsStr,
     expected_source: &IndexSource,
 ) -> Result<Option<(u64, u64)>, Error> {
-    index_sidecar_matches(parent, leaf, expected_source, false)
+    index_sidecar_removal_identity(parent, leaf, expected_source, false)
 }
 
-fn index_sidecar_matches(
+fn index_sidecar_removal_identity(
     parent: &File,
     leaf: &OsStr,
     expected_source: &IndexSource,
@@ -3205,6 +3232,9 @@ fn index_sidecar_matches(
         #[cfg(test)]
         let result =
             inject_unlink_probe_fault(UnlinkProbeStage::OpenedIdentity, Some(leaf), result);
+        #[cfg(test)]
+        let result =
+            result.map(|identity| inject_unlink_probe_opened_identity_mismatch(leaf, identity));
         if result? != identity {
             return Err(Error::Conflict(
                 "index sidecar changed before deletion".into(),
@@ -4139,7 +4169,7 @@ mod tests {
         std::fs::set_permissions(&legacy, std::fs::Permissions::from_mode(0o000)).unwrap();
         let target = DatabaseFileTarget::for_test_path(&database).unwrap();
 
-        let result = legacy_sidecar_matches(
+        let result = legacy_sidecar_removal_identity(
             target.parent(),
             legacy.file_name().unwrap(),
             &expected_source,
@@ -11224,6 +11254,36 @@ mod deletion_tests {
             .unwrap()
             .expect_durable();
         let target = DatabaseFileTarget::for_test_path(&database).unwrap();
+        let result = unlink_database_files(&target, &expected_source).unwrap();
+        assert_eq!(result.0, 2);
+        assert!(result.1.is_none());
+        assert!(!database.exists());
+        assert!(!preferred.exists());
+    }
+
+    #[test]
+    fn unlink_database_files_conflicts_when_opened_sidecar_identity_differs() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("opened-identity.db3");
+        std::fs::write(&database, b"database").unwrap();
+        let expected_source = IndexSource::from_database(&database, 0).unwrap();
+        let preferred = get_index_path(&database);
+        SearchIndexChunk::default()
+            .write_to_with_source(&preferred, expected_source.clone())
+            .unwrap()
+            .expect_durable();
+        let database_bytes = std::fs::read(&database).unwrap();
+        let index_bytes = std::fs::read(&preferred).unwrap();
+        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
+        set_unlink_probe_opened_identity_mismatch(Some(
+            preferred.file_name().unwrap().to_os_string(),
+        ));
+
+        assert!(matches!(unlink_database_files(&target, &expected_source),
+            Err(Error::Conflict(message)) if message == "index sidecar changed before deletion"));
+        assert_eq!(std::fs::read(&database).unwrap(), database_bytes);
+        assert_eq!(std::fs::read(&preferred).unwrap(), index_bytes);
+
         let result = unlink_database_files(&target, &expected_source).unwrap();
         assert_eq!(result.0, 2);
         assert!(result.1.is_none());
