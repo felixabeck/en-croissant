@@ -12351,3 +12351,16 @@ Handled by `f19e14ac` (Stockfish 19 upgrade build, phase P2, obligation O2). A g
 * **Open question:** which directories are safe to delete and when: only directories under the app-owned engine workspace that no registry entry references after pruning, and never while an engine child (including a running game that keeps its old binary until it ends, plan O3) may still be executing from them. Delete at startup after pruning, or on the next upgrade? Windows refuses to delete a running executable.
 * **Measured:** the P2 write leaf of the Stockfish 19 upgrade read the pruning path (lines above) and found no tree deletion; the plan's "Risks / open questions" required this check and a filed finding rather than a reaper in that run.
 * **Found by:** Stockfish 19 upgrade build, phase P2, 2026-10-02 (Codex leaf investigation, confirmed by the orchestrator's review of the cited lines' role).
+
+---
+
+## 2026-10-02 — filed through the inbox spool
+
+### On a first-run profile every engine workspace request fails, so no catalog engine can be installed
+
+* **ID:** f-20261002-05 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/main.rs:2482` (the path registry is `app_config_dir()/path-authority.json`), `src-tauri/src/main.rs:1501-1525` (`get_engine_workspace_blocking`: `ensure_app_owned_default_dir(... Engines)` then `get_or_create_engine_root` + `set_active_engine_root`, which persist the registry), `src/utils/engines.ts` `installCatalogEngine` (first call is `tauri.getEngineWorkspace()`).
+* **Defect:** on a profile where `~/.config/com.chessriddle.encroissant/` does not exist yet (a fresh install that has never persisted a path), `get_engine_workspace` creates `<app data>/engines` and then fails with `missing-resource` / "I/O failure: No such file or directory (os error 2)", because the registry write targets a config directory nobody created. Measured 2026-10-02 against the release build in a throwaway `HOME` driven through `scripts/app-driver.mjs`: invoking `get_engine_workspace` returned `{"tag":"backend-error","category":"missing-resource","message":"I/O failure"}` and the log line `native operation failed ... label=get_engine_workspace: I/O failure: No such file or directory (os error 2)`; with only `mkdir -p ~/.config/com.chessriddle.encroissant` added before launch, the same call returned an `engineRoot` handle.
+* **Why it matters:** the Add Engine catalog card shows "Downloading" and silently returns to "Install" for a new user, and the new "Upgrade from catalog" action fails the same way; whichever native path write happens first on a new profile is exposed to the same missing parent. Existing profiles that already wrote the registry (Felix's) are unaffected.
+* **Open question:** where the config directory is created and with which mode: once at startup next to `AppDataDir::for_app` (and whether that changes the registry's durability contract for a missing-versus-unreadable registry), or lazily inside the registry's atomic save. Check every other first write under `app_config_dir()` for the same gap.
+* **Found by:** Stockfish 19 upgrade build, real-app upgrade run in a throwaway profile, 2026-10-02 (orchestrator measurement above).
