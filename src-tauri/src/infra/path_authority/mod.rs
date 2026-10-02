@@ -94,7 +94,8 @@ fn map_db3_children_cancellable<T>(
 mod windows_tests {
     use super::*;
     use crate::infra::fs::{
-        set_test_atomic_file_injector, AtomicFileFaultPoint, AtomicWriterInjector,
+        set_test_atomic_file_injector, windows_test_junction, AtomicFileFaultPoint,
+        AtomicWriterInjector,
     };
     use std::{
         ffi::OsStr,
@@ -111,19 +112,6 @@ mod windows_tests {
             Storage::FileSystem::SYNCHRONIZE,
         },
     };
-
-    /// A directory junction, not a symlink: `mklink /J` needs neither elevation nor Developer
-    /// Mode, so the fixture runs on a stock `windows-latest` runner. A failure to create it fails
-    /// the test rather than skipping the assertion the fixture exists to drive.
-    pub(super) fn mklink_junction(link: &Path, target: &Path) {
-        let status = std::process::Command::new("cmd")
-            .args(["/C", "mklink", "/J"])
-            .arg(link)
-            .arg(target)
-            .status()
-            .expect("mklink must run");
-        assert!(status.success(), "mklink /J failed with {status}");
-    }
 
     #[test]
     fn windows_child_open_maps_absence_and_refuses_wrong_target_types() {
@@ -243,7 +231,7 @@ mod windows_tests {
             .promote_engine_resource(&grant, EngineResourceHandleKind::Directory, "resource")
             .unwrap();
         fs::remove_dir(&tables).unwrap();
-        mklink_junction(&tables, &elsewhere);
+        windows_test_junction(&tables, &elsewhere);
         assert!(matches!(
             authority.engine_resource(&handle),
             Err(Error::InvalidInput(_))
@@ -374,7 +362,7 @@ mod windows_tests {
         fs::create_dir(&real).unwrap();
         fs::write(real.join("stable.pgn"), b"stable").unwrap();
         fs::write(real.join("changed.pgn"), b"old").unwrap();
-        mklink_junction(&junction, &real);
+        windows_test_junction(&junction, &real);
         let changed = StoredEntry {
             id: PathRef {
                 id: "windows-changed".into(),
@@ -472,7 +460,7 @@ mod windows_tests {
             let elsewhere = dir.path().join("elsewhere");
             fs::create_dir(&app_data).unwrap();
             fs::create_dir(&elsewhere).unwrap();
-            mklink_junction(&app_data.join(leaf), &elsewhere);
+            windows_test_junction(&app_data.join(leaf), &elsewhere);
 
             let error = ensure_app_owned_default_dir(&AppDataDir::for_test(&app_data), root)
                 .expect_err("a junction leaf must be refused");

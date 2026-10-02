@@ -4163,117 +4163,6 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn symlinked_ancestor_database_indexes_and_deletes_through_its_real_directory() {
-        use std::os::unix::fs::symlink;
-
-        let dir = tempfile::tempdir().unwrap();
-        let real_dir = dir.path().join("real");
-        let link_dir = dir.path().join("link");
-        let database = real_dir.join("games.db3");
-        let registered_path = link_dir.join("games.db3");
-        std::fs::create_dir(&real_dir).unwrap();
-        File::create(&database).unwrap();
-        let mut connection = SqliteConnection::establish(database.to_str().unwrap()).unwrap();
-        connection.batch_execute(CREATE_TABLES_SQL).unwrap();
-        connection
-            .batch_execute("INSERT INTO Info (Name, Value) VALUES ('Version', '2.0.0');")
-            .unwrap();
-        drop(connection);
-        symlink(&real_dir, &link_dir).unwrap();
-
-        let mut authority = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
-        let grant = authority
-            .grant_dialog_operations(
-                &registered_path,
-                "games",
-                PathClass::BoundedDialogGrant,
-                vec![
-                    PathOperation::DatabaseRead,
-                    PathOperation::DatabaseMutate,
-                    PathOperation::DatabaseCreate,
-                    PathOperation::DatabaseExport,
-                ],
-                std::time::Duration::from_secs(30),
-                1,
-            )
-            .unwrap();
-        let committed = authority
-            .promote_dialog(
-                &grant,
-                PathClass::PersistentFile,
-                "games",
-                vec![
-                    PathOperation::DatabaseRead,
-                    PathOperation::DatabaseMutate,
-                    PathOperation::DatabaseCreate,
-                    PathOperation::DatabaseExport,
-                ],
-            )
-            .unwrap();
-        let handle = DatabaseHandle::new(committed.id);
-        let state = AppState::default();
-        *state.pgn_path_authority.lock().unwrap() = Some(authority);
-        let app = tauri::test::mock_app();
-        app.manage(state);
-        let state = app.state::<AppState>();
-
-        let resolved = resolve_database(
-            &state.pgn_path_authority,
-            &handle,
-            PathOperation::DatabaseRead,
-        )
-        .unwrap();
-        assert_eq!(resolved.path(), database.canonicalize().unwrap());
-
-        generate_search_index(
-            &handle,
-            &state.pgn_path_authority,
-            &state.database_repository,
-            &state.search_cache,
-            &CancellationToken::new(),
-        )
-        .unwrap();
-        let sidecar = database.with_file_name("games.db3.ecsi");
-        assert!(sidecar.exists());
-        let expected = state
-            .database_repository
-            .database_identity(&test_target(&database))
-            .unwrap();
-        let source = IndexSource::from_database_identity(&expected).unwrap();
-        assert_eq!(
-            source.object,
-            IndexSource::from_database(&database, expected.data_revision)
-                .unwrap()
-                .object
-        );
-
-        let (_, index) = search::load_search_index_cancellable(
-            &state.pgn_path_authority,
-            &state.database_repository,
-            &state.search_cache,
-            &handle,
-            &CancellationToken::new(),
-        )
-        .unwrap();
-        assert_eq!(index.source().object, source.object);
-        // Deletion waits for every lease on the preferred sidecar; this thread's clone would
-        // otherwise block its own delete.
-        drop(index);
-
-        delete_database_blocking(
-            &state.pgn_path_authority,
-            &state.database_repository,
-            &state.search_cache,
-            handle,
-            &CancellationToken::new(),
-        )
-        .unwrap();
-        assert!(!database.exists());
-        assert!(!sidecar.exists());
-    }
-
-    #[cfg(unix)]
-    #[test]
     fn resolve_database_rejects_directory_entries_before_path_access() {
         let dir = tempfile::tempdir().unwrap();
         let parent = dir.path().join("directories");
@@ -11094,6 +10983,7 @@ mod tests {
 #[cfg(test)]
 mod deletion_tests {
     use super::*;
+    use crate::infra::path_authority::PathClass;
     use std::path::Path;
     use tauri::Manager;
 
@@ -11102,6 +10992,139 @@ mod deletion_tests {
         return std::os::unix::fs::symlink(target, link);
         #[cfg(windows)]
         return std::os::windows::fs::symlink_file(target, link);
+    }
+
+    fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
+        #[cfg(unix)]
+        return std::os::unix::fs::symlink(target, link);
+        #[cfg(windows)]
+        return std::os::windows::fs::symlink_dir(target, link);
+    }
+
+    /// A linked ancestor is accepted on every platform because `acquire_target` canonicalises
+    /// the parent before its no-follow proof; the grant, index and deletion use the real directory.
+    fn assert_linked_ancestor_database_indexes_and_deletes(
+        link_directory: impl FnOnce(&Path, &Path),
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let real_dir = dir.path().join("real");
+        let link_dir = dir.path().join("link");
+        let database = real_dir.join("games.db3");
+        let registered_path = link_dir.join("games.db3");
+        std::fs::create_dir(&real_dir).unwrap();
+        File::create(&database).unwrap();
+        let mut connection = SqliteConnection::establish(database.to_str().unwrap()).unwrap();
+        connection.batch_execute(CREATE_TABLES_SQL).unwrap();
+        connection
+            .batch_execute("INSERT INTO Info (Name, Value) VALUES ('Version', '2.0.0');")
+            .unwrap();
+        drop(connection);
+        link_directory(&real_dir, &link_dir);
+
+        let mut authority = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+        let grant = authority
+            .grant_dialog_operations(
+                &registered_path,
+                "games",
+                PathClass::BoundedDialogGrant,
+                vec![
+                    PathOperation::DatabaseRead,
+                    PathOperation::DatabaseMutate,
+                    PathOperation::DatabaseCreate,
+                    PathOperation::DatabaseExport,
+                ],
+                std::time::Duration::from_secs(30),
+                1,
+            )
+            .unwrap();
+        let committed = authority
+            .promote_dialog(
+                &grant,
+                PathClass::PersistentFile,
+                "games",
+                vec![
+                    PathOperation::DatabaseRead,
+                    PathOperation::DatabaseMutate,
+                    PathOperation::DatabaseCreate,
+                    PathOperation::DatabaseExport,
+                ],
+            )
+            .unwrap();
+        let handle = DatabaseHandle::new(committed.id);
+        let state = AppState::default();
+        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        let app = tauri::test::mock_app();
+        app.manage(state);
+        let state = app.state::<AppState>();
+
+        let resolved = resolve_database(
+            &state.pgn_path_authority,
+            &handle,
+            PathOperation::DatabaseRead,
+        )
+        .unwrap();
+        assert_eq!(resolved.path(), database.canonicalize().unwrap());
+
+        generate_search_index(
+            &handle,
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        let sidecar = database.with_file_name("games.db3.ecsi");
+        assert!(sidecar.exists());
+        let expected = state
+            .database_repository
+            .database_identity(&test_target(&database))
+            .unwrap();
+        let source = IndexSource::from_database_identity(&expected).unwrap();
+        assert_eq!(
+            source.object,
+            IndexSource::from_database(&database, expected.data_revision)
+                .unwrap()
+                .object
+        );
+
+        let (_, index) = search::load_search_index_cancellable(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            &handle,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert_eq!(index.source().object, source.object);
+        // Deletion waits for every lease on the preferred sidecar; this thread's clone would
+        // otherwise block its own delete.
+        drop(index);
+
+        delete_database_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert!(!database.exists());
+        assert!(!sidecar.exists());
+    }
+
+    #[test]
+    fn symlinked_ancestor_database_indexes_and_deletes_through_its_real_directory() {
+        assert_linked_ancestor_database_indexes_and_deletes(|target, link| {
+            symlink_dir(target, link).unwrap();
+        });
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn junction_ancestor_database_indexes_and_deletes_through_its_real_directory() {
+        assert_linked_ancestor_database_indexes_and_deletes(|target, link| {
+            crate::infra::fs::windows_test_junction(link, target);
+        });
     }
 
     #[test]

@@ -47,6 +47,20 @@ pub(crate) fn windows_test_parent(path: &Path) -> File {
     options.open(path).expect("writable parent descriptor")
 }
 
+/// A directory junction, not a symlink: `mklink /J` needs neither elevation nor Developer
+/// Mode, so the fixture runs on a stock `windows-latest` runner. A failure to create it fails
+/// the test rather than skipping the assertion the fixture exists to drive.
+#[cfg(all(test, windows))]
+pub(crate) fn windows_test_junction(link: &Path, target: &Path) {
+    let status = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .status()
+        .expect("mklink must run");
+    assert!(status.success(), "mklink /J failed with {status}");
+}
+
 /// The file kind observed by descriptor-relative directory enumeration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DirectoryEntryKind {
@@ -8641,15 +8655,7 @@ mod tests {
         // the whole listing would fail where unix returns the tree minus the link.
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir(dir.path().join("real")).expect("target directory");
-        let status = std::process::Command::new("cmd")
-            .arg("/C")
-            .arg("mklink")
-            .arg("/J")
-            .arg(dir.path().join("link"))
-            .arg(dir.path().join("real"))
-            .status()
-            .expect("mklink must run");
-        assert!(status.success(), "mklink /J failed: {status}");
+        windows_test_junction(&dir.path().join("link"), &dir.path().join("real"));
         let parent = windows_test_parent(dir.path());
         let listed = read_directory_entries_at(&parent, &CancellationToken::new(), &mut |_| true)
             .expect("listing");
@@ -8681,15 +8687,7 @@ mod tests {
         std::fs::create_dir(&outside).expect("outside");
         std::fs::create_dir(&victim).expect("victim");
         std::fs::write(outside.join("keep"), b"outside").expect("outside file");
-        let status = std::process::Command::new("cmd")
-            .arg("/C")
-            .arg("mklink")
-            .arg("/J")
-            .arg(victim.join("link"))
-            .arg(&outside)
-            .status()
-            .expect("mklink must run");
-        assert!(status.success(), "mklink /J failed: {status}");
+        windows_test_junction(&victim.join("link"), &outside);
         let parent = test_parent(&root);
         let expected = entry_identity_at(&parent, OsStr::new("victim"), true).expect("identity");
 
@@ -8869,15 +8867,7 @@ mod tests {
         let target = root.path().join("installed");
         let outside = root.path().join("outside");
         std::fs::create_dir(&outside).expect("outside");
-        let status = std::process::Command::new("cmd")
-            .arg("/C")
-            .arg("mklink")
-            .arg("/J")
-            .arg(&source)
-            .arg(&outside)
-            .status()
-            .expect("mklink must run");
-        assert!(status.success(), "mklink /J failed: {status}");
+        windows_test_junction(&source, &outside);
 
         let error = atomic_install_dir(&source, &target)
             .expect_err("a junction staging source must be refused");
