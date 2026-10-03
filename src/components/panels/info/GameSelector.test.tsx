@@ -2,6 +2,7 @@ import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { FileWorkspaceHandle, StampedGame } from "@/bindings";
+import { cancellationError } from "@/platform/tauri";
 import { catalogueI18n } from "@/tests/catalogues";
 import GameSelector, { type GameSelectorRow } from "./GameSelector";
 
@@ -10,6 +11,8 @@ const mocks = vi.hoisted(() => ({
   useVirtualPageLoader: vi.fn(),
   readGames: vi.fn(),
   parsePGN: vi.fn(),
+  notifyUnlessCancelled: vi.fn(),
+  visibleIndices: [0],
 }));
 
 vi.mock("react-i18next", () => ({ useTranslation: () => translation }));
@@ -24,10 +27,14 @@ vi.mock("@/platform/tauri", async () => {
   };
 });
 vi.mock("@/utils/chess", () => ({ parsePGN: mocks.parsePGN }));
+vi.mock("@/components/files/notifyError", () => ({
+  notifyUnlessCancelled: mocks.notifyUnlessCancelled,
+}));
 vi.mock("@tanstack/react-virtual", () => ({
   useVirtualizer: () => ({
     getTotalSize: () => 30,
-    getVirtualItems: () => [{ index: 0, size: 30, start: 0 }],
+    getVirtualItems: () =>
+      mocks.visibleIndices.map((index) => ({ index, size: 30, start: index * 30 })),
   }),
 }));
 vi.mock("@mantine/core", () => ({
@@ -91,14 +98,14 @@ let root: Root;
 beforeEach(async () => {
   const instance = await catalogueI18n("de-DE");
   translation.t = instance.t.bind(instance);
-  mocks.useVirtualPageLoader.mockReset().mockImplementation((_id, loadPage, onPage) => {
-    return async (start: number, end: number, options?: { signal?: AbortSignal }) => {
-      const entries = await loadPage(start, end, options);
-      onPage(start, entries);
-    };
-  });
+  const { useVirtualPageLoader } = await vi.importActual<
+    typeof import("@/hooks/useVirtualPageLoader")
+  >("@/hooks/useVirtualPageLoader");
+  mocks.useVirtualPageLoader.mockReset().mockImplementation(useVirtualPageLoader);
   mocks.readGames.mockReset().mockResolvedValue([firstGame]);
   mocks.parsePGN.mockReset().mockResolvedValue({ headers: { event: "Loaded game" } });
+  mocks.notifyUnlessCancelled.mockReset();
+  mocks.visibleIndices = [0];
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -136,15 +143,19 @@ function renderPageLoader(
     stamp: string;
     revision: string;
   }) => void | Promise<void>,
+  total = 1,
+  initialGames = new Map<number, GameSelectorRow>(),
 ) {
+  const observed = { games: initialGames };
   function Harness() {
-    const [games, setGames] = useState<Map<number, GameSelectorRow>>(new Map());
+    const [games, setGames] = useState(initialGames);
+    observed.games = games;
     return (
       <GameSelector
         games={games}
         setGames={setGames}
         setPage={vi.fn()}
-        total={1}
+        total={total}
         path={path}
         activePage={0}
         deleteGame={deleteGame}
@@ -152,6 +163,7 @@ function renderPageLoader(
     );
   }
   root.render(<Harness />);
+  return observed;
 }
 
 function deleteButton(): HTMLButtonElement {
@@ -168,7 +180,9 @@ test("loads the stamped page through the page callback and submits its identity"
   const deleteGame = vi.fn().mockResolvedValue(undefined);
   await act(async () => renderPageLoader(deleteGame));
 
-  expect(mocks.readGames).toHaveBeenCalledWith(path, 0, 0, undefined);
+  expect(mocks.readGames).toHaveBeenCalledWith(path, 0, 0, {
+    signal: expect.any(AbortSignal),
+  });
   expect(host.textContent).toContain("Loaded game");
   await act(async () => deleteButton().click());
   await act(async () => confirmButton().click());
@@ -178,6 +192,227 @@ test("loads the stamped page through the page callback and submits its identity"
     stamp: "stamp-first",
     revision: "revision-first",
   });
+});
+
+const secondGame: StampedGame = {
+  ...firstGame,
+  pgn: '[Event "Second"]\n\n1. d4 *',
+  stamp: "stamp-second",
+  revision: "revision-second",
+};
+
+function pendingRange(start: number, end: number): Promise<void> {
+  const request = mocks.useVirtualPageLoader.mock.results.at(-1)!.value;
+  return request(start, end);
+}
+
+test("continues a short page at the next index and merges the whole inclusive range", async () => {
+  mocks.visibleIndices = [5, 6, 7];
+  mocks.readGames.mockResolvedValueOnce([firstGame, secondGame]).mockResolvedValueOnce([firstGame]);
+  const initial = new Map([[0, { name: "Already loaded" }]]);
+  let observed!: ReturnType<typeof renderPageLoader>;
+  await act(async () => {
+    observed = renderPageLoader(vi.fn(), 8, initial);
+  });
+
+  expect(mocks.readGames).toHaveBeenCalledTimes(2);
+  expect(mocks.readGames).toHaveBeenNthCalledWith(1, path, 5, 7, expect.anything());
+  expect(mocks.readGames).toHaveBeenNthCalledWith(2, path, 7, 7, expect.anything());
+  expect([...observed.games.keys()]).toEqual([0, 5, 6, 7]);
+  expect(observed.games.get(5)?.identity).toEqual({
+    stamp: "stamp-first",
+    revision: "revision-first",
+  });
+  expect(observed.games.get(6)?.identity).toEqual({
+    stamp: "stamp-second",
+    revision: "revision-second",
+  });
+  expect(observed.games.get(7)?.identity).toEqual(observed.games.get(5)?.identity);
+});
+
+test("awaits every header parse in a page before reading the continuation", async () => {
+  const headers = deferred<{ headers: { event: string } }>();
+  mocks.visibleIndices = [0, 1, 2];
+  mocks.readGames.mockResolvedValueOnce([firstGame, secondGame]).mockResolvedValueOnce([firstGame]);
+  mocks.parsePGN.mockResolvedValueOnce({ headers: { event: "First parsed" } });
+  mocks.parsePGN.mockReturnValueOnce(headers.promise);
+  await act(async () => renderPageLoader(vi.fn(), 3));
+  const request = pendingRange(0, 2);
+
+  expect(mocks.parsePGN).toHaveBeenCalledTimes(2);
+  expect(mocks.readGames).toHaveBeenCalledTimes(1);
+  await act(async () => {
+    headers.resolve({ headers: { event: "Second parsed" } });
+    await request;
+  });
+  expect(mocks.readGames).toHaveBeenCalledTimes(2);
+  expect(host.textContent).toContain("First parsed");
+  expect(host.textContent).toContain("Second parsed");
+});
+
+test("passes the same load options and signal to every read and header parse", async () => {
+  mocks.visibleIndices = [0, 1, 2];
+  mocks.readGames.mockResolvedValueOnce([firstGame]).mockResolvedValueOnce([secondGame, firstGame]);
+  await act(async () => renderPageLoader(vi.fn(), 3));
+
+  expect(mocks.readGames).toHaveBeenCalledTimes(2);
+  expect(mocks.parsePGN).toHaveBeenCalledTimes(3);
+  const options = mocks.readGames.mock.calls[0][3];
+  expect(options.signal).toBeInstanceOf(AbortSignal);
+  expect(options.signal.aborted).toBe(false);
+  for (const call of mocks.readGames.mock.calls) expect(call[3]).toBe(options);
+  for (const call of mocks.parsePGN.mock.calls) {
+    expect(call[1]).toBeUndefined();
+    expect(call[2]).toBe(options);
+  }
+});
+
+test("stops continuation when the load aborts between pages", async () => {
+  const headers = deferred<{ headers: { event: string } }>();
+  mocks.visibleIndices = [0, 1, 2];
+  mocks.parsePGN.mockReturnValueOnce(headers.promise);
+  await act(async () => renderPageLoader(vi.fn(), 3));
+  const request = pendingRange(0, 2);
+  const signal = mocks.readGames.mock.calls[0][3].signal;
+  expect(mocks.parsePGN).toHaveBeenCalledTimes(1);
+
+  await act(async () => root.unmount());
+  expect(signal.aborted).toBe(true);
+  await act(async () => {
+    headers.resolve({ headers: { event: "Late headers" } });
+    await expect(request).resolves.toBeUndefined();
+  });
+  expect(mocks.readGames).toHaveBeenCalledTimes(1);
+  expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
+});
+
+test("stops at an empty continuation page and keeps the preceding rows", async () => {
+  mocks.visibleIndices = [];
+  mocks.readGames
+    .mockResolvedValueOnce([firstGame])
+    .mockResolvedValueOnce([])
+    .mockRejectedValue(new Error("Unexpected continuation"));
+  let observed!: ReturnType<typeof renderPageLoader>;
+  await act(async () => {
+    observed = renderPageLoader(vi.fn(), 3);
+  });
+
+  expect(mocks.readGames).toHaveBeenCalledTimes(2);
+  expect(mocks.readGames).toHaveBeenNthCalledWith(2, path, 1, 2, expect.anything());
+  expect([...observed.games.keys()]).toEqual([0]);
+});
+
+test("an empty load preserves games identity and does not trigger another load", async () => {
+  const unexpectedRetry = deferred<StampedGame[]>();
+  mocks.readGames.mockResolvedValueOnce([]).mockReturnValue(unexpectedRetry.promise);
+  const initial = new Map<number, GameSelectorRow>();
+  let observed!: ReturnType<typeof renderPageLoader>;
+  await act(async () => {
+    observed = renderPageLoader(vi.fn(), 1, initial);
+  });
+  await act(async () => {});
+
+  expect(observed.games).toBe(initial);
+  expect(mocks.readGames).toHaveBeenCalledTimes(1);
+  expect(mocks.parsePGN).not.toHaveBeenCalled();
+});
+
+test.each([
+  { label: "ordinary failure", error: new Error("Page read failed"), notifies: true },
+  { label: "cancellation", error: cancellationError(), notifies: false },
+])(
+  "a later page $label discards all rows and resolves the shared promise",
+  async ({ error, notifies }) => {
+    const expected = notifies ? [[translation.t("Common.Error"), error]] : [];
+    const laterPage = deferred<StampedGame[]>();
+    mocks.visibleIndices = [0, 1, 2];
+    mocks.readGames.mockResolvedValueOnce([firstGame]).mockReturnValueOnce(laterPage.promise);
+    const initial = new Map<number, GameSelectorRow>();
+    let observed!: ReturnType<typeof renderPageLoader>;
+    await act(async () => {
+      observed = renderPageLoader(vi.fn(), 3, initial);
+    });
+    const request = pendingRange(0, 2);
+    expect(mocks.readGames).toHaveBeenCalledTimes(2);
+    expect(observed.games).toBe(initial);
+
+    await act(async () => {
+      laterPage.reject(error);
+      await expect(request).resolves.toBeUndefined();
+    });
+    expect(observed.games).toBe(initial);
+    expect(mocks.readGames).toHaveBeenCalledTimes(2);
+    expect(mocks.notifyUnlessCancelled.mock.calls).toEqual(expected);
+  },
+);
+
+test("a header parse failure discards earlier pages and resolves without further reads", async () => {
+  const headers = deferred<{ headers: { event: string } }>();
+  const error = new Error("Headers failed");
+  mocks.visibleIndices = [0, 1, 2];
+  mocks.parsePGN.mockResolvedValueOnce({ headers: { event: "First parsed" } });
+  mocks.parsePGN.mockReturnValueOnce(headers.promise);
+  const initial = new Map<number, GameSelectorRow>();
+  let observed!: ReturnType<typeof renderPageLoader>;
+  await act(async () => {
+    observed = renderPageLoader(vi.fn(), 3, initial);
+  });
+  const request = pendingRange(0, 2);
+  await act(async () => {
+    headers.reject(error);
+    await expect(request).resolves.toBeUndefined();
+  });
+
+  expect(observed.games).toBe(initial);
+  expect(mocks.readGames).toHaveBeenCalledTimes(2);
+  expect(mocks.notifyUnlessCancelled).toHaveBeenCalledExactlyOnceWith(
+    translation.t("Common.Error"),
+    error,
+  );
+});
+
+test("both one-row call sites share a failed load with exactly one notification", async () => {
+  const read = deferred<StampedGame[]>();
+  const unexpectedRetry = deferred<StampedGame[]>();
+  const error = new Error("Single row failed");
+  mocks.readGames.mockReturnValueOnce(read.promise).mockReturnValue(unexpectedRetry.promise);
+  await act(async () => renderPageLoader(vi.fn()));
+  const request = pendingRange(0, 0);
+  expect(pendingRange(0, 0)).toBe(request);
+  expect(mocks.readGames).toHaveBeenCalledTimes(1);
+
+  await act(async () => {
+    read.reject(error);
+    await expect(request).resolves.toBeUndefined();
+  });
+  expect(mocks.readGames).toHaveBeenCalledTimes(1);
+  expect(mocks.notifyUnlessCancelled).toHaveBeenCalledExactlyOnceWith(
+    translation.t("Common.Error"),
+    error,
+  );
+});
+
+test("an ordinary read failure after abort is silent and resolves without merging", async () => {
+  const read = deferred<StampedGame[]>();
+  mocks.readGames.mockReturnValue(read.promise);
+  const initial = new Map<number, GameSelectorRow>();
+  let observed!: ReturnType<typeof renderPageLoader>;
+  await act(async () => {
+    observed = renderPageLoader(vi.fn(), 1, initial);
+  });
+  const request = pendingRange(0, 0);
+  const signal = mocks.readGames.mock.calls[0][3].signal;
+  await act(async () => root.unmount());
+  expect(signal.aborted).toBe(true);
+
+  await act(async () => {
+    read.reject(new Error("Native read failed"));
+    await expect(request).resolves.toBeUndefined();
+  });
+  expect(observed.games).toBe(initial);
+  expect(mocks.readGames).toHaveBeenCalledTimes(1);
+  expect(mocks.parsePGN).not.toHaveBeenCalled();
+  expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
 });
 
 test("keeps the confirmation snapshot when the displayed row changes", async () => {

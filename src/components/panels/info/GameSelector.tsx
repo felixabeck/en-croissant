@@ -10,7 +10,9 @@ import { useTranslation } from "react-i18next";
 import type { FileWorkspaceHandle, StampedGame } from "@/bindings";
 import ConfirmModal from "@/components/common/ConfirmModal";
 import { IconAction } from "@/components/common/IconAction";
+import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { useVirtualPageLoader } from "@/hooks/useVirtualPageLoader";
+import { errorUnlessCancelled } from "@/platform/errors";
 import { fontSizeAtom } from "@/state/atoms";
 import { parsePGN } from "@/utils/chess";
 import { formatNumber } from "@/utils/format";
@@ -43,26 +45,45 @@ export default function GameSelector({
   activePage: number;
   deleteGame?: DeleteGame;
 }) {
+  const { t } = useTranslation();
   const loadPage = useCallback(
     async (startIndex: number, stopIndex: number, options?: { signal?: AbortSignal }) => {
-      const data = await tauri.readGames(path, startIndex, stopIndex, options);
-      return await Promise.all(
-        data.map(async (game, index) => {
-          const { headers } = await parsePGN(game.pgn, undefined, options);
-          return [
-            startIndex + index,
-            {
-              name: getGameName(headers),
-              identity: game.present ? { stamp: game.stamp, revision: game.revision } : undefined,
-            },
-          ] as const;
-        }),
-      );
+      try {
+        const entries: (readonly [number, GameSelectorRow])[] = [];
+        let next = startIndex;
+        while (next <= stopIndex && !options?.signal?.aborted) {
+          const data = await tauri.readGames(path, next, stopIndex, options);
+          if (data.length === 0) break;
+          const page = await Promise.all(
+            data.map(async (game, index) => {
+              const { headers } = await parsePGN(game.pgn, undefined, options);
+              return [
+                next + index,
+                {
+                  name: getGameName(headers),
+                  identity: game.present
+                    ? { stamp: game.stamp, revision: game.revision }
+                    : undefined,
+                },
+              ] as const;
+            }),
+          );
+          entries.push(...page);
+          next += page.length;
+        }
+        return entries;
+      } catch (error) {
+        if (!options?.signal?.aborted && errorUnlessCancelled(error) !== null) {
+          notifyUnlessCancelled(t("Common.Error"), error);
+        }
+        return [];
+      }
     },
-    [path],
+    [path, t],
   );
   const loadMoreRows = useVirtualPageLoader(path.id.id, loadPage, (startIndex, entries) => {
     setGames((previous) => {
+      if (entries.length === 0) return previous;
       const next = new Map(previous);
       for (const [index, name] of entries) next.set(index, name);
       return next;
