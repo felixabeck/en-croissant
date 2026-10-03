@@ -5729,18 +5729,16 @@ impl PathAuthority {
         }
     }
 
+    fn root_path(&mut self, id: &PathRef, operation: PathOperation) -> Result<PathBuf, Error> {
+        self.workspace_root(&FileWorkspaceHandle::new(id.clone()), operation)
+    }
+
     pub(crate) fn engine_root_path(&mut self, root: &EngineRootHandle) -> Result<PathBuf, Error> {
-        self.workspace_root(
-            &FileWorkspaceHandle::new(root.path_ref().clone()),
-            PathOperation::EngineInstall,
-        )
+        self.root_path(root.path_ref(), PathOperation::EngineInstall)
     }
 
     pub(crate) fn set_active_engine_root(&mut self, root: &EngineRootHandle) -> Result<(), Error> {
-        let _ = self.workspace_root(
-            &FileWorkspaceHandle::new(root.path_ref().clone()),
-            PathOperation::EngineInstall,
-        )?;
+        let _ = self.engine_root_path(root)?;
         let durability = self.commit_state(
             self.persistent.clone(),
             self.active_database_root.clone(),
@@ -6191,10 +6189,7 @@ impl PathAuthority {
     }
 
     fn puzzle_root_path(&mut self, root: &PuzzleRootHandle) -> Result<PathBuf, Error> {
-        self.workspace_root(
-            &FileWorkspaceHandle::new(root.path_ref().clone()),
-            PathOperation::PuzzleRead,
-        )
+        self.root_path(root.path_ref(), PathOperation::PuzzleRead)
     }
 
     fn register_puzzle_child(
@@ -6517,10 +6512,7 @@ impl PathAuthority {
     }
 
     fn database_root_path(&mut self, root: &DatabaseRootHandle) -> Result<PathBuf, Error> {
-        self.workspace_root(
-            &FileWorkspaceHandle::new(root.path_ref().clone()),
-            PathOperation::DatabaseRead,
-        )
+        self.root_path(root.path_ref(), PathOperation::DatabaseRead)
     }
 
     pub(crate) fn database_download_destination(
