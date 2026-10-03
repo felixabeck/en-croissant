@@ -2058,15 +2058,7 @@ mod tests {
     fn enumerated_workspace_entry(root: &Path, leaf: &str) -> DirectoryEntry {
         let parent =
             crate::infra::fs::open_parent_no_follow(&root.join(leaf)).expect("enumeration parent");
-        crate::infra::fs::read_directory_entries_at(
-            &parent,
-            &CancellationToken::new(),
-            &mut |name| name == OsStr::new(leaf),
-        )
-        .expect("enumeration")
-        .into_iter()
-        .find(|entry| entry.name == OsStr::new(leaf))
-        .expect("created entry")
+        crate::infra::fs::enumerated_directory_entry_for_test(&parent, OsStr::new(leaf))
     }
 
     fn set_directory_modified(path: &Path, modified: std::time::SystemTime) {
@@ -3372,7 +3364,7 @@ mod tests {
     }
 
     #[test]
-    fn timestamps_and_durability_outcomes_remain_renderer_safe() {
+    fn durability_outcomes_remain_renderer_safe() {
         assert_eq!(
             durability_uncertainty(
                 crate::infra::fs::AtomicFileOutcome::DurableCommit,

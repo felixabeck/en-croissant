@@ -109,6 +109,15 @@ pub(crate) struct DirectoryEntry {
     pub(crate) modified_seconds: i64,
 }
 
+#[cfg(test)]
+pub(crate) fn enumerated_directory_entry_for_test(parent: &File, leaf: &OsStr) -> DirectoryEntry {
+    read_directory_entries_at(parent, &CancellationToken::new(), &mut |name| name == leaf)
+        .expect("enumeration")
+        .into_iter()
+        .find(|entry| entry.name == leaf)
+        .expect("installed entry")
+}
+
 #[cfg(all(test, unix))]
 type ReadDirectoryPreStatHook = Box<dyn FnMut(&OsStr)>;
 
@@ -5391,11 +5400,7 @@ mod tests {
     }
 
     fn enumerated_entry(parent: &File, leaf: &OsStr) -> DirectoryEntry {
-        read_directory_entries_at(parent, &CancellationToken::new(), &mut |name| name == leaf)
-            .expect("enumeration")
-            .into_iter()
-            .find(|entry| entry.name == leaf)
-            .expect("installed entry")
+        enumerated_directory_entry_for_test(parent, leaf)
     }
 
     fn opened_modified_seconds(file: &File) -> i64 {
