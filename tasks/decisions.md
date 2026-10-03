@@ -5174,3 +5174,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The cached index knows every game's size before reading, so the bound is enforced before allocation with no new IPC surface. Reversal path: a consumer that needs to distinguish a short page from end-of-range without a follow-up call.
 * **Decided by:** Claude Code, drain session 648a7fac-1f9b-4bc0-8e9a-df298dc5f16d, full auto, adopted reviewed plan of f-20260914-05 (planned ahead, 8 review rounds) · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"5e79090b510de6e9610f5cece89ae77ab1bf50cd7388683949fa2e3185fe54df","input_sha256":"e2e2fadcf3b0a71a9ca5a3d9b9078dc292ffe16ba961fe9cf3847a0406b19632","kind":"mutation-receipt","operation":"88754a87a9dbc3c810761af98b24413452b2ef0edd2d5198555f268bd4b499f9","options":{"section":null},"request_id_sha256":null,"results":["d-20261004-01"],"target":"decisions-ledger","v":1} -->
+
+### d-20261004-02 — What is the byte budget of one PGN page?
+
+* **Question:** Which value does `MAX_PAGE_BYTES` take?
+* **Governs:** f-20260914-05
+* **Chosen:** `MAX_PAGE_BYTES = MAX_PGN_BYTES` (10 MiB); with the first-game rule no page exceeds 10 MiB, the ceiling one `read_game` call already has.
+* **Rejected:** A smaller budget such as 1 MiB (more round trips for ordinary pages while one `read_game` may already carry 10 MiB).
+* **Reason:** Keeps the existing largest single IPC response as the only ceiling. Reversal path: a measured memory or latency problem at a 10 MiB page.
+* **Decided by:** Claude Code, drain session 648a7fac-1f9b-4bc0-8e9a-df298dc5f16d, full auto, adopted reviewed plan of f-20260914-05 (planned ahead, 8 review rounds) · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"21a0d92d193cec57a0065d2541c49dd4bd575b06bfd75d7017c0f930fca56041","input_sha256":"608b7dc18a15c9f9e8f4e57d9f21f3898181bc0aa49cd4da1d34c85011da5d36","kind":"mutation-receipt","operation":"d6a32164f38ecf0f4e5930c2db88663f1e6a80b5c127f47cdc1d5d3975daed7a","options":{"section":null},"request_id_sha256":null,"results":["d-20261004-02"],"target":"decisions-ledger","v":1} -->
