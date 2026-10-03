@@ -40,6 +40,55 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+/// Re-check only the chosen root after a failed listing; retain the original failure text.
+/// Callers run this on a blocking worker, after releasing their listing lock.
+pub(crate) fn probe_listing_root_failure(
+    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    root: &PathRef,
+    operation: PathOperation,
+    original: Error,
+    cancellation: &CancellationToken,
+) -> Error {
+    if cancellation.is_cancelled() {
+        return Error::Cancellation;
+    }
+    if matches!(original.unlabelled(), Error::Cancellation) || original.root_failure().is_some() {
+        return original;
+    }
+    let probe = (|| {
+        let mut lock = match crate::infra::cancellable_lock::lock_std_cancellable(
+            authority,
+            cancellation,
+            "path authority lock was poisoned",
+        ) {
+            Ok(lock) => lock,
+            Err(Error::Cancellation) => return Err(Error::Cancellation),
+            Err(_) => return Ok(()),
+        };
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
+        let Some(authority) = lock.as_mut() else {
+            return Ok(());
+        };
+        let directory = authority.capability_directory(root, operation)?;
+        drop(lock);
+        directory.entries(cancellation, &mut |_| false)?;
+        Ok(())
+    })();
+    if cancellation.is_cancelled() {
+        return Error::Cancellation;
+    }
+    match probe {
+        Err(Error::Cancellation) => Error::Cancellation,
+        Err(error) => match error.root_failure_reason() {
+            Some(reason) => original.with_root_failure(reason),
+            None => original,
+        },
+        Ok(()) => original,
+    }
+}
+
 #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
 compile_error!("ChessFable supports Linux, macOS and Windows");
 
@@ -5212,9 +5261,10 @@ impl PathAuthority {
             || acquired.identity != grant.entry.stored.identity
             || acquired.parent_identity != grant.entry.stored.parent_identity
         {
-            return Err(Error::Conflict(
-                "dialog target changed before promotion".into(),
-            ));
+            return Err(
+                Error::Conflict("dialog target changed before promotion".into())
+                    .with_root_failure(crate::error::RootFailure::Changed),
+            );
         }
         let expected = acquired.identity.clone();
         if let Some(purpose) = purpose {
@@ -5226,7 +5276,8 @@ impl PathAuthority {
                 if existing.stored.identity != expected {
                     return Err(Error::Conflict(
                         "persistent target changed; acquire a new capability".into(),
-                    ));
+                    )
+                    .with_root_failure(crate::error::RootFailure::Changed));
                 }
                 let id = existing.stored.id.clone();
                 let mut candidate = self.persistent.clone();
@@ -5690,7 +5741,14 @@ impl PathAuthority {
             &operations,
             expected_identity,
             None,
-        )?;
+        )
+        .map_err(|error| {
+            if purpose == Some(EntryPurpose::DatabaseRoot) && expected_identity.is_some() {
+                error.label_root_failure()
+            } else {
+                error
+            }
+        })?;
         if let Some(entry) = self
             .persistent
             .values()
@@ -5760,9 +5818,13 @@ impl PathAuthority {
                         }
                     };
                 }
-                return Err(Error::Conflict(format!(
-                    "{changed_noun} root changed; select it again"
-                )));
+                let error =
+                    Error::Conflict(format!("{changed_noun} root changed; select it again"));
+                return Err(if purpose == Some(EntryPurpose::DatabaseRoot) {
+                    error.with_root_failure(crate::error::RootFailure::Changed)
+                } else {
+                    error
+                });
             }
             let id = entry.stored.id.clone();
             if let Some(purpose) = purpose {
@@ -6320,7 +6382,28 @@ impl PathAuthority {
         &mut self,
         root: &DatabaseRootHandle,
     ) -> Result<(), Error> {
-        let _ = self.database_root_path(root)?;
+        self.set_active_database_root_core(root, false)
+    }
+
+    pub(crate) fn set_active_default_database_root(
+        &mut self,
+        root: &DatabaseRootHandle,
+    ) -> Result<(), Error> {
+        self.set_active_database_root_core(root, true)
+    }
+
+    fn set_active_database_root_core(
+        &mut self,
+        root: &DatabaseRootHandle,
+        label_root_failure: bool,
+    ) -> Result<(), Error> {
+        let _ = self.database_root_path(root).map_err(|error| {
+            if label_root_failure {
+                error.label_root_failure()
+            } else {
+                error
+            }
+        })?;
         let active = Some(root.path_ref().clone());
         let durability = self.commit_state(
             self.persistent.clone(),
@@ -8824,6 +8907,465 @@ mod portable_tests {
         Arc,
     };
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    fn root_failure_database_fixture() -> (
+        tempfile::TempDir,
+        std::sync::Mutex<Option<PathAuthority>>,
+        DatabaseRootHandle,
+        PathBuf,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("databases");
+        fs::create_dir(&root).unwrap();
+        let mut authority = PathAuthority::open_with_clock(
+            directory.path().join("registry.json"),
+            vec![],
+            Arc::new(SystemClock),
+            2,
+        )
+        .unwrap();
+        let handle = authority
+            .get_or_create_database_root(&root, "Databases", None)
+            .unwrap();
+        (
+            directory,
+            std::sync::Mutex::new(Some(authority)),
+            handle,
+            root,
+        )
+    }
+
+    #[test]
+    fn root_failure_database_child_replaced_during_listing_is_unlabelled() {
+        let (directory, registry, handle, root) = root_failure_database_fixture();
+        let child = root.join("child.db3");
+        fs::write(&child, b"old").unwrap();
+        let saved = directory.path().join("old.db3");
+        DATABASE_CHILD_POST_RESOLVE_HOOK.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                fs::rename(&child, saved).unwrap();
+                fs::write(&child, b"new").unwrap();
+            }));
+        });
+        let error =
+            crate::list_workspace_databases_blocking(&registry, handle, &CancellationToken::new())
+                .unwrap_err();
+        assert_eq!(error.root_failure(), None);
+        assert_eq!(error.category(), crate::error::ErrorCategory::Conflict);
+        assert_eq!(
+            error.to_string(),
+            format!("Conflict: {VERIFIED_REGISTRATION_CONFLICT}")
+        );
+    }
+
+    #[test]
+    fn root_failure_database_root_swap_or_removal_first_seen_in_child_keeps_original_message() {
+        for replace in [false, true] {
+            let (directory, registry, handle, root) = root_failure_database_fixture();
+            fs::write(root.join("child.db3"), b"old").unwrap();
+            let saved = directory.path().join("old-root");
+            DATABASE_CHILD_POST_RESOLVE_HOOK.with(|slot| {
+                *slot.borrow_mut() = Some(Box::new(move || {
+                    fs::rename(&root, saved).unwrap();
+                    if replace {
+                        fs::create_dir(&root).unwrap();
+                    }
+                }));
+            });
+            let error = crate::list_workspace_databases_blocking(
+                &registry,
+                handle,
+                &CancellationToken::new(),
+            )
+            .unwrap_err();
+            assert_eq!(
+                error.root_failure(),
+                Some(if replace {
+                    crate::error::RootFailure::Changed
+                } else {
+                    crate::error::RootFailure::Missing
+                }),
+                "{error:?}"
+            );
+            assert_eq!(
+                error.category(),
+                if replace {
+                    crate::error::ErrorCategory::Conflict
+                } else {
+                    crate::error::ErrorCategory::MissingResource
+                }
+            );
+            assert_eq!(
+                error.to_string(),
+                if replace {
+                    "Conflict: workspace is unavailable because its root changed"
+                } else {
+                    "I/O failure"
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn root_failure_database_root_swap_during_resolution_keeps_original_message() {
+        let (directory, registry, handle, root) = root_failure_database_fixture();
+        let saved = directory.path().join("old-root");
+        RESOLVE_PRE_ROOT_OPEN_HOOK.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                fs::rename(&root, saved).unwrap();
+                fs::create_dir(&root).unwrap();
+            }));
+        });
+        let error =
+            crate::list_workspace_databases_blocking(&registry, handle, &CancellationToken::new())
+                .unwrap_err();
+        assert_eq!(
+            error.root_failure(),
+            Some(crate::error::RootFailure::Changed)
+        );
+        assert_eq!(error.category(), crate::error::ErrorCategory::Conflict);
+        assert_eq!(error.to_string(), "Conflict: root changed concurrently");
+    }
+
+    #[test]
+    fn root_failure_database_listing_authority_poison_and_initialization_stay_unlabelled() {
+        for poison in [false, true] {
+            let (_directory, registry, handle, _root) = root_failure_database_fixture();
+            let registry = Arc::new(registry);
+            if poison {
+                let registry = Arc::clone(&registry);
+                let _ = std::thread::spawn(move || {
+                    let _lock = registry.lock().unwrap();
+                    panic!("test poison");
+                })
+                .join();
+            } else {
+                *registry.lock().unwrap() = None;
+            }
+            let error = crate::list_workspace_databases_blocking(
+                &registry,
+                handle.clone(),
+                &CancellationToken::new(),
+            )
+            .unwrap_err();
+            assert_eq!(error.root_failure(), None);
+            assert_eq!(
+                error.to_string(),
+                if poison {
+                    "Conflict: path authority lock was poisoned"
+                } else {
+                    "Conflict: path authority is not initialized"
+                }
+            );
+            let error = probe_listing_root_failure(
+                &registry,
+                handle.path_ref(),
+                PathOperation::DatabaseRead,
+                Error::InvalidInput("child failure".into()),
+                &CancellationToken::new(),
+            );
+            assert_eq!(error.root_failure(), None);
+            assert_eq!(error.to_string(), "Invalid input: child failure");
+        }
+    }
+
+    #[test]
+    fn root_failure_probe_cancellation_before_and_during_resolution_is_unlabelled() {
+        for during in [false, true] {
+            let (_directory, registry, handle, _root) = root_failure_database_fixture();
+            let token = CancellationToken::new();
+            if during {
+                let token = token.clone();
+                RESOLVE_PRE_ROOT_OPEN_HOOK
+                    .with(|slot| *slot.borrow_mut() = Some(Box::new(move || token.cancel())));
+            } else {
+                token.cancel();
+            }
+            let error = probe_listing_root_failure(
+                &registry,
+                handle.path_ref(),
+                PathOperation::DatabaseRead,
+                Error::Conflict("original".into()),
+                &token,
+            );
+            assert!(matches!(error, Error::Cancellation));
+            assert_eq!(error.root_failure(), None);
+        }
+    }
+
+    #[test]
+    fn root_failure_probe_skips_cancelled_and_already_labelled_errors() {
+        let (_directory, registry, handle, root) = root_failure_database_fixture();
+        fs::remove_dir(&root).unwrap();
+        for cancelled in [false, true] {
+            let original = if cancelled {
+                Error::Cancellation
+            } else {
+                crate::infra::fs::check_directory_listing_bound(1, 1).unwrap_err()
+            };
+            let error = probe_listing_root_failure(
+                &registry,
+                handle.path_ref(),
+                PathOperation::DatabaseRead,
+                original,
+                &CancellationToken::new(),
+            );
+            if cancelled {
+                assert!(matches!(error, Error::Cancellation));
+                assert_eq!(error.root_failure(), None);
+            } else {
+                assert_eq!(
+                    error.root_failure(),
+                    Some(crate::error::RootFailure::TooLarge)
+                );
+                assert_eq!(
+                    error.to_string(),
+                    "Resource limit: directory listing exceeded 1 entries"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn root_failure_probe_cancellation_while_waiting_for_authority_is_unlabelled() {
+        let (_directory, registry, handle, _root) = root_failure_database_fixture();
+        let registry = Arc::new(registry);
+        let observer = crate::infra::cancellable_lock::observe_std_lock_wait(&registry);
+        let held = registry.lock().unwrap();
+        let token = CancellationToken::new();
+        let worker_registry = Arc::clone(&registry);
+        let worker_token = token.clone();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let error = probe_listing_root_failure(
+                &worker_registry,
+                handle.path_ref(),
+                PathOperation::DatabaseRead,
+                Error::Conflict("original".into()),
+                &worker_token,
+            );
+            done_tx.send(error).unwrap();
+        });
+        observer.recv_timeout(Duration::from_secs(5)).unwrap();
+        token.cancel();
+        let error = done_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(matches!(error, Error::Cancellation));
+        assert_eq!(error.root_failure(), None);
+        drop(held);
+        worker.join().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn root_failure_probe_cancellation_during_enumeration_is_unlabelled() {
+        let (_directory, registry, handle, _root) = root_failure_database_fixture();
+        let token = CancellationToken::new();
+        let cancel = token.clone();
+        set_capability_directory_post_entries_hook(Some(Box::new(move || cancel.cancel())));
+        let error = probe_listing_root_failure(
+            &registry,
+            handle.path_ref(),
+            PathOperation::DatabaseRead,
+            Error::Conflict("original".into()),
+            &token,
+        );
+        assert!(matches!(error, Error::Cancellation));
+        assert_eq!(error.root_failure(), None);
+    }
+
+    #[test]
+    fn root_failure_database_listing_bound_is_too_large_and_keeps_message() {
+        let (_directory, registry, handle, root) = root_failure_database_fixture();
+        for index in 0..=crate::infra::fs::MAX_DIRECTORY_LISTING_ENTRIES {
+            fs::write(root.join(index.to_string()), b"").unwrap();
+        }
+        let error =
+            crate::list_workspace_databases_blocking(&registry, handle, &CancellationToken::new())
+                .unwrap_err();
+        assert_eq!(
+            error.root_failure(),
+            Some(crate::error::RootFailure::TooLarge)
+        );
+        assert_eq!(error.category(), crate::error::ErrorCategory::ResourceLimit);
+        assert_eq!(
+            error.to_string(),
+            "Resource limit: directory listing exceeded 4096 entries"
+        );
+    }
+
+    #[test]
+    fn root_failure_database_picker_same_path_refusal_is_changed() {
+        let (directory, registry, _handle, root) = root_failure_database_fixture();
+        fs::rename(&root, directory.path().join("old-root")).unwrap();
+        fs::create_dir(&root).unwrap();
+        let error = registry
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .get_or_create_database_root(&root, "Databases", None)
+            .unwrap_err();
+        assert_eq!(
+            error.root_failure(),
+            Some(crate::error::RootFailure::Changed)
+        );
+        assert_eq!(error.category(), crate::error::ErrorCategory::Conflict);
+        assert_eq!(
+            error.to_string(),
+            "Conflict: database root changed; select it again"
+        );
+    }
+
+    #[test]
+    fn root_failure_default_registration_and_activation_label_only_root_validation() {
+        for activate in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let app_data = AppDataDir::for_test(directory.path());
+            let authorized =
+                ensure_app_owned_default_dir(&app_data, AppOwnedDefaultRoot::Databases).unwrap();
+            let mut registry = PathAuthority::open_with_clock(
+                directory.path().join("registry.json"),
+                vec![],
+                Arc::new(SystemClock),
+                2,
+            )
+            .unwrap();
+            let root = if activate {
+                Some(
+                    registry
+                        .get_or_create_database_root(
+                            authorized.path(),
+                            "Databases",
+                            Some(authorized.identity()),
+                        )
+                        .unwrap(),
+                )
+            } else {
+                None
+            };
+            fs::rename(authorized.path(), directory.path().join("old-root")).unwrap();
+            fs::create_dir(authorized.path()).unwrap();
+            let error = match root {
+                Some(root) => registry
+                    .set_active_default_database_root(&root)
+                    .unwrap_err(),
+                None => registry
+                    .get_or_create_database_root(
+                        authorized.path(),
+                        "Databases",
+                        Some(authorized.identity()),
+                    )
+                    .unwrap_err(),
+            };
+            assert_eq!(
+                error.root_failure(),
+                Some(crate::error::RootFailure::Changed)
+            );
+            assert_eq!(error.category(), crate::error::ErrorCategory::Conflict);
+            assert_eq!(
+                error.to_string(),
+                if activate {
+                    "Conflict: workspace is unavailable because its root changed".to_owned()
+                } else {
+                    format!("Conflict: {VERIFIED_REGISTRATION_CONFLICT}")
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn root_failure_default_registry_persistence_and_capacity_are_unlabelled() {
+        use crate::infra::fs::{
+            set_test_atomic_file_injector, AtomicFileFaultPoint, AtomicWriterInjector,
+        };
+        struct PersistenceFailure;
+        impl AtomicWriterInjector for PersistenceFailure {
+            fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+                if point == AtomicFileFaultPoint::Rename {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "registry persistence test failure",
+                    ))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+        for activate in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let app_data = AppDataDir::for_test(directory.path());
+            let authorized =
+                ensure_app_owned_default_dir(&app_data, AppOwnedDefaultRoot::Databases).unwrap();
+            let mut registry = PathAuthority::open_with_clock(
+                directory.path().join("registry.json"),
+                vec![],
+                Arc::new(SystemClock),
+                2,
+            )
+            .unwrap();
+            let root = if activate {
+                Some(
+                    registry
+                        .get_or_create_database_root(
+                            authorized.path(),
+                            "Databases",
+                            Some(authorized.identity()),
+                        )
+                        .unwrap(),
+                )
+            } else {
+                None
+            };
+            set_test_atomic_file_injector(Some(Arc::new(PersistenceFailure)));
+            let result = match root {
+                Some(root) => registry.set_active_default_database_root(&root),
+                None => registry
+                    .get_or_create_database_root(
+                        authorized.path(),
+                        "Databases",
+                        Some(authorized.identity()),
+                    )
+                    .map(|_| ()),
+            };
+            set_test_atomic_file_injector(None);
+            let error = result.unwrap_err();
+            assert_eq!(error.root_failure(), None);
+            assert_eq!(error.category(), crate::error::ErrorCategory::Permission);
+            assert_eq!(error.to_string(), "I/O failure");
+        }
+        let (_directory, mut registry, workspace, _root) =
+            directory_listing_bound_fixture().unwrap();
+        directory_listing_bound_fill(&mut registry, workspace.path_ref(), MAX_AUTHORITY_IDS)
+            .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let app_data = AppDataDir::for_test(directory.path());
+        let error = crate::get_default_database_workspace(&mut registry, &app_data).unwrap_err();
+        assert_eq!(error.root_failure(), None);
+        assert_eq!(error.category(), crate::error::ErrorCategory::ResourceLimit);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn root_failure_root_read_without_search_permission_is_permission() {
+        use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let (_directory, registry, handle, root) = root_failure_database_fixture();
+        fs::write(root.join("child.db3"), b"").unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o400)).unwrap();
+        let result =
+            crate::list_workspace_databases_blocking(&registry, handle, &CancellationToken::new());
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let error = result.unwrap_err();
+        assert_eq!(
+            error.root_failure(),
+            Some(crate::error::RootFailure::Permission),
+            "{error:?}"
+        );
+        assert_eq!(error.category(), crate::error::ErrorCategory::Permission);
+        assert_eq!(error.to_string(), "I/O failure");
+    }
 
     fn directory_listing_bound_fixture() -> Result<
         (
@@ -11802,7 +12344,7 @@ mod tests {
                 "Workspace",
                 vec![PathOperation::ReadPgn, PathOperation::WritePgn],
             ),
-            Err(Error::Conflict(message)) if message == "dialog target changed before promotion"
+            Err(ref error) if matches!(error.unlabelled(), Error::Conflict(message) if message == "dialog target changed before promotion")
         ));
         assert!(authority.persistent.is_empty());
     }
@@ -12878,7 +13420,7 @@ mod tests {
                 "g.pgn",
                 vec![PathOperation::ReadPgn, PathOperation::WritePgn],
             ),
-            Err(Error::Conflict(message)) if message == "dialog target changed before promotion"
+            Err(ref error) if matches!(error.unlabelled(), Error::Conflict(message) if message == "dialog target changed before promotion")
         ));
         assert!(authority.persistent.is_empty());
     }
@@ -12916,7 +13458,7 @@ mod tests {
                 "g.pgn",
                 vec![PathOperation::ReadPgn, PathOperation::WritePgn],
             ),
-            Err(Error::Conflict(message)) if message == "dialog target changed before promotion"
+            Err(ref error) if matches!(error.unlabelled(), Error::Conflict(message) if message == "dialog target changed before promotion")
         ));
         assert!(!authority.dialogs.contains_key(&grant.id));
     }
@@ -15804,7 +16346,7 @@ mod tests {
             .promote_dialog(&grant, PathClass::PersistentFile, "study", operations)
             .expect_err("promotion must reject a parent changed since the picker observed it");
         assert!(
-            matches!(error, Error::Conflict(message) if message == "dialog target changed before promotion")
+            matches!(error.unlabelled(), Error::Conflict(message) if message == "dialog target changed before promotion")
         );
         assert!(authority.persistent.is_empty());
         assert_eq!(fs::read_dir(&parent).unwrap().count(), 1);
@@ -17458,7 +18000,7 @@ mod tests {
             .get_or_create_database_root(databases.path(), "Databases", Some(engines.identity()))
             .expect_err("a live identity from another path must be refused");
         assert!(matches!(
-            error,
+            error.unlabelled(),
             Error::Conflict(message)
                 if message == "verified identity does not match registration target"
         ));
@@ -17481,7 +18023,10 @@ mod tests {
             directory.identity(),
         )
         .expect_err("a directory swapped after authorization must be refused");
-        assert!(matches!(error, Error::Conflict(_)), "{error:?}");
+        assert!(
+            matches!(error.unlabelled(), Error::Conflict(_)),
+            "{error:?}"
+        );
         assert!(!error.to_string().contains('/'), "{error:?}");
         assert!(path_authority.persistent.is_empty());
     }
@@ -17771,7 +18316,7 @@ mod tests {
             .get_or_create_database_root(&root, "Databases", None)
             .unwrap_err();
         assert!(
-            matches!(&error, Error::Conflict(message)
+            matches!(error.unlabelled(), Error::Conflict(message)
                 if message == "database root changed; select it again"),
             "unexpected error: {error:?}"
         );
@@ -22270,7 +22815,7 @@ mod workspace_directory_enumeration_tests {
                     &handle,
                     &CancellationToken::new()
                 ),
-                Err(Error::ResourceLimit(_))
+                Err(ref error) if matches!(error.unlabelled(), Error::ResourceLimit(_))
             ));
             assert!(authority.persistent == before);
             fs::remove_file(root.join("0.txt"))?;
@@ -22291,7 +22836,7 @@ mod workspace_directory_enumeration_tests {
                     &handle,
                     &CancellationToken::new()
                 ),
-                Err(Error::ResourceLimit(_))
+                Err(ref error) if matches!(error.unlabelled(), Error::ResourceLimit(_))
             ));
             assert!(authority.persistent == before);
         }

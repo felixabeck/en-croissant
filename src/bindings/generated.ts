@@ -1198,7 +1198,7 @@ export type EngineResourceHandleKind = "file" | "directory"
 export type EngineRootHandle = { id: PathRef; kind: EngineRootHandleKind }
 export type EngineRootHandleKind = "engineRoot"
 export type ErrorCategory = "io" | "parsing" | "platform" | "network" | "chess-data" | "database" | "invalid-input" | "stale-game" | "missing-resource" | "conflict" | "resource-limit" | "authentication" | "credential" | "cancellation" | "durability" | "partial-removal" | "operation-and-cleanup" | "engine-timeout" | "engine-position-rejected" | "permission" | "puzzle-themes-unavailable"
-export type ErrorPayload = { tag: ErrorPayloadTag; category: ErrorCategory; message: string }
+export type ErrorPayload = { tag: ErrorPayloadTag; category: ErrorCategory; message: string; rootFailure?: RootFailure | null }
 export type ErrorPayloadTag = "backend-error"
 export type Event = { id: number; name: string | null }
 export type FileWorkspaceDescriptor = { handle: FileWorkspaceHandle; displayName: string; availability: PathAvailability }
@@ -1277,6 +1277,7 @@ export type PuzzleRootHandle = { id: PathRef; kind: PuzzleRootHandleKind }
 export type PuzzleRootHandleKind = "puzzleRoot"
 export type QueryOptions<SortT> = { skipCount: boolean; page?: number | null; pageSize?: number | null; sort: SortT; direction: SortDirection }
 export type QueryResponse<T> = { data: T; count: number | null }
+export type RootFailure = "changed" | "missing" | "unusable" | "permission" | "too-large"
 export type Score = { value: ScoreValue; 
 /**
  * The probability of each result (win, draw, loss).

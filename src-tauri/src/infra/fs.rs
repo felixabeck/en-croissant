@@ -31,9 +31,10 @@ pub(crate) const MAX_DIRECTORY_LISTING_ENTRIES: usize = 4_096;
 /// Check before materialising the next name or staged workspace node.
 pub(crate) fn check_directory_listing_bound(count: usize, limit: usize) -> Result<(), Error> {
     if count >= limit {
-        return Err(Error::ResourceLimit(format!(
-            "directory listing exceeded {limit} entries"
-        )));
+        return Err(
+            Error::ResourceLimit(format!("directory listing exceeded {limit} entries"))
+                .with_root_failure(crate::error::RootFailure::TooLarge),
+        );
     }
     Ok(())
 }
@@ -5692,7 +5693,7 @@ mod tests {
                     Some(MAX_DIRECTORY_LISTING_ENTRIES),
                     &mut |_| keep_all
                 ),
-                Err(Error::ResourceLimit(_))
+                Err(ref error) if matches!(error.unlabelled(), Error::ResourceLimit(_))
             ));
         }
         let unbounded = read_directory_entries_at(&dir, &token, None, &mut |_| true)?;

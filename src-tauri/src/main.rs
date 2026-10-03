@@ -1325,16 +1325,25 @@ fn get_database_workspace_blocking(
     if let Some(root) = authority.active_database_root()? {
         return Ok(root);
     }
+    let app_data = crate::infra::path_authority::AppDataDir::for_app(&app)?;
+    get_default_database_workspace(authority, &app_data)
+}
+
+fn get_default_database_workspace(
+    authority: &mut crate::infra::path_authority::PathAuthority,
+    app_data: &crate::infra::path_authority::AppDataDir,
+) -> Result<crate::infra::path_authority::DatabaseRootHandle, Error> {
     let authorized_dir = crate::infra::path_authority::ensure_app_owned_default_dir(
-        &crate::infra::path_authority::AppDataDir::for_app(&app)?,
+        app_data,
         crate::infra::path_authority::AppOwnedDefaultRoot::Databases,
-    )?;
+    )
+    .map_err(Error::label_root_failure)?;
     let root = authority.get_or_create_database_root(
         authorized_dir.path(),
         "Databases",
         Some(authorized_dir.identity()),
     )?;
-    authority.set_active_database_root(&root)?;
+    authority.set_active_default_database_root(&root)?;
     Ok(root)
 }
 
@@ -1375,12 +1384,23 @@ fn list_workspace_databases_blocking(
     root: crate::infra::path_authority::DatabaseRootHandle,
     cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<Vec<crate::infra::path_authority::DatabaseDescriptor>, Error> {
-    authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .list_database_children_cancellable(&root, cancellation)
+    let result = (|| {
+        authority
+            .lock()
+            .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
+            .as_mut()
+            .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
+            .list_database_children_cancellable(&root, cancellation)
+    })();
+    result.map_err(|error| {
+        crate::infra::path_authority::probe_listing_root_failure(
+            authority,
+            root.path_ref(),
+            crate::infra::path_authority::PathOperation::DatabaseRead,
+            error,
+            cancellation,
+        )
+    })
 }
 
 #[tauri::command]
@@ -2962,6 +2982,32 @@ mod native_window_operation_wiring_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn root_failure_default_database_non_directory_is_unusable() {
+        use crate::infra::path_authority::{AppDataDir, PathAuthority, SystemClock};
+        let directory = tempfile::tempdir().unwrap();
+        let app_data = AppDataDir::for_test(directory.path());
+        std::fs::write(directory.path().join("db"), b"not a directory").unwrap();
+        let mut authority = PathAuthority::open_with_clock(
+            directory.path().join("registry.json"),
+            vec![],
+            std::sync::Arc::new(SystemClock),
+            2,
+        )
+        .unwrap();
+        let error = get_default_database_workspace(&mut authority, &app_data).unwrap_err();
+        assert_eq!(
+            error.root_failure(),
+            Some(crate::error::RootFailure::Unusable)
+        );
+        assert_eq!(error.category(), crate::error::ErrorCategory::Io);
+        assert_eq!(error.to_string(), "I/O failure");
+        assert_eq!(
+            error.diagnostic(),
+            "I/O failure: app-owned default root is not a directory"
+        );
+    }
 
     #[test]
     fn native_log_targets_never_include_the_webview() {
@@ -4942,13 +4988,22 @@ mod blocking_offload_scans {
         let puzzle = include_str!("puzzle.rs");
         let owned = "&crate::infra::path_authority::AppDataDir::for_app(&app)?,";
         let borrowed = "&crate::infra::path_authority::AppDataDir::for_app(app)?,";
+        let bootstrap = body_at_indent(main, "fn get_database_workspace_blocking(");
+        assert!(
+            bootstrap.contains("AppDataDir::for_app(&app)?"),
+            "{bootstrap}"
+        );
+        assert!(
+            bootstrap.contains("get_default_database_workspace(authority, &app_data)"),
+            "{bootstrap}"
+        );
         for (file, source, name, variant, parent, leaf) in [
             (
                 "main.rs",
                 main,
-                "get_database_workspace_blocking",
+                "get_default_database_workspace",
                 "AppOwnedDefaultRoot::Databases",
-                owned,
+                "app_data,",
                 "db",
             ),
             (
@@ -5010,7 +5065,7 @@ mod blocking_offload_scans {
             (
                 "main.rs",
                 main,
-                "get_database_workspace_blocking",
+                "get_default_database_workspace",
                 "get_or_create_database_root(",
             ),
             (

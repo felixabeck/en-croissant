@@ -36,6 +36,12 @@ const TRASH_DIRECTORY: &str = ".en-croissant-trash";
 const MAX_WORKSPACE_METADATA_BYTES: usize = 1024 * 1024;
 const METADATA_LIMIT_MESSAGE: &str = "PGN metadata exceeds the supported size limit";
 
+#[cfg(test)]
+std::thread_local! {
+    static ROOT_FAILURE_POST_WALK_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum WorkspaceEntryKind {
@@ -366,7 +372,8 @@ fn collect_tree_entries(
         if depth > MAX_WORKSPACE_LISTING_DEPTH {
             return Err(Error::ResourceLimit(format!(
                 "workspace listing exceeded {MAX_WORKSPACE_LISTING_DEPTH} levels"
-            )));
+            ))
+            .with_root_failure(crate::error::RootFailure::TooLarge));
         }
         if token.is_cancelled() {
             return Err(Error::Cancellation);
@@ -401,7 +408,8 @@ fn collect_tree_entries(
             if is_directory && depth + 1 > MAX_WORKSPACE_LISTING_DEPTH {
                 return Err(Error::ResourceLimit(format!(
                     "workspace listing exceeded {MAX_WORKSPACE_LISTING_DEPTH} levels"
-                )));
+                ))
+                .with_root_failure(crate::error::RootFailure::TooLarge));
             }
             check_directory_listing_bound(*staged_count, MAX_DIRECTORY_LISTING_ENTRIES)?;
             *staged_count += 1;
@@ -625,33 +633,66 @@ pub(crate) async fn list_file_workspace_core(
     repository: &crate::pgn::PgnRepository,
     cancellation: &CancellationToken,
 ) -> Result<Vec<WorkspaceEntry>, Error> {
-    if cancellation.is_cancelled() {
-        return Err(Error::Cancellation);
-    }
-    let pgn_path_authority = Arc::clone(authority_arc);
-    let workspace_for_tree = workspace.clone();
-    let (mut entries, missing) = BLOCKING_GATEWAY
-        .spawn_cancellable(cancellation.clone(), move |token| {
-            collect_tree_entries(&pgn_path_authority, &workspace_for_tree, token)
-        })
-        .await?;
-    for handle in missing {
+    let result = async {
         if cancellation.is_cancelled() {
             return Err(Error::Cancellation);
         }
-        let resolved = {
-            authority(authority_arc)?
-                .as_mut()
-                .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-                .resolve(handle.path_ref(), PathOperation::ReadPgn, &[])?
-        };
-        let game_count = pgn::count_pgn_games_core(resolved, cancellation, repository).await?;
-        set_workspace_game_count(&mut entries, &handle, game_count);
+        let pgn_path_authority = Arc::clone(authority_arc);
+        let workspace_for_tree = workspace.clone();
+        let (mut entries, missing) = BLOCKING_GATEWAY
+            .spawn_cancellable(cancellation.clone(), move |token| {
+                collect_tree_entries(&pgn_path_authority, &workspace_for_tree, token)
+            })
+            .await?;
+        #[cfg(test)]
+        ROOT_FAILURE_POST_WALK_HOOK.with(|slot| {
+            if let Some(hook) = slot.borrow_mut().take() {
+                hook();
+            }
+        });
+        for handle in missing {
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancellation);
+            }
+            let resolved = {
+                authority(authority_arc)?
+                    .as_mut()
+                    .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
+                    .resolve(handle.path_ref(), PathOperation::ReadPgn, &[])?
+            };
+            let game_count = pgn::count_pgn_games_core(resolved, cancellation, repository).await?;
+            set_workspace_game_count(&mut entries, &handle, game_count);
+        }
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
+        Ok(entries)
     }
-    if cancellation.is_cancelled() {
-        return Err(Error::Cancellation);
+    .await;
+    match result {
+        Ok(entries) => Ok(entries),
+        Err(error) => {
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancellation);
+            }
+            if matches!(error.unlabelled(), Error::Cancellation) || error.root_failure().is_some() {
+                return Err(error);
+            }
+            let authority = Arc::clone(authority_arc);
+            let root = workspace.path_ref().clone();
+            BLOCKING_GATEWAY
+                .spawn_cancellable(cancellation.clone(), move |token| {
+                    Err(crate::infra::path_authority::probe_listing_root_failure(
+                        &authority,
+                        &root,
+                        PathOperation::ReadPgn,
+                        error,
+                        token,
+                    ))
+                })
+                .await
+        }
     }
-    Ok(entries)
 }
 
 #[tauri::command]
@@ -4778,6 +4819,257 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+mod root_failure_tests {
+    use super::*;
+    use crate::error::{ErrorCategory, RootFailure};
+    use crate::infra::path_authority::{probe_listing_root_failure, SystemClock};
+
+    fn root_failure_fixture() -> (
+        tempfile::TempDir,
+        Arc<Mutex<Option<PathAuthority>>>,
+        FileWorkspaceHandle,
+        PathBuf,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("workspace");
+        fs::create_dir(&root).unwrap();
+        let mut registry = PathAuthority::open_with_clock(
+            directory.path().join("registry.json"),
+            vec![],
+            Arc::new(SystemClock),
+            2,
+        )
+        .unwrap();
+        let id = registry
+            .migrate_legacy_os_path(
+                root.clone().into_os_string(),
+                "workspace",
+                PathClass::PersistentCustomRoot,
+                vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+            )
+            .unwrap()
+            .id;
+        (
+            directory,
+            Arc::new(Mutex::new(Some(registry))),
+            FileWorkspaceHandle::new(id),
+            root,
+        )
+    }
+
+    #[tokio::test]
+    async fn root_failure_child_pgn_removed_or_replaced_between_walk_and_count_is_unlabelled() {
+        for replace in [false, true] {
+            let (directory, registry, workspace, root) = root_failure_fixture();
+            fs::write(root.join("child.pgn"), b"*").unwrap();
+            let saved = directory.path().join("old.pgn");
+            ROOT_FAILURE_POST_WALK_HOOK.with(|slot| {
+                *slot.borrow_mut() = Some(Box::new(move || {
+                    fs::rename(root.join("child.pgn"), saved).unwrap();
+                    if replace {
+                        fs::write(root.join("child.pgn"), b"*").unwrap();
+                    }
+                }));
+            });
+            let error = list_file_workspace_core(
+                &workspace,
+                &registry,
+                &pgn::PgnRepository::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.root_failure(), None, "{error:?}");
+            assert_eq!(
+                error.category(),
+                if replace {
+                    ErrorCategory::Conflict
+                } else {
+                    ErrorCategory::MissingResource
+                }
+            );
+            assert_eq!(
+                error.to_string(),
+                if replace {
+                    "Conflict: path authority is unavailable because its object changed"
+                } else {
+                    "I/O failure"
+                }
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn root_failure_root_removed_or_replaced_during_files_listing_keeps_original_error() {
+        for replace in [false, true] {
+            let (directory, registry, workspace, root) = root_failure_fixture();
+            fs::write(root.join("child.pgn"), b"*").unwrap();
+            let saved = directory.path().join("old-root");
+            ROOT_FAILURE_POST_WALK_HOOK.with(|slot| {
+                *slot.borrow_mut() = Some(Box::new(move || {
+                    fs::rename(&root, saved).unwrap();
+                    if replace {
+                        fs::create_dir(&root).unwrap();
+                    }
+                }));
+            });
+            let error = list_file_workspace_core(
+                &workspace,
+                &registry,
+                &pgn::PgnRepository::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                error.root_failure(),
+                Some(if replace {
+                    RootFailure::Changed
+                } else {
+                    RootFailure::Missing
+                }),
+                "{error:?}"
+            );
+            // The missing child is the original failure, even when the probe finds a changed root.
+            assert_eq!(error.category(), ErrorCategory::MissingResource);
+            assert_eq!(error.to_string(), "I/O failure");
+        }
+    }
+
+    #[tokio::test]
+    async fn root_failure_files_listing_authority_poison_and_initialization_stay_unlabelled() {
+        for poison in [false, true] {
+            let (_directory, registry, workspace, _root) = root_failure_fixture();
+            if poison {
+                let registry = Arc::clone(&registry);
+                let _ = std::thread::spawn(move || {
+                    let _lock = registry.lock().unwrap();
+                    panic!("test poison");
+                })
+                .join();
+            } else {
+                *registry.lock().unwrap() = None;
+            }
+            let error = list_file_workspace_core(
+                &workspace,
+                &registry,
+                &pgn::PgnRepository::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.root_failure(), None);
+            assert_eq!(
+                error.to_string(),
+                if poison {
+                    "Conflict: path authority lock was poisoned"
+                } else {
+                    "Conflict: path authority is not initialized"
+                }
+            );
+            let original = Error::InvalidInput("original child failure".into());
+            let probed = probe_listing_root_failure(
+                &registry,
+                workspace.path_ref(),
+                PathOperation::ReadPgn,
+                original,
+                &CancellationToken::new(),
+            );
+            assert_eq!(probed.root_failure(), None);
+            assert_eq!(probed.to_string(), "Invalid input: original child failure");
+        }
+    }
+
+    #[tokio::test]
+    async fn root_failure_files_bounds_keep_category_and_message() {
+        for depth in [false, true] {
+            let (_directory, registry, workspace, root) = root_failure_fixture();
+            if depth {
+                let mut child = root;
+                for _ in 0..=MAX_WORKSPACE_LISTING_DEPTH {
+                    child = child.join("d");
+                    fs::create_dir(&child).unwrap();
+                }
+            } else {
+                for index in 0..=MAX_DIRECTORY_LISTING_ENTRIES {
+                    fs::write(root.join(index.to_string()), b"").unwrap();
+                }
+            }
+            let error = list_file_workspace_core(
+                &workspace,
+                &registry,
+                &pgn::PgnRepository::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.root_failure(), Some(RootFailure::TooLarge));
+            assert_eq!(error.category(), ErrorCategory::ResourceLimit);
+            assert_eq!(
+                error.to_string(),
+                if depth {
+                    format!("Resource limit: workspace listing exceeded {MAX_WORKSPACE_LISTING_DEPTH} levels")
+                } else {
+                    format!("Resource limit: directory listing exceeded {MAX_DIRECTORY_LISTING_ENTRIES} entries")
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn root_failure_file_picker_same_path_refusal_is_changed() {
+        let (directory, registry, _workspace, root) = root_failure_fixture();
+        // The fixture already persisted this picker path.
+        fs::rename(&root, directory.path().join("old-root")).unwrap();
+        fs::create_dir(&root).unwrap();
+        let error = issue_file_workspace_blocking(&registry, root).unwrap_err();
+        assert_eq!(error.root_failure(), Some(RootFailure::Changed));
+        assert_eq!(error.category(), ErrorCategory::Conflict);
+        assert_eq!(
+            error.to_string(),
+            "Conflict: persistent target changed; acquire a new capability"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn root_failure_child_removed_between_readdir_and_statat_is_unlabelled() {
+        let (directory, registry, workspace, root) = root_failure_fixture();
+        fs::write(root.join("child.pgn"), b"*").unwrap();
+        fs::write(root.join("intact.pgn"), b"*").unwrap();
+        let registry_bytes = fs::read(directory.path().join("registry.json")).unwrap();
+        let child = root.join("child.pgn");
+        crate::infra::fs::set_read_directory_pre_stat_hook(Some(Box::new(move |name| {
+            if name == OsStr::new("child.pgn") {
+                fs::remove_file(&child).unwrap();
+            }
+        })));
+        let original =
+            collect_tree_entries(&registry, &workspace, &CancellationToken::new()).unwrap_err();
+        crate::infra::fs::set_read_directory_pre_stat_hook(Some(Box::new(|_| {
+            panic!("the root probe must not stat any child");
+        })));
+        assert_eq!(original.category(), ErrorCategory::MissingResource);
+        let diagnostic = original.diagnostic();
+        let error = probe_listing_root_failure(
+            &registry,
+            workspace.path_ref(),
+            PathOperation::ReadPgn,
+            original,
+            &CancellationToken::new(),
+        );
+        crate::infra::fs::set_read_directory_pre_stat_hook(None);
+        assert_eq!(error.root_failure(), None);
+        assert_eq!(error.to_string(), "I/O failure");
+        assert_eq!(error.diagnostic(), diagnostic);
+        assert_eq!(
+            fs::read(directory.path().join("registry.json")).unwrap(),
+            registry_bytes
+        );
+    }
+}
+
 #[cfg(unix)]
 #[cfg(test)]
 mod workspace_directory_enumeration_tests {
@@ -5020,7 +5312,7 @@ mod workspace_directory_enumeration_tests {
         fs::write(root.join("overflow.pgn"), b"*")?;
         assert!(matches!(
             collect_tree_entries(&registry, &workspace, &CancellationToken::new()),
-            Err(Error::ResourceLimit(_))
+            Err(ref error) if matches!(error.unlabelled(), Error::ResourceLimit(_))
         ));
         assert_eq!(
             authority(&registry)?
@@ -5049,7 +5341,7 @@ mod workspace_directory_enumeration_tests {
         }
         assert!(matches!(
             collect_tree_entries(&registry, &workspace, &CancellationToken::new()),
-            Err(Error::ResourceLimit(_))
+            Err(ref error) if matches!(error.unlabelled(), Error::ResourceLimit(_))
         ));
         assert_eq!(
             authority(&registry)?
@@ -5586,7 +5878,7 @@ mod workspace_directory_enumeration_tests {
             .persistent_snapshot_for_test();
         assert!(matches!(
             collect_tree_entries(&authority, &workspace, &CancellationToken::new()),
-            Err(Error::ResourceLimit(_))
+            Err(ref error) if matches!(error.unlabelled(), Error::ResourceLimit(_))
         ));
         assert_eq!(
             authority

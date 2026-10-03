@@ -122,14 +122,33 @@ pub enum ErrorPayloadTag {
 }
 
 #[derive(Serialize, Type)]
+#[serde(rename_all = "camelCase")]
 pub struct ErrorPayload {
     pub tag: ErrorPayloadTag,
     pub category: ErrorCategory,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub root_failure: Option<RootFailure>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "kebab-case")]
+pub enum RootFailure {
+    Changed,
+    Missing,
+    Unusable,
+    Permission,
+    TooLarge,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("{error}")]
+    RootFailure {
+        error: Box<Error>,
+        reason: RootFailure,
+    },
     #[error("I/O failure")]
     Io(#[source] Box<std::io::Error>),
 
@@ -272,8 +291,58 @@ pub enum Error {
 }
 
 impl Error {
+    pub(crate) fn with_root_failure(self, reason: RootFailure) -> Self {
+        if self.root_failure().is_some() {
+            return self;
+        }
+        Self::RootFailure {
+            error: Box::new(self),
+            reason,
+        }
+    }
+
+    pub(crate) fn root_failure(&self) -> Option<RootFailure> {
+        match self {
+            Self::RootFailure { reason, .. } => Some(*reason),
+            _ => None,
+        }
+    }
+
+    /// Only use for failures from resolving, enumerating or acquiring the chosen root.
+    pub(crate) fn root_failure_reason(&self) -> Option<RootFailure> {
+        match self {
+            Self::RootFailure { reason, .. } => Some(*reason),
+            Self::Io(error) => match error.kind() {
+                std::io::ErrorKind::NotFound => Some(RootFailure::Missing),
+                std::io::ErrorKind::PermissionDenied => Some(RootFailure::Permission),
+                std::io::ErrorKind::InvalidInput => Some(RootFailure::Unusable),
+                _ => None,
+            },
+            Self::InvalidInput(_) => Some(RootFailure::Unusable),
+            Self::Conflict(_) => Some(RootFailure::Changed),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn label_root_failure(self) -> Self {
+        match self.root_failure_reason() {
+            Some(reason) => self.with_root_failure(reason),
+            None => self,
+        }
+    }
+
+    pub(crate) fn unlabelled(&self) -> &Self {
+        match self {
+            Self::RootFailure { error, .. } => error.unlabelled(),
+            _ => self,
+        }
+    }
+
     /// Returns the local diagnostic without changing the message exposed on the wire.
     pub(crate) fn diagnostic(&self) -> String {
+        if let Self::RootFailure { error, .. } = self {
+            return error.diagnostic();
+        }
         if let Self::OperationAndCleanup { primary, cleanup } = self {
             return format!("primary={primary}; cleanup={cleanup}");
         }
@@ -304,6 +373,7 @@ impl Error {
 
     pub fn category(&self) -> ErrorCategory {
         match self {
+            Self::RootFailure { error, .. } => error.category(),
             Self::Io(error) => match error.kind() {
                 std::io::ErrorKind::NotFound => ErrorCategory::MissingResource,
                 std::io::ErrorKind::PermissionDenied => ErrorCategory::Permission,
@@ -356,6 +426,85 @@ impl Error {
 
 const SQLITE_NOTADB: i32 = 26;
 
+#[cfg(test)]
+mod root_failure_tests {
+    use super::*;
+
+    #[test]
+    fn root_failure_serialization_and_diagnostics_are_additive() {
+        let errors = [
+            (
+                Error::from(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "native missing",
+                )),
+                RootFailure::Missing,
+            ),
+            (
+                Error::from(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "native permission",
+                )),
+                RootFailure::Permission,
+            ),
+            (
+                Error::InvalidInput("root shape".into()),
+                RootFailure::Unusable,
+            ),
+            (
+                Error::Conflict("root identity".into()),
+                RootFailure::Changed,
+            ),
+            (
+                Error::ResourceLimit("listing bound".into()),
+                RootFailure::TooLarge,
+            ),
+            (
+                Error::OperationAndCleanup {
+                    primary: "primary".into(),
+                    cleanup: "cleanup".into(),
+                },
+                RootFailure::Changed,
+            ),
+        ];
+        for (error, reason) in errors {
+            let before = serde_json::to_value(&error).unwrap();
+            assert!(before.get("rootFailure").is_none());
+            let diagnostic = error.diagnostic();
+            let labelled = error.with_root_failure(reason);
+            let after = serde_json::to_value(&labelled).unwrap();
+            assert_eq!(after["category"], before["category"]);
+            assert_eq!(after["message"], before["message"]);
+            assert_eq!(labelled.diagnostic(), diagnostic);
+            assert_eq!(after["rootFailure"], serde_json::to_value(reason).unwrap());
+            assert_eq!(
+                labelled
+                    .with_root_failure(RootFailure::Permission)
+                    .root_failure(),
+                Some(reason)
+            );
+        }
+    }
+
+    #[test]
+    fn root_failure_mapping_excludes_non_listing_resource_limits_and_other_errors() {
+        for error in [
+            Error::Cancellation,
+            Error::ResourceLimit("registry capacity".into()),
+            Error::CommittedDurabilityUncertain(DurabilityStage::RegistryReplacement),
+            Error::from(std::io::Error::other("native failure")),
+        ] {
+            assert_eq!(error.root_failure_reason(), None);
+            assert_eq!(error.label_root_failure().root_failure(), None);
+        }
+        let error = Error::from(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "root shape",
+        ));
+        assert_eq!(error.root_failure_reason(), Some(RootFailure::Unusable));
+    }
+}
+
 fn sqlite_notadb_message(message: &str) -> bool {
     let message = message.to_ascii_lowercase();
     let code = SQLITE_NOTADB.to_string();
@@ -369,7 +518,7 @@ fn sqlite_notadb_message(message: &str) -> bool {
 }
 
 pub(crate) fn is_sqlite_notadb(error: &Error) -> bool {
-    match error {
+    match error.unlabelled() {
         Error::InvalidInput(message) => message == "SQLite file is not a database",
         Error::Diesel(error) => match error.as_ref() {
             diesel::result::Error::DatabaseError(_, information) => {
@@ -497,6 +646,7 @@ impl serde::Serialize for Error {
             tag: ErrorPayloadTag::BackendError,
             category: self.category(),
             message: self.to_string(),
+            root_failure: self.root_failure(),
         }
         .serialize(serializer)
     }

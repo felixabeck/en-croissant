@@ -1,4 +1,4 @@
-import type { ErrorCategory, ErrorPayload } from "@/bindings";
+import type { ErrorCategory, ErrorPayload, RootFailure } from "@/bindings";
 import { error as logError } from "./native";
 
 export type AppErrorCategory =
@@ -15,6 +15,7 @@ export type AppError = {
     message: string;
     diagnostic?: string;
     backendCategory?: ErrorCategory;
+    rootFailure?: RootFailure;
 };
 
 const APP_ERROR_CATEGORIES: readonly AppErrorCategory[] = [
@@ -195,6 +196,7 @@ export function normalizeError(error: unknown): AppError {
             category: BACKEND_CATEGORY[error.category],
             backendCategory: error.category,
             message: redact(error.message),
+            ...(error.rootFailure == null ? {} : { rootFailure: error.rootFailure }),
         };
     }
     if (isAppError(error)) return error;

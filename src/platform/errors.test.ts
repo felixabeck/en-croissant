@@ -1,4 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
+import { TauriCommandError } from "./tauri";
 import {
     errorUnlessCancelled,
     normalizeError,
@@ -8,6 +9,34 @@ import {
 } from "./errors";
 
 describe("normalizeError", () => {
+    test.each(["changed", "missing", "unusable", "permission", "too-large"] as const)(
+        "carries rootFailure %s from the payload and command details",
+        (rootFailure) => {
+            const payload = {
+                tag: "backend-error",
+                category: "conflict",
+                message: "Conflict: original failure",
+                rootFailure,
+            };
+            expect(normalizeError(payload)).toEqual({
+                category: "validation",
+                backendCategory: "conflict",
+                message: payload.message,
+                rootFailure,
+            });
+            const wrapped = new TauriCommandError(payload);
+            expect(wrapped.details.rootFailure).toBe(rootFailure);
+            expect(normalizeError(wrapped)).toBe(wrapped.details);
+        },
+    );
+
+    test("leaves rootFailure absent when unset", () => {
+        const payload = { tag: "backend-error", category: "io", message: "I/O failure" };
+        for (const error of [payload, new TauriCommandError(payload), new Error("failed")]) {
+            expect(normalizeError(error)).not.toHaveProperty("rootFailure");
+        }
+    });
+
     const START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
     test("redacts secrets without emitting a literal $1", () => {
