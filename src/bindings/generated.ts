@@ -165,8 +165,8 @@ async issueDatabaseWorkspace() : Promise<Result<DatabaseRootHandle, ErrorPayload
 }
 },
 /**
- * Returns the app-owned default database root.  Unlike the picker command it
- * never receives a renderer path and is stable across restarts.
+ * Returns the active database root when set and available.  Otherwise it acquires,
+ * registers and activates the app-owned default root, without a renderer path.
  */
 async getDatabaseWorkspace() : Promise<Result<DatabaseRootHandle, ErrorPayload>> {
     try {
