@@ -34,7 +34,7 @@ beforeEach(() => {
 test("lossless NAG round trip preserves every code and multiplicity", async () => {
     const pgn =
         "1. e4 $8 $8 c6 $11 2. d4 $1 $2 d5 $14 $1 3. Nc3 $220 dxe4 $6 $146 4. Nxe4 $0 Bf5 $255";
-    // Model the native lexer's tokens, including the single attached suffix it recognises.
+    // Token shapes are pinned by Rust's lexer::tests::test_lex_pgn_sync_lossless_nags.
     mocks.lexPgn.mockImplementation(async (source: string) => {
         const result: Token[] = [];
         for (const word of source.split(/\s+/)) {

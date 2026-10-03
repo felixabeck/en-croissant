@@ -1,5 +1,5 @@
 import { warn } from "@/platform/native";
-import { ANNOTATION_INFO } from "@/utils/annotation";
+import { ANNOTATION_INFO, MAX_NAG } from "@/utils/annotation";
 import { reportPersistError } from "@/state/persistError";
 import { splitPgnComment } from "@/utils/pgnComment";
 import { getResolvedPathLength } from "@/utils/treeReducer";
@@ -150,7 +150,7 @@ const treeNodeSchema: z.ZodType<PersistedTreeNode> = z.lazy(() =>
         depth: z.number().int().nonnegative().nullable(),
         halfMoves: z.number().int().nonnegative(),
         shapes: z.array(shapeSchema).max(10_000),
-        nags: z.array(z.number().int().min(0).max(255)).max(1_024),
+        nags: z.array(z.number().int().min(0).max(MAX_NAG)).max(1_024),
         comment: boundedText,
         commands: boundedText.optional(),
         startingComment: boundedText.optional(),
@@ -207,16 +207,17 @@ function migrateReport(report: unknown): { inProgress: boolean; operationId: str
 }
 
 /**
- * A tree persisted before commands were split out of comments (c449fbb2) carries `[%…]` commands
- * inside `comment` and no `commands` field. Split those once; a node that already has `commands`
- * is left alone, so the migration is idempotent. Depth is bounded like the schema's recursion.
+ * Migrates legacy node fields in one bounded walk. Before commands were split out of comments
+ * (c449fbb2), trees carried `[%…]` commands inside `comment` and no `commands` field.
+ * Split those once; a node that already has `commands` is left alone, so the migration is
+ * idempotent. Depth is bounded like the schema's recursion.
  * Legacy glyph arrays become canonical NAG codes, preserving their order and multiplicity.
  * The empty glyph has lost its code already; invalid legacy glyphs remain unreadable.
  */
-function migrateLegacyNodeComments(node: unknown, depth = 0): unknown {
+function migrateLegacyNode(node: unknown, depth = 0): unknown {
     if (!isRecord(node) || depth > MAX_TREE_DEPTH) return node;
     const migrated: Record<string, unknown> = { ...node };
-    if (!Array.isArray(node.nags) && Array.isArray(node.annotations)) {
+    if (!Object.prototype.hasOwnProperty.call(node, "nags") && Array.isArray(node.annotations)) {
         const legacy = z.array(annotationSchema).safeParse(node.annotations);
         if (legacy.success) {
             migrated.nags = legacy.data
@@ -226,9 +227,7 @@ function migrateLegacyNodeComments(node: unknown, depth = 0): unknown {
         }
     }
     if (Array.isArray(node.children)) {
-        migrated.children = node.children.map((child) =>
-            migrateLegacyNodeComments(child, depth + 1),
-        );
+        migrated.children = node.children.map((child) => migrateLegacyNode(child, depth + 1));
     }
     if (
         !Object.prototype.hasOwnProperty.call(node, "commands") &&
@@ -247,7 +246,7 @@ export function migrateTreeForStorage(value: unknown): unknown {
     const hasAppendAttempted = Object.prototype.hasOwnProperty.call(value, "appendAttempted");
     return {
         ...value,
-        root: migrateLegacyNodeComments(value.root),
+        root: migrateLegacyNode(value.root),
         position: Array.isArray(value.position) ? value.position : [],
         dirty: typeof value.dirty === "boolean" ? value.dirty : false,
         sourceStamp:

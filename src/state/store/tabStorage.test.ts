@@ -14,6 +14,9 @@ import {
 
 const native = vi.hoisted(() => ({ warn: vi.fn() }));
 const persistError = vi.hoisted(() => ({ reportPersistError: vi.fn() }));
+const SUPPORTED_NAGS = [
+    1, 3, 2, 4, 5, 6, 18, 16, 14, 10, 13, 15, 17, 19, 146, 32, 36, 40, 132, 44, 138, 140, 7, 22, 9,
+];
 vi.mock("@/platform/native", () => native);
 vi.mock("@/state/persistError", () => persistError);
 
@@ -168,6 +171,18 @@ test("legacy annotations never replace an existing NAG array", () => {
     });
 });
 
+test.each(["x", null])("legacy annotations never repair corrupt own nags %j", (nags) => {
+    const tree = defaultTree();
+    persistTree("corrupt-own-nags", { ...tree, root: { ...tree.root, nags, annotations: ["!"] } });
+    const raw = sessionStorage.getItem("corrupt-own-nags")!;
+    expect(storage.readTree("corrupt-own-nags")).toEqual({ kind: "unreadable", rawValue: raw });
+    expect(storage.getStatus("corrupt-own-nags")).toEqual({ kind: "unreadable", rawValue: raw });
+    expect(() => storage.seed("corrupt-own-nags", tree)).toThrow(
+        "Cannot replace a tab tree while its storage is unreadable or unavailable.",
+    );
+    expect(sessionStorage.getItem("corrupt-own-nags")).toBe(raw);
+});
+
 test("failed legacy NAG write-back returns the migrated tree and retries on the next read", () => {
     const tree = defaultTree();
     const { nags: _nags, ...root } = tree.root;
@@ -215,10 +230,7 @@ test("preserves every supported tree schema field and enum boundary", () => {
                             modifiers: { lineWidth: 0 },
                         },
                     ],
-                    nags: [
-                        1, 3, 2, 4, 5, 6, 18, 16, 14, 10, 13, 15, 17, 19, 146, 32, 36, 40, 132, 44,
-                        138, 140, 7, 22, 9,
-                    ],
+                    nags: SUPPORTED_NAGS,
                     comment: "child",
                     clock: 0,
                 },
@@ -312,10 +324,7 @@ test("evaluates the complete static schema on a fresh ESM module instance", asyn
             },
         ];
         state.root.shapes = [{ orig: "a1", dest: "h8", brush: "", modifiers: { lineWidth: 0 } }];
-        state.root.nags = [
-            1, 3, 2, 4, 5, 6, 18, 16, 14, 10, 13, 15, 17, 19, 146, 32, 36, 40, 132, 44, 138, 140, 7,
-            22, 9,
-        ];
+        state.root.nags = SUPPORTED_NAGS;
         state.headers = {
             ...state.headers,
             result: "0-1",

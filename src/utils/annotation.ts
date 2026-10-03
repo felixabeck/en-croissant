@@ -74,17 +74,25 @@ export const NAG_INFO = new Map<number, Annotation>([
     [146, "N"],
 ]);
 
+export const MAX_NAG = 255;
+
+export function isNagCode(value: number): boolean {
+    return Number.isInteger(value) && value >= 0 && value <= MAX_NAG;
+}
+
+export function sortedNags(nags: readonly number[]): number[] {
+    return [...nags].sort((a, b) => a - b);
+}
+
 export function nagGlyph(code: number): Annotation | undefined {
     return NAG_INFO.get(code);
 }
 
 export function nagGlyphs(nags: readonly number[]): Annotation[] {
-    const glyphs = [...nags]
-        .sort((a, b) => a - b)
-        .flatMap((code) => {
-            const glyph = nagGlyph(code);
-            return glyph ? [glyph] : [];
-        });
+    const glyphs = sortedNags(nags).flatMap((code) => {
+        const glyph = nagGlyph(code);
+        return glyph ? [glyph] : [];
+    });
     return [...new Set(glyphs)];
 }
 

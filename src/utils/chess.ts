@@ -6,7 +6,7 @@ import { INITIAL_FEN, makeFen, parseFen } from "chessops/fen";
 import { isPawns } from "chessops/pgn";
 import { makeSan, parseSan } from "chessops/san";
 import { type Outcome, type Score, type Token } from "@/bindings";
-import { isBasicAnnotation, nagGlyph } from "./annotation";
+import { isBasicAnnotation, isNagCode, nagGlyph, sortedNags } from "./annotation";
 import { parseSanOrUci, positionFromFen } from "./chessops";
 import { harmonicMean, isPrefix, mean } from "./misc";
 import { splitPgnComment } from "./pgnComment";
@@ -75,8 +75,9 @@ export function getMoveText(
         }
         moveText += tree.san;
         if (opt.glyphs) {
-            for (const [index, code] of [...tree.nags].sort((a, b) => a - b).entries()) {
-                moveText += index === 0 && code >= 1 && code <= 6 ? nagGlyph(code) : ` $${code}`;
+            for (const [index, code] of sortedNags(tree.nags).entries()) {
+                const glyph = nagGlyph(code);
+                moveText += index === 0 && glyph && isBasicAnnotation(glyph) ? glyph : ` $${code}`;
             }
         }
         moveText += " ";
@@ -446,7 +447,7 @@ function innerParsePGN(tokens: Token[], fen: string = INITIAL_FEN, halfMoves?: n
         } else if (token.type === "ParenClose") {
         } else if (token.type === "Nag") {
             const code = /^\$\d+$/.test(token.value) ? Number(token.value.slice(1)) : NaN;
-            if (Number.isInteger(code) && code >= 0 && code <= 255) {
+            if (isNagCode(code)) {
                 node.nags.push(code);
             }
         } else if (token.type === "San") {

@@ -1001,8 +1001,9 @@ function addAnalysis(
                     }
                 }
             }
-            if (analysis[i].novelty && !cur.nags.includes(146)) {
-                cur.nags.push(146);
+            const noveltyCode = ANNOTATION_INFO.N.nag;
+            if (analysis[i].novelty && !cur.nags.includes(noveltyCode)) {
+                cur.nags.push(noveltyCode);
             }
         }
         parent = cur;

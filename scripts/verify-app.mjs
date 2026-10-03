@@ -4,7 +4,7 @@
 //   pnpm verify:app                 run the checks
 //   pnpm verify:app --screenshot X  also write a PNG of the page to X
 //
-// It asserts sixty-seven independently reported checks, plus one conditional reload check, that no other gate in this repository can:
+// It asserts sixty-one independently reported checks, plus one conditional reload check, that no other gate in this repository can:
 //   group | assertions
 //   startup | 5: production authority, user-file safety, owned-image cleanup, real IPC bridge,
 //             document title
@@ -17,8 +17,7 @@
 //   attachments | 4: prepare, retire, live-session bytes/intent, titlebar cleanup
 //   native reads | 5: mint, cancel, cancelled-ticket refusal, retained ticket, destroyed-window log
 //   Files | 3: seeded-row-render, double-click-route, opened-game-notation
-//   NAGs | 15: seeded row, opened game, three move navigations, hint path/title/visibility,
-//              unknown hint absence, Annotate toggle, saved edit, four preserved NAGs
+//   NAGs | 9: hint path/title/visibility, unknown hint absence, saved edit, four preserved NAGs
 //   file freshness | 5: in-place rewrite, open-tab reload/withhold, native-read timing,
 //                      main-thread apply budget, one-poll-interval freshness budget;
 //                      +1 conditional Reload-from-disk check
@@ -743,6 +742,27 @@ async function clickAt(session, x, y, id = "mouse") {
         parameters: { pointerType: "mouse" },
         actions: [
           { type: "pointerMove", duration: 0, x, y, origin: "viewport" },
+          { type: "pointerDown", button: 0 },
+          { type: "pointerUp", button: 0 },
+        ],
+      },
+    ],
+  });
+}
+
+/** One real double-click, with the two clicks inside the platform double-click interval. */
+async function doubleClickAt(session, x, y) {
+  await session.call("POST", "/actions", {
+    actions: [
+      {
+        type: "pointer",
+        id: "mouse",
+        parameters: { pointerType: "mouse" },
+        actions: [
+          { type: "pointerMove", duration: 0, x, y, origin: "viewport" },
+          { type: "pointerDown", button: 0 },
+          { type: "pointerUp", button: 0 },
+          { type: "pause", duration: DOUBLE_CLICK_GAP_MS },
           { type: "pointerDown", button: 0 },
           { type: "pointerUp", button: 0 },
         ],
@@ -2151,34 +2171,14 @@ try {
     check(false, filesRouteCheck, "not attempted: the Files row never rendered");
     check(false, filesNotationCheck, "not attempted: the Files row never rendered");
   } else {
-    const gesture = await session
-      .call("POST", "/actions", {
-        actions: [
-          {
-            type: "pointer",
-            id: "mouse",
-            parameters: { pointerType: "mouse" },
-            actions: [
-              {
-                type: "pointerMove",
-                duration: 0,
-                x: filesRow.coordinates.x,
-                y: filesRow.coordinates.y,
-                origin: "viewport",
-              },
-              { type: "pointerDown", button: 0 },
-              { type: "pointerUp", button: 0 },
-              { type: "pause", duration: DOUBLE_CLICK_GAP_MS },
-              { type: "pointerDown", button: 0 },
-              { type: "pointerUp", button: 0 },
-            ],
-          },
-        ],
-      })
-      .then(
-        () => null,
-        (error) => `the pointer double-click gesture was rejected: ${error.message}`,
-      );
+    const gesture = await doubleClickAt(
+      session,
+      filesRow.coordinates.x,
+      filesRow.coordinates.y,
+    ).then(
+      () => null,
+      (error) => `the pointer double-click gesture was rejected: ${error.message}`,
+    );
     const route = gesture
       ? { error: gesture }
       : await waitFor(
@@ -2207,42 +2207,36 @@ try {
     check(notation === true, filesNotationCheck, notation.error);
   }
 
-  // Lossless NAGs: all navigation, annotation and save actions go through the real UI.
-  const nagStep = async (description, prerequisite, action) => {
-    if (!prerequisite) {
-      check(false, description, "not attempted: the preceding NAG scenario step failed");
-      return null;
+  // Lossless NAGs: setup failures are carried to every dependent assertion.
+  const nagSetup = async (step, prerequisite, action) => {
+    if (prerequisite.error) return prerequisite;
+    try {
+      const value = await action();
+      if (!value) throw new Error("the setup returned no result");
+      return { value };
+    } catch (error) {
+      return { error: `not attempted: ${step}: ${error.message}` };
+    }
+  };
+  const nagAssertion = async (description, prerequisite, action) => {
+    if (prerequisite.error) {
+      check(false, description, prerequisite.error);
+      return prerequisite;
     }
     try {
       const value = await action();
-      check(Boolean(value), description, value ? undefined : "the rendered state did not match");
-      return value || null;
+      check(true, description);
+      return { value };
     } catch (error) {
       check(false, description, error.message);
-      return null;
+      return { error: `not attempted: ${description}: ${error.message}` };
     }
   };
-  const nagRow = await nagStep("the seeded NAG game row renders on the Files page", true, () =>
+  const nagRow = await nagSetup("NAG Files row lookup", {}, () =>
     filesRowCoordinates(session, nagsRowName),
   );
-  const nagOpened = await nagStep("a real double-click opens the NAG game", nagRow, async () => {
-    await session.call("POST", "/actions", {
-      actions: [
-        {
-          type: "pointer",
-          id: "mouse",
-          parameters: { pointerType: "mouse" },
-          actions: [
-            { type: "pointerMove", duration: 0, x: nagRow.x, y: nagRow.y, origin: "viewport" },
-            { type: "pointerDown", button: 0 },
-            { type: "pointerUp", button: 0 },
-            { type: "pause", duration: DOUBLE_CLICK_GAP_MS },
-            { type: "pointerDown", button: 0 },
-            { type: "pointerUp", button: 0 },
-          ],
-        },
-      ],
-    });
+  const nagOpened = await nagSetup("NAG game double-click open", nagRow, async () => {
+    await doubleClickAt(session, nagRow.value.x, nagRow.value.y);
     return waitFor(
       "the NAG game's notation",
       () =>
@@ -2288,134 +2282,138 @@ try {
     const wrapper = board?.parentElement;
     const svg = wrapper?.querySelector('svg > title')?.parentElement;
     const hint = svg?.parentElement;
-    if (!hint) return { rendered: false };
+    if (!hint) return { rendered: false, title: null, path: false, width: 0, height: 0, ancestors: [], visible: false };
     const box = hint.getBoundingClientRect();
     const ancestors = [];
-    let reachedBoard = false;
+    let reachedBoardWrapper = false;
     let element = hint;
     while (element) {
       const style = getComputedStyle(element);
-      ancestors.push({ display: style.display, visibility: style.visibility, opacity: style.opacity });
-      if (element === wrapper) reachedBoard = true;
+      ancestors.push({ element: element.tagName, className: element.getAttribute("class"), display: style.display, visibility: style.visibility, opacity: style.opacity });
+      if (element === wrapper) reachedBoardWrapper = true;
       element = element.parentElement;
     }
     return {
       rendered: true, title: svg.querySelector('title')?.textContent,
       path: Boolean(svg.querySelector('g path')),
       width: box.width, height: box.height, ancestors,
-      visible: reachedBoard && box.width > 0 && box.height > 0 && ancestors.every((style) =>
+      visible: reachedBoardWrapper && box.width > 0 && box.height > 0 && ancestors.every((style) =>
         style.display !== 'none' && style.visibility !== 'hidden' && style.visibility !== 'collapse' &&
         Number(style.opacity) > 0),
     };
   `);
-  const nagE4 = await nagStep(
-    "real notation navigation selects 1.e4 in the NAG game",
-    nagOpened,
-    () => navigateNagMove("e4"),
-  );
-  await nagStep("the $8 board hint is rendered with a glyph path", nagE4, async () => {
+  const assertNagHint = async (predicate) => {
     const hint = await hintProbe();
-    return hint.rendered && hint.path;
-  });
-  await nagStep(
-    "the $8 board hint SVG title is □",
-    nagE4,
-    async () => (await hintProbe()).title === "□",
+    if (!predicate(hint)) throw new Error(`observed board hint: ${JSON.stringify(hint)}`);
+    return hint;
+  };
+  const nagE4 = await nagSetup("navigation to 1.e4", nagOpened, () => navigateNagMove("e4"));
+  await nagAssertion("the $8 board hint is rendered with a glyph path", nagE4, () =>
+    assertNagHint((hint) => hint.rendered && hint.path),
   );
-  await nagStep(
+  await nagAssertion("the $8 board hint SVG title is □", nagE4, () =>
+    assertNagHint((hint) => hint.title === "□"),
+  );
+  await nagAssertion(
     "the $8 board hint has a visible box and positive opacity through its board ancestors",
     nagE4,
-    async () => {
-      const hint = await hintProbe();
-      if (!hint.visible) throw new Error(`hint visibility: ${JSON.stringify(hint)}`);
-      return true;
-    },
+    () => assertNagHint((hint) => hint.visible),
   );
-  if (screenshotPath && nagE4) {
+  if (screenshotPath && !nagE4.error) {
     await writeFile(screenshotPath, Buffer.from(await session.screenshot(), "base64"));
     console.log(`  ..  NAG game at 1.e4 screenshot written to ${screenshotPath}`);
   }
-  const nagD5 = await nagStep(
-    "real notation navigation selects 2...d5 in the NAG game",
-    nagE4,
-    () => navigateNagMove("d5"),
+  const nagD5 = await nagSetup("navigation to 2...d5", nagOpened, () => navigateNagMove("d5"));
+  await nagAssertion("the unknown $220 renders no board annotation hint", nagD5, () =>
+    assertNagHint((hint) => !hint.rendered),
   );
-  await nagStep(
-    "the unknown $220 renders no board annotation hint",
-    nagD5,
-    async () => !(await hintProbe()).rendered,
-  );
-  const nagNc3 = await nagStep(
-    "real notation navigation selects 3.Nc3 in the NAG game",
-    nagD5,
-    () => navigateNagMove("Nc3"),
-  );
-  const nagAnnotated = await nagStep(
-    "the Annotate panel's ?! button annotates 3.Nc3",
-    nagNc3,
-    async () => {
-      const tab = await session.execute(`
+  const nagNc3 = await nagSetup("navigation to 3.Nc3", nagOpened, () => navigateNagMove("Nc3"));
+  const nagAnnotated = await nagSetup("Annotate panel ?! click", nagNc3, async () => {
+    const tab = await session.execute(`
       const tab = [...document.querySelectorAll('[role="tab"]')].find((tab) => tab.textContent.trim() === 'Annotate');
       if (!tab) return false;
       const box = tab.getBoundingClientRect();
       return { x: Math.round(box.left + box.width / 2), y: Math.round(box.top + box.height / 2) };
     `);
-      if (!tab) throw new Error("the Annotate tab was not rendered");
-      await clickAt(session, tab.x, tab.y);
-      const button = await waitFor(
-        "the Annotate ?! control",
-        () =>
-          session.execute(`
+    if (!tab) throw new Error("the Annotate tab was not rendered");
+    await clickAt(session, tab.x, tab.y);
+    const button = await waitFor(
+      "the Annotate ?! control",
+      () =>
+        session.execute(`
       const button = [...document.querySelectorAll('[role="tabpanel"] button')].find((button) => button.textContent.trim() === '?!');
       if (!button) return false;
       const box = button.getBoundingClientRect();
       return box.width > 0 && box.height > 0 && { x: Math.round(box.left + box.width / 2), y: Math.round(box.top + box.height / 2) };
     `),
-        { timeoutMs: FILES_PROBE_TIMEOUT_MS },
-      );
-      await clickAt(session, button.x, button.y);
-      return waitFor(
-        "Nc3?! in the real notation",
-        () =>
-          session.execute(`
+      { timeoutMs: FILES_PROBE_TIMEOUT_MS },
+    );
+    await clickAt(session, button.x, button.y);
+    return waitFor(
+      "Nc3?! in the real notation",
+      () =>
+        session.execute(`
       return [...document.querySelectorAll('button[class*="cell"]')]
         .some((button) => button.textContent.trim().replace('♘', 'N') === 'Nc3?!');
     `),
-        { timeoutMs: FILES_PROBE_TIMEOUT_MS },
-      );
-    },
-  );
-  const nagSaved = await nagStep(
+      { timeoutMs: FILES_PROBE_TIMEOUT_MS },
+    );
+  });
+  const nagMovetext = (pgn) =>
+    pgn
+      .split(/\r?\n/)
+      .filter((line) => line.trim() && !line.startsWith("["))
+      .join(" ");
+  const nagSaved = await nagAssertion(
     "SAVE_FILE writes Nc3?! to the seeded NAG file",
     nagAnnotated,
     async () => {
-      // SAVE_FILE is ctrl+s on Linux (src/state/keybinds.ts).
-      await session.call("POST", "/actions", {
-        actions: [
-          {
-            type: "key",
-            id: "nag-save",
-            actions: [
-              { type: "keyDown", value: "\uE009" },
-              { type: "keyDown", value: "s" },
-              { type: "keyUp", value: "s" },
-              { type: "keyUp", value: "\uE009" },
-            ],
+      const before = await readFile(nagsGamePath, "utf8");
+      let observed = before;
+      let readError;
+      try {
+        // SAVE_FILE is ctrl+s on Linux (src/state/keybinds.ts).
+        await session.call("POST", "/actions", {
+          actions: [
+            {
+              type: "key",
+              id: "nag-save",
+              actions: [
+                { type: "keyDown", value: "\uE009" },
+                { type: "keyDown", value: "s" },
+                { type: "keyUp", value: "s" },
+                { type: "keyUp", value: "\uE009" },
+              ],
+            },
+          ],
+        });
+        return await waitFor(
+          "the NAG file's saved Nc3?! edit",
+          async () => {
+            try {
+              observed = await readFile(nagsGamePath, "utf8");
+              readError = undefined;
+            } catch (error) {
+              readError = error.message;
+              return false;
+            }
+            return observed.includes("Nc3?!") && observed;
           },
-        ],
-      });
-      return waitFor(
-        "the NAG file's saved Nc3?! edit",
-        async () => {
-          const saved = await readFile(nagsGamePath, "utf8");
-          return saved.includes("Nc3?!") && saved;
-        },
-        { timeoutMs: FILES_PROBE_TIMEOUT_MS },
-      );
+          { timeoutMs: FILES_PROBE_TIMEOUT_MS },
+        );
+      } catch (error) {
+        throw new Error(
+          `${error.message}; file changed: ${observed !== before}; NAG movetext: ${nagMovetext(observed)}${readError ? `; read error: ${readError}` : ""}`,
+        );
+      }
     },
   );
   for (const text of ["$8", "$11", "d4! $2", "$220"]) {
-    await nagStep(`the saved NAG game preserves ${text}`, nagSaved, () => nagSaved.includes(text));
+    await nagAssertion(`the saved NAG game preserves ${text}`, nagSaved, () => {
+      const saved = nagSaved.value;
+      if (!saved.includes(text)) throw new Error(`observed saved movetext: ${nagMovetext(saved)}`);
+      return true;
+    });
   }
 
   const retainedRead = await invokeAndWait(

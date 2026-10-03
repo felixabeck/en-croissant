@@ -310,6 +310,40 @@ mod tests {
     }
 
     #[test]
+    fn test_lex_pgn_sync_lossless_nags() {
+        let pgn = "1. e4 $8 $8 c6 $11 2. d4! $2 d5 $14 $1 3. Nc3 $220 dxe4?! $146 4. Nxe4 $0 Bf5 $255 5. a3!? *";
+        let tokens = lex_pgn_sync(pgn).unwrap();
+        assert_eq!(
+            tokens,
+            vec![
+                Token::San("e4".to_string()),
+                Token::Nag("$8".to_string()),
+                Token::Nag("$8".to_string()),
+                Token::San("c6".to_string()),
+                Token::Nag("$11".to_string()),
+                Token::San("d4".to_string()),
+                Token::Nag("$1".to_string()),
+                Token::Nag("$2".to_string()),
+                Token::San("d5".to_string()),
+                Token::Nag("$14".to_string()),
+                Token::Nag("$1".to_string()),
+                Token::San("Nc3".to_string()),
+                Token::Nag("$220".to_string()),
+                Token::San("dxe4".to_string()),
+                Token::Nag("$6".to_string()),
+                Token::Nag("$146".to_string()),
+                Token::San("Nxe4".to_string()),
+                Token::Nag("$0".to_string()),
+                Token::San("Bf5".to_string()),
+                Token::Nag("$255".to_string()),
+                Token::San("a3".to_string()),
+                Token::Nag("$5".to_string()),
+                Token::Outcome("*".to_string()),
+            ]
+        );
+    }
+
+    #[test]
     fn test_lex_pgn_sync_empty() {
         let tokens = lex_pgn_sync("").unwrap();
         assert_eq!(tokens, vec![]);
