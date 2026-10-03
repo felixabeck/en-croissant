@@ -4946,8 +4946,8 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Chosen:** The phase proof is `pnpm coverage:report:test` and then `pnpm gate:ensure backend-coverage`.
 * **Rejected:** Relying on path selection or on `pnpm gates:push` without `--rust`.
 * **Reason:** The artefact is the gate. The unit test does not execute `main` or Cargo. Reversal path: teach lane selection to notice this script, which is a different change and is not this mandate.
-* **Decided by:** Grok, drain session e1db7603-3919-4fe0-898a-de9d5f32da44, adopting the reviewed plan for f-20261002-09 · **Superseded-by:** -
-<!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"feba5761eaf5d14e049b9e1d69445861465681367d560e34e67b435940782aef","input_sha256":"4c80fde878f8a5ae997e9b6435e694174ca7a2a300539318445ae87274eae981","kind":"mutation-receipt","operation":"ee670fff8e9024dff9f369dd4d6f9e829f39a6b65e178d0a0405687a8a8e7a2b","options":{"section":null},"request_id_sha256":null,"results":["d-20261003-01","d-20261003-02","d-20261003-03"],"target":"decisions-ledger","v":1} -->
+* **Decided by:** Grok, drain session e1db7603-3919-4fe0-898a-de9d5f32da44, adopting the reviewed plan for f-20261002-09 · **Superseded-by:** d-20261003-04
+<!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"4da2eedfbb4a0ce3004450972527f71f4175a42c9e937da86b0a309c7e9778cc","input_sha256":"4c80fde878f8a5ae997e9b6435e694174ca7a2a300539318445ae87274eae981","kind":"mutation-receipt","operation":"ee670fff8e9024dff9f369dd4d6f9e829f39a6b65e178d0a0405687a8a8e7a2b","options":{"section":null},"request_id_sha256":null,"results":["d-20261003-01","d-20261003-02","d-20261003-03"],"target":"decisions-ledger","v":1} -->
 
 ### d-20261003-04 — Is the coverage unit test enough proof of the profraw clear?
 
