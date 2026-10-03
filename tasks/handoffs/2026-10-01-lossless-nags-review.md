@@ -49,8 +49,10 @@ reproduces every raw plan-review lens report and both delta outputs verbatim.
 
 * A tab opened before this fix holds only what the old 26-glyph parser kept: `""` where `$8`/`$11`
   (or any other unmapped NAG) were, and the canonical code where an alias was (`$23` came in as ⨀
-  and migrates to `$22`, `$33` to `$32`). Migration cannot restore either. Every tab opened before
-  the fix must be closed and reopened from its file before it is saved.
+  and migrates to `$22`, `$33` to `$32`). Migration cannot restore either. Only a tab whose source
+  carried an unmapped or alias NAG actually lost data; a tab with canonical glyphs only migrates
+  losslessly. A migrated tab does not show which case it is, though, so the safe rule is that every
+  tab opened before the fix is closed and reopened from its file before it is saved.
 * A move with two move-quality NAGs shows them concatenated (see `f-20261003-03`); the saved PGN is
   correct.
 
@@ -259,6 +261,28 @@ grey badge carrying □ at the top-right corner of e4 (□ has no configured col
 neutral grey; before the fix it was a grey dot with no symbol), the notation
 `1. e4□ e5= 2. d4!? d5 3. ♘c3` with e4 selected, and the white pawn caught mid-animation on e3.
 The `d4!?` rendering of `$1 $2` is filed as `f-20261003-03`.
+
+### Timing and the records review
+
+Per-round wall times of the four diff rounds are unknown: the orchestrator's scratch directory,
+which held the lens streams and logs, was deleted by a reboot Felix made after diff round 4, and
+no timings were recorded before that. The reboot was a pause of roughly half an hour between the
+real-window proof and the records review; it is not review time. Diff round 1 and the closure
+rounds each completed within one polling window of about 10–25 minutes, which is the only timing
+evidence left.
+
+Records lens (one Codex leaf, `--role mechanical`, over `tasks/decisions.md`, `tasks/findings.md`
+and this file, 2026-10-03, verdict REVISE). It verified the copied plan sections, Appendix A and
+both delta outputs against their sources. Findings and verdicts:
+
+| Finding | Verdict |
+|---|---|
+| f-20261001-12's `Open question` bullet still reads as open after the close | Fix → annotation naming the answering decisions |
+| "Every tab must be reopened" overstates the loss (canonical-only tabs migrate losslessly) | Fix → the Known limits bullet above names the actual loss and why the rule stays |
+| d-20261003-19 states the first migration guard ("no `nags` array"), not the repaired own-key guard, and lacks the length cap | Fix → `d-20261003-20` records both refinements; d-20261003-19 superseded by it |
+| f-20261003-03 does not link this handoff | Fix → annotation with the link and the load instruction |
+| The diff rounds give no timing | Fix → this section |
+| `d-20261003-17` says `nagGlyphs` returns codes; it returns glyphs | Skip (wording only; the sentence names the display projection, and superseding a decision for wording churns the ledger) |
 
 ## Appendix A — raw plan-review lens reports and delta outputs (2026-10-01)
 
