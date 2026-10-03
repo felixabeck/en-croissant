@@ -8620,13 +8620,15 @@ mod portable_tests {
 
         let message = "test object changed";
         for error in [
-            Error::Io(std::io::Error::from_raw_os_error(
+            Error::Io(Box::new(std::io::Error::from_raw_os_error(
                 ERROR_FILE_NOT_FOUND as i32,
-            )),
-            Error::Io(std::io::Error::from_raw_os_error(
+            ))),
+            Error::Io(Box::new(std::io::Error::from_raw_os_error(
                 ERROR_PATH_NOT_FOUND as i32,
-            )),
-            Error::Io(std::io::Error::from_raw_os_error(ERROR_DIRECTORY as i32)),
+            ))),
+            Error::Io(Box::new(std::io::Error::from_raw_os_error(
+                ERROR_DIRECTORY as i32,
+            ))),
             Error::InvalidInput("reparse points cannot be authorized".into()),
         ] {
             let result = conflict_if_replaced(error, message);
@@ -8650,9 +8652,9 @@ mod portable_tests {
             matches!(&result, Error::InvalidInput(message) if message == "other invalid input")
         );
         let result = conflict_if_replaced(
-            Error::Io(std::io::Error::from_raw_os_error(
+            Error::Io(Box::new(std::io::Error::from_raw_os_error(
                 ERROR_ACCESS_DENIED as i32,
-            )),
+            ))),
             "test object changed",
         );
         assert!(matches!(result, Error::Io(error)
