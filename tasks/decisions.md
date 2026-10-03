@@ -5194,3 +5194,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The short-page contract belongs to the one command and its one multi-row caller. Reversal path: a second multi-row `readGames` consumer, which would extract the loop (rule 11).
 * **Decided by:** Claude Code, drain session 648a7fac-1f9b-4bc0-8e9a-df298dc5f16d, full auto, adopted reviewed plan of f-20260914-05 (planned ahead, 8 review rounds) · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"fda363e35ce375692b3ded5955903fd6b6ba7bcd9f63c6875ff8d5cf5d162451","input_sha256":"197bf84312ca6a594a10b02b8c7bdd42695b74cfcec353144ce30d9c41955be4","kind":"mutation-receipt","operation":"171a04031eb14f232c8a01e709913f70cd555bf3205277153e2d41a8296432ed","options":{"section":null},"request_id_sha256":null,"results":["d-20261004-03"],"target":"decisions-ledger","v":1} -->
+
+### d-20261004-04 — Does f-20260914-05 still change ImportModal's whole-corpus probe?
+
+* **Question:** The finding names ImportModal requesting the whole corpus through `readGames` and rejecting a 1 001-game file; does this change need to touch it?
+* **Governs:** f-20260914-05
+* **Chosen:** No change: `fefd7a5f` (`d-20260927-01`) already streams a saved PGN natively and `ImportModal.tsx` no longer calls `readGames`.
+* **Rejected:** Re-adding a paged probe to ImportModal (nothing calls it).
+* **Reason:** The clause is already resolved in the tree. Reversal path: ImportModal regaining a `readGames` call.
+* **Decided by:** Claude Code, drain session 648a7fac-1f9b-4bc0-8e9a-df298dc5f16d, full auto, adopted reviewed plan of f-20260914-05 (planned ahead, 8 review rounds) · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"4f4d4de012c333582fa86e165fc8befaa81dd2da585cad7265ae150ab10b2640","input_sha256":"fd8b0c20e7552b29da4ba9be6f11913abcf9b48d29de3cb98ca7da5ac77f4ba5","kind":"mutation-receipt","operation":"56f9f45c2c265f51b11f892c8a478921484c3b911e4a0067e03c14a29ef3ebd1","options":{"section":null},"request_id_sha256":null,"results":["d-20261004-04"],"target":"decisions-ledger","v":1} -->
