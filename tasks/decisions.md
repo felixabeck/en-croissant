@@ -4996,3 +4996,58 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The new field is unused until the create path consumes it, and the allowlist shrink is false until `timestamp` is gone. `d-20260901-03` makes the allowlist shrink-only, so the count change belongs in the same commit as the reach it removes.
 * **Decided by:** drain 12e7ce13-be17-4664-9d3a-1b5f120c3ba5 · Grok · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"dd783b3b5b52f00c907f71d737ce37a3b084cfafc04a08d5627e339b7b0a0b9c","input_sha256":"33620c2d90c3940577e4c90b9b4639ab8fca6e196ad30c79f1529ee82ca12d96","kind":"mutation-receipt","operation":"4c9d2ddb24967da005d4dc553445b271492d6001fc84ff75068866aeeea9d4a1","options":{"section":null},"request_id_sha256":null,"results":["d-20261003-06","d-20261003-07","d-20261003-08"],"target":"decisions-ledger","v":1} -->
+
+### d-20261003-09 — What does the directory listing bound measure?
+
+* **Question:** Where does the bound on a user-chosen directory listing sit, and what does it measure?
+* **Governs:** f-20260913-06
+* **Chosen:** One constant, `MAX_DIRECTORY_LISTING_ENTRIES = 4_096`, equal to `MAX_AUTHORITY_IDS`. It counts non-dot directory names, including names a later `keep` drops, and it counts staged workspace nodes across one `collect_tree_entries` call. The 4097th name or staged node returns `Error::ResourceLimit` and no partial success. The check runs only when the caller passed `Some`. Database and puzzle listings are one directory, so the directory cap already bounds them.
+* **Rejected:** A byte budget. A cap on kept names only. A separate time budget. Capping `walk_directory`, `sync_tree`, or `remove_tree_at`.
+* **Reason:** The finding's memory failure is the materialised vec, and the registry cap it names is a count of identities. Depth 64 already exists under d-20260914-02 and d-20260830-02. Reversal path: a later decision that names a different unit and shows the count misses the accumulation the finding describes.
+* **Decided by:** Grok, drain session b52c3a69-4f9f-48f1-820e-e09578b059d0, full auto, plan review of f-20260913-06 · **Superseded-by:** -
+
+### d-20261003-10 — What does a failed listing keep in the path registry?
+
+* **Question:** Does a listing that fails after it has prepared registry writes leave fresh identities behind?
+* **Governs:** f-20260913-06
+* **Chosen:** Fresh identities are not committed during the walk. One snapshot `commit_candidate`, after the net comparison at the existing registry growth check and after the reuse loop, admits every fresh identity and retires the unchanged pre-walk unobserved set together. The comparison runs before any per-entry canonicalization commit, so a refusal writes nothing. A workspace or database lookup that misses and mints is a one-for-one replacement in that candidate. A puzzle same-path identity change returns the existing `Conflict` and the snapshot commit does not run. A game-count failure or a cancellation after the workspace snapshot returns `Err` and leaves the registry matching the snapshot. `DurabilityUncertain` adopts that candidate and is not retried. A hard save error leaves the previous registry.
+* **Rejected:** A registry transaction that rolls back a prefix already committed. Delaying retirement until the command returns `Ok`. A new puzzle identity-replacement path. Registering fresh ids one by one during the walk and then deleting them on failure.
+* **Reason:** d-20260914-02 rejected a transaction that undoes a committed prefix and left this churn question to f-20260913-06. Game counts need the handles that the snapshot commit publishes, and the growth check refuses a candidate that grows past `MAX_AUTHORITY_IDS`. Puzzle identity mismatch is already `Conflict`. Reversal path: evidence that game counts can run on unpublished handles, which would let the snapshot wait until the command returns `Ok`.
+* **Decided by:** Grok, drain session b52c3a69-4f9f-48f1-820e-e09578b059d0, full auto, plan review of f-20260913-06 · **Superseded-by:** -
+
+### d-20261003-11 — Which identities does a successful listing release?
+
+* **Question:** Which path-authority identities does a completed listing retire?
+* **Governs:** f-20260913-06
+* **Chosen:** Only ids recorded before the walk, under the authority lock, whose stored path, identity, and purpose are unchanged and which this listing did not reuse. The set is workspace `PgnFile` and `PgnWorkspace` strictly under the root and not the trash directory, database `DatabaseFile` direct children, and puzzle `PuzzleFile` direct children. An id created during the unlocked walk stays. A trash rebind changes the stored path and stays. The commit clones `persistent` under the lock at commit time. It does not call `remove_workspace_entry`.
+* **Rejected:** Retiring every id the snapshot did not observe. Retiring by path prefix across every purpose. Holding the authority lock across the walk. A new mutex.
+* **Reason:** The listing does not hold the authority lock across the walk, so a create that registers during the walk is a live handle. The finding's changing-tree churn is otherwise permanent once the cap is full. Reversal path: evidence that the listing holds the authority lock for the whole walk, which would make the pre-walk set unnecessary.
+* **Decided by:** Grok, drain session b52c3a69-4f9f-48f1-820e-e09578b059d0, full auto, plan review of f-20260913-06 · **Superseded-by:** -
+
+### d-20261003-12 — What does the renderer show when a listing exceeds the bound?
+
+* **Question:** What does the user see when a workspace, database, or puzzle listing exceeds the entry bound?
+* **Governs:** f-20260913-06
+* **Chosen:** The existing listing error. `Error::ResourceLimit` already serializes as category `resource-limit`. No new page copy, command, event, or capability in this change. f-20260913-05 owns the Files and Databases sentence.
+* **Rejected:** New renderer copy in this change. A new IPC event.
+* **Reason:** The finding asks where the bound sits. The typed category the renderer already maps is enough for this change. Reversal path: Felix asking this change to own the page sentence, which moves the work into f-20260913-05's area.
+* **Decided by:** Grok, drain session b52c3a69-4f9f-48f1-820e-e09578b059d0, full auto, plan review of f-20260913-06 · **Superseded-by:** -
+
+### d-20261003-13 — Does the directory reader cap the engine-launch sweep and practice reads?
+
+* **Question:** Does the shared directory reader cap the macOS engine-launch sweep and `AuthorizedDir::entries`?
+* **Governs:** f-20260913-06
+* **Chosen:** No. Both `cfg` bodies of `read_directory_entries_at` take `Option<usize>`. Windows `read_directory_entries` forwards that option into `enumerate_directory` and does not supply `Some` itself. The windows body of `read_directory_entries_at` forwards the same option. Only `CapabilityDirectory::entries` passes `Some(MAX_DIRECTORY_LISTING_ENTRIES)`. The sweep and `AuthorizedDir::entries` pass `None`, and that `None` survives the windows wrapper. Windows removal and install sync also pass `None`. No sweep cleanup protocol.
+* **Rejected:** An unconditional cap inside `read_directory_entries_at` or inside `read_directory_entries`. A cleanup that deletes the lock file and instance directory a failed engine-launch init just created.
+* **Reason:** The finding names `collect_tree_entries` and `map_db3_children_cancellable`. The sweep creates its lock and instance before it reads, and that error fails process startup, so a cap there cannot recover. Practice shard reads are not this finding's callers. A `Some` hidden in the windows wrapper would cap them anyway, because `AuthorizedDir::entries` reaches that wrapper. Reversal path: a decision that practice shard directories and the engine-launch root are user-chosen listings under this finding.
+* **Decided by:** Grok, drain session b52c3a69-4f9f-48f1-820e-e09578b059d0, full auto, plan review of f-20260913-06 · **Superseded-by:** -
+
+### d-20261003-14 — Is the file-wide FreeBSD cfg flip a gate for the listing bound?
+
+* **Question:** Does the listing-bound change have to make a file-wide `target_os = "linux"` to `target_os = "freebsd"` flip compile?
+* **Governs:** f-20260913-06
+* **Chosen:** No. The flip is a recorded limitation. On HEAD `b13f3b52`, a guard-preserving flip of `infra/fs.rs` and `path_authority/mod.rs` in a throwaway worktree, checked with that worktree's manifest, exited 101. Missing `dist` is not the only error: macOS `StatFs` and `libc::MNT_UNION` branches compile on Linux after the flip, and linux-only engine methods drop out while their callers remain. Host tests of the `cfg(unix)` cap, a source pin that the optional cap applies only for `Some`, `pnpm rust:windows:check`, and the existing `rust-windows-test`, `rust-macos-test`, and `rust-platform` jobs are the proof. The guard at `path_authority/mod.rs` stays. If the phase adds a new linux cfg line, only that new line is flipped, in a worktree, with checkout `dist` symlinked. This phase adds no such line. Do not rewrite the macOS branches or the linux-only engine methods to make the file-wide flip pass.
+* **Rejected:** Pointing the probe at the checkout manifest. Replacing `target_os = "linux"` inside the unsupported-unix `compile_error` guard. Adding an apple-darwin or freebsd rustup target. Rewriting pre-existing macOS filesystem branches so the file-wide flip is green.
+* **Reason:** A focused review-plan judgment approved this limit after the guard-exempt probe. The flip's purpose is to compile non-linux bodies on a Linux host. On these two files that compile fails for reasons that predate the listing bound. Reversal path: a measurement that the same guard-preserving flip, with `dist` supplied, exits 0 without edits outside the new cfg lines.
+* **Decided by:** Grok, drain session b52c3a69-4f9f-48f1-820e-e09578b059d0, full auto, plan review of f-20260913-06 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":53,"effect_sha256":"ff78acf08bfbe400f2127f2e1262b6030e702fdc4533b02a2820f3e6c66b50f2","input_sha256":"3d30ab95b419f9bf087c3a077192bc594f96747b473590c6cd437b349290cb47","kind":"mutation-receipt","operation":"f566f69c8d94f73216153c72e3ed357960227d813063b4c410b60b4fd91c32fc","options":{"section":"2026-10-03 \u2014 recorded through the decisions lock"},"request_id_sha256":null,"results":["d-20261003-09","d-20261003-10","d-20261003-11","d-20261003-12","d-20261003-13","d-20261003-14"],"target":"decisions-ledger","v":1} -->
