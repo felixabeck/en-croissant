@@ -748,7 +748,11 @@ VERDICT: APPROVED
 
 ### Diff round 3 (closure) — `fa979dd8..` this record's commit
 
-Reviews the 2490aed6 delta (D11, with `review-correctness` and `review-tests`) and this record together with `tasks/decisions.md` (records lens). Its result is reported in the f-20260913-05 closing note and the build-ledger row.
+Reviewed the 2490aed6 delta (`review-minimalism`, `review-correctness`, `review-tests`) and this record with `tasks/decisions.md` (records lens, `mechanical`). Result: all four APPROVED. D11 CLOSED (minimalism, correctness, tests: the hook uses `KeyedTestValues`, keyed by capability id, cleared by its guard; both cancellation witnesses intact). R1, R2 and R4 CLOSED (records); R3 stays deferred as `f-20261002-11`. No new finding.
+
+### Diff round 4 (records) — `d44d7757`
+
+The records lens checked the f-20260913-05 closing note and found one stale pointer in this record (round 3's result was said to live in the closing note and build ledger, which held only round counts); this paragraph now states the round-3 result directly.
 
 ### Raw diff-review reports (verbatim)
 
