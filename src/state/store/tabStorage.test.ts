@@ -120,6 +120,52 @@ test("legacy NAG migration preserves order, duplicates and children and writes b
     expect(migrateTreeForStorage(expected)).toEqual(expected);
 });
 
+test("legacy NAG migration accepts every value of the old glyph schema", () => {
+    const tree = defaultTree();
+    const { nags: _rootNags, ...root } = tree.root;
+    persistTree("all-legacy-nags", {
+        ...tree,
+        root: {
+            ...root,
+            annotations: [
+                "",
+                "!",
+                "!!",
+                "?",
+                "??",
+                "!?",
+                "?!",
+                "+-",
+                "±",
+                "⩲",
+                "=",
+                "∞",
+                "⩱",
+                "∓",
+                "-+",
+                "N",
+                "↑↑",
+                "↑",
+                "→",
+                "⇆",
+                "=∞",
+                "⊕",
+                "∆",
+                "□",
+                "⨀",
+                "⊗",
+            ],
+        },
+    });
+    expect(storage.readTree("all-legacy-nags")).toEqual({
+        kind: "available",
+        value: {
+            version: TREE_STORAGE_VERSION,
+            state: { ...tree, root: { ...tree.root, nags: CANONICAL_GLYPH_NAGS } },
+        },
+    });
+});
+
 test("legacy NAG migration refuses invalid glyphs and keeps unreadable bytes gated", () => {
     const tree = defaultTree();
     const { nags: _nags, ...root } = tree.root;
