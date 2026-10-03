@@ -146,7 +146,7 @@ test("virtualizes a 20,000-node line and navigates/highlights mounted moves", as
   const state = defaultTree();
   let parent = state.root;
   const sharedMove = parseUci("e2e4")!;
-  const sharedAnnotations: [] = [];
+  const sharedNags: [] = [];
   const sharedShapes: [] = [];
   for (let index = 1; index <= 20_000; index += 1) {
     const child: TreeNode = {
@@ -158,7 +158,7 @@ test("virtualizes a 20,000-node line and navigates/highlights mounted moves", as
       depth: null,
       halfMoves: index,
       shapes: sharedShapes,
-      annotations: sharedAnnotations,
+      nags: sharedNags,
       comment: "",
     };
     parent.children = [child];

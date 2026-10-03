@@ -38,6 +38,7 @@ import {
   tableViewAtom,
 } from "@/state/atoms";
 import { keyMapAtom } from "@/state/keybinds";
+import { nagGlyphs } from "@/utils/annotation";
 import { formatScore } from "@/utils/score";
 import { getNodeAtPath, type TreeNode } from "@/utils/treeReducer";
 import CompleteMoveCell from "./CompleteMoveCell";
@@ -308,7 +309,7 @@ function moveProps(
     move: move.node.san,
     fen: move.node.fen,
     comment: move.node.comment,
-    annotations: move.node.annotations,
+    annotations: nagGlyphs(move.node.nags),
     showComments,
     first: move.first,
     isStart: move.node === startNode,

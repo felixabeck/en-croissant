@@ -7,7 +7,7 @@ import { createStore, type StateCreator, type StoreApi } from "zustand";
 import { persist } from "zustand/middleware";
 import type { BestMoves, Outcome, Score } from "@/bindings";
 import { tabStorage, TREE_STORAGE_VERSION, type TabTreeStorageStatus } from "./tabStorage";
-import { ANNOTATION_INFO, type Annotation } from "@/utils/annotation";
+import { ANNOTATION_INFO, type Annotation, nagGlyph } from "@/utils/annotation";
 import { getPGN } from "@/utils/chess";
 import { parseSanOrUci, positionFromFen } from "@/utils/chessops";
 import { isPrefix } from "@/utils/misc";
@@ -307,7 +307,7 @@ export const createTreeStore = (id?: string, initTree?: TreeState) => {
                         node = getNodeAtPath(state.root, p);
 
                         if (
-                            node.annotations.includes(annotation) &&
+                            node.nags.some((code) => nagGlyph(code) === annotation) &&
                             node.halfMoves % 2 === colorN
                         ) {
                             state.position = p;
@@ -558,17 +558,18 @@ export const createTreeStore = (id?: string, initTree?: TreeState) => {
                     state.dirty = true;
                     const node = getNodeAtPath(state.root, state.position);
                     if (node) {
-                        if (node.annotations.includes(payload)) {
-                            node.annotations = node.annotations.filter((a) => a !== payload);
+                        if (node.nags.some((code) => nagGlyph(code) === payload)) {
+                            node.nags = node.nags.filter((code) => nagGlyph(code) !== payload);
                         } else {
-                            const newAnnotations = node.annotations.filter(
-                                (a) =>
-                                    !ANNOTATION_INFO[a].group ||
-                                    ANNOTATION_INFO[a].group !== ANNOTATION_INFO[payload].group,
-                            );
-                            node.annotations = [...newAnnotations, payload].sort((a, b) =>
-                                ANNOTATION_INFO[a].nag > ANNOTATION_INFO[b].nag ? 1 : -1,
-                            );
+                            node.nags = node.nags.filter((code) => {
+                                const glyph = nagGlyph(code);
+                                return (
+                                    !glyph ||
+                                    !ANNOTATION_INFO[glyph].group ||
+                                    ANNOTATION_INFO[glyph].group !== ANNOTATION_INFO[payload].group
+                                );
+                            });
+                            node.nags.push(ANNOTATION_INFO[payload].nag);
                         }
                     }
                 }),
@@ -934,7 +935,8 @@ function addAnalysis(
                 cur.san || "",
             );
             if (annotation) {
-                cur.annotations = [...cur.annotations, annotation];
+                const code = ANNOTATION_INFO[annotation].nag;
+                if (!cur.nags.includes(code)) cur.nags.push(code);
 
                 if (
                     options?.showVariations &&
@@ -999,13 +1001,9 @@ function addAnalysis(
                     }
                 }
             }
-            if (analysis[i].novelty) {
-                cur.annotations = [...cur.annotations, "N"];
+            if (analysis[i].novelty && !cur.nags.includes(146)) {
+                cur.nags.push(146);
             }
-            cur.annotations = [...new Set(cur.annotations)];
-            cur.annotations.sort((a, b) =>
-                ANNOTATION_INFO[a].nag > ANNOTATION_INFO[b].nag ? 1 : -1,
-            );
         }
         parent = cur;
         cur = cur.children[0];

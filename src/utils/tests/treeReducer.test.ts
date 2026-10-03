@@ -102,7 +102,7 @@ test("defaultTree normalizes the root while preserving complete deterministic de
             halfMoves: 1,
             children: [],
             shapes: [],
-            annotations: [],
+            nags: [],
             comment: "",
         },
     });

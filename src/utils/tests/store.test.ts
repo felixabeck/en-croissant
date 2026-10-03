@@ -40,7 +40,7 @@ const treeE4D5: () => TreeState = () => ({
                         depth: null,
                         halfMoves: 2,
                         shapes: [],
-                        annotations: [],
+                        nags: [],
                         comment: "",
                     },
                 ],
@@ -49,7 +49,7 @@ const treeE4D5: () => TreeState = () => ({
                 depth: null,
                 halfMoves: 1,
                 shapes: [],
-                annotations: [],
+                nags: [],
                 comment: "",
             },
         ],
@@ -57,7 +57,7 @@ const treeE4D5: () => TreeState = () => ({
         depth: null,
         halfMoves: 0,
         shapes: [],
-        annotations: [],
+        nags: [],
         comment: "",
     },
     report: {
@@ -89,7 +89,7 @@ const treeE4D5Nf3: () => TreeState = () => ({
                         depth: null,
                         halfMoves: 2,
                         shapes: [],
-                        annotations: [],
+                        nags: [],
                         comment: "",
                     },
                 ],
@@ -98,7 +98,7 @@ const treeE4D5Nf3: () => TreeState = () => ({
                 depth: null,
                 halfMoves: 1,
                 shapes: [],
-                annotations: [],
+                nags: [],
                 comment: "",
             },
             {
@@ -111,7 +111,7 @@ const treeE4D5Nf3: () => TreeState = () => ({
                 depth: null,
                 halfMoves: 1,
                 shapes: [],
-                annotations: [],
+                nags: [],
                 comment: "",
             },
         ],
@@ -119,7 +119,7 @@ const treeE4D5Nf3: () => TreeState = () => ({
         depth: null,
         halfMoves: 0,
         shapes: [],
-        annotations: [],
+        nags: [],
         comment: "",
     },
     report: {
@@ -229,7 +229,7 @@ test("should handle makeMove", () => {
                     depth: null,
                     halfMoves: 1,
                     shapes: [],
-                    annotations: [],
+                    nags: [],
                     comment: "",
                 },
             ],
@@ -247,7 +247,7 @@ test("should handle makeMove", () => {
                     depth: null,
                     halfMoves: 1,
                     shapes: [],
-                    annotations: [],
+                    nags: [],
                     comment: "",
                 },
             ],
@@ -364,7 +364,7 @@ test("should handle setAnnotation", () => {
         children: [
             {
                 ...treeE4D5().root.children[0],
-                annotations: ["!"],
+                nags: [1],
             },
         ],
     };
@@ -608,6 +608,21 @@ const line = (value: number, san: string, uci: string) => ({
 // A ply whose UCI output was bound-only publishes no MultiPV set at all.
 const noLines = { best: [], novelty: false, is_sacrifice: false };
 
+test.each([
+    { score: -70, code: 6 },
+    { score: -140, code: 2 },
+    { score: -400, code: 4 },
+])("analysis report appends $code once without changing stored NAGs", ({ score, code }) => {
+    const tree = treeE4D5();
+    tree.root.children[0].nags = [8, 8, 220];
+    store.getState().setState(tree);
+    const analysis = [line(0, "e4", "e2e4"), { ...line(score, "d5", "d7d5"), novelty: true }];
+    store.getState().addAnalysis(analysis);
+    expect(store.getState().root.children[0].nags).toEqual([8, 8, 220, code, 146]);
+    store.getState().addAnalysis(analysis);
+    expect(store.getState().root.children[0].nags).toEqual([8, 8, 220, code, 146]);
+});
+
 test("addAnalysis annotates a ply whose predecessor has no lines without inventing a score", () => {
     store.getState().setState({ ...treeE4D5(), position: [0] });
     store.getState().addAnalysis([line(10, "e4", "e2e4"), noLines, line(900, "d5", "d7d5")]);
@@ -625,7 +640,7 @@ test("addAnalysis annotates a ply whose predecessor has no lines without inventi
     // +900 measured against an invented 0.00 baseline for the missing ply would
     // read as a blunder by Black. With no predecessor evaluation, no mistake
     // annotation is derivable at all.
-    expect(state.root.children[0].children[0].annotations).toStrictEqual([]);
+    expect(state.root.children[0].children[0].nags).toStrictEqual([]);
 });
 
 test("addAnalysis tolerates a previous-previous ply with no lines", () => {
@@ -642,7 +657,7 @@ test("addAnalysis tolerates a previous-previous ply with no lines", () => {
         value: { type: "cp", value: 20 },
         wdl: null,
     });
-    expect(state.root.children[0].children[0].annotations).toStrictEqual([]);
+    expect(state.root.children[0].children[0].nags).toStrictEqual([]);
 });
 
 test("should handle promoteVariation", () => {
@@ -702,7 +717,7 @@ const buildTranspositionTree = () => {
         depth: null,
         halfMoves: 1,
         shapes: [],
-        annotations: [],
+        nags: [],
         comment: "",
     };
     const e5Node: TreeNode = {
@@ -714,7 +729,7 @@ const buildTranspositionTree = () => {
         depth: null,
         halfMoves: 2,
         shapes: [],
-        annotations: [],
+        nags: [],
         comment: "",
     };
     const Nf3NodeMain: TreeNode = {
@@ -726,7 +741,7 @@ const buildTranspositionTree = () => {
         depth: null,
         halfMoves: 3,
         shapes: [],
-        annotations: [],
+        nags: [],
         comment: "",
     };
     const Nc6NodeMain: TreeNode = {
@@ -743,7 +758,7 @@ const buildTranspositionTree = () => {
                 depth: null,
                 halfMoves: 4,
                 shapes: [],
-                annotations: [],
+                nags: [],
                 comment: "",
             },
         ],
@@ -751,7 +766,7 @@ const buildTranspositionTree = () => {
         depth: null,
         halfMoves: 4,
         shapes: [],
-        annotations: [],
+        nags: [],
         comment: "",
     };
 
@@ -765,7 +780,7 @@ const buildTranspositionTree = () => {
         depth: null,
         halfMoves: 1,
         shapes: [],
-        annotations: [],
+        nags: [],
         comment: "",
     };
     const Nc6NodeSide: TreeNode = {
@@ -777,7 +792,7 @@ const buildTranspositionTree = () => {
         depth: null,
         halfMoves: 2,
         shapes: [],
-        annotations: [],
+        nags: [],
         comment: "",
     };
     const e4NodeSide: TreeNode = {
@@ -789,7 +804,7 @@ const buildTranspositionTree = () => {
         depth: null,
         halfMoves: 3,
         shapes: [],
-        annotations: [],
+        nags: [],
         comment: "",
     };
     const e5NodeSide: TreeNode = {
@@ -801,7 +816,7 @@ const buildTranspositionTree = () => {
         depth: null,
         halfMoves: 4,
         shapes: [],
-        annotations: [],
+        nags: [],
         comment: "",
     };
 
@@ -850,7 +865,7 @@ test("goToNext transposition fallback: no fallback when no transposition has chi
                 depth: null,
                 halfMoves: 1,
                 shapes: [],
-                annotations: [],
+                nags: [],
                 comment: "",
             },
             {
@@ -862,7 +877,7 @@ test("goToNext transposition fallback: no fallback when no transposition has chi
                 depth: null,
                 halfMoves: 1,
                 shapes: [],
-                annotations: [],
+                nags: [],
                 comment: "",
             },
         ],
@@ -893,7 +908,7 @@ test("goToNext transposition fallback: lexicographic priority", () => {
                 depth: null,
                 halfMoves: 3,
                 shapes: [],
-                annotations: [],
+                nags: [],
                 comment: "",
             },
         ],
@@ -901,7 +916,7 @@ test("goToNext transposition fallback: lexicographic priority", () => {
         depth: null,
         halfMoves: 2,
         shapes: [],
-        annotations: [],
+        nags: [],
         comment: "",
     };
     const nodeWithChildB: TreeNode = {
@@ -918,7 +933,7 @@ test("goToNext transposition fallback: lexicographic priority", () => {
                 depth: null,
                 halfMoves: 3,
                 shapes: [],
-                annotations: [],
+                nags: [],
                 comment: "",
             },
         ],
@@ -926,7 +941,7 @@ test("goToNext transposition fallback: lexicographic priority", () => {
         depth: null,
         halfMoves: 2,
         shapes: [],
-        annotations: [],
+        nags: [],
         comment: "",
     };
 
@@ -941,7 +956,7 @@ test("goToNext transposition fallback: lexicographic priority", () => {
         depth: null,
         halfMoves: 2,
         shapes: [],
-        annotations: [],
+        nags: [],
         comment: "",
     };
 
@@ -961,7 +976,7 @@ test("goToNext transposition fallback: lexicographic priority", () => {
                 depth: null,
                 halfMoves: 1,
                 shapes: [],
-                annotations: [],
+                nags: [],
                 comment: "",
             },
             {
@@ -973,7 +988,7 @@ test("goToNext transposition fallback: lexicographic priority", () => {
                 depth: null,
                 halfMoves: 1,
                 shapes: [],
-                annotations: [],
+                nags: [],
                 comment: "",
             },
             {
@@ -985,7 +1000,7 @@ test("goToNext transposition fallback: lexicographic priority", () => {
                 depth: null,
                 halfMoves: 1,
                 shapes: [],
-                annotations: [],
+                nags: [],
                 comment: "",
             },
         ],

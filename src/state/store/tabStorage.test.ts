@@ -85,6 +85,113 @@ function expectSeedRejected(value: ReturnType<typeof defaultTree>) {
     expect(sessionStorage.getItem("invalid")).toBeNull();
 }
 
+test("legacy NAG migration preserves order, duplicates and children and writes back", () => {
+    const tree = defaultTree();
+    const { nags: _rootNags, ...root } = tree.root;
+    const legacy = {
+        ...tree,
+        root: {
+            ...root,
+            annotations: ["", "!", "□"],
+            children: [{ ...root, annotations: ["□", "□"], children: [] }],
+        },
+    };
+    persistTree("legacy-nags", legacy);
+    const expected = {
+        ...tree,
+        root: {
+            ...tree.root,
+            nags: [1, 7],
+            children: [{ ...tree.root, nags: [7, 7], children: [] }],
+        },
+    };
+    expect(storage.readTree("legacy-nags")).toEqual({
+        kind: "available",
+        value: { version: TREE_STORAGE_VERSION, state: expected },
+    });
+    expect(deserializeStorageValue(sessionStorage.getItem("legacy-nags")!)).toEqual({
+        version: TREE_STORAGE_VERSION,
+        state: expected,
+    });
+    expect(storage.read("legacy-nags")?.state).toEqual(expected);
+    expect(migrateTreeForStorage(expected)).toEqual(expected);
+});
+
+test("legacy NAG migration refuses invalid glyphs and keeps unreadable bytes gated", () => {
+    const tree = defaultTree();
+    const { nags: _nags, ...root } = tree.root;
+    persistTree("invalid-legacy-nags", { ...tree, root: { ...root, annotations: ["bogus"] } });
+    const raw = sessionStorage.getItem("invalid-legacy-nags")!;
+    expect(storage.readTree("invalid-legacy-nags")).toEqual({ kind: "unreadable", rawValue: raw });
+    expect(storage.getStatus("invalid-legacy-nags")).toEqual({ kind: "unreadable", rawValue: raw });
+    expect(() => storage.seed("invalid-legacy-nags", tree)).toThrow(
+        "Cannot replace a tab tree while its storage is unreadable or unavailable.",
+    );
+    expect(sessionStorage.getItem("invalid-legacy-nags")).toBe(raw);
+});
+
+test.each([[256], [1.5], [-1]])("stored NAGs reject invalid codes %j", (code) => {
+    persistTree(
+        "invalid-nags",
+        treeWith((tree) => {
+            tree.root.nags = [code];
+        }),
+    );
+    const raw = sessionStorage.getItem("invalid-nags")!;
+    expect(storage.readTree("invalid-nags")).toEqual({ kind: "unreadable", rawValue: raw });
+    expectSeedRejected(
+        treeWith((tree) => {
+            tree.root.nags = [code];
+        }),
+    );
+});
+
+test("stored NAG boundaries remain unchanged", () => {
+    const tree = treeWith((tree) => {
+        tree.root.nags = [0, 255];
+    });
+    storage.seed("boundary-nags", tree);
+    expect(storage.read("boundary-nags")?.state).toEqual(tree);
+    expect(migrateTreeForStorage(tree)).toEqual(tree);
+});
+
+test("legacy annotations never replace an existing NAG array", () => {
+    const tree = treeWith((tree) => {
+        tree.root.nags = [8, 8, 220];
+    });
+    const mixed = { ...tree, root: { ...tree.root, annotations: ["?"] } };
+    expect(migrateTreeForStorage(mixed)).toEqual(mixed);
+    persistTree("mixed-nags", mixed);
+    expect(storage.readTree("mixed-nags")).toEqual({
+        kind: "available",
+        value: { version: TREE_STORAGE_VERSION, state: tree },
+    });
+});
+
+test("failed legacy NAG write-back returns the migrated tree and retries on the next read", () => {
+    const tree = defaultTree();
+    const { nags: _nags, ...root } = tree.root;
+    persistTree("quota-legacy-nags", { ...tree, root: { ...root, annotations: ["□"] } });
+    const raw = sessionStorage.getItem("quota-legacy-nags")!;
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementationOnce(() => {
+        throw new Error("quota");
+    });
+    expect(storage.readTree("quota-legacy-nags")).toMatchObject({
+        kind: "available",
+        value: { state: { root: { nags: [7] } } },
+    });
+    expect(sessionStorage.getItem("quota-legacy-nags")).toBe(raw);
+    expect(native.warn).toHaveBeenCalledWith(
+        expect.stringContaining("Could not migrate tree storage"),
+    );
+    setItem.mockRestore();
+    expect(storage.readTree("quota-legacy-nags")).toMatchObject({
+        kind: "available",
+        value: { state: { root: { nags: [7] } } },
+    });
+    expect(sessionStorage.getItem("quota-legacy-nags")).not.toBe(raw);
+});
+
 test("preserves every supported tree schema field and enum boundary", () => {
     const tree = treeWith((state) => {
         state.root = {
@@ -108,33 +215,9 @@ test("preserves every supported tree schema field and enum boundary", () => {
                             modifiers: { lineWidth: 0 },
                         },
                     ],
-                    annotations: [
-                        "",
-                        "!",
-                        "!!",
-                        "?",
-                        "??",
-                        "!?",
-                        "?!",
-                        "+-",
-                        "±",
-                        "⩲",
-                        "=",
-                        "∞",
-                        "⩱",
-                        "∓",
-                        "-+",
-                        "N",
-                        "↑↑",
-                        "↑",
-                        "→",
-                        "⇆",
-                        "=∞",
-                        "⊕",
-                        "∆",
-                        "□",
-                        "⨀",
-                        "⊗",
+                    nags: [
+                        1, 3, 2, 4, 5, 6, 18, 16, 14, 10, 13, 15, 17, 19, 146, 32, 36, 40, 132, 44,
+                        138, 140, 7, 22, 9,
                     ],
                     comment: "child",
                     clock: 0,
@@ -143,7 +226,7 @@ test("preserves every supported tree schema field and enum boundary", () => {
             score: { value: { type: "cp", value: 0 }, wdl: null },
             depth: null,
             shapes: [],
-            annotations: [],
+            nags: [],
             comment: "root",
         };
         state.headers = {
@@ -229,33 +312,9 @@ test("evaluates the complete static schema on a fresh ESM module instance", asyn
             },
         ];
         state.root.shapes = [{ orig: "a1", dest: "h8", brush: "", modifiers: { lineWidth: 0 } }];
-        state.root.annotations = [
-            "",
-            "!",
-            "!!",
-            "?",
-            "??",
-            "!?",
-            "?!",
-            "+-",
-            "±",
-            "⩲",
-            "=",
-            "∞",
-            "⩱",
-            "∓",
-            "-+",
-            "N",
-            "↑↑",
-            "↑",
-            "→",
-            "⇆",
-            "=∞",
-            "⊕",
-            "∆",
-            "□",
-            "⨀",
-            "⊗",
+        state.root.nags = [
+            1, 3, 2, 4, 5, 6, 18, 16, 14, 10, 13, 15, 17, 19, 146, 32, 36, 40, 132, 44, 138, 140, 7,
+            22, 9,
         ];
         state.headers = {
             ...state.headers,
@@ -271,7 +330,7 @@ test("evaluates the complete static schema on a fresh ESM module instance", asyn
             move: { from: 0, to: 63, promotion: "queen" },
             score: { value: { type: "cp", value: 0 }, wdl: [0, 1, 0] },
             shapes: [{ orig: "a1", dest: "h8", brush: "", modifiers: { lineWidth: 0 } }],
-            annotations: tree.root.annotations,
+            nags: tree.root.nags,
         },
         headers: { result: "0-1", orientation: "white", other: { custom: "value" } },
     });
@@ -481,7 +540,7 @@ test("rejects every persisted tree type, scalar, and structural boundary", () =>
                 (tree.root.shapes = [{ orig: "a1", dest: "h8", brush: "x".repeat(65) }] as never),
         ),
     );
-    expectSeedRejected(treeWith((tree) => (tree.root.annotations = ["invalid"] as never)));
+    expectSeedRejected(treeWith((tree) => (tree.root.nags = ["invalid"] as never)));
     expectSeedRejected(treeWith((tree) => (tree.root.halfMoves = -1)));
     expectSeedRejected(treeWith((tree) => (tree.root.depth = -1)));
     expectSeedRejected(treeWith((tree) => (tree.headers.id = 0.5)));

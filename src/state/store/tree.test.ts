@@ -103,7 +103,7 @@ function mainlinePrependStore() {
 test("goToAnnotation leaves the cursor unchanged when the annotation is only on a variation", () => {
     const tree = defaultTree();
     const variation = node("variation");
-    variation.annotations = ["!"];
+    variation.nags = [1];
     tree.root.children = [node("mainline", [node("continuation")]), variation];
     const store = createTreeStore(undefined, tree);
 
@@ -112,10 +112,23 @@ test("goToAnnotation leaves the cursor unchanged when the annotation is only on 
     expect(store.getState().position).toEqual([]);
 });
 
+test.each([
+    { code: 8, glyph: "□" as const },
+    { code: 11, glyph: "=" as const },
+])("goToAnnotation finds alias $code for $glyph", ({ code, glyph }) => {
+    const tree = defaultTree();
+    const child = node("alias");
+    child.nags = [code];
+    tree.root.children = [child];
+    const store = createTreeStore(undefined, tree);
+    store.getState().goToAnnotation(glyph, "white");
+    expect(store.getState().position).toEqual([0]);
+});
+
 test("goToAnnotation finds annotations while continuing from a variation", () => {
     const tree = defaultTree();
     const continuation = node("variation-continuation");
-    continuation.annotations = ["!"];
+    continuation.nags = [1];
     const variation = node("variation", [continuation]);
     tree.root.children = [node("mainline", [node("mainline-continuation"), variation])];
     tree.position = [0, 1];

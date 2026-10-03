@@ -2,15 +2,16 @@ import { beforeEach, expect, test, vi } from "vitest";
 import { parseUci } from "chessops";
 import { INITIAL_FEN } from "chessops/fen";
 import type { Token } from "@/bindings";
-import { ANNOTATION_INFO, type Annotation, NAG_INFO } from "../annotation";
+import { ANNOTATION_INFO, type Annotation, NAG_INFO, nagGlyphs } from "../annotation";
 import {
     getLastMainlinePosition,
+    getGameStats,
     getPGN,
     hasMorePriority,
     parsePGN,
     parseStartHeader,
 } from "../chess";
-import { createNode, defaultTree, type TreeNode } from "../treeReducer";
+import { createNode, defaultTree, treeIteratorMainLine, type TreeNode } from "../treeReducer";
 
 const mocks = vi.hoisted(() => ({ lexPgn: vi.fn() }));
 
@@ -26,7 +27,108 @@ function tokens(fen: string, san: string): Token[] {
     ];
 }
 
-beforeEach(() => mocks.lexPgn.mockReset());
+beforeEach(() => {
+    mocks.lexPgn.mockReset();
+});
+
+test("lossless NAG round trip preserves every code and multiplicity", async () => {
+    const pgn =
+        "1. e4 $8 $8 c6 $11 2. d4 $1 $2 d5 $14 $1 3. Nc3 $220 dxe4 $6 $146 4. Nxe4 $0 Bf5 $255";
+    // Model the native lexer's tokens, including the single attached suffix it recognises.
+    mocks.lexPgn.mockImplementation(async (source: string) => {
+        const result: Token[] = [];
+        for (const word of source.split(/\s+/)) {
+            if (word.startsWith("$")) result.push({ type: "Nag", value: word });
+            else if (/^[a-zA-Z]/.test(word)) {
+                const suffix = word.match(/[!?]+$/)?.[0];
+                result.push({ type: "San", value: suffix ? word.slice(0, -suffix.length) : word });
+                if (suffix)
+                    result.push({
+                        type: "Nag",
+                        value: `$${ANNOTATION_INFO[suffix as Annotation].nag}`,
+                    });
+            }
+        }
+        return result;
+    });
+    const parsed = await parsePGN(pgn);
+    const codes = (root: TreeNode) =>
+        [...treeIteratorMainLine(root)].slice(1).map(({ node }) => node.nags);
+    const expected = [[8, 8], [11], [1, 2], [14, 1], [220], [6, 146], [0], [255]];
+    expect(codes(parsed.root)).toEqual(expected);
+    const written = getPGN(parsed.root, {
+        headers: null,
+        glyphs: true,
+        comments: true,
+        variations: true,
+        extraMarkups: true,
+    });
+    for (const text of [
+        "e4 $8 $8",
+        "c6 $11",
+        "d4! $2",
+        "d5! $14",
+        "Nc3 $220",
+        "dxe4?! $146",
+        "Nxe4 $0",
+        "Bf5 $255",
+    ]) {
+        expect(written).toContain(text);
+    }
+    for (const text of ["d4!?", "$7", "$10"]) expect(written).not.toContain(text);
+    expect(codes(parsed.root)).toEqual(expected);
+    const reparsed = await parsePGN(written);
+    expect(codes(reparsed.root)).toEqual(expected.map((nags) => [...nags].sort((a, b) => a - b)));
+    expect(
+        getPGN(parsed.root, {
+            headers: null,
+            glyphs: false,
+            comments: false,
+            variations: false,
+            extraMarkups: false,
+        }),
+    ).not.toMatch(/\$|[!?]/);
+    expect(mocks.lexPgn).toHaveBeenCalledWith(pgn, undefined);
+});
+
+test("NAG parser ignores malformed and out-of-range tokens", async () => {
+    mocks.lexPgn.mockResolvedValueOnce([
+        { type: "San", value: "e4" },
+        ...["$256", "$-1", "$1.5", "$", "$1junk", "1", "$NaN", "$0", "$255"].map(
+            (value): Token => ({ type: "Nag", value }),
+        ),
+    ]);
+    expect((await parsePGN("tokens from native lexer")).root.children[0].nags).toEqual([0, 255]);
+});
+
+test.each([
+    [[8], ["□"]],
+    [[11], ["="]],
+    [
+        [14, 8],
+        ["□", "⩲"],
+    ],
+    [[8, 8], ["□"]],
+    [[7, 8], ["□"]],
+    [[10, 11], ["="]],
+    [[220], []],
+    [[220, 1], ["!"]],
+])("NAG display projection %j yields %j", (nags, glyphs) => {
+    expect(nagGlyphs(nags as number[])).toEqual(glyphs);
+});
+
+test("game stats count every basic NAG including duplicates", () => {
+    const root = defaultTree().root;
+    let parent = root;
+    for (const nags of [[1, 1, 220], [2], [6, 8], []]) {
+        parent = addMainlineMove(parent, "move");
+        parent.nags = nags;
+    }
+    expect(getGameStats(root)).toMatchObject({
+        whiteAnnotations: { "!": 2, "?!": 1, "?": 0, "??": 0, "!!": 0, "!?": 0 },
+        blackAnnotations: { "!": 0, "?!": 0, "?": 1, "??": 0, "!!": 0, "!?": 0 },
+    });
+});
 
 function addMainlineMove(parent: TreeNode, san: string): TreeNode {
     const child = createNode({
@@ -61,7 +163,7 @@ test("PGN renders each basic and non-basic annotation once", () => {
         san: "e4",
         halfMoves: 1,
     });
-    move.annotations = ["!", "??", "∞"];
+    move.nags = [1, 4, 13];
     root.children.push(move);
 
     expect(
@@ -72,14 +174,14 @@ test("PGN renders each basic and non-basic annotation once", () => {
             variations: false,
             extraMarkups: false,
         }),
-    ).toBe("1. e4!?? $13");
+    ).toBe("1. e4! $4 $13");
 });
 
 test("NAGs are consistent", () => {
     for (const k of Object.keys(ANNOTATION_INFO)) {
         if (k === "") continue;
         const nag = ANNOTATION_INFO[k as Annotation].nag!;
-        expect(NAG_INFO.get(`$${nag}`)).toBe(k);
+        expect(NAG_INFO.get(nag)).toBe(k);
     }
 });
 

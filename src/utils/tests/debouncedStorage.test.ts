@@ -13,7 +13,7 @@ test("serialize/deserialize round-trips a storage value losslessly", () => {
                 fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
                 children: [],
                 comment: "line one\nline two",
-                annotations: ["!", "?"],
+                nags: [1, 2],
                 shapes: [{ orig: "e2", dest: "e4", brush: "green" }],
                 score: { type: "cp", value: { type: "cp", value: 123 } },
             },

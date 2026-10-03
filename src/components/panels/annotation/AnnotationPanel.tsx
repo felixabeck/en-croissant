@@ -6,7 +6,7 @@ import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import { IconAction } from "@/components/common/IconAction";
-import { ANNOTATION_INFO, type Annotation, isBasicAnnotation } from "@/utils/annotation";
+import { ANNOTATION_INFO, type Annotation, isBasicAnnotation, nagGlyphs } from "@/utils/annotation";
 import { getNodeAtPath } from "@/utils/treeReducer";
 import AnnotationEditor from "./AnnotationEditor";
 
@@ -48,6 +48,7 @@ function AnnotationPanel() {
   const root = useStore(store, (s) => s.root);
   const position = useStore(store, (s) => s.position);
   const currentNode = getNodeAtPath(root, position);
+  const annotations = nagGlyphs(currentNode.nags);
   const [showMoreSymbols, setShowMoreSymbols] = useAtom(showMoreSymbolsAtom);
 
   return (
@@ -56,11 +57,7 @@ function AnnotationPanel() {
         <Group grow px="sm">
           {BASIC.map((annotation) => {
             return (
-              <SymbolButton
-                key={annotation}
-                curAnnotations={currentNode.annotations}
-                annotation={annotation}
-              />
+              <SymbolButton key={annotation} curAnnotations={annotations} annotation={annotation} />
             );
           })}
         </Group>
@@ -87,20 +84,12 @@ function AnnotationPanel() {
         <Stack mb="md">
           <Group grow>
             {ADVANTAGE.map((annotation) => (
-              <SymbolButton
-                key={annotation}
-                curAnnotations={currentNode.annotations}
-                annotation={annotation}
-              />
+              <SymbolButton key={annotation} curAnnotations={annotations} annotation={annotation} />
             ))}
           </Group>
           <Group grow>
             {EXTRA.map((annotation) => (
-              <SymbolButton
-                key={annotation}
-                curAnnotations={currentNode.annotations}
-                annotation={annotation}
-              />
+              <SymbolButton key={annotation} curAnnotations={annotations} annotation={annotation} />
             ))}
           </Group>
         </Stack>

@@ -6,7 +6,7 @@ import { INITIAL_FEN, makeFen, parseFen } from "chessops/fen";
 import { isPawns } from "chessops/pgn";
 import { makeSan, parseSan } from "chessops/san";
 import { type Outcome, type Score, type Token } from "@/bindings";
-import { ANNOTATION_INFO, isBasicAnnotation, NAG_INFO } from "./annotation";
+import { isBasicAnnotation, nagGlyph } from "./annotation";
 import { parseSanOrUci, positionFromFen } from "./chessops";
 import { harmonicMean, isPrefix, mean } from "./misc";
 import { splitPgnComment } from "./pgnComment";
@@ -75,11 +75,8 @@ export function getMoveText(
         }
         moveText += tree.san;
         if (opt.glyphs) {
-            for (const annotation of tree.annotations) {
-                if (annotation === "") continue;
-                moveText += isBasicAnnotation(annotation)
-                    ? annotation
-                    : ` $${ANNOTATION_INFO[annotation].nag}`;
+            for (const [index, code] of [...tree.nags].sort((a, b) => a - b).entries()) {
+                moveText += index === 0 && code >= 1 && code <= 6 ? nagGlyph(code) : ` $${code}`;
             }
         }
         moveText += " ";
@@ -448,10 +445,10 @@ function innerParsePGN(tokens: Token[], fen: string = INITIAL_FEN, halfMoves?: n
             prevNode.children.push(...newTree.root.children);
         } else if (token.type === "ParenClose") {
         } else if (token.type === "Nag") {
-            node.annotations.push(NAG_INFO.get(token.value) || "");
-            node.annotations.sort((a, b) => {
-                return ANNOTATION_INFO[a].nag - ANNOTATION_INFO[b].nag;
-            });
+            const code = /^\$\d+$/.test(token.value) ? Number(token.value.slice(1)) : NaN;
+            if (Number.isInteger(code) && code >= 0 && code <= 255) {
+                node.nags.push(code);
+            }
         } else if (token.type === "San") {
             const [pos, error] = positionFromFen(node.fen);
             if (error) {
@@ -643,8 +640,9 @@ export function getGameStats(root: TreeNode) {
     let node = root;
     while (node.children.length > 0) {
         node = node.children[0];
-        for (const annotation of node.annotations) {
-            if (isBasicAnnotation(annotation)) {
+        for (const code of node.nags) {
+            const annotation = nagGlyph(code);
+            if (annotation && isBasicAnnotation(annotation)) {
                 if (node.halfMoves % 2 === 1) {
                     whiteAnnotations[annotation]++;
                 } else {

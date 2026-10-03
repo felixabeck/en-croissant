@@ -2682,7 +2682,7 @@ describe("native game delivery reconciliation", () => {
 
     // Verify initial tree state
     expect(realStore.getState().root.children[0].comment).toBe("book");
-    expect(realStore.getState().root.children[0].annotations).toEqual(["!"]);
+    expect(realStore.getState().root.children[0].nags).toEqual([1]);
     expect(realStore.getState().root.children[0].shapes).toEqual([
       { brush: "green", orig: "e4", dest: "e5" },
     ]);
@@ -2729,7 +2729,7 @@ describe("native game delivery reconciliation", () => {
     const stateAfterTakeback = realStore.getState();
     const e4AfterTakeback = stateAfterTakeback.root.children[0];
     expect(e4AfterTakeback.comment).toBe("book");
-    expect(e4AfterTakeback.annotations).toEqual(["!"]);
+    expect(e4AfterTakeback.nags).toEqual([1]);
     expect(e4AfterTakeback.shapes).toEqual([{ brush: "green", orig: "e4", dest: "e5" }]);
     expect(e4AfterTakeback.children.length).toBe(2);
     expect(e4AfterTakeback.children[0].san).toBe("e5");
@@ -2772,7 +2772,7 @@ describe("native game delivery reconciliation", () => {
     const stateAfterRewrite = realStore.getState();
     const e4AfterRewrite = stateAfterRewrite.root.children[0];
     expect(e4AfterRewrite.comment).toBe("book");
-    expect(e4AfterRewrite.annotations).toEqual(["!"]);
+    expect(e4AfterRewrite.nags).toEqual([1]);
     expect(e4AfterRewrite.shapes).toEqual([{ brush: "green", orig: "e4", dest: "e5" }]);
     expect(e4AfterRewrite.children.length).toBe(2);
     expect(e4AfterRewrite.children[0].san).toBe("e5");

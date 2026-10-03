@@ -16,7 +16,7 @@ import { useTranslation } from "react-i18next";
 import type { CategoricalChartFunc } from "recharts/types/chart/types";
 import { useStore } from "zustand";
 import { reportTypeAtom } from "@/state/atoms";
-import { ANNOTATION_INFO, isBasicAnnotation } from "@/utils/annotation";
+import { ANNOTATION_INFO, isBasicAnnotation, nagGlyphs } from "@/utils/annotation";
 import { positionFromFen } from "@/utils/chessops";
 import { skipWhile, takeWhile } from "@/utils/misc";
 import { getGamePhases } from "@/utils/phase";
@@ -93,6 +93,7 @@ function EvalChart(props: EvalChartProps) {
     () =>
       nodes.map((currentNode) => {
         const node = currentNode.node;
+        const annotations = nagGlyphs(node.nags);
         const [pos] = positionFromFen(node.fen);
         const wdl = node.score?.wdl;
         const terminalText = () => {
@@ -103,7 +104,7 @@ function EvalChart(props: EvalChartProps) {
           return t("Board.Analysis.NotAnalysed");
         };
         return {
-          name: `${Math.ceil(node.halfMoves / 2)}.${pos?.turn === "black" ? "" : ".."} ${node.san}${node.annotations}`,
+          name: `${Math.ceil(node.halfMoves / 2)}.${pos?.turn === "black" ? "" : ".."} ${node.san}${annotations.join("")}`,
           cpText: node.score
             ? `${t("Board.Analysis.Advantage")}: ${formatScore(node.score.value)}`
             : terminalText(),
@@ -112,8 +113,8 @@ function EvalChart(props: EvalChartProps) {
             : terminalText(),
           yValue: getYValue(node) ?? "none",
           movePath: currentNode.position,
-          color: ANNOTATION_INFO[node.annotations[0]]?.color || "gray",
-          annotation: node.annotations[0],
+          color: ANNOTATION_INFO[annotations[0]]?.color || "gray",
+          annotation: annotations[0],
           White: wdl ? wdl[0] : 0,
           Draw: wdl ? wdl[1] : 0,
           Black: wdl ? wdl[2] : 0,

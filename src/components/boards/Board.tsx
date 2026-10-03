@@ -41,7 +41,7 @@ import {
 } from "@/state/atoms";
 import { keyMapAtom } from "@/state/keybinds";
 import classes from "@/styles/Chessboard.module.css";
-import { ANNOTATION_INFO, isBasicAnnotation } from "@/utils/annotation";
+import { ANNOTATION_INFO, isBasicAnnotation, nagGlyphs } from "@/utils/annotation";
 import { getVariationLine } from "@/utils/chess";
 import {
   forceEnPassant,
@@ -305,14 +305,15 @@ function Board({
   }, [practiceLock, editingMode, movable, turn]);
 
   const theme = useMantineTheme();
-  const color = ANNOTATION_INFO[currentNode.annotations[0]]?.color || "gray";
+  const annotations = nagGlyphs(currentNode.nags);
+  const color = ANNOTATION_INFO[annotations[0]]?.color || "gray";
   const lightColor = theme.colors[color][6];
   const darkColor = theme.colors[color][8];
 
   const [enableBoardScroll] = useAtom(enableBoardScrollAtom);
   const [snapArrows] = useAtom(snapArrowsAtom);
   const showComments = useAtomValue(currentShowCommentsAtom);
-  const visualAnnotation = showComments ? currentNode.annotations[0] : "";
+  const visualAnnotation = showComments ? annotations[0] : "";
 
   const setBoardFen = useCallback(
     (fen: string) => {
@@ -469,20 +470,17 @@ function Board({
             }}
             gap="sm"
           >
-            {showComments &&
-              currentNode.annotations.length > 0 &&
-              currentNode.move &&
-              square !== undefined && (
-                <Box pl="2.5rem" w="100%" h="100%" pos="absolute">
-                  <Box pos="relative" w="100%" h="100%">
-                    <AnnotationHint
-                      orientation={orientation}
-                      square={square}
-                      annotation={currentNode.annotations[0]}
-                    />
-                  </Box>
+            {showComments && annotations.length > 0 && currentNode.move && square !== undefined && (
+              <Box pl="2.5rem" w="100%" h="100%" pos="absolute">
+                <Box pos="relative" w="100%" h="100%">
+                  <AnnotationHint
+                    orientation={orientation}
+                    square={square}
+                    annotation={annotations[0]}
+                  />
                 </Box>
-              )}
+              </Box>
+            )}
             <Box
               h="100%"
               style={{

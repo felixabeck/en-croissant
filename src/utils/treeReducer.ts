@@ -2,7 +2,6 @@ import type { DrawShape } from "@lichess-org/chessground/draw";
 import type { Move } from "chessops";
 import { INITIAL_FEN, parseFen } from "chessops/fen";
 import type { Outcome, Score } from "@/bindings";
-import type { Annotation } from "./annotation";
 
 export interface TreeState {
     root: TreeNode;
@@ -27,7 +26,7 @@ export interface TreeNode {
     depth: number | null;
     halfMoves: number;
     shapes: DrawShape[];
-    annotations: Annotation[];
+    nags: number[];
     comment: string;
     /** Embedded `[%…]` commands the tree does not model, verbatim. */
     commands?: string;
@@ -103,7 +102,7 @@ export function defaultTree(fen?: string): TreeState {
             depth: null,
             halfMoves: rootHalfMoves(normalizedFen),
             shapes: [],
-            annotations: [],
+            nags: [],
             comment: "",
         },
         headers: {
@@ -159,7 +158,7 @@ export function createNode({
         depth: null,
         halfMoves,
         shapes: [],
-        annotations: [],
+        nags: [],
         comment: "",
     };
 }
