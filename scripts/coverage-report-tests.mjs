@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, writeFileSync } from "node:fs";
 import {
   access,
   chmod,
@@ -3147,8 +3147,11 @@ test("clearStaleRawProfiles removes nested regular profiles and preserves siblin
   await clearStaleRawProfiles(target);
   assert.equal(existsSync(nested), false);
   assert.equal(await readFile(sibling, "utf8"), "keep");
-  if (symlinkCreated)
+  if (symlinkCreated) {
     assert.equal(await readFile(join(outside, "keep.profraw"), "utf8"), "outside");
+    assert.equal(lstatSync(join(target, "linked")).isSymbolicLink(), true);
+    assert.equal(lstatSync(join(target, "linked.profraw")).isSymbolicLink(), true);
+  }
 });
 
 test("runBranchCoverage clears and refuses before Cargo, and merges only fresh profiles", async (t) => {
