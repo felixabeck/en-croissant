@@ -8570,6 +8570,9 @@ Out of scope: the `statat` to `unlinkat` instant inside `remove_entry_at`. POSIX
 * **Inherited review history (2026-09-13):** load `tasks/handoffs/2026-09-13-workspace-directory-enumeration-review.md` before this finding's plan review. It carries the `f-20260905-05` plan-review record; this finding inherits issue IDs W42 from it, with their witnesses, dispositions and evidence.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"1a78d78d7af7a1cec273617be0734e0b87795637c3fc5a98bafaf2057af74933","input_sha256":"655ccecc3f05a16d02e1391e8241fb758eb3489c768b4f834c68727d583210e7","kind":"mutation-receipt","operation":"9f6516057036ed06556e630a2c81c8521177a166dba777454ef1cbe25c1a1ae8","options":{"section":null},"request_id_sha256":null,"results":["f-20260913-05"],"target":"f-20260913-05","v":1} -->
 
+* **Annotation, 2026-10-03:** `f-20260913-04` is handled (`55c50ee75d6125d26de1ef7891d690aa77d064ed`, `d-20261003-05`). The root and parent open swaps named in the Related line now return `Conflict`, not `Io`. `EACCES` still returns `Io`. This finding remains only the Files and Databases page copy.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"12318acb8b0287af39592a1c75dda285248e35c44ec29fd7e67f3eede300d29e","input_sha256":"788bf8dfaef3754d6fd3cd85cf32ab8506091e76edaafa47bddd352dd2ff0c91","kind":"mutation-receipt","operation":"324553fce0cea8082d17052f7f0edec6f279db779c2bf4ad09afad4c4c4a2e4b","options":{"section":null},"request_id_sha256":null,"results":["f-20260913-05"],"target":"f-20260913-05","v":1} -->
+
 ---
 
 ## 2026-09-13 — filed through the inbox spool
