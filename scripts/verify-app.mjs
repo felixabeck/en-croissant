@@ -4,7 +4,7 @@
 //   pnpm verify:app                 run the checks
 //   pnpm verify:app --screenshot X  also write a PNG of the page to X
 //
-// It asserts sixty-one independently reported checks, plus one conditional reload check, that no other gate in this repository can:
+// It asserts sixty-two independently reported checks, plus one conditional reload check, that no other gate in this repository can:
 //   group | assertions
 //   startup | 5: production authority, user-file safety, owned-image cleanup, real IPC bridge,
 //             document title
@@ -17,6 +17,7 @@
 //   attachments | 4: prepare, retire, live-session bytes/intent, titlebar cleanup
 //   native reads | 5: mint, cancel, cancelled-ticket refusal, retained ticket, destroyed-window log
 //   Files | 3: seeded-row-render, double-click-route, opened-game-notation
+//   Databases | 1: default-root-unusable
 //   NAGs | 9: hint path/title/visibility, unknown hint absence, saved edit, four preserved NAGs
 //   file freshness | 5: in-place rewrite, open-tab reload/withhold, native-read timing,
 //                      main-thread apply budget, one-poll-interval freshness budget;
@@ -148,6 +149,17 @@
 //   opened-game-notation                      | FAIL  a real double-click on the unselected Files | 1
 //                                           |   row shows its game — timed out waiting for the  |
 //                                           |   opened game's notation; expected 1.e4e52.d4d5   |
+
+// Staged-failure record for default-root-unusable (2026-10-03). Both full runs used the same
+// harness inside a 4 GiB scope. The correct release printed 62 ok lines and "all checks passed",
+// exit 0. Removing only the default-root label and rebuilding left all 61 existing checks green:
+// "1 check(s) failed", exit 1. main.rs was restored byte-exact and the release rebuilt afterwards.
+//   break                                   | assertion/message                              | exit
+//   get_default_database_workspace removes | FAIL  default-root-unusable: the Databases     | 1
+//   .map_err(Error::label_root_failure)     |   alert offers a visible folder chooser         |
+//   from ensure_app_owned_default_dir      |   observed Databases alert: {"button":null,     |
+//                                           |   "message":"Could not load databases. Please  |
+//                                           |   try again.","buttonDisplayed":false}          |
 
 // Staged-failure record for the NAG checks (push-review-policy §2), 2026-10-03, one row per
 // assertion. Three runs against a release binary the harness reads, with the same harness in all
@@ -2513,6 +2525,59 @@ try {
   console.log("\nshutdown log:");
   for (const line of log.split("\n").filter((line) => /Shutdown|Sound server/.test(line))) {
     console.log(`  ${line}`);
+  }
+
+  // Reset the throwaway HOME only after all existing checks and their shutdown evidence. This
+  // fresh profile has no active custom root or cached list, and the db file predates app startup.
+  const databaseRootCheck =
+    "default-root-unusable: the Databases alert offers a visible folder chooser";
+  try {
+    if (!gone || survivors.length > 0) throw new Error("the asserted application survived close");
+    const released = await session.quit();
+    if (!released.released)
+      throw new Error(`could not release the asserted session: ${released.error}`);
+    await rm(profileDirectory, { recursive: true, force: true });
+    const appDataDirectory = join(profileDirectory, ".local/share/com.chessriddle.encroissant");
+    await mkdir(appDataDirectory, { recursive: true });
+    await mkdir(join(profileDirectory, ".config/com.chessriddle.encroissant"), { recursive: true });
+    await writeFile(join(appDataDirectory, "db"), "default database root is a regular file\n");
+    session = await Session.open(APP_BINARY);
+    const alert = await waitFor(
+      "the unusable default database root alert",
+      async () => {
+        await session.execute(
+          `const link = document.querySelector('a[href="/databases"]');
+           if (link && location.pathname !== "/databases") link.click();
+           return true`,
+        );
+        return session.execute(
+          `const alert = document.querySelector('[role="alert"]');
+           if (location.pathname !== "/databases" || !alert) return false;
+           return { message: alert.querySelector('p')?.textContent ?? null,
+                    button: alert.querySelector('button')?.textContent?.trim() ?? null };`,
+        );
+      },
+      { timeoutMs: FILES_PROBE_TIMEOUT_MS },
+    );
+    let buttonDisplayed = false;
+    if (alert.button === "Choose database folder") {
+      const button = await session.call("POST", "/element", {
+        using: "css selector",
+        value: '[role="alert"] button',
+      });
+      buttonDisplayed = await session.call(
+        "GET",
+        `/element/${encodeURIComponent(button["element-6066-11e4-a52e-4f735466cecf"])}/displayed`,
+      );
+    }
+    check(
+      alert.message === "This database folder cannot be opened. Choose another." &&
+        buttonDisplayed === true,
+      databaseRootCheck,
+      `observed Databases alert: ${JSON.stringify({ ...alert, buttonDisplayed })}`,
+    );
+  } catch (error) {
+    check(false, databaseRootCheck, error.message);
   }
 } catch (error) {
   console.error(`\nverify:app could not run: ${error.message}`);
