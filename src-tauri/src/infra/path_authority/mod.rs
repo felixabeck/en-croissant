@@ -16454,6 +16454,10 @@ mod tests {
         assert!(
             matches!(error.unlabelled(), Error::Conflict(message) if message == "dialog target changed before promotion")
         );
+        assert_eq!(
+            error.root_failure(),
+            Some(crate::error::RootFailure::Changed)
+        );
         assert!(authority.persistent.is_empty());
         assert_eq!(fs::read_dir(&parent).unwrap().count(), 1);
     }
@@ -22663,10 +22667,14 @@ mod windows_parent_identity_tests {
             )
             .unwrap();
         replace_parent_with_same_inode_hard_link(&path);
-        assert!(matches!(
-            authority.promote_dialog(&grant, PathClass::PersistentFile, "study", operations),
-            Err(Error::Conflict(_))
-        ));
+        let error = authority
+            .promote_dialog(&grant, PathClass::PersistentFile, "study", operations)
+            .unwrap_err();
+        assert!(matches!(error.unlabelled(), Error::Conflict(_)));
+        assert_eq!(
+            error.root_failure(),
+            Some(crate::error::RootFailure::Changed)
+        );
     }
 }
 
