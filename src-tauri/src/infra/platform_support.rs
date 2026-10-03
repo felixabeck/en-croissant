@@ -1263,14 +1263,13 @@ mod tests {
         // and is a junction by the time it is opened is a concurrent swap, which the renderer
         // retries, not an `InvalidInput` about a bad argument, which it reports as a caller bug.
         let authority = source_for("infra/path_authority/mod.rs");
-        let swap = compact(&authority[braced_body(authority, "fn child_open_swap(")]);
+        let swap = compact(&authority[braced_body(authority, "fn conflict_if_replaced(")]);
         assert!(
             swap.contains("\"reparse points cannot be authorized\""),
             "the listing must remap the reparse refusal: {swap}"
         );
         assert_eq!(
-            swap.matches("Error::Conflict(\"workspace directory changed concurrently\".into())")
-                .count(),
+            swap.matches("Error::Conflict(message.into())").count(),
             3,
             "both platforms map their swap statuses to the one retryable conflict: {swap}"
         );
@@ -1279,6 +1278,14 @@ mod tests {
                 && swap.contains("ERROR_PATH_NOT_FOUNDasi32")
                 && swap.contains("ERROR_DIRECTORYasi32"),
             "the NT counterparts of LOOP/NOTDIR/NOENT must be remapped too: {swap}"
+        );
+        let child_swap = compact(&authority[braced_body(authority, "fn child_open_swap(")]);
+        assert_eq!(
+            child_swap
+                .matches("\"workspace directory changed concurrently\"")
+                .count(),
+            1,
+            "the listing must retain its conflict message: {child_swap}"
         );
         let source = source_for("infra/fs.rs");
         let expected = compact(&source[braced_body(source, "fn open_expected_child(")]);

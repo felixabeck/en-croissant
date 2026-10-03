@@ -483,6 +483,47 @@ pub(crate) struct CapabilityDirectory {
     directory: fs::File,
 }
 
+fn conflict_if_replaced(error: Error, message: &str) -> Error {
+    #[cfg(unix)]
+    {
+        if let Error::Io(io_error) = &error {
+            if matches!(
+                io_error.raw_os_error(),
+                Some(code)
+                    if code == rustix::io::Errno::LOOP.raw_os_error()
+                        || code == rustix::io::Errno::NOTDIR.raw_os_error()
+                        || code == rustix::io::Errno::NOENT.raw_os_error()
+            ) {
+                return Error::Conflict(message.into());
+            }
+        }
+        error
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{
+            ERROR_DIRECTORY, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND,
+        };
+
+        if matches!(&error, Error::InvalidInput(message) if message == "reparse points cannot be authorized")
+        {
+            return Error::Conflict(message.into());
+        }
+        if let Error::Io(io_error) = &error {
+            if matches!(
+                io_error.raw_os_error(),
+                Some(code)
+                    if code == ERROR_FILE_NOT_FOUND as i32
+                        || code == ERROR_PATH_NOT_FOUND as i32
+                        || code == ERROR_DIRECTORY as i32
+            ) {
+                return Error::Conflict(message.into());
+            }
+        }
+        error
+    }
+}
+
 impl CapabilityDirectory {
     pub(crate) fn identity(&self) -> Result<(u64, u64), Error> {
         opened_file_identity(&self.directory)
@@ -517,44 +558,7 @@ impl CapabilityDirectory {
     /// the NT counterparts, plus `open_windows_child`'s reparse refusal, because an entry that was
     /// a directory at enumeration time and is a junction when it is opened is the same swap.
     fn child_open_swap(error: Error) -> Error {
-        #[cfg(unix)]
-        {
-            if let Error::Io(io_error) = &error {
-                if matches!(
-                    io_error.raw_os_error(),
-                    Some(code)
-                        if code == rustix::io::Errno::LOOP.raw_os_error()
-                            || code == rustix::io::Errno::NOTDIR.raw_os_error()
-                            || code == rustix::io::Errno::NOENT.raw_os_error()
-                ) {
-                    return Error::Conflict("workspace directory changed concurrently".into());
-                }
-            }
-            error
-        }
-        #[cfg(windows)]
-        {
-            use windows_sys::Win32::Foundation::{
-                ERROR_DIRECTORY, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND,
-            };
-
-            if matches!(&error, Error::InvalidInput(message) if message == "reparse points cannot be authorized")
-            {
-                return Error::Conflict("workspace directory changed concurrently".into());
-            }
-            if let Error::Io(io_error) = &error {
-                if matches!(
-                    io_error.raw_os_error(),
-                    Some(code)
-                        if code == ERROR_FILE_NOT_FOUND as i32
-                            || code == ERROR_PATH_NOT_FOUND as i32
-                            || code == ERROR_DIRECTORY as i32
-                ) {
-                    return Error::Conflict("workspace directory changed concurrently".into());
-                }
-            }
-            error
-        }
+        conflict_if_replaced(error, "workspace directory changed concurrently")
     }
 
     pub(crate) fn open_child_directory(
@@ -1069,6 +1073,8 @@ std::thread_local! {
     static RESOLVE_PRE_REGULAR_OPEN_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
     static RESOLVE_PRE_DIRECTORY_OPEN_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static RESOLVE_PRE_ROOT_OPEN_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
     static REFRESH_ENTRY_HOOK: std::cell::RefCell<Option<RefreshEntryHook>> =
         const { std::cell::RefCell::new(None) };
@@ -6300,7 +6306,18 @@ impl PathAuthority {
         let parent_identity = Identity { a, b };
         let root_path = self.database_root_path(root)?;
         let path = root_path.join(filename);
-        let validated_identity = validate_target(&path, PathClass::PersistentFile)?;
+        let validated_identity = validate_target(&path, PathClass::PersistentFile).map_err(|error| {
+            if resolved.file().is_some()
+                && (matches!(&error, Error::Io(error) if error.kind() == std::io::ErrorKind::NotFound)
+                    || matches!(&error, Error::InvalidInput(message)
+                        if message == "file authority must be a regular file"
+                            || message == "symbolic links cannot be authorized"))
+            {
+                Error::Conflict(VERIFIED_REGISTRATION_CONFLICT.into())
+            } else {
+                error
+            }
+        })?;
         let verified_identity =
             verified_identity::database_child_identity(expected_identity, &validated_identity)?;
         if let Some(entry) = self.persistent.values().find(|entry| {
@@ -7010,6 +7027,12 @@ impl PathAuthority {
                 "path authority is unavailable because its object changed".into(),
             ));
         }
+        #[cfg(test)]
+        RESOLVE_PRE_ROOT_OPEN_HOOK.with(|slot| {
+            if let Some(hook) = slot.borrow_mut().take() {
+                hook();
+            }
+        });
         #[cfg(unix)]
         let resolved = resolved::resolve_unix(
             &root,
@@ -8553,6 +8576,89 @@ mod portable_tests {
         PathAuthority::open_with_clock(dir.path().join("registry.json"), vec![], clock, 2).unwrap()
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn directory_root_open_removal_is_conflict() {
+        struct RootHookCleanup;
+        impl Drop for RootHookCleanup {
+            fn drop(&mut self) {
+                RESOLVE_PRE_ROOT_OPEN_HOOK.with(|slot| slot.borrow_mut().take());
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().join("root");
+        fs::create_dir(&root_path).unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let root = authority
+            .get_or_create_database_root(&root_path, "root", None)
+            .unwrap();
+        let cleanup = RootHookCleanup;
+        RESOLVE_PRE_ROOT_OPEN_HOOK.with(|slot| {
+            assert!(slot
+                .replace(Some(Box::new(move || {
+                    fs::remove_dir(&root_path).unwrap();
+                })))
+                .is_none());
+        });
+        let result = authority.resolve(root.path_ref(), PathOperation::DatabaseRead, &[]);
+        assert!(
+            matches!(&result, Err(Error::Conflict(message))
+                if message == "path authority is unavailable because its object changed"),
+            "unexpected resolution: {:?}",
+            result.err()
+        );
+        drop(cleanup);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn conflict_if_replaced_maps_windows_swap_errors() {
+        use windows_sys::Win32::Foundation::{
+            ERROR_DIRECTORY, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND,
+        };
+
+        let message = "test object changed";
+        for error in [
+            Error::Io(std::io::Error::from_raw_os_error(
+                ERROR_FILE_NOT_FOUND as i32,
+            )),
+            Error::Io(std::io::Error::from_raw_os_error(
+                ERROR_PATH_NOT_FOUND as i32,
+            )),
+            Error::Io(std::io::Error::from_raw_os_error(ERROR_DIRECTORY as i32)),
+            Error::InvalidInput("reparse points cannot be authorized".into()),
+        ] {
+            let result = conflict_if_replaced(error, message);
+            assert!(
+                matches!(&result, Error::Conflict(actual) if actual == message),
+                "unexpected classification: {result:?}"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn conflict_if_replaced_preserves_other_windows_errors() {
+        use windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
+
+        let result = conflict_if_replaced(
+            Error::InvalidInput("other invalid input".into()),
+            "test object changed",
+        );
+        assert!(
+            matches!(&result, Error::InvalidInput(message) if message == "other invalid input")
+        );
+        let result = conflict_if_replaced(
+            Error::Io(std::io::Error::from_raw_os_error(
+                ERROR_ACCESS_DENIED as i32,
+            )),
+            "test object changed",
+        );
+        assert!(matches!(result, Error::Io(error)
+            if error.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32)));
+    }
+
     /// `LaunchRootArgument` is `Option<EngineLaunchRoot>` on macOS and `()` everywhere else, so a
     /// launch-root argument written at a call site compiles on exactly one of the two. Every test
     /// that opens the authority over an explicit registry path and app roots goes through this
@@ -9036,6 +9142,261 @@ mod tests {
     }
 
     const _: fn(VerifiedFile, u64, usize) -> Result<Vec<u8>, Error> = read_engine_image_bytes;
+
+    enum SwapReplacement {
+        Symlink,
+        File,
+        Directory,
+        Removed,
+    }
+
+    enum SwapHookCleanup {
+        Root,
+        Directory,
+        DatabaseChild,
+    }
+
+    impl Drop for SwapHookCleanup {
+        fn drop(&mut self) {
+            match self {
+                Self::Root => RESOLVE_PRE_ROOT_OPEN_HOOK.with(|slot| slot.borrow_mut().take()),
+                Self::Directory => {
+                    RESOLVE_PRE_DIRECTORY_OPEN_HOOK.with(|slot| slot.borrow_mut().take())
+                }
+                Self::DatabaseChild => {
+                    DATABASE_CHILD_POST_RESOLVE_HOOK.with(|slot| slot.borrow_mut().take())
+                }
+            };
+        }
+    }
+
+    fn install_swap_replacement(path: &Path, symlink_target: &Path, swap: SwapReplacement) {
+        match swap {
+            SwapReplacement::Symlink => std::os::unix::fs::symlink(symlink_target, path).unwrap(),
+            SwapReplacement::File => fs::write(path, b"replacement").unwrap(),
+            SwapReplacement::Directory => fs::create_dir(path).unwrap(),
+            SwapReplacement::Removed => {}
+        }
+    }
+
+    enum DirectoryOpenBoundary {
+        Root,
+        FileParent,
+        Component,
+    }
+
+    fn assert_directory_open_swap(boundary: DirectoryOpenBoundary, swap: SwapReplacement) {
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().join("root");
+        let retained = dir.path().join("retained");
+        let symlink_target = dir.path().join("elsewhere");
+        fs::create_dir(&root_path).unwrap();
+        fs::create_dir(&symlink_target).unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let (id, operation, components, swap_path) = match boundary {
+            DirectoryOpenBoundary::FileParent => {
+                let book_path = root_path.join("book.bin");
+                fs::write(&book_path, b"book").unwrap();
+                let book = authority.register_opening_book(&book_path, "book").unwrap();
+                (
+                    book.path_ref().clone(),
+                    PathOperation::OpeningBookRead,
+                    vec![],
+                    root_path,
+                )
+            }
+            DirectoryOpenBoundary::Root | DirectoryOpenBoundary::Component => {
+                let root = authority
+                    .get_or_create_database_root(&root_path, "root", None)
+                    .unwrap();
+                let (components, swap_path) =
+                    if matches!(boundary, DirectoryOpenBoundary::Component) {
+                        let child = root_path.join("child");
+                        fs::create_dir(&child).unwrap();
+                        (vec![OsString::from("child")], child)
+                    } else {
+                        (vec![], root_path)
+                    };
+                (
+                    root.path_ref().clone(),
+                    PathOperation::DatabaseRead,
+                    components,
+                    swap_path,
+                )
+            }
+        };
+        let hook: Box<dyn FnOnce()> = Box::new(move || {
+            if matches!(boundary, DirectoryOpenBoundary::FileParent) {
+                fs::rename(&swap_path, retained).unwrap();
+            } else {
+                fs::remove_dir(&swap_path).unwrap();
+            }
+            install_swap_replacement(&swap_path, &symlink_target, swap);
+        });
+        let component = !components.is_empty();
+        let cleanup = if component {
+            let cleanup = SwapHookCleanup::Directory;
+            RESOLVE_PRE_DIRECTORY_OPEN_HOOK.with(|slot| {
+                assert!(slot.replace(Some(hook)).is_none());
+            });
+            cleanup
+        } else {
+            let cleanup = SwapHookCleanup::Root;
+            RESOLVE_PRE_ROOT_OPEN_HOOK.with(|slot| {
+                assert!(slot.replace(Some(hook)).is_none());
+            });
+            cleanup
+        };
+        let result = authority.resolve(&id, operation, &components);
+        assert!(
+            matches!(&result, Err(Error::Conflict(message)) if message == if component {
+                "directory changed while resolving"
+            } else {
+                "path authority is unavailable because its object changed"
+            }),
+            "unexpected resolution: {:?}",
+            result.err()
+        );
+        drop(cleanup);
+    }
+
+    #[test]
+    fn directory_root_open_eloop_is_conflict() {
+        assert_directory_open_swap(DirectoryOpenBoundary::Root, SwapReplacement::Symlink);
+    }
+
+    #[test]
+    fn directory_root_open_enotdir_is_conflict() {
+        assert_directory_open_swap(DirectoryOpenBoundary::Root, SwapReplacement::File);
+    }
+
+    #[test]
+    fn directory_root_open_enoent_is_conflict() {
+        assert_directory_open_swap(DirectoryOpenBoundary::Root, SwapReplacement::Removed);
+    }
+
+    #[test]
+    fn file_parent_open_eloop_is_conflict() {
+        assert_directory_open_swap(DirectoryOpenBoundary::FileParent, SwapReplacement::Symlink);
+    }
+
+    #[test]
+    fn file_parent_open_enotdir_is_conflict() {
+        assert_directory_open_swap(DirectoryOpenBoundary::FileParent, SwapReplacement::File);
+    }
+
+    #[test]
+    fn file_parent_open_enoent_is_conflict() {
+        assert_directory_open_swap(DirectoryOpenBoundary::FileParent, SwapReplacement::Removed);
+    }
+
+    #[test]
+    fn directory_component_open_eloop_is_conflict() {
+        assert_directory_open_swap(DirectoryOpenBoundary::Component, SwapReplacement::Symlink);
+    }
+
+    #[test]
+    fn directory_component_open_enotdir_is_conflict() {
+        assert_directory_open_swap(DirectoryOpenBoundary::Component, SwapReplacement::File);
+    }
+
+    #[test]
+    fn directory_component_open_enoent_is_conflict() {
+        assert_directory_open_swap(DirectoryOpenBoundary::Component, SwapReplacement::Removed);
+    }
+
+    #[test]
+    fn directory_root_open_eacces_stays_io() {
+        use std::os::unix::fs::PermissionsExt;
+
+        struct RestorePermissions(PathBuf);
+        impl Drop for RestorePermissions {
+            fn drop(&mut self) {
+                fs::set_permissions(&self.0, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().join("root");
+        fs::create_dir(&root_path).unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let root = authority
+            .get_or_create_database_root(&root_path, "root", None)
+            .unwrap();
+        let restore = RestorePermissions(root_path.clone());
+        let cleanup = SwapHookCleanup::Root;
+        RESOLVE_PRE_ROOT_OPEN_HOOK.with(|slot| {
+            assert!(slot
+                .replace(Some(Box::new(move || {
+                    fs::set_permissions(&root_path, fs::Permissions::from_mode(0o000)).unwrap();
+                })))
+                .is_none());
+        });
+        let result = authority.resolve(root.path_ref(), PathOperation::DatabaseRead, &[]);
+        assert!(
+            matches!(&result, Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::PermissionDenied),
+            "unexpected resolution: {:?}",
+            result.err()
+        );
+        drop(cleanup);
+        drop(restore);
+    }
+
+    fn assert_database_child_swap(swap: SwapReplacement) {
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().join("databases");
+        fs::create_dir(&root_path).unwrap();
+        let child = root_path.join("child.db3");
+        let symlink_target = dir.path().join("target.db3");
+        fs::write(&child, b"original").unwrap();
+        fs::write(&symlink_target, b"target").unwrap();
+        let original_identity = observed_identity(&child);
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let root = authority
+            .get_or_create_database_root(&root_path, "Databases", None)
+            .unwrap();
+        let before = authority.persistent.len();
+        let cleanup = SwapHookCleanup::DatabaseChild;
+        DATABASE_CHILD_POST_RESOLVE_HOOK.with(|slot| {
+            assert!(slot
+                .replace(Some(Box::new(move || {
+                    fs::remove_file(&child).unwrap();
+                    install_swap_replacement(&child, &symlink_target, swap);
+                })))
+                .is_none());
+        });
+        let result = authority.register_database_child(
+            &root,
+            OsStr::new("child.db3"),
+            "child.db3",
+            original_identity,
+        );
+        assert!(
+            matches!(&result, Err(Error::Conflict(message)) if message == VERIFIED_REGISTRATION_CONFLICT),
+            "unexpected registration: {result:?}"
+        );
+        assert_eq!(authority.persistent.len(), before);
+        assert!(!authority
+            .persistent
+            .values()
+            .any(|entry| { entry.stored.purpose == Some(EntryPurpose::DatabaseFile) }));
+        drop(cleanup);
+    }
+
+    #[test]
+    fn register_database_child_directory_swap_is_conflict() {
+        assert_database_child_swap(SwapReplacement::Directory);
+    }
+
+    #[test]
+    fn register_database_child_symlink_swap_is_conflict() {
+        assert_database_child_swap(SwapReplacement::Symlink);
+    }
+
+    #[test]
+    fn register_database_child_removal_is_conflict() {
+        assert_database_child_swap(SwapReplacement::Removed);
+    }
 
     #[test]
     fn staged_hash_core_cancels_between_real_read_chunks() {

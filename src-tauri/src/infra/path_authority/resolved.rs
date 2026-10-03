@@ -777,7 +777,12 @@ pub(super) fn resolve_unix(
             OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
             Mode::empty(),
         )
-        .map_err(|e| Error::from(std::io::Error::from(e)))?,
+        .map_err(|e| {
+            super::conflict_if_replaced(
+                Error::from(std::io::Error::from(e)),
+                "path authority is unavailable because its object changed",
+            )
+        })?,
     );
     if root_is_dir && file_identity(&handle.metadata()?) != *expected_root {
         return Err(Error::Conflict("root changed concurrently".into()));
@@ -877,7 +882,12 @@ pub(super) fn resolve_unix(
                     OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
                     Mode::empty(),
                 )
-                .map_err(|e| Error::from(std::io::Error::from(e)))?,
+                .map_err(|e| {
+                    super::conflict_if_replaced(
+                        Error::from(std::io::Error::from(e)),
+                        "directory changed while resolving",
+                    )
+                })?,
             );
             let opened_identity = file_identity(&handle.metadata()?);
             let (a, b) = crate::infra::fs::raw_stat_identity(&stat);
@@ -983,7 +993,12 @@ pub(super) fn resolve_windows(
     let parent_access =
         SYNCHRONIZE | GENERIC_READ | if parent_writable { GENERIC_WRITE } else { 0 };
     let mut handle = if root_is_dir {
-        let handle = super::open_windows_nofollow(root, parent_writable)?;
+        let handle = super::open_windows_nofollow(root, parent_writable).map_err(|error| {
+            super::conflict_if_replaced(
+                error,
+                "path authority is unavailable because its object changed",
+            )
+        })?;
         if super::windows_file_identity(&handle)? != *expected_root {
             return Err(Error::Conflict("root changed concurrently".into()));
         }
@@ -997,7 +1012,13 @@ pub(super) fn resolve_windows(
             root.parent()
                 .ok_or_else(|| Error::InvalidInput("file authority has no parent".into()))?,
             parent_writable,
-        )?
+        )
+        .map_err(|error| {
+            super::conflict_if_replaced(
+                error,
+                "path authority is unavailable because its object changed",
+            )
+        })?
     };
     if !root_is_dir {
         if let Some(expected_parent) = stored_parent_identity {
