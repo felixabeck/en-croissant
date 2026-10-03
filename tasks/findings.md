@@ -8519,7 +8519,7 @@ Out of scope: the `statat` to `unlinkat` instant inside `remove_entry_at`. POSIX
 ## 2026-09-13 — filed through the inbox spool
 
 ### Three `PathAuthority` root-path wrappers repeat the same `workspace_root(&FileWorkspaceHandle::new(root.path_ref().clone()), operation)` call
-* **ID:** f-20260913-03 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260913-03 · **Status:** handled · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src-tauri/src/infra/path_authority/mod.rs` — `engine_root_path` (`:3101-3112`), `puzzle_root_path` (`:3483-3486`), `database_root_path` (`:3792-3797`).
 * **Defect:** three private wrappers differ only in the handle type and the `PathOperation` they pass; each re-wraps a `PathRef` in a `FileWorkspaceHandle` to reach `workspace_root`. Rule 11 (extract at the second copy) was already exceeded at the third.
 * **Fix shape:** one private `root_path(&mut self, id: &PathRef, operation: PathOperation) -> Result<PathBuf, Error>` (or `workspace_root` taking `&PathRef`), with the three call sites routed through it; no behaviour change, existing tests are the proof.
@@ -8528,6 +8528,9 @@ Out of scope: the `statat` to `unlinkat` instant inside `remove_entry_at`. POSIX
 
 * **Inherited review history (2026-09-13):** load `tasks/handoffs/2026-09-13-workspace-directory-enumeration-review.md` before this finding's plan review. It carries the `f-20260905-05` plan-review record; this finding inherits issue IDs W11 from it, with their witnesses, dispositions and evidence.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"60f378c39e8c6225593b26d22ea8df0bb9225d9e78b0e9d670eab7a3d29d63be","input_sha256":"16162f96461088a5edc53d8c41022659e72b5202d8ed7a224829768df7fc38ba","kind":"mutation-receipt","operation":"59c3bfc4768c9d1435d4593e9b766c05f02c06ee0933a9830865b59f79564dce","options":{"section":null},"request_id_sha256":null,"results":["f-20260913-03"],"target":"f-20260913-03","v":1} -->
+
+* **Closed:** 2026-10-03, commit `f46bad050df8291e3b305929b0007ea2cc917042`. Private `root_path` wraps `workspace_root(&FileWorkspaceHandle::new(id.clone()), operation)`. `engine_root_path`, `puzzle_root_path`, and `database_root_path` call it with their existing operations. `set_active_engine_root` calls `engine_root_path` instead of inlining the same wrap. `workspace_root` is unchanged. Proof: `cargo fmt --check` and the engine, database, and puzzle root reuse and active-root tests. Rejected: changing `workspace_root` to take `&PathRef`, because its other callers pass a `FileWorkspaceHandle`.
+<!-- ledger-meta {"command":"close","effect_lines":1,"effect_sha256":"53786fe9677cd9319c55645645e87652fa9124a7788bf1e823031f961ca3cd91","header_sha256":"7962490513c802014b0992ec5701f97c76f9d6261ec2b41e83b9e6ee30975253","header_status":"handled","input_sha256":"55a8031c59ad7153f8265a013628472de57c199e96e98b12a1303caa196d9a5f","kind":"mutation-receipt","operation":"154fb01de1bd65a45cb5f8eaa9df97b94041aace48fad853a43159287b489044","options":{"section":null},"request_id_sha256":null,"results":["f-20260913-03"],"target":"f-20260913-03","v":1} -->
 
 ---
 
