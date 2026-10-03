@@ -8613,6 +8613,42 @@ mod portable_tests {
 
     #[cfg(windows)]
     #[test]
+    fn file_parent_open_removal_is_conflict() {
+        struct RootHookCleanup;
+        impl Drop for RootHookCleanup {
+            fn drop(&mut self) {
+                RESOLVE_PRE_ROOT_OPEN_HOOK.with(|slot| slot.borrow_mut().take());
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().join("root");
+        let retained = dir.path().join("retained");
+        fs::create_dir(&root_path).unwrap();
+        let book_path = root_path.join("book.bin");
+        fs::write(&book_path, b"book").unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let book = authority.register_opening_book(&book_path, "book").unwrap();
+        let cleanup = RootHookCleanup;
+        RESOLVE_PRE_ROOT_OPEN_HOOK.with(|slot| {
+            assert!(slot
+                .replace(Some(Box::new(move || {
+                    fs::rename(&root_path, retained).unwrap();
+                })))
+                .is_none());
+        });
+        let result = authority.resolve(book.path_ref(), PathOperation::OpeningBookRead, &[]);
+        assert!(
+            matches!(&result, Err(Error::Conflict(message))
+                if message == "path authority is unavailable because its object changed"),
+            "unexpected resolution: {:?}",
+            result.err()
+        );
+        drop(cleanup);
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn conflict_if_replaced_maps_windows_swap_errors() {
         use windows_sys::Win32::Foundation::{
             ERROR_DIRECTORY, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND,
@@ -9263,7 +9299,7 @@ mod tests {
     }
 
     #[test]
-    fn directory_root_open_eloop_is_conflict() {
+    fn directory_root_open_symlink_is_conflict() {
         assert_directory_open_swap(DirectoryOpenBoundary::Root, SwapReplacement::Symlink);
     }
 
@@ -9278,7 +9314,7 @@ mod tests {
     }
 
     #[test]
-    fn file_parent_open_eloop_is_conflict() {
+    fn file_parent_open_symlink_is_conflict() {
         assert_directory_open_swap(DirectoryOpenBoundary::FileParent, SwapReplacement::Symlink);
     }
 
@@ -9293,7 +9329,7 @@ mod tests {
     }
 
     #[test]
-    fn directory_component_open_eloop_is_conflict() {
+    fn directory_component_open_symlink_is_conflict() {
         assert_directory_open_swap(DirectoryOpenBoundary::Component, SwapReplacement::Symlink);
     }
 
