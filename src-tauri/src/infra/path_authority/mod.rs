@@ -50,7 +50,9 @@ pub(crate) fn probe_listing_root_failure(
     cancellation: &CancellationToken,
 ) -> Error {
     #[cfg(test)]
-    listing_root_failure_test_hook::run(root, &original);
+    if let Some(hook) = LISTING_ROOT_FAILURE_HOOKS.take(&root.id) {
+        hook(&original);
+    }
     if cancellation.is_cancelled() {
         return Error::Cancellation;
     }
@@ -91,37 +93,23 @@ pub(crate) fn probe_listing_root_failure(
     }
 }
 
+#[cfg(test)]
+type ListingRootFailureHook = Box<dyn FnOnce(&Error) + Send>;
+
 // Key by capability so parallel tests and Files' blocking worker cannot consume another hook.
 #[cfg(test)]
-pub(crate) mod listing_root_failure_test_hook {
-    use super::*;
+pub(crate) static LISTING_ROOT_FAILURE_HOOKS: crate::infra::test_hooks::KeyedTestValues<
+    String,
+    ListingRootFailureHook,
+> = crate::infra::test_hooks::KeyedTestValues::new();
 
-    type Hook = Box<dyn FnOnce(&Error) + Send>;
-    static HOOKS: std::sync::LazyLock<std::sync::Mutex<HashMap<String, Hook>>> =
-        std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+#[cfg(test)]
+pub(crate) struct ListingRootFailureHookGuard(pub(crate) String);
 
-    pub(crate) struct Guard(String);
-
-    impl Drop for Guard {
-        fn drop(&mut self) {
-            HOOKS.lock().unwrap().remove(&self.0);
-        }
-    }
-
-    pub(crate) fn install(root: &PathRef, hook: Hook) -> Guard {
-        assert!(HOOKS
-            .lock()
-            .unwrap()
-            .insert(root.id.clone(), hook)
-            .is_none());
-        Guard(root.id.clone())
-    }
-
-    pub(super) fn run(root: &PathRef, original: &Error) {
-        let hook = HOOKS.lock().unwrap().remove(&root.id);
-        if let Some(hook) = hook {
-            hook(original);
-        }
+#[cfg(test)]
+impl Drop for ListingRootFailureHookGuard {
+    fn drop(&mut self) {
+        LISTING_ROOT_FAILURE_HOOKS.clear(&self.0);
     }
 }
 
@@ -9096,8 +9084,9 @@ mod portable_tests {
         fs::remove_dir(&root).unwrap();
         let token = CancellationToken::new();
         let cancel = token.clone();
-        let _hook = listing_root_failure_test_hook::install(
-            handle.path_ref(),
+        let _hook = ListingRootFailureHookGuard(handle.path_ref().id.clone());
+        LISTING_ROOT_FAILURE_HOOKS.arm(
+            handle.path_ref().id.clone(),
             Box::new(move |original| {
                 assert!(
                     matches!(original, Error::Io(error) if error.kind() == std::io::ErrorKind::NotFound)

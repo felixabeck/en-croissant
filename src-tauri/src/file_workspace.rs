@@ -4860,12 +4860,17 @@ mod root_failure_tests {
 
     #[tokio::test]
     async fn root_failure_files_failed_listing_cancels_at_probe_is_unlabelled() {
+        use crate::infra::path_authority::{
+            ListingRootFailureHookGuard, LISTING_ROOT_FAILURE_HOOKS,
+        };
+
         let (_directory, registry, workspace, root) = root_failure_fixture();
         fs::remove_dir(&root).unwrap();
         let token = CancellationToken::new();
         let cancel = token.clone();
-        let _hook = crate::infra::path_authority::listing_root_failure_test_hook::install(
-            workspace.path_ref(),
+        let _hook = ListingRootFailureHookGuard(workspace.path_ref().id.clone());
+        LISTING_ROOT_FAILURE_HOOKS.arm(
+            workspace.path_ref().id.clone(),
             Box::new(move |original| {
                 assert!(
                     matches!(original, Error::Io(error) if error.kind() == std::io::ErrorKind::NotFound)
