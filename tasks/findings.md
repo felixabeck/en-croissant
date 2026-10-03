@@ -12525,3 +12525,16 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
 * **Proof:** From a clean checkout, `env CLICOLOR_FORCE=1 pnpm ci:remote:check` exits 2 and its stderr contains `gh run list returned invalid JSON`, while `env -u FORCE_COLOR -u CLICOLOR_FORCE pnpm ci:remote:check` exits 0 on the same green remote. `FORCE_COLOR=1` alone is not the trigger. After the fix, the `CLICOLOR_FORCE=1` invocation parses `gh` output and exits 0 on that green remote, or exits 1 only when a completed Test job is actually red.
 * **Related:** none in the ledger share this cause. `f-20260924-07` is the missing Windows type-check, not this parser.
 * **Found by:** drain session `1f678668-c21e-4c25-8200-a7808f5d4209` while running `pnpm ci:remote:check` before the ordinary push of `bfb7b901`, 2026-10-03.
+
+---
+
+## 2026-10-03 — filed through the inbox spool
+
+### Native folder pickers send the path-conversion diagnostic to the renderer
+
+* **ID:** f-20261003-02 · **Status:** open · **Area:** bindings-ipc · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** 955b6117-6010-4c14-a2ca-7d08516e03e4
+* **Where:** `src-tauri/src/main.rs` `issue_database_workspace` (`invalid database folder selection: {error}`), `src-tauri/src/main.rs` `issue_download_destination` (`invalid native folder selection: {error}`), and `src-tauri/src/file_workspace.rs` `issue_file_workspace` (the same `invalid native folder selection` interpolation).
+* **Defect:** when the native dialog returns a `FilePath` that `into_path` cannot convert, the raw conversion error is interpolated into `Error::InvalidInput`. `Error`'s Serialize sends that Display string to the renderer, and `runUnlessCancelled` shows it. The string can carry a native path or an OS diagnostic. Renderer redaction runs only after the diagnostic has crossed the boundary.
+* **Why it matters:** the renderer is not a place for backend path diagnostics. The same class already exists for the engine-workspace opener (`f-20260915-04`); these three picker commands are a separate site and already ship. `f-20260913-05` only changes listing copy and must not take this mapping on.
+* **Related:** `f-20260915-04` (engine opener diagnostic; different command, root `-`).
