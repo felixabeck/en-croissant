@@ -112,6 +112,7 @@ async function render(child: ReactNode, nags: number[]) {
 test.each([
   { nags: [220], glyph: null },
   { nags: [8], glyph: "□" },
+  { nags: [11], glyph: "=" },
   { nags: [220, 1], glyph: "!" },
 ])("Board projects NAGs $nags into hint $glyph", async ({ nags, glyph }) => {
   await render(<Board editingMode={false} boardRef={{ current: null }} />, nags);

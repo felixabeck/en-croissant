@@ -133,6 +133,46 @@ test("legacy NAG migration refuses invalid glyphs and keeps unreadable bytes gat
     expect(sessionStorage.getItem("invalid-legacy-nags")).toBe(raw);
 });
 
+test("legacy NAG migration refuses oversized annotations and keeps unreadable bytes gated", () => {
+    const tree = defaultTree();
+    const { nags: _nags, ...root } = tree.root;
+    persistTree("oversized-legacy-nags", {
+        ...tree,
+        root: { ...root, annotations: Array(1_025).fill("") },
+    });
+    const raw = sessionStorage.getItem("oversized-legacy-nags")!;
+    expect(storage.readTree("oversized-legacy-nags")).toEqual({
+        kind: "unreadable",
+        rawValue: raw,
+    });
+    expect(storage.getStatus("oversized-legacy-nags")).toEqual({
+        kind: "unreadable",
+        rawValue: raw,
+    });
+    expect(() => storage.seed("oversized-legacy-nags", tree)).toThrow(
+        "Cannot replace a tab tree while its storage is unreadable or unavailable.",
+    );
+    expect(sessionStorage.getItem("oversized-legacy-nags")).toBe(raw);
+});
+
+test("legacy NAG migration accepts the annotations length boundary", () => {
+    const tree = defaultTree();
+    const { nags: _nags, ...root } = tree.root;
+    persistTree("boundary-legacy-nags", {
+        ...tree,
+        root: { ...root, annotations: [...Array(1_023).fill(""), "!"] },
+    });
+    const expected = { ...tree, root: { ...tree.root, nags: [1] } };
+    expect(storage.readTree("boundary-legacy-nags")).toEqual({
+        kind: "available",
+        value: { version: TREE_STORAGE_VERSION, state: expected },
+    });
+    expect(deserializeStorageValue(sessionStorage.getItem("boundary-legacy-nags")!)).toEqual({
+        version: TREE_STORAGE_VERSION,
+        state: expected,
+    });
+});
+
 test.each([[256], [1.5], [-1]])("stored NAGs reject invalid codes %j", (code) => {
     persistTree(
         "invalid-nags",

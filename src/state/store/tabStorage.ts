@@ -22,6 +22,7 @@ const NON_TREE_SESSION_KEYS = new Set([
 const tabIdSchema = z.string().uuid();
 const MAX_TREE_NODES = 100_000;
 const MAX_TREE_DEPTH = 512;
+const MAX_NODE_NAGS = 1_024;
 // Tree text comes out of a lexed PGN, which the backend caps at 10 MiB (`validate_pgn_len`), and
 // no parsed string — a header, a comment, its commands — is longer than its source. So any parsed
 // tree rehydrates; a lower bound once made a tab with one long comment unreadable.
@@ -150,7 +151,7 @@ const treeNodeSchema: z.ZodType<PersistedTreeNode> = z.lazy(() =>
         depth: z.number().int().nonnegative().nullable(),
         halfMoves: z.number().int().nonnegative(),
         shapes: z.array(shapeSchema).max(10_000),
-        nags: z.array(z.number().int().min(0).max(MAX_NAG)).max(1_024),
+        nags: z.array(z.number().int().min(0).max(MAX_NAG)).max(MAX_NODE_NAGS),
         comment: boundedText,
         commands: boundedText.optional(),
         startingComment: boundedText.optional(),
@@ -218,7 +219,7 @@ function migrateLegacyNode(node: unknown, depth = 0): unknown {
     if (!isRecord(node) || depth > MAX_TREE_DEPTH) return node;
     const migrated: Record<string, unknown> = { ...node };
     if (!Object.prototype.hasOwnProperty.call(node, "nags") && Array.isArray(node.annotations)) {
-        const legacy = z.array(annotationSchema).safeParse(node.annotations);
+        const legacy = z.array(annotationSchema).max(MAX_NODE_NAGS).safeParse(node.annotations);
         if (legacy.success) {
             migrated.nags = legacy.data
                 .filter((glyph) => glyph !== "")

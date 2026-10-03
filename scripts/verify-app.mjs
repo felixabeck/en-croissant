@@ -150,14 +150,15 @@
 //                                           |   opened game's notation; expected 1.e4e52.d4d5   |
 
 // Staged-failure record for the NAG checks (push-review-policy §2), 2026-10-03, one row per
-// assertion. Three runs, one change each, against a release binary the harness reads; the
-// harness was the same in all three. Run A used a pre-fix release binary (built 2026-10-03 from
-// master before the lossless-NAG change): "7 check(s) failed", exit 1. Run B1 used a release
-// build of 2f4dc8c4 whose only change was `opacity: 0` on the AnnotationHint glyph box:
-// "1 check(s) failed", exit 1, so the hint path, hint title and $220 assertions are independent
-// of it. Run B2 used a release build of 2f4dc8c4 whose only change was a no-op SAVE_FILE handler
-// in BoardAnalysis.tsx: "5 check(s) failed" (the save assertion and its four dependants), exit 1.
-// Both staged sources were restored and rebuilt clean afterwards.
+// assertion. Three runs against a release binary the harness reads, with the same harness in all
+// three: run A is the pre-fix baseline, and runs B1 and B2 each staged exactly one change. Run A
+// used a pre-fix release binary (built 2026-10-03 from master before the lossless-NAG change):
+// "7 check(s) failed", exit 1. Run B1 used a release build of 2f4dc8c4 whose only change was
+// `opacity: 0` on the AnnotationHint glyph box: "1 check(s) failed", exit 1, so the hint path, hint
+// title and $220 assertions are independent of it. Run B2 used a release build of 2f4dc8c4 whose
+// only change was a no-op SAVE_FILE handler in BoardAnalysis.tsx: "5 check(s) failed" (the save
+// assertion and its four dependants), exit 1. Both staged sources were restored and rebuilt clean
+// afterwards.
 //   check                                   | run | message printed                                | exit
 //   hint-glyph-path                          | A   | FAIL  the $8 board hint is rendered with a    | 1
 //                                           |     |   glyph path — observed board hint:           |
