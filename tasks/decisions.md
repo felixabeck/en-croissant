@@ -5051,3 +5051,49 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** A focused review-plan judgment approved this limit after the guard-exempt probe. The flip's purpose is to compile non-linux bodies on a Linux host. On these two files that compile fails for reasons that predate the listing bound. Reversal path: a measurement that the same guard-preserving flip, with `dist` supplied, exits 0 without edits outside the new cfg lines.
 * **Decided by:** Grok, drain session b52c3a69-4f9f-48f1-820e-e09578b059d0, full auto, plan review of f-20260913-06 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":53,"effect_sha256":"ff78acf08bfbe400f2127f2e1262b6030e702fdc4533b02a2820f3e6c66b50f2","input_sha256":"3d30ab95b419f9bf087c3a077192bc594f96747b473590c6cd437b349290cb47","kind":"mutation-receipt","operation":"f566f69c8d94f73216153c72e3ed357960227d813063b4c410b60b4fd91c32fc","options":{"section":"2026-10-03 \u2014 recorded through the decisions lock"},"request_id_sha256":null,"results":["d-20261003-09","d-20261003-10","d-20261003-11","d-20261003-12","d-20261003-13","d-20261003-14"],"target":"decisions-ledger","v":1} -->
+
+### d-20261003-15 — What does the renderer's game tree store as a move's NAG identity?
+
+* **Question:** How does the in-memory tree hold a move's annotations so that no NAG is lost between parse, display, edit and save?
+* **Governs:** f-20261001-12
+* **Chosen:** Raw NAG codes. `TreeNode.annotations: Annotation[]` becomes `TreeNode.nags: number[]` — integers 0..=255 in insertion order, duplicates kept. The parser appends every `$n` token whose `n` parses as an integer in 0..=255; a token that does not parse is ignored and never stored as a placeholder. The glyph type `Annotation` stays only as the display vocabulary, and `""` is never stored.
+* **Rejected:** Adding `$8` → □ and `$11` → = to `NAG_INFO` while keeping glyphs as identity: the badge would be fixed, but the writer emits one canonical code per glyph, so every `$8` would be saved as `$7` and every `$11` as `$10`, and every other unmapped NAG would still be deleted. Also rejected: keeping glyphs plus a parallel raw-code field, which gives one fact two sources of truth.
+* **Reason:** The database already stores NAGs losslessly as raw `$n` strings (`src-tauri/src/db/encoding.rs`); the loss was entirely in the renderer's glyph model, and only a code-keyed model preserves both the alias numbers and NAGs without a glyph. Reversal path: a later decision has to show another representation that round-trips `1. e4 $8 $8 c6 $11 … $220 … $0 … $255` through `getPGN` unchanged (plan test 1 in `src/utils/tests/chess.test.ts`).
+* **Decided by:** Claude Code, build run of f-20261001-12 (plan reviewed 2026-10-01, implemented 2026-10-03), full auto · **Superseded-by:** -
+
+### d-20261003-16 — Which code does the Annotate panel write for □ and =, and what happens to existing aliases?
+
+* **Question:** □ is both `$7` and `$8`, and = is both `$10` and `$11`. Which code does setting the glyph write, and how do the toggles treat an alias that is already present?
+* **Governs:** f-20261001-12
+* **Chosen:** The canonical code stays `$7` for □ and `$10` for = (`ANNOTATION_INFO[glyph].nag`). A glyph button is active when any stored code has that glyph, so □ is active for `$7` or `$8` and = for `$10` or `$11`. Clicking an active button removes every code with that glyph. Clicking an inactive button removes the codes of its group (`basic` or `advantage`) and appends the canonical code. An existing `$8` or `$11` is therefore kept, because the toggle adds the canonical code only when the glyph is absent. `goToAnnotation` matches any code with the requested glyph.
+* **Rejected:** Writing `$8`/`$11` as canonical, which would change today's output for every user who sets □ or =. Also rejected: matching toggles on exact codes, which would leave the □ button inactive on a ChessBase `$8` and let a click add a second □ code.
+* **Reason:** `$7` and `$10` match today's output and the standard NAG table Lichess uses. Glyph-class toggling is what the user sees: one □ symbol, one □ button. Reversal path: change `ANNOTATION_INFO`'s canonical `nag` and the alias toggle tests in `src/components/common/NagDisplay.test.tsx` and the alias `goToAnnotation` tests in `src/state/store/tree.test.ts` go red.
+* **Decided by:** Claude Code, build run of f-20261001-12 (plan reviewed 2026-10-01, implemented 2026-10-03), full auto · **Superseded-by:** -
+
+### d-20261003-17 — What does a NAG without a glyph do in the renderer?
+
+* **Question:** A PGN can carry any NAG `$0`–`$255`, and most have no agreed glyph. How are those shown and saved?
+* **Governs:** f-20261001-12
+* **Chosen:** They are kept in `nags` and written back on save with their original number, but not drawn. The display projection `nagGlyphs(nags)` returns only codes that have a glyph, ordered by ascending code, so a code without a glyph never draws an empty grey badge and never displaces a real symbol from the primary-glyph position.
+* **Rejected:** Drawing the numeric code (`$220`) as a badge or label, which adds a new visual vocabulary no finding asked for. Also rejected: adding symbols or translation keys for further NAGs, since Felix's files show no NAG beyond `$8`/`$11` that lacks a glyph.
+* **Reason:** M2 (nothing lost) and M3 (no empty badge, no displaced symbol) of f-20261001-12 both hold with a hidden but preserved code; the standard NAG table has about 140 entries, most of them with no agreed glyph. Reversal path: add an entry to the code→glyph catalogue in `src/utils/annotation.ts`; the projection tests in `src/utils/tests/chess.test.ts` and the rendered-consumer tests in `src/components/common/NagDisplay.test.tsx` pin which codes currently draw nothing.
+* **Decided by:** Claude Code, build run of f-20261001-12 (plan reviewed 2026-10-01, implemented 2026-10-03), full auto · **Superseded-by:** -
+
+### d-20261003-18 — In what order and multiplicity are a move's NAGs written to PGN?
+
+* **Question:** Does the PGN writer preserve the read order and duplicates of a move's NAGs?
+* **Governs:** f-20261001-12
+* **Chosen:** Order is normalised to ascending code. Multiplicity is kept (`$8 $8` is written twice). Only the first code written after a move may use the attached suffix glyph, and only when it is 1–6. Every other code is written ` $n` with its original number, so `[1, 2]` is written `e4! $2`, never `e4!?`.
+* **Rejected:** Preserving the read order, which carries no information in PGN and would leave a quality code behind a positional one, so no suffix glyph could be used (`e4 $14 $1` instead of `e4! $14`). Also rejected: deduplicating, which loses a repeated NAG on save. Also rejected: two adjacent suffix glyphs, because pgn-reader reads `!?` as the single code 5 (`pgn-reader-0.26.0/src/reader.rs:343-353`).
+* **Reason:** Sorting puts the move-quality code first so the one suffix glyph lands on it, and output stays readable. The round trip keeps the same multiset of codes on every node. Reversal path: plan test 1 asserts `d4! $2`, `dxe4?! $146` and `e4 $8 $8` and goes red on another order or on deduplication.
+* **Decided by:** Claude Code, build run of f-20261001-12 (plan reviewed 2026-10-01, implemented 2026-10-03), full auto · **Superseded-by:** -
+
+### d-20261003-19 — How do tabs persisted in the old 26-glyph shape migrate?
+
+* **Question:** Open tabs persist their tree in `sessionStorage` with `annotations: Annotation[]`. How do they load once the schema stores `nags: number[]`?
+* **Governs:** f-20261001-12
+* **Chosen:** A coercion migration without a storage version bump. `TREE_STORAGE_VERSION` stays 1. The existing node walk in `migrateTreeForStorage` converts a node that has an `annotations` array and no `nags` array, and only if every element is a value the old 26-member enum accepted. Each glyph becomes its canonical code in stored order, so `["□", "□"]` becomes `[7, 7]`. `""` is dropped. `annotations` is removed. A node with a non-enum element is left unchanged, so the required `nags` field fails validation and the tab takes the existing unreadable path, with its raw bytes kept and recovery offered. A node that already carries `nags` is unchanged, so the migration is idempotent. A failed write-back keeps today's `readTree` behaviour: the session uses the migrated tree and the migration runs again on the next read.
+* **Rejected:** Bumping `TREE_STORAGE_VERSION` with a versioned migrator, which the existing coercion migrations (`migrateLegacyNodeComments`) deliberately avoid. Also rejected: silently dropping unknown legacy strings, which would turn a gated unreadable tab into a rewritten readable one.
+* **Reason:** This follows the existing coercion precedent in `src/state/store/tabStorage.ts` and the persisted-state rule, which keeps undecodable tab trees gated. Known limit: a tab opened before the fix holds only what the old parser kept. A lost `$8`/`$11` is `""` there, and an alias is collapsed (`$23` came in as ⨀ and migrates to `$22`). Such tabs must be reopened from their file before saving. Reversal path: the migration tests in `src/state/store/tabStorage.test.ts`.
+* **Decided by:** Claude Code, build run of f-20261001-12 (plan reviewed 2026-10-01, implemented 2026-10-03), full auto · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":44,"effect_sha256":"5ce6527dd9a60f8c77207735bfc65156280c1045258ae099927fc7564564cbf9","input_sha256":"686eecc72dbb6476db20c02094895b7f747af4c9929f2116f29630473e9c804f","kind":"mutation-receipt","operation":"62026b1ac069d36c2ec40c0aff7db92c06e895d855a1aeb0a2c14b9cd5310b56","options":{"section":null},"request_id_sha256":null,"results":["d-20261003-15","d-20261003-16","d-20261003-17","d-20261003-18","d-20261003-19"],"target":"decisions-ledger","v":1} -->
