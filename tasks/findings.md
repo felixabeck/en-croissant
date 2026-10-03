@@ -12566,3 +12566,17 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
 
 * **Context:** the NAG model this display builds on — raw codes in `TreeNode.nags`, the `nagGlyphs` projection, and why codes without a glyph stay hidden — is recorded in `tasks/handoffs/2026-10-01-lossless-nags-review.md` and `d-20261003-15`..`d-20261003-20`. Load that handoff before planning this finding; it inherits no open review issue from it.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"fc7369631b7c1ccb4caa9e85089701df6abde8fb0c76a03771fb8a661dddf263","input_sha256":"6920a9c2850f9e51a678946fd250643f3b2795d703052700fb7ef236bd2a6697","kind":"mutation-receipt","operation":"fa717ef3f43fd93d71045c1bdbf3acd91718fd08ad71e7e81e82aa84e8a07c39","options":{"section":null},"request_id_sha256":null,"results":["f-20261003-03"],"target":"f-20261003-03","v":1} -->
+
+---
+
+## 2026-10-03 — filed through the inbox spool
+
+### Local frontend mutation counts static-mutant timeouts as kills, so it passed 100 % where CI found 23 survivors
+
+* **ID:** f-20261003-04 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `stryker.config.mjs` (`thresholds.break: 100`, no `timeoutMS`/`timeoutFactor`, `ignoreStatic` unset, `concurrency` from `workerCount`), the `frontend-mutation` receipt gate in `scripts/run-push-gates.mjs` / `scripts/gate-receipt.mjs`, and the pre-review `frontend-mutation-changed-files` lane.
+* **Defect:** Stryker scores a `Timeout` as detected. Static mutants (module-scope values such as the `annotationSchema` enum in `src/state/store/tabStorage.ts`) run the whole package suite per mutant, and under the local `agent-gate` scope with 21 runners they time out. On 2026-10-03 the workspace-storage package reported 100 % locally three times (pre-review on `2f4dc8c4`, `db20b0ec` and `fb69f852`, and `pnpm gates:push -- --frontend --rust` on `063080b9`). The local report `artifacts/mutation/frontend/workspace-storage/mutation.json` lists the 23 enum mutants at `tabStorage.ts:32-59` as `Timeout`. CI run 37127507309 (job 111215719788, same code at `ceafc21f`) ran each of them to completion: all 23 `Survived`, score 97.85, job red. The local gate is therefore a false green for any static mutant no test kills.
+* **Why it matters:** the mutation gate is the only local proof that new tests actually constrain the code, and a push it passed reddened remote CI. The real test gap behind this instance is fixed in the f-20261001-12 repair; the gate defect remains.
+* **Open question:** how a local run can tell a slow kill from a hidden survivor. Options: treat `Timeout` as a failure in the gate for static mutants, raise the timeout so static mutants finish, or run static mutants with fewer concurrent runners. The choice affects gate time and the `d-20261002-01` memory schedule.
+* **Found by:** Claude Code, f-20261001-12 build run, 2026-10-03, after the remote Test job failed on `ceafc21f`. Related: f-20261001-12.
+* **Proof:** a staged static mutant no test kills (for example the enum literal mutation above, with the f-20261001-12 repair test removed) must make the local `frontend-mutation` gate red, as it does on CI.
