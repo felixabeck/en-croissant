@@ -4918,3 +4918,33 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Cumulative review of `d-20261002-06` found two sentences broader than the code. `classify_probe_error` keeps a sidecar only for `PermissionDenied`. `InvalidData` on the preferred name removes it and on the legacy name keeps it. Other I/O errors return before the primary is removed. The identity compare closes the window through the archive read. `remove_entry_at` on Unix still stats the leaf and then unlinks it by name, which the frozen plan threat model and the function comment already leave out of scope. Superseding `d-20260831-24` requires restating every clause that still binds, because its first clause still says the preferred sidecar is unlinked unconditionally.
 * **Decided by:** Grok, drain session 1f678668-c21e-4c25-8200-a7808f5d4209, correcting the review of f-20260912-09 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"1438871a2710057fa18416db32893fe131ca9e66a79f3bfe02ece759b5d491a8","input_sha256":"7a9a46bd5f10bc70f73aaf8e576c977c16cb7c046dbb0da5b03c86a8230357bb","kind":"mutation-receipt","operation":"af0a2d5fef000876262011a30b6b278e057238c1f0357fdbfcd8c55fdc9f052c","options":{"section":null},"request_id_sha256":null,"results":["d-20261002-08"],"target":"decisions-ledger","v":1} -->
+
+## 2026-10-03 — recorded through the decisions lock
+
+### d-20261003-01 — Which profiles count as this run?
+
+* **Question:** Clear `.profraw` files under `coverageTarget` before the run and fail if any survive, or merge only the profiles whose binary signature matches the binary just built?
+* **Governs:** f-20261002-09
+* **Chosen:** Clear every regular-file `.profraw` that `filesBelow(coverageTarget)` would return, then throw `Rust coverage left stale raw profiles:` if any remain, before `cargo llvm-cov`. A missing directory is success. Symlinks are not followed. `ENOENT` is success only when the coverage root itself is missing; a descendant `ENOENT` or any other walk error propagates and does not start Cargo.
+* **Rejected:** A `%m` filter. `cargo llvm-cov clean --profraw-only` as the only clear. Dropping `--no-report`. A new lock around the coverage target.
+* **Reason:** cargo-llvm-cov 0.8.7 sets `no_clean` when `--no-report` is passed, and its own profraw clean is a non-recursive glob while this script merges recursively. A binary-id filter drops a fresh build-script profile from the same invocation and keeps a stale file whose `%m` still matches the current test binary. `d-20260930-01` already separates `rust-test` onto another target directory. Reversal path: replace the clear with a filter that keeps every profile written by this invocation, including a different `%m`, and still drops a stale file with the current `%m`.
+* **Decided by:** Grok, drain session e1db7603-3919-4fe0-898a-de9d5f32da44, adopting the reviewed plan for f-20261002-09 · **Superseded-by:** -
+
+### d-20261003-02 — What does the failure matrix of the Rust coverage script cover?
+
+* **Question:** Stage only the new survivor refusal, or every failure path of `scripts/rust-branch-coverage.mjs`?
+* **Governs:** f-20261002-09
+* **Chosen:** The whole matrix. The survivor refusal, the new removal and walk failures, and every other path in the edited file are staged through the exports against scratch inputs. One pre-clear entrypoint spawn, the `rustup` failure, is staged after planting one `.profraw` and asserting that path set is unchanged. A `finally` path deletes only that planted file, including when the spawn or an assertion fails. A spawn that reaches the clear or Cargo stays argued because it binds the live coverage tree.
+* **Rejected:** Listing pre-existing throws as inherited and not staging them.
+* **Reason:** `pnpm coverage:backend:check` reads this script's result as evidence. Push-review-policy §2 says the run that changes an evidence artefact owns its matrix. A header that names unstaged paths does not make those paths evidence. Reversal path: a later decision that the gate stops treating this script's exit as evidence.
+* **Decided by:** Grok, drain session e1db7603-3919-4fe0-898a-de9d5f32da44, adopting the reviewed plan for f-20261002-09 · **Superseded-by:** -
+
+### d-20261003-03 — Does the adopting session run the backend coverage gate when path selection would skip it?
+
+* **Question:** Is `pnpm coverage:report:test` enough proof, given `gates:push` will not select `backend-coverage` from a scripts-only diff?
+* **Governs:** f-20261002-09
+* **Chosen:** The phase proof is `pnpm coverage:report:test` and then `pnpm gate:ensure backend-coverage`.
+* **Rejected:** Relying on path selection or on `pnpm gates:push` without `--rust`.
+* **Reason:** The artefact is the gate. The unit test does not execute `main` or Cargo. Reversal path: teach lane selection to notice this script, which is a different change and is not this mandate.
+* **Decided by:** Grok, drain session e1db7603-3919-4fe0-898a-de9d5f32da44, adopting the reviewed plan for f-20261002-09 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"feba5761eaf5d14e049b9e1d69445861465681367d560e34e67b435940782aef","input_sha256":"4c80fde878f8a5ae997e9b6435e694174ca7a2a300539318445ae87274eae981","kind":"mutation-receipt","operation":"ee670fff8e9024dff9f369dd4d6f9e829f39a6b65e178d0a0405687a8a8e7a2b","options":{"section":null},"request_id_sha256":null,"results":["d-20261003-01","d-20261003-02","d-20261003-03"],"target":"decisions-ledger","v":1} -->
