@@ -232,15 +232,12 @@ describe("listing failure copy and state", () => {
       expect(host.textContent?.includes("Add a database to get started")).toBe(
         outcome === "cancellation",
       );
-      if (outcome === "cancellation") {
-        expect(alert()).toBeNull();
-        expect(choose()).toBeUndefined();
-      } else {
-        expect(alert()?.textContent).toContain(
-          "This database folder is too large to list. Choose another.",
-        );
-        expect(choose()).toBeDefined();
-      }
+      const expectedAlert =
+        outcome === "cancellation"
+          ? null
+          : "This database folder is too large to list. Choose another.Choose database folder";
+      expect(alert()?.textContent ?? null).toBe(expectedAlert);
+      expect(choose() !== undefined).toBe(outcome !== "cancellation");
     },
   );
   test.each([false, true])(

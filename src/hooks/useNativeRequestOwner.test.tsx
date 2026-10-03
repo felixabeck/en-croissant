@@ -2,7 +2,7 @@ import { StrictMode, act, type ReactNode, useEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import useSWR, { SWRConfig, type Cache, type KeyedMutator } from "swr";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { useNativeRequestOwner } from "./useNativeRequestOwner";
+import { runningNativeRequest, useNativeRequestOwner } from "./useNativeRequestOwner";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -105,49 +105,148 @@ function CachePair({
   );
 }
 
+function heldRequestPage() {
+  const cache = new Map();
+  const oldWork = deferred<string>();
+  const freshWork = deferred<string>();
+  const oldOutcome = vi.fn();
+  const freshOutcome = vi.fn();
+  const signals: AbortSignal[] = [];
+  const fetcher = vi.fn((signal: AbortSignal) => {
+    signals.push(signal);
+    // Like getDbInfo, this work continues after its owner aborts the signal.
+    return signals.length === 1 ? oldWork.promise : freshWork.promise;
+  });
+  let revalidate!: KeyedMutator<string>;
+  let currentOwner!: NonNullable<ReturnType<typeof useNativeRequestOwner>>;
+  function Subscriber() {
+    const owner = useNativeRequestOwner("databases");
+    const { data, error, mutate } = useSWR("databases", () => {
+      const promise = owner!.run(fetcher);
+      const observer = fetcher.mock.calls.length === 0 ? oldOutcome : freshOutcome;
+      void promise.then(observer, observer);
+      return promise;
+    });
+    useEffect(() => {
+      currentOwner = owner!;
+      revalidate = mutate;
+    }, [owner, mutate]);
+    return <span>{error?.rootFailure ?? error?.message ?? data ?? "pending"}</span>;
+  }
+  function Page({ present }: { present: boolean }) {
+    return (
+      <SWRConfig
+        value={{
+          provider: () => cache,
+          shouldRetryOnError: false,
+          revalidateOnFocus: false,
+          dedupingInterval: 0,
+        }}
+      >
+        {present && <Subscriber />}
+      </SWRConfig>
+    );
+  }
+  return {
+    cache,
+    oldWork,
+    freshWork,
+    oldOutcome,
+    freshOutcome,
+    signals,
+    fetcher,
+    Page,
+    revalidate: () => revalidate(),
+    supersede: () => currentOwner.supersede(),
+  };
+}
+
 describe("native SWR request ownership", () => {
+  test("runningNativeRequest skips abandoned signal-ignoring work", async () => {
+    const { Page, cache, signals, fetcher, oldOutcome, supersede } = heldRequestPage();
+    await render(<Page present />);
+    expect(fetcher).toHaveBeenCalledOnce();
+    await render(<Page present={false} />);
+    expect(signals[0].aborted).toBe(true);
+    expect(oldOutcome).not.toHaveBeenCalled();
+    expect(runningNativeRequest(cache, "databases")).toBeUndefined();
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(oldOutcome).not.toHaveBeenCalled();
+    await act(async () => supersede());
+  });
+
   test.each(["fulfilment", "rejection"])(
-    "final-subscriber cleanup preserves the returning subscriber's failure after late %s",
+    "runningNativeRequest waits for live %s without fetching",
     async (outcome) => {
-      const cache = new Map();
-      const oldWork = deferred<string>();
-      const freshWork = deferred<string>();
-      const oldOutcome = vi.fn();
-      const freshOutcome = vi.fn();
-      const signals: AbortSignal[] = [];
-      const fetcher = vi.fn((signal: AbortSignal) => {
-        signals.push(signal);
-        // Like getDbInfo, this work continues after its owner aborts the signal.
-        return signals.length === 1 ? oldWork.promise : freshWork.promise;
-      });
-      function Subscriber() {
-        const owner = useNativeRequestOwner("databases");
-        const { data, error } = useSWR("databases", () => {
-          const promise = owner!.run(fetcher);
-          const observer = fetcher.mock.calls.length === 0 ? oldOutcome : freshOutcome;
-          void promise.then(observer, observer);
-          return promise;
-        });
-        return <span>{error?.rootFailure ?? error?.message ?? data ?? "pending"}</span>;
-      }
-      function Page({ present }: { present: boolean }) {
-        return (
-          <SWRConfig
-            value={{
-              provider: () => cache,
-              shouldRetryOnError: false,
-              revalidateOnFocus: false,
-              dedupingInterval: 0,
-            }}
-          >
-            {present && <Subscriber />}
-          </SWRConfig>
-        );
-      }
+      const { Page, cache, fetcher, oldWork } = heldRequestPage();
+      expect(runningNativeRequest(cache, "databases")).toBeUndefined();
+      await render(<Page present />);
+      const observed = runningNativeRequest(cache, "databases");
+      expect(observed).toBeInstanceOf(Promise);
+      const settled = vi.fn();
+      void observed!.then(settled);
+      await act(async () => Promise.resolve());
+      expect(settled).not.toHaveBeenCalled();
+      expect(fetcher).toHaveBeenCalledOnce();
+      await act(async () =>
+        outcome === "fulfilment"
+          ? oldWork.resolve("content")
+          : oldWork.reject(new Error("native failure")),
+      );
+      await expect(observed).resolves.toBeUndefined();
+      expect(settled).toHaveBeenCalledOnce();
+      expect(fetcher).toHaveBeenCalledOnce();
+      expect(runningNativeRequest(cache, "databases")).toBeUndefined();
+    },
+  );
+
+  test("SWR remount rejoins the original promise without another fetch", async () => {
+    const { Page, fetcher, signals, oldWork, oldOutcome, cache } = heldRequestPage();
+    await render(<Page present />);
+    expect(fetcher).toHaveBeenCalledOnce();
+    await render(<Page present={false} />);
+    expect(signals[0].aborted).toBe(true);
+    expect(oldOutcome).not.toHaveBeenCalled();
+    await render(<Page present />);
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(oldOutcome).not.toHaveBeenCalled();
+    await act(async () => oldWork.resolve("original content"));
+    expect(container.textContent).toBe("original content");
+    expect(cache.get("databases")?.data).toBe("original content");
+    expect(cache.get("databases")?.error).toBeUndefined();
+    expect(oldOutcome).toHaveBeenCalledExactlyOnceWith("original content");
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  test.each(["fulfilment", "rejection"])(
+    "explicit revalidation retires abandoned work before fresh failure and late %s",
+    async (outcome) => {
+      const {
+        Page,
+        fetcher,
+        signals,
+        oldWork,
+        freshWork,
+        oldOutcome,
+        freshOutcome,
+        cache,
+        revalidate,
+      } = heldRequestPage();
       await render(<Page present />);
       expect(fetcher).toHaveBeenCalledOnce();
       await render(<Page present={false} />);
       expect(signals[0].aborted).toBe(true);
+      expect(oldOutcome).not.toHaveBeenCalled();
+      await render(<Page present />);
+      expect(fetcher).toHaveBeenCalledOnce();
+      expect(oldOutcome).not.toHaveBeenCalled();
+      let revalidation!: Promise<string | undefined>;
+      await act(async () => {
+        revalidation = revalidate();
+        await Promise.resolve();
+      });
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(signals[1].aborted).toBe(false);
       expect(oldOutcome).toHaveBeenCalledOnce();
       expect(oldOutcome.mock.calls[0][0]).toBeInstanceOf(DOMException);
       expect(oldOutcome.mock.calls[0][0]).toMatchObject({
@@ -155,9 +254,7 @@ describe("native SWR request ownership", () => {
         message: "Cancellation",
       });
       expect(cache.get("databases")?.error).toBe(oldOutcome.mock.calls[0][0]);
-
-      await render(<Page present />);
-      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(freshOutcome).not.toHaveBeenCalled();
       const freshFailure = {
         tag: "backend-error",
         category: "resource-limit",
@@ -165,6 +262,7 @@ describe("native SWR request ownership", () => {
         rootFailure: "too-large",
       };
       await act(async () => freshWork.reject(freshFailure));
+      await revalidation;
       expect(container.textContent).toBe("too-large");
       expect(freshOutcome).toHaveBeenCalledExactlyOnceWith(freshFailure);
       expect(cache.get("databases")?.error).toBe(freshFailure);
@@ -178,6 +276,31 @@ describe("native SWR request ownership", () => {
       expect(cache.get("databases")?.data).toBeUndefined();
       expect(oldOutcome).toHaveBeenCalledOnce();
       expect(freshOutcome).toHaveBeenCalledExactlyOnceWith(freshFailure);
+    },
+  );
+
+  test.each(["fulfilment", "rejection"])(
+    "supersession settles abandoned work and drops its late %s",
+    async (outcome) => {
+      const { Page, signals, oldWork, oldOutcome, cache, supersede } = heldRequestPage();
+      await render(<Page present />);
+      await render(<Page present={false} />);
+      expect(signals[0].aborted).toBe(true);
+      expect(oldOutcome).not.toHaveBeenCalled();
+      await act(async () => supersede());
+      expect(oldOutcome).toHaveBeenCalledOnce();
+      const cancellation = oldOutcome.mock.calls[0][0];
+      expect(cancellation).toBeInstanceOf(DOMException);
+      expect(cancellation).toMatchObject({ name: "AbortError", message: "Cancellation" });
+      expect(cache.get("databases")?.error).toBe(cancellation);
+      await act(async () =>
+        outcome === "fulfilment"
+          ? oldWork.resolve("stale content")
+          : oldWork.reject(new Error("stale failure")),
+      );
+      expect(oldOutcome).toHaveBeenCalledOnce();
+      expect(cache.get("databases")?.error).toBe(cancellation);
+      expect(cache.get("databases")?.data).toBeUndefined();
     },
   );
 
