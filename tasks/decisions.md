@@ -4948,3 +4948,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The artefact is the gate. The unit test does not execute `main` or Cargo. Reversal path: teach lane selection to notice this script, which is a different change and is not this mandate.
 * **Decided by:** Grok, drain session e1db7603-3919-4fe0-898a-de9d5f32da44, adopting the reviewed plan for f-20261002-09 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"feba5761eaf5d14e049b9e1d69445861465681367d560e34e67b435940782aef","input_sha256":"4c80fde878f8a5ae997e9b6435e694174ca7a2a300539318445ae87274eae981","kind":"mutation-receipt","operation":"ee670fff8e9024dff9f369dd4d6f9e829f39a6b65e178d0a0405687a8a8e7a2b","options":{"section":null},"request_id_sha256":null,"results":["d-20261003-01","d-20261003-02","d-20261003-03"],"target":"decisions-ledger","v":1} -->
+
+### d-20261003-04 — Is the coverage unit test enough proof of the profraw clear?
+
+* **Question:** Is `pnpm coverage:report:test` enough proof, given `gates:push` will not select `backend-coverage` from a scripts-only diff?
+* **Governs:** f-20261002-09
+* **Chosen:** The phase proof is `pnpm coverage:report:test` and then `pnpm gate:ensure backend-coverage`. The choice in d-20261003-03 stands.
+* **Rejected:** Relying on path selection or on `pnpm gates:push` without `--rust`.
+* **Reason:** The suite's entrypoint spawn does call `main()` and stops in `coverageTools` when `rustup` cannot be spawned. It does not start Cargo and does not merge profiles. The artefact that measures coverage is `pnpm gate:ensure backend-coverage`. d-20261003-03's reason said the unit test does not execute `main`; that clause is false (`scripts/coverage-report-tests.mjs` entrypoint test, `scripts/rust-branch-coverage.mjs` `main`). This supersession corrects that clause and does not change the choice. What the prior did not consider: the staged tool-resolution test spawns the script.
+* **Decided by:** Grok, drain session e1db7603-3919-4fe0-898a-de9d5f32da44, correcting the records-lens finding on d-20261003-03 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"5100d7639f6904671bbaea364075c4fcb13aafaea17879ce5d1104214154c23e","input_sha256":"4caf56a327e8384bc8dd136f41b55ae6aa3fbaff85fc3918fcf9f3421357f708","kind":"mutation-receipt","operation":"dae963c571f735778b3324cff10ac0112ee9a30dd752ca8e78eff3f5e894a959","options":{"section":null},"request_id_sha256":null,"results":["d-20261003-04"],"target":"decisions-ledger","v":1} -->
