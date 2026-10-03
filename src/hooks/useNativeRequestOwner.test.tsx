@@ -107,6 +107,81 @@ function CachePair({
 
 describe("native SWR request ownership", () => {
   test.each(["fulfilment", "rejection"])(
+    "final-subscriber cleanup preserves the returning subscriber's failure after late %s",
+    async (outcome) => {
+      const cache = new Map();
+      const oldWork = deferred<string>();
+      const freshWork = deferred<string>();
+      const oldOutcome = vi.fn();
+      const freshOutcome = vi.fn();
+      const signals: AbortSignal[] = [];
+      const fetcher = vi.fn((signal: AbortSignal) => {
+        signals.push(signal);
+        // Like getDbInfo, this work continues after its owner aborts the signal.
+        return signals.length === 1 ? oldWork.promise : freshWork.promise;
+      });
+      function Subscriber() {
+        const owner = useNativeRequestOwner("databases");
+        const { data, error } = useSWR("databases", () => {
+          const promise = owner!.run(fetcher);
+          const observer = fetcher.mock.calls.length === 0 ? oldOutcome : freshOutcome;
+          void promise.then(observer, observer);
+          return promise;
+        });
+        return <span>{error?.rootFailure ?? error?.message ?? data ?? "pending"}</span>;
+      }
+      function Page({ present }: { present: boolean }) {
+        return (
+          <SWRConfig
+            value={{
+              provider: () => cache,
+              shouldRetryOnError: false,
+              revalidateOnFocus: false,
+              dedupingInterval: 0,
+            }}
+          >
+            {present && <Subscriber />}
+          </SWRConfig>
+        );
+      }
+      await render(<Page present />);
+      expect(fetcher).toHaveBeenCalledOnce();
+      await render(<Page present={false} />);
+      expect(signals[0].aborted).toBe(true);
+      expect(oldOutcome).toHaveBeenCalledOnce();
+      expect(oldOutcome.mock.calls[0][0]).toBeInstanceOf(DOMException);
+      expect(oldOutcome.mock.calls[0][0]).toMatchObject({
+        name: "AbortError",
+        message: "Cancellation",
+      });
+      expect(cache.get("databases")?.error).toBe(oldOutcome.mock.calls[0][0]);
+
+      await render(<Page present />);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      const freshFailure = {
+        tag: "backend-error",
+        category: "resource-limit",
+        message: "new folder failure",
+        rootFailure: "too-large",
+      };
+      await act(async () => freshWork.reject(freshFailure));
+      expect(container.textContent).toBe("too-large");
+      expect(freshOutcome).toHaveBeenCalledExactlyOnceWith(freshFailure);
+      expect(cache.get("databases")?.error).toBe(freshFailure);
+      await act(async () =>
+        outcome === "fulfilment"
+          ? oldWork.resolve("stale content")
+          : oldWork.reject(new DOMException("Cancellation", "AbortError")),
+      );
+      expect(container.textContent).toBe("too-large");
+      expect(cache.get("databases")?.error).toBe(freshFailure);
+      expect(cache.get("databases")?.data).toBeUndefined();
+      expect(oldOutcome).toHaveBeenCalledOnce();
+      expect(freshOutcome).toHaveBeenCalledExactlyOnceWith(freshFailure);
+    },
+  );
+
+  test.each(["fulfilment", "rejection"])(
     "supersession drains two signal-ignoring subscribers before late %s",
     async (outcome) => {
       const held = deferred<string>();

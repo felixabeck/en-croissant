@@ -1,6 +1,5 @@
 import { tauri } from "@/platform/tauri";
-import { listingFailure, type ListingFailure } from "@/components/files/listingFailure";
-import type { TFunction } from "i18next";
+import { listingFailure, type ListingFailureMessages } from "@/components/files/listingFailure";
 import { useNativePicker } from "@/hooks/useNativePicker";
 import {
   Box,
@@ -58,37 +57,28 @@ import {
 import { PlayerSearchInput } from "./PlayerSearchInput";
 import { databaseRouteTarget, type DatabaseRouteTarget } from "./databaseRoute";
 
-function loadFailureMessage(failure: Exclude<ListingFailure, "silent">, t: TFunction): string {
-  switch (failure) {
-    case "retry":
-      return t("Databases.LoadError", {
-        defaultValue: "Could not load databases. Please try again.",
-      });
-    case "changed":
-      return t("Databases.LoadError.Changed", {
-        defaultValue: "This database folder changed. Choose another.",
-      });
-    case "missing":
-      return t("Databases.LoadError.RootMissing", {
-        defaultValue: "This database folder is no longer available. Choose another.",
-      });
-    case "unusable":
-      return t("Databases.LoadError.Unusable", {
-        defaultValue: "This database folder cannot be opened. Choose another.",
-      });
-    case "permission":
-      return t("Databases.LoadError.RootPermission", {
-        defaultValue: "ChessFable is not allowed to read this database folder. Choose another.",
-      });
-    case "tooLarge":
-      return t("Databases.LoadError.TooLarge", {
-        defaultValue: "This database folder is too large to list. Choose another.",
-      });
-  }
-}
-
 export default function DatabasesPage() {
   const { t } = useTranslation();
+  const loadFailureMessages: ListingFailureMessages = {
+    retry: t("Databases.LoadError", {
+      defaultValue: "Could not load databases. Please try again.",
+    }),
+    changed: t("Databases.LoadError.Changed", {
+      defaultValue: "This database folder changed. Choose another.",
+    }),
+    missing: t("Databases.LoadError.RootMissing", {
+      defaultValue: "This database folder is no longer available. Choose another.",
+    }),
+    unusable: t("Databases.LoadError.Unusable", {
+      defaultValue: "This database folder cannot be opened. Choose another.",
+    }),
+    permission: t("Databases.LoadError.RootPermission", {
+      defaultValue: "ChessFable is not allowed to read this database folder. Choose another.",
+    }),
+    tooLarge: t("Databases.LoadError.TooLarge", {
+      defaultValue: "This database folder is too large to list. Choose another.",
+    }),
+  };
   const picker = useNativePicker();
 
   // Opening the overview ends the active session; mount-only lets double-click and Explore restore the sidebar's database target.
@@ -111,7 +101,7 @@ export default function DatabasesPage() {
       const result = await runUnlessCancelled(
         t("Common.Error"),
         () => tauri.issueDatabaseWorkspace(),
-        loadFailureMessage("changed", t),
+        loadFailureMessages.changed,
       );
       if (!result) return;
       await databaseOwner!.supersede();
@@ -305,7 +295,7 @@ export default function DatabasesPage() {
             >
               {failure !== "silent" && (
                 <Stack role="alert" c="red" p={{ base: "xs", sm: "md" }} miw={0}>
-                  <Text className="wrap-anywhere">{loadFailureMessage(failure, t)}</Text>
+                  <Text className="wrap-anywhere">{loadFailureMessages[failure]}</Text>
                   {needsFolder && (
                     <Button
                       miw={0}
@@ -385,7 +375,7 @@ export default function DatabasesPage() {
                   ))}
               </SimpleGrid>
             </ScrollArea>
-            {error == null &&
+            {failure === "silent" &&
               databases &&
               filteredDatabases.length === 0 &&
               (hasSearch || databases.length === 0) && (

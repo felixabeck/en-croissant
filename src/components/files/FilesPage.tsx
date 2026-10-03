@@ -1,6 +1,5 @@
 import { tauri } from "@/platform/tauri";
-import { listingFailure, type ListingFailure } from "@/components/files/listingFailure";
-import type { TFunction } from "i18next";
+import { listingFailure, type ListingFailureMessages } from "@/components/files/listingFailure";
 import { useNativePicker } from "@/hooks/useNativePicker";
 import { runAppliedMutationWithRefresh, runDestructiveWithRefresh } from "@/platform/errors";
 import { runUnlessCancelled } from "@/components/files/notifyError";
@@ -58,37 +57,28 @@ function findEntry(entries: Entry[], key: string): Entry | null {
   return null;
 }
 
-function loadFailureMessage(failure: Exclude<ListingFailure, "silent">, t: TFunction): string {
-  switch (failure) {
-    case "retry":
-      return t("Files.LoadFailed", {
-        defaultValue: "Files could not be loaded. Please try again.",
-      });
-    case "changed":
-      return t("Files.LoadFailed.Changed", {
-        defaultValue: "This collection changed. Choose another.",
-      });
-    case "missing":
-      return t("Files.LoadFailed.Missing", {
-        defaultValue: "This collection is no longer available. Choose another.",
-      });
-    case "unusable":
-      return t("Files.LoadFailed.Unusable", {
-        defaultValue: "This collection cannot be opened. Choose another.",
-      });
-    case "permission":
-      return t("Files.LoadFailed.Permission", {
-        defaultValue: "ChessFable is not allowed to read this collection. Choose another.",
-      });
-    case "tooLarge":
-      return t("Files.LoadFailed.TooLarge", {
-        defaultValue: "This collection is too large to list. Choose another.",
-      });
-  }
-}
-
 export default function FilesPage() {
   const { t } = useTranslation();
+  const loadFailureMessages: ListingFailureMessages = {
+    retry: t("Files.LoadFailed", {
+      defaultValue: "Files could not be loaded. Please try again.",
+    }),
+    changed: t("Files.LoadFailed.Changed", {
+      defaultValue: "This collection changed. Choose another.",
+    }),
+    missing: t("Files.LoadFailed.Missing", {
+      defaultValue: "This collection is no longer available. Choose another.",
+    }),
+    unusable: t("Files.LoadFailed.Unusable", {
+      defaultValue: "This collection cannot be opened. Choose another.",
+    }),
+    permission: t("Files.LoadFailed.Permission", {
+      defaultValue: "ChessFable is not allowed to read this collection. Choose another.",
+    }),
+    tooLarge: t("Files.LoadFailed.TooLarge", {
+      defaultValue: "This collection is too large to list. Choose another.",
+    }),
+  };
   const picker = useNativePicker();
   const [workspace, setWorkspace] = useAtom(fileWorkspaceAtom);
   const [, setWorkspaceDisplayName] = useAtom(fileWorkspaceDisplayNameAtom);
@@ -132,7 +122,7 @@ export default function FilesPage() {
       const result = await runUnlessCancelled(
         t("Common.Error"),
         () => tauri.issueFileWorkspace(),
-        loadFailureMessage("changed", t),
+        loadFailureMessages.changed,
       );
       if (!result) return;
       setWorkspace(result.handle);
@@ -311,7 +301,7 @@ export default function FilesPage() {
               )}
               {failure !== "silent" ? (
                 <Text c="red" role="alert" className="wrap-anywhere">
-                  {loadFailureMessage(failure, t)}
+                  {loadFailureMessages[failure]}
                 </Text>
               ) : !data ? (
                 <Text>{t("Common.Loading")}</Text>

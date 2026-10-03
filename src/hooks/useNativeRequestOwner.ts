@@ -63,7 +63,11 @@ export function hasNativeRequestSubscribers(cache: object, key: Key): boolean {
     return (requestsByCache.get(cache)?.get(unstable_serialize(key))?.subscribers.size ?? 0) > 0;
 }
 
-/** Shares each actual SWR fetch generation until its final committed subscriber leaves. */
+/**
+ * Shares each generation until it settles, is explicitly superseded, or its final committed
+ * subscriber leaves. The last two reject every subscriber with cancellation at once and drop
+ * the work's later outcome.
+ */
 export function useNativeRequestOwner(key: unknown | null): NativeRequestOwner | null {
     const { cache } = useSWRConfig();
     const identity = key === null ? null : unstable_serialize(key);
@@ -80,7 +84,10 @@ export function useNativeRequestOwner(key: unknown | null): NativeRequestOwner |
             // replacement can retain the same in-flight generation.
             queueMicrotask(() => {
                 if (request.subscribers.size !== 0) return;
-                for (const generation of request.generations) generation.controller.abort();
+                for (const generation of request.generations) {
+                    generation.controller.abort();
+                    generation.superseded.abort();
+                }
                 request.generations.clear();
                 const requests = requestsFor(cache);
                 if (requests.get(identity) === request) requests.delete(identity);
@@ -98,8 +105,8 @@ export function useNativeRequestOwner(key: unknown | null): NativeRequestOwner |
                 | undefined;
             if (current) return current.promise as Promise<T>;
             const controller = new AbortController();
-            // Final-subscriber cleanup keeps its cooperative abort contract. Only an explicit
-            // root supersession settles deliveries while native work ignores cancellation.
+            // Explicit supersession and final-subscriber cleanup both settle deliveries at once,
+            // even when native work ignores the cooperative controller's cancellation.
             const superseded = new AbortController();
             let onAbort!: () => void;
             const cancelled = new Promise<never>((_resolve, reject) => {

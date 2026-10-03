@@ -9,6 +9,9 @@ export type ListingFailure =
     | "permission"
     | "tooLarge";
 
+export type VisibleListingFailure = Exclude<ListingFailure, "silent">;
+export type ListingFailureMessages = Record<VisibleListingFailure, string>;
+
 /** Only the backend root label establishes that a listing needs another root. */
 export function listingFailure(error: unknown): ListingFailure {
     if (error == null) return "silent";

@@ -1,10 +1,11 @@
-import { createInstance } from "i18next";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { I18nextProvider, useTranslation } from "react-i18next";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import type { SupportedLocale } from "@/i18n";
 import type { AppErrorCategory } from "@/platform/errors";
 import * as errors from "@/platform/errors";
+import { catalogueI18n, shippedCatalogues } from "@/tests/catalogues";
 import { listingFailure } from "./listingFailure";
 
 afterEach(() => vi.restoreAllMocks());
@@ -94,26 +95,15 @@ const keys = [
     "Databases.LoadError.TooLarge",
     "Databases.ChooseFolder",
 ];
-const catalogues = import.meta.glob<{ translation: Record<string, string> }>(
-    "../../translation/*.json",
-    { eager: true, import: "default" },
-);
+const catalogues = shippedCatalogues();
 function Sentence({ translationKey }: { translationKey: string }) {
     const { t } = useTranslation();
     return createElement("span", null, t(translationKey));
 }
-test.each(Object.entries(catalogues))(
-    "renders every new key from %s without fallback",
-    async (path, catalogue) => {
-        const values = catalogue.translation;
-        const locale = path.split("/").pop()!.replace(".json", "");
-        const i18n = createInstance();
-        await i18n.init({
-            lng: locale,
-            fallbackLng: false,
-            resources: { [locale]: catalogue },
-            interpolation: { escapeValue: false },
-        });
+test.each(catalogues)(
+    "renders every new key from $locale without fallback",
+    async ({ locale, translation: values }) => {
+        const i18n = await catalogueI18n(locale as SupportedLocale);
         for (const key of keys) {
             const markup = renderToStaticMarkup(
                 createElement(
@@ -127,15 +117,14 @@ test.each(Object.entries(catalogues))(
             expect(node.textContent).toBe(values[key]);
             expect(values[key]).toBeTruthy();
         }
-        expect(Object.keys(catalogues)).toHaveLength(16);
     },
 );
-test.each(Object.entries(catalogues).filter(([path]) => !path.includes("/en-")))(
-    "%s translates each new key instead of copying English",
-    (_path, catalogue) => {
+test.each(catalogues.filter(({ locale }) => !locale.startsWith("en-")))(
+    "$locale translates each new key instead of copying English",
+    (catalogue) => {
         for (const key of keys)
             expect(catalogue.translation[key]).not.toBe(
-                catalogues["../../translation/en-US.json"].translation[key],
+                catalogues.find(({ locale }) => locale === "en-US")!.translation[key],
             );
     },
 );

@@ -216,6 +216,33 @@ describe("listing failure copy and state", () => {
     expect(host.textContent).toContain("Add a database to get started");
     expect(alert()).toBeNull();
   });
+  test.each(["cancellation", "visible failure"])(
+    "%s over a cached empty listing shows only its appropriate state",
+    async (outcome) => {
+      await render();
+      expect(cache.get("databases")?.data).toEqual([]);
+      mocks.listWorkspaceDatabases.mockRejectedValue(
+        outcome === "cancellation"
+          ? new DOMException("Cancellation", "AbortError")
+          : failure("too-large"),
+      );
+      await act(async () => revalidate());
+      expect(cache.get("databases")?.data).toEqual([]);
+      expect(host.textContent?.includes("No databases installed")).toBe(outcome === "cancellation");
+      expect(host.textContent?.includes("Add a database to get started")).toBe(
+        outcome === "cancellation",
+      );
+      if (outcome === "cancellation") {
+        expect(alert()).toBeNull();
+        expect(choose()).toBeUndefined();
+      } else {
+        expect(alert()?.textContent).toContain(
+          "This database folder is too large to list. Choose another.",
+        );
+        expect(choose()).toBeDefined();
+      }
+    },
+  );
   test.each([false, true])(
     "cancellation retains cached content=%s and never shows empty success",
     async (cached) => {
