@@ -149,6 +149,44 @@
 //                                           |   row shows its game — timed out waiting for the  |
 //                                           |   opened game's notation; expected 1.e4e52.d4d5   |
 
+// Staged-failure record for the NAG checks (push-review-policy §2), 2026-10-03, one row per
+// assertion. Two runs, each against a release binary the harness reads; the harness itself was
+// unchanged between them. Run A used a pre-fix release binary (built 2026-10-03 from master
+// before the lossless-NAG change): "7 check(s) failed", exit 1. Run B used a release build
+// of 2f4dc8c4 with two staged breaks — `opacity: 0` on the AnnotationHint glyph box and a no-op
+// SAVE_FILE handler in
+// BoardAnalysis.tsx — restored and rebuilt clean afterwards: "6 check(s) failed", exit 1.
+// In run B the hint path, hint title and $220 assertions stayed green, so the two breaks did not
+// entangle.
+//   check                                   | run | message printed                                | exit
+//   hint-glyph-path                          | A   | FAIL  the $8 board hint is rendered with a    | 1
+//                                           |     |   glyph path — observed board hint:           |
+//                                           |     |   {"title":"",…}                               |
+//   hint-title                               | A   | FAIL  the $8 board hint SVG title is □ —      | 1
+//                                           |     |   observed board hint: {"title":"",…}         |
+//   hint-visibility                          | B   | FAIL  the $8 board hint has a visible box and | 1
+//                                           |     |   positive opacity through its board          |
+//                                           |     |   ancestors — observed board hint:            |
+//                                           |     |   {"title":"□",…,"opacity":"0",…}             |
+//   unknown-hint-absence                     | A   | FAIL  the unknown $220 renders no board       | 1
+//                                           |     |   annotation hint — observed board hint:      |
+//                                           |     |   {"title":"",…}                               |
+//   saved-edit                               | B   | FAIL  SAVE_FILE writes Nc3?! to the seeded NAG | 1
+//                                           |     |   file — timed out waiting for the NAG file's |
+//                                           |     |   saved Nc3?! edit; file changed: false       |
+//   preserves-$8                             | A   | FAIL  the saved NAG game preserves $8 —       | 1
+//                                           |     |   observed saved movetext: 1. e4 e5 2. d4!?   |
+//                                           |     |   d5 3. Nc3?! *                                |
+//   preserves-$11                            | A   | FAIL  the saved NAG game preserves $11 — same | 1
+//                                           |     |   observed movetext                            |
+//   preserves-d4!-$2                         | A   | FAIL  the saved NAG game preserves d4! $2 —   | 1
+//                                           |     |   same observed movetext                       |
+//   preserves-$220                           | A   | FAIL  the saved NAG game preserves $220 — same | 1
+//                                           |     |   observed movetext                            |
+// The NAG row lookup, double-click open, the three navigations and the Annotate-panel click are
+// setup, not assertions: a setup failure prints FAIL on every dependent assertion above with
+// "not attempted: <step>: <error>", as run B shows for the four preserves-* checks.
+
 // Staged-failure record for the file-freshness checks (2026-09-25). Each break was restored
 // before the next run. The in-place row replaced the file by rename. The read row did not
 // install the recorder. The apply row set the ceiling to 0. The withhold row deleted the PGN
