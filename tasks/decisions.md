@@ -5107,3 +5107,58 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** d-20261003-19 promised to convert "only if every element is a value the old schema accepted". Its own premise requires the old schema's array bound, and requires that a present-but-corrupt field never be repaired. New evidence: review findings D1 and R3-1 in `tasks/handoffs/2026-10-01-lossless-nags-review.md`, fixed in `2f4dc8c4` and `fb69f852`. Reversal path: the tests "legacy annotations never repair corrupt own nags", "legacy NAG migration refuses oversized annotations…" and "…accepts the annotations length boundary" in `src/state/store/tabStorage.test.ts`.
 * **Decided by:** Claude Code, build run of f-20261001-12, cumulative diff review 2026-10-03, full auto · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"f0067744b3060450e0518cdacb274365cd392fbbf51d3ca531dddb14441b0262","input_sha256":"40fae4f25790b5d0fe14e22a826ba4d86e044a54de619b32e3224cb6b5f63633","kind":"mutation-receipt","operation":"0151ef922d40a90b85969be1bc6be78aec5cdddd1c5c4d6cbf8be7cacb622132","options":{"section":null},"request_id_sha256":null,"results":["d-20261003-20"],"target":"decisions-ledger","v":1} -->
+
+### d-20261003-21 — How does the renderer know that a listing failure is a failure of the chosen root?
+
+* **Question:** Which signal tells the Files and Databases pages that a listing failed because the chosen root itself is unusable, as opposed to a child entry or a transient race?
+* **Governs:** f-20260913-05
+* **Chosen:** An optional, additive `rootFailure` field on `ErrorPayload` (`changed`, `missing`, `unusable`, `permission`, `too-large`), set only by the backend: `too-large` where the listing bound and depth refusals are raised; otherwise a read-only post-failure root probe in `list_file_workspace` and `list_workspace_databases` (lock and initialization failures end it with no label; then `capability_directory`; then the root's own entry stream under the same bound, keeping no entry), whose error variant gives the label attached to the original error; `get_database_workspace` default-root acquisition errors by variant; and the two picker same-path refusals as `changed`. Category and message never change. The renderer reads only the field, never message text.
+* **Rejected:** Matching category plus exact backend message literals in the renderer (the rejected planner draft) — the same payload arises from child entries, so a vanished PGN would read as a lost collection. Labelling by variant at root call sites — root enumeration propagates child `statat` failures. New backend `ErrorCategory` values — they would replace the category other consumers read. Renderer-only hedged copy. An eighth `AppErrorCategory` (`d-20260901-34`, `d-20260904-06`).
+* **Reason:** Plan review of f-20260913-05 (rounds 1-4, locate probe `probe-1-r1`, focused judgment `judge-n9-r3`) measured that only the producer can tell root from child. It also dissolves the copied-literal coupling the draft deferred (inbox `20261003-184054-586846-1791045654702385479-4.md`). Reversal path: a backend that types root failures as their own error variants, at which point the field can be derived from them.
+* **Decided by:** Claude Code, drain session 53d740d4-5be5-4005-a744-b433a462eb1b, full auto, plan review of f-20260913-05 · **Superseded-by:** -
+
+### d-20261003-22 — Which root errors map to which label, and which never get one?
+
+* **Question:** How is a root-site error turned into a `rootFailure` value?
+* **Governs:** f-20260913-05
+* **Chosen:** `Io(NotFound)` missing; `Io(PermissionDenied)` permission; `InvalidInput` and `Io(InvalidInput)` unusable; `Conflict` changed; a listing-bound `ResourceLimit` too-large; anything else unlabelled. Authority lock poisoning and initialization, operation admission and ticket claims, registry capacity, persistence and durability are never labelled and keep the retry sentence.
+* **Rejected:** Labelling poison or an uninitialized authority (choosing another root cannot recover them; only a restart does). Labelling every `resource-limit` (a full path registry is not a property of the root). A Windows ACL-deny test fixture (the label comes from `io::ErrorKind`; the standard library maps `ERROR_ACCESS_DENIED` to `PermissionDenied`).
+* **Reason:** The label means "retrying cannot succeed until the root is re-selected" (f-20260913-05 MANDATE). Reversal path: an error the mapping labels whose recovery is not re-selection.
+* **Decided by:** Claude Code, drain session 53d740d4-5be5-4005-a744-b433a462eb1b, full auto, plan review of f-20260913-05 · **Superseded-by:** -
+
+### d-20261003-23 — What do the Files and Databases pages say for each listing failure, and what does re-selection do?
+
+* **Question:** Which sentence and recovery action does each presentation get?
+* **Governs:** f-20260913-05
+* **Chosen:** Retry keeps "… could not be loaded. Please try again." Each `rootFailure` value gets its own sentence ending "Choose another." (changed, no longer available, cannot be opened, not allowed to read, too large to list); the too-large sentence names no number. Files re-selects through its existing header button; Databases shows one "Choose database folder" button inside the alert for the five re-select presentations only. A picker's own same-path refusal notifies the page's changed sentence. No removal action. Databases shows its empty-success state only after a successful empty listing.
+* **Rejected:** "Choose it again" — both pickers refuse the same replaced path and mint nothing. A link to Settings. A button on the retry alert. A shared React alert component (Files already has a header button). Removing a stale entry from a whole-list failure (there is no selected entry and no command removes a root).
+* **Reason:** The MANDATE's wrong instruction was "try again" for a root that retrying cannot fix; `d-20261003-12` gives the over-bound sentence to this finding. Reversal path: a supported same-path re-registration command.
+* **Decided by:** Claude Code, drain session 53d740d4-5be5-4005-a744-b433a462eb1b, full auto, plan review of f-20260913-05 · **Superseded-by:** -
+
+### d-20261003-24 — How does the Databases page relist after a re-selection without old-root results winning?
+
+* **Question:** After `issueDatabaseWorkspace` returns a handle, how is the shared `"databases"` request refreshed so that no request started before the switch changes what the page shows?
+* **Governs:** f-20260913-05
+* **Chosen:** Supersede: abort every running `"databases"` generation and reject every subscriber's promise for it with a cancellation at that moment (raced against the abort signal, later outcomes of the underlying work dropped), then revalidate only after those cancellations have been delivered to SWR.
+* **Rejected:** A bare `mutate()` (`useNativeRequestOwner.run` returns the running generation that already read the old root). Waiting for running generations (a stalled old listing blocks recovery forever). Abort and detach alone (SWR 2.4.0 stores a late rejection without a staleness check). Cancellation settled when the work ends (a late cancellation can overwrite the fresh failure).
+* **Reason:** Plan review rounds 1-6 of f-20260913-05, SWR source `dist/index/index.mjs:416` versus `:463-497`, and the round-6 focused judgment. `async-resource-invariants.md`: use a discriminator, never timing. Reversal path: a per-root SWR key, which makes the old and new requests different identities.
+* **Decided by:** Claude Code, drain session 53d740d4-5be5-4005-a744-b433a462eb1b, full auto, plan review of f-20260913-05 · **Superseded-by:** -
+
+### d-20261003-25 — Which native pickers share the in-flight guard?
+
+* **Question:** Does the Databases picker get its own copy of the Files in-flight guard, and does Settings' `DirectorySetting` join a shared one?
+* **Governs:** f-20260913-05
+* **Chosen:** One shared guard for Files, Databases and `DirectorySetting`: a second activation while one is pending does nothing, and pending clears on success, cancellation and rejection. Each caller keeps its own command and outcome handling; Settings' visible behaviour is unchanged.
+* **Rejected:** A third inline copy on Databases. Leaving `DirectorySetting` on its own copy (the rejected draft's "no Settings change" non-goal).
+* **Reason:** Universal rule 11 (extract at the second copy, route every copy through it); `review-minimalism` r1. Reversal path: a picker whose guard must differ, passed as a parameter.
+* **Decided by:** Claude Code, drain session 53d740d4-5be5-4005-a744-b433a462eb1b, full auto, plan review of f-20260913-05 · **Superseded-by:** -
+
+### d-20261003-26 — How is the real IPC path of `rootFailure` proven?
+
+* **Question:** Which check shows that the field survives the real Tauri command path to the rendered page?
+* **Governs:** f-20260913-05
+* **Chosen:** One committed assertion in `scripts/verify-app.mjs` (`pnpm verify:app`): an isolated profile whose app-owned default database root is a regular file renders the `unusable` sentence and the Databases chooser, with a staged-failure row. Run after `pnpm build` in the browser-verification stage; not a push gate.
+* **Rejected:** A one-off scratch script (not re-runnable). Container e2e alone (mocked IPC). Making `verify:app` a push gate (it needs a compositor CI lacks).
+* **Reason:** `review-tests` r2-r3 of f-20260913-05. Reversal path: a CI-capable real-IPC harness.
+* **Decided by:** Claude Code, drain session 53d740d4-5be5-4005-a744-b433a462eb1b, full auto, plan review of f-20260913-05 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":53,"effect_sha256":"9d16069f7a102c44e3580dea5e65fcda54f2d76d6b993d9a53b75f33f44d4edb","input_sha256":"3272cb01da74b4c88106fce33d279da4b4a75bcaad4cd744e6ae9309a73879c5","kind":"mutation-receipt","operation":"e5cf016449a2c8d70d9ffe0b0a154fbdcd5f0ee9b499615a076835c0777e584e","options":{"section":null},"request_id_sha256":null,"results":["d-20261003-21","d-20261003-22","d-20261003-23","d-20261003-24","d-20261003-25","d-20261003-26"],"target":"decisions-ledger","v":1} -->
