@@ -5162,3 +5162,15 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** `review-tests` r2-r3 of f-20260913-05. Reversal path: a CI-capable real-IPC harness.
 * **Decided by:** Claude Code, drain session 53d740d4-5be5-4005-a744-b433a462eb1b, full auto, plan review of f-20260913-05 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":53,"effect_sha256":"9d16069f7a102c44e3580dea5e65fcda54f2d76d6b993d9a53b75f33f44d4edb","input_sha256":"3272cb01da74b4c88106fce33d279da4b4a75bcaad4cd744e6ae9309a73879c5","kind":"mutation-receipt","operation":"e5cf016449a2c8d70d9ffe0b0a154fbdcd5f0ee9b499615a076835c0777e584e","options":{"section":null},"request_id_sha256":null,"results":["d-20261003-21","d-20261003-22","d-20261003-23","d-20261003-24","d-20261003-25","d-20261003-26"],"target":"decisions-ledger","v":1} -->
+
+## 2026-10-04 — recorded through the decisions lock
+
+### d-20261004-01 — What is the PGN page contract: a byte budget with continuation, or a streaming reader?
+
+* **Question:** How does `read_games` bound one call's materialised PGN text, and how does a consumer get the rest?
+* **Governs:** f-20260914-05
+* **Chosen:** `read_games(file, start, end)` returns a non-empty prefix of the requested inclusive range, selected on the cached index before any read while the running sum of scanned game byte lengths stays within the page byte budget (a game landing exactly on the budget is included; the first requested game is always selected, so a game over `MAX_PGN_BYTES` still fails with `ResourceLimit`). The renderer (`GameSelector.loadPage`) continues from `start + rows received` until the range is covered or a page is empty.
+* **Rejected:** A Tauri channel or event stream (a new IPC event surface with listener lifetimes, for a ≤1 000-row virtual list); refusing an over-budget page with an error (files of large games become unbrowsable); an explicit `next`/`truncated` response field (a bindings change carrying what the result length already says).
+* **Reason:** The cached index knows every game's size before reading, so the bound is enforced before allocation with no new IPC surface. Reversal path: a consumer that needs to distinguish a short page from end-of-range without a follow-up call.
+* **Decided by:** Claude Code, drain session 648a7fac-1f9b-4bc0-8e9a-df298dc5f16d, full auto, adopted reviewed plan of f-20260914-05 (planned ahead, 8 review rounds) · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"5e79090b510de6e9610f5cece89ae77ab1bf50cd7388683949fa2e3185fe54df","input_sha256":"e2e2fadcf3b0a71a9ca5a3d9b9078dc292ffe16ba961fe9cf3847a0406b19632","kind":"mutation-receipt","operation":"88754a87a9dbc3c810761af98b24413452b2ef0edd2d5198555f268bd4b499f9","options":{"section":null},"request_id_sha256":null,"results":["d-20261004-01"],"target":"decisions-ledger","v":1} -->
