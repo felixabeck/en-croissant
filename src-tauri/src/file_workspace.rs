@@ -29,7 +29,7 @@ use crate::infra::fs::DirectoryEntryKind;
 use crate::infra::fs::{
     check_directory_listing_bound, DirectoryEntry, MAX_DIRECTORY_LISTING_ENTRIES,
 };
-use crate::infra::path_authority::{CapabilityDirectory, PreparedListingEntry};
+use crate::infra::path_authority::{CapabilityDirectory, PreparedEntry};
 use std::ffi::OsStr;
 
 const TRASH_DIRECTORY: &str = ".en-croissant-trash";
@@ -450,13 +450,13 @@ fn collect_tree_entries(
         Ok(staged)
     }
 
-    fn register(
+    fn prepare_staged(
         staged: Vec<Staged>,
         path_authority: &mut PathAuthority,
         workspace: &FileWorkspaceHandle,
         token: &CancellationToken,
         missing: &mut Vec<FileWorkspaceHandle>,
-        prepared: &mut Vec<PreparedListingEntry>,
+        prepared: &mut Vec<PreparedEntry>,
     ) -> Result<Vec<WorkspaceEntry>, Error> {
         let mut result = Vec::new();
         for entry in staged {
@@ -486,7 +486,7 @@ fn collect_tree_entries(
             let (metadata, nested) = match entry.body {
                 StagedBody::Directory(children) => (
                     None,
-                    register(
+                    prepare_staged(
                         children,
                         path_authority,
                         workspace,
@@ -532,7 +532,7 @@ fn collect_tree_entries(
     let path_authority = lock
         .as_mut()
         .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-    let entries = register(
+    let entries = prepare_staged(
         staged,
         path_authority,
         workspace,

@@ -3893,12 +3893,12 @@ pub(crate) struct DirectoryListingSnapshot {
     entries: Vec<StoredEntry>,
 }
 
-pub(crate) struct PreparedListingEntry {
+pub(crate) struct PreparedEntry {
     stored: StoredEntry,
     reused: bool,
 }
 
-impl PreparedListingEntry {
+impl PreparedEntry {
     pub(crate) fn id(&self) -> PathRef {
         self.stored.id.clone()
     }
@@ -4168,7 +4168,7 @@ impl PathAuthority {
     fn listing_candidate(
         &self,
         snapshot: &DirectoryListingSnapshot,
-        prepared: &[PreparedListingEntry],
+        prepared: &[PreparedEntry],
     ) -> BTreeMap<String, Entry> {
         let reused: BTreeSet<_> = prepared
             .iter()
@@ -4203,7 +4203,7 @@ impl PathAuthority {
     pub(crate) fn commit_directory_listing(
         &mut self,
         snapshot: DirectoryListingSnapshot,
-        prepared: Vec<PreparedListingEntry>,
+        prepared: Vec<PreparedEntry>,
         cancellation: &CancellationToken,
     ) -> Result<(), Error> {
         if cancellation.is_cancelled() {
@@ -4228,7 +4228,7 @@ impl PathAuthority {
             if cancellation.is_cancelled() {
                 return Err(Error::Cancellation);
             }
-            let commit = self.publish_prepared_entry(PreparedListingEntry {
+            let commit = self.publish_prepared_entry(PreparedEntry {
                 stored: entry.stored.clone(),
                 reused: true,
             })?;
@@ -5511,7 +5511,7 @@ impl PathAuthority {
         operations: Vec<PathOperation>,
         binding: IdentityBinding,
         door: RegistrationDoor,
-    ) -> Result<PreparedListingEntry, Error> {
+    ) -> Result<PreparedEntry, Error> {
         let purpose = purpose_for_shape(PathClass::PersistentFile, false, &operations);
         let desired_operations = purpose
             .map(canonical_operations)
@@ -5539,14 +5539,14 @@ impl PathAuthority {
                 let mut stored = entry.stored.clone();
                 stored.operations = desired_operations;
                 stored.parent_identity = binding.parent_identity;
-                return Ok(PreparedListingEntry {
+                return Ok(PreparedEntry {
                     stored,
                     reused: true,
                 });
             }
             // Passive discovery leaves the old binding refused and prepares a fresh ID.
         }
-        Ok(PreparedListingEntry {
+        Ok(PreparedEntry {
             stored: Self::fresh_stored_entry(
                 path,
                 binding,
@@ -5560,10 +5560,7 @@ impl PathAuthority {
         })
     }
 
-    fn publish_prepared_entry(
-        &mut self,
-        prepared: PreparedListingEntry,
-    ) -> Result<PathCommit, Error> {
+    fn publish_prepared_entry(&mut self, prepared: PreparedEntry) -> Result<PathCommit, Error> {
         if !prepared.reused {
             return self.persist_new_entry(prepared.stored);
         }
@@ -6360,26 +6357,48 @@ impl PathAuthority {
         root: &PuzzleRootHandle,
         cancellation: &CancellationToken,
     ) -> Result<Vec<PuzzleDatabaseDescriptor>, Error> {
-        let snapshot = self.directory_listing_snapshot(
+        self.reconcile_db3_listing(
             root.path_ref(),
-            &[EntryPurpose::PuzzleFile],
-            false,
-            None,
-        )?;
-        let root_directory =
-            self.capability_directory(root.path_ref(), PathOperation::PuzzleRead)?;
+            EntryPurpose::PuzzleFile,
+            PathOperation::PuzzleRead,
+            cancellation,
+            |authority, filename, display_name, identity| {
+                let entry = authority.prepare_puzzle_listing_child(root, &filename, identity)?;
+                let id = entry.id();
+                Ok((
+                    entry,
+                    PuzzleDatabaseDescriptor {
+                        file: id,
+                        filename: display_name,
+                    },
+                ))
+            },
+        )
+    }
+
+    fn reconcile_db3_listing<T>(
+        &mut self,
+        root: &PathRef,
+        purpose: EntryPurpose,
+        operation: PathOperation,
+        cancellation: &CancellationToken,
+        mut adapt: impl FnMut(
+            &mut Self,
+            OsString,
+            String,
+            (u64, u64),
+        ) -> Result<(PreparedEntry, T), Error>,
+    ) -> Result<Vec<T>, Error> {
+        let snapshot = self.directory_listing_snapshot(root, &[purpose], false, None)?;
+        let root_directory = self.capability_directory(root, operation)?;
         let mut prepared = Vec::new();
         let children = map_db3_children_cancellable(
             root_directory,
             cancellation,
             |filename, display_name, identity| {
-                let entry = self.register_puzzle_child(root, &filename, identity)?;
-                let id = entry.id();
+                let (entry, child) = adapt(self, filename, display_name, identity)?;
                 prepared.push(entry);
-                Ok(PuzzleDatabaseDescriptor {
-                    file: id,
-                    filename: display_name,
-                })
+                Ok(child)
             },
         )?;
         self.commit_directory_listing(snapshot, prepared, cancellation)?;
@@ -6398,12 +6417,12 @@ impl PathAuthority {
         self.root_path(root.path_ref(), PathOperation::PuzzleRead)
     }
 
-    fn register_puzzle_child(
+    fn prepare_puzzle_listing_child(
         &mut self,
         root: &PuzzleRootHandle,
         filename: &OsStr,
         observed: (u64, u64),
-    ) -> Result<PreparedListingEntry, Error> {
+    ) -> Result<PreparedEntry, Error> {
         validate_components(&[filename.to_os_string()])?;
         let resolved = self.resolve(
             root.path_ref(),
@@ -6451,36 +6470,29 @@ impl PathAuthority {
         root: &DatabaseRootHandle,
         cancellation: &CancellationToken,
     ) -> Result<Vec<DatabaseDescriptor>, Error> {
-        let snapshot = self.directory_listing_snapshot(
+        self.reconcile_db3_listing(
             root.path_ref(),
-            &[EntryPurpose::DatabaseFile],
-            false,
-            None,
-        )?;
-        let root_directory =
-            self.capability_directory(root.path_ref(), PathOperation::DatabaseRead)?;
-        let mut prepared = Vec::new();
-        let children = map_db3_children_cancellable(
-            root_directory,
+            EntryPurpose::DatabaseFile,
+            PathOperation::DatabaseRead,
             cancellation,
-            |filename, display_name, identity| {
-                let entry = self.prepare_database_listing_child(
+            |authority, filename, display_name, identity| {
+                let entry = authority.prepare_database_listing_child(
                     root,
                     &filename,
                     display_name.clone(),
                     identity,
                 )?;
                 let id = entry.id();
-                prepared.push(entry);
-                Ok(DatabaseDescriptor {
-                    handle: DatabaseHandle::new(id),
-                    filename: display_name,
-                    availability: PathAvailability::Available,
-                })
+                Ok((
+                    entry,
+                    DatabaseDescriptor {
+                        handle: DatabaseHandle::new(id),
+                        filename: display_name,
+                        availability: PathAvailability::Available,
+                    },
+                ))
             },
-        )?;
-        self.commit_directory_listing(snapshot, prepared, cancellation)?;
-        Ok(children)
+        )
     }
 
     /// Registers an exact database child after validating it relative to the
@@ -6507,7 +6519,7 @@ impl PathAuthority {
         filename: &OsStr,
         display_name: impl Into<String>,
         observed: (u64, u64),
-    ) -> Result<PreparedListingEntry, Error> {
+    ) -> Result<PreparedEntry, Error> {
         validate_windows_database_leaf(filename)?;
         let components = vec![filename.to_os_string()];
         let resolved = self.resolve(root.path_ref(), PathOperation::DatabaseRead, &components)?;
@@ -6554,7 +6566,7 @@ impl PathAuthority {
         display_name: String,
         resolved: &ResolvedPath,
         expected_identity: VerifiedIdentity,
-    ) -> Result<PreparedListingEntry, Error> {
+    ) -> Result<PreparedEntry, Error> {
         if resolved.parent().is_none() || resolved.leaf().is_none() {
             return Err(Error::InvalidInput(
                 "database child has no retained parent boundary".into(),
@@ -6592,7 +6604,7 @@ impl PathAuthority {
         }) {
             let mut stored = entry.stored.clone();
             stored.operations = canonical_operations(EntryPurpose::DatabaseFile);
-            return Ok(PreparedListingEntry {
+            return Ok(PreparedEntry {
                 stored,
                 reused: true,
             });
@@ -6612,7 +6624,7 @@ impl PathAuthority {
             parent_identity: Some(parent_identity),
             target_is_dir: false,
         };
-        Ok(PreparedListingEntry {
+        Ok(PreparedEntry {
             stored,
             reused: false,
         })
@@ -7431,7 +7443,7 @@ impl PathAuthority {
         binding: IdentityBinding,
         is_dir: bool,
         operation: PathOperation,
-    ) -> Result<PreparedListingEntry, Error> {
+    ) -> Result<PreparedEntry, Error> {
         validate_components(components)?;
         if components.is_empty() {
             return Err(Error::InvalidInput("workspace child is required".into()));
@@ -7504,7 +7516,7 @@ impl PathAuthority {
         class: PathClass,
         binding: IdentityBinding,
         is_dir: bool,
-    ) -> Result<PreparedListingEntry, Error> {
+    ) -> Result<PreparedEntry, Error> {
         let parent_identity = if is_dir {
             None
         } else {
@@ -7533,7 +7545,7 @@ impl PathAuthority {
             if let Some(purpose) = purpose {
                 stored.operations = canonical_operations(purpose);
             }
-            return Ok(PreparedListingEntry {
+            return Ok(PreparedEntry {
                 stored,
                 reused: true,
             });
@@ -7552,7 +7564,7 @@ impl PathAuthority {
             parent_identity,
             target_is_dir: is_dir,
         };
-        Ok(PreparedListingEntry {
+        Ok(PreparedEntry {
             stored,
             reused: false,
         })
@@ -8851,7 +8863,7 @@ mod portable_tests {
         workspace: &FileWorkspaceHandle,
         root: &Path,
         name: &str,
-    ) -> Result<PreparedListingEntry, Error> {
+    ) -> Result<PreparedEntry, Error> {
         let child = identity(&root.join(name))?;
         let parent = identity(root)?;
         authority.prepare_workspace_listing_child(
@@ -9066,24 +9078,38 @@ mod portable_tests {
         use crate::infra::fs::{
             set_test_atomic_file_injector, AtomicFileFaultPoint, AtomicWriterInjector,
         };
+        #[derive(Clone, Copy)]
+        enum ReuseFaultKind {
+            WriteFailure,
+            ParentSyncDurabilityUncertain,
+            CancelOnParentSync,
+        }
         struct ReuseFault {
-            kind: u8,
+            kind: ReuseFaultKind,
             token: CancellationToken,
         }
         impl AtomicWriterInjector for ReuseFault {
             fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
-                if (self.kind == 0 && point == AtomicFileFaultPoint::Write)
-                    || (self.kind == 1 && point == AtomicFileFaultPoint::ParentSync)
+                if (matches!(self.kind, ReuseFaultKind::WriteFailure)
+                    && point == AtomicFileFaultPoint::Write)
+                    || (matches!(self.kind, ReuseFaultKind::ParentSyncDurabilityUncertain)
+                        && point == AtomicFileFaultPoint::ParentSync)
                 {
                     return Err(std::io::Error::other("reuse persistence fault"));
                 }
-                if self.kind == 2 && point == AtomicFileFaultPoint::ParentSync {
+                if matches!(self.kind, ReuseFaultKind::CancelOnParentSync)
+                    && point == AtomicFileFaultPoint::ParentSync
+                {
                     self.token.cancel();
                 }
                 Ok(())
             }
         }
-        for kind in 0..3 {
+        for kind in [
+            ReuseFaultKind::WriteFailure,
+            ReuseFaultKind::ParentSyncDurabilityUncertain,
+            ReuseFaultKind::CancelOnParentSync,
+        ] {
             let (_directory, mut authority, workspace, root) = directory_listing_bound_fixture()?;
             let mut ids = Vec::new();
             for name in ["canonical.pgn", "removed.pgn"] {
@@ -9116,12 +9142,14 @@ mod portable_tests {
             let result = authority.commit_directory_listing(snapshot, vec![reused, fresh], &token);
             set_test_atomic_file_injector(None);
             match kind {
-                0 => assert!(matches!(result, Err(Error::Io(_)))),
-                1 => assert!(matches!(
+                ReuseFaultKind::WriteFailure => assert!(matches!(result, Err(Error::Io(_)))),
+                ReuseFaultKind::ParentSyncDurabilityUncertain => assert!(matches!(
                     result,
                     Err(Error::CommittedDurabilityUncertain(_))
                 )),
-                _ => assert!(matches!(result, Err(Error::Cancellation))),
+                ReuseFaultKind::CancelOnParentSync => {
+                    assert!(matches!(result, Err(Error::Cancellation)))
+                }
             }
             assert!(!authority.persistent.contains_key(&fresh_id.id));
             for id in ids {
@@ -10784,7 +10812,7 @@ mod tests {
         let source = include_str!("mod.rs");
         for signature in [
             "pub(crate) fn register_installed_engine(",
-            "fn register_puzzle_child(",
+            "fn prepare_puzzle_listing_child(",
         ] {
             let body = body_at_indent(source, signature);
             assert!(body.contains("let resolved = self.resolve("), "{body}");
