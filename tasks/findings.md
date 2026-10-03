@@ -12543,3 +12543,16 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
 * **Defect:** when the native dialog returns a `FilePath` that `into_path` cannot convert, the raw conversion error is interpolated into `Error::InvalidInput`. `Error`'s Serialize sends that Display string to the renderer, and `runUnlessCancelled` shows it. The string can carry a native path or an OS diagnostic. Renderer redaction runs only after the diagnostic has crossed the boundary.
 * **Why it matters:** the renderer is not a place for backend path diagnostics. The same class already exists for the engine-workspace opener (`f-20260915-04`); these three picker commands are a separate site and already ship. `f-20260913-05` only changes listing copy and must not take this mapping on.
 * **Related:** `f-20260915-04` (engine opener diagnostic; different command, root `-`).
+
+---
+
+## 2026-10-03 — filed through the inbox spool
+
+### A move carrying `$1 $2` displays "!?", indistinguishable from the single `$5` glyph
+
+* **ID:** f-20261003-03 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src/components/common/MoveCell.tsx:69` (`props.annotations.join("")`), fed by `nagGlyphs` through `src/components/common/GameNotation.tsx:312`; the same join builds the eval-chart label in `src/components/common/EvalChart.tsx:107`.
+* **Defect:** The move cell concatenates every glyph a move carries without a separator. A move with `$1` (!) and `$2` (?) therefore reads "!?", which is exactly the glyph of `$5` (interesting move); `$1 $3` reads "!!!" and `$2 $4` reads "???". Observed 2026-10-03 in the real window (`pnpm verify:app`, seeded `2. d4 $1 $2`): the notation showed `d4!?` in the `!` colour. The saved PGN is correct (`d4! $2`), so this is display only. It predates f-20261001-12: the old glyph tree stored `["!", "?"]` and joined them the same way.
+* **Why it matters:** The notation misstates the annotation for any move with two move-quality NAGs, and nothing distinguishes it from `$5`.
+* **Open question:** How several move-quality glyphs on one move are shown — a thin separator between basic glyphs, only the primary glyph in the move cell with the rest elsewhere (tooltip, Annotate panel), or a distinct rendering for contradictory pairs.
+* **Found by:** Claude Code, f-20261001-12 build run, 2026-10-03, while inspecting the `pnpm verify:app --screenshot` image of the NAG scenario. Related: f-20261001-12 (lossless NAG storage; this is its display layer, outside that finding's mandate).
