@@ -1295,8 +1295,8 @@ fn issue_database_workspace_blocking(
     Ok(root)
 }
 
-/// Returns the app-owned default database root.  Unlike the picker command it
-/// never receives a renderer path and is stable across restarts.
+/// Returns the active database root when set and available.  Otherwise it acquires,
+/// registers and activates the app-owned default root, without a renderer path.
 #[tauri::command]
 #[specta::specta]
 async fn get_database_workspace(

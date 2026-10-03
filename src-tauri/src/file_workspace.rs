@@ -4859,6 +4859,86 @@ mod root_failure_tests {
     }
 
     #[tokio::test]
+    async fn root_failure_files_failed_listing_cancels_at_probe_is_unlabelled() {
+        let (_directory, registry, workspace, root) = root_failure_fixture();
+        fs::remove_dir(&root).unwrap();
+        let token = CancellationToken::new();
+        let cancel = token.clone();
+        let _hook = crate::infra::path_authority::listing_root_failure_test_hook::install(
+            workspace.path_ref(),
+            Box::new(move |original| {
+                assert!(
+                    matches!(original, Error::Io(error) if error.kind() == std::io::ErrorKind::NotFound)
+                );
+                assert_eq!(original.root_failure(), None);
+                cancel.cancel();
+            }),
+        );
+        let error = list_file_workspace_core(
+            &workspace,
+            &registry,
+            &pgn::PgnRepository::default(),
+            &token,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            token.is_cancelled(),
+            "the failed listing must reach its probe"
+        );
+        assert!(matches!(error, Error::Cancellation));
+        assert_eq!(error.root_failure(), None);
+    }
+
+    #[tokio::test]
+    async fn root_failure_files_root_removed_or_replaced_before_listing_keeps_original_error() {
+        for reason in [
+            RootFailure::Missing,
+            RootFailure::Changed,
+            RootFailure::Unusable,
+        ] {
+            let (directory, registry, workspace, root) = root_failure_fixture();
+            fs::rename(&root, directory.path().join("old-root")).unwrap();
+            match reason {
+                RootFailure::Missing => {}
+                RootFailure::Changed => fs::create_dir(&root).unwrap(),
+                RootFailure::Unusable => fs::write(&root, b"not a directory").unwrap(),
+                _ => unreachable!(),
+            }
+            let original =
+                collect_tree_entries(&registry, &workspace, &CancellationToken::new()).unwrap_err();
+            assert_eq!(original.root_failure(), None);
+            if reason == RootFailure::Unusable {
+                assert!(
+                    matches!(&original, Error::InvalidInput(message) if message == "root authority must be a directory")
+                );
+                assert_eq!(original.category(), ErrorCategory::InvalidInput);
+                assert_eq!(
+                    original.to_string(),
+                    "Invalid input: root authority must be a directory"
+                );
+            }
+            let error = list_file_workspace_core(
+                &workspace,
+                &registry,
+                &pgn::PgnRepository::default(),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.root_failure(), Some(reason));
+            assert_eq!(error.category(), original.category());
+            assert_eq!(error.to_string(), original.to_string());
+            assert_eq!(error.diagnostic(), original.diagnostic());
+            let before = serde_json::to_value(&original).unwrap();
+            let after = serde_json::to_value(&error).unwrap();
+            assert_eq!(after["category"], before["category"]);
+            assert_eq!(after["message"], before["message"]);
+            assert_eq!(after["rootFailure"], serde_json::to_value(reason).unwrap());
+        }
+    }
+
+    #[tokio::test]
     async fn root_failure_child_pgn_removed_or_replaced_between_walk_and_count_is_unlabelled() {
         for replace in [false, true] {
             let (directory, registry, workspace, root) = root_failure_fixture();

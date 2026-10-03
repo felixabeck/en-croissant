@@ -49,6 +49,8 @@ pub(crate) fn probe_listing_root_failure(
     original: Error,
     cancellation: &CancellationToken,
 ) -> Error {
+    #[cfg(test)]
+    listing_root_failure_test_hook::run(root, &original);
     if cancellation.is_cancelled() {
         return Error::Cancellation;
     }
@@ -86,6 +88,40 @@ pub(crate) fn probe_listing_root_failure(
             None => original,
         },
         Ok(()) => original,
+    }
+}
+
+// Key by capability so parallel tests and Files' blocking worker cannot consume another hook.
+#[cfg(test)]
+pub(crate) mod listing_root_failure_test_hook {
+    use super::*;
+
+    type Hook = Box<dyn FnOnce(&Error) + Send>;
+    static HOOKS: std::sync::LazyLock<std::sync::Mutex<HashMap<String, Hook>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+    pub(crate) struct Guard(String);
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            HOOKS.lock().unwrap().remove(&self.0);
+        }
+    }
+
+    pub(crate) fn install(root: &PathRef, hook: Hook) -> Guard {
+        assert!(HOOKS
+            .lock()
+            .unwrap()
+            .insert(root.id.clone(), hook)
+            .is_none());
+        Guard(root.id.clone())
+    }
+
+    pub(super) fn run(root: &PathRef, original: &Error) {
+        let hook = HOOKS.lock().unwrap().remove(&root.id);
+        if let Some(hook) = hook {
+            hook(original);
+        }
     }
 }
 
@@ -8958,6 +8994,8 @@ mod portable_tests {
         );
     }
 
+    // Enumeration and the resolved child's parent retain the root without delete sharing.
+    #[cfg(unix)]
     #[test]
     fn root_failure_database_root_swap_or_removal_first_seen_in_child_keeps_original_message() {
         for replace in [false, true] {
@@ -9004,6 +9042,78 @@ mod portable_tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn root_failure_database_root_removed_or_replaced_before_listing_keeps_original_error() {
+        for replace in [false, true] {
+            let (directory, registry, handle, root) = root_failure_database_fixture();
+            fs::write(root.join("child.db3"), b"old").unwrap();
+            // Registration retains identity, not an OS handle: both mutations are portable.
+            fs::rename(&root, directory.path().join("old-root")).unwrap();
+            if replace {
+                fs::create_dir(&root).unwrap();
+            }
+            let original = registry
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .list_database_children_cancellable(&handle, &CancellationToken::new())
+                .unwrap_err();
+            assert_eq!(original.root_failure(), None);
+            let error = crate::list_workspace_databases_blocking(
+                &registry,
+                handle,
+                &CancellationToken::new(),
+            )
+            .unwrap_err();
+            assert_eq!(
+                error.root_failure(),
+                Some(if replace {
+                    crate::error::RootFailure::Changed
+                } else {
+                    crate::error::RootFailure::Missing
+                })
+            );
+            assert_eq!(error.category(), original.category());
+            assert_eq!(error.to_string(), original.to_string());
+            assert_eq!(error.diagnostic(), original.diagnostic());
+            assert_eq!(
+                error.to_string(),
+                if replace {
+                    "Conflict: path authority is unavailable because its object changed"
+                } else {
+                    "I/O failure"
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn root_failure_database_failed_listing_cancels_at_probe_is_unlabelled() {
+        let (_directory, registry, handle, root) = root_failure_database_fixture();
+        fs::remove_dir(&root).unwrap();
+        let token = CancellationToken::new();
+        let cancel = token.clone();
+        let _hook = listing_root_failure_test_hook::install(
+            handle.path_ref(),
+            Box::new(move |original| {
+                assert!(
+                    matches!(original, Error::Io(error) if error.kind() == std::io::ErrorKind::NotFound)
+                );
+                assert_eq!(original.root_failure(), None);
+                cancel.cancel();
+            }),
+        );
+        let error =
+            crate::list_workspace_databases_blocking(&registry, handle, &token).unwrap_err();
+        assert!(
+            token.is_cancelled(),
+            "the failed listing must reach its probe"
+        );
+        assert!(matches!(error, Error::Cancellation));
+        assert_eq!(error.root_failure(), None);
     }
 
     #[test]
@@ -12311,7 +12421,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn promotion_refuses_an_ancestor_swapped_after_grant() {
+    fn root_failure_promotion_refuses_an_ancestor_swapped_after_grant() {
         use std::os::unix::fs::symlink;
 
         let dir = tempfile::tempdir().unwrap();
@@ -12337,15 +12447,22 @@ mod tests {
         fs::rename(&real, &moved).unwrap();
         symlink(&moved, &real).unwrap();
 
-        assert!(matches!(
-            authority.promote_dialog(
+        let error = authority
+            .promote_dialog(
                 &grant,
                 PathClass::PersistentCustomRoot,
                 "Workspace",
                 vec![PathOperation::ReadPgn, PathOperation::WritePgn],
-            ),
-            Err(ref error) if matches!(error.unlabelled(), Error::Conflict(message) if message == "dialog target changed before promotion")
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error.unlabelled(),
+            Error::Conflict(message) if message == "dialog target changed before promotion"
         ));
+        assert_eq!(
+            error.root_failure(),
+            Some(crate::error::RootFailure::Changed)
+        );
         assert!(authority.persistent.is_empty());
     }
     #[test]
