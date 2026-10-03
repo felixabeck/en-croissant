@@ -4968,3 +4968,31 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Refusal is already correct. Callers can offer re-selection only when the category is `Conflict`, which is the category the same-type identity mismatch already uses. The pre-open identity check in `resolve` already returns `path authority is unavailable because its object changed`, so an open that fails because that object was replaced in the next statement returns the same category and the same message. A same-type replacement that still opens is a different observation and keeps `root changed concurrently`. A stable symlink or special file that `statat` itself sees keeps `InvalidInput("path contains a symlink or special file")`. `EACCES` and every other errno stay `Error::Io`.
 * **Decided by:** Grok drain session 8ac33c07-9caa-4264-b044-dfd5a73d10d5 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"4fb6e343ebd174b8163644c66a713acf2020ab717f4f4231b338bee51bc6320e","input_sha256":"9597c458e3858b5abadbdf2aaf21ec1aa9bb4e21e1a1a7e0d8df9bd5c7e7243f","kind":"mutation-receipt","operation":"3eaeadffaf63b7aa1043fdedaf1ca6920318f21de4b89877e3d85d092b8bf034","options":{"section":null},"request_id_sha256":null,"results":["d-20261003-05"],"target":"decisions-ledger","v":1} -->
+
+### d-20261003-06 — Where does the workspace create path take lastModified without a pathname reach?
+
+* **Question:** Where do `create_workspace_file` and `create_workspace_directory` take `WorkspaceEntry.lastModified` without a pathname reach and without turning a post-commit observation failure into an error after the entry is durable and registered?
+* **Governs:** f-20260913-02
+* **Chosen:** Files take signed Unix seconds from the post-rename `fstat` already performed on the retained temporary descriptor, returned on `AtomicInstalledFile.modified_seconds`, including the pre-rename fallback seconds on `CommittedDurabilityUncertain`. Directories take those seconds from the single pre-registration observation that already supplies identity through the retained parent (`statat` on Unix, the retained handle's `LastWriteTime` on Windows). `timestamp` is deleted. A pre-1970 time is a negative `i64`.
+* **Rejected:** An identity-checked `statat` of the installed name after registration, which can fail or observe a replacement after the PGN and sidecar are durable. Also rejected: moving today's pathname `timestamp` to before registration, which keeps the R3 pathname reach and can still observe a replacement.
+* **Reason:** The file helper already `fstat`s the installed inode before any pathname lookup. The directory helper never retained a descriptor; its existing pre-registration identity observation is the last look before the registry write. `d-20261001-06` full-precision `SystemTime` governs the schema-cache probe, not `WorkspaceEntry.lastModified`, which matches `DirectoryEntry.modified_seconds`.
+* **Decided by:** drain 12e7ce13-be17-4664-9d3a-1b5f120c3ba5 · Grok · **Superseded-by:** -
+
+### d-20261003-07 — Are create-path modification times whole seconds or SystemTime?
+
+* **Question:** Does the workspace create response report the enumerator's signed Unix seconds or the schema cache's full-precision SystemTime?
+* **Governs:** f-20260913-02
+* **Chosen:** The enumerator's signed Unix seconds, discarding subseconds, with a pre-1970 time as a negative `i64`.
+* **Rejected:** Nanosecond `SystemTime` from `d-20261001-06`.
+* **Reason:** `d-20261001-06` governs `probe_regular_file_at` and the schema cache. `WorkspaceEntry.lastModified` is the field `DirectoryEntry.modified_seconds` already fills, so a create response and a later listing of an untouched object report the same integer.
+* **Decided by:** drain 12e7ce13-be17-4664-9d3a-1b5f120c3ba5 · Grok · **Superseded-by:** -
+
+### d-20261003-08 — Is the create-path mtime change one phase or split across infra/fs.rs and file_workspace.rs?
+
+* **Question:** Should the `modified_seconds` field ship separately from the create-path consumer and the allowlist shrink?
+* **Governs:** f-20260913-02
+* **Chosen:** One phase. The field, both create paths, deletion of `timestamp`, and the allowlist shrink land together.
+* **Rejected:** Shipping the struct field alone.
+* **Reason:** The new field is unused until the create path consumes it, and the allowlist shrink is false until `timestamp` is gone. `d-20260901-03` makes the allowlist shrink-only, so the count change belongs in the same commit as the reach it removes.
+* **Decided by:** drain 12e7ce13-be17-4664-9d3a-1b5f120c3ba5 · Grok · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"dd783b3b5b52f00c907f71d737ce37a3b084cfafc04a08d5627e339b7b0a0b9c","input_sha256":"33620c2d90c3940577e4c90b9b4639ab8fca6e196ad30c79f1529ee82ca12d96","kind":"mutation-receipt","operation":"4c9d2ddb24967da005d4dc553445b271492d6001fc84ff75068866aeeea9d4a1","options":{"section":null},"request_id_sha256":null,"results":["d-20261003-06","d-20261003-07","d-20261003-08"],"target":"decisions-ledger","v":1} -->
