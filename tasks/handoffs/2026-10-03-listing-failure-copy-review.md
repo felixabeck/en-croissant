@@ -4,11 +4,11 @@ Cluster: singleton `f-20260913-05` (area `frontend-ui`). Orchestrator: Claude Co
 
 This run started Step 3 from the set-aside planner draft `consumed/42548d18-1af4-46bd-a37c-20f82f9ba6c8-finding-f-20260913-05-rejected` (rejected by the supervisor only for a mirrored-evidence defect on its round-7 `review-plan` row) and ran a complete fresh plan review. The draft's own seven-round record (issues I1-I16) is Appendix B, verbatim.
 
-Outcome: 6 rounds, 23 unique issues (N1-N23), no open plan-level obligation. The round-1 correctness finding plus locate probe `probe-1-r1` showed the draft's renderer-only design (category plus copied message literals) mislabels child-entry failures as lost roots, so the plan was rewritten around a backend `rootFailure` label (d-20261003-21, d-20261003-22) — this also dissolves the draft's I16 Defer (inbox `20261003-184054-586846-1791045654702385479-4.md`), whose premise the probe falsified. Two lineages needed focused fresh-context judgments: N9 (root-failure origin; `judge-n9-r3`) and N1 → N14 → N17 (Databases recovery ordering; round-6 `review-plan`).
+Outcome: 6 plan-review rounds, 23 unique issues (N1-N23), no open plan-level obligation. The round-1 correctness finding plus locate probe `probe-1-r1` showed the draft's renderer-only design (category plus copied message literals) mislabels child-entry failures as lost roots, so the plan was rewritten around a backend `rootFailure` label (d-20261003-21, d-20261003-22) — this also dissolves the draft's I16 Defer (inbox `20261003-184054-586846-1791045654702385479-4.md`), whose premise the probe falsified. Two lineages needed focused fresh-context judgments: N9 (root-failure origin; `judge-n9-r3`) and N1 → N14 → N17 (Databases recovery ordering; round-6 `review-plan`). The cumulative diff review added a third (`judge-owner-d1`) for the request owner's abandoned generations.
 
-Successor ownership: N10 (a child failure fails the whole listing) is filed through the inbox (`20261003-193400-1366703-1791048840413767072-4.md`); its entry links this record and must load it before review. N15 is `f-20261003-02` (picker `into_path` diagnostic), unchanged. The between-listings fallback of an unavailable custom database root is owned by `f-20260917-12`, named as a dependency in Known limits.
+Successor ownership: N10 (a child failure fails the whole listing) is filed through the inbox (`20261003-193400-1366703-1791048840413767072-4.md`); its entry links this record and must load it before review. N15 is `f-20261003-02` (picker `into_path` diagnostic), unchanged. The between-listings fallback of an unavailable custom database root is owned by `f-20260917-12`, named as a dependency in Known limits. R3 is `f-20261002-11`.
 
-Implementation commits: `dccd9636` (Phase 1, backend to facade), `20ae3a5a` (Phase 2, pages, picker guard, catalogues, bundle ceiling), Phase 3 (verify-app live assertion) and cumulative diff review follow in this run.
+Implementation commits: `dccd9636` (Phase 1, backend to facade), `20ae3a5a` (Phase 2, pages, picker guard, catalogues, bundle ceiling), `1dabaf7e` (Phase 3, verify-app live assertion with its measured staged failure); review repairs `30c58523`, `4272b261`, `fa979dd8`, `2490aed6`.
 
 ## Reviews (this run)
 
@@ -77,7 +77,7 @@ VERDICT: APPROVED
 ### N1 — Databases recovery can adopt a generation that read the old root
 
 * Witnesses: plan r1 finding 1 (blocker, 94).
-* Evidence: confirmed. `useNativeRequestOwner.run` returns the first running generation's promise for the identity (`useNativeRequestOwner.ts:76-82`); `getDatabases` reads the root first (`db.ts:233`); both pages' SWR key is constant `"databases"`.
+* Evidence: confirmed. `useNativeRequestOwner.run` returns the first running generation's promise for the identity (`useNativeRequestOwner.ts:76-82`); `getDatabases` reads the root first (`db.ts:233`); the Databases page's SWR key is the constant `"databases"` (Files keys on `["file-workspace", workspace]`).
 * Obligation: MANDATE "retrying cannot succeed until the root is re-selected" — re-selection must actually relist the new root.
 * Disposition: Fix, plan-level. Correction: "Databases alert — Recovery refresh": after a returned handle, await `runningNativeRequest` for `"databases"`, then revalidate; proof renders new-root content and alert removal with an overlapping revalidation. Authority: not a new mechanism; the existing helper used by `useDatabaseContentValidation.ts:28`. Closure pending round 2.
 
@@ -92,7 +92,7 @@ VERDICT: APPROVED
 
 * Witnesses: tests r1 findings 1, 2, 3 (should-fix, 90/94/88).
 * Evidence: the r1 phase list asserted visibility only, pending-only guard behaviour, and only the `validation` renderer-only case.
-* Disposition: Fix — carried to CR-3, CR-4, CR-5 (test assertions inside unchanged obligations). Closed by the cumulative diff review.
+* Disposition: Fix — carried to CR-3, CR-4, CR-5 (test assertions inside unchanged obligations), to be closed by the cumulative diff review (see "Cumulative diff review" below).
 
 ### N6 — `DirectorySetting` keeps a third copy of the picker guard
 
@@ -678,6 +678,442 @@ Focused judgment (fresh-context `review-plan` r6, lineage N1 → N14 → N17), r
 ### Review totals
 
 Completed rounds 6. Unique issues opened 23 (N1-N23): Fix closed at plan level 12 (N1, N6, N9, N11, N12, N13, N14, N16, N17, N22, plus N7 and N8 arbiter-closed as nits); Fix carried 5 (N3, N4, N5, N19, N23 as CR-3..CR-7); Skip 4 (N2, N18, N20, N21); Defer 2 (N10 inbox `20261003-193400-1366703-1791048840413767072-4.md`; N15 = `f-20261003-02`). Open plan-level obligations: none. Adoptions per round `r1=3 r2=6 r3=3 r4=1 r5=2 r6=0`. Lineages: N9 (r1 → r2 NOT CLOSED → r3 NOT CLOSED → focused judgment `judge-n9-r3` → r4 CLOSED); N1 → N14 → N17 (r2 closed N1; N14 r2 → r3 closed; N17 r3 → r4 NOT CLOSED → r5 NOT CLOSED → focused judgment r6 → r6 CLOSED). Correction-introduced defects: N14 (by N1's correction, r2), N17 (by N14's, r3), N9's r2 and r3 residuals (by its own corrections). Inherited draft history I1-I16 (seven planner rounds) is prior evidence, not counted here; its I16 Defer was dissolved by N9. Non-convergence trigger not reached (r4-r6 adopted 3 against 12 in r1-r3). Orchestrator errors: see the note under Round 4.
+
+## Cumulative diff review
+
+Reviewed range `1d0fc9ca..d6b34c85` in round 1 (`REVIEWED_THROUGH=d6b34c85`), then closure rounds over the committed repair deltas (push-review-policy §4a). Lenses ran on Codex leaves (OpenAI low tier, `sensitive` role; the records lens at `mechanical`); the implementation was also written by Codex leaves, so detection ran on the same model family as the code, and this same orchestrator context wrote the plan and arbitrates.
+
+### Diff round 1 — `1d0fc9ca..d6b34c85`
+
+| Lens | Verdict | Findings |
+| --- | --- | --- |
+| correctness | REVISE | D1 blocker; CR-6 NOT CLOSED |
+| root-cause | APPROVED | CR-6 NOT CLOSED |
+| tests | APPROVED | CR-6 NOT CLOSED; D3; D4 |
+| error-handling | APPROVED | 0 |
+| code-quality | APPROVED | D5; D6 |
+| minimalism | REVISE | D7; D8; CR-6 NOT CLOSED |
+| ipc-contract | APPROVED | 0 |
+| tauri-security | APPROVED | 0 |
+| platform-semantics | REVISE | D9 |
+| persisted-state | APPROVED | 0 |
+| records | REVISE | R1-R4 |
+
+CR-1, CR-2, CR-3, CR-4, CR-5 and CR-7 CLOSED in every lens that reported them. CR-6 closed in round 2 as D2.
+
+* D1 (correctness, blocker 96) — generations dropped by the request owner's last-subscriber cleanup stay pending; SWR's unchecked catch can store their late cancellation over a newer failure. Fix; see the repair history below.
+* D2 = CR-6 (correctness, root-cause, tests, minimalism) — no test cancelled a real failed listing entering its probe. Fix (30c58523).
+* D3 (tests 97) — `Error::InvalidInput` → `unusable` had no real-producer test. Fix (30c58523).
+* D4 (tests 99) — the promotion ancestor-swap test did not assert `changed`. Fix (30c58523).
+* D5 (code-quality 100) — `get_database_workspace` comment described only the default root. Fix (30c58523).
+* D6 (code-quality 94) — the owner comment omitted supersession. Fix (4272b261, rewritten in fa979dd8).
+* D7 (minimalism 90) — the six-case message switch repeated in both pages. Fix (4272b261): typed message tables.
+* D8 (minimalism 98) — the catalogue test duplicated `src/tests/catalogues.ts`. Fix (4272b261).
+* D9 (platform-semantics 99) — a Databases root-rename test cannot run on Windows. Fix (30c58523): unix-gated, portable pre-listing witnesses added.
+* D10 (orchestrator) — the Databases empty state was gated on `error == null`. Fix (4272b261).
+* R1 (records 100) — this record said both pages share the SWR key `"databases"`; only Databases does. Fixed in this revision.
+* R2 (records 100) — N3-N5 closure status read as both closed and carried. Fixed in this revision (carried, closed here as CR-3..CR-5).
+* R3 (records 100) — `tasks/decisions.md` header states rule 4c as absolute. Defer: already filed as `f-20261002-11` (open, `docs-agent-config`).
+* R4 (records nit) — the header said Phase 3 was still to come. Fixed in this revision.
+
+D1 repair history (push-review-policy §4a.3): 4272b261 made the last-subscriber cleanup settle its generations at once. `pnpm checks:pre-review` then failed in the frontend-mutation dry run: `src/components/home/Databases.test.tsx` "a ProgressEvent under an id registered by the original fetcher still moves the bar after unmount and remount" expects SWR to rejoin its in-flight fetch on a quick remount, which immediate settlement broke; the same run's lint lane flagged four conditional `expect`s in `DatabasesPage.test.tsx`. The defect sat in the previous repair's own code, so a mechanism note went to a focused fresh-context `review-plan` judgment (`judge-owner-d1`, verbatim below). fa979dd8 implements it: cleanup is cooperative and marks generations abandoned; `run` never joins an abandoned generation and retires all of them before starting fresh work; `supersede` settles every generation; `runningNativeRequest` ignores abandoned ones (the last added after the orchestrator saw `useDatabaseContentValidation` would otherwise wait on abandoned work). Measured: in a scratch worktree at fa979dd8 with the retirement call removed, `useNativeRequestOwner.test.tsx` fails exactly the two D1 regression tests ("explicit revalidation retires abandoned work before fresh failure and late fulfilment" and "… late rejection"; 2 failed, 14 passed).
+
+judge-owner-d1:
+```
+[should-fix] src/hooks/useNativeRequestOwner.ts:98 — Settling an abandoned promise inside `run` does not prevent every old **SWR cache write after a newer revalidation starts**. SWR sets loading state before invoking the fetcher (`node_modules/swr/dist/index/index.mjs:383–396`); the old Cancellation subsequently reaches its unchecked catch, replacing `error` and clearing loading (`:463–497`) while fresh work remains pending. This can hide a cached Databases failure alert. It does not defeat recovery’s existing awaited `supersede` boundary (`src/components/databases/DatabasesPage.tsx:107–108`), but the broader delivery invariant needs qualification. (confidence: 98)
+
+[should-fix] src/hooks/useNativeRequestOwner.test.tsx:149 — The existing regression test requires cancellation delivery immediately after unmount (`:151–157`) and a second fetch on remount (`:159–160`). Cooperative-only cleanup deliberately reverses those expectations. An unresolved SWR fetch does **not** expire merely because its dedupe interval elapsed: cleanup is scheduled after successful settlement (`node_modules/swr/dist/index/index.mjs:404–408`), and mount skips fetching while `FETCH[key]` exists (`:570–582`). Exercise replacement through explicit revalidation, then check late success/rejection against the fresh failure. Preserve the Home rejoin test at `src/components/home/Databases.test.tsx:252`. (confidence: 100)
+
+[should-fix] .claude/rules/async-resource-invariants.md:15 — “Remove when settled” supplies no retention bound for abandoned generations that never settle and whose identities are never revisited. The proposed registry must specify its ownership and retention policy; one generation per identity does not bound the number of identities. (confidence: 96)
+
+JUDGMENT: The core mechanism satisfies the frozen recovery mandate if `supersede` retains its awaited drain, and preserves the Home dedupe-rejoin test because remount invokes no fetcher. A simpler representation is to retain the abandoned generation in the existing per-cache `SharedRequest` entry, mark it abandoned, and retire it when an actual replacement fetch or supersession occurs. A discriminator inside the fetcher cannot suppress SWR’s unchecked catch; changing keys would require coordinating the existing consumers. This is source-level mechanism approval, not verification of an implemented correction.
+VERDICT: APPROVED
+```
+
+### Diff round 2 (closure) — `d6b34c85..fa979dd8`
+
+| Lens | Verdict | Result |
+| --- | --- | --- |
+| correctness | APPROVED | D1-D10 CLOSED |
+| root-cause | APPROVED | D1-D10 CLOSED; D12 evidence limitation |
+| tests | APPROVED | D1-D4, D7-D10 CLOSED |
+| code-quality | APPROVED | D5-D8 CLOSED |
+| minimalism | REVISE | D2, D7, D8 CLOSED; D11 |
+| platform-semantics | APPROVED | D1-D10 CLOSED |
+| persisted-state | APPROVED, NOT APPLICABLE | — |
+| error-handling | APPROVED | D1-D10 CLOSED |
+
+* D11 (minimalism 97) — the new probe test-hook registry duplicated `infra::test_hooks::KeyedTestValues`. Fix (2490aed6).
+* D12 (root-cause) — no measured failing run for the D1 regression test. Resolved by the scratch-worktree measurement above.
+
+### Diff round 3 (closure) — `fa979dd8..` this record's commit
+
+Reviews the 2490aed6 delta (D11, with `review-correctness` and `review-tests`) and this record together with `tasks/decisions.md` (records lens). Its result is reported in the f-20260913-05 closing note and the build-ledger row.
+
+### Raw diff-review reports (verbatim)
+
+correctness r1:
+```
+[blocker] src/hooks/useNativeRequestOwner.ts:44 — Supersession misses generations removed by final-subscriber cleanup at lines 83–86. Concrete case: a cached root-failure alert remains while revalidation waits in `getDbInfo`; navigate away until all subscribers leave, return, and choose another folder whose listing fails with `too-large`. When the old metadata request completes, `collectSequential` emits its delayed Cancellation. SWR stores that rejection without checking staleness, replacing the new failure and hiding its chooser. The recovery contract requires every old generation’s cancellation to settle before fresh revalidation. (confidence: 96)
+
+[should-fix] src-tauri/src/infra/path_authority/mod.rs:9073 — CR-6 NOT CLOSED: cancellation tests invoke `probe_listing_root_failure` directly with a fabricated original error. They cover cancellation before/during resolution and enumeration, but do not cancel an actual listing through its post-failure probe as requested. (confidence: 100)
+
+CR-1 CLOSED — `DatabasesPage.test.tsx:213` asserts both successful-empty messages and no alert.
+CR-2 CLOSED — `listingFailure.test.ts:106` renders all eleven keys across sixteen catalogues with fallback disabled and checks catalogue equality.
+CR-3 CLOSED — `DatabasesPage.test.tsx:267` clicks the chooser and asserts `issueDatabaseWorkspace` was called.
+CR-4 CLOSED — Files cancellation/rejection tests, Databases’ second-activation table, and `DirectorySetting.test.tsx:17` assert another command invocation.
+CR-5 CLOSED — `listingFailure.test.ts:38` covers all seven renderer-only categories, with and without `rootFailure`.
+CR-7 CLOSED — `useNativeRequestOwner.test.tsx:110` checks immediate cancellation for two subscribers and excludes later fulfilment/rejection.
+
+Limitation: source inspection only; the reported lifecycle sequence and native Windows/macOS branches were not executed in this read-only pass (confidence in native branch assessment: 85).
+
+VERDICT: REVISE
+```
+root-cause r1:
+```
+The diff addresses the cause: both pages now consume a backend root-failure reason instead of discarding it. Root probes distinguish unusable roots from child-only failures, and recovery supersedes old requests. History inspection found no reintroduced prior fix. The supplied live-app staged failure supports the IPC-to-renderer path.
+
+CR-1 CLOSED — `DatabasesPage.test.tsx` asserts both successful-empty messages and no alert.
+
+CR-2 CLOSED — `listingFailure.test.ts` renders all 11 new keys from all 16 catalogues with fallback disabled and checks exact values.
+
+CR-3 CLOSED — the recovery-click test asserts `issueDatabaseWorkspace` was called.
+
+CR-4 CLOSED — Files, Databases and DirectorySetting tests assert second activation after cancellation and rejection.
+
+CR-5 CLOSED — the presentation tests exercise normalization of renderer-only `AppError` values across all seven categories, with and without `rootFailure`.
+
+CR-7 CLOSED — the owner test shares one signal-ignoring generation between two subscribers, observes immediate cancellation, and excludes later fulfilment and rejection.
+
+[should-fix] src-tauri/src/infra/path_authority/mod.rs:9073 — CR-6 NOT CLOSED: cancellation tests call `probe_listing_root_failure` directly with a synthetic original error. They prove helper behaviour, but never trigger a failed listing and cancel before or during its post-failure probe. Command-level propagation of unlabelled `Cancellation` remains an evidence limitation; add that regression case. (confidence: 98)
+
+VERDICT: APPROVED
+```
+tests r1:
+```
+[should-fix] src-tauri/src/infra/path_authority/mod.rs:9084 — CR-6 remains unclosed: cancellation tests call the probe directly with a fabricated original error, rather than cancelling a failed listing entering its probe. Passing a fresh token from `list_workspace_databases_blocking` would leave these tests green while losing listing cancellation during probing. (confidence: 98)
+
+[should-fix] src-tauri/src/error.rs:474 — The serialization test manually supplies `RootFailure::Unusable`, bypassing classification. Removing the `Error::InvalidInput` mapping would leave it green; the default-root test exercises `Io(InvalidInput)` instead. A chosen directory replaced by a regular file could regress to retry without an assertion failing. (confidence: 97)
+
+[should-fix] src-tauri/src/infra/path_authority/mod.rs:12344 — The promotion ancestor-swap test checks `error.unlabelled()`, so removing the new `changed` label from the “dialog target changed before promotion” branch still passes. The new Files picker test exercises the separate persistent-target mismatch branch. The first branch’s notification copy therefore lacks an anchor. (confidence: 99)
+
+CR-1 CLOSED — `DatabasesPage.test.tsx:213` asserts both successful-empty sentences and absence of an alert.
+
+CR-2 CLOSED — `listingFailure.test.ts:111` disables fallback; line 127 compares rendered text with each catalogue value across all 16 catalogues.
+
+CR-3 CLOSED — `DatabasesPage.test.tsx:275` asserts `issueDatabaseWorkspace` was called after clicking the chooser.
+
+CR-4 CLOSED — Files tests at lines 572 and 719, Databases at line 331, and DirectorySetting at line 16 assert a second command invocation after rejection and cancellation.
+
+CR-7 CLOSED — `useNativeRequestOwner.test.tsx:109` holds signal-ignoring work, observes cancellation for both subscribers before settling it, and checks both late outcomes.
+
+CR-5 CLOSED — `listingFailure.test.ts:38` exercises all seven renderer-only categories through the real facade, asserting retry without a label and changed with one.
+
+VERDICT: APPROVED
+```
+error-handling r1:
+```
+No error-handling defects found.
+
+CR-1 CLOSED — DatabasesPage.test.tsx asserts both empty-success messages and no alert.
+CR-2 CLOSED — listingFailure.test.ts renders all 11 keys across 16 catalogues with fallback disabled and compares catalogue values.
+CR-3 CLOSED — the recovery click test asserts `issueDatabaseWorkspace` was called.
+CR-4 CLOSED — Files, Databases and DirectorySetting tests assert second activations after cancellation and rejection.
+CR-5 CLOSED — renderer-only AppError tests cover every collapsed category: retry without a label, changed with one.
+CR-6 CLOSED — Rust probe tests assert unlabelled Cancellation before probing and during resolution, lock waiting and enumeration.
+CR-7 CLOSED — the two-subscriber owner test asserts immediate cancellation and no later delivery from either fulfilment or rejection.
+
+Limitation: runtime proofs were inspected, not independently rerun under this read-only assignment (confidence: 100).
+
+VERDICT: APPROVED
+```
+code-quality r1:
+```
+[should-fix] src-tauri/src/main.rs:1298 — The command comment says it returns the app-owned default root, but `get_database_workspace_blocking` first returns the active root selected by the picker. Describe the active-root lookup and default fallback so the recovery flow is understandable. (confidence: 100)
+
+[should-fix] src/hooks/useNativeRequestOwner.ts:66 — The ownership comment omits explicit supersession, which now ends sharing and rejects deliveries while subscribers remain mounted. Document both termination paths and their different cancellation semantics. (confidence: 94)
+
+CR-1 CLOSED — `DatabasesPage.test.tsx:213` asserts both empty-success messages and no alert.
+CR-2 CLOSED — `listingFailure.test.ts:106` renders every new key from all 16 catalogues with fallback disabled and compares rendered text with catalogue values.
+CR-3 CLOSED — `DatabasesPage.test.tsx:267` clicks the chooser and asserts `issueDatabaseWorkspace` was called.
+CR-4 CLOSED — Files tests at lines 572/719, Databases at 332, and DirectorySetting at 17 assert second activation after rejection and cancellation.
+CR-5 CLOSED — `listingFailure.test.ts:47` covers every renderer category without `backendCategory`, asserting retry without a label and changed with one.
+CR-6 CLOSED — `path_authority/mod.rs:9073` tests cancellation before and during probe resolution, asserting unlabelled `Cancellation`; line 9160 also covers probe enumeration.
+CR-7 CLOSED — `useNativeRequestOwner.test.tsx:110` asserts immediate cancellation for two subscribers and no subsequent delivery after late fulfilment or rejection.
+
+Limitation: closures reflect source inspection; tests were not executed in this read-only review. Review used the implementation’s model family, without family separation.
+
+VERDICT: APPROVED
+```
+minimalism r1:
+```
+[should-fix] src/components/databases/DatabasesPage.tsx:61 — `loadFailureMessage` duplicates FilesPage’s six-case switch at line 61. Extract one shared message selector with the page as a parameter, preserving literal `t()` keys and distinct sentences. This removes a second branch structure without changing either alert layout. (confidence: 90)
+
+[should-fix] src/components/files/listingFailure.test.ts:97 — Catalogue discovery, locale parsing and fallback-disabled i18next initialization duplicate `shippedCatalogues()` and `catalogueI18n()` in `src/tests/catalogues.ts`. Reuse those helpers while retaining the rendered-string assertions; approximately 15 setup lines and the hardcoded catalogue count become unnecessary. (confidence: 98)
+
+[should-fix] src-tauri/src/infra/path_authority/mod.rs:9073 — CR-6 NOT CLOSED: the cancellation tests call `probe_listing_root_failure` directly with a synthetic original error; they never execute a failed listing. The requested listing-to-probe cancellation evidence remains missing. (confidence: 95)
+
+CR-1 CLOSED — DatabasesPage.test.tsx asserts both successful-empty sentences and no alert.
+CR-2 CLOSED — listingFailure.test.ts renders all eleven keys across sixteen catalogues with fallback disabled and compares catalogue values.
+CR-3 CLOSED — the recovery click test asserts `issueDatabaseWorkspace` was called once.
+CR-4 CLOSED — Files, Databases and DirectorySetting tests assert second activations after cancellation and rejection.
+CR-5 CLOSED — listingFailure.test.ts covers all seven renderer categories without `backendCategory`, with and without `rootFailure`.
+CR-7 CLOSED — useNativeRequestOwner.test.tsx tests two subscribers receiving immediate cancellation before either late fulfilment or rejection.
+
+New-file counterfactuals: retain the shared classifier in listingFailure.ts and the three-caller guard in useNativePicker.ts. DatabasesPage.test.tsx needs its dedicated SWR recovery suite. listingFailure.test.ts can retain its assertions while deleting the duplicated catalogue setup described above.
+
+Read-only source review; tests were not run.
+
+VERDICT: REVISE
+```
+ipc-contract r1:
+```
+No IPC contract defects found. Review was read-only; tests were inspected, not executed.
+
+CR-1 CLOSED — `DatabasesPage.test.tsx:213` asserts both empty-success sentences and no alert.
+CR-2 CLOSED — `listingFailure.test.ts:106` renders every new key from all 16 catalogues with fallback disabled and checks exact values.
+CR-3 CLOSED — `DatabasesPage.test.tsx:267` clicks the chooser and asserts `issueDatabaseWorkspace` was called.
+CR-4 CLOSED — Files, Databases and DirectorySetting tests assert a second command call after cancellation and rejection.
+CR-5 CLOSED — `listingFailure.test.ts:47` covers every renderer category without `backendCategory`, with and without `rootFailure`.
+CR-6 CLOSED — `path_authority/mod.rs:9073` and `:9160` exercise cancellation before and during the listing failure probe and assert unlabelled `Cancellation`.
+CR-7 CLOSED — `useNativeRequestOwner.test.tsx:110` checks immediate cancellation for both subscribers and suppression of late fulfilment and rejection.
+
+VERDICT: APPROVED
+```
+tauri-security r1:
+```
+No in-scope security defects found. Root probes retain authority and identity checks; the new error field exposes only a fixed enum, without native diagnostics.
+
+CR-1 CLOSED — `src/components/databases/DatabasesPage.test.tsx:213` asserts both empty-success sentences and no alert.
+
+CR-2 CLOSED — `src/components/files/listingFailure.test.ts:106` renders all 11 keys from all 16 catalogues, disables fallback, and compares rendered text with catalogue values.
+
+CR-3 CLOSED — `src/components/databases/DatabasesPage.test.tsx:267` clicks the chooser and asserts `issueDatabaseWorkspace` was called.
+
+CR-4 CLOSED — second activations are asserted after cancellation and rejection in `FilesPage.test.tsx:572` and `:719`, `DatabasesPage.test.tsx:332`, and `DirectorySetting.test.tsx:17`.
+
+CR-5 CLOSED — `src/components/files/listingFailure.test.ts:47` covers every renderer category without `backendCategory`, asserting retry unless labelled.
+
+CR-6 CLOSED — `src-tauri/src/infra/path_authority/mod.rs:9073`, `:9130`, and `:9160` assert unlabelled cancellation before and during probe resolution, lock waiting, and enumeration.
+
+CR-7 CLOSED — `src/hooks/useNativeRequestOwner.test.tsx:110` verifies immediate cancellation for two subscribers and suppression of later fulfilment and rejection.
+
+Limitation: static review only; tests were inspected, not executed. Credential/session storage and signed-download implementations are unchanged; no refresh flow is introduced.
+
+VERDICT: APPROVED
+```
+platform-semantics r1:
+```
+[should-fix] src-tauri/src/infra/path_authority/mod.rs:8969 — On Windows, the new portable root-swap/removal test renames the database root while enumeration and the resolved child retain root handles. `resolve_windows` opens those handles through `open_windows_nofollow`, whose share mask omits `FILE_SHARE_DELETE` (`resolved.rs:996`, `mod.rs:3705`). Both loop cases therefore panic at the rename before testing root-failure labelling. Use a Windows-compatible witness or platform-specific gating while retaining portable coverage. This affects `rust-windows-test`; a compile-only check cannot detect it. (confidence: 99)
+
+CR-1 CLOSED — `DatabasesPage.test.tsx:213` asserts both empty-success sentences and no alert.
+
+CR-2 CLOSED — `listingFailure.test.ts:113` disables fallback; `:127` compares rendered text with each catalogue’s value; `:130` asserts 16 catalogues.
+
+CR-3 CLOSED — `DatabasesPage.test.tsx:267` clicks the chooser and asserts `issueDatabaseWorkspace` was called.
+
+CR-4 CLOSED — Second activations are asserted after cancellation and rejection in `FilesPage.test.tsx:572/:719`, `DatabasesPage.test.tsx:332`, and `DirectorySetting.test.tsx:17`.
+
+CR-5 CLOSED — `listingFailure.test.ts:47` covers every renderer-only category, asserting retry without a label and changed with one.
+
+CR-6 CLOSED — `path_authority/mod.rs:9073/:9130/:9160` asserts unlabelled `Cancellation` before probing, during resolution, while waiting for authority, and during enumeration.
+
+CR-7 CLOSED — `useNativeRequestOwner.test.tsx:110` covers two subscribers sharing signal-ignoring work, immediate cancellation, and suppression of later fulfilment or rejection.
+
+Proof limitation: this read-only review ran neither `pnpm rust:windows:check` nor the non-Linux Unix source probe; the examined records do not establish their results for this revision. `d-20261003-14` records the file-wide probe limitation. Windows and macOS runtime proof remains `rust-windows-test` and `rust-macos-test`; `rust-platform` supplies compile/clippy coverage.
+
+VERDICT: REVISE
+```
+persisted-state r1:
+```
+No persistence or tab-lifecycle defects found. Workspace writers and readers agree; picker and request-owner state remains in memory. Evidence below is from source inspection; tests were not run.
+
+CR-1 CLOSED — `DatabasesPage.test.tsx:213` asserts both empty-success messages and no alert.
+CR-2 CLOSED — `listingFailure.test.ts:105` renders all 11 keys from 16 catalogues with fallback disabled and checks exact values.
+CR-3 CLOSED — `DatabasesPage.test.tsx:267` clicks the chooser and asserts `issueDatabaseWorkspace` was called.
+CR-4 CLOSED — Files, Databases and DirectorySetting tests assert a second command call after cancellation and rejection.
+CR-5 CLOSED — `listingFailure.test.ts:38` covers every renderer category without `backendCategory`, with and without `rootFailure`.
+CR-6 CLOSED — `path_authority/mod.rs:9073` and `:9160` assert unlabelled `Cancellation` before and during probing.
+CR-7 CLOSED — `useNativeRequestOwner.test.tsx:109` checks immediate cancellation for both subscribers and suppresses late fulfilment and rejection.
+
+VERDICT: APPROVED
+```
+records r1:
+```
+[should-fix] tasks/handoffs/2026-10-03-listing-failure-copy-review.md:80 — “Both pages’ SWR key is constant `"databases"`” is false. At `1d0fc9ca`, Files uses `["file-workspace", workspace]`; only Databases uses `"databases"`. (confidence: 100)
+
+[should-fix] tasks/handoffs/2026-10-03-listing-failure-copy-review.md:95 — N3–N5 are declared closed by cumulative diff review, but line 680 lists them as carried and line 11 says that review still follows. The record gives conflicting closure statuses. (confidence: 100)
+
+[should-fix] tasks/decisions.md:11 — The header restricts every reversal to Felix. Its referenced findings-ledger contract, clause 2, explicitly permits agents to supersede their own technical decisions using new evidence; supplied shared rule 11 confirms that distinction. (confidence: 100)
+
+[nit] tasks/handoffs/2026-10-03-listing-failure-copy-review.md:11 — Phase 3 is described as forthcoming, although `1dabaf7e` completed and committed it before this handoff’s commit `d6b34c85`. (confidence: 100)
+
+Read-only review; no files changed.
+
+VERDICT: REVISE
+```
+correctness r2:
+```
+D1 CLOSED — Cleanup retains abandoned generations; `run` retires them before fresh work, and `supersede` drains all deliveries. Late underlying outcomes cannot overwrite the fresh outcome.
+
+D2 CLOSED — Both new failed-listing tests reach the probe with real `Io(NotFound)`, cancel there, and assert unlabelled `Cancellation`.
+
+D3 CLOSED — The Files root replaced by a regular file exercises real `Error::InvalidInput` and asserts `unusable`, preserving category, message and diagnostic.
+
+D4 CLOSED — The promotion ancestor-swap test now asserts `RootFailure::Changed`.
+
+D5 CLOSED — The database-workspace comment describes active-root reuse and default-root fallback.
+
+D6 CLOSED — The owner comment covers explicit supersession and abandoned-generation retirement.
+
+D7 CLOSED — Both pages use exhaustive message records indexed by the shared presentation result.
+
+D8 CLOSED — Catalogue tests reuse `shippedCatalogues` and `catalogueI18n`.
+
+D9 CLOSED — The open-handle rename fixture is Unix-only; the added before-listing mutation case retains portable coverage.
+
+D10 CLOSED — Empty-state rendering depends on no visible failure, preserving cached empty success after cancellation.
+
+No new correctness defects identified. Limitation: runtime checks were not executed under the read-only review rails; closure rests on source traces and inspected assertions (confidence: 92).
+
+VERDICT: APPROVED
+```
+root-cause r2:
+```
+D1 CLOSED — `run` retains and retires abandoned generations before fresh work starts; late native outcomes cannot overwrite the fresh failure. Tests cover late fulfilment/rejection and SWR remount rejoining.
+
+D2 / CR-6 CLOSED — real failed Files and Databases listings reach the probe hook, cancel, and return unlabelled `Cancellation`; existing helper tests cover cancellation during probing.
+
+D3 CLOSED — the real Files non-directory producer returns `InvalidInput`, labelled `unusable`, with category/message preserved.
+
+D4 CLOSED — the ancestor-swap promotion test now asserts `changed`.
+
+D5 CLOSED — the command comment describes active-root lookup and default-root fallback.
+
+D6 CLOSED — the owner comment documents explicit supersession and retirement.
+
+D7 CLOSED — both duplicated switches were replaced by typed message tables.
+
+D8 CLOSED — catalogue tests reuse the shared helpers.
+
+D9 CLOSED — the open-handle root-rename case is Unix-only; portable tests cover replacement/removal before listing.
+
+D10 CLOSED — empty-state visibility follows the shared failure presentation; cached-empty cancellation and visible failure are tested.
+
+History inspection found no reintroduced prior fix. The repair changes request delivery ownership rather than hiding a stale error.
+
+[should-fix] src/hooks/useNativeRequestOwner.test.tsx:222 — Evidence limitation: the supplied repair report records passing tests, but no measured pre-repair failing run for D1’s regression test. The mechanism is pinned in source and assertions; failing-before/passing-after verification remains unestablished. (confidence: 100)
+
+VERDICT: APPROVED
+```
+tests r2:
+```
+D1 CLOSED — `useNativeRequestOwner.test.tsx:221` uses real SWR and asserts the fresh failure remains in both DOM and cache after late old fulfilment or cancellation. Reverting retirement fails these assertions. Remount preservation is separately asserted at line 203.
+
+D2 CLOSED — real failed Files and Databases listings reach the probe, cancel there, and assert unlabelled `Cancellation`. Existing probe tests cover cancellation during resolution, lock wait and enumeration.
+
+D3 CLOSED — `file_workspace.rs:4894` produces real `Error::InvalidInput` by replacing the root with a file, then asserts `Unusable` while preserving category, message and diagnostic.
+
+D4 CLOSED — `path_authority/mod.rs:12463` explicitly asserts the ancestor-swap promotion error carries `Changed`.
+
+D7 CLOSED — both pages retain rendered-sentence assertions for all five labels and retry after the message-map refactor.
+
+D8 CLOSED — catalogue helper reuse retains fallback-disabled rendering and exact catalogue-value assertions; the helper checks the shipped locale set.
+
+D9 CLOSED — the handle-sensitive rename case is Unix-only; the new portable pre-listing replacement/removal test asserts labels and preserved errors.
+
+D10 CLOSED — `DatabasesPage.test.tsx:219` asserts cancellation preserves cached empty-state text while visible failure suppresses it. Reverting to `error == null` fails the cancellation case.
+
+Gate and CI selectors include these tests and the browser cases. Review was read-only; tests were not executed.
+
+VERDICT: APPROVED
+```
+code-quality r2:
+```
+D5 CLOSED — `src-tauri/src/main.rs:1298` now documents the active root and default-root fallback.
+
+D6 CLOSED — `src/hooks/useNativeRequestOwner.ts:67` documents abandonment, retirement, explicit supersession, and SWR cancellation ordering.
+
+D7 CLOSED — both pages replace the duplicated switch with message tables using the shared `ListingFailureMessages` type.
+
+D8 CLOSED — catalogue tests now reuse `shippedCatalogues` and `catalogueI18n`.
+
+No new readability or local-consistency defects found at ≥80 confidence. Read-only review; no files changed.
+
+VERDICT: APPROVED
+```
+minimalism r2:
+```
+D2 CLOSED — Both new listing tests cancel a real failed listing at probe entry and assert unlabelled `Cancellation`.
+
+D7 CLOSED — Both pages replace the duplicated six-case switches with message tables using the shared `ListingFailureMessages` type; only page-specific keys and copy remain.
+
+D8 CLOSED — `listingFailure.test.ts` now reuses `shippedCatalogues` and `catalogueI18n` from `src/tests/catalogues.ts`.
+
+[should-fix] src-tauri/src/infra/path_authority/mod.rs:100 — The new probe-hook registry duplicates the existing `infra::test_hooks::KeyedTestValues` mechanism: keyed storage, one-shot consumption and cleanup. Its `FnOnce(&Error)` argument requires no separate registry because `KeyedTestValues<String, Hook>` accepts that closure type. Use its `arm`, `take` and `clear` methods, retaining the scope guard and error assertions; this removes bespoke locking and map mutation without losing either cancellation witness. The shared primitive existed before this repair and already serves hooks in this file. (confidence: 97)
+
+VERDICT: REVISE
+```
+platform-semantics r2:
+```
+D9 CLOSED — `src-tauri/src/infra/path_authority/mod.rs:8998` gates the rename-under-open-handles fixture to Unix. The portable replacement at `:9048` mutates the root before listing opens handles; registration retains identity data, not OS handles.
+
+D2 CLOSED — Real failed Files and Databases listings cancel upon entering their probe and assert unlabelled `Cancellation` (`file_workspace.rs:4862`, `path_authority/mod.rs:9094`).
+
+D3 CLOSED — `file_workspace.rs:4894` exercises a real `InvalidInput` producer and checks the `unusable` label without changing category, message or diagnostic.
+
+D4 CLOSED — `path_authority/mod.rs:12461` explicitly asserts `Changed`.
+
+D5 CLOSED — `main.rs:1298` documents active-root lookup and default-root fallback.
+
+D6 CLOSED — `useNativeRequestOwner.ts:68` documents explicit supersession and abandoned-generation retirement.
+
+D7 CLOSED — Both pages use typed message maps; duplicated switches are removed.
+
+D8 CLOSED — `listingFailure.test.ts:103` uses the shared catalogue helpers.
+
+D10 CLOSED — `DatabasesPage.tsx:378` gates empty state on silent presentation; its regression test covers cancellation and visible failure over cached empty data.
+
+D1 CLOSED — The owner retires abandoned generations before starting fresh work; tests cover both late fulfilment and rejection, with the accepted pending-fetch cancellation qualification.
+
+No new platform-semantic defects found.
+
+Proof limits: the repair report records `pnpm rust:windows:check` passing, providing compile/lint evidence only. No successful non-Linux Unix source probe is established for this revision; `d-20261003-14` records the file-wide limitation. Runtime proof remains pending in `rust-windows-test` and `rust-macos-test`; `rust-platform` supplies macOS and Windows MSVC compile/clippy coverage. This review ran no checks and changed no files.
+
+VERDICT: APPROVED
+```
+persisted-state r2:
+```
+NOT APPLICABLE: The repair delta changes listing presentation, in-memory request ownership, tests and comments. It changes no storage encoding, persisted keys, atom families, hydration, tab lifecycle or persistence flushing.
+
+VERDICT: APPROVED
+```
+error-handling r2:
+```
+D1 CLOSED — Abandoned generations remain tracked; `run` retires them before fresh work, and `supersede` drains every generation. Tests assert late fulfilment/rejection cannot replace the fresh failure. Pending silent cancellation remains the accepted qualification.
+
+D2 / CR-6 CLOSED — Both real listing commands now reach the probe after a missing-root failure, cancel there, and assert unlabelled `Cancellation`.
+
+D3 CLOSED — A real directory-to-file replacement produces `InvalidInput`, gains `unusable`, and preserves category, message and diagnostic.
+
+D4 CLOSED — The ancestor-swap promotion test explicitly asserts `RootFailure::Changed`.
+
+D5 CLOSED — The command comment describes active-root selection and default-root fallback.
+
+D6 CLOSED — The owner comment documents explicit supersession and abandoned-generation retirement.
+
+D7 CLOSED — Both duplicated message switches were removed.
+
+D8 CLOSED — Catalogue tests reuse `shippedCatalogues` and `catalogueI18n`.
+
+D9 CLOSED — The retained-handle rename test is Unix-only; a portable pre-listing replacement/removal test covers both outcomes.
+
+D10 CLOSED — Empty-state rendering uses `failure === "silent"`; tests distinguish cancellation over cached empty data from a visible failure.
+
+No additional error-handling defects found. Evidence is source inspection; tests were not executed in this read-only pass.
+
+VERDICT: APPROVED
+```
 
 ## Appendix A — final plan body
 
