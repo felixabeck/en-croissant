@@ -284,6 +284,27 @@ both delta outputs against their sources. Findings and verdicts:
 | The diff rounds give no timing | Fix → this section |
 | `d-20261003-17` says `nagGlyphs` returns codes; it returns glyphs | Skip (wording only; the sentence names the display projection, and superseding a decision for wording churns the ledger) |
 
+### Remote red after the first push, and diff round 5
+
+The first push (`f85d53a5..ceafc21f`) reddened remote CI: Test run 37127507309, job `test`
+(111215719788), step "Run targeted frontend mutation tests", package workspace-storage at 97.85 %,
+"Final mutation score 97.85 under breaking threshold 100". 23 StringLiteral mutants of the legacy
+`annotationSchema` enum (`src/state/store/tabStorage.ts:32-59`, for example `"!!"` → `""`) survived:
+since the persisted schema moved to `nags`, no test fed most legacy glyphs through the migration.
+The five Windows/macOS/platform jobs were green. Locally, the same 23 mutants had been reported as
+`Timeout`, which Stryker counts as detected, so every local mutation run (pre-review after each
+repair and the final `gates:push`) had passed at 100 %. That gate defect is filed as
+`f-20261003-04`; it is not inherited from this record.
+
+Repair `1ac74391` (one write leaf, role `sensitive`): a test migrates a node carrying every value
+of the old 26-member enum (literal list) and expects each canonical code in order. With `"!!"` → `""`
+staged in the enum the test failed (unreadable instead of available) and passed once restored.
+`pnpm mutation:frontend -- --files src/state/store/tabStorage.ts`: exit 0, all 30 enum-line
+mutants Killed, none Timeout or Survived. Pre-review green.
+
+Diff round 5 (DIFF `ceafc21f..1ac74391`): correctness, tests, persisted-state — all APPROVED,
+REMOTE-RED CLOSED by each, no new finding. `diff_adopted_per_round` r5 = 1 (the remote red).
+
 ## Appendix A — raw plan-review lens reports and delta outputs (2026-10-01)
 
 #### `lens-chess-semantics-r1`
