@@ -1,5 +1,5 @@
 import { Input, Text } from "@mantine/core";
-import { useRef, useState } from "react";
+import { useNativePicker } from "@/hooks/useNativePicker";
 import { useTranslation } from "react-i18next";
 
 type DirectorySettingProps = {
@@ -20,23 +20,17 @@ export function DirectorySetting({
   disabled = false,
 }: DirectorySettingProps) {
   const { t } = useTranslation();
-  const [pending, setPending] = useState(false);
-  const pendingRef = useRef(false);
+  const { pending, run } = useNativePicker();
 
-  const chooseDirectory = async () => {
-    if (pendingRef.current) return;
-    pendingRef.current = true;
-    setPending(true);
-    try {
-      const selected = await issueWorkspace();
-      if (typeof selected === "string" && selected.trim()) await onSelect(selected);
-    } catch (error) {
-      onError?.(error);
-    } finally {
-      pendingRef.current = false;
-      setPending(false);
-    }
-  };
+  const chooseDirectory = () =>
+    run(async () => {
+      try {
+        const selected = await issueWorkspace();
+        if (typeof selected === "string" && selected.trim()) await onSelect(selected);
+      } catch (error) {
+        onError?.(error);
+      }
+    });
 
   return (
     <Input

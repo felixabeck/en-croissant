@@ -106,6 +106,56 @@ function CachePair({
 }
 
 describe("native SWR request ownership", () => {
+  test.each(["fulfilment", "rejection"])(
+    "supersession drains two signal-ignoring subscribers before late %s",
+    async (outcome) => {
+      const held = deferred<string>();
+      const fetcher = vi.fn(() => held.promise);
+      const owners: Array<NonNullable<ReturnType<typeof useNativeRequestOwner>>> = [];
+      function Subscriber() {
+        const owner = useNativeRequestOwner("superseded");
+        useEffect(() => {
+          owners.push(owner!);
+        }, [owner]);
+        return null;
+      }
+      await render(
+        <SWRConfig value={{ provider: () => new Map() }}>
+          <Subscriber />
+          <Subscriber />
+        </SWRConfig>,
+      );
+      let first!: Promise<string>;
+      let second!: Promise<string>;
+      await act(async () => {
+        first = owners[0].run(fetcher);
+        second = owners[1].run(fetcher);
+      });
+      const firstOutcome = vi.fn();
+      const secondOutcome = vi.fn();
+      const delivered = [
+        first.then(firstOutcome, firstOutcome),
+        second.then(secondOutcome, secondOutcome),
+      ];
+      expect(fetcher).toHaveBeenCalledOnce();
+      await act(async () => owners[0].supersede());
+      await Promise.all(delivered);
+      for (const observer of [firstOutcome, secondOutcome]) {
+        expect(observer).toHaveBeenCalledOnce();
+        const cancellation = observer.mock.calls[0][0];
+        expect(cancellation).toBeInstanceOf(DOMException);
+        expect(cancellation.name).toBe("AbortError");
+        expect(cancellation.message).toBe("Cancellation");
+      }
+      await expect(owners[1].run(async () => "fresh")).resolves.toBe("fresh");
+      await act(async () =>
+        outcome === "fulfilment" ? held.resolve("stale") : held.reject(new Error("stale failure")),
+      );
+      expect(firstOutcome).toHaveBeenCalledOnce();
+      expect(secondOutcome).toHaveBeenCalledOnce();
+    },
+  );
+
   test("one subscriber leaving preserves the request and publishes to its peer", async () => {
     const held = deferred<string>();
     const aborted = vi.fn();

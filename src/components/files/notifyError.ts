@@ -2,13 +2,20 @@ import { notifications } from "@mantine/notifications";
 import i18n from "@/i18n";
 import { errorUnlessCancelled } from "@/platform/errors";
 
-export function notifyUnlessCancelled(title: string, error: unknown): void {
+export function notifyUnlessCancelled(
+    title: string,
+    error: unknown,
+    changedMessage?: string,
+): void {
     const visible = errorUnlessCancelled(error);
     if (visible) {
         notifications.show({
             color: "red",
             title,
-            message: visible.message,
+            message:
+                visible.rootFailure === "changed" && changedMessage
+                    ? changedMessage
+                    : visible.message,
         });
     }
 }
@@ -16,11 +23,12 @@ export function notifyUnlessCancelled(title: string, error: unknown): void {
 export async function runUnlessCancelled<T>(
     title: string,
     run: () => Promise<T>,
+    changedMessage?: string,
 ): Promise<T | undefined> {
     try {
         return await run();
     } catch (error) {
-        notifyUnlessCancelled(title, error);
+        notifyUnlessCancelled(title, error, changedMessage);
         return undefined;
     }
 }

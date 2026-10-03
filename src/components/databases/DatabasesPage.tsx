@@ -1,4 +1,7 @@
 import { tauri } from "@/platform/tauri";
+import { listingFailure, type ListingFailure } from "@/components/files/listingFailure";
+import type { TFunction } from "i18next";
+import { useNativePicker } from "@/hooks/useNativePicker";
 import {
   Box,
   Button,
@@ -31,7 +34,7 @@ import useSWR, { useSWRConfig } from "swr";
 import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import type { DatabaseHandle, DatabaseInfo } from "@/bindings";
 import { IconAction } from "@/components/common/IconAction";
-import { notifyUnlessCancelled } from "@/components/files/notifyError";
+import { notifyUnlessCancelled, runUnlessCancelled } from "@/components/files/notifyError";
 import { clearOwnedConversion, databaseConversionStateAtom, referenceDbAtom } from "@/state/atoms";
 import { activeDatabaseViewStore, useActiveDatabaseViewStore } from "@/state/store/database";
 import {
@@ -55,8 +58,38 @@ import {
 import { PlayerSearchInput } from "./PlayerSearchInput";
 import { databaseRouteTarget, type DatabaseRouteTarget } from "./databaseRoute";
 
+function loadFailureMessage(failure: Exclude<ListingFailure, "silent">, t: TFunction): string {
+  switch (failure) {
+    case "retry":
+      return t("Databases.LoadError", {
+        defaultValue: "Could not load databases. Please try again.",
+      });
+    case "changed":
+      return t("Databases.LoadError.Changed", {
+        defaultValue: "This database folder changed. Choose another.",
+      });
+    case "missing":
+      return t("Databases.LoadError.RootMissing", {
+        defaultValue: "This database folder is no longer available. Choose another.",
+      });
+    case "unusable":
+      return t("Databases.LoadError.Unusable", {
+        defaultValue: "This database folder cannot be opened. Choose another.",
+      });
+    case "permission":
+      return t("Databases.LoadError.RootPermission", {
+        defaultValue: "ChessFable is not allowed to read this database folder. Choose another.",
+      });
+    case "tooLarge":
+      return t("Databases.LoadError.TooLarge", {
+        defaultValue: "This database folder is too large to list. Choose another.",
+      });
+  }
+}
+
 export default function DatabasesPage() {
   const { t } = useTranslation();
+  const picker = useNativePicker();
 
   // Opening the overview ends the active session; mount-only lets double-click and Explore restore the sidebar's database target.
   useEffect(() => {
@@ -69,9 +102,22 @@ export default function DatabasesPage() {
   const {
     data: databases,
     error,
-    isLoading,
     mutate,
   } = useSWR("databases", () => databaseOwner!.run((signal) => getDatabases({ signal })));
+  const failure = listingFailure(error);
+  const needsFolder = failure !== "silent" && failure !== "retry";
+  function chooseWorkspace() {
+    return picker.run(async () => {
+      const result = await runUnlessCancelled(
+        t("Common.Error"),
+        () => tauri.issueDatabaseWorkspace(),
+        loadFailureMessage("changed", t),
+      );
+      if (!result) return;
+      await databaseOwner!.supersede();
+      await mutate();
+    });
+  }
   const { mutate: mutateCache } = useSWRConfig();
 
   const [open, setOpen] = useState(false);
@@ -257,22 +303,34 @@ export default function DatabasesPage() {
               flex="1 1 auto"
               viewportProps={{ tabIndex: 0, "aria-label": t("Databases.Title") }}
             >
-              {error && (
-                <Text role="alert" c="red" p="md">
-                  {t("Databases.LoadError", {
-                    defaultValue: "Could not load databases. Please try again.",
-                  })}
-                </Text>
+              {failure !== "silent" && (
+                <Stack role="alert" c="red" p={{ base: "xs", sm: "md" }} miw={0}>
+                  <Text className="wrap-anywhere">{loadFailureMessage(failure, t)}</Text>
+                  {needsFolder && (
+                    <Button
+                      miw={0}
+                      px="xs"
+                      disabled={picker.pending}
+                      onClick={() => void chooseWorkspace()}
+                      styles={{
+                        root: { height: "auto", minHeight: "var(--button-height)" },
+                        label: { whiteSpace: "normal", overflowWrap: "anywhere" },
+                      }}
+                    >
+                      {t("Databases.ChooseFolder", { defaultValue: "Choose database folder" })}
+                    </Button>
+                  )}
+                </Stack>
               )}
               <SimpleGrid cols={{ base: 1, md: 2 }} spacing={{ base: "md", md: "sm" }} p="xs">
-                {isLoading && (
+                {!databases && failure === "silent" && (
                   <>
                     <Skeleton h="8rem" />
                     <Skeleton h="8rem" />
                     <Skeleton h="8rem" />
                   </>
                 )}
-                {!isLoading &&
+                {databases &&
                   filteredDatabases?.map((item) => (
                     <GenericCard
                       id={databaseHandleKey(item.file)}
@@ -327,23 +385,26 @@ export default function DatabasesPage() {
                   ))}
               </SimpleGrid>
             </ScrollArea>
-            {!isLoading && filteredDatabases.length === 0 && (
-              <Center h="100%">
-                <Stack align="center" gap="sm">
-                  <ThemeIcon size={64} radius="100%" variant="light" color="gray">
-                    <IconDatabase size={32} />
-                  </ThemeIcon>
-                  <Text c="dimmed" fw={500} ta="center">
-                    {hasSearch ? t("Common.NoResults") : t("Databases.Empty.NoInstalled")}
-                  </Text>
-                  {!hasSearch && (
-                    <Text c="dimmed" size="sm" ta="center">
-                      {t("Databases.Empty.AddHint")}
+            {error == null &&
+              databases &&
+              filteredDatabases.length === 0 &&
+              (hasSearch || databases.length === 0) && (
+                <Center h="100%">
+                  <Stack align="center" gap="sm">
+                    <ThemeIcon size={64} radius="100%" variant="light" color="gray">
+                      <IconDatabase size={32} />
+                    </ThemeIcon>
+                    <Text c="dimmed" fw={500} ta="center">
+                      {hasSearch ? t("Common.NoResults") : t("Databases.Empty.NoInstalled")}
                     </Text>
-                  )}
-                </Stack>
-              </Center>
-            )}
+                    {!hasSearch && (
+                      <Text c="dimmed" size="sm" ta="center">
+                        {t("Databases.Empty.AddHint")}
+                      </Text>
+                    )}
+                  </Stack>
+                </Center>
+              )}
           </Stack>
         </Paper>
 

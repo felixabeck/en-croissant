@@ -1,5 +1,6 @@
 import type { Locator, Page } from "@playwright/test";
 import type { ErrorPayload } from "../src/bindings/generated";
+import germanCatalogue from "../src/translation/de-DE.json" with { type: "json" };
 import {
     expect,
     filesWorkspaceCommands,
@@ -14,6 +15,84 @@ import {
 } from "./fixtures";
 
 const { workspace, openingDirectory, pgnFile } = filesWorkspaceFixture;
+const germanListingCopy = germanCatalogue.translation;
+
+const listingReasons = [
+    ["changed", "Files.LoadFailed.Changed", "Databases.LoadError.Changed"],
+    ["missing", "Files.LoadFailed.Missing", "Databases.LoadError.RootMissing"],
+    ["unusable", "Files.LoadFailed.Unusable", "Databases.LoadError.Unusable"],
+    ["permission", "Files.LoadFailed.Permission", "Databases.LoadError.RootPermission"],
+    ["too-large", "Files.LoadFailed.TooLarge", "Databases.LoadError.TooLarge"],
+    [undefined, "Files.LoadFailed", "Databases.LoadError"],
+] as const;
+
+for (const [rootFailure, filesKey, databasesKey] of listingReasons) {
+    const error = {
+        tag: "backend-error",
+        category: "io",
+        message: "native listing diagnostic",
+        ...(rootFailure ? { rootFailure } : {}),
+    } as const satisfies ErrorPayload;
+    test(`async-errors: Files listing ${rootFailure ?? "retry"} stays visible at 320px`, async ({
+        page,
+        mockScenario,
+        assertNoHorizontalOverflow,
+        capture,
+    }) => {
+        await mockScenario({
+            commands: filesWorkspaceCommands([], {
+                list_file_workspace: { error },
+            }),
+        });
+        await page.goto("/files");
+        await page.getByRole("button", { name: "Sammlung auswählen", exact: true }).click();
+        const alert = page.getByRole("alert");
+        await expect(alert).toBeVisible();
+        await expect(alert).toHaveText(germanListingCopy[filesKey]);
+        await alert.scrollIntoViewIfNeeded();
+        await expect(
+            page.getByRole("button", {
+                name: germanListingCopy["Files.ChangeCollection"],
+                exact: true,
+            }),
+        ).toBeVisible();
+        await assertNoHorizontalOverflow();
+        await assertFilesColumnsNotClipped(page);
+        await assertPageNotClipped(page);
+        await capture(`files-listing-${rootFailure ?? "retry"}`);
+    });
+    test(`async-errors: Databases listing ${rootFailure ?? "retry"} stays visible at 320px`, async ({
+        page,
+        mockScenario,
+        assertNoHorizontalOverflow,
+        capture,
+    }) => {
+        await mockScenario({ commands: { list_workspace_databases: { error } } });
+        await page.goto("/databases");
+        const alert = page.getByRole("alert");
+        await expect(alert).toBeVisible();
+        await expect(alert).toContainText(germanListingCopy[databasesKey]);
+        await alert.scrollIntoViewIfNeeded();
+        const choose = page.getByRole("button", {
+            name: germanListingCopy["Databases.ChooseFolder"],
+            exact: true,
+        });
+        if (rootFailure) {
+            await expect(choose).toBeVisible();
+            await choose.scrollIntoViewIfNeeded();
+            await assertNothingClipped(alert, { mode: "reachable" });
+        } else await expect(choose).toHaveCount(0);
+        await expect(
+            page.getByText(germanListingCopy["Databases.Empty.NoInstalled"], { exact: true }),
+        ).toHaveCount(0);
+        await expect(
+            page.getByText(germanListingCopy["Databases.Empty.AddHint"], { exact: true }),
+        ).toHaveCount(0);
+        await assertNoHorizontalOverflow();
+        await assertPageNotClipped(page);
+        await capture(`databases-listing-${rootFailure ?? "retry"}`);
+    });
+}
 
 const refreshedDirectory = {
     ...openingDirectory,

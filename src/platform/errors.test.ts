@@ -182,6 +182,7 @@ describe("normalizeError", () => {
     test("categorizes cancellation and keeps it silent for Error and string IPC", () => {
         expect(normalizeError(new Error("Cancellation")).category).toBe("cancelled");
         expect(errorUnlessCancelled(new Error("Cancellation"))).toBeNull();
+        expect(errorUnlessCancelled(new DOMException("Cancellation", "AbortError"))).toBeNull();
         expect(errorUnlessCancelled("Cancellation")).toBeNull();
     });
 

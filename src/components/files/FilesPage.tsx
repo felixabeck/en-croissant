@@ -1,4 +1,7 @@
 import { tauri } from "@/platform/tauri";
+import { listingFailure, type ListingFailure } from "@/components/files/listingFailure";
+import type { TFunction } from "i18next";
+import { useNativePicker } from "@/hooks/useNativePicker";
 import { runAppliedMutationWithRefresh, runDestructiveWithRefresh } from "@/platform/errors";
 import { runUnlessCancelled } from "@/components/files/notifyError";
 import {
@@ -55,8 +58,38 @@ function findEntry(entries: Entry[], key: string): Entry | null {
   return null;
 }
 
+function loadFailureMessage(failure: Exclude<ListingFailure, "silent">, t: TFunction): string {
+  switch (failure) {
+    case "retry":
+      return t("Files.LoadFailed", {
+        defaultValue: "Files could not be loaded. Please try again.",
+      });
+    case "changed":
+      return t("Files.LoadFailed.Changed", {
+        defaultValue: "This collection changed. Choose another.",
+      });
+    case "missing":
+      return t("Files.LoadFailed.Missing", {
+        defaultValue: "This collection is no longer available. Choose another.",
+      });
+    case "unusable":
+      return t("Files.LoadFailed.Unusable", {
+        defaultValue: "This collection cannot be opened. Choose another.",
+      });
+    case "permission":
+      return t("Files.LoadFailed.Permission", {
+        defaultValue: "ChessFable is not allowed to read this collection. Choose another.",
+      });
+    case "tooLarge":
+      return t("Files.LoadFailed.TooLarge", {
+        defaultValue: "This collection is too large to list. Choose another.",
+      });
+  }
+}
+
 export default function FilesPage() {
   const { t } = useTranslation();
+  const picker = useNativePicker();
   const [workspace, setWorkspace] = useAtom(fileWorkspaceAtom);
   const [, setWorkspaceDisplayName] = useAtom(fileWorkspaceDisplayNameAtom);
   const [selectedEntry, setSelectedEntry] = useState<Entry | null>(null);
@@ -71,12 +104,10 @@ export default function FilesPage() {
   const [purgeTarget, setPurgeTarget] = useState<Entry | null>(null);
   const [moveTarget, setMoveTarget] = useState<string | null>(null);
   const [moving, setMoving] = useState(false);
-  const [picking, setPicking] = useState(false);
   const operationFailed = t("Files.OperationFailed", {
     defaultValue: "The file operation could not be completed. Please try again.",
   });
   const moveInFlight = useRef(false);
-  const pendingRef = useRef(false);
   const actionInputRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     if (action) actionInputRef.current?.focus();
@@ -88,6 +119,7 @@ export default function FilesPage() {
       (await tauri.listFileWorkspace(workspace!, { signal })).map(workspaceEntryToEntry),
     ),
   );
+  const failure = listingFailure(error);
   // Handle ids survive relisting and rename, so every fresh listing re-derives the selection;
   // an entry that is gone clears it. Before the first listing the chosen entry stands.
   const selected =
@@ -95,19 +127,17 @@ export default function FilesPage() {
   useEffect(() => {
     setSelectedEntry(null);
   }, [workspace]);
-  async function chooseWorkspace() {
-    if (pendingRef.current) return;
-    pendingRef.current = true;
-    setPicking(true);
-    try {
-      const result = await runUnlessCancelled(t("Common.Error"), () => tauri.issueFileWorkspace());
+  function chooseWorkspace() {
+    return picker.run(async () => {
+      const result = await runUnlessCancelled(
+        t("Common.Error"),
+        () => tauri.issueFileWorkspace(),
+        loadFailureMessage("changed", t),
+      );
       if (!result) return;
       setWorkspace(result.handle);
       setWorkspaceDisplayName(result.displayName);
-    } finally {
-      pendingRef.current = false;
-      setPicking(false);
-    }
+    });
   }
   const parent = selected?.type === "directory" ? selected.handle : workspace;
   const directories = (
@@ -196,7 +226,7 @@ export default function FilesPage() {
         <Button
           miw={0}
           styles={wrappingButton}
-          disabled={picking}
+          disabled={picker.pending}
           onClick={() => void chooseWorkspace()}
         >
           {workspace
@@ -279,11 +309,9 @@ export default function FilesPage() {
                   </Button>
                 </Group>
               )}
-              {error ? (
-                <Text c="red" role="alert">
-                  {t("Files.LoadFailed", {
-                    defaultValue: "Files could not be loaded. Please try again.",
-                  })}
+              {failure !== "silent" ? (
+                <Text c="red" role="alert" className="wrap-anywhere">
+                  {loadFailureMessage(failure, t)}
                 </Text>
               ) : !data ? (
                 <Text>{t("Common.Loading")}</Text>
@@ -368,7 +396,7 @@ export default function FilesPage() {
               </Center>
             ) : (
               <Center mih={EMPTY_PANE_MIN_HEIGHT}>
-                <Text c="dimmed" ta="center">
+                <Text c="dimmed" ta="center" miw={0} className="wrap-anywhere">
                   {t("Files.NoSelection", { defaultValue: "No file selected" })}
                 </Text>
               </Center>

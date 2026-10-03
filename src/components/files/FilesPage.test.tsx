@@ -18,7 +18,7 @@ const mocks = vi.hoisted(() => ({
   notify: vi.fn(),
   data: [] as Array<unknown> | undefined,
   cardMounts: [] as string[],
-  error: undefined as Error | undefined,
+  error: undefined as unknown,
 }));
 const stateAtoms = vi.hoisted(() => ({ fileWorkspaceAtom: {}, fileWorkspaceDisplayNameAtom: {} }));
 
@@ -652,6 +652,79 @@ describe("move controller", () => {
     expect(container.querySelector("output")?.textContent).toBe("sample.pgn");
     expect(document.activeElement).toBe(drag);
     expect(mocks.mutate).not.toHaveBeenCalled();
+  });
+});
+
+describe("listing failures", () => {
+  test.each([
+    ["changed", "This collection changed. Choose another."],
+    ["missing", "This collection is no longer available. Choose another."],
+    ["unusable", "This collection cannot be opened. Choose another."],
+    ["permission", "ChessFable is not allowed to read this collection. Choose another."],
+    ["too-large", "This collection is too large to list. Choose another."],
+  ])("%s renders its sentence and keeps the header recovery", async (rootFailure, sentence) => {
+    mocks.error = {
+      tag: "backend-error",
+      category: "io",
+      message: "native diagnostic",
+      rootFailure,
+    };
+    await rerender();
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe(sentence);
+    mocks.issueFileWorkspace.mockResolvedValueOnce({ handle: workspace, displayName: "Games" });
+    click("Change collection");
+    await settle();
+    expect(mocks.issueFileWorkspace).toHaveBeenCalledOnce();
+  });
+  test.each(["conflict", "missing-resource", "permission", "resource-limit", "io", "plain"])(
+    "%s without rootFailure retries",
+    async (category) => {
+      mocks.error =
+        category === "plain"
+          ? new Error("list unavailable")
+          : { tag: "backend-error", category, message: "root changed" };
+      await rerender();
+      expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+        "Files could not be loaded. Please try again.",
+      );
+    },
+  );
+  test.each([false, true])("cancellation stays silent with cached data=%s", async (cached) => {
+    mocks.error = new DOMException("Cancellation", "AbortError");
+    if (!cached) mocks.data = undefined;
+    await rerender();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.textContent).not.toContain("Files could not be loaded");
+    expect(container.querySelector('[data-testid="tree"]') !== null).toBe(cached);
+    expect(container.textContent?.includes("Common.Loading")).toBe(!cached);
+  });
+  test("changed picker refusal notifies the changed sentence and does not mutate", async () => {
+    mocks.issueFileWorkspace.mockRejectedValueOnce({
+      tag: "backend-error",
+      category: "conflict",
+      message: "diagnostic",
+      rootFailure: "changed",
+    });
+    click("Change collection");
+    await settle();
+    expect(mocks.notify).toHaveBeenCalledWith({
+      color: "red",
+      title: "Common.Error",
+      message: "This collection changed. Choose another.",
+    });
+    expect(mocks.setWorkspace).not.toHaveBeenCalled();
+    expect(mocks.setWorkspaceDisplayName).not.toHaveBeenCalled();
+    expect(mocks.mutate).not.toHaveBeenCalled();
+  });
+  test("picker cancellation releases the guard for another activation", async () => {
+    mocks.issueFileWorkspace
+      .mockRejectedValueOnce(new Error("Cancellation"))
+      .mockResolvedValueOnce({ handle: workspace, displayName: "Games" });
+    click("Change collection");
+    await settle();
+    click("Change collection");
+    await settle();
+    expect(mocks.issueFileWorkspace).toHaveBeenCalledTimes(2);
   });
 });
 

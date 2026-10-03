@@ -13,6 +13,38 @@ vi.mock("@mantine/core", () => ({
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
+test.each(["Cancellation", "native rejection"])(
+  "releases the picker after %s for a second activation",
+  async (message) => {
+    const error = new Error(message);
+    const issueWorkspace = vi
+      .fn()
+      .mockRejectedValueOnce(error)
+      .mockResolvedValueOnce("New workspace");
+    const onSelect = vi.fn();
+    const onError = vi.fn();
+    await act(async () =>
+      root.render(
+        <DirectorySetting
+          value="Current workspace"
+          issueWorkspace={issueWorkspace}
+          onSelect={onSelect}
+          onError={onError}
+        />,
+      ),
+    );
+    const button = host.querySelector("button")!;
+    await act(async () => button.click());
+    expect(onError).toHaveBeenCalledWith(error);
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(button.disabled).toBe(false);
+    expect(button.hasAttribute("aria-busy")).toBe(false);
+    await act(async () => button.click());
+    expect(issueWorkspace).toHaveBeenCalledTimes(2);
+    expect(onSelect).toHaveBeenCalledWith("New workspace");
+  },
+);
+
 let root: Root;
 let host: HTMLDivElement;
 
@@ -50,11 +82,13 @@ test("commits a successfully issued workspace and prevents duplicate picks while
   });
   expect(issueWorkspace).toHaveBeenCalledTimes(1);
   expect(button.disabled).toBe(true);
+  expect(button.getAttribute("aria-busy")).toBe("true");
   expect(host.textContent).toContain("Common.Loading");
 
   await act(async () => resolveWorkspace("Puzzle workspace"));
   expect(onSelect).toHaveBeenCalledWith("Puzzle workspace");
   expect(button.disabled).toBe(false);
+  expect(button.hasAttribute("aria-busy")).toBe(false);
 });
 
 test("recovers its interactive state when issuing a workspace fails", async () => {

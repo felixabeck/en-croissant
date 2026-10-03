@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useRef } from "react";
 import { type Key, unstable_serialize, useSWRConfig } from "swr";
 
-type RequestGeneration = { controller: AbortController; promise: Promise<unknown> };
+type RequestGeneration = {
+    controller: AbortController;
+    superseded: AbortController;
+    promise: Promise<unknown>;
+};
 type SharedRequest = {
     subscribers: Set<symbol>;
     generations: Set<RequestGeneration>;
@@ -30,7 +34,21 @@ function requestFor(cache: object, identity: string): SharedRequest {
 
 export type NativeRequestOwner = {
     run: <T>(request: (signal: AbortSignal) => Promise<T>) => Promise<T>;
+    supersede: () => Promise<void>;
 };
+
+/** Drain the SWR-facing promises before a new root can start revalidating. */
+async function supersedeRequest(cache: object, identity: string): Promise<void> {
+    const shared = requestsByCache.get(cache)?.get(identity);
+    if (!shared) return;
+    const generations = Array.from(shared.generations);
+    shared.generations.clear();
+    for (const generation of generations) {
+        generation.controller.abort();
+        generation.superseded.abort();
+    }
+    await Promise.allSettled(generations.map((generation) => generation.promise));
+}
 
 /** Observes existing generations without starting or sharing a revalidation fetch. */
 export function runningNativeRequest(cache: object, key: Key): Promise<void> | undefined {
@@ -71,31 +89,44 @@ export function useNativeRequestOwner(key: unknown | null): NativeRequestOwner |
     }, [cache, identity]);
 
     const run = useCallback(
-        async <T>(request: (signal: AbortSignal) => Promise<T>): Promise<T> => {
-            if (identity === null) throw new DOMException("Cancellation", "AbortError");
+        <T>(request: (signal: AbortSignal) => Promise<T>): Promise<T> => {
+            if (identity === null)
+                return Promise.reject(new DOMException("Cancellation", "AbortError"));
             const shared = requestFor(cache, identity);
             const current = shared.generations.values().next().value as
                 | RequestGeneration
                 | undefined;
             if (current) return current.promise as Promise<T>;
             const controller = new AbortController();
+            // Final-subscriber cleanup keeps its cooperative abort contract. Only an explicit
+            // root supersession settles deliveries while native work ignores cancellation.
+            const superseded = new AbortController();
+            let onAbort!: () => void;
+            const cancelled = new Promise<never>((_resolve, reject) => {
+                onAbort = () => reject(new DOMException("Cancellation", "AbortError"));
+                superseded.signal.addEventListener("abort", onAbort, { once: true });
+            });
+            const work = Promise.resolve().then(() => request(controller.signal));
             const generation: RequestGeneration = {
                 controller,
-                promise: Promise.resolve().then(() => request(controller.signal)),
+                superseded,
+                promise: Promise.race([work, cancelled]).finally(() => {
+                    superseded.signal.removeEventListener("abort", onAbort);
+                    shared.generations.delete(generation);
+                    if (shared.subscribers.size === 0 && shared.generations.size === 0) {
+                        const requests = requestsFor(cache);
+                        if (requests.get(identity) === shared) requests.delete(identity);
+                    }
+                }),
             };
             shared.generations.add(generation);
-            try {
-                return (await generation.promise) as T;
-            } finally {
-                shared.generations.delete(generation);
-                if (shared.subscribers.size === 0 && shared.generations.size === 0) {
-                    const requests = requestsFor(cache);
-                    if (requests.get(identity) === shared) requests.delete(identity);
-                }
-            }
+            return generation.promise as Promise<T>;
         },
         [cache, identity],
     );
 
-    return identity === null ? null : { run };
+    const supersede = useCallback(async () => {
+        if (identity !== null) await supersedeRequest(cache, identity);
+    }, [cache, identity]);
+    return identity === null ? null : { run, supersede };
 }

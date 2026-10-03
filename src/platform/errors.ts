@@ -78,7 +78,7 @@ function isAppError(value: unknown): value is AppError {
 }
 
 function errorSource(error: unknown): string {
-    if (error instanceof Error) return error.message;
+    if (error instanceof Error || error instanceof DOMException) return error.message;
     if (typeof error === "string") return error;
     return safelyStringify(error);
 }
