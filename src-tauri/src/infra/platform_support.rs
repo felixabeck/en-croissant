@@ -725,6 +725,10 @@ mod tests {
             !body.contains("adapter.metadata(&File::open("),
             "post-rename identity must never be re-read from a pathname; {body}"
         );
+        assert!(
+            body.contains("Ok(AtomicInstalledFile{outcome,identity:metadata.identity,ctime_nanos:metadata.ctime_nanos,modified_seconds:metadata.modified_seconds,})"),
+            "success seconds must come from the retained-handle metadata; {body}"
+        );
         // Staged-failure matrix (push-review-policy section 2), 2026-09-17. Each row was produced
         // by editing what this test READS — the `replace_at_driver` body in `fs.rs` — never this
         // test's own logic, and `fs.rs` was restored and re-run green afterwards.
@@ -937,7 +941,7 @@ mod tests {
     fn windows_identity_is_read_from_the_retained_handle() {
         let source = source_for("infra/fs.rs");
         for signature in [
-            "pub(super) fn entry_identity_at(",
+            "pub(super) fn entry_observation_at(",
             "pub(super) fn assert_entry_identity(",
             "pub(super) fn open_verified_parent(",
             "fn remove_regular_child(",

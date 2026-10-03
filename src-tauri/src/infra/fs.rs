@@ -364,6 +364,7 @@ pub struct AtomicInstalledFile {
     pub outcome: AtomicFileOutcome,
     pub identity: (u64, u64),
     pub ctime_nanos: i128,
+    pub modified_seconds: i64,
 }
 
 #[cfg(test)]
@@ -490,6 +491,7 @@ fn clear_durability_log() {
 struct TempMetadata {
     identity: (u64, u64),
     ctime_nanos: i128,
+    modified_seconds: i64,
 }
 
 trait AtomicReplaceAdapter {
@@ -945,6 +947,7 @@ where
                 outcome: AtomicFileOutcome::CommittedDurabilityUncertain(error),
                 identity: fallback_metadata.identity,
                 ctime_nanos: fallback_metadata.ctime_nanos,
+                modified_seconds: fallback_metadata.modified_seconds,
             });
         }
     };
@@ -958,6 +961,7 @@ where
             outcome: AtomicFileOutcome::CommittedDurabilityUncertain(*error),
             identity: metadata.identity,
             ctime_nanos: metadata.ctime_nanos,
+            modified_seconds: metadata.modified_seconds,
         });
     }
     let parent_sync = dir.sync_all();
@@ -970,6 +974,7 @@ where
         outcome,
         identity: metadata.identity,
         ctime_nanos: metadata.ctime_nanos,
+        modified_seconds: metadata.modified_seconds,
     })
 }
 
@@ -1764,6 +1769,7 @@ mod unix {
                 identity: raw_stat_identity(&stat),
                 ctime_nanos: i128::from(stat.st_ctime) * 1_000_000_000
                     + i128::from(stat.st_ctime_nsec),
+                modified_seconds: stat.st_mtime,
             })
         }
 
@@ -2853,6 +2859,10 @@ mod win {
             .saturating_sub(FILETIME_EPOCH_OFFSET_SECONDS)
     }
 
+    pub(super) fn filetime_bits_to_unix_seconds(ticks: u64) -> i64 {
+        filetime_to_unix_seconds(ticks as i64)
+    }
+
     fn enumerated_kind(attributes: u32) -> DirectoryEntryKind {
         if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
             DirectoryEntryKind::Other
@@ -3104,13 +3114,16 @@ mod win {
         Ok(())
     }
 
-    pub(super) fn entry_identity_at(
+    pub(super) fn entry_observation_at(
         parent: &File,
         name: &OsStr,
         dir: bool,
-    ) -> Result<(u64, u64), Error> {
+    ) -> Result<((u64, u64), i64), Error> {
+        use std::os::windows::fs::MetadataExt;
         let opened = open_expected_child(parent, name, dir, false)?;
-        opened_file_identity(&opened)
+        let identity = opened_file_identity(&opened)?;
+        let modified_seconds = filetime_bits_to_unix_seconds(opened.metadata()?.last_write_time());
+        Ok((identity, modified_seconds))
     }
 
     pub(super) fn assert_entry_identity(
@@ -3763,6 +3776,7 @@ mod win {
         Ok(TempMetadata {
             identity,
             ctime_nanos: i128::from(stamp),
+            modified_seconds: filetime_bits_to_unix_seconds(stamp),
         })
     }
 
@@ -4407,30 +4421,56 @@ pub(crate) fn assert_entry_identity(
 }
 
 #[cfg(unix)]
-pub(crate) fn entry_identity_at(
+pub(crate) fn entry_observation_at(
     parent: &File,
     name: &OsStr,
     dir: bool,
-) -> Result<(u64, u64), Error> {
+) -> Result<((u64, u64), i64), Error> {
     use rustix::fs::{self as rfs, AtFlags, FileType};
     let stat = rfs::statat(parent, name, AtFlags::SYMLINK_NOFOLLOW)
         .map_err(|error| Error::Io(Box::new(error.into())))?;
+    #[cfg(all(test, unix))]
+    ENTRY_OBSERVATION_POST_STAT_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
     let kind = FileType::from_raw_mode(stat.st_mode);
     if (dir && kind != FileType::Directory) || (!dir && kind != FileType::RegularFile) {
         return Err(Error::InvalidInput(
             "workspace entry has an unexpected file type".into(),
         ));
     }
-    Ok(unix::raw_stat_identity(&stat))
+    Ok((unix::raw_stat_identity(&stat), stat.st_mtime))
 }
 
 #[cfg(windows)]
+pub(crate) fn entry_observation_at(
+    parent: &File,
+    name: &OsStr,
+    dir: bool,
+) -> Result<((u64, u64), i64), Error> {
+    win::entry_observation_at(parent, name, dir)
+}
+
+#[cfg(any(unix, windows))]
 pub(crate) fn entry_identity_at(
     parent: &File,
     name: &OsStr,
     dir: bool,
 ) -> Result<(u64, u64), Error> {
-    win::entry_identity_at(parent, name, dir)
+    entry_observation_at(parent, name, dir).map(|(identity, _)| identity)
+}
+
+#[cfg(all(test, unix))]
+std::thread_local! {
+    static ENTRY_OBSERVATION_POST_STAT_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn set_entry_observation_post_stat_hook(hook: Option<Box<dyn FnOnce()>>) {
+    ENTRY_OBSERVATION_POST_STAT_HOOK.with(|slot| *slot.borrow_mut() = hook);
 }
 
 #[cfg(unix)]
@@ -4937,6 +4977,7 @@ where
             outcome: installed.outcome,
             identity: installed.identity,
             ctime_nanos: installed.ctime_nanos,
+            modified_seconds: installed.modified_seconds,
         })
     }
     #[cfg(windows)]
@@ -5347,6 +5388,116 @@ mod tests {
         {
             windows_test_parent(path)
         }
+    }
+
+    fn enumerated_entry(parent: &File, leaf: &OsStr) -> DirectoryEntry {
+        read_directory_entries_at(parent, &CancellationToken::new(), &mut |name| name == leaf)
+            .expect("enumeration")
+            .into_iter()
+            .find(|entry| entry.name == leaf)
+            .expect("installed entry")
+    }
+
+    fn opened_modified_seconds(file: &File) -> i64 {
+        let metadata = file.metadata().expect("retained metadata");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            metadata.mtime()
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            win::filetime_to_unix_seconds(metadata.last_write_time() as i64)
+        }
+    }
+
+    #[test]
+    fn installed_file_seconds_match_pre_epoch_enumeration() {
+        let directory = tempfile::tempdir().expect("directory");
+        let parent = test_parent(directory.path());
+        let leaf = OsStr::new("old.pgn");
+        let installed = atomic_replace_at_identified(&parent, leaf, |file| {
+            file.write_all(b"*").map_err(io)?;
+            file.set_modified(SystemTime::UNIX_EPOCH - std::time::Duration::from_secs(1))
+                .map_err(io)
+        })
+        .expect("install");
+        installed.outcome.expect_durable();
+        let listed = enumerated_entry(&parent, leaf);
+        assert!(installed.modified_seconds < 0);
+        assert_eq!(installed.modified_seconds, listed.modified_seconds);
+        assert_eq!(installed.identity, listed.identity);
+    }
+
+    #[test]
+    fn post_rename_metadata_failure_keeps_pre_rename_seconds() {
+        for modified in [
+            SystemTime::UNIX_EPOCH - std::time::Duration::from_secs(1),
+            SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000),
+        ] {
+            let directory = tempfile::tempdir().expect("directory");
+            let parent = test_parent(directory.path());
+            let leaf = OsStr::new("target");
+            let mut fallback_seconds = None;
+            set_test_atomic_file_injector(Some(Arc::new(Fault(
+                Some(AtomicFileFaultPoint::PostRenameMetadata),
+                None,
+                Arc::new(Mutex::new(Vec::new())),
+            ))));
+            let result = atomic_replace_at_identified(&parent, leaf, |file| {
+                file.write_all(b"new").map_err(io)?;
+                file.set_modified(modified).map_err(io)?;
+                fallback_seconds = Some(opened_modified_seconds(file));
+                Ok(())
+            });
+            set_test_atomic_file_injector(None);
+            let installed = result.expect("committed install retains fallback metadata");
+            assert!(matches!(
+                installed.outcome,
+                AtomicFileOutcome::CommittedDurabilityUncertain(_)
+            ));
+            assert_eq!(Some(installed.modified_seconds), fallback_seconds);
+            assert_eq!(installed.identity, enumerated_entry(&parent, leaf).identity);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn post_rename_seconds_follow_the_retained_descriptor_across_a_swap() {
+        struct SwapInstalledFile(PathBuf);
+        impl AtomicWriterInjector for SwapInstalledFile {
+            fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+                if point == AtomicFileFaultPoint::PostRenameMetadata {
+                    std::fs::rename(&self.0, self.0.with_extension("saved"))?;
+                    std::fs::write(&self.0, b"replacement")?;
+                    File::options().write(true).open(&self.0)?.set_modified(
+                        SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(777),
+                    )?;
+                }
+                Ok(())
+            }
+        }
+        let directory = tempfile::tempdir().expect("directory");
+        let parent = test_parent(directory.path());
+        let leaf = OsStr::new("target");
+        set_test_atomic_file_injector(Some(Arc::new(SwapInstalledFile(
+            directory.path().join(leaf),
+        ))));
+        let result = atomic_replace_at_identified(&parent, leaf, |file| {
+            file.write_all(b"installed").map_err(io)?;
+            file.set_modified(SystemTime::UNIX_EPOCH - std::time::Duration::from_secs(1))
+                .map_err(io)
+        });
+        set_test_atomic_file_injector(None);
+        let installed = result.expect("install");
+        installed.outcome.expect_durable();
+        let saved = enumerated_entry(&parent, OsStr::new("target.saved"));
+        let replacement = enumerated_entry(&parent, leaf);
+        assert_eq!(installed.modified_seconds, saved.modified_seconds);
+        assert_eq!(installed.identity, saved.identity);
+        assert_ne!(installed.modified_seconds, replacement.modified_seconds);
+        assert_ne!(installed.identity, replacement.identity);
     }
 
     #[cfg(unix)]
@@ -8657,6 +8808,12 @@ mod tests {
         // A zero or negative FILETIME is a pre-1970 instant, not a panic.
         assert_eq!(win::filetime_to_unix_seconds(0), -11_644_473_600);
         assert_eq!(win::filetime_to_unix_seconds(-1), -11_644_473_601);
+        for bits in [116_444_735_990_000_000_u64, u64::MAX] {
+            assert_eq!(
+                win::filetime_bits_to_unix_seconds(bits),
+                win::filetime_to_unix_seconds(bits as i64)
+            );
+        }
     }
 
     #[cfg(windows)]

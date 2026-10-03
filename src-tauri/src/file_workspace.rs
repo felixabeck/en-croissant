@@ -21,7 +21,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
-    time::{Duration, UNIX_EPOCH},
+    time::Duration,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -181,14 +181,6 @@ fn listed_mtime(entry: &DirectoryEntry) -> i64 {
     entry.modified_seconds
 }
 
-fn timestamp(path: &Path) -> Result<i64, Error> {
-    let modified = fs::metadata(path)?.modified()?;
-    Ok(modified
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| Error::InvalidInput(format!("invalid modification time: {error}")))?
-        .as_secs() as i64)
-}
-
 fn workspace_root(
     pgn_path_authority: &Mutex<Option<PathAuthority>>,
     workspace: &FileWorkspaceHandle,
@@ -292,7 +284,14 @@ std::thread_local! {
         const { std::cell::RefCell::new(None) };
     static WORKSPACE_REBIND_PRE_REGISTER_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
+    static WORKSPACE_CREATED_DIRECTORY_PRE_OBSERVE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static WORKSPACE_CREATED_FILE_POST_WRITE_HOOK: std::cell::RefCell<Option<WorkspaceFileWriteHook>> =
+        const { std::cell::RefCell::new(None) };
 }
+
+#[cfg(test)]
+type WorkspaceFileWriteHook = Box<dyn FnOnce(&fs::File) -> Result<(), Error>>;
 
 #[cfg(all(test, unix))]
 std::thread_local! {
@@ -838,7 +837,15 @@ fn create_workspace_file_blocking(
                     })?;
                     pgn::copy_range(source, file, 0, end, cancellation)
                 }
-            }
+            }?;
+            #[cfg(test)]
+            WORKSPACE_CREATED_FILE_POST_WRITE_HOOK.with(|slot| {
+                if let Some(hook) = slot.borrow_mut().take() {
+                    hook(file)?;
+                }
+                Ok::<(), Error>(())
+            })?;
+            Ok(())
         },
     )?;
     let pgn_uncertainty = durability_uncertainty(
@@ -898,7 +905,7 @@ fn create_workspace_file_blocking(
         children: vec![],
         metadata: Some(metadata),
         game_count: None,
-        last_modified: timestamp(&target)?,
+        last_modified: installed.modified_seconds,
     };
     if let Some(error) = pgn_uncertainty.or(sidecar_uncertainty) {
         return Err(Error::CommittedDurabilityUncertain(error));
@@ -963,7 +970,14 @@ fn create_workspace_directory_inner(
         return Err(Error::Cancellation);
     }
     crate::infra::fs::create_dir_at(parent_dir, &target_leaf)?;
-    let identity = crate::infra::fs::entry_identity_at(parent_dir, &target_leaf, true)?;
+    #[cfg(test)]
+    WORKSPACE_CREATED_DIRECTORY_PRE_OBSERVE_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+    let (identity, modified_seconds) =
+        crate::infra::fs::entry_observation_at(parent_dir, &target_leaf, true)?;
     let handle = match register_created_entry(
         pgn_path_authority,
         &workspace,
@@ -997,7 +1011,7 @@ fn create_workspace_directory_inner(
         children: vec![],
         metadata: None,
         game_count: None,
-        last_modified: timestamp(&target)?,
+        last_modified: modified_seconds,
     })
 }
 
@@ -2039,6 +2053,179 @@ mod tests {
         fs::create_dir(&root).expect("workspace root");
         let (state, workspace) = promoted_workspace_state(&directory, &root, 4);
         (directory, state, workspace)
+    }
+
+    fn enumerated_workspace_entry(root: &Path, leaf: &str) -> DirectoryEntry {
+        let parent =
+            crate::infra::fs::open_parent_no_follow(&root.join(leaf)).expect("enumeration parent");
+        crate::infra::fs::read_directory_entries_at(
+            &parent,
+            &CancellationToken::new(),
+            &mut |name| name == OsStr::new(leaf),
+        )
+        .expect("enumeration")
+        .into_iter()
+        .find(|entry| entry.name == OsStr::new(leaf))
+        .expect("created entry")
+    }
+
+    fn set_directory_modified(path: &Path, modified: std::time::SystemTime) {
+        #[cfg(unix)]
+        let directory = fs::File::open(path).expect("directory descriptor");
+        #[cfg(windows)]
+        let directory = crate::infra::fs::windows_test_parent(path);
+        directory.set_modified(modified).expect("directory mtime");
+    }
+
+    fn create_test_workspace_entry(
+        state: &AppState,
+        workspace: &FileWorkspaceHandle,
+        is_dir: bool,
+    ) -> Result<WorkspaceEntry, Error> {
+        if is_dir {
+            create_workspace_directory_inner(
+                workspace.clone(),
+                workspace.clone(),
+                "created".into(),
+                &state.pgn_path_authority,
+                &state.workspace_mutation,
+                &CancellationToken::new(),
+            )
+        } else {
+            create_workspace_file_blocking(
+                workspace.clone(),
+                workspace.clone(),
+                "created".into(),
+                WorkspaceMetadata::default(),
+                WorkspaceFileContent::Text { pgn: "*".into() },
+                &state.pgn_path_authority,
+                &state.workspace_mutation,
+                &CancellationToken::new(),
+            )
+        }
+    }
+
+    #[test]
+    fn workspace_create_responses_preserve_pre_epoch_seconds() {
+        let old = std::time::SystemTime::UNIX_EPOCH - Duration::from_secs(1);
+        for is_dir in [false, true] {
+            let (_directory, state, workspace) = workspace_state();
+            let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
+            let leaf = if is_dir { "created" } else { "created.pgn" };
+            if is_dir {
+                let target = root.join(leaf);
+                WORKSPACE_CREATED_DIRECTORY_PRE_OBSERVE_HOOK.with(|slot| {
+                    *slot.borrow_mut() =
+                        Some(Box::new(move || set_directory_modified(&target, old)));
+                });
+            } else {
+                WORKSPACE_CREATED_FILE_POST_WRITE_HOOK.with(|slot| {
+                    *slot.borrow_mut() = Some(Box::new(move |file| {
+                        file.set_modified(old).map_err(Error::from)
+                    }));
+                });
+            }
+            let result = create_test_workspace_entry(&state, &workspace, is_dir);
+            WORKSPACE_CREATED_DIRECTORY_PRE_OBSERVE_HOOK.with(|slot| slot.borrow_mut().take());
+            WORKSPACE_CREATED_FILE_POST_WRITE_HOOK.with(|slot| slot.borrow_mut().take());
+            let created = result.expect("pre-epoch create response");
+            assert!(created.last_modified < 0);
+            assert_eq!(
+                created.last_modified,
+                enumerated_workspace_entry(&root, leaf).modified_seconds
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_directory_create_seconds_equal_enumeration() {
+        let (_directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
+        let created = create_test_workspace_entry(&state, &workspace, true).expect("create");
+        assert_eq!(
+            created.last_modified,
+            enumerated_workspace_entry(&root, "created").modified_seconds
+        );
+    }
+
+    #[cfg(unix)]
+    fn swap_created_entry(root: &Path, leaf: &str, is_dir: bool) -> DirectoryEntry {
+        let installed = enumerated_workspace_entry(root, leaf);
+        let target = root.join(leaf);
+        fs::rename(&target, root.join("saved")).expect("save installed object");
+        let replacement_time = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(777);
+        if is_dir {
+            fs::create_dir(&target).expect("replacement directory");
+            set_directory_modified(&target, replacement_time);
+        } else {
+            fs::write(&target, b"replacement").expect("replacement file");
+            fs::File::options()
+                .write(true)
+                .open(&target)
+                .expect("replacement descriptor")
+                .set_modified(replacement_time)
+                .expect("replacement mtime");
+        }
+        installed
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_create_seconds_survive_the_pre_registration_swap() {
+        for is_dir in [false, true] {
+            let (_directory, state, workspace) = workspace_state();
+            let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
+            let leaf = if is_dir { "created" } else { "created.pgn" };
+            let observed = Arc::new(StdMutex::new(None));
+            let observed_in_hook = Arc::clone(&observed);
+            let root_in_hook = root.clone();
+            set_workspace_created_child_pre_register_hook(Some(Box::new(move || {
+                *observed_in_hook.lock().expect("observed") =
+                    Some(swap_created_entry(&root_in_hook, leaf, is_dir));
+            })));
+            let result = create_test_workspace_entry(&state, &workspace, is_dir);
+            set_workspace_created_child_pre_register_hook(None);
+            let created = result.expect("create response after swap");
+            let installed = observed.lock().expect("observed").take().expect("hook ran");
+            assert_eq!(created.last_modified, installed.modified_seconds);
+            assert_ne!(
+                created.last_modified,
+                enumerated_workspace_entry(&root, leaf).modified_seconds
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_create_identity_and_seconds_share_the_pre_swap_stat() {
+        let (_directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
+        let observed = Arc::new(StdMutex::new(None));
+        let observed_in_hook = Arc::clone(&observed);
+        let root_in_hook = root.clone();
+        crate::infra::fs::set_entry_observation_post_stat_hook(Some(Box::new(move || {
+            *observed_in_hook.lock().expect("observed") =
+                Some(swap_created_entry(&root_in_hook, "created", true));
+        })));
+        let result = create_test_workspace_entry(&state, &workspace, true);
+        crate::infra::fs::set_entry_observation_post_stat_hook(None);
+        let created = result.expect("create response after observation swap");
+        let installed = observed.lock().expect("observed").take().expect("hook ran");
+        let replacement = enumerated_workspace_entry(&root, "created");
+        assert_eq!(created.last_modified, installed.modified_seconds);
+        assert_ne!(created.last_modified, replacement.modified_seconds);
+        let registered = authority(&state.pgn_path_authority)
+            .expect("authority lock")
+            .as_ref()
+            .expect("authority")
+            .persistent_snapshot_for_test();
+        assert!(registered
+            .iter()
+            .any(|(name, identity, is_dir)| name == "created"
+                && *identity == installed.identity
+                && *is_dir));
+        assert_ne!(installed.identity, replacement.identity);
     }
 
     #[cfg(unix)]
@@ -3186,10 +3373,6 @@ mod tests {
 
     #[test]
     fn timestamps_and_durability_outcomes_remain_renderer_safe() {
-        let directory = tempfile::tempdir().expect("timestamp directory");
-        let pgn = directory.path().join("game.pgn");
-        fs::write(&pgn, "*").expect("PGN");
-        assert!(timestamp(&pgn).unwrap() > 0);
         assert_eq!(
             durability_uncertainty(
                 crate::infra::fs::AtomicFileOutcome::DurableCommit,
@@ -3324,7 +3507,7 @@ mod tests {
         assert_eq!(a.metadata.as_ref().expect("a metadata").tags, ["trusted"]);
         assert_eq!(
             a.last_modified,
-            timestamp(&root.join("a.pgn")).expect("a mtime")
+            enumerated_workspace_entry(&root, "a.pgn").modified_seconds
         );
         let b = &entries[1];
         assert_eq!(b.kind, WorkspaceEntryKind::File);
@@ -3345,7 +3528,7 @@ mod tests {
         assert_eq!(nested_entry.children[0].kind, WorkspaceEntryKind::File);
         assert_eq!(
             nested_entry.last_modified,
-            timestamp(&nested).expect("nested mtime")
+            enumerated_workspace_entry(&root, "nested").modified_seconds
         );
         // One game-count handle per listed PGN, directories excluded.
         assert_eq!(missing.len(), 3);
