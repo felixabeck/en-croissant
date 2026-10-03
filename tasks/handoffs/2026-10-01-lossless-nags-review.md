@@ -265,12 +265,12 @@ The `d4!?` rendering of `$1 $2` is filed as `f-20261003-03`.
 
 ### Timing and the records review
 
-Per-round wall times of the four diff rounds are unknown: the orchestrator's scratch directory,
+Per-round wall times of diff rounds 1–4 are unknown: the orchestrator's scratch directory,
 which held the lens streams and logs, was deleted by a reboot Felix made after diff round 4, and
 no timings were recorded before that. The reboot was a pause of roughly half an hour between the
 real-window proof and the records review; it is not review time. Diff round 1 and the closure
 rounds each completed within one polling window of about 10–25 minutes, which is the only timing
-evidence left.
+evidence left. Diff round 5, after the reboot, took about 10 minutes of lens time.
 
 Records lens (one Codex leaf, `--role mechanical`, over `tasks/decisions.md`, `tasks/findings.md`
 and this file, 2026-10-03, verdict REVISE). It verified the copied plan sections, Appendix A and
@@ -1244,6 +1244,52 @@ Full-range blockers: None.
 ### LATE OBSERVATIONS
 
 The Vitest selector includes the changed renderer and storage tests; the backend test gate runs Rust tests with `cargo test --all-targets`. The real-window scenario is reachable with `pnpm verify:app --screenshot <path>`.
+
+VERDICT: APPROVED
+```
+
+#### `lens-correctness-r5` (diff round 5)
+
+```text
+REMOTE-RED CLOSED — evidence: The fixture at [tabStorage.test.ts](/home/felixb/Projekte/chessfable/src/state/store/tabStorage.test.ts:123) contains all 26 old schema literals and expects an available migrated tree with the 25 canonical codes. Mutating any nonempty schema literal to `""`, or `""` to another value, makes the fixture’s annotations fail `annotationSchema.safeParse`; migration then leaves `nags` absent, so tree parsing fails and the expected `kind: "available"` assertion fails. The supplied mutation run also reports 30 killed enum-line mutants, with no timeouts or survivors.
+
+Round 5 DIFF: No correctness defects found.
+
+Full range: No blocker identified.
+
+LATE OBSERVATIONS: None.
+
+VERDICT: APPROVED
+```
+
+#### `lens-tests-r5` (diff round 5)
+
+```text
+REMOTE-RED CLOSED — evidence: [the new test](/home/felixb/Projekte/chessfable/src/state/store/tabStorage.test.ts:123) passes all 26 old glyph values through `readTree` and asserts the exact canonical NAG array. Mutating any of the 25 non-empty enum literals to `""` makes its input invalid; mutating the empty literal to another value makes `""` invalid. Either way, migration cannot produce the asserted available tree with the expected codes. The supplied rerun reports all 30 enum mutants killed.
+
+Round DIFF defects: none.
+
+Full-range blocker: none found.
+
+LATE OBSERVATIONS
+
+- The workspace-storage mutation package includes `tabStorage.ts`; Stryker uses related Vitest tests in [`stryker.config.mjs`](/home/felixb/Projekte/chessfable/stryker.config.mjs:35), and CI runs `pnpm mutation:frontend`.
+
+VERDICT: APPROVED
+```
+
+#### `lens-persisted-state-r5` (diff round 5)
+
+```text
+REMOTE-RED CLOSED — evidence: The test at `src/state/store/tabStorage.test.ts:123` supplies all 26 legacy glyphs and expects the canonical NAG sequence. Replacing any non-empty enum member with `""` makes the legacy array fail validation; replacing `""` with another value makes its empty element fail validation. Either way, `readTree` returns `unreadable` instead of the asserted `available`. The supplied mutation run also reports all 30 enum-line mutants killed, with zero timeouts or survivors.
+
+Round diff findings: none.
+
+Full-range blocker: none.
+
+### LATE OBSERVATIONS
+
+The `annotations`→`nags` migration reads and writes the per-tab tree through `TabStorageRepository`; migration write-back uses `serializeStorageValue`. Invalid legacy glyphs remain gated as unreadable, and the tree store’s existing debounce and unload flush paths remain in place.
 
 VERDICT: APPROVED
 ```
