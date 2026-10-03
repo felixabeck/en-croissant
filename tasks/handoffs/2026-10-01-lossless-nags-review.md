@@ -245,10 +245,11 @@ persisted-state REVISE, root-cause REVISE. D2 residual and R2-1 CLOSED by every 
 Repairs for round 3 by one write leaf (role `sensitive`) plus a mechanical resume for formatting and
 one re-wrap → `fb69f852`. Lenses: correctness, root-cause, tests, code-quality, persisted-state. All
 APPROVED; R3-1, R3-2, R3-4 CLOSED by every witness; R3-3's Skip premise confirmed unchanged by all
-five. No new finding. `diff_adopted_per_round` r4 = 0. Diff review closed at r4.
+five. No new finding. `diff_adopted_per_round` r4 = 0. The review converged at r4; the remote red
+after the first push reopened it for one more round (diff round 5, below).
 
-Totals: `diff_adopted_per_round` r1=11 r2=2 r3=3 r4=0. Unique diff issues D1–D12, R2-1, R3-1..R3-4:
-15 fixed, 1 deferred to an existing finding (D12 → `f-20260914-20`), 1 skipped (R3-3). One
+Totals: `diff_adopted_per_round` r1=11 r2=2 r3=3 r4=0 r5=1. Unique diff issues D1–D12, R2-1,
+R3-1..R3-4 and the remote red (REMOTE-RED, round 5): 16 fixed, 1 deferred to an existing finding (D12 → `f-20260914-20`), 1 skipped (R3-3). One
 correction-introduced residual (D2 → staged two breaks in one run, closed in r3). R3-1 is a defect
 in the phase-1 migration that rounds 1 and 2 did not report, not one introduced by a repair.
 Pre-review (`pnpm checks:pre-review`) ran green after the phase and after every repair batch.
