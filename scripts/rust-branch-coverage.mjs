@@ -1,5 +1,67 @@
+/**
+ * The failure matrix for this artefact (push-review-policy.md section 2).
+ *
+ * The enumeration follows the throw sites and the filesystem/configuration operations in this
+ * file, including the operations awaited by runBranchCoverage. Every row below is staged in
+ * scripts/coverage-report-tests.mjs against scratch inputs and fake command results, except the
+ * one explicitly marked argued CLI class. A direct exported-function call is a real caller.
+ * recordBranchRejection records the message AND rejected-promise status of its async call;
+ * recordBranchThrow records the message AND synchronous-throw status of its helper call.
+ *
+ *  #  site                         distinguishing message                         observed status
+ * --- ---------------------------- ---------------------------------------------- ------------------
+ *  1  run / spawn failure           spawn <rustup|cargo|merge> ENOENT               rejected promise
+ *  2  run / killed command          <command> died with SIGTERM: <command> <argv>  rejected promise
+ *  3  run / nonzero status          <command> exited with status 23                rejected promise
+ *     Rows 1-3 each stage tool resolution, Cargo, and profile merge separately.
+ *  4  coverageTools / metadata      Cannot determine sysroot and host for          synchronous throw
+ *                                  coverage toolchain <pinned toolchain>
+ *  5  coverageTools / runner error  pinned toolchain missing                       synchronous throw
+ *  6  clearStaleRawProfiles/unlink  EACCES: permission denied, unlink '<profile>'   rejected promise
+ *  7  clear / unreadable walk       EACCES: permission denied, scandir '<target>'   rejected promise
+ *  8  assert / unreadable walk      EACCES: permission denied, scandir '<target>'   rejected promise
+ *  9  clear / descendant readdir    ENOENT: no such file or directory, scandir      rejected promise
+ *                                  '<target>/disappeared'
+ * 10  assert / descendant readdir   same descendant ENOENT, on the second walk     rejected promise
+ * 11  assert / survivor refusal     Rust coverage left stale raw profiles: <path>  rejected promise
+ *     Row 11 calls only runBranchCoverage, returns [] then [<absolute path>] from listProfiles,
+ *     and proves Cargo never starts. Both walk errors and the removal error also prove that.
+ * 12  post-Cargo profile walk       ENOTDIR: not a directory, scandir '<path>'      rejected promise
+ * 13  no new profiles               Rust coverage produced no raw profiles         rejected promise
+ * 14  dependencies / readdir        ENOENT: ... scandir '<target>/missing-deps'     rejected promise
+ * 15  executable / stat             EACCES: ... stat '<deps>/chessfable-deadbeef'   rejected promise
+ * 16  executable selection          Rust coverage test executable was not found    rejected promise
+ * 17  configuration / readFile      ENOENT: ... open '<root>/missing-config.json'   rejected promise
+ * 18  configuration / JSON.parse    Expected property name ... in JSON ...         rejected promise
+ * 19  configuration / exclusion     Cannot read properties ... (sources, some,     rejected promise
+ *     filter (eight wrong shapes)   exclude, map, pattern, length), or
+ *                                  coverageConfig.sources.some / source.exclude.map
+ *                                  is not a function
+ * 20  source filesBelow walk        ENOENT: ... scandir '<root>/src-tauri/src'      rejected promise
+ * 21  source selection              Rust coverage found no sources to export       rejected promise
+ * 22  exportLcovOrDiagnose / crash   llvm-cov segfaulted while exporting these       synchronous throw
+ *                                  sources: ... src-tauri/src/db/schema.rs
+ * 23  export / spawn error          spawn llvm-cov ENOENT                          synchronous throw
+ * 24  export / nonzero status       llvm-cov died with status 23 while exporting    synchronous throw
+ *                                  LCOV
+ * 25  export / unisolated signal    llvm-cov died with SIGSEGV while exporting LCOV synchronous throw
+ * 26  empty export                  Rust branch coverage export was empty          rejected promise
+ * 27  output / writeFile            ENOENT: ... open '<root>/absent/lcov.info'      rejected promise
+ * 28  missing branch records        Rust coverage export contains no branch data   rejected promise
+ * 29  CLI tool-resolution spawn     spawnSync rustup ENOENT                        exit 1
+ *     Row 29 plants one exclusively-created profile in the real coverage target, records the
+ *     unchanged profile path set after the spawn, and removes only that file in finally. The
+ *     normal green test run verifies restoration; the target directory itself is preserved.
+ *
+ * CLI spawns past tool resolution are argued, not staged: the entrypoint binds the live coverage
+ * target and would remove live profiles or start Cargo. Each rejection above, including the new
+ * survivor refusal, escapes main's top-level await as Node's uncaught rejection, whose CLI exit
+ * is 1. That exit is described from the exported call, not claimed as a second measured spawn.
+ * The staged helper calls do not claim to exercise real Cargo/LLVM failures or a second writer
+ * that creates a profile after the refusal walk. No lock is added for that existing race.
+ */
 import { spawnSync } from "node:child_process";
-import { readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { readFile, readdir, stat, unlink, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { excluded, normalisePath } from "./coverage-scope.mjs";
@@ -9,13 +71,6 @@ import { parseRustHostMetadata } from "./rust-host.mjs";
 import { RUST_COVERAGE_TOOLCHAIN } from "./toolchain-versions.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const manifestPath = resolve(projectRoot, "src-tauri/Cargo.toml");
-const coverageTarget = resolve(projectRoot, "src-tauri/target/llvm-cov-target");
-const dependencies = resolve(coverageTarget, "debug/deps");
-const outputDirectory = resolve(projectRoot, "backend-coverage");
-const outputPath = resolve(outputDirectory, "lcov.info");
-const profilePath = resolve(outputDirectory, "src-tauri.profdata");
-const coverageConfigPath = resolve(projectRoot, "backend-coverage-areas.json");
 const toolchain = RUST_COVERAGE_TOOLCHAIN;
 
 function attempt(command, argumentsList, options = {}) {
@@ -27,8 +82,8 @@ function attempt(command, argumentsList, options = {}) {
   });
 }
 
-function run(command, argumentsList, options = {}) {
-  const result = attempt(command, argumentsList, options);
+function run(command, argumentsList, options = {}, runAttempt = attempt) {
+  const result = runAttempt(command, argumentsList, options);
   if (result.status !== 0) {
     if (result.stderr) process.stderr.write(result.stderr);
     if (result.error) throw result.error;
@@ -118,9 +173,45 @@ export function exportLcovOrDiagnose(
   return exported.stdout ?? "";
 }
 
-async function main() {
-  const { llvmProfdata, llvmCov } = coverageTools();
-  run(
+const rawProfilesBelow = (directory) => filesBelow(directory, (path) => path.endsWith(".profraw"));
+
+async function staleRawProfiles(directory, listProfiles) {
+  try {
+    return await listProfiles(directory);
+  } catch (error) {
+    // A descendant can disappear during the recursive walk. Only the root's own
+    // missing-directory error means there is nothing to clear or refuse.
+    if (error.code === "ENOENT" && error.path === resolve(directory)) return [];
+    throw error;
+  }
+}
+
+export async function clearStaleRawProfiles(directory, listProfiles = rawProfilesBelow) {
+  for (const path of await staleRawProfiles(directory, listProfiles)) await unlink(path);
+}
+
+export async function assertNoStaleRawProfiles(directory, listProfiles = rawProfilesBelow) {
+  const profiles = await staleRawProfiles(directory, listProfiles);
+  if (profiles.length > 0)
+    throw new Error(`Rust coverage left stale raw profiles: ${profiles.sort().join(", ")}`);
+}
+
+export async function runBranchCoverage({
+  projectRoot: root = projectRoot,
+  manifestPath = resolve(root, "src-tauri/Cargo.toml"),
+  coverageTarget = resolve(root, "src-tauri/target/llvm-cov-target"),
+  dependencies = resolve(coverageTarget, "debug/deps"),
+  outputPath = resolve(root, "backend-coverage/lcov.info"),
+  profilePath = resolve(root, "backend-coverage/src-tauri.profdata"),
+  coverageConfigPath = resolve(root, "backend-coverage-areas.json"),
+  runAttempt = attempt,
+  runCommand = (command, args, options) => run(command, args, options, runAttempt),
+  listProfiles = rawProfilesBelow,
+} = {}) {
+  const { llvmProfdata, llvmCov } = coverageTools(runCommand);
+  await clearStaleRawProfiles(coverageTarget, listProfiles);
+  await assertNoStaleRawProfiles(coverageTarget, listProfiles);
+  runCommand(
     "cargo",
     [
       `+${toolchain}`,
@@ -136,9 +227,9 @@ async function main() {
     { stdio: "inherit" },
   );
 
-  const profiles = await filesBelow(coverageTarget, (path) => path.endsWith(".profraw"));
+  const profiles = await listProfiles(coverageTarget);
   if (profiles.length === 0) throw new Error("Rust coverage produced no raw profiles");
-  run(llvmProfdata, ["merge", "-sparse", "-o", profilePath, ...profiles]);
+  runCommand(llvmProfdata, ["merge", "-sparse", "-o", profilePath, ...profiles]);
 
   const executableCandidates = [];
   for (const entry of await readdir(dependencies)) {
@@ -166,11 +257,9 @@ async function main() {
   // This is NOT a limit on how many sources one invocation can take: one export over
   // the remaining sources yields byte-identical LCOV to one export per source.
   const coverageConfig = JSON.parse(await readFile(coverageConfigPath, "utf8"));
-  const sources = (
-    await filesBelow(resolve(projectRoot, "src-tauri/src"), (path) => path.endsWith(".rs"))
-  )
+  const sources = (await filesBelow(resolve(root, "src-tauri/src"), (path) => path.endsWith(".rs")))
     .filter((path) => {
-      const relativePath = normalisePath(path, projectRoot);
+      const relativePath = normalisePath(path, root);
       return !coverageConfig.sources.some((source) => excluded(relativePath, source));
     })
     .sort();
@@ -179,8 +268,8 @@ async function main() {
   // Name the sources that actually crash instead of failing with a bare "exited with
   // status null": re-probing each one costs well under a second and runs only on this
   // path. It reports what crashed, without assuming why.
-  const lcov = exportLcovOrDiagnose(attempt, llvmCov, profilePath, executable, sources, {
-    toRelativePath: (source) => normalisePath(source, projectRoot),
+  const lcov = exportLcovOrDiagnose(runAttempt, llvmCov, profilePath, executable, sources, {
+    toRelativePath: (source) => normalisePath(source, root),
   });
   const sourceCount = lcov.match(/^SF:/gm)?.length ?? 0;
   if (sourceCount === 0) throw new Error("Rust branch coverage export was empty");
@@ -189,6 +278,10 @@ async function main() {
   const branchRecords = lcov.match(/^BRDA:/gm)?.length ?? 0;
   if (branchRecords === 0) throw new Error("Rust coverage export contains no branch data");
   console.log(`Rust LCOV: ${sourceCount} sources, ${branchRecords} branch records`);
+}
+
+async function main() {
+  await runBranchCoverage();
 }
 
 if (isEntrypoint(import.meta.url)) {

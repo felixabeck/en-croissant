@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { existsSync, readdirSync, writeFileSync } from "node:fs";
 import {
   access,
   chmod,
@@ -8,6 +9,7 @@ import {
   rm,
   readFile,
   rename as renameFile,
+  symlink,
   unlink as unlinkFile,
   writeFile,
 } from "node:fs/promises";
@@ -31,13 +33,17 @@ import {
   normalisePath,
 } from "./coverage-scope.mjs";
 import {
+  assertNoStaleRawProfiles,
+  clearStaleRawProfiles,
   coverageTools,
   exportLcovOrDiagnose,
   formatExportCrashMessage,
   isCoverageExecutable,
   llvmCovExportArgs,
   probeCrashingSources,
+  runBranchCoverage,
 } from "./rust-branch-coverage.mjs";
+import { filesBelow } from "./files-below.mjs";
 import { RUST_COVERAGE_TOOLCHAIN } from "./toolchain-versions.mjs";
 import { maskRustSource, maskRustSourceWithSpans } from "./rust-source-mask.mjs";
 import { classifyRustTestOnlySources, scanRustTestOnly } from "./rust-test-only.mjs";
@@ -3052,6 +3058,467 @@ test("scopeSignature records test-only Rust exclusion and rejects an older scope
   );
 });
 
+async function branchCoverageFixture(t) {
+  const root = await mkdtemp(join(tmpdir(), "rust-branch-coverage-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const target = join(root, "src-tauri/target/llvm-cov-target");
+  const dependencies = join(target, "debug/deps");
+  const source = join(root, "src-tauri/src/example.rs");
+  const executable = join(
+    dependencies,
+    `chessfable-deadbeef${process.platform === "win32" ? ".exe" : ""}`,
+  );
+  await mkdir(dependencies, { recursive: true });
+  await mkdir(dirname(source), { recursive: true });
+  await mkdir(join(root, "backend-coverage"));
+  await writeFile(source, "pub fn example() {}\n");
+  await writeFile(executable, "fixture executable", { mode: 0o755 });
+  await writeFile(
+    join(root, "backend-coverage-areas.json"),
+    JSON.stringify({ sources: [{ exclude: [] }] }),
+  );
+  const calls = [];
+  const freshProfile = join(target, "fresh.profraw");
+  const runAttempt = (command, args) => {
+    calls.push([command, ...args]);
+    if (command === "rustup") {
+      return {
+        status: 0,
+        stdout: args.at(-1) === "sysroot" ? root : "host: x86_64-unknown-linux-gnu\n",
+      };
+    }
+    if (command === "cargo") writeFileSync(freshProfile, "this run");
+    return {
+      status: 0,
+      stdout: args[0] === "export" ? `SF:${source}\nBRDA:1,0,0,1\nend_of_record\n` : "",
+    };
+  };
+  return {
+    root,
+    target,
+    source,
+    executable,
+    freshProfile,
+    calls,
+    options: { projectRoot: root, runAttempt },
+  };
+}
+
+const listRawProfiles = (directory) => filesBelow(directory, (path) => path.endsWith(".profraw"));
+
+async function recordBranchRejection(t, promise, expected) {
+  await assert.rejects(promise, (error) => {
+    if (expected instanceof RegExp) assert.match(error.message, expected);
+    else if (typeof expected === "function") expected(error);
+    else assert.equal(error, expected);
+    t.diagnostic(`staged: rejected promise; ${error.message}`);
+    return true;
+  });
+}
+
+function recordBranchThrow(t, call, expected) {
+  assert.throws(call, (error) => {
+    if (expected instanceof RegExp) assert.match(error.message, expected);
+    else assert.equal(error, expected);
+    t.diagnostic(`staged: synchronous throw; ${error.message}`);
+    return true;
+  });
+}
+
+test("clearStaleRawProfiles removes nested regular profiles and preserves siblings and symlinks", async (t) => {
+  const { root, target } = await branchCoverageFixture(t);
+  const nested = join(target, "nested/stale.profraw");
+  const sibling = join(target, "nested/incremental.o");
+  const outside = join(root, "outside");
+  await mkdir(dirname(nested));
+  await mkdir(outside);
+  await writeFile(nested, "stale");
+  await writeFile(sibling, "keep");
+  await writeFile(join(outside, "keep.profraw"), "outside");
+  let symlinkCreated = false;
+  try {
+    await symlink(outside, join(target, "linked"), "dir");
+    await symlink(join(outside, "keep.profraw"), join(target, "linked.profraw"), "file");
+    symlinkCreated = true;
+  } catch (error) {
+    if (error.code !== "EPERM") throw error;
+    t.diagnostic("EPERM creating symlink: only the symlink non-follow assertion is skipped");
+  }
+  await clearStaleRawProfiles(target);
+  assert.equal(existsSync(nested), false);
+  assert.equal(await readFile(sibling, "utf8"), "keep");
+  if (symlinkCreated)
+    assert.equal(await readFile(join(outside, "keep.profraw"), "utf8"), "outside");
+});
+
+test("runBranchCoverage clears and refuses before Cargo, and merges only fresh profiles", async (t) => {
+  const fixtureCase = await branchCoverageFixture(t);
+  const { target, options, calls, freshProfile } = fixtureCase;
+  const stale = join(target, "nested/stale.profraw");
+  await mkdir(dirname(stale));
+  await writeFile(stale, "old counts");
+  await runBranchCoverage({
+    ...options,
+    runAttempt: (command, args, runnerOptions) => {
+      if (command === "cargo") {
+        assert.deepEqual(
+          readdirSync(target, { recursive: true }).filter((path) => path.endsWith(".profraw")),
+          [],
+        );
+        assert.equal(existsSync(stale), false);
+        assert.equal(existsSync(freshProfile), false);
+        assert.ok(args.includes("llvm-cov"));
+        assert.ok(args.includes("--no-report"));
+        assert.ok(!args.includes("clean"));
+      }
+      return options.runAttempt(command, args, runnerOptions);
+    },
+  });
+  const merge = calls.find((call) => call[1] === "merge");
+  assert.deepEqual(merge.slice(5), [freshProfile]);
+  assert.match(
+    await readFile(join(fixtureCase.root, "backend-coverage/lcov.info"), "utf8"),
+    /^SF:/,
+  );
+  const script = await readFile(new URL("./rust-branch-coverage.mjs", import.meta.url), "utf8");
+  assert.match(script, /async function main\(\)\s*\{\s*await runBranchCoverage\(\);\s*\}/);
+});
+
+test("runBranchCoverage rejects a survivor without starting Cargo", async (t) => {
+  const { target, options, calls } = await branchCoverageFixture(t);
+  const survivor = join(target, "survivor.profraw");
+  let walks = 0;
+  await recordBranchRejection(
+    t,
+    runBranchCoverage({ ...options, listProfiles: () => (++walks === 1 ? [] : [survivor]) }),
+    (error) => {
+      assert.match(error.message, /^Rust coverage left stale raw profiles:/);
+      assert.ok(error.message.includes(survivor));
+    },
+  );
+  assert.equal(walks, 2);
+  assert.equal(
+    calls.some(([command]) => command === "cargo"),
+    false,
+  );
+  assert.ok(resolve(survivor) === survivor);
+});
+
+test("assertNoStaleRawProfiles reports all absolute survivors in sorted order without deleting", async (t) => {
+  const { target } = await branchCoverageFixture(t);
+  const paths = [join(target, "z.profraw"), join(target, "a.profraw")];
+  for (const path of paths) await writeFile(path, "keep");
+  await assert.rejects(assertNoStaleRawProfiles(target), {
+    message: `Rust coverage left stale raw profiles: ${[...paths].sort().join(", ")}`,
+  });
+  for (const path of paths) assert.equal(await readFile(path, "utf8"), "keep");
+});
+
+test("a missing coverage root succeeds on both pre-Cargo walks and still reaches Cargo", async (t) => {
+  const { target, options, calls } = await branchCoverageFixture(t);
+  await rm(target, { recursive: true });
+  await clearStaleRawProfiles(target);
+  await assertNoStaleRawProfiles(target);
+  const stoppedAtCargo = new Error("missing root reached cargo llvm-cov");
+  await recordBranchRejection(
+    t,
+    runBranchCoverage({
+      ...options,
+      runAttempt: (command, args) => {
+        if (command === "cargo") {
+          calls.push([command, ...args]);
+          throw stoppedAtCargo;
+        }
+        return options.runAttempt(command, args);
+      },
+    }),
+    stoppedAtCargo,
+  );
+  assert.ok(calls.some(([command, ...args]) => command === "cargo" && args.includes("llvm-cov")));
+});
+
+test("nested readdir ENOENT rejects on the clear and refusal walks without starting Cargo", async (t) => {
+  for (const failedWalk of [1, 2]) {
+    await t.test(`walk ${failedWalk}`, async (t) => {
+      const { target, options, calls } = await branchCoverageFixture(t);
+      const nested = join(target, "disappeared");
+      await mkdir(nested);
+      await rm(nested, { recursive: true });
+      let walks = 0;
+      await recordBranchRejection(
+        t,
+        runBranchCoverage({
+          ...options,
+          listProfiles: (directory) => {
+            assert.equal(directory, target);
+            // Stage the readdir error from a descendant that disappeared after
+            // enumeration, using the real walker on that now-missing directory.
+            return ++walks === failedWalk ? listRawProfiles(nested) : listRawProfiles(directory);
+          },
+        }),
+        /ENOENT:.*scandir/,
+      );
+      assert.equal(walks, failedWalk);
+      assert.equal(existsSync(target), true);
+      assert.equal(
+        calls.some(([command]) => command === "cargo"),
+        false,
+      );
+    });
+  }
+});
+
+test("removal and unreadable pre-Cargo walks record filesystem messages and rejections", async (t) => {
+  for (const mode of ["unlink", "clear walk", "refusal walk"]) {
+    await t.test(mode, async (t) => {
+      const { target, options, calls } = await branchCoverageFixture(t);
+      await writeFile(join(target, "stale.profraw"), "stale");
+      let walks = 0;
+      if (mode === "unlink") await chmod(target, 0o555);
+      else if (mode === "clear walk") await chmod(target, 0);
+      try {
+        await recordBranchRejection(
+          t,
+          runBranchCoverage({
+            ...options,
+            listProfiles: async (directory) => {
+              if (mode === "refusal walk" && ++walks === 2) await chmod(directory, 0);
+              return listRawProfiles(directory);
+            },
+          }),
+          mode === "unlink" ? /EACCES:.*unlink/ : /EACCES:.*scandir/,
+        );
+        assert.equal(
+          calls.some(([command]) => command === "cargo"),
+          false,
+        );
+      } finally {
+        await chmod(target, 0o755);
+      }
+    });
+  }
+});
+
+test("entrypoint tool-resolution failure exits 1 and leaves the planted profile set unchanged", async (t) => {
+  const scratchPath = await mkdtemp(join(tmpdir(), "coverage-no-rustup-"));
+  t.after(() => rm(scratchPath, { recursive: true, force: true }));
+  const coverageTarget = resolve("src-tauri/target/llvm-cov-target");
+  await mkdir(coverageTarget, { recursive: true });
+  const planted = join(coverageTarget, `staged-tool-failure-${process.pid}.profraw`);
+  // Exclusive creation ensures the finally path owns precisely this file.
+  await writeFile(planted, "staged input", { flag: "wx" });
+  try {
+    const before = (await listRawProfiles(coverageTarget)).sort();
+    const result = spawnSync(process.execPath, [resolve("scripts/rust-branch-coverage.mjs")], {
+      encoding: "utf8",
+      env: { ...process.env, PATH: scratchPath },
+    });
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /spawnSync rustup ENOENT/);
+    assert.deepEqual((await listRawProfiles(coverageTarget)).sort(), before);
+    t.diagnostic("staged: exit 1; spawnSync rustup ENOENT; profile path set unchanged");
+  } finally {
+    await unlinkFile(planted);
+  }
+});
+
+test("command failures are staged through runBranchCoverage's command runner", async (t) => {
+  for (const stage of ["rustup", "cargo", "merge"]) {
+    for (const failure of ["spawn", "signal", "status"]) {
+      await t.test(`${stage}: ${failure}`, async (t) => {
+        const { options } = await branchCoverageFixture(t);
+        const spawnError = new Error(`spawn ${stage} ENOENT`);
+        const result =
+          failure === "spawn"
+            ? { status: null, error: spawnError }
+            : failure === "signal"
+              ? { status: null, signal: "SIGTERM" }
+              : { status: 23, stderr: `staged ${stage} stderr\n` };
+        await recordBranchRejection(
+          t,
+          runBranchCoverage({
+            ...options,
+            runAttempt: (command, args) => {
+              if ((stage === "merge" && args[0] === "merge") || command === stage) return result;
+              return options.runAttempt(command, args);
+            },
+          }),
+          failure === "spawn"
+            ? spawnError
+            : failure === "signal"
+              ? /died with SIGTERM:/
+              : /exited with status 23/,
+        );
+      });
+    }
+  }
+});
+
+test("runBranchCoverage stages every filesystem, config, and evidence refusal", async (t) => {
+  const cases = [
+    [
+      "no raw profiles",
+      /^Rust coverage produced no raw profiles$/,
+      async (f) => ({
+        runAttempt: (command, args) =>
+          command === "cargo" ? { status: 0 } : f.options.runAttempt(command, args),
+      }),
+    ],
+    [
+      "post-Cargo walk",
+      /ENOTDIR:.*scandir/,
+      async (f) => {
+        const notDirectory = join(f.root, "not-directory");
+        await writeFile(notDirectory, "file");
+        let walks = 0;
+        return {
+          listProfiles: (directory) =>
+            ++walks === 3 ? listRawProfiles(notDirectory) : listRawProfiles(directory),
+        };
+      },
+    ],
+    [
+      "dependencies readdir",
+      /ENOENT:.*scandir/,
+      async (f) => ({ dependencies: join(f.target, "missing-deps") }),
+    ],
+    [
+      "executable stat",
+      /EACCES:.*stat/,
+      async (f) => {
+        // Directory names remain readable, but looking up an entry requires search permission.
+        await chmod(dirname(f.executable), 0o444);
+        return {};
+      },
+    ],
+    [
+      "missing executable",
+      /^Rust coverage test executable was not found$/,
+      async (f) => {
+        await unlinkFile(f.executable);
+        return {};
+      },
+    ],
+    [
+      "config read",
+      /ENOENT:.*open/,
+      async (f) => ({ coverageConfigPath: join(f.root, "missing-config.json") }),
+    ],
+    [
+      "config JSON",
+      /JSON|property name/,
+      async (f) => {
+        await writeFile(join(f.root, "backend-coverage-areas.json"), "{ invalid");
+        return {};
+      },
+    ],
+    [
+      "source walk",
+      /ENOENT:.*scandir/,
+      async (f) => {
+        await rm(dirname(f.source), { recursive: true });
+        return {};
+      },
+    ],
+    [
+      "empty sources",
+      /^Rust coverage found no sources to export$/,
+      async (f) => {
+        await unlinkFile(f.source);
+        return {};
+      },
+    ],
+    [
+      "empty export",
+      /^Rust branch coverage export was empty$/,
+      async (f) => ({
+        runAttempt: (command, args) =>
+          args[0] === "export" ? { status: 0, stdout: "" } : f.options.runAttempt(command, args),
+      }),
+    ],
+    [
+      "output write",
+      /ENOENT:.*open/,
+      async (f) => ({ outputPath: join(f.root, "absent/lcov.info") }),
+    ],
+    [
+      "no branches",
+      /^Rust coverage export contains no branch data$/,
+      async (f) => ({
+        runAttempt: (command, args) =>
+          args[0] === "export"
+            ? { status: 0, stdout: `SF:${f.source}\n` }
+            : f.options.runAttempt(command, args),
+      }),
+    ],
+  ];
+  for (const [name, expected, setup] of cases) {
+    await t.test(name, async (t) => {
+      const fixtureCase = await branchCoverageFixture(t);
+      const overrides = await setup(fixtureCase);
+      try {
+        await recordBranchRejection(
+          t,
+          runBranchCoverage({ ...fixtureCase.options, ...overrides }),
+          expected,
+        );
+      } finally {
+        if (name === "executable stat") await chmod(dirname(fixtureCase.executable), 0o755);
+      }
+    });
+  }
+  for (const contents of [
+    null,
+    {},
+    { sources: {} },
+    { sources: [null] },
+    { sources: [{}] },
+    { sources: [{ exclude: {} }] },
+    { sources: [{ exclude: [null] }] },
+    { sources: [{ exclude: [{}] }] },
+  ]) {
+    await t.test(`config shape ${JSON.stringify(contents)}`, async (t) => {
+      const fixtureCase = await branchCoverageFixture(t);
+      await writeFile(
+        join(fixtureCase.root, "backend-coverage-areas.json"),
+        JSON.stringify(contents),
+      );
+      await recordBranchRejection(
+        t,
+        runBranchCoverage(fixtureCase.options),
+        /Cannot read properties|is not a function/,
+      );
+    });
+  }
+});
+
+test("exportLcovOrDiagnose stages spawn, exit-status, and undiagnosed signal throws", (t) => {
+  const spawnError = new Error("spawn llvm-cov ENOENT");
+  for (const [result, expected] of [
+    [{ status: null, error: spawnError }, spawnError],
+    [
+      { status: 23, stderr: "staged llvm-cov stderr\n" },
+      /llvm-cov died with status 23 while exporting LCOV/,
+    ],
+    [{ status: null, signal: "SIGSEGV" }, /llvm-cov died with SIGSEGV while exporting LCOV/],
+  ]) {
+    let calls = 0;
+    recordBranchThrow(
+      t,
+      () =>
+        exportLcovOrDiagnose(
+          () => (++calls === 1 ? result : { status: 0 }),
+          "llvm-cov",
+          "/tmp/profile",
+          "/tmp/executable",
+          ["source.rs"],
+        ),
+      expected,
+    );
+  }
+});
+
 test("coverage tools follow the pinned compiler host, including Windows tool suffixes", () => {
   for (const host of [
     "x86_64-unknown-linux-gnu",
@@ -3079,20 +3546,22 @@ test("coverage tools follow the pinned compiler host, including Windows tool suf
   }
 });
 
-test("coverage tools refuse invalid metadata and propagate command errors", () => {
+test("coverage tools refuse invalid metadata and propagate command errors", (t) => {
   for (const version of [
     "rustc 1.89.0",
     "host: ",
     "host: ../../other",
     "host: aarch64-apple-darwin extra",
   ]) {
-    assert.throws(
+    recordBranchThrow(
+      t,
       () => coverageTools((_command, args) => (args.at(-1) === "sysroot" ? "/rust" : version)),
       /Cannot determine sysroot and host/,
     );
   }
-  assert.throws(() => coverageTools(() => ""), /Cannot determine sysroot and host/);
-  assert.throws(
+  recordBranchThrow(t, () => coverageTools(() => ""), /Cannot determine sysroot and host/);
+  recordBranchThrow(
+    t,
     () =>
       coverageTools((_command, args) =>
         args.at(-1) === "sysroot" ? "\n" : "host: x86_64-unknown-linux-gnu\n",
@@ -3100,12 +3569,13 @@ test("coverage tools refuse invalid metadata and propagate command errors", () =
     /Cannot determine sysroot and host/,
   );
   const failure = new Error("pinned toolchain missing");
-  assert.throws(
+  recordBranchThrow(
+    t,
     () =>
       coverageTools(() => {
         throw failure;
       }),
-    (error) => error === failure,
+    failure,
   );
 });
 
@@ -3148,7 +3618,7 @@ test("bulk llvm-cov export and the crash probe share one argument builder", () =
   assert.deepEqual(probe.slice(5), [sources[0]]);
 });
 
-test("bulk export diagnoses crashes with the shared argv", () => {
+test("bulk export diagnoses crashes with the shared argv", (t) => {
   const profilePath = "/tmp/src-tauri.profdata";
   const executable = "/tmp/chessfable-deadbeef";
   const sources = ["src-tauri/src/chess.rs", "src-tauri/src/db/schema.rs"];
@@ -3161,9 +3631,10 @@ test("bulk export diagnoses crashes with the shared argv", () => {
     }
     return { signal: null, status: 0, stdout: "SF:ok\n" };
   };
-  assert.throws(
+  recordBranchThrow(
+    t,
     () => exportLcovOrDiagnose(attempt, "llvm-cov", profilePath, executable, sources),
-    /src-tauri\/src\/db\/schema\.rs/,
+    /llvm-cov segfaulted while exporting these sources:\n  src-tauri\/src\/db\/schema\.rs/,
   );
   assert.deepEqual(calls[0], llvmCovExportArgs(profilePath, executable, sources));
 });
