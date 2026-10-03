@@ -5184,3 +5184,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Keeps the existing largest single IPC response as the only ceiling. Reversal path: a measured memory or latency problem at a 10 MiB page.
 * **Decided by:** Claude Code, drain session 648a7fac-1f9b-4bc0-8e9a-df298dc5f16d, full auto, adopted reviewed plan of f-20260914-05 (planned ahead, 8 review rounds) · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"21a0d92d193cec57a0065d2541c49dd4bd575b06bfd75d7017c0f930fca56041","input_sha256":"608b7dc18a15c9f9e8f4e57d9f21f3898181bc0aa49cd4da1d34c85011da5d36","kind":"mutation-receipt","operation":"d6a32164f38ecf0f4e5930c2db88663f1e6a80b5c127f47cdc1d5d3975daed7a","options":{"section":null},"request_id_sha256":null,"results":["d-20261004-02"],"target":"decisions-ledger","v":1} -->
+
+### d-20261004-03 — Which layer owns continuation over short PGN pages?
+
+* **Question:** Where does the renderer loop over short `readGames` pages?
+* **Governs:** f-20260914-05
+* **Chosen:** `GameSelector.loadPage`, the sole multi-row consumer; each page is reduced to header rows before the next call, a rejected page rejects the whole load (no partial merge), and a non-cancellation failure is surfaced once per load through `notifyUnlessCancelled`.
+* **Rejected:** `useVirtualPageLoader` (generic range-keyed dedupe; the short-page rule is a `readGames` property); the platform facade (would hide a multi-call loop behind one command name).
+* **Reason:** The short-page contract belongs to the one command and its one multi-row caller. Reversal path: a second multi-row `readGames` consumer, which would extract the loop (rule 11).
+* **Decided by:** Claude Code, drain session 648a7fac-1f9b-4bc0-8e9a-df298dc5f16d, full auto, adopted reviewed plan of f-20260914-05 (planned ahead, 8 review rounds) · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"fda363e35ce375692b3ded5955903fd6b6ba7bcd9f63c6875ff8d5cf5d162451","input_sha256":"197bf84312ca6a594a10b02b8c7bdd42695b74cfcec353144ce30d9c41955be4","kind":"mutation-receipt","operation":"171a04031eb14f232c8a01e709913f70cd555bf3205277153e2d41a8296432ed","options":{"section":null},"request_id_sha256":null,"results":["d-20261004-03"],"target":"decisions-ledger","v":1} -->
