@@ -25,9 +25,11 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::infra::fs::DirectoryEntry;
 use crate::infra::fs::DirectoryEntryKind;
-use crate::infra::path_authority::CapabilityDirectory;
+use crate::infra::fs::{
+    check_directory_listing_bound, DirectoryEntry, MAX_DIRECTORY_LISTING_ENTRIES,
+};
+use crate::infra::path_authority::{CapabilityDirectory, PreparedListingEntry};
 use std::ffi::OsStr;
 
 const TRASH_DIRECTORY: &str = ".en-croissant-trash";
@@ -359,6 +361,7 @@ fn collect_tree_entries(
         components: Vec<std::ffi::OsString>,
         depth: usize,
         token: &CancellationToken,
+        staged_count: &mut usize,
     ) -> Result<Vec<Staged>, Error> {
         if depth > MAX_WORKSPACE_LISTING_DEPTH {
             return Err(Error::ResourceLimit(format!(
@@ -395,12 +398,25 @@ fn collect_tree_entries(
             if !is_directory && !display.to_ascii_lowercase().ends_with(".pgn") {
                 continue;
             }
+            if is_directory && depth + 1 > MAX_WORKSPACE_LISTING_DEPTH {
+                return Err(Error::ResourceLimit(format!(
+                    "workspace listing exceeded {MAX_WORKSPACE_LISTING_DEPTH} levels"
+                )));
+            }
+            check_directory_listing_bound(*staged_count, MAX_DIRECTORY_LISTING_ENTRIES)?;
+            *staged_count += 1;
             let mut child_components = components.clone();
             child_components.push(entry.name.clone());
             if is_directory {
                 let last_modified = listed_mtime(&entry);
                 let child = dir.open_child_directory(&entry)?;
-                let children = walk(&child, child_components.clone(), depth + 1, token)?;
+                let children = walk(
+                    &child,
+                    child_components.clone(),
+                    depth + 1,
+                    token,
+                    staged_count,
+                )?;
                 if token.is_cancelled() {
                     return Err(Error::Cancellation);
                 }
@@ -436,10 +452,11 @@ fn collect_tree_entries(
 
     fn register(
         staged: Vec<Staged>,
-        pgn_path_authority: &Mutex<Option<PathAuthority>>,
+        path_authority: &mut PathAuthority,
         workspace: &FileWorkspaceHandle,
         token: &CancellationToken,
         missing: &mut Vec<FileWorkspaceHandle>,
+        prepared: &mut Vec<PreparedListingEntry>,
     ) -> Result<Vec<WorkspaceEntry>, Error> {
         let mut result = Vec::new();
         for entry in staged {
@@ -453,24 +470,30 @@ fn collect_tree_entries(
                 }
             });
             let is_dir = matches!(entry.body, StagedBody::Directory(_));
-            let handle = authority(pgn_path_authority)?
-                .as_mut()
-                .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-                .register_workspace_child_observed_with_parent(
-                    workspace,
-                    &entry.components,
-                    entry.name.clone(),
-                    IdentityBinding::from_pairs(entry.identity, entry.parent_identity),
-                    is_dir,
-                    PathOperation::ReadPgn,
-                )?;
+            let registration = path_authority.prepare_workspace_listing_child(
+                workspace,
+                &entry.components,
+                entry.name.clone(),
+                IdentityBinding::from_pairs(entry.identity, entry.parent_identity),
+                is_dir,
+                PathOperation::ReadPgn,
+            )?;
+            let handle = FileWorkspaceHandle::new(registration.id());
+            prepared.push(registration);
             if !is_dir {
                 missing.push(handle.clone());
             }
             let (metadata, nested) = match entry.body {
                 StagedBody::Directory(children) => (
                     None,
-                    register(children, pgn_path_authority, workspace, token, missing)?,
+                    register(
+                        children,
+                        path_authority,
+                        workspace,
+                        token,
+                        missing,
+                        prepared,
+                    )?,
                 ),
                 StagedBody::File(metadata) => (Some(metadata), Vec::new()),
             };
@@ -491,13 +514,33 @@ fn collect_tree_entries(
         Ok(result)
     }
 
-    let root = authority(pgn_path_authority)?
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .capability_directory(workspace.path_ref(), PathOperation::ReadPgn)?;
-    let staged = walk(&root, Vec::new(), 0, token)?;
+    let (root, snapshot) = {
+        let mut lock = authority(pgn_path_authority)?;
+        let path_authority = lock
+            .as_mut()
+            .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
+        let root =
+            path_authority.capability_directory(workspace.path_ref(), PathOperation::ReadPgn)?;
+        let snapshot =
+            path_authority.workspace_listing_snapshot(workspace, OsStr::new(TRASH_DIRECTORY))?;
+        (root, snapshot)
+    };
+    let staged = walk(&root, Vec::new(), 0, token, &mut 0)?;
     let mut missing = Vec::new();
-    let entries = register(staged, pgn_path_authority, workspace, token, &mut missing)?;
+    let mut prepared = Vec::new();
+    let mut lock = authority(pgn_path_authority)?;
+    let path_authority = lock
+        .as_mut()
+        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
+    let entries = register(
+        staged,
+        path_authority,
+        workspace,
+        token,
+        &mut missing,
+        &mut prepared,
+    )?;
+    path_authority.commit_directory_listing(snapshot, prepared, token)?;
     Ok((entries, missing))
 }
 
@@ -4958,6 +5001,186 @@ mod workspace_directory_enumeration_tests {
             .all(|handle| { listed_files.iter().any(|entry| entry.handle == *handle) }));
     }
 
+    #[test]
+    fn directory_listing_bound_workspace_counts_dropped_names_without_registry_writes(
+    ) -> Result<(), Error> {
+        let (_directory, registry, workspace, root) = workspace_fixture();
+        let before = authority(&registry)?
+            .as_ref()
+            .ok_or_else(|| Error::Conflict("test authority missing".into()))?
+            .persistent_snapshot_for_test();
+        for index in 0..MAX_DIRECTORY_LISTING_ENTRIES {
+            fs::write(root.join(format!("{index}.txt")), b"")?;
+        }
+        assert!(
+            collect_tree_entries(&registry, &workspace, &CancellationToken::new())?
+                .0
+                .is_empty()
+        );
+        fs::write(root.join("overflow.pgn"), b"*")?;
+        assert!(matches!(
+            collect_tree_entries(&registry, &workspace, &CancellationToken::new()),
+            Err(Error::ResourceLimit(_))
+        ));
+        assert_eq!(
+            authority(&registry)?
+                .as_ref()
+                .ok_or_else(|| Error::Conflict("test authority missing".into()))?
+                .persistent_snapshot_for_test(),
+            before
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn directory_listing_bound_workspace_staged_nodes_are_bounded_across_directories(
+    ) -> Result<(), Error> {
+        let (_directory, registry, workspace, root) = workspace_fixture();
+        let before = authority(&registry)?
+            .as_ref()
+            .ok_or_else(|| Error::Conflict("test authority missing".into()))?
+            .persistent_snapshot_for_test();
+        for name in ["a", "b"] {
+            let sub = root.join(name);
+            fs::create_dir(&sub)?;
+            for index in 0..MAX_DIRECTORY_LISTING_ENTRIES / 2 {
+                fs::write(sub.join(format!("{index}.pgn")), b"*")?;
+            }
+        }
+        assert!(matches!(
+            collect_tree_entries(&registry, &workspace, &CancellationToken::new()),
+            Err(Error::ResourceLimit(_))
+        ));
+        assert_eq!(
+            authority(&registry)?
+                .as_ref()
+                .ok_or_else(|| Error::Conflict("test authority missing".into()))?
+                .persistent_snapshot_for_test(),
+            before
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn directory_listing_bound_workspace_count_failure_and_late_cancellation_keep_snapshot(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        for cancel_count in [false, true] {
+            let (_directory, registry, workspace, root) = workspace_fixture();
+            let registry = Arc::new(registry);
+            fs::write(root.join("old.pgn"), b"*")?;
+            collect_tree_entries(&registry, &workspace, &CancellationToken::new())?;
+            fs::remove_file(root.join("old.pgn"))?;
+            fs::write(root.join("new.pgn"), b"*")?;
+            let repository = pgn::PgnRepository::default();
+            let (hook, entered, release) = pgn::BoundedHook::new();
+            repository.set_count_hook(Some(hook))?;
+            let token = CancellationToken::new();
+            let task = tokio::spawn({
+                let registry = Arc::clone(&registry);
+                let workspace = workspace.clone();
+                let repository = repository.clone();
+                let token = token.clone();
+                async move { list_file_workspace_core(&workspace, &registry, &repository, &token).await }
+            });
+            tokio::time::timeout(Duration::from_secs(5), entered).await??;
+            let snapshot = authority(&registry)?
+                .as_ref()
+                .ok_or_else(|| Error::Conflict("test authority missing".into()))?
+                .persistent_snapshot_for_test();
+            assert!(snapshot.iter().any(|(name, _, _)| name == "new"));
+            assert!(!snapshot.iter().any(|(name, _, _)| name == "old"));
+            if cancel_count {
+                token.cancel();
+            } else {
+                fs::write(root.join("new.pgn"), [0xff, b'\n'])?;
+            }
+            release.send(())?;
+            let result = task.await?;
+            if cancel_count {
+                assert!(matches!(result, Err(Error::Cancellation)), "{result:?}");
+            } else {
+                assert!(result.is_err(), "game count must reject malformed UTF-8");
+            }
+            assert_eq!(
+                authority(&registry)?
+                    .as_ref()
+                    .ok_or_else(|| Error::Conflict("test authority missing".into()))?
+                    .persistent_snapshot_for_test(),
+                snapshot
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn directory_listing_bound_workspace_snapshot_retires_missing_preserves_trash_and_concurrent_create(
+    ) -> Result<(), Error> {
+        let (_directory, registry, workspace, root) = workspace_fixture();
+        let registry = Arc::new(registry);
+        fs::write(root.join("removed.pgn"), b"*")?;
+        collect_tree_entries(&registry, &workspace, &CancellationToken::new())?;
+        fs::remove_file(root.join("removed.pgn"))?;
+        fs::create_dir(root.join(TRASH_DIRECTORY))?;
+        let trash_file = root.join(TRASH_DIRECTORY).join("hidden.pgn");
+        fs::write(&trash_file, b"*")?;
+        let file_stat = fs::metadata(&trash_file)?;
+        let parent_stat = fs::metadata(root.join(TRASH_DIRECTORY))?;
+        let trash_handle = authority(&registry)?
+            .as_mut()
+            .ok_or_else(|| Error::Conflict("test authority missing".into()))?
+            .register_workspace_child_observed_with_parent(
+                &workspace,
+                &[TRASH_DIRECTORY.into(), "hidden.pgn".into()],
+                "hidden",
+                IdentityBinding::from_pairs(
+                    (file_stat.dev(), file_stat.ino()),
+                    (parent_stat.dev(), parent_stat.ino()),
+                ),
+                false,
+                PathOperation::ReadPgn,
+            )?;
+        let registry_for_hook = Arc::clone(&registry);
+        let workspace_for_hook = workspace.clone();
+        let root_for_hook = root.clone();
+        set_capability_directory_post_entries_hook(Some(Box::new(move || {
+            let created = (|| -> Result<(), Error> {
+                fs::write(root_for_hook.join("late.pgn"), b"*")?;
+                let stat = fs::metadata(root_for_hook.join("late.pgn"))?;
+                let parent = fs::metadata(&root_for_hook)?;
+                authority(&registry_for_hook)?
+                    .as_mut()
+                    .ok_or_else(|| Error::Conflict("test authority missing".into()))?
+                    .register_workspace_child_observed_with_parent(
+                        &workspace_for_hook,
+                        &["late.pgn".into()],
+                        "late",
+                        IdentityBinding::from_pairs(
+                            (stat.dev(), stat.ino()),
+                            (parent.dev(), parent.ino()),
+                        ),
+                        false,
+                        PathOperation::ReadPgn,
+                    )?;
+                Ok(())
+            })();
+            assert!(created.is_ok(), "{created:?}");
+        })));
+        let result = collect_tree_entries(&registry, &workspace, &CancellationToken::new());
+        set_capability_directory_post_entries_hook(None);
+        assert!(result?.0.is_empty());
+        let mut lock = authority(&registry)?;
+        let authority = lock
+            .as_mut()
+            .ok_or_else(|| Error::Conflict("test authority missing".into()))?;
+        let snapshot = authority.persistent_snapshot_for_test();
+        assert!(!snapshot.iter().any(|(name, _, _)| name == "removed"));
+        assert!(snapshot.iter().any(|(name, _, _)| name == "late"));
+        assert!(authority
+            .resolve(trash_handle.path_ref(), PathOperation::ReadPgn, &[])
+            .is_ok());
+        Ok(())
+    }
+
     fn mtime_seconds(path: &Path) -> i64 {
         use std::os::unix::fs::MetadataExt;
         fs::symlink_metadata(path).unwrap().mtime()
@@ -5334,7 +5557,7 @@ mod workspace_directory_enumeration_tests {
     }
 
     #[test]
-    fn collect_tree_entries_refuses_beyond_the_depth_bound() {
+    fn directory_listing_bound_workspace_depth_still_wins() {
         let (_directory, authority, workspace, root) = workspace_fixture();
         let mut current = root;
         for index in 0..MAX_WORKSPACE_LISTING_DEPTH {
@@ -5474,7 +5697,7 @@ mod workspace_directory_enumeration_tests {
     }
 
     #[test]
-    fn collect_tree_entries_cancels_between_registrations() {
+    fn directory_listing_bound_workspace_cancellation_does_not_publish_a_prefix() {
         let (_directory, authority, workspace, root) = workspace_fixture();
         fs::write(root.join("a.pgn"), b"*").unwrap();
         fs::write(root.join("b.pgn"), b"*").unwrap();
@@ -5496,7 +5719,7 @@ mod workspace_directory_enumeration_tests {
             .as_ref()
             .unwrap()
             .persistent_snapshot_for_test();
-        assert!(snapshot
+        assert!(!snapshot
             .iter()
             .any(|(name, _, is_dir)| name == "a" && !*is_dir));
         assert!(!snapshot
@@ -5526,7 +5749,7 @@ mod workspace_directory_enumeration_tests {
             .as_ref()
             .unwrap()
             .persistent_snapshot_for_test();
-        assert!(snapshot
+        assert!(!snapshot
             .iter()
             .any(|(name, _, is_dir)| name == "inner" && !*is_dir));
         assert!(!snapshot
@@ -5535,108 +5758,63 @@ mod workspace_directory_enumeration_tests {
     }
 
     #[test]
-    fn collect_tree_entries_propagates_a_pass_two_registry_failure() {
+    fn directory_listing_bound_workspace_snapshot_is_one_commit() -> Result<(), Error> {
         use crate::infra::fs::{
             set_test_atomic_file_injector, AtomicFileFaultPoint, AtomicWriterInjector,
         };
-
-        struct WriteFault;
-        impl AtomicWriterInjector for WriteFault {
+        struct SnapshotFault {
+            uncertain: bool,
+            writes: std::sync::atomic::AtomicUsize,
+        }
+        impl AtomicWriterInjector for SnapshotFault {
             fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
                 if point == AtomicFileFaultPoint::Write {
-                    Err(std::io::Error::other("second registry commit failed"))
-                } else {
-                    Ok(())
+                    self.writes.fetch_add(1, Ordering::SeqCst);
+                }
+                if point
+                    == if self.uncertain {
+                        AtomicFileFaultPoint::ParentSync
+                    } else {
+                        AtomicFileFaultPoint::Write
+                    }
+                {
+                    return Err(std::io::Error::other("snapshot persistence fault"));
+                }
+                Ok(())
+            }
+        }
+        for uncertain in [false, true] {
+            let (_directory, registry, workspace, root) = workspace_fixture();
+            for name in ["a.pgn", "b.pgn", "c.pgn"] {
+                fs::write(root.join(name), b"*")?;
+            }
+            let injector = Arc::new(SnapshotFault {
+                uncertain,
+                writes: std::sync::atomic::AtomicUsize::new(0),
+            });
+            set_test_atomic_file_injector(Some(injector.clone()));
+            let result = collect_tree_entries(&registry, &workspace, &CancellationToken::new());
+            set_test_atomic_file_injector(None);
+            let snapshot = authority(&registry)?
+                .as_ref()
+                .ok_or_else(|| Error::Conflict("test authority missing".into()))?
+                .persistent_snapshot_for_test();
+            if uncertain {
+                assert!(
+                    matches!(result, Err(Error::CommittedDurabilityUncertain(_))),
+                    "{result:?}"
+                );
+                for name in ["a", "b", "c"] {
+                    assert!(snapshot.iter().any(|(display, _, _)| display == name));
+                }
+                assert_eq!(injector.writes.load(Ordering::SeqCst), 1);
+            } else {
+                assert!(matches!(result, Err(Error::Io(_))), "{result:?}");
+                for name in ["a", "b", "c"] {
+                    assert!(!snapshot.iter().any(|(display, _, _)| display == name));
                 }
             }
         }
-
-        struct SecondCommitFault<F> {
-            point: AtomicFileFaultPoint,
-            calls: std::sync::atomic::AtomicUsize,
-            fault: F,
-        }
-        impl<F: AtomicWriterInjector> AtomicWriterInjector for SecondCommitFault<F> {
-            fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
-                if point != self.point {
-                    return Ok(());
-                }
-                let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                let second_commit = match self.point {
-                    // Registry persistence retries an I/O failure once, so the second
-                    // commit occupies calls 1 and 2; call 3 (the third commit) passes.
-                    AtomicFileFaultPoint::Write => matches!(call, 1 | 2),
-                    _ => call == 1,
-                };
-                if second_commit {
-                    self.fault.inject(point)
-                } else {
-                    Ok(())
-                }
-            }
-        }
-
-        let (_directory, authority, workspace, root) = workspace_fixture();
-        for name in ["a.pgn", "b.pgn", "c.pgn"] {
-            fs::write(root.join(name), b"*").unwrap();
-        }
-        let injector = Arc::new(SecondCommitFault {
-            point: AtomicFileFaultPoint::ParentSync,
-            calls: std::sync::atomic::AtomicUsize::new(0),
-            fault: crate::infra::fs::ParentSyncFault("second registry commit uncertain"),
-        });
-        set_test_atomic_file_injector(Some(injector));
-        let uncertain = collect_tree_entries(&authority, &workspace, &CancellationToken::new());
-        set_test_atomic_file_injector(None);
-        assert!(matches!(
-            uncertain,
-            Err(Error::CommittedDurabilityUncertain(_))
-        ));
-        let snapshot = authority
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .persistent_snapshot_for_test();
-        for name in ["a", "b"] {
-            let path = root.join(format!("{name}.pgn"));
-            let metadata = fs::symlink_metadata(path).unwrap();
-            let identity = (metadata.dev(), metadata.ino());
-            assert!(snapshot.iter().any(|(display, observed, is_dir)| {
-                display == name && !*is_dir && *observed == identity
-            }));
-        }
-        assert!(!snapshot.iter().any(|(name, _, _)| name == "c"));
-
-        let (_directory, authority, workspace, root) = workspace_fixture();
-        for name in ["a.pgn", "b.pgn", "c.pgn"] {
-            fs::write(root.join(name), b"*").unwrap();
-        }
-        let injector = Arc::new(SecondCommitFault {
-            point: AtomicFileFaultPoint::Write,
-            calls: std::sync::atomic::AtomicUsize::new(0),
-            fault: WriteFault,
-        });
-        set_test_atomic_file_injector(Some(injector));
-        let hard_failure = collect_tree_entries(&authority, &workspace, &CancellationToken::new());
-        set_test_atomic_file_injector(None);
-        assert!(
-            matches!(hard_failure, Err(Error::Io(_))),
-            "{hard_failure:?}"
-        );
-        let snapshot = authority
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .persistent_snapshot_for_test();
-        let metadata = fs::symlink_metadata(root.join("a.pgn")).unwrap();
-        let identity = (metadata.dev(), metadata.ino());
-        assert!(snapshot.iter().any(|(display, observed, is_dir)| {
-            display == "a" && !*is_dir && *observed == identity
-        }));
-        assert!(!snapshot
-            .iter()
-            .any(|(name, _, _)| name == "b" || name == "c"));
+        Ok(())
     }
 }

@@ -2380,7 +2380,7 @@ mod tests {
             );
         }
         assert!(
-            flush.contains("enumerate_directory(dir,"),
+            flush.contains("enumerate_directory(dir, &CancellationToken::new(), None)"),
             "the flush walks only the handle it was given: {flush}"
         );
         // The one backup leaf is built from the shared constant, never from a glob or a listing.

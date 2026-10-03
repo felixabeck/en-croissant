@@ -1091,7 +1091,7 @@ mod tests {
         let whole = compact(&normalise(source, Literals::Keep));
         assert!(
             whole.contains(
-                "pub(super)fnenumerate_directory(dir:&File,cancellation:&CancellationToken,)"
+                "pub(super)fnenumerate_directory(dir:&File,cancellation:&CancellationToken,limit:Option<usize>,)"
             ),
             "the enumerator must take the caller's cancellation token"
         );
@@ -1102,6 +1102,62 @@ mod tests {
                 .starts_with("loop{ifcancellation.is_cancelled(){returnErr(Error::Cancellation);}"),
             "cancellation must be observed once per NtQueryDirectoryFile page: {enumerate}"
         );
+    }
+
+    #[test]
+    fn directory_listing_bound_options_survive_platform_wrappers() {
+        let source = source_for("infra/fs.rs");
+        let starts = function_starts(source, "pub(crate) fn read_directory_entries_at(");
+        assert_eq!(starts.len(), 2);
+        let unix_source = &source[starts[0]..];
+        let unix = compact(
+            &unix_source[braced_body(unix_source, "pub(crate) fn read_directory_entries_at(")],
+        );
+        assert!(source[..starts[0]].trim_end().ends_with("#[cfg(unix)]"));
+        assert!(unix.contains(
+            "ifletSome(limit)=limit{check_directory_listing_bound(observed,limit)?;observed+=1;}"
+        ));
+        assert!(unix
+            .find("check_directory_listing_bound")
+            .is_some_and(|count| {
+                unix.find("if!keep").is_some_and(|keep| count < keep)
+                    && unix.find("rfs::statat").is_some_and(|stat| count < stat)
+            }));
+        let windows_source = &source[starts[1]..];
+        let windows = compact(
+            &windows_source
+                [braced_body(windows_source, "pub(crate) fn read_directory_entries_at(")],
+        );
+        assert!(windows.contains("win::read_directory_entries(dir,cancellation,limit,keep)"));
+        let read = compact(&source[braced_body(source, "pub(super) fn read_directory_entries(")]);
+        assert!(read.contains("enumerate_directory(dir,cancellation,limit)?"));
+        for body in [&windows, &read] {
+            assert!(!body.contains("Some("));
+        }
+        let page = compact(&source[braced_body(source, "fn parse_directory_page(")]);
+        assert!(page.contains(
+            "ifletSome(limit)=limit{super::check_directory_listing_bound(entries.len(),limit)?;}"
+        ));
+        let enumerate = compact(&source[braced_body(source, "pub(super) fn enumerate_directory(")]);
+        assert!(enumerate.contains("parse_directory_page(&buffer,used,volume,&mutentries,limit)?"));
+        let removal = compact(&source[braced_body(source, "fn remove_windows_tree_at(")]);
+        assert!(removal.contains("enumerate_directory(&child,&CancellationToken::new(),None)?"));
+        let sync = compact(&source[braced_body(source, "fn sync_windows_tree(")]);
+        assert!(sync.contains("enumerate_directory(dir,&CancellationToken::new(),None)?"));
+        let authority = source_for("infra/path_authority/mod.rs");
+        let whole = compact(authority);
+        assert_eq!(
+            whole
+                .matches("Some(crate::infra::fs::MAX_DIRECTORY_LISTING_ENTRIES)")
+                .count(),
+            1
+        );
+        let capability = compact(&authority[braced_body(authority, "impl CapabilityDirectory")]);
+        assert!(capability.contains("read_directory_entries_at(&self.directory,cancellation,Some(crate::infra::fs::MAX_DIRECTORY_LISTING_ENTRIES),keep,)"));
+        let authorized = compact(&authority[braced_body(authority, "impl AuthorizedDir")]);
+        assert!(authorized.contains("read_directory_entries_at(self.directory.as_file(),&CancellationToken::new(),None,keep,)"));
+        let sweep = compact(&authority[braced_body(authority, "fn sweep_engine_launch_root(")]);
+        assert!(sweep.contains("read_directory_entries_at(root.directory.as_file(),&CancellationToken::new(),None,&mut|_|true,)"));
     }
 
     /// F1. `NtCreateFile` returns an ASYNCHRONOUS file object unless `CreateOptions` carries
@@ -1586,11 +1642,14 @@ mod tests {
             compact(&authority[braced_body(authority, "pub(crate) fn create_database_child(")]);
         let register =
             compact(&authority[braced_body(authority, "pub(crate) fn register_database_child(")]);
+        let prepare =
+            compact(&authority[braced_body(authority, "fn prepare_database_listing_child(")]);
         let validator =
             compact(&authority[braced_body(authority, "fn validate_windows_database_leaf(")]);
         let conditions = [
             create.contains("validate_windows_database_leaf(filename)?;")
-                && register.contains("validate_windows_database_leaf(filename)?;"),
+                && register.contains("self.prepare_database_listing_child(")
+                && prepare.contains("validate_windows_database_leaf(filename)?;"),
             validator.contains("windows_database_leaf_refusal(name)")
                 && validator.contains("preferred.push(\".ecsi\")")
                 && validator.contains("letlegacy=Path::new(name).with_extension(\"ecsi\")")

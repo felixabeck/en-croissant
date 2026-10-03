@@ -542,7 +542,12 @@ impl CapabilityDirectory {
         cancellation: &CancellationToken,
         keep: &mut dyn FnMut(&OsStr) -> bool,
     ) -> Result<Vec<DirectoryEntry>, Error> {
-        let entries = read_directory_entries_at(&self.directory, cancellation, keep)?;
+        let entries = read_directory_entries_at(
+            &self.directory,
+            cancellation,
+            Some(crate::infra::fs::MAX_DIRECTORY_LISTING_ENTRIES),
+            keep,
+        )?;
         #[cfg(all(test, unix))]
         CAPABILITY_DIRECTORY_POST_ENTRIES_HOOK.with(|slot| {
             if let Some(hook) = slot.borrow_mut().take() {
@@ -1144,6 +1149,7 @@ impl AuthorizedDir {
         crate::infra::fs::read_directory_entries_at(
             self.directory.as_file(),
             &CancellationToken::new(),
+            None,
             keep,
         )
     }
@@ -2936,6 +2942,7 @@ fn sweep_engine_launch_root(
     let entries = read_directory_entries_at(
         root.directory.as_file(),
         &CancellationToken::new(),
+        None,
         &mut |_| true,
     )?;
     let lock_ids = entries
@@ -3881,6 +3888,22 @@ struct Entry {
     availability: PathAvailability,
 }
 
+/// Records only identities eligible for this listing before its unlocked walk.
+pub(crate) struct DirectoryListingSnapshot {
+    entries: Vec<StoredEntry>,
+}
+
+pub(crate) struct PreparedListingEntry {
+    stored: StoredEntry,
+    reused: bool,
+}
+
+impl PreparedListingEntry {
+    pub(crate) fn id(&self) -> PathRef {
+        self.stored.id.clone()
+    }
+}
+
 type CompleteWorkspacePruneCandidate = (
     BTreeMap<String, Entry>,
     Vec<PendingArtifact>,
@@ -4088,6 +4111,144 @@ type LaunchRootArgument = Option<EngineLaunchRoot>;
 type LaunchRootArgument = ();
 
 impl PathAuthority {
+    fn directory_listing_snapshot(
+        &self,
+        root: &PathRef,
+        purposes: &[EntryPurpose],
+        recursive: bool,
+        excluded_prefix: Option<&OsStr>,
+    ) -> Result<DirectoryListingSnapshot, Error> {
+        let root_path = self
+            .persistent
+            .get(&root.id)
+            .ok_or_else(|| Error::Conflict("listing root is not persistent".into()))?
+            .stored
+            .path
+            .to_path()?;
+        let excluded = excluded_prefix.map(|prefix| root_path.join(prefix));
+        let mut entries = Vec::new();
+        for entry in self.persistent.values() {
+            if !entry
+                .stored
+                .purpose
+                .is_some_and(|purpose| purposes.contains(&purpose))
+            {
+                continue;
+            }
+            let path = entry.stored.path.to_path()?;
+            let child = if recursive {
+                path != root_path && path.starts_with(&root_path)
+            } else {
+                path.parent() == Some(root_path.as_path())
+            };
+            if child
+                && !excluded
+                    .as_ref()
+                    .is_some_and(|prefix| path.starts_with(prefix))
+            {
+                entries.push(entry.stored.clone());
+            }
+        }
+        Ok(DirectoryListingSnapshot { entries })
+    }
+
+    pub(crate) fn workspace_listing_snapshot(
+        &self,
+        workspace: &FileWorkspaceHandle,
+        trash_prefix: &OsStr,
+    ) -> Result<DirectoryListingSnapshot, Error> {
+        self.directory_listing_snapshot(
+            workspace.path_ref(),
+            &[EntryPurpose::PgnFile, EntryPurpose::PgnWorkspace],
+            true,
+            Some(trash_prefix),
+        )
+    }
+
+    fn listing_candidate(
+        &self,
+        snapshot: &DirectoryListingSnapshot,
+        prepared: &[PreparedListingEntry],
+    ) -> BTreeMap<String, Entry> {
+        let reused: BTreeSet<_> = prepared
+            .iter()
+            .filter(|entry| entry.reused)
+            .map(|entry| entry.stored.id.id.as_str())
+            .collect();
+        // Clone at commit time, preserving registrations made during the unlocked walk.
+        let mut candidate = self.persistent.clone();
+        for recorded in &snapshot.entries {
+            if !reused.contains(recorded.id.id.as_str())
+                && candidate.get(&recorded.id.id).is_some_and(|current| {
+                    current.stored.path == recorded.path
+                        && current.stored.identity == recorded.identity
+                        && current.stored.purpose == recorded.purpose
+                })
+            {
+                candidate.remove(&recorded.id.id);
+            }
+        }
+        for entry in prepared {
+            candidate.insert(
+                entry.stored.id.id.clone(),
+                Entry {
+                    stored: entry.stored.clone(),
+                    availability: PathAvailability::Available,
+                },
+            );
+        }
+        candidate
+    }
+
+    pub(crate) fn commit_directory_listing(
+        &mut self,
+        snapshot: DirectoryListingSnapshot,
+        prepared: Vec<PreparedListingEntry>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), Error> {
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
+        let candidate = self.listing_candidate(&snapshot, &prepared);
+        let admission = |entries: &BTreeMap<String, Entry>| {
+            self.registry_admission_snapshot(
+                entries,
+                &self.active_database_root,
+                &self.active_puzzle_root,
+                &self.active_engine_root,
+                &self.pending_artifacts,
+                &self.provisional_attachments,
+                &self.retired_attachments,
+                &self.image_cleanup,
+            )
+        };
+        Self::check_registry_growth(&admission(&candidate)?, &admission(&self.persistent)?)?;
+        // Only existing identities may publish canonical operations before the snapshot commit.
+        for entry in prepared.iter().filter(|entry| entry.reused) {
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancellation);
+            }
+            let commit = self.publish_prepared_entry(PreparedListingEntry {
+                stored: entry.stored.clone(),
+                reused: true,
+            })?;
+            require_durable(commit.durability)?;
+        }
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
+        let candidate = self.listing_candidate(&snapshot, &prepared);
+        let durability = if candidate != self.persistent {
+            self.commit_candidate(candidate, None)?
+        } else {
+            CommitDurability::Durable
+        };
+        for entry in prepared {
+            self.session_protected_ids.insert(entry.stored.id.id);
+        }
+        require_durable(durability)
+    }
+
     #[cfg(all(test, unix))]
     pub(crate) fn persistent_snapshot_for_test(&self) -> Vec<(String, (u64, u64), bool)> {
         let mut snapshot = self
@@ -5338,6 +5499,19 @@ impl PathAuthority {
         binding: IdentityBinding,
         door: RegistrationDoor,
     ) -> Result<PathCommit, Error> {
+        let prepared =
+            self.prepare_persistent_file(path, display_name, operations, binding, door)?;
+        self.publish_prepared_entry(prepared)
+    }
+
+    fn prepare_persistent_file(
+        &self,
+        path: &Path,
+        display_name: String,
+        operations: Vec<PathOperation>,
+        binding: IdentityBinding,
+        door: RegistrationDoor,
+    ) -> Result<PreparedListingEntry, Error> {
         let purpose = purpose_for_shape(PathClass::PersistentFile, false, &operations);
         let desired_operations = purpose
             .map(canonical_operations)
@@ -5359,42 +5533,56 @@ impl PathAuthority {
                     "persistent file changed; acquire a new capability".into(),
                 ));
             }
-            if entry.stored.parent_identity != binding.parent_identity
-                && door == RegistrationDoor::PassiveObservation
+            if entry.stored.parent_identity == binding.parent_identity
+                || door != RegistrationDoor::PassiveObservation
             {
-                // Passive discovery leaves the old binding refused and creates a fresh ID below.
-            } else {
-                let id = entry.stored.id.clone();
-                let parent_changed = entry.stored.parent_identity != binding.parent_identity;
-                let operations_changed =
-                    purpose.is_some() && entry.stored.operations != desired_operations;
-                if parent_changed || operations_changed {
-                    let mut candidate = self.persistent.clone();
-                    if let Some(candidate_entry) = candidate.get_mut(&id.id) {
-                        candidate_entry.stored.operations = desired_operations.clone();
-                        candidate_entry.stored.parent_identity = binding.parent_identity.clone();
-                    }
-                    let durability = self.commit_candidate(candidate, None)?;
-                    self.session_protected_ids.insert(id.id.clone());
-                    return Ok(PathCommit { id, durability });
-                }
-                self.session_protected_ids.insert(id.id.clone());
-                return Ok(PathCommit {
-                    id,
-                    durability: CommitDurability::Durable,
+                let mut stored = entry.stored.clone();
+                stored.operations = desired_operations;
+                stored.parent_identity = binding.parent_identity;
+                return Ok(PreparedListingEntry {
+                    stored,
+                    reused: true,
                 });
             }
+            // Passive discovery leaves the old binding refused and prepares a fresh ID.
         }
-        let stored = Self::fresh_stored_entry(
-            path,
-            binding,
-            display_name,
-            PathClass::PersistentFile,
-            purpose,
-            desired_operations,
-            false,
-        );
-        self.persist_new_entry(stored)
+        Ok(PreparedListingEntry {
+            stored: Self::fresh_stored_entry(
+                path,
+                binding,
+                display_name,
+                PathClass::PersistentFile,
+                purpose,
+                desired_operations,
+                false,
+            ),
+            reused: false,
+        })
+    }
+
+    fn publish_prepared_entry(
+        &mut self,
+        prepared: PreparedListingEntry,
+    ) -> Result<PathCommit, Error> {
+        if !prepared.reused {
+            return self.persist_new_entry(prepared.stored);
+        }
+        let id = prepared.id();
+        let current = self
+            .persistent
+            .get(&id.id)
+            .ok_or_else(|| Error::Conflict("prepared path capability disappeared".into()))?;
+        let durability = if current.stored != prepared.stored {
+            let mut candidate = self.persistent.clone();
+            if let Some(entry) = candidate.get_mut(&id.id) {
+                entry.stored = prepared.stored;
+            }
+            self.commit_candidate(candidate, None)?
+        } else {
+            CommitDurability::Durable
+        };
+        self.session_protected_ids.insert(id.id.clone());
+        Ok(PathCommit { id, durability })
     }
 
     fn persist_new_entry(&mut self, stored: StoredEntry) -> Result<PathCommit, Error> {
@@ -6172,18 +6360,30 @@ impl PathAuthority {
         root: &PuzzleRootHandle,
         cancellation: &CancellationToken,
     ) -> Result<Vec<PuzzleDatabaseDescriptor>, Error> {
+        let snapshot = self.directory_listing_snapshot(
+            root.path_ref(),
+            &[EntryPurpose::PuzzleFile],
+            false,
+            None,
+        )?;
         let root_directory =
             self.capability_directory(root.path_ref(), PathOperation::PuzzleRead)?;
-        map_db3_children_cancellable(
+        let mut prepared = Vec::new();
+        let children = map_db3_children_cancellable(
             root_directory,
             cancellation,
             |filename, display_name, identity| {
+                let entry = self.register_puzzle_child(root, &filename, identity)?;
+                let id = entry.id();
+                prepared.push(entry);
                 Ok(PuzzleDatabaseDescriptor {
-                    file: self.register_puzzle_child(root, &filename, identity)?,
+                    file: id,
                     filename: display_name,
                 })
             },
-        )
+        )?;
+        self.commit_directory_listing(snapshot, prepared, cancellation)?;
+        Ok(children)
     }
 
     pub(crate) fn puzzle_download_destination(
@@ -6203,7 +6403,7 @@ impl PathAuthority {
         root: &PuzzleRootHandle,
         filename: &OsStr,
         observed: (u64, u64),
-    ) -> Result<PathRef, Error> {
+    ) -> Result<PreparedListingEntry, Error> {
         validate_components(&[filename.to_os_string()])?;
         let resolved = self.resolve(
             root.path_ref(),
@@ -6219,16 +6419,27 @@ impl PathAuthority {
             }
         });
         let path = self.puzzle_root_path(root)?.join(filename);
-        let commit = self.get_or_create_persistent_file_verified(
+        let operations = canonical_operations(EntryPurpose::PuzzleFile);
+        let (path, binding) = Self::registration_target(
             &path,
-            filename.to_string_lossy(),
-            canonical_operations(EntryPurpose::PuzzleFile),
-            resolved_identity,
-            parent_identity,
-            RegistrationDoor::PassiveObservation,
+            PathClass::PersistentFile,
+            &operations,
+            Some(resolved_identity),
+            Some(parent_identity),
         )?;
-        require_durable(commit.durability)?;
-        Ok(commit.id)
+        #[cfg(test)]
+        PERSISTENT_FILE_POST_TARGET_HOOK.with(|slot| {
+            if let Some(hook) = slot.borrow_mut().take() {
+                hook();
+            }
+        });
+        self.prepare_persistent_file(
+            &path,
+            filename.to_string_lossy().into_owned(),
+            operations,
+            binding,
+            RegistrationDoor::PassiveObservation,
+        )
     }
 
     /// Returns database children known below a root and reconciles newly
@@ -6240,29 +6451,42 @@ impl PathAuthority {
         root: &DatabaseRootHandle,
         cancellation: &CancellationToken,
     ) -> Result<Vec<DatabaseDescriptor>, Error> {
+        let snapshot = self.directory_listing_snapshot(
+            root.path_ref(),
+            &[EntryPurpose::DatabaseFile],
+            false,
+            None,
+        )?;
         let root_directory =
             self.capability_directory(root.path_ref(), PathOperation::DatabaseRead)?;
-        map_db3_children_cancellable(
+        let mut prepared = Vec::new();
+        let children = map_db3_children_cancellable(
             root_directory,
             cancellation,
             |filename, display_name, identity| {
+                let entry = self.prepare_database_listing_child(
+                    root,
+                    &filename,
+                    display_name.clone(),
+                    identity,
+                )?;
+                let id = entry.id();
+                prepared.push(entry);
                 Ok(DatabaseDescriptor {
-                    handle: self.register_database_child(
-                        root,
-                        &filename,
-                        display_name.clone(),
-                        identity,
-                    )?,
+                    handle: DatabaseHandle::new(id),
                     filename: display_name,
                     availability: PathAvailability::Available,
                 })
             },
-        )
+        )?;
+        self.commit_directory_listing(snapshot, prepared, cancellation)?;
+        Ok(children)
     }
 
     /// Registers an exact database child after validating it relative to the
     /// root.  This avoids a join-and-open race and preserves non-UTF8 names in
     /// the registry; only lossy display metadata leaves the backend.
+    #[cfg(all(test, unix))]
     pub(crate) fn register_database_child(
         &mut self,
         root: &DatabaseRootHandle,
@@ -6270,6 +6494,20 @@ impl PathAuthority {
         display_name: impl Into<String>,
         observed: (u64, u64),
     ) -> Result<DatabaseHandle, Error> {
+        let prepared =
+            self.prepare_database_listing_child(root, filename, display_name.into(), observed)?;
+        let commit = self.publish_prepared_entry(prepared)?;
+        require_durable(commit.durability)?;
+        Ok(DatabaseHandle::new(commit.id))
+    }
+
+    fn prepare_database_listing_child(
+        &mut self,
+        root: &DatabaseRootHandle,
+        filename: &OsStr,
+        display_name: impl Into<String>,
+        observed: (u64, u64),
+    ) -> Result<PreparedListingEntry, Error> {
         validate_windows_database_leaf(filename)?;
         let components = vec![filename.to_os_string()];
         let resolved = self.resolve(root.path_ref(), PathOperation::DatabaseRead, &components)?;
@@ -6280,7 +6518,7 @@ impl PathAuthority {
                 hook();
             }
         });
-        self.register_database_child_verified(
+        self.prepare_database_child_verified(
             root,
             filename,
             display_name.into(),
@@ -6297,6 +6535,26 @@ impl PathAuthority {
         resolved: &ResolvedPath,
         expected_identity: VerifiedIdentity,
     ) -> Result<DatabaseHandle, Error> {
+        let prepared = self.prepare_database_child_verified(
+            root,
+            filename,
+            display_name,
+            resolved,
+            expected_identity,
+        )?;
+        let commit = self.publish_prepared_entry(prepared)?;
+        require_durable(commit.durability)?;
+        Ok(DatabaseHandle::new(commit.id))
+    }
+
+    fn prepare_database_child_verified(
+        &mut self,
+        root: &DatabaseRootHandle,
+        filename: &OsStr,
+        display_name: String,
+        resolved: &ResolvedPath,
+        expected_identity: VerifiedIdentity,
+    ) -> Result<PreparedListingEntry, Error> {
         if resolved.parent().is_none() || resolved.leaf().is_none() {
             return Err(Error::InvalidInput(
                 "database child has no retained parent boundary".into(),
@@ -6332,19 +6590,12 @@ impl PathAuthority {
                     .operations
                     .contains(&PathOperation::DatabaseRead)
         }) {
-            let id = entry.stored.id.clone();
-            let canonical = canonical_operations(EntryPurpose::DatabaseFile);
-            if entry.stored.operations != canonical {
-                let mut candidate = self.persistent.clone();
-                candidate
-                    .get_mut(&id.id)
-                    .expect("selected database entry remains in the cloned registry")
-                    .stored
-                    .operations = canonical;
-                require_durable(self.commit_candidate(candidate, None)?)?;
-            }
-            self.session_protected_ids.insert(id.id.clone());
-            return Ok(DatabaseHandle::new(id));
+            let mut stored = entry.stored.clone();
+            stored.operations = canonical_operations(EntryPurpose::DatabaseFile);
+            return Ok(PreparedListingEntry {
+                stored,
+                reused: true,
+            });
         }
         let id = PathRef::fresh();
         let stored = StoredEntry {
@@ -6361,17 +6612,10 @@ impl PathAuthority {
             parent_identity: Some(parent_identity),
             target_is_dir: false,
         };
-        let mut candidate = self.persistent.clone();
-        candidate.insert(
-            id.id.clone(),
-            Entry {
-                stored,
-                availability: PathAvailability::Available,
-            },
-        );
-        require_durable(self.commit_candidate(candidate, None)?)?;
-        self.session_protected_ids.insert(id.id.clone());
-        Ok(DatabaseHandle::new(id))
+        Ok(PreparedListingEntry {
+            stored,
+            reused: false,
+        })
     }
 
     /// Creates an empty database leaf exactly once below a validated database
@@ -7166,6 +7410,28 @@ impl PathAuthority {
         is_dir: bool,
         operation: PathOperation,
     ) -> Result<FileWorkspaceHandle, Error> {
+        let prepared = self.prepare_workspace_listing_child(
+            workspace,
+            components,
+            display_name,
+            binding,
+            is_dir,
+            operation,
+        )?;
+        let commit = self.publish_prepared_entry(prepared)?;
+        require_durable(commit.durability)?;
+        Ok(FileWorkspaceHandle::new(commit.id))
+    }
+
+    pub(crate) fn prepare_workspace_listing_child(
+        &mut self,
+        workspace: &FileWorkspaceHandle,
+        components: &[OsString],
+        display_name: impl Into<String>,
+        binding: IdentityBinding,
+        is_dir: bool,
+        operation: PathOperation,
+    ) -> Result<PreparedListingEntry, Error> {
         validate_components(components)?;
         if components.is_empty() {
             return Err(Error::InvalidInput("workspace child is required".into()));
@@ -7188,7 +7454,7 @@ impl PathAuthority {
         } else {
             PathClass::PersistentFile
         };
-        self.persist_workspace_child(
+        self.prepare_workspace_child(
             root_entry,
             path,
             display_name.into(),
@@ -7230,15 +7496,15 @@ impl PathAuthority {
         )
     }
 
-    fn persist_workspace_child(
-        &mut self,
+    fn prepare_workspace_child(
+        &self,
         root_entry: Entry,
         path: PathBuf,
         display_name: String,
         class: PathClass,
         binding: IdentityBinding,
         is_dir: bool,
-    ) -> Result<FileWorkspaceHandle, Error> {
+    ) -> Result<PreparedListingEntry, Error> {
         let parent_identity = if is_dir {
             None
         } else {
@@ -7262,21 +7528,15 @@ impl PathAuthority {
                 && (purpose.is_some()
                     || same_operation_set(&entry.stored.operations, &root_entry.stored.operations))
         }) {
-            let id = PathRef { id: id.clone() };
+            let mut stored = entry.stored.clone();
+            stored.id = PathRef { id: id.clone() };
             if let Some(purpose) = purpose {
-                let canonical = canonical_operations(purpose);
-                if entry.stored.operations != canonical {
-                    let mut candidate = self.persistent.clone();
-                    candidate
-                        .get_mut(&id.id)
-                        .expect("selected workspace entry remains in the cloned registry")
-                        .stored
-                        .operations = canonical;
-                    require_durable(self.commit_candidate(candidate, None)?)?;
-                }
+                stored.operations = canonical_operations(purpose);
             }
-            self.session_protected_ids.insert(id.id.clone());
-            return Ok(FileWorkspaceHandle::new(id));
+            return Ok(PreparedListingEntry {
+                stored,
+                reused: true,
+            });
         }
         let id = PathRef::fresh();
         let stored = StoredEntry {
@@ -7292,17 +7552,10 @@ impl PathAuthority {
             parent_identity,
             target_is_dir: is_dir,
         };
-        let mut candidate = self.persistent.clone();
-        candidate.insert(
-            id.id.clone(),
-            Entry {
-                stored,
-                availability: PathAvailability::Available,
-            },
-        );
-        require_durable(self.commit_candidate(candidate, None)?)?;
-        self.session_protected_ids.insert(id.id.clone());
-        Ok(FileWorkspaceHandle::new(id))
+        Ok(PreparedListingEntry {
+            stored,
+            reused: false,
+        })
     }
 
     /// Persists a recovery intent before the download target is mutated. It binds the root inode,
@@ -7894,7 +8147,7 @@ impl PathAuthority {
             refresh_entry(entry);
         }
     }
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     fn save(&mut self) -> Result<CommitDurability, Error> {
         self.commit_registry(
             self.persistent.clone(),
@@ -8146,6 +8399,30 @@ impl PathAuthority {
         }
         Ok(durability)
     }
+    fn check_registry_growth(
+        candidate: &RegistryAdmissionSnapshot,
+        current: &RegistryAdmissionSnapshot,
+    ) -> Result<(), Error> {
+        if candidate.unique_ids > MAX_AUTHORITY_IDS && candidate.unique_ids > current.unique_ids {
+            return Err(Error::ResourceLimit(
+                "path registry identifier limit reached".into(),
+            ));
+        }
+        if candidate.pending_count > MAX_PENDING_ARTIFACTS
+            && candidate.pending_count > current.pending_count
+        {
+            return Err(Error::ResourceLimit(
+                "pending path artifact limit reached".into(),
+            ));
+        }
+        if candidate.bytes > MAX_REGISTRY_BYTES && candidate.bytes > current.bytes {
+            return Err(Error::ResourceLimit(
+                "path registry serialized size limit reached".into(),
+            ));
+        }
+        Ok(())
+    }
+
     fn save_entries_with<F>(
         &self,
         source: &BTreeMap<String, Entry>,
@@ -8213,27 +8490,7 @@ impl PathAuthority {
                 &self.image_cleanup,
             )?
         };
-        if candidate_snapshot.unique_ids > MAX_AUTHORITY_IDS
-            && candidate_snapshot.unique_ids > current_snapshot.unique_ids
-        {
-            return Err(Error::ResourceLimit(
-                "path registry identifier limit reached".into(),
-            ));
-        }
-        if candidate_snapshot.pending_count > MAX_PENDING_ARTIFACTS
-            && candidate_snapshot.pending_count > current_snapshot.pending_count
-        {
-            return Err(Error::ResourceLimit(
-                "pending path artifact limit reached".into(),
-            ));
-        }
-        if candidate_snapshot.bytes > MAX_REGISTRY_BYTES
-            && candidate_snapshot.bytes > current_snapshot.bytes
-        {
-            return Err(Error::ResourceLimit(
-                "path registry serialized size limit reached".into(),
-            ));
-        }
+        Self::check_registry_growth(&candidate_snapshot, &current_snapshot)?;
         let bytes = candidate_snapshot.serialized;
         let mut attempt = || {
             let bytes = bytes.clone();
@@ -8555,6 +8812,405 @@ mod portable_tests {
         Arc,
     };
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    fn directory_listing_bound_fixture() -> Result<
+        (
+            tempfile::TempDir,
+            PathAuthority,
+            FileWorkspaceHandle,
+            PathBuf,
+        ),
+        Error,
+    > {
+        let directory = tempfile::tempdir()?;
+        let root = directory.path().join("workspace");
+        fs::create_dir(&root)?;
+        let mut authority = PathAuthority::open_with_clock(
+            directory.path().join("registry.json"),
+            vec![],
+            Arc::new(SystemClock),
+            2,
+        )?;
+        let commit = authority.migrate_legacy_os_path(
+            root.clone().into_os_string(),
+            "workspace",
+            PathClass::PersistentCustomRoot,
+            canonical_operations(EntryPurpose::PgnWorkspace),
+        )?;
+        require_durable(commit.durability)?;
+        Ok((
+            directory,
+            authority,
+            FileWorkspaceHandle::new(commit.id),
+            root,
+        ))
+    }
+
+    fn directory_listing_bound_prepare(
+        authority: &mut PathAuthority,
+        workspace: &FileWorkspaceHandle,
+        root: &Path,
+        name: &str,
+    ) -> Result<PreparedListingEntry, Error> {
+        let child = identity(&root.join(name))?;
+        let parent = identity(root)?;
+        authority.prepare_workspace_listing_child(
+            workspace,
+            &[OsString::from(name)],
+            name,
+            IdentityBinding::from_pairs((child.a, child.b), (parent.a, parent.b)),
+            false,
+            PathOperation::ReadPgn,
+        )
+    }
+
+    fn directory_listing_bound_fill(
+        authority: &mut PathAuthority,
+        root: &PathRef,
+        size: usize,
+    ) -> Result<(), Error> {
+        let template = authority
+            .persistent
+            .get(&root.id)
+            .cloned()
+            .ok_or_else(|| Error::Conflict("test root missing".into()))?;
+        for index in authority.persistent.len()..size {
+            let mut entry = template.clone();
+            entry.stored.id.id = format!("unrelated-root-{index}");
+            authority
+                .persistent
+                .insert(entry.stored.id.id.clone(), entry);
+        }
+        require_durable(authority.save()?)
+    }
+
+    #[test]
+    fn directory_listing_bound_matches_authority_limit() {
+        assert_eq!(
+            crate::infra::fs::MAX_DIRECTORY_LISTING_ENTRIES,
+            MAX_AUTHORITY_IDS
+        );
+    }
+
+    #[test]
+    fn directory_listing_bound_practice_directory_remains_unbounded() -> Result<(), Error> {
+        let directory = tempfile::tempdir()?;
+        for index in 0..=crate::infra::fs::MAX_DIRECTORY_LISTING_ENTRIES {
+            fs::write(directory.path().join(index.to_string()), b"")?;
+        }
+        let authorized = authorize_existing_dir(directory.path())?;
+        assert_eq!(
+            authorized.entries(&mut |_| true)?.len(),
+            MAX_AUTHORITY_IDS + 1
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn directory_listing_bound_net_replacement_and_legacy_relist_at_capacity() -> Result<(), Error>
+    {
+        for capacity in [MAX_AUTHORITY_IDS, MAX_AUTHORITY_IDS + 1] {
+            let (_directory, mut authority, workspace, root) = directory_listing_bound_fixture()?;
+            fs::write(root.join("a.pgn"), b"old")?;
+            let old = directory_listing_bound_prepare(&mut authority, &workspace, &root, "a.pgn")?;
+            let old_id = authority.publish_prepared_entry(old)?.id;
+            directory_listing_bound_fill(&mut authority, workspace.path_ref(), capacity)?;
+            let snapshot = authority.workspace_listing_snapshot(&workspace, OsStr::new("trash"))?;
+            fs::rename(root.join("a.pgn"), root.with_extension("old-pgn"))?;
+            fs::write(root.join("a.pgn"), b"new")?;
+            let new = directory_listing_bound_prepare(&mut authority, &workspace, &root, "a.pgn")?;
+            let new_id = new.id();
+            assert!(!new.reused);
+            authority.commit_directory_listing(snapshot, vec![new], &CancellationToken::new())?;
+            assert_eq!(authority.persistent.len(), capacity);
+            assert!(!authority.persistent.contains_key(&old_id.id));
+            assert!(authority.persistent.contains_key(&new_id.id));
+            let snapshot = authority.workspace_listing_snapshot(&workspace, OsStr::new("trash"))?;
+            let reused =
+                directory_listing_bound_prepare(&mut authority, &workspace, &root, "a.pgn")?;
+            assert_eq!(reused.id(), new_id);
+            struct NoWrite;
+            impl crate::infra::fs::AtomicWriterInjector for NoWrite {
+                fn inject(&self, _: crate::infra::fs::AtomicFileFaultPoint) -> std::io::Result<()> {
+                    Err(std::io::Error::other("unchanged listing must not write"))
+                }
+            }
+            crate::infra::fs::set_test_atomic_file_injector(Some(Arc::new(NoWrite)));
+            let relisted = authority.commit_directory_listing(
+                snapshot,
+                vec![reused],
+                &CancellationToken::new(),
+            );
+            crate::infra::fs::set_test_atomic_file_injector(None);
+            relisted?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn directory_listing_bound_growth_refusal_precedes_canonicalization_and_retirement(
+    ) -> Result<(), Error> {
+        let (_directory, mut authority, workspace, root) = directory_listing_bound_fixture()?;
+        for name in ["canonical.pgn", "removed.pgn"] {
+            fs::write(root.join(name), b"*")?;
+            let prepared =
+                directory_listing_bound_prepare(&mut authority, &workspace, &root, name)?;
+            let id = authority.publish_prepared_entry(prepared)?.id;
+            if name == "canonical.pgn" {
+                if let Some(entry) = authority.persistent.get_mut(&id.id) {
+                    entry.stored.operations = vec![PathOperation::ReadPgn];
+                }
+            }
+        }
+        directory_listing_bound_fill(&mut authority, workspace.path_ref(), MAX_AUTHORITY_IDS)?;
+        let snapshot = authority.workspace_listing_snapshot(&workspace, OsStr::new("trash"))?;
+        fs::remove_file(root.join("removed.pgn"))?;
+        let mut prepared = Vec::new();
+        for name in ["canonical.pgn", "new-a.pgn", "new-b.pgn"] {
+            if name != "canonical.pgn" {
+                fs::write(root.join(name), b"*")?;
+            }
+            prepared.push(directory_listing_bound_prepare(
+                &mut authority,
+                &workspace,
+                &root,
+                name,
+            )?);
+        }
+        let before = authority.persistent.clone();
+        let disk = fs::read(&authority.registry_path)?;
+        assert!(matches!(
+            authority.commit_directory_listing(snapshot, prepared, &CancellationToken::new()),
+            Err(Error::ResourceLimit(_))
+        ));
+        assert!(authority.persistent == before);
+        assert_eq!(fs::read(&authority.registry_path)?, disk);
+        Ok(())
+    }
+
+    #[test]
+    fn directory_listing_bound_snapshot_preserves_new_ids_rebinds_trash_and_other_purposes(
+    ) -> Result<(), Error> {
+        let (_directory, mut authority, workspace, root) = directory_listing_bound_fixture()?;
+        let mut ids = Vec::new();
+        for name in [
+            "removed.pgn",
+            "rebound.pgn",
+            "trash/hidden.pgn",
+            "other.pgn",
+            "identity-changed.pgn",
+            "purpose-changed.pgn",
+        ] {
+            if let Some(parent) = root.join(name).parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(root.join(name), b"*")?;
+            let components = Path::new(name)
+                .components()
+                .map(|c| c.as_os_str().to_os_string())
+                .collect::<Vec<_>>();
+            let file_identity = identity(&root.join(name))?;
+            let parent_identity = identity(
+                root.join(name)
+                    .parent()
+                    .ok_or_else(|| Error::Conflict("test parent missing".into()))?,
+            )?;
+            let id = authority.register_workspace_child_observed_with_parent(
+                &workspace,
+                &components,
+                name,
+                IdentityBinding::new(file_identity, Some(parent_identity)),
+                false,
+                PathOperation::ReadPgn,
+            )?;
+            ids.push(id.path_ref().clone());
+        }
+        if let Some(entry) = authority.persistent.get_mut(&ids[3].id) {
+            entry.stored.purpose = Some(EntryPurpose::OpeningBook);
+            entry.stored.operations = canonical_operations(EntryPurpose::OpeningBook);
+        }
+        let snapshot = authority.workspace_listing_snapshot(&workspace, OsStr::new("trash"))?;
+        // Model the path rebind performed by trashing while the walk is unlocked.
+        if let Some(entry) = authority.persistent.get_mut(&ids[1].id) {
+            entry.stored.path = NativePath::from_path(&root.join("trash/rebound.pgn"));
+        }
+        if let Some(entry) = authority.persistent.get_mut(&ids[4].id) {
+            entry.stored.identity.b += 1;
+        }
+        if let Some(entry) = authority.persistent.get_mut(&ids[5].id) {
+            entry.stored.purpose = Some(EntryPurpose::OpeningBook);
+            entry.stored.operations = canonical_operations(EntryPurpose::OpeningBook);
+        }
+        fs::write(root.join("late.pgn"), b"*")?;
+        let late = directory_listing_bound_prepare(&mut authority, &workspace, &root, "late.pgn")?;
+        let late_id = authority.publish_prepared_entry(late)?.id;
+        authority.commit_directory_listing(snapshot, vec![], &CancellationToken::new())?;
+        assert!(!authority.persistent.contains_key(&ids[0].id));
+        for id in [
+            &ids[1],
+            &ids[2],
+            &ids[3],
+            &ids[4],
+            &ids[5],
+            &late_id,
+            workspace.path_ref(),
+        ] {
+            assert!(authority.persistent.contains_key(&id.id));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn directory_listing_bound_reuse_failure_does_not_publish_fresh_ids_or_retire(
+    ) -> Result<(), Error> {
+        use crate::infra::fs::{
+            set_test_atomic_file_injector, AtomicFileFaultPoint, AtomicWriterInjector,
+        };
+        struct ReuseFault {
+            kind: u8,
+            token: CancellationToken,
+        }
+        impl AtomicWriterInjector for ReuseFault {
+            fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+                if (self.kind == 0 && point == AtomicFileFaultPoint::Write)
+                    || (self.kind == 1 && point == AtomicFileFaultPoint::ParentSync)
+                {
+                    return Err(std::io::Error::other("reuse persistence fault"));
+                }
+                if self.kind == 2 && point == AtomicFileFaultPoint::ParentSync {
+                    self.token.cancel();
+                }
+                Ok(())
+            }
+        }
+        for kind in 0..3 {
+            let (_directory, mut authority, workspace, root) = directory_listing_bound_fixture()?;
+            let mut ids = Vec::new();
+            for name in ["canonical.pgn", "removed.pgn"] {
+                fs::write(root.join(name), b"*")?;
+                let prepared =
+                    directory_listing_bound_prepare(&mut authority, &workspace, &root, name)?;
+                ids.push(authority.publish_prepared_entry(prepared)?.id);
+            }
+            if let Some(entry) = authority.persistent.get_mut(&ids[0].id) {
+                entry.stored.operations = vec![PathOperation::ReadPgn];
+            }
+            require_durable(authority.save()?)?;
+            let snapshot = authority.workspace_listing_snapshot(&workspace, OsStr::new("trash"))?;
+            fs::remove_file(root.join("removed.pgn"))?;
+            fs::write(root.join("new.pgn"), b"*")?;
+            let reused = directory_listing_bound_prepare(
+                &mut authority,
+                &workspace,
+                &root,
+                "canonical.pgn",
+            )?;
+            let fresh =
+                directory_listing_bound_prepare(&mut authority, &workspace, &root, "new.pgn")?;
+            let fresh_id = fresh.id();
+            let token = CancellationToken::new();
+            set_test_atomic_file_injector(Some(Arc::new(ReuseFault {
+                kind,
+                token: token.clone(),
+            })));
+            let result = authority.commit_directory_listing(snapshot, vec![reused, fresh], &token);
+            set_test_atomic_file_injector(None);
+            match kind {
+                0 => assert!(matches!(result, Err(Error::Io(_)))),
+                1 => assert!(matches!(
+                    result,
+                    Err(Error::CommittedDurabilityUncertain(_))
+                )),
+                _ => assert!(matches!(result, Err(Error::Cancellation))),
+            }
+            assert!(!authority.persistent.contains_key(&fresh_id.id));
+            for id in ids {
+                assert!(authority.persistent.contains_key(&id.id));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn directory_listing_bound_snapshot_hard_failure_uncertainty_and_cancellation(
+    ) -> Result<(), Error> {
+        use crate::infra::fs::{
+            set_test_atomic_file_injector, AtomicFileFaultPoint, AtomicWriterInjector,
+        };
+        struct Fault {
+            uncertain: bool,
+            writes: AtomicU64,
+        }
+        impl AtomicWriterInjector for Fault {
+            fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+                if point == AtomicFileFaultPoint::Write {
+                    self.writes.fetch_add(1, Ordering::SeqCst);
+                }
+                if point
+                    == if self.uncertain {
+                        AtomicFileFaultPoint::ParentSync
+                    } else {
+                        AtomicFileFaultPoint::Write
+                    }
+                {
+                    return Err(std::io::Error::other("snapshot fault"));
+                }
+                Ok(())
+            }
+        }
+        for uncertain in [false, true] {
+            let (_directory, mut authority, workspace, root) = directory_listing_bound_fixture()?;
+            fs::write(root.join("old.pgn"), b"old")?;
+            let old =
+                directory_listing_bound_prepare(&mut authority, &workspace, &root, "old.pgn")?;
+            let old_id = authority.publish_prepared_entry(old)?.id;
+            let before = authority.persistent.clone();
+            let snapshot = authority.workspace_listing_snapshot(&workspace, OsStr::new("trash"))?;
+            fs::remove_file(root.join("old.pgn"))?;
+            fs::write(root.join("new.pgn"), b"new")?;
+            let prepared =
+                directory_listing_bound_prepare(&mut authority, &workspace, &root, "new.pgn")?;
+            let new_id = prepared.id();
+            let fault = Arc::new(Fault {
+                uncertain,
+                writes: AtomicU64::new(0),
+            });
+            set_test_atomic_file_injector(Some(fault.clone()));
+            let result = authority.commit_directory_listing(
+                snapshot,
+                vec![prepared],
+                &CancellationToken::new(),
+            );
+            set_test_atomic_file_injector(None);
+            if uncertain {
+                assert!(matches!(
+                    result,
+                    Err(Error::CommittedDurabilityUncertain(_))
+                ));
+                assert!(authority.persistent.contains_key(&new_id.id));
+                assert!(!authority.persistent.contains_key(&old_id.id));
+                assert!(authority.session_protected_ids.contains(&new_id.id));
+                assert_eq!(fault.writes.load(Ordering::SeqCst), 1);
+            } else {
+                assert!(matches!(result, Err(Error::Io(_))));
+                assert!(authority.persistent == before);
+            }
+        }
+        let (_directory, mut authority, workspace, root) = directory_listing_bound_fixture()?;
+        let snapshot = authority.workspace_listing_snapshot(&workspace, OsStr::new("trash"))?;
+        fs::write(root.join("new.pgn"), b"new")?;
+        let prepared =
+            directory_listing_bound_prepare(&mut authority, &workspace, &root, "new.pgn")?;
+        let before = authority.persistent.clone();
+        let token = CancellationToken::new();
+        token.cancel();
+        assert!(matches!(
+            authority.commit_directory_listing(snapshot, vec![prepared], &token),
+            Err(Error::Cancellation)
+        ));
+        assert!(authority.persistent == before);
+        Ok(())
+    }
 
     pub(super) struct TestClock(AtomicU64);
     impl TestClock {
@@ -9900,7 +10556,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn list_workspace_databases_cancels_between_entries_before_later_durable_registration() {
+    fn directory_listing_bound_database_cancels_before_snapshot_publication() {
         let dir = tempfile::tempdir().unwrap();
         let root_path = dir.path().join("databases");
         fs::create_dir(&root_path).unwrap();
@@ -9928,12 +10584,15 @@ mod tests {
             .values()
             .filter(|entry| entry.stored.purpose == Some(EntryPurpose::DatabaseFile))
             .count();
-        assert_eq!(registered, 1, "only the completed entry may be durable");
+        assert_eq!(
+            registered, 0,
+            "a canceled listing publishes no fresh identities"
+        );
     }
 
     #[cfg(unix)]
     #[test]
-    fn list_puzzle_databases_cancels_between_entries_before_later_durable_registration() {
+    fn directory_listing_bound_puzzle_cancels_before_snapshot_publication() {
         let dir = tempfile::tempdir().unwrap();
         let root_path = dir.path().join("puzzles");
         fs::create_dir(&root_path).unwrap();
@@ -9961,7 +10620,10 @@ mod tests {
             .values()
             .filter(|entry| entry.stored.purpose == Some(EntryPurpose::PuzzleFile))
             .count();
-        assert_eq!(registered, 1, "only the completed entry may be durable");
+        assert_eq!(
+            registered, 0,
+            "a canceled listing publishes no fresh identities"
+        );
     }
 
     #[cfg(unix)]
@@ -21543,6 +22205,192 @@ mod workspace_directory_enumeration_tests {
     enum Db3Replacement {
         RegularFile,
         Directory,
+    }
+
+    fn directory_listing_bound_list_db3(
+        authority: &mut PathAuthority,
+        root: &Db3RootHandle,
+        token: &CancellationToken,
+    ) -> Result<Vec<PathRef>, Error> {
+        match root {
+            Db3RootHandle::Database(root) => authority
+                .list_database_children_cancellable(root, token)
+                .map(|entries| {
+                    entries
+                        .into_iter()
+                        .map(|entry| entry.handle.path_ref().clone())
+                        .collect()
+                }),
+            Db3RootHandle::Puzzle(root) => authority
+                .list_puzzle_children_cancellable(root, token)
+                .map(|entries| entries.into_iter().map(|entry| entry.file).collect()),
+        }
+    }
+
+    #[test]
+    fn directory_listing_bound_database_and_puzzle_overflow_publish_no_child_ids(
+    ) -> Result<(), Error> {
+        for kind in [Db3ListingKind::Database, Db3ListingKind::Puzzle] {
+            let (_directory, root, mut authority, handle) = db3_root_fixture(kind);
+            for index in 0..crate::infra::fs::MAX_DIRECTORY_LISTING_ENTRIES {
+                fs::write(root.join(format!("{index}.txt")), b"")?;
+            }
+            let before = authority.persistent.clone();
+            assert!(matches!(
+                directory_listing_bound_list_db3(
+                    &mut authority,
+                    &handle,
+                    &CancellationToken::new()
+                ),
+                Err(Error::ResourceLimit(_))
+            ));
+            assert!(authority.persistent == before);
+            fs::remove_file(root.join("0.txt"))?;
+            assert_eq!(
+                directory_listing_bound_list_db3(
+                    &mut authority,
+                    &handle,
+                    &CancellationToken::new()
+                )?
+                .len(),
+                1
+            );
+            fs::write(root.join("b.db3"), b"new")?;
+            let before = authority.persistent.clone();
+            assert!(matches!(
+                directory_listing_bound_list_db3(
+                    &mut authority,
+                    &handle,
+                    &CancellationToken::new()
+                ),
+                Err(Error::ResourceLimit(_))
+            ));
+            assert!(authority.persistent == before);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn directory_listing_bound_database_and_puzzle_snapshots_retire_only_direct_children(
+    ) -> Result<(), Error> {
+        for kind in [Db3ListingKind::Database, Db3ListingKind::Puzzle] {
+            let (_directory, root, mut authority, handle) = db3_root_fixture(kind);
+            let ids = directory_listing_bound_list_db3(
+                &mut authority,
+                &handle,
+                &CancellationToken::new(),
+            )?;
+            let child_id = ids
+                .first()
+                .ok_or_else(|| Error::Conflict("test child missing".into()))?;
+            let mut nested = authority
+                .persistent
+                .get(&child_id.id)
+                .cloned()
+                .ok_or_else(|| Error::Conflict("test child missing".into()))?;
+            nested.stored.id = PathRef::fresh();
+            let nested_id = nested.stored.id.clone();
+            nested.stored.path = NativePath::from_path(&root.join("nested/hidden.db3"));
+            authority.persistent.insert(nested_id.id.clone(), nested);
+            require_durable(authority.save()?)?;
+            fs::remove_file(root.join("a.db3"))?;
+            assert!(directory_listing_bound_list_db3(
+                &mut authority,
+                &handle,
+                &CancellationToken::new()
+            )?
+            .is_empty());
+            assert!(!authority.persistent.contains_key(&child_id.id));
+            assert!(authority.persistent.contains_key(&nested_id.id));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn directory_listing_bound_database_identity_replacement_at_capacity() -> Result<(), Error> {
+        let (_directory, root, mut authority, handle) = db3_root_fixture(Db3ListingKind::Database);
+        let original =
+            directory_listing_bound_list_db3(&mut authority, &handle, &CancellationToken::new())?;
+        let Db3RootHandle::Database(database_root) = &handle else {
+            return Err(Error::Conflict("test database root missing".into()));
+        };
+        let template = authority
+            .persistent
+            .get(&database_root.path_ref().id)
+            .cloned()
+            .ok_or_else(|| Error::Conflict("test root missing".into()))?;
+        for index in authority.persistent.len()..MAX_AUTHORITY_IDS {
+            let mut entry = template.clone();
+            entry.stored.id.id = format!("unrelated-{index}");
+            authority
+                .persistent
+                .insert(entry.stored.id.id.clone(), entry);
+        }
+        require_durable(authority.save()?)?;
+        assert_eq!(
+            directory_listing_bound_list_db3(&mut authority, &handle, &CancellationToken::new())?,
+            original
+        );
+        fs::rename(root.join("a.db3"), root.with_extension("old-db3"))?;
+        fs::write(root.join("a.db3"), b"replacement")?;
+        let replacement =
+            directory_listing_bound_list_db3(&mut authority, &handle, &CancellationToken::new())?;
+        assert_ne!(replacement, original);
+        assert_eq!(authority.persistent.len(), MAX_AUTHORITY_IDS);
+        assert!(original
+            .iter()
+            .all(|id| !authority.persistent.contains_key(&id.id)));
+        Ok(())
+    }
+
+    #[test]
+    fn directory_listing_bound_puzzle_identity_change_conflicts_without_retirement(
+    ) -> Result<(), Error> {
+        let (_directory, root, mut authority, handle) = db3_root_fixture(Db3ListingKind::Puzzle);
+        fs::write(root.join("removed.db3"), b"old")?;
+        directory_listing_bound_list_db3(&mut authority, &handle, &CancellationToken::new())?;
+        let before = authority.persistent.clone();
+        let disk = fs::read(&authority.registry_path)?;
+        fs::remove_file(root.join("removed.db3"))?;
+        fs::rename(root.join("a.db3"), root.with_extension("old-db3"))?;
+        fs::write(root.join("a.db3"), b"replacement")?;
+        assert!(matches!(
+            directory_listing_bound_list_db3(&mut authority, &handle, &CancellationToken::new()),
+            Err(Error::Conflict(_))
+        ));
+        assert!(authority.persistent == before);
+        assert_eq!(fs::read(&authority.registry_path)?, disk);
+        Ok(())
+    }
+
+    #[test]
+    fn directory_listing_bound_database_and_puzzle_cancellation_preserves_previous_snapshot(
+    ) -> Result<(), Error> {
+        for kind in [Db3ListingKind::Database, Db3ListingKind::Puzzle] {
+            let (_directory, root, mut authority, handle) = db3_root_fixture(kind);
+            fs::write(root.join("removed.db3"), b"old")?;
+            directory_listing_bound_list_db3(&mut authority, &handle, &CancellationToken::new())?;
+            fs::remove_file(root.join("removed.db3"))?;
+            fs::write(root.join("b.db3"), b"new")?;
+            let before = authority.persistent.clone();
+            let token = CancellationToken::new();
+            let cancel = token.clone();
+            let hook: Box<dyn FnOnce()> = Box::new(move || cancel.cancel());
+            match kind {
+                Db3ListingKind::Database => {
+                    DATABASE_CHILD_POST_RESOLVE_HOOK.with(|slot| *slot.borrow_mut() = Some(hook))
+                }
+                Db3ListingKind::Puzzle => {
+                    PUZZLE_CHILD_POST_RESOLVE_HOOK.with(|slot| *slot.borrow_mut() = Some(hook))
+                }
+            }
+            let result = directory_listing_bound_list_db3(&mut authority, &handle, &token);
+            DATABASE_CHILD_POST_RESOLVE_HOOK.with(|slot| *slot.borrow_mut() = None);
+            PUZZLE_CHILD_POST_RESOLVE_HOOK.with(|slot| *slot.borrow_mut() = None);
+            assert!(matches!(result, Err(Error::Cancellation)));
+            assert!(authority.persistent == before);
+        }
+        Ok(())
     }
 
     fn db3_root_fixture(

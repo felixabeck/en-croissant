@@ -26,6 +26,18 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
+pub(crate) const MAX_DIRECTORY_LISTING_ENTRIES: usize = 4_096;
+
+/// Check before materialising the next name or staged workspace node.
+pub(crate) fn check_directory_listing_bound(count: usize, limit: usize) -> Result<(), Error> {
+    if count >= limit {
+        return Err(Error::ResourceLimit(format!(
+            "directory listing exceeded {limit} entries"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(all(test, windows))]
 pub(crate) fn windows_test_parent(path: &Path) -> File {
     use std::os::windows::fs::OpenOptionsExt;
@@ -111,11 +123,13 @@ pub(crate) struct DirectoryEntry {
 
 #[cfg(test)]
 pub(crate) fn enumerated_directory_entry_for_test(parent: &File, leaf: &OsStr) -> DirectoryEntry {
-    read_directory_entries_at(parent, &CancellationToken::new(), &mut |name| name == leaf)
-        .expect("enumeration")
-        .into_iter()
-        .find(|entry| entry.name == leaf)
-        .expect("installed entry")
+    read_directory_entries_at(parent, &CancellationToken::new(), None, &mut |name| {
+        name == leaf
+    })
+    .expect("enumeration")
+    .into_iter()
+    .find(|entry| entry.name == leaf)
+    .expect("installed entry")
 }
 
 #[cfg(all(test, unix))]
@@ -136,6 +150,7 @@ pub(crate) fn set_read_directory_pre_stat_hook(hook: Option<ReadDirectoryPreStat
 pub(crate) fn read_directory_entries_at(
     dir: &File,
     cancellation: &CancellationToken,
+    limit: Option<usize>,
     keep: &mut dyn FnMut(&OsStr) -> bool,
 ) -> Result<Vec<DirectoryEntry>, Error> {
     use rustix::fs::{self as rfs, AtFlags, FileType};
@@ -145,10 +160,15 @@ pub(crate) fn read_directory_entries_at(
         return Err(Error::Cancellation);
     }
     let mut result = Vec::new();
+    let mut observed = 0;
     unix::walk_directory(dir, |bytes, _ino| {
         let name = OsString::from_vec(bytes.to_vec());
         if cancellation.is_cancelled() {
             return Err(Error::Cancellation);
+        }
+        if let Some(limit) = limit {
+            check_directory_listing_bound(observed, limit)?;
+            observed += 1;
         }
         if !keep(&name) {
             return Ok(());
@@ -189,9 +209,10 @@ pub(crate) fn read_directory_entries_at(
 pub(crate) fn read_directory_entries_at(
     dir: &File,
     cancellation: &CancellationToken,
+    limit: Option<usize>,
     keep: &mut dyn FnMut(&OsStr) -> bool,
 ) -> Result<Vec<DirectoryEntry>, Error> {
-    win::read_directory_entries(dir, cancellation, keep)
+    win::read_directory_entries(dir, cancellation, limit, keep)
 }
 
 #[cfg(any(target_os = "macos", all(test, unix)))]
@@ -2912,6 +2933,7 @@ mod win {
         used: usize,
         volume: u64,
         entries: &mut Vec<EnumeratedEntry>,
+        limit: Option<usize>,
     ) -> Result<(), Error> {
         const FILE_NAME_OFFSET: usize =
             std::mem::offset_of!(FILE_ID_BOTH_DIR_INFORMATION, FileName);
@@ -2950,6 +2972,9 @@ mod win {
                 )
             });
             if name != OsStr::new(".") && name != OsStr::new("..") {
+                if let Some(limit) = limit {
+                    super::check_directory_listing_bound(entries.len(), limit)?;
+                }
                 entries.push(EnumeratedEntry {
                     name,
                     identity: (volume, header.FileId as u64),
@@ -2983,12 +3008,12 @@ mod win {
     /// Reads one directory to exhaustion through `NtQueryDirectoryFile`. `cancellation` is
     /// observed once per page, before the kernel is asked for the next one, so a cancelled
     /// listing stops after at most one outstanding page instead of after the whole directory.
-    /// The accumulated `Vec` is bounded by the number of entries in that single directory —
-    /// this never recurses; `remove_windows_tree_at` and `collect_tree_entries` own the depth
-    /// bound — which is the same bound the unix `walk_directory` result carries.
+    /// User listings pass an entry limit; removal and install sync pass no limit.
+    /// This never recurses; the caller owns the depth bound.
     pub(super) fn enumerate_directory(
         dir: &File,
         cancellation: &CancellationToken,
+        limit: Option<usize>,
     ) -> Result<Vec<EnumeratedEntry>, Error> {
         let volume = opened_file_identity(dir)?.0;
         let mut restart_scan = true;
@@ -3029,7 +3054,7 @@ mod win {
             }
             overflow_retries = 0;
             let used = status_block.Information.min(buffer_bytes);
-            parse_directory_page(&buffer, used, volume, &mut entries)?;
+            parse_directory_page(&buffer, used, volume, &mut entries, limit)?;
             restart_scan = false;
         }
         Ok(entries)
@@ -3042,12 +3067,13 @@ mod win {
     pub(super) fn read_directory_entries(
         dir: &File,
         cancellation: &CancellationToken,
+        limit: Option<usize>,
         keep: &mut dyn FnMut(&OsStr) -> bool,
     ) -> Result<Vec<DirectoryEntry>, Error> {
         if cancellation.is_cancelled() {
             return Err(Error::Cancellation);
         }
-        let enumerated = enumerate_directory(dir, cancellation)?;
+        let enumerated = enumerate_directory(dir, cancellation, limit)?;
         let mut result = Vec::with_capacity(enumerated.len());
         for entry in enumerated {
             if cancellation.is_cancelled() {
@@ -3368,7 +3394,7 @@ mod win {
         // B4 scopes cancellation to the single-directory listing read: a half-cancelled
         // recursive unlink would leave a partially removed tree behind, so the removal walk
         // enumerates with a token that is never cancelled.
-        for entry in enumerate_directory(&child, &CancellationToken::new())? {
+        for entry in enumerate_directory(&child, &CancellationToken::new(), None)? {
             // Unix checks this at the recursive entry point for both files and directories. A
             // Windows file was previously removed directly from this loop, allowing a file at
             // the boundary depth to evade the shared traversal bound.
@@ -3462,7 +3488,7 @@ mod win {
     /// and special files and is depth-bounded exactly like the cleanup walk, so a planted reparse
     /// point cannot smuggle in a tree the later cleanup would then have to remove.
     fn sync_windows_tree(dir: &File, depth: usize) -> Result<(), Error> {
-        for entry in enumerate_directory(dir, &CancellationToken::new())? {
+        for entry in enumerate_directory(dir, &CancellationToken::new(), None)? {
             ensure_remove_tree_depth(depth.saturating_add(1), MAX_REMOVE_TREE_DEPTH)?;
             match entry.kind {
                 DirectoryEntryKind::Other => {
@@ -5605,7 +5631,8 @@ mod tests {
         let handle = File::open(root.path()).unwrap();
         let _socket = UnixListener::bind(root.path().join("socket")).unwrap();
         let entries =
-            read_directory_entries_at(&handle, &CancellationToken::new(), &mut |_| true).unwrap();
+            read_directory_entries_at(&handle, &CancellationToken::new(), None, &mut |_| true)
+                .unwrap();
         assert_eq!(entries.len(), 5);
         assert_eq!(
             entries
@@ -5635,6 +5662,78 @@ mod tests {
             assert_ne!(entry.name, "..");
             assert_eq!(entry.identity, inode(&root.path().join(&entry.name)));
         }
+    }
+
+    #[test]
+    fn directory_listing_bound_counts_names_before_filtering_and_preserves_none(
+    ) -> Result<(), Error> {
+        let root = tempfile::tempdir()?;
+        #[cfg(unix)]
+        let dir = File::open(root.path())?;
+        #[cfg(windows)]
+        let dir = win::open_directory_path(root.path(), false)?;
+        let token = CancellationToken::new();
+        for index in 0..MAX_DIRECTORY_LISTING_ENTRIES {
+            std::fs::write(root.path().join(format!("{index}.txt")), b"")?;
+        }
+        let exact = read_directory_entries_at(
+            &dir,
+            &token,
+            Some(MAX_DIRECTORY_LISTING_ENTRIES),
+            &mut |_| true,
+        )?;
+        assert_eq!(exact.len(), MAX_DIRECTORY_LISTING_ENTRIES);
+        std::fs::write(root.path().join("overflow.txt"), b"")?;
+        for keep_all in [true, false] {
+            assert!(matches!(
+                read_directory_entries_at(
+                    &dir,
+                    &token,
+                    Some(MAX_DIRECTORY_LISTING_ENTRIES),
+                    &mut |_| keep_all
+                ),
+                Err(Error::ResourceLimit(_))
+            ));
+        }
+        let unbounded = read_directory_entries_at(&dir, &token, None, &mut |_| true)?;
+        assert_eq!(unbounded.len(), MAX_DIRECTORY_LISTING_ENTRIES + 1);
+        token.cancel();
+        assert!(matches!(
+            read_directory_entries_at(
+                &dir,
+                &token,
+                Some(MAX_DIRECTORY_LISTING_ENTRIES),
+                &mut |_| true
+            ),
+            Err(Error::Cancellation)
+        ));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_listing_bound_cancellation_precedes_next_name() -> Result<(), Error> {
+        let root = tempfile::tempdir()?;
+        std::fs::write(root.path().join("a"), b"")?;
+        std::fs::write(root.path().join("b"), b"")?;
+        let dir = File::open(root.path())?;
+        let token = CancellationToken::new();
+        let result = read_directory_entries_at(&dir, &token, Some(1), &mut |_| {
+            token.cancel();
+            false
+        });
+        assert!(matches!(result, Err(Error::Cancellation)));
+        Ok(())
+    }
+
+    #[test]
+    fn directory_listing_bound_resource_limit_serializes_command_category(
+    ) -> Result<(), serde_json::Error> {
+        let error = Error::ResourceLimit("directory listing exceeded 4096 entries".into());
+        let payload = serde_json::to_value(&error)?;
+        assert_eq!(payload["category"], "resource-limit");
+        assert_eq!(payload["tag"], "backend-error");
+        Ok(())
     }
 
     #[cfg(unix)]
@@ -5667,7 +5766,7 @@ mod tests {
             }
         };
         let handle = File::open(root.path()).unwrap();
-        let result = read_directory_entries_at(&handle, &CancellationToken::new(), &mut keep);
+        let result = read_directory_entries_at(&handle, &CancellationToken::new(), None, &mut keep);
         set_read_directory_pre_stat_hook(None);
         assert!(result.is_ok());
         let log = events.lock().unwrap().clone();
@@ -5692,7 +5791,7 @@ mod tests {
         let token = CancellationToken::new();
         token.cancel();
         assert!(matches!(
-            read_directory_entries_at(&descriptor, &token, &mut |_| true),
+            read_directory_entries_at(&descriptor, &token, None, &mut |_| true),
             Err(Error::Cancellation)
         ));
     }
@@ -5711,7 +5810,7 @@ mod tests {
             *observed.lock().unwrap() = true;
         })));
         let handle = File::open(root.path()).unwrap();
-        let result = read_directory_entries_at(&handle, &token, &mut |_| {
+        let result = read_directory_entries_at(&handle, &token, None, &mut |_| {
             worker.cancel();
             true
         });
@@ -5729,7 +5828,7 @@ mod tests {
         let worker = token.clone();
         set_read_directory_pre_stat_hook(Some(Box::new(move |_| worker.cancel())));
         let handle = File::open(root.path()).unwrap();
-        let result = read_directory_entries_at(&handle, &token, &mut |_| true);
+        let result = read_directory_entries_at(&handle, &token, None, &mut |_| true);
         set_read_directory_pre_stat_hook(None);
         assert!(matches!(result, Err(Error::Cancellation)));
     }
@@ -5745,7 +5844,8 @@ mod tests {
             std::fs::remove_file(&remove).unwrap();
         })));
         let handle = File::open(root.path()).unwrap();
-        let result = read_directory_entries_at(&handle, &CancellationToken::new(), &mut |_| true);
+        let result =
+            read_directory_entries_at(&handle, &CancellationToken::new(), None, &mut |_| true);
         set_read_directory_pre_stat_hook(None);
         assert!(
             matches!(result, Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound)
@@ -5761,7 +5861,7 @@ mod tests {
         let handle = File::open(&directory).unwrap();
         std::fs::remove_dir(&directory).unwrap();
         assert!(matches!(
-            read_directory_entries_at(&handle, &CancellationToken::new(), &mut |_| true),
+            read_directory_entries_at(&handle, &CancellationToken::new(), None, &mut |_| true),
             Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound
         ));
     }
@@ -5806,7 +5906,7 @@ mod tests {
 
         let result = {
             let _guard = unix::scoped_test_removal_injector(injector);
-            read_directory_entries_at(&handle, &CancellationToken::new(), &mut |_| true)
+            read_directory_entries_at(&handle, &CancellationToken::new(), None, &mut |_| true)
         };
 
         let error = result.expect_err("post-walk removal must be refused");
@@ -5828,7 +5928,7 @@ mod tests {
 
         let result = {
             let _guard = unix::scoped_test_removal_injector(injector);
-            read_directory_entries_at(&handle, &CancellationToken::new(), &mut |_| true)
+            read_directory_entries_at(&handle, &CancellationToken::new(), None, &mut |_| true)
         };
 
         let error = result.expect_err("same-name replacement must be refused");
@@ -5857,7 +5957,7 @@ mod tests {
 
         let result = {
             let _guard = unix::scoped_test_removal_injector(injector);
-            read_directory_entries_at(&handle, &CancellationToken::new(), &mut |_| true)
+            read_directory_entries_at(&handle, &CancellationToken::new(), None, &mut |_| true)
         };
 
         assert!(
@@ -5882,7 +5982,7 @@ mod tests {
 
         let result = {
             let _guard = unix::scoped_test_removal_injector(injector);
-            read_directory_entries_at(&handle, &token, &mut |_| true)
+            read_directory_entries_at(&handle, &token, None, &mut |_| true)
         };
 
         assert!(matches!(result, Err(Error::Cancellation)));
@@ -5905,7 +6005,7 @@ mod tests {
 
         let result = {
             let _guard = unix::scoped_test_removal_injector(injector);
-            read_directory_entries_at(&handle, &CancellationToken::new(), &mut |_| true)
+            read_directory_entries_at(&handle, &CancellationToken::new(), None, &mut |_| true)
         };
 
         let error = result.expect_err("parent replacement must be refused");
@@ -6551,8 +6651,9 @@ mod tests {
         }
         let parent = test_parent(temp.path());
 
-        let listed = read_directory_entries_at(&parent, &CancellationToken::new(), &mut |_| true)
-            .expect("listing");
+        let listed =
+            read_directory_entries_at(&parent, &CancellationToken::new(), None, &mut |_| true)
+                .expect("listing");
 
         let mut names = listed
             .iter()
@@ -8830,8 +8931,9 @@ mod tests {
         std::fs::write(dir.path().join("game.pgn"), b"pgn").expect("child file");
         std::fs::create_dir(dir.path().join("folder")).expect("child directory");
         let parent = windows_test_parent(dir.path());
-        let listed = read_directory_entries_at(&parent, &CancellationToken::new(), &mut |_| true)
-            .expect("listing");
+        let listed =
+            read_directory_entries_at(&parent, &CancellationToken::new(), None, &mut |_| true)
+                .expect("listing");
         for (name, is_dir) in [("game.pgn", false), ("folder", true)] {
             let entry = listed
                 .iter()
@@ -8855,8 +8957,9 @@ mod tests {
         std::fs::create_dir(dir.path().join("real")).expect("target directory");
         windows_test_junction(&dir.path().join("link"), &dir.path().join("real"));
         let parent = windows_test_parent(dir.path());
-        let listed = read_directory_entries_at(&parent, &CancellationToken::new(), &mut |_| true)
-            .expect("listing");
+        let listed =
+            read_directory_entries_at(&parent, &CancellationToken::new(), None, &mut |_| true)
+                .expect("listing");
         let link = listed
             .iter()
             .find(|entry| entry.name == OsStr::new("link"))
