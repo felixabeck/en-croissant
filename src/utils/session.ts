@@ -83,7 +83,8 @@ function persistSessions(sessions: Session[]): void {
     localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(sessions));
 }
 
-function persistSanitizedSessions(sessions: Session[]): boolean {
+/** Returns whether the legacy credential record was overwritten with sanitized sessions or removed. */
+function eraseLegacyCredentials(sessions: Session[]): boolean {
     try {
         persistSessions(sessions);
     } catch {
@@ -97,14 +98,16 @@ function persistSanitizedSessions(sessions: Session[]): boolean {
 }
 
 /**
- * Removes plaintext bearer tokens synchronously, before React mounts any feature.  The returned
- * migration input stays only in this startup call's memory; no retry path can re-persist it.
+ * Attempts to scrub plaintext bearer tokens synchronously by overwriting sanitized sessions,
+ * then removing the record if the overwrite fails, and reports whether credentials were erased.
+ * Returns the tokens it read; migration input stays only in this startup call's memory, and no
+ * retry path can re-persist it.
  */
 function sanitizeLegacySessions(): {
     sessions: Session[];
     migrations: { username: string; token: string }[];
     legacyTokens: string[];
-    persisted: boolean;
+    credentialsErased: boolean;
 } {
     const migrations: { username: string; token: string }[] = [];
     const legacyTokens: string[] = [];
@@ -141,20 +144,28 @@ function sanitizeLegacySessions(): {
         const parsed = sessionSchema.safeParse(session);
         if (parsed.success) sessions.push(parsed.data);
     }
-    // This write is deliberately before any await: an app crash during native migration cannot
-    // resurrect plaintext credentials on the next launch.
-    const persisted = persistSanitizedSessions(sessions);
-    return { sessions, migrations, legacyTokens, persisted };
+    // This scrub is deliberately attempted before any await: after a successful overwrite or
+    // removal, an app crash during native migration cannot resurrect plaintext credentials.
+    const credentialsErased = eraseLegacyCredentials(sessions);
+    return { sessions, migrations, legacyTokens, credentialsErased };
 }
 
 /**
  * Application bootstrap for native Lichess accounts. It runs before mounting React: legacy
- * token records are scrubbed synchronously, migrated once in memory, then native metadata is
- * reconciled into a deduplicated public-session list.
+ * token records are synchronously scrubbed by overwrite or removal before migrating once in
+ * memory and reconciling native metadata into a deduplicated public-session list. If the scrub
+ * cannot erase credentials, it attempts to revoke every read token through
+ * `revoke_legacy_lichess_token`, then rejects with SessionSanitizationError carrying only a
+ * token-free summary, without migrating, listing native accounts, or writing sessions.
  */
 export async function initializePersistedSessions(): Promise<void> {
-    const { sessions: sanitized, migrations, legacyTokens, persisted } = sanitizeLegacySessions();
-    if (!persisted) {
+    const {
+        sessions: sanitized,
+        migrations,
+        legacyTokens,
+        credentialsErased,
+    } = sanitizeLegacySessions();
+    if (!credentialsErased) {
         const revocations = await Promise.all(
             legacyTokens.map(async (token) => {
                 try {
