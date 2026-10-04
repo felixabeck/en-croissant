@@ -21,6 +21,7 @@ import {
   runUnlessCancelled,
 } from "@/components/files/notifyError";
 import {
+  accountDownloadsInFlightAtom,
   databaseConversionStateAtom,
   downloadDestinationAtom,
   runDatabaseConversion,
@@ -97,7 +98,7 @@ function logProgressUpdateFailure(context: {
     await logFailureSafely(
       `Account import progress update (${context.state}) failed for ${context.progressId} [${context.conversionId}]: ${primaryFailure.message}`,
       { operation: "account import progress update", primaryFailure },
-      "Account import progress logging failed",
+      `Account import progress logging failed (${context.state}) for ${context.progressId} [${context.conversionId}]`,
     );
   };
 }
@@ -116,6 +117,7 @@ export function AccountCard({
   accountHandle,
 }: AccountCardProps) {
   const { t } = useTranslation();
+  const accountKey = `${type}_${title}`;
   const items = stats.map((stat) => {
     let color = "gray.5";
     let DiffIcon: React.FC<IconProps> = IconArrowRight;
@@ -147,7 +149,8 @@ export function AccountCard({
       </Group>
     );
   });
-  const [loading, setLoading] = useState(false);
+  const [downloadsInFlight, setDownloadsInFlight] = useAtom(accountDownloadsInFlightAtom);
+  const pending = downloadsInFlight.has(accountKey);
   const [progress, setProgress] = useState<number | null>(null);
   const [downloadDestination, setDownloadDestination] = useAtom(downloadDestinationAtom);
   const [, setConversionState] = useAtom(databaseConversionStateAtom);
@@ -171,7 +174,7 @@ export function AccountCard({
       async ({ id, setTarget }) => {
         const databaseHandle = await ensureDatabaseHandle();
         setTarget(databaseHandle);
-        const progressLease = await tauri.startProgress(`${type}_${title}`);
+        const progressLease = await tauri.startProgress(accountKey);
         try {
           await tauri.convertPgn(
             id,
@@ -185,7 +188,7 @@ export function AccountCard({
           await tauri.setProgressState(progressLease, 0, "failed").catch(
             logProgressUpdateFailure({
               conversionId: id,
-              progressId: `${type}_${title}`,
+              progressId: accountKey,
               state: "failed",
             }),
           );
@@ -194,7 +197,7 @@ export function AccountCard({
         await tauri.setProgressState(progressLease, 100, "succeeded").catch(
           logProgressUpdateFailure({
             conversionId: id,
-            progressId: `${type}_${title}`,
+            progressId: accountKey,
             state: "succeeded",
           }),
         );
@@ -211,13 +214,8 @@ export function AccountCard({
   useTauriListener(
     subscribeProgress,
     (e) => {
-      if (e.payload.id === `${type}_${title}`) {
+      if (e.payload.id === accountKey) {
         setProgress(e.payload.progress);
-        if (e.payload.finished) {
-          setLoading(false);
-        } else {
-          setLoading(true);
-        }
       }
     },
     { onError: notifyListenerError },
@@ -242,6 +240,20 @@ export function AccountCard({
     const result = await tauri.issueDownloadDestination();
     setDownloadDestination(result);
     return result;
+  }
+
+  async function refreshDatabases(importFailed: boolean): Promise<void> {
+    try {
+      setDatabases(await getDatabases());
+    } catch (refreshCause) {
+      if (!importFailed) throw refreshCause;
+      const primaryFailure = safeFailureContext(refreshCause);
+      await logFailureSafely(
+        `Account import database refresh failed: ${primaryFailure.message}`,
+        { operation: "account import database refresh", primaryFailure },
+        "Account import refresh logging failed",
+      );
+    }
   }
 
   return (
@@ -282,10 +294,11 @@ export function AccountCard({
               label={t("Home.Accounts.DownloadGames")}
               variant="subtle"
               color="gray"
-              pending={loading}
-              disabled={loading || (type === "lichess" && !accountHandle)}
+              pending={pending}
+              disabled={pending || (type === "lichess" && !accountHandle)}
               onClick={async () => {
-                setLoading(true);
+                if (downloadsInFlight.has(accountKey)) return;
+                setDownloadsInFlight((previous) => new Set(previous).add(accountKey));
                 try {
                   const lastGameDate = database ? await getLastGameDate({ database }) : null;
                   let artifact: FileWorkspaceHandle;
@@ -303,13 +316,23 @@ export function AccountCard({
                     const destination = await ensureDownloadDestination();
                     artifact = await downloadChessCom(destination, title, lastGameDate);
                   }
-                  const databaseHandle = await convert(artifact, lastGameDate);
-                  await tauri.deleteEmptyGames(databaseHandle);
-                  setDatabases(await getDatabases());
+                  let importFailed = true;
+                  try {
+                    const databaseHandle = await convert(artifact, lastGameDate);
+                    await tauri.deleteEmptyGames(databaseHandle);
+                    importFailed = false;
+                  } finally {
+                    await refreshDatabases(importFailed);
+                  }
                 } catch (cause) {
                   notifyUnlessCancelled(t("Common.Error"), cause);
                 } finally {
-                  setLoading(false);
+                  setDownloadsInFlight((previous) => {
+                    if (!previous.has(accountKey)) return previous;
+                    const next = new Set(previous);
+                    next.delete(accountKey);
+                    return next;
+                  });
                 }
               }}
             >
@@ -350,7 +373,7 @@ export function AccountCard({
           <Progress
             // An account with no games at all makes `effectiveTotal` zero; the
             // unguarded division rendered `aria-valuenow="NaN"` and a NaN width.
-            value={loading ? 100 : downloadProgressPercent(downloadedGames, effectiveTotal)}
+            value={pending ? 100 : downloadProgressPercent(downloadedGames, effectiveTotal)}
             // Mantine puts `role="progressbar"` on the inner section and forwards
             // `aria-label` to it, so the bar is named rather than anonymous.
             aria-label={t("Home.Accounts.GamesProgress", {
@@ -358,8 +381,8 @@ export function AccountCard({
               total: effectiveTotal,
             })}
             size="sm"
-            striped={loading}
-            animated={loading}
+            striped={pending}
+            animated={pending}
           />
           <Group justify="space-between" mt={4}>
             <Text size="xs" c="dimmed" miw={0} className="wrap-anywhere">
@@ -368,7 +391,7 @@ export function AccountCard({
                 interpolation: { escapeValue: false },
               })}
             </Text>
-            {loading && progress && (
+            {pending && progress && (
               <Text size="xs" c="dimmed">
                 {progress.toFixed(0)}%
               </Text>
