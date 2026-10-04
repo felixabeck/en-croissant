@@ -1001,6 +1001,7 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
         }
     };
     let artifact = if let Some(reservation) = reservation.as_ref() {
+        let target_durability = download_target_durability(target_durability);
         let Some((installed_identity, installed_ctime_nanos)) = installed_identity else {
             let error = Error::Conflict("artifact install has no inode marker".into());
             report_download_error(state, app, &progress_lease, &job_id, &error);
@@ -1015,7 +1016,7 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
         .await
         {
             Ok(mut artifact) => {
-                if let Some(durability) = download_target_durability(target_durability) {
+                if let Some(durability) = target_durability {
                     artifact.durability = durability;
                 }
                 Some(artifact)
@@ -1100,6 +1101,7 @@ pub(crate) async fn install_staged_pgn_artifact(
             return Err(error);
         }
     };
+    let durability = download_target_durability(target_durability.outcome);
     let mut artifact = crate::infra::path_authority::activate_download_artifact_runtime(
         &state.pgn_path_authority,
         &reservation,
@@ -1107,7 +1109,7 @@ pub(crate) async fn install_staged_pgn_artifact(
         target_durability.ctime_nanos,
     )
     .await?;
-    if let Some(durability) = download_target_durability(target_durability.outcome) {
+    if let Some(durability) = durability {
         artifact.durability = durability;
     }
     Ok(artifact)
@@ -4926,6 +4928,116 @@ mod tests {
                 action(stage);
             }
         }
+    }
+
+    #[track_caller]
+    fn assert_activation_conflict_with_target_durability_warning(
+        error: &Error,
+        capture: &crate::error::LogCaptureScope,
+    ) {
+        assert!(!matches!(error, Error::CommittedDurabilityUncertain(_)));
+        match error {
+            Error::Conflict(message) => {
+                assert_eq!(
+                    message,
+                    "download artifact payload differs from its durable reservation"
+                );
+                assert!(!message.contains("durability"));
+            }
+            other => panic!("expected Error::Conflict with payload mismatch, got {other:?}"),
+        }
+        assert_eq!(
+            capture
+                .records()
+                .iter()
+                .filter(|record| {
+                    record.level == log::Level::Warn
+                        && record
+                            .message
+                            .contains("download target replacement parent sync failed")
+                })
+                .count(),
+            1,
+            "target durability uncertainty must be logged exactly once before activation fails"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn download_activation_failure_records_target_durability_uncertainty() {
+        let _guard = ResetAtomicInjectorGuard;
+        let capture = crate::error::LogCaptureScope::start();
+        let dir = tempdir().unwrap();
+        let (mut authority, destination, download_root) = test_downloads_destination(&dir);
+        authority.set_activation_observer(Some(Arc::new(SharedActivationObserver {
+            corrupt_target: Some(download_root.join("games.pgn")),
+            action: None,
+        })));
+        let mut state = AppState::default();
+        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        let app = test_progress_app();
+        let pgn_content: &'static [u8] = b"1. e4 e5 2. Nf3 Nc6";
+        state.http_transport = mock_successful_transport(pgn_content);
+
+        // Skip staging and reservation journal syncs; fail the target replacement sync.
+        crate::infra::fs::set_test_atomic_file_injector(Some(Arc::new(TargetParentSyncFault {
+            skip: std::sync::atomic::AtomicUsize::new(2),
+        })));
+        let progress_id = "progress_activation_failure_uncertainty";
+        let (job_id, lease) = test_download_lease(&state);
+        let error = download_to_destination(
+            progress_id,
+            "https://example.com/games.pgn",
+            destination,
+            "games.pgn".into(),
+            app.handle(),
+            &state,
+            None,
+            Some(pgn_content.len() as u32),
+            job_id,
+            lease,
+            true,
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        let progress = state.progress_state.get(progress_id).unwrap().unwrap();
+        assert_eq!(progress.state, ProgressState::Failed);
+        assert!(progress.finished);
+        assert_activation_conflict_with_target_durability_warning(&error, &capture);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn staged_artifact_activation_failure_records_target_durability_uncertainty() {
+        let _guard = ResetAtomicInjectorGuard;
+        let capture = crate::error::LogCaptureScope::start();
+        let dir = tempdir().unwrap();
+        let (mut authority, destination, download_root) = test_downloads_destination(&dir);
+        authority.set_activation_observer(Some(Arc::new(SharedActivationObserver {
+            corrupt_target: Some(download_root.join("staged_games.pgn")),
+            action: None,
+        })));
+        let state = AppState::default();
+        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        let mut staged = tempfile::NamedTempFile::new().unwrap();
+        staged.write_all(b"1. d4 Nf6 2. c4 g6").unwrap();
+
+        // Skip the reservation journal sync; fail the target replacement sync.
+        crate::infra::fs::set_test_atomic_file_injector(Some(Arc::new(TargetParentSyncFault {
+            skip: std::sync::atomic::AtomicUsize::new(1),
+        })));
+        let error = install_staged_pgn_artifact(
+            destination,
+            "staged_games.pgn".into(),
+            staged,
+            &state,
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert_activation_conflict_with_target_durability_warning(&error, &capture);
     }
 
     #[tokio::test]
