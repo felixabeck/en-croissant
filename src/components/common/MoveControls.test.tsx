@@ -265,33 +265,25 @@ test("a rebound branch-end key closes the list and navigates to the branch end",
   expect(store.getState().position).toEqual([0, 0]);
 });
 
-test("a rebound branch-start key closes the list and navigates to the branch start", () => {
-  settings.keys.GO_TO_BRANCH_START = "k";
-  store = middleGameStore();
-  render();
-  press("ArrowRight");
-  expect(options()).toHaveLength(2);
-  expect(store.getState().position).toEqual([0]);
+test.each([
+  { binding: "k", key: "k", modifiers: undefined },
+  { binding: "ctrl+arrowup", key: "ArrowUp", modifiers: { ctrlKey: true } },
+])(
+  "a branch-start key bound to $binding closes the list and navigates to the branch start",
+  ({ binding, key, modifiers }) => {
+    settings.keys.GO_TO_BRANCH_START = binding;
+    store = middleGameStore();
+    render();
+    press("ArrowRight");
+    expect(options()).toHaveLength(2);
+    expect(store.getState().position).toEqual([0]);
 
-  press("k");
+    press(key, modifiers);
 
-  expect(options()).toEqual([]);
-  expect(store.getState().position).toEqual([]);
-});
-
-test("a modified arrow branch-start key closes the list and navigates to the branch start", () => {
-  settings.keys.GO_TO_BRANCH_START = "ctrl+arrowup";
-  store = middleGameStore();
-  render();
-  press("ArrowRight");
-  expect(options()).toHaveLength(2);
-  expect(store.getState().position).toEqual([0]);
-
-  press("ArrowUp", { ctrlKey: true });
-
-  expect(options()).toEqual([]);
-  expect(store.getState().position).toEqual([]);
-});
+    expect(options()).toEqual([]);
+    expect(store.getState().position).toEqual([]);
+  },
+);
 
 test("replacing the root closes the list without moving the cursor", () => {
   store = middleGameStore();
