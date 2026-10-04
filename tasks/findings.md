@@ -9145,12 +9145,22 @@ Code b7f52cd4, 285a96d4, 8d8e4274, 25636945. Windows runtime is rust-windows-tes
 
 ### Index creation and deletion honour cancellation only at worker admission
 
-* **ID:** f-20260914-19 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260914-19 · **Status:** handled · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** src-tauri/src/db/mod.rs:1190 (`create_indexes`, `delete_indexes`)
 * **Defect:** Cancellation is checked only when the worker is admitted; the SQLite DDL and the index-lock wait are not cancellable. On a large database, cancelling during index creation can still mutate the database and report success.
 * **Why it matters:** `.claude/rules/async-resource-invariants.md` (cancellation before use, truthful terminal state).
 * **Open question:** Can the DDL be interrupted safely (SQLite progress handler / `sqlite3_interrupt`) with a defined rollback, or must cancellation be refused once DDL starts and reported as such?
 * **Found by:** `review-pgn-index` cumulative diff review lens (Codex), 2026-09-14, confidence 93, during the `f-20260830-06` slice-1 build run (range `950f2e1d..16476781`). Pre-existing (originating commit `6ab7c3f3`), outside that run's area, so deferred; not reproduced in that run.
+
+**Handled 2026-10-04** (drain session 42548d18, adopted reviewed plan `tasks/plans/2026-10-04-index-ddl-cancellation.md`; review history `tasks/handoffs/2026-10-04-f-20260914-19-review.md`; decision `d-20261004-14`).
+
+* **Answer to the open question:** interrupt, with a defined rollback. `with_sqlite_cancellation_transaction` (`src-tauri/src/db/sqlite_cancellation.rs`) arms the SQLite progress callback around the DDL body only (BEGIN/COMMIT/ROLLBACK stay unarmed), checks the token once more before commit, and returns `Cancellation` only when `ROLLBACK` succeeded or SQLite had already rolled the interrupted write back ("cannot rollback - no transaction is active"); every other rollback, commit or body error passes through, and committed work stays a success.
+* **Commands:** `create_indexes` / `delete_indexes` now pass the blocking gateway's worker token into one shared worker `run_required_index_ddl` (`src-tauri/src/db/mod.rs`), which waits through `with_index_lock_cancellable`, opens the connection with the token, and runs the shared DDL body through the helper. The import path keeps its uncancellable index creation inside its outer transaction. The uncancellable `with_index_lock` lost its last caller and was replaced by a test-only accessor.
+* **Proof:** cross-platform (`cfg(test)`) tests in `db::index_cancellation_tests` and `db::sqlite_cancellation::transaction_tests`: DDL interruption leaves the exact index set (absent, wrong-definition and complete starts) and the pool recovers; pre-commit cancel rolls back on a reusable connection; COMMIT is unarmed; body and commit errors are preserved; lock-wait cancel; shutdown seal-cancel through the public async commands. Each was seen red under the matching mutation (plain transaction, no pre-commit check, armed COMMIT, fresh token). `cargo test -- db::` 419 passed, clippy and the Windows GNU clippy lane green.
+* **Commits:** `1aefb546` (fix), `86aa14e4` (shared worker after review), records `ea3b6080`, `9629c82a`, `a0f458ce`.
+* **Filed from the review:** the class-wide gap that no command has a regression anchor for forwarding its token into connection acquisition (db-search, build), and the decisions-ledger header contradicting rule 4c (docs-agent-config, inline).
+* **Rejected:** refusing cancellation once DDL starts (shutdown stays blocked behind a full index build); arming the whole transaction (interruptible COMMIT/ROLLBACK, `d-20260926-04`); raw BEGIN/COMMIT outside Diesel's manager.
+<!-- ledger-meta {"command":"close","effect_lines":8,"effect_sha256":"7e75745272d004549e072b257ffb18c7665f55e490e383543ce20418d738272e","header_sha256":"870fade7e29693f98cc55bf48ed79fb9b7ae2acf05ffa54cda151e4c3b6f8df8","header_status":"handled","input_sha256":"8c3a94cb2a54e3b9a189389a9b7fc1fe2fc2be1de4b2748e8bbe3302deed7992","kind":"mutation-receipt","operation":"9bd1fab18ae6110d107b3ec83e9975c199e23462607510ed1018737e029a7417","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-19"],"target":"f-20260914-19","v":1} -->
 
 ### Board editing keeps castling rights for a king that is no longer on its starting square
 
