@@ -962,11 +962,20 @@ fn routed_plural_refusals_are_byte_identical() {
 fn windows_temporary_creation_descriptor_and_share_mask_are_restrictive() {
     let source = source_for("infra/fs.rs");
     let body = braced_body(source, "fn open_temp_child(");
-    let body = compact(&source[body]);
-    assert!(body.contains("SecurityDescriptor:security_descriptor.as_ptr()"));
-    assert!(body.contains("FILE_CREATE"));
-    assert!(body.contains("FILE_SHARE_PRIVATE_TEMP"));
-    assert!(!body.contains("FILE_SHARE_READ"));
+    let body = compact(&normalise(&source[body], Literals::Keep));
+    assert!(
+        body.contains("nt_create_windows_child(dir,name,WindowsChildRequest{")
+            && body.contains("disposition:FILE_CREATE,")
+            && body.contains("access:TEMP_ACCESS,")
+            && body.contains("security_descriptor:security_descriptor.as_ptr(),")
+            && body.contains("directory:false,")
+            && body.contains("share_access:FILE_SHARE_PRIVATE_TEMP,"),
+        "private temporary must delegate with its create, access, descriptor and share request"
+    );
+    assert!(
+        !body.contains("FILE_SHARE_READ"),
+        "private temporary must not permit read sharing"
+    );
     assert!(source.contains("const FILE_SHARE_PRIVATE_TEMP: u32 = FILE_SHARE_WRITE"));
     assert!(source.contains("const TEMP_ACCESS: u32 = DELETE"));
     assert!(source.contains("GENERIC_READ"));
@@ -1236,12 +1245,92 @@ fn windows_rename_and_remove_children_carry_delete() {
 }
 
 #[test]
+fn windows_nt_create_file_has_one_call_site() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut sites = Vec::new();
+    for path in rust_source_paths() {
+        if path == root.join("infra/platform_support/tests.rs") {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).unwrap();
+        let source = compact(&normalise(&source, Literals::Blank));
+        for _ in source.match_indices("NtCreateFile(") {
+            sites.push(path.clone());
+        }
+    }
+    assert_eq!(
+        sites.len(),
+        1,
+        "crate must contain exactly one NtCreateFile call; offending paths: {sites:?}"
+    );
+    let authority_path = root.join("infra/path_authority/mod.rs");
+    assert_eq!(
+        sites[0], authority_path,
+        "NT create site must live in path authority; offending paths: {sites:?}"
+    );
+    let source = source_for("infra/path_authority/mod.rs");
+    assert!(
+        compact(&normalise(
+            &source[braced_body(source, "pub(crate) fn nt_create_windows_child(")],
+            Literals::Blank,
+        ))
+        .matches("NtCreateFile(")
+        .count()
+            == 1,
+        "NT create site must live in the shared child primitive; offending paths: {sites:?}"
+    );
+}
+
+#[test]
+fn windows_nt_opened_object_reparse_refusal_is_outcome_scoped() {
+    let source = source_for("infra/path_authority/mod.rs");
+    let body = compact(&normalise(
+        &source[braced_body(source, "pub(crate) fn nt_create_windows_child(")],
+        Literals::Keep,
+    ));
+    assert!(
+        body.contains("ifstatus.Information!=FILE_CREATED&&is_reparse_point(&file.metadata()?){returnErr(Error::InvalidInput(\"reparse points cannot be authorized\".into(),));}Ok(file)"),
+        "reparse refusal must check every opened object and skip only the FILE_CREATED outcome"
+    );
+}
+
+#[test]
+fn windows_traversal_child_preserves_its_share_mask() {
+    let source = source_for("infra/path_authority/mod.rs");
+    let body = compact(&normalise(
+        &source[braced_body(source, "pub(crate) fn open_windows_child(")],
+        Literals::Keep,
+    ));
+    assert!(
+        body.contains("nt_create_windows_child(dir,name,WindowsChildRequest{")
+            && body.contains("share_access:FILE_SHARE_READ|FILE_SHARE_WRITE|ifallow_delete_share{FILE_SHARE_DELETE}else{0},"),
+        "traversal delegation must preserve read/write sharing and gate delete sharing"
+    );
+}
+
+#[test]
+fn windows_nt_file_created_outcome_value_is_pinned() {
+    let source = source_for("infra/path_authority/mod.rs");
+    let body = compact(&normalise(
+        &source[braced_body(source, "pub(crate) fn nt_create_windows_child(")],
+        Literals::Keep,
+    ));
+    assert!(
+        body.contains("constFILE_CREATED:usize=2;"),
+        "NtCreateFile FILE_CREATED Information value must be usize 2"
+    );
+}
+
+#[test]
 fn windows_nt_name_interpreters_guard_a_single_leaf() {
     let authority = source_for("infra/path_authority/mod.rs");
-    let opener = compact(&authority[braced_body(authority, "pub(crate) fn open_windows_child(")]);
+    let opener = compact(&normalise(
+        &authority[braced_body(authority, "pub(crate) fn nt_create_windows_child(")],
+        Literals::Keep,
+    ));
     assert!(
         opener.contains("crate::infra::fs::single_leaf(name)?"),
-        "{opener}"
+        "NT child primitive must guard a single leaf"
     );
     let source = source_for("infra/fs.rs");
     let rename = compact(&source[braced_body(source, "pub(super) fn rename_child(")]);
@@ -1502,32 +1591,19 @@ fn directory_listing_bound_options_survive_platform_wrappers() {
 #[test]
 fn windows_nt_create_sites_open_synchronous_file_objects() {
     // The flag has to appear in the `CreateOptions` argument, not merely somewhere in the
-    // body: both sites also name it in a `use` or a `const`, so a bare `contains` would stay
+    // body: the primitive also names it in a `const`, so a bare `contains` would stay
     // green with the option dropped from the create call.
-    for (file, signature, create_options) in [
-        (
-            "infra/fs.rs",
-            "fn open_temp_child(",
-            "FILE_NON_DIRECTORY_FILE|FILE_OPEN_REPARSE_POINT|FILE_SYNCHRONOUS_IO_NONALERT,",
-        ),
-        (
-            "infra/path_authority/mod.rs",
-            "pub(crate) fn open_windows_child(",
-            "letoptions=FILE_OPEN_REPARSE_POINT|FILE_SYNCHRONOUS_IO_NONALERT|ifdirectory{FILE_DIRECTORY_FILE}else{FILE_NON_DIRECTORY_FILE};",
-        ),
-    ] {
-        let source = source_for(file);
-        let body = compact(&source[braced_body(source, signature)]);
-        assert!(
-            body.contains(create_options),
-            "{file}: {signature} must pass {create_options} as its CreateOptions: {body}"
-        );
-        assert!(
-            body.contains("NtCreateFile("),
-            "{file}: {signature} must still be the NT create site: {body}"
-        );
-    }
-    // `open_windows_child` declares the constant itself; a wrong value is invisible to a
+    let source = source_for("infra/path_authority/mod.rs");
+    let body = compact(&normalise(
+        &source[braced_body(source, "pub(crate) fn nt_create_windows_child(")],
+        Literals::Keep,
+    ));
+    assert!(
+        body.contains("letoptions=FILE_OPEN_REPARSE_POINT|FILE_SYNCHRONOUS_IO_NONALERT|ifrequest.directory{FILE_DIRECTORY_FILE}else{FILE_NON_DIRECTORY_FILE};")
+            && body.contains("NtCreateFile(&muthandle,request.access,&attributes,&mutstatus,null_mut(),0,request.share_access,request.disposition,options,null_mut(),0,)"),
+        "NT child primitive must pass synchronous CreateOptions to NtCreateFile"
+    );
+    // The primitive declares the constant itself; a wrong value is invisible to a
     // type-check and would silently leave the handle asynchronous.
     assert!(
         compact(source_for("infra/path_authority/mod.rs"))
@@ -2010,10 +2086,13 @@ fn unicode_string_length_guard_is_checked_and_called() {
         crate::infra::path_authority::unicode_string_lengths(units) == expected
     });
     let source = source_for("infra/path_authority/mod.rs");
-    let opener = compact(&source[braced_body(source, "pub(crate) fn open_windows_child(")]);
+    let opener = compact(&normalise(
+        &source[braced_body(source, "pub(crate) fn nt_create_windows_child(")],
+        Literals::Keep,
+    ));
     assert!(
         results.all(|result| result) && opener.contains("unicode_string_lengths(wide.len())"),
-        "UNICODE_STRING length guard is missing or not used: {opener}"
+        "UNICODE_STRING length guard is missing or not used"
     );
 }
 

@@ -2127,7 +2127,8 @@ mod unix {
 mod win {
     use super::*;
     use crate::infra::path_authority::{
-        is_reparse_point, open_windows_child, opened_file_identity, windows_open_status_error,
+        is_reparse_point, nt_create_windows_child, open_windows_child, opened_file_identity,
+        windows_open_status_error, WindowsChildRequest,
     };
     use std::{
         ffi::OsStr,
@@ -2141,27 +2142,19 @@ mod win {
         ptr::{null, null_mut},
     };
     use windows_sys::{
-        Wdk::{
-            Foundation::OBJECT_ATTRIBUTES,
-            Storage::FileSystem::{
-                FileDispositionInformation, FileDispositionInformationEx,
-                FileIdBothDirectoryInformation, FileRenameInformationEx, NtCreateFile,
-                NtQueryDirectoryFile, NtSetInformationFile, FILE_CREATE, FILE_DISPOSITION_DELETE,
-                FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE, FILE_DISPOSITION_INFORMATION,
-                FILE_DISPOSITION_INFORMATION_EX, FILE_DISPOSITION_POSIX_SEMANTICS,
-                FILE_ID_BOTH_DIR_INFORMATION, FILE_NON_DIRECTORY_FILE, FILE_OPEN,
-                FILE_OPEN_REPARSE_POINT, FILE_RENAME_IGNORE_READONLY_ATTRIBUTE,
-                FILE_RENAME_INFORMATION, FILE_RENAME_POSIX_SEMANTICS,
-                FILE_RENAME_REPLACE_IF_EXISTS, FILE_SYNCHRONOUS_IO_NONALERT,
-            },
+        Wdk::Storage::FileSystem::{
+            FileDispositionInformation, FileDispositionInformationEx,
+            FileIdBothDirectoryInformation, FileRenameInformationEx, NtQueryDirectoryFile,
+            NtSetInformationFile, FILE_CREATE, FILE_DISPOSITION_DELETE,
+            FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE, FILE_DISPOSITION_INFORMATION,
+            FILE_DISPOSITION_INFORMATION_EX, FILE_DISPOSITION_POSIX_SEMANTICS,
+            FILE_ID_BOTH_DIR_INFORMATION, FILE_OPEN, FILE_RENAME_IGNORE_READONLY_ATTRIBUTE,
+            FILE_RENAME_INFORMATION, FILE_RENAME_POSIX_SEMANTICS, FILE_RENAME_REPLACE_IF_EXISTS,
         },
         Win32::{
             // The NTSTATUS constants and RtlNtStatusToDosError live with the single classifier
             // in path_authority::windows_open_status_error, which this module now routes to.
-            Foundation::{
-                ERROR_DIRECTORY, HANDLE, STATUS_BUFFER_OVERFLOW, STATUS_NO_MORE_FILES,
-                UNICODE_STRING,
-            },
+            Foundation::{ERROR_DIRECTORY, HANDLE, STATUS_BUFFER_OVERFLOW, STATUS_NO_MORE_FILES},
             Security::{
                 AddAccessAllowedAce, CopySid, GetAce, GetKernelObjectSecurity, GetLengthSid,
                 GetTokenInformation, InitializeAcl, InitializeSecurityDescriptor,
@@ -2172,7 +2165,7 @@ mod win {
             },
             Storage::FileSystem::{
                 GetFileType, DELETE, FILE_ALL_ACCESS, FILE_ATTRIBUTE_DIRECTORY,
-                FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
+                FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
                 FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
                 FILE_TYPE_DISK, READ_CONTROL, SYNCHRONIZE, WRITE_DAC,
             },
@@ -2197,8 +2190,6 @@ mod win {
     #[cfg(test)]
     use windows_sys::Win32::System::SystemServices::ACCESS_ALLOWED_ACE_TYPE;
 
-    const OBJ_CASE_INSENSITIVE: u32 = 0x40;
-    const OBJ_DONT_REPARSE: u32 = 0x1000;
     const FILE_SHARE_PRIVATE_TEMP: u32 = FILE_SHARE_WRITE;
     const TEMP_ACCESS: u32 = DELETE
         | SYNCHRONIZE
@@ -2569,44 +2560,23 @@ mod win {
         name: &OsStr,
         security_descriptor: &PrivateSecurityDescriptor,
     ) -> Result<File, Error> {
-        let mut wide: Vec<u16> = name.encode_wide().collect();
-        let unicode = UNICODE_STRING {
-            Length: (wide.len() * 2) as u16,
-            MaximumLength: (wide.len() * 2) as u16,
-            Buffer: wide.as_mut_ptr(),
-        };
-        let attributes = OBJECT_ATTRIBUTES {
-            Length: std::mem::size_of::<OBJECT_ATTRIBUTES>() as u32,
-            RootDirectory: dir.as_raw_handle() as HANDLE,
-            ObjectName: &unicode,
-            Attributes: OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
-            SecurityDescriptor: security_descriptor.as_ptr(),
-            SecurityQualityOfService: null(),
-        };
-        let mut handle: HANDLE = null_mut();
-        let mut status: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
-        let status = unsafe {
-            NtCreateFile(
-                &mut handle,
-                TEMP_ACCESS,
-                &attributes,
-                &mut status,
-                null_mut(),
-                FILE_ATTRIBUTE_NORMAL,
-                FILE_SHARE_PRIVATE_TEMP,
-                FILE_CREATE,
-                FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
-                null(),
-                0,
-            )
-        };
-        if status != 0 {
-            return Err(windows_open_status_error(status));
-        }
-        Ok(unsafe { File::from_raw_handle(handle as RawHandle) })
+        nt_create_windows_child(
+            dir,
+            name,
+            WindowsChildRequest {
+                disposition: FILE_CREATE,
+                access: TEMP_ACCESS,
+                security_descriptor: security_descriptor.as_ptr(),
+                directory: false,
+                share_access: FILE_SHARE_PRIVATE_TEMP,
+            },
+        )
     }
 
-    fn create_temp(dir: &File, _original: Option<&Target>) -> Result<(OsString, File), Error> {
+    pub(super) fn create_temp(
+        dir: &File,
+        _original: Option<&Target>,
+    ) -> Result<(OsString, File), Error> {
         let security_descriptor = PrivateSecurityDescriptor::new(FILE_ALL_ACCESS)?;
         (0..PRIVATE_TEMP_RETRIES)
             .find_map(|_| {
@@ -9485,6 +9455,49 @@ mod tests {
         });
         assert!(matches!(result, Err(Error::Conflict(_))));
         assert_eq!(std::fs::read(&target).expect("target"), b"old");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_private_temp_refuses_read_and_rename_while_held() {
+        use std::io::{Seek, SeekFrom};
+        use windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let parent = windows_test_parent(dir.path());
+        let (name, mut file) = win::create_temp(&parent, None).expect("private temporary");
+        let path = dir.path().join(&name);
+        assert_eq!(
+            File::open(&path)
+                .expect_err("held temporary refuses readers")
+                .raw_os_error(),
+            Some(ERROR_SHARING_VIOLATION as i32)
+        );
+        assert_eq!(
+            std::fs::rename(&path, dir.path().join("renamed"))
+                .expect_err("held temporary refuses renames")
+                .raw_os_error(),
+            Some(ERROR_SHARING_VIOLATION as i32)
+        );
+        file.write_all(b"private bytes").expect("synchronous write");
+        file.seek(SeekFrom::Start(0)).expect("rewind");
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).expect("synchronous read");
+        assert_eq!(bytes, b"private bytes");
+        drop(file);
+        std::fs::remove_file(path).expect("remove temporary");
+        assert_eq!(std::fs::read_dir(dir.path()).expect("directory").count(), 0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_private_temp_refuses_a_non_single_leaf_name() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _names = win::scoped_test_temp_names(vec!["a\\b".into()]);
+        let parent = windows_test_parent(dir.path());
+        let error = win::create_temp(&parent, None).expect_err("non-leaf temporary name");
+        assert!(matches!(error, Error::InvalidInput(_)), "{error:?}");
+        assert_eq!(std::fs::read_dir(dir.path()).expect("directory").count(), 0);
     }
 
     #[cfg(windows)]

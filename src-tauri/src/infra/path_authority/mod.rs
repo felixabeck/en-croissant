@@ -249,6 +249,28 @@ mod windows_tests {
     }
 
     #[test]
+    fn windows_child_open_refuses_a_junction_object() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        windows_test_junction(&dir.path().join("junction"), target.path());
+        let parent = open_windows_nofollow(dir.path(), false).unwrap();
+        let error = open_windows_child(
+            &parent,
+            OsStr::new("junction"),
+            FILE_OPEN,
+            SYNCHRONIZE | GENERIC_READ,
+            null(),
+            true,
+            true,
+        )
+        .expect_err("a junction object must be refused");
+        assert!(
+            matches!(error, Error::InvalidInput(ref message) if message == "reparse points cannot be authorized"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
     fn windows_missing_entry_non_final_component_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let parent = open_windows_nofollow(dir.path(), false).unwrap();
@@ -3634,6 +3656,44 @@ pub(crate) fn open_windows_child(
     directory: bool,
     allow_delete_share: bool,
 ) -> Result<fs::File, Error> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+    nt_create_windows_child(
+        dir,
+        name,
+        WindowsChildRequest {
+            disposition,
+            access,
+            security_descriptor,
+            directory,
+            share_access: FILE_SHARE_READ
+                | FILE_SHARE_WRITE
+                | if allow_delete_share {
+                    FILE_SHARE_DELETE
+                } else {
+                    0
+                },
+        },
+    )
+}
+
+#[cfg(windows)]
+pub(crate) struct WindowsChildRequest {
+    pub(crate) disposition: u32,
+    pub(crate) access: u32,
+    pub(crate) security_descriptor: *const windows_sys::Win32::Security::SECURITY_DESCRIPTOR,
+    pub(crate) directory: bool,
+    pub(crate) share_access: u32,
+}
+
+/// Creates or opens one leaf below a retained directory handle without following reparse points.
+#[cfg(windows)]
+pub(crate) fn nt_create_windows_child(
+    dir: &fs::File,
+    name: &OsStr,
+    request: WindowsChildRequest,
+) -> Result<fs::File, Error> {
     use std::{
         mem::{size_of, zeroed},
         os::windows::{
@@ -3646,7 +3706,6 @@ pub(crate) fn open_windows_child(
         Wdk::{Foundation::OBJECT_ATTRIBUTES, Storage::FileSystem::NtCreateFile},
         Win32::{
             Foundation::{HANDLE, UNICODE_STRING},
-            Storage::FileSystem::{FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE},
             System::IO::IO_STATUS_BLOCK,
         },
     };
@@ -3655,6 +3714,8 @@ pub(crate) fn open_windows_child(
     const FILE_DIRECTORY_FILE: u32 = 0x1;
     const FILE_NON_DIRECTORY_FILE: u32 = 0x40;
     const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    // NtCreateFile IoStatusBlock->Information: windows-sys Win32::System::WindowsProgramming::FILE_CREATED = 2.
+    const FILE_CREATED: usize = 2;
     // Without this the I/O manager keeps no `CurrentByteOffset` on the returned file object:
     // every `ReadFile`/`WriteFile` with a NULL `lpOverlapped` — which is what `File::read` and
     // `File::write` always issue — fails with `STATUS_INVALID_PARAMETER`, and
@@ -3677,14 +3738,14 @@ pub(crate) fn open_windows_child(
         RootDirectory: dir.as_raw_handle() as _,
         ObjectName: &mut unicode,
         Attributes: OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
-        SecurityDescriptor: security_descriptor,
+        SecurityDescriptor: request.security_descriptor,
         SecurityQualityOfService: null_mut(),
     };
     let mut handle: HANDLE = null_mut();
     let mut status: IO_STATUS_BLOCK = unsafe { zeroed() };
     let options = FILE_OPEN_REPARSE_POINT
         | FILE_SYNCHRONOUS_IO_NONALERT
-        | if directory {
+        | if request.directory {
             FILE_DIRECTORY_FILE
         } else {
             FILE_NON_DIRECTORY_FILE
@@ -3692,19 +3753,13 @@ pub(crate) fn open_windows_child(
     let result = unsafe {
         NtCreateFile(
             &mut handle,
-            access,
+            request.access,
             &attributes,
             &mut status,
             null_mut(),
             0,
-            FILE_SHARE_READ
-                | FILE_SHARE_WRITE
-                | if allow_delete_share {
-                    FILE_SHARE_DELETE
-                } else {
-                    0
-                },
-            disposition,
+            request.share_access,
+            request.disposition,
             options,
             null_mut(),
             0,
@@ -3714,7 +3769,7 @@ pub(crate) fn open_windows_child(
         return Err(windows_open_status_error(result));
     }
     let file = unsafe { fs::File::from_raw_handle(handle as RawHandle) };
-    if is_reparse_point(&file.metadata()?) {
+    if status.Information != FILE_CREATED && is_reparse_point(&file.metadata()?) {
         return Err(Error::InvalidInput(
             "reparse points cannot be authorized".into(),
         ));
