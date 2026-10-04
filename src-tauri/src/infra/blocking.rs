@@ -6,7 +6,11 @@ use std::sync::Arc;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
-pub static BLOCKING_GATEWAY: Lazy<BlockingGateway> = Lazy::new(|| BlockingGateway::new(4));
+/// Bounds the number of concurrently running production blocking tasks.
+const BLOCKING_GATEWAY_PERMITS: usize = 4;
+
+pub static BLOCKING_GATEWAY: Lazy<BlockingGateway> =
+    Lazy::new(|| BlockingGateway::new(BLOCKING_GATEWAY_PERMITS));
 
 /// No closure passed to BLOCKING_GATEWAY may, directly or transitively, call BLOCKING_GATEWAY
 /// again. Acquiring several permits in sequence from an async body is fine; acquiring one inside
@@ -14,8 +18,8 @@ pub static BLOCKING_GATEWAY: Lazy<BlockingGateway> = Lazy::new(|| BlockingGatewa
 ///
 /// `create_workspace_file` awaits `count_pgn_games_core`, which awaits `scan_current`
 /// (`pgn.rs:336`), which takes a permit — that is a legal sequential acquisition and must not
-/// become a nested one. The semaphore has 4 permits, so four nested acquisitions hang the
-/// process with no error.
+/// become a nested one. The semaphore has `BLOCKING_GATEWAY_PERMITS` (4) permits, so four
+/// nested acquisitions hang the process with no error.
 pub struct BlockingGateway {
     semaphore: Arc<tokio::sync::Semaphore>,
 }
