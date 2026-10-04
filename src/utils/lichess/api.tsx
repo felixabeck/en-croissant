@@ -25,6 +25,9 @@ import { countMainPly } from "@/utils/treeReducer";
 
 export const MIN_DATE = new Date(1952, 0, 1);
 
+// Per-game byte estimate passed as the native download's estimated size (progress only).
+const ESTIMATED_PGN_BYTES_PER_GAME = 900;
+
 export type TablebaseCategory =
   | "win"
   | "unknown"
@@ -393,7 +396,7 @@ export async function downloadLichess(
       `${player}_lichess.pgn`,
       player,
       timestamp === null ? null : BigInt(timestamp),
-      games > 0 ? games * 900 : null,
+      games > 0 ? games * ESTIMATED_PGN_BYTES_PER_GAME : null,
       ticket,
     ),
   );

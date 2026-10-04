@@ -41,18 +41,6 @@ describe("convertToNormalized", () => {
         mocks.logError.mockReset().mockResolvedValue(undefined);
         mocks.getPublicLichessJson.mockReset();
         mocks.lexPgn.mockReset();
-        mocks.downloadLichessGames.mockReset().mockResolvedValue(publication);
-        mocks.releaseDownload.mockReset().mockResolvedValue(undefined);
-        mocks.withDownloadTicket
-            .mockReset()
-            .mockImplementation(async (run: (ticket: string) => Promise<unknown>) => {
-                try {
-                    return await run("prepared-ticket");
-                } catch (error) {
-                    await mocks.releaseDownload("prepared-ticket");
-                    throw error;
-                }
-            });
     });
 
     const dummyGames = [
@@ -160,6 +148,23 @@ describe("convertToNormalized", () => {
         const promise = convertToNormalized(dummyGames, { signal: controller.signal });
         await expect(promise).rejects.toThrow("Cancellation");
         expect(mocks.logError).not.toHaveBeenCalled();
+    });
+});
+
+describe("downloadLichess", () => {
+    beforeEach(() => {
+        mocks.downloadLichessGames.mockReset().mockResolvedValue(publication);
+        mocks.releaseDownload.mockReset().mockResolvedValue(undefined);
+        mocks.withDownloadTicket
+            .mockReset()
+            .mockImplementation(async (run: (ticket: string) => Promise<unknown>) => {
+                try {
+                    return await run("prepared-ticket");
+                } catch (error) {
+                    await mocks.releaseDownload("prepared-ticket");
+                    throw error;
+                }
+            });
     });
 
     test("passes the prepared ticket as the native job id", async () => {
