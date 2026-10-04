@@ -760,7 +760,10 @@ pub async fn download_file(
 
 fn sanitize_download_error(error: Error) -> Error {
     match error {
-        Error::Io(_) => Error::Io(Box::new(std::io::Error::other("I/O failure"))),
+        Error::Io(source) => Error::Io(Box::new(crate::error::sanitized_io_error(
+            &source,
+            "I/O failure".into(),
+        ))),
         error => error,
     }
 }
@@ -2512,6 +2515,34 @@ mod tests {
         assert_eq!(payload["category"], "io");
         assert_eq!(payload["message"], "I/O failure");
         assert!(!serialized.contains("staging"));
+    }
+
+    #[test]
+    fn download_io_serializes_permission_and_missing_resource_without_path() {
+        for (source, category) in [
+            (
+                std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "/private/staging/payload: permission denied",
+                ),
+                "permission",
+            ),
+            (
+                std::io::Error::from(std::io::ErrorKind::NotFound),
+                "missing-resource",
+            ),
+        ] {
+            let error = sanitize_download_error(Error::Io(Box::new(source)));
+            let Error::Io(source) = &error else {
+                panic!("sanitization must preserve the I/O error");
+            };
+            assert_eq!(source.to_string(), "I/O failure");
+            let serialized = serde_json::to_string(&error).unwrap();
+            let payload: serde_json::Value = serde_json::from_str(&serialized).unwrap();
+            assert_eq!(payload["category"], category);
+            assert_eq!(payload["message"], "I/O failure");
+            assert!(!serialized.contains("staging"));
+        }
     }
 
     #[test]
