@@ -5461,3 +5461,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** One meaning across control flow and categorisation. Reversal path: revert the two classifiers' arms to `kind() == NotFound`.
 * **Decided by:** Claude Code, drain session e86c5c5d-5436-4a09-87ef-8662fd750e7f (drain run 42548d18-1af4-46bd-a37c-20f82f9ba6c8), full auto, reviewed plan tasks/plans/2026-10-04-missing-entry-predicate.md (planned ahead, 4 review rounds) · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"9cb6534ee48eca9f684d1f47d65b314cedea88910c2163b42cab6e6c1f5213d3","input_sha256":"83a888382516dd63fb37758d01cffe87496de34acd8588bc85df9a4095e4fe6b","kind":"mutation-receipt","operation":"2180bf03794df3f329af712e3b04a2ca3741993f7a7cf7cc2287ae4ee0deabe0","options":{"section":null},"request_id_sha256":null,"results":["d-20261004-29"],"target":"decisions-ledger","v":1} -->
+
+### d-20261004-30 — Are producer-layer absence comparisons routed through the missing-entry predicate?
+
+* **Question:** rustix `Errno::NOENT` comparisons and the SQLite VFS hooks (`db/bound_sqlite.rs`) test absence on native values before any `Error`/`io::Error` exists. Does `f-20260916-09` route them too?
+* **Governs:** f-20260916-09
+* **Chosen:** No; they stay as they are and already use exactly the predicate's sets (`{ENOENT}`, `{2, 3}`). The predicate's doc comment names them.
+* **Rejected:** Converting each native value into an `io::Error` only to call the predicate.
+* **Reason:** The finding is about callers above the OS layer; the producers already agree. Reversal path: add an `Errno`/`u32` form of the predicate.
+* **Decided by:** Claude Code, drain session e86c5c5d-5436-4a09-87ef-8662fd750e7f (drain run 42548d18-1af4-46bd-a37c-20f82f9ba6c8), full auto, reviewed plan tasks/plans/2026-10-04-missing-entry-predicate.md (planned ahead, 4 review rounds) · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"43c860b22ef633962beae55cb1e166e9637fd5532f42e9dbb39dc44683c61ca1","input_sha256":"eeb7a1c4eccc3269a2e6e9aaad84eb1932b3aa271bad1b6e73150f234e0a1dc3","kind":"mutation-receipt","operation":"9c37bd48d2a59e475d4579ecec53cc0f6a8042d375daf9a06a2efe94a048a0d7","options":{"section":null},"request_id_sha256":null,"results":["d-20261004-30"],"target":"decisions-ledger","v":1} -->
