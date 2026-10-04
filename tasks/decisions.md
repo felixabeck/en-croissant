@@ -5451,3 +5451,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** One interpreter of absence codes is enough to remove the divergence; the raw code stays useful for diagnosis. Reversal path: normalise inside `windows_open_status_error`.
 * **Decided by:** Claude Code, drain session e86c5c5d-5436-4a09-87ef-8662fd750e7f (drain run 42548d18-1af4-46bd-a37c-20f82f9ba6c8), full auto, reviewed plan tasks/plans/2026-10-04-missing-entry-predicate.md (planned ahead, 4 review rounds) · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"071d94269b8947e49916f1c0a104bddafddaa7259f26c7137e68dd4129d1202d","input_sha256":"7520e2cf52014a8c92dadbfb30c8ef4be93b8c9f80f38c9e6735f97e321f5d1e","kind":"mutation-receipt","operation":"50dda7795d2692922822b1e3b0629c89123aba89f40c591dcf6f2ee68bc871ef","options":{"section":null},"request_id_sha256":null,"results":["d-20261004-28"],"target":"decisions-ledger","v":1} -->
+
+### d-20261004-29 — Do `category` and `root_failure_reason` follow the missing-entry predicate?
+
+* **Question:** `Error::category` and `root_failure_reason` classify `Io(kind NotFound)` as `MissingResource`/`Missing`. Do they switch to the new predicate of `f-20260916-09`?
+* **Governs:** f-20260916-09
+* **Chosen:** Yes; and sanitising wrappers that rebuild an `io::Error` from its kind (`practice.rs` `operation_io`, `AppDataDir::acquire`, debug `write_if_changed`) go through one `error.rs` helper that preserves the classification. Effect is Windows-only: raw 15/53/67 categorise as generic I/O instead of `MissingResource`.
+* **Rejected:** Leaving them on `ErrorKind::NotFound` — one error would be "missing" for the renderer's category and "present" for control flow, the divergence the finding names.
+* **Reason:** One meaning across control flow and categorisation. Reversal path: revert the two classifiers' arms to `kind() == NotFound`.
+* **Decided by:** Claude Code, drain session e86c5c5d-5436-4a09-87ef-8662fd750e7f (drain run 42548d18-1af4-46bd-a37c-20f82f9ba6c8), full auto, reviewed plan tasks/plans/2026-10-04-missing-entry-predicate.md (planned ahead, 4 review rounds) · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"9cb6534ee48eca9f684d1f47d65b314cedea88910c2163b42cab6e6c1f5213d3","input_sha256":"83a888382516dd63fb37758d01cffe87496de34acd8588bc85df9a4095e4fe6b","kind":"mutation-receipt","operation":"2180bf03794df3f329af712e3b04a2ca3741993f7a7cf7cc2287ae4ee0deabe0","options":{"section":null},"request_id_sha256":null,"results":["d-20261004-29"],"target":"decisions-ledger","v":1} -->
