@@ -1,7 +1,7 @@
 use std::{
-    ffi::{OsStr, OsString},
+    ffi::OsStr,
     future::Future,
-    io::{Read, Write},
+    io::{Read, Seek, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
@@ -24,7 +24,6 @@ use crate::AppState;
 pub(crate) const MAX_ACTIVE_DOWNLOADS: usize = 32;
 const DOWNLOAD_DEADLINE: Duration = Duration::from_secs(60 * 60);
 const MAX_ARCHIVE_PATH_BYTES: usize = 1024;
-const DOWNLOAD_STAGING_PAYLOAD_LEAF: &str = "payload";
 const TAR_BLOCK_SIZE: usize = 512;
 const USTAR_MAGIC_OFFSET: usize = 257;
 const USTAR_MAGIC: &[u8; 5] = b"ustar";
@@ -336,7 +335,7 @@ async fn download_file_core<F>(
     op: OpClass,
     url: &str,
     path: &Path,
-    staging: Option<(PathBuf, Option<OsString>)>,
+    staging: Option<PathBuf>,
     transport: &dyn crate::infra::net::DownloadTransport,
     token: Option<&str>,
     total_size: Option<u32>,
@@ -365,7 +364,7 @@ async fn download_file_core_control<F>(
     op: OpClass,
     url: &str,
     path: &Path,
-    staging: Option<(PathBuf, Option<OsString>)>,
+    staging: Option<PathBuf>,
     transport: &dyn crate::infra::net::DownloadTransport,
     token: Option<&str>,
     total_size: Option<u32>,
@@ -394,14 +393,14 @@ where
 /// leaf, refusing when `path` is not the directory that staging names.
 fn archive_install_names<'a>(
     path: &Path,
-    staging: &'a Option<(PathBuf, Option<OsString>)>,
+    staging: &'a Option<PathBuf>,
 ) -> Result<(&'a Path, &'a OsStr), Error> {
     let mismatch = || Error::InvalidInput("archive target does not match its staging".into());
     match staging {
         None => Err(Error::InvalidInput(
             "archive extract needs process-owned staging".into(),
         )),
-        Some((root, None)) => {
+        Some(root) => {
             if path != root.as_path() {
                 return Err(mismatch());
             }
@@ -410,24 +409,15 @@ fn archive_install_names<'a>(
                 _ => Err(mismatch()),
             }
         }
-        Some((root, Some(leaf))) => {
-            if path != root.join(leaf) {
-                return Err(mismatch());
-            }
-            Ok((root.as_path(), leaf.as_os_str()))
-        }
     }
 }
 
-/// `staging` names the process-owned directory a zip or tar payload is installed under:
-/// `(root, None)` replaces `root` itself (engine), `(root, Some(leaf))` installs onto
-/// `root/leaf` (payload). Both must agree with `path`; gzip and plain files ignore it.
+/// Writes the validated network body into the caller's open payload file and flushes it.
 #[allow(clippy::too_many_arguments)]
-async fn download_file_core_control_with_integrity<F>(
+async fn download_payload_network<F>(
     op: OpClass,
     url: &str,
-    path: &Path,
-    staging: Option<(PathBuf, Option<OsString>)>,
+    file: &mut std::fs::File,
     transport: &dyn crate::infra::net::DownloadTransport,
     token: Option<&str>,
     total_size: Option<u32>,
@@ -524,13 +514,6 @@ where
 
     let expected_size = total_size.map(|s| s as u64).or(declared_size);
 
-    let target_dir = path.parent().unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(target_dir)?;
-    let mut temp_file = tempfile::Builder::new()
-        .prefix(".download")
-        .tempfile_in(target_dir)
-        .map_err(|e| Error::Io(Box::new(e)))?;
-
     let mut downloaded: u64 = 0;
     let mut digest = expected_sha256.map(|_| Sha256::new());
 
@@ -555,7 +538,7 @@ where
                 ));
             }
         }
-        temp_file.write_all(&chunk)?;
+        file.write_all(&chunk)?;
         if let Some(total_size) = total_size {
             let progress = ((downloaded as f64 / total_size as f64) * 100.0).min(100.0) as f32;
             progress_updater(progress)?;
@@ -580,9 +563,88 @@ where
             return Err(Error::InvalidInput("artifact SHA-256 mismatch".into()));
         }
     }
-    temp_file.flush()?;
+    file.flush()?;
 
     info!("Downloaded file to temporary location");
+
+    Ok(())
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DownloadPayloadKind {
+    Plain,
+    Zip,
+    Tar,
+    Gzip,
+}
+
+fn sniff_download_payload(file: &mut std::fs::File) -> Result<DownloadPayloadKind, Error> {
+    file.rewind()?;
+    let mut magic = [0u8; TAR_BLOCK_SIZE];
+    let n = file.read(&mut magic)?;
+    file.rewind()?;
+    if n >= 4
+        && matches!(
+            &magic[..4],
+            b"PK\x03\x04" | b"PK\x05\x06" | b"PK\x06\x06" | b"PK\x06\x07"
+        )
+    {
+        Ok(DownloadPayloadKind::Zip)
+    } else if n >= 2 && magic[0] == 0x1F && magic[1] == 0x8B {
+        Ok(DownloadPayloadKind::Gzip)
+    } else if is_ustar_header(&magic[..n]) {
+        Ok(DownloadPayloadKind::Tar)
+    } else {
+        Ok(DownloadPayloadKind::Plain)
+    }
+}
+
+fn accept_plain_download_payload(file: &mut std::fs::File) -> Result<(), Error> {
+    if sniff_download_payload(file)? != DownloadPayloadKind::Plain {
+        return Err(Error::InvalidInput(
+            "Archive payload is not allowed for this operation".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// `staging` names the process-owned engine directory a zip or tar payload replaces.
+/// It must agree with `path`; gzip and plain files ignore it.
+#[allow(clippy::too_many_arguments)]
+async fn download_file_core_control_with_integrity<F>(
+    op: OpClass,
+    url: &str,
+    path: &Path,
+    staging: Option<PathBuf>,
+    transport: &dyn crate::infra::net::DownloadTransport,
+    token: Option<&str>,
+    total_size: Option<u32>,
+    cancellation: CancellationToken,
+    expected_sha256: Option<&str>,
+    progress_updater: F,
+) -> Result<(), Error>
+where
+    F: FnMut(f32) -> Result<(), Error>,
+{
+    let target_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(target_dir)?;
+    let mut temp_file = tempfile::Builder::new()
+        .prefix(".download")
+        .tempfile_in(target_dir)
+        .map_err(|e| Error::Io(Box::new(e)))?;
+    download_payload_network(
+        op,
+        url,
+        temp_file.as_file_mut(),
+        transport,
+        token,
+        total_size,
+        cancellation.clone(),
+        expected_sha256,
+        progress_updater,
+    )
+    .await?;
+    let limits = op.limits();
 
     let path = path.to_path_buf();
     crate::infra::blocking::BLOCKING_GATEWAY
@@ -591,29 +653,10 @@ where
                 return Err(Error::Cancellation);
             }
             let mut file = temp_file.into_file();
-            use std::io::Seek;
-            file.seek(std::io::SeekFrom::Start(0))?;
-
-            let mut magic = [0u8; TAR_BLOCK_SIZE];
-            let n = std::io::Read::read(&mut file, &mut magic)?;
-            file.seek(std::io::SeekFrom::Start(0))?;
-
-            let is_zip = n >= 4
-                && matches!(
-                    &magic[..4],
-                    b"PK\x03\x04" | b"PK\x05\x06" | b"PK\x06\x06" | b"PK\x06\x07"
-                );
-
-            let mut is_gz = false;
-            let mut is_tar = false;
-            if !is_zip {
-                if n >= 2 && magic[0] == 0x1F && magic[1] == 0x8B {
-                    is_gz = true;
-                } else {
-                    is_tar = is_ustar_header(&magic[..n]);
-                    file.seek(std::io::SeekFrom::Start(0))?;
-                }
-            }
+            let kind = sniff_download_payload(&mut file)?;
+            let is_zip = kind == DownloadPayloadKind::Zip;
+            let is_tar = kind == DownloadPayloadKind::Tar;
+            let is_gz = kind == DownloadPayloadKind::Gzip;
 
             if is_zip || is_tar || is_gz {
                 if op.payload_format() != PayloadFormat::Archive {
@@ -869,6 +912,11 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
             .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
         let operations = authority.download_operations(&destination)?;
         let op = OpClass::from_operations(&operations)?;
+        if op.payload_format() != PayloadFormat::PlainFile {
+            return Err(Error::InvalidInput(
+                "Payload download requires a plain-file operation".into(),
+            ));
+        }
         validate_artifact_integrity(op, url, integrity)?;
         let resolved = authority.resolve(
             &destination,
@@ -877,8 +925,7 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
         )?;
         (op, resolved)
     };
-    let staged = tempfile::tempdir().map_err(|error| Error::Io(Box::new(error)))?;
-    let staged_file = staged.path().join(DOWNLOAD_STAGING_PAYLOAD_LEAF);
+    let mut staged_file = tempfile::tempfile().map_err(|error| Error::Io(Box::new(error)))?;
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
@@ -887,44 +934,58 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
         DOWNLOAD_DEADLINE,
         &cancellation,
         "download deadline exceeded",
-        download_file_core_control_with_integrity(
-            op,
-            url,
-            &staged_file,
-            Some((
-                staged.path().to_path_buf(),
-                Some(DOWNLOAD_STAGING_PAYLOAD_LEAF.into()),
-            )),
-            state.http_transport.as_ref(),
-            bearer_token,
-            total_size,
-            cancellation.clone(),
-            integrity.map(|metadata| metadata.sha256.as_str()),
-            |progress| {
-                update_progress_with_state(
-                    &state.progress_state,
-                    app,
-                    &progress_lease,
-                    progress,
-                    ProgressState::Running,
-                )
-            },
-        ),
+        async {
+            download_payload_network(
+                op,
+                url,
+                &mut staged_file,
+                state.http_transport.as_ref(),
+                bearer_token,
+                total_size,
+                cancellation.clone(),
+                integrity.map(|metadata| metadata.sha256.as_str()),
+                |progress| {
+                    update_progress_with_state(
+                        &state.progress_state,
+                        app,
+                        &progress_lease,
+                        progress,
+                        ProgressState::Running,
+                    )
+                },
+            )
+            .await?;
+            crate::infra::blocking::BLOCKING_GATEWAY
+                .spawn_cancellable(cancellation.clone(), move |worker_cancellation| {
+                    if worker_cancellation.is_cancelled() {
+                        return Err(Error::Cancellation);
+                    }
+                    accept_plain_download_payload(&mut staged_file)?;
+                    Ok(staged_file)
+                })
+                .await
+        },
     )
     .await;
-    if let Err(error) = result {
-        report_download_error(state, app, &progress_lease, &job_id, &error);
-        return Err(error);
-    }
+    let mut staged_file = match result {
+        Ok(file) => file,
+        Err(error) => {
+            report_download_error(state, app, &progress_lease, &job_id, &error);
+            return Err(error);
+        }
+    };
 
     let reservation = if register_pgn_artifact {
         let payload = match crate::infra::path_authority::hash_staged_payload_cancellable(
-            staged_file.clone(),
+            staged_file,
             cancellation.clone(),
         )
         .await
         {
-            Ok(payload) => payload,
+            Ok((file, payload)) => {
+                staged_file = file;
+                payload
+            }
             Err(error) => {
                 report_download_error(state, app, &progress_lease, &job_id, &error);
                 return Err(error);
@@ -964,7 +1025,7 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
                 Some(reservation) => resolved
                     .atomic_install_reserved_download_cancellable(
                         reservation,
-                        &staged_file,
+                        &mut staged_file,
                         worker_cancellation,
                         Some(&commit_gate),
                     )
@@ -975,13 +1036,13 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
                         )
                     }),
                 None => {
-                    let mut staged = std::fs::File::open(staged_file)?;
+                    staged_file.rewind()?;
                     resolved
                         .atomic_replace_download_cancellable_with_commit_gate(
                             worker_cancellation,
                             &commit_gate,
                             |target| {
-                                copy_cancellable(&mut staged, target, worker_cancellation)?;
+                                copy_cancellable(&mut staged_file, target, worker_cancellation)?;
                                 Ok(())
                             },
                         )
@@ -1049,12 +1110,11 @@ pub(crate) async fn install_staged_pgn_artifact(
     cancellation: &CancellationToken,
     commit_gate: Option<&crate::infra::operations::OperationCommitGate>,
 ) -> Result<crate::infra::path_authority::ArtifactPublication, Error> {
+    let staged = staged.into_file();
     let filename = std::ffi::OsString::from(filename);
-    let payload = crate::infra::path_authority::hash_staged_payload_cancellable(
-        staged.path().to_path_buf(),
-        cancellation.clone(),
-    )
-    .await?;
+    let (mut staged, payload) =
+        crate::infra::path_authority::hash_staged_payload_cancellable(staged, cancellation.clone())
+            .await?;
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
@@ -1088,7 +1148,7 @@ pub(crate) async fn install_staged_pgn_artifact(
         .spawn_cancellable(cancellation.clone(), move |worker_cancellation| {
             resolved.atomic_install_reserved_download_cancellable(
                 &installation_reservation,
-                staged.path(),
+                &mut staged,
                 worker_cancellation,
                 commit_gate.as_ref(),
             )
@@ -1366,7 +1426,7 @@ async fn download_engine_archive_core<R: tauri::Runtime>(
                 op,
                 &url,
                 &extracted,
-                Some((staging.path().to_path_buf(), None)),
+                Some(staging.path().to_path_buf()),
                 state.http_transport.as_ref(),
                 None,
                 None,
@@ -2010,6 +2070,52 @@ mod tests {
         task::{Context, Poll},
     };
     use tempfile::tempdir;
+
+    #[test]
+    fn payload_download_staging_has_no_pathname() {
+        let source = include_str!("fs.rs");
+        let body = body_at_indent(source, "async fn download_to_destination_inner<");
+        assert!(body.contains("tempfile::tempfile()"), "{body}");
+        assert!(
+            body.contains("atomic_replace_download_cancellable_with_commit_gate("),
+            "{body}"
+        );
+        for forbidden in [
+            "tempdir(",
+            ".join(",
+            "File::open",
+            "create_dir_all",
+            "atomic_replace(",
+        ] {
+            assert!(!body.contains(forbidden), "{forbidden}: {body}");
+        }
+        let installer = body_at_indent(source, "pub(crate) async fn install_staged_pgn_artifact(");
+        assert!(installer.contains("into_file()"), "{installer}");
+        assert!(!installer.contains(".path()"), "{installer}");
+    }
+
+    #[test]
+    fn plain_download_acceptance_refuses_every_archive_kind() {
+        let mut tar = Vec::new();
+        flate2::read::GzDecoder::new(gzip_tar_payload(b"engine").as_slice())
+            .read_to_end(&mut tar)
+            .unwrap();
+        let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gzip.write_all(b"plain gzip contents").unwrap();
+        for bytes in [zip_payload(), tar, gzip.finish().unwrap()] {
+            let mut file = tempfile::tempfile().unwrap();
+            file.write_all(&bytes).unwrap();
+            assert_eq!(
+                accept_plain_download_payload(&mut file)
+                    .unwrap_err()
+                    .to_string(),
+                "Invalid input: Archive payload is not allowed for this operation"
+            );
+        }
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(b"plain contents").unwrap();
+        accept_plain_download_payload(&mut file).unwrap();
+    }
 
     #[test]
     fn archive_copy_core_cancels_between_real_chunks_before_publication() {
@@ -3823,7 +3929,7 @@ mod tests {
                 OpClass::Engine,
                 "https://example.com/engine.tar",
                 &target,
-                valid_checksum.then(|| (target.clone(), None)),
+                valid_checksum.then(|| target.clone()),
                 &zip_response(bytes.clone()),
                 None,
                 None,
@@ -3854,7 +3960,7 @@ mod tests {
             OpClass::Engine,
             "https://example.com/stockfish.tar.gz",
             &target,
-            Some((target.clone(), None)),
+            Some(target.clone()),
             &zip_response(bytes),
             None,
             None,
@@ -4064,10 +4170,7 @@ mod tests {
         assert_eq!(std::fs::read(&paths[1]).unwrap(), b"second executable");
     }
 
-    async fn download_zip_with_staging(
-        path: &Path,
-        staging: Option<(PathBuf, Option<OsString>)>,
-    ) -> Error {
+    async fn download_zip_with_staging(path: &Path, staging: Option<PathBuf>) -> Error {
         download_file_core(
             OpClass::Engine,
             "https://github.com/owner/repo/releases/download/v1/engine.zip",
@@ -4100,8 +4203,7 @@ mod tests {
         let root = tempdir().unwrap();
         let staging = private_tempdir_in(".archive", root.path()).unwrap();
         let other = root.path().join("other");
-        let error =
-            download_zip_with_staging(&other, Some((staging.path().to_path_buf(), None))).await;
+        let error = download_zip_with_staging(&other, Some(staging.path().to_path_buf())).await;
         assert_eq!(
             error.to_string(),
             "Invalid input: archive target does not match its staging"
@@ -4109,30 +4211,6 @@ mod tests {
         assert!(!error.to_string().contains('/'));
         assert!(!other.exists());
         assert!(leaves(staging.path()).is_empty());
-    }
-
-    #[tokio::test]
-    async fn download_archive_staging_payload_path_mismatch_is_invalid_input() {
-        let staged = tempdir().unwrap();
-        let other = staged.path().join("other");
-        let error = download_zip_with_staging(
-            &other,
-            Some((
-                staged.path().to_path_buf(),
-                Some(DOWNLOAD_STAGING_PAYLOAD_LEAF.into()),
-            )),
-        )
-        .await;
-        assert_eq!(
-            error.to_string(),
-            "Invalid input: archive target does not match its staging"
-        );
-        assert!(!error.to_string().contains('/'));
-        assert!(
-            leaves(staged.path()).is_empty(),
-            "{:?}",
-            leaves(staged.path())
-        );
     }
 
     #[tokio::test]
@@ -4681,6 +4759,96 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn payload_download_refuses_zip_without_publication_and_finishes_failed() {
+        let dir = tempdir().unwrap();
+        let (authority, destination, download_root) = test_downloads_destination(&dir);
+        let state = AppState {
+            http_transport: Arc::new(zip_response(zip_payload())),
+            ..AppState::default()
+        };
+        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        let app = test_progress_app();
+        let progress_id = "payload_zip_refused";
+        let (job_id, lease) = test_download_lease(&state);
+        let error = download_to_destination(
+            progress_id,
+            "https://example.com/games.zip",
+            destination,
+            "games.pgn".into(),
+            app.handle(),
+            &state,
+            None,
+            None,
+            job_id,
+            lease,
+            true,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Invalid input: Archive payload is not allowed for this operation"
+        );
+        assert!(leaves(&download_root).is_empty());
+        let progress = state.progress_state.get(progress_id).unwrap().unwrap();
+        assert_eq!(progress.state, ProgressState::Failed);
+        assert!(progress.finished);
+    }
+
+    #[tokio::test]
+    async fn payload_download_refuses_engine_class_before_integrity_and_transport() {
+        use crate::infra::path_authority::{AppOwnedRoot, PathAuthority, PathOperation};
+
+        let dir = tempdir().unwrap();
+        let download_root = dir.path().join("downloads");
+        std::fs::create_dir(&download_root).unwrap();
+        let root = AppOwnedRoot::new(
+            "downloads",
+            download_root.clone(),
+            vec![PathOperation::DownloadFile, PathOperation::EngineExecute],
+        );
+        let destination = root.id.clone();
+        let authority =
+            PathAuthority::open(dir.path().join("path-authority.json"), vec![root]).unwrap();
+        let transport = Arc::new(MockTransport {
+            responses: Mutex::new(vec![Ok(mock_successful_response(b"plain bytes"))]),
+            requests_seen: Mutex::new(vec![]),
+        });
+        let state = AppState {
+            http_transport: transport.clone(),
+            ..AppState::default()
+        };
+        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        let app = test_progress_app();
+        let progress_id = "payload_engine_refused";
+        let (job_id, lease) = test_download_lease(&state);
+        let error = download_to_destination(
+            progress_id,
+            "https://example.com/engine",
+            destination,
+            "engine".into(),
+            app.handle(),
+            &state,
+            None,
+            None,
+            job_id,
+            lease,
+            false,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Invalid input: Payload download requires a plain-file operation"
+        );
+        assert!(transport.requests_seen.lock().unwrap().is_empty());
+        assert!(leaves(&download_root).is_empty());
+        assert!(state.progress_state.get(progress_id).unwrap().is_none());
+    }
+
+    #[tokio::test]
     async fn runtime_callers_pin_download_target_replacement_durability_override() {
         let _guard = ResetAtomicInjectorGuard;
         let dir = tempdir().unwrap();
@@ -4693,9 +4861,9 @@ mod tests {
         let pgn_content: &'static [u8] = b"1. e4 c5 2. Nf3 d6";
         state.http_transport = mock_successful_transport(pgn_content);
 
-        // Skip download staging (1) and reservation journal (2); fail target replacement parent sync (3)
+        // Skip reservation journal (1); fail target replacement parent sync (2).
         crate::infra::fs::set_test_atomic_file_injector(Some(Arc::new(TargetParentSyncFault {
-            skip: std::sync::atomic::AtomicUsize::new(2),
+            skip: std::sync::atomic::AtomicUsize::new(1),
         })));
 
         let (job_id, lease) = test_download_lease(&state);
@@ -4786,10 +4954,10 @@ mod tests {
         let pgn_content: &'static [u8] = b"1. e4 c5 2. Nf3 d6";
         state.http_transport = mock_successful_transport(pgn_content);
 
-        // The staging replacement is the first parent sync; the ordinary target replacement is
-        // the second and must report committed-but-uncertain durability terminally.
+        // The ordinary target replacement is the first parent sync and must report
+        // committed-but-uncertain durability terminally.
         crate::infra::fs::set_test_atomic_file_injector(Some(Arc::new(TargetParentSyncFault {
-            skip: std::sync::atomic::AtomicUsize::new(1),
+            skip: std::sync::atomic::AtomicUsize::new(0),
         })));
 
         let progress_id = "progress_no_reservation_uncertainty";
@@ -4976,9 +5144,9 @@ mod tests {
         let pgn_content: &'static [u8] = b"1. e4 e5 2. Nf3 Nc6";
         state.http_transport = mock_successful_transport(pgn_content);
 
-        // Skip staging and reservation journal syncs; fail the target replacement sync.
+        // Skip the reservation journal sync; fail the target replacement sync.
         crate::infra::fs::set_test_atomic_file_injector(Some(Arc::new(TargetParentSyncFault {
-            skip: std::sync::atomic::AtomicUsize::new(2),
+            skip: std::sync::atomic::AtomicUsize::new(1),
         })));
         let progress_id = "progress_activation_failure_uncertainty";
         let (job_id, lease) = test_download_lease(&state);

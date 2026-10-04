@@ -8,7 +8,7 @@ use sha2::Digest;
 use std::{
     ffi::{OsStr, OsString},
     fs,
-    io::{Read, Write},
+    io::{Read, Seek, Write},
     path::{Path, PathBuf},
     time::SystemTime,
 };
@@ -352,13 +352,13 @@ impl ResolvedPath {
     }
 
     /// Streams a previously reserved staging file into the private atomic temporary inode and
-    /// verifies its exact reservation digest before `renameat`. A substituted staging pathname
-    /// therefore fails before the visible target changes.
+    /// verifies its exact reservation digest before `renameat`. Changed staging bytes therefore
+    /// fail before the visible target changes.
     #[cfg(all(test, unix))]
     pub(crate) fn atomic_install_reserved_download(
         &self,
         reservation: &super::PendingArtifactReservation,
-        staged_payload: &Path,
+        staged_payload: &mut fs::File,
     ) -> Result<AtomicInstalledFile, Error> {
         self.atomic_install_reserved_download_cancellable(
             reservation,
@@ -371,11 +371,11 @@ impl ResolvedPath {
     pub(crate) fn atomic_install_reserved_download_cancellable(
         &self,
         reservation: &super::PendingArtifactReservation,
-        staged_payload: &Path,
+        staged_payload: &mut fs::File,
         cancellation: &CancellationToken,
         commit_gate: Option<&crate::infra::operations::OperationCommitGate>,
     ) -> Result<AtomicInstalledFile, Error> {
-        let mut staged = fs::File::open(staged_payload)?;
+        staged_payload.rewind()?;
         let expected_size = reservation.payload_size;
         let expected_hash = reservation.payload_sha256.clone();
         let parent = self
@@ -410,7 +410,7 @@ impl ResolvedPath {
                     if copy_cancellation.is_cancelled() {
                         return Err(Error::Cancellation);
                     }
-                    let read = staged.read(&mut buffer)?;
+                    let read = staged_payload.read(&mut buffer)?;
                     if read == 0 {
                         break;
                     }

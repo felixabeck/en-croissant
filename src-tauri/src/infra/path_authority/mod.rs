@@ -27,7 +27,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     ffi::{OsStr, OsString},
     fs,
-    io::{Read, Write},
+    io::{Read, Seek, Write},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -3432,13 +3432,14 @@ fn identity(path: &Path) -> Result<Identity, Error> {
 }
 
 pub(crate) async fn hash_staged_payload_cancellable(
-    path: PathBuf,
+    mut file: fs::File,
     cancellation: tokio_util::sync::CancellationToken,
-) -> Result<(u64, String), Error> {
+) -> Result<(fs::File, (u64, String)), Error> {
     crate::infra::blocking::BLOCKING_GATEWAY
         .spawn_cancellable(cancellation, move |token| {
-            let mut file = fs::File::open(&path)?;
-            sha256_reader_cancellable(&mut file, token)
+            file.rewind()?;
+            let payload = sha256_reader_cancellable(&mut file, token)?;
+            Ok((file, payload))
         })
         .await
 }
@@ -14843,7 +14844,7 @@ mod tests {
             )
             .unwrap();
         let installed = resolved
-            .atomic_install_reserved_download(&reservation, staged)
+            .atomic_install_reserved_download(&reservation, &mut fs::File::open(staged).unwrap())
             .unwrap();
         authority
             .mark_download_artifact_committed(
@@ -14997,7 +14998,7 @@ mod tests {
                 &[OsString::from("games.pgn")],
             )
             .unwrap()
-            .atomic_install_reserved_download(&reservation, &staged)
+            .atomic_install_reserved_download(&reservation, &mut fs::File::open(&staged).unwrap())
             .unwrap();
         authority
             .mark_download_artifact_committed(
@@ -15045,7 +15046,7 @@ mod tests {
                 &[OsString::from("games.pgn")],
             )
             .unwrap()
-            .atomic_install_reserved_download(&reservation, &staged)
+            .atomic_install_reserved_download(&reservation, &mut fs::File::open(&staged).unwrap())
             .unwrap();
         fs::remove_file(root.join("games.pgn")).unwrap();
         fs::write(root.join("games.pgn"), b"same bytes").unwrap();
@@ -15141,7 +15142,10 @@ mod tests {
                     &[OsString::from("games.pgn")],
                 )
                 .unwrap()
-                .atomic_install_reserved_download(&reservation, &staged)
+                .atomic_install_reserved_download(
+                    &reservation,
+                    &mut fs::File::open(&staged).unwrap(),
+                )
                 .unwrap();
             let target_path = root_path.join("games.pgn");
             Self {
@@ -19825,10 +19829,15 @@ mod tests {
         );
         assert_eq!(constructor_count, 6, "resolved path construction sites");
         assert!(unix_resolver.contains("crate::infra::fs::open_regular_at"));
-        assert_eq!(resolved.matches("File::open").count(), 1);
-        assert!(body_at_indent(
+        assert_eq!(resolved.matches("File::open").count(), 0);
+        assert!(!body_at_indent(
             resolved,
             "pub(crate) fn atomic_install_reserved_download_cancellable("
+        )
+        .contains("File::open"));
+        assert!(!body_at_indent(
+            module,
+            "pub(crate) async fn hash_staged_payload_cancellable("
         )
         .contains("File::open"));
 
