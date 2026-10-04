@@ -32,7 +32,6 @@ import puzzleCatalogSignature from "@/catalogs/puzzles.json.minisig?raw";
 import { CatalogVerificationError } from "@/utils/signedCatalog";
 import {
     DATABASE_NOT_INITIALIZED,
-    conversionProgressId,
     databaseHandleFromKey,
     databaseHandleKey,
     defaultDatabaseProgressId,
@@ -388,21 +387,6 @@ describe("production database metadata pipeline", () => {
         controller.abort();
         await expect(result).rejects.toMatchObject({ name: "AbortError" });
         expect(mocks.logError).not.toHaveBeenCalled();
-    });
-});
-
-describe("conversionProgressId", () => {
-    it("projects different handles to different ids", () => {
-        expect(conversionProgressId(handle("first"))).not.toBe(
-            conversionProgressId(handle("second")),
-        );
-        expect(conversionProgressId(handle("first"))).toBe(
-            `conversion:${databaseHandleKey(handle("first"))}`,
-        );
-    });
-
-    it("is stable for the same handle", () => {
-        expect(conversionProgressId(handle("same"))).toBe(conversionProgressId(handle("same")));
     });
 });
 

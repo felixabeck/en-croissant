@@ -11,7 +11,6 @@ vi.mock("@/bindings/generated", () => ({
 
 import { useConversionProgress } from "./useConversionProgress";
 import { databaseConversionStateAtom } from "@/state/atoms";
-import { conversionProgressId } from "@/utils/db";
 import { getDefaultStore, Provider, useAtomValue } from "jotai";
 import type { DatabaseHandle } from "@/bindings";
 
@@ -23,7 +22,8 @@ type ConvertProgress = {
 };
 
 const target: DatabaseHandle = { id: { id: "import-db" }, kind: "database" };
-const ownedId = conversionProgressId(target);
+const ownedId = "conversion:00000000-0000-4000-8000-000000000001";
+const secondId = "conversion:00000000-0000-4000-8000-000000000002";
 
 let eventHandler: ((event: { payload: ConvertProgress }) => void) | undefined;
 let root: Root;
@@ -33,15 +33,16 @@ const store = getDefaultStore();
 function Probe() {
   useConversionProgress();
   const state = useAtomValue(databaseConversionStateAtom);
-  return (
+  return state.map((entry) => (
     <output
-      data-in-progress={String(state.inProgress)}
-      data-total={state.totalGames}
-      data-elapsed={state.elapsedSeconds}
-      data-source={state.sourceFileName ?? "none"}
-      data-title={state.targetDatabaseTitle ?? "none"}
+      key={entry.id}
+      data-id={entry.id}
+      data-total={entry.totalGames}
+      data-elapsed={entry.elapsedSeconds}
+      data-source={entry.sourceFileName ?? "none"}
+      data-title={entry.targetDatabaseTitle ?? "none"}
     />
-  );
+  ));
 }
 
 function read(attribute: string) {
@@ -58,14 +59,16 @@ beforeEach(async () => {
     eventHandler = handler;
     return Promise.resolve(() => {});
   });
-  store.set(databaseConversionStateAtom, {
-    inProgress: false,
-    totalGames: 0,
-    elapsedSeconds: 0,
-    targetDatabase: target,
-    targetDatabaseTitle: "Lichess import",
-    sourceFileName: "games.pgn",
-  });
+  store.set(databaseConversionStateAtom, [
+    {
+      id: ownedId,
+      totalGames: 0,
+      elapsedSeconds: 0,
+      targetDatabase: target,
+      targetDatabaseTitle: "Lichess import",
+      sourceFileName: "games.pgn",
+    },
+  ]);
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -91,7 +94,6 @@ test("feeds the live import counters from the native conversion event", async ()
     source_file_name: "batch.pgn",
   });
 
-  expect(read("data-in-progress")).toBe("true");
   expect(read("data-total")).toBe("4000");
   expect(read("data-elapsed")).toBe("2.5");
   expect(read("data-source")).toBe("batch.pgn");
@@ -115,33 +117,48 @@ test("never overwrites the conversion target the route owns", async () => {
   await emit({ id: ownedId, imported_games: 10, elapsed_ms: 100, source_file_name: null });
 
   expect(read("data-title")).toBe("Lichess import");
+  expect(store.get(databaseConversionStateAtom)[0]?.targetDatabase).toEqual(target);
+});
+
+test("a registered operation can receive frames before its target exists", async () => {
+  await act(async () =>
+    store.set(databaseConversionStateAtom, (previous) =>
+      previous.map((entry) => ({ ...entry, targetDatabase: null })),
+    ),
+  );
+  await emit({
+    id: ownedId,
+    imported_games: 10,
+    elapsed_ms: 1000,
+    source_file_name: "created.pgn",
+  });
+  expect(store.get(databaseConversionStateAtom)[0]).toMatchObject({
+    totalGames: 10,
+    elapsedSeconds: 1,
+    targetDatabase: null,
+  });
 });
 
 test("ignores a ConvertProgress event with a foreign id", async () => {
+  const previous = store.get(databaseConversionStateAtom);
   await emit({
-    id: conversionProgressId({ id: { id: "other-db" }, kind: "database" }),
+    id: "conversion:foreign",
     imported_games: 9000,
     elapsed_ms: 4000,
     source_file_name: "foreign.pgn",
   });
 
-  expect(read("data-in-progress")).toBe("false");
+  expect(store.get(databaseConversionStateAtom)).toBe(previous);
   expect(read("data-total")).toBe("0");
   expect(read("data-source")).toBe("games.pgn");
   expect(read("data-title")).toBe("Lichess import");
 });
 
-test("does not start a conversion when no target database is in flight", async () => {
+test("a frame never creates an entry when no conversion is in flight", async () => {
   await act(async () => {
-    store.set(databaseConversionStateAtom, {
-      inProgress: false,
-      totalGames: 0,
-      elapsedSeconds: 0,
-      targetDatabase: null,
-      targetDatabaseTitle: null,
-      sourceFileName: null,
-    });
+    store.set(databaseConversionStateAtom, []);
   });
+  const previous = store.get(databaseConversionStateAtom);
 
   await emit({
     id: ownedId,
@@ -150,7 +167,33 @@ test("does not start a conversion when no target database is in flight", async (
     source_file_name: "idle.pgn",
   });
 
-  expect(read("data-in-progress")).toBe("false");
-  expect(read("data-total")).toBe("0");
-  expect(read("data-source")).toBe("none");
+  expect(store.get(databaseConversionStateAtom)).toBe(previous);
+  expect(container.querySelectorAll("output")).toHaveLength(0);
+});
+
+test("two live operations receive only their own frames, even with the same target", async () => {
+  const first = store.get(databaseConversionStateAtom)[0];
+  if (!first) throw new Error("Missing first conversion");
+  const second = { ...first, id: secondId, sourceFileName: "second.pgn" };
+  await act(async () => store.set(databaseConversionStateAtom, [first, second]));
+  await emit({ id: ownedId, imported_games: 100, elapsed_ms: 2000, source_file_name: "first.pgn" });
+  expect(store.get(databaseConversionStateAtom)[1]).toBe(second);
+  const updatedFirst = store.get(databaseConversionStateAtom)[0];
+  await emit({ id: secondId, imported_games: 42, elapsed_ms: 500, source_file_name: null });
+  expect(store.get(databaseConversionStateAtom)[0]).toBe(updatedFirst);
+  expect(store.get(databaseConversionStateAtom)).toEqual([
+    { ...first, totalGames: 100, elapsedSeconds: 2, sourceFileName: "first.pgn" },
+    { ...second, totalGames: 42, elapsedSeconds: 0.5 },
+  ]);
+});
+
+test("a removed id leaves the surviving registry referentially unchanged", async () => {
+  await act(async () =>
+    store.set(databaseConversionStateAtom, (previous) =>
+      previous.map((entry) => ({ ...entry, id: secondId })),
+    ),
+  );
+  const previous = store.get(databaseConversionStateAtom);
+  await emit({ id: ownedId, imported_games: 9000, elapsed_ms: 4000, source_file_name: "late.pgn" });
+  expect(store.get(databaseConversionStateAtom)).toBe(previous);
 });

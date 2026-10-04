@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { Provider, createStore } from "jotai";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { AppError, AppErrorCategory } from "@/platform/errors";
-import { conversionProgressId } from "@/utils/db";
+import { databaseConversionStateAtom } from "@/state/atoms";
 import { AccountCard } from "./AccountCard";
 
 const mocks = vi.hoisted(() => ({
@@ -333,7 +333,7 @@ test("convertPgn failure is not masked when marking the lease failed also reject
   await renderCard();
   await act(async () => downloadButton().click());
   expect(mocks.convertPgn).toHaveBeenCalledWith(
-    conversionProgressId(handle),
+    expect.stringMatching(/^conversion:[0-9a-f-]{36}$/),
     [artifact],
     handle,
     null,
@@ -351,6 +351,7 @@ test("convertPgn failure is not masked when marking the lease failed also reject
     expect.objectContaining({ message: "progress failed" }),
   );
   expect(downloadButton().disabled).toBe(false);
+  expect(store.get(databaseConversionStateAtom)).toEqual([]);
 });
 
 test("a rejecting setProgressState after a successful convert still runs the post-import step", async () => {
@@ -372,7 +373,7 @@ test("a rejecting setProgressState after a successful convert still runs the pos
   await renderCard();
   await act(async () => downloadButton().click());
   expect(mocks.convertPgn).toHaveBeenCalledWith(
-    conversionProgressId(handle),
+    expect.stringMatching(/^conversion:[0-9a-f-]{36}$/),
     [artifact],
     handle,
     null,
@@ -382,5 +383,32 @@ test("a rejecting setProgressState after a successful convert still runs the pos
   expect(mocks.setProgressState).toHaveBeenCalledWith(lease, 100, "succeeded");
   expect(mocks.deleteEmptyGames).toHaveBeenCalledWith(handle);
   expect(mocks.notify).not.toHaveBeenCalled();
+  expect(downloadButton().disabled).toBe(false);
+  expect(store.get(databaseConversionStateAtom)).toEqual([]);
+});
+
+test("startProgress failure removes the registered conversion before convertPgn", async () => {
+  configureSuccessfulDownload();
+  mocks.issueDownloadDestination.mockResolvedValue({ id: "dest" });
+  mocks.convertPgn.mockClear();
+  mocks.startProgress.mockImplementation(async () => {
+    expect(store.get(databaseConversionStateAtom)).toEqual([
+      expect.objectContaining({
+        id: expect.stringMatching(/^conversion:[0-9a-f-]{36}$/),
+        targetDatabase: { id: { id: "database" }, kind: "database" },
+        targetDatabaseTitle: "Felix Chess.com",
+      }),
+    ]);
+    throw new Error("start failed");
+  });
+  await renderCard();
+  await act(async () => downloadButton().click());
+  expect(mocks.convertPgn).not.toHaveBeenCalled();
+  expect(store.get(databaseConversionStateAtom)).toEqual([]);
+  expect(mocks.notify).toHaveBeenCalledWith({
+    color: "red",
+    title: "Common.Error",
+    message: "start failed",
+  });
   expect(downloadButton().disabled).toBe(false);
 });

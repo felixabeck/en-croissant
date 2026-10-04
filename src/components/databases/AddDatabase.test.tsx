@@ -4,7 +4,7 @@ import { getDefaultStore } from "jotai";
 import { databaseConversionStateAtom } from "@/state/atoms";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { CatalogVerificationError } from "@/utils/signedCatalog";
-import { conversionProgressId, defaultDatabaseProgressId } from "@/utils/db";
+import { defaultDatabaseProgressId } from "@/utils/db";
 
 const mocks = vi.hoisted(() => ({
   catalogError: undefined as unknown,
@@ -152,14 +152,7 @@ beforeEach(() => {
   mocks.deleteDatabase.mockReset().mockResolvedValue(undefined);
   mocks.logError.mockReset().mockResolvedValue(undefined);
   mocks.getDatabases.mockReset().mockResolvedValue([]);
-  getDefaultStore().set(databaseConversionStateAtom, {
-    inProgress: false,
-    targetDatabase: null,
-    targetDatabaseTitle: null,
-    sourceFileName: null,
-    totalGames: 0,
-    elapsedSeconds: 0,
-  });
+  getDefaultStore().set(databaseConversionStateAtom, []);
   vi.spyOn(crypto, "randomUUID").mockReturnValue("00000000-0000-4000-8000-000000000001");
   host = document.createElement("div");
   document.body.append(host);
@@ -227,12 +220,12 @@ test.each([
     mocks.convertPgn.mockResolvedValue(undefined);
     const onCreated = vi.fn();
 
-    await expect(convertLocalDatabase([source], "Imported", "notes", onCreated)).resolves.toBe(
-      handle,
-    );
+    await expect(
+      convertLocalDatabase("conversion:test", [source], "Imported", "notes", onCreated),
+    ).resolves.toBe(handle);
     expect(onCreated).toHaveBeenCalledWith(handle);
     expect(mocks.convertPgn).toHaveBeenCalledWith(
-      conversionProgressId(handle),
+      "conversion:test",
       [source],
       handle,
       null,
@@ -426,7 +419,16 @@ test("keeps the modal open when local conversion fails", async () => {
     id: { id: "database-root" },
     kind: "databaseRoot",
   });
-  mocks.createWorkspaceDatabase.mockRejectedValue(new Error("permission denied"));
+  mocks.convertPgn.mockClear();
+  mocks.createWorkspaceDatabase.mockImplementation(async () => {
+    expect(getDefaultStore().get(databaseConversionStateAtom)).toEqual([
+      expect.objectContaining({
+        id: "conversion:00000000-0000-4000-8000-000000000001",
+        targetDatabase: null,
+      }),
+    ]);
+    throw new Error("permission denied");
+  });
   const pick = [...host.querySelectorAll("button")].find((button) =>
     button.textContent?.includes("pick-pgn"),
   )!;
@@ -438,6 +440,8 @@ test("keeps the modal open when local conversion fails", async () => {
   await act(async () => convert.click());
 
   expect(setOpened).not.toHaveBeenCalledWith(false);
+  expect(mocks.convertPgn).not.toHaveBeenCalled();
+  expect(getDefaultStore().get(databaseConversionStateAtom)).toEqual([]);
   expect(mocks.notify).toHaveBeenCalledWith({
     color: "red",
     title: "Common.Error",
@@ -516,14 +520,7 @@ test.each(["none", "delete", "getDatabases", "setDatabases", "logger", "refreshL
       message: failure.message,
     });
     expect(setOpened).not.toHaveBeenCalledWith(false);
-    expect(getDefaultStore().get(databaseConversionStateAtom)).toEqual({
-      inProgress: false,
-      targetDatabase: null,
-      targetDatabaseTitle: null,
-      sourceFileName: null,
-      totalGames: 0,
-      elapsedSeconds: 0,
-    });
+    expect(getDefaultStore().get(databaseConversionStateAtom)).toEqual([]);
     const cleanupFailed = secondaryFailure === "delete" || secondaryFailure === "logger";
     expect(mocks.logError.mock.calls).toEqual(
       secondaryFailure === "none"
@@ -569,18 +566,29 @@ test("cancellation deletes the created database and rethrows the same error", as
   setupLocalImport();
   const cancellation = new Error("Cancellation");
   mocks.convertPgn.mockRejectedValueOnce(cancellation);
-  await expect(convertLocalDatabase([importSource], "Games", undefined, vi.fn())).rejects.toBe(
-    cancellation,
-  );
+  await expect(
+    convertLocalDatabase("conversion:test", [importSource], "Games", undefined, vi.fn()),
+  ).rejects.toBe(cancellation);
   expect(mocks.deleteDatabase).toHaveBeenCalledExactlyOnceWith(importHandle);
   expect(mocks.convertPgn).toHaveBeenCalledWith(
-    conversionProgressId(importHandle),
+    "conversion:test",
     [importSource],
     importHandle,
     null,
     "Games",
     null,
   );
+});
+
+test("a cancelled local conversion removes its entry and keeps the modal open silently", async () => {
+  setupLocalImport();
+  mocks.convertPgn.mockRejectedValueOnce(new Error("Cancellation"));
+  const { setOpened } = await renderAddDatabase();
+  await submitLocalImport();
+  expect(mocks.deleteDatabase).toHaveBeenCalledExactlyOnceWith(importHandle);
+  expect(getDefaultStore().get(databaseConversionStateAtom)).toEqual([]);
+  expect(setOpened).not.toHaveBeenCalledWith(false);
+  expect(mocks.notify).not.toHaveBeenCalled();
 });
 
 test.each([false, true])(
@@ -593,7 +601,7 @@ test.each([false, true])(
     await submitLocalImport();
     expect(mocks.deleteDatabase).not.toHaveBeenCalled();
     expect(mocks.getDatabases).toHaveBeenCalledOnce();
-    expect(getDefaultStore().get(databaseConversionStateAtom).inProgress).toBe(false);
+    expect(getDefaultStore().get(databaseConversionStateAtom)).toEqual([]);
     expect(setOpened.mock.calls).toEqual(refreshFails ? [] : [[false]]);
     expect(setDatabases.mock.calls).toEqual(refreshFails ? [] : [[[]]]);
     expect(mocks.notify.mock.calls).toEqual(

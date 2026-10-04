@@ -77,6 +77,77 @@ const databaseScenario: MockScenario = {
     },
 };
 
+test("database-files: concurrent conversions render their own live progress counters", async ({
+    page,
+    mockScenario,
+    emitTauriEvent,
+}) => {
+    await mockScenario({
+        commands: {
+            ...databaseScenario.commands,
+            issue_pgn_workspace: {
+                results: [
+                    {
+                        handle: { id: { id: "first-pgn" }, kind: "fileWorkspace" },
+                        displayName: "first.pgn",
+                        availability: "available",
+                    },
+                    {
+                        handle: { id: { id: "second-pgn" }, kind: "fileWorkspace" },
+                        displayName: "second.pgn",
+                        availability: "available",
+                    },
+                ],
+            },
+            count_pgn_games: { result: 100 },
+            convert_pgn: { delay: 60_000, result: null },
+        },
+    });
+    await page.goto("/databases");
+    await page.getByRole("button").filter({ hasText: databaseTitle }).click();
+    const addGames = page.getByRole("button", { name: /^add games$/i });
+    await addGames.click();
+    await expect(page.getByText("Convert: first", { exact: true })).toBeVisible();
+    await expect(addGames).toBeEnabled();
+    await addGames.click();
+    await expect(page.getByText("Convert: second", { exact: true })).toBeVisible();
+
+    const ids = await page.evaluate(() =>
+        window.__E2E_TAURI__
+            .invocations()
+            .filter((call) => call.command === "convert_pgn")
+            .map((call) => (call.args as { progressId: string }).progressId),
+    );
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).toMatch(/^conversion:[0-9a-f-]{36}$/);
+    expect(ids[1]).toMatch(/^conversion:[0-9a-f-]{36}$/);
+    expect(ids[0]).not.toBe(ids[1]);
+    await emitTauriEvent({
+        event: "convert-progress",
+        payload: {
+            id: ids[0],
+            imported_games: 120,
+            elapsed_ms: 2000,
+            source_file_name: "first.pgn",
+        },
+    });
+    await emitTauriEvent({
+        event: "convert-progress",
+        payload: {
+            id: ids[1],
+            imported_games: 42,
+            elapsed_ms: 3000,
+            source_file_name: "second.pgn",
+        },
+    });
+    const firstRow = page.getByText("Convert: first.pgn", { exact: true }).locator("../..");
+    const secondRow = page.getByText("Convert: second.pgn", { exact: true }).locator("../..");
+    await expect(firstRow).toHaveText("Convert: first.pgn120 games • 60.0 games/s");
+    await expect(secondRow).toHaveText("Convert: second.pgn42 games • 14.0 games/s");
+    await expect(page.getByRole("button", { name: /^add new$/i })).toBeDisabled();
+    await expect(page).toHaveScreenshot("database-concurrent-conversions.png", { fullPage: true });
+});
+
 test("database-files: an unfinished import stays visible with Delete and no reference star", async ({
     page,
     mockScenario,

@@ -27,17 +27,16 @@ import { useDebouncedValue, useToggle } from "@mantine/hooks";
 import { IconArrowRight, IconDatabase, IconPlus, IconSearch } from "@tabler/icons-react";
 import { Link, useNavigate, type RegisteredRouter } from "@tanstack/react-router";
 import { useAtom } from "jotai";
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import useSWR, { useSWRConfig } from "swr";
 import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import type { DatabaseHandle, DatabaseInfo } from "@/bindings";
 import { IconAction } from "@/components/common/IconAction";
 import { notifyUnlessCancelled, runUnlessCancelled } from "@/components/files/notifyError";
-import { clearOwnedConversion, databaseConversionStateAtom, referenceDbAtom } from "@/state/atoms";
+import { databaseConversionStateAtom, referenceDbAtom, runDatabaseConversion } from "@/state/atoms";
 import { activeDatabaseViewStore, useActiveDatabaseViewStore } from "@/state/store/database";
 import {
-  conversionProgressId,
   databaseHandleKey,
   getDatabases,
   sameDatabaseHandle,
@@ -115,19 +114,20 @@ export default function DatabasesPage() {
   const [selected, setSelected] = useState<string | null>(null);
   const [referenceDatabase, setReferenceDatabase] = useAtom(referenceDbAtom);
   const [conversionState, setConversionState] = useAtom(databaseConversionStateAtom);
+  const conversionInProgress = conversionState.length > 0;
   const selectedDatabase = useMemo(
     () => (databases ?? []).find((db) => databaseHandleKey(db.file) === selected) ?? null,
     [databases, selected],
   );
   const visibleDatabases = useMemo(() => {
-    return (databases ?? []).filter((item) => {
-      if (!conversionState.inProgress || !conversionState.targetDatabase) {
-        return true;
-      }
-
-      return !sameDatabaseHandle(item.file, conversionState.targetDatabase);
-    });
-  }, [databases, conversionState.inProgress, conversionState.targetDatabase]);
+    return (databases ?? []).filter(
+      (item) =>
+        !conversionState.some(
+          (entry) =>
+            entry.targetDatabase !== null && sameDatabaseHandle(item.file, entry.targetDatabase),
+        ),
+    );
+  }, [databases, conversionState]);
   const filteredDatabases = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase();
     if (!normalizedSearch) {
@@ -218,7 +218,7 @@ export default function DatabasesPage() {
         databases={databases ?? []}
         opened={open}
         setOpened={setOpen}
-        disableLocalConversion={conversionState.inProgress}
+        disableLocalConversion={conversionInProgress}
         setDatabases={mutate}
       />
 
@@ -258,35 +258,35 @@ export default function DatabasesPage() {
                 variant="default"
                 size="lg"
                 onClick={() => setOpen(true)}
-                disabled={conversionState.inProgress}
+                disabled={conversionInProgress}
               >
                 <IconPlus size="1rem" />
               </IconAction>
             </Group>
             <Divider />
-            {conversionState.inProgress && (
-              <>
+            {conversionState.map((entry) => (
+              <Fragment key={entry.id}>
                 <Group px="xs" py={6} gap="xs" justify="space-between">
                   <Group gap={6}>
                     <Loader size="xs" />
                     <Text size="sm">
-                      {conversionState.sourceFileName || conversionState.targetDatabaseTitle
-                        ? `${t("Databases.Add.Convert")}: ${conversionState.sourceFileName ?? conversionState.targetDatabaseTitle}`
+                      {entry.sourceFileName || entry.targetDatabaseTitle
+                        ? `${t("Databases.Add.Convert")}: ${entry.sourceFileName ?? entry.targetDatabaseTitle}`
                         : t("Databases.Add.Convert")}
                     </Text>
                   </Group>
-                  {conversionState.totalGames > 0 && (
+                  {entry.totalGames > 0 && (
                     <Text size="xs" c="dimmed">
-                      {t("Files.GameCountSuffix", { number: conversionState.totalGames })}
-                      {conversionState.elapsedSeconds > 0
-                        ? ` • ${(conversionState.totalGames / conversionState.elapsedSeconds).toFixed(1)} games/s`
+                      {t("Files.GameCountSuffix", { number: entry.totalGames })}
+                      {entry.elapsedSeconds > 0
+                        ? ` • ${(entry.totalGames / entry.elapsedSeconds).toFixed(1)} games/s`
                         : ""}
                     </Text>
                   )}
                 </Group>
                 <Divider />
-              </>
-            )}
+              </Fragment>
+            ))}
             <ScrollArea
               // `auto`, not a zero basis: a scroll container's minimum height is zero, so with no
               // basis of its own the list got no share of a stacked panel and vanished.
@@ -528,9 +528,9 @@ export default function DatabasesPage() {
                           const dest = selectedDatabase.file;
                           void runAddGamesToDatabase({
                             pickPgnFile,
-                            convertPgn: async (files, destination) => {
+                            convertPgn: async (progressId, files, destination) => {
                               await tauri.convertPgn(
-                                conversionProgressId(destination),
+                                progressId,
                                 files,
                                 destination,
                                 null,
@@ -541,18 +541,16 @@ export default function DatabasesPage() {
                             },
                             dest,
                             notifyTitle: t("Common.Error"),
-                            begin: (sourceFileName) => {
-                              setConversionState((prev) => ({
-                                ...prev,
-                                inProgress: true,
-                                targetDatabase: dest,
-                                targetDatabaseTitle: selectedDatabase.title,
-                                sourceFileName,
-                              }));
-                            },
-                            finish: () => {
-                              setConversionState(clearOwnedConversion(dest));
-                            },
+                            runConversion: (sourceFileName, convert) =>
+                              runDatabaseConversion(
+                                setConversionState,
+                                {
+                                  targetDatabase: dest,
+                                  targetDatabaseTitle: selectedDatabase.title,
+                                  sourceFileName,
+                                },
+                                ({ id }) => convert(id),
+                              ),
                           });
                         }}
                       >

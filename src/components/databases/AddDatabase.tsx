@@ -22,9 +22,8 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { KeyedMutator } from "swr";
 import { type DatabaseHandle, type DatabaseInfo, type FileWorkspaceHandle } from "@/bindings";
-import { clearOwnedConversion, databaseConversionStateAtom } from "@/state/atoms";
+import { databaseConversionStateAtom, runDatabaseConversion } from "@/state/atoms";
 import {
-  conversionProgressId,
   getDatabases,
   manifestDatabaseInstallCard,
   type DownloadableDatabaseInfo,
@@ -47,6 +46,7 @@ interface AddDatabaseFormValues {
 }
 
 export async function convertLocalDatabase(
+  progressId: string,
   paths: FileWorkspaceHandle[],
   title: string,
   description: string | undefined,
@@ -63,14 +63,7 @@ export async function convertLocalDatabase(
   );
   onCreated(dbPath);
   try {
-    await tauri.convertPgn(
-      conversionProgressId(dbPath),
-      paths,
-      dbPath,
-      null,
-      title,
-      description ?? null,
-    );
+    await tauri.convertPgn(progressId, paths, dbPath, null, title, description ?? null);
   } catch (cause) {
     try {
       await tauri.deleteDatabase(dbPath);
@@ -107,40 +100,32 @@ function AddDatabase({
 
   async function convertDB(paths: FileWorkspaceHandle[], title: string, description?: string) {
     if (paths.length === 0) return;
-    let thisHandle: DatabaseHandle | null = null;
-    try {
-      const sourceFileName = "PGN";
-      setConversionState((prev) => ({
-        ...prev,
-        inProgress: true,
+    await runDatabaseConversion(
+      setConversionState,
+      {
+        targetDatabase: null,
         targetDatabaseTitle: title,
-        sourceFileName,
-      }));
-      try {
-        await convertLocalDatabase(paths, title, description, (dbPath) => {
-          thisHandle = dbPath;
-          setConversionState((prev) => ({
-            ...prev,
-            targetDatabase: dbPath,
-          }));
-        });
-      } catch (cause) {
+        sourceFileName: "PGN",
+      },
+      async ({ id, setTarget }) => {
         try {
-          await setDatabases(await getDatabases());
-        } catch (refreshCause) {
-          const primaryFailure = safeFailureContext(refreshCause);
-          await logFailureSafely(
-            `Failed import database refresh failed: ${primaryFailure.message}`,
-            { operation: "failed import database refresh", primaryFailure },
-            "Import refresh logging failed",
-          );
+          await convertLocalDatabase(id, paths, title, description, setTarget);
+        } catch (cause) {
+          try {
+            await setDatabases(await getDatabases());
+          } catch (refreshCause) {
+            const primaryFailure = safeFailureContext(refreshCause);
+            await logFailureSafely(
+              `Failed import database refresh failed: ${primaryFailure.message}`,
+              { operation: "failed import database refresh", primaryFailure },
+              "Import refresh logging failed",
+            );
+          }
+          throw cause;
         }
-        throw cause;
-      }
-      await setDatabases(await getDatabases());
-    } finally {
-      setConversionState(clearOwnedConversion(thisHandle));
-    }
+        await setDatabases(await getDatabases());
+      },
+    );
   }
 
   const form = useForm<AddDatabaseFormValues>({

@@ -1,12 +1,16 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { SWRConfig } from "swr";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi, type MockInstance } from "vitest";
 import { getDefaultStore, Provider, useAtomValue } from "jotai";
 import type { DatabaseHandle } from "@/bindings";
-import { databaseConversionStateAtom, referenceDbAtom } from "@/state/atoms";
+import {
+  databaseConversionStateAtom,
+  referenceDbAtom,
+  type DatabaseConversionEntry,
+} from "@/state/atoms";
 import { activeDatabaseViewStore } from "@/state/store/database";
-import { conversionProgressId, databaseHandleKey, type SuccessDatabaseInfo } from "@/utils/db";
+import { databaseHandleKey, type SuccessDatabaseInfo } from "@/utils/db";
 import { useConversionProgress } from "@/hooks/useConversionProgress";
 
 const mocks = vi.hoisted(() => ({
@@ -77,7 +81,8 @@ vi.mock("@/utils/chess.com/api", () => ({ downloadChessCom: mocks.downloadChessC
 vi.mock("@/utils/lichess/api", () => ({ downloadLichess: vi.fn() }));
 vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.notify } }));
 vi.mock("react-i18next", () => {
-  const t = (key: string) => key;
+  const t = (key: string, options?: { number?: number }) =>
+    options?.number === undefined ? key : `${key}:${options.number}`;
   return { useTranslation: () => ({ t }) };
 });
 vi.mock("@tanstack/react-router", () => ({
@@ -243,6 +248,8 @@ type ConvertProgress = {
 
 type ConvertCall = {
   args: unknown[];
+  registeredAtCall: DatabaseConversionEntry | undefined;
+  mintedAtCall: string[];
   resolve: () => void;
   reject: (error: unknown) => void;
 };
@@ -274,23 +281,59 @@ function successDatabase(file: DatabaseHandle, title: string): SuccessDatabaseIn
 function ConversionProbe() {
   useConversionProgress();
   const state = useAtomValue(databaseConversionStateAtom);
-  return (
+  return state.map((entry) => (
     <output
-      data-in-progress={String(state.inProgress)}
-      data-total={String(state.totalGames)}
-      data-target={state.targetDatabase ? databaseHandleKey(state.targetDatabase) : "none"}
-      data-source={state.sourceFileName ?? "none"}
+      key={entry.id}
+      data-id={entry.id}
+      data-total={String(entry.totalGames)}
+      data-target={entry.targetDatabase ? databaseHandleKey(entry.targetDatabase) : "none"}
+      data-source={entry.sourceFileName ?? "none"}
     />
-  );
+  ));
 }
 
 let root: Root;
 let host: HTMLDivElement;
 let convertCalls: ConvertCall[];
+let randomUUIDSpy: MockInstance<typeof crypto.randomUUID>;
 let convertProgressListener: ((event: { payload: ConvertProgress }) => void) | undefined;
 
 function conversionState() {
   return store.get(databaseConversionStateAtom);
+}
+
+function conversionRows() {
+  return [...host.querySelectorAll("span")]
+    .filter((span) => span.textContent?.startsWith("Databases.Add.Convert:"))
+    .map((span) => span.parentElement?.parentElement?.textContent);
+}
+
+function activeOperation(index: number) {
+  const call = convertCalls[index];
+  if (!call) throw new Error(`Missing convertPgn call ${index}`);
+  const id = call.args[0];
+  if (typeof id !== "string") throw new Error("Missing conversion id");
+  const entry = conversionState().find((candidate) => candidate.id === id);
+  if (!entry) throw new Error(`Missing registered conversion ${id}`);
+  return entry;
+}
+
+function assertConversionCall(index: number) {
+  const call = convertCalls[index];
+  if (!call) throw new Error(`Missing convertPgn call ${index}`);
+  const id = call.args[0];
+  expect(id).toMatch(/^conversion:[0-9a-f-]{36}$/);
+  expect(call.mintedAtCall).toContain(id);
+  expect(call.registeredAtCall).toMatchObject({
+    id,
+    targetDatabase: call.args[2],
+    totalGames: 0,
+    elapsedSeconds: 0,
+  });
+}
+
+function addNewDisabled() {
+  return (host.querySelector('button[aria-label="Common.AddNew"]') as HTMLButtonElement).disabled;
 }
 
 function buttonByText(text: string) {
@@ -307,17 +350,13 @@ beforeEach(() => {
   convertProgressListener = undefined;
   localStorage.clear();
   sessionStorage.clear();
-  store.set(databaseConversionStateAtom, {
-    inProgress: false,
-    totalGames: 0,
-    elapsedSeconds: 0,
-    targetDatabase: null,
-    targetDatabaseTitle: null,
-    sourceFileName: null,
-  });
+  store.set(databaseConversionStateAtom, []);
   mocks.convertPgn.mockImplementation((...args: unknown[]) => {
+    const registered = conversionState().find((entry) => entry.id === args[0]);
+    const registeredAtCall = registered ? { ...registered } : undefined;
+    const mintedAtCall = randomUUIDSpy.mock.results.map((result) => `conversion:${result.value}`);
     return new Promise<void>((resolve, reject) => {
-      convertCalls.push({ args, resolve, reject });
+      convertCalls.push({ args, registeredAtCall, mintedAtCall, resolve, reject });
     });
   });
   mocks.convertProgress.mockImplementation(
@@ -348,7 +387,10 @@ beforeEach(() => {
   mocks.mergePlayers.mockResolvedValue(undefined);
   mocks.createIndexes.mockResolvedValue(undefined);
   mocks.deleteIndexes.mockResolvedValue(undefined);
-  vi.spyOn(crypto, "randomUUID").mockReturnValue("00000000-0000-4000-8000-000000000001");
+  let nextId = 0;
+  randomUUIDSpy = vi
+    .spyOn(crypto, "randomUUID")
+    .mockImplementation(() => `00000000-0000-4000-8000-${String(++nextId).padStart(12, "0")}`);
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -493,66 +535,86 @@ test("submitting a local conversion disables Add before the workspace handle exi
   await act(async () => buttonByText("Databases.Add.Convert")!.click());
 
   await vi.waitFor(() => {
-    expect(conversionState().inProgress).toBe(true);
-    expect(conversionState().targetDatabase).toBeNull();
+    expect(conversionState()).toHaveLength(1);
+    expect(conversionState()[0]?.targetDatabase).toBeNull();
+    expect(conversionState()[0]?.id).toBe("conversion:00000000-0000-4000-8000-000000000001");
   });
   expect(
     (host.querySelector('button[aria-label="Common.AddNew"]') as HTMLButtonElement).disabled,
   ).toBe(true);
 
   await act(async () => resolveCreate(handleA));
+  await vi.waitFor(() => expect(convertCalls).toHaveLength(1));
+  assertConversionCall(0);
 });
 
-test("finishing AddDatabase does not wipe a later Add Games conversion or its progress", async () => {
-  await renderRoute();
-  await startAddDatabase();
-  expect(mocks.convertPgn.mock.calls[0]?.[0]).toBe(conversionProgressId(handleA));
-  expect(conversionState().targetDatabase).toEqual(handleA);
-  expect(conversionState().inProgress).toBe(true);
+test.each(["success", "failure"])(
+  "AddDatabase %s removes only its own entry beside Add games",
+  async (outcome) => {
+    mocks.getDatabases.mockResolvedValue([
+      successDatabase(handleA, "Local target"),
+      successDatabase(handleB, "Existing"),
+    ]);
+    await renderRoute();
+    await startAddDatabase();
+    assertConversionCall(0);
+    const local = activeOperation(0);
+    expect(local.targetDatabase).toEqual(handleA);
 
-  await selectExistingDatabase();
-  await startAddGames();
-  expect(mocks.convertPgn).toHaveBeenCalledWith(
-    conversionProgressId(handleB),
-    [addGamesPgn],
-    handleB,
-    null,
-    "",
-    null,
-  );
-  expect(conversionState().targetDatabase).toEqual(handleB);
-  expect(conversionState().inProgress).toBe(true);
+    await selectExistingDatabase();
+    await startAddGames();
+    assertConversionCall(1);
+    const games = activeOperation(1);
+    expect(mocks.convertPgn).toHaveBeenCalledWith(games.id, [addGamesPgn], handleB, null, "", null);
+    expect(conversionState().map((entry) => entry.targetDatabase)).toEqual([handleA, handleB]);
+    expect(conversionRows()).toEqual([
+      "Databases.Add.Convert: PGN",
+      "Databases.Add.Convert: more.pgn",
+    ]);
+    expect(host.querySelector(`[data-testid='select-${databaseHandleKey(handleB)}']`)).toBeNull();
+    expect(host.querySelector(`[data-testid='select-${databaseHandleKey(handleA)}']`)).toBeNull();
+    expect(addNewDisabled()).toBe(true);
 
-  await act(async () => convertCalls[0]!.resolve());
-  await vi.waitFor(() => {
-    expect(conversionState().targetDatabase).toEqual(handleB);
-    expect(conversionState().inProgress).toBe(true);
-  });
+    await act(async () =>
+      outcome === "success"
+        ? convertCalls[0]?.resolve()
+        : convertCalls[0]?.reject(new Error("convert failed")),
+    );
+    await vi.waitFor(() => {
+      expect(conversionState()).toEqual([games]);
+    });
 
-  await emitConvertProgress({
-    id: conversionProgressId(handleB),
-    imported_games: 42,
-    elapsed_ms: 2000,
-    source_file_name: "more.pgn",
-  });
-  expect(host.querySelector("output")?.getAttribute("data-total")).toBe("42");
-  expect(host.querySelector("output")?.getAttribute("data-target")).toBe(
-    databaseHandleKey(handleB),
-  );
-  expect(host.querySelector("output")?.getAttribute("data-in-progress")).toBe("true");
-});
+    await emitConvertProgress({
+      id: games.id,
+      imported_games: 42,
+      elapsed_ms: 2000,
+      source_file_name: "more.pgn",
+    });
+    expect(host.querySelector("output")?.getAttribute("data-total")).toBe("42");
+    expect(host.querySelector("output")?.getAttribute("data-target")).toBe(
+      databaseHandleKey(handleB),
+    );
+    expect(conversionRows()).toEqual([
+      "Databases.Add.Convert: more.pgnFiles.GameCountSuffix:42 • 21.0 games/s",
+    ]);
+    expect(addNewDisabled()).toBe(true);
+    await act(async () => convertCalls[1]?.resolve());
+    expect(conversionState()).toEqual([]);
+    expect(addNewDisabled()).toBe(false);
+  },
+);
 
 test("AccountCard convert() throw clears the conversion it owns", async () => {
-  mocks.convertPgn.mockRejectedValue(new Error("convert failed"));
   await renderRoute(true);
   const download = host.querySelector(
     'button[aria-label="Home.Accounts.DownloadGames"]',
   ) as HTMLButtonElement;
   await act(async () => download.click());
   await vi.waitFor(() => expect(mocks.convertPgn).toHaveBeenCalled());
+  assertConversionCall(0);
+  await act(async () => convertCalls[0]?.reject(new Error("convert failed")));
   await vi.waitFor(() => {
-    expect(conversionState().inProgress).toBe(false);
-    expect(conversionState().targetDatabase).toBeNull();
+    expect(conversionState()).toEqual([]);
   });
   expect(mocks.notify).toHaveBeenCalledWith({
     color: "red",
@@ -561,25 +623,180 @@ test("AccountCard convert() throw clears the conversion it owns", async () => {
   });
 });
 
-test("AccountCard convert() throw does not wipe a concurrent Add Games conversion", async () => {
-  await renderRoute(true);
+test.each(["success", "failure"])(
+  "AccountCard convert() %s removes only its own entry beside Add games",
+  async (outcome) => {
+    mocks.getDatabases.mockResolvedValue([
+      successDatabase(accountHandle, "Account target"),
+      successDatabase(handleB, "Existing"),
+    ]);
+    await renderRoute(true);
+    await selectExistingDatabase();
+    await startAccountDownload();
+    assertConversionCall(0);
+    const account = activeOperation(0);
+    expect(account.targetDatabase).toEqual(accountHandle);
+
+    await startAddGames();
+    assertConversionCall(1);
+    const games = activeOperation(1);
+    expect(conversionState().map((entry) => entry.targetDatabase)).toEqual([
+      accountHandle,
+      handleB,
+    ]);
+    expect(conversionRows()).toEqual([
+      "Databases.Add.Convert: Felix_chesscom.pgn",
+      "Databases.Add.Convert: more.pgn",
+    ]);
+    expect(host.querySelector(`[data-testid='select-${databaseHandleKey(handleB)}']`)).toBeNull();
+    expect(
+      host.querySelector(`[data-testid='select-${databaseHandleKey(accountHandle)}']`),
+    ).toBeNull();
+
+    await act(async () =>
+      outcome === "success"
+        ? convertCalls[0]?.resolve()
+        : convertCalls[0]?.reject(new Error("convert failed")),
+    );
+    await vi.waitFor(() => {
+      expect(conversionState()).toEqual([games]);
+    });
+    expect(conversionRows()).toEqual(["Databases.Add.Convert: more.pgn"]);
+    expect(addNewDisabled()).toBe(true);
+    await act(async () => convertCalls[1]?.resolve());
+    expect(conversionState()).toEqual([]);
+  },
+);
+
+test("two Add games runs into the same target retain independent ids, frames and rows", async () => {
+  await renderRoute();
   await selectExistingDatabase();
-  await startAccountDownload();
-  expect(conversionState().targetDatabase).toEqual(accountHandle);
-
   await startAddGames();
-  expect(conversionState().targetDatabase).toEqual(handleB);
-  expect(conversionState().inProgress).toBe(true);
-
-  const accountCall = convertCalls.find(
-    (call) => call.args[0] === conversionProgressId(accountHandle),
-  )!;
-  await act(async () => accountCall.reject(new Error("convert failed")));
-  await vi.waitFor(() => {
-    expect(conversionState().targetDatabase).toEqual(handleB);
-    expect(conversionState().inProgress).toBe(true);
+  assertConversionCall(0);
+  const first = activeOperation(0);
+  await startAddGames();
+  assertConversionCall(1);
+  const second = activeOperation(1);
+  expect(first.id).not.toBe(second.id);
+  expect(conversionState().map((entry) => entry.id)).toEqual([first.id, second.id]);
+  expect(conversionState().map((entry) => entry.targetDatabase)).toEqual([handleB, handleB]);
+  await emitConvertProgress({
+    id: first.id,
+    imported_games: 20,
+    elapsed_ms: 2000,
+    source_file_name: "first.pgn",
   });
+  await emitConvertProgress({
+    id: second.id,
+    imported_games: 42,
+    elapsed_ms: 3000,
+    source_file_name: "second.pgn",
+  });
+  expect(conversionRows()).toEqual([
+    "Databases.Add.Convert: first.pgnFiles.GameCountSuffix:20 • 10.0 games/s",
+    "Databases.Add.Convert: second.pgnFiles.GameCountSuffix:42 • 14.0 games/s",
+  ]);
+  const survivor = activeOperation(1);
+  await act(async () => convertCalls[0]?.resolve());
+  expect(conversionState()).toEqual([survivor]);
+  expect(conversionRows()).toEqual([
+    "Databases.Add.Convert: second.pgnFiles.GameCountSuffix:42 • 14.0 games/s",
+  ]);
+  expect(addNewDisabled()).toBe(true);
+  expect(buttonByText("Databases.Add.Convert")?.disabled).toBe(true);
+  await emitConvertProgress({
+    id: second.id,
+    imported_games: 60,
+    elapsed_ms: 4000,
+    source_file_name: null,
+  });
+  expect(conversionRows()).toEqual([
+    "Databases.Add.Convert: second.pgnFiles.GameCountSuffix:60 • 15.0 games/s",
+  ]);
+  await act(async () => convertCalls[1]?.resolve());
+  expect(conversionState()).toEqual([]);
+  expect(conversionRows()).toEqual([]);
+  expect(addNewDisabled()).toBe(false);
 });
+
+test.each(
+  (["local", "account"] as const).flatMap((route) =>
+    (["success", "failure"] as const).map((outcome) => ({ route, outcome })),
+  ),
+)(
+  "Add games $outcome leaves the concurrent $route operation visible",
+  async ({ route, outcome }) => {
+    await renderRoute(route === "account");
+    await selectExistingDatabase();
+    if (route === "local") await startAddDatabase();
+    else await startAccountDownload();
+    assertConversionCall(0);
+    const owner = activeOperation(0);
+    await startAddGames();
+    assertConversionCall(1);
+    expect(conversionRows()).toHaveLength(2);
+    await act(async () =>
+      outcome === "success"
+        ? convertCalls[1]?.resolve()
+        : convertCalls[1]?.reject(new Error("convert failed")),
+    );
+    expect(conversionState()).toEqual([owner]);
+    expect(conversionRows()).toEqual([`Databases.Add.Convert: ${owner.sourceFileName}`]);
+    expect(addNewDisabled()).toBe(true);
+    await emitConvertProgress({
+      id: owner.id,
+      imported_games: 30,
+      elapsed_ms: 2000,
+      source_file_name: "survivor.pgn",
+    });
+    expect(conversionRows()).toEqual([
+      "Databases.Add.Convert: survivor.pgnFiles.GameCountSuffix:30 • 15.0 games/s",
+    ]);
+    await act(async () => convertCalls[0]?.resolve());
+    expect(conversionState()).toEqual([]);
+  },
+);
+
+test.each(["create", "startProgress"] as const)(
+  "%s failure before convertPgn removes only its registered entry",
+  async (stage) => {
+    let rejectSetup: ((error: unknown) => void) | undefined;
+    const setup = new Promise((_resolve, reject) => {
+      rejectSetup = reject;
+    });
+    if (stage === "create") mocks.createWorkspaceDatabase.mockReturnValue(setup);
+    else mocks.startProgress.mockReturnValue(setup);
+    await renderRoute(stage === "startProgress");
+    await selectExistingDatabase();
+    if (stage === "create") {
+      const pick = [...host.querySelectorAll("button")].find((button) =>
+        button.textContent?.includes("pick-pgn"),
+      );
+      await act(async () => pick?.click());
+      await act(async () => buttonByText("Databases.Add.Convert")?.click());
+    } else {
+      const download = host.querySelector<HTMLButtonElement>(
+        'button[aria-label="Home.Accounts.DownloadGames"]',
+      );
+      await act(async () => download?.click());
+    }
+    await vi.waitFor(() => expect(conversionState()).toHaveLength(1));
+    expect(mocks.convertPgn).not.toHaveBeenCalled();
+    expect(addNewDisabled()).toBe(true);
+    await startAddGames();
+    assertConversionCall(0);
+    const games = activeOperation(0);
+    expect(conversionRows()).toHaveLength(2);
+    if (!rejectSetup) throw new Error("Setup did not start");
+    await act(async () => rejectSetup?.(new Error("setup failed")));
+    expect(mocks.convertPgn).toHaveBeenCalledTimes(1);
+    expect(conversionState()).toEqual([games]);
+    expect(conversionRows()).toEqual(["Databases.Add.Convert: more.pgn"]);
+    expect(addNewDisabled()).toBe(true);
+    await act(async () => convertCalls[0]?.resolve());
+    expect(conversionState()).toEqual([]);
+  },
+);
 
 async function waitForSettingsDebounce() {
   await act(async () => {

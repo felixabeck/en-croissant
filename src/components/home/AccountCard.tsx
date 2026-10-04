@@ -17,12 +17,12 @@ import type { DatabaseHandle, FileWorkspaceHandle, PathRef } from "@/bindings";
 import { IconAction } from "@/components/common/IconAction";
 import { notifyListenerError, notifyUnlessCancelled } from "@/components/files/notifyError";
 import {
-  clearOwnedConversion,
   databaseConversionStateAtom,
   downloadDestinationAtom,
+  runDatabaseConversion,
 } from "@/state/atoms";
 import { downloadChessCom } from "@/utils/chess.com/api";
-import { conversionProgressId, getDatabases, type ManagedDatabaseInfo } from "@/utils/db";
+import { getDatabases, type ManagedDatabaseInfo } from "@/utils/db";
 import { capitalize } from "@/utils/format";
 import { downloadLichess } from "@/utils/lichess/api";
 import { useTauriListener } from "@/platform/useTauriListener";
@@ -142,34 +142,34 @@ export function AccountCard({
     timestamp: number | null,
   ): Promise<DatabaseHandle> {
     const filename = title + (type === "lichess" ? " Lichess" : " Chess.com");
-    const databaseHandle = await ensureDatabaseHandle();
-    try {
-      const progressLease = await tauri.startProgress(`${type}_${title}`);
-      try {
-        setConversionState((prev) => ({
-          ...prev,
-          inProgress: true,
-          targetDatabase: databaseHandle,
-          targetDatabaseTitle: filename,
-          sourceFileName: `${title}_${type}.pgn`,
-        }));
-        await tauri.convertPgn(
-          conversionProgressId(databaseHandle),
-          [source],
-          databaseHandle,
-          timestamp === null ? null : timestamp / 1000,
-          filename,
-          null,
-        );
-      } catch (caught) {
-        await tauri.setProgressState(progressLease, 0, "failed").catch(() => undefined);
-        throw caught;
-      }
-      await tauri.setProgressState(progressLease, 100, "succeeded").catch(() => undefined);
-      return databaseHandle;
-    } finally {
-      setConversionState(clearOwnedConversion(databaseHandle));
-    }
+    return runDatabaseConversion(
+      setConversionState,
+      {
+        targetDatabase: database?.file ?? null,
+        targetDatabaseTitle: filename,
+        sourceFileName: `${title}_${type}.pgn`,
+      },
+      async ({ id, setTarget }) => {
+        const databaseHandle = await ensureDatabaseHandle();
+        setTarget(databaseHandle);
+        const progressLease = await tauri.startProgress(`${type}_${title}`);
+        try {
+          await tauri.convertPgn(
+            id,
+            [source],
+            databaseHandle,
+            timestamp === null ? null : timestamp / 1000,
+            filename,
+            null,
+          );
+        } catch (caught) {
+          await tauri.setProgressState(progressLease, 0, "failed").catch(() => undefined);
+          throw caught;
+        }
+        await tauri.setProgressState(progressLease, 100, "succeeded").catch(() => undefined);
+        return databaseHandle;
+      },
+    );
   }
 
   const subscribeProgress = useCallback(

@@ -5,7 +5,6 @@ import { notifyListenerError } from "@/components/files/notifyError";
 import { tauriSubscriptions } from "@/platform/tauri";
 import { useTauriListener } from "@/platform/useTauriListener";
 import { databaseConversionStateAtom } from "@/state/atoms";
-import { conversionProgressId } from "@/utils/db";
 
 /**
  * Keeps the live import counters on the databases page fed while a PGN
@@ -13,10 +12,9 @@ import { conversionProgressId } from "@/utils/db";
  *
  * This is mounted application-wide rather than on the databases route: an import
  * keeps running while the user navigates away, and the counters have to be
- * correct when they come back. A frame is applied only when its `id` matches
- * `conversionProgressId` of the conversion currently stored in `targetDatabase`;
- * matching frames also set `inProgress: true`. The owning route still writes
- * the target database and title.
+ * correct when they come back. A frame updates only its own live operation id;
+ * unknown or retired ids never create an entry. The owning route still writes
+ * the target database and title and removes its entry when it settles.
  */
 export function useConversionProgress() {
     const setConversionState = useSetAtom(databaseConversionStateAtom);
@@ -31,19 +29,19 @@ export function useConversionProgress() {
         subscribe,
         ({ payload }) => {
             setConversionState((previous) => {
-                if (
-                    previous.targetDatabase == null ||
-                    payload.id !== conversionProgressId(previous.targetDatabase)
-                ) {
+                if (!previous.some((entry) => entry.id === payload.id)) {
                     return previous;
                 }
-                return {
-                    ...previous,
-                    inProgress: true,
-                    totalGames: payload.imported_games,
-                    elapsedSeconds: payload.elapsed_ms / 1000,
-                    sourceFileName: payload.source_file_name ?? previous.sourceFileName,
-                };
+                return previous.map((entry) =>
+                    entry.id === payload.id
+                        ? {
+                              ...entry,
+                              totalGames: payload.imported_games,
+                              elapsedSeconds: payload.elapsed_ms / 1000,
+                              sourceFileName: payload.source_file_name ?? entry.sourceFileName,
+                          }
+                        : entry,
+                );
             });
         },
         { onError: notifyListenerError },

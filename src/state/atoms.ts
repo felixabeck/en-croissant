@@ -18,7 +18,7 @@ import type {
 import type { OpponentSettings } from "@/state/opponentSettings";
 import type { LocalOptions } from "@/components/panels/database/DatabasePanel";
 import { positionFromFen, swapMove } from "@/utils/chessops";
-import { sameDatabaseHandle, type SuccessDatabaseInfo } from "@/utils/db";
+import type { SuccessDatabaseInfo } from "@/utils/db";
 import { type Engine, type EngineSettings, engineSchema } from "@/utils/engines";
 import {
     type LichessGamesOptions,
@@ -489,8 +489,8 @@ export const selectedPuzzleDbAtom = atomWithStorage<PathRef | null>(
 /** In-memory invalidation signal shared by Settings, the local picker, and Puzzle tabs. */
 export const puzzleWorkspaceGenerationAtom = atom(0);
 
-export type DatabaseConversionState = {
-    inProgress: boolean;
+export type DatabaseConversionEntry = {
+    id: string;
     totalGames: number;
     elapsedSeconds: number;
     targetDatabase: DatabaseHandle | null;
@@ -498,26 +498,40 @@ export type DatabaseConversionState = {
     sourceFileName: string | null;
 };
 
-export const idleDatabaseConversionState: DatabaseConversionState = {
-    inProgress: false,
-    totalGames: 0,
-    elapsedSeconds: 0,
-    targetDatabase: null,
-    targetDatabaseTitle: null,
-    sourceFileName: null,
-};
-
 /** Backend jobs are reconciled by their native IDs at startup; never restore a stale snapshot. */
-export const databaseConversionStateAtom = atom<DatabaseConversionState>(
-    idleDatabaseConversionState,
-);
+export const databaseConversionStateAtom = atom<DatabaseConversionEntry[]>([]);
 
-/** Restore the idle snapshot only when `previous.targetDatabase` is `handle`. */
-export function clearOwnedConversion(handle: DatabaseHandle | null) {
-    return (previous: DatabaseConversionState): DatabaseConversionState =>
-        sameDatabaseHandle(previous.targetDatabase, handle)
-            ? idleDatabaseConversionState
-            : previous;
+/** Retains one entry per active owner, in start order, until that owner's work settles. */
+export async function runDatabaseConversion<T>(
+    setState: (update: (previous: DatabaseConversionEntry[]) => DatabaseConversionEntry[]) => void,
+    target: Pick<
+        DatabaseConversionEntry,
+        "targetDatabase" | "targetDatabaseTitle" | "sourceFileName"
+    >,
+    run: (operation: { id: string; setTarget: (handle: DatabaseHandle) => void }) => Promise<T>,
+): Promise<T> {
+    const id = `conversion:${crypto.randomUUID()}`;
+    setState((previous) => [...previous, { ...target, id, totalGames: 0, elapsedSeconds: 0 }]);
+    try {
+        return await run({
+            id,
+            setTarget: (handle) => {
+                setState((previous) =>
+                    previous.some((entry) => entry.id === id)
+                        ? previous.map((entry) =>
+                              entry.id === id ? { ...entry, targetDatabase: handle } : entry,
+                          )
+                        : previous,
+                );
+            },
+        });
+    } finally {
+        setState((previous) =>
+            previous.some((entry) => entry.id === id)
+                ? previous.filter((entry) => entry.id !== id)
+                : previous,
+        );
+    }
 }
 
 /** Database metadata is authoritative in native storage, not in renderer persistence. */
