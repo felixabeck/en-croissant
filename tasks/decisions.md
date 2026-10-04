@@ -5368,3 +5368,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Observability without changing precedence or any contract; one mapping per path, the P9 shape in `file_workspace.rs`. Reversal path: move the mapping back into the `Ok` arm (loses the log on the error path).
 * **Decided by:** Claude Code, drain session 0bcbe3ad-da8e-43bf-9f91-5e53009238c8 (drain run 42548d18-1af4-46bd-a37c-20f82f9ba6c8), full auto, reviewed plan tasks/plans/2026-10-04-f-20260916-07-download-durability.md · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"0ad467499403fa9163ae31749bdbb7d50318fddbd2b1493600169ca8520b4e2b","input_sha256":"f7f3c6791aaa17ee1af2deb60bb1cbc7a019e0995e0cc552ea8dbd865b78167c","kind":"mutation-receipt","operation":"c5d6d164891b5e585b69b00407c606be420ccf9280774451d36fb1decffc0375","options":{"section":null},"request_id_sha256":null,"results":["d-20261004-20"],"target":"decisions-ledger","v":1} -->
+
+### d-20261004-21 — Does the record durability contract need renderer surfacing?
+
+* **Question:** `f-20260916-07` asks whether the *record* contract of `d-20260906-03` needs the same renderer surfacing as the *report* contract of the download path.
+* **Governs:** f-20260916-07
+* **Chosen:** No. Every record site already logs natively (`credentials.rs`, `keep_adopted_handle`), user-initiated record results are already surfaced (`Home.Accounts.LinkDurabilityUncertain`, `Home.Accounts.RemoveDurabilityUncertain`), and the startup legacy-token migration (`src/utils/session.ts`) is background reconciliation whose uncertainty is already logged natively.
+* **Rejected:** A startup notification for migration durability — there is no user action to qualify, and the native log satisfies `d-20260906-03` (2).
+* **Reason:** The record contract is "log, keep going, carry the uncertainty in the result", and all record sites meet it. Reversal path: a finding showing a user acting on a migrated account's uncertain persistence.
+* **Decided by:** Claude Code, drain session 0bcbe3ad-da8e-43bf-9f91-5e53009238c8 (drain run 42548d18-1af4-46bd-a37c-20f82f9ba6c8), full auto, reviewed plan tasks/plans/2026-10-04-f-20260916-07-download-durability.md · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"c2418775f053398820597a92c4cebf7f3a9ba195a09f0a514816e4fa202494f6","input_sha256":"36b03842fa62e0227f67ae7460d9b293a59e9e87a03d3f22b64e7988aafe13a5","kind":"mutation-receipt","operation":"1652ecab752c67f6151f6e727df083dec48a09ce516630af52241ab6d481d8a7","options":{"section":null},"request_id_sha256":null,"results":["d-20261004-21"],"target":"decisions-ledger","v":1} -->
