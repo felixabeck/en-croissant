@@ -130,7 +130,6 @@ export default function DatabasesPage() {
     });
   }, [visibleDatabases, search]);
   const hasSearch = search.trim().length > 0;
-  // const [, setStorageSelected] = useAtom(selectedDatabaseAtom);
   const setActiveDatabase = useActiveDatabaseViewStore((store) => store.setDatabase);
 
   const isReference = sameDatabaseHandle(referenceDatabase, selectedDatabase?.file);
@@ -317,7 +316,6 @@ export default function DatabasesPage() {
                         if (item.type === "error") return;
                         navigate(databaseRouteTarget(item));
                         setActiveDatabase(item);
-                        //setStorageSelected(item);
                       }}
                       Header={
                         // Both rows wrap: a narrow card (a large font scale) puts the star and then
