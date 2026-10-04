@@ -12,12 +12,16 @@ import ConfirmModal from "@/components/common/ConfirmModal";
 import { IconAction } from "@/components/common/IconAction";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { useVirtualPageLoader } from "@/hooks/useVirtualPageLoader";
-import { errorUnlessCancelled } from "@/platform/errors";
 import { fontSizeAtom } from "@/state/atoms";
 import { parsePGN } from "@/utils/chess";
 import { formatNumber } from "@/utils/format";
 import { getGameName } from "@/utils/treeReducer";
 import classes from "./GameSelector.module.css";
+
+// Opening load count; the requested end index is inclusive.
+const INITIAL_LOAD_ROWS = 11;
+// Row height at 100 % font size.
+const ROW_HEIGHT_PX = 30;
 
 export type GameSelectorRow = {
   name: string;
@@ -73,9 +77,7 @@ export default function GameSelector({
         }
         return entries;
       } catch (error) {
-        if (!options?.signal?.aborted && errorUnlessCancelled(error) !== null) {
-          notifyUnlessCancelled(t("Common.Error"), error);
-        }
+        if (!options?.signal?.aborted) notifyUnlessCancelled(t("Common.Error"), error);
         return [];
       }
     },
@@ -95,7 +97,7 @@ export default function GameSelector({
   const parentRef = useRef<HTMLDivElement>(null);
   const rowVirtualizer = useVirtualizer({
     count: total,
-    estimateSize: () => 30 * (fontSize / 100),
+    estimateSize: () => ROW_HEIGHT_PX * (fontSize / 100),
     getScrollElement: () => parentRef.current!,
   });
   const virtualItems = rowVirtualizer.getVirtualItems();
@@ -106,7 +108,7 @@ export default function GameSelector({
 
   useEffect(() => {
     if (games.size === 0) {
-      void loadMoreRows(0, Math.min(10, total - 1));
+      void loadMoreRows(0, Math.min(INITIAL_LOAD_ROWS - 1, total - 1));
     }
     if (visibleStart >= 0 && visibleEnd >= visibleStart) {
       let hasUnloadedRow = false;

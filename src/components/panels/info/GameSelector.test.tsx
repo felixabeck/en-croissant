@@ -1,3 +1,4 @@
+import { notifications } from "@mantine/notifications";
 import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -11,7 +12,6 @@ const mocks = vi.hoisted(() => ({
   useVirtualPageLoader: vi.fn(),
   readGames: vi.fn(),
   parsePGN: vi.fn(),
-  notifyUnlessCancelled: vi.fn(),
   visibleIndices: [0],
 }));
 
@@ -27,8 +27,8 @@ vi.mock("@/platform/tauri", async () => {
   };
 });
 vi.mock("@/utils/chess", () => ({ parsePGN: mocks.parsePGN }));
-vi.mock("@/components/files/notifyError", () => ({
-  notifyUnlessCancelled: mocks.notifyUnlessCancelled,
+vi.mock("@mantine/notifications", () => ({
+  notifications: { show: vi.fn() },
 }));
 vi.mock("@tanstack/react-virtual", () => ({
   useVirtualizer: () => ({
@@ -104,7 +104,7 @@ beforeEach(async () => {
   mocks.useVirtualPageLoader.mockReset().mockImplementation(useVirtualPageLoader);
   mocks.readGames.mockReset().mockResolvedValue([firstGame]);
   mocks.parsePGN.mockReset().mockResolvedValue({ headers: { event: "Loaded game" } });
-  mocks.notifyUnlessCancelled.mockReset();
+  vi.mocked(notifications.show).mockReset();
   mocks.visibleIndices = [0];
   host = document.createElement("div");
   document.body.append(host);
@@ -283,7 +283,7 @@ test("stops continuation when the load aborts between pages", async () => {
     await expect(request).resolves.toBeUndefined();
   });
   expect(mocks.readGames).toHaveBeenCalledTimes(1);
-  expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
+  expect(notifications.show).not.toHaveBeenCalled();
 });
 
 test("stops at an empty continuation page and keeps the preceding rows", async () => {
@@ -323,7 +323,9 @@ test.each([
 ])(
   "a later page $label discards all rows and resolves the shared promise",
   async ({ error, notifies }) => {
-    const expected = notifies ? [[translation.t("Common.Error"), error]] : [];
+    const expected = notifies
+      ? [[{ color: "red", title: translation.t("Common.Error"), message: error.message }]]
+      : [];
     const laterPage = deferred<StampedGame[]>();
     mocks.visibleIndices = [0, 1, 2];
     mocks.readGames.mockResolvedValueOnce([firstGame]).mockReturnValueOnce(laterPage.promise);
@@ -342,7 +344,7 @@ test.each([
     });
     expect(observed.games).toBe(initial);
     expect(mocks.readGames).toHaveBeenCalledTimes(2);
-    expect(mocks.notifyUnlessCancelled.mock.calls).toEqual(expected);
+    expect(vi.mocked(notifications.show).mock.calls).toEqual(expected);
   },
 );
 
@@ -365,10 +367,11 @@ test("a header parse failure discards earlier pages and resolves without further
 
   expect(observed.games).toBe(initial);
   expect(mocks.readGames).toHaveBeenCalledTimes(2);
-  expect(mocks.notifyUnlessCancelled).toHaveBeenCalledExactlyOnceWith(
-    translation.t("Common.Error"),
-    error,
-  );
+  expect(notifications.show).toHaveBeenCalledExactlyOnceWith({
+    color: "red",
+    title: translation.t("Common.Error"),
+    message: error.message,
+  });
 });
 
 test("both one-row call sites share a failed load with exactly one notification", async () => {
@@ -386,10 +389,11 @@ test("both one-row call sites share a failed load with exactly one notification"
     await expect(request).resolves.toBeUndefined();
   });
   expect(mocks.readGames).toHaveBeenCalledTimes(1);
-  expect(mocks.notifyUnlessCancelled).toHaveBeenCalledExactlyOnceWith(
-    translation.t("Common.Error"),
-    error,
-  );
+  expect(notifications.show).toHaveBeenCalledExactlyOnceWith({
+    color: "red",
+    title: translation.t("Common.Error"),
+    message: error.message,
+  });
 });
 
 test("an ordinary read failure after abort is silent and resolves without merging", async () => {
@@ -412,7 +416,7 @@ test("an ordinary read failure after abort is silent and resolves without mergin
   expect(observed.games).toBe(initial);
   expect(mocks.readGames).toHaveBeenCalledTimes(1);
   expect(mocks.parsePGN).not.toHaveBeenCalled();
-  expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
+  expect(notifications.show).not.toHaveBeenCalled();
 });
 
 test("keeps the confirmation snapshot when the displayed row changes", async () => {
