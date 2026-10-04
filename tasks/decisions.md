@@ -5571,3 +5571,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Rule 11 (one mapping, not three) and the existing Databases presentation. Reversal path: add chooser buttons to the puzzle/engine surfaces beside the sentence.
 * **Decided by:** Claude Code, drain session 67883078-c337-48f6-a006-eeaa0a292fdc (drain run 42548d18-1af4-46bd-a37c-20f82f9ba6c8), full auto, reviewed plan tasks/plans/2026-10-04-f-20260917-12.md (planned ahead, 3 review rounds) · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"68fcf5687f0eda595525371ef473b9013ebe81cb546ea9fb36d780d1de1b83b1","input_sha256":"719ad517da333cd4a82367404b387cea0fa787692f8fd26e5613f029f7193b94","kind":"mutation-receipt","operation":"ea424dc257c61dd361ba723e5ca689f44dc050115e5fd43928c69c7ab710bd45","options":{"section":null},"request_id_sha256":null,"results":["d-20261004-40"],"target":"decisions-ledger","v":1} -->
+
+### d-20261004-41 — How is the active-root refusal proven through the real IPC path?
+
+* **Question:** Container e2e mocks IPC; what proves that an unusable selected database root reaches the Databases page and that no default is created?
+* **Governs:** f-20260917-12
+* **Chosen:** One committed `pnpm verify:app` check in `scripts/verify-app.mjs`: activate a database root in an isolated profile, rename the folder away, revisit the Databases page, and require the RootMissing sentence, the chooser, and an absent `<app-data>/db`; plus a staged-failure record with the accessor change reverted.
+* **Rejected:** Container e2e only (mocked IPC proves nothing about the backend); a one-off scratch script (not re-runnable).
+* **Reason:** Precedent `d-20261003-26` (`default-root-unusable` check). Reversal path: delete the check from `scripts/verify-app.mjs`.
+* **Decided by:** Claude Code, drain session 67883078-c337-48f6-a006-eeaa0a292fdc (drain run 42548d18-1af4-46bd-a37c-20f82f9ba6c8), full auto, reviewed plan tasks/plans/2026-10-04-f-20260917-12.md (planned ahead, 3 review rounds) · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"03969bc37ab25c00b26185b5d1b06c5a6774bed1f3882b516d3792195dbb5454","input_sha256":"1ce6881ba68f5e6d8e396ba66c79c76fe2c7586fa1cb081a230045948b597ad1","kind":"mutation-receipt","operation":"759ee69c569226cc5ee3356b7928335cee59f55f35167c5a7314a387155b0252","options":{"section":null},"request_id_sha256":null,"results":["d-20261004-41"],"target":"decisions-ledger","v":1} -->
