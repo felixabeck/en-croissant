@@ -17,7 +17,9 @@ file's joined literal stream. E blanks only braced inline test-module bodies, re
 before and after them, byte offsets and newlines; cfg(not(test)) does not hide production.
 The review repair removed the dormant body-row verifier (BodyRow/ExpectedBody/check_source_pin,
 `remaining_refusal_body_rows_are_none`): C rejects any re-added refusal site, so a future body-form
-refusal fails C first and is pinned there; the test count is therefore 58.
+refusal site fails C first, which pins its (file, function, helper, label) tuple; pinning its
+body (effects, cfg and scope placement) then needs the body-row verifier restored from commit
+e3c6b225 (or an equivalent row check), alongside the new row; the test count is therefore 58.
 S-new-site, S-outside-fn, S-after-tests, S-cfg-not-test, S-label-const, S-literal, S-concat-2 and
 S-format were re-run on the repaired tree with identical messages and exit 101.
 
@@ -2403,15 +2405,11 @@ fn check_function_attributes(
     source: &str,
     signature: &str,
     start: usize,
-    allow_direct_non_unix: bool,
     errors: &mut Vec<String>,
 ) {
     for attribute in attribute_lines_before(source, start) {
         if attribute.contains("#[cfg") || attribute.contains("cfg_attr") {
-            let allowed = allow_direct_non_unix && attribute == "#[cfg(not(unix))]";
-            if !allowed {
-                errors.push(format!("{file}: {signature} carries forbidden {attribute}"));
-            }
+            errors.push(format!("{file}: {signature} carries forbidden {attribute}"));
         }
     }
 }
@@ -2480,7 +2478,7 @@ fn refusal_guards_are_first_statements_and_precede_their_effects() {
             continue;
         }
         let start = starts[0];
-        check_function_attributes(row.file, source, row.signature, start, false, &mut errors);
+        check_function_attributes(row.file, source, row.signature, start, &mut errors);
         check_scope_and_modules(row.file, source, start, &mut errors);
         let body = body_at(source, start);
         let normalised = normalise(source, Literals::Blank);
