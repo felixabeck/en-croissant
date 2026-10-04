@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { SWRConfig, useSWRConfig } from "swr";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import { accountDownloadsInFlightAtom, sessionsAtom } from "@/state/atoms";
 import { installMatchMediaStub } from "@/tests/matchMedia";
 import { installResizeObserverStub } from "@/tests/resizeObserver";
@@ -46,11 +47,31 @@ let root: Root;
 let host: HTMLDivElement;
 let store: ReturnType<typeof createStore>;
 let revalidate: ReturnType<typeof useSWRConfig>["mutate"];
+let cache: ReturnType<typeof useSWRConfig>["cache"];
+let switchRoot: () => Promise<void>;
 
 function RevalidationControl() {
-  revalidate = useSWRConfig().mutate;
+  const config = useSWRConfig();
+  const owner = useNativeRequestOwner("databases");
+  revalidate = config.mutate;
+  cache = config.cache;
+  switchRoot = async () => {
+    await owner!.supersede();
+    await config.mutate("databases");
+  };
   return null;
 }
+
+const oldInfo = {
+  filename: "Felix_chesscom.db3",
+  title: "Felix",
+  description: "",
+  player_count: 2,
+  event_count: 1,
+  game_count: 3,
+  storage_size: 0n,
+  indexed: false,
+};
 
 const swrConfig = {
   provider: () => new Map(),
@@ -108,6 +129,7 @@ beforeEach(() => {
   mocks.startProgress.mockResolvedValue({ id: "chesscom_Felix", generation: 1n });
   mocks.convertPgn.mockResolvedValue(undefined);
   mocks.setProgressState.mockResolvedValue(undefined);
+  mocks.deleteEmptyGames.mockResolvedValue(undefined);
   mocks.progress.mockResolvedValue(vi.fn());
   host = document.createElement("div");
   document.body.append(host);
@@ -121,22 +143,17 @@ afterEach(async () => {
 
 test("real Accounts retain post-cleanup counts across remount and revalidation of an older listing", async () => {
   const deletion = deferred<void>();
-  const oldInfo = {
-    filename: "Felix_chesscom.db3",
-    title: "Felix",
-    description: "",
-    player_count: 2,
-    event_count: 1,
-    game_count: 3,
-    storage_size: 0n,
-    indexed: false,
-  };
   const listing = deferred<typeof oldInfo>();
+  const refresh = deferred<typeof oldInfo>();
   const newInfo = { ...oldInfo, game_count: 8 };
+  const newDatabases = [
+    { type: "success", ...newInfo, file: { id: { id: "database" }, kind: "database" } },
+  ];
   mocks.deleteEmptyGames.mockReturnValue(deletion.promise);
   mocks.getDbInfo
     .mockResolvedValueOnce(oldInfo)
     .mockReturnValueOnce(listing.promise)
+    .mockReturnValueOnce(refresh.promise)
     .mockResolvedValue(newInfo);
   await renderAccounts();
   expect(host.textContent).toContain("3 / 3");
@@ -157,11 +174,15 @@ test("real Accounts retain post-cleanup counts across remount and revalidation o
         throw new Error("Remounted Accounts have not started listing L");
     });
   });
+  expect(host.textContent).toContain("3 / 3");
   expect(downloadButton().disabled).toBe(true);
 
   await act(async () => deletion.resolve());
   expect(mocks.getDbInfo).toHaveBeenCalledTimes(3);
+  expect(downloadButton().disabled).toBe(true);
+  await act(async () => refresh.resolve(newInfo));
   expect(host.textContent).toContain("8 / 8");
+  expect(cache.get("databases")?.data).toEqual(newDatabases);
   expect(downloadButton().disabled).toBe(false);
 
   // DatabasesPage's mutate() must not rejoin L after the cleanup refresh.
@@ -176,6 +197,57 @@ test("real Accounts retain post-cleanup counts across remount and revalidation o
 
   expect(host.textContent).toContain("8 / 8");
   expect(host.textContent).not.toContain("3 / 3");
+  expect(cache.get("databases")?.data).toEqual(newDatabases);
   expect(mocks.notify).not.toHaveBeenCalled();
   expect(store.get(accountDownloadsInFlightAtom).size).toBe(0);
+});
+
+test("a root switch retires a pending successful import refresh and keeps root B's counts", async () => {
+  const refresh = deferred<typeof oldInfo>();
+  const rootAInfo = { ...oldInfo, game_count: 8 };
+  const rootBInfo = { ...oldInfo, game_count: 13 };
+  const rootB = { id: { id: "root-B" }, kind: "databaseRoot" };
+  const rootBHandle = { id: { id: "database-B" }, kind: "database" };
+  mocks.getDbInfo
+    .mockResolvedValueOnce(oldInfo)
+    .mockReturnValueOnce(refresh.promise)
+    .mockResolvedValue(rootBInfo);
+  const unhandled = vi.fn();
+  window.addEventListener("unhandledrejection", unhandled);
+  try {
+    await renderAccounts();
+    expect(host.textContent).toContain("3 / 3");
+
+    await act(async () => downloadButton().click());
+    expect(mocks.convertPgn).toHaveBeenCalledTimes(1);
+    expect(mocks.deleteEmptyGames).toHaveBeenCalledTimes(1);
+    expect(mocks.getDbInfo).toHaveBeenCalledTimes(2);
+    expect(downloadButton().disabled).toBe(true);
+
+    mocks.getDatabaseWorkspace.mockResolvedValue(rootB);
+    mocks.listWorkspaceDatabases.mockResolvedValue([
+      { handle: rootBHandle, filename: "Felix_chesscom.db3", availability: "available" },
+    ]);
+    // Use DatabasesPage's root-switch sequence in this same SWR provider/cache.
+    await act(async () => switchRoot());
+    await act(async () => {
+      refresh.resolve(rootAInfo);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(mocks.getDbInfo).toHaveBeenCalledTimes(3);
+    expect(mocks.getDbInfo).toHaveBeenLastCalledWith(rootBHandle);
+    expect(host.textContent).toContain("13 / 13");
+    expect(host.textContent).not.toContain("8 / 8");
+    expect(cache.get("databases")?.data).toEqual([
+      { type: "success", ...rootBInfo, file: rootBHandle },
+    ]);
+    expect(downloadButton().disabled).toBe(false);
+    expect(store.get(accountDownloadsInFlightAtom).size).toBe(0);
+    expect(mocks.notify).not.toHaveBeenCalled();
+    expect(mocks.warn).not.toHaveBeenCalled();
+    expect(unhandled).not.toHaveBeenCalled();
+  } finally {
+    window.removeEventListener("unhandledrejection", unhandled);
+  }
 });

@@ -161,6 +161,18 @@ function chooseBrowserLogin() {
   click(document.querySelector("input[aria-label='Home.Accounts.LoginWithBrowser']")!);
 }
 
+function chooseChessCom() {
+  click(
+    Array.from(document.querySelectorAll("button")).find(
+      (button) => button.textContent === "Chess.com",
+    )!,
+  );
+}
+
+function assertNoLichessAuthentication() {
+  expect(mocks.authenticateLichess).not.toHaveBeenCalled();
+}
+
 beforeEach(async () => {
   localStorage.clear();
   sessionStorage.clear();
@@ -187,47 +199,41 @@ afterEach(async () => {
 });
 
 describe("account authentication", () => {
-  test("notifies a rejected Chess.com lookup and keeps the add modal open", async () => {
-    mocks.getChessComAccount.mockRejectedValue(new Error("Chess.com lookup failed"));
-    openModal();
-    click(
-      Array.from(document.querySelectorAll("button")).find(
-        (button) => button.textContent === "Chess.com",
-      )!,
-    );
+  test.each([
+    {
+      provider: "Chess.com",
+      lookup: mocks.getChessComAccount,
+      setup: chooseChessCom,
+      assertion: undefined,
+    },
+    {
+      provider: "Lichess",
+      lookup: mocks.getLichessAccount,
+      setup: undefined,
+      assertion: assertNoLichessAuthentication,
+    },
+  ])(
+    "notifies a rejected $provider lookup and keeps the add modal open",
+    async ({ provider, lookup, setup, assertion }) => {
+      lookup.mockRejectedValue(new Error(`${provider} lookup failed`));
+      openModal();
+      setup?.();
 
-    await submit();
+      await submit();
 
-    expect(mocks.getChessComAccount).toHaveBeenCalledTimes(1);
-    expect(mocks.notificationsShow).toHaveBeenCalledExactlyOnceWith({
-      color: "red",
-      title: "Common.Error",
-      message: "Chess.com lookup failed",
-    });
-    expect(document.querySelector("[role='dialog']")).not.toBeNull();
-    expect(document.querySelector<HTMLButtonElement>("button[type='submit']")?.disabled).toBe(
-      false,
-    );
-  });
-
-  test("notifies a rejected Lichess lookup without login and keeps the add modal open", async () => {
-    mocks.getLichessAccount.mockRejectedValue(new Error("Lichess lookup failed"));
-    openModal();
-
-    await submit();
-
-    expect(mocks.getLichessAccount).toHaveBeenCalledTimes(1);
-    expect(mocks.authenticateLichess).not.toHaveBeenCalled();
-    expect(mocks.notificationsShow).toHaveBeenCalledExactlyOnceWith({
-      color: "red",
-      title: "Common.Error",
-      message: "Lichess lookup failed",
-    });
-    expect(document.querySelector("[role='dialog']")).not.toBeNull();
-    expect(document.querySelector<HTMLButtonElement>("button[type='submit']")?.disabled).toBe(
-      false,
-    );
-  });
+      expect(lookup).toHaveBeenCalledTimes(1);
+      assertion?.();
+      expect(mocks.notificationsShow).toHaveBeenCalledExactlyOnceWith({
+        color: "red",
+        title: "Common.Error",
+        message: `${provider} lookup failed`,
+      });
+      expect(document.querySelector("[role='dialog']")).not.toBeNull();
+      expect(document.querySelector<HTMLButtonElement>("button[type='submit']")?.disabled).toBe(
+        false,
+      );
+    },
+  );
 
   test("closes on success with a durability warning and hides native text", async () => {
     mocks.authenticateLichess.mockResolvedValue({ ok: true, durabilityUncertain: true });

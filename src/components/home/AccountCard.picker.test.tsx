@@ -1,12 +1,10 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Provider, createStore } from "jotai";
-import useSWR, { SWRConfig, type State } from "swr";
+import { SWRConfig, type State } from "swr";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { AppError, AppErrorCategory } from "@/platform/errors";
 import type { ManagedDatabaseInfo } from "@/utils/db";
-import { getDatabases } from "@/utils/db";
-import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import { accountDownloadsInFlightAtom, databaseConversionStateAtom } from "@/state/atoms";
 import { AccountCard } from "./AccountCard";
 
@@ -129,39 +127,19 @@ afterEach(async () => {
   host.remove();
 });
 
-function DatabaseConsumer() {
-  const databaseOwner = useNativeRequestOwner("databases");
-  const { data } = useSWR("databases", () =>
-    databaseOwner!.run((signal) => getDatabases({ signal })),
-  );
-  const database = data?.[0];
-  return (
-    <output data-testid="database-count">
-      {database?.type === "success" ? database.game_count : "unavailable"}
-    </output>
-  );
-}
-
 function cachedDatabases() {
   return cache.get("databases")?.data;
 }
 
-async function renderCard(
-  props: Partial<React.ComponentProps<typeof AccountCard>> = {},
-  withConsumer = false,
-) {
-  await renderCards([props], withConsumer);
+async function renderCard(props: Partial<React.ComponentProps<typeof AccountCard>> = {}) {
+  await renderCards([props]);
 }
 
-async function renderCards(
-  cards: Partial<React.ComponentProps<typeof AccountCard>>[],
-  withConsumer = false,
-) {
+async function renderCards(cards: Partial<React.ComponentProps<typeof AccountCard>>[]) {
   await act(async () => {
     root.render(
       <Provider store={store}>
         <SWRConfig value={{ provider: () => cache, dedupingInterval: 0 }}>
-          {withConsumer && <DatabaseConsumer />}
           {cards.map((props, index) => (
             <AccountCard
               key={props.title ?? index}
@@ -391,56 +369,6 @@ test("a remounted account stays pending and cannot start a second download", asy
   await act(async () => conversion.resolve());
   expect(downloadButton().disabled).toBe(false);
   expect(downloadButton().getAttribute("data-pending")).toBeNull();
-  expect(store.get(accountDownloadsInFlightAtom).size).toBe(0);
-});
-
-test("a post-cleanup refresh wins over the remounted consumer's older in-flight listing", async () => {
-  configureSuccessfulDownload();
-  mocks.issueDownloadDestination.mockResolvedValue({ id: "dest" });
-  const deletion = deferred<void>();
-  const listing = deferred<ManagedDatabaseInfo[]>();
-  const refresh = deferred<ManagedDatabaseInfo[]>();
-  const oldDatabases = accountDatabases();
-  const newDatabases = oldDatabases.map((database) =>
-    database.type === "success" ? { ...database, game_count: 8 } : database,
-  );
-  mocks.deleteEmptyGames.mockReturnValue(deletion.promise);
-  mocks.getDatabases
-    .mockResolvedValueOnce(oldDatabases)
-    .mockReturnValueOnce(listing.promise)
-    .mockReturnValueOnce(refresh.promise);
-  await renderCard({}, true);
-  expect(host.querySelector("output")?.textContent).toBe("3");
-  await act(async () => downloadButton().click());
-  expect(mocks.deleteEmptyGames).toHaveBeenCalledTimes(1);
-  expect(mocks.getDatabases).toHaveBeenCalledTimes(1);
-
-  await act(async () => root.unmount());
-  root = createRoot(host);
-  await renderCard({}, true);
-  await act(async () => {
-    await vi.waitFor(() => {
-      if (mocks.getDatabases.mock.calls.length !== 2) {
-        throw new Error("The remounted consumer has not started its listing");
-      }
-    });
-  });
-  expect(host.querySelector("output")?.textContent).toBe("3");
-  expect(downloadButton().disabled).toBe(true);
-
-  await act(async () => deletion.resolve());
-  expect(mocks.getDatabases).toHaveBeenCalledTimes(3);
-  expect(mocks.getDatabases).toHaveBeenLastCalledWith();
-  expect(downloadButton().disabled).toBe(true);
-  await act(async () => refresh.resolve(newDatabases));
-  expect(host.querySelector("output")?.textContent).toBe("8");
-  expect(cachedDatabases()).toEqual(newDatabases);
-  expect(downloadButton().disabled).toBe(false);
-
-  await act(async () => listing.resolve(oldDatabases));
-  expect(host.querySelector("output")?.textContent).toBe("8");
-  expect(cachedDatabases()).toEqual(newDatabases);
-  expect(mocks.notify).not.toHaveBeenCalled();
   expect(store.get(accountDownloadsInFlightAtom).size).toBe(0);
 });
 
