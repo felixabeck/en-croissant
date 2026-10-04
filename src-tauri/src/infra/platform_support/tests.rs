@@ -1585,9 +1585,11 @@ fn directory_listing_bound_options_survive_platform_wrappers() {
 /// and `File::write` always issue — fail with `STATUS_INVALID_PARAMETER`, and
 /// `NtQueryDirectoryFile` may return `STATUS_PENDING` while still writing into a buffer this
 /// code would drop. `SYNCHRONIZE` in the access mask does not imply it. No Linux test can
-/// observe it, and no Windows test can either: the Windows listing tests enumerate
-/// `windows_test_parent`, a `CreateFile` handle that is synchronous by construction, so they
-/// exercise a handle kind production never produces.
+/// observe it. On Windows, `windows_private_temp_refuses_read_and_rename_while_held`
+/// (`infra/fs.rs`) writes and reads through a handle the NT primitive returned, so the file-I/O
+/// half runs on the Windows runner; the listing half does not, because the Windows listing tests
+/// enumerate `windows_test_parent`, a `CreateFile` handle that is synchronous by construction,
+/// so they exercise a directory-handle kind production never produces.
 #[test]
 fn windows_nt_create_sites_open_synchronous_file_objects() {
     // The flag has to appear in the `CreateOptions` argument, not merely somewhere in the
