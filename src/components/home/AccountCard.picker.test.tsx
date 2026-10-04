@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { Provider, createStore } from "jotai";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { AppError, AppErrorCategory } from "@/platform/errors";
+import type { ManagedDatabaseInfo } from "@/utils/db";
 import { databaseConversionStateAtom } from "@/state/atoms";
 import { AccountCard } from "./AccountCard";
 
@@ -17,9 +18,12 @@ const mocks = vi.hoisted(() => ({
   convertPgn: vi.fn(),
   setProgressState: vi.fn(),
   deleteEmptyGames: vi.fn(),
+  getDatabases: vi.fn(),
+  logFailureSafely: vi.fn(),
   notify: vi.fn(),
   warn: vi.fn(),
   downloadChessCom: vi.fn(),
+  downloadLichess: vi.fn(),
   progress: vi.fn(),
 }));
 
@@ -39,10 +43,14 @@ vi.mock("@/platform/tauri", () => ({
   tauriSubscriptions: { progress: mocks.progress },
 }));
 vi.mock("@/utils/chess.com/api", () => ({ downloadChessCom: mocks.downloadChessCom }));
-vi.mock("@/utils/lichess/api", () => ({ downloadLichess: vi.fn() }));
+vi.mock("@/utils/lichess/api", () => ({ downloadLichess: mocks.downloadLichess }));
 vi.mock("@/utils/db", async () => {
   const actual = await vi.importActual<typeof import("@/utils/db")>("@/utils/db");
-  return { ...actual, getDatabases: vi.fn() };
+  return { ...actual, getDatabases: mocks.getDatabases };
+});
+vi.mock("@/platform/errors", async () => {
+  const actual = await vi.importActual<typeof import("@/platform/errors")>("@/platform/errors");
+  return { ...actual, logFailureSafely: mocks.logFailureSafely };
 });
 vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.notify } }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
@@ -99,6 +107,8 @@ beforeEach(() => {
   localStorage.clear();
   store = createStore();
   mocks.progress.mockResolvedValue(vi.fn());
+  mocks.getDatabases.mockResolvedValue([]);
+  mocks.logFailureSafely.mockResolvedValue(undefined);
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -109,7 +119,7 @@ afterEach(async () => {
   host.remove();
 });
 
-async function renderCard() {
+async function renderCard(props: Partial<React.ComponentProps<typeof AccountCard>> = {}) {
   await act(async () => {
     root.render(
       <Provider store={store}>
@@ -123,6 +133,7 @@ async function renderCard() {
           logout={vi.fn()}
           reload={vi.fn()}
           setDatabases={vi.fn()}
+          {...props}
         />
       </Provider>,
     );
@@ -146,22 +157,116 @@ const CATEGORY_CASES = {
   unexpected: { message: "unexpected download failed" },
 } satisfies Record<AppErrorCategory, { message: string }>;
 
-function configureSuccessfulDownload() {
+function configureSuccessfulDownload(type: "chesscom" | "lichess" = "chesscom") {
   const artifact = { id: { id: "pgn" }, kind: "fileWorkspace" as const };
   const root = { id: { id: "database-root" }, kind: "databaseRoot" as const };
   const handle = { id: { id: "database" }, kind: "database" as const };
-  const lease = { id: "chesscom_Felix", generation: 1n };
+  const lease = { id: `${type}_Felix`, generation: 1n };
   mocks.getLatestGameTimestamp.mockResolvedValue(null);
   mocks.downloadChessCom.mockResolvedValue(artifact);
+  mocks.downloadLichess.mockResolvedValue(artifact);
   mocks.getDatabaseWorkspace.mockResolvedValue(root);
   mocks.listWorkspaceDatabases.mockResolvedValue([
-    { handle, filename: "Felix_chesscom.db3", availability: "available" },
+    { handle, filename: `Felix_${type}.db3`, availability: "available" },
   ]);
   mocks.startProgress.mockResolvedValue(lease);
   mocks.convertPgn.mockResolvedValue(undefined);
   mocks.setProgressState.mockResolvedValue(undefined);
   mocks.deleteEmptyGames.mockResolvedValue(undefined);
 }
+
+test.each(["chesscom", "lichess"] as const)(
+  "a successful %s download refreshes databases after deleting empty games without a finished frame",
+  async (type) => {
+    configureSuccessfulDownload(type);
+    mocks.issueDownloadDestination.mockResolvedValue({ id: "dest" });
+    const setDatabases = vi.fn();
+    const databases: ManagedDatabaseInfo[] = [
+      {
+        type: "success",
+        file: { id: { id: "database" }, kind: "database" },
+        filename: `Felix_${type}.db3`,
+        title: "Felix",
+        description: "",
+        player_count: 2,
+        event_count: 1,
+        game_count: 3,
+        storage_size: 0n,
+        indexed: false,
+      },
+    ];
+    mocks.getDatabases.mockResolvedValue(databases);
+    await renderCard({ type, accountHandle: "account", setDatabases });
+
+    await act(async () => downloadButton().click());
+
+    expect(mocks.deleteEmptyGames).toHaveBeenCalledWith({
+      id: { id: "database" },
+      kind: "database",
+    });
+    expect(mocks.getDatabases).toHaveBeenCalledTimes(1);
+    expect(setDatabases).toHaveBeenCalledWith(databases);
+    expect(mocks.deleteEmptyGames.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.getDatabases.mock.invocationCallOrder[0],
+    );
+    expect(mocks.notify).not.toHaveBeenCalled();
+  },
+);
+
+test("a failed post-import database refresh notifies after deleting empty games", async () => {
+  configureSuccessfulDownload();
+  mocks.issueDownloadDestination.mockResolvedValue({ id: "dest" });
+  mocks.getDatabases.mockRejectedValue(new Error("refresh failed"));
+  const setDatabases = vi.fn();
+  await renderCard({ setDatabases });
+
+  await act(async () => downloadButton().click());
+
+  expect(mocks.deleteEmptyGames).toHaveBeenCalledTimes(1);
+  expect(setDatabases).not.toHaveBeenCalled();
+  expect(mocks.notify).toHaveBeenCalledWith({
+    color: "red",
+    title: "Common.Error",
+    message: "refresh failed",
+  });
+  expect(downloadButton().disabled).toBe(false);
+});
+
+test("a rejecting reload notifies without an unhandled rejection", async () => {
+  const reload = vi.fn().mockRejectedValue(new Error("reload failed"));
+  await renderCard({ reload });
+
+  await act(async () => {
+    host
+      .querySelector<HTMLButtonElement>('button[aria-label="Home.Accounts.UpdateStats"]')!
+      .click();
+  });
+
+  expect(reload).toHaveBeenCalledTimes(1);
+  expect(mocks.notify).toHaveBeenCalledWith({
+    color: "red",
+    title: "Common.Error",
+    message: "reload failed",
+  });
+});
+
+test("a rejecting logout notifies without an unhandled rejection", async () => {
+  const logout = vi.fn().mockRejectedValue(new Error("logout failed"));
+  await renderCard({ type: "lichess", logout });
+
+  await act(async () => {
+    host
+      .querySelector<HTMLButtonElement>('button[aria-label="Home.Accounts.RemoveAccount"]')!
+      .click();
+  });
+
+  expect(logout).toHaveBeenCalledTimes(1);
+  expect(mocks.notify).toHaveBeenCalledWith({
+    color: "red",
+    title: "Common.Error",
+    message: "logout failed",
+  });
+});
 
 test("cancelled game-download destination stays silent", async () => {
   mocks.issueDownloadDestination.mockRejectedValue(new Error("Cancellation"));
@@ -341,6 +446,14 @@ test("convertPgn failure is not masked when marking the lease failed also reject
     null,
   );
   expect(mocks.setProgressState).toHaveBeenCalledWith(lease, 0, "failed");
+  expect(mocks.logFailureSafely).toHaveBeenCalledWith(
+    "Account import progress update failed: progress failed",
+    {
+      operation: "account import progress update",
+      primaryFailure: { category: "unexpected", message: "progress failed" },
+    },
+    "Account import progress logging failed",
+  );
   expect(mocks.deleteEmptyGames).not.toHaveBeenCalled();
   expect(mocks.notify).toHaveBeenCalledWith({
     color: "red",
@@ -381,6 +494,14 @@ test("a rejecting setProgressState after a successful convert still runs the pos
     null,
   );
   expect(mocks.setProgressState).toHaveBeenCalledWith(lease, 100, "succeeded");
+  expect(mocks.logFailureSafely).toHaveBeenCalledWith(
+    "Account import progress update failed: progress failed",
+    {
+      operation: "account import progress update",
+      primaryFailure: { category: "unexpected", message: "progress failed" },
+    },
+    "Account import progress logging failed",
+  );
   expect(mocks.deleteEmptyGames).toHaveBeenCalledWith(handle);
   expect(mocks.notify).not.toHaveBeenCalled();
   expect(downloadButton().disabled).toBe(false);

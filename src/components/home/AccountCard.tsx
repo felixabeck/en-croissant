@@ -15,7 +15,11 @@ import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { DatabaseHandle, FileWorkspaceHandle, PathRef } from "@/bindings";
 import { IconAction } from "@/components/common/IconAction";
-import { notifyListenerError, notifyUnlessCancelled } from "@/components/files/notifyError";
+import {
+  notifyListenerError,
+  notifyUnlessCancelled,
+  runUnlessCancelled,
+} from "@/components/files/notifyError";
 import {
   databaseConversionStateAtom,
   downloadDestinationAtom,
@@ -26,7 +30,7 @@ import { getDatabases, type ManagedDatabaseInfo } from "@/utils/db";
 import { capitalize } from "@/utils/format";
 import { downloadLichess } from "@/utils/lichess/api";
 import { useTauriListener } from "@/platform/useTauriListener";
-import { runWithAppliedRecovery } from "@/platform/errors";
+import { logFailureSafely, runWithAppliedRecovery, safeFailureContext } from "@/platform/errors";
 import LichessLogo from "./LichessLogo";
 
 interface AccountCardProps {
@@ -41,7 +45,7 @@ interface AccountCardProps {
     diff?: number;
   }[];
   logout: () => void | Promise<void>;
-  reload: () => void;
+  reload: () => void | Promise<void>;
   setDatabases: (databases: ManagedDatabaseInfo[]) => void;
   authenticated?: boolean;
   accountHandle?: string;
@@ -80,6 +84,15 @@ export async function ensureAccountDatabaseHandle(
       (await tauri.listWorkspaceDatabases(root)).find(
         (candidate) => candidate.filename === filename,
       )?.handle,
+  );
+}
+
+async function logProgressUpdateFailure(cause: unknown): Promise<void> {
+  const primaryFailure = safeFailureContext(cause);
+  await logFailureSafely(
+    `Account import progress update failed: ${primaryFailure.message}`,
+    { operation: "account import progress update", primaryFailure },
+    "Account import progress logging failed",
   );
 }
 
@@ -141,12 +154,12 @@ export function AccountCard({
     source: FileWorkspaceHandle,
     timestamp: number | null,
   ): Promise<DatabaseHandle> {
-    const filename = title + (type === "lichess" ? " Lichess" : " Chess.com");
+    const databaseTitle = title + (type === "lichess" ? " Lichess" : " Chess.com");
     return runDatabaseConversion(
       setConversionState,
       {
         targetDatabase: database?.file ?? null,
-        targetDatabaseTitle: filename,
+        targetDatabaseTitle: databaseTitle,
         sourceFileName: `${title}_${type}.pgn`,
       },
       async ({ id, setTarget }) => {
@@ -159,14 +172,16 @@ export function AccountCard({
             [source],
             databaseHandle,
             timestamp === null ? null : timestamp / 1000,
-            filename,
+            databaseTitle,
             null,
           );
         } catch (caught) {
-          await tauri.setProgressState(progressLease, 0, "failed").catch(() => undefined);
+          await tauri.setProgressState(progressLease, 0, "failed").catch(logProgressUpdateFailure);
           throw caught;
         }
-        await tauri.setProgressState(progressLease, 100, "succeeded").catch(() => undefined);
+        await tauri
+          .setProgressState(progressLease, 100, "succeeded")
+          .catch(logProgressUpdateFailure);
         return databaseHandle;
       },
     );
@@ -242,7 +257,11 @@ export function AccountCard({
               label={t("Home.Accounts.UpdateStats")}
               variant="subtle"
               color="gray"
-              onClick={() => reload()}
+              onClick={() =>
+                void runUnlessCancelled(t("Common.Error"), async () => {
+                  await reload();
+                })
+              }
             >
               <IconRefresh size="1rem" />
             </IconAction>
@@ -256,24 +275,24 @@ export function AccountCard({
                 setLoading(true);
                 try {
                   const lastGameDate = database ? await getLastGameDate({ database }) : null;
+                  let artifact: FileWorkspaceHandle;
                   if (type === "lichess") {
                     if (!accountHandle) throw new Error("Authenticated Lichess account required");
                     const destination = await ensureDownloadDestination();
-                    const artifact = await downloadLichess(
+                    artifact = await downloadLichess(
                       accountHandle,
                       destination,
                       title,
                       lastGameDate,
                       total - downloadedGames,
                     );
-                    const databaseHandle = await convert(artifact, lastGameDate);
-                    await tauri.deleteEmptyGames(databaseHandle);
                   } else {
                     const destination = await ensureDownloadDestination();
-                    const artifact = await downloadChessCom(destination, title, lastGameDate);
-                    const databaseHandle = await convert(artifact, lastGameDate);
-                    await tauri.deleteEmptyGames(databaseHandle);
+                    artifact = await downloadChessCom(destination, title, lastGameDate);
                   }
+                  const databaseHandle = await convert(artifact, lastGameDate);
+                  await tauri.deleteEmptyGames(databaseHandle);
+                  setDatabases(await getDatabases());
                 } catch (cause) {
                   notifyUnlessCancelled(t("Common.Error"), cause);
                 } finally {
@@ -287,7 +306,11 @@ export function AccountCard({
               label={t("Home.Accounts.RemoveAccount")}
               variant="subtle"
               color="red"
-              onClick={() => void logout()}
+              onClick={() =>
+                void runUnlessCancelled(t("Common.Error"), async () => {
+                  await logout();
+                })
+              }
             >
               <IconTrash size="1rem" />
             </IconAction>
