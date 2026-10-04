@@ -169,9 +169,10 @@ fn finish_scope(guard: ScopeGuard, query_failed: bool) -> Result<(), Error> {
     Ok(())
 }
 
-/// Runs one synchronous Diesel query, including iterator consumption, under the SQLite VM
-/// cancellation callback. Connection acquisition and migration/validation must happen before this
-/// scope. Schema DDL uses `with_sqlite_cancellation_transaction` to keep transaction tails unarmed.
+/// Runs a synchronous query scope covering every statement the closure runs, including iterator
+/// consumption, under the SQLite VM cancellation callback. Connection acquisition and
+/// migration/validation must happen before this scope. Schema DDL uses
+/// `with_sqlite_cancellation_transaction` to keep transaction tails unarmed.
 pub fn with_sqlite_cancellation<T, E>(
     cancellation: &CancellationToken,
     query: impl FnOnce() -> Result<T, E>,

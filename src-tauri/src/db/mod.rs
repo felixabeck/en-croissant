@@ -1450,26 +1450,42 @@ pub async fn create_indexes(
     .await
 }
 
-fn create_indexes_blocking(
+fn run_required_index_ddl(
     authority: &std::sync::Mutex<Option<PathAuthority>>,
     repository: &DatabaseRepository,
     file: DatabaseHandle,
     cancellation: &CancellationToken,
+    label: &'static str,
+    body: fn(&mut SqliteConnection) -> Result<(), Error>,
 ) -> Result<(), Error> {
     #[cfg(test)]
-    database_command_checkpoint("create_indexes", &file);
+    database_command_checkpoint(label, &file);
+    #[cfg(not(test))]
+    let _ = label;
     let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
 
     repository.with_index_lock_cancellable(&target, cancellation, || {
         let mut database_connection =
             get_db_or_create(repository, &target, Some(cancellation), authority, &file)?;
         let db = &mut *database_connection;
-        sqlite_cancellation::with_sqlite_cancellation_transaction(
-            db,
-            cancellation,
-            create_required_indexes_body,
-        )
+        sqlite_cancellation::with_sqlite_cancellation_transaction(db, cancellation, body)
     })
+}
+
+fn create_indexes_blocking(
+    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    repository: &DatabaseRepository,
+    file: DatabaseHandle,
+    cancellation: &CancellationToken,
+) -> Result<(), Error> {
+    run_required_index_ddl(
+        authority,
+        repository,
+        file,
+        cancellation,
+        "create_indexes",
+        create_required_indexes_body,
+    )
 }
 
 #[tauri::command]
@@ -1498,19 +1514,14 @@ fn delete_indexes_blocking(
     file: DatabaseHandle,
     cancellation: &CancellationToken,
 ) -> Result<(), Error> {
-    #[cfg(test)]
-    database_command_checkpoint("delete_indexes", &file);
-    let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
-    repository.with_index_lock_cancellable(&target, cancellation, || {
-        let mut database_connection =
-            get_db_or_create(repository, &target, Some(cancellation), authority, &file)?;
-        let db = &mut *database_connection;
-        sqlite_cancellation::with_sqlite_cancellation_transaction(
-            db,
-            cancellation,
-            drop_required_indexes_body,
-        )
-    })
+    run_required_index_ddl(
+        authority,
+        repository,
+        file,
+        cancellation,
+        "delete_indexes",
+        drop_required_indexes_body,
+    )
 }
 
 #[tauri::command]
@@ -4405,7 +4416,7 @@ mod tests {
             .split("#[cfg(all(test, unix))]\nmod tests")
             .next()
             .unwrap();
-        assert_eq!(production.matches("resolve_database(").count(), 20);
+        assert_eq!(production.matches("resolve_database(").count(), 19);
         let resolver = production
             .split("pub(crate) fn resolve_database(")
             .nth(1)
