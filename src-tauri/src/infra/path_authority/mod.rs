@@ -14821,6 +14821,60 @@ mod tests {
         assert!(recovered.pending_artifacts.is_empty());
     }
 
+    #[test]
+    fn reserved_download_rejects_changed_payload_before_publication() {
+        for replacement in [b"1. d4".as_slice(), b"1. d4 d5".as_slice()] {
+            for existing in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let root_path = dir.path().join("downloads");
+                fs::create_dir(&root_path).unwrap();
+                let app_root = AppOwnedRoot::new(
+                    "downloads",
+                    root_path.clone(),
+                    vec![PathOperation::DownloadFile],
+                );
+                let root = app_root.id.clone();
+                let mut authority =
+                    PathAuthority::open(dir.path().join("registry.json"), vec![app_root]).unwrap();
+                let target = root_path.join("games.pgn");
+                if existing {
+                    fs::write(&target, b"previous bytes").unwrap();
+                }
+                let staged = dir.path().join("staged.pgn");
+                fs::write(&staged, b"1. e4").unwrap();
+                let reservation = authority
+                    .reserve_download_artifact(
+                        &root,
+                        OsString::from("games.pgn"),
+                        sha256_file(&staged).unwrap(),
+                        "games.pgn",
+                        canonical_operations(EntryPurpose::PgnReadOnlyFile),
+                    )
+                    .unwrap();
+                let resolved = authority
+                    .resolve(
+                        &root,
+                        PathOperation::DownloadFile,
+                        &[OsString::from("games.pgn")],
+                    )
+                    .unwrap();
+                let mut payload = tempfile::tempfile().unwrap();
+                payload.write_all(replacement).unwrap();
+                let result = resolved.atomic_install_reserved_download(&reservation, &mut payload);
+                assert!(
+                    matches!(&result, Err(Error::Conflict(message))
+                        if message == "staging payload changed after artifact reservation"),
+                    "replacement={replacement:?}, existing={existing}, result={result:?}"
+                );
+                if existing {
+                    assert_eq!(fs::read(&target).unwrap(), b"previous bytes");
+                } else {
+                    assert!(!target.exists());
+                }
+            }
+        }
+    }
+
     fn install_read_only_download_fixture(
         authority: &mut PathAuthority,
         root: &PathRef,

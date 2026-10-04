@@ -23,6 +23,8 @@ use crate::AppState;
 
 pub(crate) const MAX_ACTIVE_DOWNLOADS: usize = 32;
 const DOWNLOAD_DEADLINE: Duration = Duration::from_secs(60 * 60);
+const DOWNLOAD_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+const MAX_DOWNLOAD_REDIRECTS: usize = 10;
 const MAX_ARCHIVE_PATH_BYTES: usize = 1024;
 const TAR_BLOCK_SIZE: usize = 512;
 const USTAR_MAGIC_OFFSET: usize = 257;
@@ -412,22 +414,12 @@ fn archive_install_names<'a>(
     }
 }
 
-/// Writes the validated network body into the caller's open payload file and flushes it.
-#[allow(clippy::too_many_arguments)]
-async fn download_payload_network<F>(
+fn validate_download_request(
     op: OpClass,
     url: &str,
-    file: &mut std::fs::File,
-    transport: &dyn crate::infra::net::DownloadTransport,
     token: Option<&str>,
-    total_size: Option<u32>,
-    cancellation: CancellationToken,
-    expected_sha256: Option<&str>,
-    mut progress_updater: F,
-) -> Result<(), Error>
-where
-    F: FnMut(f32) -> Result<(), Error>,
-{
+    cancellation: &CancellationToken,
+) -> Result<reqwest::Url, Error> {
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
@@ -445,9 +437,27 @@ where
             _ => return Err(Error::InvalidInput("Token only allowed for Lichess".into())),
         }
     }
+    Ok(parsed_url)
+}
 
+/// Writes the validated network body into the caller's open payload file and flushes it.
+#[allow(clippy::too_many_arguments)]
+async fn download_payload_network<F>(
+    op: OpClass,
+    parsed_url: reqwest::Url,
+    file: &mut std::fs::File,
+    transport: &dyn crate::infra::net::DownloadTransport,
+    token: Option<&str>,
+    total_size: Option<u32>,
+    cancellation: CancellationToken,
+    expected_sha256: Option<&str>,
+    mut progress_updater: F,
+) -> Result<(), Error>
+where
+    F: FnMut(f32) -> Result<(), Error>,
+{
     info!("Downloading file from {}", redact_url(&parsed_url));
-    let mut req_url = parsed_url.clone();
+    let mut req_url = parsed_url;
     let mut redirects = 0;
 
     let mut res = loop {
@@ -462,12 +472,12 @@ where
 
         let res = tokio::select! {
             _ = cancellation.cancelled() => return Err(Error::Cancellation),
-            response = tokio::time::timeout(Duration::from_secs(60), transport.request(req_url.as_str(), headers)) => response
+            response = tokio::time::timeout(DOWNLOAD_REQUEST_TIMEOUT, transport.request(req_url.as_str(), headers)) => response
                 .map_err(|_| Error::EngineTimeout("download request timed out".into()))??,
         };
 
         if res.status >= 300 && res.status < 400 {
-            if redirects >= 10 {
+            if redirects >= MAX_DOWNLOAD_REDIRECTS {
                 return Err(Error::InvalidInput("Too many redirects".into()));
             }
             redirects += 1;
@@ -608,8 +618,8 @@ fn accept_plain_download_payload(file: &mut std::fs::File) -> Result<(), Error> 
     Ok(())
 }
 
-/// `staging` names the process-owned engine directory a zip or tar payload replaces.
-/// It must agree with `path`; gzip and plain files ignore it.
+/// `staging` names the process-owned engine directory a zip, tar or tar-in-gzip payload replaces.
+/// It must agree with `path`; plain gzip and plain files ignore it.
 #[allow(clippy::too_many_arguments)]
 async fn download_file_core_control_with_integrity<F>(
     op: OpClass,
@@ -626,6 +636,7 @@ async fn download_file_core_control_with_integrity<F>(
 where
     F: FnMut(f32) -> Result<(), Error>,
 {
+    let parsed_url = validate_download_request(op, url, token, &cancellation)?;
     let target_dir = path.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(target_dir)?;
     let mut temp_file = tempfile::Builder::new()
@@ -634,7 +645,7 @@ where
         .map_err(|e| Error::Io(Box::new(e)))?;
     download_payload_network(
         op,
-        url,
+        parsed_url,
         temp_file.as_file_mut(),
         transport,
         token,
@@ -693,17 +704,7 @@ where
                 let target_dir = path.parent().unwrap_or_else(|| Path::new("."));
                 std::fs::create_dir_all(target_dir)?;
                 let outcome = atomic_replace(&path, |target_file| {
-                    let mut buffer = [0_u8; 64 * 1024];
-                    loop {
-                        if cancellation.is_cancelled() {
-                            return Err(Error::Cancellation);
-                        }
-                        let read = file.read(&mut buffer)?;
-                        if read == 0 {
-                            break;
-                        }
-                        target_file.write_all(&buffer[..read])?;
-                    }
+                    copy_cancellable(&mut file, target_file, cancellation)?;
                     Ok(())
                 })?;
                 crate::infra::fs::require_durable(
@@ -935,9 +936,10 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
         &cancellation,
         "download deadline exceeded",
         async {
+            let parsed_url = validate_download_request(op, url, bearer_token, &cancellation)?;
             download_payload_network(
                 op,
-                url,
+                parsed_url,
                 &mut staged_file,
                 state.http_transport.as_ref(),
                 bearer_token,
@@ -4252,7 +4254,8 @@ mod tests {
     #[tokio::test]
     async fn cancelled_download_never_starts_transport_or_touches_target() {
         let dir = tempdir().unwrap();
-        let target = dir.path().join("out.pgn");
+        let parent = dir.path().join("missing-parent");
+        let target = parent.join("out.pgn");
         let token = CancellationToken::new();
         token.cancel();
         let mock = MockTransport {
@@ -4273,6 +4276,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(error, Error::Cancellation));
+        assert!(!parent.exists());
         assert!(!target.exists());
         assert!(mock.requests_seen.lock().unwrap().is_empty());
     }
