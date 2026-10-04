@@ -1,0 +1,181 @@
+import { MantineProvider } from "@mantine/core";
+import { Provider, createStore } from "jotai";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { SWRConfig, useSWRConfig } from "swr";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { accountDownloadsInFlightAtom, sessionsAtom } from "@/state/atoms";
+import { installMatchMediaStub } from "@/tests/matchMedia";
+import { installResizeObserverStub } from "@/tests/resizeObserver";
+import Accounts from "./Accounts";
+
+const mocks = vi.hoisted(() => ({
+  getDatabaseWorkspace: vi.fn(),
+  listWorkspaceDatabases: vi.fn(),
+  getDbInfo: vi.fn(),
+  getLatestGameTimestamp: vi.fn(),
+  issueDownloadDestination: vi.fn(),
+  startProgress: vi.fn(),
+  convertPgn: vi.fn(),
+  setProgressState: vi.fn(),
+  deleteEmptyGames: vi.fn(),
+  progress: vi.fn(),
+  downloadChessCom: vi.fn(),
+  notify: vi.fn(),
+  warn: vi.fn(),
+}));
+
+vi.mock("@/platform/tauri", () => ({
+  tauri: mocks,
+  tauriSubscriptions: { progress: mocks.progress },
+}));
+vi.mock("@/utils/chess.com/api", async () => {
+  const actual =
+    await vi.importActual<typeof import("@/utils/chess.com/api")>("@/utils/chess.com/api");
+  return { ...actual, downloadChessCom: mocks.downloadChessCom };
+});
+vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.notify } }));
+vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock("@/platform/native", () => ({ warn: mocks.warn }));
+
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+installMatchMediaStub();
+installResizeObserverStub();
+
+let root: Root;
+let host: HTMLDivElement;
+let store: ReturnType<typeof createStore>;
+let revalidate: ReturnType<typeof useSWRConfig>["mutate"];
+
+function RevalidationControl() {
+  revalidate = useSWRConfig().mutate;
+  return null;
+}
+
+const swrConfig = {
+  provider: () => new Map(),
+  dedupingInterval: 0,
+  shouldRetryOnError: false,
+};
+
+async function renderAccounts(show = true) {
+  await act(async () => {
+    root.render(
+      <MantineProvider>
+        <Provider store={store}>
+          <SWRConfig value={swrConfig}>
+            <RevalidationControl />
+            {show && <Accounts />}
+          </SWRConfig>
+        </Provider>
+      </MantineProvider>,
+    );
+  });
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
+function downloadButton() {
+  return host.querySelector<HTMLButtonElement>('button[aria-label="Home.Accounts.DownloadGames"]')!;
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  localStorage.clear();
+  sessionStorage.clear();
+  store = createStore();
+  store.set(sessionsAtom, [
+    {
+      player: "Felix",
+      updatedAt: 0,
+      chessCom: { username: "Felix", stats: {} },
+    },
+  ]);
+  mocks.getDatabaseWorkspace.mockResolvedValue({ id: { id: "root" }, kind: "databaseRoot" });
+  const handle = { id: { id: "database" }, kind: "database" };
+  mocks.listWorkspaceDatabases.mockResolvedValue([
+    { handle, filename: "Felix_chesscom.db3", availability: "available" },
+  ]);
+  mocks.getLatestGameTimestamp.mockResolvedValue(null);
+  mocks.issueDownloadDestination.mockResolvedValue({ id: "destination" });
+  mocks.downloadChessCom.mockResolvedValue({ id: { id: "pgn" }, kind: "fileWorkspace" });
+  mocks.startProgress.mockResolvedValue({ id: "chesscom_Felix", generation: 1n });
+  mocks.convertPgn.mockResolvedValue(undefined);
+  mocks.setProgressState.mockResolvedValue(undefined);
+  mocks.progress.mockResolvedValue(vi.fn());
+  host = document.createElement("div");
+  document.body.append(host);
+  root = createRoot(host);
+});
+
+afterEach(async () => {
+  await act(async () => root.unmount());
+  host.remove();
+});
+
+test("real Accounts retain post-cleanup counts across remount and revalidation of an older listing", async () => {
+  const deletion = deferred<void>();
+  const oldInfo = {
+    filename: "Felix_chesscom.db3",
+    title: "Felix",
+    description: "",
+    player_count: 2,
+    event_count: 1,
+    game_count: 3,
+    storage_size: 0n,
+    indexed: false,
+  };
+  const listing = deferred<typeof oldInfo>();
+  const newInfo = { ...oldInfo, game_count: 8 };
+  mocks.deleteEmptyGames.mockReturnValue(deletion.promise);
+  mocks.getDbInfo
+    .mockResolvedValueOnce(oldInfo)
+    .mockReturnValueOnce(listing.promise)
+    .mockResolvedValue(newInfo);
+  await renderAccounts();
+  expect(host.textContent).toContain("3 / 3");
+
+  await act(async () => downloadButton().click());
+  expect(mocks.deleteEmptyGames).toHaveBeenCalledTimes(1);
+  expect(mocks.getDbInfo).toHaveBeenCalledTimes(1);
+  expect(mocks.getLatestGameTimestamp).toHaveBeenCalledWith({
+    id: { id: "database" },
+    kind: "database",
+  });
+
+  await renderAccounts(false);
+  await renderAccounts();
+  await act(async () => {
+    await vi.waitFor(() => {
+      if (mocks.getDbInfo.mock.calls.length !== 2)
+        throw new Error("Remounted Accounts have not started listing L");
+    });
+  });
+  expect(downloadButton().disabled).toBe(true);
+
+  await act(async () => deletion.resolve());
+  expect(mocks.getDbInfo).toHaveBeenCalledTimes(3);
+  expect(host.textContent).toContain("8 / 8");
+  expect(downloadButton().disabled).toBe(false);
+
+  // DatabasesPage's mutate() must not rejoin L after the cleanup refresh.
+  let revalidation!: Promise<unknown>;
+  await act(async () => {
+    revalidation = revalidate("databases");
+  });
+  await act(async () => {
+    listing.resolve(oldInfo);
+    await revalidation;
+  });
+
+  expect(host.textContent).toContain("8 / 8");
+  expect(host.textContent).not.toContain("3 / 3");
+  expect(mocks.notify).not.toHaveBeenCalled();
+  expect(store.get(accountDownloadsInFlightAtom).size).toBe(0);
+});

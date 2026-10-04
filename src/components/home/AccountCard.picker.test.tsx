@@ -493,62 +493,41 @@ test("a failed convertPgn refreshes the newly created database and skips cleanup
   expect(store.get(accountDownloadsInFlightAtom).size).toBe(0);
 });
 
-test("a refresh failure after failed conversion logs without replacing the conversion error", async () => {
-  configureSuccessfulDownload();
-  mocks.issueDownloadDestination.mockResolvedValue({ id: "dest" });
-  mocks.convertPgn.mockRejectedValue(new Error("convert failed"));
-  mocks.getDatabases.mockRejectedValue(new Error("refresh failed"));
-  await renderCard();
+test.each([
+  { stage: "conversion", primaryMessage: "convert failed", cleanupCalls: 0 },
+  { stage: "cleanup", primaryMessage: "cleanup failed", cleanupCalls: 1 },
+])(
+  "a refresh failure after failed $stage logs without replacing the primary error",
+  async ({ stage, primaryMessage, cleanupCalls }) => {
+    configureSuccessfulDownload();
+    mocks.issueDownloadDestination.mockResolvedValue({ id: "dest" });
+    if (stage === "conversion") mocks.convertPgn.mockRejectedValue(new Error(primaryMessage));
+    else mocks.deleteEmptyGames.mockRejectedValue(new Error(primaryMessage));
+    mocks.getDatabases.mockRejectedValue(new Error("refresh failed"));
+    await renderCard();
 
-  await act(async () => downloadButton().click());
+    await act(async () => downloadButton().click());
 
-  expect(mocks.getDatabases).toHaveBeenCalledTimes(1);
-  expect(cachedDatabases()).toBeUndefined();
-  expect(mocks.deleteEmptyGames).not.toHaveBeenCalled();
-  expect(mocks.logFailureSafely).toHaveBeenCalledExactlyOnceWith(
-    "Account import database refresh failed for chesscom_Felix: refresh failed",
-    {
-      operation: "account import database refresh",
-      primaryFailure: { category: "unexpected", message: "refresh failed" },
-    },
-    "Account import refresh logging failed for chesscom_Felix",
-  );
-  expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
-    color: "red",
-    title: "Common.Error",
-    message: "convert failed",
-  });
-  expect(downloadButton().disabled).toBe(false);
-  expect(store.get(accountDownloadsInFlightAtom).size).toBe(0);
-});
-
-test("a refresh failure after failed cleanup logs without replacing the cleanup error", async () => {
-  configureSuccessfulDownload();
-  mocks.issueDownloadDestination.mockResolvedValue({ id: "dest" });
-  mocks.deleteEmptyGames.mockRejectedValue(new Error("cleanup failed"));
-  mocks.getDatabases.mockRejectedValue(new Error("refresh failed"));
-  await renderCard();
-
-  await act(async () => downloadButton().click());
-
-  expect(mocks.getDatabases).toHaveBeenCalledTimes(1);
-  expect(cachedDatabases()).toBeUndefined();
-  expect(mocks.logFailureSafely).toHaveBeenCalledExactlyOnceWith(
-    "Account import database refresh failed for chesscom_Felix: refresh failed",
-    {
-      operation: "account import database refresh",
-      primaryFailure: { category: "unexpected", message: "refresh failed" },
-    },
-    "Account import refresh logging failed for chesscom_Felix",
-  );
-  expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
-    color: "red",
-    title: "Common.Error",
-    message: "cleanup failed",
-  });
-  expect(downloadButton().disabled).toBe(false);
-  expect(store.get(accountDownloadsInFlightAtom).size).toBe(0);
-});
+    expect(mocks.getDatabases).toHaveBeenCalledTimes(1);
+    expect(cachedDatabases()).toBeUndefined();
+    expect(mocks.deleteEmptyGames).toHaveBeenCalledTimes(cleanupCalls);
+    expect(mocks.logFailureSafely).toHaveBeenCalledExactlyOnceWith(
+      "Account import database refresh failed for chesscom_Felix: refresh failed",
+      {
+        operation: "account import database refresh",
+        primaryFailure: { category: "unexpected", message: "refresh failed" },
+      },
+      "Account import refresh logging failed for chesscom_Felix",
+    );
+    expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
+      color: "red",
+      title: "Common.Error",
+      message: primaryMessage,
+    });
+    expect(downloadButton().disabled).toBe(false);
+    expect(store.get(accountDownloadsInFlightAtom).size).toBe(0);
+  },
+);
 
 test("a finished progress frame for the card does not refresh databases", async () => {
   await renderCard();

@@ -187,6 +187,48 @@ afterEach(async () => {
 });
 
 describe("account authentication", () => {
+  test("notifies a rejected Chess.com lookup and keeps the add modal open", async () => {
+    mocks.getChessComAccount.mockRejectedValue(new Error("Chess.com lookup failed"));
+    openModal();
+    click(
+      Array.from(document.querySelectorAll("button")).find(
+        (button) => button.textContent === "Chess.com",
+      )!,
+    );
+
+    await submit();
+
+    expect(mocks.getChessComAccount).toHaveBeenCalledTimes(1);
+    expect(mocks.notificationsShow).toHaveBeenCalledExactlyOnceWith({
+      color: "red",
+      title: "Common.Error",
+      message: "Chess.com lookup failed",
+    });
+    expect(document.querySelector("[role='dialog']")).not.toBeNull();
+    expect(document.querySelector<HTMLButtonElement>("button[type='submit']")?.disabled).toBe(
+      false,
+    );
+  });
+
+  test("notifies a rejected Lichess lookup without login and keeps the add modal open", async () => {
+    mocks.getLichessAccount.mockRejectedValue(new Error("Lichess lookup failed"));
+    openModal();
+
+    await submit();
+
+    expect(mocks.getLichessAccount).toHaveBeenCalledTimes(1);
+    expect(mocks.authenticateLichess).not.toHaveBeenCalled();
+    expect(mocks.notificationsShow).toHaveBeenCalledExactlyOnceWith({
+      color: "red",
+      title: "Common.Error",
+      message: "Lichess lookup failed",
+    });
+    expect(document.querySelector("[role='dialog']")).not.toBeNull();
+    expect(document.querySelector<HTMLButtonElement>("button[type='submit']")?.disabled).toBe(
+      false,
+    );
+  });
+
   test("closes on success with a durability warning and hides native text", async () => {
     mocks.authenticateLichess.mockResolvedValue({ ok: true, durabilityUncertain: true });
 

@@ -14,6 +14,7 @@ import { useAtom } from "jotai";
 import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useSWRConfig } from "swr";
+import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import type { DatabaseHandle, FileWorkspaceHandle, PathRef } from "@/bindings";
 import { IconAction } from "@/components/common/IconAction";
 import {
@@ -117,6 +118,7 @@ export function AccountCard({
 }: AccountCardProps) {
   const { t } = useTranslation();
   const { mutate } = useSWRConfig();
+  const databaseOwner = useNativeRequestOwner("databases");
   const accountKey = `${type}_${title}`;
   const items = stats.map((stat) => {
     let color = "gray.5";
@@ -244,6 +246,8 @@ export function AccountCard({
 
   async function refreshDatabases(importFailed: boolean): Promise<void> {
     try {
+      // d-20261003-24: settle older listings before publishing the fresh database counts.
+      await databaseOwner!.supersede();
       await mutate("databases", getDatabases(), { revalidate: false });
     } catch (refreshCause) {
       if (!importFailed) throw refreshCause;

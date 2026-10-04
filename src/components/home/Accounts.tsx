@@ -13,6 +13,7 @@ import { notifications } from "@mantine/notifications";
 import { useCallback, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import useSWR from "swr";
+import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import { sessionsAtom } from "@/state/atoms";
 import { getChessComAccount } from "@/utils/chess.com/api";
@@ -86,11 +87,12 @@ function Accounts() {
         if (!stats) return false;
         addChessComSession(p, { username, stats });
         return true;
-      } catch {
+      } catch (cause) {
+        notifyUnlessCancelled(t("Common.Error"), cause);
         return false;
       }
     },
-    [addChessComSession],
+    [addChessComSession, t],
   );
 
   const addLichessNoLogin = useCallback(
@@ -101,11 +103,12 @@ function Accounts() {
         if (!account) return false;
         addLichessSession(p, { username, account });
         return true;
-      } catch {
+      } catch (cause) {
+        notifyUnlessCancelled(t("Common.Error"), cause);
         return false;
       }
     },
-    [addLichessSession],
+    [addLichessSession, t],
   );
 
   const addLichess = useCallback(
