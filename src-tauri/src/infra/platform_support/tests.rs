@@ -2433,6 +2433,14 @@ fn preceding_attributes_include_inner_attribute() {
     );
 }
 
+#[test]
+fn direct_attribute_matches_multiline_spelling() {
+    let source = "#[cfg(\n    not(unix)\n)]\nfn item(";
+    let start = source.find("fn item(").unwrap();
+    assert!(direct_attribute(source, start, "#[cfg(not(unix))]"));
+    assert!(!direct_attribute(source, start, "#[cfg(unix)]"));
+}
+
 fn direct_attribute(source: &str, start: usize, expected: &str) -> bool {
     attribute_lines_before(source, start)
         .first()
