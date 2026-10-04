@@ -25,7 +25,8 @@ import { countMainPly } from "@/utils/treeReducer";
 
 export const MIN_DATE = new Date(1952, 0, 1);
 
-// Per-game byte estimate passed as the native download's estimated size (progress only).
+// Per-game byte estimate sent as the native download's `estimatedSize`. The native download also
+// enforces it as the exact expected byte count today, not only as a progress hint (filed defect).
 const ESTIMATED_PGN_BYTES_PER_GAME = 900;
 
 export type TablebaseCategory =
