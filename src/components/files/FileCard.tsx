@@ -6,7 +6,6 @@ import { useAtom } from "jotai";
 import { useEffect, useRef, useState } from "react";
 import { useElementSize } from "@mantine/hooks";
 import { useTranslation } from "react-i18next";
-import { errorUnlessCancelled } from "@/platform/errors";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { tabsAtom } from "@/state/atoms";
 import { IconAction } from "@/components/common/IconAction";
@@ -58,7 +57,7 @@ function FileCard({ selected }: { selected: FileMetadata }) {
         }
       } catch (error) {
         if (controller.signal.aborted) return;
-        if (errorUnlessCancelled(error) === null) return;
+        setSelectedGame(null);
         notifyUnlessCancelled(t("Common.Error"), error);
       }
     }

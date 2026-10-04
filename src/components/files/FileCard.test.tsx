@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   readGame: vi.fn(),
   navigate: vi.fn(),
   notifyUnlessCancelled: vi.fn(),
+  showNotification: vi.fn(),
 }));
 
 vi.mock("@/platform/tauri", async () => {
@@ -38,9 +39,21 @@ vi.mock("@/utils/chess", async (importOriginal) => {
   };
 });
 
-vi.mock("@/components/files/notifyError", () => ({
-  notifyUnlessCancelled: mocks.notifyUnlessCancelled,
+vi.mock("@mantine/notifications", () => ({
+  notifications: { show: mocks.showNotification },
 }));
+
+vi.mock("@/components/files/notifyError", async () => {
+  const actual = await vi.importActual<typeof import("@/components/files/notifyError")>(
+    "@/components/files/notifyError",
+  );
+  return {
+    ...actual,
+    notifyUnlessCancelled: mocks.notifyUnlessCancelled.mockImplementation(
+      actual.notifyUnlessCancelled,
+    ),
+  };
+});
 
 vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => mocks.navigate,
@@ -56,7 +69,11 @@ vi.mock("../databases/GamePreview", () => ({
 }));
 
 vi.mock("../panels/info/GameSelector", () => ({
-  default: () => <div data-testid="game-selector" />,
+  default: ({ setPage }: { setPage: (page: number) => void }) => (
+    <button type="button" data-testid="game-selector" onClick={() => setPage(1)}>
+      Select game B
+    </button>
+  ),
 }));
 
 import { MantineProvider } from "@mantine/core";
@@ -185,8 +202,41 @@ describe("FileCard", () => {
 
     await renderWithMantine(<FileCard selected={sampleFileA} />, root);
 
-    expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
+    expect(mocks.showNotification).not.toHaveBeenCalled();
     expect(container.querySelector("[data-testid='game-preview']")).toBeNull();
+  });
+
+  test.each([
+    {
+      failure: "ordinary error",
+      error: new Error("Failed to read game B"),
+      notifications: [{ color: "red", title: "Common.Error", message: "Failed to read game B" }],
+    },
+    { failure: "cancellation", error: cancellationError(), notifications: [] },
+  ])("clears A's preview after B's $failure", async ({ error, notifications }) => {
+    mocks.readGames
+      .mockResolvedValueOnce([stampedGame("pgn-from-game-A", "a")])
+      .mockRejectedValueOnce(error);
+
+    await renderWithMantine(<FileCard selected={sampleFileA} />, root);
+    expect(container.querySelector("[data-testid='game-preview']")?.textContent).toBe(
+      "pgn-from-game-A",
+    );
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("[data-testid='game-selector']")!.click();
+    });
+
+    expect(mocks.readGames).toHaveBeenCalledTimes(2);
+    expect(mocks.readGames).toHaveBeenLastCalledWith(sampleFileA.handle, 1, 1, {
+      signal: expect.any(AbortSignal),
+    });
+    expect(mocks.readGames.mock.calls[1][3].signal.aborted).toBe(false);
+    expect(container.querySelector("[data-testid='game-preview']")).toBeNull();
+    expect(container.textContent).not.toContain("pgn-from-game-A");
+    expect(mocks.showNotification.mock.calls).toEqual(
+      notifications.map((notification) => [notification]),
+    );
   });
 
   test("active readGames error triggers notification", async () => {
