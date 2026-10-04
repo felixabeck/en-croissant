@@ -167,6 +167,10 @@ const EXPECTED_SESSION_COMMANDS = new Set<PropertyKey>([
     "abortGame",
     "getGameEngineLogs",
 ]);
+const DOWNLOAD_SINCE_MS_ARGUMENTS = new Map<PropertyKey, number>([
+    ["downloadLichessGames", 4],
+    ["downloadChessComGames", 3],
+]);
 const GAME_STATE_COMMANDS = new Set<PropertyKey>([
     "startGame",
     "getGameState",
@@ -372,6 +376,10 @@ export const tauri: TauriCommands = new Proxy(commands, {
                 }
                 if (EXPECTED_SESSION_COMMANDS.has(property)) {
                     args[1] = encodeCounter(args[1] as bigint, "expectedSession");
+                }
+                const sinceMsIndex = DOWNLOAD_SINCE_MS_ARGUMENTS.get(property);
+                if (sinceMsIndex !== undefined && args[sinceMsIndex] !== null) {
+                    args[sinceMsIndex] = encodeCounter(args[sinceMsIndex] as bigint, "sinceMs");
                 }
                 if (property === "setProgressState") {
                     const lease = args[0] as ProgressLease;

@@ -14,6 +14,8 @@ const mocks = vi.hoisted(() => ({
     setProgressState: vi.fn(),
     clearProgress: vi.fn(),
     cancelDownload: vi.fn(),
+    downloadLichessGames: vi.fn(),
+    downloadChessComGames: vi.fn(),
     prepareNativeRead: vi.fn(),
     cancelNativeRead: vi.fn(),
     prepareDownload: vi.fn(),
@@ -51,6 +53,8 @@ vi.mock("@/bindings/generated", () => ({
         setProgressState: mocks.setProgressState,
         clearProgress: mocks.clearProgress,
         cancelDownload: mocks.cancelDownload,
+        downloadLichessGames: mocks.downloadLichessGames,
+        downloadChessComGames: mocks.downloadChessComGames,
         prepareNativeRead: mocks.prepareNativeRead,
         cancelNativeRead: mocks.cancelNativeRead,
         prepareDownload: mocks.prepareDownload,
@@ -110,6 +114,8 @@ describe("tauri command facade", () => {
         mocks.cancelNativeRead.mockReset();
         mocks.prepareDownload.mockReset();
         mocks.releaseDownload.mockReset();
+        mocks.downloadLichessGames.mockReset().mockResolvedValue({ status: "ok", data: null });
+        mocks.downloadChessComGames.mockReset().mockResolvedValue({ status: "ok", data: null });
         mocks.prepareAnalysis.mockReset();
         mocks.cancelAnalysis.mockReset();
         mocks.getGames.mockReset();
@@ -182,6 +188,74 @@ describe("tauri command facade", () => {
         await expect(tauri.cancelDownload("ticket")).resolves.toBe(true);
         mocks.clearProgress.mockResolvedValueOnce({ status: "ok", data: 9 });
         await expect(tauri.clearProgress("job")).resolves.toBe(9n);
+    });
+
+    describe("download sinceMs encoding", () => {
+        const destination = { id: "destination" };
+        describe.each([
+            {
+                name: "downloadLichessGames",
+                command: mocks.downloadLichessGames,
+                call: (sinceMs: bigint | null) =>
+                    tauri.downloadLichessGames(
+                        "account",
+                        destination,
+                        "games.pgn",
+                        "player",
+                        sinceMs,
+                        42,
+                        "job",
+                    ),
+                wireArgs: (sinceMs: number | null) => [
+                    "account",
+                    destination,
+                    "games.pgn",
+                    "player",
+                    sinceMs,
+                    42,
+                    "job",
+                ],
+            },
+            {
+                name: "downloadChessComGames",
+                command: mocks.downloadChessComGames,
+                call: (sinceMs: bigint | null) =>
+                    tauri.downloadChessComGames(destination, "games.pgn", "player", sinceMs, "job"),
+                wireArgs: (sinceMs: number | null) => [
+                    destination,
+                    "games.pgn",
+                    "player",
+                    sinceMs,
+                    "job",
+                ],
+            },
+        ])("$name", ({ command, call, wireArgs }) => {
+            test("encodes a timestamp as a JSON number and preserves other arguments", async () => {
+                await call(1_700_000_000_000n);
+
+                expect(() => JSON.stringify(command.mock.calls[0])).not.toThrow();
+                expect(command).toHaveBeenCalledExactlyOnceWith(...wireArgs(1_700_000_000_000));
+            });
+
+            test("passes null through unchanged", async () => {
+                await call(null);
+
+                expect(command).toHaveBeenCalledExactlyOnceWith(...wireArgs(null));
+            });
+
+            test.each([-1n, BigInt(Number.MAX_SAFE_INTEGER) + 1n])(
+                "rejects invalid timestamp %s before native dispatch",
+                async (sinceMs) => {
+                    const result = call(sinceMs);
+
+                    await expect(result).rejects.toBeInstanceOf(TauriCommandError);
+                    await expect(result).rejects.toThrow(
+                        "sinceMs must be a nonnegative safe integer",
+                    );
+                    expect(command).not.toHaveBeenCalled();
+                },
+            );
+        });
     });
 
     test("a signal reserves a ticket and passes it outside positional arguments", async () => {
