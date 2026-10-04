@@ -100,6 +100,8 @@ pub struct WriteStamp {
 const MAX_LINE_LEN: usize = 1024 * 1024;
 const MAX_PAGE_LEN: usize = 1_000;
 const MAX_PGN_BYTES: usize = 10 * 1024 * 1024;
+/// Maximum total PGN text bytes returned by one page.
+const MAX_PAGE_BYTES: usize = MAX_PGN_BYTES;
 /// Size of each PGN read and copy chunk.
 const IO_CHUNK_LEN: usize = 64 * 1024;
 const MAX_CACHE_ENTRIES: usize = 128;
@@ -945,6 +947,9 @@ pub async fn read_games(
     .await
 }
 
+/// Returns a non-empty prefix of the requested range within `MAX_PAGE_BYTES`.
+/// Callers continue at start + returned length; only the empty-file opening range returns empty.
+/// An oversized first game is selected and rejected by the per-game read limit.
 pub async fn read_games_core(
     resolved: crate::infra::path_authority::ResolvedPath,
     start: i32,
@@ -960,10 +965,26 @@ pub async fn read_games_core(
         let requested = if games.is_empty() && start == 0 && count == 1 {
             Vec::new()
         } else {
-            games
+            let requested = games
                 .get(start..end)
-                .ok_or_else(|| Error::InvalidInput("game index is out of bounds".into()))?
-                .to_vec()
+                .ok_or_else(|| Error::InvalidInput("game index is out of bounds".into()))?;
+            let mut total_bytes = 0_u64;
+            let mut selected_len = 0;
+            for (index, range) in requested.iter().enumerate() {
+                let bytes = range
+                    .end
+                    .checked_sub(range.start)
+                    .ok_or_else(|| Error::Conflict("invalid cached PGN byte range".into()))?;
+                let Some(next_bytes) = total_bytes.checked_add(bytes) else {
+                    break;
+                };
+                if index > 0 && next_bytes > MAX_PAGE_BYTES as u64 {
+                    break;
+                }
+                total_bytes = next_bytes;
+                selected_len = index + 1;
+            }
+            requested[..selected_len].to_vec()
         };
         Ok(((), requested))
     })
@@ -2255,6 +2276,254 @@ mod tests {
             missing,
             Err(Error::InvalidInput(message)) if message == "game index is out of bounds"
         ));
+    }
+
+    fn seed_page_ranges(
+        directory: &tempfile::TempDir,
+        path: &Path,
+        repository: &PgnRepository,
+        ranges: Vec<GameRange>,
+    ) {
+        repository
+            .retain_if_within_budget(snapshot_key(&snapshot_for(directory, path)), ranges.into())
+            .expect("seed cached page ranges");
+    }
+
+    #[tokio::test]
+    async fn page_byte_budget_returns_fitting_prefix_with_unchanged_stamps() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("prefix.pgn");
+        let pgn = b"[Event \"A\"]\n\n1. e4 *\n[Event \"B\"]\n\n1. d4 *\n[Event \"C\"]\n\n1. c4 *\n";
+        std::fs::write(&path, pgn).expect("write PGN");
+        let app = mock_app();
+        let state = app.state::<AppState>();
+        let expected = read_games_core(
+            resolved_for(&directory, &path),
+            1,
+            2,
+            &CancellationToken::new(),
+            &state.pgn_repository,
+        )
+        .await
+        .expect("read complete fitting range");
+        let mut ranges = scan_games(Cursor::new(pgn)).expect("scan real game ranges");
+        let fitting_bytes = ranges[2].end - ranges[1].start;
+        let suffix_start = pgn.len() as u64;
+        ranges.push(GameRange {
+            start: suffix_start,
+            end: suffix_start + MAX_PAGE_BYTES as u64 - fitting_bytes + 1,
+        });
+        seed_page_ranges(&directory, &path, &state.pgn_repository, ranges);
+
+        let page = read_games_core(
+            resolved_for(&directory, &path),
+            1,
+            3,
+            &CancellationToken::new(),
+            &state.pgn_repository,
+        )
+        .await
+        .expect("read fitting prefix");
+        assert_eq!(page.len(), 2);
+        assert_eq!(
+            page, expected,
+            "PGN, stamp, revision and presence stay identical"
+        );
+    }
+
+    #[tokio::test]
+    async fn page_byte_budget_never_reads_excluded_suffix_past_eof() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("unread-suffix.pgn");
+        let pgn = b"[Event \"A\"]\n\n1. e4 *\n";
+        std::fs::write(&path, pgn).expect("write PGN");
+        let app = mock_app();
+        let state = app.state::<AppState>();
+        let eof = pgn.len() as u64;
+        seed_page_ranges(
+            &directory,
+            &path,
+            &state.pgn_repository,
+            vec![
+                GameRange { start: 0, end: eof },
+                // This game meets the per-game limit, but read_exact would fail past EOF.
+                GameRange {
+                    start: eof + 1,
+                    end: eof + 1 + MAX_PAGE_BYTES as u64,
+                },
+            ],
+        );
+
+        let page = read_games_core(
+            resolved_for(&directory, &path),
+            0,
+            1,
+            &CancellationToken::new(),
+            &state.pgn_repository,
+        )
+        .await
+        .expect("excluded suffix must never be read");
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].pgn.as_bytes(), pgn);
+    }
+
+    #[tokio::test]
+    async fn page_byte_budget_includes_exact_sum_and_excludes_next_game() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("exact-budget.pgn");
+        let game_bytes = 16 * 1024;
+        let mut pgn = b"[Event \"Exact\"]\n\n1. e4 *\n".to_vec();
+        pgn.resize(game_bytes, b' ');
+        std::fs::write(&path, &pgn).expect("write small PGN");
+        let app = mock_app();
+        let state = app.state::<AppState>();
+        let expected = read_games_core(
+            resolved_for(&directory, &path),
+            0,
+            0,
+            &CancellationToken::new(),
+            &state.pgn_repository,
+        )
+        .await
+        .expect("read real game");
+        let fitting_games = MAX_PAGE_BYTES / game_bytes;
+        assert_eq!(fitting_games * game_bytes, MAX_PAGE_BYTES);
+        assert!(fitting_games < MAX_PAGE_LEN);
+        // Reuse an in-file range to exercise the exact production budget with a small fixture.
+        seed_page_ranges(
+            &directory,
+            &path,
+            &state.pgn_repository,
+            vec![
+                GameRange {
+                    start: 0,
+                    end: game_bytes as u64
+                };
+                fitting_games + 1
+            ],
+        );
+
+        let page = read_games_core(
+            resolved_for(&directory, &path),
+            0,
+            fitting_games as i32,
+            &CancellationToken::new(),
+            &state.pgn_repository,
+        )
+        .await
+        .expect("read page landing exactly on budget");
+        assert_eq!(page.len(), fitting_games);
+        assert_eq!(
+            page.iter().map(|game| game.pgn.len()).sum::<usize>(),
+            MAX_PAGE_BYTES
+        );
+        assert!(page.iter().all(|game| game == &expected[0]));
+    }
+
+    #[tokio::test]
+    async fn page_byte_budget_keeps_oversized_first_game_resource_limit() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("oversized-first.pgn");
+        std::fs::write(&path, b"[Event \"A\"]\n\n1. e4 *\n").expect("write PGN");
+        let app = mock_app();
+        let state = app.state::<AppState>();
+        for bytes in [MAX_PGN_BYTES as u64 + 1, u64::MAX] {
+            seed_page_ranges(
+                &directory,
+                &path,
+                &state.pgn_repository,
+                vec![
+                    GameRange {
+                        start: 0,
+                        end: bytes,
+                    },
+                    GameRange { start: 0, end: 1 },
+                ],
+            );
+            let result = read_games_core(
+                resolved_for(&directory, &path),
+                0,
+                1,
+                &CancellationToken::new(),
+                &state.pgn_repository,
+            )
+            .await;
+            assert!(matches!(result, Err(Error::ResourceLimit(_))));
+        }
+    }
+
+    #[tokio::test]
+    async fn page_byte_budget_checks_whole_requested_range_before_selection() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("missing-end.pgn");
+        let pgn = b"[Event \"A\"]\n\n1. e4 *\n";
+        std::fs::write(&path, pgn).expect("write PGN");
+        let app = mock_app();
+        let state = app.state::<AppState>();
+        seed_page_ranges(
+            &directory,
+            &path,
+            &state.pgn_repository,
+            vec![
+                GameRange {
+                    start: 0,
+                    end: pgn.len() as u64,
+                },
+                GameRange {
+                    start: 0,
+                    end: MAX_PAGE_BYTES as u64,
+                },
+            ],
+        );
+
+        let result = read_games_core(
+            resolved_for(&directory, &path),
+            0,
+            2,
+            &CancellationToken::new(),
+            &state.pgn_repository,
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(Error::InvalidInput(message)) if message == "game index is out of bounds"
+        ));
+    }
+
+    #[tokio::test]
+    async fn page_byte_budget_rejects_inverted_cached_ranges() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("inverted.pgn");
+        let pgn = b"[Event \"A\"]\n\n1. e4 *\n";
+        std::fs::write(&path, pgn).expect("write PGN");
+        let app = mock_app();
+        let state = app.state::<AppState>();
+        let inverted = GameRange { start: 1, end: 0 };
+        for ranges in [
+            vec![inverted],
+            vec![
+                GameRange {
+                    start: 0,
+                    end: pgn.len() as u64,
+                },
+                inverted,
+            ],
+        ] {
+            let end = ranges.len() as i32 - 1;
+            seed_page_ranges(&directory, &path, &state.pgn_repository, ranges);
+            let result = read_games_core(
+                resolved_for(&directory, &path),
+                0,
+                end,
+                &CancellationToken::new(),
+                &state.pgn_repository,
+            )
+            .await;
+            assert!(matches!(
+                result,
+                Err(Error::Conflict(message)) if message == "invalid cached PGN byte range"
+            ));
+        }
     }
 
     #[tokio::test]
