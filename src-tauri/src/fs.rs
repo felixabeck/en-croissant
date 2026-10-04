@@ -4935,14 +4935,12 @@ mod tests {
         error: &Error,
         capture: &crate::error::LogCaptureScope,
     ) {
-        assert!(!matches!(error, Error::CommittedDurabilityUncertain(_)));
         match error {
             Error::Conflict(message) => {
                 assert_eq!(
                     message,
                     "download artifact payload differs from its durable reservation"
                 );
-                assert!(!message.contains("durability"));
             }
             other => panic!("expected Error::Conflict with payload mismatch, got {other:?}"),
         }
