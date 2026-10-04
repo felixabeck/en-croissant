@@ -8,8 +8,11 @@ governing the cluster it picks.
 **A decision here is input, not an open question.** The rules for reversing one, the second-reversal
 park, and why the whole mechanism exists are in
 `~/.claude/references/findings-ledger-contract.md` ("Decisions bind later sessions"). Not repeated
-here. Universal rule 4c applies without exception: a recorded decision is reversed by Felix, in the
-chat, and by nothing else, and no session writes `(Felix, <date>)` against something he did not say.
+here. Universal rule 4c governs records attributed to Felix: a decision Felix made is reversed by him,
+in the chat, and by nothing else, and no session writes `(Felix, <date>)` against something he
+did not say. Decisions recorded here without him are superseded under the contract's clause 2
+(new evidence, the prior entry named, `superseded-by`), and a second reversal of one question parks
+under clause 4.
 
 **Technical calls only** — which mechanism, which default, which failure mode is preferable.
 
