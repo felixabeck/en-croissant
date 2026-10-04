@@ -5561,3 +5561,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Re-proof runs only on the refusal path and reuses the mapping `d-20261003-22` already validated. Reversal path: make `refresh_entry` return its reason and drop the re-proof.
 * **Decided by:** Claude Code, drain session 67883078-c337-48f6-a006-eeaa0a292fdc (drain run 42548d18-1af4-46bd-a37c-20f82f9ba6c8), full auto, reviewed plan tasks/plans/2026-10-04-f-20260917-12.md (planned ahead, 3 review rounds) · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"87a8d08a001a21d9ad26755621eccc63906577c6b972d1839fb47eb98b76a9bc","input_sha256":"a7b5d9fd48a27d78459161577853213204b7df851f38e222c94ae98e53d541f7","kind":"mutation-receipt","operation":"b8f644b0074136d1270579b005da65e1c360a970ae1d961b22cf5d8297479715","options":{"section":null},"request_id_sha256":null,"results":["d-20261004-39"],"target":"decisions-ledger","v":1} -->
+
+### d-20261004-40 — What do puzzle and engine surfaces say for an unusable selected root?
+
+* **Question:** The Databases page already maps `rootFailure` to sentences with a chooser; what do the puzzle and engine surfaces show?
+* **Governs:** f-20260917-12
+* **Chosen:** Four sentences per domain (changed, missing, unusable, permission) ending "Choose another in Settings.", through one shared label→sentence primitive that also absorbs the Databases page's existing record and generalises `notifyUnlessCancelled`'s `changedMessage` override (every caller migrated). No `too-large` sentence for puzzle/engine; any label a domain lacks falls back to the backend message.
+* **Rejected:** The raw backend message — untranslated, says nothing about re-selection. New chooser buttons on puzzle/engine surfaces — Settings already re-selects all three domains.
+* **Reason:** Rule 11 (one mapping, not three) and the existing Databases presentation. Reversal path: add chooser buttons to the puzzle/engine surfaces beside the sentence.
+* **Decided by:** Claude Code, drain session 67883078-c337-48f6-a006-eeaa0a292fdc (drain run 42548d18-1af4-46bd-a37c-20f82f9ba6c8), full auto, reviewed plan tasks/plans/2026-10-04-f-20260917-12.md (planned ahead, 3 review rounds) · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"68fcf5687f0eda595525371ef473b9013ebe81cb546ea9fb36d780d1de1b83b1","input_sha256":"719ad517da333cd4a82367404b387cea0fa787692f8fd26e5613f029f7193b94","kind":"mutation-receipt","operation":"ea424dc257c61dd361ba723e5ca689f44dc050115e5fd43928c69c7ab710bd45","options":{"section":null},"request_id_sha256":null,"results":["d-20261004-40"],"target":"decisions-ledger","v":1} -->
