@@ -498,7 +498,7 @@ export type DatabaseConversionEntry = {
     sourceFileName: string | null;
 };
 
-/** Backend jobs are reconciled by their native IDs at startup; never restore a stale snapshot. */
+/** In-memory only: one entry per in-flight conversion, removed by its owning route; never persisted or restored. */
 export const databaseConversionStateAtom = atom<DatabaseConversionEntry[]>([]);
 
 /** Retains one entry per active owner, in start order, until that owner's work settles. */

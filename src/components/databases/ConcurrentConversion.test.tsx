@@ -548,31 +548,49 @@ test("submitting a local conversion disables Add before the workspace handle exi
   assertConversionCall(0);
 });
 
-test.each(["success", "failure"])(
-  "AddDatabase %s removes only its own entry beside Add games",
-  async (outcome) => {
+test.each(
+  [
+    {
+      route: "AddDatabase",
+      account: false,
+      target: handleA,
+      title: "Local target",
+      source: "PGN",
+      startup: [startAddDatabase, selectExistingDatabase],
+    },
+    {
+      route: "AccountCard convert()",
+      account: true,
+      target: accountHandle,
+      title: "Account target",
+      source: "Felix_chesscom.pgn",
+      startup: [selectExistingDatabase, startAccountDownload],
+    },
+  ].flatMap((route) => ["success", "failure"].map((outcome) => ({ ...route, outcome }))),
+)(
+  "$route $outcome removes only its own entry beside Add games",
+  async ({ account, target, title, source, startup, outcome }) => {
     mocks.getDatabases.mockResolvedValue([
-      successDatabase(handleA, "Local target"),
+      successDatabase(target, title),
       successDatabase(handleB, "Existing"),
     ]);
-    await renderRoute();
-    await startAddDatabase();
+    await renderRoute(account);
+    for (const step of startup) await step();
     assertConversionCall(0);
-    const local = activeOperation(0);
-    expect(local.targetDatabase).toEqual(handleA);
+    const owner = activeOperation(0);
+    expect(owner.targetDatabase).toEqual(target);
 
-    await selectExistingDatabase();
     await startAddGames();
     assertConversionCall(1);
     const games = activeOperation(1);
     expect(mocks.convertPgn).toHaveBeenCalledWith(games.id, [addGamesPgn], handleB, null, "", null);
-    expect(conversionState().map((entry) => entry.targetDatabase)).toEqual([handleA, handleB]);
+    expect(conversionState().map((entry) => entry.targetDatabase)).toEqual([target, handleB]);
     expect(conversionRows()).toEqual([
-      "Databases.Add.Convert: PGN",
+      `Databases.Add.Convert: ${source}`,
       "Databases.Add.Convert: more.pgn",
     ]);
     expect(host.querySelector(`[data-testid='select-${databaseHandleKey(handleB)}']`)).toBeNull();
-    expect(host.querySelector(`[data-testid='select-${databaseHandleKey(handleA)}']`)).toBeNull();
+    expect(host.querySelector(`[data-testid='select-${databaseHandleKey(target)}']`)).toBeNull();
     expect(addNewDisabled()).toBe(true);
 
     await act(async () =>
@@ -583,6 +601,8 @@ test.each(["success", "failure"])(
     await vi.waitFor(() => {
       expect(conversionState()).toEqual([games]);
     });
+    expect(conversionRows()).toEqual(["Databases.Add.Convert: more.pgn"]);
+    expect(addNewDisabled()).toBe(true);
 
     await emitConvertProgress({
       id: games.id,
@@ -622,51 +642,6 @@ test("AccountCard convert() throw clears the conversion it owns", async () => {
     message: "convert failed",
   });
 });
-
-test.each(["success", "failure"])(
-  "AccountCard convert() %s removes only its own entry beside Add games",
-  async (outcome) => {
-    mocks.getDatabases.mockResolvedValue([
-      successDatabase(accountHandle, "Account target"),
-      successDatabase(handleB, "Existing"),
-    ]);
-    await renderRoute(true);
-    await selectExistingDatabase();
-    await startAccountDownload();
-    assertConversionCall(0);
-    const account = activeOperation(0);
-    expect(account.targetDatabase).toEqual(accountHandle);
-
-    await startAddGames();
-    assertConversionCall(1);
-    const games = activeOperation(1);
-    expect(conversionState().map((entry) => entry.targetDatabase)).toEqual([
-      accountHandle,
-      handleB,
-    ]);
-    expect(conversionRows()).toEqual([
-      "Databases.Add.Convert: Felix_chesscom.pgn",
-      "Databases.Add.Convert: more.pgn",
-    ]);
-    expect(host.querySelector(`[data-testid='select-${databaseHandleKey(handleB)}']`)).toBeNull();
-    expect(
-      host.querySelector(`[data-testid='select-${databaseHandleKey(accountHandle)}']`),
-    ).toBeNull();
-
-    await act(async () =>
-      outcome === "success"
-        ? convertCalls[0]?.resolve()
-        : convertCalls[0]?.reject(new Error("convert failed")),
-    );
-    await vi.waitFor(() => {
-      expect(conversionState()).toEqual([games]);
-    });
-    expect(conversionRows()).toEqual(["Databases.Add.Convert: more.pgn"]);
-    expect(addNewDisabled()).toBe(true);
-    await act(async () => convertCalls[1]?.resolve());
-    expect(conversionState()).toEqual([]);
-  },
-);
 
 test("two Add games runs into the same target retain independent ids, frames and rows", async () => {
   await renderRoute();
