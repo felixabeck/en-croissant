@@ -778,14 +778,10 @@ pub async fn get_themes_for_puzzle(
     .await
 }
 
-#[cfg(all(test, unix))]
-mod tests {
-    use std::time::Duration;
-
-    use diesel::connection::SimpleConnection;
-
+// These tests run on every platform, unlike the unix-only `tests` module below.
+#[cfg(test)]
+mod workspace_tests {
     use super::*;
-    use tauri::Manager;
 
     #[test]
     fn puzzle_workspace_body_creates_and_activates_default_without_selection() {
@@ -816,6 +812,16 @@ mod tests {
             },
         );
     }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::time::Duration;
+
+    use diesel::connection::SimpleConnection;
+
+    use super::*;
+    use tauri::Manager;
 
     async fn yield_until(mut ready: impl FnMut() -> bool) {
         while !ready() {
