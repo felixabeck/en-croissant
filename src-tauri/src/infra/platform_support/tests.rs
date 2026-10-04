@@ -23,6 +23,20 @@ e3c6b225 (or an equivalent row check), alongside the new row; the test count is 
 S-new-site, S-outside-fn, S-after-tests, S-cfg-not-test, S-label-const, S-literal, S-concat-2 and
 S-format were re-run on the repaired tree with identical messages and exit 101.
 
+S-multiline-cfg — oauth.rs: insert the multi-line attribute below immediately before
+`pub async fn authenticate(`. Detached HEAD 5c34fd06 plus this verifier diff compiled;
+`refusal_guards_are_first_statements_and_precede_their_effects` failed with every message line:
+```text
+refusal guard pins failed:
+oauth.rs: pub async fn authenticate( carries forbidden #[cfg(any(
+    unix,
+    target_os = "a-long-platform-name",
+    target_os = "another-long-platform-name"
+))]
+```
+Exit status: 101 (63 passed; 1 failed). The same mutation on detached HEAD 5c34fd06
+without this diff compiled and stayed green: 58 passed; 0 failed; exit status 0.
+
 Named limits: L1 — differently worded Windows errors; L2 — runtime or procedural-macro wording,
 character-escape encoding, or a format! split with neither stem intact and intervening arguments
 in source order; L3 — plain literals spanning an unescaped physical newline (the shared lexer
@@ -2309,37 +2323,120 @@ fn function_starts(source: &str, signature: &str) -> Vec<usize> {
         .collect()
 }
 
+/// Collect preceding attributes nearest-first, including rustfmt's multi-line spellings.
+/// Match brackets in blanked text so comments and literals cannot fake their boundaries.
 fn attribute_lines_before(source: &str, start: usize) -> Vec<&str> {
+    let normalised = normalise(source, Literals::Blank);
+    let bytes = normalised.as_bytes();
+    // Callers may point at a keyword after visibility or qualifier prefixes.
     let mut cursor = source[..start].rfind('\n').map_or(0, |offset| offset + 1);
     let mut attributes = Vec::new();
     while cursor > 0 {
-        let previous_end = cursor - 1;
-        let previous_start = source[..previous_end]
-            .rfind('\n')
-            .map_or(0, |offset| offset + 1);
-        let trimmed = source[previous_start..previous_end]
-            .trim_end_matches('\r')
-            .trim();
-        if trimmed.is_empty() || trimmed.starts_with("//") {
-            // A comment or doc comment between an attribute and its item does not
-            // detach the attribute, so skipping it is what the compiler does. Breaking
-            // here instead would hide a `#[cfg(unix)]` sitting above a doc comment and
-            // let a refusal site be compiled out off-Unix without tripping any pin.
-            cursor = previous_start;
-        } else if trimmed.starts_with("#[") || trimmed.starts_with("#![") {
-            attributes.push(trimmed);
-            cursor = previous_start;
-        } else {
+        // Blanked comments (including doc comments) are whitespace: they do not
+        // detach an attribute from its item, just as a multi-line attribute's tail
+        // does not end the attribute scan.
+        while cursor > 0 && bytes[cursor - 1].is_ascii_whitespace() {
+            cursor -= 1;
+        }
+        if cursor == 0 || bytes[cursor - 1] != b']' {
             break;
         }
+        let end = cursor;
+        let mut depth = 0;
+        while cursor > 0 {
+            cursor -= 1;
+            match bytes[cursor] {
+                b']' => depth += 1,
+                b'[' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if depth != 0 {
+            break;
+        }
+        while cursor > 0 && bytes[cursor - 1].is_ascii_whitespace() {
+            cursor -= 1;
+        }
+        if cursor > 0 && bytes[cursor - 1] == b'!' {
+            cursor -= 1;
+            while cursor > 0 && bytes[cursor - 1].is_ascii_whitespace() {
+                cursor -= 1;
+            }
+        }
+        if cursor == 0 || bytes[cursor - 1] != b'#' {
+            break;
+        }
+        cursor -= 1;
+        attributes.push(source[cursor..end].trim());
     }
     attributes
+}
+
+#[test]
+fn preceding_attributes_include_multiline_cfg() {
+    let attribute = "#[cfg(any(\n    unix,\n    target_os = \"x\"\n))]";
+    let source = format!("{attribute}\nfn item(");
+    assert_eq!(
+        attribute_lines_before(&source, source.find("fn item(").unwrap()),
+        vec![attribute]
+    );
+}
+
+#[test]
+fn preceding_attributes_skip_visibility_before_keyword() {
+    let source = "#[cfg(test)]\npub(crate) mod staged {";
+    assert_eq!(
+        attribute_lines_before(source, source.find("mod").unwrap()),
+        vec!["#[cfg(test)]"]
+    );
+}
+
+#[test]
+fn preceding_attributes_skip_doc_and_plain_comments() {
+    let source = "#[cfg(unix)]\n/// Item documentation.\n// comment\nfn item(";
+    assert_eq!(
+        attribute_lines_before(source, source.find("fn item(").unwrap()),
+        vec!["#[cfg(unix)]"]
+    );
+}
+
+#[test]
+fn preceding_attributes_are_nearest_first() {
+    let source = "#[cfg(unix)]\n#[allow(dead_code)]\nfn item(";
+    assert_eq!(
+        attribute_lines_before(source, source.find("fn item(").unwrap()),
+        vec!["#[allow(dead_code)]", "#[cfg(unix)]"]
+    );
+}
+
+#[test]
+fn preceding_attributes_stop_at_non_attribute_expression() {
+    for source in ["let x = [1];\nfn item(", "let x = [1]\nfn item("] {
+        assert_eq!(
+            attribute_lines_before(source, source.find("fn item(").unwrap()),
+            Vec::<&str>::new()
+        );
+    }
+}
+
+#[test]
+fn preceding_attributes_include_inner_attribute() {
+    let source = "#![allow(dead_code)]\nfn item(";
+    assert_eq!(
+        attribute_lines_before(source, source.find("fn item(").unwrap()),
+        vec!["#![allow(dead_code)]"]
+    );
 }
 
 fn direct_attribute(source: &str, start: usize, expected: &str) -> bool {
     attribute_lines_before(source, start)
         .first()
-        .is_some_and(|attribute| *attribute == expected)
+        .is_some_and(|attribute| compact(attribute) == compact(expected))
 }
 
 /// Every enclosing `impl`/`mod` scope, with the offset of its *declaration* — not of its
@@ -2904,7 +3001,7 @@ fn production_region(source: &str) -> String {
                 .iter()
                 .any(|attribute| {
                     let attribute = compact(attribute);
-                    attribute == "#[cfg(test)]" || attribute.starts_with("#[cfg(all(test,")
+                    attribute == compact("#[cfg(test)]") || attribute.starts_with("#[cfg(all(test,")
                 })
         {
             continue;
