@@ -36,13 +36,16 @@ test("files-preview: the card fills the window and shows the whole board and its
     await page.goto("/files");
     await page.getByRole("button", { name: /choose collection/i }).click();
     await selectFilesTreeRow(page, repertoireFile.name);
-    await expect(page.getByText("Weiss - Schwarz")).toBeVisible();
+    await expect(page.getByText("Weiss - Schwarz").first()).toBeVisible();
+    await expect
+        .poll(() => page.getByText("Weiss - Schwarz").count())
+        .toBeGreaterThanOrEqual(MIN_VISIBLE_GAME_ROWS);
     await expect(page.getByText("sofort vertreiben")).toBeVisible();
     await expect(page.getByText(/%evp/)).toHaveCount(0);
 
     const listViewport = page
         .locator(".mantine-ScrollArea-viewport")
-        .filter({ has: page.getByText("Weiss - Schwarz") });
+        .filter({ has: page.getByText("Weiss - Schwarz").first() });
     const listHeight = await listViewport.evaluate((element) => element.clientHeight);
     expect(listHeight).toBeGreaterThanOrEqual(MIN_VISIBLE_GAME_ROWS * GAME_ROW_HEIGHT_PX);
 
