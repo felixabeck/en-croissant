@@ -13033,3 +13033,17 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
 * **Related:** `f-20260914-24` (open; the PGN export rollback discards a failed `remove_entry_at` — the review lens re-reported it in this run as `path_authority/mod.rs` `let _ = crate::infra::fs::remove_entry_at(...)` in both cfg variants), `f-20260830-09` (open; no unlink by descriptor on Linux), `f-20260916-11` (handled in this run; the single NT create site), `d-20261004-36`.
 * **Found by:** `review-error-handling` cumulative diff review lens (Codex, should-fix, confidence 98) in the `f-20260916-11` build run, 2026-10-04; the orchestrator source-checked both cfg variants of `create_regular_at` and the caller's `created_identity` ordering. Pre-existing; deferred under push-review-policy §4's same-area open-design-question exception, because the compensation mechanism and its error reporting are a design choice shared with `f-20260914-24` and `f-20260830-09`, not a line-precise repair.
 * **Proof sought:** a test per platform that injects a failure after the exclusive create (a fault hook between create and identity query) and asserts the name is absent afterwards, plus one where the compensation itself fails and the returned error carries both causes.
+
+---
+
+## 2026-10-05 — filed through the inbox spool
+
+### The shared workspace-body refusal tests register their root under the Windows temp directory's 8.3 short spelling and fail on the Windows runner
+
+* **ID:** f-20261005-01 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Filed from:** 67883078-c337-48f6-a006-eeaa0a292fdc
+* **Where:** `portable_tests::assert_workspace_body_refuses_unusable_selections_without_defaults` in `src-tauri/src/infra/path_authority/mod.rs` (added by `379e0329`), which registers the selected root through `authorize_existing_dir` + `get_or_create_app_owned_test_root(.., directory.identity())`; `registration_target`'s `Some(expected)` arm keeps the caller's spelling.
+* **Defect:** CI `rust-windows-test` on `349362a4` (run 37241529354, job 111551045207) fails `tests::database_and_engine_workspace_bodies_refuse_unusable_selections_without_defaults` and `puzzle::workspace_tests::puzzle_workspace_body_refuses_unusable_selections_without_a_default` with `Conflict("workspace is unavailable because its root changed")` at `set_active_*_root`. The runner's temp path is `C:\Users\RUNNER~1\AppData\Local\Temp\…`; the `Some(expected)` registration stores that short spelling, and `workspace_root` re-acquires the long spelling and refuses the mismatch. Test fixture only: production pickers register with `None`, which stores the acquired spelling.
+* **Why it matters:** the Windows test job is red on master, so every later push lands on a red remote (push-review-policy §8).
+* **Change:** register the selected root in that helper with `get_or_create_{database,engine,puzzle}_root(&path, "Selected", None)`, as the pickers and the passing `puzzle_workspace_reselection_recovers_from_an_unusable_selection` do.
+* **Found by:** Claude Code, drain session 67883078-c337-48f6-a006-eeaa0a292fdc (f-20260917-12 build), post-push CI wait, 2026-10-05.
