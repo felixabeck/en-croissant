@@ -1725,7 +1725,7 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
   atom already holds. Note `conversionProgressId` must project through `databaseHandleKey`:
   `DatabaseHandle` is an object, and interpolating it yields `conversion:[object Object]` for every
   import.
-* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** d-20261004-06
 
 ### d-20260904-17 — Where does the analysis report's operation id live?
 
