@@ -165,8 +165,8 @@ async issueDatabaseWorkspace() : Promise<Result<DatabaseRootHandle, ErrorPayload
 }
 },
 /**
- * Returns the active database root when set and available.  Otherwise it acquires,
- * registers and activates the app-owned default root, without a renderer path.
+ * Returns the active database root or refuses an unusable selection. With no selection,
+ * it acquires, registers and activates the app-owned default root without a renderer path.
  */
 async getDatabaseWorkspace() : Promise<Result<DatabaseRootHandle, ErrorPayload>> {
     try {
@@ -208,6 +208,10 @@ async issueEngineWorkspace() : Promise<Result<EngineRootHandle, ErrorPayload>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Returns the active engine root or refuses an unusable selection. The app-owned default
+ * is created and activated only when no selection exists.
+ */
 async getEngineWorkspace() : Promise<Result<EngineRootHandle, ErrorPayload>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_engine_workspace") };
@@ -467,6 +471,10 @@ async issuePuzzleWorkspace() : Promise<Result<PuzzleRootDescriptor, ErrorPayload
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Returns the selected puzzle workspace or refuses an unusable selection. With no selection,
+ * creates and activates the app-owned default.
+ */
 async getPuzzleWorkspace() : Promise<Result<PuzzleRootDescriptor, ErrorPayload>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_puzzle_workspace") };
