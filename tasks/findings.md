@@ -12667,3 +12667,71 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
 * **Fix shape:** fill the three-byte probe with a loop that stops only at EOF (or `read_exact` with `UnexpectedEof` mapped to "fewer than three bytes"), keep the rewind for the BOM-less case; a test with a reader that returns one byte per call over a BOM-prefixed two-game PGN asserts game 0 starts at byte 3.
 * **Related:** `f-20260914-02` (its plan's O1 reuses this scanner on the installed file); scanner history `3a632a7d` (BOM seek origin).
 * **Found by:** Codex `review-pgn-index` lens, round 3 of the `f-20260914-02` PLAN-ONLY review (late observation, confidence 88), drain session b1d90b24-0cf0-4e7d-8d87-ab95faeee372, 2026-10-03; the single `read` confirmed by reading `pgn.rs:545-552`.
+
+---
+
+## 2026-10-04 — filed through the inbox spool
+
+### Remote HTTP rejections of account exports reach the user as "invalid input", losing 401, 404, 429 and 5xx
+
+* **ID:** f-20261004-01 · **Status:** open · **Area:** bindings-ipc · **Root:** - · **Entry:** build · **Blocked:** none
+* **Filed from:** 03d2028b-c7dc-4979-98e4-2fe92af0aef8
+* **Where:** `src-tauri/src/chesscom.rs:127-129` (`fetch_bounded`) maps every non-2xx Chess.com response to `Error::InvalidInput("Chess.com request was rejected")`; `src-tauri/src/fs.rs:500-502` maps every non-2xx download response, including the authenticated Lichess export, to `Error::InvalidInput(format!("HTTP status {}", res.status))`.
+* **Defect:** the error category is `validation` for failures that are not the user's input: an expired or revoked Lichess token (401), a renamed or missing Chess.com player (404), rate limiting (429) and server failures (5xx) all reach the account card as the same generic validation error, and the native log loses the distinction too. A 401 gives no re-authentication guidance.
+* **Why it matters:** `.claude/rules/async-resource-invariants.md` — return typed errors from commands and map them at the facade; the renderer classifies by the typed category (`f-20260830-08`, handled), so a wrong category is a wrong user message.
+* **Related:** `f-20260830-08` (handled; typed backend errors across IPC), `f-20260914-14` (the account-export plan whose round-1 `review-error-handling` lens raised this; out of that finding's MANDATE).
+* **Open question:** which typed error (or category mapping) carries a remote HTTP rejection — an HTTP-status-bearing variant mapped per status class at the facade, or mapping 401/403 to the existing OAuth failure and 429/5xx to a transient/network category — and which user-facing messages each class gets.
+* **Found by:** `review-error-handling` plan lens (Codex), 2026-10-04, `f-20260914-14` plan review round 1, confidence 99 and 97. Pre-existing at `9d6c4d99`; read and confirmed by the orchestrator at the cited lines.
+
+### A Lichess account stuck in PendingDelete still yields its bearer token to new exports
+
+* **ID:** f-20261004-02 · **Status:** open · **Area:** oauth-credentials · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** 03d2028b-c7dc-4979-98e4-2fe92af0aef8
+* **Where:** `src-tauri/src/credentials.rs:342-348` (`CredentialManager::token`) reads the keyring for any valid handle without consulting the registry record's state; `credentials.rs:590-610` (account removal) first journals `AccountRecord::PendingDelete`, then deletes the keyring secret, and can fail between the two; `credentials.rs:335-338` hides `PendingDelete` accounts from the account list; `src-tauri/src/fs.rs:1208-1220` uses `token_async` for authenticated Lichess exports.
+* **Defect:** if the keyring delete fails after the tombstone was written, the account disappears from the native account list but a renderer still holding its handle can start a new authenticated export, and the native side hands the secret to it. A removal the user requested does not disable native use of the credential.
+* **Why it matters:** `review-tauri-security` class — credential storage and use must follow the registry's lifecycle; only an `Active` record may authorise a bearer-token read.
+* **Related:** `f-20260912-01` (handled; `PendingDelete` tombstones for detached credential directories, `d-20260927-25`), `f-20260914-14` (the account-export plan whose round-1 `review-tauri-security` lens raised this; out of that finding's MANDATE).
+* **Fix shape:** `token` (and `token_async`) return `None`/a typed refusal unless the handle's registry record is `AccountRecord::Active`; a test drives a failed keyring delete and asserts that a later token read is refused while the tombstone stands.
+* **Found by:** `review-tauri-security` plan lens (Codex), 2026-10-04, `f-20260914-14` plan review round 1, confidence 96. Pre-existing at `9d6c4d99`; read and confirmed by the orchestrator at the cited lines.
+
+### Startup keeps a Lichess session's handle after the native store confirms the account is gone, and logout then cannot clear it
+
+* **ID:** f-20261004-03 · **Status:** open · **Area:** oauth-credentials · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** 4d37a1f3-c56b-44b0-82ce-6bbb4ede1a0a (plan-only run for `f-20260914-16`)
+* **Where:** `src/utils/session.ts:175-180` (`initializePersistedSessions` reconciliation keeps `session.lichess` unchanged, including its stored `handle`, when the account is absent from a *successful* `listLichessAccounts`); `src/components/common/AccountCards.tsx:234-237` (logout returns early on `removal.state === "not_found"` without removing the renderer session or its handle).
+* **Defect:** if a native account removal commits but the renderer's following `sessions` write fails (or the app exits between them), the next launch lists native accounts successfully, does not find the account, and still restores the old `handle`. The card shows the account as authenticated (`authenticated={Boolean(lichessSession.handle)}`), and logout answers `not_found` and returns, so the stale handle is never cleared and survives every further reload. Reconciliation does not distinguish "native lookup failed" (keep the handle, offline) from "native lookup succeeded and the account is absent" (drop the handle).
+* **Why it matters:** `.claude/rules/async-resource-invariants.md` — renderer state is not authoritative for credentials and must be reconciled against native state at startup; `.claude/rules/persisted-state.md` — a persisted value naming something contextual is re-validated on read.
+* **Found by:** `review-persisted-state` plan lens (Codex), 2026-10-04, confidence 98, during the `f-20260914-16` plan review round 1. Confirmed by reading the cited lines; not reproduced. Pre-existing and outside that run's MANDATE (the terminal behaviour of failed legacy-token sanitisation), so filed rather than planned.
+* **Review lens:** `review-tauri-security`, `review-persisted-state`.
+
+### Lichess token revocation collapses an unreachable provider and a rejected token into one generic failure
+
+* **ID:** f-20261004-04 · **Status:** open · **Area:** oauth-credentials · **Root:** - · **Entry:** build · **Blocked:** none
+* **Filed from:** 4d37a1f3-c56b-44b0-82ce-6bbb4ede1a0a (plan-only run for `f-20260914-16`)
+* **Where:** `src-tauri/src/oauth.rs:367-379` (`ProdOAuthServices::revoke_token` maps a transport failure and every non-2xx status to `Error::OAuthFailure(OAUTH_FAILURE)`); consumer `src-tauri/src/oauth.rs:557-561` (account removal reports `revocation_pending` as `revoke_token(...).is_err()`).
+* **Defect:** neither the user nor the diagnostic can tell a timeout or offline provider (the token may still work; retry is right) from a credential Lichess already rejects (for example 401: the token no longer works, so "revocation pending" is false) or from rate limiting. Account removal therefore reports `revocation_pending` for a token that is already dead, and any later consumer of `revoke_token` (the `f-20260914-16` plan adds one for legacy tokens that could not be erased) inherits the same blind boolean.
+* **Why it matters:** `.claude/rules/async-resource-invariants.md` — typed errors from commands, mapped at the facade; an error path that loses its context cannot drive the right terminal state.
+* **Open question:** which outcomes does `revoke_token` distinguish (revoked / already invalid / unreachable / rejected for another reason), how does a sanitised kind reach account removal's `revocation_pending` and the renderer without exposing the token, and does an already-invalid token count as revoked?
+* **Found by:** `review-error-handling` plan lens (Codex), 2026-10-04, confidence 96, during the `f-20260914-16` plan review round 2. Confirmed by reading the cited lines; not reproduced. Pre-existing for account removal and not required by that run's MANDATE, whose summary treats any unconfirmed revocation as "not revoked" (the safe direction) and retries it.
+
+### A tag line carrying two tag pairs is not a header, so the scanner splits one game into two ranges
+
+* **ID:** f-20261004-05 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** 648a7fac-1f9b-4bc0-8e9a-df298dc5f16d (drain build run for `f-20260914-05`)
+* **Where:** `src-tauri/src/pgn.rs:458-491` (`is_tag_header`) and the scan loop `pgn.rs:577-600` (`scan_games_cancelled`).
+* **Defect:** `is_tag_header` accepts exactly one tag pair per line: after the first closing quote the rest must be `]`. A valid single game whose header block puts two tag pairs on one line — `[Event "A"] [Site "X"]\n[White "W"]\n\n1. e4 *\n` — makes the first line a non-header, non-whitespace line, which sets `has_movetext`; the `[White "W"]` line is then a header after movetext and starts a new range. The byte-offset index holds two ranges (Event/Site alone, then White plus the moves) for what `pgn_reader` parses as one game, so page reads, `read_game` and indexed deletion act on fragments and game numbering drifts from the parser.
+* **Why it matters:** `.claude/rules/pgn-scanning.md` — game-boundary detection and the cached byte-offset index must agree with the parser; an off-by-a-boundary failure produces plausible wrong data.
+* **Related:** `f-20260914-25` (open, same function: a header-only game followed by another header block is indexed as one game) and `f-20260917-06` (open, same boundary rule: a leading `%` or `;` line before the first tag pair). All three are disagreements between the scanner's line-based boundary rule and the parser's grammar; one session changing that rule should take them together.
+* **Fix shape:** a header line is one or more complete tag pairs separated by spaces or tabs, with nothing else but trailing whitespace; a test pins the two-pairs-per-line game as one range, alongside the existing `tag_header_grammar_accepts_underscore_and_rejects_empty_tag_names` cases.
+* **Found by:** `review-pgn-index` cumulative diff review lens (Codex), 2026-10-04, confidence 99, during the `f-20260914-05` build run (range `68a8e768..14c533e8`). Confirmed by the orchestrator by reading `is_tag_header` and the scan loop; not reproduced by a test. Pre-existing (originating commit `97c29add`); deferred to sit with its two open siblings on the same boundary rule rather than change that rule piecemeal in a page-budget run.
+
+### One PGN game over 10 MiB blanks every row of the game list's load that reaches it
+
+* **ID:** f-20261004-06 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
+* **Filed from:** 648a7fac-1f9b-4bc0-8e9a-df298dc5f16d (drain build run for `f-20260914-05`)
+* **Where:** `src/components/panels/info/GameSelector.tsx` (`loadPage`: any failed page discards every row of that load and resolves with none, `d-20261004-05`); `src-tauri/src/pgn.rs` (`read_games_core` always selects the first requested game, and `read_range_bytes` refuses a game over `MAX_PGN_BYTES` with `ResourceLimit`).
+* **Defect:** when a visible range contains a game larger than 10 MiB, the continuation reaches a page whose first game is that one, the native call fails with `ResourceLimit`, and the whole load is discarded: every row of the range, including the readable games before and after it, stays `...` with one error notification, and the rows are only re-requested on the next visible-range change, which fails the same way. Before `f-20260914-05` the same file failed identically (the unbudgeted read hit the same per-game cap), so this is not a regression, but the byte-budgeted page contract now makes the unreadable game's position known exactly, which the renderer does not use.
+* **Why it matters:** `.claude/rules/async-resource-invariants.md` — fail the one item, not the whole operation. A file with one huge annotated game should still list its other games and let the user open them.
+* **Open question:** how does the list represent an unreadable game without re-triggering the visible-range effect into a retry loop (the reason `d-20261004-05` merges nothing on failure): a native per-game placeholder result (`present: false` with an error label, changing the `StampedGame` contract and bindings), a renderer-side "unreadable" row recorded so the effect treats it as loaded, or skipping past the failing index and continuing the load?
+* **Related:** `f-20260914-05` (handled in the same run; introduced the byte-budgeted short page and the whole-load failure rule), `d-20261004-01`, `d-20261004-05`.
+* **Found by:** the orchestrator of the `f-20260914-05` build run while extending the real-app verification to an oversized game, 2026-10-04; derived from reading `loadPage` and `read_games_core`, not yet reproduced in the app.
