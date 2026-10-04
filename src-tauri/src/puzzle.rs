@@ -361,7 +361,7 @@ pub struct PuzzleDatabaseInfo {
 
 /// Refuses an unusable selected root; creates and activates the default only without a selection.
 fn active_or_default_puzzle_workspace(
-    app_data: impl FnOnce() -> Result<crate::infra::path_authority::AppDataDir, Error>,
+    app_data: &dyn Fn() -> Result<crate::infra::path_authority::AppDataDir, Error>,
     authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
 ) -> Result<crate::infra::path_authority::PuzzleRootDescriptor, Error> {
     let mut authority_lock = authority
@@ -451,7 +451,7 @@ pub async fn get_puzzle_workspace(
         "get_puzzle_workspace",
         move || {
             active_or_default_puzzle_workspace(
-                || crate::infra::path_authority::AppDataDir::for_app(&app),
+                &|| crate::infra::path_authority::AppDataDir::for_app(&app),
                 &authority,
             )
         },
@@ -479,7 +479,7 @@ fn issue_puzzle_download_destination_blocking<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<crate::infra::path_authority::PathRef, Error> {
     let workspace = active_or_default_puzzle_workspace(
-        || crate::infra::path_authority::AppDataDir::for_app(&app),
+        &|| crate::infra::path_authority::AppDataDir::for_app(&app),
         authority,
     )?;
     authority
@@ -545,7 +545,7 @@ fn list_puzzle_databases_blocking<R: tauri::Runtime>(
     cancellation: &CancellationToken,
 ) -> Result<Vec<crate::infra::path_authority::PuzzleDatabaseDescriptor>, Error> {
     let workspace = active_or_default_puzzle_workspace(
-        || crate::infra::path_authority::AppDataDir::for_app(app),
+        &|| crate::infra::path_authority::AppDataDir::for_app(app),
         authority,
     )?;
     authority
@@ -783,6 +783,14 @@ pub async fn get_themes_for_puzzle(
 mod workspace_tests {
     use super::*;
 
+    fn puzzle_workspace_body(
+        authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+        lookup: &dyn Fn() -> Result<crate::infra::path_authority::AppDataDir, Error>,
+    ) -> Result<crate::infra::path_authority::PathRef, Error> {
+        active_or_default_puzzle_workspace(lookup, authority)
+            .map(|workspace| workspace.root.path_ref().clone())
+    }
+
     #[test]
     fn puzzle_workspace_body_creates_and_activates_default_without_selection() {
         use crate::infra::path_authority::{
@@ -791,10 +799,7 @@ mod workspace_tests {
         };
         assert_workspace_body_defaults_only_without_a_selection(
             AppOwnedDefaultRoot::Puzzles,
-            |authority, lookup| {
-                active_or_default_puzzle_workspace(lookup, authority)
-                    .map(|workspace| workspace.root.path_ref().clone())
-            },
+            puzzle_workspace_body,
         );
     }
 
@@ -806,10 +811,76 @@ mod workspace_tests {
         };
         assert_workspace_body_refuses_unusable_selections_without_defaults(
             AppOwnedDefaultRoot::Puzzles,
-            |authority, lookup| {
-                active_or_default_puzzle_workspace(lookup, authority)
-                    .map(|workspace| workspace.root.path_ref().clone())
-            },
+            puzzle_workspace_body,
+        );
+    }
+
+    #[test]
+    fn puzzle_workspace_reselection_recovers_from_an_unusable_selection() {
+        use crate::error::RootFailure;
+        use crate::infra::path_authority::PathAuthority;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path_a = directory.path().join("puzzles-a");
+        let path_b = directory.path().join("puzzles-b");
+        std::fs::create_dir(&path_a).unwrap();
+        std::fs::create_dir(&path_b).unwrap();
+        let authority = std::sync::Mutex::new(Some(
+            PathAuthority::open(directory.path().join("registry.json"), vec![]).unwrap(),
+        ));
+
+        let workspace_a = issue_puzzle_workspace_blocking(&authority, path_a.clone()).unwrap();
+        assert_eq!(workspace_a.display_name, "puzzles-a");
+        assert_eq!(
+            authority
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .active_puzzle_root()
+                .unwrap(),
+            Some(workspace_a)
+        );
+        std::fs::remove_dir(&path_a).unwrap();
+        let looked_up = std::cell::Cell::new(false);
+        let lookup = || {
+            looked_up.set(true);
+            Err(Error::Conflict("unexpected app-data lookup".into()))
+        };
+        let error = active_or_default_puzzle_workspace(&lookup, &authority).unwrap_err();
+        assert_eq!(error.root_failure(), Some(RootFailure::Missing));
+        assert!(!looked_up.get());
+
+        let workspace_b = issue_puzzle_workspace_blocking(&authority, path_b).unwrap();
+        assert_eq!(
+            authority
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .active_puzzle_root()
+                .unwrap(),
+            Some(workspace_b.clone())
+        );
+        assert_eq!(
+            active_or_default_puzzle_workspace(&lookup, &authority).unwrap(),
+            workspace_b
+        );
+        assert!(!looked_up.get());
+
+        let error = issue_puzzle_workspace_blocking(&authority, directory.path().join("absent"))
+            .unwrap_err();
+        assert_eq!(error.root_failure(), None);
+        assert_eq!(error.root_failure_reason(), Some(RootFailure::Missing));
+        assert_eq!(
+            authority
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .active_puzzle_root()
+                .unwrap(),
+            Some(workspace_b)
         );
     }
 }

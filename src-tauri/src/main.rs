@@ -1308,7 +1308,7 @@ async fn get_database_workspace(
         &state.operations,
         "get_database_workspace",
         move || {
-            get_database_workspace_blocking(&authority, || {
+            get_database_workspace_blocking(&authority, &|| {
                 crate::infra::path_authority::AppDataDir::for_app(&app)
             })
         },
@@ -1318,7 +1318,7 @@ async fn get_database_workspace(
 
 fn get_database_workspace_blocking(
     authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
-    app_data: impl FnOnce() -> Result<crate::infra::path_authority::AppDataDir, Error>,
+    app_data: &dyn Fn() -> Result<crate::infra::path_authority::AppDataDir, Error>,
 ) -> Result<crate::infra::path_authority::DatabaseRootHandle, Error> {
     let mut authority_lock = authority
         .lock()
@@ -1522,7 +1522,7 @@ async fn get_engine_workspace(
         &state.operations,
         "get_engine_workspace",
         move || {
-            get_engine_workspace_blocking(&authority, || {
+            get_engine_workspace_blocking(&authority, &|| {
                 crate::infra::path_authority::AppDataDir::for_app(&app)
             })
         },
@@ -1532,7 +1532,7 @@ async fn get_engine_workspace(
 
 fn get_engine_workspace_blocking(
     authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
-    app_data: impl FnOnce() -> Result<crate::infra::path_authority::AppDataDir, Error>,
+    app_data: &dyn Fn() -> Result<crate::infra::path_authority::AppDataDir, Error>,
 ) -> Result<crate::infra::path_authority::EngineRootHandle, Error> {
     let mut lock = authority
         .lock()
