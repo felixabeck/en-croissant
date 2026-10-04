@@ -258,6 +258,41 @@ describe("FileCard", () => {
     );
   });
 
+  test("renders neither the game selector nor the preview for an empty file", async () => {
+    mocks.readGames.mockResolvedValueOnce([]);
+
+    await renderWithMantine(<FileCard selected={{ ...sampleFileA, numGames: 0 }} />, root);
+
+    expect(mocks.readGames).toHaveBeenCalledTimes(1);
+    expect(container.querySelector("[data-testid='game-selector']")).toBeNull();
+    expect(container.querySelector("[data-testid='game-preview']")).toBeNull();
+  });
+
+  test("renders the game selector while the first read is pending, then shows the preview", async () => {
+    let resolveFirstRead!: (games: StampedGame[]) => void;
+    mocks.readGames.mockImplementationOnce(
+      () =>
+        new Promise<StampedGame[]>((resolve) => {
+          resolveFirstRead = resolve;
+        }),
+    );
+
+    await renderWithMantine(<FileCard selected={sampleFileA} />, root);
+
+    expect(mocks.readGames).toHaveBeenCalledTimes(1);
+    expect(container.querySelector("[data-testid='game-selector']")).not.toBeNull();
+    expect(container.querySelector("[data-testid='game-preview']")).toBeNull();
+
+    await act(async () => {
+      resolveFirstRead([stampedGame("pgn-from-game-A", "a")]);
+    });
+
+    expect(container.querySelector("[data-testid='game-selector']")).not.toBeNull();
+    expect(container.querySelector("[data-testid='game-preview']")?.textContent).toBe(
+      "pgn-from-game-A",
+    );
+  });
+
   test("keeps the game selector rendered when the first read fails", async () => {
     const error = new Error("Failed to read game A");
     mocks.readGames.mockRejectedValueOnce(error);
