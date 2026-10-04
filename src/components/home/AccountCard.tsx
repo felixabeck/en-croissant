@@ -246,13 +246,12 @@ export function AccountCard({
 
   async function refreshDatabases(importFailed: boolean): Promise<void> {
     try {
-      // d-20261003-24: settle older listings and keep the fresh read owned so a root switch
-      // can retire it before publishing the new root's database counts.
+      // Supersede older listings, publish an owned fresh read, then let SWR revalidate mounted
+      // consumers after mutation settles, including a remount that retired the refresh read.
       await databaseOwner!.supersede();
       await mutate(
         "databases",
         databaseOwner!.run((signal) => getDatabases({ signal })),
-        { revalidate: false },
       );
     } catch (refreshCause) {
       if (!importFailed) throw refreshCause;

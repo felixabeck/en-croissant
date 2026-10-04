@@ -85,7 +85,7 @@ async function renderAccounts(show = true) {
       <MantineProvider>
         <Provider store={store}>
           <SWRConfig value={swrConfig}>
-            <RevalidationControl />
+            {show && <RevalidationControl />}
             {show && <Accounts />}
           </SWRConfig>
         </Provider>
@@ -200,6 +200,61 @@ test("real Accounts retain post-cleanup counts across remount and revalidation o
   expect(cache.get("databases")?.data).toEqual(newDatabases);
   expect(mocks.notify).not.toHaveBeenCalled();
   expect(store.get(accountDownloadsInFlightAtom).size).toBe(0);
+});
+
+test("a remount that retires a pending import refresh receives the new counts after mutation settles", async () => {
+  const refresh = deferred<typeof oldInfo>();
+  const listing = deferred<typeof oldInfo>();
+  const newInfo = { ...oldInfo, game_count: 8 };
+  mocks.getDbInfo
+    .mockResolvedValueOnce(oldInfo)
+    .mockReturnValueOnce(refresh.promise)
+    .mockReturnValueOnce(listing.promise)
+    .mockResolvedValue(newInfo);
+  const unhandled = vi.fn();
+  window.addEventListener("unhandledrejection", unhandled);
+  try {
+    await renderAccounts();
+    expect(host.textContent).toContain("3 / 3");
+
+    await act(async () => downloadButton().click());
+    expect(mocks.convertPgn).toHaveBeenCalledTimes(1);
+    expect(mocks.deleteEmptyGames).toHaveBeenCalledTimes(1);
+    expect(mocks.getDbInfo).toHaveBeenCalledTimes(2);
+    expect(downloadButton().disabled).toBe(true);
+
+    await renderAccounts(false);
+    // Let the provider's zero-length dedupe interval expire before remounting.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await renderAccounts();
+    await act(async () => {
+      await vi.waitFor(() => {
+        if (mocks.getDbInfo.mock.calls.length !== 3)
+          throw new Error("Remounted Accounts have not started the replacement listing");
+      });
+    });
+    expect(host.textContent).toContain("3 / 3");
+
+    await act(async () => {
+      listing.resolve(newInfo);
+      refresh.resolve(newInfo);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(host.textContent).toContain("8 / 8");
+    expect(host.textContent).not.toContain("3 / 3");
+    expect(cache.get("databases")?.data).toEqual([
+      { type: "success", ...newInfo, file: { id: { id: "database" }, kind: "database" } },
+    ]);
+    expect(downloadButton().disabled).toBe(false);
+    expect(store.get(accountDownloadsInFlightAtom).size).toBe(0);
+    expect(mocks.notify).not.toHaveBeenCalled();
+    expect(unhandled).not.toHaveBeenCalled();
+  } finally {
+    window.removeEventListener("unhandledrejection", unhandled);
+  }
 });
 
 test("a root switch retires a pending successful import refresh and keeps root B's counts", async () => {
