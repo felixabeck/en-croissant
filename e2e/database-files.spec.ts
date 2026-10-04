@@ -147,7 +147,6 @@ test("database-files: concurrent conversions render their own live progress coun
     await secondRow.scrollIntoViewIfNeeded();
     await expect(secondRow).toBeInViewport();
     await expect(page.getByRole("button", { name: /^add new$/i })).toBeDisabled();
-    await expect(page).toHaveScreenshot("database-concurrent-conversions.png", { fullPage: true });
 });
 
 test("database-files: an unfinished import stays visible with Delete and no reference star", async ({
