@@ -42,6 +42,7 @@ const fixtures = vi.hoisted(() => ({
   getCardForReview: vi.fn(),
   updateCardPerformance: vi.fn(),
   loadPracticeReviews: vi.fn(),
+  node: { halfMoves: 0, san: "e4" },
   tree: {
     currentNode: () => ({ fen: "root" }),
     goToMove: vi.fn(),
@@ -120,7 +121,7 @@ vi.mock("@/utils/pathCapabilities", () => ({ fileWorkspaceKey: () => "file-a" })
 vi.mock("@/utils/treeReducer", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/utils/treeReducer")>()),
   findFen: (fen: string) => (fen === "gone" || fen === "root" ? null : [0]),
-  getNodeAtPath: () => ({ halfMoves: 0, san: "e4" }),
+  getNodeAtPath: () => fixtures.node,
 }));
 vi.mock("@/components/common/AppModal", () => ({
   default: ({ opened, onClose, title, children }: any) =>
@@ -263,6 +264,7 @@ let container: HTMLDivElement | undefined;
 beforeEach(() => {
   vi.clearAllMocks();
   fixtures.deck = deck();
+  fixtures.node = { halfMoves: 0, san: "e4" };
   fixtures.autoDifficulty = "none";
   fixtures.getCardForReview.mockReset().mockReturnValue(null);
   fixtures.updateCardPerformance.mockReset();
@@ -465,6 +467,52 @@ test("renders and dismisses only unacknowledged unapplied reviews", async () => 
   fixtures.deck = deck({ unappliedReviews: 0, orphansAcknowledged: false });
   await rerenderPracticePanel();
   expect(container?.textContent).not.toContain("Board.Practice.UnappliedReviews");
+});
+
+test.each([
+  { halfMoves: 2, answer: "Nf3", expected: "2. Nf3" },
+  { halfMoves: 1, answer: "e5", expected: "1... e5" },
+])("renders the exact positions card label $expected", async ({ halfMoves, answer, expected }) => {
+  fixtures.node = { halfMoves, san: "e4" };
+  fixtures.deck = deck({ positions: [{ ...position("in-repertoire"), answer }] });
+  await rerenderPracticePanel();
+  const showPositions = [...(container?.querySelectorAll("button") ?? [])].find((button) =>
+    button.textContent?.includes("Board.Practice.ShowAll"),
+  );
+  await act(async () => showPositions?.click());
+
+  const dialog = container?.querySelector('[role="dialog"]');
+  expect(dialog).not.toBeNull();
+  const labels = [...(dialog?.querySelectorAll("div") ?? [])]
+    .filter((element) => element.children.length === 0)
+    .map((element) => element.textContent);
+  expect(labels).toContain(expected);
+});
+
+test.each([
+  { halfMoves: 2, san: "e5", expected: "2. e5" },
+  { halfMoves: 1, san: "e4", expected: "1... e4" },
+])("renders the exact logs card label $expected", async ({ halfMoves, san, expected }) => {
+  fixtures.node = { halfMoves, san };
+  fixtures.loadPracticeReviews.mockResolvedValueOnce({
+    entries: [
+      {
+        id: "numbered-log",
+        entry: JSON.stringify({ due: "2026-09-22", fen: "in-repertoire", rating: 3 }),
+      },
+    ],
+    nextCursor: null,
+  });
+  const showLogs = [...(container?.querySelectorAll("button") ?? [])].find((button) =>
+    button.textContent?.includes("Board.Practice.ShowLogs"),
+  );
+  await act(async () => showLogs?.click());
+  await vi.waitFor(() =>
+    expect(
+      container?.querySelector('[data-practice-entry-id="numbered-log"]')?.firstElementChild
+        ?.textContent,
+    ).toBe(expected),
+  );
 });
 
 test("pages logs in backend order until the cursor is exhausted and keeps off-repertoire FENs", async () => {

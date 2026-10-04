@@ -207,9 +207,8 @@ export function nextContinuation(
     const currentFen = getBoardState(node.fen);
     const entries =
         getMemoizedBoardStateMap(state.root, state.headers.start ?? [])[currentFen] || [];
-    const candidates = entries.filter((e) => e.node !== node);
-    const target = candidates[0];
-    if (!target || target.node.children.length === 0) return null;
+    const target = entries.find((e) => e.node !== node && e.node.children.length > 0);
+    if (!target) return null;
     return { path: target.path, children: target.node.children };
 }
 

@@ -163,6 +163,36 @@ test("receives the complete memoized board-state map for transposed nodes", asyn
   );
 });
 
+test("renders exact White and Black move labels", async () => {
+  const initial = defaultTree();
+  const whiteMove = createNode({
+    fen: "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
+    move: parseUci("e2e4")!,
+    san: "e4",
+    halfMoves: 1,
+  });
+  whiteMove.children = [
+    createNode({
+      fen: "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2",
+      move: parseUci("e7e5")!,
+      san: "e5",
+      halfMoves: 2,
+    }),
+  ];
+  initial.root.children = [whiteMove];
+  let store: TreeStore | undefined;
+  await renderRepertoireInfo(initial, "repertoire-info-move-labels", (captured) => {
+    store = captured;
+  });
+
+  const renderedLabels = () =>
+    [...host.querySelectorAll("button p")].map((element) => element.textContent);
+  expect(renderedLabels()).toContain("1. e4");
+
+  await act(async () => store?.getState().goToMove([0]));
+  expect(renderedLabels()).toContain("1... e5");
+});
+
 test("reports the current-position query failure", async () => {
   mocks.fetchPositionMoves.mockRejectedValue(new Error("position query failed"));
   await renderRepertoireInfo();

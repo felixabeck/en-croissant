@@ -18,6 +18,16 @@ import type { TreeNode } from "@/utils/treeReducer";
 import { TreeStateContext } from "./TreeStateContext";
 import IconAction from "./IconAction";
 
+function isBareVerticalArrow(event: KeyboardEvent) {
+  return (
+    (event.key === "ArrowUp" || event.key === "ArrowDown") &&
+    !event.ctrlKey &&
+    !event.shiftKey &&
+    !event.altKey &&
+    !event.metaKey
+  );
+}
+
 function MoveControls({ readOnly }: { readOnly?: boolean }) {
   const store = useContext(TreeStateContext)!;
   const { t } = useTranslation();
@@ -36,7 +46,6 @@ function MoveControls({ readOnly }: { readOnly?: boolean }) {
   const chooseVariation = useAtomValue(chooseVariationAtom);
 
   const [choice, setChoice] = useState<{
-    path: number[];
     children: TreeNode[];
     selected: number;
   } | null>(null);
@@ -53,6 +62,10 @@ function MoveControls({ readOnly }: { readOnly?: boolean }) {
     setChoice(null);
     action();
   };
+  const branchNavigation = (action: () => void) => (event: KeyboardEvent) => {
+    if (choice && isBareVerticalArrow(event)) return;
+    navigate(action)();
+  };
 
   const next = () => {
     if (choice) {
@@ -62,7 +75,7 @@ function MoveControls({ readOnly }: { readOnly?: boolean }) {
       const state = store.getState();
       const c = nextContinuation(state);
       if (chooseVariation && state.practicePath === null && c && c.children.length > 1) {
-        setChoice({ ...c, selected: 0 });
+        setChoice({ children: c.children, selected: 0 });
       } else {
         goToNext();
       }
@@ -82,15 +95,9 @@ function MoveControls({ readOnly }: { readOnly?: boolean }) {
   useHotkeys(keyMap.GO_TO_START.keys, navigate(start));
   useHotkeys(keyMap.GO_TO_END.keys, navigate(end));
   useHotkeys(keyMap.DELETE_MOVE.keys, navigate(readOnly ? () => {} : () => deleteMove()));
-  // While the list is open the arrow keys move its selection, whatever the branch keys are bound to.
-  useHotkeys(keyMap.GO_TO_BRANCH_START.keys, (event) => {
-    if (choice && (event.key === "ArrowUp" || event.key === "ArrowDown")) return;
-    navigate(startBranch)();
-  });
-  useHotkeys(keyMap.GO_TO_BRANCH_END.keys, (event) => {
-    if (choice && (event.key === "ArrowUp" || event.key === "ArrowDown")) return;
-    navigate(endBranch)();
-  });
+  // While the list is open, only bare ArrowUp/ArrowDown select, whatever the branch key bindings.
+  useHotkeys(keyMap.GO_TO_BRANCH_START.keys, branchNavigation(startBranch));
+  useHotkeys(keyMap.GO_TO_BRANCH_END.keys, branchNavigation(endBranch));
   useHotkeys("arrowup", () => select(-1), { enabled: choice !== null, preventDefault: true });
   useHotkeys("arrowdown", () => select(1), { enabled: choice !== null, preventDefault: true });
   useHotkeys("escape", () => setChoice(null), { enabled: choice !== null });

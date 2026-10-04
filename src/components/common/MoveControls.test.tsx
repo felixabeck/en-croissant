@@ -76,11 +76,15 @@ function middleGameStore() {
   return createTreeStore(undefined, tree);
 }
 
-function press(key: string, { shiftKey = false } = {}) {
+function press(key: string, { shiftKey = false, ctrlKey = false } = {}) {
   const code = key.length === 1 ? `Key${key.toUpperCase()}` : key;
   act(() => {
-    document.dispatchEvent(new KeyboardEvent("keydown", { key, code, shiftKey, bubbles: true }));
-    document.dispatchEvent(new KeyboardEvent("keyup", { key, code, shiftKey, bubbles: true }));
+    document.dispatchEvent(
+      new KeyboardEvent("keydown", { key, code, shiftKey, ctrlKey, bubbles: true }),
+    );
+    document.dispatchEvent(
+      new KeyboardEvent("keyup", { key, code, shiftKey, ctrlKey, bubbles: true }),
+    );
   });
 }
 
@@ -108,6 +112,7 @@ function render() {
 
 beforeEach(() => {
   settings.chooseVariation = true;
+  settings.keys.GO_TO_BRANCH_START = "arrowup";
   settings.keys.GO_TO_BRANCH_END = "arrowdown";
   host = document.createElement("div");
   document.body.append(host);
@@ -258,6 +263,49 @@ test("a rebound branch-end key closes the list and navigates to the branch end",
 
   expect(options()).toEqual([]);
   expect(store.getState().position).toEqual([0, 0]);
+});
+
+test("a rebound branch-start key closes the list and navigates to the branch start", () => {
+  settings.keys.GO_TO_BRANCH_START = "k";
+  store = middleGameStore();
+  render();
+  press("ArrowRight");
+  expect(options()).toHaveLength(2);
+  expect(store.getState().position).toEqual([0]);
+
+  press("k");
+
+  expect(options()).toEqual([]);
+  expect(store.getState().position).toEqual([]);
+});
+
+test("a modified arrow branch-start key closes the list and navigates to the branch start", () => {
+  settings.keys.GO_TO_BRANCH_START = "ctrl+arrowup";
+  store = middleGameStore();
+  render();
+  press("ArrowRight");
+  expect(options()).toHaveLength(2);
+  expect(store.getState().position).toEqual([0]);
+
+  press("ArrowUp", { ctrlKey: true });
+
+  expect(options()).toEqual([]);
+  expect(store.getState().position).toEqual([]);
+});
+
+test("replacing the root closes the list without moving the cursor", () => {
+  store = middleGameStore();
+  render();
+  press("ArrowRight");
+  expect(options()).toHaveLength(2);
+  const previous = store.getState();
+
+  act(() => store.getState().setComment("x"));
+
+  expect(store.getState().root).not.toBe(previous.root);
+  expect(store.getState().position).toBe(previous.position);
+  expect(store.getState().position).toEqual([0]);
+  expect(options()).toEqual([]);
 });
 
 test("a transposed leaf offers every continuation and plays the chosen variation", () => {

@@ -922,6 +922,32 @@ test("nextContinuation returns the transposition target's path and children", ()
     expect(continuation?.children).toBe(target.children);
 });
 
+test("transposed continuation skips an earlier leaf and follows the populated node", () => {
+    const tree = defaultTree();
+    const target = fixtureNode("target", {
+        children: [fixtureNode("main"), fixtureNode("variation")],
+    });
+    const populatedPath = [1];
+    const currentPath = [2];
+    tree.root.children = [
+        fixtureNode("earlier-leaf", { fen: target.fen }),
+        target,
+        fixtureNode("current-leaf", { fen: target.fen }),
+    ];
+    tree.position = currentPath;
+    const store = createTreeStore(undefined, tree);
+
+    const continuation = nextContinuation(store.getState());
+
+    expect(continuation?.path).toEqual(populatedPath);
+    expect(continuation?.children).toBe(target.children);
+    store.getState().goToNext();
+    expect(store.getState().position).toEqual([...populatedPath, 0]);
+    store.getState().goToMove(currentPath);
+    store.getState().goToContinuation(1);
+    expect(store.getState().position).toEqual([...populatedPath, 1]);
+});
+
 test("nextContinuation returns null at a leaf without a transposition", () => {
     const { store } = threeBranchStore();
     store.getState().goToMove([0, 0]);
