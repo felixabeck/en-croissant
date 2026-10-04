@@ -22,9 +22,9 @@ pub struct BlockingGateway {
 
 /// Source-text scanning shared by the blocking-offload invariant tests in `main.rs`, `chess.rs`,
 /// `engine/process.rs`, `fs.rs`, `infra/fs.rs`, `infra/path_authority/mod.rs`,
-/// `infra/platform_support/tests.rs` and `sound.rs`. It lives here, beside the non-nesting rule it exists to
-/// prove, and there is exactly one copy on purpose: all scans depend on the same delimiter list,
-/// so a private second copy would let an edit to one (a new `fn` prefix,
+/// `infra/platform_support/tests.rs` and `sound.rs`. It lives here, beside the non-nesting rule it
+/// exists to prove, and there is exactly one copy on purpose: all scans depend on the same
+/// delimiter list, so a private second copy would let an edit to one (a new `fn` prefix,
 /// attribute placement, CRLF) silently change what the other treats as a function body.
 #[cfg(test)]
 pub(crate) mod source_scan {
@@ -114,6 +114,32 @@ pub(crate) mod source_scan {
 
     /// Blanks comments and, when requested, literals without changing byte offsets.
     pub(crate) fn normalise(text: &str, literals: Literals) -> String {
+        scan(text, literals, |_, _, _| {})
+    }
+
+    /// String-literal start offsets and raw contents, from the same pass as `normalise`.
+    pub(crate) fn string_literals(text: &str) -> Vec<(usize, &str)> {
+        let mut contents = Vec::new();
+        scan(text, Literals::Keep, |start, content, _| {
+            contents.push((start, &text[content]));
+        });
+        contents
+    }
+
+    /// Full string-literal delimiter ranges, for exact argument-shape checks.
+    pub(crate) fn string_literal_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
+        let mut ranges = Vec::new();
+        scan(text, Literals::Keep, |start, _, end| {
+            ranges.push(start..end)
+        });
+        ranges
+    }
+
+    fn scan(
+        text: &str,
+        literals: Literals,
+        mut literal: impl FnMut(usize, std::ops::Range<usize>, usize),
+    ) -> String {
         let mut bytes = text.as_bytes().to_vec();
         let mut cursor = 0;
         let mut block_depth = 0;
@@ -154,6 +180,7 @@ pub(crate) mod source_scan {
             let raw = raw_open(&bytes, cursor);
             if let Some((content_start, hashes)) = raw {
                 if let Some(end) = raw_end(text.as_bytes(), content_start, hashes) {
+                    literal(cursor, content_start..end - hashes - 1, end);
                     if literals == Literals::Blank {
                         blank(&mut bytes, cursor, end);
                     }
@@ -163,6 +190,7 @@ pub(crate) mod source_scan {
             }
             if bytes[cursor] == b'b' && bytes.get(cursor + 1) == Some(&b'"') {
                 if let Some(end) = quoted_end(text.as_bytes(), cursor + 1) {
+                    literal(cursor, cursor + 2..end - 1, end);
                     if literals == Literals::Blank {
                         blank(&mut bytes, cursor, end);
                     }
@@ -172,6 +200,7 @@ pub(crate) mod source_scan {
             }
             if bytes[cursor] == b'"' {
                 if let Some(end) = quoted_end(text.as_bytes(), cursor) {
+                    literal(cursor, cursor + 1..end - 1, end);
                     if literals == Literals::Blank {
                         blank(&mut bytes, cursor, end);
                     }
@@ -272,7 +301,60 @@ pub(crate) mod source_scan {
 
     #[cfg(test)]
     mod tests {
-        use super::{braced_body, normalise, Literals};
+        use super::{braced_body, normalise, string_literal_ranges, string_literals, Literals};
+
+        #[test]
+        fn string_literals_plain() {
+            assert_eq!(string_literals(r#"let x = "plain";"#), vec![(8, "plain")]);
+        }
+
+        #[test]
+        fn string_literals_raw() {
+            assert_eq!(
+                string_literals(r##"r#"raw"# r"bare""##),
+                vec![(0, "raw"), (9, "bare")]
+            );
+        }
+
+        #[test]
+        fn string_literals_byte_and_raw_byte() {
+            assert_eq!(
+                string_literals(r##"b"byte" br#"raw"#"##),
+                vec![(0, "byte"), (8, "raw")]
+            );
+        }
+
+        #[test]
+        fn string_literals_escaped_quote() {
+            assert_eq!(
+                string_literals(r#""escaped\"quote""#),
+                vec![(0, r#"escaped\"quote"#)]
+            );
+        }
+
+        #[test]
+        fn string_literals_skip_comment_quotes() {
+            assert_eq!(
+                string_literals("// \"line\"\n/* \"block\" */ \"kept\""),
+                vec![(24, "kept")]
+            );
+        }
+
+        #[test]
+        fn string_literals_skip_quote_character() {
+            assert_eq!(string_literals("'\"' \"kept\""), vec![(4, "kept")]);
+        }
+
+        #[test]
+        fn string_literals_offsets_preserve_utf8_and_newlines() {
+            let source = "/* ü */\n\"ä\" r#\"ö\"#";
+            let contents = string_literals(source);
+            assert_eq!(contents, vec![(9, "ä"), (14, "ö")]);
+            assert_eq!(string_literal_ranges(source), vec![9..13, 14..21]);
+            for (offset, _) in contents {
+                assert!(source.is_char_boundary(offset));
+            }
+        }
 
         fn assert_body(source: &str) {
             let range = braced_body(source, "fn body");

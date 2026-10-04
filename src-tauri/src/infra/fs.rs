@@ -9278,8 +9278,9 @@ mod tests {
         // exact sharing mask under test rejects the second opener, which is `f-20260916-12`. The
         // invariant it used to prove at runtime — that the post-rename identity comes from the
         // retained handle and never from re-opening the pathname — is pinned against the source
-        // instead, beside this repository's other source pins in `infra/platform_support/tests.rs`, so that
-        // rewriting the query to reopen the target fails a test rather than passing silently.
+        // instead, beside this repository's other source pins in `infra/platform_support/tests.rs`,
+        // so that rewriting the query to reopen the target fails a test rather than passing
+        // silently.
     }
 
     #[cfg(windows)]
@@ -9523,9 +9524,9 @@ mod tests {
         // base open but once demanded DIRECTORY_ACCESS (which carries GENERIC_WRITE) for every
         // child component, so the pre-commit revalidation — which opens the parent chain with
         // `writable = false` — failed on any path whose ancestor denies write. The source pin in
-        // infra/platform_support/tests.rs proves the two-predicate split is still written; this proves
-        // the behaviour it exists for. Nothing local executes it: it first runs on a Windows
-        // runner.
+        // infra/platform_support/tests.rs proves the two-predicate split is still written; this
+        // proves the behaviour it exists for. Nothing local executes it: it first runs on a
+        // Windows runner.
         let dir = tempfile::tempdir().expect("tempdir");
         let ancestor = dir.path().join("ancestor");
         std::fs::create_dir(&ancestor).expect("ancestor");

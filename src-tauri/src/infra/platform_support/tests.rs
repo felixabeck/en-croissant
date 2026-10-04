@@ -5,14 +5,329 @@ The refusal sites are pinned by the G and B rows below: 20 of the original 35,
 after `f-20260914-08` retired eleven by giving them real Windows bodies (the
 four `file_workspace.rs` rows and the seven named under "B rows"). The O4d exclusion is
 `opened_file_change_stamp`: its unconditional non-unix tail is not a refusal
-site and is intentionally not a row. Future closed-world completeness is not
-claimed here; that work is split to `f-20260916-01` (R15-01).
+site and is intentionally not a row.
 
-The four shared-helper pins (`refusal`, `unsupported`, `unsupported_plural`,
-`off_unix_refusal`) are ARGUED, not staged. Reaching them by mutation would
-require editing this verifier file itself, which push-review-policy section 2
-forbids as a staging route. Every green result below therefore means “green
-with those four helper pins argued, not staged”.
+Closed-world refusal assertions (f-20260916-01, Phase 2, 2026-10-04):
+B pins the whole comment-blanked, compacted subject file, including its helper declarations,
+bodies and test-module declaration. C inventories every production platform_support identifier
+outside the two exact subject/verifier keys: only the infra module declaration and qualified,
+literal-label helper calls are allowed; the call-site multiset must equal the guard and routed
+rows. D rejects both refusal stems inside folded literal contents and the whole phrase in each
+file's joined literal stream. E blanks only braced inline test-module bodies, retaining production
+before and after them, byte offsets and newlines; cfg(not(test)) does not hide production.
+
+Named limits: L1 — differently worded Windows errors; L2 — runtime or procedural-macro wording,
+character-escape encoding, or a format! split with neither stem intact and intervening arguments
+in source order; L3 — plain literals spanning an unescaped physical newline (the shared lexer
+stops there); L4 — the verifier's own cfg gate can compile every assertion out. The existing
+Linux/Windows test-line comparison observes L4. These limits continue R6-06; no assertion of
+B, C or D is argued.
+
+Phase 2 staged failure matrix. Each run below used a detached disposable worktree of the final
+phase tree and the filter infra::platform_support::tests. Only production inputs were mutated;
+neither this verifier nor blocking.rs was edited during a staged run. The tree was restored
+between cases. BASE controls used efc52a4db3eed36d2bc0cdeb7616e0694b6abb8e. Every mutation compiled;
+each assertion failure exited 101. Both worktrees were removed afterwards.
+
+1. S-alias — oauth.rs: alias import and authenticate guard calls staged_refuse.
+   Failing tests:
+   - production_refusal_inventory_matches_rows
+   - refusal_guards_are_first_statements_and_precede_their_effects
+
+   Every observed assertion message line (verbatim):
+   ```text
+   refusal guard pins failed:
+   oauth.rs: pub async fn authenticate(: expected one refusal guard, found 0
+   refusal inventory: oauth.rs:1: platform_support reference is not a qualified refusal call
+   refusal inventory: missing refusal sites: [("oauth.rs", "authenticate", "off_unix_refusal", "Lichess authentication")]
+   ```
+
+   test result: FAILED. 57 passed; 2 failed; 0 ignored; 0 measured; 1790 filtered out; finished in 1.69s
+   Exit status: 101.
+
+2. S-module-import — pgn.rs: use crate::infra::platform_support;.
+   Failing tests:
+   - production_refusal_inventory_matches_rows
+
+   Every observed assertion message line (verbatim):
+   ```text
+   refusal inventory: pgn.rs:1: platform_support reference is not a qualified refusal call
+   ```
+
+   test result: FAILED. 58 passed; 1 failed; 0 ignored; 0 measured; 1790 filtered out; finished in 1.72s
+   Exit status: 101.
+
+3. S-reexport — infra/mod.rs: pub(crate) use platform_support::unsupported;.
+   Failing tests:
+   - production_refusal_inventory_matches_rows
+
+   Every observed assertion message line (verbatim):
+   ```text
+   refusal inventory: infra/mod.rs:17: platform_support reference is not a qualified refusal call
+   ```
+
+   test result: FAILED. 58 passed; 1 failed; 0 ignored; 0 measured; 1790 filtered out; finished in 2.15s
+   Exit status: 101.
+
+4. S-new-site — puzzle.rs: new cfg(not(unix)) fn returns unsupported("staged operation").
+   Failing tests:
+   - production_refusal_inventory_matches_rows
+
+   Every observed assertion message line (verbatim):
+   ```text
+   refusal inventory: unexpected refusal sites: [("puzzle.rs", "staged_refusal", "unsupported", "staged operation")]
+   ```
+
+   test result: FAILED. 58 passed; 1 failed; 0 ignored; 0 measured; 1790 filtered out; finished in 1.73s
+   Exit status: 101.
+
+5. S-duplicate — pgn.rs: duplicate delete_game guard.
+   Failing tests:
+   - production_refusal_inventory_matches_rows
+   - refusal_guards_are_first_statements_and_precede_their_effects
+
+   Every observed assertion message line (verbatim):
+   ```text
+   refusal guard pins failed:
+   pgn.rs: pub async fn delete_game(: expected one refusal guard, found 2
+   refusal inventory: unexpected refusal sites: [("pgn.rs", "delete_game", "off_unix_refusal", "PGN atomic replacement")]
+   ```
+
+   test result: FAILED. 57 passed; 2 failed; 0 ignored; 0 measured; 1790 filtered out; finished in 1.61s
+   Exit status: 101.
+
+6. S-label-const — oauth.rs: authenticate label passed through const.
+   Failing tests:
+   - production_refusal_inventory_matches_rows
+   - refusal_guards_are_first_statements_and_precede_their_effects
+
+   Every observed assertion message line (verbatim):
+   ```text
+   refusal guard pins failed:
+   oauth.rs: pub async fn authenticate(: guard changed: crate::infra::platform_support::off_unix_refusal(STAGED_LABEL,cfg!(unix))?;
+   refusal inventory: oauth.rs:458: refusal label is not one string literal
+   refusal inventory: missing refusal sites: [("oauth.rs", "authenticate", "off_unix_refusal", "Lichess authentication")]
+   ```
+
+   test result: FAILED. 57 passed; 2 failed; 0 ignored; 0 measured; 1790 filtered out; finished in 1.63s
+   Exit status: 101.
+
+7. S-outside-fn — puzzle.rs: cfg(not(unix)) static LazyLock closure calls unsupported("staged").
+   Failing tests:
+   - production_refusal_inventory_matches_rows
+
+   Every observed assertion message line (verbatim):
+   ```text
+   refusal inventory: puzzle.rs:2: refusal call outside a named function
+   ```
+
+   test result: FAILED. 58 passed; 1 failed; 0 ignored; 0 measured; 1790 filtered out; finished in 1.58s
+   Exit status: 101.
+
+8. S-after-tests — puzzle.rs: cfg(not(unix)) fn with off_unix_refusal after test module.
+   Failing tests:
+   - production_refusal_inventory_matches_rows
+
+   Every observed assertion message line (verbatim):
+   ```text
+   refusal inventory: unexpected refusal sites: [("puzzle.rs", "staged_refusal", "off_unix_refusal", "staged operation")]
+   ```
+
+   test result: FAILED. 58 passed; 1 failed; 0 ignored; 0 measured; 1790 filtered out; finished in 1.67s
+   Exit status: 101.
+
+9. S-cfg-not-test — puzzle.rs: off_unix_refusal inside cfg(not(test)) mod staged.
+   Failing tests:
+   - production_refusal_inventory_matches_rows
+
+   Every observed assertion message line (verbatim):
+   ```text
+   refusal inventory: unexpected refusal sites: [("puzzle.rs", "staged_refusal", "off_unix_refusal", "staged operation")]
+   ```
+
+   test result: FAILED. 58 passed; 1 failed; 0 ignored; 0 measured; 1790 filtered out; finished in 1.59s
+   Exit status: 101.
+
+10. S-subject-helper — subject: add fifth helper unsupported_staged.
+    Failing tests:
+    - refusal_subject_is_pinned_whole
+
+    Every observed assertion message line (verbatim):
+    ```text
+    refusal subject changed: usecrate::error::Error;fnrefusal(subject:&str,verb:&str)->Error{Error::Conflict(format!("{subject} {verb} unsupported on this platform"))}pub(crate)fnunsupported(operation:&str)->Error{refusal(operation,"is")}pub(crate)fnunsupported_plural(operations:&str)->Error{refusal(operations,"are")}pub(crate)fnoff_unix_refusal(operation:&str,unix:bool)->Result<(),Error>{ifunix{Ok(())}else{Err(unsupported(operation))}}#[cfg(test)]modtests;#[cfg(not(unix))]pub(crate)fnunsupported_staged(operation:&str)->Error{unsupported(operation)}
+    ```
+
+    test result: FAILED. 58 passed; 1 failed; 0 ignored; 0 measured; 1790 filtered out; finished in 1.48s
+    Exit status: 101.
+
+11. S-subject-visibility — subject: refusal becomes pub(crate).
+    Failing tests:
+    - refusal_subject_is_pinned_whole
+
+    Every observed assertion message line (verbatim):
+    ```text
+    refusal subject changed: usecrate::error::Error;pub(crate)fnrefusal(subject:&str,verb:&str)->Error{Error::Conflict(format!("{subject} {verb} unsupported on this platform"))}pub(crate)fnunsupported(operation:&str)->Error{refusal(operation,"is")}pub(crate)fnunsupported_plural(operations:&str)->Error{refusal(operations,"are")}pub(crate)fnoff_unix_refusal(operation:&str,unix:bool)->Result<(),Error>{ifunix{Ok(())}else{Err(unsupported(operation))}}#[cfg(test)]modtests;
+    ```
+
+    test result: FAILED. 58 passed; 1 failed; 0 ignored; 0 measured; 1790 filtered out; finished in 1.56s
+    Exit status: 101.
+
+12. S-subject-body — subject: format gains word staged before platform.
+    Failing tests:
+    - refusal_subject_is_pinned_whole
+    - refusals_have_typed_messages
+    - routed_plural_refusals_are_byte_identical
+
+    Every observed assertion message line (verbatim):
+    ```text
+    refusal subject changed: usecrate::error::Error;fnrefusal(subject:&str,verb:&str)->Error{Error::Conflict(format!("{subject} {verb} unsupported on this staged platform"))}pub(crate)fnunsupported(operation:&str)->Error{refusal(operation,"is")}pub(crate)fnunsupported_plural(operations:&str)->Error{refusal(operations,"are")}pub(crate)fnoff_unix_refusal(operation:&str,unix:bool)->Result<(),Error>{ifunix{Ok(())}else{Err(unsupported(operation))}}#[cfg(test)]modtests;
+    assertion `left == right` failed
+      left: "test operation is unsupported on this staged platform"
+     right: "test operation is unsupported on this platform"
+    assertion `left == right` failed
+      left: "authorized directories are unsupported on this staged platform"
+     right: "authorized directories are unsupported on this platform"
+    ```
+
+    test result: FAILED. 56 passed; 3 failed; 0 ignored; 0 measured; 1790 filtered out; finished in 1.56s
+    Exit status: 101.
+
+13. S-literal — puzzle.rs: bare Conflict literal.
+    Failing tests:
+    - refusal_wording_has_one_production_source
+
+    Every observed assertion message line (verbatim):
+    ```text
+    refusal text outside platform_support: puzzle.rs:3: stem unsupportedonthis
+    refusal text outside platform_support: puzzle.rs:3: stem onthisplatform
+    refusal text outside platform_support: puzzle.rs:3: joined phrase
+    ```
+
+    test result: FAILED. 58 passed; 1 failed; 0 ignored; 0 measured; 1790 filtered out; finished in 1.51s
+    Exit status: 101.
+
+14. S-concat-1 — puzzle.rs: concat!("staged is unsupported on this ", "platform").
+    Failing tests:
+    - refusal_wording_has_one_production_source
+
+    Every observed assertion message line (verbatim):
+    ```text
+    refusal text outside platform_support: puzzle.rs:3: stem unsupportedonthis
+    refusal text outside platform_support: puzzle.rs:3: joined phrase
+    ```
+
+    test result: FAILED. 58 passed; 1 failed; 0 ignored; 0 measured; 1790 filtered out; finished in 1.56s
+    Exit status: 101.
+
+15. S-concat-2 — puzzle.rs: concat!("staged is unsupported on ", "this platform").
+    Failing tests:
+    - refusal_wording_has_one_production_source
+
+    Every observed assertion message line (verbatim):
+    ```text
+    refusal text outside platform_support: puzzle.rs:3: joined phrase
+    ```
+
+    test result: FAILED. 58 passed; 1 failed; 0 ignored; 0 measured; 1790 filtered out; finished in 1.53s
+    Exit status: 101.
+
+16. S-concat-3 — puzzle.rs: concat!(r"staged is unsupported ", r#"on this platform"#).
+    Failing tests:
+    - refusal_wording_has_one_production_source
+
+    Every observed assertion message line (verbatim):
+    ```text
+    refusal text outside platform_support: puzzle.rs:3: stem onthisplatform
+    refusal text outside platform_support: puzzle.rs:3: joined phrase
+    ```
+
+    test result: FAILED. 58 passed; 1 failed; 0 ignored; 0 measured; 1790 filtered out; finished in 2.09s
+    Exit status: 101.
+
+17. S-format — puzzle.rs: format!("{} is unsupported on this {}", "staged", "platform").
+    Failing tests:
+    - refusal_wording_has_one_production_source
+
+    Every observed assertion message line (verbatim):
+    ```text
+    refusal text outside platform_support: puzzle.rs:3: stem unsupportedonthis
+    ```
+
+    test result: FAILED. 58 passed; 1 failed; 0 ignored; 0 measured; 1790 filtered out; finished in 2.08s
+    Exit status: 101.
+
+18. S-case-continuation — puzzle.rs: mixed case, extra spaces and backslash-newline continuation.
+    Failing tests:
+    - refusal_wording_has_one_production_source
+
+    Every observed assertion message line (verbatim):
+    ```text
+    refusal text outside platform_support: puzzle.rs:3: stem unsupportedonthis
+    refusal text outside platform_support: puzzle.rs:3: stem onthisplatform
+    refusal text outside platform_support: puzzle.rs:3: joined phrase
+    ```
+
+    test result: FAILED. 58 passed; 1 failed; 0 ignored; 0 measured; 1790 filtered out; finished in 2.03s
+    Exit status: 101.
+
+19. S-second-subject-name — db/platform_support.rs: phrase; db/mod.rs: mod platform_support;.
+    Failing tests:
+    - production_refusal_inventory_matches_rows
+    - refusal_wording_has_one_production_source
+
+    Every observed assertion message line (verbatim):
+    ```text
+    refusal inventory: db/mod.rs:1: platform_support reference is not a qualified refusal call
+    refusal text outside platform_support: db/platform_support.rs:3: stem unsupportedonthis
+    refusal text outside platform_support: db/platform_support.rs:3: stem onthisplatform
+    refusal text outside platform_support: db/platform_support.rs:3: joined phrase
+    ```
+
+    test result: FAILED. 57 passed; 2 failed; 0 ignored; 0 measured; 1790 filtered out; finished in 1.91s
+    Exit status: 101.
+
+20. S-removed — db/mod.rs: remove export_to_pgn guard.
+    Failing tests:
+    - production_refusal_inventory_matches_rows
+    - refusal_guards_are_first_statements_and_precede_their_effects
+
+    Every observed assertion message line (verbatim):
+    ```text
+    refusal guard pins failed:
+    db/mod.rs: pub async fn export_to_pgn(: expected one refusal guard, found 0
+    refusal inventory: missing refusal sites: [("db/mod.rs", "export_to_pgn", "off_unix_refusal", "PGN atomic replacement")]
+    ```
+
+    test result: FAILED. 57 passed; 2 failed; 0 ignored; 0 measured; 1790 filtered out; finished in 1.77s
+    Exit status: 101.
+
+21. S-after-tests-BASE — BASE negative control: puzzle.rs: cfg(not(unix)) fn with off_unix_refusal after test module.
+    All platform_support tests green; no assertion message.
+
+    test result: ok. 60 passed; 0 failed; 0 ignored; 0 measured; 1783 filtered out; finished in 0.64s
+    Exit status: 0.
+
+22. S-second-subject-name-BASE — BASE negative control: db/platform_support.rs: phrase; db/mod.rs: mod platform_support;.
+    All platform_support tests green; no assertion message.
+
+    test result: ok. 60 passed; 0 failed; 0 ignored; 0 measured; 1783 filtered out; finished in 0.47s
+    Exit status: 0.
+
+Failure-path enumeration from the final B/C/D message-producing branches:
+- B whole-subject mismatch: S-subject-helper, S-subject-visibility, S-subject-body.
+- C unqualified reference: S-alias, S-module-import, S-reexport, S-second-subject-name.
+- C nonliteral label: S-label-const.
+- C outside a named function: S-outside-fn.
+- C unexpected multiset members: S-new-site, S-duplicate, S-after-tests, S-cfg-not-test.
+- C missing multiset members: S-alias, S-label-const, S-removed.
+- D stem unsupportedonthis: S-literal, S-concat-1, S-format, S-case-continuation,
+  S-second-subject-name.
+- D stem onthisplatform: S-literal, S-concat-3, S-case-continuation, S-second-subject-name.
+- D joined phrase: S-literal, S-concat-1/2/3, S-case-continuation, S-second-subject-name.
+
+S-format stages D-stem alone; S-concat-2 stages D-joined alone. All nine message paths are
+staged, none argued. E's after-tests gap and D's old filename exemption each have a green BASE
+control. Older records below are retained as historical evidence.
 
 Phase A G rows (each staged message names the listed file and signature):
 `infra/path_authority/mod.rs::ensure_app_owned_default_dir`,
@@ -308,7 +623,9 @@ No production whole-function rewrite was needed; all refusal messages remain
 byte-identical.
 */
 use super::*;
-use crate::infra::blocking::source_scan::{braced_body, normalise, Literals};
+use crate::infra::blocking::source_scan::{
+    braced_body, normalise, string_literal_ranges, string_literals, Literals,
+};
 use std::{
     ffi::{OsStr, OsString},
     io,
@@ -2314,7 +2631,6 @@ struct GuardRow {
     signature: &'static str,
     operation: &'static str,
     effects: &'static [&'static str],
-    nested: bool,
 }
 
 fn guard_rows() -> &'static [GuardRow] {
@@ -2324,42 +2640,36 @@ fn guard_rows() -> &'static [GuardRow] {
             signature: "pub async fn authenticate(",
             operation: "Lichess authentication",
             effects: &["create_job("],
-            nested: false,
         },
         GuardRow {
             file: "oauth.rs",
             signature: "pub async fn migrate_legacy_lichess_token(",
             operation: "legacy Lichess token migration",
             effects: &["ProdOAuthServices::new("],
-            nested: false,
         },
         GuardRow {
             file: "infra/path_authority/resolved.rs",
             signature: "pub(crate) fn replace_pgn_atomic<F>(",
             operation: "PGN atomic replacement",
             effects: &["atomic_replace_at_identified_with_precommit("],
-            nested: false,
         },
         GuardRow {
             file: "pgn.rs",
             signature: "pub async fn delete_game(",
             operation: "PGN atomic replacement",
             effects: &["operations.accept("],
-            nested: false,
         },
         GuardRow {
             file: "pgn.rs",
             signature: "pub async fn write_game(",
             operation: "PGN atomic replacement",
             effects: &["operations.accept("],
-            nested: false,
         },
         GuardRow {
             file: "db/mod.rs",
             signature: "pub async fn export_to_pgn(",
             operation: "PGN atomic replacement",
             effects: &["operations.accept("],
-            nested: false,
         },
     ]
 }
@@ -2410,17 +2720,10 @@ fn refusal_guards_are_first_statements_and_precede_their_effects() {
             continue;
         };
         let raw_statement = compact(&source[guard_start..statement_end]);
-        let expected = if row.operation == "engine directory resources" {
-            format!(
-                "crate::infra::platform_support::off_unix_refusal(\"{}\",cfg!(unix),)?;",
-                row.operation
-            )
-        } else {
-            format!(
-                "crate::infra::platform_support::off_unix_refusal(\"{}\",cfg!(unix))?;",
-                row.operation
-            )
-        };
+        let expected = format!(
+            "crate::infra::platform_support::off_unix_refusal(\"{}\",cfg!(unix))?;",
+            row.operation
+        );
         if raw_statement != expected {
             errors.push(format!(
                 "{}: {}: guard changed: {raw_statement}",
@@ -2433,51 +2736,17 @@ fn refusal_guards_are_first_statements_and_precede_their_effects() {
             b'}' => depth - 1,
             _ => depth,
         });
-        if row.nested {
-            let if_signature = "if resource.kind == EngineResourceHandleKind::Directory";
-            let if_body = braced_body(source, if_signature);
-            let if_start = normalised[..if_body.start].rfind(if_signature);
-            if let Some(if_start) = if_start {
-                if !normalised[body.start + 1..if_start]
-                    .chars()
-                    .all(char::is_whitespace)
-                    || !normalised[if_body.start + 1..guard_start]
-                        .chars()
-                        .all(char::is_whitespace)
-                    || !normalised[statement_end..if_body.end - 1]
-                        .chars()
-                        .all(char::is_whitespace)
-                {
-                    errors.push(format!(
-                        "{}: {}: directory guard block changed",
-                        row.file, row.signature
-                    ));
-                }
-            } else {
-                errors.push(format!(
-                    "{}: {}: directory guard scope missing",
-                    row.file, row.signature
-                ));
-            }
-            if depth != 2 {
-                errors.push(format!(
-                    "{}: {}: guard depth changed",
-                    row.file, row.signature
-                ));
-            }
-        } else {
-            if !before.chars().all(char::is_whitespace) {
-                errors.push(format!(
-                    "{}: {}: guard is not first statement",
-                    row.file, row.signature
-                ));
-            }
-            if depth != 1 {
-                errors.push(format!(
-                    "{}: {}: guard depth changed",
-                    row.file, row.signature
-                ));
-            }
+        if !before.chars().all(char::is_whitespace) {
+            errors.push(format!(
+                "{}: {}: guard is not first statement",
+                row.file, row.signature
+            ));
+        }
+        if depth != 1 {
+            errors.push(format!(
+                "{}: {}: guard depth changed",
+                row.file, row.signature
+            ));
         }
         if normalised[body.start..guard_start].contains("#[") {
             errors.push(format!(
@@ -2609,25 +2878,6 @@ fn production_calls_of_every_pgn_atomic_path_node_are_only_from_allowed_callers(
     );
 }
 
-/// Every production `off_unix_refusal(` call goes through `crate::infra::platform_support::`
-/// and is a `guard_rows` site. A new first-statement (or late) refusal that is not a row
-/// would leave the PGN call-graph pins green.
-#[test]
-fn production_off_unix_refusal_calls_match_guard_rows() {
-    let mut count = 0;
-    for_each_production_region(|_, _, normalised| {
-        count += normalised
-            .matches("crate::infra::platform_support::off_unix_refusal(")
-            .count();
-    });
-    assert_eq!(
-        count,
-        guard_rows().len(),
-        "production off_unix_refusal calls {count} != guard_rows {}",
-        guard_rows().len()
-    );
-}
-
 fn for_each_production_region(mut visit: impl FnMut(&str, &str, &str)) {
     for path in rust_source_paths() {
         let source = std::fs::read_to_string(&path).unwrap();
@@ -2637,36 +2887,263 @@ fn for_each_production_region(mut visit: impl FnMut(&str, &str, &str)) {
             continue;
         }
         let production = production_region(&source);
-        let normalised = normalise(production, Literals::Blank);
-        visit(&key, &source, &normalised);
+        let normalised = normalise(&production, Literals::Blank);
+        visit(&key, &production, &normalised);
     }
 }
 
-/// The production region of one scanned file: everything before the first `mod tests` whose
-/// preceding attributes mention `test` (`#[cfg(test)]`, `#[cfg(all(test, unix))]`,
-/// `#[cfg(all(test, windows))]`). A file with no such module is scanned whole. Splitting on
-/// the attribute substring is what keeps `db/mod.rs`'s `#[cfg(all(test, unix))]` test body
-/// out of production (R2-01); the token-boundary check keeps `mod tests_support` from
-/// ending the region.
-fn production_region(source: &str) -> &str {
+#[test]
+fn refusal_subject_is_pinned_whole() {
+    const EXPECTED: &str = concat!(
+        "usecrate::error::Error;",
+        "fnrefusal(subject:&str,verb:&str)->Error{",
+        "Error::Conflict(format!(\"{subject} {verb} unsupported on this platform\"))}",
+        "pub(crate)fnunsupported(operation:&str)->Error{refusal(operation,\"is\")}",
+        "pub(crate)fnunsupported_plural(operations:&str)->Error{refusal(operations,\"are\")}",
+        "pub(crate)fnoff_unix_refusal(operation:&str,unix:bool)->Result<(),Error>{",
+        "ifunix{Ok(())}else{Err(unsupported(operation))}}",
+        "#[cfg(test)]modtests;",
+    );
+    let source = include_str!("../platform_support.rs");
+    let actual = compact(&normalise(source, Literals::Keep));
+    assert!(actual == EXPECTED, "refusal subject changed: {actual}");
+}
+
+type RefusalSite = (String, String, String, String);
+
+fn site(file: &str, function: &str, helper: &str, label: &str) -> RefusalSite {
+    (file.into(), function.into(), helper.into(), label.into())
+}
+
+fn source_line(source: &str, offset: usize) -> usize {
+    source[..offset]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count()
+        + 1
+}
+
+fn ascii_ident(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+/// C and D use the same exact-key exclusions; B pins their subject and test-only declaration.
+fn for_each_refusal_region(mut visit: impl FnMut(&str, &str, &str)) {
+    for_each_production_region(|key, source, blanked| {
+        if key != "infra/platform_support.rs" {
+            visit(key, source, blanked);
+        }
+    });
+}
+
+#[test]
+fn production_refusal_inventory_matches_rows() {
+    let mut expected = guard_rows()
+        .iter()
+        .map(|row| {
+            let name = row
+                .signature
+                .split("fn ")
+                .nth(1)
+                .unwrap()
+                .chars()
+                .take_while(|character| character.is_ascii_alphanumeric() || *character == '_')
+                .collect::<String>();
+            site(row.file, &name, "off_unix_refusal", row.operation)
+        })
+        .collect::<Vec<_>>();
+    let routed_rows = [(
+        "infra/path_authority/mod.rs",
+        "opened_file_change_stamp",
+        "unsupported_plural",
+        "post-rename marker timestamps",
+    )];
+    expected.extend(
+        routed_rows
+            .into_iter()
+            .map(|(file, function, helper, label)| site(file, function, helper, label)),
+    );
+    let mut actual = Vec::new();
+    let mut errors = Vec::new();
+    for_each_refusal_region(|key, source, blanked| {
+        let kept = normalise(source, Literals::Keep);
+        let literals = string_literals(&kept);
+        let ranges = string_literal_ranges(&kept);
+        // Compact code only; the offset map still addresses both normalised forms (P11).
+        let offsets = blanked
+            .bytes()
+            .enumerate()
+            .filter_map(|(offset, byte)| (!byte.is_ascii_whitespace()).then_some(offset))
+            .collect::<Vec<_>>();
+        let code = String::from_utf8(
+            offsets
+                .iter()
+                .map(|offset| blanked.as_bytes()[*offset])
+                .collect(),
+        )
+        .unwrap();
+        for (start, _) in blanked.match_indices("platform_support") {
+            let end = start + "platform_support".len();
+            if start > 0 && ascii_ident(blanked.as_bytes()[start - 1])
+                || blanked
+                    .as_bytes()
+                    .get(end)
+                    .is_some_and(|byte| ascii_ident(*byte))
+            {
+                continue;
+            }
+            let position = offsets.binary_search(&start).unwrap();
+            let prefix = &code[..position];
+            let tail = &code[position + "platform_support".len()..];
+            if key == "infra/mod.rs" && prefix.ends_with("pub(crate)mod") && tail.starts_with(';') {
+                continue;
+            }
+            let line = source_line(source, start);
+            let qualifier = "crate::infra::";
+            let qualified = prefix.strip_suffix(qualifier).is_some_and(|before| {
+                before
+                    .as_bytes()
+                    .last()
+                    .is_none_or(|byte| !ascii_ident(*byte) && *byte != b':')
+            });
+            let helper = ["off_unix_refusal", "unsupported", "unsupported_plural"]
+                .into_iter()
+                .find(|helper| tail.starts_with(&format!("::{helper}(")));
+            let Some(helper) = helper.filter(|_| qualified) else {
+                errors.push(format!(
+                    "refusal inventory: {key}:{line}: platform_support reference is not a qualified refusal call"
+                ));
+                continue;
+            };
+            let opening_index = position + "platform_support".len() + 2 + helper.len();
+            let argument_start = offsets[opening_index] + 1;
+            let argument_start = argument_start
+                + kept[argument_start..]
+                    .find(|character: char| !character.is_whitespace())
+                    .unwrap_or(0);
+            let literal = literals
+                .iter()
+                .zip(&ranges)
+                .find(|((offset, _), _)| *offset == argument_start);
+            let Some(((_, label), _)) =
+                literal.filter(|(_, range)| kept[range.end..].trim_start().starts_with([',', ')']))
+            else {
+                errors.push(format!(
+                    "refusal inventory: {key}:{line}: refusal label is not one string literal"
+                ));
+                continue;
+            };
+            let Some(function) = enclosing_function_name(source, start) else {
+                errors.push(format!(
+                    "refusal inventory: {key}:{line}: refusal call outside a named function"
+                ));
+                continue;
+            };
+            actual.push(site(key, &function, helper, label));
+        }
+    });
+    // Consume equal tuples once: duplicates, additions and removals are all multiset differences.
+    actual.sort();
+    expected.sort();
+    let mut unexpected = Vec::new();
+    for occurrence in actual {
+        if let Some(index) = expected.iter().position(|row| *row == occurrence) {
+            expected.remove(index);
+        } else {
+            unexpected.push(occurrence);
+        }
+    }
+    if !unexpected.is_empty() {
+        errors.push(format!(
+            "refusal inventory: unexpected refusal sites: {unexpected:?}"
+        ));
+    }
+    if !expected.is_empty() {
+        errors.push(format!(
+            "refusal inventory: missing refusal sites: {expected:?}"
+        ));
+    }
+    assert!(errors.is_empty(), "{}", errors.join("\n"));
+}
+
+fn fold_refusal_literal(content: &str) -> String {
+    let mut folded = String::new();
+    let mut characters = content.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character == '\\'
+            && characters
+                .peek()
+                .is_some_and(|next| matches!(next, '\n' | '\r' | 'n' | 'r' | 't'))
+        {
+            characters.next();
+        } else if !character.is_whitespace() {
+            folded.extend(character.to_lowercase());
+        }
+    }
+    folded
+}
+
+#[test]
+fn refusal_wording_has_one_production_source() {
+    let mut errors = Vec::new();
+    for_each_refusal_region(|key, source, _| {
+        let mut joined = String::new();
+        let mut starts = Vec::new();
+        for (offset, content) in string_literals(source) {
+            let folded = fold_refusal_literal(content);
+            let line = source_line(source, offset);
+            for stem in ["unsupportedonthis", "onthisplatform"] {
+                for _ in folded.match_indices(stem) {
+                    errors.push(format!(
+                        "refusal text outside platform_support: {key}:{line}: stem {stem}"
+                    ));
+                }
+            }
+            starts.push((joined.len(), line));
+            joined.push_str(&folded);
+        }
+        for (offset, _) in joined.match_indices("unsupportedonthisplatform") {
+            let line = starts
+                .iter()
+                .rev()
+                .find(|(start, _)| *start <= offset)
+                .unwrap()
+                .1;
+            errors.push(format!(
+                "refusal text outside platform_support: {key}:{line}: joined phrase"
+            ));
+        }
+    });
+    assert!(errors.is_empty(), "{}", errors.join("\n"));
+}
+
+/// Blank only the braced bodies of inline test modules; retain every production byte's offset.
+fn production_region(source: &str) -> String {
     let normalised = normalise(source, Literals::Blank);
-    for (start, _) in normalised.match_indices("mod tests") {
-        let end = start + "mod tests".len();
-        if normalised
-            .as_bytes()
-            .get(end)
-            .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+    let mut bytes = source.as_bytes().to_vec();
+    for (start, _, end) in named_items(&normalised, "mod") {
+        let opening = end
+            + normalised[end..]
+                .find(|character: char| !character.is_whitespace())
+                .unwrap_or(0);
+        if normalised.as_bytes().get(opening) != Some(&b'{')
+            || !attribute_lines_before(source, start)
+                .iter()
+                .any(|attribute| {
+                    let attribute = compact(attribute);
+                    attribute == "#[cfg(test)]" || attribute.starts_with("#[cfg(all(test,")
+                })
         {
             continue;
         }
-        if attribute_lines_before(source, start)
-            .iter()
-            .any(|attribute| attribute.contains("test"))
-        {
-            return &source[..start];
+        let body = body_from_opening(&normalised, opening);
+        for byte in &mut bytes[body] {
+            if *byte != b'\n' {
+                *byte = b' ';
+            }
         }
     }
-    source
+    String::from_utf8(bytes).expect("production blanking replaces only with ASCII bytes")
 }
 
 /// The `src`-relative slash-joined key of a scanned path, so the two expected files can be
@@ -2687,36 +3164,57 @@ fn file_key(path: &std::path::Path) -> String {
 /// so a call is never attributed to an unrelated earlier function.
 fn enclosing_function_name(source: &str, call: usize) -> Option<String> {
     let normalised = normalise(source, Literals::Blank);
-    let mut search_end = call;
-    while let Some(start) = normalised[..search_end].rfind("fn ") {
-        let name = normalised[start + "fn ".len()..]
-            .chars()
-            .take_while(|character| character.is_ascii_alphanumeric() || *character == '_')
-            .collect::<String>();
-        if !name.is_empty() {
-            if let Some(opening) = normalised[start..].find('{').map(|offset| start + offset) {
-                if call > opening && brace_depth_at(&normalised, opening, call) > 0 {
-                    return Some(name);
+    named_items(&normalised[..call], "fn")
+        .into_iter()
+        .filter_map(|(_, name, end)| {
+            let mut parentheses = 0_i32;
+            let mut brackets = 0_i32;
+            let opening = normalised.as_bytes()[end..].iter().position(|byte| {
+                match byte {
+                    b'(' => parentheses += 1,
+                    b')' => parentheses -= 1,
+                    b'[' => brackets += 1,
+                    b']' => brackets -= 1,
+                    _ => {}
                 }
+                parentheses == 0 && brackets == 0 && matches!(byte, b'{' | b';')
+            })? + end;
+            if normalised.as_bytes()[opening] != b'{' || opening >= call {
+                return None;
             }
-        }
-        search_end = start;
-    }
-    None
+            let body = body_from_opening(&normalised, opening);
+            body.contains(&call).then(|| name.to_owned())
+        })
+        .next_back()
 }
 
-/// The brace depth at `call` measured from an opening `{` at `opening`; zero or less means the
-/// block closed before `call`.
-fn brace_depth_at(normalised: &str, opening: usize, call: usize) -> i32 {
-    let mut depth = 0_i32;
-    for byte in normalised.as_bytes()[opening..call].iter() {
-        match byte {
-            b'{' => depth += 1,
-            b'}' => depth -= 1,
-            _ => {}
-        }
-    }
-    depth
+/// Keyword, ASCII item name and its end offset, without depending on a fixed whitespace spelling.
+fn named_items<'a>(normalised: &'a str, keyword: &str) -> Vec<(usize, &'a str, usize)> {
+    normalised
+        .match_indices(keyword)
+        .filter_map(|(start, _)| {
+            let after = start + keyword.len();
+            if start > 0 && ascii_ident(normalised.as_bytes()[start - 1])
+                || !normalised
+                    .as_bytes()
+                    .get(after)
+                    .is_some_and(u8::is_ascii_whitespace)
+            {
+                return None;
+            }
+            let name_start =
+                after + normalised[after..].find(|character: char| !character.is_whitespace())?;
+            let name_length = normalised.as_bytes()[name_start..]
+                .iter()
+                .take_while(|byte| ascii_ident(**byte))
+                .count();
+            (name_length > 0).then_some((
+                start,
+                &normalised[name_start..name_start + name_length],
+                name_start + name_length,
+            ))
+        })
+        .collect()
 }
 
 /// The half of `check_helper` that pins the *shape* of a helper: exactly one declaration of
@@ -2895,53 +3393,6 @@ fn startup_registry_files_carry_no_unported_marker_for_this_finding() {
 }
 
 #[test]
-fn refusal_format_has_one_body() {
-    let source = include_str!("../platform_support.rs");
-    let kept = normalise(source, Literals::Keep);
-    let needle = ["unsupported on this ", "platform"].concat();
-    let production = &kept[..kept.find("#[cfg(test)]").unwrap()];
-    assert_eq!(production.matches(&needle).count(), 1);
-    let mut errors = Vec::new();
-    check_helper(
-        "infra/platform_support.rs",
-        source,
-        "fn refusal(",
-        "fnrefusal(subject:&str,verb:&str)->Error",
-        r#"{Error::Conflict(format!("{subject} {verb} unsupported on this platform"))}"#,
-        &mut errors,
-    );
-    check_helper(
-        "infra/platform_support.rs",
-        source,
-        "pub(crate) fn unsupported(",
-        "pub(crate)fnunsupported(operation:&str)->Error",
-        r#"{refusal(operation,"is")}"#,
-        &mut errors,
-    );
-    check_helper(
-        "infra/platform_support.rs",
-        source,
-        "pub(crate) fn unsupported_plural(",
-        "pub(crate)fnunsupported_plural(operations:&str)->Error",
-        r#"{refusal(operations,"are")}"#,
-        &mut errors,
-    );
-    check_helper(
-        "infra/platform_support.rs",
-        source,
-        "pub(crate) fn off_unix_refusal(",
-        "pub(crate)fnoff_unix_refusal(operation:&str,unix:bool)->Result<(),Error>",
-        r#"{ifunix{Ok(())}else{Err(unsupported(operation))}}"#,
-        &mut errors,
-    );
-    assert!(
-        errors.is_empty(),
-        "refusal helper pins failed:\n{}",
-        errors.join("\n")
-    );
-}
-
-#[test]
 fn refusal_constant_and_callees_are_exact() {
     let mut errors = Vec::new();
     let authority = source_for("infra/path_authority/mod.rs");
@@ -2989,109 +3440,6 @@ fn refusal_constant_and_callees_are_exact() {
     assert!(
         errors.is_empty(),
         "refusal constant and callee pins failed:\n{}",
-        errors.join("\n")
-    );
-}
-
-#[test]
-fn refusal_text_has_one_source() {
-    let needle = ["unsupported on this ", "platform"].concat();
-    let mut occurrences = Vec::new();
-    for path in rust_source_paths() {
-        // The verifier file is test-only and is skipped since the move; Phase 2 of f-20260916-01 replaces this scan.
-        if file_key(&path) == "infra/platform_support/tests.rs" {
-            continue;
-        }
-        let source = std::fs::read_to_string(&path).unwrap();
-        let normalised = normalise(&source, Literals::Keep);
-        for offset in normalised.match_indices(&needle).map(|(offset, _)| offset) {
-            if path.file_name().and_then(|name| name.to_str()) != Some("platform_support.rs") {
-                occurrences.push(format!(
-                    "{}:{}",
-                    path.display(),
-                    source[..offset].matches('\n').count() + 1
-                ));
-            }
-        }
-    }
-    assert!(
-        occurrences.is_empty(),
-        "unexpected refusal text: {occurrences:?}"
-    );
-}
-
-#[test]
-fn routed_refusal_labels_are_unchanged() {
-    let expected = [(
-        "infra/path_authority/mod.rs",
-        "post-rename marker timestamps",
-        "unsupported_plural",
-    )];
-    let mut errors = Vec::new();
-    for (file, operation, function) in expected {
-        let source = source_for(file);
-        let normalised = compact(&normalise(source, Literals::Keep));
-        let needle = format!("crate::infra::platform_support::{function}(\"{operation}\")");
-        let comma_needle = needle
-            .strip_suffix(')')
-            .map(|prefix| format!("{prefix},)"))
-            .unwrap_or_default();
-        if normalised.matches(&needle).count() == 0
-            && normalised.matches(&comma_needle).count() == 0
-        {
-            errors.push(format!("{file}: missing routed refusal {operation}"));
-        }
-    }
-    for file in [
-        "infra/fs.rs",
-        "infra/path_authority/mod.rs",
-        "infra/path_authority/resolved.rs",
-        "db/repository.rs",
-        "db/mod.rs",
-        "db/search.rs",
-        "file_workspace.rs",
-    ] {
-        let source = source_for(file);
-        let compacted = compact(&normalise(source, Literals::Keep));
-        let call_count = compacted
-            .matches("crate::infra::platform_support::unsupported(")
-            .count()
-            + compacted
-                .matches("crate::infra::platform_support::unsupported_plural(")
-                .count();
-        let expected_count = expected.iter().filter(|row| row.0 == file).count();
-        if call_count != expected_count {
-            errors.push(format!(
-                "{file}: expected {expected_count} routed refusals, found {call_count}"
-            ));
-        }
-    }
-    let mut tree_count = 0;
-    for path in rust_source_paths() {
-        // The verifier file is test-only and is skipped since the move; Phase 2 of f-20260916-01 replaces this scan.
-        if file_key(&path) == "infra/platform_support/tests.rs" {
-            continue;
-        }
-        if path.file_name().and_then(|name| name.to_str()) != Some("platform_support.rs") {
-            let source = std::fs::read_to_string(path).unwrap();
-            let compacted = compact(&normalise(&source, Literals::Keep));
-            tree_count += compacted
-                .matches("crate::infra::platform_support::unsupported(")
-                .count()
-                + compacted
-                    .matches("crate::infra::platform_support::unsupported_plural(")
-                    .count();
-        }
-    }
-    if tree_count != expected.len() {
-        errors.push(format!(
-            "tree-wide routed refusal count: expected {}, found {tree_count}",
-            expected.len()
-        ));
-    }
-    assert!(
-        errors.is_empty(),
-        "routed refusal labels changed:\n{}",
         errors.join("\n")
     );
 }
