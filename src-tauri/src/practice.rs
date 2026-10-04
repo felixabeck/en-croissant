@@ -2302,6 +2302,25 @@ fn run_migration_before_positions_hook() -> Result<(), Error> {
 mod tests {
     use super::*;
     use crate::error::{ErrorCategory, RootFailure};
+    use crate::infra::fs::{
+        set_test_atomic_file_injector, AtomicFileFaultPoint, AtomicWriterInjector, ParentSyncFault,
+    };
+    use crate::infra::path_authority::{
+        ensure_app_owned_default_dir, AppDataDir, AppOwnedDefaultRoot, AuthorizedDir,
+    };
+    use std::{
+        fs,
+        sync::{atomic::AtomicUsize, Arc, Barrier},
+        thread,
+    };
+    // Only the Unix cross-process lock test spawns a child of this test binary.
+    #[cfg(unix)]
+    use std::{
+        env,
+        path::PathBuf,
+        process::Command,
+        time::{Duration, Instant},
+    };
 
     #[test]
     fn missing_entry_operation_wrapper_preserves_classification_and_sanitises_text() {
@@ -2369,26 +2388,6 @@ mod tests {
             );
         }
     }
-
-    use crate::infra::fs::{
-        set_test_atomic_file_injector, AtomicFileFaultPoint, AtomicWriterInjector, ParentSyncFault,
-    };
-    use crate::infra::path_authority::{
-        ensure_app_owned_default_dir, AppDataDir, AppOwnedDefaultRoot, AuthorizedDir,
-    };
-    use std::{
-        fs,
-        sync::{atomic::AtomicUsize, Arc, Barrier},
-        thread,
-    };
-    // Only the Unix cross-process lock test spawns a child of this test binary.
-    #[cfg(unix)]
-    use std::{
-        env,
-        path::PathBuf,
-        process::Command,
-        time::{Duration, Instant},
-    };
 
     fn directory() -> (tempfile::TempDir, AuthorizedDir) {
         let temp = tempfile::tempdir().unwrap();

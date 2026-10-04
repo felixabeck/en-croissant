@@ -683,12 +683,17 @@ fn probe_error_classifier_missing_entry_table_and_directory_split_are_explicit()
         (1224, ProbeErrorClass::MappedFile),
     ];
     #[cfg(windows)]
-    rows.extend([
-        (2, ProbeErrorClass::NotFound),
-        (3, ProbeErrorClass::NotFound),
-        (53, ProbeErrorClass::Other),
-        (67, ProbeErrorClass::Other),
-    ]);
+    {
+        use windows_sys::Win32::Foundation::{
+            ERROR_BAD_NETPATH, ERROR_BAD_NET_NAME, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND,
+        };
+        rows.extend([
+            (ERROR_FILE_NOT_FOUND as i32, ProbeErrorClass::NotFound),
+            (ERROR_PATH_NOT_FOUND as i32, ProbeErrorClass::NotFound),
+            (ERROR_BAD_NETPATH as i32, ProbeErrorClass::Other),
+            (ERROR_BAD_NET_NAME as i32, ProbeErrorClass::Other),
+        ]);
+    }
     #[cfg(unix)]
     rows.extend([
         (libc::ENOENT, ProbeErrorClass::NotFound),
