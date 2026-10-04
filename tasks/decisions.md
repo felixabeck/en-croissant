@@ -5431,3 +5431,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Absence must mean the OS said the entry is not there; the narrow set is exactly what the producer layer (rustix `Errno::NOENT`, SQLite VFS hooks) already uses. On unix the only change is that raw 3 (`ESRCH`) stops being absence in `classify_probe_error_kind`. Reversal path: make the predicate `kind() == NotFound` (one function in `error.rs`).
 * **Decided by:** Claude Code, drain session e86c5c5d-5436-4a09-87ef-8662fd750e7f (drain run 42548d18-1af4-46bd-a37c-20f82f9ba6c8), full auto, reviewed plan tasks/plans/2026-10-04-missing-entry-predicate.md (planned ahead, 4 review rounds) · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"311154b9eb625ba98e9be17d125b19b7085b796580c243acee70994b4d3089ff","input_sha256":"e219ccab4b25104e323f5b03c99bef483a10bab387fbb3eedf658a2a39506cf4","kind":"mutation-receipt","operation":"f80ecc9956a8f62e8825d4da805f9dfb96528c7d52e0f4db1dfdbda17d17e07b","options":{"section":null},"request_id_sha256":null,"results":["d-20261004-26"],"target":"decisions-ledger","v":1} -->
+
+### d-20261004-27 — Where does the missing-entry predicate live?
+
+* **Question:** `f-20260916-09` leaves one missing-entry predicate; which module owns it?
+* **Governs:** f-20260916-09
+* **Chosen:** `src-tauri/src/error.rs`, as a method on `crate::error::Error` plus a free function over `&std::io::Error`, beside `category` and `root_failure_reason`, which consume it.
+* **Rejected:** `infra/path_authority` or `infra/fs.rs` — callers outside `infra` (credentials, practice, sound, puzzle, db) would import a path-authority internal for an error question.
+* **Reason:** The question is about the error type, and its classifiers already live there. Reversal path: move the two functions; callers change only their import.
+* **Decided by:** Claude Code, drain session e86c5c5d-5436-4a09-87ef-8662fd750e7f (drain run 42548d18-1af4-46bd-a37c-20f82f9ba6c8), full auto, reviewed plan tasks/plans/2026-10-04-missing-entry-predicate.md (planned ahead, 4 review rounds) · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"ee03ecaaceaf643ec2b3587845eba35298f3307de10bdf8650c3618f337fb7b2","input_sha256":"3c9d71921a44ce2bd1365932cbefd8321326af617de2d253ccf00ff635623061","kind":"mutation-receipt","operation":"73484cbf101f4ae2943ecb45495512a74922d69c92720137fa520f12b79d0066","options":{"section":null},"request_id_sha256":null,"results":["d-20261004-27"],"target":"decisions-ledger","v":1} -->
