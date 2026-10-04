@@ -789,76 +789,32 @@ mod tests {
 
     #[test]
     fn puzzle_workspace_body_creates_and_activates_default_without_selection() {
-        use crate::infra::path_authority::{AppDataDir, PathAuthority};
-        let dir = tempfile::tempdir().unwrap();
-        let app_path = dir.path().join("app-data");
-        std::fs::create_dir(&app_path).unwrap();
-        let authority = std::sync::Mutex::new(Some(
-            PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap(),
-        ));
-        let workspace =
-            active_or_default_puzzle_workspace(|| Ok(AppDataDir::for_test(&app_path)), &authority)
-                .unwrap();
-        assert!(app_path.join("puzzles").is_dir());
-        let active = authority
-            .lock()
-            .unwrap()
-            .as_mut()
-            .unwrap()
-            .active_puzzle_root()
-            .unwrap()
-            .unwrap();
-        assert_eq!(workspace.root, active.root);
+        use crate::infra::path_authority::{
+            portable_tests::assert_workspace_body_defaults_only_without_a_selection,
+            AppOwnedDefaultRoot,
+        };
+        assert_workspace_body_defaults_only_without_a_selection(
+            AppOwnedDefaultRoot::Puzzles,
+            |authority, lookup| {
+                active_or_default_puzzle_workspace(lookup, authority)
+                    .map(|workspace| workspace.root.path_ref().clone())
+            },
+        );
     }
 
     #[test]
     fn puzzle_workspace_body_refuses_unusable_selections_without_a_default() {
-        use crate::error::RootFailure;
-        use crate::infra::path_authority::AppDataDir;
-        for reason in [
-            RootFailure::Missing,
-            RootFailure::Changed,
-            #[cfg(unix)]
-            RootFailure::Unusable,
-        ] {
-            let dir = tempfile::tempdir().unwrap();
-            let root_path = dir.path().join("selected");
-            let app_path = dir.path().join("app-data");
-            std::fs::create_dir(&root_path).unwrap();
-            std::fs::create_dir(&app_path).unwrap();
-            let (authority, _) = puzzle_workspace_authority(dir.path(), &root_path);
-            match reason {
-                RootFailure::Missing => std::fs::remove_dir(&root_path).unwrap(),
-                RootFailure::Changed => {
-                    std::fs::rename(&root_path, dir.path().join("moved")).unwrap();
-                    std::fs::create_dir(&root_path).unwrap();
-                }
-                #[cfg(unix)]
-                RootFailure::Unusable => {
-                    *authority.lock().unwrap() = Some(
-                        crate::infra::path_authority::portable_tests::reload_with_undecodable_root(
-                            &dir.path().join("registry.json"),
-                        ),
-                    );
-                }
-                _ => unreachable!(),
-            }
-            let registry = dir.path().join("registry.json");
-            let before = std::fs::read(&registry).unwrap();
-            let looked_up = std::cell::Cell::new(false);
-            let error = active_or_default_puzzle_workspace(
-                || {
-                    looked_up.set(true);
-                    Ok(AppDataDir::for_test(&app_path))
-                },
-                &authority,
-            )
-            .unwrap_err();
-            assert_eq!(error.root_failure(), Some(reason));
-            assert!(!looked_up.get());
-            assert!(!app_path.join("puzzles").exists());
-            assert_eq!(std::fs::read(&registry).unwrap(), before);
-        }
+        use crate::infra::path_authority::{
+            portable_tests::assert_workspace_body_refuses_unusable_selections_without_defaults,
+            AppOwnedDefaultRoot,
+        };
+        assert_workspace_body_refuses_unusable_selections_without_defaults(
+            AppOwnedDefaultRoot::Puzzles,
+            |authority, lookup| {
+                active_or_default_puzzle_workspace(lookup, authority)
+                    .map(|workspace| workspace.root.path_ref().clone())
+            },
+        );
     }
 
     async fn yield_until(mut ready: impl FnMut() -> bool) {

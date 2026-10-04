@@ -9113,6 +9113,100 @@ pub(crate) mod portable_tests {
         }
     }
 
+    pub(crate) fn assert_workspace_body_refuses_unusable_selections_without_defaults(
+        domain: AppOwnedDefaultRoot,
+        body: impl Fn(
+            &std::sync::Mutex<Option<PathAuthority>>,
+            &dyn Fn() -> Result<AppDataDir, Error>,
+        ) -> Result<PathRef, Error>,
+    ) {
+        use crate::error::RootFailure;
+
+        let leaf = APP_OWNED_DEFAULT_ROOT_LEAVES
+            .iter()
+            .find(|(root, _)| *root == domain)
+            .unwrap()
+            .1;
+        for reason in [
+            RootFailure::Missing,
+            RootFailure::Changed,
+            #[cfg(unix)]
+            RootFailure::Unusable,
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let selected_path = dir.path().join("selected");
+            let app_path = dir.path().join("app-data");
+            fs::create_dir(&selected_path).unwrap();
+            fs::create_dir(&app_path).unwrap();
+            let registry = dir.path().join("registry.json");
+            let mut authority = PathAuthority::open(registry.clone(), vec![]).unwrap();
+            let id = {
+                let directory = authorize_existing_dir(&selected_path).unwrap();
+                get_or_create_app_owned_test_root(
+                    &mut authority,
+                    domain,
+                    &directory,
+                    directory.identity(),
+                )
+                .unwrap()
+            };
+            set_active_app_owned_test_root(&mut authority, domain, &id);
+            match reason {
+                RootFailure::Missing => fs::remove_dir(&selected_path).unwrap(),
+                RootFailure::Changed => {
+                    fs::rename(&selected_path, dir.path().join("moved")).unwrap();
+                    fs::create_dir(&selected_path).unwrap();
+                }
+                #[cfg(unix)]
+                RootFailure::Unusable => authority = reload_with_undecodable_root(&registry),
+                _ => unreachable!(),
+            }
+            let before = fs::read(&registry).unwrap();
+            let authority = std::sync::Mutex::new(Some(authority));
+            let looked_up = std::cell::Cell::new(false);
+            let lookup = || {
+                looked_up.set(true);
+                Ok(AppDataDir::for_test(&app_path))
+            };
+            let error = body(&authority, &lookup).unwrap_err();
+            assert_eq!(error.root_failure(), Some(reason), "{domain:?}: {reason:?}");
+            assert!(!looked_up.get(), "{domain:?}: {reason:?}");
+            assert!(!app_path.join(leaf).exists(), "{domain:?}: {reason:?}");
+            assert_eq!(
+                fs::read(&registry).unwrap(),
+                before,
+                "{domain:?}: {reason:?}"
+            );
+        }
+    }
+
+    pub(crate) fn assert_workspace_body_defaults_only_without_a_selection(
+        domain: AppOwnedDefaultRoot,
+        body: impl FnOnce(
+            &std::sync::Mutex<Option<PathAuthority>>,
+            &dyn Fn() -> Result<AppDataDir, Error>,
+        ) -> Result<PathRef, Error>,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let app_path = dir.path().join("app-data");
+        fs::create_dir(&app_path).unwrap();
+        let authority = std::sync::Mutex::new(Some(
+            PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap(),
+        ));
+        let id = body(&authority, &|| Ok(AppDataDir::for_test(&app_path))).unwrap();
+        let leaf = APP_OWNED_DEFAULT_ROOT_LEAVES
+            .iter()
+            .find(|(root, _)| *root == domain)
+            .unwrap()
+            .1;
+        assert!(app_path.join(leaf).is_dir(), "{domain:?}");
+        let selected =
+            active_app_owned_test_root(authority.lock().unwrap().as_mut().unwrap(), domain)
+                .unwrap()
+                .unwrap();
+        assert_eq!(selected, id, "{domain:?}");
+    }
+
     #[test]
     fn active_roots_refuse_missing_and_changed_selections_and_recover_without_writing() {
         use crate::error::RootFailure;

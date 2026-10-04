@@ -2994,114 +2994,48 @@ mod tests {
 
     #[test]
     fn database_and_engine_workspace_bodies_default_only_without_a_selection() {
-        use crate::infra::path_authority::{AppDataDir, PathAuthority};
-        for engine in [false, true] {
-            let dir = tempfile::tempdir().unwrap();
-            let app_path = dir.path().join("app-data");
-            std::fs::create_dir(&app_path).unwrap();
-            let authority = std::sync::Mutex::new(Some(
-                PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap(),
-            ));
-            let lookup = || Ok(AppDataDir::for_test(&app_path));
-            let id = if engine {
-                get_engine_workspace_blocking(&authority, lookup)
-                    .unwrap()
-                    .path_ref()
-                    .clone()
-            } else {
-                get_database_workspace_blocking(&authority, lookup)
-                    .unwrap()
-                    .path_ref()
-                    .clone()
-            };
-            assert!(app_path
-                .join(if engine { "engines" } else { "db" })
-                .is_dir());
-            let mut guard = authority.lock().unwrap();
-            let selected = if engine {
-                guard
-                    .as_mut()
-                    .unwrap()
-                    .active_engine_root()
-                    .unwrap()
-                    .unwrap()
-                    .path_ref()
-                    .clone()
-            } else {
-                guard
-                    .as_mut()
-                    .unwrap()
-                    .active_database_root()
-                    .unwrap()
-                    .unwrap()
-                    .path_ref()
-                    .clone()
-            };
-            assert_eq!(selected, id);
+        use crate::infra::path_authority::{
+            portable_tests::assert_workspace_body_defaults_only_without_a_selection,
+            AppOwnedDefaultRoot,
+        };
+        for domain in [AppOwnedDefaultRoot::Databases, AppOwnedDefaultRoot::Engines] {
+            assert_workspace_body_defaults_only_without_a_selection(domain, |authority, lookup| {
+                match domain {
+                    AppOwnedDefaultRoot::Databases => {
+                        get_database_workspace_blocking(authority, lookup)
+                            .map(|root| root.path_ref().clone())
+                    }
+                    AppOwnedDefaultRoot::Engines => {
+                        get_engine_workspace_blocking(authority, lookup)
+                            .map(|root| root.path_ref().clone())
+                    }
+                    _ => unreachable!(),
+                }
+            });
         }
     }
 
     #[test]
     fn database_and_engine_workspace_bodies_refuse_unusable_selections_without_defaults() {
-        use crate::error::RootFailure;
-        use crate::infra::path_authority::{AppDataDir, PathAuthority};
-        for engine in [false, true] {
-            for reason in [
-                RootFailure::Missing,
-                RootFailure::Changed,
-                #[cfg(unix)]
-                RootFailure::Unusable,
-            ] {
-                let dir = tempfile::tempdir().unwrap();
-                let selected_path = dir.path().join("selected");
-                let app_path = dir.path().join("app-data");
-                std::fs::create_dir(&selected_path).unwrap();
-                std::fs::create_dir(&app_path).unwrap();
-                let registry = dir.path().join("registry.json");
-                let mut authority = PathAuthority::open(registry.clone(), vec![]).unwrap();
-                if engine {
-                    let root = authority
-                        .get_or_create_engine_root(&selected_path, "Selected", None)
-                        .unwrap();
-                    authority.set_active_engine_root(&root).unwrap();
-                } else {
-                    let root = authority
-                        .get_or_create_database_root(&selected_path, "Selected", None)
-                        .unwrap();
-                    authority.set_active_database_root(&root).unwrap();
-                }
-                match reason {
-                    RootFailure::Missing => std::fs::remove_dir(&selected_path).unwrap(),
-                    RootFailure::Changed => {
-                        std::fs::rename(&selected_path, dir.path().join("moved")).unwrap();
-                        std::fs::create_dir(&selected_path).unwrap();
+        use crate::infra::path_authority::{
+            portable_tests::assert_workspace_body_refuses_unusable_selections_without_defaults,
+            AppOwnedDefaultRoot,
+        };
+        for domain in [AppOwnedDefaultRoot::Databases, AppOwnedDefaultRoot::Engines] {
+            assert_workspace_body_refuses_unusable_selections_without_defaults(
+                domain,
+                |authority, lookup| match domain {
+                    AppOwnedDefaultRoot::Databases => {
+                        get_database_workspace_blocking(authority, lookup)
+                            .map(|root| root.path_ref().clone())
                     }
-                    #[cfg(unix)]
-                    RootFailure::Unusable => authority =
-                        crate::infra::path_authority::portable_tests::reload_with_undecodable_root(
-                            &registry,
-                        ),
+                    AppOwnedDefaultRoot::Engines => {
+                        get_engine_workspace_blocking(authority, lookup)
+                            .map(|root| root.path_ref().clone())
+                    }
                     _ => unreachable!(),
-                }
-                let before = std::fs::read(&registry).unwrap();
-                let authority = std::sync::Mutex::new(Some(authority));
-                let looked_up = std::cell::Cell::new(false);
-                let lookup = || {
-                    looked_up.set(true);
-                    Ok(AppDataDir::for_test(&app_path))
-                };
-                let error = if engine {
-                    get_engine_workspace_blocking(&authority, lookup).unwrap_err()
-                } else {
-                    get_database_workspace_blocking(&authority, lookup).unwrap_err()
-                };
-                assert_eq!(error.root_failure(), Some(reason));
-                assert!(!looked_up.get());
-                assert!(!app_path
-                    .join(if engine { "engines" } else { "db" })
-                    .exists());
-                assert_eq!(std::fs::read(&registry).unwrap(), before);
-            }
+                },
+            );
         }
     }
 
