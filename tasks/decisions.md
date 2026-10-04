@@ -5613,3 +5613,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The payload route installs one plain file; engines download through `download_engine_archive`. Canonical engine roots do not grant `DownloadFile`, so no user-visible behaviour changes. Settled by the r4 focused fresh-context `review-plan` judgment (candidate C). Reversal path: delete the admission check in `download_to_destination_inner`.
 * **Decided by:** Claude Code, drain session a7e751d8-3d90-4f19-851d-4f9973874b62 (drain run 42548d18-1af4-46bd-a37c-20f82f9ba6c8), full auto, reviewed plan tasks/plans/2026-10-05-download-staging-anonymous-payload.md (planned ahead, 6 review rounds) · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"d3a0f2da07674289782c580e31ea24b593e9dca960b29722766e7e5cdc3b5a62","input_sha256":"8221672b162bf9ba394428a4c103b4b6d96f0ca6fd06e6635fa8d9cba63d9373","kind":"mutation-receipt","operation":"037430798e276486f742b94339d3f5e82693ad6e34ed9c8ea18560bdc88b2d6f","options":{"section":null},"request_id_sha256":null,"results":["d-20261005-02"],"target":"decisions-ledger","v":1} -->
+
+### d-20261005-03 — Does the payload-leaf staging form stay in the download core?
+
+* **Question:** Once `download_to_destination_inner` stops passing `staging = Some((root, Some("payload")))`, does the core keep that form and `archive_install_names`' leaf arm?
+* **Governs:** f-20260919-02
+* **Chosen:** Remove it: `staging` keeps only the engine root form, `archive_install_names` loses its leaf arm, and its one test (`download_archive_staging_payload_path_mismatch_is_invalid_input`) goes.
+* **Rejected:** Keeping it for its single test — dead production code; deleting covered code is shrink-neutral for the coverage ratchet (`d-20260829-03`).
+* **Reason:** No producer remains after the payload becomes an anonymous descriptor. Reversal path: restore the `Some(leaf)` arm with its test.
+* **Decided by:** Claude Code, drain session a7e751d8-3d90-4f19-851d-4f9973874b62 (drain run 42548d18-1af4-46bd-a37c-20f82f9ba6c8), full auto, reviewed plan tasks/plans/2026-10-05-download-staging-anonymous-payload.md (planned ahead, 6 review rounds) · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"c53938ef37e778b655e52c93c24066b1ab8f334235b4cb3807652a0c6fd97545","input_sha256":"ecb1f5b25a4c3475dadbe220b30817e8212791af1f943eeafe86bfca7de88d4e","kind":"mutation-receipt","operation":"0fb15c66d61b8929e9fd083e89a4b569940ac991f144ecf5eef987acf7b0012d","options":{"section":null},"request_id_sha256":null,"results":["d-20261005-03"],"target":"decisions-ledger","v":1} -->
