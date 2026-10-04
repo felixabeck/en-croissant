@@ -6,7 +6,7 @@ import type { SupportedLocale } from "@/i18n";
 import type { AppErrorCategory } from "@/platform/errors";
 import * as errors from "@/platform/errors";
 import { catalogueI18n, shippedCatalogues } from "@/tests/catalogues";
-import { listingFailure } from "./listingFailure";
+import { listingFailure, rootFailureMessage } from "./listingFailure";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -79,6 +79,10 @@ describe("listing failure presentation", () => {
             },
         });
         expect(listingFailure(new Error("input"))).toBe("permission");
+        const t = ((key: string) => key) as import("i18next").TFunction;
+        expect(rootFailureMessage("database", new Error("input"), t)).toBe(
+            "Databases.LoadError.RootPermission",
+        );
     });
 });
 
@@ -94,6 +98,14 @@ const keys = [
     "Databases.LoadError.RootPermission",
     "Databases.LoadError.TooLarge",
     "Databases.ChooseFolder",
+    "Puzzle.LoadError.Changed",
+    "Puzzle.LoadError.RootMissing",
+    "Puzzle.LoadError.Unusable",
+    "Puzzle.LoadError.RootPermission",
+    "Engines.LoadError.Changed",
+    "Engines.LoadError.RootMissing",
+    "Engines.LoadError.Unusable",
+    "Engines.LoadError.RootPermission",
 ];
 const catalogues = shippedCatalogues();
 function Sentence({ translationKey }: { translationKey: string }) {
@@ -116,6 +128,51 @@ test.each(catalogues)(
             node.innerHTML = markup;
             expect(node.textContent).toBe(values[key]);
             expect(values[key]).toBeTruthy();
+        }
+    },
+);
+
+test.each(["database", "puzzle", "engine", "files"] as const)(
+    "%s maps every supported label and leaves fallback presentation to the caller",
+    async (domain) => {
+        const i18n = await catalogueI18n("en-US");
+        const folder = domain === "files" ? "collection" : `${domain} folder`;
+        const recovery =
+            domain === "puzzle" || domain === "engine"
+                ? "Choose another in Settings."
+                : "Choose another.";
+        for (const [rootFailure, sentence] of [
+            ["changed", `This ${folder} changed. ${recovery}`],
+            ["missing", `This ${folder} is no longer available. ${recovery}`],
+            ["unusable", `This ${folder} cannot be opened. ${recovery}`],
+            ["permission", `ChessFable is not allowed to read this ${folder}. ${recovery}`],
+            [
+                "too-large",
+                domain === "database" || domain === "files"
+                    ? `This ${folder} is too large to list. ${recovery}`
+                    : undefined,
+            ],
+        ] as const) {
+            expect(
+                rootFailureMessage(
+                    domain,
+                    {
+                        tag: "backend-error",
+                        category: "io",
+                        message: "unrelated diagnostic",
+                        rootFailure,
+                    },
+                    i18n.t,
+                ),
+            ).toBe(sentence);
+        }
+        for (const error of [
+            undefined,
+            new Error("root changed"),
+            { tag: "backend-error", category: "conflict", message: "root changed" },
+            new Error("Cancellation"),
+        ]) {
+            expect(rootFailureMessage(domain, error, i18n.t)).toBeUndefined();
         }
     },
 );

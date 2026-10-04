@@ -170,11 +170,7 @@ function Puzzles({ id }: { id: string }) {
           setPuzzleDbs([]);
           setListedWorkspaceGeneration(null);
           if (normalizeError(error).category !== "cancelled") {
-            notifications.show({
-              title: commonErrorRef.current,
-              message: normalizeError(error).message,
-              color: "red",
-            });
+            notifyUnlessCancelled(commonErrorRef.current, error, "puzzle");
           }
         }
       });

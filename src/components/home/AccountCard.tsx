@@ -343,7 +343,7 @@ export function AccountCard({
                     await refreshDatabases(importFailed);
                   }
                 } catch (cause) {
-                  notifyUnlessCancelled(t("Common.Error"), cause);
+                  notifyUnlessCancelled(t("Common.Error"), cause, "database");
                 } finally {
                   setDownloadsInFlight((previous) => {
                     if (!previous.has(accountKey)) return previous;

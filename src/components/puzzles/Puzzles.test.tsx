@@ -34,6 +34,12 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock("@/i18n", async (original) => ({
+  ...(await original<typeof import("@/i18n")>()),
+  default: {
+    t: (key: string, options?: { defaultValue?: string }) => options?.defaultValue ?? key,
+  },
+}));
 vi.mock("@/platform/tauri", async () => {
   const actual = await vi.importActual<typeof import("@/platform/tauri")>("@/platform/tauri");
   return {
@@ -211,6 +217,45 @@ async function openAndConfirmDeletion() {
     await Promise.resolve();
   });
 }
+
+test.each(["workspace", "listing"] as const)(
+  "%s refusal clears the puzzle list and preserves unlabelled diagnostics",
+  async (surface) => {
+    const store = await renderPuzzles();
+    await vi.waitFor(() =>
+      expect(document.querySelector('[data-testid="puzzle-database-count"]')?.textContent).toBe(
+        "1",
+      ),
+    );
+    for (const labelled of [true, false]) {
+      const failure = new TauriCommandError({
+        tag: "backend-error",
+        category: "io",
+        message: "native failure",
+        ...(labelled ? { rootFailure: "missing" as const } : {}),
+      });
+      mocks[
+        surface === "workspace" ? "getPuzzleWorkspace" : "listPuzzleDatabases"
+      ].mockRejectedValue(failure);
+      mocks.notificationShow.mockClear();
+      await act(async () =>
+        store.set(puzzleWorkspaceGenerationAtom, (generation) => generation + 1),
+      );
+      await vi.waitFor(() =>
+        expect(mocks.notificationShow).toHaveBeenCalledWith({
+          color: "red",
+          title: "Common.Error",
+          message: labelled
+            ? "This puzzle folder is no longer available. Choose another in Settings."
+            : "native failure",
+        }),
+      );
+      expect(document.querySelector('[data-testid="puzzle-database-count"]')?.textContent).toBe(
+        "0",
+      );
+    }
+  },
+);
 
 test("shows the outdated-database alert for puzzle-themes-unavailable", async () => {
   // Message is neither the old Diesel substring nor the variant Display.

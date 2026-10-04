@@ -17,6 +17,11 @@ vi.mock("@/platform/tauri", async () => ({
   tauri: mocks,
 }));
 vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.notify } }));
+vi.mock("@/i18n", () => ({
+  default: {
+    t: (key: string, options?: { defaultValue?: string }) => options?.defaultValue ?? key,
+  },
+}));
 vi.mock("react-i18next", async () => {
   const catalogue = (await import("@/translation/en-US.json")).default.translation as Record<
     string,
@@ -157,6 +162,22 @@ async function clickChoose() {
 function alert() {
   return host.querySelector('[role="alert"]');
 }
+
+test.each([true, false])(
+  "workspace acquisition refusal renders recovery with rootFailure=%s",
+  async (labelled) => {
+    mocks.getDatabaseWorkspace.mockRejectedValue(failure(labelled ? "missing" : undefined));
+    await render();
+    expect(alert()?.textContent).toContain(
+      labelled
+        ? "This database folder is no longer available. Choose another."
+        : "Could not load databases. Please try again.",
+    );
+    expect(choose() !== undefined).toBe(labelled);
+    expect(mocks.listWorkspaceDatabases).not.toHaveBeenCalled();
+    expect(host.textContent).not.toContain("No databases installed");
+  },
+);
 
 beforeEach(() => {
   vi.resetAllMocks();

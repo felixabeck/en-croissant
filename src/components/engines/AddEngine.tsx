@@ -228,7 +228,7 @@ function EngineCard({
       if (!receipt.saved) throw new Error(t("Engines.SaveError"));
       setInstalledThisSession(true);
     } catch (error) {
-      notifyUnlessCancelled(t("Common.Error"), error);
+      notifyUnlessCancelled(t("Common.Error"), error, "engine");
     } finally {
       setInProgress(false);
     }

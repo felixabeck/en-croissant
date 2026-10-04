@@ -59,6 +59,12 @@ vi.mock("@/utils/db", async () => {
   };
 });
 vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.notify } }));
+vi.mock("@/i18n", async (original) => ({
+  ...(await original<typeof import("@/i18n")>()),
+  default: {
+    t: (key: string, options?: { defaultValue?: string }) => options?.defaultValue ?? key,
+  },
+}));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("@/platform/native", () => ({ error: mocks.logError }));
 vi.mock("../common/AppModal", () => ({
@@ -286,6 +292,49 @@ test("keeps a cancelled database download destination silent", async () => {
   expect(mocks.notify).not.toHaveBeenCalled();
   expect(setDatabases).not.toHaveBeenCalled();
 });
+
+test.each(["convert", "download"] as const)(
+  "%s root acquisition uses the database sentence and preserves unlabelled errors",
+  async (surface) => {
+    if (surface === "download") mocks.defaultDatabases = [manifestDb];
+    const { setOpened } = await renderAddDatabase();
+    if (surface === "convert") {
+      mocks.issuePgnWorkspace.mockResolvedValue({
+        handle: { id: { id: "pgn" }, kind: "fileWorkspace" },
+        displayName: "games.pgn",
+      });
+      await act(async () =>
+        [...host.querySelectorAll("button")]
+          .find((button) => button.textContent === "pick-pgn")!
+          .click(),
+      );
+    }
+    for (const labelled of [true, false]) {
+      mocks.notify.mockClear();
+      mocks.getDatabaseWorkspace.mockRejectedValue({
+        tag: "backend-error",
+        category: "io",
+        message: "native failure",
+        ...(labelled ? { rootFailure: "missing" } : {}),
+      });
+      await act(async () => {
+        if (surface === "download") mocks.progressButtonProps!.onClick();
+        else
+          host
+            .querySelector("form")!
+            .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      });
+      expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
+        color: "red",
+        title: "Common.Error",
+        message: labelled
+          ? "This database folder is no longer available. Choose another."
+          : "native failure",
+      });
+      expect(setOpened).not.toHaveBeenCalled();
+    }
+  },
+);
 
 test("reports a failed database download destination without replacing the list", async () => {
   mocks.defaultDatabases = [manifestDb];

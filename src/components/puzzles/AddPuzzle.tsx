@@ -54,7 +54,7 @@ function AddPuzzle({
       setPuzzleDbs(databases);
       setOpened(false);
     } catch (error) {
-      if (!controller.signal.aborted) notifyUnlessCancelled(t("Common.Error"), error);
+      if (!controller.signal.aborted) notifyUnlessCancelled(t("Common.Error"), error, "puzzle");
     }
   }
 
@@ -117,20 +117,23 @@ function PuzzleDbCard({
   async function downloadDatabase() {
     setInProgress(true);
     try {
-      await runUnlessCancelled(t("Common.Error"), () =>
-        runDownloadJob(progressId, async (ticket) => {
-          const destination = await tauri.issuePuzzleDownloadDestination();
-          await tauri.downloadFile(
-            progressId,
-            puzzleDb.downloadLink,
-            destination,
-            `${puzzleDb.title}.db3`,
-            null,
-            ticket,
-            { sha256: puzzleDb.sha256, signature: puzzleDb.signature },
-          );
-          setPuzzleDbs(await getPuzzleDatabases());
-        }),
+      await runUnlessCancelled(
+        t("Common.Error"),
+        () =>
+          runDownloadJob(progressId, async (ticket) => {
+            const destination = await tauri.issuePuzzleDownloadDestination();
+            await tauri.downloadFile(
+              progressId,
+              puzzleDb.downloadLink,
+              destination,
+              `${puzzleDb.title}.db3`,
+              null,
+              ticket,
+              { sha256: puzzleDb.sha256, signature: puzzleDb.signature },
+            );
+            setPuzzleDbs(await getPuzzleDatabases());
+          }),
+        "puzzle",
       );
     } finally {
       setInProgress(false);

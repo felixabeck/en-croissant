@@ -34,6 +34,7 @@ const mocks = vi.hoisted(() => ({
   cancelDownload: vi.fn(),
   withDownloadTicket: vi.fn((run: (ticket: string) => Promise<unknown>) => run("prepared-ticket")),
   notifyUnlessCancelled: vi.fn(),
+  notificationShow: vi.fn(),
   getEngineWorkspace: vi.fn(),
   engineArchiveDestination: vi.fn(),
   downloadEngineArchive: vi.fn(),
@@ -85,8 +86,17 @@ vi.mock("@/platform/tauri", () => ({
   withDownloadTicket: mocks.withDownloadTicket,
   cancellationError: () => new Error("Cancellation"),
 }));
-vi.mock("@/components/files/notifyError", () => ({
-  notifyUnlessCancelled: mocks.notifyUnlessCancelled,
+vi.mock("@/components/files/notifyError", async (original) => {
+  const actual = await original<typeof import("@/components/files/notifyError")>();
+  mocks.notifyUnlessCancelled.mockImplementation(actual.notifyUnlessCancelled);
+  return { ...actual, notifyUnlessCancelled: mocks.notifyUnlessCancelled };
+});
+vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.notificationShow } }));
+vi.mock("@/i18n", async (original) => ({
+  ...(await original<typeof import("@/i18n")>()),
+  default: {
+    t: (key: string, options?: { defaultValue?: string }) => options?.defaultValue ?? key,
+  },
 }));
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -199,6 +209,31 @@ afterEach(async () => {
   host.remove();
 });
 
+test.each([true, false])(
+  "catalog root acquisition displays engine errors with rootFailure=%s",
+  async (labelled) => {
+    const actual = await vi.importActual<typeof import("@/utils/engines")>("@/utils/engines");
+    mocks.installDefaultEngine.mockImplementation(actual.installDefaultEngine);
+    mocks.getEngineWorkspace.mockRejectedValue({
+      tag: "backend-error",
+      category: "io",
+      message: "native failure",
+      ...(labelled ? { rootFailure: "missing" } : {}),
+    });
+    await act(async () => root.render(<AddEngine opened setOpened={() => undefined} />));
+    await act(async () => mocks.progressButtonProps!.onClick());
+    expect(mocks.notificationShow).toHaveBeenCalledExactlyOnceWith({
+      color: "red",
+      title: "Common.Error",
+      message: labelled
+        ? "This engine folder is no longer available. Choose another in Settings."
+        : "native failure",
+    });
+    expect(mocks.downloadEngineArchive).not.toHaveBeenCalled();
+    expect(mocks.saveEngines).not.toHaveBeenCalled();
+  },
+);
+
 test("wires installed state and progress id from the download URL", async () => {
   mocks.engines = [
     {
@@ -261,7 +296,11 @@ test("a succeeded download that fails to register is not treated as installed", 
     await Promise.resolve();
     await Promise.resolve();
   });
-  expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", expect.any(Error));
+  expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith(
+    "Common.Error",
+    expect.any(Error),
+    "engine",
+  );
   expect(mocks.clearProgress).toHaveBeenCalledWith(
     defaultEngineProgressId(mocks.defaultEngines[0].downloadLink),
   );
@@ -274,7 +313,11 @@ test("a refused catalog save shows an error and returns the card to its action",
   await act(async () => root.render(<AddEngine opened setOpened={() => undefined} />));
   await act(async () => mocks.progressButtonProps!.onClick());
   expect(mocks.saveEngines).toHaveBeenCalledWith(expect.any(Function), "after-save");
-  expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", expect.any(Error));
+  expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith(
+    "Common.Error",
+    expect.any(Error),
+    "engine",
+  );
   expect(mocks.progressButtonProps?.initInstalled).toBe(false);
   expect(mocks.progressButtonProps?.inProgress).toBe(false);
   expect(mocks.engines).toEqual([]);
@@ -313,7 +356,11 @@ test.each(["registerInstalledEngine", "getEngineConfig"] as const)(
     expect(mocks.getEngineConfig).toHaveBeenCalledTimes(step === "getEngineConfig" ? 1 : 0);
     expect(mocks.saveEngines).not.toHaveBeenCalled();
     expect(mocks.engines).toEqual([]);
-    expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", expect.any(Error));
+    expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith(
+      "Common.Error",
+      expect.any(Error),
+      "engine",
+    );
     expect(mocks.progressButtonProps?.initInstalled).toBe(false);
     expect(mocks.progressButtonProps?.inProgress).toBe(false);
   },

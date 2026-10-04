@@ -31,6 +31,11 @@ vi.mock("swr/immutable", () => ({
   default: () => ({ data: mocks.defaultDatabases, error: mocks.catalogError }),
 }));
 vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.notify } }));
+vi.mock("@/i18n", () => ({
+  default: {
+    t: (key: string, options?: { defaultValue?: string }) => options?.defaultValue ?? key,
+  },
+}));
 vi.mock("@/utils/puzzles", () => ({
   choosePuzzleDatabase: mocks.choosePuzzleDatabase,
   getPuzzleDatabases: mocks.getPuzzleDatabases,
@@ -40,7 +45,13 @@ vi.mock("@/platform/errors", () => ({
   errorUnlessCancelled: (error: unknown) =>
     error instanceof Error && error.message === "Cancellation"
       ? null
-      : { category: "unexpected", message: "Safe error" },
+      : {
+          category: "unexpected",
+          message: "Safe error",
+          ...(typeof error === "object" && error !== null && "rootFailure" in error
+            ? { rootFailure: error.rootFailure }
+            : {}),
+        },
 }));
 vi.mock("@/platform/tauri", () => ({
   tauri: {
@@ -367,3 +378,29 @@ test("keeps the fetch error for other catalog failures", async () => {
   expect(host.textContent).toContain("Databases.Add.ErrorFetch");
   expect(host.textContent).not.toContain("Databases.Add.ErrorCatalog");
 });
+
+test.each(["picker", "destination"] as const)(
+  "%s root refusal shows the puzzle sentence",
+  async (surface) => {
+    const failure = {
+      tag: "backend-error",
+      category: "io",
+      message: "native failure",
+      rootFailure: "missing",
+    };
+    if (surface === "picker") mocks.choosePuzzleDatabase.mockRejectedValue(failure);
+    else {
+      mocks.defaultDatabases = [tacticsManifest];
+      mocks.issueDownloadDestination.mockRejectedValue(failure);
+    }
+    const actions = await render();
+    await act(async () => host.querySelectorAll("button")[surface === "picker" ? 0 : 1].click());
+    expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
+      color: "red",
+      title: "Common.Error",
+      message: "This puzzle folder is no longer available. Choose another in Settings.",
+    });
+    expect(actions.setPuzzleDbs).not.toHaveBeenCalled();
+    expect(actions.setOpened).not.toHaveBeenCalled();
+  },
+);

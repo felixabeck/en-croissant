@@ -24,6 +24,8 @@ const mocks = vi.hoisted(() => ({
   clear: vi.fn(),
   report: vi.fn(),
   notify: vi.fn(),
+  notificationShow: vi.fn(),
+  getEngineWorkspace: vi.fn(),
   close: undefined as (() => void) | undefined,
   catalogError: undefined as unknown,
   progress: new Map<string, number>(),
@@ -32,7 +34,7 @@ vi.mock("@/platform/tauri", async (original) => ({
   ...(await original<typeof import("@/platform/tauri")>()),
   withDownloadTicket: (run: (ticket: string) => Promise<unknown>) => run("ticket"),
   tauri: {
-    getEngineWorkspace: async () => ({ id: { id: "root" }, kind: "engineRoot" }),
+    getEngineWorkspace: mocks.getEngineWorkspace,
     engineArchiveDestination: async () => ({ id: "destination" }),
     downloadEngineArchive: mocks.download,
     registerInstalledEngine: mocks.register,
@@ -57,14 +59,28 @@ vi.mock("@/platform/native", () => ({
   warn: vi.fn().mockResolvedValue(undefined),
   error: vi.fn().mockResolvedValue(undefined),
 }));
-vi.mock("@/components/files/notifyError", async () => {
+vi.mock("@/components/files/notifyError", async (original) => {
+  const actual = await original<typeof import("@/components/files/notifyError")>();
   const { errorUnlessCancelled } = await import("@/platform/errors");
   return {
-    notifyUnlessCancelled: (title: string, cause: unknown) => {
+    ...actual,
+    notifyUnlessCancelled: (
+      title: string,
+      cause: unknown,
+      domain?: import("@/components/files/listingFailure").RootFailureDomain,
+    ) => {
       if (errorUnlessCancelled(cause) !== null) mocks.notify(title, cause);
+      actual.notifyUnlessCancelled(title, cause, domain);
     },
   };
 });
+vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.notificationShow } }));
+vi.mock("@/i18n", async (original) => ({
+  ...(await original<typeof import("@/i18n")>()),
+  default: {
+    t: (key: string, options?: { defaultValue?: string }) => options?.defaultValue ?? key,
+  },
+}));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("@/hooks/useProgress", () => ({
   useProgress: (id: string) => ({
@@ -177,6 +193,9 @@ beforeEach(async () => {
   resetEngineOwnerCoordinatorForTests();
   vi.clearAllMocks();
   mocks.catalogError = undefined;
+  mocks.getEngineWorkspace
+    .mockReset()
+    .mockResolvedValue({ id: { id: "root" }, kind: "engineRoot" });
   mocks.close = undefined;
   mocks.progress.clear();
   mocks.reconcile.mockReset().mockResolvedValue(undefined);
@@ -230,6 +249,29 @@ test("success saves once before retiring the old pair and keeps the same list po
   expect(engines[2]).toEqual(last);
   expect(mocks.notify).not.toHaveBeenCalled();
 });
+
+test.each([true, false])(
+  "upgrade root acquisition displays engine errors with rootFailure=%s",
+  async (labelled) => {
+    mocks.getEngineWorkspace.mockRejectedValue({
+      tag: "backend-error",
+      category: "io",
+      message: "native failure",
+      ...(labelled ? { rootFailure: "missing" } : {}),
+    });
+    await render();
+    await click("Common.Install");
+    expect(mocks.notificationShow).toHaveBeenCalledExactlyOnceWith({
+      color: "red",
+      title: "Common.Error",
+      message: labelled
+        ? "This engine folder is no longer available. Choose another in Settings."
+        : "native failure",
+    });
+    expect(mocks.download).not.toHaveBeenCalled();
+    expect(store.get(enginesAtom)?.[0]).toMatchObject({ handle: old.handle });
+  },
+);
 
 test("committing withdraws cancel and ignores cancellation while save, retirement and snapshot save are pending", async () => {
   const snapshotKey = "game-player1-settings";

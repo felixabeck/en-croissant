@@ -195,10 +195,14 @@ function AddDatabase({
           <form
             onSubmit={form.onSubmit(async (values) => {
               if (disableLocalConversion) return;
-              await runUnlessCancelled(t("Common.Error"), async () => {
-                await convertDB(values.files, values.title, values.description);
-                setOpened(false);
-              });
+              await runUnlessCancelled(
+                t("Common.Error"),
+                async () => {
+                  await convertDB(values.files, values.title, values.description);
+                  setOpened(false);
+                },
+                "database",
+              );
             })}
           >
             <TextInput label={t("Common.Name")} withAsterisk {...form.getInputProps("title")} />
@@ -260,21 +264,24 @@ function DatabaseCard({
   async function downloadDatabase() {
     setInProgress(true);
     try {
-      await runUnlessCancelled(t("Common.Error"), () =>
-        runDownloadJob(progressId, async (ticket) => {
-          const root = await tauri.getDatabaseWorkspace();
-          const destination = await tauri.databaseDownloadDestination(root);
-          await tauri.downloadFile(
-            progressId,
-            database.downloadLink,
-            destination,
-            `${database.title}.db3`,
-            null,
-            ticket,
-            { sha256: database.sha256, signature: database.signature },
-          );
-          await setDatabases(await getDatabases());
-        }),
+      await runUnlessCancelled(
+        t("Common.Error"),
+        () =>
+          runDownloadJob(progressId, async (ticket) => {
+            const root = await tauri.getDatabaseWorkspace();
+            const destination = await tauri.databaseDownloadDestination(root);
+            await tauri.downloadFile(
+              progressId,
+              database.downloadLink,
+              destination,
+              `${database.title}.db3`,
+              null,
+              ticket,
+              { sha256: database.sha256, signature: database.signature },
+            );
+            await setDatabases(await getDatabases());
+          }),
+        "database",
       );
     } finally {
       setInProgress(false);

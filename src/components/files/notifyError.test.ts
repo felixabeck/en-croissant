@@ -6,7 +6,11 @@ vi.mock("@mantine/notifications", () => ({
     notifications: { show: vi.fn() },
 }));
 vi.mock("@/i18n", () => ({
-    default: { t: vi.fn(() => "Common.Error") },
+    default: {
+        t: vi.fn(
+            (key: string, options?: { defaultValue?: string }) => options?.defaultValue ?? key,
+        ),
+    },
 }));
 
 afterEach(() => {
@@ -72,3 +76,85 @@ test("runUnlessCancelled notifies a real failure and does not return a value", a
         message: "permission denied",
     });
 });
+
+test.each([
+    ["database", "This database folder is no longer available. Choose another."],
+    ["puzzle", "This puzzle folder is no longer available. Choose another in Settings."],
+    ["engine", "This engine folder is no longer available. Choose another in Settings."],
+    ["files", "This collection is no longer available. Choose another."],
+] as const)("%s notifies its root sentence through both entry points", async (domain, message) => {
+    const error = {
+        tag: "backend-error",
+        category: "io",
+        message: "native failure",
+        rootFailure: "missing",
+    };
+    notifyUnlessCancelled("Common.Error", error, domain);
+    await runUnlessCancelled(
+        "Common.Error",
+        async () => {
+            throw error;
+        },
+        domain,
+    );
+    expect(notifications.show).toHaveBeenCalledTimes(2);
+    expect(notifications.show).toHaveBeenNthCalledWith(1, {
+        color: "red",
+        title: "Common.Error",
+        message,
+    });
+    expect(notifications.show).toHaveBeenNthCalledWith(2, {
+        color: "red",
+        title: "Common.Error",
+        message,
+    });
+});
+
+test.each(["database", "puzzle", "engine", "files"] as const)(
+    "%s preserves unlabelled errors and cancellation",
+    (domain) => {
+        notifyUnlessCancelled(
+            "Common.Error",
+            { tag: "backend-error", category: "conflict", message: "workspace root changed" },
+            domain,
+        );
+        expect(notifications.show).toHaveBeenCalledWith({
+            color: "red",
+            title: "Common.Error",
+            message: "workspace root changed",
+        });
+        vi.mocked(notifications.show).mockClear();
+        notifyUnlessCancelled(
+            "Common.Error",
+            {
+                tag: "backend-error",
+                category: "cancellation",
+                message: "Cancellation",
+                rootFailure: "changed",
+            },
+            domain,
+        );
+        expect(notifications.show).not.toHaveBeenCalled();
+    },
+);
+
+test.each(["puzzle", "engine"] as const)(
+    "%s retains the backend message for too-large",
+    (domain) => {
+        notifyUnlessCancelled(
+            "Common.Error",
+            {
+                tag: "backend-error",
+                category: "resource-limit",
+                message: "listing bound reached",
+                rootFailure: "too-large",
+            },
+            domain,
+        );
+        expect(notifications.show).toHaveBeenCalledWith({
+            color: "red",
+            title: "Common.Error",
+            message: "listing bound reached",
+        });
+    },
+);

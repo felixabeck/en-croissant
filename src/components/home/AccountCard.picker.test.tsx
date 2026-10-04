@@ -56,6 +56,12 @@ vi.mock("@/platform/errors", async () => {
   return { ...actual, logFailureSafely: mocks.logFailureSafely };
 });
 vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.notify } }));
+vi.mock("@/i18n", async (original) => ({
+  ...(await original<typeof import("@/i18n")>()),
+  default: {
+    t: (key: string, options?: { defaultValue?: string }) => options?.defaultValue ?? key,
+  },
+}));
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string) =>
@@ -227,6 +233,31 @@ function configureSuccessfulDownload(type: "chesscom" | "lichess" = "chesscom") 
   mocks.setProgressState.mockResolvedValue(undefined);
   mocks.deleteEmptyGames.mockResolvedValue(undefined);
 }
+
+test.each([true, false])(
+  "account import acquisition preserves the domain presentation with rootFailure=%s",
+  async (labelled) => {
+    configureSuccessfulDownload("chesscom");
+    mocks.issueDownloadDestination.mockResolvedValue({ id: "dest" });
+    mocks.getDatabaseWorkspace.mockRejectedValue({
+      tag: "backend-error",
+      category: "io",
+      message: "native failure",
+      ...(labelled ? { rootFailure: "missing" } : {}),
+    });
+    await renderCard();
+    await act(async () => downloadButton().click());
+    expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
+      color: "red",
+      title: "Common.Error",
+      message: labelled
+        ? "This database folder is no longer available. Choose another."
+        : "native failure",
+    });
+    expect(mocks.convertPgn).not.toHaveBeenCalled();
+    expect(downloadButton().disabled).toBe(false);
+  },
+);
 
 test.each(["lichess", "chesscom"] as const)(
   "an uncertain %s publication warns once before importing its handle",

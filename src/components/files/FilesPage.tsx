@@ -1,5 +1,5 @@
 import { tauri } from "@/platform/tauri";
-import { listingFailure, type ListingFailureMessages } from "@/components/files/listingFailure";
+import { listingFailure, rootFailureMessage } from "@/components/files/listingFailure";
 import { useNativePicker } from "@/hooks/useNativePicker";
 import { runAppliedMutationWithRefresh, runDestructiveWithRefresh } from "@/platform/errors";
 import { runUnlessCancelled } from "@/components/files/notifyError";
@@ -59,26 +59,6 @@ function findEntry(entries: Entry[], key: string): Entry | null {
 
 export default function FilesPage() {
   const { t } = useTranslation();
-  const loadFailureMessages: ListingFailureMessages = {
-    retry: t("Files.LoadFailed", {
-      defaultValue: "Files could not be loaded. Please try again.",
-    }),
-    changed: t("Files.LoadFailed.Changed", {
-      defaultValue: "This collection changed. Choose another.",
-    }),
-    missing: t("Files.LoadFailed.Missing", {
-      defaultValue: "This collection is no longer available. Choose another.",
-    }),
-    unusable: t("Files.LoadFailed.Unusable", {
-      defaultValue: "This collection cannot be opened. Choose another.",
-    }),
-    permission: t("Files.LoadFailed.Permission", {
-      defaultValue: "ChessFable is not allowed to read this collection. Choose another.",
-    }),
-    tooLarge: t("Files.LoadFailed.TooLarge", {
-      defaultValue: "This collection is too large to list. Choose another.",
-    }),
-  };
   const picker = useNativePicker();
   const [workspace, setWorkspace] = useAtom(fileWorkspaceAtom);
   const [, setWorkspaceDisplayName] = useAtom(fileWorkspaceDisplayNameAtom);
@@ -110,6 +90,11 @@ export default function FilesPage() {
     ),
   );
   const failure = listingFailure(error);
+  const loadFailureMessage =
+    rootFailureMessage("files", error, t) ??
+    t("Files.LoadFailed", {
+      defaultValue: "Files could not be loaded. Please try again.",
+    });
   // Handle ids survive relisting and rename, so every fresh listing re-derives the selection;
   // an entry that is gone clears it. Before the first listing the chosen entry stands.
   const selected =
@@ -122,7 +107,7 @@ export default function FilesPage() {
       const result = await runUnlessCancelled(
         t("Common.Error"),
         () => tauri.issueFileWorkspace(),
-        loadFailureMessages.changed,
+        "files",
       );
       if (!result) return;
       setWorkspace(result.handle);
@@ -301,7 +286,7 @@ export default function FilesPage() {
               )}
               {failure !== "silent" ? (
                 <Text c="red" role="alert" className="wrap-anywhere">
-                  {loadFailureMessages[failure]}
+                  {loadFailureMessage}
                 </Text>
               ) : !data ? (
                 <Text>{t("Common.Loading")}</Text>

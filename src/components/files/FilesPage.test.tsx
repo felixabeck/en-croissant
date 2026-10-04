@@ -60,6 +60,11 @@ vi.mock("react-i18next", () => ({
   }),
 }));
 vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.notify } }));
+vi.mock("@/i18n", () => ({
+  default: {
+    t: (key: string, options?: { defaultValue?: string }) => options?.defaultValue ?? key,
+  },
+}));
 vi.mock("@mantine/core", () => ({
   Button: ({
     children,

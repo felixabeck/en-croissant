@@ -112,7 +112,7 @@ export default function UpgradeEngineModal({
         }
       });
     } catch (cause) {
-      notifyUnlessCancelled(t("Common.Error"), cause);
+      notifyUnlessCancelled(t("Common.Error"), cause, "engine");
     } finally {
       committing.current = false;
       setIsCommitting(false);
