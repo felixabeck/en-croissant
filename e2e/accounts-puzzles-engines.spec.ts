@@ -1,5 +1,86 @@
 import { expect, test } from "./fixtures";
 
+test("accounts-puzzles-engines: warns when a downloaded game file's save is not confirmed", async ({
+    page,
+    mockScenario,
+    capture,
+}) => {
+    const publicationHandle = { id: { id: "uncertain-chesscom-download" }, kind: "fileWorkspace" };
+    const databaseHandle = { id: { id: "chesscom-import" }, kind: "database" };
+    await page.addInitScript(() => {
+        localStorage.setItem(
+            "sessions",
+            JSON.stringify([
+                {
+                    player: "download-player",
+                    updatedAt: Date.UTC(2026, 9, 4),
+                    chessCom: {
+                        username: "download-player",
+                        stats: {
+                            chess_rapid: {
+                                last: { rating: 1500, date: 1791072000, rd: 50 },
+                                record: { win: 1, loss: 0, draw: 0 },
+                            },
+                        },
+                    },
+                },
+            ]),
+        );
+    });
+    await mockScenario({
+        commands: {
+            issue_download_destination: { result: { id: "download-destination" } },
+            prepare_download: { result: "chesscom-download-ticket" },
+            download_chess_com_games: {
+                result: {
+                    handle: publicationHandle,
+                    durability: { DurabilityUncertain: "DownloadTargetReplacement" },
+                },
+            },
+            create_workspace_database: { result: databaseHandle },
+            start_progress: { result: { id: "chesscom_download-player", generation: 1 } },
+            convert_pgn: { result: null },
+            set_progress_state: { result: null },
+            delete_empty_games: { result: null },
+        },
+    });
+    await page.goto("/accounts");
+    const download = page.getByRole("button", { name: "Download games", exact: true });
+    await download.click();
+
+    const warning = page.getByText(
+        "The games were downloaded, but the save could not be fully confirmed. Do not retry.",
+        { exact: true },
+    );
+    await expect(warning).toBeVisible();
+    await expect(download).toBeEnabled();
+    const notification = page.locator(".mantine-Notification-root");
+    await expect(notification).toHaveCount(1);
+    await expect(notification).toHaveCSS("opacity", "1");
+
+    const invocations = await page.evaluate(() => window.__E2E_TAURI__.invocations());
+    expect(invocations.filter(({ command }) => command === "convert_pgn")).toEqual([
+        {
+            command: "convert_pgn",
+            args: {
+                progressId: expect.any(String),
+                files: [publicationHandle],
+                database: databaseHandle,
+                timestamp: null,
+                title: "download-player Chess.com",
+                description: null,
+            },
+        },
+    ]);
+    expect(invocations.filter(({ command }) => command === "delete_empty_games")).toEqual([
+        { command: "delete_empty_games", args: { file: databaseHandle } },
+    ]);
+    await capture("account-download-durability-uncertain");
+    await expect(page).toHaveScreenshot("account-download-durability-uncertain.png", {
+        fullPage: true,
+    });
+});
+
 test("accounts-puzzles-engines: refuses startup when legacy sign-in storage cannot be erased", async ({
     page,
     mockScenario,
