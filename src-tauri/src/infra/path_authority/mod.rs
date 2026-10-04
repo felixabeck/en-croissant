@@ -2519,6 +2519,19 @@ pub(crate) fn set_app_data_pre_open_hook(hook: Option<Box<dyn FnOnce()>>) {
     APP_DATA_PRE_OPEN_HOOK.with(|slot| *slot.borrow_mut() = hook);
 }
 
+fn app_data_acquisition_failure(error: Error) -> Error {
+    log::error!(
+        "application data directory acquisition failed: {}",
+        error.diagnostic()
+    );
+    let message = "application data directory could not be acquired";
+    match &error {
+        Error::Io(error) => crate::error::sanitized_io_error(error, message.into()),
+        _ => std::io::Error::other(message),
+    }
+    .into()
+}
+
 impl AppDataDir {
     /// The production constructor, and the only one outside tests. Generic over
     /// `R: tauri::Runtime`, matching how `puzzle.rs` and `db/mod.rs` spell that bound, so the
@@ -2548,15 +2561,7 @@ impl AppDataDir {
     /// the renderer. The shared sanitising helper preserves missing-entry classification and
     /// other I/O kinds, including the Permission category.
     fn acquire(requested: &Path) -> Result<Self, Error> {
-        Self::acquire_canonical(requested).map_err(|error| {
-            log::error!("application data directory acquisition failed: {error}");
-            let message = "application data directory could not be acquired";
-            match &error {
-                Error::Io(error) => crate::error::sanitized_io_error(error, message.into()),
-                _ => std::io::Error::other(message),
-            }
-            .into()
-        })
+        Self::acquire_canonical(requested).map_err(app_data_acquisition_failure)
     }
 
     fn acquire_canonical(requested: &Path) -> Result<Self, Error> {
@@ -8945,6 +8950,59 @@ mod portable_tests {
         Arc,
     };
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    fn assert_app_data_acquisition_missing_entry(
+        source: Error,
+        missing: bool,
+        category: crate::error::ErrorCategory,
+    ) {
+        let result = app_data_acquisition_failure(source);
+        assert_eq!(result.is_missing_entry(), missing);
+        assert_eq!(result.category(), category);
+        assert_eq!(
+            result.diagnostic(),
+            "I/O failure: application data directory could not be acquired"
+        );
+        assert!(matches!(result, Error::Io(error) if error.raw_os_error().is_none()));
+    }
+
+    #[test]
+    fn app_data_acquisition_missing_entry_conflict_is_sanitized_io() {
+        assert_app_data_acquisition_missing_entry(
+            Error::Conflict("native path was replaced".into()),
+            false,
+            crate::error::ErrorCategory::Io,
+        );
+    }
+
+    #[test]
+    fn app_data_acquisition_missing_entry_preserves_native_classification() {
+        use crate::error::ErrorCategory;
+        #[cfg(unix)]
+        let cases = [
+            (libc::ENOENT, true, ErrorCategory::MissingResource),
+            (libc::EACCES, false, ErrorCategory::Permission),
+        ];
+        #[cfg(windows)]
+        let cases = {
+            use windows_sys::Win32::Foundation::{ERROR_BAD_NETPATH, ERROR_FILE_NOT_FOUND};
+            [
+                (ERROR_BAD_NETPATH as i32, false, ErrorCategory::Io),
+                (
+                    ERROR_FILE_NOT_FOUND as i32,
+                    true,
+                    ErrorCategory::MissingResource,
+                ),
+            ]
+        };
+        for (code, missing, category) in cases {
+            assert_app_data_acquisition_missing_entry(
+                std::io::Error::from_raw_os_error(code).into(),
+                missing,
+                category,
+            );
+        }
+    }
 
     fn root_failure_database_fixture() -> (
         tempfile::TempDir,

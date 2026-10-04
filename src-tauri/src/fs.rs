@@ -1980,7 +1980,7 @@ fn resolve_engine_binary_for_inspection(
             "engine binary inspection could not be authorized".into(),
         )),
         Err(error) => {
-            log::warn!("engine binary inspection failed: {error}");
+            log::warn!("engine binary inspection failed: {}", error.diagnostic());
             Err(Error::Conflict(
                 "engine binary inspection could not be completed".into(),
             ))

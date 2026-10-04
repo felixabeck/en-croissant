@@ -5396,6 +5396,50 @@ mod tests {
         assert!(write_if_changed(directory.path(), "unreadable").is_err());
     }
 
+    #[test]
+    fn write_if_changed_missing_entry_preserves_native_durability_classification() {
+        use crate::error::ErrorCategory;
+
+        struct RawParentSyncFault(i32);
+        impl AtomicWriterInjector for RawParentSyncFault {
+            fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+                if point == AtomicFileFaultPoint::ParentSync {
+                    Err(std::io::Error::from_raw_os_error(self.0))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+
+        #[cfg(unix)]
+        let cases = [
+            (libc::ENOENT, true, ErrorCategory::MissingResource),
+            (libc::EACCES, false, ErrorCategory::Permission),
+        ];
+        #[cfg(windows)]
+        let cases = [(
+            windows_sys::Win32::Foundation::ERROR_BAD_NETPATH as i32,
+            false,
+            ErrorCategory::Io,
+        )];
+        for (code, missing, category) in cases {
+            let directory = tempfile::tempdir().expect("binding directory");
+            let path = directory.path().join("generated.ts");
+            set_test_atomic_file_injector(Some(Arc::new(RawParentSyncFault(code))));
+            let result = write_if_changed(&path, "committed bytes");
+            set_test_atomic_file_injector(None);
+
+            let error = result.expect_err("parent sync fault must report an uncertain commit");
+            assert_eq!(error.is_missing_entry(), missing);
+            assert_eq!(error.category(), category);
+            assert!(error
+                .diagnostic()
+                .contains("replaced, but durability is uncertain"));
+            assert!(matches!(error, Error::Io(error) if error.raw_os_error().is_none()));
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "committed bytes");
+        }
+    }
+
     /// The module's dual-cfg parent pair, so a test that needs only `std::fs` plus a retained
     /// parent handle runs on both targets instead of being gated to unix by its fixture.
     fn test_parent(path: &std::path::Path) -> File {
