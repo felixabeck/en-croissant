@@ -126,6 +126,15 @@ struct GameRange {
     end: u64,
 }
 
+impl GameRange {
+    /// Returns the checked byte length of the cached PGN range.
+    fn byte_len(self) -> Result<u64, Error> {
+        self.end
+            .checked_sub(self.start)
+            .ok_or_else(|| Error::Conflict("invalid cached PGN byte range".into()))
+    }
+}
+
 #[derive(Debug, Clone)]
 struct CachedScan {
     games: Arc<[GameRange]>,
@@ -689,10 +698,7 @@ fn read_range_bytes(
     range: GameRange,
     cancellation: &CancellationToken,
 ) -> Result<Vec<u8>, Error> {
-    let bytes = range
-        .end
-        .checked_sub(range.start)
-        .ok_or_else(|| Error::Conflict("invalid cached PGN byte range".into()))?;
+    let bytes = range.byte_len()?;
     let len =
         usize::try_from(bytes).map_err(|_| Error::ResourceLimit("PGN game is too large".into()))?;
     if len > MAX_PGN_BYTES {
@@ -971,10 +977,7 @@ pub async fn read_games_core(
             let mut total_bytes = 0_u64;
             let mut selected_len = 0;
             for (index, range) in requested.iter().enumerate() {
-                let bytes = range
-                    .end
-                    .checked_sub(range.start)
-                    .ok_or_else(|| Error::Conflict("invalid cached PGN byte range".into()))?;
+                let bytes = range.byte_len()?;
                 let Some(next_bytes) = total_bytes.checked_add(bytes) else {
                     break;
                 };
@@ -2369,6 +2372,15 @@ mod tests {
 
     #[tokio::test]
     async fn page_byte_budget_includes_exact_sum_and_excludes_next_game() {
+        assert_eq!(
+            MAX_PAGE_BYTES,
+            10 * 1024 * 1024,
+            "d-20261004-02 fixes the page budget at 10 MiB"
+        );
+        assert_eq!(
+            MAX_PAGE_BYTES, MAX_PGN_BYTES,
+            "d-20261004-02 requires equal page and game byte budgets"
+        );
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("exact-budget.pgn");
         let game_bytes = 16 * 1024;
