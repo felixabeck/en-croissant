@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: 4988373bed8ce9a1606297c2a1c38a29d321db45ca79907354f5cca08240ae97
+# agent-kit-sha256: 45b43dbf589045e32f51a80c45b6a852dacdac0215213c2cd3c2fbd5cce46348
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -33,6 +33,7 @@ Subcommands
 ``summary``      print counts, who is waiting, and what is drainable
 ``next``         print the highest-ranked pickable cluster, the decisions governing it,
                  and separately the ones merely touching its files
+``unclaim``      release this session's pick claims
 ``related``      print findings sharing an area or naming the same files
 ``file``         publish one new finding entry through the inbox spool
 ``merge-inbox``  fold published findings from the inbox into the ledger
@@ -74,7 +75,7 @@ import time
 from collections.abc import Callable, Collection, Iterator
 from contextlib import contextmanager, redirect_stderr, redirect_stdout, suppress
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum, auto
 from pathlib import Path, PurePosixPath
 from typing import Literal, cast
@@ -413,6 +414,7 @@ COMMAND_CLASSIFICATION = {
     "list": "read-only",
     "summary": "read-only",
     "next": "read-only",
+    "unclaim": "guarded",
     "related": "read-only",
     "decisions": "read-only",
     "file": "guarded",
@@ -1901,6 +1903,28 @@ def _merge_driver_settings_to_repair(
     return missing_or_wrong
 
 
+def _git_common_directory(root: Path, purpose: str) -> Path:
+    """Resolve the shared Git directory with the caller's failure diagnostic."""
+    try:
+        common = _git_for_ledger(
+            root, "rev-parse", "--path-format=absolute", "--git-common-dir"
+        )
+    except OSError as exc:
+        raise LedgerError(f"{purpose}: {exc}") from exc
+    if common.returncode != 0:
+        raise LedgerError(f"{purpose}: {_git_failure_detail(common)}")
+    common_text = common.stdout.strip()
+    if not common_text:
+        raise LedgerError(
+            f"{purpose}: "
+            "git rev-parse --git-common-dir returned an empty path"
+        )
+    common_dir = Path(common_text)
+    if not common_dir.is_absolute():
+        common_dir = root / common_dir
+    return common_dir.resolve()
+
+
 @contextmanager
 def _merge_driver_config_lock(root: Path) -> Iterator[None]:
     """Serialize merge-driver config repair across worktrees and processes.
@@ -1909,22 +1933,10 @@ def _merge_driver_config_lock(root: Path) -> Iterator[None]:
     Like the ledger flock, its inode remains on disk so waiters always lock the
     same file.
     """
-    common = _git_for_ledger(root, "rev-parse", "--git-common-dir")
-    if common.returncode != 0:
-        raise LedgerError(
-            "could not locate the shared Git directory for merge-driver config: "
-            f"{_git_failure_detail(common)}"
-        )
-    common_text = common.stdout.strip()
-    if not common_text:
-        raise LedgerError(
-            "could not locate the shared Git directory for merge-driver config: "
-            "git rev-parse --git-common-dir returned an empty path"
-        )
-    common_dir = Path(common_text)
-    if not common_dir.is_absolute():
-        common_dir = root / common_dir
-    lock = common_dir.resolve() / MERGE_DRIVER_CONFIG_LOCK_NAME
+    common_dir = _git_common_directory(
+        root, "could not locate the shared Git directory for merge-driver config"
+    )
+    lock = common_dir / MERGE_DRIVER_CONFIG_LOCK_NAME
     try:
         acquired, waited = acquire_ledger_lock(
             lock, MERGE_DRIVER_CONFIG_LOCK_WAIT_SECONDS
@@ -4411,7 +4423,253 @@ def _co_located_singletons(
     return sorted(candidates)[:CO_LOCATED_MAX]
 
 
+PICK_CLAIM_LOCK_WAIT_SECONDS = 5.0
+PICK_CLAIM_VERSION = 1
+PICK_CLAIM_ANCESTOR_MAX = 16
+# Parsed /proc stat fields start at field 3 after "pid (comm) "; ppid is 4, starttime is 22.
+PICK_STAT_FIRST_FIELD = 3
+PICK_STAT_PPID_INDEX = 4 - PICK_STAT_FIRST_FIELD
+PICK_STAT_STARTTIME_INDEX = 22 - PICK_STAT_FIRST_FIELD
+PICK_STAT_MIN_FIELDS = PICK_STAT_STARTTIME_INDEX + 1
+
+
+def _pick_process_stat(pid: int) -> tuple[str | None, OSError | None]:
+    """Local copy of the supervisor's /proc read; keep this script vendorable."""
+    try:
+        return Path(f"/proc/{pid}/stat").read_text(encoding="utf-8"), None
+    except OSError as exc:
+        return None, exc
+    except UnicodeError:
+        return None, None
+
+
+def _pick_stat_fields(raw: str | None) -> list[str] | None:
+    if raw is None:
+        return None
+    marker = raw.rfind(") ")
+    if marker < 0:
+        return None
+    fields = raw[marker + 2:].split()
+    if (
+        len(fields) < PICK_STAT_MIN_FIELDS
+        or not fields[PICK_STAT_STARTTIME_INDEX].isascii()
+        or not fields[PICK_STAT_STARTTIME_INDEX].isdigit()
+    ):
+        return None
+    return fields
+
+
+def _pick_owner_identity() -> tuple[int, int] | None:
+    override = os.environ.get("FINDINGS_CLAIM_OWNER_PID")
+    if override is not None:
+        if not re.fullmatch(r"[1-9][0-9]*", override):
+            return None
+        pid = int(override)
+        fields = _pick_stat_fields(_pick_process_stat(pid)[0])
+        return (pid, int(fields[PICK_STAT_STARTTIME_INDEX])) if fields is not None else None
+    pid = os.getppid()
+    for _hop in range(PICK_CLAIM_ANCESTOR_MAX):
+        if pid <= 1:
+            break
+        raw, _error = _pick_process_stat(pid)
+        fields = _pick_stat_fields(raw)
+        if fields is None or raw is None:
+            break
+        comm = raw[raw.find("(") + 1:raw.rfind(") ")]
+        if comm in {"claude", "codex", "grok"}:
+            return pid, int(fields[PICK_STAT_STARTTIME_INDEX])
+        if not fields[PICK_STAT_PPID_INDEX].isdigit():
+            break
+        parent = int(fields[PICK_STAT_PPID_INDEX])
+        if parent == pid:
+            break
+        pid = parent
+    return None
+
+
+def _pick_owner_state(pid: int, start: int) -> str:
+    """Mirror d-20260919-20: only proven absence or PID reuse ends a claim."""
+    raw, error = _pick_process_stat(pid)
+    fields = _pick_stat_fields(raw)
+    if fields is not None:
+        return "live" if int(fields[PICK_STAT_STARTTIME_INDEX]) == start else "gone"
+    if error is not None and error.errno in {errno.ENOENT, errno.ESRCH}:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return "gone"
+        except (OSError, OverflowError, ValueError):
+            pass
+    return "unprovable"
+
+
+def _pick_claim_directory() -> Path:
+    return _git_common_directory(
+        _require_git_toplevel(), "pick claim storage unavailable"
+    ) / "findings-picks"
+
+
+@contextmanager
+def _pick_claim_lock(directory: Path) -> Iterator[None]:
+    directory.mkdir(exist_ok=True)
+    try:
+        with _publish_lock(directory / "lock", PICK_CLAIM_LOCK_WAIT_SECONDS):
+            yield
+    except PublishLockBusyError as exc:
+        raise LedgerError(f"pick claim lock busy: {directory / 'lock'}") from exc
+
+
+def _pick_claim_records(
+    directory: Path, *, prune: bool = False,
+) -> tuple[dict[str, dict[str, object] | None], list[str]]:
+    records: dict[str, dict[str, object] | None] = {}
+    diagnostics: list[str] = []
+    try:
+        paths = sorted(directory.iterdir())
+    except FileNotFoundError:
+        return records, diagnostics
+    for path in paths:
+        fid = path.stem
+        if path.suffix != ".json" or ID_RE.fullmatch(fid) is None:
+            continue
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+            if (
+                not isinstance(record, dict) or record.get("version") != PICK_CLAIM_VERSION
+                or record.get("id") != fid
+                or type(record.get("owner_pid")) is not int
+                or record["owner_pid"] <= 0
+                or type(record.get("owner_start")) is not int
+                or record["owner_start"] < 0
+                or not isinstance(record.get("session"), str)
+                or not isinstance(record.get("claimed_at"), str)
+            ):
+                raise ValueError("invalid pick claim fields")
+        except _READ_JSON_ERRORS as exc:
+            records[fid] = None
+            diagnostics.append(f"WARN unreadable pick claim {path}: {exc}")
+            continue
+        if _pick_owner_state(record["owner_pid"], record["owner_start"]) == "gone":
+            if prune:
+                path.unlink()
+            continue
+        records[fid] = record
+    return records, diagnostics
+
+
+def _pick_claim_is_own(record: dict[str, object] | None, owner: tuple[int, int] | None) -> bool:
+    return record is not None and owner is not None and (
+        record["owner_pid"], record["owner_start"]
+    ) == owner
+
+
+def _pick_claim_reason(directory: Path, fid: str, record: dict[str, object] | None) -> str:
+    path = directory / f"{fid}.json"
+    if record is None:
+        return f"claimed by session unknown pid unknown since unknown: {path}"
+    return (
+        f"claimed by session {record['session']} pid {record['owner_pid']} "
+        f"since {record['claimed_at']}: {path}"
+    )
+
+
+def _write_pick_claims(
+    directory: Path, ids: list[str], owner: tuple[int, int],
+    records: dict[str, dict[str, object] | None], label: str,
+) -> None:
+    created: list[Path] = []
+    try:
+        for fid in ids:
+            if _pick_claim_is_own(records.get(fid), owner):
+                continue
+            path = directory / f"{fid}.json"
+            # Include the attempted path: a directory fsync can fail after rename.
+            created.append(path)
+            _atomic_write(path, json.dumps({
+                "version": PICK_CLAIM_VERSION, "id": fid, "owner_pid": owner[0],
+                "owner_start": owner[1], "session": label,
+                "claimed_at": datetime.now(timezone.utc).isoformat(),
+            }) + "\n", durable_directory=True)
+    except OSError as exc:
+        failed_path = path
+        for path in created:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as cleanup:
+                print(
+                    f"pick claim rollback failed: {path}: {cleanup}; "
+                    f"run unclaim {path.stem}", file=sys.stderr,
+                )
+        raise LedgerError(f"pick claim write failed: {failed_path}: {exc}") from exc
+
+
+def _next_with_pick_claims(
+    args: argparse.Namespace, directory: Path, owner: tuple[int, int] | None,
+    *, claim: bool,
+) -> int:
+    records, diagnostics = _pick_claim_records(directory, prune=claim)
+    args._pick_claims = {
+        fid: _pick_claim_reason(directory, fid, record)
+        for fid, record in records.items() if not _pick_claim_is_own(record, owner)
+    }
+    args._pick_ids = []
+    output = io.StringIO()
+    if claim:
+        with redirect_stdout(output):
+            result = _cmd_next_selection(args)
+    else:
+        result = _cmd_next_selection(args)
+    for diagnostic in diagnostics:
+        print(diagnostic, file=sys.stderr)
+    if claim and result == 0:
+        ids = args._pick_ids
+        if ids:
+            assert owner is not None
+            label = (os.environ.get("CLAUDE_CODE_SESSION_ID")
+                     or os.environ.get("DRAIN_SESSION_ID") or "unknown")
+            _write_pick_claims(directory, ids, owner, records, label)
+            print(f"claimed {' '.join(ids)} for {label} pid {owner[0]}", file=sys.stderr)
+        print(output.getvalue(), end="")
+    return result
+
+
 def cmd_next(args: argparse.Namespace) -> int:
+    owner = _pick_owner_identity()
+    claim = bool(getattr(args, "claim", False))
+    if claim and owner is None:
+        print("REFUSING: pick claim owner unresolved; set FINDINGS_CLAIM_OWNER_PID", file=sys.stderr)
+        return 1
+    directory = _pick_claim_directory()
+    if claim:
+        with _pick_claim_lock(directory):
+            return _next_with_pick_claims(args, directory, owner, claim=True)
+    return _next_with_pick_claims(args, directory, owner, claim=False)
+
+
+def cmd_unclaim(args: argparse.Namespace) -> int:
+    for fid in args.ids:
+        if ID_RE.fullmatch(fid) is None:
+            raise LedgerError(f"invalid pick claim id: {fid}")
+    owner = _pick_owner_identity()
+    directory = _pick_claim_directory()
+    refused = False
+    with _pick_claim_lock(directory):
+        records, diagnostics = _pick_claim_records(directory, prune=True)
+        for diagnostic in diagnostics:
+            print(diagnostic, file=sys.stderr)
+        for fid in dict.fromkeys(args.ids) or sorted(records):
+            if fid not in records:
+                continue
+            if not _pick_claim_is_own(records[fid], owner):
+                print(f"REFUSING: unclaim {fid}: {_pick_claim_reason(directory, fid, records[fid])}", file=sys.stderr)
+                refused = True
+                continue
+            (directory / f"{fid}.json").unlink(missing_ok=True)
+            del records[fid]
+    return 1 if refused else 0
+
+
+def _cmd_next_selection(args: argparse.Namespace) -> int:
     findings, problems, vocabulary = parse(args.ledger)
     issues = validate(findings, problems, vocabulary)
     if issues:
@@ -4427,13 +4685,16 @@ def cmd_next(args: argparse.Namespace) -> int:
         return 1
     waiting_rows = _waiting_rows(findings)
     clusters, pickable, grouped, key_by_id = _ranked_clusters(
-        findings, excluded_ids=answers_claim_ids
+        findings, excluded_ids=set(answers_claim_ids) | set(args._pick_claims)
     )
 
     if args.pin:
         chosen = next((f for f in findings if f.id == args.pin), None)
         if chosen is None:
             print(f"no finding with id {args.pin}", file=sys.stderr)
+            return 1
+        if args.pin in args._pick_claims:
+            print(f"{args.pin} is not pickable ({args._pick_claims[args.pin]})", file=sys.stderr)
             return 1
         if args.pin in answers_claim_ids:
             claim_reason = (
@@ -4518,6 +4779,7 @@ def cmd_next(args: argparse.Namespace) -> int:
     co_located = _co_located_singletons(
         key, entry, members, pickable, key_by_id
     )
+    args._pick_ids = list(dict.fromkeys(ids + (co_located or [])))
     if _json_requested(args):
         return _print_json(
             _next_json_payload(
@@ -11366,12 +11628,13 @@ def _plan_only_refuses(args: argparse.Namespace) -> bool:
     """Refuse guarded verbs before any command-owned lock or write is touched."""
     if os.environ.get(PLAN_ONLY_ENV) != "1":
         return False
-    if COMMAND_CLASSIFICATION.get(args.command) != "guarded":
+    claim_next = args.command == "next" and bool(getattr(args, "claim", False))
+    if COMMAND_CLASSIFICATION.get(args.command) != "guarded" and not claim_next:
         return False
     if _plan_only_file_exception(args):
         return False
     print(
-        f"REFUSING: {PLAN_ONLY_ENV}=1 forbids {args.command}",
+        f"REFUSING: {PLAN_ONLY_ENV}=1 forbids {args.command}" + (" --claim" if claim_next else ""),
         file=sys.stderr,
     )
     return True
@@ -12338,6 +12601,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_next = sub.add_parser("next", help="print the highest-ranked pickable cluster")
     p_next.add_argument("--pin", help="force this finding's cluster")
+    p_next.add_argument("--claim", action="store_true", help="atomically claim the selected findings for this session")
     p_next.add_argument(
         "--json",
         action="store_true",
@@ -12356,6 +12620,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="select the first remaining cluster at the effective build tier",
     )
     p_next.set_defaults(func=cmd_next)
+
+    p_unclaim = sub.add_parser("unclaim", help="release this session's pick claims")
+    p_unclaim.add_argument("ids", nargs="*", help="finding ids; omit to release all")
+    p_unclaim.set_defaults(func=cmd_unclaim)
 
     p_rel = sub.add_parser("related", help="findings sharing an area or a file")
     p_rel.add_argument("--area")
