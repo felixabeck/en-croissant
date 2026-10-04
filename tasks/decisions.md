@@ -5441,3 +5441,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The question is about the error type, and its classifiers already live there. Reversal path: move the two functions; callers change only their import.
 * **Decided by:** Claude Code, drain session e86c5c5d-5436-4a09-87ef-8662fd750e7f (drain run 42548d18-1af4-46bd-a37c-20f82f9ba6c8), full auto, reviewed plan tasks/plans/2026-10-04-missing-entry-predicate.md (planned ahead, 4 review rounds) · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"ee03ecaaceaf643ec2b3587845eba35298f3307de10bdf8650c3618f337fb7b2","input_sha256":"3c9d71921a44ce2bd1365932cbefd8321326af617de2d253ccf00ff635623061","kind":"mutation-receipt","operation":"73484cbf101f4ae2943ecb45495512a74922d69c92720137fa520f12b79d0066","options":{"section":null},"request_id_sha256":null,"results":["d-20261004-27"],"target":"decisions-ledger","v":1} -->
+
+### d-20261004-28 — Does `Error::Io` keep the platform error number across the path-authority boundary?
+
+* **Question:** `f-20260916-09` asks whether `Error::Io` keeps carrying a platform-specific number across the `path_authority` boundary.
+* **Governs:** f-20260916-09
+* **Chosen:** Yes, unchanged: `Error::Io` keeps the original `std::io::Error` with its raw OS code; `windows_open_status_error` is not changed; only the shared predicate interprets absence codes.
+* **Rejected:** Stripping or normalising the code at the NT layer — loses diagnostics and does not constrain other producers (see the missing-entry meaning decision of the same finding).
+* **Reason:** One interpreter of absence codes is enough to remove the divergence; the raw code stays useful for diagnosis. Reversal path: normalise inside `windows_open_status_error`.
+* **Decided by:** Claude Code, drain session e86c5c5d-5436-4a09-87ef-8662fd750e7f (drain run 42548d18-1af4-46bd-a37c-20f82f9ba6c8), full auto, reviewed plan tasks/plans/2026-10-04-missing-entry-predicate.md (planned ahead, 4 review rounds) · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"071d94269b8947e49916f1c0a104bddafddaa7259f26c7137e68dd4129d1202d","input_sha256":"7520e2cf52014a8c92dadbfb30c8ef4be93b8c9f80f38c9e6735f97e321f5d1e","kind":"mutation-receipt","operation":"50dda7795d2692922822b1e3b0629c89123aba89f40c591dcf6f2ee68bc871ef","options":{"section":null},"request_id_sha256":null,"results":["d-20261004-28"],"target":"decisions-ledger","v":1} -->
