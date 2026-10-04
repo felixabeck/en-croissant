@@ -732,15 +732,13 @@ impl DatabaseRepository {
         operation()
     }
 
-    pub fn with_index_lock<T>(
+    #[cfg(test)]
+    pub(crate) fn index_lock_for_test(
         &self,
         target: &crate::infra::path_authority::DatabaseFileTarget,
-        operation: impl FnOnce() -> Result<T, Error>,
-    ) -> Result<T, Error> {
+    ) -> Result<Arc<ParkingMutex<()>>, Error> {
         let (_, entry, _) = self.entry(target, None)?;
-        let _lease = entry.acquire()?;
-        let _guard = entry.index_lock.lock();
-        operation()
+        Ok(Arc::clone(&entry.index_lock))
     }
 
     pub fn with_index_lock_cancellable<T>(

@@ -5,6 +5,7 @@ use std::{
     sync::OnceLock,
 };
 
+use diesel::{Connection, SqliteConnection};
 use rusqlite::ffi;
 use tokio_util::sync::CancellationToken;
 
@@ -25,6 +26,8 @@ thread_local! {
     static SCOPE: RefCell<Option<Scope>> = const { RefCell::new(None) };
     #[cfg(test)]
     static CALLBACK_HOOK: RefCell<Option<Box<dyn FnMut()>>> = const { RefCell::new(None) };
+    #[cfg(test)]
+    static BEFORE_COMMIT_HOOK: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
 }
 
 static INSTALL_RESULT: OnceLock<c_int> = OnceLock::new();
@@ -167,7 +170,8 @@ fn finish_scope(guard: ScopeGuard, query_failed: bool) -> Result<(), Error> {
 }
 
 /// Runs one synchronous Diesel query, including iterator consumption, under the SQLite VM
-/// cancellation callback. Connection acquisition and schema work must happen before this scope.
+/// cancellation callback. Connection acquisition and migration/validation must happen before this
+/// scope. Schema DDL uses `with_sqlite_cancellation_transaction` to keep transaction tails unarmed.
 pub fn with_sqlite_cancellation<T, E>(
     cancellation: &CancellationToken,
     query: impl FnOnce() -> Result<T, E>,
@@ -181,31 +185,268 @@ where
     result
 }
 
+/// Runs a top-level transaction with cancellation armed only around its body, never around BEGIN,
+/// COMMIT or ROLLBACK. Do not call inside another transaction or cancellation scope.
+/// After SQLite auto-rolls back an interrupted write, Diesel's manager is in error: the connection
+/// must not be reused for a transaction. Repository pools discard it through `has_broken`.
+pub fn with_sqlite_cancellation_transaction<T>(
+    connection: &mut SqliteConnection,
+    cancellation: &CancellationToken,
+    body: impl FnOnce(&mut SqliteConnection) -> Result<T, Error>,
+) -> Result<T, Error> {
+    let mut cancelled = false;
+    let result = connection.transaction::<_, Error, _>(|connection| {
+        let result = with_sqlite_cancellation(cancellation, || body(connection));
+        cancelled = matches!(result, Err(Error::Cancellation));
+        let value = result?;
+        if cancellation.is_cancelled() {
+            cancelled = true;
+            return Err(Error::Cancellation);
+        }
+        #[cfg(test)]
+        BEFORE_COMMIT_HOOK.with(|hook| {
+            if let Some(hook) = hook.borrow_mut().take() {
+                hook();
+            }
+        });
+        Ok(value)
+    });
+    classify_transaction_outcome(result, cancelled)
+}
+
+fn classify_transaction_outcome<T>(result: Result<T, Error>, cancelled: bool) -> Result<T, Error> {
+    if cancelled {
+        if let Err(Error::Diesel(error)) = &result {
+            if let diesel::result::Error::DatabaseError(
+                diesel::result::DatabaseErrorKind::Unknown,
+                information,
+            ) = error.as_ref()
+            {
+                if information.message() == "cannot rollback - no transaction is active" {
+                    return Err(Error::Cancellation);
+                }
+            }
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 pub(crate) fn set_callback_hook(hook: impl FnMut() + 'static) {
     CALLBACK_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 pub(crate) fn cancel_on_callback(
     cancellation: CancellationToken,
     callback_number: usize,
+) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+    cancel_on_callback_when(cancellation, callback_number, || true)
+}
+
+/// Counts only callbacks in a body scope, so connection setup cannot trigger a DDL test's cancel.
+#[cfg(test)]
+pub(crate) fn cancel_on_scoped_callback(
+    cancellation: CancellationToken,
+    callback_number: usize,
+) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+    cancel_on_callback_when(cancellation, callback_number, || {
+        SCOPE.with(|scope| scope.borrow().is_some())
+    })
+}
+
+#[cfg(test)]
+fn cancel_on_callback_when(
+    cancellation: CancellationToken,
+    callback_number: usize,
+    eligible: impl Fn() -> bool + 'static,
 ) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
     };
-
     let checkpoints = Arc::new(AtomicUsize::new(0));
     let observed = Arc::clone(&checkpoints);
-    CALLBACK_HOOK.with(|hook| {
-        *hook.borrow_mut() = Some(Box::new(move || {
-            if observed.fetch_add(1, Ordering::SeqCst) + 1 >= callback_number {
-                cancellation.cancel();
-            }
-        }));
+    set_callback_hook(move || {
+        if eligible() && observed.fetch_add(1, Ordering::SeqCst) + 1 >= callback_number {
+            cancellation.cancel();
+        }
     });
     checkpoints
+}
+
+#[cfg(test)]
+mod transaction_tests {
+    use super::*;
+    use diesel::connection::SimpleConnection;
+    use std::sync::atomic::Ordering;
+
+    fn memory() -> SqliteConnection {
+        install().unwrap();
+        let mut connection = SqliteConnection::establish(":memory:").unwrap();
+        connection
+            .batch_execute("CREATE TABLE items (id INTEGER); CREATE INDEX original ON items(id);")
+            .unwrap();
+        connection
+    }
+
+    #[test]
+    fn ddl_interruption_restores_schema_and_pool_recovers() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("ddl.db3");
+        let repository = crate::db::DatabaseRepository::default();
+        let target = crate::db::test_target(&path);
+        let mut connection = repository.initialization_connection(&target, None).unwrap();
+        connection
+            .batch_execute("CREATE TABLE items (id INTEGER); CREATE INDEX original ON items(id);")
+            .unwrap();
+        let before = crate::db::index_cancellation_tests::index_list(&mut connection);
+        let token = CancellationToken::new();
+        let result = with_sqlite_cancellation_transaction(&mut connection, &token, |connection| {
+            connection.batch_execute("DROP INDEX original")?;
+            let observed = cancel_on_callback(token.clone(), 5);
+            let result = connection.batch_execute("CREATE INDEX replacement ON items(id)");
+            assert!(observed.load(Ordering::SeqCst) >= 5);
+            result.map_err(Into::into)
+        });
+        assert!(matches!(result, Err(Error::Cancellation)), "{result:?}");
+        assert!(<SqliteConnection as diesel::r2d2::R2D2Connection>::is_broken(&mut connection));
+        assert_eq!(
+            crate::db::index_cancellation_tests::index_list(&mut connection),
+            before
+        );
+        drop(connection);
+        let mut fresh = repository.initialization_connection(&target, None).unwrap();
+        assert!(!<SqliteConnection as diesel::r2d2::R2D2Connection>::is_broken(&mut fresh));
+        fresh
+            .transaction::<_, Error, _>(|connection| {
+                connection.batch_execute("CREATE INDEX recovered ON items(id)")?;
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn pre_commit_cancel_rolls_back_and_same_connection_recovers() {
+        let mut connection = memory();
+        let before = crate::db::index_cancellation_tests::index_list(&mut connection);
+        let token = CancellationToken::new();
+        let result = with_sqlite_cancellation_transaction(&mut connection, &token, |connection| {
+            connection.batch_execute("DROP INDEX original")?;
+            token.cancel();
+            Ok(())
+        });
+        assert!(matches!(result, Err(Error::Cancellation)), "{result:?}");
+        assert_eq!(
+            crate::db::index_cancellation_tests::index_list(&mut connection),
+            before
+        );
+        connection
+            .transaction::<_, Error, _>(|connection| {
+                connection.batch_execute("CREATE INDEX recovered ON items(id)")?;
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn uncancelled_body_commits() {
+        let mut connection = memory();
+        with_sqlite_cancellation_transaction(
+            &mut connection,
+            &CancellationToken::new(),
+            |connection| {
+                connection.batch_execute("DROP INDEX original")?;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(crate::db::index_cancellation_tests::index_list(&mut connection).is_empty());
+    }
+
+    #[test]
+    fn commit_is_unarmed_and_late_cancellation_keeps_committed_success() {
+        let mut connection = memory();
+        let token = CancellationToken::new();
+        let late = token.clone();
+        BEFORE_COMMIT_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                cancel_on_callback(late, 1);
+            }));
+        });
+        let result = with_sqlite_cancellation_transaction(&mut connection, &token, |connection| {
+            connection.batch_execute("DROP INDEX original")?;
+            Ok(())
+        });
+        set_callback_hook(|| {});
+        assert!(token.is_cancelled(), "cancel must arrive during COMMIT");
+        result.unwrap();
+        assert!(crate::db::index_cancellation_tests::index_list(&mut connection).is_empty());
+        assert!(!<SqliteConnection as diesel::r2d2::R2D2Connection>::is_broken(&mut connection));
+    }
+
+    #[test]
+    fn commit_failure_is_preserved_after_late_cancellation() {
+        let mut connection = memory();
+        connection.batch_execute("PRAGMA foreign_keys = ON; CREATE TABLE parent (id INTEGER PRIMARY KEY); CREATE TABLE child (id INTEGER REFERENCES parent(id) DEFERRABLE INITIALLY DEFERRED);").unwrap();
+        let token = CancellationToken::new();
+        let late = token.clone();
+        BEFORE_COMMIT_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                cancel_on_callback(late, 1);
+            }));
+        });
+        let result = with_sqlite_cancellation_transaction(&mut connection, &token, |connection| {
+            connection.batch_execute("INSERT INTO child VALUES (1)")?;
+            Ok(())
+        });
+        set_callback_hook(|| {});
+        assert!(token.is_cancelled());
+        assert!(
+            matches!(result, Err(Error::Diesel(error)) if error.to_string() == "FOREIGN KEY constraint failed")
+        );
+    }
+
+    #[test]
+    fn body_error_is_preserved_even_if_token_is_cancelled() {
+        let mut connection = memory();
+        let before = crate::db::index_cancellation_tests::index_list(&mut connection);
+        let token = CancellationToken::new();
+        let result: Result<(), Error> =
+            with_sqlite_cancellation_transaction(&mut connection, &token, |connection| {
+                connection.batch_execute("DROP INDEX original")?;
+                token.cancel();
+                Err(Error::InvalidInput("body failure".into()))
+            });
+        assert!(matches!(result, Err(Error::InvalidInput(message)) if message == "body failure"));
+        assert_eq!(
+            crate::db::index_cancellation_tests::index_list(&mut connection),
+            before
+        );
+    }
+
+    fn database_error(message: &str) -> Error {
+        diesel::result::Error::DatabaseError(
+            diesel::result::DatabaseErrorKind::Unknown,
+            Box::new(message.to_owned()),
+        )
+        .into()
+    }
+
+    #[test]
+    fn only_verified_auto_rollback_is_classified_as_cancellation() {
+        const AUTO_ROLLBACK: &str = "cannot rollback - no transaction is active";
+        assert!(matches!(
+            classify_transaction_outcome::<()>(Err(database_error(AUTO_ROLLBACK)), true),
+            Err(Error::Cancellation)
+        ));
+        for (message, cancelled) in [("out of memory", true), (AUTO_ROLLBACK, false)] {
+            let result =
+                classify_transaction_outcome::<()>(Err(database_error(message)), cancelled);
+            assert!(matches!(result, Err(Error::Diesel(error)) if error.to_string() == message));
+        }
+        assert_eq!(classify_transaction_outcome(Ok(7), true).unwrap(), 7);
+    }
 }
 
 #[cfg(all(test, unix))]

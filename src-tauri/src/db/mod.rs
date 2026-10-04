@@ -1298,32 +1298,32 @@ fn check_index_exists(conn: &mut SqliteConnection) -> Result<bool, Error> {
 }
 
 fn create_required_indexes(conn: &mut SqliteConnection) -> Result<(), Error> {
-    conn.transaction::<_, Error, _>(|conn| {
-        // Rebuilding the named contract inside one transaction repairs a
-        // same-name but semantically wrong/partial/collated index as well as
-        // a missing one. Readers observe either the former set or the full
-        // canonical set, never a partial repair.
-        conn.batch_execute(DELETE_INDEXES_SQL)?;
-        conn.batch_execute(INDEXES_SQL)?;
-        if !check_index_exists(conn)? {
-            return Err(Error::InvalidInput(
-                "Required Games indexes were not created with their expected definitions".into(),
-            ));
-        }
-        Ok(())
-    })
+    conn.transaction::<_, Error, _>(create_required_indexes_body)
 }
 
-fn drop_required_indexes(conn: &mut SqliteConnection) -> Result<(), Error> {
-    conn.transaction::<_, Error, _>(|conn| {
-        conn.batch_execute(DELETE_INDEXES_SQL)?;
-        if check_index_exists(conn)? {
-            return Err(Error::InvalidInput(
-                "Required Games indexes remain after deletion".into(),
-            ));
-        }
-        Ok(())
-    })
+fn create_required_indexes_body(conn: &mut SqliteConnection) -> Result<(), Error> {
+    // Rebuilding the named contract inside one transaction repairs a
+    // same-name but semantically wrong/partial/collated index as well as
+    // a missing one. Readers observe either the former set or the full
+    // canonical set, never a partial repair.
+    conn.batch_execute(DELETE_INDEXES_SQL)?;
+    conn.batch_execute(INDEXES_SQL)?;
+    if !check_index_exists(conn)? {
+        return Err(Error::InvalidInput(
+            "Required Games indexes were not created with their expected definitions".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn drop_required_indexes_body(conn: &mut SqliteConnection) -> Result<(), Error> {
+    conn.batch_execute(DELETE_INDEXES_SQL)?;
+    if check_index_exists(conn)? {
+        return Err(Error::InvalidInput(
+            "Required Games indexes remain after deletion".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1442,8 +1442,8 @@ pub async fn create_indexes(
     let repository = Arc::clone(&state.database_repository);
     crate::infra::operations::run_native_operation(operation, "create_indexes", async move {
         BLOCKING_GATEWAY
-            .spawn_cancellable(cancellation, move |_| {
-                create_indexes_blocking(&authority, &repository, file)
+            .spawn_cancellable(cancellation, move |cancellation| {
+                create_indexes_blocking(&authority, &repository, file, cancellation)
             })
             .await
     })
@@ -1454,16 +1454,21 @@ fn create_indexes_blocking(
     authority: &std::sync::Mutex<Option<PathAuthority>>,
     repository: &DatabaseRepository,
     file: DatabaseHandle,
+    cancellation: &CancellationToken,
 ) -> Result<(), Error> {
     #[cfg(test)]
     database_command_checkpoint("create_indexes", &file);
     let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
 
-    repository.with_index_lock(&target, || {
+    repository.with_index_lock_cancellable(&target, cancellation, || {
         let mut database_connection =
-            get_db_or_create(repository, &target, None, authority, &file)?;
+            get_db_or_create(repository, &target, Some(cancellation), authority, &file)?;
         let db = &mut *database_connection;
-        create_required_indexes(db)
+        sqlite_cancellation::with_sqlite_cancellation_transaction(
+            db,
+            cancellation,
+            create_required_indexes_body,
+        )
     })
 }
 
@@ -1479,8 +1484,8 @@ pub async fn delete_indexes(
     let repository = Arc::clone(&state.database_repository);
     crate::infra::operations::run_native_operation(operation, "delete_indexes", async move {
         BLOCKING_GATEWAY
-            .spawn_cancellable(cancellation, move |_| {
-                delete_indexes_blocking(&authority, &repository, file)
+            .spawn_cancellable(cancellation, move |cancellation| {
+                delete_indexes_blocking(&authority, &repository, file, cancellation)
             })
             .await
     })
@@ -1491,15 +1496,20 @@ fn delete_indexes_blocking(
     authority: &std::sync::Mutex<Option<PathAuthority>>,
     repository: &DatabaseRepository,
     file: DatabaseHandle,
+    cancellation: &CancellationToken,
 ) -> Result<(), Error> {
     #[cfg(test)]
     database_command_checkpoint("delete_indexes", &file);
     let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
-    repository.with_index_lock(&target, || {
+    repository.with_index_lock_cancellable(&target, cancellation, || {
         let mut database_connection =
-            get_db_or_create(repository, &target, None, authority, &file)?;
+            get_db_or_create(repository, &target, Some(cancellation), authority, &file)?;
         let db = &mut *database_connection;
-        drop_required_indexes(db)
+        sqlite_cancellation::with_sqlite_cancellation_transaction(
+            db,
+            cancellation,
+            drop_required_indexes_body,
+        )
     })
 }
 
@@ -4814,7 +4824,8 @@ mod tests {
         create_required_indexes(db).unwrap();
         assert!(check_index_exists(db).unwrap());
 
-        drop_required_indexes(db).unwrap();
+        db.transaction::<_, Error, _>(drop_required_indexes_body)
+            .unwrap();
         assert!(!check_index_exists(db).unwrap());
 
         db.batch_execute("CREATE INDEX games_date_idx ON Games(Result);")
@@ -5542,6 +5553,7 @@ mod tests {
                 &state.pgn_path_authority,
                 &state.database_repository,
                 handle,
+                &CancellationToken::new(),
             )
         })
         .is_ok());
@@ -5553,6 +5565,7 @@ mod tests {
                 &state.pgn_path_authority,
                 &state.database_repository,
                 handle,
+                &CancellationToken::new(),
             )
         })
         .is_ok());
@@ -5680,6 +5693,7 @@ mod tests {
                 &state.pgn_path_authority,
                 &state.database_repository,
                 handle,
+                &CancellationToken::new(),
             )
         }));
 
@@ -5719,6 +5733,7 @@ mod tests {
                     &app.state::<AppState>().pgn_path_authority,
                     &app.state::<AppState>().database_repository,
                     handle,
+                    &CancellationToken::new(),
                 )
             },
         );
@@ -5832,6 +5847,7 @@ mod tests {
                     &app.state::<AppState>().pgn_path_authority,
                     &app.state::<AppState>().database_repository,
                     handle,
+                    &CancellationToken::new(),
                 )
             },
         );
@@ -5986,6 +6002,7 @@ mod tests {
                     &app.state::<AppState>().pgn_path_authority,
                     &app.state::<AppState>().database_repository,
                     handle,
+                    &CancellationToken::new(),
                 )
             },
         );
@@ -8624,6 +8641,7 @@ mod tests {
             &state.pgn_path_authority,
             &state.database_repository,
             handle.clone(),
+            &CancellationToken::new(),
         )
         .unwrap();
 
@@ -8662,6 +8680,7 @@ mod tests {
             &state.pgn_path_authority,
             &state.database_repository,
             handle.clone(),
+            &CancellationToken::new(),
         )
         .unwrap();
 
@@ -12129,5 +12148,247 @@ mod deletion_tests {
         .unwrap();
         assert!(!database.exists());
         assert!(!legacy.exists());
+    }
+}
+
+#[cfg(test)]
+mod index_cancellation_tests {
+    use super::*;
+    use crate::infra::cancellable_lock::observe_lock_wait;
+    use std::{sync::atomic::Ordering, time::Duration};
+
+    #[derive(Debug, PartialEq, Eq, QueryableByName)]
+    pub(super) struct IndexDefinition {
+        #[diesel(sql_type = diesel::sql_types::Text)]
+        name: String,
+        #[diesel(sql_type = diesel::sql_types::Text)]
+        tbl_name: String,
+        #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
+        sql: Option<String>,
+    }
+
+    pub(super) fn index_list(connection: &mut SqliteConnection) -> Vec<IndexDefinition> {
+        sql_query(
+            "SELECT name, tbl_name, sql FROM sqlite_master WHERE type = 'index' ORDER BY name",
+        )
+        .load(connection)
+        .unwrap()
+    }
+
+    fn snapshot(state: &AppState, handle: &DatabaseHandle) -> (bool, Vec<IndexDefinition>) {
+        let target = resolve_database(
+            &state.pgn_path_authority,
+            handle,
+            PathOperation::DatabaseMutate,
+        )
+        .unwrap();
+        let mut connection = get_db_or_create(
+            &state.database_repository,
+            &target,
+            None,
+            &state.pgn_path_authority,
+            handle,
+        )
+        .unwrap();
+        (
+            check_index_exists(&mut connection).unwrap(),
+            index_list(&mut connection),
+        )
+    }
+
+    fn run(
+        state: &AppState,
+        handle: DatabaseHandle,
+        create: bool,
+        token: &CancellationToken,
+    ) -> Result<(), Error> {
+        if create {
+            create_indexes_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                handle,
+                token,
+            )
+        } else {
+            delete_indexes_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                handle,
+                token,
+            )
+        }
+    }
+
+    fn ddl_cancel_case(create: bool, wrong_definition: bool) {
+        let (_directory, app, handle, _path) = blocking_database_case();
+        let state = app.state::<AppState>();
+        if !create {
+            run(&state, handle.clone(), true, &CancellationToken::new()).unwrap();
+        } else if wrong_definition {
+            let target = resolve_database(
+                &state.pgn_path_authority,
+                &handle,
+                PathOperation::DatabaseMutate,
+            )
+            .unwrap();
+            let mut connection = get_db_or_create(
+                &state.database_repository,
+                &target,
+                None,
+                &state.pgn_path_authority,
+                &handle,
+            )
+            .unwrap();
+            connection
+                .batch_execute("CREATE INDEX games_date_idx ON Games(Result)")
+                .unwrap();
+        }
+        let before = snapshot(&state, &handle);
+        assert_eq!(before.0, !create);
+        let token = CancellationToken::new();
+        let observed = sqlite_cancellation::cancel_on_scoped_callback(token.clone(), 5);
+        let result = run(&state, handle.clone(), create, &token);
+        // A plain transaction never arms the hook; clear it even on that mutation path.
+        sqlite_cancellation::set_callback_hook(|| {});
+        assert!(
+            observed.load(Ordering::SeqCst) >= 5,
+            "cancellation must occur inside the DDL body"
+        );
+        assert!(matches!(result, Err(Error::Cancellation)), "{result:?}");
+        assert_eq!(snapshot(&state, &handle), before);
+        run(&state, handle.clone(), create, &CancellationToken::new()).unwrap();
+        assert_eq!(snapshot(&state, &handle).0, create);
+    }
+
+    #[test]
+    fn create_ddl_cancel_restores_absent_indexes_and_recovers() {
+        ddl_cancel_case(true, false);
+    }
+
+    #[test]
+    fn create_ddl_cancel_restores_wrong_definition_and_recovers() {
+        ddl_cancel_case(true, true);
+    }
+
+    #[test]
+    fn delete_ddl_cancel_restores_complete_indexes_and_recovers() {
+        ddl_cancel_case(false, false);
+    }
+
+    fn lock_cancel_case(create: bool) {
+        let (_directory, app, handle, _path) = blocking_database_case();
+        let state = app.state::<AppState>();
+        if !create {
+            run(&state, handle.clone(), true, &CancellationToken::new()).unwrap();
+        }
+        let before = snapshot(&state, &handle);
+        let target = resolve_database(
+            &state.pgn_path_authority,
+            &handle,
+            PathOperation::DatabaseMutate,
+        )
+        .unwrap();
+        let lock = state
+            .database_repository
+            .index_lock_for_test(&target)
+            .unwrap();
+        let held = lock.lock();
+        let entered = observe_lock_wait(&lock);
+        let token = CancellationToken::new();
+        let worker_token = token.clone();
+        let worker_app = app.clone();
+        let worker_handle = handle.clone();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = run(
+                &worker_app.state::<AppState>(),
+                worker_handle,
+                create,
+                &worker_token,
+            );
+            done_tx.send(result).unwrap();
+        });
+        let waited = entered.recv_timeout(Duration::from_secs(5));
+        token.cancel();
+        let result = done_rx.recv_timeout(Duration::from_secs(5));
+        drop(held);
+        worker.join().unwrap();
+        waited.expect("worker must enter the entry's index-lock wait");
+        assert!(matches!(result.unwrap(), Err(Error::Cancellation)));
+        assert_eq!(snapshot(&state, &handle), before);
+    }
+
+    #[test]
+    fn create_lock_wait_cancel_preserves_indexes() {
+        lock_cancel_case(true);
+    }
+
+    #[test]
+    fn delete_lock_wait_cancel_preserves_indexes() {
+        lock_cancel_case(false);
+    }
+
+    async fn shutdown_cancel_case(create: bool) {
+        let (_directory, app, handle, _path) = blocking_database_case();
+        let state = app.state::<AppState>();
+        if !create {
+            run(&state, handle.clone(), true, &CancellationToken::new()).unwrap();
+        }
+        let before = snapshot(&state, &handle);
+        let target = resolve_database(
+            &state.pgn_path_authority,
+            &handle,
+            PathOperation::DatabaseMutate,
+        )
+        .unwrap();
+        let lock = state
+            .database_repository
+            .index_lock_for_test(&target)
+            .unwrap();
+        let entered = observe_lock_wait(&lock);
+        let holder_lock = Arc::clone(&lock);
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let _held = holder_lock.lock();
+            held_tx.send(()).unwrap();
+            release_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        });
+        held_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let worker_app = app.clone();
+        let worker_handle = handle.clone();
+        let mut command = tokio::spawn(async move {
+            if create {
+                create_indexes(worker_handle, worker_app.state::<AppState>()).await
+            } else {
+                delete_indexes(worker_handle, worker_app.state::<AppState>()).await
+            }
+        });
+        let waited = entered.recv_timeout(Duration::from_secs(5));
+        state.operations.seal_and_request_cancellation().unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(2), &mut command).await;
+        release_tx.send(()).unwrap();
+        holder.join().unwrap();
+        if result.is_err() {
+            command.await.unwrap().unwrap();
+        }
+        waited.expect("async command must enter the entry's index-lock wait");
+        assert!(matches!(
+            result
+                .expect("shutdown must cancel the blocked worker")
+                .unwrap(),
+            Err(Error::Cancellation)
+        ));
+        assert_eq!(snapshot(&state, &handle), before);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn create_command_shutdown_cancel_reaches_worker() {
+        shutdown_cancel_case(true).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn delete_command_shutdown_cancel_reaches_worker() {
+        shutdown_cancel_case(false).await;
     }
 }
