@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
     migrateLegacyLichessToken: vi.fn(),
+    revokeLegacyLichessToken: vi.fn(),
     listLichessAccounts: vi.fn(),
     getLichessAccount: vi.fn(),
 }));
@@ -9,21 +10,181 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/bindings/generated", () => ({
     commands: {
         migrateLegacyLichessToken: mocks.migrateLegacyLichessToken,
+        revokeLegacyLichessToken: mocks.revokeLegacyLichessToken,
         listLichessAccounts: mocks.listLichessAccounts,
     },
 }));
 vi.mock("@/utils/lichess/api", () => ({ getLichessAccount: mocks.getLichessAccount }));
 
-import { initializePersistedSessions } from "./session";
+import { initializePersistedSessions, SessionSanitizationError } from "./session";
 
 beforeEach(() => {
     vi.restoreAllMocks();
     localStorage.clear();
     vi.clearAllMocks();
     mocks.listLichessAccounts.mockResolvedValue([]);
+    mocks.revokeLegacyLichessToken.mockReset().mockResolvedValue({ status: "ok", data: null });
 });
 
 describe("initializePersistedSessions", () => {
+    function seedLegacySessions(tokens: string[]) {
+        localStorage.setItem(
+            "sessions",
+            JSON.stringify(
+                tokens.map((accessToken, index) => ({
+                    updatedAt: 1,
+                    lichess: {
+                        username: `private-player-${index}`,
+                        account: { id: `private-player-${index}` },
+                        accessToken,
+                    },
+                })),
+            ),
+        );
+    }
+
+    function refuseSessionErasure() {
+        const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+            throw new DOMException("quota exceeded", "QuotaExceededError");
+        });
+        const removeItem = vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {
+            throw new DOMException("storage refused", "SecurityError");
+        });
+        return { setItem, removeItem };
+    }
+
+    test("revokes each unerased token before rejecting with only a safe summary", async () => {
+        const tokens = ["first-private-token", "second-private-token"];
+        seedLegacySessions(tokens);
+        const original = localStorage.getItem("sessions");
+        const erasure = refuseSessionErasure();
+        let finishRevocation!: (value: unknown) => void;
+        mocks.revokeLegacyLichessToken.mockImplementationOnce(
+            () =>
+                new Promise((resolve) => {
+                    finishRevocation = resolve;
+                }),
+        );
+        const startup = initializePersistedSessions();
+        let settled = false;
+        const outcome = startup.then(
+            () => {
+                settled = true;
+                return null;
+            },
+            (cause: unknown) => {
+                settled = true;
+                return cause;
+            },
+        );
+        expect(mocks.revokeLegacyLichessToken.mock.calls).toEqual(tokens.map((token) => [token]));
+        expect(mocks.migrateLegacyLichessToken).not.toHaveBeenCalled();
+        expect(mocks.listLichessAccounts).not.toHaveBeenCalled();
+        await Promise.resolve();
+        expect(settled).toBe(false);
+        finishRevocation({ status: "ok", data: null });
+        const error = await outcome;
+        expect(error).toBeInstanceOf(SessionSanitizationError);
+        expect(error).toMatchObject({ legacySignInFound: true, allRevoked: true });
+        for (const sensitive of [...tokens, "private-player-0", "private-player-1"]) {
+            expect(String(error)).not.toContain(sensitive);
+            expect((error as SessionSanitizationError).stack).not.toContain(sensitive);
+            expect(JSON.stringify(error)).not.toContain(sensitive);
+        }
+        expect(mocks.migrateLegacyLichessToken).not.toHaveBeenCalled();
+        expect(mocks.listLichessAccounts).not.toHaveBeenCalled();
+        expect(mocks.getLichessAccount).not.toHaveBeenCalled();
+        expect(erasure.setItem).toHaveBeenCalledTimes(1);
+        expect(erasure.removeItem).toHaveBeenCalledExactlyOnceWith("sessions");
+        expect(erasure.setItem.mock.invocationCallOrder[0]).toBeLessThan(
+            erasure.removeItem.mock.invocationCallOrder[0],
+        );
+        expect(localStorage.getItem("sessions")).toBe(original);
+    });
+
+    test("catches a revoke rejection and still attempts every other token", async () => {
+        seedLegacySessions(["failed-private-token", "revoked-private-token"]);
+        refuseSessionErasure();
+        mocks.revokeLegacyLichessToken.mockRejectedValueOnce(new Error("failed-private-token"));
+        await expect(initializePersistedSessions()).rejects.toMatchObject({
+            name: "SessionSanitizationError",
+            legacySignInFound: true,
+            allRevoked: false,
+        });
+        expect(mocks.revokeLegacyLichessToken.mock.calls).toEqual([
+            ["failed-private-token"],
+            ["revoked-private-token"],
+        ]);
+        expect(mocks.migrateLegacyLichessToken).not.toHaveBeenCalled();
+        expect(mocks.listLichessAccounts).not.toHaveBeenCalled();
+        expect(mocks.getLichessAccount).not.toHaveBeenCalled();
+    });
+
+    test("treats a native error result as unconfirmed revocation", async () => {
+        seedLegacySessions(["native-error-private-token"]);
+        refuseSessionErasure();
+        mocks.revokeLegacyLichessToken.mockResolvedValueOnce({
+            status: "error",
+            error: "unavailable",
+        });
+        await expect(initializePersistedSessions()).rejects.toMatchObject({
+            name: "SessionSanitizationError",
+            legacySignInFound: true,
+            allRevoked: false,
+        });
+    });
+
+    test("reports nothing found and skips revocation when storage has no legacy token", async () => {
+        refuseSessionErasure();
+        await expect(initializePersistedSessions()).rejects.toMatchObject({
+            name: "SessionSanitizationError",
+            legacySignInFound: false,
+            allRevoked: true,
+        });
+        expect(mocks.revokeLegacyLichessToken).not.toHaveBeenCalled();
+        expect(mocks.migrateLegacyLichessToken).not.toHaveBeenCalled();
+        expect(mocks.listLichessAccounts).not.toHaveBeenCalled();
+        expect(mocks.getLichessAccount).not.toHaveBeenCalled();
+    });
+
+    test("revokes a read token even when its record cannot be migrated", async () => {
+        localStorage.setItem(
+            "sessions",
+            JSON.stringify([{ lichess: { accessToken: "malformed-private-token" } }]),
+        );
+        refuseSessionErasure();
+        await expect(initializePersistedSessions()).rejects.toMatchObject({
+            legacySignInFound: true,
+            allRevoked: true,
+        });
+        expect(mocks.revokeLegacyLichessToken).toHaveBeenCalledExactlyOnceWith(
+            "malformed-private-token",
+        );
+        expect(mocks.migrateLegacyLichessToken).not.toHaveBeenCalled();
+    });
+
+    test("retries sanitization and migrates exactly once when storage works on the next call", async () => {
+        seedLegacySessions(["retry-private-token"]);
+        const erasure = refuseSessionErasure();
+        await expect(initializePersistedSessions()).rejects.toBeInstanceOf(
+            SessionSanitizationError,
+        );
+        erasure.setItem.mockRestore();
+        erasure.removeItem.mockRestore();
+        mocks.migrateLegacyLichessToken.mockImplementation(async () => {
+            expect(localStorage.getItem("sessions")).not.toContain("retry-private-token");
+            expect(localStorage.getItem("sessions")).not.toContain("accessToken");
+            return { status: "error", error: "revoked token" };
+        });
+        await initializePersistedSessions();
+        await initializePersistedSessions();
+        expect(mocks.migrateLegacyLichessToken).toHaveBeenCalledExactlyOnceWith(
+            "private-player-0",
+            "retry-private-token",
+        );
+        expect(mocks.revokeLegacyLichessToken).toHaveBeenCalledTimes(1);
+    });
+
     test("reconciles the opaque handle returned by a successful migration", async () => {
         localStorage.setItem(
             "sessions",
@@ -47,6 +208,7 @@ describe("initializePersistedSessions", () => {
 
         const sessions = JSON.parse(localStorage.getItem("sessions")!);
         expect(sessions[0].lichess.handle).toBe("migrated-handle");
+        expect(mocks.revokeLegacyLichessToken).not.toHaveBeenCalled();
     });
 
     test("removes credential storage when the sanitized overwrite fails", async () => {
@@ -73,6 +235,7 @@ describe("initializePersistedSessions", () => {
         await initializePersistedSessions();
 
         expect(localStorage.getItem("sessions")).not.toContain("credential-that-must-be-removed");
+        expect(mocks.revokeLegacyLichessToken).not.toHaveBeenCalled();
     });
 
     test("scrubs a token even when a sibling record is malformed", async () => {

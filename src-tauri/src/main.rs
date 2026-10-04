@@ -85,7 +85,7 @@ use crate::lichess::{
 };
 use crate::oauth::{
     authenticate, get_authentication_status, list_lichess_accounts, migrate_legacy_lichess_token,
-    remove_lichess_account,
+    remove_lichess_account, revoke_legacy_lichess_token,
 };
 use crate::pgn::{count_pgn_games, delete_game, file_revision, read_game, read_games, write_game};
 use crate::practice::{
@@ -2385,6 +2385,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             list_lichess_accounts,
             remove_lichess_account,
             migrate_legacy_lichess_token,
+            revoke_legacy_lichess_token,
             get_authenticated_lichess_account,
             get_authenticated_lichess_explorer,
             get_public_lichess_json,

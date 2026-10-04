@@ -797,6 +797,18 @@ async migrateLegacyLichessToken(username: string, token: string) : Promise<Resul
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Handle-free revocation: writes no keyring, registry or file, is not platform-gated,
+ * and never echoes the supplied token.
+ */
+async revokeLegacyLichessToken(token: string) : Promise<Result<null, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("revoke_legacy_lichess_token", { token }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async getAuthenticatedLichessAccount(handle: LichessAccountHandle) : Promise<Result<string, ErrorPayload>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_authenticated_lichess_account", { handle }) };

@@ -55,9 +55,16 @@ export const sessionsSchema: z.ZodType<Session[]> = z.array(sessionSchema);
 const SESSION_STORAGE_KEY = "sessions";
 
 export class SessionSanitizationError extends Error {
-    constructor() {
+    /** Whether this launch read any legacy Lichess bearer token; contains no account identity. */
+    readonly legacySignInFound: boolean;
+    /** Whether every token read was revoked, vacuously true when none was found. */
+    readonly allRevoked: boolean;
+
+    constructor(legacySignInFound = false, allRevoked = true) {
         super("account storage could not be sanitized");
         this.name = "SessionSanitizationError";
+        this.legacySignInFound = legacySignInFound;
+        this.allRevoked = allRevoked;
     }
 }
 
@@ -76,16 +83,17 @@ function persistSessions(sessions: Session[]): void {
     localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(sessions));
 }
 
-function persistSanitizedSessions(sessions: Session[]): void {
+function persistSanitizedSessions(sessions: Session[]): boolean {
     try {
         persistSessions(sessions);
     } catch {
         try {
             localStorage.removeItem(SESSION_STORAGE_KEY);
         } catch {
-            throw new SessionSanitizationError();
+            return false;
         }
     }
+    return true;
 }
 
 /**
@@ -95,8 +103,11 @@ function persistSanitizedSessions(sessions: Session[]): void {
 function sanitizeLegacySessions(): {
     sessions: Session[];
     migrations: { username: string; token: string }[];
+    legacyTokens: string[];
+    persisted: boolean;
 } {
     const migrations: { username: string; token: string }[] = [];
+    const legacyTokens: string[] = [];
     const sessions: Session[] = [];
     for (const storedSession of parsePersistedSessions()) {
         if (
@@ -114,6 +125,9 @@ function sanitizeLegacySessions(): {
             !Array.isArray(storedLichess)
         ) {
             const { accessToken, ...lichess } = storedLichess as Record<string, unknown>;
+            if (typeof accessToken === "string" && accessToken !== "") {
+                legacyTokens.push(accessToken);
+            }
             if (
                 typeof accessToken === "string" &&
                 accessToken !== "" &&
@@ -129,8 +143,8 @@ function sanitizeLegacySessions(): {
     }
     // This write is deliberately before any await: an app crash during native migration cannot
     // resurrect plaintext credentials on the next launch.
-    persistSanitizedSessions(sessions);
-    return { sessions, migrations };
+    const persisted = persistSanitizedSessions(sessions);
+    return { sessions, migrations, legacyTokens, persisted };
 }
 
 /**
@@ -139,7 +153,20 @@ function sanitizeLegacySessions(): {
  * reconciled into a deduplicated public-session list.
  */
 export async function initializePersistedSessions(): Promise<void> {
-    const { sessions: sanitized, migrations } = sanitizeLegacySessions();
+    const { sessions: sanitized, migrations, legacyTokens, persisted } = sanitizeLegacySessions();
+    if (!persisted) {
+        const revocations = await Promise.all(
+            legacyTokens.map(async (token) => {
+                try {
+                    await tauri.revokeLegacyLichessToken(token);
+                    return true;
+                } catch {
+                    return false;
+                }
+            }),
+        );
+        throw new SessionSanitizationError(legacyTokens.length > 0, revocations.every(Boolean));
+    }
     const migrated = await Promise.all(
         migrations.map(async ({ username, token }) => {
             try {

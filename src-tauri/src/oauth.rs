@@ -296,11 +296,23 @@ pub trait OAuthServices: Send + Sync + 'static {
 
 pub struct ProdOAuthServices {
     http_client: Arc<reqwest::Client>,
+    token_url: String,
 }
 
 impl ProdOAuthServices {
     pub(crate) fn new(http_client: Arc<reqwest::Client>) -> Self {
-        Self { http_client }
+        Self {
+            http_client,
+            token_url: LICHESS_TOKEN_URL.into(),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_token_url(http_client: Arc<reqwest::Client>, token_url: String) -> Self {
+        Self {
+            http_client,
+            token_url,
+        }
     }
 
     #[cfg(test)]
@@ -367,7 +379,7 @@ impl OAuthServices for ProdOAuthServices {
     async fn revoke_token(&self, access_token: &str) -> Result<(), Error> {
         let response = self
             .http_client
-            .delete(LICHESS_TOKEN_URL)
+            .delete(&self.token_url)
             .bearer_auth(access_token)
             .send()
             .await
@@ -561,6 +573,31 @@ async fn remove_lichess_account_internal<S: OAuthServices>(
         },
         durability_uncertain: removal.durability_uncertain,
     })
+}
+
+/// Handle-free revocation: writes no keyring, registry or file, is not platform-gated,
+/// and never echoes the supplied token.
+#[tauri::command]
+#[specta::specta]
+pub async fn revoke_legacy_lichess_token(
+    token: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), Error> {
+    revoke_legacy_lichess_token_internal(
+        token,
+        &ProdOAuthServices::new(state.json_http_client.clone()),
+    )
+    .await
+}
+
+async fn revoke_legacy_lichess_token_internal<S: OAuthServices>(
+    token: String,
+    services: &S,
+) -> Result<(), Error> {
+    services
+        .revoke_token(&token)
+        .await
+        .map_err(|_| Error::OAuthFailure(OAUTH_FAILURE.into()))
 }
 
 /// One-way bridge for pre-credential-store renderer records. The caller must erase the supplied
@@ -910,6 +947,7 @@ mod tests {
         listener_ignores_shutdown: bool,
         exchange_started: Arc<AtomicBool>,
         revoke_calls: Arc<AtomicUsize>,
+        revoked_tokens: Arc<Mutex<Vec<String>>>,
         listener_stopped: Arc<AtomicBool>,
         listener_aborted: Arc<AtomicBool>,
         listener_starts: Arc<AtomicUsize>,
@@ -928,6 +966,7 @@ mod tests {
                 listener_ignores_shutdown: false,
                 exchange_started: Arc::new(AtomicBool::new(false)),
                 revoke_calls: Arc::new(AtomicUsize::new(0)),
+                revoked_tokens: Arc::new(Mutex::new(Vec::new())),
                 listener_stopped: Arc::new(AtomicBool::new(false)),
                 listener_aborted: Arc::new(AtomicBool::new(false)),
                 listener_starts: Arc::new(AtomicUsize::new(0)),
@@ -959,10 +998,13 @@ mod tests {
             }
         }
 
-        async fn revoke_token(&self, _: &str) -> Result<(), Error> {
+        async fn revoke_token(&self, access_token: &str) -> Result<(), Error> {
             self.revoke_calls.fetch_add(1, Ordering::Relaxed);
+            self.revoked_tokens.lock().await.push(access_token.into());
             if self.revoke_error {
-                Err(Error::OAuthFailure(OAUTH_FAILURE.into()))
+                Err(Error::OAuthFailure(format!(
+                    "mock revocation failed for {access_token}"
+                )))
             } else {
                 Ok(())
             }
@@ -1193,6 +1235,8 @@ mod tests {
 
     #[test]
     fn provider_endpoints_are_exactly_allowlisted() {
+        let services = ProdOAuthServices::new(Arc::new(reqwest::Client::new()));
+        assert_eq!(services.token_url, LICHESS_TOKEN_URL);
         for (endpoint, path) in [
             (LICHESS_ACCOUNT_URL, "/api/account"),
             (LICHESS_TOKEN_URL, "/api/token"),
@@ -1203,6 +1247,104 @@ mod tests {
             assert_eq!(parsed.path(), path);
             assert!(parsed.query().is_none());
         }
+    }
+
+    #[tokio::test]
+    async fn legacy_revocation_calls_services_once_with_the_supplied_token() {
+        let services = MockServices::new();
+        revoke_legacy_lichess_token_internal("legacy-secret".into(), &services)
+            .await
+            .unwrap();
+        assert_eq!(services.revoke_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(*services.revoked_tokens.lock().await, vec!["legacy-secret"]);
+    }
+
+    fn assert_token_free_oauth_failure(error: &Error, token: &str) {
+        assert!(matches!(error, Error::OAuthFailure(message) if message == OAUTH_FAILURE));
+        assert!(!error.to_string().contains(token));
+        assert!(!format!("{error:?}").contains(token));
+    }
+
+    #[tokio::test]
+    async fn legacy_revocation_redacts_service_errors() {
+        let mut services = MockServices::new();
+        services.revoke_error = true;
+        let token = "legacy-private-secret";
+        let error = revoke_legacy_lichess_token_internal(token.into(), &services)
+            .await
+            .unwrap_err();
+        assert_eq!(services.revoke_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(*services.revoked_tokens.lock().await, vec![token]);
+        assert_token_free_oauth_failure(&error, token);
+    }
+
+    #[tokio::test]
+    async fn production_revocation_sends_delete_with_bearer_and_checks_status() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let token = "loopback-private-secret";
+        let client = Arc::new(reqwest::Client::builder().no_proxy().build().unwrap());
+        for status in ["200 OK", "204 No Content", "401 Unauthorized"] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}/api/token", listener.local_addr().unwrap());
+            let services = ProdOAuthServices::with_token_url(client.clone(), url);
+            let server = async {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    request.push(stream.read_u8().await.unwrap());
+                    assert!(request.len() <= 8192, "request headers exceed test limit");
+                }
+                stream
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+                String::from_utf8(request).unwrap()
+            };
+            // Joining under a deadline also fails if revocation becomes a no-op: no request
+            // would ever reach the listener. No server task is left behind on that failure.
+            let (request, result) = tokio::time::timeout(Duration::from_secs(2), async {
+                tokio::join!(server, services.revoke_token(token))
+            })
+            .await
+            .expect("revocation must reach and finish the loopback server");
+            let mut lines = request.lines();
+            assert_eq!(lines.next(), Some("DELETE /api/token HTTP/1.1"));
+            let authorization = lines.find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("authorization")
+                    .then(|| value.trim())
+            });
+            assert_eq!(authorization, Some(format!("Bearer {token}").as_str()));
+            if status.starts_with('2') {
+                result.unwrap();
+            } else {
+                assert_token_free_oauth_failure(&result.unwrap_err(), token);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn production_revocation_redacts_connection_failure() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/api/token", listener.local_addr().unwrap());
+        drop(listener);
+        let client = Arc::new(
+            reqwest::Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_secs(2))
+                .build()
+                .unwrap(),
+        );
+        let services = ProdOAuthServices::with_token_url(client, url);
+        let token = "refused-connection-private-secret";
+        let error = services.revoke_token(token).await.unwrap_err();
+        assert_token_free_oauth_failure(&error, token);
     }
 
     #[tokio::test]
