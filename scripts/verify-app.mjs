@@ -4,7 +4,7 @@
 //   pnpm verify:app                 run the checks
 //   pnpm verify:app --screenshot X  also write a PNG of the page to X
 //
-// It asserts sixty-two independently reported checks, plus one conditional reload check, that no other gate in this repository can:
+// It asserts sixty-three independently reported checks, plus one conditional reload check, that no other gate in this repository can:
 //   group | assertions
 //   startup | 5: production authority, user-file safety, owned-image cleanup, real IPC bridge,
 //             document title
@@ -17,7 +17,7 @@
 //   attachments | 4: prepare, retire, live-session bytes/intent, titlebar cleanup
 //   native reads | 5: mint, cancel, cancelled-ticket refusal, retained ticket, destroyed-window log
 //   Files | 3: seeded-row-render, double-click-route, opened-game-notation
-//   Databases | 1: default-root-unusable
+//   Databases | 2: default-root-unusable, selected-root-missing
 //   NAGs | 9: hint path/title/visibility, unknown hint absence, saved edit, four preserved NAGs
 //   file freshness | 5: in-place rewrite, open-tab reload/withhold, native-read timing,
 //                      main-thread apply budget, one-poll-interval freshness budget;
@@ -160,6 +160,17 @@
 //   from ensure_app_owned_default_dir      |   observed Databases alert: {"button":null,     |
 //                                           |   "message":"Could not load databases. Please  |
 //                                           |   try again.","buttonDisplayed":false}          |
+
+// Staged-failure record for selected-root-missing (2026-10-04). Changing only resolve_active_root's
+// refusal branch to Ok(None) and rebuilding left all 62 other checks green: "1 check(s) failed",
+// exit 1. The verifier was unchanged. mod.rs was restored with git checkout, git status --short
+// src-tauri was empty, and the correct release was rebuilt before the final green run.
+//   break                                   | assertion/message                              | exit
+//   resolve_active_root maps the refusal   | FAIL  selected-root-missing: the Databases     | 1
+//   branch to Ok(None), the pre-fix         |   alert offers a visible folder chooser         |
+//   behaviour                              |   without recreating db                         |
+//                                           |   timed out waiting for the missing selected   |
+//                                           |   database root alert; db exists: true          |
 
 // Staged-failure record for the NAG checks (push-review-policy §2), 2026-10-03, one row per
 // assertion. Three runs against a release binary the harness reads, with the same harness in all
@@ -308,7 +319,7 @@
 //                                         | is possible.
 
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { Chess, makeSquare } from "chessops";
@@ -676,6 +687,38 @@ async function closeApplicationThroughTitlebar(session, label) {
     gone,
     survivors: trackedPids.filter(processExists),
   };
+}
+
+async function databaseAlert(session, label) {
+  const alert = await waitFor(
+    label,
+    async () => {
+      await session.execute(
+        `const link = document.querySelector('a[href="/databases"]');
+         if (link && location.pathname !== "/databases") link.click();
+         return true`,
+      );
+      return session.execute(
+        `const alert = document.querySelector('[role="alert"]');
+         if (location.pathname !== "/databases" || !alert) return false;
+         return { message: alert.querySelector('p')?.textContent ?? null,
+                  button: alert.querySelector('button')?.textContent?.trim() ?? null };`,
+      );
+    },
+    { timeoutMs: FILES_PROBE_TIMEOUT_MS },
+  );
+  let buttonDisplayed = false;
+  if (alert.button === "Choose database folder") {
+    const button = await session.call("POST", "/element", {
+      using: "css selector",
+      value: '[role="alert"] button',
+    });
+    buttonDisplayed = await session.call(
+      "GET",
+      `/element/${encodeURIComponent(button["element-6066-11e4-a52e-4f735466cecf"])}/displayed`,
+    );
+  }
+  return { ...alert, buttonDisplayed };
 }
 
 async function invokeAndWait(session, label, globalName, invokeExpression, successKey = "value") {
@@ -2542,42 +2585,83 @@ try {
     await mkdir(join(profileDirectory, ".config/com.chessriddle.encroissant"), { recursive: true });
     await writeFile(join(appDataDirectory, "db"), "default database root is a regular file\n");
     session = await Session.open(APP_BINARY);
-    const alert = await waitFor(
-      "the unusable default database root alert",
+    const alert = await databaseAlert(session, "the unusable default database root alert");
+    check(
+      alert.message === "This database folder cannot be opened. Choose another." &&
+        alert.buttonDisplayed === true,
+      databaseRootCheck,
+      `observed Databases alert: ${JSON.stringify(alert)}`,
+    );
+  } catch (error) {
+    check(false, databaseRootCheck, error.message);
+  }
+
+  // Let the real page activate its default in a fresh profile, then remove that selected folder
+  // while the app is stopped. Relaunching re-proves the persisted selection without a cached list.
+  const selectedRootCheck =
+    "selected-root-missing: the Databases alert offers a visible folder chooser without recreating db";
+  const selectedDatabaseRoot = join(
+    profileDirectory,
+    ".local/share/com.chessriddle.encroissant/db",
+  );
+  try {
+    const closed = await closeApplicationThroughTitlebar(session, "default-root-unusable");
+    if (!closed.gone || closed.survivors.length > 0)
+      throw new Error("the default-root-unusable application survived close");
+    const released = await session.quit();
+    if (!released.released)
+      throw new Error(`could not release the default-root-unusable session: ${released.error}`);
+    await rm(profileDirectory, { recursive: true, force: true });
+    await mkdir(join(profileDirectory, ".config/com.chessriddle.encroissant"), { recursive: true });
+    session = await Session.open(APP_BINARY);
+    await waitFor(
+      "the Databases page to activate the default database root",
       async () => {
-        await session.execute(
+        const onDatabases = await session.execute(
           `const link = document.querySelector('a[href="/databases"]');
            if (link && location.pathname !== "/databases") link.click();
-           return true`,
+           return location.pathname === "/databases";`,
         );
-        return session.execute(
-          `const alert = document.querySelector('[role="alert"]');
-           if (location.pathname !== "/databases" || !alert) return false;
-           return { message: alert.querySelector('p')?.textContent ?? null,
-                    button: alert.querySelector('button')?.textContent?.trim() ?? null };`,
+        if (!onDatabases || !existsSync(selectedDatabaseRoot)) return false;
+        const registry = await readFile(registryFile, "utf8").then(JSON.parse);
+        const active = registry.entries.find(
+          ({ id }) => id.id === registry.active_database_root?.id,
+        );
+        return (
+          active?.purpose === "databaseRoot" &&
+          active.target_is_dir &&
+          active.path.platform === "unix" &&
+          Buffer.from(active.path.bytes, "base64").toString() === selectedDatabaseRoot
         );
       },
       { timeoutMs: FILES_PROBE_TIMEOUT_MS },
     );
-    let buttonDisplayed = false;
-    if (alert.button === "Choose database folder") {
-      const button = await session.call("POST", "/element", {
-        using: "css selector",
-        value: '[role="alert"] button',
-      });
-      buttonDisplayed = await session.call(
-        "GET",
-        `/element/${encodeURIComponent(button["element-6066-11e4-a52e-4f735466cecf"])}/displayed`,
-      );
-    }
+    const activatedClose = await closeApplicationThroughTitlebar(
+      session,
+      "activated database root",
+    );
+    if (!activatedClose.gone || activatedClose.survivors.length > 0)
+      throw new Error("the activated database root application survived close");
+    const activatedRelease = await session.quit();
+    if (!activatedRelease.released)
+      throw new Error(`could not release the activated-root session: ${activatedRelease.error}`);
+    await rename(selectedDatabaseRoot, join(selectedDatabaseRoot, "..", "db-moved"));
+    session = await Session.open(APP_BINARY);
+    const alert = await databaseAlert(session, "the missing selected database root alert");
+    const dbExists = existsSync(selectedDatabaseRoot);
     check(
-      alert.message === "This database folder cannot be opened. Choose another." &&
-        buttonDisplayed === true,
-      databaseRootCheck,
-      `observed Databases alert: ${JSON.stringify({ ...alert, buttonDisplayed })}`,
+      alert.message === "This database folder is no longer available. Choose another." &&
+        alert.buttonDisplayed === true &&
+        !dbExists,
+      selectedRootCheck,
+      `observed Databases alert: ${JSON.stringify({ ...alert, dbExists })}`,
     );
   } catch (error) {
-    check(false, databaseRootCheck, error.message);
+    check(
+      false,
+      selectedRootCheck,
+      `${error.message}; db exists: ${existsSync(selectedDatabaseRoot)}`,
+    );
   }
 } catch (error) {
   console.error(`\nverify:app could not run: ${error.message}`);
