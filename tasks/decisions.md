@@ -5226,3 +5226,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The backend already serializes same-target writes safely, so refusing removes a working capability; refusing also leaves the different-target single-slot loss unfixed. No Rust or binding change is needed. Reversal path: a product decision that one database accepts only one import at a time.
 * **Decided by:** Claude Code, drain session 0fa004d0-93e4-4004-86d2-6652e891bd6e, full auto, adopted reviewed plan of f-20260914-06 (planned ahead, 3 review rounds) · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"1317af54034f083d6b6895f22b206812d3a70b203b48ed00f3194627d57808b3","input_sha256":"f995247eec5603f74296486d4bca2c5eed5acc2e53324f8a086538055c57ba0e","kind":"mutation-receipt","operation":"798e2b527dd42f81ff4c70f7769347e728b97d01fa4e549842fc006cd29a7d9a","options":{"section":null},"request_id_sha256":null,"results":["d-20261004-06"],"target":"decisions-ledger","v":1} -->
+
+### d-20261004-07 — Which teardown may remove a conversion's renderer state?
+
+* **Question:** Which teardown may remove an entry from the conversion progress state?
+* **Governs:** f-20260914-06
+* **Supersedes:** d-20260904-18. Handle compare-and-clear cannot tell two operations on one target apart, because same-target operations share a handle. Its constraints still hold by construction: the `setLoading` bridge and AccountCard's `onClick` `finally` still write no conversion state, AddDatabase still registers its entry before the handle exists, and AccountCard's removal still sits inside `convert()`.
+* **Chosen:** Only the route that minted the operation id, removing by that id on every exit path (success, `convertPgn` rejection, a throw before `convertPgn`), through one shared lifecycle primitive used by all three routes; `clearOwnedConversion` is removed.
+* **Rejected:** Handle compare-and-clear (d-20260904-18).
+* **Reason:** A handle cannot carry ownership when two operations share a target. Reversal path: none expected while concurrent same-target conversions exist.
+* **Decided by:** Claude Code, drain session 0fa004d0-93e4-4004-86d2-6652e891bd6e, full auto, adopted reviewed plan of f-20260914-06 (planned ahead, 3 review rounds) · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"b0d1aa5535bfe3864fb9d1b66fa1e28a6fb035bf033b040bc7b2e5fb57eeff2c","input_sha256":"43cbd4e623774e070e13a530fadc7987b22ad3e2cff573f26af4ed68c9a1dca9","kind":"mutation-receipt","operation":"7095fc69f6777f08707766c393b21fa1f69ba0315b120d3617cdd7b7ae30e758","options":{"section":null},"request_id_sha256":null,"results":["d-20261004-07"],"target":"decisions-ledger","v":1} -->
