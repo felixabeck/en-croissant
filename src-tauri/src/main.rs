@@ -1295,8 +1295,8 @@ fn issue_database_workspace_blocking(
     Ok(root)
 }
 
-/// Returns the active database root when set and available.  Otherwise it acquires,
-/// registers and activates the app-owned default root, without a renderer path.
+/// Returns the active database root or refuses an unusable selection. With no selection,
+/// it acquires, registers and activates the app-owned default root without a renderer path.
 #[tauri::command]
 #[specta::specta]
 async fn get_database_workspace(
@@ -1307,14 +1307,18 @@ async fn get_database_workspace(
     crate::infra::operations::run_accepted_blocking(
         &state.operations,
         "get_database_workspace",
-        move || get_database_workspace_blocking(&authority, app),
+        move || {
+            get_database_workspace_blocking(&authority, || {
+                crate::infra::path_authority::AppDataDir::for_app(&app)
+            })
+        },
     )
     .await
 }
 
 fn get_database_workspace_blocking(
     authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
-    app: tauri::AppHandle,
+    app_data: impl FnOnce() -> Result<crate::infra::path_authority::AppDataDir, Error>,
 ) -> Result<crate::infra::path_authority::DatabaseRootHandle, Error> {
     let mut authority_lock = authority
         .lock()
@@ -1325,7 +1329,7 @@ fn get_database_workspace_blocking(
     if let Some(root) = authority.active_database_root()? {
         return Ok(root);
     }
-    let app_data = crate::infra::path_authority::AppDataDir::for_app(&app)?;
+    let app_data = app_data()?;
     get_default_database_workspace(authority, &app_data)
 }
 
@@ -1505,6 +1509,8 @@ fn issue_engine_workspace_blocking(
     Ok(root)
 }
 
+/// Returns the active engine root or refuses an unusable selection. The app-owned default
+/// is created and activated only when no selection exists.
 #[tauri::command]
 #[specta::specta]
 async fn get_engine_workspace(
@@ -1515,14 +1521,18 @@ async fn get_engine_workspace(
     crate::infra::operations::run_accepted_blocking(
         &state.operations,
         "get_engine_workspace",
-        move || get_engine_workspace_blocking(&authority, app),
+        move || {
+            get_engine_workspace_blocking(&authority, || {
+                crate::infra::path_authority::AppDataDir::for_app(&app)
+            })
+        },
     )
     .await
 }
 
 fn get_engine_workspace_blocking(
     authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
-    app: tauri::AppHandle,
+    app_data: impl FnOnce() -> Result<crate::infra::path_authority::AppDataDir, Error>,
 ) -> Result<crate::infra::path_authority::EngineRootHandle, Error> {
     let mut lock = authority
         .lock()
@@ -1534,7 +1544,7 @@ fn get_engine_workspace_blocking(
         return Ok(root);
     }
     let authorized_dir = crate::infra::path_authority::ensure_app_owned_default_dir(
-        &crate::infra::path_authority::AppDataDir::for_app(&app)?,
+        &app_data()?,
         crate::infra::path_authority::AppOwnedDefaultRoot::Engines,
     )?;
     let root = authority.get_or_create_engine_root(
@@ -2981,6 +2991,119 @@ mod native_window_operation_wiring_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn database_and_engine_workspace_bodies_default_only_without_a_selection() {
+        use crate::infra::path_authority::{AppDataDir, PathAuthority};
+        for engine in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let app_path = dir.path().join("app-data");
+            std::fs::create_dir(&app_path).unwrap();
+            let authority = std::sync::Mutex::new(Some(
+                PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap(),
+            ));
+            let lookup = || Ok(AppDataDir::for_test(&app_path));
+            let id = if engine {
+                get_engine_workspace_blocking(&authority, lookup)
+                    .unwrap()
+                    .path_ref()
+                    .clone()
+            } else {
+                get_database_workspace_blocking(&authority, lookup)
+                    .unwrap()
+                    .path_ref()
+                    .clone()
+            };
+            assert!(app_path
+                .join(if engine { "engines" } else { "db" })
+                .is_dir());
+            let mut guard = authority.lock().unwrap();
+            let selected = if engine {
+                guard
+                    .as_mut()
+                    .unwrap()
+                    .active_engine_root()
+                    .unwrap()
+                    .unwrap()
+                    .path_ref()
+                    .clone()
+            } else {
+                guard
+                    .as_mut()
+                    .unwrap()
+                    .active_database_root()
+                    .unwrap()
+                    .unwrap()
+                    .path_ref()
+                    .clone()
+            };
+            assert_eq!(selected, id);
+        }
+    }
+
+    #[test]
+    fn database_and_engine_workspace_bodies_refuse_unusable_selections_without_defaults() {
+        use crate::error::RootFailure;
+        use crate::infra::path_authority::{AppDataDir, PathAuthority};
+        for engine in [false, true] {
+            for reason in [
+                RootFailure::Missing,
+                RootFailure::Changed,
+                #[cfg(unix)]
+                RootFailure::Unusable,
+            ] {
+                let dir = tempfile::tempdir().unwrap();
+                let selected_path = dir.path().join("selected");
+                let app_path = dir.path().join("app-data");
+                std::fs::create_dir(&selected_path).unwrap();
+                std::fs::create_dir(&app_path).unwrap();
+                let registry = dir.path().join("registry.json");
+                let mut authority = PathAuthority::open(registry.clone(), vec![]).unwrap();
+                if engine {
+                    let root = authority
+                        .get_or_create_engine_root(&selected_path, "Selected", None)
+                        .unwrap();
+                    authority.set_active_engine_root(&root).unwrap();
+                } else {
+                    let root = authority
+                        .get_or_create_database_root(&selected_path, "Selected", None)
+                        .unwrap();
+                    authority.set_active_database_root(&root).unwrap();
+                }
+                match reason {
+                    RootFailure::Missing => std::fs::remove_dir(&selected_path).unwrap(),
+                    RootFailure::Changed => {
+                        std::fs::rename(&selected_path, dir.path().join("moved")).unwrap();
+                        std::fs::create_dir(&selected_path).unwrap();
+                    }
+                    #[cfg(unix)]
+                    RootFailure::Unusable => authority =
+                        crate::infra::path_authority::portable_tests::reload_with_undecodable_root(
+                            &registry,
+                        ),
+                    _ => unreachable!(),
+                }
+                let before = std::fs::read(&registry).unwrap();
+                let authority = std::sync::Mutex::new(Some(authority));
+                let looked_up = std::cell::Cell::new(false);
+                let lookup = || {
+                    looked_up.set(true);
+                    Ok(AppDataDir::for_test(&app_path))
+                };
+                let error = if engine {
+                    get_engine_workspace_blocking(&authority, lookup).unwrap_err()
+                } else {
+                    get_database_workspace_blocking(&authority, lookup).unwrap_err()
+                };
+                assert_eq!(error.root_failure(), Some(reason));
+                assert!(!looked_up.get());
+                assert!(!app_path
+                    .join(if engine { "engines" } else { "db" })
+                    .exists());
+                assert_eq!(std::fs::read(&registry).unwrap(), before);
+            }
+        }
+    }
 
     #[test]
     fn root_failure_default_database_non_directory_is_unusable() {
@@ -4970,23 +5093,45 @@ mod blocking_offload_scans {
 
     /// A one-directional "who calls `ensure_app_owned_default_dir`" scan cannot see the swap
     /// that matters: exchanging `Databases` and `Engines` between the two workspace helpers
-    /// leaves every other check green — neither helper has a behavioural test, the surface
-    /// counts do not move — and the application would then register the database root under
-    /// `engines`. So each call site is pinned to its own variant, to the exact parent argument
-    /// it passes (`AppDataDir::for_app` of its own handle: a residual `.join("db")` would yield
-    /// `<app_data>/db/db` and pass everything else), and to no longer joining its own leaf. The
-    /// argument is spelled out per site because `main.rs` owns its handle and `puzzle.rs`
-    /// borrows one. The needle is the fully-qualified variant: three of these bodies already
+    /// leaves the surface counts unchanged and registers the database root under `engines`.
+    /// So each call site is pinned to its own variant, to the exact parent argument
+    /// it passes (the lazily resolved app-data directory: a residual `.join("db")` would yield
+    /// `<app_data>/db/db`), and to no longer joining its own leaf. The argument is spelled out
+    /// per site. The needle is the fully-qualified variant: three of these bodies already
     /// contain the bare word as a `display_name` argument.
     #[test]
     fn app_owned_default_roots_are_pinned_to_their_call_sites() {
         let main = include_str!("main.rs");
         let puzzle = include_str!("puzzle.rs");
-        let owned = "&crate::infra::path_authority::AppDataDir::for_app(&app)?,";
-        let borrowed = "&crate::infra::path_authority::AppDataDir::for_app(app)?,";
+        let lazy = "&app_data()?,";
+        for (source, name, lookup) in [
+            (main, "get_database_workspace", "AppDataDir::for_app(&app)"),
+            (main, "get_engine_workspace", "AppDataDir::for_app(&app)"),
+            (puzzle, "get_puzzle_workspace", "AppDataDir::for_app(&app)"),
+            (
+                puzzle,
+                "issue_puzzle_download_destination_blocking",
+                "AppDataDir::for_app(&app)",
+            ),
+            (
+                puzzle,
+                "list_puzzle_databases_blocking",
+                "AppDataDir::for_app(app)",
+            ),
+        ] {
+            let body = body_at_indent(source, &fn_signature(source, name));
+            assert!(
+                body.contains(lookup),
+                "{name} must supply its own app-data lookup: {body}"
+            );
+            assert!(
+                !body.contains(".join("),
+                "{name} must not append a default leaf: {body}"
+            );
+        }
         let bootstrap = body_at_indent(main, "fn get_database_workspace_blocking(");
         assert!(
-            bootstrap.contains("AppDataDir::for_app(&app)?"),
+            bootstrap.contains("let app_data = app_data()?;"),
             "{bootstrap}"
         );
         assert!(
@@ -5007,7 +5152,7 @@ mod blocking_offload_scans {
                 main,
                 "get_engine_workspace_blocking",
                 "AppOwnedDefaultRoot::Engines",
-                owned,
+                lazy,
                 "engines",
             ),
             (
@@ -5023,7 +5168,7 @@ mod blocking_offload_scans {
                 puzzle,
                 "active_or_default_puzzle_workspace",
                 "AppOwnedDefaultRoot::Puzzles",
-                borrowed,
+                lazy,
                 "puzzles",
             ),
         ] {

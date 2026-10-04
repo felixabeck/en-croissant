@@ -6062,7 +6062,19 @@ impl PathAuthority {
     }
 
     pub(crate) fn active_engine_root(&mut self) -> Result<Option<EngineRootHandle>, Error> {
-        let Some(id) = self.active_engine_root.clone() else {
+        self.resolve_active_root(
+            self.active_engine_root.clone(),
+            PathOperation::EngineInstall,
+        )
+        .map(|id| id.map(EngineRootHandle::new))
+    }
+
+    fn resolve_active_root(
+        &mut self,
+        active_id: Option<PathRef>,
+        operation: PathOperation,
+    ) -> Result<Option<PathRef>, Error> {
+        let Some(id) = active_id else {
             return Ok(None);
         };
         self.refresh_persistent_id(&id);
@@ -6070,14 +6082,21 @@ impl PathAuthority {
             Some(entry)
                 if entry.availability == PathAvailability::Available
                     && entry.stored.target_is_dir
-                    && entry
-                        .stored
-                        .operations
-                        .contains(&PathOperation::EngineInstall) =>
+                    && entry.stored.operations.contains(&operation) =>
             {
-                Ok(Some(EngineRootHandle::new(id)))
+                Ok(Some(id))
             }
-            _ => Ok(None),
+            _ => {
+                let error = match self
+                    .workspace_root(&FileWorkspaceHandle::new(id.clone()), operation)
+                {
+                    Err(error) => error,
+                    // A re-proof can disagree with refresh. Fail closed for this request;
+                    // the next refresh can recover without changing the persisted selection.
+                    Ok(_) => Error::Conflict("active workspace changed during resolution".into()),
+                };
+                Err(error.label_root_failure())
+            }
         }
     }
 
@@ -6412,43 +6431,32 @@ impl PathAuthority {
     }
 
     pub(crate) fn active_database_root(&mut self) -> Result<Option<DatabaseRootHandle>, Error> {
-        let Some(id) = self.active_database_root.clone() else {
-            return Ok(None);
-        };
-        self.refresh_persistent_id(&id);
-        match self.persistent.get(&id.id) {
-            Some(entry)
-                if entry.availability == PathAvailability::Available
-                    && entry.stored.target_is_dir
-                    && entry
-                        .stored
-                        .operations
-                        .contains(&PathOperation::DatabaseRead) =>
-            {
-                Ok(Some(DatabaseRootHandle::new(id)))
-            }
-            _ => Ok(None),
-        }
+        self.resolve_active_root(
+            self.active_database_root.clone(),
+            PathOperation::DatabaseRead,
+        )
+        .map(|id| id.map(DatabaseRootHandle::new))
     }
 
     pub(crate) fn active_puzzle_root(&mut self) -> Result<Option<PuzzleRootDescriptor>, Error> {
-        let Some(id) = self.active_puzzle_root.clone() else {
+        let Some(id) =
+            self.resolve_active_root(self.active_puzzle_root.clone(), PathOperation::PuzzleRead)?
+        else {
             return Ok(None);
         };
-        self.refresh_persistent_id(&id);
-        match self.persistent.get(&id.id) {
-            Some(entry)
-                if entry.availability == PathAvailability::Available
-                    && entry.stored.target_is_dir
-                    && entry.stored.operations.contains(&PathOperation::PuzzleRead) =>
-            {
-                Ok(Some(PuzzleRootDescriptor {
-                    root: PuzzleRootHandle::new(id),
-                    display_name: entry.stored.display_name.clone(),
-                }))
-            }
-            _ => Ok(None),
-        }
+        let display_name = self
+            .persistent
+            .get(&id.id)
+            .ok_or_else(|| {
+                Error::Conflict("active puzzle workspace disappeared".into()).label_root_failure()
+            })?
+            .stored
+            .display_name
+            .clone();
+        Ok(Some(PuzzleRootDescriptor {
+            root: PuzzleRootHandle::new(id),
+            display_name,
+        }))
     }
 
     /// Checks a practice deck capability without making availability part of authorisation.
@@ -8998,7 +9006,7 @@ const APP_OWNED_DEFAULT_ROOT_LEAVES: &[(AppOwnedDefaultRoot, &str)] = &[
 /// platform-neutral property placed there would silently stop being proven off unix; these live
 /// here instead, and the shared `PathAuthority` constructor lives here with them.
 #[cfg(test)]
-mod portable_tests {
+pub(crate) mod portable_tests {
     use super::*;
     use std::sync::{
         atomic::{AtomicU64, Ordering},
@@ -9006,6 +9014,172 @@ mod portable_tests {
     };
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+    #[cfg(unix)]
+    pub(crate) fn reload_with_undecodable_root(registry_path: &Path) -> PathAuthority {
+        let mut registry: Registry =
+            serde_json::from_slice(&fs::read(registry_path).unwrap()).unwrap();
+        assert_eq!(registry.entries.len(), 1);
+        registry.entries[0].path = NativePath::Unix {
+            bytes: "!invalid-base64!".into(),
+        };
+        super::tests::write_registry(registry_path, &registry);
+        PathAuthority::open(registry_path.to_path_buf(), vec![]).unwrap()
+    }
+
+    pub(super) fn get_or_create_app_owned_test_root(
+        path_authority: &mut PathAuthority,
+        root: AppOwnedDefaultRoot,
+        directory: &AuthorizedDir,
+        expected_identity: VerifiedIdentity,
+    ) -> Result<PathRef, Error> {
+        match root {
+            AppOwnedDefaultRoot::Databases => path_authority
+                .get_or_create_database_root(directory.path(), "Databases", Some(expected_identity))
+                .map(|handle| handle.path_ref().clone()),
+            AppOwnedDefaultRoot::Engines => path_authority
+                .get_or_create_engine_root(directory.path(), "Engines", Some(expected_identity))
+                .map(|handle| handle.path_ref().clone()),
+            AppOwnedDefaultRoot::Puzzles => path_authority
+                .get_or_create_puzzle_root(directory.path(), "Puzzles", Some(expected_identity))
+                .map(|handle| handle.path_ref().clone()),
+            AppOwnedDefaultRoot::EngineImages
+            | AppOwnedDefaultRoot::Credentials
+            | AppOwnedDefaultRoot::Practice => {
+                panic!(
+                    "engine images, credentials and practice do not have a persistent root entry"
+                )
+            }
+            #[cfg(target_os = "macos")]
+            AppOwnedDefaultRoot::EngineLaunch => {
+                panic!("engine launch does not have a persistent root entry")
+            }
+        }
+    }
+
+    pub(super) fn set_active_app_owned_test_root(
+        path_authority: &mut PathAuthority,
+        root: AppOwnedDefaultRoot,
+        id: &PathRef,
+    ) {
+        match root {
+            AppOwnedDefaultRoot::Databases => path_authority
+                .set_active_database_root(&DatabaseRootHandle::new(id.clone()))
+                .unwrap(),
+            AppOwnedDefaultRoot::Engines => path_authority
+                .set_active_engine_root(&EngineRootHandle::new(id.clone()))
+                .unwrap(),
+            AppOwnedDefaultRoot::Puzzles => path_authority
+                .set_active_puzzle_root(&PuzzleRootHandle::new(id.clone()))
+                .unwrap(),
+            AppOwnedDefaultRoot::EngineImages
+            | AppOwnedDefaultRoot::Credentials
+            | AppOwnedDefaultRoot::Practice => {
+                panic!(
+                    "engine images, credentials and practice do not have a persistent root entry"
+                )
+            }
+            #[cfg(target_os = "macos")]
+            AppOwnedDefaultRoot::EngineLaunch => {
+                panic!("engine launch does not have a persistent root entry")
+            }
+        }
+    }
+
+    pub(super) fn active_app_owned_test_root(
+        path_authority: &mut PathAuthority,
+        root: AppOwnedDefaultRoot,
+    ) -> Result<Option<PathRef>, Error> {
+        match root {
+            AppOwnedDefaultRoot::Databases => path_authority
+                .active_database_root()
+                .map(|root| root.map(|root| root.path_ref().clone())),
+            AppOwnedDefaultRoot::Engines => path_authority
+                .active_engine_root()
+                .map(|root| root.map(|root| root.path_ref().clone())),
+            AppOwnedDefaultRoot::Puzzles => path_authority
+                .active_puzzle_root()
+                .map(|root| root.map(|root| root.root.path_ref().clone())),
+            AppOwnedDefaultRoot::EngineImages
+            | AppOwnedDefaultRoot::Credentials
+            | AppOwnedDefaultRoot::Practice => {
+                panic!(
+                    "engine images, credentials and practice do not have a persistent root entry"
+                )
+            }
+            #[cfg(target_os = "macos")]
+            AppOwnedDefaultRoot::EngineLaunch => {
+                panic!("engine launch does not have a persistent root entry")
+            }
+        }
+    }
+
+    #[test]
+    fn active_roots_refuse_missing_and_changed_selections_and_recover_without_writing() {
+        use crate::error::RootFailure;
+        for domain in [
+            AppOwnedDefaultRoot::Databases,
+            AppOwnedDefaultRoot::Engines,
+            AppOwnedDefaultRoot::Puzzles,
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut authority = authority(&dir, Arc::new(TestClock::new(1)));
+            assert_eq!(
+                active_app_owned_test_root(&mut authority, domain).unwrap(),
+                None
+            );
+            let directory =
+                ensure_app_owned_default_dir(&AppDataDir::for_test(dir.path()), domain).unwrap();
+            let id = get_or_create_app_owned_test_root(
+                &mut authority,
+                domain,
+                &directory,
+                directory.identity(),
+            )
+            .unwrap();
+            set_active_app_owned_test_root(&mut authority, domain, &id);
+            let registry = dir.path().join("registry.json");
+            let before = fs::read(&registry).unwrap();
+            let modified = fs::metadata(&registry).unwrap().modified().unwrap();
+            assert_eq!(
+                active_app_owned_test_root(&mut authority, domain).unwrap(),
+                Some(id.clone())
+            );
+
+            let moved = dir.path().join("moved");
+            fs::rename(directory.path(), &moved).unwrap();
+            assert_eq!(
+                active_app_owned_test_root(&mut authority, domain)
+                    .unwrap_err()
+                    .root_failure(),
+                Some(RootFailure::Missing)
+            );
+            fs::rename(&moved, directory.path()).unwrap();
+            assert_eq!(
+                active_app_owned_test_root(&mut authority, domain).unwrap(),
+                Some(id.clone())
+            );
+            fs::rename(directory.path(), &moved).unwrap();
+            fs::create_dir(directory.path()).unwrap();
+            assert_eq!(
+                active_app_owned_test_root(&mut authority, domain)
+                    .unwrap_err()
+                    .root_failure(),
+                Some(RootFailure::Changed)
+            );
+            let active = match domain {
+                AppOwnedDefaultRoot::Databases => &authority.active_database_root,
+                AppOwnedDefaultRoot::Engines => &authority.active_engine_root,
+                AppOwnedDefaultRoot::Puzzles => &authority.active_puzzle_root,
+                _ => unreachable!(),
+            };
+            assert_eq!(active, &Some(id));
+            assert_eq!(fs::read(&registry).unwrap(), before);
+            assert_eq!(
+                fs::metadata(&registry).unwrap().modified().unwrap(),
+                modified
+            );
+        }
+    }
     fn assert_app_data_acquisition_missing_entry(
         source: Error,
         missing: bool,
@@ -10607,7 +10781,10 @@ mod portable_tests {
 #[cfg(test)]
 mod tests {
     use super::database_test_support::replace_parent_with_same_inode_hard_link;
-    use super::portable_tests::{authority, authority_at, TestClock};
+    use super::portable_tests::{
+        active_app_owned_test_root, authority, authority_at, get_or_create_app_owned_test_root,
+        set_active_app_owned_test_root, TestClock,
+    };
     use super::resolved::file_identity;
     use super::*;
     use crate::infra::blocking::source_scan::body_at_indent;
@@ -15581,7 +15758,10 @@ mod tests {
         #[cfg(windows)]
         fs::remove_dir(&root).unwrap();
         fs::rename(&replacement, &root).unwrap();
-        assert_eq!(reloaded.active_database_root().unwrap(), None);
+        assert_eq!(
+            reloaded.active_database_root().unwrap_err().root_failure(),
+            Some(crate::error::RootFailure::Changed)
+        );
     }
 
     /// Test 8: a raw app-owned spelling written before `AppDataDir` became canonical is rebound at
@@ -17537,90 +17717,84 @@ mod tests {
         assert!(!absent.exists(), "the absent root must not be created");
     }
 
-    fn get_or_create_app_owned_test_root(
-        path_authority: &mut PathAuthority,
-        root: AppOwnedDefaultRoot,
-        directory: &AuthorizedDir,
-        expected_identity: VerifiedIdentity,
-    ) -> Result<PathRef, Error> {
-        match root {
-            AppOwnedDefaultRoot::Databases => path_authority
-                .get_or_create_database_root(directory.path(), "Databases", Some(expected_identity))
-                .map(|handle| handle.path_ref().clone()),
-            AppOwnedDefaultRoot::Engines => path_authority
-                .get_or_create_engine_root(directory.path(), "Engines", Some(expected_identity))
-                .map(|handle| handle.path_ref().clone()),
-            AppOwnedDefaultRoot::Puzzles => path_authority
-                .get_or_create_puzzle_root(directory.path(), "Puzzles", Some(expected_identity))
-                .map(|handle| handle.path_ref().clone()),
-            AppOwnedDefaultRoot::EngineImages
-            | AppOwnedDefaultRoot::Credentials
-            | AppOwnedDefaultRoot::Practice => {
-                panic!(
-                    "engine images, credentials and practice do not have a persistent root entry"
-                )
-            }
-            #[cfg(target_os = "macos")]
-            AppOwnedDefaultRoot::EngineLaunch => {
-                panic!("engine launch does not have a persistent root entry")
-            }
+    #[cfg(unix)]
+    #[test]
+    fn active_roots_label_an_unsearchable_parent_as_permission() {
+        use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        for domain in [
+            AppOwnedDefaultRoot::Databases,
+            AppOwnedDefaultRoot::Engines,
+            AppOwnedDefaultRoot::Puzzles,
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let parent = dir.path().join("parent");
+            fs::create_dir(&parent).unwrap();
+            let directory =
+                ensure_app_owned_default_dir(&AppDataDir::for_test(&parent), domain).unwrap();
+            let mut authority = authority(&dir, Arc::new(TestClock::new(1)));
+            let id = get_or_create_app_owned_test_root(
+                &mut authority,
+                domain,
+                &directory,
+                directory.identity(),
+            )
+            .unwrap();
+            set_active_app_owned_test_root(&mut authority, domain, &id);
+            let permissions = fs::metadata(&parent).unwrap().permissions();
+            fs::set_permissions(&parent, fs::Permissions::from_mode(0o0)).unwrap();
+            let result = active_app_owned_test_root(&mut authority, domain);
+            fs::set_permissions(&parent, permissions).unwrap();
+            assert_eq!(
+                result.unwrap_err().root_failure(),
+                Some(crate::error::RootFailure::Permission)
+            );
+            assert_eq!(
+                active_app_owned_test_root(&mut authority, domain).unwrap(),
+                Some(id)
+            );
         }
     }
 
-    fn set_active_app_owned_test_root(
-        path_authority: &mut PathAuthority,
-        root: AppOwnedDefaultRoot,
-        id: &PathRef,
-    ) {
-        match root {
-            AppOwnedDefaultRoot::Databases => path_authority
-                .set_active_database_root(&DatabaseRootHandle::new(id.clone()))
-                .unwrap(),
-            AppOwnedDefaultRoot::Engines => path_authority
-                .set_active_engine_root(&EngineRootHandle::new(id.clone()))
-                .unwrap(),
-            AppOwnedDefaultRoot::Puzzles => path_authority
-                .set_active_puzzle_root(&PuzzleRootHandle::new(id.clone()))
-                .unwrap(),
-            AppOwnedDefaultRoot::EngineImages
-            | AppOwnedDefaultRoot::Credentials
-            | AppOwnedDefaultRoot::Practice => {
-                panic!(
-                    "engine images, credentials and practice do not have a persistent root entry"
-                )
-            }
-            #[cfg(target_os = "macos")]
-            AppOwnedDefaultRoot::EngineLaunch => {
-                panic!("engine launch does not have a persistent root entry")
-            }
-        }
-    }
-
-    fn assert_active_app_owned_test_root_is_absent(
-        path_authority: &mut PathAuthority,
-        root: AppOwnedDefaultRoot,
-    ) {
-        match root {
-            AppOwnedDefaultRoot::Databases => {
-                assert_eq!(path_authority.active_database_root().unwrap(), None)
-            }
-            AppOwnedDefaultRoot::Engines => {
-                assert_eq!(path_authority.active_engine_root().unwrap(), None)
-            }
-            AppOwnedDefaultRoot::Puzzles => {
-                assert_eq!(path_authority.active_puzzle_root().unwrap(), None)
-            }
-            AppOwnedDefaultRoot::EngineImages
-            | AppOwnedDefaultRoot::Credentials
-            | AppOwnedDefaultRoot::Practice => {
-                panic!(
-                    "engine images, credentials and practice do not have a persistent root entry"
-                )
-            }
-            #[cfg(target_os = "macos")]
-            AppOwnedDefaultRoot::EngineLaunch => {
-                panic!("engine launch does not have a persistent root entry")
-            }
+    #[cfg(unix)]
+    #[test]
+    fn undecodable_active_roots_are_unusable_and_keep_the_selection() {
+        for domain in [
+            AppOwnedDefaultRoot::Databases,
+            AppOwnedDefaultRoot::Engines,
+            AppOwnedDefaultRoot::Puzzles,
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let directory =
+                ensure_app_owned_default_dir(&AppDataDir::for_test(dir.path()), domain).unwrap();
+            let mut authority = authority(&dir, Arc::new(TestClock::new(1)));
+            let id = get_or_create_app_owned_test_root(
+                &mut authority,
+                domain,
+                &directory,
+                directory.identity(),
+            )
+            .unwrap();
+            set_active_app_owned_test_root(&mut authority, domain, &id);
+            let registry_path = dir.path().join("registry.json");
+            let mut reloaded = super::portable_tests::reload_with_undecodable_root(&registry_path);
+            let before = fs::read(&registry_path).unwrap();
+            assert_eq!(
+                active_app_owned_test_root(&mut reloaded, domain)
+                    .unwrap_err()
+                    .root_failure(),
+                Some(crate::error::RootFailure::Unusable)
+            );
+            let active = match domain {
+                AppOwnedDefaultRoot::Databases => &reloaded.active_database_root,
+                AppOwnedDefaultRoot::Engines => &reloaded.active_engine_root,
+                AppOwnedDefaultRoot::Puzzles => &reloaded.active_puzzle_root,
+                _ => unreachable!(),
+            };
+            assert_eq!(active, &Some(id));
+            assert_eq!(fs::read(&registry_path).unwrap(), before);
         }
     }
 
@@ -17674,7 +17848,12 @@ mod tests {
         set_active_app_owned_test_root(&mut path_authority, root, &old_id);
 
         fs::remove_dir_all(&old_path).unwrap();
-        assert_active_app_owned_test_root_is_absent(&mut path_authority, root);
+        assert_eq!(
+            active_app_owned_test_root(&mut path_authority, root)
+                .unwrap_err()
+                .root_failure(),
+            Some(crate::error::RootFailure::Missing)
+        );
 
         let replacement = ensure_app_owned_default_dir(&app_data, root).unwrap();
         assert_ne!(replacement.identity(), old_identity);
@@ -17759,7 +17938,13 @@ mod tests {
 
         let old_identity = databases.identity();
         fs::remove_dir_all(databases.path()).unwrap();
-        assert_eq!(path_authority.active_database_root().unwrap(), None);
+        assert_eq!(
+            path_authority
+                .active_database_root()
+                .unwrap_err()
+                .root_failure(),
+            Some(crate::error::RootFailure::Missing)
+        );
         let replacement =
             ensure_app_owned_default_dir(&app_data, AppOwnedDefaultRoot::Databases).unwrap();
         assert_ne!(replacement.identity(), old_identity);
@@ -17857,7 +18042,13 @@ mod tests {
         );
 
         fs::remove_dir_all(databases.path()).unwrap();
-        assert_eq!(path_authority.active_database_root().unwrap(), None);
+        assert_eq!(
+            path_authority
+                .active_database_root()
+                .unwrap_err()
+                .root_failure(),
+            Some(crate::error::RootFailure::Missing)
+        );
         let replacement =
             ensure_app_owned_default_dir(&app_data, AppOwnedDefaultRoot::Databases).unwrap();
         let new_id = get_or_create_app_owned_test_root(
@@ -18090,7 +18281,13 @@ mod tests {
         path_authority.save().unwrap();
 
         fs::remove_dir_all(databases.path()).unwrap();
-        assert_eq!(path_authority.active_database_root().unwrap(), None);
+        assert_eq!(
+            path_authority
+                .active_database_root()
+                .unwrap_err()
+                .root_failure(),
+            Some(crate::error::RootFailure::Missing)
+        );
         let replacement =
             ensure_app_owned_default_dir(&app_data, AppOwnedDefaultRoot::Databases).unwrap();
         assert_ne!(replacement.identity(), databases.identity());
@@ -18353,7 +18550,10 @@ mod tests {
         #[cfg(windows)]
         fs::remove_dir(&root).unwrap();
         fs::rename(&replacement, &root).unwrap();
-        assert_eq!(reloaded.active_puzzle_root().unwrap(), None);
+        assert_eq!(
+            reloaded.active_puzzle_root().unwrap_err().root_failure(),
+            Some(crate::error::RootFailure::Changed)
+        );
     }
 
     #[test]
@@ -18376,7 +18576,10 @@ mod tests {
         #[cfg(windows)]
         fs::remove_dir(&root).unwrap();
         fs::rename(&replacement, &root).unwrap();
-        assert_eq!(reloaded.active_engine_root().unwrap(), None);
+        assert_eq!(
+            reloaded.active_engine_root().unwrap_err().root_failure(),
+            Some(crate::error::RootFailure::Changed)
+        );
     }
 
     #[test]
@@ -19907,7 +20110,7 @@ mod tests {
         );
     }
 
-    fn write_registry(path: &Path, registry: &Registry) {
+    pub(super) fn write_registry(path: &Path, registry: &Registry) {
         fs::write(path, serde_json::to_vec(registry).unwrap()).unwrap();
     }
 

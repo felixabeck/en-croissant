@@ -359,8 +359,9 @@ pub struct PuzzleDatabaseInfo {
     path: crate::infra::path_authority::PathRef,
 }
 
-fn active_or_default_puzzle_workspace<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+/// Refuses an unusable selected root; creates and activates the default only without a selection.
+fn active_or_default_puzzle_workspace(
+    app_data: impl FnOnce() -> Result<crate::infra::path_authority::AppDataDir, Error>,
     authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
 ) -> Result<crate::infra::path_authority::PuzzleRootDescriptor, Error> {
     let mut authority_lock = authority
@@ -373,7 +374,7 @@ fn active_or_default_puzzle_workspace<R: tauri::Runtime>(
         return Ok(workspace);
     }
     let authorized_dir = crate::infra::path_authority::ensure_app_owned_default_dir(
-        &crate::infra::path_authority::AppDataDir::for_app(app)?,
+        &app_data()?,
         crate::infra::path_authority::AppOwnedDefaultRoot::Puzzles,
     )?;
     let root = authority.get_or_create_puzzle_root(
@@ -434,6 +435,8 @@ fn issue_puzzle_workspace_blocking(
         .ok_or_else(|| Error::Conflict("selected puzzle workspace became unavailable".into()))
 }
 
+/// Returns the selected puzzle workspace or refuses an unusable selection. With no selection,
+/// creates and activates the app-owned default.
 #[tauri::command]
 #[specta::specta]
 pub async fn get_puzzle_workspace(
@@ -446,7 +449,12 @@ pub async fn get_puzzle_workspace(
     crate::infra::operations::run_accepted_blocking(
         &state.operations,
         "get_puzzle_workspace",
-        move || active_or_default_puzzle_workspace(&app, &authority),
+        move || {
+            active_or_default_puzzle_workspace(
+                || crate::infra::path_authority::AppDataDir::for_app(&app),
+                &authority,
+            )
+        },
     )
     .await
 }
@@ -470,7 +478,10 @@ fn issue_puzzle_download_destination_blocking<R: tauri::Runtime>(
     authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
     app: tauri::AppHandle<R>,
 ) -> Result<crate::infra::path_authority::PathRef, Error> {
-    let workspace = active_or_default_puzzle_workspace(&app, authority)?;
+    let workspace = active_or_default_puzzle_workspace(
+        || crate::infra::path_authority::AppDataDir::for_app(&app),
+        authority,
+    )?;
     authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
@@ -533,7 +544,10 @@ fn list_puzzle_databases_blocking<R: tauri::Runtime>(
     authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
     cancellation: &CancellationToken,
 ) -> Result<Vec<crate::infra::path_authority::PuzzleDatabaseDescriptor>, Error> {
-    let workspace = active_or_default_puzzle_workspace(app, authority)?;
+    let workspace = active_or_default_puzzle_workspace(
+        || crate::infra::path_authority::AppDataDir::for_app(app),
+        authority,
+    )?;
     authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
@@ -772,6 +786,80 @@ mod tests {
 
     use super::*;
     use tauri::Manager;
+
+    #[test]
+    fn puzzle_workspace_body_creates_and_activates_default_without_selection() {
+        use crate::infra::path_authority::{AppDataDir, PathAuthority};
+        let dir = tempfile::tempdir().unwrap();
+        let app_path = dir.path().join("app-data");
+        std::fs::create_dir(&app_path).unwrap();
+        let authority = std::sync::Mutex::new(Some(
+            PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap(),
+        ));
+        let workspace =
+            active_or_default_puzzle_workspace(|| Ok(AppDataDir::for_test(&app_path)), &authority)
+                .unwrap();
+        assert!(app_path.join("puzzles").is_dir());
+        let active = authority
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .active_puzzle_root()
+            .unwrap()
+            .unwrap();
+        assert_eq!(workspace.root, active.root);
+    }
+
+    #[test]
+    fn puzzle_workspace_body_refuses_unusable_selections_without_a_default() {
+        use crate::error::RootFailure;
+        use crate::infra::path_authority::AppDataDir;
+        for reason in [
+            RootFailure::Missing,
+            RootFailure::Changed,
+            #[cfg(unix)]
+            RootFailure::Unusable,
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let root_path = dir.path().join("selected");
+            let app_path = dir.path().join("app-data");
+            std::fs::create_dir(&root_path).unwrap();
+            std::fs::create_dir(&app_path).unwrap();
+            let (authority, _) = puzzle_workspace_authority(dir.path(), &root_path);
+            match reason {
+                RootFailure::Missing => std::fs::remove_dir(&root_path).unwrap(),
+                RootFailure::Changed => {
+                    std::fs::rename(&root_path, dir.path().join("moved")).unwrap();
+                    std::fs::create_dir(&root_path).unwrap();
+                }
+                #[cfg(unix)]
+                RootFailure::Unusable => {
+                    *authority.lock().unwrap() = Some(
+                        crate::infra::path_authority::portable_tests::reload_with_undecodable_root(
+                            &dir.path().join("registry.json"),
+                        ),
+                    );
+                }
+                _ => unreachable!(),
+            }
+            let registry = dir.path().join("registry.json");
+            let before = std::fs::read(&registry).unwrap();
+            let looked_up = std::cell::Cell::new(false);
+            let error = active_or_default_puzzle_workspace(
+                || {
+                    looked_up.set(true);
+                    Ok(AppDataDir::for_test(&app_path))
+                },
+                &authority,
+            )
+            .unwrap_err();
+            assert_eq!(error.root_failure(), Some(reason));
+            assert!(!looked_up.get());
+            assert!(!app_path.join("puzzles").exists());
+            assert_eq!(std::fs::read(&registry).unwrap(), before);
+        }
+    }
 
     async fn yield_until(mut ready: impl FnMut() -> bool) {
         while !ready() {

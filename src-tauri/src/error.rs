@@ -357,6 +357,7 @@ impl Error {
             Self::RootFailure { reason, .. } => Some(*reason),
             Self::Io(_) if self.is_missing_entry() => Some(RootFailure::Missing),
             Self::Io(error) => match error.kind() {
+                std::io::ErrorKind::NotFound => Some(RootFailure::Missing),
                 std::io::ErrorKind::PermissionDenied => Some(RootFailure::Permission),
                 std::io::ErrorKind::InvalidInput => Some(RootFailure::Unusable),
                 _ => None,
@@ -493,7 +494,9 @@ mod missing_entry_tests {
         for error in [original, rebuilt] {
             assert_eq!(error.is_missing_entry(), missing, "{error:?}");
             assert_eq!(error.category(), category, "{error:?}");
-            if missing {
+            if missing
+                || matches!(&error, Error::Io(source) if source.kind() == ErrorKind::NotFound)
+            {
                 assert_eq!(error.root_failure_reason(), Some(RootFailure::Missing));
             } else {
                 assert_ne!(error.root_failure_reason(), Some(RootFailure::Missing));
@@ -556,6 +559,22 @@ mod missing_entry_tests {
 #[cfg(test)]
 mod root_failure_tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn root_failure_missing_drive_and_network_preserves_narrow_missing_entry_class() {
+        use windows_sys::Win32::Foundation::{
+            ERROR_BAD_NETPATH, ERROR_BAD_NET_NAME, ERROR_INVALID_DRIVE,
+        };
+        for raw in [ERROR_INVALID_DRIVE, ERROR_BAD_NETPATH, ERROR_BAD_NET_NAME] {
+            let error = Error::from(std::io::Error::from_raw_os_error(raw as i32));
+            assert_eq!(error.root_failure_reason(), Some(RootFailure::Missing));
+            assert_eq!(
+                error.label_root_failure().root_failure(),
+                Some(RootFailure::Missing)
+            );
+        }
+    }
 
     #[test]
     fn root_failure_serialization_and_diagnostics_are_additive() {
