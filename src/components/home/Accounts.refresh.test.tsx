@@ -125,7 +125,10 @@ beforeEach(() => {
   ]);
   mocks.getLatestGameTimestamp.mockResolvedValue(null);
   mocks.issueDownloadDestination.mockResolvedValue({ id: "destination" });
-  mocks.downloadChessCom.mockResolvedValue({ id: { id: "pgn" }, kind: "fileWorkspace" });
+  mocks.downloadChessCom.mockResolvedValue({
+    handle: { id: { id: "pgn" }, kind: "fileWorkspace" },
+    durability: "Durable",
+  });
   mocks.startProgress.mockResolvedValue({ id: "chesscom_Felix", generation: 1n });
   mocks.convertPgn.mockResolvedValue(undefined);
   mocks.setProgressState.mockResolvedValue(undefined);

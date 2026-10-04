@@ -596,6 +596,7 @@
     "Home.Accounts.AllWebsites": "Todos os sites",
     "Home.Accounts.Authenticated": "Autenticada",
     "Home.Accounts.AuthenticationFailed": "Falha na autenticação",
+    "Home.Accounts.DownloadDurabilityUncertain": "As partidas foram transferidas, mas não foi possível confirmar completamente a gravação. Não volte a tentar.",
     "Home.Accounts.DownloadGames": "Transferir partidas",
     "Home.Accounts.Empty.Description": "Ligue a sua conta Lichess ou Chess.com para analisar as suas partidas e acompanhar o seu progresso.",
     "Home.Accounts.Empty.Title": "Não há contas ligadas",

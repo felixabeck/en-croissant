@@ -4,6 +4,8 @@ import { Provider, createStore } from "jotai";
 import { SWRConfig, type State } from "swr";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { AppError, AppErrorCategory } from "@/platform/errors";
+import type { ArtifactPublication } from "@/bindings";
+import english from "@/translation/en-US.json";
 import type { ManagedDatabaseInfo } from "@/utils/db";
 import { accountDownloadsInFlightAtom, databaseConversionStateAtom } from "@/state/atoms";
 import { AccountCard } from "./AccountCard";
@@ -54,7 +56,12 @@ vi.mock("@/platform/errors", async () => {
   return { ...actual, logFailureSafely: mocks.logFailureSafely };
 });
 vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.notify } }));
-vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock("react-i18next", () => ({
+  useTranslation: () => ({
+    t: (key: string) =>
+      key === "Home.Accounts.DownloadDurabilityUncertain" ? english.translation[key] : key,
+  }),
+}));
 vi.mock("@/platform/native", () => ({ warn: mocks.warn }));
 vi.mock("@/components/common/IconAction", () => ({
   IconAction: ({
@@ -208,8 +215,9 @@ function configureSuccessfulDownload(type: "chesscom" | "lichess" = "chesscom") 
   const handle = { id: { id: "database" }, kind: "database" as const };
   const lease = { id: `${type}_Felix`, generation: 1n };
   mocks.getLatestGameTimestamp.mockResolvedValue(null);
-  mocks.downloadChessCom.mockResolvedValue(artifact);
-  mocks.downloadLichess.mockResolvedValue(artifact);
+  const publication: ArtifactPublication = { handle: artifact, durability: "Durable" };
+  mocks.downloadChessCom.mockResolvedValue(publication);
+  mocks.downloadLichess.mockResolvedValue(publication);
   mocks.getDatabaseWorkspace.mockResolvedValue(root);
   mocks.listWorkspaceDatabases.mockResolvedValue([
     { handle, filename: `Felix_${type}.db3`, availability: "available" },
@@ -219,6 +227,62 @@ function configureSuccessfulDownload(type: "chesscom" | "lichess" = "chesscom") 
   mocks.setProgressState.mockResolvedValue(undefined);
   mocks.deleteEmptyGames.mockResolvedValue(undefined);
 }
+
+test.each(["lichess", "chesscom"] as const)(
+  "an uncertain %s publication warns once before importing its handle",
+  async (type) => {
+    configureSuccessfulDownload(type);
+    const publication: ArtifactPublication = {
+      handle: { id: { id: "uncertain-pgn" }, kind: "fileWorkspace" },
+      durability: { DurabilityUncertain: "DownloadTargetReplacement" },
+    };
+    const download = type === "lichess" ? mocks.downloadLichess : mocks.downloadChessCom;
+    download.mockResolvedValue(publication);
+    mocks.issueDownloadDestination.mockResolvedValue({ id: "dest" });
+    await renderCard({ type, accountHandle: "account" });
+
+    await act(async () => downloadButton().click());
+
+    expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
+      message:
+        "The games were downloaded, but the save could not be fully confirmed. Do not retry.",
+      color: "orange",
+    });
+    expect(mocks.convertPgn).toHaveBeenCalledExactlyOnceWith(
+      expect.stringMatching(/^conversion:[0-9a-f-]{36}$/),
+      [publication.handle],
+      { id: { id: "database" }, kind: "database" },
+      null,
+      `Felix ${type === "lichess" ? "Lichess" : "Chess.com"}`,
+      null,
+    );
+    expect(mocks.notify.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.convertPgn.mock.invocationCallOrder[0],
+    );
+    expect(download).toHaveBeenCalledTimes(1);
+  },
+);
+
+test.each(["lichess", "chesscom"] as const)(
+  "a durable %s publication imports its handle without a warning",
+  async (type) => {
+    configureSuccessfulDownload(type);
+    mocks.issueDownloadDestination.mockResolvedValue({ id: "dest" });
+    await renderCard({ type, accountHandle: "account" });
+
+    await act(async () => downloadButton().click());
+
+    expect(mocks.notify).not.toHaveBeenCalled();
+    expect(mocks.convertPgn).toHaveBeenCalledExactlyOnceWith(
+      expect.stringMatching(/^conversion:[0-9a-f-]{36}$/),
+      [{ id: { id: "pgn" }, kind: "fileWorkspace" }],
+      { id: { id: "database" }, kind: "database" },
+      null,
+      `Felix ${type === "lichess" ? "Lichess" : "Chess.com"}`,
+      null,
+    );
+  },
+);
 
 test.each(["chesscom", "lichess"] as const)(
   "a successful %s download refreshes databases after deleting empty games without a finished frame",
@@ -682,7 +746,7 @@ test("convertPgn failure is not masked when marking the lease failed also reject
   const handle = { id: { id: "database" }, kind: "database" as const };
   const lease = { id: "chesscom_Felix", generation: 1n };
   mocks.issueDownloadDestination.mockResolvedValue(destination);
-  mocks.downloadChessCom.mockResolvedValue(artifact);
+  mocks.downloadChessCom.mockResolvedValue({ handle: artifact, durability: "Durable" });
   mocks.getDatabaseWorkspace.mockResolvedValue(root);
   mocks.listWorkspaceDatabases.mockResolvedValue([
     { handle, filename: "Felix_chesscom.db3", availability: "available" },
@@ -729,7 +793,7 @@ test("a rejecting setProgressState after a successful convert still runs the pos
   const handle = { id: { id: "database" }, kind: "database" as const };
   const lease = { id: "chesscom_Felix", generation: 1n };
   mocks.issueDownloadDestination.mockResolvedValue(destination);
-  mocks.downloadChessCom.mockResolvedValue(artifact);
+  mocks.downloadChessCom.mockResolvedValue({ handle: artifact, durability: "Durable" });
   mocks.getDatabaseWorkspace.mockResolvedValue(root);
   mocks.listWorkspaceDatabases.mockResolvedValue([
     { handle, filename: "Felix_chesscom.db3", availability: "available" },

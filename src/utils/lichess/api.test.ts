@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { cancellationError } from "@/platform/tauri";
+import type { ArtifactPublication } from "@/bindings";
 
 const mocks = vi.hoisted(() => ({
     downloadLichessGames: vi.fn(),
@@ -30,12 +31,17 @@ vi.mock("@/platform/tauri", async () => {
 
 import { convertToNormalized, downloadLichess } from "./api";
 
+const publication: ArtifactPublication = {
+    handle: { id: { id: "artifact" }, kind: "fileWorkspace" },
+    durability: "Durable",
+};
+
 describe("convertToNormalized", () => {
     beforeEach(() => {
         mocks.logError.mockReset().mockResolvedValue(undefined);
         mocks.getPublicLichessJson.mockReset();
         mocks.lexPgn.mockReset();
-        mocks.downloadLichessGames.mockReset().mockResolvedValue({ handle: { id: "artifact" } });
+        mocks.downloadLichessGames.mockReset().mockResolvedValue(publication);
         mocks.releaseDownload.mockReset().mockResolvedValue(undefined);
         mocks.withDownloadTicket
             .mockReset()
@@ -160,9 +166,9 @@ describe("convertToNormalized", () => {
         const handle = { id: "account" };
         const destination = { id: "destination" };
 
-        await expect(downloadLichess(handle.id, destination, "player", 123, 2)).resolves.toEqual({
-            id: "artifact",
-        });
+        await expect(downloadLichess(handle.id, destination, "player", 123, 2)).resolves.toEqual(
+            publication,
+        );
         expect(mocks.downloadLichessGames).toHaveBeenCalledWith(
             handle.id,
             destination,
@@ -172,6 +178,20 @@ describe("convertToNormalized", () => {
             1800,
             "prepared-ticket",
         );
+    });
+
+    test("returns an uncertain publication unchanged", async () => {
+        const uncertain: ArtifactPublication = {
+            handle: publication.handle,
+            durability: { DurabilityUncertain: "DownloadTargetReplacement" },
+        };
+        mocks.downloadLichessGames.mockResolvedValue(uncertain);
+
+        await expect(
+            downloadLichess("account", { id: "destination" }, "player", null, 0),
+        ).resolves.toEqual(uncertain);
+        expect(mocks.downloadLichessGames).toHaveBeenCalledTimes(1);
+        expect(mocks.releaseDownload).not.toHaveBeenCalled();
     });
 
     test("releases the prepared ticket when the download command rejects", async () => {

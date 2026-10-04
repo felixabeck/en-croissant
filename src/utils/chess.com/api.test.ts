@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import type { PathRef } from "@/bindings";
+import type { ArtifactPublication, PathRef } from "@/bindings";
 
 const mocks = vi.hoisted(() => ({
     downloadChessComGames: vi.fn(),
@@ -22,9 +22,13 @@ vi.mock("@/platform/tauri", async () => {
 import { downloadChessCom } from "./api";
 
 const destination: PathRef = { id: "destination" };
+const publication: ArtifactPublication = {
+    handle: { id: { id: "artifact" }, kind: "fileWorkspace" },
+    durability: "Durable",
+};
 
 beforeEach(() => {
-    mocks.downloadChessComGames.mockReset().mockResolvedValue({ handle: { id: "artifact" } });
+    mocks.downloadChessComGames.mockReset().mockResolvedValue(publication);
     mocks.releaseDownload.mockReset().mockResolvedValue(undefined);
     mocks.withDownloadTicket
         .mockReset()
@@ -40,7 +44,7 @@ beforeEach(() => {
 
 describe("downloadChessCom", () => {
     test("passes the prepared ticket as the native job id", async () => {
-        await downloadChessCom(destination, "player", 123);
+        await expect(downloadChessCom(destination, "player", 123)).resolves.toEqual(publication);
 
         expect(mocks.downloadChessComGames).toHaveBeenCalledWith(
             destination,
@@ -49,6 +53,18 @@ describe("downloadChessCom", () => {
             123n,
             "prepared-ticket",
         );
+        expect(mocks.releaseDownload).not.toHaveBeenCalled();
+    });
+
+    test("returns an uncertain publication unchanged", async () => {
+        const uncertain: ArtifactPublication = {
+            handle: publication.handle,
+            durability: { DurabilityUncertain: "DownloadTargetReplacement" },
+        };
+        mocks.downloadChessComGames.mockResolvedValue(uncertain);
+
+        await expect(downloadChessCom(destination, "player", null)).resolves.toEqual(uncertain);
+        expect(mocks.downloadChessComGames).toHaveBeenCalledTimes(1);
         expect(mocks.releaseDownload).not.toHaveBeenCalled();
     });
 

@@ -377,8 +377,8 @@ beforeEach(() => {
   mocks.editDbInfo.mockResolvedValue(undefined);
   mocks.issueDownloadDestination.mockResolvedValue({ id: "dest" });
   mocks.downloadChessCom.mockResolvedValue({
-    id: { id: "account-pgn" },
-    kind: "fileWorkspace",
+    handle: { id: { id: "account-pgn" }, kind: "fileWorkspace" },
+    durability: "Durable",
   });
   mocks.startProgress.mockResolvedValue({ id: "chesscom_Felix", generation: 1n });
   mocks.setProgressState.mockResolvedValue(undefined);

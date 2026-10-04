@@ -588,6 +588,7 @@
     "Home.Accounts.AllWebsites": "Alle Webseiten",
     "Home.Accounts.Authenticated": "Angemeldet",
     "Home.Accounts.AuthenticationFailed": "Authentifizierung fehlgeschlagen",
+    "Home.Accounts.DownloadDurabilityUncertain": "Die Partien wurden heruntergeladen, aber das Speichern konnte nicht vollständig bestätigt werden. Nicht erneut versuchen.",
     "Home.Accounts.DownloadGames": "Partien laden",
     "Home.Accounts.Empty.Description": "Beschreibung",
     "Home.Accounts.Empty.Title": "Keine Konten verbunden",

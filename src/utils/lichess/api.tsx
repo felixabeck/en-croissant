@@ -5,6 +5,7 @@ import { makeFen } from "chessops/fen";
 import { makeSan } from "chessops/san";
 import { z } from "zod";
 import {
+  type ArtifactPublication,
   type BestMoves,
   type EngineOptions,
   type GoMode,
@@ -382,7 +383,7 @@ export async function downloadLichess(
   player: string,
   timestamp: number | null,
   games: number,
-) {
+): Promise<ArtifactPublication> {
   // The destination command is supplied by the native download authority.  The opaque handle
   // selects the credential in the OS keyring; renderer code never forms an Authorization header.
   const result = await withDownloadTicket((ticket) =>
@@ -396,9 +397,9 @@ export async function downloadLichess(
       ticket,
     ),
   );
-  // Native publication treats durability uncertainty as committed and returns the recovered
-  // capability. Never retry this operation from the renderer.
-  return result.handle;
+  // Return the whole publication so the caller can report its durability without retrying
+  // the committed download.
+  return result;
 }
 
 export async function getLichessGame(gameId: string): Promise<string> {

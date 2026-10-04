@@ -6,7 +6,7 @@ import { Chess } from "chessops";
 import { ChildNode, defaultGame, makePgn, type PgnNodeData } from "chessops/pgn";
 import { makeSan } from "chessops/san";
 import { z } from "zod";
-import { type PathRef } from "@/bindings";
+import { type ArtifactPublication, type PathRef } from "@/bindings";
 import i18n from "@/i18n";
 import { decodeTCN } from "./tcn";
 
@@ -54,7 +54,7 @@ export async function downloadChessCom(
   destination: PathRef,
   player: string,
   timestamp: number | null,
-) {
+): Promise<ArtifactPublication> {
   const result = await withDownloadTicket((ticket) =>
     tauri.downloadChessComGames(
       destination,
@@ -64,10 +64,9 @@ export async function downloadChessCom(
       ticket,
     ),
   );
-  // `durabilityUncertain` means the native rename committed but its parent-directory fsync
-  // acknowledgement was interrupted.  The capability is already durable/reconciled; retrying
-  // would overwrite it, so consumers proceed with this exact committed artifact.
-  return result.handle;
+  // Return the whole publication so the caller can report its durability without retrying
+  // the committed download.
+  return result;
 }
 
 const chessComGameSchema = z.object({

@@ -588,6 +588,7 @@
     "Home.Accounts.AllWebsites": "Tüm web siteleri",
     "Home.Accounts.Authenticated": "Kimliği doğrulandı",
     "Home.Accounts.AuthenticationFailed": "Kimlik doğrulama başarısız oldu",
+    "Home.Accounts.DownloadDurabilityUncertain": "Oyunlar indirildi, ancak kaydetme tam olarak doğrulanamadı. Yeniden denemeyin.",
     "Home.Accounts.DownloadGames": "Oyunları indir",
     "Home.Accounts.Empty.Description": "Oyunları indirmek ve istatistikleri görüntülemek için hesap ekleyin.",
     "Home.Accounts.Empty.Title": "Henüz hesap yok",

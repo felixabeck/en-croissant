@@ -1,5 +1,6 @@
 import { tauri, tauriSubscriptions } from "@/platform/tauri";
 import { Badge, Card, Group, Progress, SimpleGrid, Stack, Text, Tooltip } from "@mantine/core";
+import { notifications } from "@mantine/notifications";
 import {
   IconArrowDownRight,
   IconArrowRight,
@@ -15,7 +16,7 @@ import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useSWRConfig } from "swr";
 import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
-import type { DatabaseHandle, FileWorkspaceHandle, PathRef } from "@/bindings";
+import type { ArtifactPublication, DatabaseHandle, FileWorkspaceHandle, PathRef } from "@/bindings";
 import { IconAction } from "@/components/common/IconAction";
 import {
   notifyListenerError,
@@ -309,11 +310,11 @@ export function AccountCard({
                 setDownloadsInFlight((previous) => new Set(previous).add(accountKey));
                 try {
                   const lastGameDate = database ? await getLastGameDate({ database }) : null;
-                  let artifact: FileWorkspaceHandle;
+                  let publication: ArtifactPublication;
                   if (type === "lichess") {
                     if (!accountHandle) throw new Error("Authenticated Lichess account required");
                     const destination = await ensureDownloadDestination();
-                    artifact = await downloadLichess(
+                    publication = await downloadLichess(
                       accountHandle,
                       destination,
                       title,
@@ -322,11 +323,20 @@ export function AccountCard({
                     );
                   } else {
                     const destination = await ensureDownloadDestination();
-                    artifact = await downloadChessCom(destination, title, lastGameDate);
+                    publication = await downloadChessCom(destination, title, lastGameDate);
+                  }
+                  if (publication.durability !== "Durable") {
+                    notifications.show({
+                      message: t("Home.Accounts.DownloadDurabilityUncertain", {
+                        defaultValue:
+                          "The games were downloaded, but the save could not be fully confirmed. Do not retry.",
+                      }),
+                      color: "orange",
+                    });
                   }
                   let importFailed = true;
                   try {
-                    const databaseHandle = await convert(artifact, lastGameDate);
+                    const databaseHandle = await convert(publication.handle, lastGameDate);
                     await tauri.deleteEmptyGames(databaseHandle);
                     importFailed = false;
                   } finally {

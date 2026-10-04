@@ -604,6 +604,7 @@
     "Home.Accounts.AllWebsites": "Все сайты",
     "Home.Accounts.Authenticated": "Вход выполнен",
     "Home.Accounts.AuthenticationFailed": "Ошибка аутентификации",
+    "Home.Accounts.DownloadDurabilityUncertain": "Партии загружены, но сохранение не удалось полностью подтвердить. Не повторяйте попытку.",
     "Home.Accounts.DownloadGames": "Скачать партии",
     "Home.Accounts.Empty.Description": "Подключите учётную запись Lichess или Chess.com, чтобы анализировать свои партии и отслеживать прогресс.",
     "Home.Accounts.Empty.Title": "Нет подключённых учётных записей",
