@@ -79,13 +79,23 @@ no longer ever be anything but zero, so **the live import counter silently died*
 hundreds of thousands of games ran. A boundary checker that only looks at one side will happily
 green-light deleting the last listener for an event nobody stopped emitting.
 
-The event is now the registered `ConvertProgress { imported_games, elapsed_ms, source_file_name }`,
+The event is now the registered `ConvertProgress { id, imported_games, elapsed_ms, source_file_name }`,
 emitted best-effort (never `unwrap`), and consumed by `useConversionProgress` through the facade.
-`collect_events!` lists exactly `BestMovesPayload`, `ConvertProgress`, `DatabaseProgress`,
+`collect_events!` lists exactly `BestMovesPayload`, `ConvertProgress`, `DatabaseContentFailure`,
 `ProgressEvent`, `GameMoveEvent`, `ClockUpdateEvent`, `GameOverEvent` — there is no longer any event
 outside it. Keep it that way, and when a listener has to go, **check whether anything still emits to
 it before deleting it**; an event with a producer and no consumer is invisible to every gate in this
 repository.
+
+`ConvertProgress.id` is a **per-operation** id the renderer mints (`conversion:` plus
+`crypto.randomUUID()`) before it calls `convert_pgn`; Rust echoes it unchanged. Each conversion owns
+one entry in `databaseConversionStateAtom`, keyed by that id, and `useConversionProgress` applies a
+frame only to the entry with the same id — a frame for an unknown or retired id is dropped, never
+turned into an entry. **Never derive the id from the target database.** It was, until
+`f-20260914-06`: two imports into the same database shared `conversion:<database>`, both streams
+passed the filter, their counts and source names interleaved, and the first completion cleared the
+survivor's state. The backend queues a second conversion into the same target behind its write lock
+rather than refusing it, so a target is not an operation identity.
 
 ## What the gates already prove — do not restate it as a rule
 
