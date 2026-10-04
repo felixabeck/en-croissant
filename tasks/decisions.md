@@ -1770,7 +1770,7 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
   Removing the `setLoading` bridge also required `AddDatabase` to raise `inProgress` itself before
   converting, because that bridge was what set the flag synchronously on submit; without it a
   double-submit window opens until `onCreated` fires.
-* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** d-20261004-07
 
 ### d-20260904-19 — Is `SearchProgress` extracted for the second caller, and with what surface?
 
