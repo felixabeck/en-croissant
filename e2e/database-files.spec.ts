@@ -144,6 +144,8 @@ test("database-files: concurrent conversions render their own live progress coun
     const secondRow = page.getByText("Convert: second.pgn", { exact: true }).locator("../..");
     await expect(firstRow).toHaveText("Convert: first.pgn120 games • 60.0 games/s");
     await expect(secondRow).toHaveText("Convert: second.pgn42 games • 14.0 games/s");
+    await secondRow.scrollIntoViewIfNeeded();
+    await expect(secondRow).toBeInViewport();
     await expect(page.getByRole("button", { name: /^add new$/i })).toBeDisabled();
     await expect(page).toHaveScreenshot("database-concurrent-conversions.png", { fullPage: true });
 });

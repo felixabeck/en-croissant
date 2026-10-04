@@ -264,35 +264,35 @@ export default function DatabasesPage() {
               </IconAction>
             </Group>
             <Divider />
-            {conversionState.map((entry) => (
-              <Fragment key={entry.id}>
-                <Group px="xs" py={6} gap="xs" justify="space-between">
-                  <Group gap={6}>
-                    <Loader size="xs" />
-                    <Text size="sm">
-                      {entry.sourceFileName || entry.targetDatabaseTitle
-                        ? `${t("Databases.Add.Convert")}: ${entry.sourceFileName ?? entry.targetDatabaseTitle}`
-                        : t("Databases.Add.Convert")}
-                    </Text>
-                  </Group>
-                  {entry.totalGames > 0 && (
-                    <Text size="xs" c="dimmed">
-                      {t("Files.GameCountSuffix", { number: entry.totalGames })}
-                      {entry.elapsedSeconds > 0
-                        ? ` • ${(entry.totalGames / entry.elapsedSeconds).toFixed(1)} games/s`
-                        : ""}
-                    </Text>
-                  )}
-                </Group>
-                <Divider />
-              </Fragment>
-            ))}
             <ScrollArea
               // `auto`, not a zero basis: a scroll container's minimum height is zero, so with no
               // basis of its own the list got no share of a stacked panel and vanished.
               flex="1 1 auto"
               viewportProps={{ tabIndex: 0, "aria-label": t("Databases.Title") }}
             >
+              {conversionState.map((entry) => (
+                <Fragment key={entry.id}>
+                  <Group px="xs" py={6} gap="xs" justify="space-between">
+                    <Group gap={6}>
+                      <Loader size="xs" />
+                      <Text size="sm">
+                        {entry.sourceFileName || entry.targetDatabaseTitle
+                          ? `${t("Databases.Add.Convert")}: ${entry.sourceFileName ?? entry.targetDatabaseTitle}`
+                          : t("Databases.Add.Convert")}
+                      </Text>
+                    </Group>
+                    {entry.totalGames > 0 && (
+                      <Text size="xs" c="dimmed">
+                        {t("Files.GameCountSuffix", { number: entry.totalGames })}
+                        {entry.elapsedSeconds > 0
+                          ? ` • ${(entry.totalGames / entry.elapsedSeconds).toFixed(1)} games/s`
+                          : ""}
+                      </Text>
+                    )}
+                  </Group>
+                  <Divider />
+                </Fragment>
+              ))}
               {failure !== "silent" && (
                 <Stack role="alert" c="red" p={{ base: "xs", sm: "md" }} miw={0}>
                   <Text className="wrap-anywhere">{loadFailureMessages[failure]}</Text>
