@@ -101,26 +101,26 @@ function FileCard({ selected }: { selected: FileMetadata }) {
         </Text>
       </Group>
 
-      {selectedGame && (
-        <>
-          {/* Both parts share what the header leaves, by ratio, from a zero basis: a fixed preview
-              share once left the list two rows in a short window. The floor keeps ~4 rows. */}
-          <Box flex="2 1 0" mih={GAME_LIST_MIN_HEIGHT}>
-            <Divider />
-            <GameSelector
-              setGames={setGames}
-              games={games}
-              activePage={page}
-              path={selected.handle}
-              setPage={setPage}
-              total={selected.numGames}
-            />
-            <Divider />
-          </Box>
-          <Box flex="3 1 0" mih={0} px="xs" pb="xs">
-            <GamePreview pgn={selectedGame} hideControls={narrow} fitHeight />
-          </Box>
-        </>
+      {/* When both parts render, they share what the header leaves, by ratio, from a zero basis:
+          a fixed preview share once left the list two rows in a short window. The floor keeps ~4 rows. */}
+      {selected.numGames > 0 && (
+        <Box flex="2 1 0" mih={GAME_LIST_MIN_HEIGHT}>
+          <Divider />
+          <GameSelector
+            setGames={setGames}
+            games={games}
+            activePage={page}
+            path={selected.handle}
+            setPage={setPage}
+            total={selected.numGames}
+          />
+          <Divider />
+        </Box>
+      )}
+      {selectedGame !== null && (
+        <Box flex="3 1 0" mih={0} px="xs" pb="xs">
+          <GamePreview pgn={selectedGame} hideControls={narrow} fitHeight />
+        </Box>
       )}
     </Stack>
   );

@@ -69,9 +69,9 @@ vi.mock("../databases/GamePreview", () => ({
 }));
 
 vi.mock("../panels/info/GameSelector", () => ({
-  default: ({ setPage }: { setPage: (page: number) => void }) => (
-    <button type="button" data-testid="game-selector" onClick={() => setPage(1)}>
-      Select game B
+  default: ({ activePage, setPage }: { activePage: number; setPage: (page: number) => void }) => (
+    <button type="button" data-testid="game-selector" onClick={() => setPage(activePage + 1)}>
+      Select next game
     </button>
   ),
 }));
@@ -237,6 +237,45 @@ describe("FileCard", () => {
     expect(mocks.showNotification.mock.calls).toEqual(
       notifications.map((notification) => [notification]),
     );
+
+    const selector = container.querySelector<HTMLButtonElement>("[data-testid='game-selector']");
+    expect(selector).not.toBeNull();
+    expect(selector?.disabled).toBe(false);
+    mocks.readGames.mockResolvedValueOnce([stampedGame("pgn-from-game-C", "c")]);
+    await act(async () => {
+      selector!.click();
+    });
+
+    expect(mocks.readGames).toHaveBeenCalledTimes(3);
+    expect(mocks.readGames).toHaveBeenLastCalledWith(sampleFileA.handle, 2, 2, {
+      signal: expect.any(AbortSignal),
+    });
+    expect(container.querySelector("[data-testid='game-preview']")?.textContent).toBe(
+      "pgn-from-game-C",
+    );
+    expect(mocks.showNotification.mock.calls).toEqual(
+      notifications.map((notification) => [notification]),
+    );
+  });
+
+  test("keeps the game selector rendered when the first read fails", async () => {
+    const error = new Error("Failed to read game A");
+    mocks.readGames.mockRejectedValueOnce(error);
+
+    await renderWithMantine(<FileCard selected={sampleFileA} />, root);
+
+    expect(mocks.readGames).toHaveBeenCalledTimes(1);
+    expect(mocks.readGames).toHaveBeenCalledWith(sampleFileA.handle, 0, 0, {
+      signal: expect.any(AbortSignal),
+    });
+    expect(container.querySelector("[data-testid='game-preview']")).toBeNull();
+    expect(container.querySelector("[data-testid='game-selector']")).not.toBeNull();
+    expect(mocks.showNotification).toHaveBeenCalledTimes(1);
+    expect(mocks.showNotification).toHaveBeenCalledWith({
+      color: "red",
+      title: "Common.Error",
+      message: error.message,
+    });
   });
 
   test("active readGames error triggers notification", async () => {
