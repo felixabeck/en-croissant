@@ -25,11 +25,9 @@ function findAccountDatabase(databases: ManagedDatabaseInfo[], filename: string)
 
 function AccountCards({
   databases,
-  setDatabases,
   onAddAccount,
 }: {
   databases: ManagedDatabaseInfo[];
-  setDatabases: React.Dispatch<React.SetStateAction<ManagedDatabaseInfo[]>>;
   onAddAccount: () => void;
 }) {
   const sessions = useAtomValue(sessionsAtom);
@@ -52,13 +50,7 @@ function AccountCards({
     <ScrollArea offsetScrollbars>
       <Stack>
         {playerSessions.map(({ name, sessions }) => (
-          <PlayerSession
-            key={name}
-            name={name!}
-            sessions={sessions}
-            databases={databases}
-            setDatabases={setDatabases}
-          />
+          <PlayerSession key={name} name={name!} sessions={sessions} databases={databases} />
         ))}
       </Stack>
     </ScrollArea>
@@ -69,12 +61,10 @@ function PlayerSession({
   name,
   sessions,
   databases,
-  setDatabases,
 }: {
   name: string;
   sessions: Session[];
   databases: ManagedDatabaseInfo[];
-  setDatabases: React.Dispatch<React.SetStateAction<ManagedDatabaseInfo[]>>;
 }) {
   const { t } = useTranslation();
   const [, setSessions] = useAtom(sessionsAtom);
@@ -172,7 +162,6 @@ function PlayerSession({
             key={i}
             session={session}
             databases={databases}
-            setDatabases={setDatabases}
             setSessions={setSessions}
           />
         ))}
@@ -184,12 +173,10 @@ function PlayerSession({
 function LichessOrChessCom({
   session,
   databases,
-  setDatabases,
   setSessions,
 }: {
   session: Session;
   databases: ManagedDatabaseInfo[];
-  setDatabases: React.Dispatch<React.SetStateAction<ManagedDatabaseInfo[]>>;
   setSessions: React.Dispatch<React.SetStateAction<Session[]>>;
 }) {
   const { t } = useTranslation();
@@ -246,7 +233,6 @@ function LichessOrChessCom({
           }
           setSessions((sessions) => sessions.filter((s) => s.lichess?.account.id !== account.id));
         }}
-        setDatabases={setDatabases}
         reload={async () => {
           const account = await getLichessAccount(
             lichessSession.handle
@@ -314,7 +300,6 @@ function LichessOrChessCom({
             ),
           );
         }}
-        setDatabases={setDatabases}
       />
     );
   }

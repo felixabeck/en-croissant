@@ -1,6 +1,7 @@
 import { getDefaultStore } from "jotai";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { SWRConfig } from "swr";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { sessionsAtom } from "@/state/atoms";
 import type { ManagedDatabaseInfo } from "@/utils/db";
@@ -66,7 +67,9 @@ const session = {
 async function renderCards(databases: ManagedDatabaseInfo[] = []) {
   await act(async () => {
     root.render(
-      <AccountCards databases={databases} setDatabases={vi.fn()} onAddAccount={vi.fn()} />,
+      <SWRConfig value={{ provider: () => new Map() }}>
+        <AccountCards databases={databases} onAddAccount={vi.fn()} />
+      </SWRConfig>,
     );
   });
 }

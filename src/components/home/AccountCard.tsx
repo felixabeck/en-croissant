@@ -13,6 +13,7 @@ import {
 import { useAtom } from "jotai";
 import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useSWRConfig } from "swr";
 import type { DatabaseHandle, FileWorkspaceHandle, PathRef } from "@/bindings";
 import { IconAction } from "@/components/common/IconAction";
 import {
@@ -47,7 +48,6 @@ interface AccountCardProps {
   }[];
   logout: () => void | Promise<void>;
   reload: () => void | Promise<void>;
-  setDatabases: (databases: ManagedDatabaseInfo[]) => void;
   authenticated?: boolean;
   accountHandle?: string;
 }
@@ -112,11 +112,11 @@ export function AccountCard({
   stats,
   logout,
   reload,
-  setDatabases,
   authenticated,
   accountHandle,
 }: AccountCardProps) {
   const { t } = useTranslation();
+  const { mutate } = useSWRConfig();
   const accountKey = `${type}_${title}`;
   const items = stats.map((stat) => {
     let color = "gray.5";
@@ -244,14 +244,14 @@ export function AccountCard({
 
   async function refreshDatabases(importFailed: boolean): Promise<void> {
     try {
-      setDatabases(await getDatabases());
+      await mutate("databases", getDatabases(), { revalidate: false });
     } catch (refreshCause) {
       if (!importFailed) throw refreshCause;
       const primaryFailure = safeFailureContext(refreshCause);
       await logFailureSafely(
-        `Account import database refresh failed: ${primaryFailure.message}`,
+        `Account import database refresh failed for ${accountKey}: ${primaryFailure.message}`,
         { operation: "account import database refresh", primaryFailure },
-        "Account import refresh logging failed",
+        `Account import refresh logging failed for ${accountKey}`,
       );
     }
   }

@@ -1,6 +1,7 @@
 import { MantineProvider } from "@mantine/core";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
+import { SWRConfig } from "swr";
 import { beforeEach, expect, test, vi } from "vitest";
 import { installMatchMediaStub } from "@/tests/matchMedia";
 
@@ -67,38 +68,33 @@ test.each([
   },
 );
 
-test("does not refresh databases after unmount", async () => {
+test("a progress frame does not publish databases before or after unmount", async () => {
   let progressListener!: (event: {
     payload: { id: string; progress: number; finished: boolean };
   }) => void;
-  let resolveDatabases!: (databases: []) => void;
-  const setDatabases = vi.fn();
+  const cache = new Map();
   mocks.progress.mockImplementation(async (listener) => {
     progressListener = listener;
     return vi.fn();
   });
-  mocks.getDatabases.mockReturnValue(
-    new Promise<[]>((resolve) => {
-      resolveDatabases = resolve;
-    }),
-  );
   const host = document.createElement("div");
   document.body.append(host);
   const root = createRoot(host);
   await act(async () => {
     root.render(
       <MantineProvider>
-        <AccountCard
-          type="lichess"
-          database={null}
-          title="Felix"
-          updatedAt={0}
-          total={0}
-          stats={[]}
-          logout={vi.fn()}
-          reload={vi.fn()}
-          setDatabases={setDatabases}
-        />
+        <SWRConfig value={{ provider: () => cache }}>
+          <AccountCard
+            type="lichess"
+            database={null}
+            title="Felix"
+            updatedAt={0}
+            total={0}
+            stats={[]}
+            logout={vi.fn()}
+            reload={vi.fn()}
+          />
+        </SWRConfig>
       </MantineProvider>,
     );
   });
@@ -107,8 +103,11 @@ test("does not refresh databases after unmount", async () => {
   });
 
   await act(async () => root.unmount());
-  await act(async () => resolveDatabases([]));
+  act(() => {
+    progressListener({ payload: { id: "lichess_Felix", progress: 100, finished: true } });
+  });
 
-  expect(setDatabases).not.toHaveBeenCalled();
+  expect(mocks.getDatabases).not.toHaveBeenCalled();
+  expect(cache.get("databases")?.data).toBeUndefined();
   host.remove();
 });

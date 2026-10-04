@@ -420,7 +420,6 @@ async function renderRoute(account = false) {
               stats={[]}
               logout={vi.fn()}
               reload={vi.fn()}
-              setDatabases={vi.fn()}
             />
           ) : null}
         </SWRConfig>

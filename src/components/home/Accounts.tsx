@@ -10,11 +10,13 @@ import {
 import { IconPlus } from "@tabler/icons-react";
 import { useAtom, useAtomValue } from "jotai";
 import { notifications } from "@mantine/notifications";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import useSWR from "swr";
+import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import { sessionsAtom } from "@/state/atoms";
 import { getChessComAccount } from "@/utils/chess.com/api";
-import { getDatabases, type ManagedDatabaseInfo } from "@/utils/db";
+import { getDatabases } from "@/utils/db";
 import { getLichessAccount } from "@/utils/lichess/api";
 import { authenticateLichess } from "@/utils/lichess/authentication";
 import { type ChessComSession, type LichessSession, upsertLichessSession } from "@/utils/session";
@@ -26,24 +28,13 @@ import LichessLogo from "./LichessLogo";
 function Accounts() {
   const { t } = useTranslation();
   const [sessions, setSessions] = useAtom(sessionsAtom);
-  const [databases, setDatabases] = useState<ManagedDatabaseInfo[]>([]);
-  useEffect(() => {
-    let active = true;
-    const controller = new AbortController();
-    void getDatabases({ signal: controller.signal })
-      .then((dbs) => {
-        if (active) setDatabases(dbs);
-      })
-      .catch(() => {
-        // Account management remains usable without an import destination. The database page
-        // owns the visible retry/error state for the shared workspace.
-        if (active) setDatabases([]);
-      });
-    return () => {
-      active = false;
-      controller.abort();
-    };
-  }, []);
+  const databaseOwner = useNativeRequestOwner("databases");
+  const { data } = useSWR("databases", () =>
+    databaseOwner!.run((signal) => getDatabases({ signal })),
+  );
+  // Account management remains usable without an import destination. The database page
+  // owns the visible retry/error state for the shared workspace.
+  const databases = data ?? [];
   const [open, setOpen] = useState(false);
 
   const addChessComSession = useCallback(
@@ -141,11 +132,7 @@ function Accounts() {
 
   return (
     <>
-      <AccountCards
-        databases={databases}
-        setDatabases={setDatabases}
-        onAddAccount={() => setOpen(true)}
-      />
+      <AccountCards databases={databases} onAddAccount={() => setOpen(true)} />
       {sessions.length > 0 && (
         <Group>
           <Button

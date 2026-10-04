@@ -1,9 +1,12 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Provider, createStore } from "jotai";
+import useSWR, { SWRConfig, type State } from "swr";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { AppError, AppErrorCategory } from "@/platform/errors";
 import type { ManagedDatabaseInfo } from "@/utils/db";
+import { getDatabases } from "@/utils/db";
+import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import { accountDownloadsInFlightAtom, databaseConversionStateAtom } from "@/state/atoms";
 import { AccountCard } from "./AccountCard";
 
@@ -106,11 +109,13 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root;
 let host: HTMLDivElement;
 let store: ReturnType<typeof createStore>;
+let cache: Map<string, State<ManagedDatabaseInfo[]>>;
 
 beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
   store = createStore();
+  cache = new Map();
   mocks.progress.mockResolvedValue(vi.fn());
   mocks.getDatabases.mockResolvedValue([]);
   mocks.logFailureSafely.mockResolvedValue(undefined);
@@ -124,22 +129,54 @@ afterEach(async () => {
   host.remove();
 });
 
-async function renderCard(props: Partial<React.ComponentProps<typeof AccountCard>> = {}) {
+function DatabaseConsumer() {
+  const databaseOwner = useNativeRequestOwner("databases");
+  const { data } = useSWR("databases", () =>
+    databaseOwner!.run((signal) => getDatabases({ signal })),
+  );
+  const database = data?.[0];
+  return (
+    <output data-testid="database-count">
+      {database?.type === "success" ? database.game_count : "unavailable"}
+    </output>
+  );
+}
+
+function cachedDatabases() {
+  return cache.get("databases")?.data;
+}
+
+async function renderCard(
+  props: Partial<React.ComponentProps<typeof AccountCard>> = {},
+  withConsumer = false,
+) {
+  await renderCards([props], withConsumer);
+}
+
+async function renderCards(
+  cards: Partial<React.ComponentProps<typeof AccountCard>>[],
+  withConsumer = false,
+) {
   await act(async () => {
     root.render(
       <Provider store={store}>
-        <AccountCard
-          type="chesscom"
-          database={null}
-          title="Felix"
-          updatedAt={0}
-          total={0}
-          stats={[]}
-          logout={vi.fn()}
-          reload={vi.fn()}
-          setDatabases={vi.fn()}
-          {...props}
-        />
+        <SWRConfig value={{ provider: () => cache, dedupingInterval: 0 }}>
+          {withConsumer && <DatabaseConsumer />}
+          {cards.map((props, index) => (
+            <AccountCard
+              key={props.title ?? index}
+              type="chesscom"
+              database={null}
+              title="Felix"
+              updatedAt={0}
+              total={0}
+              stats={[]}
+              logout={vi.fn()}
+              reload={vi.fn()}
+              {...props}
+            />
+          ))}
+        </SWRConfig>
       </Provider>,
     );
   });
@@ -216,10 +253,9 @@ test.each(["chesscom", "lichess"] as const)(
       }),
     );
     mocks.issueDownloadDestination.mockResolvedValue({ id: "dest" });
-    const setDatabases = vi.fn();
     const databases = accountDatabases(type);
     mocks.getDatabases.mockResolvedValue(databases);
-    await renderCard({ type, accountHandle: "account", setDatabases });
+    await renderCard({ type, accountHandle: "account" });
 
     await act(async () => downloadButton().click());
 
@@ -228,14 +264,14 @@ test.each(["chesscom", "lichess"] as const)(
       kind: "database",
     });
     expect(mocks.getDatabases).not.toHaveBeenCalled();
-    expect(setDatabases).not.toHaveBeenCalled();
+    expect(cachedDatabases()).toBeUndefined();
     expect(downloadButton().disabled).toBe(true);
     expect(downloadButton().getAttribute("data-pending")).toBe("true");
 
     await act(async () => resolveDeletion());
 
     expect(mocks.getDatabases).toHaveBeenCalledTimes(1);
-    expect(setDatabases).toHaveBeenCalledWith(databases);
+    expect(cachedDatabases()).toEqual(databases);
     expect(mocks.notify).not.toHaveBeenCalled();
     expect(downloadButton().disabled).toBe(false);
     expect(downloadButton().getAttribute("data-pending")).toBeNull();
@@ -249,8 +285,7 @@ test("a finished progress frame leaves Download pending until cleanup and refres
   const refresh = deferred<ManagedDatabaseInfo[]>();
   mocks.deleteEmptyGames.mockReturnValue(deletion.promise);
   mocks.getDatabases.mockReturnValue(refresh.promise);
-  const setDatabases = vi.fn();
-  await renderCard({ setDatabases });
+  await renderCard();
   await act(async () => downloadButton().click());
   expect(mocks.deleteEmptyGames).toHaveBeenCalledTimes(1);
 
@@ -277,10 +312,62 @@ test("a finished progress frame leaves Download pending until cleanup and refres
   expect(downloadButton().getAttribute("data-pending")).toBe("true");
   const databases = accountDatabases();
   await act(async () => refresh.resolve(databases));
-  expect(setDatabases).toHaveBeenCalledWith(databases);
+  expect(cachedDatabases()).toEqual(databases);
   expect(downloadButton().disabled).toBe(false);
   expect(downloadButton().getAttribute("data-pending")).toBeNull();
   expect(store.get(accountDownloadsInFlightAtom).size).toBe(0);
+});
+
+test("concurrent account downloads retain each other's pending state", async () => {
+  configureSuccessfulDownload();
+  mocks.issueDownloadDestination.mockResolvedValue({ id: "dest" });
+  mocks.downloadDestinationIsKnown.mockResolvedValue(true);
+  const conversionA = deferred<void>();
+  const conversionB = deferred<void>();
+  const handleA = { id: { id: "database-a" }, kind: "database" as const };
+  const handleB = { id: { id: "database-b" }, kind: "database" as const };
+  mocks.listWorkspaceDatabases.mockResolvedValue([
+    { handle: handleA, filename: "Felix_chesscom.db3", availability: "available" },
+    { handle: handleB, filename: "Alex_chesscom.db3", availability: "available" },
+  ]);
+  mocks.startProgress.mockImplementation(async (id: string) => ({ id, generation: 1n }));
+  mocks.convertPgn
+    .mockReturnValueOnce(conversionA.promise)
+    .mockReturnValueOnce(conversionB.promise);
+  await renderCards([{ title: "Felix" }, { title: "Alex" }]);
+  const [buttonA, buttonB] = host.querySelectorAll<HTMLButtonElement>(
+    'button[aria-label="Home.Accounts.DownloadGames"]',
+  );
+
+  await act(async () => buttonA.click());
+  expect(mocks.convertPgn).toHaveBeenCalledTimes(1);
+  expect(buttonA.disabled).toBe(true);
+  expect(buttonA.getAttribute("data-pending")).toBe("true");
+  expect(buttonB.disabled).toBe(false);
+
+  await act(async () => buttonB.click());
+  expect(mocks.convertPgn).toHaveBeenCalledTimes(2);
+  expect(buttonA.disabled).toBe(true);
+  expect(buttonA.getAttribute("data-pending")).toBe("true");
+  expect(buttonB.disabled).toBe(true);
+  expect(buttonB.getAttribute("data-pending")).toBe("true");
+  expect(store.get(accountDownloadsInFlightAtom)).toEqual(
+    new Set(["chesscom_Felix", "chesscom_Alex"]),
+  );
+
+  await act(async () => conversionB.resolve());
+  expect(buttonB.disabled).toBe(false);
+  expect(buttonB.getAttribute("data-pending")).toBeNull();
+  expect(buttonA.disabled).toBe(true);
+  expect(buttonA.getAttribute("data-pending")).toBe("true");
+  expect(store.get(accountDownloadsInFlightAtom)).toEqual(new Set(["chesscom_Felix"]));
+
+  await act(async () => conversionA.resolve());
+  expect(buttonA.disabled).toBe(false);
+  expect(buttonA.getAttribute("data-pending")).toBeNull();
+  expect(buttonB.disabled).toBe(false);
+  expect(store.get(accountDownloadsInFlightAtom).size).toBe(0);
+  expect(mocks.notify).not.toHaveBeenCalled();
 });
 
 test("a remounted account stays pending and cannot start a second download", async () => {
@@ -288,13 +375,12 @@ test("a remounted account stays pending and cannot start a second download", asy
   mocks.issueDownloadDestination.mockResolvedValue({ id: "dest" });
   const conversion = deferred<void>();
   mocks.convertPgn.mockReturnValue(conversion.promise);
-  const props = { setDatabases: vi.fn() };
-  await renderCard(props);
+  await renderCard();
   await act(async () => downloadButton().click());
   expect(mocks.convertPgn).toHaveBeenCalledTimes(1);
   await act(async () => root.unmount());
   root = createRoot(host);
-  await renderCard(props);
+  await renderCard();
 
   expect(downloadButton().disabled).toBe(true);
   expect(downloadButton().getAttribute("data-pending")).toBe("true");
@@ -308,19 +394,68 @@ test("a remounted account stays pending and cannot start a second download", asy
   expect(store.get(accountDownloadsInFlightAtom).size).toBe(0);
 });
 
+test("a post-cleanup refresh wins over the remounted consumer's older in-flight listing", async () => {
+  configureSuccessfulDownload();
+  mocks.issueDownloadDestination.mockResolvedValue({ id: "dest" });
+  const deletion = deferred<void>();
+  const listing = deferred<ManagedDatabaseInfo[]>();
+  const refresh = deferred<ManagedDatabaseInfo[]>();
+  const oldDatabases = accountDatabases();
+  const newDatabases = oldDatabases.map((database) =>
+    database.type === "success" ? { ...database, game_count: 8 } : database,
+  );
+  mocks.deleteEmptyGames.mockReturnValue(deletion.promise);
+  mocks.getDatabases
+    .mockResolvedValueOnce(oldDatabases)
+    .mockReturnValueOnce(listing.promise)
+    .mockReturnValueOnce(refresh.promise);
+  await renderCard({}, true);
+  expect(host.querySelector("output")?.textContent).toBe("3");
+  await act(async () => downloadButton().click());
+  expect(mocks.deleteEmptyGames).toHaveBeenCalledTimes(1);
+  expect(mocks.getDatabases).toHaveBeenCalledTimes(1);
+
+  await act(async () => root.unmount());
+  root = createRoot(host);
+  await renderCard({}, true);
+  await act(async () => {
+    await vi.waitFor(() => {
+      if (mocks.getDatabases.mock.calls.length !== 2) {
+        throw new Error("The remounted consumer has not started its listing");
+      }
+    });
+  });
+  expect(host.querySelector("output")?.textContent).toBe("3");
+  expect(downloadButton().disabled).toBe(true);
+
+  await act(async () => deletion.resolve());
+  expect(mocks.getDatabases).toHaveBeenCalledTimes(3);
+  expect(mocks.getDatabases).toHaveBeenLastCalledWith();
+  expect(downloadButton().disabled).toBe(true);
+  await act(async () => refresh.resolve(newDatabases));
+  expect(host.querySelector("output")?.textContent).toBe("8");
+  expect(cachedDatabases()).toEqual(newDatabases);
+  expect(downloadButton().disabled).toBe(false);
+
+  await act(async () => listing.resolve(oldDatabases));
+  expect(host.querySelector("output")?.textContent).toBe("8");
+  expect(cachedDatabases()).toEqual(newDatabases);
+  expect(mocks.notify).not.toHaveBeenCalled();
+  expect(store.get(accountDownloadsInFlightAtom).size).toBe(0);
+});
+
 test("a failed deleteEmptyGames refreshes databases and notifies the cleanup error", async () => {
   configureSuccessfulDownload();
   mocks.issueDownloadDestination.mockResolvedValue({ id: "dest" });
   mocks.deleteEmptyGames.mockRejectedValue(new Error("cleanup failed"));
   const databases = accountDatabases();
   mocks.getDatabases.mockResolvedValue(databases);
-  const setDatabases = vi.fn();
-  await renderCard({ setDatabases });
+  await renderCard();
 
   await act(async () => downloadButton().click());
 
   expect(mocks.getDatabases).toHaveBeenCalledTimes(1);
-  expect(setDatabases).toHaveBeenCalledExactlyOnceWith(databases);
+  expect(cachedDatabases()).toEqual(databases);
   expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
     color: "red",
     title: "Common.Error",
@@ -341,14 +476,13 @@ test("a failed convertPgn refreshes the newly created database and skips cleanup
   mocks.convertPgn.mockRejectedValue(new Error("convert failed"));
   const databases = accountDatabases();
   mocks.getDatabases.mockResolvedValue(databases);
-  const setDatabases = vi.fn();
-  await renderCard({ setDatabases });
+  await renderCard();
 
   await act(async () => downloadButton().click());
 
   expect(mocks.createWorkspaceDatabase).toHaveBeenCalledTimes(1);
   expect(mocks.getDatabases).toHaveBeenCalledTimes(1);
-  expect(setDatabases).toHaveBeenCalledExactlyOnceWith(databases);
+  expect(cachedDatabases()).toEqual(databases);
   expect(mocks.deleteEmptyGames).not.toHaveBeenCalled();
   expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
     color: "red",
@@ -364,21 +498,20 @@ test("a refresh failure after failed conversion logs without replacing the conve
   mocks.issueDownloadDestination.mockResolvedValue({ id: "dest" });
   mocks.convertPgn.mockRejectedValue(new Error("convert failed"));
   mocks.getDatabases.mockRejectedValue(new Error("refresh failed"));
-  const setDatabases = vi.fn();
-  await renderCard({ setDatabases });
+  await renderCard();
 
   await act(async () => downloadButton().click());
 
   expect(mocks.getDatabases).toHaveBeenCalledTimes(1);
-  expect(setDatabases).not.toHaveBeenCalled();
+  expect(cachedDatabases()).toBeUndefined();
   expect(mocks.deleteEmptyGames).not.toHaveBeenCalled();
   expect(mocks.logFailureSafely).toHaveBeenCalledExactlyOnceWith(
-    "Account import database refresh failed: refresh failed",
+    "Account import database refresh failed for chesscom_Felix: refresh failed",
     {
       operation: "account import database refresh",
       primaryFailure: { category: "unexpected", message: "refresh failed" },
     },
-    "Account import refresh logging failed",
+    "Account import refresh logging failed for chesscom_Felix",
   );
   expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
     color: "red",
@@ -389,9 +522,36 @@ test("a refresh failure after failed conversion logs without replacing the conve
   expect(store.get(accountDownloadsInFlightAtom).size).toBe(0);
 });
 
+test("a refresh failure after failed cleanup logs without replacing the cleanup error", async () => {
+  configureSuccessfulDownload();
+  mocks.issueDownloadDestination.mockResolvedValue({ id: "dest" });
+  mocks.deleteEmptyGames.mockRejectedValue(new Error("cleanup failed"));
+  mocks.getDatabases.mockRejectedValue(new Error("refresh failed"));
+  await renderCard();
+
+  await act(async () => downloadButton().click());
+
+  expect(mocks.getDatabases).toHaveBeenCalledTimes(1);
+  expect(cachedDatabases()).toBeUndefined();
+  expect(mocks.logFailureSafely).toHaveBeenCalledExactlyOnceWith(
+    "Account import database refresh failed for chesscom_Felix: refresh failed",
+    {
+      operation: "account import database refresh",
+      primaryFailure: { category: "unexpected", message: "refresh failed" },
+    },
+    "Account import refresh logging failed for chesscom_Felix",
+  );
+  expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
+    color: "red",
+    title: "Common.Error",
+    message: "cleanup failed",
+  });
+  expect(downloadButton().disabled).toBe(false);
+  expect(store.get(accountDownloadsInFlightAtom).size).toBe(0);
+});
+
 test("a finished progress frame for the card does not refresh databases", async () => {
-  const setDatabases = vi.fn();
-  await renderCard({ setDatabases });
+  await renderCard();
   const progressListener = mocks.progress.mock.calls[0][0];
 
   await act(async () => {
@@ -408,7 +568,7 @@ test("a finished progress frame for the card does not refresh databases", async 
   });
 
   expect(mocks.getDatabases).not.toHaveBeenCalled();
-  expect(setDatabases).not.toHaveBeenCalled();
+  expect(cachedDatabases()).toBeUndefined();
   expect(downloadButton().disabled).toBe(false);
   expect(downloadButton().getAttribute("data-pending")).toBeNull();
 });
@@ -417,13 +577,12 @@ test("a failed post-import database refresh notifies after deleting empty games"
   configureSuccessfulDownload();
   mocks.issueDownloadDestination.mockResolvedValue({ id: "dest" });
   mocks.getDatabases.mockRejectedValue(new Error("refresh failed"));
-  const setDatabases = vi.fn();
-  await renderCard({ setDatabases });
+  await renderCard();
 
   await act(async () => downloadButton().click());
 
   expect(mocks.deleteEmptyGames).toHaveBeenCalledTimes(1);
-  expect(setDatabases).not.toHaveBeenCalled();
+  expect(cachedDatabases()).toBeUndefined();
   expect(mocks.getDatabases).toHaveBeenCalledTimes(1);
   expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
     color: "red",
