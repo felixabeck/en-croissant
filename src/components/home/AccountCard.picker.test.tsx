@@ -55,9 +55,6 @@ vi.mock("@/platform/errors", async () => {
 vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.notify } }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("@/platform/native", () => ({ warn: mocks.warn }));
-vi.mock("@/platform/useTauriListener", () => ({
-  useTauriListener: () => undefined,
-}));
 vi.mock("@/components/common/IconAction", () => ({
   IconAction: ({
     label,
@@ -179,6 +176,12 @@ test.each(["chesscom", "lichess"] as const)(
   "a successful %s download refreshes databases after deleting empty games without a finished frame",
   async (type) => {
     configureSuccessfulDownload(type);
+    let resolveDeletion!: () => void;
+    mocks.deleteEmptyGames.mockReturnValue(
+      new Promise<void>((resolve) => {
+        resolveDeletion = resolve;
+      }),
+    );
     mocks.issueDownloadDestination.mockResolvedValue({ id: "dest" });
     const setDatabases = vi.fn();
     const databases: ManagedDatabaseInfo[] = [
@@ -204,14 +207,39 @@ test.each(["chesscom", "lichess"] as const)(
       id: { id: "database" },
       kind: "database",
     });
+    expect(mocks.getDatabases).not.toHaveBeenCalled();
+    expect(setDatabases).not.toHaveBeenCalled();
+
+    await act(async () => resolveDeletion());
+
     expect(mocks.getDatabases).toHaveBeenCalledTimes(1);
     expect(setDatabases).toHaveBeenCalledWith(databases);
-    expect(mocks.deleteEmptyGames.mock.invocationCallOrder[0]).toBeLessThan(
-      mocks.getDatabases.mock.invocationCallOrder[0],
-    );
     expect(mocks.notify).not.toHaveBeenCalled();
   },
 );
+
+test("a finished progress frame for the card does not refresh databases", async () => {
+  const setDatabases = vi.fn();
+  await renderCard({ setDatabases });
+  const progressListener = mocks.progress.mock.calls[0][0];
+
+  await act(async () => {
+    progressListener({
+      payload: {
+        id: "chesscom_Felix",
+        generation: 1n,
+        progress: 100,
+        finished: true,
+        state: "succeeded",
+        cleared: false,
+      },
+    });
+  });
+
+  expect(mocks.getDatabases).not.toHaveBeenCalled();
+  expect(setDatabases).not.toHaveBeenCalled();
+  expect(downloadButton().disabled).toBe(false);
+});
 
 test("a failed post-import database refresh notifies after deleting empty games", async () => {
   configureSuccessfulDownload();
@@ -232,41 +260,27 @@ test("a failed post-import database refresh notifies after deleting empty games"
   expect(downloadButton().disabled).toBe(false);
 });
 
-test("a rejecting reload notifies without an unhandled rejection", async () => {
-  const reload = vi.fn().mockRejectedValue(new Error("reload failed"));
-  await renderCard({ reload });
+test.each([
+  { label: "Home.Accounts.UpdateStats", prop: "reload" },
+  { label: "Home.Accounts.RemoveAccount", prop: "logout" },
+] as const)(
+  "a rejecting $prop notifies without an unhandled rejection",
+  async ({ label, prop }) => {
+    const callback = vi.fn().mockRejectedValue(new Error(`${prop} failed`));
+    await renderCard({ type: prop === "logout" ? "lichess" : "chesscom", [prop]: callback });
 
-  await act(async () => {
-    host
-      .querySelector<HTMLButtonElement>('button[aria-label="Home.Accounts.UpdateStats"]')!
-      .click();
-  });
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!.click();
+    });
 
-  expect(reload).toHaveBeenCalledTimes(1);
-  expect(mocks.notify).toHaveBeenCalledWith({
-    color: "red",
-    title: "Common.Error",
-    message: "reload failed",
-  });
-});
-
-test("a rejecting logout notifies without an unhandled rejection", async () => {
-  const logout = vi.fn().mockRejectedValue(new Error("logout failed"));
-  await renderCard({ type: "lichess", logout });
-
-  await act(async () => {
-    host
-      .querySelector<HTMLButtonElement>('button[aria-label="Home.Accounts.RemoveAccount"]')!
-      .click();
-  });
-
-  expect(logout).toHaveBeenCalledTimes(1);
-  expect(mocks.notify).toHaveBeenCalledWith({
-    color: "red",
-    title: "Common.Error",
-    message: "logout failed",
-  });
-});
+    expect(callback).toHaveBeenCalledTimes(1);
+    expect(mocks.notify).toHaveBeenCalledWith({
+      color: "red",
+      title: "Common.Error",
+      message: `${prop} failed`,
+    });
+  },
+);
 
 test("cancelled game-download destination stays silent", async () => {
   mocks.issueDownloadDestination.mockRejectedValue(new Error("Cancellation"));
@@ -447,7 +461,7 @@ test("convertPgn failure is not masked when marking the lease failed also reject
   );
   expect(mocks.setProgressState).toHaveBeenCalledWith(lease, 0, "failed");
   expect(mocks.logFailureSafely).toHaveBeenCalledWith(
-    "Account import progress update failed: progress failed",
+    `Account import progress update (failed) failed for ${lease.id} [${mocks.convertPgn.mock.calls[0][0]}]: progress failed`,
     {
       operation: "account import progress update",
       primaryFailure: { category: "unexpected", message: "progress failed" },
@@ -495,7 +509,7 @@ test("a rejecting setProgressState after a successful convert still runs the pos
   );
   expect(mocks.setProgressState).toHaveBeenCalledWith(lease, 100, "succeeded");
   expect(mocks.logFailureSafely).toHaveBeenCalledWith(
-    "Account import progress update failed: progress failed",
+    `Account import progress update (succeeded) failed for ${lease.id} [${mocks.convertPgn.mock.calls[0][0]}]: progress failed`,
     {
       operation: "account import progress update",
       primaryFailure: { category: "unexpected", message: "progress failed" },

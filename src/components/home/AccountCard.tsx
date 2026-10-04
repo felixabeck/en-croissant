@@ -87,13 +87,19 @@ export async function ensureAccountDatabaseHandle(
   );
 }
 
-async function logProgressUpdateFailure(cause: unknown): Promise<void> {
-  const primaryFailure = safeFailureContext(cause);
-  await logFailureSafely(
-    `Account import progress update failed: ${primaryFailure.message}`,
-    { operation: "account import progress update", primaryFailure },
-    "Account import progress logging failed",
-  );
+function logProgressUpdateFailure(context: {
+  conversionId: string;
+  progressId: string;
+  state: "failed" | "succeeded";
+}): (cause: unknown) => Promise<void> {
+  return async (cause) => {
+    const primaryFailure = safeFailureContext(cause);
+    await logFailureSafely(
+      `Account import progress update (${context.state}) failed for ${context.progressId} [${context.conversionId}]: ${primaryFailure.message}`,
+      { operation: "account import progress update", primaryFailure },
+      "Account import progress logging failed",
+    );
+  };
 }
 
 export function AccountCard({
@@ -176,12 +182,22 @@ export function AccountCard({
             null,
           );
         } catch (caught) {
-          await tauri.setProgressState(progressLease, 0, "failed").catch(logProgressUpdateFailure);
+          await tauri.setProgressState(progressLease, 0, "failed").catch(
+            logProgressUpdateFailure({
+              conversionId: id,
+              progressId: `${type}_${title}`,
+              state: "failed",
+            }),
+          );
           throw caught;
         }
-        await tauri
-          .setProgressState(progressLease, 100, "succeeded")
-          .catch(logProgressUpdateFailure);
+        await tauri.setProgressState(progressLease, 100, "succeeded").catch(
+          logProgressUpdateFailure({
+            conversionId: id,
+            progressId: `${type}_${title}`,
+            state: "succeeded",
+          }),
+        );
         return databaseHandle;
       },
     );
@@ -194,14 +210,11 @@ export function AccountCard({
   );
   useTauriListener(
     subscribeProgress,
-    async (e, signal) => {
+    (e) => {
       if (e.payload.id === `${type}_${title}`) {
         setProgress(e.payload.progress);
         if (e.payload.finished) {
           setLoading(false);
-          const databases = await getDatabases();
-          if (signal.aborted) return;
-          setDatabases(databases);
         } else {
           setLoading(true);
         }
