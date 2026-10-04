@@ -963,13 +963,6 @@ pub(super) fn resolve_windows(
         )
     }
 
-    fn is_missing_leaf_error(error: &Error) -> bool {
-        matches!(
-            error,
-            Error::Io(error) if error.kind() == std::io::ErrorKind::NotFound
-        )
-    }
-
     /// `NtCreateFile` answers a non-directory at a `FILE_DIRECTORY_FILE` leaf with
     /// `STATUS_NOT_A_DIRECTORY`, which `windows_open_status_error` maps to `ERROR_DIRECTORY`.
     fn is_not_a_directory_error(error: &Error) -> bool {
@@ -1063,9 +1056,7 @@ pub(super) fn resolve_windows(
             super::allows_delete_sharing_for_operation(operation, last),
         ) {
             Ok(file) => file,
-            Err(error)
-                if last && allows_missing_leaf(operation) && is_missing_leaf_error(&error) =>
-            {
+            Err(error) if last && allows_missing_leaf(operation) && error.is_missing_entry() => {
                 return Ok(ResolvedPath {
                     operation,
                     file: None,

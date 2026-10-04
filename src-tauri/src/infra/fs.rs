@@ -255,7 +255,7 @@ pub(crate) fn archive_destination_directory_exists(path: &Path) -> Result<bool, 
         Ok(_) => Err(Error::Conflict(
             "archive destination is not a directory".into(),
         )),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) if crate::error::is_missing_entry_io(&error) => Ok(false),
         Err(error) => Err(error.into()),
     }
 }
@@ -2159,8 +2159,8 @@ mod win {
             // The NTSTATUS constants and RtlNtStatusToDosError live with the single classifier
             // in path_authority::windows_open_status_error, which this module now routes to.
             Foundation::{
-                ERROR_DIRECTORY, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, HANDLE,
-                STATUS_BUFFER_OVERFLOW, STATUS_NO_MORE_FILES, UNICODE_STRING,
+                ERROR_DIRECTORY, HANDLE, STATUS_BUFFER_OVERFLOW, STATUS_NO_MORE_FILES,
+                UNICODE_STRING,
             },
             Security::{
                 AddAccessAllowedAce, CopySid, GetAce, GetKernelObjectSecurity, GetLengthSid,
@@ -2489,13 +2489,6 @@ mod win {
         }
     }
 
-    fn missing(error: &Error) -> bool {
-        matches!(
-            error,
-            Error::Io(error) if matches!(error.raw_os_error(), Some(2 | 3))
-        )
-    }
-
     fn open_target(dir: &File, name: &OsStr) -> Result<File, Error> {
         open_windows_child(dir, name, FILE_OPEN, TARGET_ACCESS, null(), false, true)
     }
@@ -2503,7 +2496,7 @@ mod win {
     fn target_stat(dir: &File, name: &OsStr) -> Result<Option<Target>, Error> {
         let handle = match open_target(dir, name) {
             Ok(handle) => handle,
-            Err(error) if missing(&error) => return Ok(None),
+            Err(error) if error.is_missing_entry() => return Ok(None),
             Err(error) => return Err(error),
         };
         let identity = opened_file_identity(&handle)?;
@@ -2730,19 +2723,6 @@ mod win {
             ),
             other => other,
         }
-    }
-
-    /// `NtCreateFile` reports an absent single-leaf child as `STATUS_OBJECT_NAME_NOT_FOUND`,
-    /// which `windows_open_status_error` maps through `RtlNtStatusToDosError` to
-    /// `ERROR_FILE_NOT_FOUND`; a directory handle whose own name has gone gives
-    /// `ERROR_PATH_NOT_FOUND`. Both mean "the optional leaf is not there".
-    fn missing_leaf(error: &Error) -> bool {
-        matches!(
-            error,
-            Error::Io(error)
-                if error.raw_os_error() == Some(ERROR_FILE_NOT_FOUND as i32)
-                    || error.raw_os_error() == Some(ERROR_PATH_NOT_FOUND as i32)
-        )
     }
 
     fn is_reparse_refusal(error: &Error) -> bool {
@@ -3321,7 +3301,7 @@ mod win {
             true,
         ) {
             Ok(opened) => opened,
-            Err(error) if missing_leaf(&error) => return Ok(false),
+            Err(error) if error.is_missing_entry() => return Ok(false),
             Err(error) => return Err(error),
         };
         if !opened_is_disk(&opened) {
@@ -3471,7 +3451,7 @@ mod win {
                     is_directory: true,
                 }))
             }
-            Err(error) if missing_leaf(&error) => Ok(None),
+            Err(error) if error.is_missing_entry() => Ok(None),
             Err(error) if not_a_directory(&error) => {
                 let handle =
                     open_windows_child(dir, name, FILE_OPEN, TARGET_ACCESS, null(), false, true)?;
@@ -3773,7 +3753,7 @@ mod win {
             true,
         ) {
             Ok(opened) => opened,
-            Err(error) if missing_leaf(&error) => return Ok(()),
+            Err(error) if error.is_missing_entry() => return Ok(()),
             Err(error) => return Err(error),
         };
         if !opened_is_disk(&opened) {
@@ -4238,23 +4218,26 @@ where
 /// gives the tracked file a new mtime, which refuses any gate receipt measured beside it
 /// (`f-20260906-06`). An uncertain commit is an error that says the file may already be
 /// replaced: the caller is a check that must not pass on an uncertain write.
+/// Rebuilt durability errors preserve missing-entry classification and other I/O kinds.
 #[cfg(any(debug_assertions, test))]
 pub(crate) fn write_if_changed(target: &Path, contents: &str) -> Result<(), Error> {
     match std::fs::read(target) {
         Ok(existing) if existing == contents.as_bytes() => return Ok(()),
         Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) if crate::error::is_missing_entry_io(&error) => {}
         Err(error) => return Err(error.into()),
     }
     match atomic_replace(target, |file| {
         file.write_all(contents.as_bytes()).map_err(Error::from)
     })? {
         AtomicFileOutcome::DurableCommit => Ok(()),
-        AtomicFileOutcome::CommittedDurabilityUncertain(error) => Err(std::io::Error::new(
-            error.kind(),
-            format!("replaced, but durability is uncertain: {error}"),
-        )
-        .into()),
+        AtomicFileOutcome::CommittedDurabilityUncertain(error) => {
+            Err(crate::error::sanitized_io_error(
+                &error,
+                format!("replaced, but durability is uncertain: {error}"),
+            )
+            .into())
+        }
     }
 }
 

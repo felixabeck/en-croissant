@@ -174,7 +174,7 @@ fn read_stamp(target: &DatabaseFileTarget) -> Result<Option<Stamp>, Error> {
         RegularFileAccess::ReadOnly,
     ) {
         Ok(file) => file,
-        Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.is_missing_entry() => return Ok(None),
         Err(error) => return Err(error),
     };
     let mut bytes = Vec::new();

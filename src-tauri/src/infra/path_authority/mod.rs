@@ -187,7 +187,28 @@ mod windows_tests {
     };
 
     #[test]
-    fn windows_child_open_maps_absence_and_refuses_wrong_target_types() {
+    fn missing_entry_windows_open_status_producer() {
+        use windows_sys::Win32::Foundation::{
+            STATUS_ACCESS_DENIED, STATUS_BAD_NETWORK_NAME, STATUS_BAD_NETWORK_PATH,
+            STATUS_NO_SUCH_FILE, STATUS_OBJECT_NAME_COLLISION, STATUS_OBJECT_NAME_NOT_FOUND,
+            STATUS_OBJECT_PATH_NOT_FOUND,
+        };
+        for (status, missing) in [
+            (STATUS_OBJECT_NAME_NOT_FOUND, true),
+            (STATUS_NO_SUCH_FILE, true),
+            (STATUS_OBJECT_PATH_NOT_FOUND, true),
+            (STATUS_BAD_NETWORK_PATH, false),
+            (STATUS_BAD_NETWORK_NAME, false),
+            (STATUS_ACCESS_DENIED, false),
+            (STATUS_OBJECT_NAME_COLLISION, false),
+        ] {
+            let error = windows_open_status_error(status);
+            assert_eq!(error.is_missing_entry(), missing, "{status:#x}: {error:?}");
+        }
+    }
+
+    #[test]
+    fn windows_child_open_maps_missing_entry_and_refuses_wrong_target_types() {
         let dir = tempfile::tempdir().unwrap();
         let parent = open_windows_nofollow(dir.path(), false).unwrap();
         let read_access = SYNCHRONIZE | GENERIC_READ;
@@ -201,10 +222,7 @@ mod windows_tests {
             true,
         )
         .expect_err("an absent child must fail");
-        assert!(matches!(
-            absent,
-            Error::Io(error) if error.kind() == std::io::ErrorKind::NotFound
-        ));
+        assert!(absent.is_missing_entry(), "{absent:?}");
 
         fs::create_dir(dir.path().join("directory")).unwrap();
         fs::write(dir.path().join("file"), b"file").unwrap();
@@ -231,7 +249,7 @@ mod windows_tests {
     }
 
     #[test]
-    fn windows_missing_non_final_component_is_refused() {
+    fn windows_missing_entry_non_final_component_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let parent = open_windows_nofollow(dir.path(), false).unwrap();
         let expected = windows_file_identity(&parent).unwrap();
@@ -246,7 +264,7 @@ mod windows_tests {
         );
         assert!(matches!(
             result,
-            Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound
+            Err(error) if error.is_missing_entry()
         ));
     }
 
@@ -560,13 +578,14 @@ fn conflict_if_replaced(error: Error, message: &str) -> Error {
     #[cfg(unix)]
     {
         if let Error::Io(io_error) = &error {
-            if matches!(
-                io_error.raw_os_error(),
-                Some(code)
-                    if code == rustix::io::Errno::LOOP.raw_os_error()
-                        || code == rustix::io::Errno::NOTDIR.raw_os_error()
-                        || code == rustix::io::Errno::NOENT.raw_os_error()
-            ) {
+            if error.is_missing_entry()
+                || matches!(
+                    io_error.raw_os_error(),
+                    Some(code)
+                        if code == rustix::io::Errno::LOOP.raw_os_error()
+                            || code == rustix::io::Errno::NOTDIR.raw_os_error()
+                )
+            {
                 return Error::Conflict(message.into());
             }
         }
@@ -574,22 +593,20 @@ fn conflict_if_replaced(error: Error, message: &str) -> Error {
     }
     #[cfg(windows)]
     {
-        use windows_sys::Win32::Foundation::{
-            ERROR_DIRECTORY, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND,
-        };
+        use windows_sys::Win32::Foundation::ERROR_DIRECTORY;
 
         if matches!(&error, Error::InvalidInput(message) if message == "reparse points cannot be authorized")
         {
             return Error::Conflict(message.into());
         }
         if let Error::Io(io_error) = &error {
-            if matches!(
-                io_error.raw_os_error(),
-                Some(code)
-                    if code == ERROR_FILE_NOT_FOUND as i32
-                        || code == ERROR_PATH_NOT_FOUND as i32
-                        || code == ERROR_DIRECTORY as i32
-            ) {
+            if error.is_missing_entry()
+                || matches!(
+                    io_error.raw_os_error(),
+                    Some(code)
+                        if code == ERROR_DIRECTORY as i32
+                )
+            {
                 return Error::Conflict(message.into());
             }
         }
@@ -694,7 +711,7 @@ impl CapabilityDirectory {
                 });
                 Some(file)
             }
-            Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) if error.is_missing_entry() => None,
             Err(error) => return Err(error),
         };
         self.confirm_entry(pgn)?;
@@ -779,15 +796,12 @@ fn unix_probe_error_class(code: Option<i32>) -> Option<ProbeErrorClass> {
     }
 }
 
-/// Maps platform error values without importing a platform-specific error table. The Windows
-/// values are stable DOS error codes, and using their numeric values lets Linux execute the same
-/// classifier in its tests.
+/// Classifies absence through the shared missing-entry predicate. Other Windows values are
+/// stable DOS error codes; their numeric values let Linux execute those classifier rows in tests.
 pub(crate) fn classify_probe_error_kind(error: &Error) -> ProbeErrorClass {
     match error {
         Error::Io(error) => {
-            if error.kind() == std::io::ErrorKind::NotFound
-                || matches!(error.raw_os_error(), Some(2 | 3))
-            {
+            if crate::error::is_missing_entry_io(error) {
                 ProbeErrorClass::NotFound
             } else if let Some(class) = unix_probe_error_class(error.raw_os_error()) {
                 class
@@ -1200,7 +1214,7 @@ impl AuthorizedDir {
     pub(crate) fn resides_at(&self, location: &DefaultRootLocation) -> Result<bool, Error> {
         match identity(&location.path) {
             Ok(identity) => Ok((identity.a, identity.b) == self.identity),
-            Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) if error.is_missing_entry() => Ok(false),
             // `identity` rejects symbolic links and other reparse points as invalid input.
             Err(Error::InvalidInput(_)) => Ok(false),
             Err(error) => Err(error),
@@ -2531,16 +2545,17 @@ impl AppDataDir {
 
     /// Every construction failure — including a `Conflict` from a prefix swapped between
     /// canonicalisation and open — becomes `Error::Io` with fixed text, so no native path reaches
-    /// the renderer. An I/O failure keeps its kind, and with it the MissingResource/Permission
-    /// category.
+    /// the renderer. The shared sanitising helper preserves missing-entry classification and
+    /// other I/O kinds, including the Permission category.
     fn acquire(requested: &Path) -> Result<Self, Error> {
         Self::acquire_canonical(requested).map_err(|error| {
             log::error!("application data directory acquisition failed: {error}");
-            let kind = match &error {
-                Error::Io(error) => error.kind(),
-                _ => std::io::ErrorKind::Other,
-            };
-            std::io::Error::new(kind, "application data directory could not be acquired").into()
+            let message = "application data directory could not be acquired";
+            match &error {
+                Error::Io(error) => crate::error::sanitized_io_error(error, message.into()),
+                _ => std::io::Error::other(message),
+            }
+            .into()
         })
     }
 
@@ -2550,7 +2565,7 @@ impl AppDataDir {
         loop {
             match fs::symlink_metadata(&prefix) {
                 Ok(_) => break,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Err(error) if crate::error::is_missing_entry_io(&error) => {
                     if !has_normal_leaf(&prefix) {
                         return Err(error.into());
                     }
@@ -4421,7 +4436,7 @@ impl PathAuthority {
         let result = (|| {
             let identity = match crate::infra::fs::entry_identity_at(&parent, &leaf, false) {
                 Ok(identity) => identity,
-                Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                Err(error) if error.is_missing_entry() => {
                     let (file, identity) = crate::infra::fs::create_regular_at(&parent, &leaf)?;
                     created_identity = Some(identity);
                     file.sync_all()?;
@@ -6683,18 +6698,19 @@ impl PathAuthority {
         let parent_identity = Identity { a, b };
         let root_path = self.database_root_path(root)?;
         let path = root_path.join(filename);
-        let validated_identity = validate_target(&path, PathClass::PersistentFile).map_err(|error| {
-            if resolved.file().is_some()
-                && (matches!(&error, Error::Io(error) if error.kind() == std::io::ErrorKind::NotFound)
-                    || matches!(&error, Error::InvalidInput(message)
+        let validated_identity =
+            validate_target(&path, PathClass::PersistentFile).map_err(|error| {
+                if resolved.file().is_some()
+                    && (error.is_missing_entry()
+                        || matches!(&error, Error::InvalidInput(message)
                         if message == "file authority must be a regular file"
                             || message == "symbolic links cannot be authorized"))
-            {
-                Error::Conflict(VERIFIED_REGISTRATION_CONFLICT.into())
-            } else {
-                error
-            }
-        })?;
+                {
+                    Error::Conflict(VERIFIED_REGISTRATION_CONFLICT.into())
+                } else {
+                    error
+                }
+            })?;
         let verified_identity =
             verified_identity::database_child_identity(expected_identity, &validated_identity)?;
         if let Some(entry) = self.persistent.values().find(|entry| {
@@ -7274,7 +7290,7 @@ impl PathAuthority {
                     next_cleanup.remove(&id);
                     continue;
                 }
-                Err(Error::Io(ref error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                Err(error) if error.is_missing_entry() => {
                     next_cleanup.remove(&id);
                     continue;
                 }
@@ -7291,9 +7307,7 @@ impl PathAuthority {
                 Ok(()) => {
                     next_cleanup.remove(&id);
                 }
-                Err(Error::Io(ref error))
-                    if matches!(error.kind(), std::io::ErrorKind::NotFound) =>
-                {
+                Err(error) if error.is_missing_entry() => {
                     next_cleanup.remove(&id);
                 }
                 Err(Error::Conflict(_)) => {
@@ -7725,7 +7739,7 @@ impl PathAuthority {
                 ));
             }
             Ok(_) => Some(identity(&path)?),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) if crate::error::is_missing_entry_io(&error) => None,
             Err(error) => return Err(Error::from(error)),
         };
         let pending = PendingArtifact {

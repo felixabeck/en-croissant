@@ -2546,9 +2546,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         match crate::infra::path_authority::open_app_owned_resource_dir(
                             &resource_dir,
                         ) {
-                            Err(Error::Io(error))
-                                if error.kind() == std::io::ErrorKind::NotFound =>
-                            {
+                            Err(error) if error.is_missing_entry() => {
                                 log::info!(
                                     "no bundled sound resources found, sound stays disabled"
                                 );
@@ -3952,10 +3950,7 @@ mod blocking_offload_scans {
             startup.contains("open_app_owned_resource_dir("),
             "{startup}"
         );
-        assert!(
-            startup.contains("std::io::ErrorKind::NotFound"),
-            "{startup}"
-        );
+        assert!(startup.contains("error.is_missing_entry()"), "{startup}");
         assert!(
             startup.contains("no bundled sound resources found, sound stays disabled"),
             "{startup}"

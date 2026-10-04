@@ -620,7 +620,7 @@ async fn delete_puzzle_database_resolved(
         |resolved: &crate::infra::path_authority::ResolvedPath| -> Result<Option<Error>, Error> {
             match resolved.delete_puzzle_database() {
                 Ok(()) => Ok(None),
-                Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(error) if error.is_missing_entry() => Ok(None),
                 Err(error @ Error::CommittedDurabilityUncertain(_)) => Ok(Some(error)),
                 Err(error) => Err(error),
             }
@@ -644,7 +644,7 @@ async fn delete_puzzle_database_resolved(
                         };
                     (Some(canonical_path), deletion_error)
                 }
-                Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                Err(error) if error.is_missing_entry() => {
                     if token.is_cancelled() {
                         return Err(Error::Cancellation);
                     }

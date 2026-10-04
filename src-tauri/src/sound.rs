@@ -105,7 +105,7 @@ mod server {
         let mut file = match opened {
             Ok(Ok(file)) => tokio::fs::File::from_std(file),
             Ok(Err(Error::InvalidInput(_))) => return StatusCode::NOT_FOUND.into_response(),
-            Ok(Err(Error::Io(error))) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(Err(error)) if error.is_missing_entry() => {
                 return StatusCode::NOT_FOUND.into_response();
             }
             Ok(Err(error)) => {

@@ -394,10 +394,11 @@ fn invalid_leaf(leaf: &str, reason: &str) -> Error {
     Error::InvalidInput(format!("practice leaf {leaf}: {reason}"))
 }
 
+/// Sanitises native text while preserving missing-entry classification and other I/O kinds.
 fn operation_io(operation: &str, leaf: &str, error: std::io::Error) -> Error {
     log::warn!("practice {operation} failed for leaf {leaf}: {error}");
-    Error::Io(Box::new(std::io::Error::new(
-        error.kind(),
+    Error::Io(Box::new(crate::error::sanitized_io_error(
+        &error,
         format!("practice {operation} failed for leaf {leaf}"),
     )))
 }
@@ -418,7 +419,7 @@ fn read_leaf_bytes(
 ) -> Result<Option<Vec<u8>>, Error> {
     let mut file = match directory.open_regular_relative(Path::new(leaf)) {
         Ok(file) => file,
-        Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.is_missing_entry() => return Ok(None),
         Err(error) => return Err(operation_error(operation, leaf, error)),
     };
     let declared = file
@@ -2300,6 +2301,75 @@ fn run_migration_before_positions_hook() -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::{ErrorCategory, RootFailure};
+
+    #[test]
+    fn missing_entry_operation_wrapper_preserves_classification_and_sanitises_text() {
+        let mut sources = vec![
+            (
+                std::io::Error::from(std::io::ErrorKind::NotFound),
+                ErrorCategory::MissingResource,
+            ),
+            (
+                std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+                ErrorCategory::Permission,
+            ),
+            (
+                std::io::Error::other("private/native/path"),
+                ErrorCategory::Io,
+            ),
+        ];
+        #[cfg(unix)]
+        sources.extend([
+            (
+                std::io::Error::from_raw_os_error(libc::ENOENT),
+                ErrorCategory::MissingResource,
+            ),
+            (
+                std::io::Error::from_raw_os_error(libc::EACCES),
+                ErrorCategory::Permission,
+            ),
+        ]);
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::Foundation::{
+                ERROR_ACCESS_DENIED, ERROR_BAD_NETPATH, ERROR_FILE_NOT_FOUND,
+            };
+            sources.extend([
+                (
+                    std::io::Error::from_raw_os_error(ERROR_FILE_NOT_FOUND as i32),
+                    ErrorCategory::MissingResource,
+                ),
+                (
+                    std::io::Error::from_raw_os_error(ERROR_ACCESS_DENIED as i32),
+                    ErrorCategory::Permission,
+                ),
+                (
+                    std::io::Error::from_raw_os_error(ERROR_BAD_NETPATH as i32),
+                    ErrorCategory::Io,
+                ),
+            ]);
+        }
+        for (source, category) in sources {
+            let missing = crate::error::is_missing_entry_io(&source);
+            let error = operation_error("read", "positions.json", source.into());
+            assert_eq!(error.is_missing_entry(), missing);
+            assert_eq!(error.category(), category);
+            assert_eq!(
+                error.root_failure_reason(),
+                match category {
+                    ErrorCategory::MissingResource => Some(RootFailure::Missing),
+                    ErrorCategory::Permission => Some(RootFailure::Permission),
+                    _ => None,
+                }
+            );
+            assert_eq!(
+                error.diagnostic(),
+                "I/O failure: practice read failed for leaf positions.json"
+            );
+        }
+    }
+
     use crate::infra::fs::{
         set_test_atomic_file_injector, AtomicFileFaultPoint, AtomicWriterInjector, ParentSyncFault,
     };

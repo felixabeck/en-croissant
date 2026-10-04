@@ -671,23 +671,28 @@ fn unix_regular_file_probe_uses_only_eaccess_for_access_check() {
 }
 
 #[test]
-fn probe_error_classifier_table_and_directory_split_are_explicit() {
+fn probe_error_classifier_missing_entry_table_and_directory_split_are_explicit() {
     use crate::infra::path_authority::{
         classify_probe_error, classify_probe_error_kind, ProbeErrorClass,
     };
 
-    // Only the unix arm extends this table, so the binding is not mutated on Windows.
-    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut rows = vec![
-        (2, ProbeErrorClass::NotFound),
-        (3, ProbeErrorClass::NotFound),
         (267, ProbeErrorClass::WrongKind),
         (1920, ProbeErrorClass::Reparse),
         (4393, ProbeErrorClass::Reparse),
         (1224, ProbeErrorClass::MappedFile),
     ];
+    #[cfg(windows)]
+    rows.extend([
+        (2, ProbeErrorClass::NotFound),
+        (3, ProbeErrorClass::NotFound),
+        (53, ProbeErrorClass::Other),
+        (67, ProbeErrorClass::Other),
+    ]);
     #[cfg(unix)]
     rows.extend([
+        (libc::ENOENT, ProbeErrorClass::NotFound),
+        (libc::ESRCH, ProbeErrorClass::Other),
         (
             rustix::io::Errno::LOOP.raw_os_error(),
             ProbeErrorClass::Reparse,
@@ -978,6 +983,20 @@ fn real_durability_calls_and_their_receivers_are_pinned() {
     ] {
         assert!(source.contains(call), "missing durability call pin: {call}");
     }
+}
+
+#[test]
+fn windows_resolver_missing_entry_guard_uses_shared_predicate() {
+    let source = source_for("infra/path_authority/resolved.rs");
+    let body = compact(&source[braced_body(source, "pub(super) fn resolve_windows(")]);
+    assert!(
+        body.contains(
+            "Err(error)iflast&&allows_missing_leaf(operation)&&error.is_missing_entry()=>"
+        ),
+        "{body}"
+    );
+    assert!(!source.contains("fn is_missing_leaf_error("));
+    assert!(!body.contains("ErrorKind::NotFound"), "{body}");
 }
 
 #[test]
@@ -1640,9 +1659,10 @@ fn windows_reparse_swap_is_a_conflict_in_listing_and_on_the_mutation_open() {
         "both platforms map their swap statuses to the one retryable conflict: {swap}"
     );
     assert!(
-        swap.contains("ERROR_FILE_NOT_FOUNDasi32")
-            && swap.contains("ERROR_PATH_NOT_FOUNDasi32")
-            && swap.contains("ERROR_DIRECTORYasi32"),
+        swap.matches("error.is_missing_entry()").count() == 2
+            && swap.contains("ERROR_DIRECTORYasi32")
+            && swap.contains("Errno::LOOP.raw_os_error()")
+            && swap.contains("Errno::NOTDIR.raw_os_error()"),
         "the NT counterparts of LOOP/NOTDIR/NOENT must be remapped too: {swap}"
     );
     let child_swap = compact(&authority[braced_body(authority, "fn child_open_swap(")]);
@@ -1662,26 +1682,24 @@ fn windows_reparse_swap_is_a_conflict_in_listing_and_on_the_mutation_open() {
 }
 
 #[test]
-fn windows_optional_regular_missing_leaf_is_success() {
+fn windows_optional_regular_missing_entry_is_success() {
     let source = source_for("infra/fs.rs");
-    let missing = compact(&source[braced_body(source, "fn missing_leaf(")]);
-    // Named constants, not the bare literal 2: `ERROR_FILE_NOT_FOUND` is what
-    // `RtlNtStatusToDosError` gives for `STATUS_OBJECT_NAME_NOT_FOUND`.
-    assert!(
-        missing.contains("raw_os_error()==Some(ERROR_FILE_NOT_FOUNDasi32)")
-            && missing.contains("raw_os_error()==Some(ERROR_PATH_NOT_FOUNDasi32)"),
-        "{missing}"
-    );
-    assert!(
-        !missing.contains("Some(2)") && !missing.contains("Some(3)"),
-        "the missing-leaf codes must stay named: {missing}"
-    );
+    assert!(!source.contains("fn missing_leaf("));
+    assert!(!source.contains("fn missing(error: &Error)"));
     let rename = compact(&source[braced_body(source, "pub(super) fn rename_optional_regular_at(")]);
-    assert!(rename.contains("missing_leaf(&error)"), "{rename}");
+    assert!(rename.contains("error.is_missing_entry()"), "{rename}");
     assert!(rename.contains("returnOk(false)"), "{rename}");
     let remove = compact(&source[braced_body(source, "pub(super) fn remove_optional_regular_at(")]);
-    assert!(remove.contains("missing_leaf(&error)"), "{remove}");
+    assert!(remove.contains("error.is_missing_entry()"), "{remove}");
     assert!(remove.contains("returnOk(())"), "{remove}");
+    for body in [rename, remove] {
+        assert!(!body.contains("ERROR_FILE_NOT_FOUND"), "{body}");
+        assert!(!body.contains("ERROR_PATH_NOT_FOUND"), "{body}");
+        assert!(
+            !body.contains("Some(2)") && !body.contains("Some(3)"),
+            "{body}"
+        );
+    }
 }
 
 #[test]

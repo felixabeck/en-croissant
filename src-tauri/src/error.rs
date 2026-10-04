@@ -290,7 +290,50 @@ pub enum Error {
     OperationAndCleanup { primary: String, cleanup: String },
 }
 
+/// Whether the OS reported that the named filesystem entry does not exist.
+/// Raw OS codes are authoritative: unix accepts only `ENOENT`, and Windows accepts only
+/// `ERROR_FILE_NOT_FOUND` / `ERROR_PATH_NOT_FOUND`. Without a raw code, synthetic
+/// `ErrorKind::NotFound` means absence. This is narrower than Windows' `ErrorKind::NotFound`,
+/// which also includes `ERROR_INVALID_DRIVE` (15), `ERROR_BAD_NETPATH` (53), and
+/// `ERROR_BAD_NET_NAME` (67). Producer-layer rustix `Errno::NOENT` and SQLite VFS comparisons
+/// use the same platform sets before an I/O error exists.
+pub fn is_missing_entry_io(error: &std::io::Error) -> bool {
+    match error.raw_os_error() {
+        Some(code) => {
+            #[cfg(unix)]
+            {
+                code == libc::ENOENT
+            }
+            #[cfg(windows)]
+            {
+                use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND};
+                code == ERROR_FILE_NOT_FOUND as i32 || code == ERROR_PATH_NOT_FOUND as i32
+            }
+        }
+        None => error.kind() == std::io::ErrorKind::NotFound,
+    }
+}
+
+/// Replaces native error text while preserving missing-entry classification and other kinds.
+/// A raw-coded `NotFound` that is not absence becomes generic I/O, rather than a synthetic
+/// missing entry after its raw code is removed.
+pub fn sanitized_io_error(error: &std::io::Error, message: String) -> std::io::Error {
+    let kind = if is_missing_entry_io(error) {
+        std::io::ErrorKind::NotFound
+    } else if error.kind() == std::io::ErrorKind::NotFound {
+        std::io::ErrorKind::Other
+    } else {
+        error.kind()
+    };
+    std::io::Error::new(kind, message)
+}
+
 impl Error {
+    /// True only for an I/O error reporting absence as defined by [`is_missing_entry_io`].
+    pub fn is_missing_entry(&self) -> bool {
+        matches!(self, Self::Io(error) if is_missing_entry_io(error))
+    }
+
     pub(crate) fn with_root_failure(self, reason: RootFailure) -> Self {
         if self.root_failure().is_some() {
             return self;
@@ -312,8 +355,8 @@ impl Error {
     pub(crate) fn root_failure_reason(&self) -> Option<RootFailure> {
         match self {
             Self::RootFailure { reason, .. } => Some(*reason),
+            Self::Io(_) if self.is_missing_entry() => Some(RootFailure::Missing),
             Self::Io(error) => match error.kind() {
-                std::io::ErrorKind::NotFound => Some(RootFailure::Missing),
                 std::io::ErrorKind::PermissionDenied => Some(RootFailure::Permission),
                 std::io::ErrorKind::InvalidInput => Some(RootFailure::Unusable),
                 _ => None,
@@ -374,8 +417,8 @@ impl Error {
     pub fn category(&self) -> ErrorCategory {
         match self {
             Self::RootFailure { error, .. } => error.category(),
+            Self::Io(_) if self.is_missing_entry() => ErrorCategory::MissingResource,
             Self::Io(error) => match error.kind() {
-                std::io::ErrorKind::NotFound => ErrorCategory::MissingResource,
                 std::io::ErrorKind::PermissionDenied => ErrorCategory::Permission,
                 _ => ErrorCategory::Io,
             },
@@ -425,6 +468,90 @@ impl Error {
 }
 
 const SQLITE_NOTADB: i32 = 26;
+
+#[cfg(test)]
+mod missing_entry_tests {
+    use super::*;
+    use std::io::{self, ErrorKind};
+
+    fn assert_missing_entry_class(source: io::Error, missing: bool, category: ErrorCategory) {
+        assert_eq!(is_missing_entry_io(&source), missing, "{source:?}");
+        let rebuilt = sanitized_io_error(&source, "sanitised failure".into());
+        assert_eq!(is_missing_entry_io(&rebuilt), missing);
+        let expected_kind = if missing {
+            ErrorKind::NotFound
+        } else if source.kind() == ErrorKind::NotFound {
+            ErrorKind::Other
+        } else {
+            source.kind()
+        };
+        assert_eq!(rebuilt.kind(), expected_kind);
+        assert_eq!(rebuilt.raw_os_error(), None);
+        assert_eq!(rebuilt.to_string(), "sanitised failure");
+        let original = Error::from(source);
+        let rebuilt = Error::from(rebuilt);
+        for error in [original, rebuilt] {
+            assert_eq!(error.is_missing_entry(), missing, "{error:?}");
+            assert_eq!(error.category(), category, "{error:?}");
+            if missing {
+                assert_eq!(error.root_failure_reason(), Some(RootFailure::Missing));
+            } else {
+                assert_ne!(error.root_failure_reason(), Some(RootFailure::Missing));
+                if category == ErrorCategory::Permission {
+                    assert_eq!(error.root_failure_reason(), Some(RootFailure::Permission));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn missing_entry_synthetic_errors_and_sanitising_helper() {
+        assert_missing_entry_class(
+            io::Error::from(ErrorKind::NotFound),
+            true,
+            ErrorCategory::MissingResource,
+        );
+        assert_missing_entry_class(
+            io::Error::new(ErrorKind::NotFound, "absent"),
+            true,
+            ErrorCategory::MissingResource,
+        );
+        assert_missing_entry_class(io::Error::other("failure"), false, ErrorCategory::Io);
+        assert!(!Error::Conflict("changed".into()).is_missing_entry());
+        assert!(!Error::InvalidInput("invalid".into()).is_missing_entry());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn missing_entry_unix_raw_errors_and_consumers() {
+        for (raw, missing, category) in [
+            (libc::ENOENT, true, ErrorCategory::MissingResource),
+            (libc::ESRCH, false, ErrorCategory::Io),
+            (libc::EACCES, false, ErrorCategory::Permission),
+        ] {
+            assert_missing_entry_class(io::Error::from_raw_os_error(raw), missing, category);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn missing_entry_windows_raw_errors_and_consumers() {
+        use windows_sys::Win32::Foundation::{
+            ERROR_ACCESS_DENIED, ERROR_BAD_NETPATH, ERROR_BAD_NET_NAME, ERROR_FILE_NOT_FOUND,
+            ERROR_INVALID_DRIVE, ERROR_PATH_NOT_FOUND,
+        };
+        for (raw, missing, category) in [
+            (ERROR_FILE_NOT_FOUND, true, ErrorCategory::MissingResource),
+            (ERROR_PATH_NOT_FOUND, true, ErrorCategory::MissingResource),
+            (ERROR_INVALID_DRIVE, false, ErrorCategory::Io),
+            (ERROR_BAD_NETPATH, false, ErrorCategory::Io),
+            (ERROR_BAD_NET_NAME, false, ErrorCategory::Io),
+            (ERROR_ACCESS_DENIED, false, ErrorCategory::Permission),
+        ] {
+            assert_missing_entry_class(io::Error::from_raw_os_error(raw as i32), missing, category);
+        }
+    }
+}
 
 #[cfg(test)]
 mod root_failure_tests {

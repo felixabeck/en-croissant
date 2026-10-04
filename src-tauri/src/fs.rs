@@ -1975,7 +1975,7 @@ fn resolve_engine_binary_for_inspection(
         &[],
     ) {
         Ok(resolved) => Ok(Some(resolved)),
-        Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) if error.is_missing_entry() => Ok(None),
         Err(Error::InvalidInput(_)) => Err(Error::InvalidInput(
             "engine binary inspection could not be authorized".into(),
         )),

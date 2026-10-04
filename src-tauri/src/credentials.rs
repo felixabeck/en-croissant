@@ -780,7 +780,7 @@ fn credential_failure(error: Error) -> Error {
 fn open_private_registry(dir: &AuthorizedDir) -> Result<Option<fs::File>, Error> {
     let file = match dir.open_regular_relative(Path::new(REGISTRY_FILE)) {
         Ok(file) => file,
-        Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.is_missing_entry() => return Ok(None),
         Err(error) => return Err(error),
     };
     #[cfg(unix)]
