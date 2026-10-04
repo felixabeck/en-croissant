@@ -15,6 +15,11 @@ literal-label helper calls are allowed; the call-site multiset must equal the gu
 rows. D rejects both refusal stems inside folded literal contents and the whole phrase in each
 file's joined literal stream. E blanks only braced inline test-module bodies, retaining production
 before and after them, byte offsets and newlines; cfg(not(test)) does not hide production.
+The review repair removed the dormant body-row verifier (BodyRow/ExpectedBody/check_source_pin,
+`remaining_refusal_body_rows_are_none`): C rejects any re-added refusal site, so a future body-form
+refusal fails C first and is pinned there; the test count is therefore 58.
+S-new-site, S-outside-fn, S-after-tests, S-cfg-not-test, S-label-const, S-literal, S-concat-2 and
+S-format were re-run on the repaired tree with identical messages and exit 101.
 
 Named limits: L1 — differently worded Windows errors; L2 — runtime or procedural-macro wording,
 character-escape encoding, or a format! split with neither stem intact and intervening arguments
@@ -624,7 +629,7 @@ byte-identical.
 */
 use super::*;
 use crate::infra::blocking::source_scan::{
-    braced_body, normalise, string_literal_ranges, string_literals, Literals,
+    body_from_opening, braced_body, normalise, string_literals, Literals,
 };
 use std::{
     ffi::{OsStr, OsString},
@@ -1990,13 +1995,12 @@ fn legacy_index_mapping_is_dropped_before_removal() {
     );
 }
 
-/// The live `(body_rows, guard_rows)` counts at the current phase boundary. Every
+/// The live guard-row count at the current phase boundary. Every
 /// `phase_*_removed_rows...` test reads this, so a phase that removes a row edits the live
 /// count in exactly one place instead of five copies.
-const LIVE_REFUSAL_ROW_COUNTS: (usize, usize) = (0, 6);
+const LIVE_GUARD_ROW_COUNT: usize = 6;
 
 fn assert_removed_rows_are_ungated(phase: &str, rows: &[(&str, &str)]) {
-    let (expected_body_rows, expected_guard_rows) = LIVE_REFUSAL_ROW_COUNTS;
     let mut failures = Vec::new();
     for (file, signature) in rows {
         let source = source_for(file);
@@ -2021,11 +2025,8 @@ fn assert_removed_rows_are_ungated(phase: &str, rows: &[(&str, &str)]) {
         }
     }
     assert!(
-        failures.is_empty()
-            && body_rows().len() == expected_body_rows
-            && guard_rows().len() == expected_guard_rows,
-        "{phase} refusal rows or definitions are wrong: {} body rows, {} guard rows, {:?}",
-        body_rows().len(),
+        failures.is_empty() && guard_rows().len() == LIVE_GUARD_ROW_COUNT,
+        "{phase} refusal rows or definitions are wrong: {} guard rows, {:?}",
         guard_rows().len(),
         failures
     );
@@ -2290,30 +2291,13 @@ fn rust_source_paths() -> Vec<std::path::PathBuf> {
     paths
 }
 
-fn body_from_opening(normalised: &str, opening: usize) -> Range<usize> {
-    let mut depth = 0;
-    for (offset, byte) in normalised.as_bytes()[opening..].iter().enumerate() {
-        match byte {
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return opening..opening + offset + 1;
-                }
-            }
-            _ => {}
-        }
-    }
-    panic!("unterminated source body")
-}
-
 fn body_at(source: &str, start: usize) -> Range<usize> {
     let normalised = normalise(source, Literals::Blank);
     let opening = normalised[start..]
         .find('{')
         .map(|offset| start + offset)
         .unwrap_or_else(|| panic!("source item has no body"));
-    body_from_opening(&normalised, opening)
+    body_from_opening(&normalised, opening).expect("unterminated source body")
 }
 
 fn function_starts(source: &str, signature: &str) -> Vec<usize> {
@@ -2356,73 +2340,6 @@ fn direct_attribute(source: &str, start: usize, expected: &str) -> bool {
         .is_some_and(|attribute| *attribute == expected)
 }
 
-/// Phase 3 emptied `body_rows()`, so the per-row verifier below has no rows to walk. It is
-/// retained rather than deleted: the next refusal row revives it wholesale, and the row list
-/// — not the verifier — is what the phase boundary emptied.
-#[allow(dead_code)]
-struct CfgBlock {
-    attribute_start: usize,
-    block: Range<usize>,
-    is_not_unix: bool,
-}
-
-#[allow(dead_code)]
-fn top_level_cfg_blocks(source: &str, body: &Range<usize>) -> Vec<CfgBlock> {
-    let normalised = normalise(source, Literals::Blank);
-    let mut blocks = Vec::new();
-    let mut depth = 1;
-    let mut cursor = body.start + 1;
-    while cursor < body.end - 1 {
-        if depth == 1 && normalised[cursor..].starts_with("#[cfg(") {
-            let attribute_end = normalised[cursor..]
-                .find(']')
-                .map(|offset| cursor + offset + 1)
-                .unwrap_or(cursor);
-            let attribute = compact(&source[cursor..attribute_end]);
-            let is_unix = attribute == "#[cfg(unix)]";
-            let is_not_unix = attribute == "#[cfg(not(unix))]";
-            if is_unix || is_not_unix {
-                let mut opening = attribute_end;
-                while opening < body.end && normalised.as_bytes()[opening].is_ascii_whitespace() {
-                    opening += 1;
-                }
-                if normalised.as_bytes().get(opening) == Some(&b'{') {
-                    let block = body_from_opening(&normalised, opening);
-                    blocks.push(CfgBlock {
-                        attribute_start: cursor,
-                        block: block.clone(),
-                        is_not_unix,
-                    });
-                    cursor = block.end;
-                    continue;
-                }
-            }
-        }
-        match normalised.as_bytes()[cursor] {
-            b'{' => depth += 1,
-            b'}' => depth -= 1,
-            _ => {}
-        }
-        cursor += 1;
-    }
-    blocks
-}
-
-#[allow(dead_code)]
-fn effective_non_unix_body(source: &str, body: &Range<usize>, blocks: &[CfgBlock]) -> String {
-    let mut effective = String::new();
-    let mut cursor = body.start;
-    for block in blocks {
-        effective.push_str(&source[cursor..block.attribute_start]);
-        if block.is_not_unix {
-            effective.push_str(&source[block.block.start + 1..block.block.end - 1]);
-        }
-        cursor = block.block.end;
-    }
-    effective.push_str(&source[cursor..body.end]);
-    effective
-}
-
 /// Every enclosing `impl`/`mod` scope, with the offset of its *declaration* — not of its
 /// opening brace. A multi-line header (`impl Foo\n{`, a `where` clause, a long generic list)
 /// would otherwise make the caller scan for attributes above the `{` line, find the tail of
@@ -2440,7 +2357,7 @@ fn scope_blocks(source: &str) -> Vec<(String, usize, Range<usize>)> {
             if normalised[start..opening].contains(';') {
                 continue;
             }
-            let body = body_from_opening(&normalised, opening);
+            let body = body_from_opening(&normalised, opening).expect("unterminated source body");
             scopes.push((compact(&source[start..opening]), start, body));
         }
     }
@@ -2495,133 +2412,6 @@ fn check_function_attributes(
             if !allowed {
                 errors.push(format!("{file}: {signature} carries forbidden {attribute}"));
             }
-        }
-    }
-}
-
-#[allow(dead_code)]
-enum ExpectedBody {
-    /// No remaining refusal row is a bare counterpart after Phase 2 ported
-    /// `mark_engine_executable` (d-20260918-09, R2-01). The variant stays so the verifier
-    /// keeps matching the plan's row forms, and is revived by any future refusal row.
-    #[allow(dead_code)]
-    Refusal(&'static str),
-    Exact(&'static str),
-}
-
-#[allow(dead_code)]
-impl ExpectedBody {
-    fn compact(&self) -> String {
-        match self {
-            Self::Refusal(operation) => {
-                format!("{{Err(crate::infra::platform_support::unsupported(\"{operation}\",))}}")
-            }
-            Self::Exact(body) => (*body).to_owned(),
-        }
-    }
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Copy)]
-enum BodyForm {
-    /// See `ExpectedBody::Refusal`: the last counterpart row was deleted in Phase 2.
-    #[allow(dead_code)]
-    Counterpart,
-    Block,
-}
-
-#[allow(dead_code)]
-struct BodyRow {
-    file: &'static str,
-    signature: &'static str,
-    form: BodyForm,
-    expected: ExpectedBody,
-}
-
-fn body_rows() -> &'static [BodyRow] {
-    &[]
-}
-
-#[allow(dead_code)]
-fn check_source_pin(row: &BodyRow, source: &str, errors: &mut Vec<String>) {
-    let label = format!("{}: {}", row.file, row.signature);
-    let starts = function_starts(source, row.signature);
-    let candidates = starts
-        .iter()
-        .copied()
-        .filter(|start| match row.form {
-            BodyForm::Counterpart => direct_attribute(source, *start, "#[cfg(not(unix))]"),
-            BodyForm::Block => {
-                let body = body_at(source, *start);
-                top_level_cfg_blocks(source, &body)
-                    .iter()
-                    .any(|block| block.is_not_unix)
-                    && !direct_attribute(source, *start, "#[cfg(not(unix))]")
-            }
-        })
-        .collect::<Vec<_>>();
-    if candidates.len() != 1 {
-        errors.push(format!(
-            "{label}: expected exactly one {} form, found {}",
-            match row.form {
-                BodyForm::Counterpart => "Counterpart",
-                BodyForm::Block => "Block",
-            },
-            candidates.len()
-        ));
-    }
-    let Some(start) = candidates
-        .first()
-        .copied()
-        .or_else(|| starts.first().copied())
-    else {
-        errors.push(format!("{label}: function signature missing"));
-        return;
-    };
-    check_function_attributes(
-        row.file,
-        source,
-        row.signature,
-        start,
-        matches!(row.form, BodyForm::Counterpart),
-        errors,
-    );
-    check_scope_and_modules(row.file, source, start, errors);
-    let body = body_at(source, start);
-    let blocks = top_level_cfg_blocks(source, &body);
-    let effective = match row.form {
-        BodyForm::Counterpart => source[body.clone()].to_owned(),
-        BodyForm::Block => effective_non_unix_body(source, &body, &blocks),
-    };
-    let actual = compact(&effective);
-    if actual != row.expected.compact() {
-        errors.push(format!(
-            "{label}: effective non-unix body changed: {actual}"
-        ));
-    }
-    let normalised = normalise(&effective, Literals::Blank);
-    if normalised.contains("#[cfg")
-        || normalised.contains("cfg!(")
-        || normalised.contains("cfg_attr")
-    {
-        errors.push(format!(
-            "{label}: effective body contains an unpermitted cfg"
-        ));
-    }
-    for crate_start in actual.match_indices("crate::").map(|(offset, _)| offset) {
-        let Some(open) = actual[crate_start..].find('(') else {
-            continue;
-        };
-        let path = &actual[crate_start..crate_start + open];
-        let allowed = [
-            "crate::infra::platform_support::unsupported",
-            "crate::infra::platform_support::unsupported_plural",
-            "crate::infra::platform_support::off_unix_refusal",
-        ];
-        if !allowed.contains(&path) {
-            errors.push(format!(
-                "{label}: effective body calls unpinned crate function {path}"
-            ));
         }
     }
 }
@@ -2767,19 +2557,6 @@ fn refusal_guards_are_first_statements_and_precede_their_effects() {
         errors.is_empty(),
         "refusal guard pins failed:\n{}",
         errors.join("\n")
-    );
-}
-
-/// Phase 3 ported the last two refusal bodies (`atomic_install_dir`,
-/// `atomic_install_download_dir`), so `body_rows()` is now the empty remaining-refusal list.
-/// The per-row loop above is gone rather than left vacuous; what is left to pin is the count
-/// itself, so a re-added refusal row fails here and in `assert_removed_rows_are_ungated`.
-#[test]
-fn remaining_refusal_body_rows_are_none() {
-    assert!(
-        body_rows().is_empty(),
-        "refusal body rows remain: {}",
-        body_rows().len()
     );
 }
 
@@ -2968,7 +2745,6 @@ fn production_refusal_inventory_matches_rows() {
     for_each_refusal_region(|key, source, blanked| {
         let kept = normalise(source, Literals::Keep);
         let literals = string_literals(&kept);
-        let ranges = string_literal_ranges(&kept);
         // Compact code only; the offset map still addresses both normalised forms (P11).
         let offsets = blanked
             .bytes()
@@ -3023,10 +2799,9 @@ fn production_refusal_inventory_matches_rows() {
                     .unwrap_or(0);
             let literal = literals
                 .iter()
-                .zip(&ranges)
-                .find(|((offset, _), _)| *offset == argument_start);
-            let Some(((_, label), _)) =
-                literal.filter(|(_, range)| kept[range.end..].trim_start().starts_with([',', ')']))
+                .find(|(range, _)| range.start == argument_start);
+            let Some((_, label)) =
+                literal.filter(|(range, _)| kept[range.end..].trim_start().starts_with([',', ')']))
             else {
                 errors.push(format!(
                     "refusal inventory: {key}:{line}: refusal label is not one string literal"
@@ -3089,9 +2864,9 @@ fn refusal_wording_has_one_production_source() {
     for_each_refusal_region(|key, source, _| {
         let mut joined = String::new();
         let mut starts = Vec::new();
-        for (offset, content) in string_literals(source) {
+        for (range, content) in string_literals(source) {
             let folded = fold_refusal_literal(content);
-            let line = source_line(source, offset);
+            let line = source_line(source, range.start);
             for stem in ["unsupportedonthis", "onthisplatform"] {
                 for _ in folded.match_indices(stem) {
                     errors.push(format!(
@@ -3136,7 +2911,7 @@ fn production_region(source: &str) -> String {
         {
             continue;
         }
-        let body = body_from_opening(&normalised, opening);
+        let body = body_from_opening(&normalised, opening).expect("unterminated source body");
         for byte in &mut bytes[body] {
             if *byte != b'\n' {
                 *byte = b' ';
@@ -3182,7 +2957,7 @@ fn enclosing_function_name(source: &str, call: usize) -> Option<String> {
             if normalised.as_bytes()[opening] != b'{' || opening >= call {
                 return None;
             }
-            let body = body_from_opening(&normalised, opening);
+            let body = body_from_opening(&normalised, opening).expect("unterminated source body");
             body.contains(&call).then(|| name.to_owned())
         })
         .next_back()

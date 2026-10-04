@@ -121,22 +121,13 @@ pub(crate) mod source_scan {
         scan(text, literals, |_, _, _| {})
     }
 
-    /// String-literal start offsets and raw contents, from the same pass as `normalise`.
-    pub(crate) fn string_literals(text: &str) -> Vec<(usize, &str)> {
-        let mut contents = Vec::new();
-        scan(text, Literals::Keep, |start, content, _| {
-            contents.push((start, &text[content]));
+    /// Full string-literal delimiter ranges and raw contents, from the same pass as `normalise`.
+    pub(crate) fn string_literals(text: &str) -> Vec<(std::ops::Range<usize>, &str)> {
+        let mut literals = Vec::new();
+        scan(text, Literals::Keep, |start, content, end| {
+            literals.push((start..end, &text[content]));
         });
-        contents
-    }
-
-    /// Full string-literal delimiter ranges, for exact argument-shape checks.
-    pub(crate) fn string_literal_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
-        let mut ranges = Vec::new();
-        scan(text, Literals::Keep, |start, _, end| {
-            ranges.push(start..end)
-        });
-        ranges
+        literals
     }
 
     fn scan(
@@ -236,6 +227,15 @@ pub(crate) mod source_scan {
             .find('{')
             .map(|offset| signature_start + offset)
             .unwrap_or_else(|| panic!("signature {signature:?} must have a body"));
+        body_from_opening(&normalised, opening)
+            .unwrap_or_else(|| panic!("signature {signature:?} has an unterminated body"))
+    }
+
+    /// Matches nested braces from an opening `{` in normalised source text.
+    pub(crate) fn body_from_opening(
+        normalised: &str,
+        opening: usize,
+    ) -> Option<std::ops::Range<usize>> {
         let mut depth = 0;
         for (offset, byte) in normalised.as_bytes()[opening..].iter().enumerate() {
             match byte {
@@ -243,13 +243,13 @@ pub(crate) mod source_scan {
                 b'}' => {
                     depth -= 1;
                     if depth == 0 {
-                        return opening..opening + offset + 1;
+                        return Some(opening..opening + offset + 1);
                     }
                 }
                 _ => {}
             }
         }
-        panic!("signature {signature:?} has an unterminated body")
+        None
     }
 
     /// The source text of `signature`'s body, from its signature line up to the first line at
@@ -305,18 +305,27 @@ pub(crate) mod source_scan {
 
     #[cfg(test)]
     mod tests {
-        use super::{braced_body, normalise, string_literal_ranges, string_literals, Literals};
+        use super::{body_from_opening, braced_body, normalise, string_literals, Literals};
+
+        #[test]
+        fn source_scan_matches_nested_braces_and_rejects_unterminated_body() {
+            assert_eq!(body_from_opening("prefix { { } } suffix", 7), Some(7..14));
+            assert_eq!(body_from_opening("prefix { { }", 7), None);
+        }
 
         #[test]
         fn string_literals_plain() {
-            assert_eq!(string_literals(r#"let x = "plain";"#), vec![(8, "plain")]);
+            assert_eq!(
+                string_literals(r#"let x = "plain";"#),
+                vec![(8..15, "plain")]
+            );
         }
 
         #[test]
         fn string_literals_raw() {
             assert_eq!(
                 string_literals(r##"r#"raw"# r"bare""##),
-                vec![(0, "raw"), (9, "bare")]
+                vec![(0..8, "raw"), (9..16, "bare")]
             );
         }
 
@@ -324,7 +333,7 @@ pub(crate) mod source_scan {
         fn string_literals_byte_and_raw_byte() {
             assert_eq!(
                 string_literals(r##"b"byte" br#"raw"#"##),
-                vec![(0, "byte"), (8, "raw")]
+                vec![(0..7, "byte"), (8..17, "raw")]
             );
         }
 
@@ -332,7 +341,7 @@ pub(crate) mod source_scan {
         fn string_literals_escaped_quote() {
             assert_eq!(
                 string_literals(r#""escaped\"quote""#),
-                vec![(0, r#"escaped\"quote"#)]
+                vec![(0..16, r#"escaped\"quote"#)]
             );
         }
 
@@ -340,23 +349,23 @@ pub(crate) mod source_scan {
         fn string_literals_skip_comment_quotes() {
             assert_eq!(
                 string_literals("// \"line\"\n/* \"block\" */ \"kept\""),
-                vec![(24, "kept")]
+                vec![(24..30, "kept")]
             );
         }
 
         #[test]
         fn string_literals_skip_quote_character() {
-            assert_eq!(string_literals("'\"' \"kept\""), vec![(4, "kept")]);
+            assert_eq!(string_literals("'\"' \"kept\""), vec![(4..10, "kept")]);
         }
 
         #[test]
         fn string_literals_offsets_preserve_utf8_and_newlines() {
             let source = "/* ü */\n\"ä\" r#\"ö\"#";
             let contents = string_literals(source);
-            assert_eq!(contents, vec![(9, "ä"), (14, "ö")]);
-            assert_eq!(string_literal_ranges(source), vec![9..13, 14..21]);
-            for (offset, _) in contents {
-                assert!(source.is_char_boundary(offset));
+            assert_eq!(contents, vec![(9..13, "ä"), (14..21, "ö")]);
+            for (range, _) in contents {
+                assert!(source.is_char_boundary(range.start));
+                assert!(source.is_char_boundary(range.end));
             }
         }
 
