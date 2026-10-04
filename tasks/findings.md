@@ -9761,7 +9761,7 @@ required.
 
 ### Two "does this path exist" predicates disagree about how a missing entry is spelled
 
-* **ID:** f-20260916-09 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260916-09 · **Status:** handled · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
 
 `review-minimalism` raised this during the `$push` review of the f-20260914-10 Windows
 atomic-replacement port (confidence 85). Two predicates answer the same question with different
@@ -9795,6 +9795,15 @@ fixed in the f-20260914-10 push itself; this entry is the semantic half that sur
 plus `cargo test --manifest-path src-tauri/Cargo.toml`. A Windows target check is available
 locally via `cargo check --target x86_64-pc-windows-gnu` (see the toolchain note in the
 f-20260914-10 handoff).
+
+**Closed 2026-10-04** (drain session e86c5c5d-5436-4a09-87ef-8662fd750e7f, build tier, plan reviewed ahead in four rounds and adopted through ADOPT-PLAN; review record `tasks/handoffs/2026-10-04-f-20260916-09-review.md`).
+
+* **Answer to the open question:** the raw OS numbers stay authoritative and `Error::Io` keeps them, but through one predicate in `src-tauri/src/error.rs` (`is_missing_entry_io` / `Error::is_missing_entry`): for an error carrying a raw OS code, exactly unix `ENOENT` and Windows `ERROR_FILE_NOT_FOUND` / `ERROR_PATH_NOT_FOUND`; for a raw-less in-process error, `kind() == NotFound`. Windows `ERROR_INVALID_DRIVE`, `ERROR_BAD_NETPATH` and `ERROR_BAD_NET_NAME`, which std also maps to `ErrorKind::NotFound`, are no longer absence anywhere. Decisions `d-20261004-26`..`30`; `d-20261004-26` is superseded in its scope statement by `d-20261004-31`, and the justification of `conflict_if_replaced`'s broader absence test is `d-20261004-33` (via `d-20261004-32`), which also refines the absence member of `d-20261003-05`.
+* **`df8d02df`** — the predicate; Windows `missing` / `missing_leaf` (infra/fs.rs) and `is_missing_leaf_error` (resolved.rs) deleted; `classify_probe_error_kind`, `conflict_if_replaced`, `category`, `root_failure_reason` and the 18 inline `kind() == NotFound` sites routed through it; the sanitising wrappers (practice `operation_io`, `AppDataDir::acquire`, debug `write_if_changed`) rebuild through `sanitized_io_error`, which keeps the classification after the raw code is dropped. Tests: predicate rows on all platforms, cfg(windows) raw rows, the `windows_open_status_error` producer → predicate test (the cross-layer proof the entry asked for), classifier/category/root-failure assertions, the resolver-guard source pin and the updated classifier table.
+* **`4f682613`**, **`2a5cd52e`** — diff-review round 1 repairs: full diagnostics in the two native logs that printed only "I/O failure", `app_data_acquisition_failure` extracted and tested, a raw-error ParentSync injector test for `write_if_changed`, named Windows constants in the classifier table, practice test imports regrouped.
+* **Rejected:** `ErrorKind::NotFound` everywhere (an unreachable drive or share reads as absent; contrary to `d-20261002-08`); normalising the NT layer to synthetic `NotFound` (drops the OS code and leaves `last_os_error` producers unconstrained).
+* **Evidence limits:** every `cfg(windows)` test runs only in CI `rust-windows-test`; locally the Windows target is type-checked and clippy-linted by `pnpm rust:windows:check` (green). Skipped review finding: per-site Windows network-error tests for the inline guards (no fault-injection seam; the reviewed plan's O4 fixed the verification level).
+<!-- ledger-meta {"command":"close","effect_lines":7,"effect_sha256":"8037ed81f28b596c8ccc7c91fed6d428ad3170ae3806689ab9e31d026cdc6533","header_sha256":"2f51da22510f0d5ba17e6390ad333547af64bc87e20291be56495a343e1fd24f","header_status":"handled","input_sha256":"edb48330f5b4c06b7e4b0eaa51a41c099bba5fc877cc8a4259f01ad36ad10cd7","kind":"mutation-receipt","operation":"9db959f7f0cf635f1a290a42af4fb259b6ddad5d293da1ea5ab4e8a861da549b","options":{"section":null},"request_id_sha256":null,"results":["f-20260916-09"],"target":"f-20260916-09","v":1} -->
 
 ---
 
