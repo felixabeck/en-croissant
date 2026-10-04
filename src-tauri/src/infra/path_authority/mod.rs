@@ -9140,16 +9140,21 @@ pub(crate) mod portable_tests {
             fs::create_dir(&app_path).unwrap();
             let registry = dir.path().join("registry.json");
             let mut authority = PathAuthority::open(registry.clone(), vec![]).unwrap();
-            let id = {
-                let directory = authorize_existing_dir(&selected_path).unwrap();
-                get_or_create_app_owned_test_root(
-                    &mut authority,
-                    domain,
-                    &directory,
-                    directory.identity(),
-                )
-                .unwrap()
-            };
+            // None stores the acquired spelling, as the pickers do; Some keeps the caller's
+            // spelling, which on Windows is the temp directory's 8.3 short form.
+            let id = match domain {
+                AppOwnedDefaultRoot::Databases => authority
+                    .get_or_create_database_root(&selected_path, "Selected", None)
+                    .map(|handle| handle.path_ref().clone()),
+                AppOwnedDefaultRoot::Engines => authority
+                    .get_or_create_engine_root(&selected_path, "Selected", None)
+                    .map(|handle| handle.path_ref().clone()),
+                AppOwnedDefaultRoot::Puzzles => authority
+                    .get_or_create_puzzle_root(&selected_path, "Selected", None)
+                    .map(|handle| handle.path_ref().clone()),
+                _ => unreachable!(),
+            }
+            .unwrap();
             set_active_app_owned_test_root(&mut authority, domain, &id);
             match reason {
                 RootFailure::Missing => fs::remove_dir(&selected_path).unwrap(),
