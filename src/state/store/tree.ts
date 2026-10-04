@@ -33,8 +33,8 @@ export interface TreeStoreState extends TreeState {
     getNode: (path: number[]) => TreeNode | null;
 
     goToNext: () => void;
-    /** Steps from the current node into `children[childIndex]`; refused during a practice drill. */
-    goToChild: (childIndex: number) => void;
+    /** Plays continuation `index` of nextContinuation; refused during a practice drill. */
+    goToContinuation: (index: number) => void;
     goToPrevious: () => void;
     goToStart: () => void;
     goToEnd: () => void;
@@ -196,15 +196,33 @@ function installRoot(state: Draft<TreeStoreState>, root: TreeNode): void {
     state.position = [];
 }
 
+export function nextContinuation(
+    state: Pick<TreeStoreState, "root" | "position" | "headers" | "practicePath">,
+): { path: number[]; children: TreeNode[] } | null {
+    const node = getNodeAtPath(state.root, state.position);
+    if (!node) return null;
+    if (node.children.length > 0) return { path: state.position, children: node.children };
+    if (state.practicePath !== null) return null;
+
+    const currentFen = getBoardState(node.fen);
+    const entries =
+        getMemoizedBoardStateMap(state.root, state.headers.start ?? [])[currentFen] || [];
+    const candidates = entries.filter((e) => e.node !== node);
+    const target = candidates[0];
+    if (!target || target.node.children.length === 0) return null;
+    return { path: target.path, children: target.node.children };
+}
+
 function stepIntoChild(
-    position: number[],
-    node: TreeNode,
-    childIndex: number,
+    path: number[],
+    children: TreeNode[],
+    index: number,
 ): Partial<TreeStoreState> {
-    const san = node.children[childIndex]?.move ? node.children[childIndex].san : null;
-    if (!san) return {};
+    const child = children[index];
+    if (!child?.move || !child.san) return {};
+    const { san } = child;
     playSound(san.includes("x"), san.includes("+"));
-    return { position: [...position, childIndex] };
+    return { position: [...path, index] };
 }
 
 export const createTreeStore = (id?: string, initTree?: TreeState) => {
@@ -261,44 +279,18 @@ export const createTreeStore = (id?: string, initTree?: TreeState) => {
                 )
                     return {};
 
-                const node = getNodeAtPath(state.root, state.position);
-                if (!node) return {};
-
-                // Normal case: node has children
-                if (node.children.length > 0) {
-                    return stepIntoChild(
-                        state.position,
-                        node,
-                        practicePath === null ? 0 : practicePath[state.position.length],
-                    );
-                }
-
-                // No children — outside an active drill, try the transposition fallback
-                if (practicePath !== null) return {};
-
-                const currentFen = getBoardState(node.fen);
-                const entries =
-                    getMemoizedBoardStateMap(state.root, state.headers.start ?? [])[currentFen] ||
-                    [];
-                const candidates = entries.filter((e) => e.node !== node);
-
-                if (candidates.length === 0) return {};
-
-                const { node: targetNode, path: targetPath } = candidates[0];
-                if (targetNode.children.length === 0) return {};
-                const firstChild = targetNode.children[0];
-                if (!firstChild.san) return {};
-                playSound(firstChild.san.includes("x"), firstChild.san.includes("+"));
-
-                return { position: [...targetPath, 0] };
+                const c = nextContinuation(state);
+                if (!c) return {};
+                const index = practicePath === null ? 0 : practicePath[state.position.length];
+                return stepIntoChild(c.path, c.children, index);
             });
         },
-        goToChild: (childIndex) => {
+        goToContinuation: (index) => {
             set((state) => {
                 if (state.practicePath !== null) return {};
-                const node = getNodeAtPath(state.root, state.position);
-                if (!node) return {};
-                return stepIntoChild(state.position, node, childIndex);
+                const c = nextContinuation(state);
+                if (!c) return {};
+                return stepIntoChild(c.path, c.children, index);
             });
         },
         goToPrevious: () => {

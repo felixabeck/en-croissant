@@ -6,12 +6,13 @@ import {
   IconChevronsRight,
 } from "@tabler/icons-react";
 import { useAtomValue } from "jotai";
-import { memo, useContext, useState } from "react";
+import { memo, useContext, useEffect, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
 import { chooseVariationAtom } from "@/state/atoms";
 import { keyMapAtom } from "@/state/keybinds";
+import { nextContinuation } from "@/state/store/tree";
 import { formatMoveNumber } from "@/utils/format";
 import type { TreeNode } from "@/utils/treeReducer";
 import { TreeStateContext } from "./TreeStateContext";
@@ -21,7 +22,7 @@ function MoveControls({ readOnly }: { readOnly?: boolean }) {
   const store = useContext(TreeStateContext)!;
   const { t } = useTranslation();
   const goToNext = useStore(store, (s) => s.goToNext);
-  const goToChild = useStore(store, (s) => s.goToChild);
+  const goToContinuation = useStore(store, (s) => s.goToContinuation);
   const goToPrevious = useStore(store, (s) => s.goToPrevious);
   const start = useStore(store, (s) => s.goToStart);
   const end = useStore(store, (s) => s.goToEnd);
@@ -32,54 +33,75 @@ function MoveControls({ readOnly }: { readOnly?: boolean }) {
   const previousBranch = useStore(store, (s) => s.previousBranch);
   const nextBranching = useStore(store, (s) => s.nextBranching);
   const previousBranching = useStore(store, (s) => s.previousBranching);
-  const currentNode = useStore(store, (s) => s.currentNode());
-  const practicing = useStore(store, (s) => s.practicePath !== null);
   const chooseVariation = useAtomValue(chooseVariationAtom);
 
-  // A choice belongs to the node it was opened at: any other navigation, or an edit that replaces
-  // that node (and so its children), abandons it without an effect having to notice.
-  const [choice, setChoice] = useState<{ node: TreeNode; selected: number } | null>(null);
-  const open = choice !== null && choice.node === currentNode ? choice : null;
-  const continuations = open ? currentNode.children : [];
+  const [choice, setChoice] = useState<{
+    path: number[];
+    children: TreeNode[];
+    selected: number;
+  } | null>(null);
+
+  useEffect(
+    () =>
+      store.subscribe((state, previous) => {
+        if (state.position !== previous.position || state.root !== previous.root) setChoice(null);
+      }),
+    [store],
+  );
+
+  const navigate = (action: () => void) => () => {
+    setChoice(null);
+    action();
+  };
 
   const next = () => {
-    if (open) {
+    if (choice) {
       setChoice(null);
-      goToChild(open.selected);
-    } else if (chooseVariation && !practicing && currentNode.children.length > 1) {
-      setChoice({ node: currentNode, selected: 0 });
+      goToContinuation(choice.selected);
     } else {
-      goToNext();
+      const state = store.getState();
+      const c = nextContinuation(state);
+      if (chooseVariation && state.practicePath === null && c && c.children.length > 1) {
+        setChoice({ ...c, selected: 0 });
+      } else {
+        goToNext();
+      }
     }
   };
-  const previous = () => (open ? setChoice(null) : goToPrevious());
+  const previous = () => (choice ? setChoice(null) : goToPrevious());
   const select = (step: number) =>
-    open &&
+    choice &&
     setChoice({
-      node: open.node,
-      selected: (open.selected + step + continuations.length) % continuations.length,
+      ...choice,
+      selected: (choice.selected + step + choice.children.length) % choice.children.length,
     });
 
   const keyMap = useAtomValue(keyMapAtom);
   useHotkeys(keyMap.PREVIOUS_MOVE.keys, previous);
   useHotkeys(keyMap.NEXT_MOVE.keys, next);
-  useHotkeys(keyMap.GO_TO_START.keys, start);
-  useHotkeys(keyMap.GO_TO_END.keys, end);
-  useHotkeys(keyMap.DELETE_MOVE.keys, readOnly ? () => {} : () => deleteMove());
+  useHotkeys(keyMap.GO_TO_START.keys, navigate(start));
+  useHotkeys(keyMap.GO_TO_END.keys, navigate(end));
+  useHotkeys(keyMap.DELETE_MOVE.keys, navigate(readOnly ? () => {} : () => deleteMove()));
   // While the list is open the arrow keys move its selection, whatever the branch keys are bound to.
-  useHotkeys(keyMap.GO_TO_BRANCH_START.keys, () => open || startBranch());
-  useHotkeys(keyMap.GO_TO_BRANCH_END.keys, () => open || endBranch());
-  useHotkeys("arrowup", () => select(-1), { enabled: open !== null, preventDefault: true });
-  useHotkeys("arrowdown", () => select(1), { enabled: open !== null, preventDefault: true });
-  useHotkeys("escape", () => setChoice(null), { enabled: open !== null });
-  useHotkeys(keyMap.NEXT_BRANCH.keys, nextBranch);
-  useHotkeys(keyMap.PREVIOUS_BRANCH.keys, previousBranch);
-  useHotkeys(keyMap.NEXT_BRANCHING.keys, nextBranching);
-  useHotkeys(keyMap.PREVIOUS_BRANCHING.keys, previousBranching);
+  useHotkeys(keyMap.GO_TO_BRANCH_START.keys, (event) => {
+    if (choice && (event.key === "ArrowUp" || event.key === "ArrowDown")) return;
+    navigate(startBranch)();
+  });
+  useHotkeys(keyMap.GO_TO_BRANCH_END.keys, (event) => {
+    if (choice && (event.key === "ArrowUp" || event.key === "ArrowDown")) return;
+    navigate(endBranch)();
+  });
+  useHotkeys("arrowup", () => select(-1), { enabled: choice !== null, preventDefault: true });
+  useHotkeys("arrowdown", () => select(1), { enabled: choice !== null, preventDefault: true });
+  useHotkeys("escape", () => setChoice(null), { enabled: choice !== null });
+  useHotkeys(keyMap.NEXT_BRANCH.keys, navigate(nextBranch));
+  useHotkeys(keyMap.PREVIOUS_BRANCH.keys, navigate(previousBranch));
+  useHotkeys(keyMap.NEXT_BRANCHING.keys, navigate(nextBranching));
+  useHotkeys(keyMap.PREVIOUS_BRANCHING.keys, navigate(previousBranching));
 
   return (
     <Popover
-      opened={open !== null}
+      opened={choice !== null}
       onClose={() => setChoice(null)}
       position="top"
       withArrow
@@ -94,7 +116,7 @@ function MoveControls({ readOnly }: { readOnly?: boolean }) {
             label={t("Common.MoveControls.GoToStart", { defaultValue: "Go to start" })}
             variant="default"
             size="lg"
-            onClick={start}
+            onClick={navigate(start)}
           >
             <IconChevronsLeft />
           </IconAction>
@@ -118,7 +140,7 @@ function MoveControls({ readOnly }: { readOnly?: boolean }) {
             label={t("Common.MoveControls.GoToEnd", { defaultValue: "Go to end" })}
             variant="default"
             size="lg"
-            onClick={end}
+            onClick={navigate(end)}
           >
             <IconChevronsRight />
           </IconAction>
@@ -132,20 +154,20 @@ function MoveControls({ readOnly }: { readOnly?: boolean }) {
             defaultValue: "Choose a continuation",
           })}
         >
-          {continuations.map((child, index) => (
+          {choice?.children.map((child, index) => (
             <UnstyledButton
               key={index}
               role="option"
-              aria-selected={index === open?.selected}
+              aria-selected={index === choice.selected}
               tabIndex={-1}
               px="sm"
               py={4}
-              bg={index === open?.selected ? "var(--mantine-primary-color-light)" : undefined}
+              bg={index === choice.selected ? "var(--mantine-primary-color-light)" : undefined}
               style={{ borderRadius: "var(--mantine-radius-sm)" }}
-              onMouseEnter={() => open && setChoice({ node: open.node, selected: index })}
+              onMouseEnter={() => setChoice({ ...choice, selected: index })}
               onClick={() => {
                 setChoice(null);
-                goToChild(index);
+                goToContinuation(index);
               }}
             >
               <Text component="span" size="sm" fw={index === 0 ? 600 : undefined}>

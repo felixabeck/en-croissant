@@ -2,6 +2,7 @@ import { parseUci } from "chessops";
 import { INITIAL_FEN, makeFen } from "chessops/fen";
 import { makeSan } from "chessops/san";
 import { afterEach, expect, test, vi } from "vitest";
+import { fixtureNode } from "@/tests/treeFixtures";
 import {
     createNode,
     defaultTree,
@@ -14,6 +15,7 @@ import {
     closeTreeStore,
     createTreeStore,
     discardTreeStoreStorage,
+    nextContinuation,
     retryTreeStoreStorage,
 } from "./tree";
 import { tabStorage } from "./tabStorage";
@@ -27,39 +29,35 @@ afterEach(() => {
     }
 });
 
-function node(name: string, children: TreeNode[] = []): TreeNode {
-    const result = createNode({
-        fen: `${name} w - - 0 1`,
-        move: parseUci("e2e4")!,
-        san: name,
-        halfMoves: 1,
-    });
-    result.children = children;
-    return result;
-}
-
 function threeBranchStore() {
     const tree = defaultTree();
-    const deepA = node("deep-a");
-    const deepB = node("deep-b");
-    const deepC = node("deep-c");
-    tree.root.children = [node("a", [deepA]), node("b", [deepB]), node("c", [deepC])];
+    const deepA = fixtureNode("deep-a");
+    const deepB = fixtureNode("deep-b");
+    const deepC = fixtureNode("deep-c");
+    tree.root.children = [
+        fixtureNode("a", { children: [deepA] }),
+        fixtureNode("b", { children: [deepB] }),
+        fixtureNode("c", { children: [deepC] }),
+    ];
     return { store: createTreeStore(undefined, tree), deepA, deepB, deepC };
 }
 
 function nestedPracticePathStore() {
     const grandchildren = (prefix: string) =>
         Array.from({ length: 4 }, (_, index) => {
-            const grandchild = node(`${prefix}-${index}`);
+            const grandchild = fixtureNode(`${prefix}-${index}`);
             const childCount = prefix === "a" && index === 2 ? 2 : 1;
             grandchild.children = Array.from({ length: childCount }, (_, childIndex) =>
-                node(`${prefix}-${index}-${childIndex}`),
+                fixtureNode(`${prefix}-${index}-${childIndex}`),
             );
             return grandchild;
         });
 
     const tree = defaultTree();
-    tree.root.children = [node("a", grandchildren("a")), node("b", grandchildren("b"))];
+    tree.root.children = [
+        fixtureNode("a", { children: grandchildren("a") }),
+        fixtureNode("b", { children: grandchildren("b") }),
+    ];
     return createTreeStore(undefined, tree);
 }
 
@@ -102,9 +100,12 @@ function mainlinePrependStore() {
 
 test("goToAnnotation leaves the cursor unchanged when the annotation is only on a variation", () => {
     const tree = defaultTree();
-    const variation = node("variation");
+    const variation = fixtureNode("variation");
     variation.nags = [1];
-    tree.root.children = [node("mainline", [node("continuation")]), variation];
+    tree.root.children = [
+        fixtureNode("mainline", { children: [fixtureNode("continuation")] }),
+        variation,
+    ];
     const store = createTreeStore(undefined, tree);
 
     store.getState().goToAnnotation("!", "white");
@@ -117,7 +118,7 @@ test.each([
     { code: 11, glyph: "=" as const },
 ])("goToAnnotation finds alias $code for $glyph", ({ code, glyph }) => {
     const tree = defaultTree();
-    const child = node("alias");
+    const child = fixtureNode("alias");
     child.nags = [code];
     tree.root.children = [child];
     const store = createTreeStore(undefined, tree);
@@ -127,10 +128,12 @@ test.each([
 
 test("goToAnnotation finds annotations while continuing from a variation", () => {
     const tree = defaultTree();
-    const continuation = node("variation-continuation");
+    const continuation = fixtureNode("variation-continuation");
     continuation.nags = [1];
-    const variation = node("variation", [continuation]);
-    tree.root.children = [node("mainline", [node("mainline-continuation"), variation])];
+    const variation = fixtureNode("variation", { children: [continuation] });
+    tree.root.children = [
+        fixtureNode("mainline", { children: [fixtureNode("mainline-continuation"), variation] }),
+    ];
     tree.position = [0, 1];
     const store = createTreeStore(undefined, tree);
 
@@ -717,7 +720,7 @@ test("setFen stores the normalized FEN from the installed root", () => {
 
 test("setFen with an empty FEN installs the default root and clears old paths", () => {
     const tree = defaultTree();
-    tree.root.children = [node("old-root-child")];
+    tree.root.children = [fixtureNode("old-root-child")];
     tree.position = [0];
     tree.headers.start = [0];
     const store = createTreeStore(undefined, tree);
@@ -735,7 +738,7 @@ test("setFen with an empty FEN installs the default root and clears old paths", 
 
 test("setFen clears paths into the replaced root", () => {
     const tree = defaultTree();
-    tree.root.children = [node("old-root-child")];
+    tree.root.children = [fixtureNode("old-root-child")];
     tree.position = [0];
     tree.headers.start = [0];
     const store = createTreeStore(undefined, tree);
@@ -765,7 +768,7 @@ test("editing headers after setFen keeps the installed position", () => {
 
 test("setHeaders installing a new FEN clears paths into the replaced root", () => {
     const tree = defaultTree();
-    tree.root.children = [node("old-root-child")];
+    tree.root.children = [fixtureNode("old-root-child")];
     tree.position = [0];
     tree.headers.start = [0];
     const store = createTreeStore(undefined, tree);
@@ -816,7 +819,10 @@ test("setState clears practicePath and keeps the supplied start path", () => {
     const tree = defaultTree();
     // Both paths resolve in the supplied tree, as parsePGN (every production caller's source)
     // guarantees.
-    tree.root.children = [node("a", [node("a-0")]), node("b", [node("b-0"), node("b-1")])];
+    tree.root.children = [
+        fixtureNode("a", { children: [fixtureNode("a-0")] }),
+        fixtureNode("b", { children: [fixtureNode("b-0"), fixtureNode("b-1")] }),
+    ];
     tree.headers.start = [1, 1];
     tree.position = [0, 0];
     tree.dirty = true;
@@ -838,7 +844,9 @@ test("setState clears practicePath and keeps the supplied start path", () => {
 
 test("reset clears practicePath, the start path and the cursor", () => {
     const tree = defaultTree();
-    tree.root.children = [node("old-root-child", [node("old-grandchild")])];
+    tree.root.children = [
+        fixtureNode("old-root-child", { children: [fixtureNode("old-grandchild")] }),
+    ];
     tree.headers.start = [0, 0];
     tree.position = [0, 0];
     const store = createTreeStore(undefined, tree);
@@ -851,23 +859,79 @@ test("reset clears practicePath, the start path and the cursor", () => {
     expect(store.getState().position).toEqual([]);
 });
 
-test("goToChild steps into the chosen variation instead of the main line", () => {
+test("goToContinuation steps into the chosen variation instead of the main line", () => {
     const { store, deepB } = threeBranchStore();
 
-    store.getState().goToChild(1);
+    store.getState().goToContinuation(1);
     expect(store.getState().position).toEqual([1]);
 
     store.getState().goToNext();
     expect(store.getState().currentNode()).toBe(deepB);
 });
 
-test("goToChild refuses an index with no child and any step during a practice drill", () => {
+test("goToContinuation refuses an index with no child", () => {
     const { store } = threeBranchStore();
 
-    store.getState().goToChild(3);
+    store.getState().goToContinuation(3);
     expect(store.getState().position).toEqual([]);
+});
 
+test("goToContinuation refuses any step during a practice drill", () => {
+    const { store } = threeBranchStore();
     store.getState().setPracticePath([0, 0]);
-    store.getState().goToChild(2);
+    store.getState().goToContinuation(2);
     expect(store.getState().position).toEqual([]);
+});
+
+function transposedContinuationStore() {
+    const tree = defaultTree();
+    const target = fixtureNode("target", {
+        children: [fixtureNode("main"), fixtureNode("variation")],
+    });
+    tree.root.children = [target, fixtureNode("leaf", { fen: target.fen })];
+    tree.position = [1];
+    return { store: createTreeStore(undefined, tree), target };
+}
+
+test("goToContinuation follows the selected transposed continuation", () => {
+    const { store, target } = transposedContinuationStore();
+
+    store.getState().goToContinuation(1);
+
+    expect(store.getState().position).toEqual([0, 1]);
+    expect(store.getState().currentNode()).toBe(target.children[1]);
+});
+
+test("nextContinuation returns the current node's own children", () => {
+    const { store } = threeBranchStore();
+    store.getState().goToMove([1]);
+    const state = store.getState();
+
+    const continuation = nextContinuation(state);
+
+    expect(continuation?.path).toBe(state.position);
+    expect(continuation?.children).toBe(state.currentNode().children);
+});
+
+test("nextContinuation returns the transposition target's path and children", () => {
+    const { store, target } = transposedContinuationStore();
+
+    const continuation = nextContinuation(store.getState());
+
+    expect(continuation?.path).toEqual([0]);
+    expect(continuation?.children).toBe(target.children);
+});
+
+test("nextContinuation returns null at a leaf without a transposition", () => {
+    const { store } = threeBranchStore();
+    store.getState().goToMove([0, 0]);
+
+    expect(nextContinuation(store.getState())).toBeNull();
+});
+
+test("nextContinuation never transposes during an active practice drill", () => {
+    const { store } = transposedContinuationStore();
+    store.getState().setPracticePath([1, 0]);
+
+    expect(nextContinuation(store.getState())).toBeNull();
 });

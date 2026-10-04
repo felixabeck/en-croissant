@@ -33,7 +33,7 @@ import { useHotkeys } from "react-hotkeys-hook";
 import { useTranslation } from "react-i18next";
 import { formatDate, type ReviewLog } from "ts-fsrs";
 import { normalizeError, type AppError } from "@/platform/errors";
-import { formatNumber } from "@/utils/format";
+import { formatMoveNumber, formatNumber } from "@/utils/format";
 import { useStore } from "zustand";
 import ConfirmModal from "@/components/common/ConfirmModal";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
@@ -1227,11 +1227,7 @@ function PositionsModal({
           const node = getNodeAtPath(root, position);
           return (
             <Card key={c.fen}>
-              <Text>
-                {Math.floor(node.halfMoves / 2) + 1}
-                {node.halfMoves % 2 === 0 ? ". " : "... "}
-                {c.answer}
-              </Text>
+              <Text>{`${formatMoveNumber(node.halfMoves + 1)} ${c.answer}`}</Text>
               <Divider my="xs" />
               <Group justify="space-between">
                 <Stack>
@@ -1354,11 +1350,7 @@ function LogsModal({
 
           return (
             <Card key={log.id} data-practice-entry-id={log.id}>
-              <Text>
-                {node
-                  ? `${Math.floor(node.halfMoves / 2) + 1}${node.halfMoves % 2 === 0 ? ". " : "... "}${node.san}`
-                  : log.fen}
-              </Text>
+              <Text>{node ? `${formatMoveNumber(node.halfMoves + 1)} ${node.san}` : log.fen}</Text>
 
               <Divider my="xs" />
               <Group justify="space-between">

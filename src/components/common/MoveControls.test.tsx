@@ -1,15 +1,31 @@
 import { MantineProvider } from "@mantine/core";
-import { parseUci } from "chessops";
 import { Provider } from "jotai";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { createTreeStore, type TreeStore } from "@/state/store/tree";
 import { installMatchMediaStub } from "@/tests/matchMedia";
-import { createNode, defaultTree, type TreeNode } from "@/utils/treeReducer";
+import { installResizeObserverStub } from "@/tests/resizeObserver";
+import { fixtureNode } from "@/tests/treeFixtures";
+import { defaultTree } from "@/utils/treeReducer";
 import { TreeStateContext } from "./TreeStateContext";
 
-const settings = vi.hoisted(() => ({ chooseVariation: true }));
+const settings = vi.hoisted(() => ({
+  chooseVariation: true,
+  keys: {
+    NEXT_MOVE: "arrowright",
+    PREVIOUS_MOVE: "arrowleft",
+    GO_TO_BRANCH_START: "arrowup",
+    GO_TO_BRANCH_END: "arrowdown",
+    GO_TO_START: "shift+arrowup",
+    GO_TO_END: "shift+arrowdown",
+    NEXT_BRANCH: "c",
+    PREVIOUS_BRANCH: "x",
+    NEXT_BRANCHING: "shift+arrowright",
+    PREVIOUS_BRANCHING: "shift+arrowleft",
+    DELETE_MOVE: "delete",
+  },
+}));
 
 vi.mock("@/state/atoms", async () => {
   const { atom } = await import("jotai");
@@ -17,23 +33,10 @@ vi.mock("@/state/atoms", async () => {
 });
 vi.mock("@/state/keybinds", async () => {
   const { atom } = await import("jotai");
-  const keys = {
-    NEXT_MOVE: "arrowright",
-    PREVIOUS_MOVE: "arrowleft",
-    GO_TO_BRANCH_START: "arrowup",
-    GO_TO_BRANCH_END: "arrowdown",
-    GO_TO_START: "shift+arrowup",
-    GO_TO_END: "shift+down",
-    NEXT_BRANCH: "c",
-    PREVIOUS_BRANCH: "x",
-    NEXT_BRANCHING: "shift+arrowright",
-    PREVIOUS_BRANCHING: "shift+arrowleft",
-    DELETE_MOVE: "delete",
-  };
   return {
-    keyMapAtom: atom(
+    keyMapAtom: atom(() =>
       Object.fromEntries(
-        Object.entries(keys).map(([id, value]) => [id, { name: id, keys: value }]),
+        Object.entries(settings.keys).map(([id, value]) => [id, { name: id, keys: value }]),
       ),
     ),
   };
@@ -45,38 +48,39 @@ import MoveControls from "./MoveControls";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 installMatchMediaStub();
-globalThis.ResizeObserver ??= class {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-};
+installResizeObserverStub();
 
 let host: HTMLDivElement;
 let root: Root;
 let store: TreeStore;
 
-function node(san: string, halfMoves: number, children: TreeNode[] = []): TreeNode {
-  const result = createNode({
-    fen: `${san} w - - 0 1`,
-    move: parseUci("e2e4")!,
-    san,
-    halfMoves,
-  });
-  result.children = children;
-  return result;
-}
-
 // 1.e4 (1.d4) (1.c4) e5 — a three-way branch at the root, then a single continuation.
 function branchingStore() {
   const tree = defaultTree();
-  tree.root.children = [node("e4", 1, [node("e5", 2)]), node("d4", 1), node("c4", 1)];
+  tree.root.children = [
+    fixtureNode("e4", { children: [fixtureNode("e5", { halfMoves: 2 })] }),
+    fixtureNode("d4"),
+    fixtureNode("c4"),
+  ];
   return createTreeStore(undefined, tree);
 }
 
-function press(key: string) {
+function middleGameStore() {
+  const tree = defaultTree();
+  tree.root.children = [
+    fixtureNode("e4", {
+      children: [fixtureNode("e5", { halfMoves: 2 }), fixtureNode("c5", { halfMoves: 2 })],
+    }),
+  ];
+  tree.position = [0];
+  return createTreeStore(undefined, tree);
+}
+
+function press(key: string, { shiftKey = false } = {}) {
+  const code = key.length === 1 ? `Key${key.toUpperCase()}` : key;
   act(() => {
-    document.dispatchEvent(new KeyboardEvent("keydown", { key, code: key, bubbles: true }));
-    document.dispatchEvent(new KeyboardEvent("keyup", { key, code: key, bubbles: true }));
+    document.dispatchEvent(new KeyboardEvent("keydown", { key, code, shiftKey, bubbles: true }));
+    document.dispatchEvent(new KeyboardEvent("keyup", { key, code, shiftKey, bubbles: true }));
   });
 }
 
@@ -104,6 +108,7 @@ function render() {
 
 beforeEach(() => {
   settings.chooseVariation = true;
+  settings.keys.GO_TO_BRANCH_END = "arrowdown";
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -142,10 +147,7 @@ test("arrow down then next move plays the selected variation and closes the list
 });
 
 test("arrow up wraps to the last variation and never jumps to the branch start", () => {
-  const tree = defaultTree();
-  tree.root.children = [node("e4", 1, [node("e5", 2), node("c5", 2)])];
-  store = createTreeStore(undefined, tree);
-  store.getState().goToMove([0]);
+  store = middleGameStore();
   render();
 
   press("ArrowRight");
@@ -189,4 +191,100 @@ test("a practice drill keeps following its own path", () => {
 
   expect(store.getState().position).toEqual([1]);
   expect(options()).toEqual([]);
+});
+
+test("arrow down wraps from the last variation back to the main line", () => {
+  render();
+  press("ArrowRight");
+
+  press("ArrowDown");
+  press("ArrowDown");
+  expect(options().map((option) => option.selected)).toEqual([false, false, true]);
+  press("ArrowDown");
+
+  expect(options().map((option) => option.selected)).toEqual([true, false, false]);
+  expect(store.getState().position).toEqual([]);
+});
+
+test.each(["ArrowLeft", "Escape"])(
+  "%s closes the list in the middle of a game without moving",
+  (key) => {
+    store = middleGameStore();
+    render();
+    press("ArrowRight");
+    expect(options()).toHaveLength(2);
+
+    press(key);
+
+    expect(options()).toEqual([]);
+    expect(store.getState().position).toEqual([0]);
+  },
+);
+
+test.each([
+  { key: "ArrowUp", shiftKey: true },
+  { key: "c", shiftKey: false },
+])("$key closes the list even when navigation stays at the branching root", ({ key, shiftKey }) => {
+  render();
+  press("ArrowRight");
+  expect(options()).toHaveLength(3);
+
+  press(key, { shiftKey });
+
+  expect(options()).toEqual([]);
+  expect(store.getState().position).toEqual([]);
+});
+
+test("navigating away and back to the same node never resurrects the list", () => {
+  render();
+  press("ArrowRight");
+  expect(options()).toHaveLength(3);
+
+  act(() => store.getState().goToMove([0]));
+  expect(options()).toEqual([]);
+  act(() => store.getState().goToMove([]));
+
+  expect(options()).toEqual([]);
+  expect(store.getState().position).toEqual([]);
+});
+
+test("a rebound branch-end key closes the list and navigates to the branch end", () => {
+  settings.keys.GO_TO_BRANCH_END = "j";
+  render();
+  press("ArrowRight");
+  expect(options()).toHaveLength(3);
+
+  press("j");
+
+  expect(options()).toEqual([]);
+  expect(store.getState().position).toEqual([0, 0]);
+});
+
+test("a transposed leaf offers every continuation and plays the chosen variation", () => {
+  const tree = defaultTree();
+  const target = fixtureNode("e4", {
+    children: [
+      fixtureNode("e5", { halfMoves: 2 }),
+      fixtureNode("c5", { halfMoves: 2 }),
+      fixtureNode("e6", { halfMoves: 2 }),
+    ],
+  });
+  tree.root.children = [target, fixtureNode("leaf", { fen: target.fen })];
+  tree.position = [1];
+  store = createTreeStore(undefined, tree);
+  render();
+
+  press("ArrowRight");
+
+  expect(store.getState().position).toEqual([1]);
+  expect(options()).toEqual([
+    { text: "1... e5", selected: true },
+    { text: "1... c5", selected: false },
+    { text: "1... e6", selected: false },
+  ]);
+  press("ArrowDown");
+  press("ArrowRight");
+
+  expect(options()).toEqual([]);
+  expect(store.getState().position).toEqual([0, 1]);
 });

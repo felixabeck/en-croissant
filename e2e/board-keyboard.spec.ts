@@ -1,4 +1,4 @@
-import { expect, test } from "./fixtures";
+import { expect, preserveStorageForReload, test } from "./fixtures";
 import type { ErrorPayload } from "../src/bindings/generated";
 
 test("board-keyboard: refuses an excess-material engine game with its localized position message", async ({
@@ -240,4 +240,30 @@ test("board-keyboard: next move at a branch asks which continuation to play", as
     await expect(chooser).toBeHidden();
     await expect(page.getByRole("gridcell", { name: "d4, White Pawn" })).toHaveCount(1);
     await expect(page.getByRole("gridcell", { name: "e2, White Pawn" })).toHaveCount(1);
+
+    const start = page.getByRole("button", { name: "Go to start", exact: true });
+    await start.click();
+    await page.getByRole("link", { name: "Settings", exact: true }).click();
+    await page.getByRole("tab", { name: "Board", exact: true }).click();
+    const chooseVariations = page.getByRole("switch", {
+        name: "Choose Variations at Branches",
+        exact: true,
+    });
+    await expect(chooseVariations).toBeChecked();
+    await chooseVariations.uncheck();
+    await expect(chooseVariations).not.toBeChecked();
+
+    await preserveStorageForReload(page);
+    await expect(chooseVariations).not.toBeChecked();
+    await page.getByRole("link", { name: "Board", exact: true }).click();
+    await expect(board).toBeVisible();
+    await start.click();
+    await expect(page.getByRole("gridcell", { name: "e2, White Pawn" })).toHaveCount(1);
+    await expect(page.getByRole("gridcell", { name: "d2, White Pawn" })).toHaveCount(1);
+    await expect(page.getByRole("gridcell", { name: "c2, White Pawn" })).toHaveCount(1);
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await page.mouse.move(250, 600);
+    await page.keyboard.press("ArrowRight");
+    await expect(chooser).toHaveCount(0);
+    await expect(page.getByRole("gridcell", { name: "e4, White Pawn" })).toHaveCount(1);
 });

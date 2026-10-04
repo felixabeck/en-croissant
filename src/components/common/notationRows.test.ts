@@ -1,32 +1,23 @@
-import { parseUci } from "chessops";
 import { describe, expect, test } from "vitest";
+import { fixtureNode } from "@/tests/treeFixtures";
 import {
     buildNotationRows,
     NOTATION_ROW_MAX_MOVES,
     pathForNotationNode,
     type NotationRow,
 } from "./notationRows";
-import { createNode, defaultTree, getNodeAtPath, type TreeNode } from "@/utils/treeReducer";
-
-function node(san: string, halfMoves: number): TreeNode {
-    return createNode({
-        fen: `${san} w - - 0 1`,
-        move: parseUci("e2e4")!,
-        san,
-        halfMoves,
-    });
-}
+import { defaultTree, getNodeAtPath, type TreeNode } from "@/utils/treeReducer";
 
 function variedTree() {
     const root = defaultTree().root;
-    const e4 = node("e4", 1);
-    const e5 = node("e5", 2);
-    const d4 = node("d4", 1);
-    const c5 = node("c5", 2);
-    const nf3 = node("Nf3", 3);
-    const nc6 = node("Nc6", 4);
-    const bb5 = node("Bb5", 5);
-    const a6 = node("a6", 6);
+    const e4 = fixtureNode("e4");
+    const e5 = fixtureNode("e5", { halfMoves: 2 });
+    const d4 = fixtureNode("d4");
+    const c5 = fixtureNode("c5", { halfMoves: 2 });
+    const nf3 = fixtureNode("Nf3", { halfMoves: 3 });
+    const nc6 = fixtureNode("Nc6", { halfMoves: 4 });
+    const bb5 = fixtureNode("Bb5", { halfMoves: 5 });
+    const a6 = fixtureNode("a6", { halfMoves: 6 });
     root.children = [e4, d4];
     e4.children = [e5, c5];
     e5.children = [nf3];
@@ -101,7 +92,7 @@ describe("buildNotationRows", () => {
         const root = defaultTree().root;
         let parent = root;
         for (let index = 1; index <= NOTATION_ROW_MAX_MOVES * 2 + 1; index += 1) {
-            const child = node(`m${index}`, index);
+            const child = fixtureNode(`m${index}`, { halfMoves: index });
             parent.children = [child];
             parent = child;
         }
@@ -136,7 +127,7 @@ describe("buildNotationRows", () => {
 
     test("anchors black-to-move numbering to halfMoves", () => {
         const root = defaultTree("8/8/8/8/8/8/8/K6k b - - 0 23").root;
-        const blackMove = node("...Kh7", root.halfMoves + 1);
+        const blackMove = fixtureNode("...Kh7", { halfMoves: root.halfMoves + 1 });
         root.children = [blackMove];
         const rows = buildNotationRows(root, {
             showVariations: false,
@@ -176,7 +167,7 @@ describe("buildNotationRows", () => {
         const root = defaultTree().root;
         let parent = root;
         for (let index = 1; index <= 25_000; index += 1) {
-            const child = node(`ply-${index}`, index);
+            const child = fixtureNode(`ply-${index}`, { halfMoves: index });
             parent.children = [child];
             parent = child;
         }

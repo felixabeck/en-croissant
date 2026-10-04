@@ -29,7 +29,7 @@ import { useStore } from "zustand";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { coverageMinGamesAtom, currentTabAtom, referenceDbAtom } from "@/state/atoms";
-import { roundKeepSum } from "@/utils/format";
+import { formatMoveNumber, roundKeepSum } from "@/utils/format";
 import { isPrefix } from "@/utils/misc";
 import {
   computeTreeCoverage,
@@ -48,9 +48,7 @@ import {
 import classes from "./RepertoireInfo.module.css";
 
 function formatMoveNotation(halfMoves: number, san: string): string {
-  const moveNum = Math.ceil(halfMoves / 2);
-  const isWhite = halfMoves % 2 === 1;
-  return `${moveNum}${isWhite ? "." : "..."} ${san}`;
+  return `${formatMoveNumber(halfMoves)} ${san}`;
 }
 
 function RepertoireInfo() {
