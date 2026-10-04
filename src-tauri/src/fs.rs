@@ -1629,7 +1629,10 @@ fn extract_zip_cancellable(
     // Only after a successful adopt: from here `staging` alone removes the leaf by identity.
     let _ = temp_dir.keep();
 
-    let mut archive = zip::ZipArchive::new(file).map_err(|e| Error::InvalidInput(e.to_string()))?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|error| match error {
+        zip::result::ZipError::Io(source) => Error::Io(Box::new(source)),
+        _ => Error::InvalidInput("Invalid zip archive".into()),
+    })?;
 
     let mut total_expanded = 0u64;
     if archive.len() > limits.entries {
@@ -2743,6 +2746,24 @@ mod tests {
         fn drop(&mut self) {
             set_dest_parent_identity_pre_open_hook(None);
         }
+    }
+
+    #[test]
+    fn extract_zip_non_archive_returns_fixed_error() {
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(b"not a zip archive").unwrap();
+        file.rewind().unwrap();
+        let parent = tempdir().unwrap();
+        let error = extract_zip_cancellable(
+            file,
+            parent.path(),
+            OsStr::new("payload"),
+            OpClass::Engine.limits(),
+            &CancellationToken::new(),
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "Invalid input: Invalid zip archive");
+        assert!(leaves(parent.path()).is_empty());
     }
 
     #[test]
