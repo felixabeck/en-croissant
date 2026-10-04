@@ -33,6 +33,8 @@ export interface TreeStoreState extends TreeState {
     getNode: (path: number[]) => TreeNode | null;
 
     goToNext: () => void;
+    /** Steps from the current node into `children[childIndex]`; refused during a practice drill. */
+    goToChild: (childIndex: number) => void;
     goToPrevious: () => void;
     goToStart: () => void;
     goToEnd: () => void;
@@ -194,6 +196,17 @@ function installRoot(state: Draft<TreeStoreState>, root: TreeNode): void {
     state.position = [];
 }
 
+function stepIntoChild(
+    position: number[],
+    node: TreeNode,
+    childIndex: number,
+): Partial<TreeStoreState> {
+    const san = node.children[childIndex]?.move ? node.children[childIndex].san : null;
+    if (!san) return {};
+    playSound(san.includes("x"), san.includes("+"));
+    return { position: [...position, childIndex] };
+}
+
 export const createTreeStore = (id?: string, initTree?: TreeState) => {
     if (id) {
         const existing = treeStores.get(id);
@@ -253,13 +266,11 @@ export const createTreeStore = (id?: string, initTree?: TreeState) => {
 
                 // Normal case: node has children
                 if (node.children.length > 0) {
-                    const childIndex =
-                        practicePath === null ? 0 : practicePath[state.position.length];
-                    if (!node.children[childIndex]?.move) return {};
-                    const san = node.children[childIndex].san;
-                    if (!san) return {};
-                    playSound(san.includes("x"), san.includes("+"));
-                    return { position: [...state.position, childIndex] };
+                    return stepIntoChild(
+                        state.position,
+                        node,
+                        practicePath === null ? 0 : practicePath[state.position.length],
+                    );
                 }
 
                 // No children — outside an active drill, try the transposition fallback
@@ -280,6 +291,14 @@ export const createTreeStore = (id?: string, initTree?: TreeState) => {
                 playSound(firstChild.san.includes("x"), firstChild.san.includes("+"));
 
                 return { position: [...targetPath, 0] };
+            });
+        },
+        goToChild: (childIndex) => {
+            set((state) => {
+                if (state.practicePath !== null) return {};
+                const node = getNodeAtPath(state.root, state.position);
+                if (!node) return {};
+                return stepIntoChild(state.position, node, childIndex);
             });
         },
         goToPrevious: () => {

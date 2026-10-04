@@ -17,6 +17,7 @@ import IconAction from "@/components/common/IconAction";
 import { currentTabAtom } from "@/state/atoms";
 import type { Annotation } from "@/utils/annotation";
 import { hasMorePriority, stripClock } from "@/utils/chess";
+import { formatMoveNumber } from "@/utils/format";
 import { getTabFile } from "@/utils/tabs";
 import type { TreeNode } from "@/utils/treeReducer";
 import type { NotationNodeIndex } from "./notationRows";
@@ -111,7 +112,6 @@ function CompleteMoveCell({
   );
   const [open, setOpen] = useState(false);
 
-  const moveNumber = Math.ceil(halfMoves / 2);
   const isWhite = halfMoves % 2 === 1;
   const hasNumber = !tableLayout && halfMoves > 0 && (first || isWhite);
 
@@ -151,7 +151,7 @@ function CompleteMoveCell({
           width: tableLayout ? "100%" : undefined,
         }}
       >
-        {hasNumber && `${moveNumber.toString()}${isWhite ? "." : "..."}`}
+        {hasNumber && formatMoveNumber(halfMoves)}
         {open && move ? (
           <OpenMoveMenu
             store={store}

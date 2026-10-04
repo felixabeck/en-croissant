@@ -372,6 +372,12 @@ export const enableBoardScrollAtom = atomWithStorage<boolean>(
     true,
     createPreferenceStorage(true),
 );
+/** Next move at a branch point opens a list of every continuation instead of following the main line. */
+export const chooseVariationAtom = atomWithStorage<boolean>(
+    "choose-variation",
+    true,
+    createPreferenceStorage(true),
+);
 export const materialDisplayAtom = atomWithStorage<"diff" | "all">(
     "material-display",
     "diff",

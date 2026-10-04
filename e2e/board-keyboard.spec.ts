@@ -184,3 +184,60 @@ test.describe("board-keyboard: German game command errors", () => {
         await capture("board-game-command-error");
     });
 });
+
+test("board-keyboard: next move at a branch asks which continuation to play", async ({
+    page,
+    assertAccessible,
+    assertNoHorizontalOverflow,
+    capture,
+}) => {
+    await page.goto("/");
+    await page.getByRole("button", { name: /^open$/i }).click();
+    const board = page.locator("cg-board").first();
+    await expect(board).toBeVisible();
+
+    // Chessground moves by click-click; squares are located from the board box (White at the bottom).
+    async function play(from: string, to: string) {
+        const box = (await board.boundingBox())!;
+        for (const square of [from, to]) {
+            const file = square.charCodeAt(0) - "a".charCodeAt(0);
+            const rank = Number(square[1]) - 1;
+            await page.mouse.click(
+                box.x + ((file + 0.5) * box.width) / 8,
+                box.y + ((7 - rank + 0.5) * box.height) / 8,
+            );
+        }
+    }
+    const previous = page.getByRole("button", { name: "Previous move", exact: true });
+    // 1.e4 (1.d4) (1.c4): the first move played is the main line, the others become variations.
+    for (const [from, to] of [
+        ["e2", "e4"],
+        ["d2", "d4"],
+        ["c2", "c4"],
+    ]) {
+        await play(from, to);
+        await expect(page.getByRole("gridcell", { name: `${to}, White Pawn` })).toHaveCount(1);
+        await previous.click();
+    }
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    // Off the controls, so no tooltip from the last click sits under the list in the screenshot.
+    await page.mouse.move(250, 600);
+
+    await page.keyboard.press("ArrowRight");
+    const chooser = page.getByRole("listbox", { name: "Choose a continuation" });
+    await expect(chooser).toBeVisible();
+    await expect(chooser.getByRole("option")).toHaveText(["1. e4", "1. d4", "1. c4"]);
+    await expect(chooser.getByRole("option", { selected: true })).toHaveText("1. e4");
+    await expect(page.getByRole("gridcell", { name: "e2, White Pawn" })).toHaveCount(1);
+    await assertNoHorizontalOverflow();
+    await assertAccessible();
+    await capture("variation-chooser");
+    await expect(page).toHaveScreenshot("variation-chooser.png", { fullPage: true });
+
+    await page.keyboard.press("ArrowDown");
+    await expect(chooser.getByRole("option", { selected: true })).toHaveText("1. d4");
+    await page.keyboard.press("ArrowRight");
+    await expect(chooser).toBeHidden();
+    await expect(page.getByRole("gridcell", { name: "d4, White Pawn" })).toHaveCount(1);
+    await expect(page.getByRole("gridcell", { name: "e2, White Pawn" })).toHaveCount(1);
+});

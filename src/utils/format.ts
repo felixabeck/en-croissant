@@ -37,6 +37,11 @@ export function formatDuration(ms: number): string {
     return parts.join(", ");
 }
 
+/** "12." before a White move, "12..." before a Black one; `halfMoves` is the ply the move completes. */
+export function formatMoveNumber(halfMoves: number): string {
+    return `${Math.ceil(halfMoves / 2)}${halfMoves % 2 === 1 ? "." : "..."}`;
+}
+
 export function formatMove(orientation: string) {
     return orientation === "w" ? "white" : "black";
 }

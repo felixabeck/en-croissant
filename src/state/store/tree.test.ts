@@ -850,3 +850,24 @@ test("reset clears practicePath, the start path and the cursor", () => {
     expect(store.getState().headers.start).toBeUndefined();
     expect(store.getState().position).toEqual([]);
 });
+
+test("goToChild steps into the chosen variation instead of the main line", () => {
+    const { store, deepB } = threeBranchStore();
+
+    store.getState().goToChild(1);
+    expect(store.getState().position).toEqual([1]);
+
+    store.getState().goToNext();
+    expect(store.getState().currentNode()).toBe(deepB);
+});
+
+test("goToChild refuses an index with no child and any step during a practice drill", () => {
+    const { store } = threeBranchStore();
+
+    store.getState().goToChild(3);
+    expect(store.getState().position).toEqual([]);
+
+    store.getState().setPracticePath([0, 0]);
+    store.getState().goToChild(2);
+    expect(store.getState().position).toEqual([]);
+});

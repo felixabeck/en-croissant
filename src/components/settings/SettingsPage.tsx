@@ -35,6 +35,7 @@ import { changeLocale } from "@/i18n";
 import {
   autoPromoteAtom,
   autoSaveAtom,
+  chooseVariationAtom,
   enableBoardScrollAtom,
   eraseDrawablesOnClickAtom,
   forcedEnPassantAtom,
@@ -311,6 +312,14 @@ export default function Page() {
         description: t("Settings.ScrollThroughMoves.Desc"),
         keywords: ["scroll", "moves", "wheel"],
         render: () => <SettingsSwitch atom={enableBoardScrollAtom} />,
+      },
+      {
+        id: "choose-variation",
+        category: "board",
+        title: t("Settings.ChooseVariation"),
+        description: t("Settings.ChooseVariation.Desc"),
+        keywords: ["variation", "branch", "arrow", "keyboard", "continuation"],
+        render: () => <SettingsSwitch atom={chooseVariationAtom} />,
       },
       {
         id: "material-display",
