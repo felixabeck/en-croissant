@@ -1,5 +1,67 @@
 import { expect, test } from "./fixtures";
 
+test("accounts-puzzles-engines: refuses startup when legacy sign-in storage cannot be erased", async ({
+    page,
+    mockScenario,
+    capture,
+}) => {
+    const token = "lip_e2e-legacy-token";
+    const storedSessions = JSON.stringify([
+        {
+            updatedAt: 1,
+            player: "legacy-player",
+            lichess: {
+                username: "legacy-player",
+                account: { id: "legacy-player", username: "legacy-player" },
+                accessToken: token,
+            },
+        },
+    ]);
+    await page.addInitScript((sessions) => {
+        const originalSetItem = Storage.prototype.setItem;
+        const originalRemoveItem = Storage.prototype.removeItem;
+        originalSetItem.call(localStorage, "sessions", sessions);
+        // Refuse both erase paths without blocking the fixture's keys or i18next caching.
+        Storage.prototype.setItem = function (key, value) {
+            if (key === "sessions") throw new DOMException("refused", "QuotaExceededError");
+            return originalSetItem.call(this, key, value);
+        };
+        Storage.prototype.removeItem = function (key) {
+            if (key === "sessions") throw new DOMException("refused", "QuotaExceededError");
+            return originalRemoveItem.call(this, key);
+        };
+    }, storedSessions);
+    await mockScenario({ commands: {} });
+    await page.goto("/");
+
+    await expect(
+        page.getByRole("heading", { name: "ChessFable could not start", level: 1, exact: true }),
+    ).toBeVisible();
+    await expect(
+        page.getByText(
+            "A saved Lichess sign-in could not be removed from local storage, so ChessFable signed it out at Lichess. You can sign in again once ChessFable starts. Try again to retry removing the saved sign-in and signing it out at Lichess.",
+            { exact: true },
+        ),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Try again", exact: true })).toBeVisible();
+    await expect(page.getByRole("navigation")).toHaveCount(0);
+    await expect(page.getByRole("link")).toHaveCount(0);
+    expect(await page.evaluate(() => localStorage.getItem("sessions"))).toBe(storedSessions);
+
+    const invocations = await page.evaluate(() => window.__E2E_TAURI__.invocations());
+    expect(invocations.some(({ command }) => command === "close_splashscreen")).toBe(true);
+    expect(invocations.filter(({ command }) => command === "revoke_legacy_lichess_token")).toEqual([
+        { command: "revoke_legacy_lichess_token", args: { token } },
+    ]);
+    expect(
+        invocations.filter(({ command }) =>
+            ["migrate_legacy_lichess_token", "list_lichess_accounts"].includes(command),
+        ),
+    ).toEqual([]);
+    await capture("startup-storage-failure-revoked");
+    await expect(page).toHaveScreenshot("startup-storage-failure-revoked.png", { fullPage: true });
+});
+
 test("accounts-puzzles-engines: local settings and catalog upgrade modal", async ({
     page,
     mockScenario,
