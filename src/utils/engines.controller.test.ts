@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const native = vi.hoisted(() => ({
     stopEngine: vi.fn(),
+    releaseEngineSearch: vi.fn(),
     killEngine: vi.fn(),
     retireEngine: vi.fn(),
     getBestMoves: vi.fn(),
@@ -39,6 +40,7 @@ import {
     useDefaultEngines,
     getBestMoves,
     prepareEngineSearch,
+    releaseEngineSearch,
     installDefaultEngine,
     killEngine,
     registerInstalledEngineHandle,
@@ -64,11 +66,11 @@ const engine = {
 
 describe("engine IPC controllers", () => {
     it("stops and kills the selected engine through the opaque engine id", async () => {
-        native.stopEngine.mockResolvedValue(undefined);
+        native.stopEngine.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
         native.killEngine.mockResolvedValue(undefined);
 
-        await expect(stopEngine(engine, "tab-1")).resolves.toBeUndefined();
-        await expect(stopEngine(engine, "tab-1", "9007199254740993")).resolves.toBeUndefined();
+        await expect(stopEngine(engine, "tab-1")).resolves.toBe(false);
+        await expect(stopEngine(engine, "tab-1", "9007199254740993")).resolves.toBe(true);
         await expect(killEngine(engine, "tab-1")).resolves.toBeUndefined();
 
         expect(native.stopEngine).toHaveBeenNthCalledWith(1, "engine-1", "tab-1", null);
@@ -79,6 +81,21 @@ describe("engine IPC controllers", () => {
             "9007199254740993",
         );
         expect(native.killEngine).toHaveBeenCalledWith("engine-1", "tab-1");
+    });
+
+    it("releases only the exact native search owner and propagates release failures", async () => {
+        native.releaseEngineSearch.mockResolvedValueOnce(undefined);
+        await expect(
+            releaseEngineSearch(engine, "tab-1", "9007199254740993"),
+        ).resolves.toBeUndefined();
+        expect(native.releaseEngineSearch).toHaveBeenCalledWith(
+            "engine-1",
+            "tab-1",
+            "9007199254740993",
+        );
+        const failure = new Error("release failed");
+        native.releaseEngineSearch.mockRejectedValueOnce(failure);
+        await expect(releaseEngineSearch(engine, "tab-1", "42")).rejects.toBe(failure);
     });
 
     it("retires every process owned by the immutable engine id", async () => {

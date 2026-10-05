@@ -156,7 +156,7 @@ fn is_filesystem_path(value: &str) -> bool {
             && matches!(value.as_bytes()[2], b'/' | b'\\'))
 }
 
-fn validate_engine_option(option: &EngineOption) -> Result<(), Error> {
+pub(crate) fn validate_engine_option(option: &EngineOption) -> Result<(), Error> {
     match option {
         EngineOption::String { name, value } => {
             validate_uci_text("option name", name)?;
@@ -187,6 +187,27 @@ fn validate_engine_option(option: &EngineOption) -> Result<(), Error> {
     Ok(())
 }
 impl EngineOption {
+    /// Display labels and materialized descriptor/path values are not resource identity.
+    pub(crate) fn has_same_value(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::Resource { name, resources },
+                Self::Resource {
+                    name: other_name,
+                    resources: other_resources,
+                },
+            ) => {
+                name == other_name
+                    && resources.len() == other_resources.len()
+                    && resources
+                        .iter()
+                        .zip(other_resources)
+                        .all(|(left, right)| left.id == right.id && left.kind == right.kind)
+            }
+            _ => self == other,
+        }
+    }
+
     pub fn name(&self) -> &str {
         match self {
             Self::String { name, .. } | Self::Resource { name, .. } => name,
@@ -245,7 +266,7 @@ pub(crate) fn resolve_engine_option_leases(
 }
 
 /// Internal UCI option. This never crosses IPC or renderer persistence.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct ResolvedEngineOption {
     pub(crate) name: String,
     pub(crate) value: String,

@@ -898,6 +898,10 @@ enum EngineCommand {
         reply: oneshot::Sender<Result<Option<String>, Error>>,
     },
     Stop(oneshot::Sender<Result<(), Error>>),
+    StopRequest {
+        id: EngineRequestId,
+        reply: oneshot::Sender<Result<(), Error>>,
+    },
     Terminate(oneshot::Sender<Result<(), Error>>),
     Logs(oneshot::Sender<Vec<EngineLog>>),
 }
@@ -910,6 +914,46 @@ pub struct SupervisedEngine {
     pub actor: Arc<EngineActor>,
     pub cancelled: Arc<std::sync::atomic::AtomicBool>,
     publish: Arc<StdMutex<()>>,
+    pub(crate) interactive: Arc<Mutex<Option<crate::chess::WarmEngine>>>,
+    search: Arc<StdMutex<Option<SupervisedSearch>>>,
+}
+
+/// One publication boundary per search, independent of the actor's lifetime.
+#[derive(Clone)]
+pub(crate) struct SupervisedSearch {
+    pub generation: u64,
+    pub cancelled: Arc<AtomicBool>,
+    publish: Arc<StdMutex<()>>,
+}
+
+impl SupervisedSearch {
+    fn new(generation: u64, cancelled: Arc<AtomicBool>) -> Self {
+        Self {
+            generation,
+            cancelled,
+            publish: Arc::default(),
+        }
+    }
+
+    pub fn mark_cancelled(&self) {
+        let _publish = self
+            .publish
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.cancelled.store(true, Ordering::SeqCst);
+    }
+
+    pub fn try_publish<E>(&self, emit: impl FnOnce() -> Result<(), E>) -> Result<bool, E> {
+        let _publish = self
+            .publish
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if self.cancelled.load(Ordering::SeqCst) {
+            return Ok(false);
+        }
+        emit()?;
+        Ok(true)
+    }
 }
 
 impl SupervisedEngine {
@@ -927,10 +971,15 @@ impl SupervisedEngine {
             actor,
             cancelled,
             publish: Arc::new(StdMutex::new(())),
+            interactive: Arc::default(),
+            search: Arc::default(),
         }
     }
 
     pub fn mark_cancelled(&self) {
+        if let Some(search) = self.current_search() {
+            search.mark_cancelled();
+        }
         let _publish = self
             .publish
             .lock()
@@ -938,7 +987,32 @@ impl SupervisedEngine {
         self.cancelled.store(true, Ordering::SeqCst);
     }
 
+    pub(crate) fn current_search(&self) -> Option<SupervisedSearch> {
+        self.search
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub(crate) fn owner_generation(&self) -> u64 {
+        self.current_search()
+            .map_or(self.generation, |search| search.generation)
+    }
+
+    fn bind_search(&self, search: SupervisedSearch) {
+        let mut current = self
+            .search
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(previous) = current.replace(search) {
+            previous.mark_cancelled();
+        }
+    }
+
     pub fn try_publish<E>(&self, emit: impl FnOnce() -> Result<(), E>) -> Result<bool, E> {
+        if let Some(search) = self.current_search() {
+            return search.try_publish(emit);
+        }
         let _publish = self
             .publish
             .lock()
@@ -1413,6 +1487,17 @@ impl EngineSupervisor {
         &self,
         key: EngineKey,
         actor: Arc<EngineActor>,
+        admission: AdmissionLease,
+    ) -> Result<SupervisedEngine, Error> {
+        let lifecycle = self.lifecycle_lease(&key);
+        let _transition = lifecycle.lock().await;
+        self.publish_admitted_locked(key, actor, admission).await
+    }
+
+    async fn publish_admitted_locked(
+        &self,
+        key: EngineKey,
+        actor: Arc<EngineActor>,
         mut admission: AdmissionLease,
     ) -> Result<SupervisedEngine, Error> {
         let _ = actor
@@ -1424,8 +1509,6 @@ impl EngineSupervisor {
             .is_some_and(|(bound_key, generation)| {
                 bound_key == &key && *generation == admission.generation()
             }));
-        let lifecycle = self.lifecycle_lease(&key);
-        let _transition = lifecycle.lock().await;
         if let Some(error) = admission.cancel_error() {
             return Err(reject_actor(&actor, error).await);
         }
@@ -1473,7 +1556,7 @@ impl EngineSupervisor {
                     admission.admission.engine_id.clone(),
                     admission.admission.executable.clone(),
                     actor.clone(),
-                    admission.admission.cancelled.clone(),
+                    Arc::new(AtomicBool::new(false)),
                 );
                 debug_assert!(actor.registration_identity.get().is_some_and(
                     |(bound_key, bound_generation)| {
@@ -1493,6 +1576,127 @@ impl EngineSupervisor {
         };
         admission.disarm();
         Ok(entry)
+    }
+
+    /// Serialize stop, options, position, ready and go with the existing lifecycle lease.
+    /// The returned snapshot owns only this search's output; the mirror stays with the actor.
+    pub(crate) async fn start_interactive_search(
+        self: &Arc<Self>,
+        key: EngineKey,
+        engine: EngineHandle,
+        authority: Arc<StdMutex<Option<PathAuthority>>>,
+        mut admission: AdmissionLease,
+        options: crate::chess::EngineOptions,
+        mode: &GoMode,
+    ) -> Result<
+        (
+            crate::chess::EngineProcess,
+            SupervisedEngine,
+            SupervisedSearch,
+        ),
+        Error,
+    > {
+        let mut guard =
+            RegistrationGuard::for_search(self.clone(), key.clone(), admission.generation());
+        let lifecycle = self.lifecycle_lease(&key);
+        let _transition = lifecycle.lock().await;
+        if let Some(error) = admission.cancel_error() {
+            return Err(error);
+        }
+        self.validate_admission_policy(&key, &admission.admission.engine_id, &engine.id)?;
+        let search = SupervisedSearch::new(
+            admission.generation(),
+            admission.admission.cancelled.clone(),
+        );
+        let mut reused = None;
+        if let Some(current) = self.get_exact(&key) {
+            if current.engine_id == admission.admission.engine_id
+                && current.executable == engine.id
+                && !current.cancelled.load(Ordering::SeqCst)
+            {
+                let mirror = current.interactive.lock().await;
+                if mirror.as_ref().is_some_and(|warm| warm.can_reuse(&options)) {
+                    reused = Some(current.clone());
+                }
+            }
+        }
+        let current = if let Some(current) = reused {
+            current.bind_search(search.clone());
+            if let Err(primary) = current.actor.stop_current().await {
+                let cleanup = current.actor.terminate().await;
+                self.actors.remove(&key);
+                return Err(Error::with_cleanup(primary, cleanup));
+            }
+            let _registration = self.registration.lock().await;
+            let _coordination = self
+                .admission_coordination
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(error) = admission.cancel_error() {
+                return Err(error);
+            }
+            self.validate_admission_policy(&key, &admission.admission.engine_id, &engine.id)?;
+            self.admissions
+                .remove_if(&key, |_, pending| pending.generation == search.generation);
+            admission.disarm();
+            current
+        } else {
+            let (executable, resolved) = resolve_launch(
+                authority,
+                engine,
+                PathOperation::EngineExecute,
+                &options.extra_options,
+                &admission,
+            )
+            .await?;
+            let actor = Arc::new(EngineActor::spawn(executable, EngineDeadlines::default()).await?);
+            let mut guard =
+                PendingActorGuard::new(actor.clone(), key.clone(), Some(search.generation));
+            let published = self
+                .publish_admitted_locked(key.clone(), actor, admission)
+                .await;
+            guard.disarm();
+            let current = published?;
+            current.bind_search(search.clone());
+            let initialized = crate::chess::WarmEngine::new(current.actor.clone(), resolved).await;
+            match initialized {
+                Ok(warm) => *current.interactive.lock().await = Some(warm),
+                Err(primary) => {
+                    current.mark_cancelled();
+                    let cleanup = current.actor.terminate().await;
+                    self.actors.remove(&key);
+                    return Err(Error::with_cleanup(primary, cleanup));
+                }
+            }
+            current
+        };
+        let result = async {
+            if search.cancelled.load(Ordering::SeqCst) {
+                return Err(Error::Cancellation);
+            }
+            let mut mirror = current.interactive.lock().await;
+            let warm = mirror.as_mut().ok_or(Error::EngineNotInitialized)?;
+            warm.start(options, mode, &search.cancelled).await
+        }
+        .await;
+        match result {
+            Ok(process) => {
+                guard.disarm();
+                let mut snapshot = current;
+                snapshot.search = Arc::new(StdMutex::new(Some(search.clone())));
+                Ok((process, snapshot, search))
+            }
+            Err(Error::Cancellation) => {
+                guard.disarm();
+                Err(Error::Cancellation)
+            }
+            Err(primary) => {
+                current.mark_cancelled();
+                let cleanup = current.actor.terminate().await;
+                self.actors.remove(&key);
+                Err(Error::with_cleanup(primary, cleanup))
+            }
+        }
     }
 
     pub async fn terminate_exact(&self, key: &EngineKey, generation: u64) -> Result<(), Error> {
@@ -1515,17 +1719,45 @@ impl EngineSupervisor {
         self.stop_generation(key, None).await
     }
 
+    #[cfg(test)]
     pub async fn stop_generation(
         &self,
         key: &EngineKey,
         generation: Option<u64>,
     ) -> Result<(), Error> {
+        self.stop_or_release(key, generation, generation.is_none())
+            .await
+            .map(|_| ())
+    }
+
+    /// Whether this exact stop retained an actor serving the requested search.
+    pub async fn stop_search(
+        &self,
+        key: &EngineKey,
+        generation: Option<u64>,
+    ) -> Result<bool, Error> {
+        self.stop_or_release(key, generation, generation.is_none())
+            .await
+    }
+
+    pub async fn release_generation(&self, key: &EngineKey, generation: u64) -> Result<(), Error> {
+        self.stop_or_release(key, Some(generation), true)
+            .await
+            .map(|_| ())
+    }
+
+    async fn stop_or_release(
+        &self,
+        key: &EngineKey,
+        generation: Option<u64>,
+        release: bool,
+    ) -> Result<bool, Error> {
         let (actor_generation, captured_admission) = {
             let _coordination = self
                 .admission_coordination
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let actor_generation = self.actors.get(key).map(|entry| entry.generation);
+            let actor_generation = self.actors.get(key).map(|entry| entry.owner_generation());
             let captured_admission = if generation.is_none() {
                 self.admissions.get(key).map(|entry| entry.clone())
             } else {
@@ -1541,7 +1773,15 @@ impl EngineSupervisor {
             target_generations.extend(captured_admission.as_ref().map(|entry| entry.generation));
         }
         if target_generations.is_empty() {
-            return Ok(());
+            return Ok(false);
+        }
+        if let Some(current) = self.get_exact(key) {
+            if let Some(search) = current
+                .current_search()
+                .filter(|search| target_generations.contains(&search.generation))
+            {
+                search.mark_cancelled();
+            }
         }
         let registration = self.registration.lock().await;
         {
@@ -1565,16 +1805,31 @@ impl EngineSupervisor {
         let lifecycle = self.lifecycle_lease(key);
         let _transition = lifecycle.lock().await;
         let Some(current) = self.actors.get(key).map(|entry| entry.clone()) else {
-            return Ok(());
+            return Ok(false);
         };
-        if !target_generations.contains(&current.generation) {
-            return Ok(());
+        if !target_generations.contains(&current.owner_generation()) {
+            return Ok(false);
+        }
+        if !release {
+            if let Some(search) = current.current_search() {
+                search.mark_cancelled();
+                let stop = current.actor.stop_current().await;
+                return match stop {
+                    Ok(()) => Ok(true),
+                    Err(primary) => {
+                        current.mark_cancelled();
+                        let cleanup = current.actor.terminate().await;
+                        self.actors.remove(key);
+                        Err(Error::with_cleanup(primary, cleanup))
+                    }
+                };
+            }
         }
         current.mark_cancelled();
         let stop = current.actor.stop_current().await;
         let terminate = current.actor.terminate().await;
         self.actors.remove(key);
-        combine_shutdown_results(stop, terminate)
+        combine_shutdown_results(stop, terminate).map(|_| false)
     }
 
     pub fn get_exact(&self, key: &EngineKey) -> Option<SupervisedEngine> {
@@ -1771,6 +2026,7 @@ pub(crate) struct RegistrationGuard {
     key: EngineKey,
     generation: u64,
     taken: bool,
+    search: bool,
 }
 
 struct PendingActorGuard {
@@ -1878,6 +2134,21 @@ impl RegistrationGuard {
             key,
             generation,
             taken: false,
+            search: false,
+        }
+    }
+
+    pub(crate) fn for_search(
+        supervisor: Arc<EngineSupervisor>,
+        key: EngineKey,
+        generation: u64,
+    ) -> Self {
+        Self {
+            supervisor,
+            key,
+            generation,
+            taken: false,
+            search: true,
         }
     }
 
@@ -1886,7 +2157,9 @@ impl RegistrationGuard {
     }
 
     pub(crate) async fn terminate_now(mut self) -> Result<(), Error> {
-        let result = terminate_exact_and_log(&self.supervisor, &self.key, self.generation).await;
+        let result =
+            terminate_exact_and_log(&self.supervisor, &self.key, self.generation, self.search)
+                .await;
         self.disarm();
         result
     }
@@ -1896,8 +2169,13 @@ async fn terminate_exact_and_log(
     supervisor: &EngineSupervisor,
     key: &EngineKey,
     generation: u64,
+    search: bool,
 ) -> Result<(), Error> {
-    let result = supervisor.terminate_exact(key, generation).await;
+    let result = if search {
+        supervisor.release_generation(key, generation).await
+    } else {
+        supervisor.terminate_exact(key, generation).await
+    };
     if let Err(error) = &result {
         log_registration_cleanup_error(Some(key), Some(generation), error);
     }
@@ -1912,6 +2190,7 @@ impl Drop for RegistrationGuard {
         let supervisor = self.supervisor.clone();
         let key = self.key.clone();
         let generation = self.generation;
+        let search = self.search;
         #[cfg(test)]
         REGISTRATION_GUARD_DROPS
             .lock()
@@ -1919,7 +2198,7 @@ impl Drop for RegistrationGuard {
             .push((key.clone(), generation, false));
         tokio::spawn(async move {
             // The helper logs a failure; a dropped guard has nobody to return it to.
-            let _ = terminate_exact_and_log(&supervisor, &key, generation).await;
+            let _ = terminate_exact_and_log(&supervisor, &key, generation, search).await;
             #[cfg(test)]
             {
                 let mut drops = REGISTRATION_GUARD_DROPS
@@ -3006,7 +3285,7 @@ impl EngineActor {
         loop {
             tokio::select! {
                 _ = cancellation.cancelled() => {
-                    self.stop_current().await?;
+                    self.stop_request(request).await?;
                     return Err(Error::AnalysisCancelled);
                 }
                 line = self.next_search_line(request) => {
@@ -3037,7 +3316,7 @@ impl EngineActor {
         cancelled: &std::sync::atomic::AtomicBool,
     ) -> Result<Option<String>, Error> {
         if cancelled.load(Ordering::SeqCst) {
-            self.stop_current().await?;
+            self.stop_request(id).await?;
             return Err(Error::AnalysisCancelled);
         }
         let next_line = self.next_search_line(id);
@@ -3052,7 +3331,7 @@ impl EngineActor {
                 result = &mut next_line => return result,
                 _ = cancellation_poll.tick() => {
                     if cancelled.load(Ordering::SeqCst) {
-                        self.stop_current().await?;
+                        self.stop_request(id).await?;
                         return Err(Error::AnalysisCancelled);
                     }
                 }
@@ -3063,6 +3342,17 @@ impl EngineActor {
         let (reply_tx, reply) = oneshot::channel();
         self.request_control(EngineCommand::Stop(reply_tx), reply)
             .await?
+    }
+    pub async fn stop_request(&self, id: EngineRequestId) -> Result<(), Error> {
+        let (reply_tx, reply) = oneshot::channel();
+        self.request_control(
+            EngineCommand::StopRequest {
+                id,
+                reply: reply_tx,
+            },
+            reply,
+        )
+        .await?
     }
     pub async fn terminate(&self) -> Result<(), Error> {
         self.interrupt.cancel();
@@ -3405,6 +3695,20 @@ async fn engine_actor_loop(
                     break;
                 }
             }
+            EngineCommand::StopRequest { id, reply } => {
+                let result = if matches!(runtime.state, EngineState::Searching { request_id } | EngineState::Stopping { request_id } if request_id == id)
+                {
+                    stop_at_protocol_boundary(&mut runtime, &registration_identity).await
+                } else {
+                    Ok(())
+                };
+                let failed = result.is_err();
+                let _ = reply.send(result);
+                if failed {
+                    terminated = true;
+                    break;
+                }
+            }
             EngineCommand::Terminate(reply) => {
                 terminate_and_reply(&mut runtime, &registration_identity, reply).await;
                 terminated = true;
@@ -3499,12 +3803,23 @@ async fn service_search_read(
                         let result =
                             stop_at_protocol_boundary(runtime, registration_identity).await;
                         let failed = result.is_err();
-                        let _ = control_reply.send(result);
                         let _ = reply.send(if failed {
                             Err(Error::EngineDisconnected)
                         } else {
                             Ok(None)
                         });
+                        let _ = control_reply.send(result);
+                        return !failed;
+                    }
+                    EngineCommand::StopRequest { id: target, reply: control_reply } => {
+                        if target != id {
+                            let _ = control_reply.send(Ok(()));
+                            continue;
+                        }
+                        let result = stop_at_protocol_boundary(runtime, registration_identity).await;
+                        let failed = result.is_err();
+                        let _ = reply.send(if failed { Err(Error::EngineDisconnected) } else { Ok(None) });
+                        let _ = control_reply.send(result);
                         return !failed;
                     }
                     EngineCommand::Logs(control_reply) => {
@@ -3548,18 +3863,21 @@ async fn service_search_read(
                 Some(EngineCommand::Stop(control_reply)) => {
                     let result = stop_at_protocol_boundary(runtime, registration_identity).await;
                     let failed = result.is_err();
-                    let _ = control_reply.send(result);
-                    let _ = reply.send(if failed {
+                        let _ = reply.send(if failed {
                         Err(Error::EngineDisconnected)
                     } else {
                         Ok(None)
-                    });
+                        });
+                        let _ = control_reply.send(result);
                     return !failed;
                 }
                 Some(EngineCommand::Logs(control_reply)) => {
                     // Logs are observational. They must remain available while
                     // stdout is silent without cancelling the active search.
                     let _ = control_reply.send(runtime.logs.entries());
+                }
+                Some(EngineCommand::NextSearch { id: requested, reply: next_reply }) if requested != id => {
+                    let _ = next_reply.send(Ok(None));
                 }
                 Some(other) => reject_command_during_search(other),
                 None => {
@@ -3589,7 +3907,7 @@ fn reject_command_during_search(command: EngineCommand) {
         EngineCommand::StartSearch { reply, .. } => {
             let _ = reply.send(Err(error()));
         }
-        EngineCommand::Stop(reply) => {
+        EngineCommand::Stop(reply) | EngineCommand::StopRequest { reply, .. } => {
             let _ = reply.send(Err(error()));
         }
         EngineCommand::Terminate(reply) => {
@@ -5486,6 +5804,178 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn warm_handoff_completes_a_pending_read_before_options_and_stale_waiters_cannot_stop_b()
+    {
+        let started = Arc::new(AtomicBool::new(false));
+        let (actor, writes) = delayed_search_actor(
+            &["bestmove e2e4", "readyok", "info depth 2", "bestmove d2d4"],
+            Duration::from_millis(50),
+            Some(started.clone()),
+        );
+        let actor = Arc::new(actor);
+        let a = actor.start_search(&GoMode::Depth(1)).await.unwrap();
+        let (reply, mut pending_read) = oneshot::channel();
+        actor
+            .tx
+            .send(EngineCommand::NextSearch { id: a, reply })
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !started.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        actor.stop_current().await.unwrap();
+        assert!(matches!(pending_read.try_recv(), Ok(Ok(None))));
+        actor.set_option("Threads", "4").await.unwrap();
+        actor
+            .set_position(
+                "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+                &[],
+            )
+            .await
+            .unwrap();
+        let b = actor.start_search(&GoMode::Depth(2)).await.unwrap();
+        started.store(false, Ordering::SeqCst);
+        let (reply, pending_b) = oneshot::channel();
+        actor
+            .tx
+            .send(EngineCommand::NextSearch { id: b, reply })
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !started.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let cancelled = AtomicBool::new(true);
+        assert!(matches!(
+            actor.next_search_line_cancellable(a, &cancelled).await,
+            Err(Error::AnalysisCancelled)
+        ));
+        let token = CancellationToken::new();
+        token.cancel();
+        assert!(matches!(
+            actor.wait_bestmove_cancellable(a, &token).await,
+            Err(Error::AnalysisCancelled)
+        ));
+        assert_eq!(actor.next_search_line(a).await.unwrap(), None);
+        assert_eq!(
+            pending_b.await.unwrap().unwrap(),
+            Some("info depth 2".into())
+        );
+        assert_eq!(
+            writes
+                .lock()
+                .await
+                .iter()
+                .filter(|line| *line == "stop")
+                .count(),
+            1
+        );
+        actor.stop_request(b).await.unwrap();
+        actor.terminate().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn warm_search_barriers_cancel_dequeued_info_and_terminal_payloads_before_successor() {
+        let supervisor = EngineSupervisor::default();
+        let key = EngineKey::new("barriers".into(), "id".into()).unwrap();
+        let (actor, _) = EngineActor::recording_test_actor(&[]);
+        let current = supervisor
+            .replace_handle(
+                key.clone(),
+                actor,
+                "id".into(),
+                PathRef {
+                    id: "binary".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let a = SupervisedSearch::new(100, Arc::new(AtomicBool::new(false)));
+        let b = SupervisedSearch::new(101, Arc::new(AtomicBool::new(false)));
+        current.bind_search(a.clone());
+        let mut old_snapshot = current.clone();
+        old_snapshot.search = Arc::new(StdMutex::new(Some(a.clone())));
+        assert!(old_snapshot.try_publish(|| Ok::<_, Error>(())).unwrap());
+        current.bind_search(b.clone());
+        for _ in ["info", "bestmove"] {
+            assert!(!old_snapshot.try_publish(|| Ok::<_, Error>(())).unwrap());
+        }
+        assert!(current.try_publish(|| Ok::<_, Error>(())).unwrap());
+        supervisor.stop_generation(&key, Some(100)).await.unwrap();
+        supervisor.release_generation(&key, 100).await.unwrap();
+        assert!(!b.cancelled.load(Ordering::SeqCst));
+        assert!(supervisor.get_exact(&key).is_some());
+        supervisor.release_generation(&key, 101).await.unwrap();
+        assert!(b.cancelled.load(Ordering::SeqCst));
+        assert!(supervisor.get_exact(&key).is_none());
+    }
+
+    #[tokio::test]
+    async fn warm_qualified_stop_and_release_failures_remove_the_actor() {
+        for release in [false, true] {
+            let supervisor = EngineSupervisor::default();
+            let key = EngineKey::new("failed-warm-stop".into(), "engine".into()).unwrap();
+            let ((actor, _), terminated) = fake_actor_with_config(
+                &[],
+                false,
+                true,
+                None,
+                None,
+                None,
+                EngineDeadlines::default(),
+            );
+            let current = supervisor.replace(key.clone(), actor).await.unwrap();
+            current.bind_search(SupervisedSearch::new(100, Arc::new(AtomicBool::new(false))));
+            current.actor.start_search(&GoMode::Infinite).await.unwrap();
+            let result = if release {
+                supervisor.release_generation(&key, 100).await
+            } else {
+                supervisor.stop_generation(&key, Some(100)).await
+            };
+            assert!(result.is_err());
+            assert!(supervisor.get_exact(&key).is_none());
+            assert_eq!(terminated.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn search_registration_guard_drop_preserves_successor_and_explicit_cleanup_releases_owner(
+    ) {
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let key = EngineKey::new("search-guard".into(), "engine".into()).unwrap();
+        let (actor, _) = EngineActor::recording_test_actor(&[]);
+        let current = supervisor
+            .replace_handle(
+                key.clone(),
+                actor,
+                "engine".into(),
+                PathRef {
+                    id: "binary".into(),
+                },
+            )
+            .await
+            .unwrap();
+        current.bind_search(SupervisedSearch::new(100, Arc::new(AtomicBool::new(false))));
+        let guard = RegistrationGuard::for_search(supervisor.clone(), key.clone(), 100);
+        current.bind_search(SupervisedSearch::new(101, Arc::new(AtomicBool::new(false))));
+        drop(guard);
+        tokio::task::yield_now().await;
+        assert!(supervisor.get_exact(&key).is_some());
+        RegistrationGuard::for_search(supervisor.clone(), key.clone(), 101)
+            .terminate_now()
+            .await
+            .unwrap();
+        assert!(supervisor.get_exact(&key).is_none());
     }
 
     #[tokio::test]

@@ -38,6 +38,7 @@ import {
   type LocalEngine,
   getBestMoves as localGetBestMoves,
   prepareEngineSearch,
+  releaseEngineSearch,
   stopEngine,
 } from "@/utils/engines";
 import { getBestMoves as lichessGetBestMoves } from "@/utils/lichess/api";
@@ -58,7 +59,8 @@ type NativeSearchOwner = {
   engine: LocalEngine;
   tab: string;
   generation: string;
-  stopPromise: Promise<void> | null;
+  stopPromise: Promise<boolean> | null;
+  releasePromise: Promise<void> | null;
 };
 
 // The executable identity a result is bound to: the same id with a replaced
@@ -71,9 +73,15 @@ function engineIdentity(engine: Engine): string {
   );
 }
 
-function stopNativeOwner(owner: NativeSearchOwner): Promise<void> {
+function stopNativeOwner(owner: NativeSearchOwner): Promise<boolean> {
+  if (owner.releasePromise) return owner.releasePromise.then(() => false);
   owner.stopPromise ??= stopEngine(owner.engine, owner.tab, owner.generation);
   return owner.stopPromise;
+}
+
+function releaseNativeOwner(owner: NativeSearchOwner): Promise<void> {
+  owner.releasePromise ??= releaseEngineSearch(owner.engine, owner.tab, owner.generation);
+  return owner.releasePromise;
 }
 
 function EvalListener() {
@@ -181,6 +189,9 @@ function EngineListener({
   );
   const settingsFingerprint = JSON.stringify(settings);
   const activeAttempt = useRef<SearchAttempt | null>(null);
+  // A preparation does not yet own the previous warm actor. Retain its exact
+  // owner until a later stop confirms which search the actor actually served.
+  const retainedOwner = useRef<NativeSearchOwner | null>(null);
   const [closeRevision, advanceCloseRevision] = useReducer((revision: number) => revision + 1, 0);
   const mounted = useRef(false);
   const enabled = useRef(settings.enabled);
@@ -192,9 +203,13 @@ function EngineListener({
     return () => {
       mounted.current = false;
       const attempt = activeAttempt.current;
-      const owner = attempt?.nativeOwner ?? attempt?.predecessorOwner;
-      if (owner) {
-        void stopNativeOwner(owner).catch((error) =>
+      for (const owner of new Set([
+        attempt?.nativeOwner,
+        attempt?.predecessorOwner,
+        retainedOwner.current,
+      ])) {
+        if (!owner) continue;
+        void releaseNativeOwner(owner).catch((error) =>
           notifyUnlessCancelled(t("Common.Error"), error),
         );
       }
@@ -340,12 +355,24 @@ function EngineListener({
       cancelled: false,
     };
     activeAttempt.current = attempt;
+    if (
+      !settings.enabled ||
+      previous?.tab !== activeTab ||
+      previous?.engineIdentity !== attempt.engineIdentity
+    ) {
+      for (const owner of new Set([attempt.predecessorOwner, retainedOwner.current])) {
+        if (!owner) continue;
+        void releaseNativeOwner(owner).catch((error) =>
+          notifyUnlessCancelled(t("Common.Error"), error),
+        );
+      }
+    }
     setEngineVariation(new Map());
     setProgress(0);
     return () => {
       attempt.cancelled = true;
     };
-  }, [activeTab, engine, requestFingerprint, setEngineVariation, setProgress]);
+  }, [activeTab, engine, requestFingerprint, setEngineVariation, setProgress, settings.enabled, t]);
 
   useThrottledEffect(
     () => {
@@ -357,8 +384,9 @@ function EngineListener({
         // cancellation boundary instead of merely hiding stale UI results.
         try {
           if (attempt.predecessorOwner) {
-            await stopNativeOwner(attempt.predecessorOwner);
-            attempt.predecessorOwner = null;
+            if (await stopNativeOwner(attempt.predecessorOwner)) {
+              retainedOwner.current = attempt.predecessorOwner;
+            }
           }
         } catch (error) {
           if (isCurrentAttempt(attempt)) notifyUnlessCancelled(t("Common.Error"), error);
@@ -375,7 +403,17 @@ function EngineListener({
           }
           if (!isCurrentAttempt(attempt)) {
             try {
-              await stopEngine(engine, activeTab!, nativeGeneration);
+              const jotaiStore = getDefaultStore();
+              const ownerDisappeared =
+                !mounted.current ||
+                !enabled.current ||
+                jotaiStore.get(activeTabAtom) !== activeTab ||
+                !(jotaiStore.get(enginesAtom) ?? []).some(
+                  (candidate) =>
+                    candidate.loaded && engineIdentity(candidate) === attempt.engineIdentity,
+                );
+              if (ownerDisappeared) await releaseEngineSearch(engine, activeTab!, nativeGeneration);
+              else await stopEngine(engine, activeTab!, nativeGeneration);
             } catch (error) {
               notifyUnlessCancelled(t("Common.Error"), error);
             }
@@ -386,6 +424,7 @@ function EngineListener({
             tab: activeTab!,
             generation: nativeGeneration,
             stopPromise: null,
+            releasePromise: null,
           };
         }
         if (!isCurrentAttempt(attempt)) return;

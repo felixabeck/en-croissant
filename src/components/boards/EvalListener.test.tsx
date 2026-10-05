@@ -30,6 +30,7 @@ const fixtures = vi.hoisted(() => ({
   notifyUnlessCancelled: vi.fn(),
   setScore: vi.fn(),
   stopEngine: vi.fn(),
+  releaseEngineSearch: vi.fn(),
   t: (key: string) => key,
 }));
 
@@ -45,6 +46,7 @@ vi.mock("@/utils/engines", () => ({
   getBestMoves: fixtures.getBestMoves,
   prepareEngineSearch: fixtures.prepareEngineSearch,
   stopEngine: fixtures.stopEngine,
+  releaseEngineSearch: fixtures.releaseEngineSearch,
 }));
 vi.mock("@/utils/chess", () => ({ getVariationLine: () => fixtures.moves }));
 vi.mock("@/utils/chessops", () => ({
@@ -171,7 +173,8 @@ beforeEach(() => {
   fixtures.moves = [];
   fixtures.listeners = [];
   fixtures.prepareEngineSearch.mockResolvedValue("generation-1");
-  fixtures.stopEngine.mockResolvedValue(undefined);
+  fixtures.stopEngine.mockResolvedValue(true);
+  fixtures.releaseEngineSearch.mockResolvedValue(undefined);
   fixtures.getBestMoves.mockImplementation(() => new Promise(() => undefined));
   fixtures.chessdbGetBestMoves.mockImplementation(() => new Promise(() => undefined));
   store.set(activeTabAtom, "tab-1");
@@ -549,7 +552,7 @@ test("an executable change rejects the old owner before debounce", async () => {
   expect(fixtures.prepareEngineSearch).toHaveBeenCalledTimes(1);
 
   await advanceDebounce();
-  expect(fixtures.stopEngine).toHaveBeenCalledWith(engine, "tab-1", "old-binary-owner");
+  expect(fixtures.releaseEngineSearch).toHaveBeenCalledWith(engine, "tab-1", "old-binary-owner");
   expect(fixtures.prepareEngineSearch).toHaveBeenLastCalledWith(replacement, "tab-1");
 });
 
@@ -636,7 +639,7 @@ test("stale and unmounted preparations release exactly their returned owners", a
   expect(fixtures.stopEngine).not.toHaveBeenCalledWith(engine, "tab-1", "new-owner");
 
   await unmount();
-  expect(fixtures.stopEngine).toHaveBeenCalledWith(engine, "tab-1", "new-owner");
+  expect(fixtures.releaseEngineSearch).toHaveBeenCalledWith(engine, "tab-1", "new-owner");
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -648,10 +651,10 @@ test("stale and unmounted preparations release exactly their returned owners", a
     prepares[2].resolve("unmounted-owner");
     await flush();
   });
-  expect(fixtures.stopEngine).toHaveBeenCalledWith(engine, "tab-1", "unmounted-owner");
+  expect(fixtures.releaseEngineSearch).toHaveBeenCalledWith(engine, "tab-1", "unmounted-owner");
 });
 
-test("tab switch and unmount before debounce stop the captured predecessor", async () => {
+test("tab switch and unmount before debounce release the captured predecessor", async () => {
   fixtures.prepareEngineSearch
     .mockResolvedValueOnce("tab-1-owner")
     .mockResolvedValueOnce("tab-2-owner");
@@ -663,13 +666,75 @@ test("tab switch and unmount before debounce stop the captured predecessor", asy
     await flush();
   });
   expect(fixtures.stopEngine).not.toHaveBeenCalled();
+  expect(fixtures.releaseEngineSearch).toHaveBeenCalledWith(engine, "tab-1", "tab-1-owner");
   await advanceDebounce();
-  expect(fixtures.stopEngine).toHaveBeenCalledWith(engine, "tab-1", "tab-1-owner");
+  expect(fixtures.stopEngine).not.toHaveBeenCalled();
 
   fixtures.fen = "third-fen";
   await rerender();
   await unmount();
-  expect(fixtures.stopEngine).toHaveBeenCalledWith(engine, "tab-2", "tab-2-owner");
+  expect(fixtures.releaseEngineSearch).toHaveBeenCalledWith(engine, "tab-2", "tab-2-owner");
+});
+
+test("position changes stop the search and keep its actor warm", async () => {
+  fixtures.prepareEngineSearch
+    .mockResolvedValueOnce("position-a")
+    .mockResolvedValueOnce("position-b");
+  await rerender();
+  await advanceDebounce();
+  fixtures.fen = "fen-b";
+  await rerender();
+  await advanceDebounce();
+  expect(fixtures.stopEngine).toHaveBeenCalledWith(engine, "tab-1", "position-a");
+  expect(fixtures.releaseEngineSearch).not.toHaveBeenCalled();
+});
+
+test("pause releases the owner before debounce without starting another search", async () => {
+  await rerender();
+  await advanceDebounce();
+  await act(async () => {
+    store.set(settingsAtom(), { ...store.get(settingsAtom()), enabled: false });
+    await flush();
+  });
+  expect(fixtures.releaseEngineSearch).toHaveBeenCalledWith(engine, "tab-1", "generation-1");
+  await advanceDebounce();
+  expect(fixtures.prepareEngineSearch).toHaveBeenCalledTimes(1);
+  expect(fixtures.stopEngine).not.toHaveBeenCalled();
+});
+
+test("unmount during preparation releases the retained warm actor and the late reservation", async () => {
+  await rerender();
+  await advanceDebounce();
+  const prepare = deferred<string>();
+  fixtures.prepareEngineSearch.mockReturnValueOnce(prepare.promise);
+  fixtures.fen = "fen-b";
+  await rerender();
+  await advanceDebounce();
+  await unmount();
+  expect(fixtures.releaseEngineSearch).toHaveBeenCalledWith(engine, "tab-1", "generation-1");
+  await act(async () => {
+    prepare.resolve("pending-owner");
+    await flush();
+  });
+  expect(fixtures.releaseEngineSearch).toHaveBeenCalledWith(engine, "tab-1", "pending-owner");
+});
+
+test("a cancelled pending successor preserves the actual warm owner for cleanup", async () => {
+  await rerender();
+  await advanceDebounce();
+  fixtures.prepareEngineSearch
+    .mockResolvedValueOnce("pending-b")
+    .mockResolvedValueOnce("pending-c");
+  fixtures.fen = "fen-b";
+  await rerender();
+  await advanceDebounce();
+  fixtures.stopEngine.mockResolvedValueOnce(false);
+  fixtures.fen = "fen-c";
+  await rerender();
+  await advanceDebounce();
+  await unmount();
+  expect(fixtures.releaseEngineSearch).toHaveBeenCalledWith(engine, "tab-1", "generation-1");
+  expect(fixtures.releaseEngineSearch).toHaveBeenCalledWith(engine, "tab-1", "pending-c");
 });
 
 test("a stop failure is visible and blocks preparation of a replacement", async () => {

@@ -404,9 +404,17 @@ async cancelAnalysis(id: string) : Promise<Result<null, ErrorPayload>> {
     else return { status: "error", error: e  as any };
 }
 },
-async stopEngine(engine: string, tab: string, expectedGeneration: string | null) : Promise<Result<null, ErrorPayload>> {
+async stopEngine(engine: string, tab: string, expectedGeneration: string | null) : Promise<Result<boolean, ErrorPayload>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("stop_engine", { engine, tab, expectedGeneration }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async releaseEngineSearch(engine: string, tab: string, generation: string) : Promise<Result<null, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("release_engine_search", { engine, tab, generation }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };

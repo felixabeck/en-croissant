@@ -257,12 +257,20 @@ export async function stopEngine(
     engine: LocalEngine,
     tab: string,
     expectedGeneration: string | null = null,
-): Promise<void> {
-    await tauri.stopEngine(engine.id, tab, expectedGeneration);
+): Promise<boolean> {
+    return tauri.stopEngine(engine.id, tab, expectedGeneration);
 }
 
 export function prepareEngineSearch(engine: LocalEngine, tab: string): Promise<string> {
     return tauri.prepareEngineSearch(engine.id, engine.handle, tab);
+}
+
+export async function releaseEngineSearch(
+    engine: LocalEngine,
+    tab: string,
+    generation: string,
+): Promise<void> {
+    await tauri.releaseEngineSearch(engine.id, tab, generation);
 }
 
 export async function killEngine(engine: LocalEngine, tab: string): Promise<void> {

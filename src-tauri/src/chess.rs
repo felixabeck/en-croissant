@@ -47,6 +47,7 @@ use tokio_util::sync::CancellationToken;
 #[cfg(all(test, target_os = "linux"))]
 use crate::engine::resolve_engine_option_leases;
 
+#[derive(Clone)]
 pub struct EngineProcess {
     base: Arc<EngineActor>,
     last_depth: u32,
@@ -63,6 +64,141 @@ pub struct EngineProcess {
     start: Instant,
 }
 
+/// The option belief and launch leases are retained only by the supervisor's live actor entry.
+pub(crate) struct WarmEngine {
+    process: EngineProcess,
+    resolved: Vec<ResolvedEngineOption>,
+    defaults: HashMap<String, String>,
+}
+
+impl WarmEngine {
+    pub(crate) async fn new(
+        base: Arc<EngineActor>,
+        resolved: Vec<ResolvedEngineOption>,
+    ) -> Result<Self, Error> {
+        let config = collect_engine_configuration(base.clone()).await?;
+        base.ensure_ready().await?;
+        let defaults = config
+            .options
+            .into_iter()
+            .filter_map(|option| {
+                let name = option.get_name().to_string();
+                let value = match option {
+                    UciOptionConfig::Check { default, .. } => {
+                        default.map(|value| value.to_string())
+                    }
+                    UciOptionConfig::Spin { default, .. } => default.map(|value| value.to_string()),
+                    UciOptionConfig::Combo { default, .. }
+                    | UciOptionConfig::String { default, .. } => default,
+                    UciOptionConfig::Button { .. } => None,
+                };
+                value
+                    .filter(|value| {
+                        crate::engine::validate_engine_option(&EngineOption::String {
+                            name: name.clone(),
+                            value: value.clone(),
+                        })
+                        .is_ok()
+                    })
+                    .map(|value| (name, value))
+            })
+            .collect();
+        Ok(Self {
+            process: EngineProcess::from_actor(base),
+            resolved,
+            defaults,
+        })
+    }
+
+    pub(crate) fn can_reuse(&self, options: &EngineOptions) -> bool {
+        let previous = crate::engine::effective_engine_options(&self.process.options.extra_options);
+        let next = crate::engine::effective_engine_options(&options.extra_options);
+        let resources = |options: Vec<EngineOption>| {
+            let mut resources = options
+                .into_iter()
+                .filter(|option| matches!(option, EngineOption::Resource { .. }))
+                .collect::<Vec<_>>();
+            resources.sort_by(|left, right| left.name().cmp(right.name()));
+            resources
+        };
+        let previous_resources = resources(previous.clone());
+        let next_resources = resources(next.clone());
+        previous_resources.len() == next_resources.len()
+            && previous_resources
+                .iter()
+                .zip(next_resources)
+                .all(|(previous, next)| previous.has_same_value(&next))
+            && previous.iter().all(|option| {
+                next.iter().any(|next| next.name() == option.name())
+                    || self.defaults.contains_key(option.name())
+            })
+    }
+
+    pub(crate) async fn start(
+        &mut self,
+        options: EngineOptions,
+        mode: &GoMode,
+        cancelled: &AtomicBool,
+    ) -> Result<EngineProcess, Error> {
+        if cancelled.load(Ordering::SeqCst) {
+            return Err(Error::Cancellation);
+        }
+        let next = crate::engine::effective_engine_options(&options.extra_options);
+        for option in &next {
+            crate::engine::validate_engine_option(option)?;
+        }
+        for previous in crate::engine::effective_engine_options(&self.process.options.extra_options)
+        {
+            if !next.iter().any(|option| option.name() == previous.name()) {
+                let default = self
+                    .defaults
+                    .get(previous.name())
+                    .ok_or_else(|| Error::Conflict("engine option default unavailable".into()))?;
+                if previous.name() != "UCI_Chess960" {
+                    self.process
+                        .base
+                        .set_option(previous.name(), default)
+                        .await?;
+                }
+                self.process
+                    .options
+                    .extra_options
+                    .retain(|option| option.name() != previous.name());
+            }
+        }
+        let resolved = next
+            .iter()
+            .map(|option| match option {
+                EngineOption::String { name, value } => Ok(ResolvedEngineOption {
+                    name: name.clone(),
+                    value: value.clone(),
+                    resources: Vec::new(),
+                    resource_values: Vec::new(),
+                }),
+                EngineOption::Resource { name, .. } => self
+                    .resolved
+                    .iter()
+                    .find(|resolved| resolved.name == *name)
+                    .cloned()
+                    .ok_or_else(|| {
+                        Error::Conflict("engine resource option lease unavailable".into())
+                    }),
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        self.process
+            .set_options_inner(options, resolved, None, Some(cancelled))
+            .await?;
+        self.process.last_progress = 0.0;
+        #[cfg(all(test, unix))]
+        run_interactive_before_go_hook().await;
+        if cancelled.load(Ordering::SeqCst) {
+            return Err(Error::Cancellation);
+        }
+        self.process.go(mode).await?;
+        Ok(self.process.clone())
+    }
+}
+
 impl EngineProcess {
     async fn new(
         supervisor: Arc<crate::engine::EngineSupervisor>,
@@ -75,23 +211,24 @@ impl EngineProcess {
                 actor.init_uci().await
             })
             .await?;
-        Ok((
-            Self {
-                base: supervised.actor.clone(),
-                last_depth: 0,
-                best_moves: Vec::new(),
-                last_best_moves: Vec::new(),
-                last_progress: 0.0,
-                options: EngineOptions::default(),
-                resource_leases: Vec::new(),
-                real_multipv: 0,
-                go_mode: GoMode::Infinite,
-                running: false,
-                request_id: None,
-                start: Instant::now(),
-            },
-            supervised,
-        ))
+        Ok((Self::from_actor(supervised.actor.clone()), supervised))
+    }
+
+    fn from_actor(base: Arc<EngineActor>) -> Self {
+        Self {
+            base,
+            last_depth: 0,
+            best_moves: Vec::new(),
+            last_best_moves: Vec::new(),
+            last_progress: 0.0,
+            options: EngineOptions::default(),
+            resource_leases: Vec::new(),
+            real_multipv: 0,
+            go_mode: GoMode::Infinite,
+            running: false,
+            request_id: None,
+            start: Instant::now(),
+        }
     }
 
     async fn set_options(
@@ -99,6 +236,17 @@ impl EngineProcess {
         options: EngineOptions,
         resolved: Vec<ResolvedEngineOption>,
         operation_cancellation: Option<CancellationToken>,
+    ) -> Result<(), Error> {
+        self.set_options_inner(options, resolved, operation_cancellation, None)
+            .await
+    }
+
+    async fn set_options_inner(
+        &mut self,
+        options: EngineOptions,
+        resolved: Vec<ResolvedEngineOption>,
+        operation_cancellation: Option<CancellationToken>,
+        search_cancelled: Option<&AtomicBool>,
     ) -> Result<(), Error> {
         let canonical = crate::engine::canonicalize_engine_position(&options.fen, &options.moves)?;
         let effective_options = crate::engine::effective_engine_options(&options.extra_options);
@@ -110,6 +258,9 @@ impl EngineProcess {
         verify_option_resources(&self.base, &resolved, operation_cancellation.as_ref()).await?;
         #[cfg(all(test, unix))]
         run_after_resource_verification_hook().await;
+        if search_cancelled.is_some_and(|cancelled| cancelled.load(Ordering::SeqCst)) {
+            return Err(Error::Cancellation);
+        }
         let fen_changed = options.fen != self.options.fen;
         let castling_mode = canonical.castling_mode;
         let pos = canonical.position;
@@ -169,7 +320,11 @@ impl EngineProcess {
                 .iter()
                 .rev()
                 .find(|configured| configured.name() == option.name);
-            if current != previous && option.name != "UCI_Chess960" {
+            if !current
+                .zip(previous)
+                .is_some_and(|(current, previous)| current.has_same_value(previous))
+                && option.name != "UCI_Chess960"
+            {
                 self.base
                     .set_option_with_operation(
                         &option.name,
@@ -455,7 +610,7 @@ pub async fn stop_engine(
     tab: String,
     expected_generation: Option<String>,
     state: tauri::State<'_, AppState>,
-) -> Result<(), Error> {
+) -> Result<bool, Error> {
     let key = EngineKey::new(tab, engine)?;
     let generation = expected_generation
         .as_deref()
@@ -465,9 +620,24 @@ pub async fn stop_engine(
                 .map_err(|_| Error::InvalidInput("invalid engine generation".into()))
         })
         .transpose()?;
+    state.engine_supervisor.stop_search(&key, generation).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn release_engine_search(
+    engine: String,
+    tab: String,
+    generation: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), Error> {
+    let key = EngineKey::new(tab, engine)?;
+    let generation = generation
+        .parse::<u64>()
+        .map_err(|_| Error::InvalidInput("invalid engine generation".into()))?;
     state
         .engine_supervisor
-        .stop_generation(&key, generation)
+        .release_generation(&key, generation)
         .await
 }
 
@@ -582,7 +752,7 @@ async fn process_interactive_search_output<R: tauri::Runtime>(
                                         process,
                                         engine,
                                         tab,
-                                        supervised.generation,
+                                        supervised.owner_generation(),
                                         set.lines.clone(),
                                         progress,
                                     ),
@@ -609,7 +779,7 @@ async fn process_interactive_search_output<R: tauri::Runtime>(
                         process,
                         engine,
                         tab,
-                        supervised.generation,
+                        supervised.owner_generation(),
                         process.last_best_moves.clone(),
                         100.0,
                     ),
@@ -693,41 +863,42 @@ async fn get_best_moves_core<R: tauri::Runtime>(
         .engine_supervisor
         .consume_engine_search(key.clone(), id.clone(), executable_ref.clone(), &generation)
         .await?;
-    let (executable, resolved) = resolve_launch(
-        state.pgn_path_authority.clone(),
-        engine.clone(),
-        PathOperation::EngineExecute,
-        &options.extra_options,
-        &admission,
-    )
-    .await?;
-
-    let (mut process, supervised) = EngineProcess::new(
+    let (mut process, supervised, search) = state
+        .engine_supervisor
+        .start_interactive_search(
+            key.clone(),
+            engine.clone(),
+            state.pgn_path_authority.clone(),
+            admission,
+            options,
+            &go_mode,
+        )
+        .await?;
+    let mut guard = crate::engine::RegistrationGuard::for_search(
         state.engine_supervisor.clone(),
         key.clone(),
-        executable,
-        admission,
-    )
-    .await?;
-
-    let run_result: Result<(), Error> = async {
-        process.set_options(options.clone(), resolved, None).await?;
-        #[cfg(all(test, unix))]
-        run_interactive_before_go_hook().await;
-        process.go(&go_mode).await?;
-        process_interactive_search_output(&mut process, &id, &tab, &supervised, &app).await
-    }
-    .await;
+        search.generation,
+    );
     let run_result =
-        classify_interactive_search_result(run_result, supervised.cancelled.load(Ordering::SeqCst));
+        process_interactive_search_output(&mut process, &id, &tab, &supervised, &app).await;
+    let run_result =
+        classify_interactive_search_result(run_result, search.cancelled.load(Ordering::SeqCst));
     info!(
         "Engine process finished: tab: {}, engine: {}",
         tab, engine.id.id
     );
-    let cleanup = state
-        .engine_supervisor
-        .terminate_exact(&key, supervised.generation)
-        .await;
+    let cleanup = if run_result
+        .as_ref()
+        .is_err_and(|error| !matches!(error, Error::Cancellation))
+    {
+        state
+            .engine_supervisor
+            .release_generation(&key, search.generation)
+            .await
+    } else {
+        Ok(())
+    };
+    guard.disarm();
     match (run_result, cleanup) {
         (Ok(()), Ok(())) => Ok(None),
         (Err(primary), Ok(())) => Err(primary),
@@ -1909,6 +2080,7 @@ mod tests {
             r#"#!/bin/sh
 capture="$PWD/capture.log"
 while IFS= read -r line; do
+    printf 'wire=%s\n' "$line" >> "$capture"
     case "$line" in
         uci)
             echo uciok
@@ -1944,6 +2116,9 @@ while IFS= read -r line; do
             echo "$line"
             ;;
         go*)
+            if [ -f "$PWD/fail-search" ]; then
+                exit 0
+            fi
             echo "info depth 1 multipv 1 score cp 12 nodes 1 pv e2e4"
             echo "info depth 1 multipv 2 score cp 8 nodes 1 pv d2d4"
             printf 'go-ready\n' >> "$capture"
@@ -2651,8 +2826,396 @@ done
         let result = result.unwrap();
         assert!(result.is_none());
         assert_safe_resource_logs(&logs);
-        assert!(supervisor.get_exact(&key).is_none());
+        assert!(supervisor.get_exact(&key).is_some());
+        supervisor.stop_generation(&key, None).await.unwrap();
         assert_resource_wire_capture(&_directory, "resource-bytes");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn warm_interactive_searches_reuse_resource_handles_and_publish_each_generation() {
+        let (directory, app, engine, resource) = resource_engine_fixture();
+        std::fs::write(directory.path().join("release"), b"").unwrap();
+        let state = app.state::<AppState>().inner().clone();
+        let key = EngineKey::new("warm-tab".into(), "warm-id".into()).unwrap();
+        let emitted = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed = emitted.clone();
+        app.listen(BestMovesPayload::NAME, move |event| {
+            observed
+                .lock()
+                .unwrap()
+                .push(serde_json::from_str::<serde_json::Value>(event.payload()).unwrap());
+        });
+        let mut first_actor = None;
+        let mut previous_generation = None;
+        for (index, moves) in [vec![], vec!["d2d4".into(), "d7d5".into()], vec![]]
+            .into_iter()
+            .enumerate()
+        {
+            let mut same_handle = resource.clone();
+            same_handle.display_name = format!("label-{index}");
+            let generation = state
+                .engine_supervisor
+                .prepare_engine_search(key.clone(), key.engine.clone(), engine.id.clone())
+                .await
+                .unwrap();
+            get_best_moves_core(
+                key.engine.clone(),
+                engine.clone(),
+                key.tab.clone(),
+                GoMode::Depth(1),
+                EngineOptions {
+                    fen: start_fen().to_string(),
+                    moves,
+                    extra_options: vec![EngineOption::Resource {
+                        name: "EvalFile".into(),
+                        resources: vec![same_handle],
+                    }],
+                },
+                generation.clone(),
+                app.clone(),
+                state.clone(),
+            )
+            .await
+            .unwrap();
+            let current = state.engine_supervisor.get_exact(&key).unwrap();
+            if let Some(first) = &first_actor {
+                assert!(Arc::ptr_eq(first, &current.actor));
+            } else {
+                first_actor = Some(current.actor.clone());
+            }
+            assert!(emitted
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|payload| payload["generation"] == generation));
+            if let Some(previous) = previous_generation {
+                state
+                    .engine_supervisor
+                    .stop_generation(&key, Some(previous))
+                    .await
+                    .unwrap();
+                state
+                    .engine_supervisor
+                    .release_generation(&key, previous)
+                    .await
+                    .unwrap();
+                assert!(state.engine_supervisor.get_exact(&key).is_some());
+                assert!(!current
+                    .current_search()
+                    .unwrap()
+                    .cancelled
+                    .load(Ordering::SeqCst));
+            }
+            state
+                .engine_supervisor
+                .stop_generation(&key, Some(generation.parse().unwrap()))
+                .await
+                .unwrap();
+            assert!(state.engine_supervisor.get_exact(&key).is_some());
+            previous_generation = Some(generation.parse().unwrap());
+        }
+        let capture = std::fs::read_to_string(directory.path().join("capture.log")).unwrap();
+        assert_eq!(
+            capture.lines().filter(|line| *line == "wire=uci").count(),
+            1
+        );
+        assert_eq!(
+            capture
+                .lines()
+                .filter(|line| line.starts_with("eval="))
+                .count(),
+            1
+        );
+        release_engine_search(
+            key.engine.clone(),
+            key.tab.clone(),
+            previous_generation.unwrap().to_string(),
+            app.state(),
+        )
+        .await
+        .unwrap();
+        assert!(state.engine_supervisor.get_exact(&key).is_none());
+        assert_eq!(
+            capture
+                .lines()
+                .filter(|line| line.starts_with("wire=go"))
+                .count(),
+            3
+        );
+        assert!(release_engine_search(
+            key.engine.clone(),
+            key.tab.clone(),
+            "bad".into(),
+            app.state()
+        )
+        .await
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn warm_options_restore_removed_overrides_and_reset_search_fields() {
+        let (actor, writes) = EngineActor::recording_test_actor(&[
+            "option name Skill Level type spin default 20 min 0 max 20",
+            "option name Ponder type check default false",
+            "option name Style type combo default Normal var Normal var Aggressive",
+            "option name Label type string default default-label",
+            "option name Clear Hash type button",
+            "uciok",
+            "readyok",
+            "readyok",
+            "bestmove e2e4",
+            "readyok",
+            "bestmove e2e4",
+        ]);
+        let mut warm = WarmEngine::new(actor.clone(), Vec::new()).await.unwrap();
+        let override_options = EngineOptions {
+            fen: start_fen().to_string(),
+            moves: Vec::new(),
+            extra_options: vec![string_option("Skill Level", "3")],
+        };
+        let cancelled = AtomicBool::new(false);
+        let mut first = warm
+            .start(override_options, &GoMode::Depth(1), &cancelled)
+            .await
+            .unwrap();
+        assert!(first.next_line().await.unwrap().is_some());
+        warm.process.last_progress = 100.0;
+        warm.process.last_depth = 100;
+        let options = EngineOptions {
+            fen: start_fen().to_string(),
+            ..EngineOptions::default()
+        };
+        assert!(warm.can_reuse(&options));
+        let mut next = warm
+            .start(options, &GoMode::Depth(1), &cancelled)
+            .await
+            .unwrap();
+        assert_ne!(first.request_id, next.request_id);
+        assert_eq!(next.last_progress, 0.0);
+        assert_eq!(next.last_depth, 0);
+        assert!(next.next_line().await.unwrap().is_some());
+        assert_eq!(
+            writes
+                .lock()
+                .await
+                .iter()
+                .filter(|line| *line == "uci")
+                .count(),
+            1
+        );
+        assert!(writes
+            .lock()
+            .await
+            .iter()
+            .any(|line| line == "setoption name Skill Level value 20"));
+        assert!(!warm.defaults.contains_key("Clear Hash"));
+        actor.terminate().await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn warm_actor_release_paths_reap_every_owner() {
+        for release in ["unscoped", "kill", "tab", "retire", "binary", "all"] {
+            let (directory, app, engine, _resource) = resource_engine_fixture();
+            std::fs::write(directory.path().join("release"), b"").unwrap();
+            let state = app.state::<AppState>().inner().clone();
+            let key = EngineKey::new("release-tab".into(), "release-id".into()).unwrap();
+            let generation = state
+                .engine_supervisor
+                .prepare_engine_search(key.clone(), key.engine.clone(), engine.id.clone())
+                .await
+                .unwrap();
+            get_best_moves_core(
+                key.engine.clone(),
+                engine.clone(),
+                key.tab.clone(),
+                GoMode::Depth(1),
+                EngineOptions {
+                    fen: start_fen().to_string(),
+                    ..EngineOptions::default()
+                },
+                generation,
+                app.clone(),
+                state.clone(),
+            )
+            .await
+            .unwrap();
+            let actor = state.engine_supervisor.get_exact(&key).unwrap().actor;
+            match release {
+                "unscoped" => {
+                    stop_engine(key.engine.clone(), key.tab.clone(), None, app.state())
+                        .await
+                        .unwrap();
+                }
+                "kill" => kill_engine(key.engine.clone(), key.tab.clone(), app.state())
+                    .await
+                    .unwrap(),
+                "tab" => state
+                    .engine_supervisor
+                    .terminate_tab(&key.tab)
+                    .await
+                    .unwrap(),
+                "retire" => state
+                    .engine_supervisor
+                    .retire_engine(key.engine.clone())
+                    .await
+                    .unwrap(),
+                "binary" => state
+                    .engine_supervisor
+                    .retire_engine_binary(
+                        key.engine.clone(),
+                        engine.id,
+                        crate::infra::path_authority::PathRef {
+                            id: "next-binary".into(),
+                        },
+                    )
+                    .await
+                    .unwrap(),
+                "all" => state.engine_supervisor.terminate_all().await.unwrap(),
+                _ => unreachable!(),
+            }
+            assert!(
+                state.engine_supervisor.get_exact(&key).is_none(),
+                "{release}"
+            );
+            assert!(
+                matches!(
+                    actor.start_search(&GoMode::Depth(1)).await,
+                    Err(Error::EngineDisconnected)
+                ),
+                "{release}"
+            );
+            let capture = std::fs::read_to_string(directory.path().join("capture.log")).unwrap();
+            assert!(capture.lines().any(|line| line == "wire=quit"), "{release}");
+        }
+    }
+
+    #[cfg(unix)]
+    async fn run_warm_fixture_search(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        key: &EngineKey,
+        engine: EngineHandle,
+        extra_options: Vec<EngineOption>,
+    ) -> Result<String, Error> {
+        let state = app.state::<AppState>().inner().clone();
+        let generation = state
+            .engine_supervisor
+            .prepare_engine_search(key.clone(), key.engine.clone(), engine.id.clone())
+            .await?;
+        get_best_moves_core(
+            key.engine.clone(),
+            engine,
+            key.tab.clone(),
+            GoMode::Depth(1),
+            EngineOptions {
+                fen: start_fen().to_string(),
+                moves: Vec::new(),
+                extra_options,
+            },
+            generation.clone(),
+            app.clone(),
+            state,
+        )
+        .await?;
+        Ok(generation)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn warm_resource_and_executable_changes_relaunch_and_duplicate_ids_stay_separate() {
+        let (directory, app, engine, resource) = resource_engine_fixture();
+        std::fs::write(directory.path().join("release"), b"").unwrap();
+        let key = EngineKey::new("changes".into(), "id-1".into()).unwrap();
+        let options = vec![EngineOption::Resource {
+            name: "EvalFile".into(),
+            resources: vec![resource],
+        }];
+        run_warm_fixture_search(&app, &key, engine.clone(), options)
+            .await
+            .unwrap();
+        let supervisor = app.state::<AppState>().engine_supervisor.clone();
+        let first = supervisor.get_exact(&key).unwrap();
+        // Removing the resource handle changes the launch leases and requires a fresh process.
+        run_warm_fixture_search(&app, &key, engine.clone(), Vec::new())
+            .await
+            .unwrap();
+        let second = supervisor.get_exact(&key).unwrap();
+        assert!(!Arc::ptr_eq(&first.actor, &second.actor));
+        assert!(first.actor.start_search(&GoMode::Depth(1)).await.is_err());
+
+        let replacement_path = directory.path().join("replacement.sh");
+        std::fs::copy(
+            directory.path().join("resource-flow-engine.sh"),
+            &replacement_path,
+        )
+        .unwrap();
+        let replacement = app
+            .state::<AppState>()
+            .pgn_path_authority
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .register_engine_file(&replacement_path, "resource-flow-engine")
+            .unwrap();
+        run_warm_fixture_search(&app, &key, replacement, Vec::new())
+            .await
+            .unwrap();
+        let third = supervisor.get_exact(&key).unwrap();
+        assert!(!Arc::ptr_eq(&second.actor, &third.actor));
+        assert!(second.actor.start_search(&GoMode::Depth(1)).await.is_err());
+
+        let duplicate = EngineKey::new("changes".into(), "id-2".into()).unwrap();
+        let duplicate2 = EngineKey::new("changes".into(), "id-3".into()).unwrap();
+        run_warm_fixture_search(&app, &duplicate, engine.clone(), Vec::new())
+            .await
+            .unwrap();
+        run_warm_fixture_search(&app, &duplicate2, engine, Vec::new())
+            .await
+            .unwrap();
+        let a = supervisor.get_exact(&duplicate).unwrap();
+        let b = supervisor.get_exact(&duplicate2).unwrap();
+        assert_eq!(a.executable, b.executable);
+        assert!(!Arc::ptr_eq(&a.actor, &b.actor));
+        supervisor
+            .release_generation(&duplicate, a.owner_generation())
+            .await
+            .unwrap();
+        assert!(supervisor.get_exact(&duplicate2).is_some());
+        supervisor.terminate_all().await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn warm_protocol_failure_removes_actor_and_next_search_relaunches() {
+        let (directory, app, engine, _resource) = resource_engine_fixture();
+        std::fs::write(directory.path().join("release"), b"").unwrap();
+        let key = EngineKey::new("failure".into(), "failure-id".into()).unwrap();
+        run_warm_fixture_search(&app, &key, engine.clone(), Vec::new())
+            .await
+            .unwrap();
+        let supervisor = app.state::<AppState>().engine_supervisor.clone();
+        let first = supervisor.get_exact(&key).unwrap();
+        std::fs::write(directory.path().join("fail-search"), b"").unwrap();
+        assert!(
+            run_warm_fixture_search(&app, &key, engine.clone(), Vec::new())
+                .await
+                .is_err()
+        );
+        assert!(supervisor.get_exact(&key).is_none());
+        std::fs::remove_file(directory.path().join("fail-search")).unwrap();
+        run_warm_fixture_search(&app, &key, engine, Vec::new())
+            .await
+            .unwrap();
+        let next = supervisor.get_exact(&key).unwrap();
+        assert!(!Arc::ptr_eq(&first.actor, &next.actor));
+        let capture = std::fs::read_to_string(directory.path().join("capture.log")).unwrap();
+        assert_eq!(
+            capture.lines().filter(|line| *line == "wire=uci").count(),
+            2
+        );
+        supervisor.terminate_all().await.unwrap();
     }
 
     #[cfg(unix)]
@@ -2872,15 +3435,31 @@ done
             .await
             .unwrap()
             .unwrap();
-        stop_engine(
-            id.into(),
-            tab.into(),
-            Some(generation.to_string()),
-            app.state(),
-        )
+        let supervisor = state.engine_supervisor.clone();
+        let stop_key = EngineKey::new(tab.into(), id.into()).unwrap();
+        let stop_supervisor = supervisor.clone();
+        let stop_generation = generation.parse().unwrap();
+        let stop = tokio::spawn(async move {
+            stop_supervisor
+                .stop_generation(&stop_key, Some(stop_generation))
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !supervisor
+                .get_exact(&EngineKey::new(tab.into(), id.into()).unwrap())
+                .unwrap()
+                .current_search()
+                .unwrap()
+                .cancelled
+                .load(Ordering::SeqCst)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
         .await
         .unwrap();
         release_tx.send(()).unwrap();
+        stop.await.unwrap().unwrap();
         set_after_resource_verification_hook(None);
         assert!(matches!(
             tokio::time::timeout(Duration::from_secs(2), core)
@@ -2896,7 +3475,7 @@ done
 
     #[cfg(unix)]
     #[tokio::test(flavor = "current_thread")]
-    async fn interactive_stop_between_options_and_go_rejects_go_after_termination() {
+    async fn interactive_stop_between_options_and_go_rejects_go_and_keeps_actor_warm() {
         let (directory, app, engine, resource) = resource_engine_fixture();
         let state = app.state::<AppState>();
         let id = "interactive-stop-before-go-engine";
@@ -2947,26 +3526,46 @@ done
             .await
             .unwrap()
             .unwrap();
-        stop_engine(
-            id.into(),
-            tab.into(),
-            Some(generation.to_string()),
-            app.state(),
-        )
+        let supervisor = state.engine_supervisor.clone();
+        let stop_key = EngineKey::new(tab.into(), id.into()).unwrap();
+        let stop_supervisor = supervisor.clone();
+        let stop_generation = generation.parse().unwrap();
+        let stop = tokio::spawn(async move {
+            stop_supervisor
+                .stop_generation(&stop_key, Some(stop_generation))
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !supervisor
+                .get_exact(&EngineKey::new(tab.into(), id.into()).unwrap())
+                .unwrap()
+                .current_search()
+                .unwrap()
+                .cancelled
+                .load(Ordering::SeqCst)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
         .await
         .unwrap();
         release_tx.send(()).unwrap();
+        stop.await.unwrap().unwrap();
         set_interactive_before_go_hook(None);
         let result = tokio::time::timeout(Duration::from_secs(2), core)
             .await
             .unwrap()
             .unwrap();
         set_interactive_go_attempt_hook(None);
-        assert!(attempted.load(Ordering::SeqCst));
+        assert!(!attempted.load(Ordering::SeqCst));
         assert!(matches!(result, Err(Error::Cancellation)));
         let capture =
             std::fs::read_to_string(directory.path().join("capture.log")).unwrap_or_default();
         assert!(capture.contains("eval=") && !capture.contains("go-ready"));
+        supervisor
+            .stop_generation(&EngineKey::new(tab.into(), id.into()).unwrap(), None)
+            .await
+            .unwrap();
     }
 
     #[cfg(unix)]
