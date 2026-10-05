@@ -280,7 +280,8 @@ export async function assertChooserInsideBoard(board: Locator, chooser: Locator)
     expect(cardBox.x + cardBox.width).toBeLessThanOrEqual(boardBox.x + boardBox.width + 1);
     expect(cardBox.y + cardBox.height).toBeLessThanOrEqual(boardBox.y + boardBox.height + 1);
     expect(cardBox.y - boardBox.y).toBeLessThanOrEqual(8);
-    // The frame is centred exactly; Chessground rounds its painted width down to eight pixels.
+    // The frame is centred exactly; Chessground rounds the board size down to a multiple of eight
+    // device pixels, so its centre can differ by up to 4 px.
     expect(
         Math.abs(cardBox.x + cardBox.width / 2 - boardBox.x - boardBox.width / 2),
     ).toBeLessThanOrEqual(4);

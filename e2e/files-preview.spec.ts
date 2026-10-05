@@ -1,4 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
+import type { KeyedNode } from "@lichess-org/chessground/types";
 import {
     assertChooserInsideBoard,
     expect,
@@ -112,5 +113,12 @@ test("files-preview: variation chooser lies inside the preview board at its top 
     expect(accessibility.violations).toEqual([]);
     await chooser.getByRole("option", { name: "1. d4", exact: true }).click();
     await expect(chooser).toBeHidden();
-    await expect(board.locator("piece.white.pawn")).toHaveCount(8);
+    // Chessground stores each rendered piece's square in cgKey, independent of orientation.
+    await expect
+        .poll(() =>
+            board
+                .locator("piece.white.pawn")
+                .evaluateAll((pawns) => pawns.map((pawn) => (pawn as KeyedNode).cgKey).sort()),
+        )
+        .toEqual(["a2", "b2", "c2", "d4", "e2", "f2", "g2", "h2"]);
 });
