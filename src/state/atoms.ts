@@ -878,6 +878,12 @@ export const engineProgressFamily = atomFamily(
     (a, b) => a.tab === b.tab && a.engine === b.engine,
 );
 
+/** Ephemeral terminal state for the current search, reset by every new attempt. */
+export const engineNoLinesFamily = atomFamily(
+    ({ tab: _tab, engine: _engine }: { tab: string; engine: string }) => atom<string | null>(null),
+    (a, b) => a.tab === b.tab && a.engine === b.engine,
+);
+
 // returns the best moves of each engine for the current position
 export const bestMovesFamily = atomFamily(
     ({ fen, gameMoves }: { fen: string; gameMoves: string[] }) =>
@@ -1038,7 +1044,7 @@ export function disposeTabAtoms(tabId: string) {
         family.remove(tabId);
     }
 
-    for (const family of [engineMovesFamily, engineProgressFamily]) {
+    for (const family of [engineMovesFamily, engineProgressFamily, engineNoLinesFamily]) {
         for (const param of Array.from(family.getParams())) {
             if (param.tab === tabId) family.remove(param);
         }

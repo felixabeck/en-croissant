@@ -13,6 +13,7 @@ import {
     currentThreatAtom,
     disposeTabAtoms,
     engineMovesFamily,
+    engineNoLinesFamily,
     enginesAtom,
     firstEngineWithLinesFamily,
     tabsAtom,
@@ -123,6 +124,26 @@ test("atom display selection refreshes LRU recency and tab close disposes line m
     expect(store.get(engineMovesFamily(param)).size).toBe(0);
     expect(store.get(engineMovesFamily(param))).toBeInstanceOf(AnalysisLineMemory);
     disposeTabAtoms(tab);
+});
+
+test("terminal no-lines atoms are independent per tab and engine and disposed with their tab", () => {
+    const owner = { tab: "terminal-owner", engine: "same-name-1" };
+    const sibling = { tab: owner.tab, engine: "same-name-2" };
+    const otherTab = { tab: "terminal-other", engine: owner.engine };
+    const store = createStore();
+    const oldAtom = engineNoLinesFamily(owner);
+    store.set(oldAtom, "position-a:");
+    store.set(engineNoLinesFamily(sibling), "position-b:");
+    store.set(engineNoLinesFamily(otherTab), "position-c:");
+    expect(store.get(engineNoLinesFamily(owner))).toBe("position-a:");
+    expect(store.get(engineNoLinesFamily(sibling))).toBe("position-b:");
+    disposeTabAtoms(owner.tab);
+    expect(engineNoLinesFamily(owner)).not.toBe(oldAtom);
+    expect(store.get(engineNoLinesFamily(owner))).toBeNull();
+    expect(store.get(engineNoLinesFamily(sibling))).toBeNull();
+    expect(store.get(engineNoLinesFamily(otherTab))).toBe("position-c:");
+    disposeTabAtoms(owner.tab);
+    disposeTabAtoms(otherTab.tab);
 });
 
 test("line readers ignore unloaded engines, empty entries and absent tab or engine list", async () => {

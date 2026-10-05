@@ -1,4 +1,5 @@
 import { tauriSubscriptions } from "@/platform/tauri";
+import { errorUnlessCancelled } from "@/platform/errors";
 import equal from "fast-deep-equal";
 import { getDefaultStore, useAtom, useAtomValue } from "jotai";
 import {
@@ -21,6 +22,7 @@ import {
   closingTabsAtom,
   currentThreatAtom,
   engineMovesFamily,
+  engineNoLinesFamily,
   engineProgressFamily,
   enginesAtom,
   firstEngineWithLinesFamily,
@@ -55,6 +57,7 @@ type SearchAttempt = {
   nativeOwner: NativeSearchOwner | null;
   predecessorOwner: NativeSearchOwner | null;
   cancelled: boolean;
+  hasLines: boolean;
 };
 
 type NativeSearchOwner = {
@@ -155,6 +158,7 @@ function EngineListener({
   const [, setProgress] = useAtom(engineProgressFamily({ engine: engine.id, tab: activeTab! }));
 
   const [, setEngineVariation] = useAtom(engineMovesFamily({ engine: engine.id, tab: activeTab! }));
+  const [, setNoLinesKey] = useAtom(engineNoLinesFamily({ engine: engine.id, tab: activeTab! }));
   const [settings] = useAtom(
     tabEngineSettingsFamily({
       engineId: engine.id,
@@ -258,10 +262,13 @@ function EngineListener({
             line && line.score && Array.isArray(line.uciMoves) && Array.isArray(line.sanMoves),
         )
       ) {
+        const attempt = activeAttempt.current;
+        attempt.hasLines = true;
+        setNoLinesKey(null);
         startTransition(() => {
           setEngineVariation((prev) => {
             const newMap = new AnalysisLineMemory(prev);
-            const replaced = newMap.remember(searchedKey, ev, activeAttempt.current!);
+            const replaced = newMap.remember(searchedKey, ev, attempt);
             const shouldSetScore =
               firstEngineWithLines === engine.id || firstEngineWithLines === null;
             if (replaced && !threat && shouldSetScore) setScore(ev[0].score);
@@ -278,6 +285,7 @@ function EngineListener({
       searchingMoves,
       engine.id,
       setEngineVariation,
+      setNoLinesKey,
       setProgress,
       firstEngineWithLines,
       threat,
@@ -324,8 +332,10 @@ function EngineListener({
       nativeOwner: null,
       predecessorOwner: previous?.nativeOwner ?? previous?.predecessorOwner ?? null,
       cancelled: false,
+      hasLines: false,
     };
     activeAttempt.current = attempt;
+    setNoLinesKey(null);
     if (
       !settings.enabled ||
       previous?.tab !== activeTab ||
@@ -354,6 +364,7 @@ function EngineListener({
     engine,
     requestFingerprint,
     setEngineVariation,
+    setNoLinesKey,
     setProgress,
     settings.enabled,
     settingsFingerprint,
@@ -364,6 +375,21 @@ function EngineListener({
   useEffect(() => {
     const attempt = activeAttempt.current;
     if (!attempt || attempt.fingerprint !== requestFingerprint) return;
+    const finishWithoutLines = (error?: unknown) => {
+      if (
+        engine.type === "local" &&
+        isCurrentAttempt(attempt) &&
+        !attempt.hasLines &&
+        (error === undefined || errorUnlessCancelled(error))
+      ) {
+        setNoLinesKey(searchedKey);
+      }
+    };
+    const failAttempt = (error: unknown) => {
+      if (!isCurrentAttempt(attempt)) return;
+      notifyUnlessCancelled(t("Common.Error"), error);
+      finishWithoutLines(error);
+    };
     const runSearch = async () => {
       // A local engine has one native search slot per tab.  Cancelling it on
       // every identity change gives FEN/settings/go-mode changes a real
@@ -382,7 +408,7 @@ function EngineListener({
         try {
           nativeGeneration = await prepareEngineSearch(engine, activeTab!);
         } catch (error) {
-          if (isCurrentAttempt(attempt)) notifyUnlessCancelled(t("Common.Error"), error);
+          failAttempt(error);
           return;
         }
         if (!isCurrentAttempt(attempt)) {
@@ -430,6 +456,8 @@ function EngineListener({
             result[1].every((line) => line && line.score && Array.isArray(line.uciMoves))
           ) {
             const [progress, bestMoves] = result;
+            attempt.hasLines = true;
+            setNoLinesKey(null);
             setEngineVariation((prev) => {
               const newMap = new AnalysisLineMemory(prev);
               newMap.remember(searchedKey, bestMoves, attempt);
@@ -437,14 +465,12 @@ function EngineListener({
             });
             setProgress(progress);
           }
+          finishWithoutLines();
         })
-        .catch((error) => {
-          if (isCurrentAttempt(attempt)) {
-            notifyUnlessCancelled(t("Common.Error"), error);
-          }
-        });
+        .catch(failAttempt);
     };
-    pendingTransition.current = runSearch;
+    // Each queued transition handles terminal failures for its own captured attempt.
+    pendingTransition.current = () => runSearch().catch(failAttempt);
     if (transitionRunning.current) return;
     transitionRunning.current = true;
     const drain = async () => {
@@ -452,7 +478,7 @@ function EngineListener({
         while (pendingTransition.current) {
           const next = pendingTransition.current;
           pendingTransition.current = null;
-          await next().catch(notifyFailure);
+          await next();
         }
       } finally {
         transitionRunning.current = false;
@@ -470,6 +496,7 @@ function EngineListener({
     activeTab,
     getBestMoves,
     setEngineVariation,
+    setNoLinesKey,
     setProgress,
     engine,
     requestFingerprint,

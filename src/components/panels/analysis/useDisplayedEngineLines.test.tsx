@@ -1,7 +1,7 @@
 import { INITIAL_FEN } from "chessops/fen";
 import { act } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { activeTabAtom, currentThreatAtom } from "@/state/atoms";
+import { activeTabAtom, currentThreatAtom, engineNoLinesFamily } from "@/state/atoms";
 import { displayEngine, displayLines, engineDisplayHarness } from "@/tests/engineDisplay";
 import { analysisSearch } from "./analysisSearch";
 import { AnalysisLineMemory } from "./analysisLineMemory";
@@ -62,6 +62,51 @@ test("first start stays empty until 1000 ms and navigation restarts the deadline
   expect(display.loading).toBe(false);
   await act(async () => vi.advanceTimersByTime(1));
   expect(display.loading).toBe(true);
+});
+
+test("a marked key suppresses dimmed fallback and loading beyond 1000 ms while other keys still wait", async () => {
+  await h.remember();
+  await h.render(<Probe />);
+  const moves = ["d2d4"];
+  await h.render(<Probe moves={moves} />);
+  expect(display.dimmed).toBe(true);
+  const terminal = engineNoLinesFamily({ tab: "display-tab", engine: displayEngine.id });
+  await act(async () => h.store.set(terminal, analysisSearch(INITIAL_FEN, moves, false).key));
+  expect(display.lines).toBeUndefined();
+  expect(display.dimmed).toBe(false);
+  await act(async () => vi.advanceTimersByTime(1000));
+  expect(display.loading).toBe(false);
+  expect(display.lines).toBeUndefined();
+  await act(async () => vi.advanceTimersByTime(5000));
+  expect(display.loading).toBe(false);
+  expect(vi.getTimerCount()).toBe(0);
+  await h.render(<Probe moves={["e2e4"]} />);
+  expect(display.dimmed).toBe(true);
+  await act(async () => vi.advanceTimersByTime(999));
+  expect(display.loading).toBe(false);
+  await act(async () => vi.advanceTimersByTime(1));
+  expect(display.loading).toBe(true);
+  await h.render(<Probe moves={moves} />);
+  expect(display.loading).toBe(false);
+  await act(async () => h.store.set(terminal, null));
+  expect(display.dimmed).toBe(true);
+  await act(async () => vi.advanceTimersByTime(1000));
+  expect(display.loading).toBe(true);
+});
+
+test("a no-lines mark preserves valid remembered lines for the same key", async () => {
+  await h.remember();
+  await act(async () =>
+    h.store.set(
+      engineNoLinesFamily({ tab: "display-tab", engine: displayEngine.id }),
+      analysisSearch(INITIAL_FEN, [], false).key,
+    ),
+  );
+  await h.render(<Probe />);
+  expect(display.lines).toEqual(displayLines);
+  expect(display.dimmed).toBe(false);
+  await act(async () => vi.advanceTimersByTime(5000));
+  expect(display.loading).toBe(false);
 });
 
 test("invalid, game-over, inactive and explicit no-analysis entries take precedence", async () => {

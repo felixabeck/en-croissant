@@ -5,6 +5,7 @@ import {
     activeTabAtom,
     currentThreatAtom,
     engineMovesFamily,
+    engineNoLinesFamily,
     tabEngineSettingsFamily,
 } from "@/state/atoms";
 import { positionFromFen } from "@/utils/chessops";
@@ -35,6 +36,7 @@ export function useDisplayedEngineLines(
         }),
     );
     const memory = useAtomValue(engineMovesFamily({ tab, engine: engine.id }));
+    const noLinesKey = useAtomValue(engineNoLinesFamily({ tab, engine: engine.id }));
     const search = analysisSearch(fen, moves, threat);
     const [, error] = positionFromFen(fen);
     const isGameOver = search.position?.isEnd() ?? false;
@@ -59,7 +61,7 @@ export function useDisplayedEngineLines(
     }, [current, scope, search.finalFen, halfMoves, error, isGameOver, threat]);
 
     const eligible = settings.enabled && !error && !isGameOver;
-    const waiting = eligible && current === undefined;
+    const waiting = eligible && current === undefined && noLinesKey !== search.key;
     const request = JSON.stringify([scope, search.key, threat]);
     const [expired, setExpired] = useState<string | null>(null);
     useEffect(() => {

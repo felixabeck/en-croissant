@@ -85,6 +85,11 @@ vi.mock("@/state/atoms", async () => {
       ({ tab: _tab, engine: _engine }: { tab: string; engine: string }) => atom(0),
       (a, b) => a.tab === b.tab && a.engine === b.engine,
     ),
+    engineNoLinesFamily: atomFamily(
+      ({ tab: _tab, engine: _engine }: { tab: string; engine: string }) =>
+        atom<string | null>(null),
+      (a, b) => a.tab === b.tab && a.engine === b.engine,
+    ),
     firstEngineWithLinesFamily: atomFamily(() => atom(() => fixtures.scoreOwner)),
     tabEngineSettingsFamily: atomFamily(
       ({ defaultSettings, defaultGo }: { defaultSettings?: any[]; defaultGo?: any }) =>
@@ -114,6 +119,7 @@ import {
   closingTabsAtom,
   currentThreatAtom,
   engineMovesFamily,
+  engineNoLinesFamily,
   engineProgressFamily,
   enginesAtom,
   tabEngineSettingsFamily,
@@ -138,6 +144,8 @@ const movesAtom = (tab = store.get(activeTabAtom)!, engineId = engine.id) =>
   engineMovesFamily({ tab, engine: engineId });
 const progressAtom = (tab = store.get(activeTabAtom)!, engineId = engine.id) =>
   engineProgressFamily({ tab, engine: engineId });
+const noLinesAtom = (tab = store.get(activeTabAtom)!, engineId = engine.id) =>
+  engineNoLinesFamily({ tab, engine: engineId });
 
 async function flush() {
   await Promise.resolve();
@@ -208,6 +216,7 @@ beforeEach(() => {
   });
   store.set(movesAtom("tab-1"), new Map([["old", payload("cached").bestLines]]));
   store.set(progressAtom("tab-1"), 73);
+  store.set(noLinesAtom("tab-1"), null);
   store.set(movesAtom("tab-1", chessdbEngine.id), new Map());
   store.set(progressAtom("tab-1", chessdbEngine.id), 0);
   host = document.createElement("div");
@@ -813,7 +822,7 @@ test("a rejected predecessor stop is notified once, retired, and the newest requ
   expect(fixtures.notifyUnlessCancelled).toHaveBeenCalledTimes(1);
 });
 
-test("stale protocol Conflict is silent while current Conflict is visible", async () => {
+test("a superseded preparation rejection does not mark while the current rejection marks and notifies once", async () => {
   const first = deferred<string>();
   const conflict = new Error("Conflict: invalid or expired reservation");
   const second = deferred<string>();
@@ -830,11 +839,14 @@ test("stale protocol Conflict is silent while current Conflict is visible", asyn
     await flush();
   });
   expect(fixtures.notifyUnlessCancelled).not.toHaveBeenCalled();
+  expect(store.get(noLinesAtom())).toBeNull();
   await act(async () => {
     second.reject(conflict);
     await flush();
   });
-  expect(fixtures.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", conflict);
+  expect(fixtures.notifyUnlessCancelled).toHaveBeenCalledExactlyOnceWith("Common.Error", conflict);
+  expect(store.get(noLinesAtom())).toBe("fen-b:");
+  expect(fixtures.getBestMoves).not.toHaveBeenCalled();
 });
 
 test("live close and tab removal block transitions, preparation, and later starts", async () => {
@@ -1151,18 +1163,35 @@ test("the current first engine with lines can update its score", async () => {
   expect(fixtures.setScore).toHaveBeenCalledExactlyOnceWith(result.bestLines[0].score);
 });
 
-test("a synchronous launch failure is notified and retires the transition slot", async () => {
+test("a synchronous launch failure marks its key, notifies once and retires the transition slot", async () => {
   const failure = new Error("launch rejected synchronously");
   fixtures.getBestMoves.mockImplementationOnce(() => {
     throw failure;
   });
   await rerender();
   expect(fixtures.notifyUnlessCancelled).toHaveBeenCalledExactlyOnceWith("Common.Error", failure);
+  expect(store.get(noLinesAtom())).toBe("start-fen:");
   fixtures.fen = "fen-b";
   await rerender();
   expect(fixtures.prepareEngineSearch).toHaveBeenCalledTimes(2);
   expect(fixtures.getBestMoves).toHaveBeenCalledTimes(2);
+  expect(store.get(noLinesAtom())).toBeNull();
 });
+
+test.each(["preparation", "launch"])(
+  "cancelled %s failures never mark the current attempt",
+  async (phase) => {
+    const cancellation = new Error("Cancellation");
+    if (phase === "preparation") fixtures.prepareEngineSearch.mockRejectedValueOnce(cancellation);
+    else
+      fixtures.getBestMoves.mockImplementationOnce(() => {
+        throw cancellation;
+      });
+    await rerender();
+    expect(store.get(noLinesAtom())).toBeNull();
+    expect(store.get(movesAtom()).size).toBe(0);
+  },
+);
 
 test("line context survives listener remount and changes only for settings or executable identity", async () => {
   await rerender();
@@ -1204,6 +1233,105 @@ test("a payload move list must match by deep equality even when joined strings m
   expect(store.get(movesAtom()).size).toBe(0);
   await broadcast(payload("generation-1", { moves: ["e2e4", "e7e5"] }));
   expect(store.get(movesAtom()).get("start-fen:e2e4,e7e5")).toBeDefined();
+});
+
+test("a current local rejection without lines marks its key, notifies once and navigation clears the mark", async () => {
+  const result = deferred<null>();
+  const failure = new Error("Illegal UCI move: all PVs unusable");
+  fixtures.getBestMoves.mockReturnValueOnce(result.promise);
+  await rerender();
+  await act(async () => {
+    result.reject(failure);
+    await flush();
+  });
+  expect(store.get(noLinesAtom())).toBe("start-fen:");
+  expect(store.get(movesAtom()).size).toBe(0);
+  expect(fixtures.notifyUnlessCancelled).toHaveBeenCalledExactlyOnceWith("Common.Error", failure);
+  fixtures.fen = "fen-b";
+  await rerender();
+  expect(store.get(noLinesAtom())).toBeNull();
+  fixtures.fen = "start-fen";
+  await rerender();
+  expect(store.get(noLinesAtom())).toBeNull();
+});
+
+test("an empty local terminal payload followed by a null result marks completion without storing empty lines", async () => {
+  const result = deferred<null>();
+  fixtures.getBestMoves.mockReturnValueOnce(result.promise);
+  await rerender();
+  const terminal = payload("generation-1", { progress: 100 });
+  terminal.bestLines = [];
+  await broadcast(terminal);
+  expect(store.get(noLinesAtom())).toBeNull();
+  await act(async () => {
+    result.resolve(null);
+    await flush();
+  });
+  expect(store.get(noLinesAtom())).toBe("start-fen:");
+  expect(store.get(movesAtom()).size).toBe(0);
+  expect(fixtures.notifyUnlessCancelled).not.toHaveBeenCalled();
+  // The same searched key gets a new attempt when its go mode changes.
+  await act(async () => store.set(settingsAtom(), (s) => ({ ...s, go: { t: "Depth", c: 12 } })));
+  expect(store.get(noLinesAtom())).toBeNull();
+});
+
+test.each(["reject", "resolve"])(
+  "a superseded local attempt cannot mark the current key on %s",
+  async (outcome) => {
+    const result = deferred<null>();
+    fixtures.getBestMoves.mockReturnValueOnce(result.promise);
+    await rerender();
+    fixtures.fen = "fen-b";
+    await rerender();
+    await act(async () => {
+      if (outcome === "reject") result.reject(new Error("obsolete failure"));
+      else result.resolve(null);
+      await flush();
+    });
+    expect(store.get(noLinesAtom())).toBeNull();
+    expect(fixtures.notifyUnlessCancelled).not.toHaveBeenCalled();
+  },
+);
+
+test("a cancelled local search does not mark its key", async () => {
+  fixtures.getBestMoves.mockRejectedValueOnce(new Error("Cancellation"));
+  await rerender();
+  expect(store.get(noLinesAtom())).toBeNull();
+  expect(store.get(movesAtom()).size).toBe(0);
+});
+
+test.each(["reject", "resolve"])(
+  "usable streamed lines prevent a no-lines mark when the local search later settles with %s",
+  async (outcome) => {
+    const result = deferred<null>();
+    fixtures.getBestMoves.mockReturnValueOnce(result.promise);
+    await rerender();
+    const lines = payload("generation-1");
+    await broadcast(lines);
+    await act(async () => {
+      if (outcome === "reject") result.reject(new Error("failed after usable output"));
+      else result.resolve(null);
+      await flush();
+    });
+    expect(store.get(noLinesAtom())).toBeNull();
+    expect(store.get(movesAtom()).get("start-fen:")).toEqual(lines.bestLines);
+  },
+);
+
+test("usable terminal results and normal payloads clear a no-lines mark", async () => {
+  const result = deferred<ReturnType<typeof remoteResult>>();
+  fixtures.getBestMoves.mockReturnValueOnce(result.promise);
+  await rerender();
+  store.set(noLinesAtom(), "start-fen:");
+  await act(async () => {
+    result.resolve(remoteResult(100));
+    await flush();
+  });
+  expect(store.get(noLinesAtom())).toBeNull();
+  expect(store.get(movesAtom()).get("start-fen:")).toEqual(remoteResult(100)[1]);
+  store.set(noLinesAtom(), "start-fen:");
+  await broadcast(payload("generation-1"));
+  expect(store.get(noLinesAtom())).toBeNull();
 });
 
 function payload(generation: string, overrides: Partial<BestMovesPayload> = {}): BestMovesPayload {

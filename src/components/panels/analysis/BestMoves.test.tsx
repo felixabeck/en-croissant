@@ -3,6 +3,8 @@ import { INITIAL_FEN } from "chessops/fen";
 import { act } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { displayEngine, engineDisplayHarness } from "@/tests/engineDisplay";
+import { engineNoLinesFamily } from "@/state/atoms";
+import { analysisSearch } from "./analysisSearch";
 import BestMoves from "./BestMoves";
 
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
@@ -48,6 +50,32 @@ test("first start has neither skeleton rows nor Loading at 999 ms and has both a
   expect(h.host.querySelectorAll(".mantine-Skeleton-root")).toHaveLength(1);
   expect(h.host.textContent).toContain("Common.Loading");
 });
+
+test.each([0, 1000])(
+  "a marked key leaves the lines area empty without fallback, skeleton or Loading when marked at %i ms",
+  async (elapsed) => {
+    await h.remember();
+    await h.render(panel());
+    const moves = ["d2d4"];
+    await h.render(panel(moves));
+    await act(async () => vi.advanceTimersByTime(elapsed));
+    await act(async () =>
+      h.store.set(
+        engineNoLinesFamily({ tab: "display-tab", engine: displayEngine.id }),
+        analysisSearch(INITIAL_FEN, moves, false).key,
+      ),
+    );
+    expect(h.host.querySelector('[data-inert="true"]')).toBeNull();
+    expect(h.host.querySelector("tbody")?.children).toHaveLength(0);
+    await act(async () => vi.advanceTimersByTime(1000));
+    expect(h.host.querySelector(".mantine-Skeleton-root")).toBeNull();
+    expect(h.host.textContent).not.toContain("Common.Loading");
+    expect(h.host.textContent).not.toContain("Board.Analysis.NoAnalysisAvailable");
+    await act(async () => vi.advanceTimersByTime(5000));
+    expect(h.host.querySelector("tbody")?.children).toHaveLength(0);
+    expect(h.host.textContent).not.toContain("Common.Loading");
+  },
+);
 
 test("position change with previous lines renders dimmed inert rows without skeleton or badge and replaces them on result", async () => {
   await h.remember();
