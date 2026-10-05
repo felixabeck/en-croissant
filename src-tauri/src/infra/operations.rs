@@ -545,13 +545,22 @@ impl OperationRegistry {
         Ok(already_cancelled)
     }
 
-    pub fn has_live_download_for_progress(&self, progress_id: &str) -> Result<bool, Error> {
+    /// Excludes download admission while deciding whether to clear its progress.
+    /// Lock order is registry -> progress store: progress store/lease paths never lock
+    /// the registry, and this module's other production paths never lock the progress store.
+    /// The closure must do only in-memory work, with no await, I/O, or registry reentry.
+    pub fn with_live_download_for_progress<R>(
+        &self,
+        progress_id: &str,
+        decide: impl FnOnce(bool) -> R,
+    ) -> Result<R, Error> {
         let state = self.state()?;
-        Ok(state.accepted.values().any(|entry| {
+        let live_download = state.accepted.values().any(|entry| {
             entry.download
                 && entry.progress_id.as_deref() == Some(progress_id)
                 && !entry.cancellation.is_cancelled()
-        }))
+        });
+        Ok(decide(live_download))
     }
 
     pub fn release_download(&self, ticket: &str, owner: &str) -> Result<(), Error> {
@@ -1069,12 +1078,16 @@ mod tests {
             .cancel_download_for_progress("progress", "main")
             .unwrap());
         assert_eq!(registry.outstanding_labels().unwrap(), vec!["first"]);
-        assert!(!registry.has_live_download_for_progress("progress").unwrap());
+        assert!(!registry
+            .with_live_download_for_progress("progress", |live| live)
+            .unwrap());
         let retry_ticket = registry.prepare_download("main").unwrap();
         let retry = registry
             .claim_download(&retry_ticket, "main", "retry", "progress", 8)
             .unwrap();
-        assert!(registry.has_live_download_for_progress("progress").unwrap());
+        assert!(registry
+            .with_live_download_for_progress("progress", |live| live)
+            .unwrap());
         assert!(registry
             .cancel_download_for_progress("progress", "main")
             .unwrap());
@@ -1111,12 +1124,49 @@ mod tests {
             .cancel_download_for_progress("progress", "main")
             .unwrap());
         assert!(!committing.token().is_cancelled());
-        assert!(registry.has_live_download_for_progress("progress").unwrap());
+        assert!(registry
+            .with_live_download_for_progress("progress", |live| live)
+            .unwrap());
         let duplicate = registry.prepare_download("main").unwrap();
         assert!(matches!(
             registry.claim_download(&duplicate, "main", "duplicate", "progress", 8),
             Err(Error::Conflict(_))
         ));
+    }
+
+    #[test]
+    fn progress_clear_decision_excludes_download_admission() {
+        let registry = OperationRegistry::default();
+        let ticket = registry.prepare_download("main").unwrap();
+        let store = crate::progress::ProgressStore::default();
+        let previous = store.start("progress".into()).unwrap();
+        let generation = registry
+            .with_live_download_for_progress("progress", |live| {
+                assert!(!live);
+                assert!(
+                    matches!(
+                        registry.inner.state.try_lock(),
+                        Err(std::sync::TryLockError::WouldBlock)
+                    ),
+                    "download admission must remain locked through the clear decision"
+                );
+                store.clear("progress")
+            })
+            .unwrap()
+            .unwrap();
+        assert!(generation > previous.generation);
+        assert!(store.get("progress").unwrap().is_none());
+        let _download = registry
+            .claim_download(&ticket, "main", "download", "progress", 8)
+            .unwrap();
+        let next = store.start("progress".into()).unwrap();
+        assert!(next.generation > generation);
+        assert!(
+            store
+                .transition(&next, 50.0, crate::progress::ProgressState::Running)
+                .unwrap()
+                .1
+        );
     }
 
     #[test]
@@ -1128,7 +1178,9 @@ mod tests {
             Err(Error::Conflict(_))
         ));
         assert!(matches!(
-            registry.has_live_download_for_progress("progress"),
+            registry.with_live_download_for_progress("progress", |_| panic!(
+                "registry failure must not decide a clear"
+            )),
             Err(Error::Conflict(_))
         ));
     }

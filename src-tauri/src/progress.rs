@@ -480,13 +480,14 @@ fn clear_progress_with(
     id: String,
     emit_cleared: impl FnOnce(ProgressItem) -> Result<(), Error>,
 ) -> Result<u64, Error> {
-    // The registry check releases its mutex before the progress store is locked.
-    let live_download = operations.has_live_download_for_progress(&id)?;
-    let (generation, cleared) = if live_download {
-        store.clear_unless_live_running(&id, true)?
-    } else {
-        (store.clear(&id)?, true)
-    };
+    let (generation, cleared) =
+        operations.with_live_download_for_progress(&id, |live_download| {
+            if live_download {
+                store.clear_unless_live_running(&id, true)
+            } else {
+                store.clear(&id).map(|generation| (generation, true))
+            }
+        })??;
     if !cleared {
         return Ok(generation);
     }
