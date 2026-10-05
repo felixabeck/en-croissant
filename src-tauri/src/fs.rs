@@ -1256,7 +1256,7 @@ async fn download_lichess_games_runtime<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     state: &AppState,
 ) -> Result<crate::infra::path_authority::ArtifactPublication, Error> {
-    let progress_id = format!("lichess_{}", player.trim());
+    let progress_id = format!("lichess_{}", crate::lichess::lichess_user_segment(&player)?);
     let lease = state.operations.claim_download(
         &job_id,
         owner,

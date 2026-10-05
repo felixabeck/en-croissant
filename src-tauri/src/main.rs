@@ -3807,6 +3807,12 @@ mod blocking_offload_scans {
         );
         let compact: String = lichess.chars().filter(|c| !c.is_whitespace()).collect();
         assert!(
+            compact.contains(
+                "letprogress_id=format!(\"lichess_{}\",crate::lichess::lichess_user_segment(&player)?);"
+            ),
+            "{lichess}"
+        );
+        assert!(
             compact.contains("download_to_destination(&progress_id,"),
             "{lichess}"
         );
