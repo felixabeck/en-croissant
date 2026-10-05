@@ -6,9 +6,9 @@ import { warn } from "@/platform/native";
 
 /**
  * Why a cancellation did not take effect. `lost` means the download settled on its own
- * (it finished, or native lookup found no cancellable download), `request` that the cancel IPC itself failed -
- * the card notifies only the latter - and `busy` that a job for this progress id is
- * already running.
+ * (it finished, or native lookup found no cancellable download), `request` that the cancel IPC
+ * itself failed - the card notifies only the latter - and `busy` that a job for this progress
+ * id is already running.
  */
 export type DownloadCancelReason = "lost" | "request" | "busy";
 
@@ -77,10 +77,11 @@ export function runDownloadJob<T>(
     });
 
     entry.settlement = execution
-        // A job that did not succeed leaves no bar behind: the store keeps a terminal item at the
-        // last percentage it reached (cancelled or failed), which would otherwise still be drawn.
-        // Clearing here, before the entry is released below, is what keeps a retry's own bar safe:
-        // no start is accepted for this id until the clear has been answered.
+        // Clear an unsuccessful job's own terminal item so its last percentage is no longer drawn.
+        // If another live download reports under the same progress id, native clear keeps that
+        // Running bar; the returned generation is only a visibility floor below it, even when
+        // nothing was cleared. Clearing before releasing this entry keeps a retry's own bar safe:
+        // no local start is accepted for this id until the clear has been answered.
         .catch(async (error) => {
             entry.clearedGeneration = await clearDownloadProgress(progressId);
             throw error;
@@ -97,9 +98,9 @@ export function runDownloadJob<T>(
  * the job's own progress clear returned, or `null` when that clear failed. With no local job,
  * owner-checked native lookup cancels the surviving download and answers `null` without clearing.
  * It rejects with a `reason` of `lost` when the download settled on its own or lookup found no
- * cancellable download, and `request`
- * when the cancellation could not be delivered - only the latter is notified here, because the
- * job's own failure is already reported by the wrapper around `runDownloadJob`.
+ * cancellable download, and `request` when the cancellation could not be delivered - only the
+ * latter is notified here, because the job's own failure is already reported by the wrapper
+ * around `runDownloadJob`.
  */
 export async function cancelDownloadJob(
     progressId: string,
