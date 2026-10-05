@@ -5,12 +5,10 @@ use specta::Type;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Type)]
 pub enum DurabilityStage {
     ArchiveCommitMarker,
-    ArchiveFileReplacement,
     ArchiveReservationJournal,
     DatabasePgnReplacement,
     DirectoryInstall,
     DownloadTargetReplacement,
-    GzipFileReplacement,
     NativeExport,
     OldDirectoryCleanup,
     OldDirectoryCleanupSync,
@@ -34,14 +32,12 @@ impl std::fmt::Display for DurabilityStage {
             Self::ArchiveCommitMarker => {
                 "artifact commit marker, which may have committed; do not retry"
             }
-            Self::ArchiveFileReplacement => "archive file replacement",
             Self::ArchiveReservationJournal => {
                 "artifact reservation journal, which may have committed; do not install or retry"
             }
             Self::DatabasePgnReplacement => "database PGN replacement",
             Self::DirectoryInstall => "directory installation",
             Self::DownloadTargetReplacement => "download target replacement",
-            Self::GzipFileReplacement => "gzip file replacement",
             Self::NativeExport => "native export",
             Self::OldDirectoryCleanup => "old directory cleanup",
             Self::OldDirectoryCleanupSync => "old directory cleanup sync",
@@ -1012,12 +1008,10 @@ mod tests {
     fn every_durability_label_serializes_without_native_diagnostics() {
         let stages = [
             DurabilityStage::ArchiveCommitMarker,
-            DurabilityStage::ArchiveFileReplacement,
             DurabilityStage::ArchiveReservationJournal,
             DurabilityStage::DatabasePgnReplacement,
             DurabilityStage::DirectoryInstall,
             DurabilityStage::DownloadTargetReplacement,
-            DurabilityStage::GzipFileReplacement,
             DurabilityStage::NativeExport,
             DurabilityStage::OldDirectoryCleanup,
             DurabilityStage::OldDirectoryCleanupSync,

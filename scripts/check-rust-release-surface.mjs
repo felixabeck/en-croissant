@@ -20,15 +20,14 @@ const INITIAL_DEAD_CODE_ALLOWLIST = Object.freeze([]);
 
 export const DEAD_CODE_ALLOWLIST = new Set(INITIAL_DEAD_CODE_ALLOWLIST);
 
-// Owner: f-20260830-23. This allowlist may only shrink.
-const INITIAL_FS_SURFACE_ALLOWLIST = Object.freeze(["src-tauri/src/fs.rs"]);
+// Owner: f-20260830-23. Emptied 2026-10-05 by f-20260919-03;
+// any new entry is an R3 violation. This allowlist may only shrink.
+const INITIAL_FS_SURFACE_ALLOWLIST = Object.freeze([]);
 
 export const FS_SURFACE_ALLOWLIST = new Set(INITIAL_FS_SURFACE_ALLOWLIST);
 
 // Production R3+R4 match counts, measured by this checker. Shrink-only.
-export const INITIAL_FS_SURFACE_COUNTS = Object.freeze({
-  "src-tauri/src/fs.rs": 6,
-});
+export const INITIAL_FS_SURFACE_COUNTS = Object.freeze({});
 
 export const PATH_METHODS = Object.freeze([
   "canonicalize",

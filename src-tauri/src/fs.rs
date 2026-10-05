@@ -17,7 +17,6 @@ use futures_util::StreamExt;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::Error;
-use crate::infra::fs::atomic_replace;
 use crate::progress::{begin_progress, update_progress_with_state, ProgressLease, ProgressState};
 use crate::AppState;
 
@@ -618,8 +617,8 @@ fn accept_plain_download_payload(file: &mut std::fs::File) -> Result<(), Error> 
     Ok(())
 }
 
-/// `staging` names the process-owned engine directory a zip, tar or tar-in-gzip payload replaces.
-/// It must agree with `path`; plain gzip and plain files ignore it.
+/// Installs only zip, tar or tar-in-gzip into process-owned `staging`, which must match `path`.
+/// Its existing parent is pinned once for every archive install; missing parents are refused.
 #[allow(clippy::too_many_arguments)]
 async fn download_file_core_control_with_integrity<F>(
     op: OpClass,
@@ -638,7 +637,6 @@ where
 {
     let parsed_url = validate_download_request(op, url, token, &cancellation)?;
     let target_dir = path.parent().unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(target_dir)?;
     let mut temp_file = tempfile::Builder::new()
         .prefix(".download")
         .tempfile_in(target_dir)
@@ -664,6 +662,9 @@ where
                 return Err(Error::Cancellation);
             }
             let mut file = temp_file.into_file();
+            let pin = crate::infra::fs::open_parent_no_follow(&path)?;
+            #[cfg(test)]
+            run_core_after_pin_hook(&path);
             let kind = sniff_download_payload(&mut file)?;
             let is_zip = kind == DownloadPayloadKind::Zip;
             let is_tar = kind == DownloadPayloadKind::Tar;
@@ -680,6 +681,7 @@ where
                     if is_zip {
                         extract_zip_cancellable(
                             file,
+                            &pin,
                             dest_parent,
                             dest_leaf,
                             limits,
@@ -688,6 +690,7 @@ where
                     } else {
                         extract_tar_cancellable(
                             file,
+                            &pin,
                             dest_parent,
                             dest_leaf,
                             limits,
@@ -695,22 +698,21 @@ where
                         )?;
                     }
                 } else {
-                    if gzip_is_tar(&mut file)? {
-                        archive_install_names(&path, &staging)?;
+                    if !gzip_is_tar(&mut file)? {
+                        return Err(archive_payload_required());
                     }
-                    extract_gz_cancellable(file, &path, limits, cancellation)?;
+                    let (dest_parent, dest_leaf) = archive_install_names(&path, &staging)?;
+                    extract_gz_cancellable(
+                        file,
+                        &pin,
+                        dest_parent,
+                        dest_leaf,
+                        limits,
+                        cancellation,
+                    )?;
                 }
             } else {
-                let target_dir = path.parent().unwrap_or_else(|| Path::new("."));
-                std::fs::create_dir_all(target_dir)?;
-                let outcome = atomic_replace(&path, |target_file| {
-                    copy_cancellable(&mut file, target_file, cancellation)?;
-                    Ok(())
-                })?;
-                crate::infra::fs::require_durable(
-                    outcome,
-                    crate::error::DurabilityStage::ArchiveFileReplacement,
-                )?;
+                return Err(archive_payload_required());
             }
             Ok(())
         })
@@ -1522,38 +1524,6 @@ pub async fn cancel_download(
     state.operations.cancel_download(&id, window.label())
 }
 
-fn create_private_dir_all(path: &Path) -> Result<(), Error> {
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        // The effective mode is the requested mode intersected with the process umask.
-        builder.mode(0o700);
-    }
-    builder.create(path)?;
-    Ok(())
-}
-
-/// A private staging directory outside any authority-managed parent. Only the unix
-/// private-mode test still calls this; production staging is `private_tempdir_in` beside the
-/// destination it will be installed onto.
-#[cfg(all(test, unix))]
-fn private_tempdir() -> Result<tempfile::TempDir, Error> {
-    #[cfg(unix)]
-    let mut builder = tempfile::Builder::new();
-    #[cfg(not(unix))]
-    let builder = tempfile::Builder::new();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        builder.permissions(std::fs::Permissions::from_mode(0o700));
-    }
-    builder
-        .tempdir()
-        .map_err(|error| Error::Io(Box::new(error)))
-}
-
 fn private_tempdir_in(prefix: &str, parent: &Path) -> Result<tempfile::TempDir, Error> {
     let mut builder = tempfile::Builder::new();
     builder.prefix(prefix);
@@ -1618,12 +1588,12 @@ fn validate_archive_path(path: &str) -> Result<PathBuf, Error> {
 
 fn extract_zip_cancellable(
     file: std::fs::File,
+    pin: &std::fs::File,
     dest_parent: &Path,
     dest_leaf: &OsStr,
     limits: ArchiveLimits,
     cancellation: &CancellationToken,
 ) -> Result<(), Error> {
-    create_private_dir_all(dest_parent)?;
     let temp_dir = private_tempdir_in(".zip", dest_parent)?;
     let staging = crate::infra::fs::OwnedStagingDir::adopt(&temp_dir)?;
     // Only after a successful adopt: from here `staging` alone removes the leaf by identity.
@@ -1676,17 +1646,22 @@ fn extract_zip_cancellable(
         }
     }
 
-    install_extracted_tree(staging, dest_parent, dest_leaf)
+    #[cfg(test)]
+    run_archive_pre_install_hook(dest_parent);
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
+    install_extracted_tree(staging, pin, dest_leaf)
 }
 
 fn extract_tar_cancellable(
     file: std::fs::File,
+    pin: &std::fs::File,
     dest_parent: &Path,
     dest_leaf: &OsStr,
     limits: ArchiveLimits,
     cancellation: &CancellationToken,
 ) -> Result<(), Error> {
-    create_private_dir_all(dest_parent)?;
     let temp_dir = private_tempdir_in(".tar", dest_parent)?;
     let staging = crate::infra::fs::OwnedStagingDir::adopt(&temp_dir)?;
     // Only after a successful adopt: from here `staging` alone removes the leaf by identity.
@@ -1741,42 +1716,76 @@ fn extract_tar_cancellable(
         }
     }
 
-    install_extracted_tree(staging, dest_parent, dest_leaf)
+    #[cfg(test)]
+    run_archive_pre_install_hook(dest_parent);
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
+    install_extracted_tree(staging, pin, dest_leaf)
 }
 
 #[cfg(test)]
-type DestParentIdentityPreOpenHook = Box<dyn FnOnce(&Path) -> PathBuf>;
+type ArchivePreInstallHook = Box<dyn FnOnce(&Path)>;
 
 #[cfg(test)]
 std::thread_local! {
-    static DEST_PARENT_IDENTITY_PRE_OPEN_HOOK:
-        std::cell::RefCell<Option<DestParentIdentityPreOpenHook>> =
+    static ARCHIVE_PRE_INSTALL_HOOK:
+        std::cell::RefCell<Option<ArchivePreInstallHook>> =
         const { std::cell::RefCell::new(None) };
 }
 
-/// Runs once, after the inner tree is adopted and before `dest_parent` is opened for the identity
-/// check. It receives `dest_parent` and returns the directory that open should name instead.
+/// Runs once after extraction, before cancellation and the pinned-parent install check.
 #[cfg(test)]
-fn set_dest_parent_identity_pre_open_hook(hook: Option<DestParentIdentityPreOpenHook>) {
-    DEST_PARENT_IDENTITY_PRE_OPEN_HOOK.with(|slot| *slot.borrow_mut() = hook);
+fn set_archive_pre_install_hook(hook: Option<ArchivePreInstallHook>) {
+    ARCHIVE_PRE_INSTALL_HOOK.with(|slot| *slot.borrow_mut() = hook);
 }
 
-/// Installs an already adopted inner tree onto `dest_leaf`. The install parent is only the
-/// descriptor held by `source`; `dest_parent` is opened once, without following links, just to
-/// confirm it is that same directory.
+#[cfg(test)]
+fn run_archive_pre_install_hook(dest_parent: &Path) {
+    let hook = ARCHIVE_PRE_INSTALL_HOOK.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook(dest_parent);
+    }
+}
+
+#[cfg(test)]
+type CoreAfterPinHook = Box<dyn FnOnce(&Path) + Send>;
+
+#[cfg(test)]
+static CORE_AFTER_PIN_HOOKS: std::sync::Mutex<
+    std::collections::BTreeMap<PathBuf, CoreAfterPinHook>,
+> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Keyed by the unique test target so a different blocking worker cannot consume the hook.
+#[cfg(test)]
+fn set_core_after_pin_hook(path: &Path, hook: Option<CoreAfterPinHook>) {
+    let mut hooks = CORE_AFTER_PIN_HOOKS.lock().unwrap();
+    if let Some(hook) = hook {
+        assert!(hooks.insert(path.to_path_buf(), hook).is_none());
+    } else {
+        hooks.remove(path);
+    }
+}
+
+#[cfg(test)]
+fn run_core_after_pin_hook(path: &Path) {
+    let hook = CORE_AFTER_PIN_HOOKS.lock().unwrap().remove(path);
+    if let Some(hook) = hook {
+        hook(path);
+    }
+}
+
+fn archive_payload_required() -> Error {
+    Error::InvalidInput("Download payload must be a zip, tar or tar.gz archive".into())
+}
+
+/// Installs an adopted inner tree only when its held parent is the call's original pin.
 fn install_extracted_tree(
     source: crate::infra::fs::OwnedStagingDir,
-    dest_parent: &Path,
+    pin: &std::fs::File,
     dest_leaf: &OsStr,
 ) -> Result<(), Error> {
-    #[cfg(test)]
-    let substituted = DEST_PARENT_IDENTITY_PRE_OPEN_HOOK
-        .with(|slot| slot.borrow_mut().take())
-        .map(|hook| hook(dest_parent));
-    #[cfg(test)]
-    let dest_parent = substituted.as_deref().unwrap_or(dest_parent);
-    let named = crate::infra::fs::open_parent_no_follow(&dest_parent.join(dest_leaf))?;
-    if crate::infra::path_authority::opened_file_identity(&named)? != source.parent_identity()? {
+    if crate::infra::path_authority::opened_file_identity(pin)? != source.parent_identity()? {
         return Err(Error::Conflict(
             "archive staging parent changed concurrently".into(),
         ));
@@ -1841,68 +1850,43 @@ fn gzip_is_tar(file: &mut std::fs::File) -> Result<bool, Error> {
 
 fn extract_gz_cancellable(
     mut file: std::fs::File,
-    target_path: &Path,
+    pin: &std::fs::File,
+    dest_parent: &Path,
+    dest_leaf: &OsStr,
     limits: ArchiveLimits,
     cancellation: &CancellationToken,
 ) -> Result<(), Error> {
-    let target_dir = target_path.parent().unwrap_or_else(|| Path::new("."));
-    create_private_dir_all(target_dir)?;
-
-    if gzip_is_tar(&mut file)? {
-        use std::io::{Seek, SeekFrom};
-        let compressed = file.metadata()?.len();
-        let ratio_limit = compressed.saturating_mul(limits.ratio);
-        let stream_limit = limits.expanded.min(ratio_limit);
-        // Bound the entire decompressed stream (headers and padding included) before tar
-        // publication. The tar extractor still enforces entry count and per-entry limits.
-        let mut tar_file = tempfile::tempfile_in(target_dir)?;
-        let mut decoder = flate2::read::GzDecoder::new(file);
-        let mut total = 0;
-        bounded_copy(
-            &mut decoder,
-            &mut tar_file,
-            u64::MAX,
-            &mut total,
-            stream_limit,
-            cancellation,
-        )
-        .map_err(|error| match error {
-            Error::ResourceLimit(_) if ratio_limit < limits.expanded => {
-                Error::ResourceLimit("High tar-in-gzip compression ratio detected".into())
-            }
-            Error::ResourceLimit(_) => {
-                Error::ResourceLimit("Tar-in-gzip expansion limit exceeded".into())
-            }
-            other => other,
-        })?;
-        tar_file.seek(SeekFrom::Start(0))?;
-        let leaf = target_path
-            .file_name()
-            .ok_or_else(|| Error::InvalidInput("archive destination needs a leaf name".into()))?;
-        return extract_tar_cancellable(tar_file, target_dir, leaf, limits, cancellation);
+    if !gzip_is_tar(&mut file)? {
+        return Err(archive_payload_required());
     }
-
-    let outcome = atomic_replace(target_path, |target_file| {
-        let mut decoder = flate2::read::GzDecoder::new(file);
-        let compressed = decoder.get_ref().metadata()?.len();
-        let mut total_expanded = 0;
-        bounded_copy(
-            &mut decoder,
-            target_file,
-            limits.per_entry,
-            &mut total_expanded,
-            limits.expanded,
-            cancellation,
-        )?;
-        let expanded = target_file.metadata()?.len();
-        if compressed == 0 || expanded > compressed.saturating_mul(limits.ratio) {
-            return Err(Error::ResourceLimit(
-                "High gzip compression ratio detected".into(),
-            ));
+    use std::io::{Seek, SeekFrom};
+    let compressed = file.metadata()?.len();
+    let ratio_limit = compressed.saturating_mul(limits.ratio);
+    let stream_limit = limits.expanded.min(ratio_limit);
+    // Bound the entire decompressed stream (headers and padding included) before tar
+    // publication. The tar extractor still enforces entry count and per-entry limits.
+    let mut tar_file = tempfile::tempfile_in(dest_parent)?;
+    let mut decoder = flate2::read::GzDecoder::new(file);
+    let mut total = 0;
+    bounded_copy(
+        &mut decoder,
+        &mut tar_file,
+        u64::MAX,
+        &mut total,
+        stream_limit,
+        cancellation,
+    )
+    .map_err(|error| match error {
+        Error::ResourceLimit(_) if ratio_limit < limits.expanded => {
+            Error::ResourceLimit("High tar-in-gzip compression ratio detected".into())
         }
-        Ok(())
+        Error::ResourceLimit(_) => {
+            Error::ResourceLimit("Tar-in-gzip expansion limit exceeded".into())
+        }
+        other => other,
     })?;
-    crate::infra::fs::require_durable(outcome, crate::error::DurabilityStage::GzipFileReplacement)
+    tar_file.seek(SeekFrom::Start(0))?;
+    extract_tar_cancellable(tar_file, pin, dest_parent, dest_leaf, limits, cancellation)
 }
 
 fn bounded_copy(
@@ -1972,8 +1956,10 @@ fn extract_zip(
             "archive target needs a parent and a leaf".into(),
         ));
     };
+    let pin = crate::infra::fs::open_parent_no_follow(target_path)?;
     extract_zip_cancellable(
         file,
+        &pin,
         dest_parent,
         dest_leaf,
         limits,
@@ -1993,8 +1979,10 @@ fn extract_tar(
             "archive target needs a parent and a leaf".into(),
         ));
     };
+    let pin = crate::infra::fs::open_parent_no_follow(target_path)?;
     extract_tar_cancellable(
         file,
+        &pin,
         dest_parent,
         dest_leaf,
         limits,
@@ -2004,7 +1992,21 @@ fn extract_tar(
 
 #[cfg(test)]
 fn extract_gz(file: std::fs::File, target_path: &Path, limits: ArchiveLimits) -> Result<(), Error> {
-    extract_gz_cancellable(file, target_path, limits, &CancellationToken::new())
+    let (Some(dest_parent), Some(dest_leaf)) = (target_path.parent(), target_path.file_name())
+    else {
+        return Err(Error::InvalidInput(
+            "archive target needs a parent and a leaf".into(),
+        ));
+    };
+    let pin = crate::infra::fs::open_parent_no_follow(target_path)?;
+    extract_gz_cancellable(
+        file,
+        &pin,
+        dest_parent,
+        dest_leaf,
+        limits,
+        &CancellationToken::new(),
+    )
 }
 
 #[tauri::command]
@@ -2733,10 +2735,10 @@ mod tests {
         names
     }
 
-    struct ResetDestParentHook;
-    impl Drop for ResetDestParentHook {
+    struct ResetArchiveHook;
+    impl Drop for ResetArchiveHook {
         fn drop(&mut self) {
-            set_dest_parent_identity_pre_open_hook(None);
+            set_archive_pre_install_hook(None);
         }
     }
 
@@ -2746,8 +2748,10 @@ mod tests {
         file.write_all(b"not a zip archive").unwrap();
         file.rewind().unwrap();
         let parent = tempdir().unwrap();
+        let pin = crate::infra::fs::open_parent_no_follow(&parent.path().join("payload")).unwrap();
         let error = extract_zip_cancellable(
             file,
+            &pin,
             parent.path(),
             OsStr::new("payload"),
             OpClass::Engine.limits(),
@@ -2768,8 +2772,10 @@ mod tests {
         let handle = std::os::fd::OwnedFd::from(reader);
         let file = std::fs::File::from(handle);
         let parent = tempdir().unwrap();
+        let pin = crate::infra::fs::open_parent_no_follow(&parent.path().join("payload")).unwrap();
         let result = extract_zip_cancellable(
             file,
+            &pin,
             parent.path(),
             OsStr::new("payload"),
             OpClass::Engine.limits(),
@@ -2795,10 +2801,12 @@ mod tests {
         write_zip(&bad, &[("ok.txt", b"ok"), ("../escape.txt", b"x")]);
 
         let parent = tempdir().unwrap();
+        let pin = crate::infra::fs::open_parent_no_follow(&parent.path().join("payload")).unwrap();
         let cancelled = CancellationToken::new();
         cancelled.cancel();
         let error = extract_zip_cancellable(
             std::fs::File::open(&good).unwrap(),
+            &pin,
             parent.path(),
             OsStr::new("payload"),
             OpClass::Engine.limits(),
@@ -2814,6 +2822,7 @@ mod tests {
 
         let error = extract_zip_cancellable(
             std::fs::File::open(&bad).unwrap(),
+            &pin,
             parent.path(),
             OsStr::new("payload"),
             OpClass::Engine.limits(),
@@ -2849,10 +2858,12 @@ mod tests {
         };
 
         let parent = tempdir().unwrap();
+        let pin = crate::infra::fs::open_parent_no_follow(&parent.path().join("payload")).unwrap();
         let cancelled = CancellationToken::new();
         cancelled.cancel();
         let error = extract_tar_cancellable(
             std::fs::File::open(&tar_path).unwrap(),
+            &pin,
             parent.path(),
             OsStr::new("payload"),
             OpClass::Engine.limits(),
@@ -2868,6 +2879,7 @@ mod tests {
 
         let error = extract_tar_cancellable(
             std::fs::File::open(&tar_path).unwrap(),
+            &pin,
             parent.path(),
             OsStr::new("payload"),
             limits,
@@ -2884,7 +2896,6 @@ mod tests {
 
     #[test]
     fn extract_zip_engine_shape_identity_hook_is_conflict() {
-        let _reset = ResetDestParentHook;
         let archives = tempdir().unwrap();
         let archive = archives.path().join("engine.zip");
         write_zip(&archive, &[("engine.bin", b"engine")]);
@@ -2892,12 +2903,12 @@ mod tests {
         let outer = private_tempdir_in(".archive", root.path()).unwrap();
         let outer_leaf = outer.path().file_name().unwrap().to_os_string();
         let elsewhere = tempdir().unwrap();
-        let substitute = elsewhere.path().to_path_buf();
-        set_dest_parent_identity_pre_open_hook(Some(Box::new(move |_| substitute)));
+        let pin = crate::infra::fs::open_parent_no_follow(outer.path()).unwrap();
 
         let error = extract_zip_cancellable(
             std::fs::File::open(&archive).unwrap(),
-            root.path(),
+            &pin,
+            elsewhere.path(),
             &outer_leaf,
             OpClass::Engine.limits(),
             &CancellationToken::new(),
@@ -2913,18 +2924,20 @@ mod tests {
             vec![outer_leaf.to_string_lossy().into_owned()]
         );
         assert!(leaves(outer.path()).is_empty());
+        assert!(leaves(elsewhere.path()).is_empty());
     }
 
     #[test]
     fn extract_zip_inner_leaf_substitution_before_install_is_conflict() {
-        let _reset = ResetDestParentHook;
+        let _reset = ResetArchiveHook;
         let archives = tempdir().unwrap();
         let archive = archives.path().join("payload.zip");
         write_zip(&archive, &[("real.txt", b"real")]);
         let parent = tempdir().unwrap();
+        let pin = crate::infra::fs::open_parent_no_follow(&parent.path().join("payload")).unwrap();
         let moved = tempdir().unwrap();
         let moved_path = moved.path().join("original");
-        set_dest_parent_identity_pre_open_hook(Some(Box::new(move |dest_parent| {
+        set_archive_pre_install_hook(Some(Box::new(move |dest_parent| {
             let inner = std::fs::read_dir(dest_parent)
                 .unwrap()
                 .map(|entry| entry.unwrap().path())
@@ -2938,11 +2951,11 @@ mod tests {
             std::fs::rename(&inner, &moved_path).unwrap();
             std::fs::create_dir(&inner).unwrap();
             std::fs::write(inner.join("planted.txt"), b"planted").unwrap();
-            dest_parent.to_path_buf()
         })));
 
         let error = extract_zip_cancellable(
             std::fs::File::open(&archive).unwrap(),
+            &pin,
             parent.path(),
             OsStr::new("payload"),
             OpClass::Engine.limits(),
@@ -3028,7 +3041,7 @@ mod tests {
         );
         assert_eq!(
             helper.matches("open_parent_no_follow(").count(),
-            1,
+            0,
             "{helper}"
         );
     }
@@ -3199,8 +3212,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_download_file_cross_origin_token_stripping() {
-        let dir = tempdir().unwrap();
-        let target = dir.path().join("out.txt");
+        let mut file = tempfile::tempfile().unwrap();
+        let cancellation = CancellationToken::new();
+        let parsed_url = validate_download_request(
+            OpClass::Lichess,
+            "https://lichess.org/test",
+            Some("my_secret_token"),
+            &cancellation,
+        )
+        .unwrap();
 
         let mut redirect_headers = HeaderMap::new();
         redirect_headers.insert(
@@ -3226,13 +3246,14 @@ mod tests {
             requests_seen: std::sync::Mutex::new(vec![]),
         };
 
-        let res = download_file_core(
+        let res = download_payload_network(
             OpClass::Lichess,
-            "https://lichess.org/test",
-            &target,
-            None,
+            parsed_url,
+            &mut file,
             &mock,
             Some("my_secret_token"),
+            None,
+            cancellation,
             None,
             |_| Ok(()),
         )
@@ -3417,9 +3438,6 @@ mod tests {
         let _umask = UmaskGuard::zero();
         let root = tempdir().unwrap();
 
-        let outer_staging = private_tempdir().unwrap();
-        assert_mode_700(outer_staging.path());
-
         let zip_archive = root.path().join("archive.zip");
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&zip_archive).unwrap());
         let options = zip::write::SimpleFileOptions::default();
@@ -3428,13 +3446,13 @@ mod tests {
         zip.write_all(b"zip").unwrap();
         zip.finish().unwrap();
         let zip_target = root.path().join("zip-target").join("installed");
+        std::fs::create_dir(zip_target.parent().unwrap()).unwrap();
         extract_zip(
             std::fs::File::open(zip_archive).unwrap(),
             &zip_target,
             OpClass::Engine.limits(),
         )
         .unwrap();
-        assert_mode_700(zip_target.parent().unwrap());
         assert_mode_700(&zip_target);
         assert_mode_700(&zip_target.join("explicit"));
         assert_mode_700(&zip_target.join("implicit"));
@@ -3457,13 +3475,13 @@ mod tests {
         tar.finish().unwrap();
         drop(tar);
         let tar_target = root.path().join("tar-target").join("installed");
+        std::fs::create_dir(tar_target.parent().unwrap()).unwrap();
         extract_tar(
             std::fs::File::open(tar_archive).unwrap(),
             &tar_target,
             OpClass::Engine.limits(),
         )
         .unwrap();
-        assert_mode_700(tar_target.parent().unwrap());
         assert_mode_700(&tar_target);
         assert_mode_700(&tar_target.join("explicit"));
         assert_mode_700(&tar_target.join("implicit"));
@@ -3476,13 +3494,15 @@ mod tests {
         encoder.write_all(b"gzip").unwrap();
         encoder.finish().unwrap();
         let gzip_target = root.path().join("gzip-target").join("installed");
-        extract_gz(
+        std::fs::create_dir(gzip_target.parent().unwrap()).unwrap();
+        let error = extract_gz(
             std::fs::File::open(gzip_archive).unwrap(),
             &gzip_target,
             OpClass::Engine.limits(),
         )
-        .unwrap();
-        assert_mode_700(gzip_target.parent().unwrap());
+        .unwrap_err();
+        assert_eq!(error.to_string(), archive_payload_required().to_string());
+        assert!(leaves(gzip_target.parent().unwrap()).is_empty());
     }
 
     /// Staged-failure matrix (2026-09-20; each run exited 101):
@@ -3560,35 +3580,6 @@ mod tests {
             )),
         }
         assert!(failures.is_empty(), "{failures:#?}");
-    }
-
-    #[test]
-    fn gzip_extraction_keeps_the_installed_file_and_reports_uncertain_durability() {
-        let root = tempdir().unwrap();
-        let gzip_archive = root.path().join("archive.gz");
-        let mut encoder = flate2::write::GzEncoder::new(
-            std::fs::File::create(&gzip_archive).unwrap(),
-            flate2::Compression::default(),
-        );
-        encoder.write_all(b"gzip").unwrap();
-        encoder.finish().unwrap();
-        let gzip_target = root.path().join("gzip-target").join("installed");
-        crate::infra::fs::set_test_atomic_file_injector(Some(std::sync::Arc::new(
-            crate::infra::fs::ParentSyncFault("uncertain"),
-        )));
-        let result = extract_gz(
-            std::fs::File::open(gzip_archive).unwrap(),
-            &gzip_target,
-            OpClass::Engine.limits(),
-        );
-        crate::infra::fs::set_test_atomic_file_injector(None);
-        assert!(matches!(
-            result,
-            Err(Error::CommittedDurabilityUncertain(
-                crate::error::DurabilityStage::GzipFileReplacement
-            ))
-        ));
-        assert_eq!(std::fs::read(&gzip_target).unwrap(), b"gzip");
     }
 
     #[cfg(unix)]
@@ -3943,6 +3934,188 @@ mod tests {
         archive.into_inner().unwrap().finish().unwrap()
     }
 
+    fn raw_tar_payload() -> Vec<u8> {
+        let mut payload = Vec::new();
+        flate2::read::GzDecoder::new(gzip_tar_payload(b"engine").as_slice())
+            .read_to_end(&mut payload)
+            .unwrap();
+        payload
+    }
+
+    #[tokio::test]
+    async fn core_download_missing_parent_is_io_and_does_not_create_it() {
+        let root = tempdir().unwrap();
+        let parent = root.path().join("missing");
+        let target = parent.join("installed");
+        let transport = zip_response(zip_payload());
+        let error = download_file_core(
+            OpClass::Engine,
+            "https://example.com/engine.zip",
+            &target,
+            Some(target.clone()),
+            &transport,
+            None,
+            None,
+            |_| Ok(()),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(error, Error::Io(ref source) if source.kind() == std::io::ErrorKind::NotFound),
+            "{error}"
+        );
+        assert!(!parent.exists());
+        assert!(leaves(root.path()).is_empty());
+        assert!(transport.requests_seen.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn core_download_refuses_plain_and_plain_gzip_without_leaves() {
+        let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gzip.write_all(b"plain gzip contents").unwrap();
+        for payload in [b"plain contents".to_vec(), gzip.finish().unwrap()] {
+            let parent = tempdir().unwrap();
+            let target = parent.path().join("installed");
+            let transport = zip_response(payload);
+            let error = download_file_core(
+                OpClass::Engine,
+                "https://example.com/engine",
+                &target,
+                Some(target.clone()),
+                &transport,
+                None,
+                None,
+                |_| Ok(()),
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(error, Error::InvalidInput(_)), "{error}");
+            assert_eq!(
+                error.to_string(),
+                "Invalid input: Download payload must be a zip, tar or tar.gz archive"
+            );
+            assert!(!target.exists());
+            assert!(leaves(parent.path()).is_empty());
+            assert_eq!(transport.requests_seen.lock().unwrap().len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn core_download_preserves_non_archive_operation_refusal_precedence() {
+        let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gzip.write_all(b"plain gzip contents").unwrap();
+        for payload in [zip_payload(), raw_tar_payload(), gzip.finish().unwrap()] {
+            let parent = tempdir().unwrap();
+            let target = parent.path().join("installed");
+            let error = download_file_core(
+                OpClass::Lichess,
+                "https://lichess.org/export",
+                &target,
+                None,
+                &zip_response(payload),
+                None,
+                None,
+                |_| Ok(()),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "Invalid input: Archive payload is not allowed for this operation"
+            );
+            assert!(leaves(parent.path()).is_empty());
+        }
+    }
+
+    struct ResetCoreHook(PathBuf);
+
+    impl Drop for ResetCoreHook {
+        fn drop(&mut self) {
+            set_core_after_pin_hook(&self.0, None);
+        }
+    }
+
+    async fn assert_core_parent_swap_conflict(payload: Vec<u8>, member: &str) {
+        let root = tempdir().unwrap();
+        let parent = root.path().join("parent");
+        let moved = root.path().join("moved");
+        std::fs::create_dir(&parent).unwrap();
+        let target = parent.join("installed");
+        let _reset = ResetCoreHook(target.clone());
+        let rename_result = Arc::new(Mutex::new(None));
+        let hook_result = Arc::clone(&rename_result);
+        let hook_moved = moved.clone();
+        set_core_after_pin_hook(
+            &target,
+            Some(Box::new(move |path| {
+                let parent = path.parent().unwrap();
+                let result = std::fs::rename(parent, &hook_moved);
+                if result.is_ok() {
+                    std::fs::create_dir(parent).unwrap();
+                }
+                *hook_result.lock().unwrap() = Some(result);
+            })),
+        );
+        let result = download_file_core(
+            OpClass::Engine,
+            "https://example.com/engine.archive",
+            &target,
+            Some(target.clone()),
+            &zip_response(payload),
+            None,
+            None,
+            |_| Ok(()),
+        )
+        .await;
+        match rename_result
+            .lock()
+            .unwrap()
+            .take()
+            .expect("after-pin hook ran")
+        {
+            Ok(()) => {
+                let error = result.unwrap_err();
+                assert_eq!(
+                    error.to_string(),
+                    "Conflict: archive staging parent changed concurrently"
+                );
+                assert!(!error.to_string().contains('/'));
+                assert!(!target.exists());
+                assert!(!moved.join("installed").exists());
+                assert!(leaves(&parent).is_empty());
+                assert!(leaves(&moved).is_empty());
+            }
+            Err(error) => {
+                assert!(
+                    matches!(
+                        error.kind(),
+                        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::WouldBlock
+                    ) || matches!(error.raw_os_error(), Some(32 | 33)),
+                    "parent rename must be refused by the held handle: {error}"
+                );
+                result.unwrap();
+                assert_eq!(std::fs::read(target.join(member)).unwrap(), b"engine");
+                assert_eq!(leaves(&parent), vec!["installed"]);
+                assert!(!moved.exists());
+            }
+        };
+    }
+
+    #[tokio::test]
+    async fn core_zip_parent_swap_after_pin_is_conflict() {
+        assert_core_parent_swap_conflict(zip_payload(), "engine.bin").await;
+    }
+
+    #[tokio::test]
+    async fn core_tar_parent_swap_after_pin_is_conflict() {
+        assert_core_parent_swap_conflict(raw_tar_payload(), "stockfish/engine").await;
+    }
+
+    #[tokio::test]
+    async fn core_tar_gzip_parent_swap_after_pin_is_conflict() {
+        assert_core_parent_swap_conflict(gzip_tar_payload(b"engine"), "stockfish/engine").await;
+    }
+
     #[test]
     fn ustar_header_requires_full_block_magic_and_valid_octal_checksum() {
         let mut header = tar::Header::new_ustar();
@@ -3999,7 +4172,7 @@ mod tests {
             if !valid_checksum {
                 bytes[TAR_CHECKSUM_FIELD].copy_from_slice(b"000000\0 ");
             }
-            download_file_core(
+            let result = download_file_core(
                 OpClass::Engine,
                 "https://example.com/engine.tar",
                 &target,
@@ -4009,16 +4182,18 @@ mod tests {
                 None,
                 |_| Ok(()),
             )
-            .await
-            .unwrap();
+            .await;
             if valid_checksum {
+                result.unwrap();
                 assert_eq!(
                     std::fs::read(target.join("stockfish/engine")).unwrap(),
                     b"engine"
                 );
             } else {
-                assert!(target.is_file());
-                assert_eq!(std::fs::read(target).unwrap(), bytes);
+                let error = result.unwrap_err();
+                assert_eq!(error.to_string(), archive_payload_required().to_string());
+                assert!(!target.exists());
+                assert!(leaves(dir.path()).is_empty());
             }
         }
     }
@@ -4095,25 +4270,26 @@ mod tests {
     }
 
     #[test]
-    fn single_file_gzip_still_installs_one_file() {
+    fn single_file_gzip_is_refused() {
         let dir = tempdir().unwrap();
         let archive = dir.path().join("archive.gz");
         let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         encoder.write_all(b"single engine payload").unwrap();
         std::fs::write(&archive, encoder.finish().unwrap()).unwrap();
         let target = dir.path().join("engine");
-        extract_gz(
+        let error = extract_gz(
             std::fs::File::open(archive).unwrap(),
             &target,
             OpClass::Engine.limits(),
         )
-        .unwrap();
-        assert!(target.is_file());
-        assert_eq!(std::fs::read(target).unwrap(), b"single engine payload");
+        .unwrap_err();
+        assert_eq!(error.to_string(), archive_payload_required().to_string());
+        assert!(!target.exists());
+        assert_eq!(leaves(dir.path()), vec!["archive.gz"]);
     }
 
     #[test]
-    fn single_file_gzip_with_ustar_magic_and_wrong_checksum_installs_one_file() {
+    fn single_file_gzip_with_ustar_magic_and_wrong_checksum_is_refused() {
         let dir = tempdir().unwrap();
         let archive = dir.path().join("archive.gz");
         let mut payload = [b'x'; 512];
@@ -4123,14 +4299,15 @@ mod tests {
         encoder.write_all(&payload).unwrap();
         std::fs::write(&archive, encoder.finish().unwrap()).unwrap();
         let target = dir.path().join("engine");
-        extract_gz(
+        let error = extract_gz(
             std::fs::File::open(archive).unwrap(),
             &target,
             OpClass::Engine.limits(),
         )
-        .unwrap();
-        assert!(target.is_file());
-        assert_eq!(std::fs::read(target).unwrap(), payload);
+        .unwrap_err();
+        assert_eq!(error.to_string(), archive_payload_required().to_string());
+        assert!(!target.exists());
+        assert_eq!(leaves(dir.path()), vec!["archive.gz"]);
     }
 
     #[tokio::test]
@@ -5761,11 +5938,6 @@ mod tests {
         }
     }
 
-    struct HoldExtractionWrite {
-        entered: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
-        release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
-    }
-
     struct ExtractionTestGuard {
         release: Option<std::sync::mpsc::Sender<()>>,
     }
@@ -5781,49 +5953,21 @@ mod tests {
     impl Drop for ExtractionTestGuard {
         fn drop(&mut self) {
             self.release();
-            crate::infra::fs::set_test_atomic_file_injector(None);
-        }
-    }
-
-    impl crate::infra::fs::AtomicWriterInjector for HoldExtractionWrite {
-        fn inject(&self, point: crate::infra::fs::AtomicFileFaultPoint) -> std::io::Result<()> {
-            if point == crate::infra::fs::AtomicFileFaultPoint::Write {
-                if let Some(entered) = self.entered.lock().unwrap().take() {
-                    let _ = entered.send(());
-                }
-                self.release
-                    .lock()
-                    .unwrap()
-                    .recv_timeout(Duration::from_secs(5))
-                    .map_err(|_| std::io::Error::other("extraction release timed out"))?;
-            }
-            Ok(())
         }
     }
 
     #[tokio::test]
     async fn staging_deadline_keeps_accepted_lease_until_real_extractor_cleanup() {
         let dir = tempdir().unwrap();
-        let archive_path = dir.path().join("held.gz");
+        let archive_path = dir.path().join("held.zip");
         let target = dir.path().join("published-engine");
-        {
-            let mut encoder = flate2::write::GzEncoder::new(
-                std::fs::File::create(&archive_path).unwrap(),
-                flate2::Compression::default(),
-            );
-            encoder.write_all(b"held extraction payload").unwrap();
-            encoder.finish().unwrap();
-        }
+        write_zip(&archive_path, &[("engine", b"held extraction payload")]);
 
         let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let mut guard = ExtractionTestGuard {
             release: Some(release_tx),
         };
-        crate::infra::fs::set_test_atomic_file_injector(Some(Arc::new(HoldExtractionWrite {
-            entered: std::sync::Mutex::new(Some(entered_tx)),
-            release: std::sync::Mutex::new(release_rx),
-        })));
 
         let registry = crate::infra::operations::OperationRegistry::default();
         let lease = registry.accept("held engine extraction").unwrap();
@@ -5833,9 +5977,19 @@ mod tests {
         let producer = tokio::spawn(crate::infra::blocking::BLOCKING_GATEWAY.spawn_cancellable(
             worker_cancellation,
             move |token| {
-                extract_gz_cancellable(
+                let _reset = ResetArchiveHook;
+                set_archive_pre_install_hook(Some(Box::new(move |_| {
+                    let _ = entered_tx.send(());
+                    release_rx
+                        .recv_timeout(Duration::from_secs(5))
+                        .expect("extraction release");
+                })));
+                let pin = crate::infra::fs::open_parent_no_follow(&target)?;
+                extract_zip_cancellable(
                     std::fs::File::open(archive_path)?,
-                    &target,
+                    &pin,
+                    target.parent().unwrap(),
+                    target.file_name().unwrap(),
                     OpClass::Engine.limits(),
                     token,
                 )
@@ -5881,5 +6035,6 @@ mod tests {
         assert!(matches!(result, Err(Error::EngineTimeout(_))));
         assert!(registry.wait_for_drain(Duration::from_secs(1)).unwrap());
         assert!(!dir.path().join("published-engine").exists());
+        assert_eq!(leaves(dir.path()), vec!["held.zip"]);
     }
 }

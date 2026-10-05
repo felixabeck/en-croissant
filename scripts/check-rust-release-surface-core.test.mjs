@@ -391,9 +391,14 @@ mod tests {
   // The allowlist may only shrink, and the shrink-only check compares a supplied allowlist
   // against the baseline rather than the baseline against itself. Re-adding a path to both
   // constants would therefore restore its exemption silently. f-20260905-02 emptied
-  // credentials.rs and f-20260913-02 emptied file_workspace.rs; both stay empty.
+  // credentials.rs, f-20260913-02 emptied file_workspace.rs and f-20260919-03 emptied
+  // fs.rs; all stay empty.
   test("cleared files have left the filesystem-surface baseline for good", () => {
-    const removed = ["src-tauri/src/credentials.rs", "src-tauri/src/file_workspace.rs"];
+    const removed = [
+      "src-tauri/src/credentials.rs",
+      "src-tauri/src/file_workspace.rs",
+      "src-tauri/src/fs.rs",
+    ];
     expect(
       [...FS_SURFACE_ALLOWLIST, ...Object.keys(INITIAL_FS_SURFACE_COUNTS)].filter((path) =>
         removed.includes(path),
@@ -597,27 +602,23 @@ mod tests {
       ),
     ).toBe(true);
   });
-  test("the residency arm alone fails the CLI with no surface violation present", async () => {
+  test("the residency flag accepts an empty default allowlist with no surface violation", async () => {
     const result = await runCheckerOver(
-      [{ path: "src-tauri/src/infra/path_authority.rs", contents: "#![allow(dead_code)]\n" }],
+      [{ path: "src-tauri/src/infra/path_authority.rs", contents: "pub struct PathAuthority;\n" }],
       ["--check-allowlist-residency"],
-      { seedBase: false },
+      { omitPrefixes: ["src-tauri/src/fs.rs"] },
     );
 
-    expectCliStatus(result, 1);
-    expect(result.output).toContain(
-      "R3: allowlist entry src-tauri/src/fs.rs is not present in the working tree and must be removed from the allowlist",
-    );
+    expectCliStatus(result, 0);
+    expect(result.output).not.toContain("is not present in the working tree");
   });
-  test("the residency flag reports an absent allowlist entry alongside an R3 leak", async () => {
+  test("the residency flag keeps an R3 leak visible with the empty default allowlist", async () => {
     const result = await runCheckerOver(LEAK_FIXTURE, ["--check-allowlist-residency"], {
-      seedBase: false,
+      omitPrefixes: ["src-tauri/src/fs.rs"],
     });
 
     expectCliStatus(result, 1);
-    expect(result.output).toContain(
-      "R3: allowlist entry src-tauri/src/fs.rs is not present in the working tree and must be removed from the allowlist",
-    );
+    expect(result.output).not.toContain("is not present in the working tree");
     expect(result.output).toContain("src-tauri/src/leak.rs");
     expect(result.output).toContain("R3:");
   });
