@@ -2509,20 +2509,11 @@ mod tests {
 
     #[test]
     fn download_io_serializes_without_path() {
-        let error = sanitize_download_error(Error::Io(Box::new(std::io::Error::other(
-            "/private/staging/payload: permission denied",
-        ))));
-        let serialized = serde_json::to_string(&error).unwrap();
-        let payload: serde_json::Value =
-            serde_json::from_str(&serialized).expect("serialized error is a JSON object");
-        assert_eq!(payload["category"], "io");
-        assert_eq!(payload["message"], "I/O failure");
-        assert!(!serialized.contains("staging"));
-    }
-
-    #[test]
-    fn download_io_serializes_permission_and_missing_resource_without_path() {
         for (source, category) in [
+            (
+                std::io::Error::other("/private/staging/payload: permission denied"),
+                "io",
+            ),
             (
                 std::io::Error::new(
                     std::io::ErrorKind::PermissionDenied,
@@ -2545,6 +2536,7 @@ mod tests {
             assert_eq!(payload["category"], category);
             assert_eq!(payload["message"], "I/O failure");
             assert!(!serialized.contains("staging"));
+            assert!(!serialized.contains("private"));
         }
     }
 
@@ -2763,6 +2755,34 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.to_string(), "Invalid input: Invalid zip archive");
+        assert!(leaves(parent.path()).is_empty());
+    }
+
+    // The fixture relies on a pipe refusing to seek (ESPIPE).
+    #[test]
+    #[cfg(unix)]
+    fn extract_zip_io_error_is_preserved_and_sanitized() {
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        writer.write_all(b"not a zip archive").unwrap();
+        drop(writer);
+        let handle = std::os::fd::OwnedFd::from(reader);
+        let file = std::fs::File::from(handle);
+        let parent = tempdir().unwrap();
+        let result = extract_zip_cancellable(
+            file,
+            parent.path(),
+            OsStr::new("payload"),
+            OpClass::Engine.limits(),
+            &CancellationToken::new(),
+        );
+        assert!(matches!(&result, Err(Error::Io(_))));
+        let error = result.unwrap_err();
+        let diagnostic = std::error::Error::source(&error).unwrap().to_string();
+        let sanitized = sanitize_download_error(error);
+        let serialized = serde_json::to_string(&sanitized).unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(payload["message"], "I/O failure");
+        assert!(!serialized.contains(&diagnostic));
         assert!(leaves(parent.path()).is_empty());
     }
 
