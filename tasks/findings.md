@@ -13212,3 +13212,19 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
 * **Fix direction:** treat an absent (ENOENT) registry as "not yet" inside the predicate (return `false`), keep every other read error fatal; prove by delaying the registry write or by starting the predicate before the app writes it.
 * **Related:** `f-20260920-16` (other `verify:app` assertions that are too weak — a different defect class), `f-20261005-07` (the three `$8` board-hint checks, also red in the same run).
 * **Found by:** Claude Code orchestrator, warm-engine build, final `pnpm verify:app`, 2026-10-05.
+
+---
+
+## 2026-10-05 — filed through the inbox spool
+
+### `wait_drained_blocks_until_the_held_ticket_is_dropped` measures its delay from after the releasing thread started sleeping
+
+* **ID:** f-20261005-11 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src-tauri/src/db/repository.rs` ~1693-1710, `drain_gate_tests::wait_drained_blocks_until_the_held_ticket_is_dropped`.
+* **Defect:** the spawned thread starts `std::thread::sleep(RELEASE_DELAY)` (150 ms) before the main thread records `let started = Instant::now()`. If the main thread is scheduled late, the ticket is dropped less than `RELEASE_DELAY` after `started`, `wait_drained` returns promptly and `assert!(started.elapsed() >= RELEASE_DELAY)` fails although the gate behaved correctly. The assertion measures scheduling, not the drain wait.
+* **Evidence:** CI run 37366659717 (Test workflow, job `test`, commit `67f1a021`, 2026-10-05, during a GitHub Actions degraded-availability incident): `panicked at src/db/repository.rs:1707:13: assertion failed: started.elapsed() >= RELEASE_DELAY`; 1916 passed, 1 failed. The range under test (warm-engine build) did not touch `src-tauri/src/db/**`; the same test passed in the local `pnpm gates:push` rust-test lane on the same tree.
+* **Why it matters:** a red `test` job makes `pnpm ci:remote:check` refuse every later push until a newer run is green, and a flaky assertion trains readers to ignore real drain-gate failures.
+* **Fix direction:** take `started` before spawning the releaser (or synchronize with a barrier/channel so the sleep starts strictly after `started`), and assert on the property itself (`wait_drained` did not return while the ticket was held), e.g. with the dropped-at instant recorded by the releaser.
+* **Proof:** a deterministic test: delay the main thread between spawn and `Instant::now()` (or inject the ordering) and show the current assertion fails while the corrected one passes.
+* **Related:** `f-20260929-07` (another intermittently failing test in this file, handled; different cause), `f-20260914-01` (process-global test hooks in this module, handled).
+* **Found by:** Claude Code orchestrator, warm-engine build, waiting on CI for `67f1a021`, 2026-10-05.
