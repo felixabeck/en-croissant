@@ -85,6 +85,33 @@ test("engine-gap: A lines stay dimmed and inert at B until explicitly emitted B 
     await page.keyboard.press("ArrowUp");
     await page.keyboard.press("Enter");
     await expect.poll(async () => (await searches()).length).toBe(2);
+    const [searchA, searchB] = (await searches()).map(
+        ({ args }) => args as { id: string; tab: string; generation: string },
+    );
+    const engineSearchState = await page.evaluate(() => window.__E2E_TAURI__.engineSearchState());
+    expect(engineSearchState.settled).toEqual([
+        {
+            generation: searchA.generation,
+            outcome: "cancelled",
+            error: { tag: "backend-error", category: "cancellation", message: "Cancellation" },
+        },
+    ]);
+    expect(engineSearchState.pending).toEqual([searchB.generation]);
+    expect(
+        engineSearchState.stops.filter(
+            ({ engine, tab, expectedGeneration }) =>
+                engine === searchA.id &&
+                tab === searchA.tab &&
+                expectedGeneration === searchA.generation,
+        ),
+    ).toEqual([
+        {
+            engine: searchA.id,
+            tab: searchA.tab,
+            expectedGeneration: searchA.generation,
+            result: true,
+        },
+    ]);
     // Advance the board's animation frames under the controlled clock, below the loading deadline.
     await page.clock.runFor(250);
     await expect(page.getByRole("gridcell", { name: "d4, White Pawn", exact: true })).toHaveCount(

@@ -14,6 +14,12 @@ export type MockScenario = {
     commands?: Record<string, MockCommand>;
 };
 
+type MockEngineSearchState = {
+    pending: unknown[];
+    settled: { generation: unknown; outcome: "cancelled"; error: ErrorPayload }[];
+    stops: { engine: unknown; tab: unknown; expectedGeneration: unknown; result: unknown }[];
+};
+
 export const filesWorkspaceFixture = {
     workspace: { id: { id: "files-workspace" }, kind: "fileWorkspace" },
     openingDirectory: {
@@ -371,7 +377,7 @@ const tauriBootstrap = () => {
         id: unknown;
         tab: unknown;
         generation: unknown;
-        resolve: (result: null) => void;
+        reject: (error: ErrorPayload) => void;
     }>();
     let nextCallback = 1;
     let nextNativeTicket = 1;
@@ -413,7 +419,7 @@ const tauriBootstrap = () => {
         kill_engines: { result: null },
         kill_engine: { result: null },
         get_engine_config: { result: { name: "E2E Stockfish", options: [] } },
-        stop_engine: { result: null },
+        stop_engine: { result: false },
         release_engine_search: { result: null },
         abort_game: { result: null },
         "plugin:app|version": { result: "0.0.0-e2e" },
@@ -432,6 +438,8 @@ const tauriBootstrap = () => {
     const state = {
         commands: {} as Record<string, Response>,
         invocations: [] as { command: string; args: unknown }[],
+        settledSearches: [] as MockEngineSearchState["settled"],
+        stops: [] as MockEngineSearchState["stops"],
     };
 
     const emit = (event: string, payload: unknown) => {
@@ -452,13 +460,20 @@ const tauriBootstrap = () => {
 
         // Native searches stay pending for their lifetime; scenarios can still script a response.
         if (command === "get_best_moves" && !state.commands[command]) {
-            return new Promise<null>((resolve) => {
+            return new Promise<null>((_resolve, reject) => {
                 pendingSearches.add({
                     id: args.id,
                     tab: args.tab,
                     generation: args.generation,
-                    resolve,
+                    reject,
                 });
+            }).catch((error: ErrorPayload) => {
+                state.settledSearches.push({
+                    generation: args.generation,
+                    outcome: "cancelled",
+                    error,
+                });
+                throw error;
             });
         }
 
@@ -472,6 +487,7 @@ const tauriBootstrap = () => {
             if (typeof response.error === "string") throw new Error(response.error);
             throw response.error;
         }
+        let retainedSearch = false;
         if (
             command === "stop_engine" ||
             command === "release_engine_search" ||
@@ -489,11 +505,31 @@ const tauriBootstrap = () => {
                     continue;
                 if (command === "release_engine_search" && args.generation !== search.generation)
                     continue;
+                if (command === "stop_engine" && args.expectedGeneration !== null)
+                    retainedSearch = true;
                 pendingSearches.delete(search);
-                search.resolve(null);
+                search.reject({
+                    tag: "backend-error",
+                    category: "cancellation",
+                    message: "Cancellation",
+                });
             }
         }
-        return response.results?.length ? response.results.shift() : response.result;
+        const result =
+            command === "stop_engine" && !state.commands[command]
+                ? retainedSearch
+                : response.results?.length
+                  ? response.results.shift()
+                  : response.result;
+        if (command === "stop_engine") {
+            state.stops.push({
+                engine: args.engine,
+                tab: args.tab,
+                expectedGeneration: args.expectedGeneration,
+                result,
+            });
+        }
+        return result;
     };
 
     Object.assign(window, {
@@ -503,6 +539,11 @@ const tauriBootstrap = () => {
             },
             emit,
             invocations: () => [...state.invocations],
+            engineSearchState: (): MockEngineSearchState => ({
+                pending: [...pendingSearches].map(({ generation }) => generation),
+                settled: [...state.settledSearches],
+                stops: [...state.stops],
+            }),
         },
         __TAURI_OS_PLUGIN_INTERNALS__: {
             arch: "x86_64",
@@ -667,6 +708,7 @@ declare global {
             configure(scenario: MockScenario): void;
             emit(event: string, payload: unknown): void;
             invocations(): { command: string; args: unknown }[];
+            engineSearchState(): MockEngineSearchState;
         };
     }
 }
