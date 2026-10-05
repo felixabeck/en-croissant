@@ -1992,7 +1992,6 @@ mod tests {
         _dir: tempfile::TempDir,
         database: PathBuf,
         sidecar: PathBuf,
-        cache: Arc<crate::SearchCache>,
     }
 
     impl MappedSidecarCase {
@@ -2010,7 +2009,6 @@ mod tests {
                 _dir: dir,
                 database,
                 sidecar,
-                cache: Arc::new(crate::SearchCache::default()),
             }
         }
 
@@ -2057,19 +2055,6 @@ mod tests {
             vec![Ok(test_entry(2, vec![]))],
             token,
         )
-    }
-
-    #[test]
-    fn search_index_generation_lock_does_not_block_a_cache_miss_map() {
-        let case = MappedSidecarCase::new();
-        let lock = case.cache.generation_lock(get_index_path(&case.database));
-        let _held = lock.lock();
-        let index = MmapSearchIndex::open_file_cancellable(
-            File::open(&case.sidecar).unwrap(),
-            &CancellationToken::new(),
-        )
-        .unwrap();
-        assert_eq!(index.get_entry_ref(0).unwrap().id, 1);
     }
 
     /// The replace is a rename onto the leaf (POSIX semantics on Windows too), so it commits in one

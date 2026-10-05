@@ -3541,6 +3541,24 @@ fn search_index_reader_opens_preferred_leaf_before_cancellable_mapping() {
     assert_no_mapping_gate_symbols();
 }
 
+/// All three loader attempts snapshot before probing; promotion reuses the second snapshot.
+#[test]
+fn search_index_loader_snapshots_only_in_the_attempt_probe() {
+    let source = source_for("db/search.rs");
+    let body = compact(&source[braced_body(source, "fn load_search_index_cancellable(")]);
+    let helper =
+        compact(&source[braced_body(source, "let probe_attempt = |target: &DatabaseFileTarget|")]);
+    assert_in_order(
+        &helper,
+        &["invalidation_snapshot()", "database_identity_expected("],
+    );
+    for needle in ["invalidation_snapshot()", "database_identity_expected("] {
+        assert_eq!(helper.matches(needle).count(), 1, "{helper}");
+        assert_eq!(body.matches(needle).count(), 1, "{body}");
+    }
+    assert_eq!(body.matches("probe_attempt(").count(), 3, "{body}");
+}
+
 /// The counter comparison and insert share the indexes critical section. The
 /// increment precedes both eviction locks, and displaced mappings drop afterwards.
 #[test]

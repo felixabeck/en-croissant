@@ -228,13 +228,15 @@ pub(crate) fn load_search_index_cancellable(
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
+    // Snapshot before the identity probe for every attempt (plan O3 / d-20261005-06).
+    let probe_attempt = |target: &DatabaseFileTarget| {
+        let invalidation_snapshot = search_cache.invalidation_snapshot();
+        let db_identity =
+            repository.database_identity_expected(target, target.identity(), Some(cancellation))?;
+        Ok::<_, Error>((invalidation_snapshot, db_identity))
+    };
     let read_target = super::resolve_database(authority, handle, PathOperation::DatabaseRead)?;
-    let invalidation_snapshot = search_cache.invalidation_snapshot();
-    let db_identity = repository.database_identity_expected(
-        &read_target,
-        read_target.identity(),
-        Some(cancellation),
-    )?;
+    let (invalidation_snapshot, db_identity) = probe_attempt(&read_target)?;
     #[cfg(test)]
     run_after_fast_identity_probe_hook();
     let expected_source = IndexSource::from_database_identity(&db_identity)?;
@@ -255,12 +257,7 @@ pub(crate) fn load_search_index_cancellable(
     let _generation_guard = generation_lease.lock_cancellable(cancellation)?;
 
     let read_target = super::resolve_database(authority, handle, PathOperation::DatabaseRead)?;
-    let invalidation_snapshot = search_cache.invalidation_snapshot();
-    let db_identity = repository.database_identity_expected(
-        &read_target,
-        read_target.identity(),
-        Some(cancellation),
-    )?;
+    let (invalidation_snapshot, db_identity) = probe_attempt(&read_target)?;
     let expected_source = IndexSource::from_database_identity(&db_identity)?;
     if let Some(index) = open_valid_preferred(&read_target, &expected_source, cancellation)? {
         return cache_loaded_index(
@@ -313,12 +310,7 @@ pub(crate) fn load_search_index_cancellable(
     };
 
     let read_target = super::resolve_database(authority, handle, PathOperation::DatabaseRead)?;
-    let invalidation_snapshot = search_cache.invalidation_snapshot();
-    let db_identity = repository.database_identity_expected(
-        &read_target,
-        read_target.identity(),
-        Some(cancellation),
-    )?;
+    let (invalidation_snapshot, db_identity) = probe_attempt(&read_target)?;
     let expected_source = IndexSource::from_database_identity(&db_identity)?;
     let Some(index) = open_valid_preferred(&read_target, &expected_source, cancellation)? else {
         return Err(generation_error
@@ -1090,6 +1082,39 @@ mod tests {
             handle,
             &CancellationToken::new(),
         )
+    }
+
+    #[test]
+    fn search_index_loader_fast_path_does_not_wait_for_generation_lock() {
+        let (_dir, app, handle, database) = preferred_loader_test_case();
+        let state = app.state::<AppState>();
+        let generation_lease = state
+            .search_cache
+            .generation_lock(get_index_path(&database));
+        let _generation_guard = generation_lease.lock();
+        let cancellation = CancellationToken::new();
+        let timer_token = cancellation.clone();
+        let (timer_sender, timer_receiver) = std::sync::mpsc::channel::<()>();
+        let timer = std::thread::spawn(move || {
+            if matches!(
+                timer_receiver.recv_timeout(std::time::Duration::from_secs(2)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ) {
+                timer_token.cancel();
+            }
+        });
+        let result = load_search_index_cancellable(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            &handle,
+            &cancellation,
+        );
+        drop(timer_sender);
+        timer.join().unwrap();
+        let (_, index) = result.unwrap();
+        assert_eq!(index.get_entry_ref(0).unwrap().id, 1);
+        assert_eq!(state.search_cache.cached_index_count(), 1);
     }
 
     #[test]
