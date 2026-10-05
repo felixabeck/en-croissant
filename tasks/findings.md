@@ -13157,6 +13157,9 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
 * **Correction (2026-10-05, records lens on the inbox merge `8974241d`):** the base-commit run did not fail "exactly these three checks". It ran the `f-20260919-10` Phase 4 verifier against a `52e301ba` binary and reported four failures (`base-verify.log`): the three `$8` hint checks plus "a real document reload cancels the previous document's retained reservation", which is expected there because that binary has no startup sweep. Among the pre-existing checks, the three `$8` hint checks are the only failures; the head runs on `20fa9b68` and `57248802` failed only those three.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"2fa418638d728fd4202e92b3aa152cfa1f13fc2d036f5d9e53ed8f13c42fcbb3","input_sha256":"5fde1ed2887ed62a7ae26fd3b72b5be86a073afc5d9386b6400acd693c986223","kind":"mutation-receipt","operation":"37372d75b759d451f3973a32f19b7e580227e8a9100cc0b0604c17f98efa1ec4","options":{"section":null},"request_id_sha256":null,"results":["f-20261005-07"],"target":"f-20261005-07","v":1} -->
 
+* **Clarification (2026-10-05, records lens on `e085709d`):** "its Phase 4 reload checks pass in the same run" in **Related** refers to the `verify:app` runs on the `f-20260919-10` head commits (`20fa9b68`, `57248802`), which also showed the three `$8` failures. On the base-commit measurement the reload check failed as expected, as the correction above records.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"64836c111864a5d2a666b399d305e87050e9d99c7b54af9abe92511a3f6c3369","input_sha256":"ad313b34b295f75e5988bc9979ba0fe7bacb9c23f15a594db20d8fc35c92c799","kind":"mutation-receipt","operation":"b854afcc9c899cdb65536a819b95a0d76c5f0368765e535ab344ccfe7ab75a0a","options":{"section":null},"request_id_sha256":null,"results":["f-20261005-07"],"target":"f-20261005-07","v":1} -->
+
 ---
 
 ## 2026-10-05 — filed through the inbox spool
