@@ -75,9 +75,13 @@ impl WarmEngine {
     pub(crate) async fn new(
         base: Arc<EngineActor>,
         resolved: Vec<ResolvedEngineOption>,
+        cancelled: &AtomicBool,
     ) -> Result<Self, Error> {
-        let config = collect_engine_configuration(base.clone()).await?;
+        ensure_search_not_cancelled(Some(cancelled))?;
+        let config = collect_engine_configuration_inner(base.clone(), Some(cancelled)).await?;
+        ensure_search_not_cancelled(Some(cancelled))?;
         base.ensure_ready().await?;
+        ensure_search_not_cancelled(Some(cancelled))?;
         let defaults = config
             .options
             .into_iter()
@@ -129,7 +133,8 @@ impl WarmEngine {
                 .zip(next_resources)
                 .all(|(previous, next)| previous.has_same_value(&next))
             && previous.iter().all(|option| {
-                next.iter().any(|next| next.name() == option.name())
+                option.name() == "UCI_Chess960"
+                    || next.iter().any(|next| next.name() == option.name())
                     || self.defaults.contains_key(option.name())
             })
     }
@@ -149,17 +154,20 @@ impl WarmEngine {
         }
         for previous in crate::engine::effective_engine_options(&self.process.options.extra_options)
         {
+            ensure_search_not_cancelled(Some(cancelled))?;
+            // This flag follows the position, not the advertised default.
+            if previous.name() == "UCI_Chess960" {
+                continue;
+            }
             if !next.iter().any(|option| option.name() == previous.name()) {
                 let default = self
                     .defaults
                     .get(previous.name())
                     .ok_or_else(|| Error::Conflict("engine option default unavailable".into()))?;
-                if previous.name() != "UCI_Chess960" {
-                    self.process
-                        .base
-                        .set_option(previous.name(), default)
-                        .await?;
-                }
+                self.process
+                    .base
+                    .set_option(previous.name(), default)
+                    .await?;
                 self.process
                     .options
                     .extra_options
@@ -248,6 +256,7 @@ impl EngineProcess {
         operation_cancellation: Option<CancellationToken>,
         search_cancelled: Option<&AtomicBool>,
     ) -> Result<(), Error> {
+        ensure_search_not_cancelled(search_cancelled)?;
         let canonical = crate::engine::canonicalize_engine_position(&options.fen, &options.moves)?;
         let effective_options = crate::engine::effective_engine_options(&options.extra_options);
         if resolved.len() != effective_options.len() {
@@ -265,33 +274,34 @@ impl EngineProcess {
         let castling_mode = canonical.castling_mode;
         let pos = canonical.position;
 
-        if fen_changed {
-            if castling_mode.is_chess960() {
-                self.base
-                    .set_option_with_operation(
-                        "UCI_Chess960",
-                        "true",
-                        &[],
-                        operation_cancellation.clone(),
-                    )
-                    .await?;
-            } else {
-                self.base
-                    .set_option_with_operation(
-                        "UCI_Chess960",
-                        "false",
-                        &[],
-                        operation_cancellation.clone(),
-                    )
-                    .await?;
-            }
+        let chess960_option = EngineOption::String {
+            name: "UCI_Chess960".into(),
+            value: castling_mode.is_chess960().to_string(),
+        };
+        let chess960_changed = self
+            .options
+            .extra_options
+            .iter()
+            .rev()
+            .find(|option| option.name() == "UCI_Chess960")
+            .is_some_and(|previous| !previous.has_same_value(&chess960_option));
+        if fen_changed || chess960_changed {
+            self.base
+                .set_option_with_operation(
+                    "UCI_Chess960",
+                    &castling_mode.is_chess960().to_string(),
+                    &[],
+                    operation_cancellation.clone(),
+                )
+                .await?;
+            self.record_written_option(chess960_option);
         }
 
-        let mut to_send = resolved;
-        let mut next_resource_leases = Vec::new();
-        for option in &mut to_send {
-            next_resource_leases.append(&mut option.resources);
-        }
+        let to_send = resolved;
+        let next_resource_leases = to_send
+            .iter()
+            .flat_map(|option| option.resources.iter().cloned())
+            .collect();
 
         let multipv = to_send
             .iter()
@@ -311,6 +321,7 @@ impl EngineProcess {
         self.real_multipv = multipv.min(pos.legal_moves().len() as u16);
 
         for option in &to_send {
+            ensure_search_not_cancelled(search_cancelled)?;
             let current = effective_options
                 .iter()
                 .find(|configured| configured.name() == option.name);
@@ -333,21 +344,45 @@ impl EngineProcess {
                         operation_cancellation.clone(),
                     )
                     .await?;
+                if let Some(current) = current {
+                    self.record_written_option(current.clone());
+                }
+                // A fresh actor can be cancelled after its first resource write.
+                // Retain those leases along with the now-written option belief.
+                for resource in &option.resources {
+                    if !self
+                        .resource_leases
+                        .iter()
+                        .any(|held| Arc::ptr_eq(held, resource))
+                    {
+                        self.resource_leases.push(resource.clone());
+                    }
+                }
             }
         }
 
+        ensure_search_not_cancelled(search_cancelled)?;
         if fen_changed || options.moves != self.options.moves {
             self.set_position(&options.fen, &options.moves).await?;
         }
         // UCI applies setoption lazily in many engines. A ready barrier makes
         // the following position/go belong to this exact configuration.
+        ensure_search_not_cancelled(search_cancelled)?;
         self.base.ensure_ready().await?;
+        ensure_search_not_cancelled(search_cancelled)?;
         self.resource_leases = next_resource_leases;
         self.last_depth = 0;
         self.options = options.clone();
         self.best_moves.clear();
         self.last_best_moves.clear();
         Ok(())
+    }
+
+    fn record_written_option(&mut self, option: EngineOption) {
+        self.options
+            .extra_options
+            .retain(|previous| previous.name() != option.name());
+        self.options.extra_options.push(option);
     }
 
     async fn set_position(&mut self, fen: &str, moves: &[String]) -> Result<(), Error> {
@@ -713,12 +748,15 @@ async fn process_interactive_search_output<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<(), Error> {
     let limiter = RateLimiter::direct(Quota::per_second(nonzero!(5u32)));
+    let mut parse_error = None;
     loop {
         let Some(line) = process.next_line().await? else {
             break;
         };
         #[cfg(test)]
         observe_dequeued_search_line(&line);
+        #[cfg(all(test, unix))]
+        run_interactive_line_dequeued_hook().await;
         match parse_one(&line) {
             UciMessage::Info(attrs) => {
                 match parse_uci_attrs(attrs, &process.options.fen, &process.options.moves) {
@@ -729,7 +767,7 @@ async fn process_interactive_search_output<R: tauri::Runtime>(
                             process.real_multipv,
                             best_moves,
                         ) {
-                            if set.publishable && limiter.check().is_ok() {
+                            if set.publishable {
                                 let progress = (match process.go_mode {
                                     GoMode::Depth(depth) => {
                                         (set.depth as f64 / depth as f64) * 100.0
@@ -745,33 +783,42 @@ async fn process_interactive_search_output<R: tauri::Runtime>(
                                     GoMode::Infinite => 99.99,
                                 })
                                 .clamp(0.0, 100.0);
-                                let published = emit_live_interactive_best_moves(
-                                    supervised,
-                                    app,
-                                    interactive_best_moves_payload(
-                                        process,
-                                        engine,
-                                        tab,
-                                        supervised.owner_generation(),
-                                        set.lines.clone(),
-                                        progress,
-                                    ),
-                                )?;
-                                if published {
+                                // Retain every complete set under the search barrier;
+                                // only intermediate events consume the rate limit.
+                                let generation = supervised.owner_generation();
+                                supervised.try_publish(|| -> Result<(), Error> {
                                     process.last_depth = set.depth;
                                     process.last_best_moves = set.lines;
                                     process.last_progress = progress as f32;
-                                }
+                                    if limiter.check().is_ok() {
+                                        interactive_best_moves_payload(
+                                            process,
+                                            engine,
+                                            tab,
+                                            generation,
+                                            process.last_best_moves.clone(),
+                                            progress,
+                                        )
+                                        .emit(app)?;
+                                    }
+                                    Ok(())
+                                })?;
                             }
                         }
                     }
                     Err(Error::NoMovesFound) => {}
                     Err(error) => {
                         warn!("Failed to parse info line: {}, error: {:?}", line, error);
+                        parse_error = Some(error);
                     }
                 }
             }
             UciMessage::BestMove { .. } => {
+                if process.last_best_moves.is_empty() {
+                    if let Some(error) = parse_error.take() {
+                        return Err(error);
+                    }
+                }
                 let published = emit_live_interactive_best_moves(
                     supervised,
                     app,
@@ -884,7 +931,7 @@ async fn get_best_moves_core<R: tauri::Runtime>(
     let run_result =
         classify_interactive_search_result(run_result, search.cancelled.load(Ordering::SeqCst));
     info!(
-        "Engine process finished: tab: {}, engine: {}",
+        "Engine search finished: tab: {}, engine: {}",
         tab, engine.id.id
     );
     let cleanup = if run_result
@@ -1101,6 +1148,8 @@ std::thread_local! {
         const { std::cell::RefCell::new(None) };
     static INTERACTIVE_GO_ATTEMPT_HOOK: std::cell::RefCell<Option<SyncAnalysisHook>> =
         const { std::cell::RefCell::new(None) };
+    static INTERACTIVE_LINE_DEQUEUED_HOOK: std::cell::RefCell<Option<AsyncAnalysisHook>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(all(test, unix))]
@@ -1124,6 +1173,14 @@ fn set_interactive_before_go_hook(hook: Option<AsyncAnalysisHook>) {
 #[cfg(all(test, unix))]
 async fn run_interactive_before_go_hook() {
     let hook = INTERACTIVE_BEFORE_GO_HOOK.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook().await;
+    }
+}
+
+#[cfg(all(test, unix))]
+async fn run_interactive_line_dequeued_hook() {
+    let hook = INTERACTIVE_LINE_DEQUEUED_HOOK.with(|slot| slot.borrow_mut().take());
     if let Some(hook) = hook {
         hook().await;
     }
@@ -2086,6 +2143,9 @@ while IFS= read -r line; do
             echo uciok
             ;;
         isready)
+            if [ -f "$PWD/slow-ready" ]; then
+                sleep 0.2
+            fi
             echo readyok
             ;;
         setoption\ name\ EvalFile\ value\ *)
@@ -2118,6 +2178,12 @@ while IFS= read -r line; do
         go*)
             if [ -f "$PWD/fail-search" ]; then
                 exit 0
+            fi
+            if [ -f "$PWD/illegal-pv" ]; then
+                echo "info depth 1 multipv 1 score cp 12 nodes 1 pv e2e5"
+                echo "info depth 2 multipv 1 score cp 15 nodes 2 pv d2d5"
+                echo "bestmove e2e4"
+                continue
             fi
             echo "info depth 1 multipv 1 score cp 12 nodes 1 pv e2e4"
             echo "info depth 1 multipv 2 score cp 8 nodes 1 pv d2d4"
@@ -2403,6 +2469,233 @@ done
         "info depth 8 multipv 1 score cp 34 nodes 100 pv e2e4",
         "bestmove e2e4",
     ];
+
+    #[tokio::test]
+    async fn interactive_terminal_payload_retains_deepest_set_when_intermediate_events_are_throttled(
+    ) {
+        let mut lines = (1..=12)
+            .flat_map(|depth| {
+                [
+                    format!("info depth {depth} multipv 1 score cp {depth} nodes {depth} pv e2e4"),
+                    format!("info depth {depth} multipv 2 score cp {depth} nodes {depth} pv d2d4"),
+                ]
+            })
+            .collect::<Vec<_>>();
+        lines.push("bestmove e2e4".into());
+        let borrowed = lines.iter().map(String::as_str).collect::<Vec<_>>();
+        let mut probe = interactive_search_probe(&borrowed, false).await;
+        probe.process.real_multipv = 2;
+        process_interactive_search_output(
+            &mut probe.process,
+            "engine",
+            "tab",
+            &probe.supervised,
+            &probe.app,
+        )
+        .await
+        .unwrap();
+        {
+            let payloads = probe.emitted.lock().unwrap();
+            assert!(
+                payloads.len() < 13,
+                "intermediate emissions must be throttled"
+            );
+            let terminal = payloads.last().unwrap();
+            assert_eq!(terminal["progress"], 100.0);
+            assert_eq!(terminal["bestLines"].as_array().unwrap().len(), 2);
+            assert_eq!(terminal["bestLines"][0]["depth"], 12);
+            assert_eq!(terminal["bestLines"][1]["depth"], 12);
+        }
+        assert_eq!(probe.process.last_depth, 12);
+        probe.actor.terminate().await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn interactive_illegal_pvs_return_typed_error_without_empty_terminal_payload() {
+        let (directory, app, engine, _) = resource_engine_fixture();
+        std::fs::write(directory.path().join("illegal-pv"), b"").unwrap();
+        let emitted = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed = emitted.clone();
+        app.listen(BestMovesPayload::NAME, move |event| {
+            observed.lock().unwrap().push(event.payload().to_string());
+        });
+        let key = EngineKey::new("illegal-pvs".into(), "id".into()).unwrap();
+        let result = run_warm_fixture_search(&app, &key, engine, Vec::new()).await;
+        assert!(matches!(result, Err(Error::IllegalUciMove(_))));
+        assert!(emitted.lock().unwrap().is_empty());
+        assert!(app
+            .state::<AppState>()
+            .engine_supervisor
+            .get_exact(&key)
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn interactive_parse_error_with_a_usable_set_still_publishes_terminal_lines() {
+        let mut probe = interactive_search_probe(
+            &[
+                "info depth 7 multipv 1 score cp 12 pv e2e5",
+                INTERACTIVE_SEARCH_LINES[0],
+                INTERACTIVE_SEARCH_LINES[1],
+            ],
+            false,
+        )
+        .await;
+        process_interactive_search_output(
+            &mut probe.process,
+            "engine",
+            "tab",
+            &probe.supervised,
+            &probe.app,
+        )
+        .await
+        .unwrap();
+        {
+            let payloads = probe.emitted.lock().unwrap();
+            assert_eq!(payloads.len(), 2);
+            assert_eq!(payloads[1]["bestLines"][0]["depth"], 8);
+            assert_eq!(payloads[1]["progress"], 100.0);
+        }
+        probe.actor.terminate().await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn production_warm_handoff_suppresses_dequeued_info_and_terminal_payloads() {
+        for held_terminal in [false, true] {
+            let app = engine_test_app();
+            let state = app.state::<AppState>().inner().clone();
+            let supervisor = state.engine_supervisor.clone();
+            let key = EngineKey::new("production-handoff".into(), "id".into()).unwrap();
+            let engine = EngineHandle {
+                id: crate::infra::path_authority::PathRef {
+                    id: "binary".into(),
+                },
+                kind: crate::infra::path_authority::EngineHandleKind::Engine,
+            };
+            let mut lines = vec!["uciok", "readyok", "readyok"];
+            if !held_terminal {
+                lines.push(INTERACTIVE_SEARCH_LINES[0]);
+            }
+            lines.extend([
+                "bestmove e2e4",
+                "readyok",
+                INTERACTIVE_SEARCH_LINES[0],
+                "bestmove e2e4",
+            ]);
+            let (actor, _) = EngineActor::recording_test_actor(&lines);
+            let warm = WarmEngine::new(actor.clone(), Vec::new(), &AtomicBool::new(false))
+                .await
+                .unwrap();
+            let current = supervisor
+                .replace_handle(key.clone(), actor, key.engine.clone(), engine.id.clone())
+                .await
+                .unwrap();
+            *current.interactive.lock().await = Some(warm);
+            let payloads = Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
+            let observed = payloads.clone();
+            app.listen(BestMovesPayload::NAME, move |event| {
+                observed
+                    .lock()
+                    .unwrap()
+                    .push(serde_json::from_str(event.payload()).unwrap());
+            });
+            let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+            let (resume_tx, resume_rx) = tokio::sync::oneshot::channel();
+            INTERACTIVE_LINE_DEQUEUED_HOOK.with(|slot| {
+                *slot.borrow_mut() = Some(Box::new(move || {
+                    Box::pin(async move {
+                        entered_tx.send(()).unwrap();
+                        resume_rx.await.unwrap();
+                    })
+                }));
+            });
+            let generation_a = supervisor
+                .prepare_engine_search(key.clone(), key.engine.clone(), engine.id.clone())
+                .await
+                .unwrap();
+            let a_state = state.clone();
+            let a_app = app.clone();
+            let a_engine = engine.clone();
+            let a_key = key.clone();
+            let a = tokio::spawn(async move {
+                get_best_moves_core(
+                    a_key.engine,
+                    a_engine,
+                    a_key.tab,
+                    GoMode::Depth(16),
+                    EngineOptions {
+                        fen: start_fen().to_string(),
+                        ..EngineOptions::default()
+                    },
+                    generation_a,
+                    a_app,
+                    a_state,
+                )
+                .await
+            });
+            tokio::time::timeout(Duration::from_secs(1), entered_rx)
+                .await
+                .unwrap()
+                .unwrap();
+            let generation_b = supervisor
+                .prepare_engine_search(key.clone(), key.engine.clone(), engine.id.clone())
+                .await
+                .unwrap();
+            let admission = supervisor
+                .consume_engine_search(
+                    key.clone(),
+                    key.engine.clone(),
+                    engine.id.clone(),
+                    &generation_b,
+                )
+                .await
+                .unwrap();
+            let (mut b_process, b_owner, _) = supervisor
+                .start_interactive_search(
+                    key.clone(),
+                    engine,
+                    state.pgn_path_authority.clone(),
+                    admission,
+                    EngineOptions {
+                        fen: start_fen().to_string(),
+                        ..EngineOptions::default()
+                    },
+                    &GoMode::Depth(16),
+                )
+                .await
+                .unwrap();
+            resume_tx.send(()).unwrap();
+            let a_result = tokio::time::timeout(Duration::from_secs(1), a)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(matches!(a_result, Err(Error::Cancellation)));
+            assert!(
+                payloads.lock().unwrap().is_empty(),
+                "A's dequeued payload escaped after B started (terminal={held_terminal})"
+            );
+            process_interactive_search_output(
+                &mut b_process,
+                &key.engine,
+                &key.tab,
+                &b_owner,
+                &app,
+            )
+            .await
+            .unwrap();
+            {
+                let payloads = payloads.lock().unwrap();
+                assert_eq!(payloads.len(), 2);
+                assert!(payloads
+                    .iter()
+                    .all(|payload| payload["generation"] == generation_b));
+                assert_eq!(payloads[1]["progress"], 100.0);
+            }
+            supervisor.terminate_all().await.unwrap();
+        }
+    }
 
     #[tokio::test]
     async fn interactive_producer_emits_supervised_generation_for_info_and_terminal_payloads() {
@@ -2968,7 +3261,9 @@ done
             "readyok",
             "bestmove e2e4",
         ]);
-        let mut warm = WarmEngine::new(actor.clone(), Vec::new()).await.unwrap();
+        let mut warm = WarmEngine::new(actor.clone(), Vec::new(), &AtomicBool::new(false))
+            .await
+            .unwrap();
         let override_options = EngineOptions {
             fen: start_fen().to_string(),
             moves: Vec::new(),
@@ -3010,6 +3305,171 @@ done
             .iter()
             .any(|line| line == "setoption name Skill Level value 20"));
         assert!(!warm.defaults.contains_key("Clear Hash"));
+        actor.terminate().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelled_warm_option_write_is_corrected_by_the_next_search() {
+        for cancelled_write in ["override", "restoration", "chess960"] {
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let command = match cancelled_write {
+                "override" => "setoption name Threads value 8",
+                "restoration" => "setoption name Threads value 1",
+                "chess960" => "setoption name UCI_Chess960 value true",
+                _ => unreachable!(),
+            };
+            let (actor, writes) = EngineActor::recording_test_actor_cancelling_after_write(
+                &[
+                    "option name Threads type spin default 1 min 1 max 128",
+                    "option name Hash type spin default 16 min 1 max 1024",
+                    "uciok",
+                    "readyok",
+                    "readyok",
+                    "bestmove e2e4",
+                    "readyok",
+                    "bestmove e2e4",
+                ],
+                Vec::new(),
+                command.into(),
+                cancelled.clone(),
+            );
+            let mut warm = WarmEngine::new(actor.clone(), Vec::new(), &cancelled)
+                .await
+                .unwrap();
+            let baseline = EngineOptions {
+                fen: start_fen().to_string(),
+                moves: Vec::new(),
+                extra_options: vec![string_option("Threads", "4"), string_option("Hash", "16")],
+            };
+            let mut first = warm
+                .start(baseline.clone(), &GoMode::Depth(1), &cancelled)
+                .await
+                .unwrap();
+            assert!(first.next_line().await.unwrap().is_some());
+            let transition = match cancelled_write {
+                "restoration" => EngineOptions {
+                    fen: baseline.fen.clone(),
+                    ..EngineOptions::default()
+                },
+                "chess960" => EngineOptions {
+                    fen: "rk5r/8/8/8/8/8/8/RK5R w HAha - 0 1".into(),
+                    moves: Vec::new(),
+                    extra_options: vec![string_option("Threads", "8"), string_option("Hash", "32")],
+                },
+                _ => EngineOptions {
+                    extra_options: vec![string_option("Threads", "8"), string_option("Hash", "32")],
+                    ..baseline.clone()
+                },
+            };
+            assert!(warm.can_reuse(&transition));
+            assert!(matches!(
+                warm.start(transition, &GoMode::Depth(1), &cancelled).await,
+                Err(Error::Cancellation)
+            ));
+            {
+                let writes = writes.lock().await;
+                assert!(
+                    writes.iter().any(|line| line == command),
+                    "{cancelled_write}"
+                );
+                assert!(!writes
+                    .iter()
+                    .any(|line| line == "setoption name Hash value 32"));
+                assert_eq!(
+                    writes.iter().filter(|line| line.starts_with("go ")).count(),
+                    1
+                );
+            }
+            assert!(warm.can_reuse(&baseline), "{cancelled_write}");
+            let mut next = warm
+                .start(baseline.clone(), &GoMode::Depth(1), &AtomicBool::new(false))
+                .await
+                .unwrap();
+            assert!(next.next_line().await.unwrap().is_some());
+            {
+                let writes = writes.lock().await;
+                let restored_command = if cancelled_write == "chess960" {
+                    "setoption name UCI_Chess960 value false"
+                } else {
+                    "setoption name Threads value 4"
+                };
+                assert_eq!(writes.iter().filter(|line| *line == restored_command).count(), 2,
+                    "the successor must correct the successful cancelled write ({cancelled_write}): {writes:?}");
+                assert_eq!(
+                    writes.iter().filter(|line| line.starts_with("go ")).count(),
+                    2
+                );
+                assert_eq!(writes.iter().filter(|line| *line == "uci").count(), 1);
+            }
+            assert_eq!(warm.process.options, baseline);
+            actor.terminate().await.unwrap();
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn cancelled_initial_resource_write_retains_its_mirror_and_lease_for_reuse() {
+        let (_directory, app, _, resource) = resource_engine_fixture();
+        let resource_option = EngineOption::Resource {
+            name: "EvalFile".into(),
+            resources: vec![resource],
+        };
+        let mut resolved = {
+            let state = app.state::<AppState>();
+            let mut authority = state.pgn_path_authority.lock().unwrap();
+            resolve_engine_option_leases(
+                authority.as_mut().unwrap(),
+                std::slice::from_ref(&resource_option),
+            )
+            .unwrap()
+        };
+        resolved[0].refresh_resource_values().unwrap();
+        let lease = resolved[0].resources[0].clone();
+        let command = format!("setoption name EvalFile value {}", resolved[0].value);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let (actor, writes) = EngineActor::recording_test_actor_cancelling_after_write(
+            &["uciok", "readyok", "readyok", "bestmove e2e4"],
+            vec![lease.clone()],
+            command.clone(),
+            cancelled.clone(),
+        );
+        let mut warm = WarmEngine::new(actor.clone(), resolved, &cancelled)
+            .await
+            .unwrap();
+        let options = EngineOptions {
+            fen: start_fen().to_string(),
+            moves: Vec::new(),
+            extra_options: vec![resource_option.clone(), string_option("Threads", "4")],
+        };
+        assert!(matches!(
+            warm.start(options.clone(), &GoMode::Depth(1), &cancelled)
+                .await,
+            Err(Error::Cancellation)
+        ));
+        assert_eq!(warm.process.resource_leases.len(), 1);
+        assert!(Arc::ptr_eq(&warm.process.resource_leases[0], &lease));
+        assert!(warm
+            .process
+            .options
+            .extra_options
+            .iter()
+            .any(|option| option.has_same_value(&resource_option)));
+        assert!(warm.can_reuse(&options));
+        let mut next = warm
+            .start(options, &GoMode::Depth(1), &AtomicBool::new(false))
+            .await
+            .unwrap();
+        assert!(next.next_line().await.unwrap().is_some());
+        assert_eq!(
+            writes
+                .lock()
+                .await
+                .iter()
+                .filter(|line| *line == &command)
+                .count(),
+            1
+        );
+        assert_eq!(warm.process.resource_leases.len(), 1);
         actor.terminate().await.unwrap();
     }
 
@@ -3088,6 +3548,113 @@ done
             );
             let capture = std::fs::read_to_string(directory.path().join("capture.log")).unwrap();
             assert!(capture.lines().any(|line| line == "wire=quit"), "{release}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn warm_transition_termination_stops_after_one_slow_exchange_on_fresh_and_reuse_paths() {
+        for reused in [false, true] {
+            for termination in ["exact", "all", "release"] {
+                let (directory, app, engine, _) = resource_engine_fixture();
+                std::fs::write(directory.path().join("release"), b"").unwrap();
+                let state = app.state::<AppState>().inner().clone();
+                let supervisor = state.engine_supervisor.clone();
+                let key = EngineKey::new("slow-transition".into(), "id".into()).unwrap();
+                if reused {
+                    run_warm_fixture_search(&app, &key, engine.clone(), Vec::new())
+                        .await
+                        .unwrap();
+                }
+                let capture_path = directory.path().join("capture.log");
+                let previous_ready = std::fs::read_to_string(&capture_path)
+                    .unwrap_or_default()
+                    .lines()
+                    .filter(|line| *line == "wire=isready")
+                    .count();
+                let previous_go = std::fs::read_to_string(&capture_path)
+                    .unwrap_or_default()
+                    .lines()
+                    .filter(|line| line.starts_with("wire=go"))
+                    .count();
+                std::fs::write(directory.path().join("slow-ready"), b"").unwrap();
+                let generation = supervisor
+                    .prepare_engine_search(key.clone(), key.engine.clone(), engine.id.clone())
+                    .await
+                    .unwrap();
+                let search_generation = generation.parse::<u64>().unwrap();
+                let start_key = key.clone();
+                let start_state = state.clone();
+                let start_app = app.clone();
+                let search = tokio::spawn(async move {
+                    get_best_moves_core(
+                        start_key.engine,
+                        engine,
+                        start_key.tab,
+                        GoMode::Depth(1),
+                        EngineOptions {
+                            fen: start_fen().to_string(),
+                            ..EngineOptions::default()
+                        },
+                        generation,
+                        start_app,
+                        start_state,
+                    )
+                    .await
+                });
+                // Observe the exchange on the child's wire before requesting termination.
+                tokio::time::timeout(Duration::from_secs(2), async {
+                    loop {
+                        let capture = std::fs::read_to_string(&capture_path).unwrap_or_default();
+                        if capture
+                            .lines()
+                            .filter(|line| *line == "wire=isready")
+                            .count()
+                            > previous_ready
+                        {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(2)).await;
+                    }
+                })
+                .await
+                .unwrap();
+                let current = supervisor.get_exact(&key).unwrap();
+                let started = Instant::now();
+                tokio::time::timeout(Duration::from_millis(600), async {
+                    match termination {
+                        "exact" => supervisor.terminate_exact(&key, current.generation).await,
+                        "all" => supervisor.terminate_all().await,
+                        "release" => supervisor.release_generation(&key, search_generation).await,
+                        _ => unreachable!(),
+                    }
+                })
+                .await
+                .unwrap()
+                .unwrap();
+                assert!(started.elapsed() < Duration::from_millis(600));
+                assert!(current.cancelled.load(Ordering::SeqCst));
+                assert!(current
+                    .current_search()
+                    .unwrap()
+                    .cancelled
+                    .load(Ordering::SeqCst));
+                let result = tokio::time::timeout(Duration::from_secs(1), search)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert!(
+                    matches!(result, Err(Error::Cancellation)),
+                    "reused={reused}, termination={termination}: {result:?}"
+                );
+                assert!(supervisor.get_exact(&key).is_none());
+                let capture = std::fs::read_to_string(&capture_path).unwrap();
+                assert_eq!(capture.lines().filter(|line| *line == "wire=isready").count(), previous_ready + 1,
+                    "no second readiness exchange: reused={reused}, termination={termination}: {capture}");
+                assert_eq!(capture.lines().filter(|line| line.starts_with("wire=go")).count(), previous_go,
+                    "no go after termination: reused={reused}, termination={termination}: {capture}");
+                assert!(capture.lines().any(|line| line == "wire=quit"));
+            }
         }
     }
 
@@ -4113,7 +4680,24 @@ pub struct EngineConfig {
 const MAX_ENGINE_OPTIONS: usize = 512;
 
 async fn collect_engine_configuration(base: Arc<EngineActor>) -> Result<EngineConfig, Error> {
+    collect_engine_configuration_inner(base, None).await
+}
+
+fn ensure_search_not_cancelled(cancelled: Option<&AtomicBool>) -> Result<(), Error> {
+    if cancelled.is_some_and(|cancelled| cancelled.load(Ordering::SeqCst)) {
+        Err(Error::Cancellation)
+    } else {
+        Ok(())
+    }
+}
+
+async fn collect_engine_configuration_inner(
+    base: Arc<EngineActor>,
+    cancelled: Option<&AtomicBool>,
+) -> Result<EngineConfig, Error> {
+    ensure_search_not_cancelled(cancelled)?;
     base.start_uci_configuration().await?;
+    ensure_search_not_cancelled(cancelled)?;
 
     // The per-line timeout in `next_configuration_line` only protects a
     // silent process. A chatty process which never sends `uciok` must be
@@ -4121,6 +4705,7 @@ async fn collect_engine_configuration(base: Arc<EngineActor>) -> Result<EngineCo
     tokio::time::timeout(EngineDeadlines::default().uciok, async {
         let mut config = EngineConfig::default();
         while let Some(line) = base.next_configuration_line().await? {
+            ensure_search_not_cancelled(cancelled)?;
             if let UciMessage::Id {
                 name: Some(name),
                 author: _,

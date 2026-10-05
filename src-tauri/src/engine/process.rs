@@ -263,6 +263,7 @@ struct FakeIo {
     read_observation: Option<ReadObservation>,
     terminate_delay: Option<Duration>,
     terminate_started: Option<Arc<AtomicBool>>,
+    cancel_after_write: Option<(String, Arc<AtomicBool>)>,
 }
 
 #[cfg(test)]
@@ -289,6 +290,7 @@ impl FakeIo {
             read_observation: None,
             terminate_delay: None,
             terminate_started: None,
+            cancel_after_write: None,
         }
     }
 }
@@ -315,6 +317,11 @@ impl UciIo for FakeIo {
             .lock()
             .await
             .push((line.into(), Instant::now()));
+        if let Some((command, cancelled)) = &self.cancel_after_write {
+            if command == line {
+                cancelled.store(true, Ordering::SeqCst);
+            }
+        }
         Ok(())
     }
 
@@ -913,7 +920,7 @@ pub struct SupervisedEngine {
     pub executable: PathRef,
     pub actor: Arc<EngineActor>,
     pub cancelled: Arc<std::sync::atomic::AtomicBool>,
-    publish: Arc<StdMutex<()>>,
+    barrier: PublicationBarrier,
     pub(crate) interactive: Arc<Mutex<Option<crate::chess::WarmEngine>>>,
     search: Arc<StdMutex<Option<SupervisedSearch>>>,
 }
@@ -923,13 +930,19 @@ pub struct SupervisedEngine {
 pub(crate) struct SupervisedSearch {
     pub generation: u64,
     pub cancelled: Arc<AtomicBool>,
+    barrier: PublicationBarrier,
+}
+
+/// Shared mechanics, with separate instances for actor lifetime and search ownership.
+#[derive(Clone)]
+struct PublicationBarrier {
+    cancelled: Arc<AtomicBool>,
     publish: Arc<StdMutex<()>>,
 }
 
-impl SupervisedSearch {
-    fn new(generation: u64, cancelled: Arc<AtomicBool>) -> Self {
+impl PublicationBarrier {
+    fn new(cancelled: Arc<AtomicBool>) -> Self {
         Self {
-            generation,
             cancelled,
             publish: Arc::default(),
         }
@@ -956,6 +969,24 @@ impl SupervisedSearch {
     }
 }
 
+impl SupervisedSearch {
+    fn new(generation: u64, cancelled: Arc<AtomicBool>) -> Self {
+        Self {
+            generation,
+            barrier: PublicationBarrier::new(cancelled.clone()),
+            cancelled,
+        }
+    }
+
+    pub fn mark_cancelled(&self) {
+        self.barrier.mark_cancelled();
+    }
+
+    pub fn try_publish<E>(&self, emit: impl FnOnce() -> Result<(), E>) -> Result<bool, E> {
+        self.barrier.try_publish(emit)
+    }
+}
+
 impl SupervisedEngine {
     pub fn new(
         generation: u64,
@@ -969,22 +1000,18 @@ impl SupervisedEngine {
             engine_id,
             executable,
             actor,
+            barrier: PublicationBarrier::new(cancelled.clone()),
             cancelled,
-            publish: Arc::new(StdMutex::new(())),
             interactive: Arc::default(),
             search: Arc::default(),
         }
     }
 
     pub fn mark_cancelled(&self) {
+        self.barrier.mark_cancelled();
         if let Some(search) = self.current_search() {
             search.mark_cancelled();
         }
-        let _publish = self
-            .publish
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.cancelled.store(true, Ordering::SeqCst);
     }
 
     pub(crate) fn current_search(&self) -> Option<SupervisedSearch> {
@@ -1007,21 +1034,18 @@ impl SupervisedEngine {
         if let Some(previous) = current.replace(search) {
             previous.mark_cancelled();
         }
+        if self.cancelled.load(Ordering::SeqCst) {
+            if let Some(search) = current.as_ref() {
+                search.mark_cancelled();
+            }
+        }
     }
 
     pub fn try_publish<E>(&self, emit: impl FnOnce() -> Result<(), E>) -> Result<bool, E> {
         if let Some(search) = self.current_search() {
             return search.try_publish(emit);
         }
-        let _publish = self
-            .publish
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if self.cancelled.load(Ordering::SeqCst) {
-            return Ok(false);
-        }
-        emit()?;
-        Ok(true)
+        self.barrier.try_publish(emit)
     }
 }
 
@@ -1622,10 +1646,16 @@ impl EngineSupervisor {
         }
         let current = if let Some(current) = reused {
             current.bind_search(search.clone());
+            if search.cancelled.load(Ordering::SeqCst) {
+                return Err(Error::Cancellation);
+            }
             if let Err(primary) = current.actor.stop_current().await {
                 let cleanup = current.actor.terminate().await;
                 self.actors.remove(&key);
                 return Err(Error::with_cleanup(primary, cleanup));
+            }
+            if search.cancelled.load(Ordering::SeqCst) {
+                return Err(Error::Cancellation);
             }
             let _registration = self.registration.lock().await;
             let _coordination = self
@@ -1658,7 +1688,9 @@ impl EngineSupervisor {
             guard.disarm();
             let current = published?;
             current.bind_search(search.clone());
-            let initialized = crate::chess::WarmEngine::new(current.actor.clone(), resolved).await;
+            let initialized =
+                crate::chess::WarmEngine::new(current.actor.clone(), resolved, &search.cancelled)
+                    .await;
             match initialized {
                 Ok(warm) => *current.interactive.lock().await = Some(warm),
                 Err(primary) => {
@@ -1700,6 +1732,27 @@ impl EngineSupervisor {
     }
 
     pub async fn terminate_exact(&self, key: &EngineKey, generation: u64) -> Result<(), Error> {
+        {
+            let _registration = self.registration.lock().await;
+            let _coordination = self
+                .admission_coordination
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(current) = self
+                .get_exact(key)
+                .filter(|entry| entry.generation == generation)
+            {
+                current.mark_cancelled();
+            }
+            if let Some(admission) = self
+                .admissions
+                .get(key)
+                .map(|entry| entry.clone())
+                .filter(|entry| entry.generation == generation)
+            {
+                self.cancel_admission(key, &admission);
+            }
+        }
         let lifecycle = self.lifecycle_lease(key);
         let _transition = lifecycle.lock().await;
         let Some(current) = self.actors.get(key).map(|entry| entry.clone()) else {
@@ -1752,24 +1805,24 @@ impl EngineSupervisor {
         generation: Option<u64>,
         release: bool,
     ) -> Result<bool, Error> {
-        let (actor_generation, captured_admission) = {
+        let (owner_generation, captured_admission) = {
             let _coordination = self
                 .admission_coordination
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let actor_generation = self.actors.get(key).map(|entry| entry.owner_generation());
+            let owner_generation = self.actors.get(key).map(|entry| entry.owner_generation());
             let captured_admission = if generation.is_none() {
                 self.admissions.get(key).map(|entry| entry.clone())
             } else {
                 None
             };
-            (actor_generation, captured_admission)
+            (owner_generation, captured_admission)
         };
         let mut target_generations = HashSet::new();
         if let Some(generation) = generation {
             target_generations.insert(generation);
         } else {
-            target_generations.extend(actor_generation);
+            target_generations.extend(owner_generation);
             target_generations.extend(captured_admission.as_ref().map(|entry| entry.generation));
         }
         if target_generations.is_empty() {
@@ -1799,6 +1852,16 @@ impl EngineSupervisor {
             };
             if let Some(admission) = &admission {
                 self.cancel_admission(key, admission);
+            }
+            if let Some(current) = self
+                .get_exact(key)
+                .filter(|entry| target_generations.contains(&entry.owner_generation()))
+            {
+                if release {
+                    current.mark_cancelled();
+                } else if let Some(search) = current.current_search() {
+                    search.mark_cancelled();
+                }
             }
         }
         drop(registration);
@@ -1961,6 +2024,9 @@ impl EngineSupervisor {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         self.cancel_admissions_matching(|_, _| true);
+        for entry in self.actors.iter() {
+            entry.mark_cancelled();
+        }
         drop(_coordination);
         drop(registration);
         loop {
@@ -3026,6 +3092,7 @@ impl EngineActor {
             lines,
             Vec::new(),
             EngineDeadlines::default(),
+            None,
         )
     }
 
@@ -3075,7 +3142,24 @@ impl EngineActor {
         resources: Vec<Arc<crate::infra::path_authority::EngineResourceLease>>,
         deadlines: EngineDeadlines,
     ) -> (Arc<Self>, Arc<Mutex<Vec<String>>>) {
-        Self::recording_test_actor_with_resources_and_deadlines_impl(lines, resources, deadlines)
+        Self::recording_test_actor_with_resources_and_deadlines_impl(
+            lines, resources, deadlines, None,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn recording_test_actor_cancelling_after_write(
+        lines: &[&str],
+        resources: Vec<Arc<crate::infra::path_authority::EngineResourceLease>>,
+        command: String,
+        cancelled: Arc<AtomicBool>,
+    ) -> (Arc<Self>, Arc<Mutex<Vec<String>>>) {
+        Self::recording_test_actor_with_resources_and_deadlines_impl(
+            lines,
+            resources,
+            EngineDeadlines::default(),
+            Some((command, cancelled)),
+        )
     }
 
     #[cfg(test)]
@@ -3083,12 +3167,14 @@ impl EngineActor {
         lines: &[&str],
         resources: Vec<Arc<crate::infra::path_authority::EngineResourceLease>>,
         deadlines: EngineDeadlines,
+        cancel_after_write: Option<(String, Arc<AtomicBool>)>,
     ) -> (Arc<Self>, Arc<Mutex<Vec<String>>>) {
         let writes = Arc::new(Mutex::new(Vec::new()));
-        let io = FakeIo::new(
+        let mut io = FakeIo::new(
             writes.clone(),
             lines.iter().map(|line| Some((*line).into())),
         );
+        io.cancel_after_write = cancel_after_write;
         (
             Arc::new(Self::from_runtime_with_resources(
                 EngineRuntime::new(Box::new(io), deadlines),
@@ -7367,12 +7453,17 @@ mod tests {
             .split_once("mod tests {")
             .map(|(prefix, _)| prefix)
             .expect("test module should exist");
+        let barrier = production
+            .split_once("impl PublicationBarrier {")
+            .unwrap()
+            .1;
         for function in ["pub fn mark_cancelled(", "pub fn try_publish<E>("] {
-            let body = crate::infra::blocking::source_scan::body_at_indent(production, function);
+            let body = crate::infra::blocking::source_scan::body_at_indent(barrier, function);
             assert!(
-                body.contains(".publish"),
+                body.contains(".publish") && body.contains(".lock()"),
                 "{function} must take the publication lock"
             );
+            assert!(body.find(".lock()").unwrap() < body.find("self.cancelled").unwrap());
         }
     }
 
