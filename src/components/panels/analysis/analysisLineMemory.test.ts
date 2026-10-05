@@ -1,27 +1,27 @@
 import { expect, test } from "vitest";
 import type { BestMoves } from "@/bindings";
-import { AnalysisLineMemory } from "./analysisLineMemory";
+import { AnalysisLineMemory, ENGINE_LINE_MEMORY_CAPACITY } from "./analysisLineMemory";
 
 const lines = (depth: number): BestMoves[] => [{ depth } as BestMoves];
 
-test("256-entry LRU refreshes display reads and writes, including across immutable copies", () => {
+test("capacity-bound LRU refreshes display reads and writes, including across immutable copies", () => {
     const memory = new AnalysisLineMemory();
     expect(memory.get("missing-before-writes")).toBeUndefined();
-    for (let i = 0; i < 256; i++) memory.set(String(i), lines(i));
-    expect(memory.size).toBe(256);
+    for (let i = 0; i < ENGINE_LINE_MEMORY_CAPACITY; i++) memory.set(String(i), lines(i));
+    expect(memory.size).toBe(ENGINE_LINE_MEMORY_CAPACITY);
     expect(memory.has("0")).toBe(true);
     expect(memory.get("missing")).toBeUndefined();
     expect(memory.get("0")).toEqual(lines(0));
     memory.set("1", lines(10));
     const copy = new AnalysisLineMemory(memory);
-    copy.set("256", lines(256));
-    expect(copy.size).toBe(256);
+    copy.set(String(ENGINE_LINE_MEMORY_CAPACITY), lines(ENGINE_LINE_MEMORY_CAPACITY));
+    expect(copy.size).toBe(ENGINE_LINE_MEMORY_CAPACITY);
     expect(copy.has("2")).toBe(false);
     expect(copy.has("0")).toBe(true);
     expect(copy.get("1")).toEqual(lines(10));
     expect(memory.has("2")).toBe(true);
-    expect(memory.has("256")).toBe(false);
-    copy.set("257", lines(257));
+    expect(memory.has(String(ENGINE_LINE_MEMORY_CAPACITY))).toBe(false);
+    copy.set(String(ENGINE_LINE_MEMORY_CAPACITY + 1), lines(ENGINE_LINE_MEMORY_CAPACITY + 1));
     expect(copy.has("3")).toBe(false);
 });
 
@@ -46,11 +46,11 @@ test("depth replacement admits absent, equal, deeper, and current-search revisio
 
 test("a plain map copy preserves default context and eviction order", () => {
     const plain = new Map<string, BestMoves[]>();
-    for (let i = 0; i < 256; i++) plain.set(String(i), lines(i));
+    for (let i = 0; i < ENGINE_LINE_MEMORY_CAPACITY; i++) plain.set(String(i), lines(i));
     const memory = new AnalysisLineMemory(plain);
     expect(memory.context).toBeNull();
     memory.set("new", lines(300));
-    expect(memory.size).toBe(256);
+    expect(memory.size).toBe(ENGINE_LINE_MEMORY_CAPACITY);
     expect(memory.has("0")).toBe(false);
     expect(memory.has("new")).toBe(true);
 });
@@ -66,9 +66,9 @@ test("deletion, clear, eviction and direct writes retire remembered search owner
     expect(memory.remember("a", lines(1), search)).toBe(true);
     memory.clear();
     expect(memory.size).toBe(0);
-    for (let i = 0; i < 257; i++) memory.set(String(i), lines(i));
-    expect(memory.size).toBe(256);
+    for (let i = 0; i < ENGINE_LINE_MEMORY_CAPACITY + 1; i++) memory.set(String(i), lines(i));
+    expect(memory.size).toBe(ENGINE_LINE_MEMORY_CAPACITY);
     expect(memory.has("0")).toBe(false);
     expect(memory.has("1")).toBe(true);
-    expect(memory.has("256")).toBe(true);
+    expect(memory.has(String(ENGINE_LINE_MEMORY_CAPACITY))).toBe(true);
 });

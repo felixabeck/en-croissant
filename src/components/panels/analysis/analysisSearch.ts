@@ -1,4 +1,4 @@
-import { parseUci } from "chessops";
+import { opposite, parseUci } from "chessops";
 import { INITIAL_FEN, makeFen } from "chessops/fen";
 import { positionFromFen, swapMove } from "@/utils/chessops";
 
@@ -20,6 +20,7 @@ export function analysisSearch(fen: string, moves: string[], threat: boolean) {
         finalFen,
         searchingFen,
         searchingMoves,
+        searchingTurn: position ? (threat ? opposite(position.turn) : position.turn) : null,
         key: `${searchingFen}:${searchingMoves.join(",")}`,
     };
 }

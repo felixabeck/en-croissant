@@ -347,26 +347,34 @@ test("position, settings, and tab changes reject stale ChessDB promise results",
   expect(store.get(progressAtom("tab-2", chessdbEngine.id))).toBe(0);
 });
 
-test("close entry clears remote state immediately and a stale result cannot restore it", async () => {
-  const result = deferred<ReturnType<typeof remoteResult>>();
-  fixtures.chessdbGetBestMoves.mockReturnValueOnce(result.promise);
+test("close intent preserves remote line memory through refusal and a stale result cannot replace it", async () => {
+  fixtures.chessdbGetBestMoves.mockResolvedValueOnce(remoteResult(65));
   store.set(enginesAtom, [chessdbEngine] as any);
   await rerender();
   await settleTransition();
-  store.set(movesAtom("tab-1", chessdbEngine.id), new Map([["start-fen:", remoteResult(65)[1]]]));
-  store.set(progressAtom("tab-1", chessdbEngine.id), 65);
+  const remembered = store.get(movesAtom("tab-1", chessdbEngine.id)).get("start-fen:");
+  expect(remembered).toEqual(remoteResult(65)[1]);
+  const result = deferred<ReturnType<typeof remoteResult>>();
+  fixtures.chessdbGetBestMoves.mockReturnValueOnce(result.promise);
+  fixtures.fen = "fen-b";
+  await rerender();
+  await settleTransition();
 
   await act(async () => {
     store.set(closingTabsAtom, new Set(["tab-1"]));
-    expect(store.get(movesAtom("tab-1", chessdbEngine.id)).size).toBe(0);
+    expect(store.get(movesAtom("tab-1", chessdbEngine.id)).get("start-fen:")).toEqual(remembered);
     expect(store.get(progressAtom("tab-1", chessdbEngine.id))).toBe(0);
+    store.set(closingTabsAtom, new Set());
+    await flush();
   });
   await act(async () => {
     result.resolve(remoteResult(66));
     await flush();
   });
 
-  expect(store.get(movesAtom("tab-1", chessdbEngine.id)).size).toBe(0);
+  expect(store.get(movesAtom("tab-1", chessdbEngine.id)).size).toBe(1);
+  expect(store.get(movesAtom("tab-1", chessdbEngine.id)).get("start-fen:")).toEqual(remembered);
+  expect(store.get(movesAtom("tab-1", chessdbEngine.id)).has("fen-b:")).toBe(false);
   expect(store.get(progressAtom("tab-1", chessdbEngine.id))).toBe(0);
 });
 
@@ -695,9 +703,14 @@ test("position changes stop the search and keep its actor warm", async () => {
   expect(fixtures.releaseEngineSearch).not.toHaveBeenCalled();
 });
 
-test("pause releases the owner during transition without starting another search", async () => {
+test("pause and resume retain remembered lines while releasing the owner and rejecting paused output", async () => {
+  fixtures.prepareEngineSearch
+    .mockResolvedValueOnce("generation-1")
+    .mockResolvedValueOnce("resumed");
   await rerender();
   await settleTransition();
+  const remembered = payload("generation-1");
+  await broadcast(remembered);
   await act(async () => {
     store.set(settingsAtom(), { ...store.get(settingsAtom()), enabled: false });
     await flush();
@@ -706,7 +719,46 @@ test("pause releases the owner during transition without starting another search
   await settleTransition();
   expect(fixtures.prepareEngineSearch).toHaveBeenCalledTimes(1);
   expect(fixtures.stopEngine).not.toHaveBeenCalled();
+  expect(store.get(movesAtom()).get("start-fen:")).toEqual(remembered.bestLines);
+  const stale = payload("generation-1", { progress: 91 });
+  stale.bestLines[0].score.value.value = 999;
+  await broadcast(stale);
+  expect(store.get(progressAtom())).toBe(0);
+  await act(async () => {
+    store.set(settingsAtom(), { ...store.get(settingsAtom()), enabled: true });
+    await flush();
+  });
+  await settleTransition();
+  expect(fixtures.prepareEngineSearch).toHaveBeenCalledTimes(2);
+  expect(store.get(movesAtom()).get("start-fen:")).toEqual(remembered.bestLines);
+  await broadcast(stale);
+  expect(store.get(movesAtom()).get("start-fen:")).toEqual(remembered.bestLines);
+  expect(store.get(progressAtom())).toBe(0);
 });
+
+test.each(["settings", "go", "synced"])(
+  "line memory invalidates only computation settings: %s",
+  async (field) => {
+    await rerender();
+    const remembered = payload("generation-1");
+    await broadcast(remembered);
+    await act(async () => {
+      store.set(settingsAtom(), (settings) => ({
+        ...settings,
+        ...(field === "settings"
+          ? { settings: [{ type: "string" as const, name: "Hash", value: "256" }] }
+          : {}),
+        ...(field === "go" ? { go: { t: "Depth" as const, c: 18 } } : {}),
+        ...(field === "synced" ? { synced: false } : {}),
+      }));
+      await flush();
+    });
+    expect(store.get(movesAtom()).size).toBe(field === "synced" ? 1 : 0);
+    expect(store.get(movesAtom()).get("start-fen:")).toEqual(
+      field === "synced" ? remembered.bestLines : undefined,
+    );
+  },
+);
 
 test("unmount during preparation releases the retained warm actor and the late reservation", async () => {
   await rerender();
@@ -835,12 +887,14 @@ test("close intent arriving during predecessor stop blocks preparation", async (
   expect(fixtures.getBestMoves).toHaveBeenCalledTimes(1);
 });
 
-test("a fast failed close permanently cancels the old attempt and starts a fresh one", async () => {
+test("a fast failed close preserves remembered lines, cancels the old attempt and starts a fresh one", async () => {
   fixtures.prepareEngineSearch
     .mockResolvedValueOnce("before-close")
     .mockResolvedValueOnce("after-failed-close");
   await rerender();
   await settleTransition();
+  const remembered = payload("before-close");
+  await broadcast(remembered);
 
   await act(async () => {
     store.set(closingTabsAtom, new Set(["tab-1"]));
@@ -848,7 +902,7 @@ test("a fast failed close permanently cancels the old attempt and starts a fresh
     await flush();
   });
   await broadcast(payload("before-close", { progress: 91 }));
-  expect(store.get(movesAtom()).size).toBe(0);
+  expect(store.get(movesAtom()).get("start-fen:")).toEqual(remembered.bestLines);
   expect(store.get(progressAtom())).toBe(0);
 
   await settleTransition();

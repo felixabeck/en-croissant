@@ -11,6 +11,7 @@ import { positionFromFen } from "@/utils/chessops";
 import type { Engine } from "@/utils/engines";
 import { analysisSearch } from "./analysisSearch";
 import { AnalysisLineMemory } from "./analysisLineMemory";
+import { engineLineContext } from "./analysisLineContext";
 
 export const ENGINE_LINES_LOADING_DELAY_MS = 1000;
 
@@ -37,12 +38,7 @@ export function useDisplayedEngineLines(
     const search = analysisSearch(fen, moves, threat);
     const [, error] = positionFromFen(fen);
     const isGameOver = search.position?.isEnd() ?? false;
-    const identity = JSON.stringify(
-        engine.type === "local"
-            ? { type: engine.type, id: engine.id, handle: engine.handle }
-            : { type: engine.type, id: engine.id, url: engine.url },
-    );
-    const context = JSON.stringify([JSON.stringify(settings), identity]);
+    const context = engineLineContext(settings, engine);
     const scope = JSON.stringify([tab, context]);
     const current =
         memory instanceof AnalysisLineMemory && memory.context !== context

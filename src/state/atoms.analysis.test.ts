@@ -3,7 +3,10 @@ import { INITIAL_FEN } from "chessops/fen";
 import { expect, test } from "vitest";
 import type { BestMoves } from "@/bindings";
 import { analysisSearch } from "@/components/panels/analysis/analysisSearch";
-import { AnalysisLineMemory } from "@/components/panels/analysis/analysisLineMemory";
+import {
+    AnalysisLineMemory,
+    ENGINE_LINE_MEMORY_CAPACITY,
+} from "@/components/panels/analysis/analysisLineMemory";
 import {
     activeTabAtom,
     bestMovesFamily,
@@ -108,7 +111,7 @@ test("atom display selection refreshes LRU recency and tab close disposes line m
     const key = analysisSearch(position.fen, position.gameMoves, false).key;
     const memory = new AnalysisLineMemory();
     memory.set(key, lines("e2e4"));
-    for (let i = 0; i < 255; i++) memory.set(String(i), lines("d2d4"));
+    for (let i = 0; i < ENGINE_LINE_MEMORY_CAPACITY - 1; i++) memory.set(String(i), lines("d2d4"));
     const param = { tab, engine: engine.id };
     store.set(engineMovesFamily(param), memory);
     expect(store.get(bestMovesFamily(position)).size).toBe(1);
@@ -148,5 +151,42 @@ test("line readers ignore unloaded engines, empty entries and absent tab or engi
     store.set(engineMovesFamily({ tab, engine: engine.id }), new Map([[`${INITIAL_FEN}:`, []]]));
     expect(store.get(bestMovesFamily(position)).size).toBe(0);
     expect(store.get(firstEngineWithLinesFamily(position))).toBeNull();
+    disposeTabAtoms(tab);
+});
+
+test("threat arrows compare White-perspective scores against the searched turn and normal mode stays unchanged", async () => {
+    const store = createStore();
+    const tab = "analysis-threat-score-perspective";
+    store.set(tabsAtom, [
+        { value: tab, name: "Analysis", type: "analysis", gameOrigin: { kind: "none" } },
+    ]);
+    store.set(activeTabAtom, tab);
+    await store.set(enginesAtom, [engine]);
+    const fen = "r1bqkbnr/pppp1ppp/2n5/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 3 3";
+    const mate = lines("h5f7")[0];
+    mate.score.value = { type: "mate", value: 1 };
+    mate.sanMoves = ["Qxf7#"];
+    const inferior = lines("a2a3")[0];
+    inferior.score.value = { type: "cp", value: 0 };
+    inferior.sanMoves = ["a3"];
+    store.set(
+        engineMovesFamily({ tab, engine: engine.id }),
+        new AnalysisLineMemory(
+            new Map([
+                [analysisSearch(fen, [], true).key, [mate, inferior]],
+                [analysisSearch(fen, [], false).key, [mate, inferior]],
+            ]),
+        ),
+    );
+    const position = { fen, gameMoves: [] };
+    store.set(currentThreatAtom, true);
+    const threats = store.get(bestMovesFamily(position)).get(0)!;
+    expect(threats.map((line) => line.pv)).toEqual([["h5f7"]]);
+    expect(threats[0].winChance).toBeGreaterThan(90);
+    store.set(currentThreatAtom, false);
+    const normal = store.get(bestMovesFamily(position)).get(0)!;
+    expect(normal.map((line) => line.pv)).toEqual([["h5f7"], ["a2a3"]]);
+    expect(normal[0].winChance).toBeLessThan(10);
+    expect(normal[1].winChance).toBe(50);
     disposeTabAtoms(tab);
 });

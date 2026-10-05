@@ -1,5 +1,7 @@
 import type { BestMoves } from "@/bindings";
 
+export const ENGINE_LINE_MEMORY_CAPACITY = 256;
+
 /** Ephemeral per-(tab, engine) memory. Reads do not publish atom updates. */
 export class AnalysisLineMemory extends Map<string, BestMoves[]> {
     context: string | null = null;
@@ -33,7 +35,7 @@ export class AnalysisLineMemory extends Map<string, BestMoves[]> {
         super.set(key, lines);
         this.touch(key);
         this.writers.delete(key);
-        if (this.size > 256) {
+        if (this.size > ENGINE_LINE_MEMORY_CAPACITY) {
             const oldest = this.recency.keys().next().value!;
             this.delete(oldest);
         }

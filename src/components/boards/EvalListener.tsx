@@ -31,6 +31,10 @@ import { getVariationLine } from "@/utils/chess";
 import { getBestMoves as chessdbGetBestMoves } from "@/utils/chessdb/api";
 import { analysisSearch } from "@/components/panels/analysis/analysisSearch";
 import { AnalysisLineMemory } from "@/components/panels/analysis/analysisLineMemory";
+import {
+  engineIdentity,
+  engineLineContext,
+} from "@/components/panels/analysis/analysisLineContext";
 import { normalizeEngineOptions } from "@/components/engines/engineOptions";
 import {
   type Engine,
@@ -60,16 +64,6 @@ type NativeSearchOwner = {
   stopPromise: Promise<boolean> | null;
   releasePromise: Promise<void> | null;
 };
-
-// The executable identity a result is bound to: the same id with a replaced
-// handle or URL is a different engine for result-routing purposes.
-function engineIdentity(engine: Engine): string {
-  return JSON.stringify(
-    engine.type === "local"
-      ? { type: engine.type, id: engine.id, handle: engine.handle }
-      : { type: engine.type, id: engine.id, url: engine.url },
-  );
-}
 
 function stopNativeOwner(
   owner: NativeSearchOwner,
@@ -170,6 +164,7 @@ function EngineListener({
     }),
   );
   const settingsFingerprint = JSON.stringify(settings);
+  const lineContext = engineLineContext(settings, engine);
   const activeAttempt = useRef<SearchAttempt | null>(null);
   // A preparation does not yet own the previous warm actor. Retain its exact
   // owner until a later stop confirms which search the actor actually served.
@@ -210,14 +205,13 @@ function EngineListener({
       if (isClosing && !wasClosing) {
         const attempt = activeAttempt.current;
         if (attempt?.tab === tab) attempt.cancelled = true;
-        setEngineVariation(new Map());
         setProgress(0);
       } else if (!isClosing && wasClosing) {
         advanceCloseRevision();
       }
       wasClosing = isClosing;
     });
-  }, [activeTab, setEngineVariation, setProgress]);
+  }, [activeTab, setProgress]);
   const requestFingerprint = JSON.stringify({
     tab: activeTab,
     closeRevision,
@@ -342,12 +336,11 @@ function EngineListener({
         void releaseNativeOwner(owner, notifyFailure);
       }
     }
-    const context = JSON.stringify([settingsFingerprint, attempt.engineIdentity]);
     setEngineVariation((prev) => {
       const memory = new AnalysisLineMemory(prev);
-      if (memory.context !== context) {
+      if (memory.context !== lineContext) {
         const empty = new AnalysisLineMemory();
-        empty.context = context;
+        empty.context = lineContext;
         return empty;
       }
       return memory;
@@ -364,6 +357,7 @@ function EngineListener({
     setProgress,
     settings.enabled,
     settingsFingerprint,
+    lineContext,
     notifyFailure,
   ]);
 

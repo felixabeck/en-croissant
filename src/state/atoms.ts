@@ -890,7 +890,7 @@ export const bestMovesFamily = atomFamily(
             let n = 0;
             for (const engine of engines.filter((e) => e.loaded)) {
                 const engineMoves = get(engineMovesFamily({ tab, engine: engine.id }));
-                const { position: pos, key } = analysisSearch(
+                const { searchingTurn, key } = analysisSearch(
                     fen,
                     gameMoves,
                     get(currentThreatAtom),
@@ -898,13 +898,13 @@ export const bestMovesFamily = atomFamily(
                 const moves = engineMoves.get(key);
                 if (moves && moves.length > 0) {
                     const bestWinChange = getWinChance(
-                        normalizeScore(moves[0].score.value, pos?.turn || "white"),
+                        normalizeScore(moves[0].score.value, searchingTurn || "white"),
                     );
                     bestMoves.set(
                         n,
                         moves.reduce<{ pv: string[]; winChance: number }[]>((acc, m) => {
                             const winChance = getWinChance(
-                                normalizeScore(m.score.value, pos?.turn || "white"),
+                                normalizeScore(m.score.value, searchingTurn || "white"),
                             );
                             if (bestWinChange - winChance < 10) {
                                 acc.push({ pv: m.uciMoves, winChance });

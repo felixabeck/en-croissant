@@ -5,6 +5,7 @@ import { activeTabAtom, currentThreatAtom } from "@/state/atoms";
 import { displayEngine, displayLines, engineDisplayHarness } from "@/tests/engineDisplay";
 import { analysisSearch } from "./analysisSearch";
 import { AnalysisLineMemory } from "./analysisLineMemory";
+import { engineLineContext } from "./analysisLineContext";
 import { useDisplayedEngineLines } from "./useDisplayedEngineLines";
 import type { Engine } from "@/utils/engines";
 
@@ -219,14 +220,7 @@ test("invalid and game-over positions suppress even remembered entries", async (
 
 test("matching contextual memory is eligible and remote executable identity scopes the fallback", async () => {
   const memory = new AnalysisLineMemory();
-  memory.context = JSON.stringify([
-    JSON.stringify(h.store.get(h.settingsAtom)),
-    JSON.stringify({
-      type: displayEngine.type,
-      id: displayEngine.id,
-      handle: displayEngine.handle,
-    }),
-  ]);
+  memory.context = engineLineContext(h.store.get(h.settingsAtom), displayEngine);
   memory.set(analysisSearch(INITIAL_FEN, [], false).key, displayLines);
   await act(async () => h.store.set(h.memoryAtom, memory));
   await h.render(<Probe />);
@@ -241,6 +235,23 @@ test("matching contextual memory is eligible and remote executable identity scop
   await h.render(<Probe engine={remote} />);
   await h.render(<Probe engine={{ ...remote, url: "https://changed.test" }} moves={["e2e4"]} />);
   expect(display.lines).toBeUndefined();
+});
+
+test("contextual remembered lines remain current across pause, resume and sync toggles", async () => {
+  const memory = new AnalysisLineMemory();
+  memory.context = engineLineContext(h.store.get(h.settingsAtom), displayEngine);
+  memory.set(analysisSearch(INITIAL_FEN, [], false).key, displayLines);
+  await act(async () => h.store.set(h.memoryAtom, memory));
+  await h.render(<Probe />);
+  expect(display.lines).toEqual(displayLines);
+  for (const enabled of [false, true]) {
+    await act(async () =>
+      h.store.set(h.settingsAtom, (s) => ({ ...s, enabled, synced: !s.synced })),
+    );
+    expect(display.lines).toEqual(displayLines);
+    expect(display.dimmed).toBe(false);
+    expect(display.loading).toBe(false);
+  }
 });
 
 test("the shared reader initializes per-engine option and go defaults", async () => {
