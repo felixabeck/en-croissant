@@ -1,6 +1,6 @@
 import { MantineProvider } from "@mantine/core";
 import { Provider } from "jotai";
-import { act } from "react";
+import { act, useContext } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { createTreeStore, type TreeStore } from "@/state/store/tree";
@@ -8,7 +8,8 @@ import { installMatchMediaStub } from "@/tests/matchMedia";
 import { installResizeObserverStub } from "@/tests/resizeObserver";
 import { fixtureNode } from "@/tests/treeFixtures";
 import { defaultTree } from "@/utils/treeReducer";
-import { TreeStateContext } from "./TreeStateContext";
+import { TreeStateContext, TreeStateProvider } from "@/components/common/TreeStateContext";
+import BoardFrame from "@/components/boards/BoardFrame";
 
 const settings = vi.hoisted(() => ({
   chooseVariation: true,
@@ -95,15 +96,24 @@ function options() {
   }));
 }
 
+function CaptureStore() {
+  store = useContext(TreeStateContext)!;
+  return null;
+}
+
 function render() {
   act(() => {
     root.render(
       // A fresh jotai store per render, so the setting is read anew in every case.
       <Provider>
         <MantineProvider env="test">
-          <TreeStateContext.Provider value={store}>
+          <TreeStateProvider initial={store.getState()}>
+            <CaptureStore />
+            <BoardFrame>
+              <div role="grid" />
+            </BoardFrame>
             <MoveControls />
-          </TreeStateContext.Provider>
+          </TreeStateProvider>
         </MantineProvider>
       </Provider>,
     );
@@ -189,8 +199,8 @@ test("with the setting off, next move follows the main line as before", () => {
 });
 
 test("a practice drill keeps following its own path", () => {
-  store.getState().setPracticePath([1]);
   render();
+  act(() => store.getState().setPracticePath([1]));
 
   press("ArrowRight");
 

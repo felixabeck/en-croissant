@@ -34,16 +34,36 @@ vi.mock("react-i18next", () => ({
 }));
 
 vi.mock("@/chessground/Chessground", () => ({
-  Chessground: () => <div data-testid="chessground" />,
+  Chessground: (props: { drawable?: { autoShapes?: unknown[] } }) => (
+    <div data-testid="chessground" data-shapes={JSON.stringify(props.drawable?.autoShapes)} />
+  ),
 }));
 
 vi.mock("../common/GameNotation", () => ({
   default: () => <div data-testid="game-notation" />,
 }));
 
-vi.mock("../common/MoveControls", () => ({
-  default: () => <div data-testid="move-controls" />,
-}));
+vi.mock("../common/MoveControls", async () => {
+  const { useContext } = await import("react");
+  const { TreeStateContext, useVariationChooser } =
+    await import("@/components/common/TreeStateContext");
+  const { nextContinuation } = await import("@/state/store/tree");
+  return {
+    default: () => {
+      const tree = useContext(TreeStateContext)!;
+      const chooser = useVariationChooser();
+      return (
+        <button
+          data-testid="move-controls"
+          onClick={() => {
+            const continuation = nextContinuation(tree.getState());
+            if (continuation) chooser.open(continuation.children);
+          }}
+        />
+      );
+    },
+  };
+});
 
 vi.mock("../common/OpeningName", () => ({
   default: () => <div data-testid="opening-name" />,
@@ -295,9 +315,9 @@ describe("GamePreview board sizing", () => {
     await vi.waitFor(() =>
       expect(container.querySelector("[data-testid='chessground']")).not.toBeNull(),
     );
-    // Group (frame) > board box > wheel box > board.
+    // Group (frame) > board box > chooser frame > wheel box > board.
     const boardBox = container.querySelector("[data-testid='chessground']")!.parentElement!
-      .parentElement as HTMLElement;
+      .parentElement!.parentElement as HTMLElement;
     return { boardBox, frame: boardBox.parentElement! };
   }
 
@@ -355,5 +375,28 @@ describe("GamePreview board sizing", () => {
     await reportSize(frame, 600, 200);
 
     expect(boardBox.style.width).toBe("");
+  });
+  test("preview chooser shares its frame and draws every continuation", async () => {
+    mocks.lexPgn.mockResolvedValue([
+      { type: "San", value: "e4" },
+      { type: "ParenOpen" },
+      { type: "San", value: "d4" },
+      { type: "ParenClose" },
+    ]);
+    await renderPreview({});
+    await act(async () =>
+      (container.querySelector("[data-testid='move-controls']") as HTMLElement).click(),
+    );
+    const list = container.querySelector('[role="listbox"]')!;
+    const board = container.querySelector("[data-testid='chessground']")!;
+    expect(list.parentElement!.parentElement).toBe(board.parentElement!.parentElement);
+    expect([...list.querySelectorAll('[role="option"]')].map((row) => row.textContent)).toEqual([
+      "1. e4",
+      "1. d4",
+    ]);
+    expect(JSON.parse(board.getAttribute("data-shapes")!)).toEqual([
+      { orig: "e2", dest: "e4", brush: "continuationSelected" },
+      { orig: "d2", dest: "d4", brush: "continuationOther" },
+    ]);
   });
 });

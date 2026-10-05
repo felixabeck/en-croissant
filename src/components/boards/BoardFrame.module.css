@@ -1,0 +1,39 @@
+.frame {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  aspect-ratio: 1;
+  z-index: 1;
+}
+
+.card {
+  position: absolute;
+  top: 4px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  /* Chessground rounds its painted width down by up to eight pixels. */
+  max-width: calc(100% - 16px);
+  max-height: calc(50% - 8px);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  z-index: 20;
+}
+
+/* Promotion overlays inside the board share the frame's stacking context with the card. */
+.frame > :first-child {
+  z-index: auto;
+}
+
+.rows {
+  min-height: 0;
+  overflow: auto;
+  flex: 1 1 auto;
+}
+
+.hint {
+  flex: 0 0 auto;
+}

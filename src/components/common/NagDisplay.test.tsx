@@ -15,7 +15,8 @@ import Board from "@/components/boards/Board";
 import AnnotationPanel from "@/components/panels/annotation/AnnotationPanel";
 import EvalChart from "./EvalChart";
 import GameNotation from "./GameNotation";
-import { TreeStateContext } from "./TreeStateContext";
+import { TreeStateContext, VariationChooserContext } from "./TreeStateContext";
+import { createVariationChooserStore } from "@/state/store/variationChooser";
 
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("@/platform/native", () => ({ platform: () => "linux", warn: vi.fn(), error: vi.fn() }));
@@ -102,7 +103,11 @@ async function render(child: ReactNode, nags: number[]) {
     root.render(
       <MantineProvider>
         <Provider store={atoms}>
-          <TreeStateContext.Provider value={store}>{child}</TreeStateContext.Provider>
+          <TreeStateContext.Provider value={store}>
+            <VariationChooserContext.Provider value={createVariationChooserStore()}>
+              {child}
+            </VariationChooserContext.Provider>
+          </TreeStateContext.Provider>
         </Provider>
       </MantineProvider>,
     ),

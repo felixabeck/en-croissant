@@ -1,4 +1,6 @@
+import AxeBuilder from "@axe-core/playwright";
 import {
+    assertChooserInsideBoard,
     expect,
     filesWorkspaceCommands,
     filesWorkspaceFixture,
@@ -72,4 +74,43 @@ test("files-preview: the card fills the window and shows the whole board and its
     await assertNoHorizontalOverflow();
     await capture("files-preview");
     await expect(page).toHaveScreenshot("files-preview.png");
+});
+
+test("files-preview: variation chooser lies inside the preview board at its top edge", async ({
+    page,
+    mockScenario,
+}) => {
+    await mockScenario({
+        commands: filesWorkspaceCommands([[repertoireFile]], {
+            ...pgnFileCommands,
+            lex_pgn: {
+                result: [
+                    { type: "Header", value: { tag: "White", value: "Weiss" } },
+                    { type: "Header", value: { tag: "Black", value: "Schwarz" } },
+                    { type: "San", value: "e4" },
+                    { type: "ParenOpen" },
+                    { type: "San", value: "d4" },
+                    { type: "ParenClose" },
+                    { type: "San", value: "c5" },
+                ],
+            },
+        }),
+    });
+    await page.goto("/files");
+    await page.getByRole("button", { name: /choose collection/i }).click();
+    await selectFilesTreeRow(page, repertoireFile.name);
+    const board = page.locator("cg-board");
+    await expect(board).toBeVisible();
+    await page.getByRole("button", { name: "Next move", exact: true }).click();
+    const chooser = page.getByRole("listbox", { name: "Choose a continuation" });
+    await expect(chooser.getByRole("option")).toHaveText(["1. e4", "1. d4"]);
+    await assertChooserInsideBoard(board, chooser);
+    const accessibility = await new AxeBuilder({ page })
+        .include('.mantine-Paper-root:has(> [role="listbox"])')
+        .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
+        .analyze();
+    expect(accessibility.violations).toEqual([]);
+    await chooser.getByRole("option", { name: "1. d4", exact: true }).click();
+    await expect(chooser).toBeHidden();
+    await expect(board.locator("piece.white.pawn")).toHaveCount(8);
 });

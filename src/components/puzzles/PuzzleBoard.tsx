@@ -14,6 +14,9 @@ import classes from "@/styles/Chessboard.module.css";
 import { positionFromFen } from "@/utils/chessops";
 import type { Completion, Puzzle } from "@/utils/puzzles";
 import { getNodeAtPath, treeIteratorMainLine } from "@/utils/treeReducer";
+import BoardFrame from "@/components/boards/BoardFrame";
+import { chooserArrows, continuationBrushes } from "@/components/boards/continuationArrows";
+import { useVariationChooser } from "@/components/common/TreeStateContext";
 import PromotionModal from "../boards/PromotionModal";
 import { TreeStateContext } from "../common/TreeStateContext";
 
@@ -34,6 +37,7 @@ function PuzzleBoard({
   const root = useStore(store, (s) => s.root);
   const position = useStore(store, (s) => s.position);
   const moveHighlight = useAtomValue(moveHighlightAtom);
+  const { choice } = useVariationChooser();
   const boardShapes = useStore(store, (s) => s.currentNode().shapes);
   const makeMove = useStore(store, (s) => s.makeMove);
   const makeMoves = useStore(store, (s) => s.makeMoves);
@@ -118,69 +122,67 @@ function PuzzleBoard({
 
   return (
     <Box w="100%" h="100%" ref={parentRef}>
-      <Box
-        className={classes.chessboard}
-        style={{
-          maxWidth: parentHeight,
-        }}
-      >
-        <PromotionModal
-          pendingMove={pendingMove}
-          cancelMove={() => setPendingMove(null)}
-          confirmMove={async (p) => {
-            if (pendingMove) {
-              await checkMove({ ...pendingMove, promotion: p });
-              setPendingMove(null);
-            }
-          }}
-          turn={turn}
-          orientation={orientation}
-        />
-        <Chessground
-          animation={{
-            enabled: true,
-          }}
-          coordinates={showCoordinates !== "no"}
-          coordinatesOnSquares={showCoordinates === "all"}
-          orientation={orientation}
-          drawable={{
-            enabled: true,
-            visible: true,
-            autoShapes: boardShapes,
-          }}
-          movable={{
-            free: false,
-            color:
-              puzzle &&
-              equal(position, Array(currentMove).fill(0)) &&
-              (puzzle.completion === "incomplete" || puzzle.completion === "incorrect")
-                ? turn
-                : undefined,
-            dests: dests,
-            events: {
-              after: (orig, dest) => {
-                const from = parseSquare(orig)!;
-                const to = parseSquare(dest)!;
-                const move: NormalMove = { from, to };
-                if (
-                  pos?.board.get(from)?.role === "pawn" &&
-                  ((dest[1] === "8" && turn === "white") || (dest[1] === "1" && turn === "black"))
-                ) {
-                  setPendingMove(move);
-                } else {
-                  checkMove(move);
-                }
+      <BoardFrame style={{ maxWidth: parentHeight }}>
+        <Box className={classes.chessboard}>
+          <PromotionModal
+            pendingMove={pendingMove}
+            cancelMove={() => setPendingMove(null)}
+            confirmMove={async (p) => {
+              if (pendingMove) {
+                await checkMove({ ...pendingMove, promotion: p });
+                setPendingMove(null);
+              }
+            }}
+            turn={turn}
+            orientation={orientation}
+          />
+          <Chessground
+            animation={{
+              enabled: true,
+            }}
+            coordinates={showCoordinates !== "no"}
+            coordinatesOnSquares={showCoordinates === "all"}
+            orientation={orientation}
+            drawable={{
+              enabled: true,
+              visible: true,
+              autoShapes: [...chooserArrows(choice), ...boardShapes],
+              brushes: continuationBrushes,
+            }}
+            movable={{
+              free: false,
+              color:
+                puzzle &&
+                equal(position, Array(currentMove).fill(0)) &&
+                (puzzle.completion === "incomplete" || puzzle.completion === "incorrect")
+                  ? turn
+                  : undefined,
+              dests: dests,
+              events: {
+                after: (orig, dest) => {
+                  const from = parseSquare(orig)!;
+                  const to = parseSquare(dest)!;
+                  const move: NormalMove = { from, to };
+                  if (
+                    pos?.board.get(from)?.role === "pawn" &&
+                    ((dest[1] === "8" && turn === "white") || (dest[1] === "1" && turn === "black"))
+                  ) {
+                    setPendingMove(move);
+                  } else {
+                    checkMove(move);
+                  }
+                },
               },
-            },
-          }}
-          lastMove={
-            moveHighlight && currentNode.move ? chessgroundMove(currentNode.move) : undefined
-          }
-          turnColor={turn}
-          fen={currentNode.fen}
-          check={moveHighlight && pos?.isCheck()}
-        />
-      </Box>
+            }}
+            lastMove={
+              moveHighlight && currentNode.move ? chessgroundMove(currentNode.move) : undefined
+            }
+            turnColor={turn}
+            fen={currentNode.fen}
+            check={moveHighlight && pos?.isCheck()}
+          />
+        </Box>
+      </BoardFrame>
     </Box>
   );
 }

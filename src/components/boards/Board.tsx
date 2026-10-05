@@ -1,4 +1,4 @@
-import type { DrawBrushes, DrawShape } from "@lichess-org/chessground/draw";
+import type { DrawShape } from "@lichess-org/chessground/draw";
 import { Box, Center, Group, Text, useMantineTheme, VisuallyHidden } from "@mantine/core";
 import { IconChevronRight } from "@tabler/icons-react";
 import {
@@ -50,7 +50,13 @@ import {
   translateChessopsError,
 } from "@/utils/chessops";
 import ShowMaterial from "../common/ShowMaterial";
-import { TreeStateContext } from "../common/TreeStateContext";
+import { TreeStateContext, useVariationChooser } from "@/components/common/TreeStateContext";
+import BoardFrame from "@/components/boards/BoardFrame";
+import {
+  childMoveArrow,
+  chooserArrows,
+  continuationBrushes,
+} from "@/components/boards/continuationArrows";
 import FideInfo from "../databases/FideInfo";
 import { arrowColors } from "../panels/analysis/BestMoves";
 import AnnotationHint from "./AnnotationHint";
@@ -202,7 +208,8 @@ function Board({
     }
   }
 
-  let shapes: DrawShape[] = [];
+  const { choice } = useVariationChooser();
+  let shapes: DrawShape[] = chooserArrows(choice);
   if (showArrows && evalOpen && arrows.size > 0 && pos) {
     const entries = Array.from(arrows.entries()).sort((a, b) => a[0] - b[0]);
     for (const [i, moves] of entries) {
@@ -257,22 +264,11 @@ function Board({
   }
 
   // Variation arrows: show all children moves when there are alternatives
-  if (showVariationArrows && currentNode.children.length > 1) {
+  if (!choice && showVariationArrows && currentNode.children.length > 1) {
     for (const child of currentNode.children) {
-      if (child.move) {
-        const m = child.move as NormalMove;
-        const from = makeSquare(m.from);
-        const to = makeSquare(m.to);
-        if (from && to && !shapes.find((s) => s.orig === from && s.dest === to)) {
-          shapes.push({
-            orig: from,
-            dest: to,
-            brush: "variation",
-            modifiers: {
-              lineWidth: MEDIUM_BRUSH,
-            },
-          });
-        }
+      const arrow = childMoveArrow(child, "variation", MEDIUM_BRUSH);
+      if (arrow && !shapes.find((s) => s.orig === arrow.orig && s.dest === arrow.dest)) {
+        shapes.push(arrow);
       }
     }
   }
@@ -504,173 +500,168 @@ function Board({
               )}
               {evalOpen && <EvalBar score={currentNode.score || null} orientation={orientation} />}
             </Box>
-            <Box
-              style={
-                isBasicAnnotation(visualAnnotation)
-                  ? {
-                      "--light-color": lightColor,
-                      "--dark-color": darkColor,
-                    }
-                  : undefined
-              }
-              className={classes.chessboard}
-              ref={boardRef}
-              role="grid"
-              tabIndex={0}
-              aria-label={t("Board.AccessibleName", {
-                defaultValue: "Chessboard, {{orientation}} orientation",
-                orientation: boardColorLabel(t, orientation),
-              })}
-              aria-activedescendant={`board-square-${keyboardSquare}`}
-              onKeyDown={keyboardMove}
-              onClick={() => {
-                if (eraseDrawablesOnClick) clearShapes();
-              }}
-              onWheel={(e) => {
-                if (enableBoardScroll) {
-                  if (e.deltaY > 0) {
-                    goToNext();
-                  } else {
-                    goToPrevious();
-                  }
+            <BoardFrame>
+              <Box
+                style={
+                  isBasicAnnotation(visualAnnotation)
+                    ? {
+                        "--light-color": lightColor,
+                        "--dark-color": darkColor,
+                      }
+                    : undefined
                 }
-              }}
-            >
-              <PromotionModal
-                pendingMove={pendingMove}
-                cancelMove={() => setPendingMove(null)}
-                confirmMove={(p) => {
-                  if (pendingMove) {
-                    makeMove({
-                      from: pendingMove.from,
-                      to: pendingMove.to,
-                      promotion: p,
-                    });
+                className={classes.chessboard}
+                ref={boardRef}
+                role="grid"
+                tabIndex={0}
+                aria-label={t("Board.AccessibleName", {
+                  defaultValue: "Chessboard, {{orientation}} orientation",
+                  orientation: boardColorLabel(t, orientation),
+                })}
+                aria-activedescendant={`board-square-${keyboardSquare}`}
+                onKeyDown={keyboardMove}
+                onClick={() => {
+                  if (eraseDrawablesOnClick) clearShapes();
+                }}
+                onWheel={(e) => {
+                  if (enableBoardScroll) {
+                    if (e.deltaY > 0) {
+                      goToNext();
+                    } else {
+                      goToPrevious();
+                    }
                   }
                 }}
-                turn={turn}
-                orientation={orientation}
-              />
-              <div style={VISUALLY_HIDDEN_STYLE}>
-                {accessibleGrid.map((row) => (
-                  <div
-                    key={row[0]}
-                    role="row"
-                    aria-label={t("Board.Aria.Rank", { rank: row[0][1] })}
-                  >
-                    {row.map((square) => (
-                      <div
-                        id={`board-square-${square}`}
-                        key={square}
-                        role="gridcell"
-                        aria-label={accessibleSquareLabel(
-                          t,
-                          square,
-                          pos?.board.get(parseSquare(square)!),
-                          keyboardSource === square,
-                        )}
-                        aria-selected={keyboardSquare === square}
-                      />
-                    ))}
-                  </div>
-                ))}
-              </div>
+              >
+                <PromotionModal
+                  pendingMove={pendingMove}
+                  cancelMove={() => setPendingMove(null)}
+                  confirmMove={(p) => {
+                    if (pendingMove) {
+                      makeMove({
+                        from: pendingMove.from,
+                        to: pendingMove.to,
+                        promotion: p,
+                      });
+                    }
+                  }}
+                  turn={turn}
+                  orientation={orientation}
+                />
+                <div style={VISUALLY_HIDDEN_STYLE}>
+                  {accessibleGrid.map((row) => (
+                    <div
+                      key={row[0]}
+                      role="row"
+                      aria-label={t("Board.Aria.Rank", { rank: row[0][1] })}
+                    >
+                      {row.map((square) => (
+                        <div
+                          id={`board-square-${square}`}
+                          key={square}
+                          role="gridcell"
+                          aria-label={accessibleSquareLabel(
+                            t,
+                            square,
+                            pos?.board.get(parseSquare(square)!),
+                            keyboardSource === square,
+                          )}
+                          aria-selected={keyboardSquare === square}
+                        />
+                      ))}
+                    </div>
+                  ))}
+                </div>
 
-              <Chessground
-                ref={cgRef}
-                setBoardFen={setBoardFen}
-                orientation={orientation}
-                fen={currentNode.fen}
-                animation={{ enabled: !editingMode }}
-                coordinates={showCoordinates !== "no"}
-                coordinatesOnSquares={showCoordinates === "all"}
-                movable={{
-                  free: editingMode,
-                  color: movableColor,
-                  dests:
-                    editingMode || viewOnly
-                      ? undefined
-                      : disableVariations && currentNode.children.length > 0
+                <Chessground
+                  ref={cgRef}
+                  setBoardFen={setBoardFen}
+                  orientation={orientation}
+                  fen={currentNode.fen}
+                  animation={{ enabled: !editingMode }}
+                  coordinates={showCoordinates !== "no"}
+                  coordinatesOnSquares={showCoordinates === "all"}
+                  movable={{
+                    free: editingMode,
+                    color: movableColor,
+                    dests:
+                      editingMode || viewOnly
                         ? undefined
-                        : dests,
-                  showDests,
-                  events: {
-                    after(orig, dest, metadata) {
-                      if (!editingMode) {
-                        const from = parseSquare(orig)!;
-                        const to = parseSquare(dest)!;
+                        : disableVariations && currentNode.children.length > 0
+                          ? undefined
+                          : dests,
+                    showDests,
+                    events: {
+                      after(orig, dest, metadata) {
+                        if (!editingMode) {
+                          const from = parseSquare(orig)!;
+                          const to = parseSquare(dest)!;
 
-                        if (pos) {
-                          if (
-                            pos.board.get(from)?.role === "pawn" &&
-                            ((dest[1] === "8" && turn === "white") ||
-                              (dest[1] === "1" && turn === "black"))
-                          ) {
-                            if (autoPromote && !metadata.ctrlKey) {
-                              makeMove({
-                                from,
-                                to,
-                                promotion: "queen",
-                              });
+                          if (pos) {
+                            if (
+                              pos.board.get(from)?.role === "pawn" &&
+                              ((dest[1] === "8" && turn === "white") ||
+                                (dest[1] === "1" && turn === "black"))
+                            ) {
+                              if (autoPromote && !metadata.ctrlKey) {
+                                makeMove({
+                                  from,
+                                  to,
+                                  promotion: "queen",
+                                });
+                              } else {
+                                setPendingMove({
+                                  from,
+                                  to,
+                                });
+                              }
                             } else {
-                              setPendingMove({
+                              makeMove({
                                 from,
                                 to,
                               });
                             }
-                          } else {
-                            makeMove({
-                              from,
-                              to,
-                            });
                           }
+                        }
+                      },
+                    },
+                  }}
+                  events={{
+                    select: (key) => {
+                      if (editingMode && selectedPiece) {
+                        const square = parseSquare(key);
+                        if (square) {
+                          const setup = parseFen(currentNode.fen).unwrap();
+                          setup.board.set(square, selectedPiece);
+                          const normalized = normalizeEditedFen(makeFen(setup));
+                          if (normalized) setFen(normalized);
                         }
                       }
                     },
-                  },
-                }}
-                events={{
-                  select: (key) => {
-                    if (editingMode && selectedPiece) {
-                      const square = parseSquare(key);
-                      if (square) {
-                        const setup = parseFen(currentNode.fen).unwrap();
-                        setup.board.set(square, selectedPiece);
-                        const normalized = normalizeEditedFen(makeFen(setup));
-                        if (normalized) setFen(normalized);
-                      }
-                    }
-                  },
-                }}
-                turnColor={turn}
-                check={moveHighlight && pos?.isCheck()}
-                lastMove={moveHighlight && !editingMode ? lastMove : undefined}
-                premovable={{
-                  enabled: enablePremoves && !editingMode && !viewOnly,
-                }}
-                draggable={{
-                  enabled: true,
-                  deleteOnDropOff: editingMode,
-                }}
-                drawable={{
-                  enabled: true,
-                  visible: true,
-                  defaultSnapToValidMove: snapArrows,
-                  autoShapes: shapes,
-                  brushes: {
-                    variation: {
-                      key: "v",
-                      color: "#9b59b6",
-                      opacity: 0.8,
-                      lineWidth: 10,
+                  }}
+                  turnColor={turn}
+                  check={moveHighlight && pos?.isCheck()}
+                  lastMove={moveHighlight && !editingMode ? lastMove : undefined}
+                  premovable={{
+                    enabled: enablePremoves && !editingMode && !viewOnly,
+                  }}
+                  draggable={{
+                    enabled: true,
+                    deleteOnDropOff: editingMode,
+                  }}
+                  drawable={{
+                    enabled: true,
+                    visible: true,
+                    defaultSnapToValidMove: snapArrows,
+                    autoShapes: shapes,
+                    brushes: continuationBrushes,
+                    onChange: (shapes) => {
+                      setShapes(shapes);
                     },
-                  } as unknown as DrawBrushes,
-                  onChange: (shapes) => {
-                    setShapes(shapes);
-                  },
-                }}
-              />
-            </Box>
+                  }}
+                />
+              </Box>
+            </BoardFrame>
             <VisuallyHidden aria-live="polite">{keyboardAnnouncement}</VisuallyHidden>
           </Group>
           <BoardBar

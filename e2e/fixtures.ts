@@ -271,6 +271,33 @@ export async function preserveStorageForReload(page: Page) {
     await page.reload();
 }
 
+export async function assertChooserInsideBoard(board: Locator, chooser: Locator) {
+    const boardBox = (await board.boundingBox())!;
+    const card = chooser.locator("..");
+    const cardBox = (await card.boundingBox())!;
+    expect(cardBox.x).toBeGreaterThanOrEqual(boardBox.x);
+    expect(cardBox.y).toBeGreaterThanOrEqual(boardBox.y);
+    expect(cardBox.x + cardBox.width).toBeLessThanOrEqual(boardBox.x + boardBox.width + 1);
+    expect(cardBox.y + cardBox.height).toBeLessThanOrEqual(boardBox.y + boardBox.height + 1);
+    expect(cardBox.y - boardBox.y).toBeLessThanOrEqual(8);
+    // The frame is centred exactly; Chessground rounds its painted width down to eight pixels.
+    expect(
+        Math.abs(cardBox.x + cardBox.width / 2 - boardBox.x - boardBox.width / 2),
+    ).toBeLessThanOrEqual(4);
+}
+
+export async function playBoardMove(page: Page, board: Locator, from: string, to: string) {
+    const box = (await board.boundingBox())!;
+    for (const square of [from, to]) {
+        const file = square.charCodeAt(0) - "a".charCodeAt(0);
+        const rank = Number(square[1]) - 1;
+        await page.mouse.click(
+            box.x + ((file + 0.5) * box.width) / 8,
+            box.y + ((7 - rank + 0.5) * box.height) / 8,
+        );
+    }
+}
+
 // Selects a Files tree row by its name. Once a row wraps at a narrow width its centre can be one of
 // its icon buttons, so a plain row click would not select; the name always does.
 export async function selectFilesTreeRow(page: Page, name: string): Promise<Locator> {

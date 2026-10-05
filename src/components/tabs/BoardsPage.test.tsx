@@ -15,6 +15,7 @@ const fixtures = vi.hoisted(() => ({
   },
   createTreeStore: vi.fn(() => ({
     dispose: fixtures.dispose,
+    subscribe: fixtures.subscribe,
     getState: () => ({
       dirty: fixtures.dirty,
       setReportInProgress: fixtures.setReportInProgress,
@@ -31,6 +32,7 @@ const fixtures = vi.hoisted(() => ({
   treeStatus: { kind: "available" } as TabTreeStorageStatus,
   treeStatusListeners: new Set<() => void>(),
   dispose: vi.fn(),
+  subscribe: vi.fn(() => vi.fn()),
   dirty: false,
   closeHandler: null as (() => unknown) | null,
   closeReceipt: true,
@@ -349,6 +351,7 @@ beforeEach(() => {
   fixtures.abortGame.mockResolvedValue(undefined);
   fixtures.createTreeStore.mockImplementation(() => ({
     dispose: fixtures.dispose,
+    subscribe: fixtures.subscribe,
     getState: () => ({
       dirty: fixtures.dirty,
       setReportInProgress: fixtures.setReportInProgress,

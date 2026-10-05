@@ -3,6 +3,9 @@ import { useElementSize } from "@mantine/hooks";
 import { useContext } from "react";
 import useSWRImmutable from "swr/immutable";
 import { useStore } from "zustand";
+import BoardFrame from "@/components/boards/BoardFrame";
+import { chooserArrows, continuationBrushes } from "@/components/boards/continuationArrows";
+import { useVariationChooser } from "@/components/common/TreeStateContext";
 import { Chessground } from "@/chessground/Chessground";
 import { useTranslation } from "react-i18next";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
@@ -105,24 +108,29 @@ function PreviewBoard() {
   const headers = useStore(store, (s) => s.headers);
   const node = getNodeAtPath(root, position);
   const fen = node.fen;
+  const { choice } = useVariationChooser();
 
   return (
-    <Box
-      onWheel={(e) => {
-        if (e.deltaY > 0) {
-          goToNext();
-        } else {
-          goToPrevious();
-        }
-      }}
-    >
-      <Chessground
-        coordinates={false}
-        viewOnly={true}
-        fen={fen}
-        orientation={headers.orientation || "white"}
-      />
-    </Box>
+    <BoardFrame>
+      <Box
+        w="100%"
+        onWheel={(e) => {
+          if (e.deltaY > 0) {
+            goToNext();
+          } else {
+            goToPrevious();
+          }
+        }}
+      >
+        <Chessground
+          coordinates={false}
+          viewOnly={true}
+          drawable={{ autoShapes: chooserArrows(choice), brushes: continuationBrushes }}
+          fen={fen}
+          orientation={headers.orientation || "white"}
+        />
+      </Box>
+    </BoardFrame>
   );
 }
 

@@ -1,4 +1,10 @@
-import { expect, preserveStorageForReload, test } from "./fixtures";
+import {
+    assertChooserInsideBoard,
+    expect,
+    playBoardMove,
+    preserveStorageForReload,
+    test,
+} from "./fixtures";
 import type { ErrorPayload } from "../src/bindings/generated";
 
 test("board-keyboard: refuses an excess-material engine game with its localized position message", async ({
@@ -197,17 +203,6 @@ test("board-keyboard: next move at a branch asks which continuation to play", as
     await expect(board).toBeVisible();
 
     // Chessground moves by click-click; squares are located from the board box (White at the bottom).
-    async function play(from: string, to: string) {
-        const box = (await board.boundingBox())!;
-        for (const square of [from, to]) {
-            const file = square.charCodeAt(0) - "a".charCodeAt(0);
-            const rank = Number(square[1]) - 1;
-            await page.mouse.click(
-                box.x + ((file + 0.5) * box.width) / 8,
-                box.y + ((7 - rank + 0.5) * box.height) / 8,
-            );
-        }
-    }
     const previous = page.getByRole("button", { name: "Previous move", exact: true });
     // 1.e4 (1.d4) (1.c4): the first move played is the main line, the others become variations.
     for (const [from, to] of [
@@ -215,7 +210,7 @@ test("board-keyboard: next move at a branch asks which continuation to play", as
         ["d2", "d4"],
         ["c2", "c4"],
     ]) {
-        await play(from, to);
+        await playBoardMove(page, board, from, to);
         await expect(page.getByRole("gridcell", { name: `${to}, White Pawn` })).toHaveCount(1);
         await previous.click();
     }
@@ -229,10 +224,11 @@ test("board-keyboard: next move at a branch asks which continuation to play", as
     await expect(chooser.getByRole("option")).toHaveText(["1. e4", "1. d4", "1. c4"]);
     await expect(chooser.getByRole("option", { selected: true })).toHaveText("1. e4");
     await expect(page.getByRole("gridcell", { name: "e2, White Pawn" })).toHaveCount(1);
+    await assertChooserInsideBoard(board, chooser);
     await assertNoHorizontalOverflow();
     await assertAccessible();
     await capture("variation-chooser");
-    await expect(page).toHaveScreenshot("variation-chooser.png", { fullPage: true });
+    await expect.soft(page).toHaveScreenshot("variation-chooser.png", { fullPage: true });
 
     await page.keyboard.press("ArrowDown");
     await expect(chooser.getByRole("option", { selected: true })).toHaveText("1. d4");
@@ -266,4 +262,67 @@ test("board-keyboard: next move at a branch asks which continuation to play", as
     await page.keyboard.press("ArrowRight");
     await expect(chooser).toHaveCount(0);
     await expect(page.getByRole("gridcell", { name: "e4, White Pawn" })).toHaveCount(1);
+});
+
+test("board-keyboard: overflowing chooser stays bounded and reaches lower continuations", async ({
+    page,
+    assertAccessible,
+}) => {
+    await page.goto("/");
+    await page.getByRole("button", { name: /^open$/i }).click();
+    const board = page.locator("cg-board").first();
+    const previous = page.getByRole("button", { name: "Previous move", exact: true });
+    const moves = [
+        ["a2", "a3"],
+        ["a2", "a4"],
+        ["b2", "b3"],
+        ["b2", "b4"],
+        ["c2", "c3"],
+        ["c2", "c4"],
+        ["d2", "d3"],
+        ["d2", "d4"],
+        ["e2", "e3"],
+        ["e2", "e4"],
+        ["f2", "f3"],
+        ["f2", "f4"],
+        ["g2", "g3"],
+        ["g2", "g4"],
+        ["h2", "h3"],
+        ["h2", "h4"],
+        ["b1", "a3"],
+        ["b1", "c3"],
+        ["g1", "f3"],
+        ["g1", "h3"],
+    ];
+    for (const [from, to] of moves) {
+        await playBoardMove(page, board, from, to);
+        await previous.click();
+    }
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await page.mouse.move(250, 600);
+    await page.keyboard.press("ArrowRight");
+    const chooser = page.getByRole("listbox", { name: "Choose a continuation" });
+    await expect(chooser.getByRole("option")).toHaveCount(moves.length);
+    await assertChooserInsideBoard(board, chooser);
+    expect(await chooser.evaluate((list) => list.scrollHeight > list.clientHeight)).toBe(true);
+    await page.keyboard.press("ArrowUp");
+    const last = chooser.getByRole("option", { selected: true });
+    await expect(last).toHaveText("1. Nh3");
+    await expect
+        .poll(async () => {
+            const listBox = (await chooser.boundingBox())!;
+            const rowBox = (await last.boundingBox())!;
+            return (
+                rowBox.y >= listBox.y - 1 &&
+                rowBox.y + rowBox.height <= listBox.y + listBox.height + 1
+            );
+        })
+        .toBe(true);
+    await assertChooserInsideBoard(board, chooser);
+    await assertAccessible();
+    await chooser.getByRole("option", { name: "1. Nf3", exact: true }).click();
+    await expect(chooser).toBeHidden();
+    await expect(page.getByRole("gridcell", { name: "f3, White Knight", exact: true })).toHaveCount(
+        1,
+    );
 });
