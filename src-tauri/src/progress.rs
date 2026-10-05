@@ -475,7 +475,7 @@ pub fn clear_progress(
     state: tauri::State<'_, crate::AppState>,
     app: tauri::AppHandle,
 ) -> Result<u64, Error> {
-    clear_progress_with(&state.progress_state, &state.operations, id, |item| {
+    clear_progress_with(&state.progress_state, &state.operations, id, &mut |item| {
         emit(&app, item, true)
     })
 }
@@ -484,7 +484,7 @@ fn clear_progress_with(
     store: &ProgressStore,
     operations: &OperationRegistry,
     id: String,
-    emit_cleared: impl FnOnce(ProgressItem) -> Result<(), Error>,
+    emit_cleared: &mut dyn FnMut(ProgressItem) -> Result<(), Error>,
 ) -> Result<u64, Error> {
     let (generation, cleared) =
         operations.with_live_download_for_progress(&id, |live_download| {
@@ -569,7 +569,7 @@ mod tests {
                 }),
             );
             let mut emitted = false;
-            clear_progress_with(&store, &operations, id, |_| {
+            clear_progress_with(&store, &operations, id, &mut |_| {
                 assert!(!operations.download_admission_is_locked_for_test());
                 assert!(store.state.try_lock().is_ok());
                 emitted = true;
@@ -592,7 +592,7 @@ mod tests {
             &store,
             &OperationRegistry::default(),
             "job".into(),
-            |_item| Err(Error::Conflict("event channel unavailable".into())),
+            &mut |_item| Err(Error::Conflict("event channel unavailable".into())),
         )
         .unwrap();
 
@@ -613,7 +613,7 @@ mod tests {
             .transition(&lease, 35.0, ProgressState::Running)
             .unwrap();
         let before = store.get("job").unwrap().unwrap();
-        let generation = clear_progress_with(&store, &operations, "job".into(), |_| {
+        let generation = clear_progress_with(&store, &operations, "job".into(), &mut |_| {
             panic!("a preserved running item must not emit a clear")
         })
         .unwrap();
@@ -649,7 +649,7 @@ mod tests {
                     .unwrap();
             }
             let mut emitted = Vec::new();
-            let generation = clear_progress_with(&store, &operations, "job".into(), |item| {
+            let generation = clear_progress_with(&store, &operations, "job".into(), &mut |item| {
                 emitted.push(item);
                 Ok(())
             })
@@ -688,7 +688,7 @@ mod tests {
                 0
             };
             let mut emitted = Vec::new();
-            let generation = clear_progress_with(&store, &operations, "job".into(), |item| {
+            let generation = clear_progress_with(&store, &operations, "job".into(), &mut |item| {
                 emitted.push(item);
                 Ok(())
             })
@@ -711,13 +711,13 @@ mod tests {
             .unwrap();
         let lease = store.start("job".into()).unwrap();
         let generation =
-            clear_progress_with(&store, &operations, "job".into(), |_| Ok(())).unwrap();
+            clear_progress_with(&store, &operations, "job".into(), &mut |_| Ok(())).unwrap();
         assert!(generation > lease.generation);
         assert!(store.get("job").unwrap().is_none());
         let lease = store.start("job".into()).unwrap();
         operations.poison_for_test();
         assert!(matches!(
-            clear_progress_with(&store, &operations, "job".into(), |_| panic!(
+            clear_progress_with(&store, &operations, "job".into(), &mut |_| panic!(
                 "registry failure must not emit"
             )),
             Err(Error::Conflict(_))
@@ -925,6 +925,15 @@ mod tests {
         assert!(matches!(store.start("job".into()), Err(Error::Conflict(_))));
         assert!(matches!(store.get("job"), Err(Error::Conflict(_))));
         assert!(matches!(store.clear("job"), Err(Error::Conflict(_))));
+        assert!(matches!(
+            clear_progress_with(
+                &store,
+                &OperationRegistry::default(),
+                "job".into(),
+                &mut |_| panic!("progress store failure must not emit")
+            ),
+            Err(Error::Conflict(message)) if message == "progress store poisoned"
+        ));
         assert!(matches!(
             store.transition(&lease, 1.0, ProgressState::Running),
             Err(Error::Conflict(_))
