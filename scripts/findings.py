@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: 45b43dbf589045e32f51a80c45b6a852dacdac0215213c2cd3c2fbd5cce46348
+# agent-kit-sha256: fb1eb604674608049d4927a8565bef026772a5be98d24d84c9910106a357abad
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -56,6 +56,7 @@ Subcommands
 from __future__ import annotations
 
 import argparse
+import base64
 import errno
 import fcntl
 import functools
@@ -65,6 +66,7 @@ import itertools
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import stat
@@ -326,6 +328,9 @@ ORPHAN_PART_GRACE_SECONDS = 60.0
 # for an hour is outside the supported write window, and a swept candidate makes
 # the failed write visible rather than silently losing it.
 SCRATCH_GRACE_SECONDS = 3600.0
+INTAKE_RECOVERY_GRACE_SECONDS = 3600.0
+# One retry covers a concurrent merge removing the emptied intake directory.
+INTAKE_STAGING_ATTEMPTS = 2
 _GENERATED_SCRATCH_RE = re.compile(r"^(?P<target>.+)\.(?:tmp|candidate)-\d+-\d+-\d+$")
 _GENERATED_INBOX_PART_RE = re.compile(r"^\.\d{8}-\d{6}-\d+-\d+-\d+\.part$")
 MERGE_INTENT_NAME = ".merge-intent.json"
@@ -3271,6 +3276,22 @@ def _warn_pending_inbox(inbox: Path) -> None:
     # The completeness flag belongs to `summary`, which reports it; here a
     # dropped part only weakens a duplicate warning that is advisory anyway.
     pending, _complete, sources = _count_pending_inbox(inbox)
+    intake = intake_directory(inbox)
+    try:
+        intake_count = sum(
+            1 for path in intake.iterdir()
+            if not path.is_symlink() and path.is_file()
+        )
+    except FileNotFoundError:
+        intake_count = 0
+    except OSError as exc:
+        print(f"WARN intake {intake.name}: {exc}", file=sys.stderr)
+        intake_count = 0
+    if intake_count:
+        print(
+            f"NOTE {intake_count} intake entry(s) are pending in {intake}. "
+            "Read them before filing.", file=sys.stderr,
+        )
     if not pending:
         return
     claim = CLAIM if inbox == INBOX else inbox.with_name(f"{inbox.name}.claim")
@@ -5294,8 +5315,8 @@ def _adopt_orphan_parts(spool: Path, receipt_index: ReceiptIndex | None = None) 
             receipt = None
         else:
             receipt_path, receipt = indexed_receipt
-        if receipt is not None and receipt["state"] in {"published", "merged"}:
-            accounted_as = receipt.get("id", receipt["published"])
+        if receipt is not None and receipt["state"] in {"published", "merged", "quarantined"}:
+            accounted_as = receipt.get("id", receipt.get("refused", receipt["published"]))
             try:
                 part.unlink()
             except OSError as exc:
@@ -5486,39 +5507,74 @@ def _normalise_sentry_origin_entry(entry: str, ledger: Path) -> str:
     return "\n".join(lines) + ("\n" if entry.endswith("\n") else "")
 
 
+def _stamp_filing_entry(entry: str) -> str:
+    session_id = os.environ.get("DRAIN_SESSION_ID")
+    if not session_id:
+        return entry
+    lines = entry.splitlines()
+    try:
+        fence_states = _fence_mask(lines)
+    except LedgerError:
+        # Attribution precedes validation, including an interrupted fence. A
+        # virtual closing delimiter lets us inspect the prefix without repairing
+        # the staged text or treating quoted headers as its own header.
+        longest_run = max(
+            (len(m[0]) for m in re.finditer(r"`+|~+", entry)), default=2
+        )
+        for character in ("`", "~"):
+            try:
+                fence_states = _fence_mask([*lines, character * (longest_run + 1)])[:-1]
+                break
+            except LedgerError:
+                continue
+        else:
+            return entry
+    unfenced = "\n".join(
+        line for line, state in zip(lines, fence_states, strict=True)
+        if state is FenceState.OUTSIDE
+    )
+    if FILED_FROM_RE.search(unfenced) is None:
+        output = os.environ.get("DRAIN_CODEX_OUTPUT")
+        filed_from = f"* **Filed from:** {session_id}"
+        if output:
+            filed_from += f" · output {output}"
+        header_index = next(
+            (
+                index
+                for index, (line, state) in enumerate(
+                    zip(lines, fence_states, strict=True)
+                )
+                if state is FenceState.OUTSIDE and HEADER_RE.match(line)
+            ),
+            None,
+        )
+        if header_index is not None:
+            lines.insert(header_index + 1, filed_from)
+            entry = "\n".join(lines) + ("\n" if entry.endswith("\n") else "")
+    return entry
+
+
 def _read_and_validate_entry(
     entry_path: Path, ledger: Path
 ) -> tuple[str | None, list[str]]:
-    """Read, normalise and validate exactly one pending entry before creating the spool.
+    """Read and stamp an external path for `cmd_file_status`, then validate its entry.
 
-    Normalisation happens here rather than in the caller because validation is the very
-    next step: `cmd_file` validates before it publishes, so an entry carrying the
-    conventional `Blocked: none` with a Sentry-origin marker would be rejected outright
-    and the manual intake path would stop filing.
+    Content normalisation precedes validation so conventional Sentry-origin headers
+    resolve to the same filing identity as publication.
     """
     try:
         entry = entry_path.read_text(encoding="utf-8")
-        session_id = os.environ.get("DRAIN_SESSION_ID")
-        if session_id and FILED_FROM_RE.search(_unfenced_text(entry)) is None:
-            output = os.environ.get("DRAIN_CODEX_OUTPUT")
-            filed_from = f"* **Filed from:** {session_id}"
-            if output:
-                filed_from += f" · output {output}"
-            lines = entry.splitlines()
-            fence_states = _fence_mask(lines)
-            header_index = next(
-                (
-                    index
-                    for index, (line, state) in enumerate(
-                        zip(lines, fence_states, strict=True)
-                    )
-                    if state is FenceState.OUTSIDE and HEADER_RE.match(line)
-                ),
-                None,
-            )
-            if header_index is not None:
-                lines.insert(header_index + 1, filed_from)
-                entry = "\n".join(lines) + ("\n" if entry.endswith("\n") else "")
+        entry = _stamp_filing_entry(entry)
+        return _validate_entry_text(entry, ledger, entry_path)
+    except (OSError, UnicodeError, LedgerError) as exc:
+        return None, [f"could not read or parse {entry_path}: {exc}"]
+
+
+def _validate_entry_text(
+    entry: str, ledger: Path, entry_path: Path
+) -> tuple[str | None, list[str]]:
+    """Normalise staged text without attributing it to the sweeper."""
+    try:
         entry = _normalise_sentry_origin_entry(entry, ledger)
         ledger_text = ledger.read_text(encoding="utf-8")
         candidate = _entry_candidate_text(entry, ledger_text)
@@ -6801,6 +6857,8 @@ def _write_quarantined_inbox_receipts(
                     f"quarantined receipt {receipt_name} conflicts with the claim"
                 )
             continue
+        if existing is not None and "part" in existing:
+            record["part"] = existing["part"]
         _write_receipt(receipt_directory(inbox) / receipt_name, record)
 
 
@@ -6912,10 +6970,10 @@ def _write_merged_receipts(inbox: Path, records: list[tuple[str, str, str]]) -> 
                     f"merged receipt {path} does not match the claimed outcome"
                 )
             continue
-        _write_receipt(
-            path,
-            {"state": "merged", "published": published, "id": identifier},
-        )
+        record = {"state": "merged", "published": published, "id": identifier}
+        if existing is not None and "part" in existing:
+            record["part"] = existing["part"]
+        _write_receipt(path, record)
 
 
 def _receipt_records_from_intent(
@@ -8798,6 +8856,7 @@ def merge_inbox(
         return MergeResult(1)
     try:
         with _publish_lock(publish_lock_path(inbox)):
+            _sweep_intake(inbox, ledger, decisions)
             try:
                 return _merge_inbox_publish_locked(
                     inbox, ledger, decisions=decisions, mode=mode
@@ -9434,6 +9493,11 @@ def _release_consumer_lock(args: argparse.Namespace) -> None:
     args._consumer_lock_fd = None
 
 
+def _decode_entry_bytes(raw: bytes, *, errors: str = "strict") -> str:
+    """Decode entry bytes with the universal newlines used by `Path.read_text`."""
+    return raw.decode("utf-8", errors=errors).replace("\r\n", "\n").replace("\r", "\n")
+
+
 def cmd_file_status(args: argparse.Namespace) -> int:
     """Read the content-derived filing receipt without taking any lock."""
     try:
@@ -9441,13 +9505,32 @@ def cmd_file_status(args: argparse.Namespace) -> int:
     except LedgerError as exc:
         print(f"FAIL {exc}", file=sys.stderr)
         return 1
-    entry, issues = _read_and_validate_entry(args.entry, args.ledger)
+    intake_sourced = args.entry.resolve().parent == intake_directory(args.inbox.resolve())
+    if intake_sourced or args.entry == Path("-"):
+        try:
+            raw = (
+                sys.stdin.buffer.read() if args.entry == Path("-")
+                else args.entry.read_bytes()
+            )
+            text = _decode_entry_bytes(raw)
+            if not intake_sourced:
+                text = _stamp_filing_entry(text)
+            entry, issues = _validate_entry_text(
+                text, args.ledger, args.entry
+            )
+        except (OSError, UnicodeError) as exc:
+            entry, issues = None, [str(exc)]
+    else:
+        entry, issues = _read_and_validate_entry(args.entry, args.ledger)
     if issues:
         for issue in issues:
             print(f"FAIL {issue}", file=sys.stderr)
         return 1
     assert entry is not None
-    receipt_path = _receipt_path(args.inbox, entry)
+    receipt_path = _receipt_path(
+        args.inbox, entry,
+        filing_token=_intake_filing_token(args.entry) if intake_sourced else None,
+    )
     receipt = _read_receipt(receipt_path)
     if receipt is None:
         print("none")
@@ -9501,6 +9584,301 @@ def _refuse_terminal_filing_receipt(
     return False
 
 
+def intake_directory(inbox: Path) -> Path:
+    return inbox / "intake"
+
+
+def _intake_filing_token(path: Path) -> str | None:
+    match = re.search(r"-again-(.+)\.md$", path.name)
+    return match[1] if match is not None else None
+
+
+def _make_intake_directory(inbox: Path) -> Path:
+    for directory in (inbox, intake_directory(inbox)):
+        existed = directory.exists()
+        directory.mkdir(parents=True, exist_ok=True)
+        if not existed:
+            _fsync_directory(directory.parent)
+    return intake_directory(inbox)
+
+
+def _stage_intake(inbox: Path, raw: bytes, *, filing_token: str | None = None) -> Path:
+    """Persist bytes before validation; an unsuccessful write never removes bytes."""
+    suffix = f"-again-{filing_token}" if filing_token is not None else ""
+    name = f"{_publish_stamp()}-{_unique_suffix()}{suffix}.md"
+    for attempt in range(INTAKE_STAGING_ATTEMPTS):
+        try:
+            directory = _make_intake_directory(inbox)
+            staged = directory / name
+            temporary = directory / f".{name}.tmp-{_unique_suffix()}"
+            with temporary.open("xb") as handle:
+                handle.write(raw)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, staged)
+            _fsync_directory(directory)
+            return staged
+        except OSError as exc:
+            if exc.errno != errno.ENOENT or attempt == INTAKE_STAGING_ATTEMPTS - 1:
+                raise
+    raise AssertionError("unreachable intake staging retry")
+
+
+def _filing_citation_issues(entry: str, ledger: Path, decisions: Path) -> list[str]:
+    candidate = ledger.read_text(encoding="utf-8").rstrip() + "\n\n" + entry + "\n"
+    return _candidate_citation_issues(candidate, ledger, decisions)
+
+
+def _publish_filing(inbox: Path, entry: str, *, filing_token: str | None = None) -> Path:
+    """Publish under the caller's publish lock through the durable receipt protocol."""
+    receipt_path = _receipt_path(inbox, entry, filing_token=filing_token)
+    receipt = _read_receipt(receipt_path)
+    new_receipt = receipt is None
+    if receipt is not None and receipt["state"] in {"merged", "quarantined"}:
+        raise LedgerError(
+            f"this entry was already filed according to {receipt_path}. "
+            "Use --again to file it deliberately."
+        )
+    if receipt is None:
+        receipt = {
+            "state": "publishing",
+            "published": f"{_publish_stamp()}-{_unique_suffix()}.md",
+        }
+    published_name = receipt["published"]
+    published = inbox / published_name
+    claimed = inbox.with_name(f"{inbox.name}.claim") / published_name
+    in_inbox, in_claim = published.exists(), claimed.exists()
+    if not new_receipt and in_inbox and in_claim:
+        raise LedgerError(
+            f"filing receipt {receipt_path} names {published_name}, "
+            "which exists in both the inbox and claim. Use --again to file deliberately."
+        )
+    if (
+        not new_receipt
+        and in_inbox
+        and _sha256_bytes(published.read_bytes()) != _sha256_text(entry)
+    ):
+        raise LedgerError(
+            f"filing receipt {receipt_path} names {published_name}, "
+            "but the inbox content does not match this entry. "
+            "Use --again to file deliberately."
+        )
+    state = receipt["state"]
+    if not new_receipt and state == "published" and not in_inbox and not in_claim:
+        detail = (
+            f"it was filed as {receipt['id']}" if "id" in receipt
+            else "the allocated id was not recorded"
+        )
+        raise LedgerError(
+            f"this entry was already filed according to {receipt_path}; {detail}. "
+            "Use --again to file it deliberately."
+        )
+    needs_link = new_receipt or (state == "publishing" and not in_inbox and not in_claim)
+    if needs_link:
+        inbox.mkdir(parents=True, exist_ok=True)
+        recorded_part = receipt.get("part")
+        part = inbox / recorded_part if recorded_part is not None else None
+        if part is not None and part.exists():
+            if part.read_text(encoding="utf-8") != entry:
+                raise LedgerError(
+                    f"filing receipt {receipt_path} names part {part.name}, "
+                    "but its content does not match this entry"
+                )
+        else:
+            part = inbox / f".{_publish_stamp()}-{_unique_suffix()}.part"
+            receipt["part"] = part.name
+            _write_receipt(
+                receipt_path,
+                {"state": "publishing", "published": published_name, "part": part.name},
+            )
+            _atomic_write(part, entry)
+
+        def candidate_for(attempt: int) -> Path:
+            if attempt == 0:
+                return inbox / published_name
+            return inbox / f"{_publish_stamp()}-{_unique_suffix()}.md"
+
+        def record_publishing(candidate: Path) -> None:
+            nonlocal published_name
+            published_name = candidate.name
+            _record_publishing(receipt_path, receipt, candidate)
+
+        published = _link_with_retries(part, candidate_for, record_publishing)
+        _fsync_directory(inbox)
+        _write_receipt(receipt_path, _published_receipt_record(published.name, receipt))
+        try:
+            part.unlink(missing_ok=True)
+        except OSError as exc:
+            print(
+                f"WARN published {published}; "
+                f"could not remove part {part}: {exc}", file=sys.stderr
+            )
+    elif state == "publishing":
+        _fsync_directory(inbox)
+        _write_receipt(receipt_path, _published_receipt_record(published_name, receipt))
+    return published
+
+
+def _remove_published_intake(
+    path: Path, published: Path, *, replaced: bool = False
+) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        if replaced:
+            print(
+                f"WARN published {published}; "
+                f"could not remove replaced {path}: {exc} — a later merge treats it "
+                "as an unfiled entry (a duplicate is possible)", file=sys.stderr,
+            )
+        else:
+            print(
+                f"WARN published {published}; "
+                f"could not remove {path}: {exc} — the next merge clears it", file=sys.stderr
+            )
+
+
+def _complete_intake_filing(source: Path, published: Path, replaces: Path | None) -> None:
+    _remove_published_intake(source, published)
+    if replaces is not None:
+        _remove_published_intake(replaces, published, replaced=True)
+
+
+def _intake_covered(inbox: Path, entry: str, token: str | None = None) -> bool:
+    receipt = _read_receipt(_receipt_path(inbox, entry, filing_token=token))
+    if receipt is None or receipt["state"] == "publishing":
+        return False
+    if receipt["state"] in {"merged", "quarantined"}:
+        return True
+    published = inbox / receipt["published"]
+    try:
+        return _sha256_bytes(published.read_bytes()) == _sha256_text(entry)
+    except FileNotFoundError:
+        # A prepared claim has substituted its allocated id; its receipt is
+        # still published until the ledger commit, and the claim owns the bytes.
+        return (inbox.with_name(f"{inbox.name}.claim") / receipt["published"]).is_file()
+
+
+def _intake_recovery_entry(raw: bytes, ledger_text: str) -> str:
+    """Build a recovery identity from bytes and vocabulary, never a path or reason."""
+    lines = ledger_text.splitlines()
+    header = _ledger_header_text(lines, _fence_mask(lines))
+    vocabulary = _backticks_after_bold_label(header, VOCAB_RE) or frozenset()
+    rendered = _decode_entry_bytes(raw, errors="replace")
+    try:
+        unfenced = _unfenced_text(rendered)
+    except LedgerError:
+        unfenced = ""
+    own_area = re.search(r"\*\*Area:\*\*\s+([\w-]+)", unfenced)
+    if own_area is not None and own_area[1] in vocabulary:
+        area = own_area[1]
+    else:
+        tooling = TOOLING_AREAS_RE.search(header)
+        slugs = re.findall(r"`([^`]+)`", tooling[1]) if tooling is not None else []
+        if not slugs:
+            areas = VOCAB_RE.search(header)
+            slugs = re.findall(r"`([^`]+)`", areas[1]) if areas is not None else []
+        area = slugs[0] if slugs else ""
+    longest_run = max((len(m[0]) for m in re.finditer(r"`+", rendered)), default=0)
+    fence = "`" * max(3, longest_run + 1)
+    try:
+        text = _decode_entry_bytes(raw)
+        payload = f"{fence}\n{text}\n{fence}\n"
+    except UnicodeError:
+        encoded = base64.b64encode(raw).decode("ascii")
+        payload = (
+            f"```base64\n{encoded}\n```\n\nRendering (errors=\"replace\"):\n"
+            f"{fence}\n{rendered}\n{fence}\n"
+        )
+    return (
+        "### Recovered unfiled finding text\n\n"
+        f"* **ID:** f-PENDING · **Status:** open · **Area:** {area} · "
+        "**Root:** - · **Entry:** inline · **Blocked:** none\n\n"
+        "* **Where:** `<inbox>/intake/`, the findings intake directory.\n"
+        "* **Defect:** A session handed this text to `findings.py file` "
+        "and the filing never completed.\n"
+        "* **Proof:** After `related`, re-file the text as its own entry through "
+        "`file -` or show it is already filed, then close this one.\n"
+        "* **Found by:** findings.py merge-inbox intake sweep\n\n"
+        + payload
+    )
+
+
+def _sweep_intake(inbox: Path, ledger: Path, decisions: Path) -> None:
+    """Best-effort intake recovery under both merge locks; never block the queue."""
+    directory = intake_directory(inbox)
+    try:
+        paths = sorted(directory.iterdir())
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        print(f"WARN intake {directory.name}: {exc}", file=sys.stderr)
+        return
+    for path in paths:
+        try:
+            metadata = path.lstat()
+            if not stat.S_ISREG(metadata.st_mode):
+                print(f"WARN intake {path.name}: not a regular non-symlink file", file=sys.stderr)
+                continue
+            raw = path.read_bytes()
+            token = _intake_filing_token(path)
+            recovery = _intake_recovery_entry(raw, ledger.read_text(encoding="utf-8"))
+            reason = "interrupted staging"
+            entry = None
+            if not path.name.startswith(".") and path.suffix == ".md":
+                try:
+                    entry, issues = _validate_entry_text(_decode_entry_bytes(raw), ledger, path)
+                    if entry is not None and _intake_covered(inbox, entry, token):
+                        path.unlink(missing_ok=True)
+                        print(f"intake-cleared {path.name}")
+                        continue
+                    if not issues and entry is not None:
+                        issues = _filing_citation_issues(entry, ledger, decisions)
+                        if not issues:
+                            _publish_filing(inbox, entry, filing_token=token)
+                            path.unlink(missing_ok=True)
+                            print(f"intake-filed {path.name}")
+                            continue
+                    reason = issues[0] if issues else "entry cannot be filed"
+                except (LedgerError, UnicodeError) as exc:
+                    if isinstance(exc.__cause__, OSError):
+                        raise
+                    reason = str(exc)
+            wrapped, wrap_issues = _validate_entry_text(recovery, ledger, path)
+            if _intake_covered(inbox, wrapped if wrapped is not None else recovery):
+                path.unlink(missing_ok=True)
+                print(f"intake-cleared {path.name}")
+                continue
+            if metadata.st_mtime < time.time() - INTAKE_RECOVERY_GRACE_SECONDS:
+                issues = wrap_issues
+                if not issues and wrapped is not None:
+                    issues = _filing_citation_issues(wrapped, ledger, decisions)
+                    if not issues:
+                        _publish_filing(inbox, wrapped)
+                        path.unlink(missing_ok=True)
+                        print(f"intake-recovered {path.name}: {reason}")
+                        continue
+                reason = issues[0] if issues else reason
+            print(f"intake-pending {path.name}: {reason}")
+        except (OSError, LedgerError, UnicodeError) as exc:
+            print(f"WARN intake {path.name}: {exc}", file=sys.stderr)
+    try:
+        directory.rmdir()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        if exc.errno not in {errno.ENOTEMPTY, errno.EEXIST}:
+            print(f"WARN intake {directory.name}: {exc}", file=sys.stderr)
+    else:
+        try:
+            inbox.rmdir()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            if exc.errno not in {errno.ENOTEMPTY, errno.EEXIST}:
+                print(f"WARN intake {directory.name}: {exc}", file=sys.stderr)
+
+
 def cmd_file(args: argparse.Namespace) -> int:
     """Publish one pending finding, then merge it when no live drain owns the ledger."""
     try:
@@ -9508,211 +9886,116 @@ def cmd_file(args: argparse.Namespace) -> int:
     except LedgerError as exc:
         print(f"FAIL {exc}", file=sys.stderr)
         return 1
-    entry, issues = _read_and_validate_entry(args.entry, args.ledger)
-    if issues:
-        for issue in issues:
-            print(f"FAIL {issue}", file=sys.stderr)
-        return 1
-    assert entry is not None
-    decisions = _args_decisions(args)
-    _warn_filing_entry(entry, args.ledger, decisions)
-
-    inbox: Path = args.inbox
-    receipt_path = _receipt_path(inbox, entry)
-    claim = inbox.with_name(f"{inbox.name}.claim")
-    again = bool(getattr(args, "again", False))
-    terminal_receipt: dict[str, str] | None = None
-    receipt_error: LedgerError | None = None
-    if not again:
-        try:
-            terminal_receipt = _read_receipt(receipt_path)
-        except LedgerError as exc:
-            receipt_error = exc
-
+    inbox: Path = args.inbox.resolve()
+    intake = intake_directory(inbox)
+    source = args.entry.resolve()
+    intake_sourced = args.entry != Path("-") and source.parent == intake
+    display_path = source if intake_sourced else (
+        Path("<stdin>") if args.entry == Path("-") else args.entry
+    )
+    replaces = getattr(args, "replaces", None)
+    if replaces is not None:
+        replaces = replaces.absolute()
+        if (
+            replaces.parent.resolve() != intake or replaces.is_symlink()
+            or not replaces.is_file()
+        ):
+            print("FAIL --replaces must name a regular file inside the intake", file=sys.stderr)
+            return 2
+    if intake_sourced and bool(getattr(args, "again", False)):
+        print("FAIL --again cannot be used with an intake path", file=sys.stderr)
+        return 2
+    token = _intake_filing_token(source) if intake_sourced else (
+        _unique_suffix() if bool(getattr(args, "again", False)) else None
+    )
     try:
-        citation_candidate = (
-            args.ledger.read_text(encoding="utf-8").rstrip()
-            + "\n\n"
-            + entry
-            + "\n"
-        )
-        citation_issues = _candidate_citation_issues(
-            citation_candidate, args.ledger, decisions
-        )
+        raw = sys.stdin.buffer.read() if args.entry == Path("-") else source.read_bytes()
+        if not intake_sourced:
+            try:
+                text = _decode_entry_bytes(raw)
+                stamped = _stamp_filing_entry(text)
+                if stamped != text:
+                    raw = stamped.encode("utf-8")
+            except (UnicodeError, LedgerError):
+                pass
+            source = _stage_intake(inbox, raw, filing_token=token)
+    except (OSError, UnicodeError) as exc:
+        print(f"FAIL could not stage entry: {exc}", file=sys.stderr)
+        return 1
+
+    promoted = False
+    try:
+        entry, issues = _validate_entry_text(_decode_entry_bytes(raw), args.ledger, display_path)
+        if issues:
+            raise LedgerError("; ".join(issues))
+        assert entry is not None
+        decisions = _args_decisions(args)
+        _warn_filing_entry(entry, args.ledger, decisions)
+        receipt_path = _receipt_path(inbox, entry, filing_token=token)
+        try:
+            terminal = _read_receipt(receipt_path)
+        except LedgerError as exc:
+            raise LedgerError(f"{exc}. Use --again to file deliberately.") from exc
+        if terminal is not None and terminal["state"] == "merged" and intake_sourced:
+            with _publish_lock(publish_lock_path(inbox)):
+                _complete_intake_filing(source, inbox / terminal["published"], replaces)
+            promoted = True
+            print(f"already filed as {terminal['id']}")
+            return 0
+        if _refuse_terminal_filing_receipt(terminal, receipt_path):
+            return 1
+        citation_issues = _filing_citation_issues(entry, args.ledger, decisions)
+        if citation_issues:
+            raise LedgerError(
+                f"{display_path} does not validate with {decisions}: "
+                + "; ".join(citation_issues)
+            )
+        preconditions_checked = False
+        if not bool(getattr(args, "spool_only", False)):
+            drain_held, _reason, _unreadable = _drain_lock_state(drain_lock_path())
+            if not drain_held:
+                mode = _claim_finalisation_mode(
+                    args.ledger, merge_without_intent=_ACTIVE_LEDGER_COMMIT is None
+                )
+                if mode == "deferred":
+                    _deferred_preconditions(args.ledger, decisions)
+                    preconditions_checked = True
+        with _publish_lock(publish_lock_path(inbox)):
+            current = _read_receipt(receipt_path)
+            if intake_sourced and current is not None and current["state"] == "merged":
+                promoted = True
+                published = inbox / current["published"]
+                _complete_intake_filing(source, published, replaces)
+                print(f"already filed as {current['id']}")
+                return 0
+            try:
+                published = _publish_filing(inbox, entry, filing_token=token)
+            except OSError as exc:
+                raise LedgerError(f"could not publish filing to {inbox}: {exc}") from exc
+            promoted = True
+            _complete_intake_filing(source, published, replaces)
     except (LedgerError, OSError, UnicodeError) as exc:
-        citation_issues = [str(exc)]
-    if receipt_error is not None:
-        print(f"FAIL {receipt_error}. Use --again to file deliberately.", file=sys.stderr)
-        return 1
-    if not again and _refuse_terminal_filing_receipt(terminal_receipt, receipt_path):
-        return 1
-    if citation_issues:
-        print(
-            f"FAIL {args.entry} does not validate with {decisions}: "
-            + "; ".join(citation_issues),
-            file=sys.stderr,
-        )
-        return 1
-
-    preconditions_checked = False
-    if not bool(getattr(args, "spool_only", False)):
-        drain_held, _reason, _unreadable = _drain_lock_state(drain_lock_path())
-        if not drain_held:
-            mode = _claim_finalisation_mode(
-                args.ledger, merge_without_intent=_ACTIVE_LEDGER_COMMIT is None
+        print(f"FAIL {exc}", file=sys.stderr)
+        return 2 if isinstance(exc, (PublishLockBusyError, LedgerDirtyError)) else 1
+    finally:
+        if not promoted:
+            global_options = []
+            for name in ("ledger", "decisions"):
+                if getattr(args, f"_explicit_{name}", False):
+                    global_options.extend([f"--{name}", str(getattr(args, name))])
+            options = []
+            if bool(getattr(args, "spool_only", False)):
+                options.append("--spool-only")
+            if getattr(args, "_explicit_inbox", False) or args.inbox != INBOX:
+                options.extend(["--inbox", str(args.inbox)])
+            if token is not None:
+                options.append("--again")
+            command = shlex.join(
+                ["findings.py", *global_options, "file", *options, "--replaces", str(source), "-"]
             )
-            if mode == "deferred":
-                _deferred_preconditions(args.ledger, decisions)
-                preconditions_checked = True
-    published_name: str | None = None
-    # Published with `os.link`, which REFUSES to overwrite, rather than
-    # `os.replace`, which does so silently. A review run deferring several
-    # findings in a loop is one process publishing repeatedly, and the original
-    # `<stamp>-<pid>` name collided within a second: the second filing destroyed
-    # the first while both were reported as landed. The suffix makes that
-    # practically impossible and the link makes it impossible -- a clock that
-    # repeats or steps backwards costs a retry here instead of an entry.
-    with _publish_lock(publish_lock_path(inbox)):
-        if again:
-            filing_token = _unique_suffix()
-            published_name = f"{_publish_stamp()}-{_unique_suffix()}.md"
-            receipt_path = _receipt_path(inbox, entry, filing_token=filing_token)
-            receipt = None
-        else:
-            try:
-                receipt = _read_receipt(receipt_path)
-            except LedgerError as exc:
-                print(
-                    f"FAIL {exc}. Use --again to file deliberately.",
-                    file=sys.stderr,
-                )
-                return 1
-
-        if _refuse_terminal_filing_receipt(receipt, receipt_path):
-            return 1
-
-        new_receipt = receipt is None
-        if receipt is None:
-            if published_name is None:
-                published_name = f"{_publish_stamp()}-{_unique_suffix()}.md"
-            receipt = {"state": "publishing", "published": published_name}
-        else:
-            published_name = receipt["published"]
-
-        assert published_name is not None
-
-        published = inbox / published_name
-        claimed = claim / published_name
-        in_inbox = published.exists()
-        in_claim = claimed.exists()
-        if not new_receipt and in_inbox and in_claim:
             print(
-                f"FAIL filing receipt {receipt_path} names {published_name}, which "
-                "exists in both the inbox and claim. Use --again to file "
-                "deliberately.",
+                f"kept {source}; file the corrected entry with: {command}",
                 file=sys.stderr,
-            )
-            return 1
-
-        state = receipt["state"]
-        if not new_receipt and in_inbox:
-            try:
-                actual_digest = hashlib.sha256(published.read_bytes()).hexdigest()
-            except OSError as exc:
-                print(
-                    f"FAIL could not verify published filing {published}: {exc}. "
-                    "Use --again to file deliberately.",
-                    file=sys.stderr,
-                )
-                return 1
-            expected_digest = hashlib.sha256(entry.encode("utf-8")).hexdigest()
-            if actual_digest != expected_digest:
-                print(
-                    f"FAIL filing receipt {receipt_path} names {published_name}, "
-                    "but the inbox content does not match this entry. Use --again "
-                    "to file deliberately.",
-                    file=sys.stderr,
-                )
-                return 1
-        if not new_receipt and state == "published" and not in_inbox and not in_claim:
-            recorded_id = receipt.get("id")
-            if recorded_id is None:
-                detail = "the allocated id was not recorded"
-            else:
-                detail = f"it was filed as {recorded_id}"
-            print(
-                f"FAIL this entry was already filed according to {receipt_path}; "
-                f"{detail}. Use --again to file it deliberately.",
-                file=sys.stderr,
-            )
-            return 1
-
-        needs_link = new_receipt or (
-            state == "publishing" and not in_inbox and not in_claim
-        )
-        if needs_link:
-            try:
-                inbox.mkdir(parents=True, exist_ok=True)
-                recorded_part = receipt.get("part")
-                part = inbox / recorded_part if recorded_part is not None else None
-                if part is not None and part.exists():
-                    if part.read_text(encoding="utf-8") != entry:
-                        raise LedgerError(
-                            f"filing receipt {receipt_path} names part {part.name}, "
-                            "but its content does not match this entry"
-                        )
-                else:
-                    part = inbox / f".{_publish_stamp()}-{_unique_suffix()}.part"
-                    receipt["part"] = part.name
-                    _write_receipt(
-                        receipt_path,
-                        {
-                            "state": "publishing",
-                            "published": published_name,
-                            "part": part.name,
-                        },
-                    )
-                    _atomic_write(part, entry)
-
-                def candidate_for(attempt: int) -> Path:
-                    if attempt == 0:
-                        # `nonlocal` in record_publishing below defeats the
-                        # narrowing the assert above established, so re-state it
-                        # here rather than widen the annotation.
-                        assert published_name is not None
-                        return inbox / published_name
-                    return inbox / f"{_publish_stamp()}-{_unique_suffix()}.md"
-
-                def record_publishing(candidate: Path) -> None:
-                    nonlocal published, published_name
-                    published = candidate
-                    published_name = candidate.name
-                    _record_publishing(receipt_path, receipt, candidate)
-
-                linked = _link_with_retries(part, candidate_for, record_publishing)
-                published = linked
-                published_name = linked.name
-                _fsync_directory(inbox)
-                _write_receipt(
-                    receipt_path,
-                    _published_receipt_record(published_name, receipt),
-                )
-                receipt["state"] = "published"
-                receipt["published"] = published_name
-                part.unlink(missing_ok=True)
-            except OSError as exc:
-                raise LedgerError(
-                    f"could not publish filing to {inbox}: {exc}"
-                ) from exc
-        elif state == "publishing":
-            try:
-                _fsync_directory(inbox)
-            except OSError as exc:
-                raise LedgerError(
-                    f"could not make published filing {published} durable: {exc}"
-                ) from exc
-            _write_receipt(
-                receipt_path, _published_receipt_record(published_name, receipt)
             )
 
     if bool(getattr(args, "spool_only", False)):
@@ -12635,9 +12918,10 @@ def build_parser() -> argparse.ArgumentParser:
         "file", help="publish one pending finding entry through the inbox spool"
     )
     p_file.add_argument(
-        "entry", type=Path, help="path to one complete ### finding entry"
+        "entry", type=Path, help="path to one complete ### finding entry, or - for stdin"
     )
     p_file.add_argument("--inbox", type=Path, default=None, help=argparse.SUPPRESS)
+    p_file.add_argument("--replaces", type=Path, help="replace a kept intake entry after filing")
     p_file.add_argument(
         "--again",
         action="store_true",
@@ -12774,6 +13058,8 @@ def main(argv: list[str] | None = None) -> int:
     if _plan_only_refuses(args):
         return 3
     _bind_repo_root(root)
+    args._explicit_ledger = args.ledger is not None
+    args._explicit_decisions = args.decisions is not None
     if args.ledger is None:
         args.ledger = LEDGER
     try:
@@ -12788,6 +13074,7 @@ def main(argv: list[str] | None = None) -> int:
     except (LedgerError, OSError, UnicodeDecodeError) as exc:
         print(f"FAIL {exc}", file=sys.stderr)
         return 1
+    args._explicit_inbox = getattr(args, "inbox", None) is not None
     if getattr(args, "inbox", None) is None and hasattr(args, "inbox"):
         args.inbox = INBOX
     if getattr(args, "answers", None) is None and hasattr(args, "answers"):
