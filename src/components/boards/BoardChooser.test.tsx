@@ -20,6 +20,7 @@ import {
 } from "@/state/atoms";
 import { createTreeStore, type TreeStore } from "@/state/store/tree";
 import type { VariationChooserStore } from "@/state/store/variationChooser";
+import { press } from "@/tests/keyboard";
 import { installMatchMediaStub } from "@/tests/matchMedia";
 import { installResizeObserverStub } from "@/tests/resizeObserver";
 import { fixtureNode } from "@/tests/treeFixtures";
@@ -120,12 +121,6 @@ function render(initial: TreeState = initialTree(), puzzle = false) {
       </Provider>,
     ),
   );
-}
-function press(key: string) {
-  act(() => {
-    document.dispatchEvent(new KeyboardEvent("keydown", { key, code: key, bubbles: true }));
-    document.dispatchEvent(new KeyboardEvent("keyup", { key, code: key, bubbles: true }));
-  });
 }
 beforeEach(() => {
   engine.enabled = false;

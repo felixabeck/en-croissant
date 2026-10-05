@@ -4,6 +4,7 @@ import { act, useContext } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { createTreeStore, type TreeStore } from "@/state/store/tree";
+import { press } from "@/tests/keyboard";
 import { installMatchMediaStub } from "@/tests/matchMedia";
 import { installResizeObserverStub } from "@/tests/resizeObserver";
 import { fixtureNode } from "@/tests/treeFixtures";
@@ -75,18 +76,6 @@ function middleGameStore() {
   ];
   tree.position = [0];
   return createTreeStore(undefined, tree);
-}
-
-function press(key: string, { shiftKey = false, ctrlKey = false } = {}) {
-  const code = key.length === 1 ? `Key${key.toUpperCase()}` : key;
-  act(() => {
-    document.dispatchEvent(
-      new KeyboardEvent("keydown", { key, code, shiftKey, ctrlKey, bubbles: true }),
-    );
-    document.dispatchEvent(
-      new KeyboardEvent("keyup", { key, code, shiftKey, ctrlKey, bubbles: true }),
-    );
-  });
 }
 
 function options() {
