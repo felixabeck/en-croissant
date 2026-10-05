@@ -367,6 +367,12 @@ const tauriBootstrap = () => {
     type Listener = { event: string; callback: number };
     const callbacks = new Map<number, (payload: unknown) => void>();
     const listeners: Listener[] = [];
+    const pendingSearches = new Set<{
+        id: unknown;
+        tab: unknown;
+        generation: unknown;
+        resolve: (result: null) => void;
+    }>();
     let nextCallback = 1;
     let nextNativeTicket = 1;
 
@@ -405,8 +411,8 @@ const tauriBootstrap = () => {
         get_opening_from_fens: { result: [] },
         list_puzzle_databases: { result: [] },
         kill_engines: { result: null },
+        kill_engine: { result: null },
         get_engine_config: { result: { name: "E2E Stockfish", options: [] } },
-        get_best_moves: { result: null },
         stop_engine: { result: null },
         release_engine_search: { result: null },
         abort_game: { result: null },
@@ -444,6 +450,18 @@ const tauriBootstrap = () => {
                 listeners.push({ event: String(args.event), callback });
         }
 
+        // Native searches stay pending for their lifetime; scenarios can still script a response.
+        if (command === "get_best_moves" && !state.commands[command]) {
+            return new Promise<null>((resolve) => {
+                pendingSearches.add({
+                    id: args.id,
+                    tab: args.tab,
+                    generation: args.generation,
+                    resolve,
+                });
+            });
+        }
+
         const response = state.commands[command] ?? defaultCommands[command];
         if (!response) {
             throw new Error(`Unexpected Tauri IPC command: ${command}`);
@@ -453,6 +471,27 @@ const tauriBootstrap = () => {
         if ("error" in response) {
             if (typeof response.error === "string") throw new Error(response.error);
             throw response.error;
+        }
+        if (
+            command === "stop_engine" ||
+            command === "release_engine_search" ||
+            command === "kill_engines" ||
+            command === "kill_engine"
+        ) {
+            for (const search of pendingSearches) {
+                if (search.tab !== args.tab) continue;
+                if (command !== "kill_engines" && search.id !== args.engine) continue;
+                if (
+                    command === "stop_engine" &&
+                    args.expectedGeneration !== null &&
+                    args.expectedGeneration !== search.generation
+                )
+                    continue;
+                if (command === "release_engine_search" && args.generation !== search.generation)
+                    continue;
+                pendingSearches.delete(search);
+                search.resolve(null);
+            }
         }
         return response.results?.length ? response.results.shift() : response.result;
     };
