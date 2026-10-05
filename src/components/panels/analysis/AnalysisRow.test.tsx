@@ -1,9 +1,11 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { INITIAL_FEN } from "chessops/fen";
 
 const mocks = vi.hoisted(() => ({
   scoreTypeFamily: vi.fn((_engineId: string) => Symbol("scoreType")),
+  makeMoves: vi.fn(),
 }));
 
 import AnalysisRow from "./AnalysisRow";
@@ -16,12 +18,12 @@ vi.mock("@/state/atoms", () => ({
 }));
 vi.mock("jotai", () => ({
   useAtom: () => ["cp", vi.fn()],
-  useAtomValue: () => false,
+  useAtomValue: () => true,
 }));
-vi.mock("@/utils/chessops", () => ({ positionFromFen: () => [null] }));
+vi.mock("zustand", () => ({ useStore: () => mocks.makeMoves }));
 vi.mock("@mantine/hooks", () => ({ useForceUpdate: () => vi.fn() }));
 vi.mock("@mantine/core", () => {
-  const Container = ({ children }: { children?: React.ReactNode }) => <div>{children}</div>;
+  const Container = ({ children, ...props }: any) => <div {...props}>{children}</div>;
   return {
     Box: Container,
     CopyButton: ({ value, children }: any) => (
@@ -41,15 +43,21 @@ vi.mock("@tabler/icons-react", () => ({
   IconCopy: () => null,
 }));
 vi.mock("@/components/common/IconAction", () => ({
-  IconAction: ({ label, onClick, children }: any) => (
-    <button type="button" aria-label={label} onClick={onClick}>
+  IconAction: ({ label, onClick, children, disabled }: any) => (
+    <button type="button" aria-label={label} onClick={onClick} disabled={disabled}>
       {children}
     </button>
   ),
 }));
 vi.mock("./ScoreBubble", () => ({ default: () => null }));
-vi.mock("@/components/common/MoveCell", () => ({ default: () => null }));
-vi.mock("@/chessground/Chessground", () => ({ Chessground: () => null }));
+vi.mock("@/components/common/MoveCell", () => ({
+  default: ({ move, onClick, onContextMenu }: any) => (
+    <button onClick={onClick} onContextMenu={onContextMenu}>
+      {move}
+    </button>
+  ),
+}));
+vi.mock("@/chessground/Chessground", () => ({ Chessground: () => <div data-preview /> }));
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -106,4 +114,43 @@ test("keys score display by id while copied output keeps the engine name", async
   const copied = host.querySelector('[data-testid="copy-value"]')?.getAttribute("data-value");
   expect(copied).toContain("Duplicate");
   expect(copied).not.toContain("engine-uuid-1");
+});
+
+test("inert previous rows ignore insertion, hover preview, context and expansion; current rows remain interactive", async () => {
+  const row = (inert: boolean) => (
+    <AnalysisRow
+      engineId="engine"
+      engineName="Engine"
+      score={{ value: { type: "cp", value: 34 }, wdl: null }}
+      moves={["e4", "e5"]}
+      halfMoves={0}
+      threat={false}
+      fen={INITIAL_FEN}
+      orientation="white"
+      inert={inert}
+    />
+  );
+  await act(async () => root.render(row(false)));
+  const move = host.querySelectorAll("button")[0];
+  await act(async () => {
+    move.click();
+    move.parentElement!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+  });
+  expect(mocks.makeMoves).toHaveBeenCalledWith({ payload: ["e4"] });
+  expect(host.querySelector("[data-preview]")).not.toBeNull();
+  mocks.makeMoves.mockClear();
+  await act(async () => root.render(row(true)));
+  await act(async () => {
+    move.click();
+    move.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+    move.parentElement!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    (host.querySelector('[aria-label="Board.Analysis.Expand"]') as HTMLButtonElement).click();
+  });
+  expect(mocks.makeMoves).not.toHaveBeenCalled();
+  expect(host.querySelector("[data-preview]")).toBeNull();
+  expect(host.querySelector('[aria-label="Board.Analysis.Expand"]')?.hasAttribute("disabled")).toBe(
+    true,
+  );
+  expect(host.querySelector("[inert]")).not.toBeNull();
+  expect(host.querySelector('[data-testid="copy-value"]')).toBeNull();
 });

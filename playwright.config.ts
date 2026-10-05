@@ -32,6 +32,11 @@ export default defineConfig({
     snapshotPathTemplate: "{testDir}/{testFilePath}-snapshots/{arg}-{projectName}{ext}",
     projects: [
         {
+            name: "engine-gap",
+            testMatch: /engine-gap\.spec\.ts/,
+            use: { ...chromium, viewport: { width: 1440, height: 900 }, colorScheme: "light" },
+        },
+        {
             name: "workspace-tabs",
             testMatch: /workspace-tabs\.spec\.ts/,
             use: { ...chromium, viewport: { width: 1440, height: 900 }, colorScheme: "light" },

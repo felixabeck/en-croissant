@@ -1,24 +1,19 @@
 import { Group, Paper, Text, useMantineTheme } from "@mantine/core";
 import { IconPinnedOff, IconPlayerPause, IconPlayerPlay } from "@tabler/icons-react";
-import { parseUci } from "chessops";
-import { INITIAL_FEN, makeFen } from "chessops/fen";
 import { useAtom, useAtomValue } from "jotai";
-import { memo, useContext, useDeferredValue, useMemo } from "react";
+import { memo, useContext } from "react";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
 import { useShallow } from "zustand/react/shallow";
-import type { GoMode } from "@/bindings";
 import {
   activeTabAtom,
   currentDetachedEngineAtom,
-  currentThreatAtom,
-  engineMovesFamily,
   enginesAtom,
   tabEngineSettingsFamily,
 } from "@/state/atoms";
 import { getVariationLine } from "@/utils/chess";
-import { positionFromFen, swapMove } from "@/utils/chessops";
-import type { EngineSettings } from "@/utils/engines";
+import type { Engine } from "@/utils/engines";
+import { useDisplayedEngineLines } from "../panels/analysis/useDisplayedEngineLines";
 import ScoreBubble from "../panels/analysis/ScoreBubble";
 import IconAction from "./IconAction";
 import { TreeStateContext } from "./TreeStateContext";
@@ -34,33 +29,18 @@ function DetachedEval() {
     return null;
   }
 
-  return (
-    <DetachedEvalInner
-      engineId={detachedEngineId}
-      engineName={engine.name}
-      defaultSettings={engine.settings ?? undefined}
-      defaultGo={engine.go ?? undefined}
-      onClose={() => setDetachedEngineId(null)}
-    />
-  );
+  return <DetachedEvalInner engine={engine} onClose={() => setDetachedEngineId(null)} />;
 }
 
 const DetachedEvalInner = memo(function DetachedEvalInner({
-  engineId,
-  engineName,
-  defaultSettings,
-  defaultGo,
+  engine,
   onClose,
 }: {
-  engineId: string;
-  engineName: string;
-  defaultSettings?: EngineSettings;
-  defaultGo?: GoMode;
+  engine: Engine;
   onClose: () => void;
 }) {
   const { t } = useTranslation();
   const activeTab = useAtomValue(activeTabAtom);
-  const threat = useAtomValue(currentThreatAtom);
   const store = useContext(TreeStateContext)!;
   const rootFen = useStore(store, (s) => s.root.fen);
   const moves = useStore(
@@ -71,42 +51,18 @@ const DetachedEvalInner = memo(function DetachedEvalInner({
 
   const [settings, setSettings] = useAtom(
     tabEngineSettingsFamily({
-      engineId,
-      defaultSettings,
-      defaultGo,
+      engineId: engine.id,
+      defaultSettings: engine.settings ?? undefined,
+      defaultGo: engine.go ?? undefined,
       tab: activeTab!,
     }),
   );
 
-  const ev = useAtomValue(engineMovesFamily({ engine: engineId, tab: activeTab! }));
-
-  const [pos] = positionFromFen(rootFen);
-  if (pos) {
-    for (const uci of moves) {
-      const move = parseUci(uci);
-      if (!move) break;
-      pos.play(move);
-    }
-  }
-  const isGameOver = pos?.isEnd() ?? false;
-  const finalFen = useMemo(() => (pos ? makeFen(pos.toSetup()) : null), [pos]);
-
-  const { searchingFen, searchingMoves } = useMemo(() => {
-    if (threat) {
-      return {
-        searchingFen: swapMove(finalFen || INITIAL_FEN),
-        searchingMoves: [] as string[],
-      };
-    }
-    return { searchingFen: rootFen, searchingMoves: moves };
-  }, [rootFen, moves, threat, finalFen]);
-
-  const engineVariations = useDeferredValue(
-    useMemo(
-      () => ev.get(`${searchingFen}:${searchingMoves.join(",")}`),
-      [ev, searchingFen, searchingMoves],
-    ),
-  );
+  const {
+    lines: engineVariations,
+    dimmed,
+    isGameOver,
+  } = useDisplayedEngineLines(engine, rootFen, moves);
 
   const hasData = engineVariations && engineVariations.length > 0 && !isGameOver;
   const topLine = hasData ? engineVariations[0] : null;
@@ -130,24 +86,33 @@ const DetachedEvalInner = memo(function DetachedEvalInner({
             )}
           </IconAction>
           <Text fw={700} fz="sm" style={{ whiteSpace: "nowrap" }}>
-            {engineName}
+            {engine.name}
           </Text>
           {topLine ? (
             <>
-              <ScoreBubble size="sm" score={topLine.score} />
-              <Text
-                fz="xs"
-                c="dimmed"
-                style={{
-                  whiteSpace: "nowrap",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  flex: 1,
-                  minWidth: 0,
-                }}
+              <Group
+                gap="xs"
+                wrap="nowrap"
+                flex={1}
+                miw={0}
+                opacity={dimmed ? 0.5 : 1}
+                inert={dimmed}
               >
-                {topLine.sanMoves.slice(0, 8).join(" ")}
-              </Text>
+                <ScoreBubble size="sm" score={topLine.score} />
+                <Text
+                  fz="xs"
+                  c="dimmed"
+                  style={{
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    flex: 1,
+                    minWidth: 0,
+                  }}
+                >
+                  {topLine.sanMoves.slice(0, 8).join(" ")}
+                </Text>
+              </Group>
             </>
           ) : (
             <Text fz="xs" c="dimmed" lh={"1.6rem"}>

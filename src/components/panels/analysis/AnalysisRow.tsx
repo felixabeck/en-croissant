@@ -28,6 +28,7 @@ function AnalysisRow({
   threat,
   fen,
   orientation,
+  inert = false,
 }: {
   engineId: string;
   engineName: string;
@@ -37,6 +38,7 @@ function AnalysisRow({
   threat: boolean;
   fen: string;
   orientation: "white" | "black";
+  inert?: boolean;
 }) {
   const [open, setOpen] = useState<boolean>(false);
   const { t } = useTranslation();
@@ -76,13 +78,13 @@ function AnalysisRow({
 
   return (
     <>
-      <Table.Tr style={{ verticalAlign: "top" }}>
+      <Table.Tr inert={inert} opacity={inert ? 0.5 : 1} style={{ verticalAlign: "top" }}>
         <Table.Td width={70}>
           <ScoreBubble
             size="md"
             score={score}
             evalDisplay={evalDisplay}
-            setEvalDisplay={setEvalDisplay}
+            setEvalDisplay={inert ? undefined : setEvalDisplay}
           />
         </Table.Td>
         <Table.Td>
@@ -111,6 +113,7 @@ function AnalysisRow({
                 orientation={orientation}
                 lastMove={lastMove}
                 isCheck={isCheck}
+                inert={inert}
               />
             ))}
           </Flex>
@@ -120,6 +123,7 @@ function AnalysisRow({
             <IconAction
               label={open ? t("Board.Analysis.Collapse") : t("Board.Analysis.Expand")}
               pressed={open}
+              disabled={inert}
               style={{
                 transition: "transform 200ms ease",
                 transform: open ? "rotate(180deg)" : "none",
@@ -135,6 +139,7 @@ function AnalysisRow({
                     label={copied ? t("Common.Copied") : t("Menu.Edit.Copy")}
                     color={copied ? "teal" : undefined}
                     variant="subtle"
+                    disabled={inert}
                     onClick={copy}
                   >
                     {copied ? (
@@ -165,6 +170,7 @@ function BoardPopover({
   fen,
   orientation,
   position,
+  inert,
 }: {
   san: string;
   lastMove: Key[];
@@ -176,6 +182,7 @@ function BoardPopover({
   fen: string;
   orientation: "white" | "black";
   position: { left: number; top: number };
+  inert: boolean;
 }) {
   const total_moves = halfMoves + index + 1 + (threat ? 1 : 0);
   const is_white = total_moves % 2 === 1;
@@ -189,7 +196,12 @@ function BoardPopover({
 
   return (
     <>
-      <Box onMouseEnter={() => setHovering(true)} onMouseLeave={() => setHovering(false)}>
+      <Box
+        onMouseEnter={() => {
+          if (!inert) setHovering(true);
+        }}
+        onMouseLeave={() => setHovering(false)}
+      >
         {(index === 0 || is_white) && `${move_number.toString()}${is_white ? "." : "..."}`}
         <MoveCell
           move={san}
@@ -198,13 +210,13 @@ function BoardPopover({
           onContextMenu={() => undefined}
           isStart={false}
           onClick={() => {
-            if (!threat) {
+            if (!inert && !threat) {
               makeMoves({ payload: moves.slice(0, index + 1) });
             }
           }}
         />
       </Box>
-      {preview && hovering && (
+      {!inert && preview && hovering && (
         <Portal>
           <Box
             w={200}

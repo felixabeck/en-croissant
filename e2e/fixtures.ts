@@ -405,6 +405,10 @@ const tauriBootstrap = () => {
         get_opening_from_fens: { result: [] },
         list_puzzle_databases: { result: [] },
         kill_engines: { result: null },
+        get_engine_config: { result: { name: "E2E Stockfish", options: [] } },
+        get_best_moves: { result: null },
+        stop_engine: { result: null },
+        release_engine_search: { result: null },
         abort_game: { result: null },
         "plugin:app|version": { result: "0.0.0-e2e" },
         "plugin:app|tauri_version": { result: "2.10.0" },
@@ -433,6 +437,7 @@ const tauriBootstrap = () => {
     const invoke = async (command: string, args: Record<string, unknown> = {}) => {
         state.invocations.push({ command, args });
         if (command === "prepare_native_read") return `e2e-native-read-${nextNativeTicket++}`;
+        if (command === "prepare_engine_search") return `e2e-engine-search-${nextNativeTicket++}`;
         if (command === "plugin:event|listen") {
             const callback = args.handler;
             if (typeof callback === "number")

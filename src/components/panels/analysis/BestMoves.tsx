@@ -22,31 +22,28 @@ import {
   IconSettings,
   IconTargetArrow,
 } from "@tabler/icons-react";
-import { parseUci } from "chessops";
-import { INITIAL_FEN, makeFen } from "chessops/fen";
 import equal from "fast-deep-equal";
 import { useAtom, useAtomValue } from "jotai";
-import { memo, startTransition, useCallback, useDeferredValue, useEffect, useMemo } from "react";
+import { memo, startTransition, useCallback, useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import { match } from "ts-pattern";
 import type { BestMoves } from "@/bindings";
 import { IconAction } from "@/components/common/IconAction";
 import {
   activeTabAtom,
   currentDetachedEngineAtom,
   currentThreatAtom,
-  engineMovesFamily,
   engineProgressFamily,
   enginesAtom,
   tabEngineSettingsFamily,
 } from "@/state/atoms";
-import { positionFromFen, swapMove, translateChessopsError } from "@/utils/chessops";
+import { swapMove, translateChessopsError } from "@/utils/chessops";
 import type { Engine } from "@/utils/engines";
 import { formatNodes } from "@/utils/format";
 import { formatScore } from "@/utils/score";
 import AnalysisRow from "./AnalysisRow";
 import classes from "./BestMoves.module.css";
 import EngineSettingsForm, { type Settings } from "./EngineSettingsForm";
+import { useDisplayedEngineLines } from "./useDisplayedEngineLines";
 
 export const arrowColors = [
   { strong: "blue", pale: "paleBlue" },
@@ -77,7 +74,6 @@ function BestMovesComponent({
   const { t } = useTranslation();
 
   const activeTab = useAtomValue(activeTabAtom);
-  const ev = useAtomValue(engineMovesFamily({ engine: engine.id, tab: activeTab! }));
   const progress = useAtomValue(engineProgressFamily({ engine: engine.id, tab: activeTab! }));
   const [, setEngines] = useAtom(enginesAtom);
   const [settings, setSettings2] = useAtom(
@@ -120,42 +116,15 @@ function BestMovesComponent({
   const isDetached = detachedEngineId === engine.id;
   const theme = useMantineTheme();
 
-  const [pos, error] = positionFromFen(fen);
-  if (pos) {
-    for (const uci of moves) {
-      const move = parseUci(uci);
-      if (!move) {
-        console.log("Invalid move", uci);
-        break;
-      }
-      pos.play(move);
-    }
-  }
-
-  const isGameOver = pos?.isEnd() ?? false;
-  const finalFen = useMemo(() => (pos ? makeFen(pos.toSetup()) : null), [pos]);
-
-  const { searchingFen, searchingMoves } = useMemo(
-    () =>
-      match(threat)
-        .with(true, () => ({
-          searchingFen: swapMove(finalFen || INITIAL_FEN),
-          searchingMoves: [],
-        }))
-        .with(false, () => ({
-          searchingFen: fen,
-          searchingMoves: moves,
-        }))
-        .exhaustive(),
-    [fen, moves, threat, finalFen],
-  );
-
-  const engineVariations = useDeferredValue(
-    useMemo(
-      () => ev.get(`${searchingFen}:${searchingMoves.join(",")}`),
-      [ev, searchingFen, searchingMoves],
-    ),
-  );
+  const {
+    lines: engineVariations,
+    dimmed,
+    loading,
+    error,
+    isGameOver,
+    finalFen,
+    halfMoves: displayedHalfMoves,
+  } = useDisplayedEngineLines(engine, fen, moves, halfMoves);
 
   return (
     <>
@@ -187,6 +156,8 @@ function BestMovesComponent({
             enabled={settings.enabled}
             progress={progress}
             error={error}
+            loading={loading}
+            dimmed={dimmed}
           />
         </Accordion.Control>
         <Group gap={0}>
@@ -287,6 +258,7 @@ function BestMovesComponent({
               !error &&
               !engineVariations &&
               (settings.enabled ? (
+                loading &&
                 [
                   ...Array(
                     Number(
@@ -325,7 +297,8 @@ function BestMovesComponent({
                     engineName={engine.name}
                     moves={engineVariation.sanMoves}
                     score={engineVariation.score}
-                    halfMoves={halfMoves}
+                    halfMoves={displayedHalfMoves}
+                    inert={dimmed}
                     threat={threat}
                     fen={threat ? swapMove(finalFen) : finalFen}
                     orientation={orientation}
@@ -346,6 +319,8 @@ function EngineTop({
   enabled,
   progress,
   error,
+  loading,
+  dimmed,
 }: {
   name: string;
   engineVariations: BestMoves[] | undefined;
@@ -353,6 +328,8 @@ function EngineTop({
   enabled: boolean;
   progress: number;
   error: any;
+  loading: boolean;
+  dimmed: boolean;
 }) {
   const { t } = useTranslation();
   const isComputed = engineVariations && engineVariations.length > 0;
@@ -361,14 +338,12 @@ function EngineTop({
   const nps = isComputed ? formatNodes(engineVariations[0].nps, 1) : 0;
 
   return (
-    <Group justify="space-between" wrap="nowrap">
+    <Group justify="space-between" wrap="nowrap" opacity={dimmed ? 0.5 : 1}>
       <Group align="center" wrap="nowrap">
         <Text fw="bold" fz="lg" lineClamp={1}>
           {name}
         </Text>
-        {enabled && !isGameOver && !error && !engineVariations && (
-          <Code fz="xs">{t("Common.Loading")}</Code>
-        )}
+        {loading && enabled && !isGameOver && !error && <Code fz="xs">{t("Common.Loading")}</Code>}
         {progress < 100 &&
           enabled &&
           !isGameOver &&

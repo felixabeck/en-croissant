@@ -20,19 +20,17 @@ import {
 } from "@tabler/icons-react";
 import { useNavigate } from "@tanstack/react-router";
 import { useAtom, useAtomValue } from "jotai";
-import { memo, startTransition, useContext, useDeferredValue, useMemo, useOptimistic } from "react";
+import { memo, startTransition, useContext, useMemo, useOptimistic } from "react";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import { IconAction } from "@/components/common/IconAction";
 import {
-  activeTabAtom,
   allEnabledAtom,
   currentAnalysisTabAtom,
   currentExpandedEnginesAtom,
   enableAllAtom,
-  engineMovesFamily,
   enginesAtom,
 } from "@/state/atoms";
 import { getVariationLine } from "@/utils/chess";
@@ -45,6 +43,7 @@ import LogsPanel from "./LogsPanel";
 import ReportPanel from "./ReportPanel";
 import ScoreBubble from "./ScoreBubble";
 import TablebaseInfo from "./TablebaseInfo";
+import { useDisplayedEngineLines } from "./useDisplayedEngineLines";
 
 function AnalysisPanel() {
   const { t } = useTranslation();
@@ -300,7 +299,7 @@ function reorderEngines(
   return result;
 }
 
-function EngineSummary({
+export function EngineSummary({
   engine,
   fen,
   moves,
@@ -313,12 +312,7 @@ function EngineSummary({
   shorten: boolean;
   i: number;
 }) {
-  const activeTab = useAtomValue(activeTabAtom);
-  const [ev] = useAtom(engineMovesFamily({ engine: engine.id, tab: activeTab! }));
-
-  const curEval = useDeferredValue(
-    useMemo(() => ev.get(`${fen}:${moves.join(",")}`), [ev, fen, moves]),
-  );
+  const { lines: curEval, dimmed } = useDisplayedEngineLines(engine, fen, moves);
   const score = curEval && curEval.length > 0 ? curEval[0].score : null;
 
   return (
@@ -337,7 +331,9 @@ function EngineSummary({
             : engine.name}
         </Text>
         {score ? (
-          <ScoreBubble size="sm" score={score} />
+          <Group opacity={dimmed ? 0.5 : 1} inert={dimmed}>
+            <ScoreBubble size="sm" score={score} />
+          </Group>
         ) : (
           <Text fz="sm" c="dimmed">
             ???

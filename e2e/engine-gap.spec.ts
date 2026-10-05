@@ -1,0 +1,112 @@
+import { expect, test } from "./fixtures";
+
+test("engine-gap: A lines stay dimmed and inert at B until explicitly emitted B lines arrive", async ({
+    page,
+    emitTauriEvent,
+}) => {
+    await page.clock.install({ time: new Date("2026-10-05T12:00:00Z") });
+    await page.clock.pauseAt(new Date("2026-10-05T12:01:00Z"));
+    await page.addInitScript(() => {
+        localStorage.setItem(
+            "engines",
+            JSON.stringify([
+                {
+                    type: "local",
+                    id: "e2e-engine",
+                    name: "E2E Stockfish",
+                    version: "19",
+                    filename: "stockfish",
+                    handle: { id: { id: "e2e-engine-handle" }, kind: "engine" },
+                    loaded: true,
+                    settings: [],
+                    go: { t: "Infinite" },
+                },
+            ]),
+        );
+    });
+    await page.goto("/");
+    await page.getByRole("button", { name: /^open$/i }).click();
+    await page.getByRole("tab", { name: "Analysis", exact: true }).click();
+    await page.getByRole("button", { name: "Enable engine", exact: true }).click();
+    const searches = () =>
+        page.evaluate(() =>
+            window.__E2E_TAURI__
+                .invocations()
+                .filter(({ command }) => command === "get_best_moves"),
+        );
+    await expect.poll(async () => (await searches()).length).toBe(1);
+    const panel = page.locator(".mantine-Accordion-item").filter({ hasText: "E2E Stockfish" });
+    await expect(panel.locator(".mantine-Skeleton-root")).toHaveCount(0);
+    await expect(panel).not.toContainText("Loading");
+    const emitLines = async (
+        index: number,
+        sanMoves: string[],
+        uciMoves: string[],
+        score: number,
+    ) => {
+        const request = (await searches())[index].args as {
+            id: string;
+            tab: string;
+            generation: string;
+            options: { fen: string; moves: string[] };
+        };
+        await emitTauriEvent({
+            event: "best-moves-payload",
+            payload: {
+                engine: request.id,
+                tab: request.tab,
+                generation: request.generation,
+                fen: request.options.fen,
+                moves: request.options.moves,
+                progress: 50,
+                bestLines: [
+                    {
+                        depth: 20,
+                        multipv: 1,
+                        nodes: 1234,
+                        nps: 5678,
+                        score: { value: { type: "cp", value: score }, wdl: null },
+                        sanMoves,
+                        uciMoves,
+                    },
+                ],
+            },
+        });
+    };
+    await emitLines(0, ["e4", "e5", "Nf3"], ["e2e4", "e7e5", "g1f3"], 34);
+    await expect(panel.getByRole("button", { name: "e4", exact: true })).toBeVisible();
+    await page.mouse.move(1400, 850);
+    const before = await panel.boundingBox();
+    const board = page.getByRole("grid", { name: "Chessboard, White orientation", exact: true });
+    await board.focus();
+    await page.keyboard.press("ArrowLeft");
+    await page.keyboard.press("Enter");
+    await page.keyboard.press("ArrowUp");
+    await page.keyboard.press("ArrowUp");
+    await page.keyboard.press("Enter");
+    await expect.poll(async () => (await searches()).length).toBe(2);
+    // Advance the board's animation frames under the controlled clock, below the loading deadline.
+    await page.clock.runFor(250);
+    await expect(page.getByRole("gridcell", { name: "d4, White Pawn", exact: true })).toHaveCount(
+        1,
+    );
+    const oldRow = panel.locator("tr[inert]").filter({ hasText: "e4" });
+    await expect(oldRow).toHaveCount(1);
+    await expect(oldRow).toHaveCSS("opacity", "0.5");
+    await expect(panel.locator(".mantine-Skeleton-root")).toHaveCount(0);
+    await expect(panel).not.toContainText("Loading");
+    expect((await panel.boundingBox())!.height).toBe(before!.height);
+    const oldMove = oldRow.locator("button").first();
+    await oldMove.dispatchEvent("click");
+    await oldMove.dispatchEvent("mouseover");
+    await oldMove.dispatchEvent("contextmenu");
+    await expect.poll(async () => (await searches()).length).toBe(2);
+    await expect(page.getByRole("grid")).toHaveCount(1);
+    await expect(page.getByRole("menu")).toHaveCount(0);
+    await expect(page).toHaveScreenshot("engine-gap-dimmed.png", { fullPage: true });
+    await emitLines(1, ["d5", "c4"], ["d7d5", "c2c4"], 55);
+    await expect(panel.locator("tr[inert]")).toHaveCount(0);
+    await expect(panel.getByRole("button", { name: "d5", exact: true })).toBeVisible();
+    await expect(panel).toContainText("0.55");
+    await expect(panel).not.toContainText("Loading");
+});
