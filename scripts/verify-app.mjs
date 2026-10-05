@@ -4,7 +4,7 @@
 //   pnpm verify:app                 run the checks
 //   pnpm verify:app --screenshot X  also write a PNG of the page to X
 //
-// It asserts sixty-three independently reported checks, plus one conditional reload check, that no other gate in this repository can:
+// It asserts sixty-four independently reported checks, plus one conditional reload check, that no other gate in this repository can:
 //   group | assertions
 //   startup | 5: production authority, user-file safety, owned-image cleanup, real IPC bridge,
 //             document title
@@ -15,7 +15,8 @@
 //                  retained-engine-WebKitGTK-decode, detached-blob-CSP-rejection
 //   native services | 3: path capability refusal, live sound port, bundled sound bytes
 //   attachments | 4: prepare, retire, live-session bytes/intent, titlebar cleanup
-//   native reads | 5: mint, cancel, cancelled-ticket refusal, retained ticket, destroyed-window log
+//   native reads | 6: mint, cancel, cancelled-ticket refusal, document-reload sweep, retained ticket,
+//                     destroyed-window log
 //   Files | 3: seeded-row-render, double-click-route, opened-game-notation
 //   Databases | 2: default-root-unusable, selected-root-missing
 //   NAGs | 9: hint path/title/visibility, unknown hint absence, saved edit, four preserved NAGs
@@ -114,6 +115,26 @@
 //                                            |   4078384, 4078409                             |
 //   shutdown skipped image cleanup           | FAIL  titlebar shutdown removes retired image    | 1
 //                                            |   bytes and intent while retaining the owner    |
+//
+// Staged-failure record for the document-reload sweep (2026-10-05). The verifier stayed unchanged;
+// src/index.tsx omitted only the startup releasePreviousDocumentOperations call, then pnpm build
+// and pnpm verify:app ran against that binary. The source was restored byte-exact before the next
+// break. This run reported 4 failed checks (the reload assertion and three NAG hint assertions).
+//   break                                   | assertion/message                              | exit
+//   applicationStartup omits the startup   | FAIL  a real document reload cancels the      | 1
+//   reservation sweep                      |   previous document's retained reservation     |
+//                                           |   timed out waiting for the reloaded renderer  |
+//                                           |   and its previous-document reservation sweep  |
+//
+// Staged-failure record for post-reload reservation survival (2026-10-05). After render,
+// src/index.tsx used a sessionStorage reload marker to schedule another sweep every 50 ms only in
+// the reloaded document. pnpm build and pnpm verify:app read that binary with unchanged verifier
+// logic. The reload and retained-ticket checks stayed green; the destroyed-window assertion
+// printed its own FAIL line. The run reported 4 failed checks (that assertion and three NAG hint
+// assertions). The temporary source was restored byte-exact and rebuilt before the final proof.
+//   break                                   | assertion/message                              | exit
+//   repeated reservation sweeps after      | FAIL  the real destroyed-window event cancels | 1
+//   render in the reloaded document        |   the exact retained main-webview reservation  |
 //
 // Download-destination assertions (2026-09-22). Each staged break fails only its own assertion;
 // the fixture or assertion argument was restored immediately after the run.
@@ -2510,6 +2531,50 @@ try {
     });
   }
 
+  const reloadCheck = "a real document reload cancels the previous document's retained reservation";
+  try {
+    const previousDocumentRead = await invokeAndWait(
+      session,
+      "previous-document native read reservation to settle",
+      "__verifyAppPreviousDocumentRead",
+      `window.__TAURI_INTERNALS__.invoke("prepare_native_read", {})`,
+    );
+    if (typeof previousDocumentRead.value !== "string") {
+      throw new Error(
+        previousDocumentRead.rejected ??
+          previousDocumentRead.error ??
+          "no reservation ticket returned",
+      );
+    }
+    const previousDocumentTicket = previousDocumentRead.value;
+    await session.call("POST", "/refresh", {});
+    await waitFor(
+      "the reloaded renderer and its previous-document reservation sweep",
+      async () => {
+        const ready = await session
+          .execute("return typeof window.__TAURI_INTERNALS__ === 'object'")
+          .catch(() => false);
+        if (!ready) return false;
+        const prefix = "reloaded webview main cancelled native reservations:";
+        return (await readLog()).split("\n").some((line) => {
+          const start = line.indexOf(prefix);
+          if (start === -1) return false;
+          const ids = line
+            .slice(start + prefix.length)
+            .trim()
+            .split(",");
+          return ids.includes(previousDocumentTicket);
+        });
+      },
+      { timeoutMs: FILES_PROBE_TIMEOUT_MS },
+    );
+    check(true, reloadCheck);
+  } catch (error) {
+    check(false, reloadCheck, error.message);
+  }
+
+  // The reload log wait above confirms the startup sweep ran before this new-document reservation.
+  // Its presence in the destroyed-window log below proves it survived that sweep until close.
   const retainedRead = await invokeAndWait(
     session,
     "retained native read reservation to settle",
@@ -2539,6 +2604,7 @@ try {
   );
 
   const log = await readLog();
+  // This retained ticket belongs to the reloaded document and survived its startup sweep.
   check(
     log.includes(`destroyed webview main cancelled native reads/downloads: ${retainedTicket}`),
     "the real destroyed-window event cancels the exact retained main-webview reservation",
