@@ -41,6 +41,14 @@ async cancelNativeRead(ticket: string) : Promise<Result<null, ErrorPayload>> {
     else return { status: "error", error: e  as any };
 }
 },
+async releasePreviousDocumentOperations() : Promise<Result<null, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("release_previous_document_operations") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async prepareAnalysis(tab: string) : Promise<Result<string, ErrorPayload>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("prepare_analysis", { tab }) };

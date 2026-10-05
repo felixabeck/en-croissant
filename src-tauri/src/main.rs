@@ -557,15 +557,24 @@ fn native_read_operation_for_owner(
 }
 
 fn cancel_destroyed_window_operations(state: &AppState, label: &str) {
-    cancel_destroyed_window_operations_in_registry(&state.operations, label);
+    cancel_destroyed_window_operations_in_registry(
+        &state.operations,
+        &state.engine_supervisor,
+        label,
+    );
 }
 
-fn cancel_destroyed_window_operations_in_registry(operations: &OperationRegistry, label: &str) {
+fn cancel_destroyed_window_operations_in_registry(
+    operations: &OperationRegistry,
+    supervisor: &crate::engine::EngineSupervisor,
+    label: &str,
+) {
     match operations.cancel_owner(label) {
-        Ok(tickets) if !tickets.is_empty() => {
+        Ok(cancelled) if !cancelled.is_empty() => {
+            let ids = signal_cancelled_analyses(supervisor, &cancelled);
             log::info!(
                 "destroyed webview {label} cancelled native reads/downloads: {}",
-                tickets.join(",")
+                ids
             );
         }
         Ok(_) => {}
@@ -575,6 +584,53 @@ fn cancel_destroyed_window_operations_in_registry(operations: &OperationRegistry
             )
         }
     }
+}
+
+#[tauri::command]
+#[specta::specta]
+fn release_previous_document_operations(
+    window: WebviewWindow,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), Error> {
+    release_previous_document_operations_in_registry(
+        &state.operations,
+        &state.engine_supervisor,
+        window.label(),
+    )
+}
+
+fn release_previous_document_operations_in_registry(
+    operations: &OperationRegistry,
+    supervisor: &crate::engine::EngineSupervisor,
+    label: &str,
+) -> Result<(), Error> {
+    let cancelled = operations.cancel_owner_reservations(label)?;
+    if !cancelled.is_empty() {
+        let ids = signal_cancelled_analyses(supervisor, &cancelled);
+        log::info!(
+            "reloaded webview {label} cancelled native reservations: {}",
+            ids
+        );
+    }
+    Ok(())
+}
+
+fn signal_cancelled_analyses(
+    supervisor: &crate::engine::EngineSupervisor,
+    cancelled: &[crate::infra::operations::CancelledOperation],
+) -> String {
+    for operation in cancelled {
+        if operation.kind == crate::infra::operations::CancelledOperationKind::Analysis {
+            if let Err(error) = chess::cancel_analysis_engine(supervisor, &operation.id) {
+                log::error!("could not cancel analysis engine {}: {error}", operation.id);
+            }
+        }
+    }
+    cancelled
+        .iter()
+        .map(|operation| operation.id.as_str())
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 #[cfg(test)]
@@ -2039,6 +2095,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             verify_signed_bytes,
             prepare_native_read,
             cancel_native_read,
+            release_previous_document_operations,
             prepare_analysis,
             reconcile_startup_path_owners,
             reconcile_engine_attachments,
@@ -2610,6 +2667,104 @@ mod native_window_operation_wiring_tests {
     use super::*;
 
     #[test]
+    fn previous_document_command_uses_actual_owner_and_shared_analysis_signal() {
+        use crate::infra::blocking::source_scan::body_at_indent;
+        let source = include_str!("main.rs");
+        let command = body_at_indent(source, "fn release_previous_document_operations(");
+        assert_eq!(command.matches("window.label()").count(), 1, "{command}");
+        let compact: String = command.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(compact.contains("release_previous_document_operations_in_registry(&state.operations,&state.engine_supervisor,window.label(),)"), "{command}");
+        for signature in [
+            "fn release_previous_document_operations_in_registry(",
+            "fn cancel_destroyed_window_operations_in_registry(",
+        ] {
+            let body = body_at_indent(source, signature);
+            assert_eq!(
+                body.matches("signal_cancelled_analyses(supervisor, &cancelled)")
+                    .count(),
+                1,
+                "{body}"
+            );
+        }
+        let signal = body_at_indent(source, "fn signal_cancelled_analyses(");
+        assert!(
+            signal.contains("chess::cancel_analysis_engine(supervisor, &operation.id)"),
+            "{signal}"
+        );
+        let destroy = body_at_indent(source, "fn cancel_destroyed_window_operations(");
+        assert!(destroy.contains("&state.engine_supervisor"), "{destroy}");
+        let cancel = body_at_indent(include_str!("chess.rs"), "pub async fn cancel_analysis(");
+        assert!(
+            cancel.contains("cancel_analysis_engine(&state.engine_supervisor, &id)"),
+            "{cancel}"
+        );
+    }
+
+    #[tokio::test]
+    async fn lifecycle_cancellation_signals_the_exact_supervised_analysis() {
+        for destroyed in [false, true] {
+            let operations = OperationRegistry::default();
+            let supervisor = crate::engine::EngineSupervisor::default();
+            let id = operations.prepare_analysis("main", "tab").unwrap();
+            let lease = operations
+                .claim_analysis(&id, "main", "tab", "analysis")
+                .unwrap();
+            let other_id = operations.prepare_analysis("other", "tab").unwrap();
+            let other_lease = operations
+                .claim_analysis(&other_id, "other", "tab", "other analysis")
+                .unwrap();
+            let mut processes = Vec::new();
+            for id in [&id, &other_id] {
+                let key = crate::engine::EngineKey::new("analysis".into(), id.clone()).unwrap();
+                let (actor, _) = crate::engine::EngineActor::recording_test_actor(&[]);
+                processes.push(
+                    supervisor
+                        .replace_handle(
+                            key,
+                            actor,
+                            id.clone(),
+                            crate::infra::path_authority::PathRef {
+                                id: "test-engine".into(),
+                            },
+                        )
+                        .await
+                        .unwrap(),
+                );
+            }
+
+            if destroyed {
+                cancel_destroyed_window_operations_in_registry(&operations, &supervisor, "main");
+            } else {
+                release_previous_document_operations_in_registry(&operations, &supervisor, "main")
+                    .unwrap();
+            }
+            assert!(lease.token().is_cancelled());
+            assert!(!other_lease.token().is_cancelled());
+            assert!(processes[0]
+                .cancelled
+                .load(std::sync::atomic::Ordering::SeqCst));
+            // Publication consults the supervisor signal independently of the registry token.
+            assert!(!processes[0].try_publish(|| Ok::<_, Error>(())).unwrap());
+            assert!(processes[1].try_publish(|| Ok::<_, Error>(())).unwrap());
+            supervisor.terminate_all().await.unwrap();
+        }
+    }
+
+    #[test]
+    fn previous_document_sweep_returns_typed_registry_failure() {
+        let operations = OperationRegistry::default();
+        operations.poison_for_test();
+        assert!(matches!(
+            release_previous_document_operations_in_registry(
+                &operations,
+                &crate::engine::EngineSupervisor::default(),
+                "main"
+            ),
+            Err(Error::Conflict(_))
+        ));
+    }
+
+    #[test]
     fn destroyed_window_dispatches_its_actual_label() {
         let source = include_str!("main.rs");
         let event_loop = source
@@ -2667,7 +2822,11 @@ mod native_window_operation_wiring_tests {
             .unwrap()
             .unwrap();
 
-        cancel_destroyed_window_operations_in_registry(&operations, "destroyed");
+        cancel_destroyed_window_operations_in_registry(
+            &operations,
+            &crate::engine::EngineSupervisor::default(),
+            "destroyed",
+        );
 
         assert!(cancellation.is_cancelled());
         assert!(operations

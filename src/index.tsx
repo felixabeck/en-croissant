@@ -34,6 +34,16 @@ function logStartupDiagnostic(
 /** Do not mount feature routes until credential-bearing legacy storage has been scrubbed and
  * native account metadata has reconciled into public renderer sessions. */
 export const applicationStartup = (async () => {
+  try {
+    await tauri.releasePreviousDocumentOperations();
+  } catch {
+    await logStartupDiagnostic(
+      "releasePreviousDocumentOperations",
+      "StartupReservationReleaseError",
+      "Startup reservation release failed",
+    );
+  }
+
   let sanitizationFailure: SessionSanitizationError | undefined;
   try {
     await initializePersistedSessions();

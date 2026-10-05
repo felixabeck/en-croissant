@@ -819,11 +819,16 @@ pub async fn cancel_analysis(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
     state.operations.cancel_analysis(&id, window.label())?;
-    let key = EngineKey::new("analysis".into(), id)?;
-    if let Some(process) = state.engine_supervisor.get_exact(&key) {
-        state
-            .engine_supervisor
-            .cancel_exact(&key, process.generation);
+    cancel_analysis_engine(&state.engine_supervisor, &id)
+}
+
+pub(crate) fn cancel_analysis_engine(
+    supervisor: &crate::engine::EngineSupervisor,
+    id: &str,
+) -> Result<(), Error> {
+    let key = EngineKey::new("analysis".into(), id.to_owned())?;
+    if let Some(process) = supervisor.get_exact(&key) {
+        supervisor.cancel_exact(&key, process.generation);
     }
     Ok(())
 }

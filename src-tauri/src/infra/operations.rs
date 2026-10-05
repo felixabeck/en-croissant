@@ -49,6 +49,19 @@ enum ReservationKindOwned {
     Download,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CancelledOperationKind {
+    Read,
+    Analysis,
+    Download,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct CancelledOperation {
+    pub id: String,
+    pub kind: CancelledOperationKind,
+}
+
 #[derive(Clone, Copy)]
 enum ReservationKind<'a> {
     Read,
@@ -607,27 +620,54 @@ impl OperationRegistry {
         self.cancel_reservation(ticket, owner, false)
     }
 
-    pub fn cancel_owner(&self, owner: &str) -> Result<Vec<String>, Error> {
-        let mut state = self.state()?;
-        let tickets: Vec<_> = state
+    fn cancel_owner_reservations_in_state(
+        state: &mut RegistryState,
+        owner: &str,
+    ) -> Vec<CancelledOperation> {
+        let cancelled: Vec<_> = state
             .reads
             .iter()
             .filter(|(_, entry)| entry.owner == owner)
-            .map(|(ticket, _)| ticket.clone())
+            .map(|(ticket, entry)| CancelledOperation {
+                id: ticket.clone(),
+                kind: match entry.kind {
+                    ReservationKindOwned::Read => CancelledOperationKind::Read,
+                    ReservationKindOwned::Analysis { .. } => CancelledOperationKind::Analysis,
+                    ReservationKindOwned::Download => CancelledOperationKind::Download,
+                },
+            })
             .collect();
-        for ticket in &tickets {
-            Self::cancel_entry(&mut state, ticket);
+        for operation in &cancelled {
+            Self::cancel_entry(state, &operation.id);
         }
+        cancelled
+    }
+
+    pub(crate) fn cancel_owner_reservations(
+        &self,
+        owner: &str,
+    ) -> Result<Vec<CancelledOperation>, Error> {
+        let mut state = self.state()?;
+        Ok(Self::cancel_owner_reservations_in_state(&mut state, owner))
+    }
+
+    pub(crate) fn cancel_owner(&self, owner: &str) -> Result<Vec<CancelledOperation>, Error> {
+        let mut state = self.state()?;
+        let mut cancelled = Self::cancel_owner_reservations_in_state(&mut state, owner);
         let accepted: Vec<_> = state
             .accepted
             .iter()
             .filter(|(_, entry)| entry.download && entry.owner == owner && !entry.committing)
             .map(|(ticket, entry)| {
                 entry.cancellation.cancel();
-                ticket.clone()
+                CancelledOperation {
+                    id: ticket.clone(),
+                    kind: CancelledOperationKind::Download,
+                }
             })
             .collect();
-        Ok(tickets.into_iter().chain(accepted).collect())
+        cancelled.extend(accepted);
+        Ok(cancelled)
     }
 
     pub fn seal_and_request_cancellation(&self) -> Result<(), Error> {
@@ -1232,6 +1272,127 @@ mod tests {
     }
 
     #[test]
+    fn previous_document_sweep_cancels_only_the_owners_reservations() {
+        let registry = OperationRegistry::default();
+        let read = registry.prepare_read("main").unwrap();
+        let read_lease = registry.claim_read(&read, "main", "read").unwrap();
+        let reserved_read = registry.prepare_read("main").unwrap();
+        let analysis = registry.prepare_analysis("main", "tab").unwrap();
+        let analysis_lease = registry
+            .claim_analysis(&analysis, "main", "tab", "analysis")
+            .unwrap();
+        let reserved_analysis = registry.prepare_analysis("main", "background").unwrap();
+        let download = registry.prepare_download("main").unwrap();
+        let cancelled_download = registry.prepare_download("main").unwrap();
+        registry
+            .cancel_download(&cancelled_download, "main")
+            .unwrap();
+        let accepted_download = registry.prepare_download("main").unwrap();
+        let download_lease = registry
+            .claim_download(&accepted_download, "main", "download", "progress", 8)
+            .unwrap();
+        let accepted = registry.accept("ownerless work").unwrap();
+        let other_read = registry.prepare_read("other").unwrap();
+        let other_read_lease = registry
+            .claim_read(&other_read, "other", "other read")
+            .unwrap();
+        let other_analysis = registry.prepare_analysis("other", "tab").unwrap();
+        let other_analysis_lease = registry
+            .claim_analysis(&other_analysis, "other", "tab", "other analysis")
+            .unwrap();
+        let other_download = registry.prepare_download("other").unwrap();
+        let other_accepted_download = registry.prepare_download("other").unwrap();
+        let other_download_lease = registry
+            .claim_download(
+                &other_accepted_download,
+                "other",
+                "other download",
+                "progress",
+                8,
+            )
+            .unwrap();
+
+        let cancelled = registry.cancel_owner_reservations("main").unwrap();
+        assert_eq!(cancelled.len(), 6);
+        for (id, kind) in [
+            (&read, CancelledOperationKind::Read),
+            (&reserved_read, CancelledOperationKind::Read),
+            (&analysis, CancelledOperationKind::Analysis),
+            (&reserved_analysis, CancelledOperationKind::Analysis),
+            (&download, CancelledOperationKind::Download),
+            (&cancelled_download, CancelledOperationKind::Download),
+        ] {
+            assert!(cancelled
+                .iter()
+                .any(|entry| &entry.id == id && entry.kind == kind));
+        }
+        assert!(read_lease.token().is_cancelled());
+        assert!(analysis_lease.token().is_cancelled());
+        let state = registry.state().unwrap();
+        for id in [
+            &reserved_read,
+            &reserved_analysis,
+            &download,
+            &cancelled_download,
+        ] {
+            assert!(!state.reads.contains_key(id));
+        }
+        assert!(state.reads.contains_key(&read));
+        assert!(state.reads.contains_key(&analysis));
+        assert!(state.reads.contains_key(&other_download));
+        drop(state);
+        for lease in [
+            &download_lease,
+            &accepted,
+            &other_read_lease,
+            &other_analysis_lease,
+            &other_download_lease,
+        ] {
+            assert!(!lease.token().is_cancelled());
+        }
+        drop(read_lease);
+        drop(analysis_lease);
+        assert!(registry
+            .cancel_owner_reservations("main")
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn owner_destruction_cancels_reservations_and_non_committing_downloads() {
+        let registry = OperationRegistry::default();
+        let read = registry.prepare_read("main").unwrap();
+        let read_lease = registry.claim_read(&read, "main", "read").unwrap();
+        let analysis = registry.prepare_analysis("main", "tab").unwrap();
+        let analysis_lease = registry
+            .claim_analysis(&analysis, "main", "tab", "analysis")
+            .unwrap();
+        let reserved = registry.prepare_download("main").unwrap();
+        let download = registry.prepare_download("main").unwrap();
+        let download_lease = registry
+            .claim_download(&download, "main", "download", "progress", 8)
+            .unwrap();
+        let committing = registry.prepare_download("main").unwrap();
+        let committing_lease = registry
+            .claim_download(&committing, "main", "committing", "committing", 8)
+            .unwrap();
+        committing_lease.commit_gate().begin_commit().unwrap();
+        let cancelled = registry.cancel_owner("main").unwrap();
+        assert_eq!(cancelled.len(), 4);
+        for id in [&read, &analysis, &reserved, &download] {
+            assert!(cancelled.iter().any(|entry| &entry.id == id));
+        }
+        assert!(cancelled
+            .iter()
+            .any(|entry| entry.id == analysis && entry.kind == CancelledOperationKind::Analysis));
+        assert!(read_lease.token().is_cancelled());
+        assert!(analysis_lease.token().is_cancelled());
+        assert!(download_lease.token().is_cancelled());
+        assert!(!committing_lease.token().is_cancelled());
+        assert!(!registry.state().unwrap().reads.contains_key(&reserved));
+    }
+
+    #[test]
     fn owner_destruction_does_not_cancel_another_owner_or_accepted_work() {
         let registry = OperationRegistry::default();
         let first = registry.prepare_read("first").unwrap();
@@ -1241,7 +1402,13 @@ mod tests {
             .claim_read(&second, "second", "second read")
             .unwrap();
         let accepted = registry.accept("accepted").unwrap();
-        assert_eq!(registry.cancel_owner("first").unwrap(), vec![first]);
+        assert_eq!(
+            registry.cancel_owner("first").unwrap(),
+            vec![CancelledOperation {
+                id: first,
+                kind: CancelledOperationKind::Read,
+            }]
+        );
         assert!(first_lease.token().is_cancelled());
         assert!(!second_lease.token().is_cancelled());
         assert!(!accepted.token().is_cancelled());

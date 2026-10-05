@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
     closeSplashscreen: vi.fn(),
+    releasePreviousDocumentOperations: vi.fn(),
     startGame: vi.fn(),
     getGameState: vi.fn(),
     makeGameMove: vi.fn(),
@@ -42,6 +43,7 @@ vi.mock("./native", () => ({ error: mocks.logError, getCurrentWindow: mocks.getC
 vi.mock("@/bindings/generated", () => ({
     commands: {
         closeSplashscreen: mocks.closeSplashscreen,
+        releasePreviousDocumentOperations: mocks.releasePreviousDocumentOperations,
         startGame: mocks.startGame,
         getGameState: mocks.getGameState,
         makeGameMove: mocks.makeGameMove,
@@ -112,6 +114,7 @@ const wireState = {
 
 describe("tauri command facade", () => {
     beforeEach(() => {
+        mocks.releasePreviousDocumentOperations.mockReset();
         mocks.prepareNativeRead.mockReset();
         mocks.cancelNativeRead.mockReset();
         mocks.prepareDownload.mockReset();
@@ -131,6 +134,22 @@ describe("tauri command facade", () => {
         mocks.logError.mockReset().mockResolvedValue(undefined);
         mocks.windowListen.mockReset().mockResolvedValue(vi.fn());
         mocks.getCurrentWindow.mockReset().mockReturnValue({ listen: mocks.windowListen });
+    });
+    test("exposes the previous-document sweep with normalized failures", async () => {
+        mocks.releasePreviousDocumentOperations.mockResolvedValueOnce({ status: "ok", data: null });
+        await expect(tauri.releasePreviousDocumentOperations()).resolves.toBeNull();
+        expect(mocks.releasePreviousDocumentOperations).toHaveBeenCalledExactlyOnceWith();
+        mocks.releasePreviousDocumentOperations.mockResolvedValueOnce({
+            status: "error",
+            error: {
+                tag: "backend-error",
+                category: "conflict",
+                message: "native operation registry poisoned",
+            },
+        });
+        await expect(tauri.releasePreviousDocumentOperations()).rejects.toBeInstanceOf(
+            TauriCommandError,
+        );
     });
     test("normalizes progress event generations from numeric wire values", async () => {
         const callback = vi.fn();

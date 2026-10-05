@@ -4,24 +4,32 @@ import App from "./App";
 import { StartupStorageFailure } from "./components/home/StartupStorageFailure";
 import i18n from "./i18n";
 
-const { render, createRoot, logFailureSafely, closeSplashscreen, initializeI18n } = vi.hoisted(
-  () => {
-    const render = vi.fn();
-    return {
-      render,
-      createRoot: vi.fn(() => ({ render })),
-      logFailureSafely: vi.fn().mockResolvedValue(undefined),
-      closeSplashscreen: vi.fn().mockResolvedValue(undefined),
-      initializeI18n: vi.fn().mockResolvedValue(undefined),
-    };
-  },
-);
+const {
+  render,
+  createRoot,
+  logFailureSafely,
+  closeSplashscreen,
+  initializeI18n,
+  releasePreviousDocumentOperations,
+} = vi.hoisted(() => {
+  const render = vi.fn();
+  return {
+    render,
+    createRoot: vi.fn(() => ({ render })),
+    logFailureSafely: vi.fn().mockResolvedValue(undefined),
+    closeSplashscreen: vi.fn().mockResolvedValue(undefined),
+    initializeI18n: vi.fn().mockResolvedValue(undefined),
+    releasePreviousDocumentOperations: vi.fn().mockResolvedValue(null),
+  };
+});
 
 vi.mock("react-dom/client", () => ({ createRoot }));
 vi.mock("./App", () => ({ default: () => null }));
 vi.mock("./components/home/StartupStorageFailure", () => ({ StartupStorageFailure: () => null }));
 vi.mock("./platform/errors", () => ({ logFailureSafely }));
-vi.mock("./platform/tauri", () => ({ tauri: { closeSplashscreen } }));
+vi.mock("./platform/tauri", () => ({
+  tauri: { closeSplashscreen, releasePreviousDocumentOperations },
+}));
 // Only the bootstrap call is stubbed. `SessionSanitizationError` stays the real
 // class so the terminal branch is pinned to the error the product actually throws.
 vi.mock("./utils/session", async (importOriginal) => ({
@@ -40,8 +48,47 @@ beforeEach(() => {
   initializeI18n.mockClear();
   logFailureSafely.mockClear();
   closeSplashscreen.mockClear();
+  releasePreviousDocumentOperations.mockReset().mockResolvedValue(null);
   localStorage.clear();
   vi.resetModules();
+});
+
+test("awaits the previous-document sweep before sessions, i18n and rendering", async () => {
+  const sessions = await import("./utils/session");
+  vi.mocked(sessions.initializePersistedSessions).mockClear();
+  let finishSweep!: () => void;
+  releasePreviousDocumentOperations.mockReturnValueOnce(
+    new Promise<void>((resolve) => {
+      finishSweep = resolve;
+    }),
+  );
+  const { applicationStartup } = await import("./index");
+  expect(releasePreviousDocumentOperations).toHaveBeenCalledExactlyOnceWith();
+  expect(sessions.initializePersistedSessions).not.toHaveBeenCalled();
+  expect(initializeI18n).not.toHaveBeenCalled();
+  expect(render).not.toHaveBeenCalled();
+  finishSweep();
+  await applicationStartup;
+  expect(sessions.initializePersistedSessions).toHaveBeenCalledTimes(1);
+  expect(initializeI18n).toHaveBeenCalledTimes(1);
+  expect(renderedChild().type).toBe(App);
+});
+
+test("logs a rejected previous-document sweep and still renders the application", async () => {
+  releasePreviousDocumentOperations.mockRejectedValueOnce(new Error("native registry failed"));
+  const { applicationStartup } = await import("./index");
+  await expect(applicationStartup).resolves.toBeUndefined();
+  expect(logFailureSafely).toHaveBeenCalledExactlyOnceWith(
+    "StartupReservationReleaseError",
+    {
+      operation: "releasePreviousDocumentOperations",
+      primaryFailure: { category: "unexpected", message: "StartupReservationReleaseError" },
+    },
+    "Startup reservation release failed",
+  );
+  expect(initializeI18n).toHaveBeenCalledTimes(1);
+  expect(render).toHaveBeenCalledTimes(1);
+  expect(renderedChild().type).toBe(App);
 });
 
 test("initialises the browser application root", async () => {
