@@ -1,6 +1,4 @@
 import { tauriSubscriptions } from "@/platform/tauri";
-import { parseUci } from "chessops";
-import { INITIAL_FEN, makeFen } from "chessops/fen";
 import equal from "fast-deep-equal";
 import { getDefaultStore, useAtom, useAtomValue } from "jotai";
 import {
@@ -31,7 +29,8 @@ import {
 } from "@/state/atoms";
 import { getVariationLine } from "@/utils/chess";
 import { getBestMoves as chessdbGetBestMoves } from "@/utils/chessdb/api";
-import { positionFromFen, swapMove } from "@/utils/chessops";
+import { analysisSearch } from "@/components/panels/analysis/analysisSearch";
+import { AnalysisLineMemory } from "@/components/panels/analysis/analysisLineMemory";
 import { normalizeEngineOptions } from "@/components/engines/engineOptions";
 import {
   type Engine,
@@ -42,7 +41,6 @@ import {
   stopEngine,
 } from "@/utils/engines";
 import { getBestMoves as lichessGetBestMoves } from "@/utils/lichess/api";
-import { useThrottledEffect } from "@/utils/misc";
 import { useTauriListener } from "@/platform/useTauriListener";
 import { TreeStateContext } from "../common/TreeStateContext";
 
@@ -73,14 +71,28 @@ function engineIdentity(engine: Engine): string {
   );
 }
 
-function stopNativeOwner(owner: NativeSearchOwner): Promise<boolean> {
-  if (owner.releasePromise) return owner.releasePromise.then(() => false);
-  owner.stopPromise ??= stopEngine(owner.engine, owner.tab, owner.generation);
+function stopNativeOwner(
+  owner: NativeSearchOwner,
+  onError: (error: unknown) => void,
+): Promise<boolean> {
+  owner.stopPromise ??= stopEngine(owner.engine, owner.tab, owner.generation).catch((error) => {
+    // O1 guarantees the failed stop left no actor serving this generation.
+    // Memoize a terminal non-retained outcome so it cannot poison successors.
+    onError(error);
+    return false;
+  });
   return owner.stopPromise;
 }
 
-function releaseNativeOwner(owner: NativeSearchOwner): Promise<void> {
-  owner.releasePromise ??= releaseEngineSearch(owner.engine, owner.tab, owner.generation);
+function releaseNativeOwner(
+  owner: NativeSearchOwner,
+  onError: (error: unknown) => void,
+): Promise<void> {
+  owner.releasePromise ??= releaseEngineSearch(owner.engine, owner.tab, owner.generation).catch(
+    (error) => {
+      onError(error);
+    },
+  );
   return owner.releasePromise;
 }
 
@@ -95,40 +107,16 @@ function EvalListener() {
     useShallow((s) => getVariationLine(s.root, s.position)),
   );
 
-  const [pos] = positionFromFen(fen);
-  if (pos) {
-    for (const uci of moves) {
-      const move = parseUci(uci);
-      if (!move) {
-        console.log("Invalid move", uci);
-        break;
-      }
-      pos.play(move);
-    }
-  }
-
-  const isGameOver = pos?.isEnd() ?? false;
-  const finalFen = useMemo(() => (pos ? makeFen(pos.toSetup()) : null), [pos]);
-
-  const { searchingFen, searchingMoves } = useMemo(
-    () =>
-      match(threat as boolean)
-        .with(true, () => ({
-          searchingFen: swapMove(finalFen || INITIAL_FEN),
-          searchingMoves: [],
-        }))
-        .with(false, () => ({
-          searchingFen: fen,
-          searchingMoves: moves,
-        }))
-        .exhaustive(),
-    [fen, moves, threat, finalFen],
+  const { position, searchingFen, searchingMoves, key } = useMemo(
+    () => analysisSearch(fen, moves, threat),
+    [fen, moves, threat],
   );
+  const isGameOver = position?.isEnd() ?? false;
 
   const firstEngineWithLines = useAtomValue(
     firstEngineWithLinesFamily({
-      fen: searchingFen,
-      gameMoves: searchingMoves,
+      fen,
+      gameMoves: moves,
     }),
   );
 
@@ -140,11 +128,9 @@ function EvalListener() {
         engine={e}
         firstEngineWithLines={firstEngineWithLines}
         isGameOver={isGameOver}
-        finalFen={finalFen || ""}
         searchingFen={searchingFen}
         searchingMoves={searchingMoves}
-        fen={fen}
-        moves={moves}
+        searchedKey={key}
         threat={threat}
       />
     ));
@@ -154,21 +140,17 @@ function EngineListener({
   engine,
   firstEngineWithLines,
   isGameOver,
-  finalFen,
   searchingFen,
   searchingMoves,
-  fen,
-  moves,
+  searchedKey,
   threat,
 }: {
   engine: Engine;
   firstEngineWithLines: string | null;
   isGameOver: boolean;
-  finalFen: string;
   searchingFen: string;
   searchingMoves: string[];
-  fen: string;
-  moves: string[];
+  searchedKey: string;
   threat: boolean;
 }) {
   const { t } = useTranslation();
@@ -192,6 +174,12 @@ function EngineListener({
   // A preparation does not yet own the previous warm actor. Retain its exact
   // owner until a later stop confirms which search the actor actually served.
   const retainedOwner = useRef<NativeSearchOwner | null>(null);
+  const transitionRunning = useRef(false);
+  const pendingTransition = useRef<(() => Promise<void>) | null>(null);
+  const notifyFailure = useCallback(
+    (error: unknown) => notifyUnlessCancelled(t("Common.Error"), error),
+    [t],
+  );
   const [closeRevision, advanceCloseRevision] = useReducer((revision: number) => revision + 1, 0);
   const mounted = useRef(false);
   const enabled = useRef(settings.enabled);
@@ -209,12 +197,10 @@ function EngineListener({
         retainedOwner.current,
       ])) {
         if (!owner) continue;
-        void releaseNativeOwner(owner).catch((error) =>
-          notifyUnlessCancelled(t("Common.Error"), error),
-        );
+        void releaseNativeOwner(owner, notifyFailure);
       }
     };
-  }, [t]);
+  }, [notifyFailure]);
   useEffect(() => {
     const jotaiStore = getDefaultStore();
     const tab = activeTab!;
@@ -280,21 +266,14 @@ function EngineListener({
       ) {
         startTransition(() => {
           setEngineVariation((prev) => {
-            const newMap = new Map(prev);
-            newMap.set(`${searchingFen}:${searchingMoves.join(",")}`, ev);
-            if (threat) {
-              newMap.delete(`${fen}:${moves.join(",")}`);
-            } else if (finalFen) {
-              newMap.delete(`${swapMove(finalFen)}:`);
-            }
+            const newMap = new AnalysisLineMemory(prev);
+            const replaced = newMap.remember(searchedKey, ev, activeAttempt.current!);
+            const shouldSetScore =
+              firstEngineWithLines === engine.id || firstEngineWithLines === null;
+            if (replaced && !threat && shouldSetScore) setScore(ev[0].score);
             return newMap;
           });
           setProgress(payload.progress);
-          const shouldSetScore =
-            firstEngineWithLines === engine.id || firstEngineWithLines === null;
-          if (shouldSetScore) {
-            setScore(ev[0].score);
-          }
         });
       }
     },
@@ -308,9 +287,7 @@ function EngineListener({
       setProgress,
       firstEngineWithLines,
       threat,
-      fen,
-      moves,
-      finalFen,
+      searchedKey,
       isCurrentAttempt,
     ],
   );
@@ -362,81 +339,96 @@ function EngineListener({
     ) {
       for (const owner of new Set([attempt.predecessorOwner, retainedOwner.current])) {
         if (!owner) continue;
-        void releaseNativeOwner(owner).catch((error) =>
-          notifyUnlessCancelled(t("Common.Error"), error),
-        );
+        void releaseNativeOwner(owner, notifyFailure);
       }
     }
-    setEngineVariation(new Map());
+    const context = JSON.stringify([settingsFingerprint, attempt.engineIdentity]);
+    setEngineVariation((prev) => {
+      const memory = new AnalysisLineMemory(prev);
+      if (memory.context !== context) {
+        const empty = new AnalysisLineMemory();
+        empty.context = context;
+        return empty;
+      }
+      return memory;
+    });
     setProgress(0);
     return () => {
       attempt.cancelled = true;
     };
-  }, [activeTab, engine, requestFingerprint, setEngineVariation, setProgress, settings.enabled, t]);
+  }, [
+    activeTab,
+    engine,
+    requestFingerprint,
+    setEngineVariation,
+    setProgress,
+    settings.enabled,
+    settingsFingerprint,
+    notifyFailure,
+  ]);
 
-  useThrottledEffect(
-    () => {
-      const attempt = activeAttempt.current;
-      if (!attempt || attempt.fingerprint !== requestFingerprint) return;
-      const runSearch = async () => {
-        // A local engine has one native search slot per tab.  Cancelling it on
-        // every identity change gives FEN/settings/go-mode changes a real
-        // cancellation boundary instead of merely hiding stale UI results.
+  useEffect(() => {
+    const attempt = activeAttempt.current;
+    if (!attempt || attempt.fingerprint !== requestFingerprint) return;
+    const runSearch = async () => {
+      // A local engine has one native search slot per tab.  Cancelling it on
+      // every identity change gives FEN/settings/go-mode changes a real
+      // cancellation boundary instead of merely hiding stale UI results.
+      if (attempt.predecessorOwner) {
+        if (attempt.predecessorOwner.releasePromise) {
+          await attempt.predecessorOwner.releasePromise;
+        } else if (await stopNativeOwner(attempt.predecessorOwner, notifyFailure)) {
+          retainedOwner.current = attempt.predecessorOwner;
+        }
+        attempt.predecessorOwner = null;
+      }
+      if (engine.type === "local") {
+        if (!isCurrentAttempt(attempt)) return;
+        let nativeGeneration: string;
         try {
-          if (attempt.predecessorOwner) {
-            if (await stopNativeOwner(attempt.predecessorOwner)) {
-              retainedOwner.current = attempt.predecessorOwner;
-            }
-          }
+          nativeGeneration = await prepareEngineSearch(engine, activeTab!);
         } catch (error) {
           if (isCurrentAttempt(attempt)) notifyUnlessCancelled(t("Common.Error"), error);
           return;
         }
-        if (engine.type === "local") {
-          if (!isCurrentAttempt(attempt)) return;
-          let nativeGeneration: string;
+        if (!isCurrentAttempt(attempt)) {
           try {
-            nativeGeneration = await prepareEngineSearch(engine, activeTab!);
+            const jotaiStore = getDefaultStore();
+            const ownerDisappeared =
+              !mounted.current ||
+              !enabled.current ||
+              jotaiStore.get(activeTabAtom) !== activeTab ||
+              !(jotaiStore.get(enginesAtom) ?? []).some(
+                (candidate) =>
+                  candidate.loaded && engineIdentity(candidate) === attempt.engineIdentity,
+              );
+            if (ownerDisappeared) await releaseEngineSearch(engine, activeTab!, nativeGeneration);
+            else await stopEngine(engine, activeTab!, nativeGeneration);
           } catch (error) {
-            if (isCurrentAttempt(attempt)) notifyUnlessCancelled(t("Common.Error"), error);
-            return;
+            notifyUnlessCancelled(t("Common.Error"), error);
           }
-          if (!isCurrentAttempt(attempt)) {
-            try {
-              const jotaiStore = getDefaultStore();
-              const ownerDisappeared =
-                !mounted.current ||
-                !enabled.current ||
-                jotaiStore.get(activeTabAtom) !== activeTab ||
-                !(jotaiStore.get(enginesAtom) ?? []).some(
-                  (candidate) =>
-                    candidate.loaded && engineIdentity(candidate) === attempt.engineIdentity,
-                );
-              if (ownerDisappeared) await releaseEngineSearch(engine, activeTab!, nativeGeneration);
-              else await stopEngine(engine, activeTab!, nativeGeneration);
-            } catch (error) {
-              notifyUnlessCancelled(t("Common.Error"), error);
-            }
-            return;
-          }
-          attempt.nativeOwner = {
-            engine,
-            tab: activeTab!,
-            generation: nativeGeneration,
-            stopPromise: null,
-            releasePromise: null,
-          };
+          return;
         }
-        if (!isCurrentAttempt(attempt)) return;
+        attempt.nativeOwner = {
+          engine,
+          tab: activeTab!,
+          generation: nativeGeneration,
+          stopPromise: null,
+          releasePromise: null,
+        };
+      }
+      if (!isCurrentAttempt(attempt)) return;
 
-        const options = normalizeEngineOptions(settings.settings ?? []);
-        try {
-          const result = await getBestMoves(
-            activeTab!,
-            settings.go,
-            { moves: searchingMoves, fen: searchingFen, extraOptions: options },
-            attempt.nativeOwner?.generation ?? "",
-          );
+      const options = normalizeEngineOptions(settings.settings ?? []);
+      // The command lives for the whole search. Only stop and preparation
+      // occupy the transition slot; new navigation must be able to stop it.
+      void getBestMoves(
+        activeTab!,
+        settings.go,
+        { moves: searchingMoves, fen: searchingFen, extraOptions: options },
+        attempt.nativeOwner?.generation ?? "",
+      )
+        .then((result) => {
           if (
             isCurrentAttempt(attempt) &&
             result &&
@@ -445,37 +437,53 @@ function EngineListener({
           ) {
             const [progress, bestMoves] = result;
             setEngineVariation((prev) => {
-              const newMap = new Map(prev);
-              newMap.set(`${searchingFen}:${searchingMoves.join(",")}`, bestMoves);
+              const newMap = new AnalysisLineMemory(prev);
+              newMap.remember(searchedKey, bestMoves, attempt);
               return newMap;
             });
             setProgress(progress);
           }
-        } catch (error) {
+        })
+        .catch((error) => {
           if (isCurrentAttempt(attempt)) {
             notifyUnlessCancelled(t("Common.Error"), error);
           }
+        });
+    };
+    pendingTransition.current = runSearch;
+    if (transitionRunning.current) return;
+    transitionRunning.current = true;
+    const drain = async () => {
+      try {
+        while (pendingTransition.current) {
+          const next = pendingTransition.current;
+          pendingTransition.current = null;
+          await next().catch(notifyFailure);
         }
-      };
-      runSearch().catch((error) => notifyUnlessCancelled(t("Common.Error"), error));
-    },
-    50,
-    [
-      settings.enabled,
-      settingsFingerprint,
-      settings.go,
-      searchingFen,
-      searchingMoves,
-      isGameOver,
-      activeTab,
-      getBestMoves,
-      setEngineVariation,
-      engine,
-      requestFingerprint,
-      isCurrentAttempt,
-      t,
-    ],
-  );
+      } finally {
+        transitionRunning.current = false;
+      }
+    };
+    void drain();
+  }, [
+    settings.enabled,
+    settingsFingerprint,
+    settings.go,
+    settings.settings,
+    searchingFen,
+    searchingMoves,
+    isGameOver,
+    activeTab,
+    getBestMoves,
+    setEngineVariation,
+    setProgress,
+    engine,
+    requestFingerprint,
+    isCurrentAttempt,
+    t,
+    notifyFailure,
+    searchedKey,
+  ]);
   return null;
 }
 

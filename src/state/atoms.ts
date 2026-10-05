@@ -1,6 +1,4 @@
 import type { MantineColor } from "@mantine/core";
-import { parseUci } from "chessops";
-import { INITIAL_FEN, makeFen } from "chessops/fen";
 import equal from "fast-deep-equal";
 import type { SetStateAction } from "react";
 import { atom, type PrimitiveAtom } from "jotai";
@@ -17,7 +15,8 @@ import type {
 } from "@/bindings";
 import type { OpponentSettings } from "@/state/opponentSettings";
 import type { LocalOptions } from "@/components/panels/database/DatabasePanel";
-import { positionFromFen, swapMove } from "@/utils/chessops";
+import { analysisSearch } from "@/components/panels/analysis/analysisSearch";
+import { AnalysisLineMemory } from "@/components/panels/analysis/analysisLineMemory";
 import type { SuccessDatabaseInfo } from "@/utils/db";
 import { type Engine, type EngineSettings, engineSchema } from "@/utils/engines";
 import {
@@ -870,7 +869,7 @@ export const practiceCardStartTimeAtom = tabValue(practiceCardStartTimeFamily);
 
 export const engineMovesFamily = atomFamily(
     ({ tab: _tab, engine: _engine }: { tab: string; engine: string }) =>
-        atom<Map<string, BestMoves[]>>(new Map()),
+        atom<Map<string, BestMoves[]>>(new AnalysisLineMemory()),
     (a, b) => a.tab === b.tab && a.engine === b.engine,
 );
 
@@ -891,18 +890,12 @@ export const bestMovesFamily = atomFamily(
             let n = 0;
             for (const engine of engines.filter((e) => e.loaded)) {
                 const engineMoves = get(engineMovesFamily({ tab, engine: engine.id }));
-                const [pos] = positionFromFen(fen);
-                let finalFen = INITIAL_FEN;
-                if (pos) {
-                    for (const move of gameMoves) {
-                        const m = parseUci(move);
-                        pos.play(m!);
-                    }
-                    finalFen = makeFen(pos.toSetup());
-                }
-                const moves =
-                    engineMoves.get(`${swapMove(finalFen)}:`) ||
-                    engineMoves.get(`${fen}:${gameMoves.join(",")}`);
+                const { position: pos, key } = analysisSearch(
+                    fen,
+                    gameMoves,
+                    get(currentThreatAtom),
+                );
+                const moves = engineMoves.get(key);
                 if (moves && moves.length > 0) {
                     const bestWinChange = getWinChance(
                         normalizeScore(moves[0].score.value, pos?.turn || "white"),
@@ -935,21 +928,11 @@ export const firstEngineWithLinesFamily = atomFamily(
             const engines = get(enginesAtom);
             if (!engines) return null;
 
-            const [pos] = positionFromFen(fen);
-            let finalFen = INITIAL_FEN;
-            if (pos) {
-                for (const move of gameMoves) {
-                    const m = parseUci(move);
-                    if (m) pos.play(m);
-                }
-                finalFen = makeFen(pos.toSetup());
-            }
+            const { key } = analysisSearch(fen, gameMoves, get(currentThreatAtom));
 
             for (const engine of engines.filter((e) => e.loaded)) {
                 const engineMoves = get(engineMovesFamily({ tab, engine: engine.id }));
-                const moves =
-                    engineMoves.get(`${swapMove(finalFen)}:`) ||
-                    engineMoves.get(`${fen}:${gameMoves.join(",")}`);
+                const moves = engineMoves.get(key);
 
                 if (moves && moves.length > 0) {
                     return engine.id;
