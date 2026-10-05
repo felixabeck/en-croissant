@@ -371,14 +371,23 @@ const localeByProject: Record<string, string> = {
 const tauriBootstrap = () => {
     type Response = MockCommand;
     type Listener = { event: string; callback: number };
+    type Actor = {
+        owner: unknown;
+        pending: { reject: (error: ErrorPayload) => void } | null;
+    };
     const callbacks = new Map<number, (payload: unknown) => void>();
     const listeners: Listener[] = [];
-    const pendingSearches = new Set<{
-        id: unknown;
-        tab: unknown;
-        generation: unknown;
-        reject: (error: ErrorPayload) => void;
-    }>();
+    // Model only successfully started searches and their warm actors, not prepared reservations.
+    const actors = new Map<string, Actor>();
+    const actorKey = (engine: unknown, tab: unknown) => `${String(engine)}\u0000${String(tab)}`;
+    const cancelSearch = (actor: Actor) => {
+        actor.pending?.reject({
+            tag: "backend-error",
+            category: "cancellation",
+            message: "Cancellation",
+        });
+        actor.pending = null;
+    };
     let nextCallback = 1;
     let nextNativeTicket = 1;
 
@@ -461,12 +470,10 @@ const tauriBootstrap = () => {
         // Native searches stay pending for their lifetime; scenarios can still script a response.
         if (command === "get_best_moves" && !state.commands[command]) {
             return new Promise<null>((_resolve, reject) => {
-                pendingSearches.add({
-                    id: args.id,
-                    tab: args.tab,
-                    generation: args.generation,
-                    reject,
-                });
+                const key = actorKey(args.id, args.tab);
+                const predecessor = actors.get(key);
+                if (predecessor) cancelSearch(predecessor);
+                actors.set(key, { owner: args.generation, pending: { reject } });
             }).catch((error: ErrorPayload) => {
                 state.settledSearches.push({
                     generation: args.generation,
@@ -488,31 +495,30 @@ const tauriBootstrap = () => {
             throw response.error;
         }
         let retainedSearch = false;
-        if (
-            command === "stop_engine" ||
-            command === "release_engine_search" ||
-            command === "kill_engines" ||
-            command === "kill_engine"
-        ) {
-            for (const search of pendingSearches) {
-                if (search.tab !== args.tab) continue;
-                if (command !== "kill_engines" && search.id !== args.engine) continue;
-                if (
-                    command === "stop_engine" &&
-                    args.expectedGeneration !== null &&
-                    args.expectedGeneration !== search.generation
-                )
-                    continue;
-                if (command === "release_engine_search" && args.generation !== search.generation)
-                    continue;
-                if (command === "stop_engine" && args.expectedGeneration !== null)
-                    retainedSearch = true;
-                pendingSearches.delete(search);
-                search.reject({
-                    tag: "backend-error",
-                    category: "cancellation",
-                    message: "Cancellation",
-                });
+        if (command === "kill_engines") {
+            for (const [key, actor] of actors) {
+                if (!key.endsWith(`\u0000${String(args.tab)}`)) continue;
+                cancelSearch(actor);
+                actors.delete(key);
+            }
+        } else {
+            const key = actorKey(args.engine, args.tab);
+            const actor = actors.get(key);
+            if (
+                actor &&
+                (command === "kill_engine" ||
+                    (command === "stop_engine" && args.expectedGeneration === null) ||
+                    (command === "release_engine_search" && args.generation === actor.owner))
+            ) {
+                cancelSearch(actor);
+                actors.delete(key);
+            } else if (
+                actor &&
+                command === "stop_engine" &&
+                args.expectedGeneration === actor.owner
+            ) {
+                retainedSearch = true;
+                cancelSearch(actor);
             }
         }
         const result =
@@ -540,7 +546,9 @@ const tauriBootstrap = () => {
             emit,
             invocations: () => [...state.invocations],
             engineSearchState: (): MockEngineSearchState => ({
-                pending: [...pendingSearches].map(({ generation }) => generation),
+                pending: [...actors.values()]
+                    .filter(({ pending }) => pending)
+                    .map(({ owner }) => owner),
                 settled: [...state.settledSearches],
                 stops: [...state.stops],
             }),
@@ -704,6 +712,9 @@ export { expect };
 
 declare global {
     interface Window {
+        __TAURI_INTERNALS__: {
+            invoke(command: string, args?: Record<string, unknown>): Promise<unknown>;
+        };
         __E2E_TAURI__: {
             configure(scenario: MockScenario): void;
             emit(event: string, payload: unknown): void;

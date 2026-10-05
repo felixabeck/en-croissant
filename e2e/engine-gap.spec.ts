@@ -1,5 +1,110 @@
 import { expect, test } from "./fixtures";
 
+test("engine-gap: warm actor contract preserves ownership and isolates searches", async ({
+    page,
+}) => {
+    await page.goto("/");
+    const invoke = (command: string, args: Record<string, unknown>) =>
+        page.evaluate(({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), {
+            command,
+            args,
+        });
+    const start = (id: string, tab: string, generation: string) =>
+        page.evaluate(
+            (args) => {
+                // Handle the command's rejection without awaiting the still-running search.
+                void window.__TAURI_INTERNALS__.invoke("get_best_moves", args).catch(() => {});
+            },
+            { id, tab, generation },
+        );
+    const state = () => page.evaluate(() => window.__E2E_TAURI__.engineSearchState());
+    const pending = async (...generations: string[]) =>
+        expect((await state()).pending).toEqual(generations);
+    const cancelled = async (generation: string) =>
+        expect((await state()).settled.filter((entry) => entry.generation === generation)).toEqual([
+            {
+                generation,
+                outcome: "cancelled",
+                error: { tag: "backend-error", category: "cancellation", message: "Cancellation" },
+            },
+        ]);
+    const stop = (engine: string, tab: string, expectedGeneration: string | null) =>
+        invoke("stop_engine", { engine, tab, expectedGeneration });
+    const release = (engine: string, tab: string, generation: string) =>
+        invoke("release_engine_search", { engine, tab, generation });
+
+    await test.step("(a) same-key supersession and stale generations", async () => {
+        await start("contract-engine", "contract-tab", "contract-A");
+        await start("contract-engine", "contract-tab", "contract-B");
+        await cancelled("contract-A");
+        await pending("contract-B");
+        expect(await stop("contract-engine", "contract-tab", "contract-A")).toBe(false);
+        await pending("contract-B");
+        expect(await release("contract-engine", "contract-tab", "contract-A")).toBeNull();
+        await pending("contract-B");
+        await cancelled("contract-A");
+    });
+
+    await test.step("(b) repeated qualified stop retains owner", async () => {
+        expect(await stop("contract-engine", "contract-tab", "contract-B")).toBe(true);
+        await cancelled("contract-B");
+        await pending();
+        expect(await stop("contract-engine", "contract-tab", "contract-B")).toBe(true);
+        await cancelled("contract-B");
+        await pending();
+        expect(await release("contract-engine", "contract-tab", "contract-B")).toBeNull();
+        expect(await stop("contract-engine", "contract-tab", "contract-B")).toBe(false);
+        await cancelled("contract-B");
+    });
+
+    await test.step("(c) engine and tab isolation across stop, release and kill", async () => {
+        await start("engine-1", "tab-1", "isolation-1");
+        await start("engine-1", "tab-2", "isolation-2");
+        await start("engine-2", "tab-1", "isolation-3");
+        await start("engine-2", "tab-2", "isolation-4");
+        await pending("isolation-1", "isolation-2", "isolation-3", "isolation-4");
+
+        expect(await stop("engine-1", "tab-1", "isolation-1")).toBe(true);
+        await cancelled("isolation-1");
+        await pending("isolation-2", "isolation-3", "isolation-4");
+
+        expect(await release("engine-1", "tab-2", "isolation-2")).toBeNull();
+        await cancelled("isolation-2");
+        expect(await stop("engine-1", "tab-2", "isolation-2")).toBe(false);
+        await pending("isolation-3", "isolation-4");
+
+        expect(await invoke("kill_engine", { engine: "engine-2", tab: "tab-1" })).toBeNull();
+        await cancelled("isolation-3");
+        expect(await stop("engine-2", "tab-1", "isolation-3")).toBe(false);
+        await pending("isolation-4");
+
+        await start("engine-1", "tab-1", "isolation-5");
+        await start("engine-2", "tab-1", "isolation-6");
+        await start("engine-1", "tab-2", "isolation-7");
+        expect(await invoke("kill_engines", { tab: "tab-1" })).toBeNull();
+        await cancelled("isolation-5");
+        await cancelled("isolation-6");
+        await pending("isolation-4", "isolation-7");
+
+        expect(await stop("engine-1", "tab-2", null)).toBe(false);
+        await cancelled("isolation-7");
+        expect(await stop("engine-1", "tab-2", "isolation-7")).toBe(false);
+        await pending("isolation-4");
+
+        expect(await stop("engine-2", "tab-2", null)).toBe(false);
+        await cancelled("isolation-4");
+        expect(await stop("engine-2", "tab-2", "isolation-4")).toBe(false);
+        await pending();
+        const finalState = await state();
+        expect(finalState.settled).toHaveLength(9);
+        expect(
+            finalState.stops
+                .filter(({ expectedGeneration }) => expectedGeneration === "contract-B")
+                .map(({ result }) => result),
+        ).toEqual([true, true, false]);
+    });
+});
+
 test("engine-gap: A lines stay dimmed and inert at B until explicitly emitted B lines arrive", async ({
     page,
     emitTauriEvent,
