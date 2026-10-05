@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: fb1eb604674608049d4927a8565bef026772a5be98d24d84c9910106a357abad
+# agent-kit-sha256: be4d092434a610b3bbc4ca3fd471d8a20a38e1c7a04a81da9163015ef9862853
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -6909,23 +6909,43 @@ def _recover_inbox_quarantines(
     return updated
 
 
-def _complete_claim(
+def _immediate_entry_id(
+    identifier: str,
+    published: str,
+    index: int,
+    count: int,
+    receipt_ids: dict[str, str | dict[str, str]] | None,
+) -> str | None:
+    """Map a placeholder to its allocation, including older dict keys.
+
+    Unmappable placeholders in legacy intents use id presence alone in the proof.
+    """
+    if identifier != PENDING_ID:
+        return identifier
+    if receipt_ids is None:
+        return None
+    key = published if count == 1 else f"{published}#{index}"
+    record = receipt_ids.get(key)
+    if not isinstance(record, dict) and count == 1:
+        matching = [
+            value
+            for value in receipt_ids.values()
+            if isinstance(value, dict) and value["published"] == published
+        ]
+        record = matching[0] if len(matching) == 1 else None
+    if isinstance(record, dict) and record["published"] == published:
+        return record["id"]
+    return None
+
+
+def _claim_release_records(
     claim: Path,
     spool: Path,
     claimed: list[Path],
     receipt_ids: dict[str, str | dict[str, str]] | None,
     proven_ids: Collection[str],
-    *,
-    publish_locked: bool,
-) -> None:
-    """Write terminal receipts and release a claim after its entries are proven.
-
-    ``proven_ids`` are the intent ids the caller found in the ledger. A claimed
-    filing is released only if every entry it carries is among them and, unless
-    ``receipt_ids`` is None (an intent written before that mapping existed), a
-    receipt record names it. Anything else would be deleted with its receipt
-    still ``published``; the deferred reconciliation refuses it the same way.
-    """
+) -> list[tuple[str, str, str]]:
+    """Check intent/file agreement without writing receipts or releasing files."""
     records = (
         _receipt_records_from_intent(claim, receipt_ids) if receipt_ids else []
     )
@@ -6944,13 +6964,167 @@ def _complete_claim(
                 f"could not read {path} while releasing {claim}: {exc}"
             ) from exc
         carried = header_ids(text)
-        if not carried or not carried.issubset(proven_ids):
+        headers = _unfenced_header_matches(text)[1]
+        for index, (_heading, _header, match) in enumerate(headers):
+            if match.group("id") != PENDING_ID:
+                continue
+            identifier = _immediate_entry_id(
+                PENDING_ID, path.name, index, len(headers), receipt_ids
+            )
+            if identifier is not None:
+                carried.add(identifier)
+            elif receipt_ids is None:
+                carried.update(proven_ids)
+        recorded_ids = {
+            identifier
+            for _receipt, published, identifier in records
+            if published == path.name
+        }
+        if (
+            not carried
+            or not carried.issubset(proven_ids)
+            or not recorded_ids.issubset(carried)
+        ):
             unrecorded.append(path.name)
     if unrecorded:
         raise LedgerError(
             f"{', '.join(sorted(unrecorded))} in {claim} carries no recorded entry; "
             f"the claim is kept — move it back to {spool} by hand, then retry"
         )
+    return records
+
+
+def _claimed_entry_finding(
+    entry_text: str, ledger_text: str, ledger: Path
+) -> Finding | None:
+    """Return exactly one valid claimed finding, allowing its pending allocation."""
+    parsed, problems, vocabulary = _parse_text(
+        _entry_candidate_text(entry_text, ledger_text), ledger
+    )
+    if (
+        len(parsed) != 1
+        or problems
+        or validate(parsed, problems, vocabulary, allow_pending=True)
+    ):
+        return None
+    return parsed[0]
+
+
+def _immediate_entry_line_regions(
+    text: str,
+) -> list[tuple[str, tuple[str, ...], tuple[str, ...]]]:
+    """Slice non-blank leading and body lines at the receipt parser's headings.
+
+    Leading lines start after the preceding entry's header, or at the file start;
+    body lines end before the next valid entry heading, or at EOF.
+    """
+    lines, headers, _orphans = _unfenced_header_matches(text)
+    regions: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = []
+    previous_header = -1
+    for index, (heading_index, header_index, match) in enumerate(headers):
+        end = headers[index + 1][0] if index + 1 < len(headers) else len(lines)
+        leading = tuple(
+            line for line in lines[previous_header + 1:heading_index] if line.strip()
+        )
+        body = tuple(line for line in lines[header_index + 1:end] if line.strip())
+        regions.append((match.group("id"), leading, body))
+        previous_header = header_index
+    return regions
+
+
+def _immediate_claim_content_proven(
+    claim: Path, ledger: Path, ledger_text: str, intent: ClaimIntent
+) -> bool:
+    """Prove ordered content coverage with insertions allowed, not write provenance.
+
+    Each entry's body lines must occur within its ledger span, and a file's leading
+    lines must occur before its first entry's ledger heading.
+    Unmapped legacy placeholders retain id-presence proof only when their parser
+    body accounts for every source line beyond the title and consumed header.
+    """
+    try:
+        findings, _problems, _vocabulary = _parse_text(ledger_text, ledger)
+        ledger_regions = {
+            identifier: (leading, body)
+            for identifier, leading, body in _immediate_entry_line_regions(ledger_text)
+        }
+    except (OSError, UnicodeError, LedgerError) as exc:
+        raise LedgerError(
+            f"could not parse ledger {ledger} while recovering {claim}: {exc}"
+        ) from exc
+    actual = {finding.id: finding for finding in findings}
+    current_ids = header_ids(ledger_text)
+    receipt_ids = intent.receipt_ids if intent.has_receipt_ids else None
+    dict_records = any(isinstance(value, dict) for value in intent.receipt_ids.values())
+    claimed_names = {path.name for path in intent.claimed}
+    for record in intent.receipt_ids.values():
+        if (
+            isinstance(record, dict)
+            and record["published"] not in claimed_names
+            and record["id"] not in current_ids
+        ):
+            return False
+    for path in intent.claimed:
+        try:
+            sources = _merge_sources([path], ledger)
+            text = sources[0] if sources else ""
+            parsed, problems, _vocabulary = _parse_text(
+                _entry_candidate_text(text, ledger_text), ledger
+            )
+            _lines, _headers, orphans = _unfenced_header_matches(text)
+            entries = _receipt_entry_texts(text)
+            regions = _immediate_entry_line_regions(text)
+            if (
+                problems
+                or not entries
+                or len(parsed) != len(entries)
+                or any(finding.controller_export for finding in parsed)
+                or orphans
+                or len(regions) != len(entries)
+            ):
+                return False
+            for index, entry_text in enumerate(entries):
+                finding = _claimed_entry_finding(entry_text, ledger_text, ledger)
+                if finding is None or finding.controller_export:
+                    return False
+                _identifier, leading, raw_body = regions[index]
+                prefix = leading if index == 0 else ()
+                expected = _finding_expectation(finding)
+                identifier = _immediate_entry_id(
+                    expected.identifier, path.name, index, len(entries), receipt_ids
+                )
+                if identifier is None:
+                    # Older intents cannot map a placeholder to its minted id.
+                    if dict_records or not all(item in current_ids for item in intent.ids):
+                        return False
+                    if prefix or not _ordered_content_preserved(raw_body, expected.body):
+                        return False
+                    continue
+                finding = actual.get(identifier)
+                if finding is None or not _finding_identity_preserved(expected, finding):
+                    return False
+                ledger_region = ledger_regions.get(identifier)
+                if ledger_region is None:
+                    return False
+                ledger_leading, ledger_body = ledger_region
+                if not _ordered_content_preserved(prefix, ledger_leading):
+                    return False
+                if not _ordered_content_preserved(raw_body, ledger_body):
+                    return False
+        except (OSError, UnicodeError, LedgerError):
+            return False
+    return True
+
+
+def _complete_claim(
+    claim: Path,
+    spool: Path,
+    claimed: list[Path],
+    records: list[tuple[str, str, str]],
+    *,
+    publish_locked: bool,
+) -> None:
+    """Write terminal receipts and release an agreeing, content-proven claim."""
     if records:
         _write_merged_receipts(spool, records)
     release_spool(claim, spool, claimed, publish_locked=publish_locked)
@@ -7387,6 +7561,7 @@ def _recover_claim(
     *,
     answers: bool = False,
     publish_locked: bool = False,
+    durable_replay: bool = False,
 ) -> None:
     """Finish or replay a stranded claim using its durable intent record."""
     if not claim.exists():
@@ -7427,12 +7602,19 @@ def _recover_claim(
             current_ids = header_ids(ledger_text)
             complete = all(identifier in current_ids for identifier in ids)
             if complete:
+                records = _claim_release_records(
+                    claim, spool, claimed,
+                    intent.receipt_ids if intent.has_receipt_ids else None, ids,
+                )
+                complete = _immediate_claim_content_proven(
+                    claim, ledger, ledger_text, intent
+                )
+            if complete:
                 _complete_claim(
                     claim,
                     spool,
                     claimed,
-                    intent.receipt_ids if intent.has_receipt_ids else None,
-                    ids,
+                    records,
                     publish_locked=publish_locked,
                 )
                 print(
@@ -7442,8 +7624,18 @@ def _recover_claim(
                 )
                 return
 
-    # Replay is deliberately ordered: the work returns to the spool first, then
-    # the intent and claim disappear. A crash after any one step is restartable.
+    # Immediate replay must never resemble an interrupted release. Deferred
+    # prepared claims go through reconciliation, which refuses missing filings
+    # rather than completing by id presence, so deferred replay needs no sync.
+    if durable_replay and not answers:
+        try:
+            if intent.phase == "prepared":
+                _write_claim_intent(claim, "claimed")
+            _fsync_directory(claim)
+        except OSError as exc:
+            raise LedgerError(f"could not durably prepare replay of {claim}: {exc}") from exc
+
+    # The work returns first, then the intent and claim disappear.
     legacy = None if answers else spool.with_suffix(".md")
     spool.mkdir(parents=True, exist_ok=True)
     for path in claimed:
@@ -7985,25 +8177,19 @@ def _claim_entry_expectations(
         for filing_key, entry_text in zip(expected_keys, entries, strict=True):
             record = intent.receipt_ids[filing_key]
             assert isinstance(record, dict)
-            parsed, problems, vocabulary = _parse_text(
-                _entry_candidate_text(entry_text, ledger_text), ledger
-            )
-            if (
-                len(parsed) != 1
-                or problems
-                or validate(parsed, problems, vocabulary, allow_pending=True)
-            ):
+            finding = _claimed_entry_finding(entry_text, ledger_text, ledger)
+            if finding is None:
                 raise LedgerError(
                     f"{path} in {claim} holds entries its intent does not record; the "
                     "claim is kept — inspect it by hand"
                 )
-            if parsed[0].id not in {PENDING_ID, record["id"]}:
+            if finding.id not in {PENDING_ID, record["id"]}:
                 raise LedgerError(
                     f"{path} in {claim} holds entries its intent does not record; "
                     "the claim is kept — inspect it by hand"
                 )
-            expected = _finding_expectation(parsed[0])
-            if parsed[0].id == PENDING_ID:
+            expected = _finding_expectation(finding)
+            if finding.id == PENDING_ID:
                 # The intent is durable before a rewritten claim file. A crash in
                 # that window leaves the placeholder behind with the allocated
                 # id already recorded in the intent.
@@ -8628,12 +8814,17 @@ def _finalize_inbox_claim_locked(
         raise LedgerError(f"could not read ledger {ledger} while finalising {claim}: {exc}") from exc
     if not intent.ids or not all(identifier in header_ids(ledger_text) for identifier in intent.ids):
         return FINALIZE_OUTCOME_REPLAY
+    records = _claim_release_records(
+        claim, inbox, list(intent.claimed),
+        intent.receipt_ids if intent.has_receipt_ids else None, intent.ids,
+    )
+    if not _immediate_claim_content_proven(claim, ledger, ledger_text, intent):
+        return FINALIZE_OUTCOME_REPLAY
     _complete_claim(
         claim,
         inbox,
         list(intent.claimed),
-        intent.receipt_ids if intent.has_receipt_ids else None,
-        intent.ids,
+        records,
         publish_locked=True,
     )
     if claim.exists():
@@ -8958,9 +9149,13 @@ def _merge_inbox_publish_locked(
         if existing is not None and existing.phase == "prepared":
             reconciliation = _reconcile_inbox_claim(claim, inbox, ledger, decisions)
         elif existing is not None:
-            _recover_claim(claim, inbox, ledger, publish_locked=True)
+            _recover_claim(
+                claim, inbox, ledger, publish_locked=True, durable_replay=False
+            )
     else:
-        _recover_claim(claim, inbox, ledger, publish_locked=True)
+        _recover_claim(
+            claim, inbox, ledger, publish_locked=True, durable_replay=True
+        )
     try:
         receipt_index = _receipt_index(inbox, _merge_receipt_digests(inbox, legacy))
     except LedgerError as exc:
