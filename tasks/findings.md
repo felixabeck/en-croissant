@@ -13176,3 +13176,16 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
 * **Found by:** Claude Code orchestrator, `$push` of drain session 7b604ce0-e244-4017-b0cc-0bc1bff00242 (f-20260919-10 records follow-up), reading the job log of CI run 37311242805, 2026-10-05.
 * **Correction (2026-10-05, records lens on the inbox merge `e085709d`):** "turns `pnpm ci:remote:check` red for every later push" overstates it. `scripts/check-remote-ci.mjs` judges each job by its newest completed result, so a later green run of the `test` job clears the refusal; the next push after run 37311242805 was not blocked, because the parallel run 37311243143 on the same commit finished green. The cost is a refused push only while a red `test` result is the newest one.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"44d5fe17cb3d31e7c236cbb9f75c92023466f971414fa7246926b204d0100741","input_sha256":"89e63cb5f1063ce940a9b6658e83578690cc82b94d8bd7cbded60343664e8f82","kind":"mutation-receipt","operation":"5a0a8c99bc27325a9901f3f1ba83641a637cea8c1c9f56949519cbe58e68c325","options":{"section":null},"request_id_sha256":null,"results":["f-20261005-08"],"target":"f-20261005-08","v":1} -->
+
+---
+
+## 2026-10-05 — filed through the inbox spool
+
+### Frontend push mutation does not select the Phase 3 analysis display files
+
+* **ID:** f-20261005-09 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Found in:** Phase 3 of `tasks/plans/2026-10-05-warm-engine-analysis.md`, 2026-10-05.
+* **Evidence:** `scripts/frontend-mutation-packages.mjs` lists six fixed production paths in three packages; none is `BestMoves.tsx`, `AnalysisRow.tsx`, `DetachedEval.tsx`, `AnalysisPanel.tsx` or the new `useDisplayedEngineLines.ts`. `scripts/run-frontend-mutation.mjs` selects only those package records, and `stryker.config.mjs` refuses a `STRYKER_FILES` path outside them. The Phase 3 assignment expressly requires 100% mutation on changed files, so its prescribed `pnpm gates:push -- --frontend` cannot establish that requirement. A supplemental Stryker run using the same configuration with those five paths produced 622 mutants, 175 killed, 272 survived and 175 uncovered (28.14%) before further hook tests; the report is `artifacts/mutation/frontend/phase3/`, and the run log is `/tmp/chessfable-phase3-mutation-2.log`.
+* **Consequence:** A green frontend push mutation lane is evidence for the six configured files only; it must not be reported as 100% mutation coverage of these changed analysis readers.
+* **Required resolution:** Reconcile the assignment's changed-file mutation requirement with the package selection contract and add the necessary meaningful reader coverage if these files enter the gated scope. Do not lower the 100% threshold or silently narrow a claimed measurement.
+* **Related:** `f-20260929-09` shares the package mapping but concerns static-mutant initialization in workspace files; `f-20261003-04` concerns timeout classification. Neither has the same cause.
