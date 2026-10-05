@@ -1188,16 +1188,8 @@ fn generate_search_index_locked(
                     cancellation,
                 )
             });
-        let replace_guard = search_cache.begin_preferred_replace(target.path(), cancellation)?;
-        let outcome = search_index::write_entries_to_at(
-            target.parent(),
-            &index_leaf,
-            source,
-            rows,
-            cancellation,
-        );
-        drop(replace_guard);
-        outcome
+        search_cache.invalidate_database(target.path());
+        search_index::write_entries_to_at(target.parent(), &index_leaf, source, rows, cancellation)
     })?;
     // Publication has committed once `write_entries_to_at` returns. From here on the durability
     // and cache-invalidation tail must finish even if cancellation arrives concurrently.
@@ -2889,9 +2881,9 @@ fn delete_database_blocking(
     let mut unlinked = 0;
     let mut deletion_error = None;
     let unlink_result = repository.delete_exclusive_cancellable(&target, cancellation, || {
-        let replace_guard = search_cache.begin_preferred_replace(target.path(), cancellation)?;
+        search_cache.invalidate_database(target.path());
         let result = unlink_database_files(&target, &expected_source);
-        drop(replace_guard);
+        search_cache.invalidate_database(target.path());
         let result = result?;
         unlinked = result.0;
         primary_gone = true;
@@ -2905,7 +2897,6 @@ fn delete_database_blocking(
         return finish_database_deletion(primary_gone, unlinked, Err(error));
     }
 
-    search_cache.invalidate_database(target.path());
     let registry_result = (|| {
         authority
             .lock()
@@ -4345,6 +4336,68 @@ mod tests {
         assert!(!database.exists());
         assert!(capture.messages().iter().any(|message| message
             .contains("database registry cleanup failed after durability uncertainty")));
+    }
+
+    #[test]
+    fn delete_database_failed_unlink_evicts_mapping_inserted_after_pre_invalidation() {
+        struct InsertBeforePrimaryFailure {
+            cache: Arc<SearchCache>,
+            identity: crate::SearchIndexIdentity,
+            index: std::sync::Mutex<Option<MmapSearchIndex>>,
+            sidecar: PathBuf,
+            inserted: std::sync::atomic::AtomicBool,
+        }
+
+        impl crate::infra::fs::RemovalInjector for InsertBeforePrimaryFailure {
+            fn inject(
+                &self,
+                point: crate::infra::fs::RemovalFaultPoint,
+            ) -> std::io::Result<Option<u64>> {
+                if point == crate::infra::fs::RemovalFaultPoint::BeforeTopOpen
+                    && !self.sidecar.exists()
+                {
+                    assert_eq!(self.cache.cached_index_count(), 0);
+                    let index = self.index.lock().unwrap().take().unwrap();
+                    self.cache.insert_index(
+                        self.identity.clone(),
+                        index,
+                        self.cache.invalidation_snapshot(),
+                    );
+                    assert_eq!(self.cache.cached_index_count(), 1);
+                    self.inserted
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    return Err(std::io::Error::other("injected primary removal failure"));
+                }
+                Ok(None)
+            }
+        }
+
+        let (_dir, app, handle, database) = blocking_database_case();
+        let state = app.state::<AppState>();
+        let (_key, identity) = seed_search_index_cache_for_database(&app, &database);
+        let sidecar = get_index_path(&database);
+        let probe = Arc::new(InsertBeforePrimaryFailure {
+            cache: Arc::clone(&state.search_cache),
+            index: std::sync::Mutex::new(Some(MmapSearchIndex::open(&sidecar).unwrap())),
+            identity,
+            sidecar: sidecar.clone(),
+            inserted: std::sync::atomic::AtomicBool::new(false),
+        });
+        crate::infra::fs::set_test_removal_injector(Some(probe.clone()));
+        let _faults = RemovalFaultReset;
+        let result = delete_database_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle.clone(),
+            &CancellationToken::new(),
+        );
+        assert!(matches!(result, Err(Error::Io(_))), "{result:?}");
+        assert!(probe.inserted.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(!sidecar.exists());
+        assert!(database.exists());
+        assert!(database_is_registered(&app, &handle));
+        assert_eq!(state.search_cache.cached_index_count(), 0);
     }
 
     #[test]
@@ -10398,7 +10451,7 @@ mod tests {
         let index = MmapSearchIndex::open(&index_path).unwrap();
         let key = crate::SearchResultKey::new(GameQuery::new(), identity.clone());
         let cache = &app.state::<AppState>().search_cache;
-        cache.insert_index(identity.clone(), index);
+        cache.insert_index(identity.clone(), index, cache.invalidation_snapshot());
         cache.insert_result(key.clone(), (Vec::new(), Vec::new()));
         (key, identity)
     }
@@ -11513,6 +11566,9 @@ mod deletion_tests {
         connection
             .batch_execute("INSERT INTO Info (Name, Value) VALUES ('Version', '2.0.0');")
             .unwrap();
+        connection.batch_execute(
+            "INSERT INTO Games (ID, Result, Moves, PawnHome, WhiteMaterial, BlackMaterial) VALUES (1, '*', X'', 0, 0, 0);"
+        ).unwrap();
         drop(connection);
         link_directory(&real_dir, &link_dir);
 
@@ -11563,9 +11619,8 @@ mod deletion_tests {
         )
         .unwrap();
         assert_eq!(index.source().object, source.object);
-        // Deletion waits for every lease on the preferred sidecar; this thread's clone would
-        // otherwise block its own delete.
-        drop(index);
+        let first_id = index.get_entry_ref(0).unwrap().id;
+        // The reader retains its generation across the production unlink on every platform.
 
         delete_database_blocking(
             &state.pgn_path_authority,
@@ -11577,6 +11632,7 @@ mod deletion_tests {
         .unwrap();
         assert!(!database.exists());
         assert!(!sidecar.exists());
+        assert_eq!(index.get_entry_ref(0).unwrap().id, first_id);
     }
 
     #[test]

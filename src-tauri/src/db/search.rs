@@ -194,6 +194,21 @@ pub(crate) fn load_search_index(
     )
 }
 
+#[cfg(test)]
+std::thread_local! {
+    static AFTER_FAST_IDENTITY_PROBE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn run_after_fast_identity_probe_hook() {
+    AFTER_FAST_IDENTITY_PROBE_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
 /// Loads the search index for `handle`, serving a sidecar only when its archived
 /// provenance equals the database identity probed by this call.
 ///
@@ -214,20 +229,22 @@ pub(crate) fn load_search_index_cancellable(
         return Err(Error::Cancellation);
     }
     let read_target = super::resolve_database(authority, handle, PathOperation::DatabaseRead)?;
+    let invalidation_snapshot = search_cache.invalidation_snapshot();
     let db_identity = repository.database_identity_expected(
         &read_target,
         read_target.identity(),
         Some(cancellation),
     )?;
+    #[cfg(test)]
+    run_after_fast_identity_probe_hook();
     let expected_source = IndexSource::from_database_identity(&db_identity)?;
-    if let Some(index) =
-        open_valid_preferred(search_cache, &read_target, &expected_source, cancellation)?
-    {
+    if let Some(index) = open_valid_preferred(&read_target, &expected_source, cancellation)? {
         return cache_loaded_index(
             search_cache,
             read_target.path(),
             expected_source,
             index,
+            invalidation_snapshot,
             cancellation,
         );
     }
@@ -238,20 +255,20 @@ pub(crate) fn load_search_index_cancellable(
     let _generation_guard = generation_lease.lock_cancellable(cancellation)?;
 
     let read_target = super::resolve_database(authority, handle, PathOperation::DatabaseRead)?;
+    let invalidation_snapshot = search_cache.invalidation_snapshot();
     let db_identity = repository.database_identity_expected(
         &read_target,
         read_target.identity(),
         Some(cancellation),
     )?;
     let expected_source = IndexSource::from_database_identity(&db_identity)?;
-    if let Some(index) =
-        open_valid_preferred(search_cache, &read_target, &expected_source, cancellation)?
-    {
+    if let Some(index) = open_valid_preferred(&read_target, &expected_source, cancellation)? {
         return cache_loaded_index(
             search_cache,
             read_target.path(),
             expected_source,
             index,
+            invalidation_snapshot,
             cancellation,
         );
     }
@@ -267,14 +284,13 @@ pub(crate) fn load_search_index_cancellable(
         &db_identity,
         cancellation,
     )?;
-    if let Some(index) =
-        open_valid_preferred(search_cache, &mutate_target, &expected_source, cancellation)?
-    {
+    if let Some(index) = open_valid_preferred(&mutate_target, &expected_source, cancellation)? {
         return cache_loaded_index(
             search_cache,
             mutate_target.path(),
             expected_source,
             index,
+            invalidation_snapshot,
             cancellation,
         );
     }
@@ -297,15 +313,14 @@ pub(crate) fn load_search_index_cancellable(
     };
 
     let read_target = super::resolve_database(authority, handle, PathOperation::DatabaseRead)?;
+    let invalidation_snapshot = search_cache.invalidation_snapshot();
     let db_identity = repository.database_identity_expected(
         &read_target,
         read_target.identity(),
         Some(cancellation),
     )?;
     let expected_source = IndexSource::from_database_identity(&db_identity)?;
-    let Some(index) =
-        open_valid_preferred(search_cache, &read_target, &expected_source, cancellation)?
-    else {
+    let Some(index) = open_valid_preferred(&read_target, &expected_source, cancellation)? else {
         return Err(generation_error
             .unwrap_or_else(|| Error::Conflict("search index changed while loading".into())));
     };
@@ -318,19 +333,16 @@ pub(crate) fn load_search_index_cancellable(
         read_target.path(),
         expected_source,
         index,
+        invalidation_snapshot,
         cancellation,
     )
 }
 
 fn open_valid_preferred(
-    search_cache: &SearchCache,
     target: &DatabaseFileTarget,
     expected_source: &IndexSource,
     cancellation: &CancellationToken,
 ) -> Result<Option<MmapSearchIndex>, Error> {
-    // The lease is taken before the leaf is opened, so a writer that has set
-    // draining never races this reader into a new mapping.
-    let lease = search_cache.lease_preferred_mapping(target.path(), cancellation)?;
     let leaf = preferred_sidecar_leaf(target.leaf());
     let file = match crate::infra::fs::open_regular_at(
         target.parent(),
@@ -346,7 +358,7 @@ fn open_valid_preferred(
             }
         },
     };
-    let index = match MmapSearchIndex::open_file_leased(file, lease, cancellation) {
+    let index = match MmapSearchIndex::open_file_cancellable(file, cancellation) {
         Ok(index) => index,
         Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::InvalidData => {
             return Ok(None)
@@ -361,13 +373,21 @@ fn cache_loaded_index(
     database: &Path,
     expected_source: IndexSource,
     index: MmapSearchIndex,
+    invalidation_snapshot: u64,
     cancellation: &CancellationToken,
 ) -> Result<(SearchIndexIdentity, MmapSearchIndex), Error> {
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
-    let identity = SearchIndexIdentity::for_database(database, expected_source)?;
-    let index = search_cache.insert_index(identity.clone(), index);
+    let identity =
+        SearchIndexIdentity::for_database(database, expected_source).map_err(|error| {
+            if search_cache.invalidation_snapshot() != invalidation_snapshot {
+                Error::Conflict("search index changed while loading".into())
+            } else {
+                Error::from(error)
+            }
+        })?;
+    let index = search_cache.insert_index(identity.clone(), index, invalidation_snapshot);
     Ok((identity, index))
 }
 
@@ -1010,6 +1030,130 @@ mod tests {
         super::super::schema_database_case("search", operations)
     }
 
+    fn preferred_loader_test_case() -> (
+        TempDir,
+        tauri::AppHandle<tauri::test::MockRuntime>,
+        DatabaseHandle,
+        PathBuf,
+    ) {
+        let case = loader_test_case(vec![PathOperation::DatabaseRead]);
+        let (_, app, handle, database) = &case;
+        let state = app.state::<AppState>();
+        let target = super::super::resolve_database(
+            &state.pgn_path_authority,
+            handle,
+            PathOperation::DatabaseRead,
+        )
+        .unwrap();
+        let identity = state
+            .database_repository
+            .database_identity_expected(&target, target.identity(), None)
+            .unwrap();
+        SearchIndexChunk {
+            entries: vec![crate::db::SearchGameEntry {
+                id: 1,
+                white_id: 0,
+                black_id: 0,
+                date: None,
+                result: GameResult::Draw,
+                pawn_home: 0,
+                white_material: 0,
+                black_material: 0,
+                white_elo: 0,
+                black_elo: 0,
+                fen: None,
+                moves: vec![],
+            }],
+        }
+        .write_to_with_source(
+            get_index_path(database),
+            IndexSource::from_database_identity(&identity).unwrap(),
+        )
+        .unwrap()
+        .expect_durable();
+        case
+    }
+
+    fn load_preferred_after_probe(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        handle: &DatabaseHandle,
+        hook: impl FnOnce() + 'static,
+    ) -> Result<(SearchIndexIdentity, MmapSearchIndex), Error> {
+        AFTER_FAST_IDENTITY_PROBE_HOOK.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(hook));
+        });
+        let state = app.state::<AppState>();
+        load_search_index_cancellable(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle,
+            &CancellationToken::new(),
+        )
+    }
+
+    #[test]
+    fn search_index_loader_same_database_invalidation_returns_mapping_uncached() {
+        let (_dir, app, handle, database) = preferred_loader_test_case();
+        let cache = Arc::clone(&app.state::<AppState>().search_cache);
+        let (_, index) = load_preferred_after_probe(&app, &handle, move || {
+            cache.invalidate_database(&database);
+        })
+        .unwrap();
+        assert_eq!(index.get_entry_ref(0).unwrap().id, 1);
+        assert_eq!(app.state::<AppState>().search_cache.cached_index_count(), 0);
+    }
+
+    #[test]
+    fn search_index_loader_without_invalidation_caches_mapping() {
+        let (_dir, app, handle, _database) = preferred_loader_test_case();
+        let (_, index) = load_preferred_after_probe(&app, &handle, || {}).unwrap();
+        assert_eq!(index.get_entry_ref(0).unwrap().id, 1);
+        assert_eq!(app.state::<AppState>().search_cache.cached_index_count(), 1);
+    }
+
+    #[test]
+    fn search_index_loader_other_database_invalidation_returns_mapping_uncached() {
+        let (dir, app, handle, _database) = preferred_loader_test_case();
+        let other = dir.path().join("other.db3");
+        std::fs::write(&other, b"other database").unwrap();
+        let cache = Arc::clone(&app.state::<AppState>().search_cache);
+        // The counter is global: another database's invalidation costs one uncached load.
+        let (_, index) = load_preferred_after_probe(&app, &handle, move || {
+            cache.invalidate_database(&other);
+        })
+        .unwrap();
+        assert_eq!(index.get_entry_ref(0).unwrap().id, 1);
+        assert_eq!(app.state::<AppState>().search_cache.cached_index_count(), 0);
+    }
+
+    #[test]
+    fn search_index_loader_identity_failure_after_invalidation_is_conflict() {
+        let (_dir, app, handle, database) = preferred_loader_test_case();
+        let sidecar = get_index_path(&database);
+        let cache = Arc::clone(&app.state::<AppState>().search_cache);
+        let result = load_preferred_after_probe(&app, &handle, move || {
+            cache.invalidate_database(&database);
+            std::fs::remove_file(&database).unwrap();
+        });
+        assert!(sidecar.exists());
+        assert!(matches!(result, Err(Error::Conflict(message))
+            if message == "search index changed while loading"));
+        assert_eq!(app.state::<AppState>().search_cache.cached_index_count(), 0);
+    }
+
+    #[test]
+    fn search_index_loader_identity_failure_without_invalidation_is_io() {
+        let (_dir, app, handle, database) = preferred_loader_test_case();
+        let sidecar = get_index_path(&database);
+        let result = load_preferred_after_probe(&app, &handle, move || {
+            std::fs::remove_file(&database).unwrap();
+        });
+        assert!(sidecar.exists());
+        assert!(matches!(result, Err(Error::Io(_))));
+        assert_eq!(app.state::<AppState>().search_cache.cached_index_count(), 0);
+    }
+
     struct CacheEvictionProbe {
         cache: Arc<SearchCache>,
         identity: SearchIndexIdentity,
@@ -1335,12 +1479,7 @@ mod tests {
             .database_identity_expected(&target, target.identity(), None)
             .unwrap();
         let expected_source = IndexSource::from_database_identity(&db_identity).unwrap();
-        let result = open_valid_preferred(
-            &state.search_cache,
-            &target,
-            &expected_source,
-            &CancellationToken::new(),
-        );
+        let result = open_valid_preferred(&target, &expected_source, &CancellationToken::new());
         assert!(matches!(result, Ok(None)), "{result:?}");
         assert_eq!(std::fs::read(&outside).unwrap(), b"outside");
     }
@@ -1370,7 +1509,11 @@ mod tests {
             .expect_durable();
         let identity = SearchIndexIdentity::for_database(&database, source.clone()).unwrap();
         let index = MmapSearchIndex::open(&preferred).unwrap();
-        state.search_cache.insert_index(identity.clone(), index);
+        state.search_cache.insert_index(
+            identity.clone(),
+            index,
+            state.search_cache.invalidation_snapshot(),
+        );
         std::fs::remove_file(&preferred).unwrap();
         SearchIndexChunk::default()
             .write_to_with_source(legacy_index_path(&database), source)

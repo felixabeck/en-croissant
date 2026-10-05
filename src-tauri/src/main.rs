@@ -34,12 +34,14 @@ use std::{
     io,
     io::Write,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
     time::{Duration, SystemTime},
 };
 
 use chess::BestMovesPayload;
-use dashmap::DashMap;
 use db::{
     ConvertProgress, DatabaseContentFailure, GameQuery, IndexSource, NormalizedGame, PositionStats,
 };
@@ -317,148 +319,15 @@ impl<K: Clone + Eq + std::hash::Hash, V: Clone> BoundedSearchCache<K, V> {
     }
 }
 
-const MAPPING_GATE_POLL_INTERVAL: Duration = Duration::from_millis(25);
-
-type MappingGates = Arc<DashMap<PathBuf, Arc<MappingGate>>>;
-
-/// Reader/writer protocol over one preferred search-index sidecar
-/// (`get_index_path`). Readers take a lease before mapping the leaf; a writer
-/// sets draining, then waits for leases to reach zero before replacing or
-/// unlinking the leaf, so no in-process mapping pins the file on Windows.
-#[derive(Default)]
-pub(crate) struct MappingGate {
-    state: parking_lot::Mutex<MappingGateState>,
-    changed: parking_lot::Condvar,
-}
-
-#[derive(Default)]
-struct MappingGateState {
-    leases: usize,
-    draining: bool,
-    #[cfg(test)]
-    park_observers: Vec<std::sync::mpsc::SyncSender<()>>,
-}
-
-impl MappingGate {
-    fn is_draining(&self) -> bool {
-        self.state.lock().draining
-    }
-
-    /// Waits cancellably while `blocked` holds, then applies `admit` under the
-    /// same gate critical section. The gate mutex is released on return.
-    fn wait_then(
-        &self,
-        cancellation: &tokio_util::sync::CancellationToken,
-        blocked: impl Fn(&MappingGateState) -> bool,
-        admit: impl FnOnce(&mut MappingGateState),
-    ) -> Result<(), Error> {
-        let mut state = self.state.lock();
-        #[cfg(test)]
-        let mut parked = false;
-        while blocked(&state) {
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancellation);
-            }
-            #[cfg(test)]
-            if !parked {
-                parked = true;
-                for observer in state.park_observers.drain(..) {
-                    let _ = observer.try_send(());
-                }
-            }
-            self.changed
-                .wait_for(&mut state, MAPPING_GATE_POLL_INTERVAL);
-        }
-        admit(&mut state);
-        Ok(())
-    }
-}
-
-/// Removes the gate for `key` only while the map is its sole owner. The count
-/// is read inside the shard lock, so no other thread can clone it concurrently.
-fn remove_idle_mapping_gate(gates: &DashMap<PathBuf, Arc<MappingGate>>, key: &Path) {
-    gates.remove_if(key, |_, gate| Arc::strong_count(gate) == 1);
-}
-
-fn release_mapping_gate(
-    gate: Option<Arc<MappingGate>>,
-    gates: &DashMap<PathBuf, Arc<MappingGate>>,
-    key: &Path,
-    release: impl FnOnce(&mut MappingGateState),
-) {
-    let Some(gate) = gate else {
-        return;
-    };
-    {
-        let mut state = gate.state.lock();
-        release(&mut state);
-        gate.changed.notify_all();
-    }
-    drop(gate);
-    remove_idle_mapping_gate(gates, key);
-}
-
-/// Read lease on a preferred-sidecar mapping. Stored on `MmapSearchIndex`
-/// behind an `Arc`, so the last clone of that mapping releases it.
-pub(crate) struct MappingLease {
-    gate: Option<Arc<MappingGate>>,
-    key: PathBuf,
-    gates: MappingGates,
-}
-
-impl MappingLease {
-    pub(crate) fn gate(&self) -> Option<&Arc<MappingGate>> {
-        self.gate.as_ref()
-    }
-}
-
-impl std::fmt::Debug for MappingLease {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("MappingLease")
-            .field("key", &self.key)
-            .finish_non_exhaustive()
-    }
-}
-
-impl Drop for MappingLease {
-    fn drop(&mut self) {
-        release_mapping_gate(self.gate.take(), &self.gates, &self.key, |state| {
-            state.leases = state.leases.saturating_sub(1);
-        });
-    }
-}
-
-/// Write-guard returned by `SearchCache::begin_preferred_replace`. While it is
-/// live the gate is draining, so no reader can map the preferred leaf between
-/// the wait for leases and the caller's single mutation. Dropping it clears
-/// draining.
-pub(crate) struct PreferredReplaceGuard {
-    gate: Option<Arc<MappingGate>>,
-    key: PathBuf,
-    gates: MappingGates,
-}
-
-impl Drop for PreferredReplaceGuard {
-    fn drop(&mut self) {
-        release_mapping_gate(self.gate.take(), &self.gates, &self.key, |state| {
-            state.draining = false;
-        });
-    }
-}
-
 #[derive(Default)]
 pub(crate) struct SearchCache {
     results: Mutex<BoundedSearchCache<SearchResultKey, CachedSearchResult>>,
     indexes: Mutex<BoundedSearchCache<SearchIndexIdentity, MmapSearchIndex>>,
     collisions: KeyedLocks<(GameQuery, PathBuf), parking_lot::Mutex<()>>,
     generation_locks: KeyedLocks<PathBuf, parking_lot::Mutex<()>>,
-    /// One mapping gate per preferred-sidecar path. Lock order is `indexes`
-    /// then a gate's mutex; evicted indexes are dropped only after `indexes`
-    /// is released, because dropping a lease takes the gate mutex.
-    mapping_gates: MappingGates,
-    #[cfg(test)]
-    before_insert_index_hook: parking_lot::Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// Global invalidation sequence: one atomic, no per-database registry. A load of
+    /// another database may skip caching once when any database is invalidated.
+    invalidation_counter: AtomicU64,
 }
 
 impl SearchCache {
@@ -468,113 +337,13 @@ impl SearchCache {
         let evicted =
             std::mem::take(&mut *self.indexes.lock().expect("search index cache poisoned"));
         drop(evicted);
-        // Live or draining gates stay: a lease or write-guard still owns them.
-        self.mapping_gates
-            .retain(|_, gate| Arc::strong_count(gate) != 1);
     }
 
-    fn mapping_gate(&self, key: PathBuf) -> Arc<MappingGate> {
-        self.mapping_gates.entry(key).or_default().value().clone()
+    pub(crate) fn invalidation_snapshot(&self) -> u64 {
+        self.invalidation_counter.load(Ordering::SeqCst)
     }
 
-    /// Admits a reader of the preferred sidecar of `database`. Must be taken
-    /// before the leaf is opened or mapped; waits cancellably while a writer
-    /// has set draining.
-    pub(crate) fn lease_preferred_mapping(
-        &self,
-        database: &Path,
-        cancellation: &tokio_util::sync::CancellationToken,
-    ) -> Result<MappingLease, Error> {
-        let key = db::get_index_path(database);
-        let gate = self.mapping_gate(key.clone());
-        match gate.wait_then(
-            cancellation,
-            |state| state.draining,
-            |state| state.leases += 1,
-        ) {
-            Ok(()) => Ok(MappingLease {
-                gate: Some(gate),
-                key,
-                gates: Arc::clone(&self.mapping_gates),
-            }),
-            Err(error) => {
-                release_mapping_gate(Some(gate), &self.mapping_gates, &key, |_| {});
-                Err(error)
-            }
-        }
-    }
-
-    /// Acquires the write-guard for the preferred sidecar of `database`: set
-    /// draining, invalidate cached indexes, then wait for leases. The caller
-    /// performs exactly one mutation of the leaf while the guard is live and
-    /// then drops it. Cancellation of either wait returns `Error::Cancellation`
-    /// and leaves draining cleared.
-    pub(crate) fn begin_preferred_replace(
-        &self,
-        database: &Path,
-        cancellation: &tokio_util::sync::CancellationToken,
-    ) -> Result<PreferredReplaceGuard, Error> {
-        let key = db::get_index_path(database);
-        let gate = self.mapping_gate(key.clone());
-        // Another writer's guard is serialized, not overridden.
-        if let Err(error) = gate.wait_then(
-            cancellation,
-            |state| state.draining,
-            |state| state.draining = true,
-        ) {
-            release_mapping_gate(Some(gate), &self.mapping_gates, &key, |_| {});
-            return Err(error);
-        }
-        // The gate mutex is released here: invalidation takes `indexes` and
-        // drops evicted leases, which take the gate mutex.
-        let guard = PreferredReplaceGuard {
-            gate: Some(Arc::clone(&gate)),
-            key,
-            gates: Arc::clone(&self.mapping_gates),
-        };
-        self.invalidate_entries(database, Some(&gate));
-        gate.wait_then(cancellation, |state| state.leases > 0, |_| {})?;
-        Ok(guard)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_before_insert_index_hook(&self, hook: Box<dyn FnOnce() + Send>) {
-        *self.before_insert_index_hook.lock() = Some(hook);
-    }
-
-    /// Fires once when the next waiter on this sidecar's gate parks.
-    #[cfg(test)]
-    pub(crate) fn observe_mapping_gate_park(
-        &self,
-        database: &Path,
-    ) -> std::sync::mpsc::Receiver<()> {
-        let (parked_tx, parked_rx) = std::sync::mpsc::sync_channel(1);
-        self.mapping_gate(db::get_index_path(database))
-            .state
-            .lock()
-            .park_observers
-            .push(parked_tx);
-        parked_rx
-    }
-
-    /// `(leases, draining)` of the live gate for this sidecar, if any.
-    #[cfg(test)]
-    pub(crate) fn mapping_gate_state(&self, database: &Path) -> Option<(usize, bool)> {
-        let gate = self
-            .mapping_gates
-            .get(&db::get_index_path(database))?
-            .value()
-            .clone();
-        let state = gate.state.lock();
-        Some((state.leases, state.draining))
-    }
-
-    #[cfg(test)]
-    pub(crate) fn mapping_gate_count(&self) -> usize {
-        self.mapping_gates.len()
-    }
-
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn cached_index_count(&self) -> usize {
         self.indexes
             .lock()
@@ -625,38 +394,20 @@ impl SearchCache {
             .get(identity)
     }
 
-    /// The only insert path for mapped indexes. Returns the cached index when
-    /// one already exists for `identity`, otherwise `index`. The insert is
-    /// skipped while the sidecar's gate is draining; that read happens in the
-    /// same `indexes` critical section as the insert.
+    /// The only insert path for mapped indexes. Deduplicates under the indexes
+    /// mutex, then caches only if no invalidation began since the loader's probe
+    /// snapshot. Displaced mappings are dropped after releasing that mutex.
     pub(crate) fn insert_index(
         &self,
         identity: SearchIndexIdentity,
         index: MmapSearchIndex,
+        invalidation_snapshot: u64,
     ) -> MmapSearchIndex {
-        #[cfg(test)]
-        if let Some(hook) = self.before_insert_index_hook.lock().take() {
-            hook();
-        }
-        let path_key = db::get_index_path(&identity.database);
-        let unleased_gate = index
-            .mapping_gate()
-            .is_none()
-            .then(|| {
-                self.mapping_gates
-                    .get(&path_key)
-                    .map(|entry| entry.value().clone())
-            })
-            .flatten();
         let (loaded, discarded) = {
             let mut cache = self.indexes.lock().expect("search index cache poisoned");
             if let Some(existing) = cache.get(&identity) {
                 (existing, vec![index])
-            } else if index
-                .mapping_gate()
-                .or(unleased_gate.as_ref())
-                .is_some_and(|gate| gate.is_draining())
-            {
+            } else if self.invalidation_snapshot() != invalidation_snapshot {
                 (index, Vec::new())
             } else {
                 let evicted = cache.insert(identity, index.clone(), SEARCH_INDEX_CACHE_CAPACITY);
@@ -664,10 +415,6 @@ impl SearchCache {
             }
         };
         drop(discarded);
-        if unleased_gate.is_some() {
-            drop(unleased_gate);
-            remove_idle_mapping_gate(&self.mapping_gates, &path_key);
-        }
         loaded
     }
 
@@ -686,20 +433,14 @@ impl SearchCache {
         self.generation_locks.lease(index)
     }
 
-    /// Explicit in-process invalidation seam for database writes; revision
-    /// keys protect against external replacement. Evicts cached indexes whose
-    /// identity database path matches. Preferred-sidecar mutation goes through
-    /// `begin_preferred_replace`, which calls `invalidate_entries` with the
-    /// write-guard's gate so leased entries are also dropped by pointer,
-    /// whatever their spelling.
+    /// Invalidates before eviction so publication under the indexes mutex either
+    /// precedes the eviction or sees the changed counter and stays uncached.
+    /// Readers retain their own mapped generation without waiting (d-20261005-06).
     pub(crate) fn invalidate_database(&self, database: &Path) {
-        self.invalidate_entries(database, None);
-    }
-
-    fn invalidate_entries(&self, database: &Path, gate: Option<&Arc<MappingGate>>) {
+        self.invalidation_counter.fetch_add(1, Ordering::SeqCst);
         #[expect(
             clippy::disallowed_methods,
-            reason = "pinned pathname reach (search-cache invalidation by canonical path); counted by R5 until f-20260927-07 migrates it: SearchCache::invalidate_entries database.canonicalize"
+            reason = "pinned pathname reach (search-cache invalidation by canonical path); counted by R5 until f-20260927-07 migrates it: SearchCache::invalidate_database database.canonicalize"
         )]
         let database = database
             .canonicalize()
@@ -712,14 +453,7 @@ impl SearchCache {
             .indexes
             .lock()
             .expect("search index cache poisoned")
-            .retain(|identity, index| {
-                let leased_here = gate.is_some_and(|gate| {
-                    index
-                        .mapping_gate()
-                        .is_some_and(|leased| Arc::ptr_eq(leased, gate))
-                });
-                identity.database != database && !leased_here
-            });
+            .retain(|identity, _| identity.database != database);
         drop(evicted);
     }
 }

@@ -64,8 +64,8 @@ const INITIAL_PATH_EXPECT_BASELINE = Object.freeze([
   }),
   Object.freeze({
     path: "src-tauri/src/main.rs",
-    function: "invalidate_entries",
-    sha256: "4b6504c02c74f90728e0423004d1af36883f1217633f7c5c097ed0be6fb0d69c",
+    function: "invalidate_database",
+    sha256: "7a52b20055efa987d6fd6dcdffbeb9765ba50246385ef0451d279d912b7043fa",
     methods: Object.freeze({ canonicalize: 1 }),
   }),
 ]);

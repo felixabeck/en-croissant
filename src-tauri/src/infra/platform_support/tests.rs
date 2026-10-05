@@ -2111,7 +2111,7 @@ fn legacy_index_mapping_is_dropped_before_removal() {
                 .find("probe_legacy_index_sidecar_at(")
                 .zip(promotion.find("remove_entry_at(parent,legacy_leaf,legacy_object,false)"))
                 .is_some_and(|(probe, remove)| probe < remove),
-        "Windows refuses a still-mapped legacy index (ERROR_USER_MAPPED_FILE): the provenance probe must drop the archive before promotion removes the legacy sidecar"
+        "Dropping the archive before removal keeps promotion from pinning the legacy generation it removes"
     );
 }
 
@@ -3442,51 +3442,47 @@ fn assert_no_retry_loop(body: &str) {
     }
 }
 
-/// f-20260917-04. Generation takes the preferred-sidecar write-guard, mutates exactly once,
-/// then drops the guard. It does not take `generation_lock`: the loader already holds it.
+/// Generation invalidates before and after one mutation, without waiting for readers.
+/// It does not take `generation_lock`: the loader already holds it.
 #[test]
-fn search_index_generation_mutates_once_under_begin_preferred_replace() {
+fn search_index_generation_mutates_once_between_invalidations() {
     let source = source_for("db/mod.rs");
     let body = compact(&source[braced_body(source, "fn generate_search_index_locked(")]);
     assert_in_order(
         &body,
         &[
-            "letreplace_guard=search_cache.begin_preferred_replace(target.path(),cancellation)?;",
+            "search_cache.invalidate_database(target.path());",
             "search_index::write_entries_to_at(",
-            "drop(replace_guard);",
+            "search_cache.invalidate_database(target.path());",
         ],
-    );
-    assert_eq!(
-        body.matches("begin_preferred_replace(").count(),
-        1,
-        "{body}"
     );
     assert_eq!(body.matches("write_entries_to_at(").count(), 1, "{body}");
     assert!(!body.contains("generation_lock"), "{body}");
-    let guarded = &body[body.find("begin_preferred_replace(").unwrap()
-        ..body.find("drop(replace_guard);").unwrap()];
-    assert_no_retry_loop(guarded);
+    let mutation = &body[body.find("search_cache.invalidate_database(").unwrap()
+        ..body
+            .find("//Publication")
+            .unwrap_or_else(|| body.find("letdurability=").unwrap())];
+    assert_no_retry_loop(mutation);
+    assert_no_mapping_gate_symbols();
 }
 
-/// f-20260917-04. Deletion takes the write-guard inside the exclusive closure, after
-/// retirement, and unlinks exactly once; `unlink_database_files` keeps its signature.
+/// Deletion invalidates inside the exclusive closure after retirement, unlinks once,
+/// and invalidates again before propagating any mutation error.
 #[test]
-fn search_index_deletion_unlinks_once_under_begin_preferred_replace() {
+fn search_index_deletion_unlinks_once_between_invalidations() {
     let source = source_for("db/mod.rs");
     let body = compact(&source[braced_body(source, "fn delete_database_blocking(")]);
     let before_exclusive = &body[..body.find("delete_exclusive_cancellable(").unwrap()];
-    assert!(
-        !before_exclusive.contains("begin_preferred_replace"),
-        "{body}"
-    );
+    assert!(!before_exclusive.contains("invalidate_database"), "{body}");
     let closure = &body[body.find("delete_exclusive_cancellable(").unwrap()
         ..body.find("ifletErr(error)=unlink_result").unwrap()];
     assert_in_order(
         closure,
         &[
-            "letreplace_guard=search_cache.begin_preferred_replace(target.path(),cancellation)?;",
+            "search_cache.invalidate_database(target.path());",
             "unlink_database_files(&target,&expected_source);",
-            "drop(replace_guard);",
+            "search_cache.invalidate_database(target.path());",
+            "letresult=result?;",
         ],
     );
     assert_eq!(
@@ -3494,85 +3490,83 @@ fn search_index_deletion_unlinks_once_under_begin_preferred_replace() {
         1,
         "{closure}"
     );
-    assert_eq!(
-        body.matches("begin_preferred_replace(").count(),
-        1,
-        "{body}"
-    );
-    let guarded = &closure[closure.find("begin_preferred_replace(").unwrap()
-        ..closure.find("drop(replace_guard);").unwrap()];
-    assert_no_retry_loop(guarded);
+    let mutation = &closure[closure.find("search_cache.invalidate_database(").unwrap()
+        ..closure.find("letresult=result?;").unwrap()];
+    assert_no_retry_loop(mutation);
     assert!(compact(source).contains(
         "fnunlink_database_files(target:&DatabaseFileTarget,expected_source:&IndexSource,)->"
     ));
+    assert_no_mapping_gate_symbols();
 }
 
-/// f-20260917-04. Only the two writers call the write-guard; promotion never waits because
-/// it only creates a preferred leaf that nothing in-process can have mapped.
-#[test]
-fn search_index_write_guard_callers_exclude_promotion() {
-    let mut callers = 0;
-    for file in ["db/mod.rs", "db/search.rs", "db/search_index.rs"] {
-        let source = source_for(file);
-        let normalised = normalise(source, Literals::Blank);
-        let test_start = normalised.find("mod tests {").unwrap_or(normalised.len());
-        callers += normalised[..test_start]
-            .matches(".begin_preferred_replace(")
-            .count();
+fn assert_no_mapping_gate_symbols() {
+    for file in ["main.rs", "db/mod.rs", "db/search.rs", "db/search_index.rs"] {
+        let source = normalise(source_for(file), Literals::Blank);
+        for forbidden in [
+            "MappingGate",
+            "MappingLease",
+            "PreferredReplaceGuard",
+            "mapping_gate",
+            "MAPPING_GATE",
+            "lease_preferred_mapping",
+            "begin_preferred_replace",
+            "open_file_leased",
+            "invalidate_entries",
+        ] {
+            assert!(!source.contains(forbidden), "{forbidden} remains in {file}");
+        }
     }
-    assert_eq!(callers, 2);
-    let source = source_for("db/search_index.rs");
-    let promote =
-        compact(&source[braced_body(source, "pub(crate) fn promote_legacy_index_sidecar_at(")]);
-    assert!(!promote.contains("begin_preferred_replace"), "{promote}");
-    assert!(!promote.contains("lease_preferred_mapping"), "{promote}");
 }
 
-/// f-20260917-04. The loader leases the preferred leaf before opening or mapping it, and
-/// `cache_loaded_index` publishes only through `insert_index`.
+/// The reader opens relative to the descriptor before mapping, and publishes only
+/// through `insert_index`.
 #[test]
-fn search_index_reader_leases_before_opening_the_preferred_leaf() {
+fn search_index_reader_opens_preferred_leaf_before_cancellable_mapping() {
     let source = source_for("db/search.rs");
     let open = compact(&source[braced_body(source, "fn open_valid_preferred(")]);
     assert_in_order(
         &open,
         &[
-            "search_cache.lease_preferred_mapping(target.path(),cancellation)?;",
             "open_regular_at(",
-            "MmapSearchIndex::open_file_leased(file,lease,cancellation)",
+            "MmapSearchIndex::open_file_cancellable(file,cancellation)",
         ],
     );
     let cache = compact(&source[braced_body(source, "fn cache_loaded_index(")]);
-    assert_eq!(cache.matches("search_cache.").count(), 1, "{cache}");
-    assert!(cache.contains("search_cache.insert_index("), "{cache}");
+    assert_eq!(
+        cache.matches("search_cache.insert_index(").count(),
+        1,
+        "{cache}"
+    );
+    assert!(!cache.contains("indexes.lock()"), "{cache}");
+    assert_no_mapping_gate_symbols();
 }
 
-/// f-20260917-04. `insert_index` reads draining inside the same `indexes` critical section
-/// as the insert, and drops displaced indexes only after that section ends.
+/// The counter comparison and insert share the indexes critical section. The
+/// increment precedes both eviction locks, and displaced mappings drop afterwards.
 #[test]
-fn search_index_insert_reads_draining_under_the_indexes_mutex() {
+fn search_index_insert_checks_invalidation_under_the_indexes_mutex() {
     let source = source_for("main.rs");
     let body = compact(&source[braced_body(source, "pub(crate) fn insert_index(")]);
-    let section_start = body.find("letmutcache=self.indexes.lock()").unwrap();
-    let section = &body[section_start..body.find("drop(discarded);").unwrap()];
     assert_in_order(
-        section,
+        &body,
         &[
+            "let(loaded,discarded)={",
+            "letmutcache=self.indexes.lock()",
             "cache.get(&identity)",
-            ".is_draining()",
+            "self.invalidation_snapshot()!=invalidation_snapshot",
             "cache.insert(identity,",
+            "};drop(discarded);",
+        ],
+    );
+    let invalidation = compact(&source[braced_body(source, "pub(crate) fn invalidate_database(")]);
+    assert_in_order(
+        &invalidation,
+        &[
+            "self.invalidation_counter.fetch_add(1,Ordering::SeqCst);",
+            "self.results.lock()",
+            "self.indexes.lock()",
         ],
     );
     let clear = compact(&source[braced_body(source, "pub(crate) fn clear(")]);
-    assert!(!clear.contains("mapping_gates.clear()"), "{clear}");
-    assert!(clear.contains("Arc::strong_count(gate)!=1"), "{clear}");
-    let guard = compact(&source[braced_body(source, "pub(crate) fn begin_preferred_replace(")]);
-    assert_in_order(
-        &guard,
-        &[
-            "|state|state.draining=true",
-            "self.invalidate_entries(database,Some(&gate));",
-            "|state|state.leases>0",
-        ],
-    );
+    assert!(!clear.contains("mapping_gates"), "{clear}");
 }
