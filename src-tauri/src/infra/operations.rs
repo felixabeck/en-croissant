@@ -772,6 +772,14 @@ impl OperationRegistry {
     }
 
     #[cfg(test)]
+    pub(crate) fn download_admission_is_locked_for_test(&self) -> bool {
+        matches!(
+            self.inner.state.try_lock(),
+            Err(std::sync::TryLockError::WouldBlock)
+        )
+    }
+
+    #[cfg(test)]
     pub(crate) fn poison_for_test(&self) {
         let inner = Arc::clone(&self.inner);
         let _ = std::panic::catch_unwind(move || {
@@ -1132,41 +1140,6 @@ mod tests {
             registry.claim_download(&duplicate, "main", "duplicate", "progress", 8),
             Err(Error::Conflict(_))
         ));
-    }
-
-    #[test]
-    fn progress_clear_decision_excludes_download_admission() {
-        let registry = OperationRegistry::default();
-        let ticket = registry.prepare_download("main").unwrap();
-        let store = crate::progress::ProgressStore::default();
-        let previous = store.start("progress".into()).unwrap();
-        let generation = registry
-            .with_live_download_for_progress("progress", |live| {
-                assert!(!live);
-                assert!(
-                    matches!(
-                        registry.inner.state.try_lock(),
-                        Err(std::sync::TryLockError::WouldBlock)
-                    ),
-                    "download admission must remain locked through the clear decision"
-                );
-                store.clear("progress")
-            })
-            .unwrap()
-            .unwrap();
-        assert!(generation > previous.generation);
-        assert!(store.get("progress").unwrap().is_none());
-        let _download = registry
-            .claim_download(&ticket, "main", "download", "progress", 8)
-            .unwrap();
-        let next = store.start("progress".into()).unwrap();
-        assert!(next.generation > generation);
-        assert!(
-            store
-                .transition(&next, 50.0, crate::progress::ProgressState::Running)
-                .unwrap()
-                .1
-        );
     }
 
     #[test]

@@ -15,6 +15,10 @@ const PROGRESS_CAPACITY: usize = 1_000;
 const RUNNING_TTL: Duration = Duration::from_secs(60 * 60);
 const TERMINAL_TTL: Duration = Duration::from_secs(5 * 60);
 
+#[cfg(test)]
+static CLEAR_DECISION_HOOKS: crate::infra::test_hooks::KeyedTestHooks<String> =
+    crate::infra::test_hooks::KeyedTestHooks::new();
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum ProgressState {
@@ -251,6 +255,8 @@ impl ProgressStore {
             .state
             .lock()
             .map_err(|_| Error::Conflict("progress store poisoned".into()))?;
+        #[cfg(test)]
+        CLEAR_DECISION_HOOKS.run(&id.to_owned());
         if live_download {
             if let Some(stored) = state.entries.get(id) {
                 if stored.item.state == ProgressState::Running {
@@ -527,6 +533,55 @@ mod tests {
             .is_err());
         let third = store.start("job".into()).unwrap();
         assert!(third.generation > second.generation);
+    }
+
+    #[test]
+    fn clear_progress_excludes_download_admission_through_the_store_decision() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        for live_download in [false, true] {
+            let store = ProgressStore::default();
+            let operations = OperationRegistry::default();
+            let id = uuid::Uuid::new_v4().to_string();
+            store.start(id.clone()).unwrap();
+            let _download = live_download.then(|| {
+                let ticket = operations.prepare_download("main").unwrap();
+                operations
+                    .claim_download(&ticket, "main", "download", &id, 8)
+                    .unwrap()
+            });
+            let observed = Arc::new(AtomicBool::new(false));
+            let hook_observed = observed.clone();
+            let hook_operations = operations.clone();
+            let hook_store = store.clone();
+            CLEAR_DECISION_HOOKS.arm(
+                id.clone(),
+                Box::new(move || {
+                    assert!(
+                        hook_operations.download_admission_is_locked_for_test(),
+                        "clear_progress must hold download admission through the store clear decision"
+                    );
+                    assert!(matches!(
+                        hook_store.state.try_lock(),
+                        Err(std::sync::TryLockError::WouldBlock)
+                    ));
+                    hook_observed.store(true, Ordering::SeqCst);
+                }),
+            );
+            let mut emitted = false;
+            clear_progress_with(&store, &operations, id, |_| {
+                assert!(!operations.download_admission_is_locked_for_test());
+                assert!(store.state.try_lock().is_ok());
+                emitted = true;
+                Ok(())
+            })
+            .unwrap();
+            assert!(
+                observed.load(Ordering::SeqCst),
+                "clear_progress must reach the store clear decision hook"
+            );
+            assert_eq!(emitted, !live_download);
+        }
     }
 
     #[test]
