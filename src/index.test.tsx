@@ -26,7 +26,10 @@ const {
 vi.mock("react-dom/client", () => ({ createRoot }));
 vi.mock("./App", () => ({ default: () => null }));
 vi.mock("./components/home/StartupStorageFailure", () => ({ StartupStorageFailure: () => null }));
-vi.mock("./platform/errors", () => ({ logFailureSafely }));
+vi.mock("./platform/errors", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./platform/errors")>()),
+  logFailureSafely,
+}));
 vi.mock("./platform/tauri", () => ({
   tauri: { closeSplashscreen, releasePreviousDocumentOperations },
 }));
@@ -75,14 +78,21 @@ test("awaits the previous-document sweep before sessions, i18n and rendering", a
 });
 
 test("logs a rejected previous-document sweep and still renders the application", async () => {
-  releasePreviousDocumentOperations.mockRejectedValueOnce(new Error("native registry failed"));
+  releasePreviousDocumentOperations.mockRejectedValueOnce({
+    tag: "backend-error",
+    category: "network",
+    message: "native registry request failed at /home/private/registry token=secret-registry-token",
+  });
   const { applicationStartup } = await import("./index");
   await expect(applicationStartup).resolves.toBeUndefined();
   expect(logFailureSafely).toHaveBeenCalledExactlyOnceWith(
-    "StartupReservationReleaseError",
+    "StartupReservationReleaseError: network: native registry request failed at [path] token=[redacted]",
     {
       operation: "releasePreviousDocumentOperations",
-      primaryFailure: { category: "unexpected", message: "StartupReservationReleaseError" },
+      primaryFailure: {
+        category: "network",
+        message: "native registry request failed at [path] token=[redacted]",
+      },
     },
     "Startup reservation release failed",
   );

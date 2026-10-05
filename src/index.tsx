@@ -7,7 +7,7 @@ import { initializePersistedSessions, SessionSanitizationError } from "./utils/s
 import { setAutoFreeze } from "immer";
 import { I18nextProvider } from "react-i18next";
 import { StartupStorageFailure } from "./components/home/StartupStorageFailure";
-import { logFailureSafely } from "./platform/errors";
+import { logFailureSafely, safeFailureContext } from "./platform/errors";
 import { tauri } from "./platform/tauri";
 
 dayjs.extend(customParseFormat);
@@ -36,10 +36,11 @@ function logStartupDiagnostic(
 export const applicationStartup = (async () => {
   try {
     await tauri.releasePreviousDocumentOperations();
-  } catch {
-    await logStartupDiagnostic(
-      "releasePreviousDocumentOperations",
-      "StartupReservationReleaseError",
+  } catch (error) {
+    const primaryFailure = safeFailureContext(error);
+    await logFailureSafely(
+      `StartupReservationReleaseError: ${primaryFailure.category}: ${primaryFailure.message}`,
+      { operation: "releasePreviousDocumentOperations", primaryFailure },
       "Startup reservation release failed",
     );
   }
