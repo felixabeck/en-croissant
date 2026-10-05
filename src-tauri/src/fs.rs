@@ -1586,6 +1586,13 @@ fn validate_archive_path(path: &str) -> Result<PathBuf, Error> {
         .collect())
 }
 
+fn map_zip_error(error: zip::result::ZipError, message: &str) -> Error {
+    match error {
+        zip::result::ZipError::Io(source) => Error::Io(Box::new(source)),
+        _ => Error::InvalidInput(message.into()),
+    }
+}
+
 fn extract_zip_cancellable(
     file: std::fs::File,
     pin: &std::fs::File,
@@ -1599,10 +1606,8 @@ fn extract_zip_cancellable(
     // Only after a successful adopt: from here `staging` alone removes the leaf by identity.
     let _ = temp_dir.keep();
 
-    let mut archive = zip::ZipArchive::new(file).map_err(|error| match error {
-        zip::result::ZipError::Io(source) => Error::Io(Box::new(source)),
-        _ => Error::InvalidInput("Invalid zip archive".into()),
-    })?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|error| map_zip_error(error, "Invalid zip archive"))?;
 
     let mut total_expanded = 0u64;
     if archive.len() > limits.entries {
@@ -1615,7 +1620,7 @@ fn extract_zip_cancellable(
         }
         let mut file = archive
             .by_index(i)
-            .map_err(|_| Error::InvalidInput("Invalid zip entry".into()))?;
+            .map_err(|error| map_zip_error(error, "Invalid zip entry"))?;
 
         let validated_path = validate_archive_path(file.name())?;
 
@@ -1646,12 +1651,7 @@ fn extract_zip_cancellable(
         }
     }
 
-    #[cfg(test)]
-    run_archive_pre_install_hook(dest_parent);
-    if cancellation.is_cancelled() {
-        return Err(Error::Cancellation);
-    }
-    install_extracted_tree(staging, pin, dest_leaf)
+    install_extracted_tree(staging, pin, dest_parent, dest_leaf, cancellation)
 }
 
 fn extract_tar_cancellable(
@@ -1716,12 +1716,7 @@ fn extract_tar_cancellable(
         }
     }
 
-    #[cfg(test)]
-    run_archive_pre_install_hook(dest_parent);
-    if cancellation.is_cancelled() {
-        return Err(Error::Cancellation);
-    }
-    install_extracted_tree(staging, pin, dest_leaf)
+    install_extracted_tree(staging, pin, dest_parent, dest_leaf, cancellation)
 }
 
 #[cfg(test)]
@@ -1734,7 +1729,7 @@ std::thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-/// Runs once after extraction, before cancellation and the pinned-parent install check.
+/// Sets a one-shot hook in the shared installer, before cancellation and parent identity checks.
 #[cfg(test)]
 fn set_archive_pre_install_hook(hook: Option<ArchivePreInstallHook>) {
     ARCHIVE_PRE_INSTALL_HOOK.with(|slot| *slot.borrow_mut() = hook);
@@ -1779,12 +1774,19 @@ fn archive_payload_required() -> Error {
     Error::InvalidInput("Download payload must be a zip, tar or tar.gz archive".into())
 }
 
-/// Installs an adopted inner tree only when its held parent is the call's original pin.
+/// Checks cancellation after the test hook, then installs an adopted tree only under its original pin.
 fn install_extracted_tree(
     source: crate::infra::fs::OwnedStagingDir,
     pin: &std::fs::File,
+    _dest_parent: &Path,
     dest_leaf: &OsStr,
+    cancellation: &CancellationToken,
 ) -> Result<(), Error> {
+    #[cfg(test)]
+    run_archive_pre_install_hook(_dest_parent);
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
     if crate::infra::path_authority::opened_file_identity(pin)? != source.parent_identity()? {
         return Err(Error::Conflict(
             "archive staging parent changed concurrently".into(),
@@ -1945,10 +1947,21 @@ fn copy_cancellable(
 }
 
 #[cfg(test)]
-fn extract_zip(
+type ArchiveExtractor = fn(
+    std::fs::File,
+    &std::fs::File,
+    &Path,
+    &OsStr,
+    ArchiveLimits,
+    &CancellationToken,
+) -> Result<(), Error>;
+
+#[cfg(test)]
+fn extract_archive_for_test(
     file: std::fs::File,
     target_path: &Path,
     limits: ArchiveLimits,
+    extractor: ArchiveExtractor,
 ) -> Result<(), Error> {
     let (Some(dest_parent), Some(dest_leaf)) = (target_path.parent(), target_path.file_name())
     else {
@@ -1957,7 +1970,7 @@ fn extract_zip(
         ));
     };
     let pin = crate::infra::fs::open_parent_no_follow(target_path)?;
-    extract_zip_cancellable(
+    extractor(
         file,
         &pin,
         dest_parent,
@@ -1965,6 +1978,15 @@ fn extract_zip(
         limits,
         &CancellationToken::new(),
     )
+}
+
+#[cfg(test)]
+fn extract_zip(
+    file: std::fs::File,
+    target_path: &Path,
+    limits: ArchiveLimits,
+) -> Result<(), Error> {
+    extract_archive_for_test(file, target_path, limits, extract_zip_cancellable)
 }
 
 #[cfg(test)]
@@ -1973,40 +1995,12 @@ fn extract_tar(
     target_path: &Path,
     limits: ArchiveLimits,
 ) -> Result<(), Error> {
-    let (Some(dest_parent), Some(dest_leaf)) = (target_path.parent(), target_path.file_name())
-    else {
-        return Err(Error::InvalidInput(
-            "archive target needs a parent and a leaf".into(),
-        ));
-    };
-    let pin = crate::infra::fs::open_parent_no_follow(target_path)?;
-    extract_tar_cancellable(
-        file,
-        &pin,
-        dest_parent,
-        dest_leaf,
-        limits,
-        &CancellationToken::new(),
-    )
+    extract_archive_for_test(file, target_path, limits, extract_tar_cancellable)
 }
 
 #[cfg(test)]
 fn extract_gz(file: std::fs::File, target_path: &Path, limits: ArchiveLimits) -> Result<(), Error> {
-    let (Some(dest_parent), Some(dest_leaf)) = (target_path.parent(), target_path.file_name())
-    else {
-        return Err(Error::InvalidInput(
-            "archive target needs a parent and a leaf".into(),
-        ));
-    };
-    let pin = crate::infra::fs::open_parent_no_follow(target_path)?;
-    extract_gz_cancellable(
-        file,
-        &pin,
-        dest_parent,
-        dest_leaf,
-        limits,
-        &CancellationToken::new(),
-    )
+    extract_archive_for_test(file, target_path, limits, extract_gz_cancellable)
 }
 
 #[tauri::command]
@@ -2743,6 +2737,24 @@ mod tests {
     }
 
     #[test]
+    fn map_zip_error_preserves_io_and_uses_invalid_input_message() {
+        let error = map_zip_error(
+            zip::result::ZipError::Io(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)),
+            "Invalid zip entry",
+        );
+        assert!(
+            matches!(error, Error::Io(ref source) if source.kind() == std::io::ErrorKind::UnexpectedEof),
+            "{error}"
+        );
+        let error = map_zip_error(
+            zip::result::ZipError::InvalidArchive("untrusted detail"),
+            "Invalid zip entry",
+        );
+        assert!(matches!(&error, Error::InvalidInput(message) if message == "Invalid zip entry"));
+        assert_eq!(error.to_string(), "Invalid input: Invalid zip entry");
+    }
+
+    #[test]
     fn extract_zip_non_archive_returns_fixed_error() {
         let mut file = tempfile::tempfile().unwrap();
         file.write_all(b"not a zip archive").unwrap();
@@ -2895,7 +2907,33 @@ mod tests {
     }
 
     #[test]
-    fn extract_zip_engine_shape_identity_hook_is_conflict() {
+    fn extract_tar_cancelled_before_install_leaves_no_inner_staging_leaf() {
+        let _reset = ResetArchiveHook;
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(&raw_tar_payload()).unwrap();
+        file.rewind().unwrap();
+        let parent = tempdir().unwrap();
+        let pin = crate::infra::fs::open_parent_no_follow(&parent.path().join("payload")).unwrap();
+        let cancellation = CancellationToken::new();
+        let hook_token = cancellation.clone();
+        set_archive_pre_install_hook(Some(Box::new(move |_| hook_token.cancel())));
+
+        let error = extract_tar_cancellable(
+            file,
+            &pin,
+            parent.path(),
+            OsStr::new("payload"),
+            OpClass::Engine.limits(),
+            &cancellation,
+        )
+        .unwrap_err();
+        assert!(matches!(error, Error::Cancellation), "{error}");
+        assert!(!parent.path().join("payload").exists());
+        assert!(leaves(parent.path()).is_empty());
+    }
+
+    #[test]
+    fn extract_zip_staging_outside_pinned_parent_is_conflict() {
         let archives = tempdir().unwrap();
         let archive = archives.path().join("engine.zip");
         write_zip(&archive, &[("engine.bin", b"engine")]);
@@ -2986,14 +3024,27 @@ mod tests {
         }
         for signature in ["fn extract_zip_cancellable(", "fn extract_tar_cancellable("] {
             let body = body_at_indent(source, signature);
-            assert!(body.contains("install_extracted_tree("), "{body}");
+            assert!(
+                body.contains(
+                    "install_extracted_tree(staging, pin, dest_parent, dest_leaf, cancellation)"
+                ),
+                "{body}"
+            );
         }
         for signature in ["fn extract_zip(", "fn extract_tar("] {
             let body = body_at_indent(source, signature);
             let production = signature
                 .trim_start_matches("fn ")
-                .replace('(', "_cancellable(");
+                .replace('(', "_cancellable");
             assert!(body.contains(&production), "{body}");
+            assert!(body.contains("extract_archive_for_test("), "{body}");
+        }
+        let zip = body_at_indent(source, "fn extract_zip_cancellable(");
+        for message in ["Invalid zip archive", "Invalid zip entry"] {
+            assert!(
+                zip.contains(&format!("map_zip_error(error, \"{message}\")")),
+                "{zip}"
+            );
         }
         for signature in ["fn extract_zip_cancellable(", "fn extract_tar_cancellable("] {
             let body = body_at_indent(source, signature);
@@ -3030,11 +3081,23 @@ mod tests {
         let helper = body_at_indent(source, "fn install_extracted_tree(");
         assert!(
             source.contains(
-                "fn install_extracted_tree(\n    source: crate::infra::fs::OwnedStagingDir,"
+                "fn install_extracted_tree(\n    source: crate::infra::fs::OwnedStagingDir,\n    pin: &std::fs::File,\n    _dest_parent: &Path,\n    dest_leaf: &OsStr,\n    cancellation: &CancellationToken,"
             ),
             "{helper}"
         );
         assert!(!helper.contains("adopt("), "{helper}");
+        let hook = helper
+            .find("run_archive_pre_install_hook(_dest_parent)")
+            .unwrap();
+        let cancellation = helper.find("if cancellation.is_cancelled()").unwrap();
+        let identity = helper.find("opened_file_identity(pin)").unwrap();
+        let install = helper
+            .find("install_owned_staging_dir(source, dest_leaf)")
+            .unwrap();
+        assert!(
+            hook < cancellation && cancellation < identity && identity < install,
+            "{helper}"
+        );
         assert!(
             helper.contains("install_owned_staging_dir(source, dest_leaf)"),
             "{helper}"
@@ -4086,11 +4149,22 @@ mod tests {
                 assert!(leaves(&moved).is_empty());
             }
             Err(error) => {
+                let rename_refused = matches!(
+                    error.kind(),
+                    std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::WouldBlock
+                );
+                #[cfg(windows)]
+                let rename_refused = {
+                    use windows_sys::Win32::Foundation::{
+                        ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION,
+                    };
+                    rename_refused
+                        || matches!(error.raw_os_error(), Some(code)
+                            if code == ERROR_SHARING_VIOLATION as i32
+                                || code == ERROR_LOCK_VIOLATION as i32)
+                };
                 assert!(
-                    matches!(
-                        error.kind(),
-                        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::WouldBlock
-                    ) || matches!(error.raw_os_error(), Some(32 | 33)),
+                    rename_refused,
                     "parent rename must be refused by the held handle: {error}"
                 );
                 result.unwrap();
