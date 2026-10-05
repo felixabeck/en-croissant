@@ -84,13 +84,17 @@ test("engine-gap: warm actor contract preserves ownership and isolates searches"
         expect(await invoke("kill_engines", { tab: "tab-1" })).toBeNull();
         await cancelled("isolation-5");
         await cancelled("isolation-6");
+        expect(await stop("engine-1", "tab-1", "isolation-5")).toBe(false);
+        expect(await stop("engine-2", "tab-1", "isolation-6")).toBe(false);
         await pending("isolation-4", "isolation-7");
 
+        expect(await stop("engine-1", "tab-2", "isolation-7")).toBe(true);
         expect(await stop("engine-1", "tab-2", null)).toBe(false);
         await cancelled("isolation-7");
         expect(await stop("engine-1", "tab-2", "isolation-7")).toBe(false);
         await pending("isolation-4");
 
+        expect(await stop("engine-2", "tab-2", "isolation-4")).toBe(true);
         expect(await stop("engine-2", "tab-2", null)).toBe(false);
         await cancelled("isolation-4");
         expect(await stop("engine-2", "tab-2", "isolation-4")).toBe(false);
