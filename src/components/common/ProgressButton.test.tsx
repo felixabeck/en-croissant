@@ -473,7 +473,6 @@ test("a rejected cancel keeps the running UI and is not reported by the button",
 
   expect(progress.clear).not.toHaveBeenCalled();
   expect(progress.fence).not.toHaveBeenCalled();
-  expect(progress.fence).not.toHaveBeenCalled();
   expect(setInProgress).not.toHaveBeenCalledWith(false);
   expect(notifyListenerError).not.toHaveBeenCalled();
 });
