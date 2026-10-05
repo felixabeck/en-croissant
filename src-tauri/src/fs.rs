@@ -740,6 +740,7 @@ pub async fn download_file(
         &job_id,
         window.label(),
         "download publication",
+        &id,
         MAX_ACTIVE_DOWNLOADS,
     )?;
     download_to_destination(
@@ -1255,10 +1256,12 @@ async fn download_lichess_games_runtime<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     state: &AppState,
 ) -> Result<crate::infra::path_authority::ArtifactPublication, Error> {
+    let progress_id = format!("lichess_{}", player.trim());
     let lease = state.operations.claim_download(
         &job_id,
         owner,
         "download_lichess_games",
+        &progress_id,
         MAX_ACTIVE_DOWNLOADS,
     )?;
     let operations = state
@@ -1273,14 +1276,14 @@ async fn download_lichess_games_runtime<R: tauri::Runtime>(
             "Lichess download requires a Lichess destination".into(),
         ));
     }
-    let (url, player) = lichess_games_url(&player, since_ms)?;
+    let (url, _) = lichess_games_url(&player, since_ms)?;
     let token = state
         .credentials
         .token_async(handle)
         .await?
         .ok_or_else(|| Error::OAuthFailure("authenticated Lichess account unavailable".into()))?;
     download_to_destination(
-        &format!("lichess_{player}"),
+        &progress_id,
         url.as_str(),
         destination,
         filename,
@@ -1345,6 +1348,7 @@ pub async fn download_engine_archive(
         &job_id,
         window.label(),
         "download_engine_archive",
+        &id,
         MAX_ACTIVE_DOWNLOADS,
     )?;
     let cancellation = lease.token();
@@ -1522,6 +1526,18 @@ pub async fn cancel_download(
     state: tauri::State<'_, AppState>,
 ) -> Result<bool, Error> {
     state.operations.cancel_download(&id, window.label())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn cancel_download_for_progress(
+    progress_id: String,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+) -> Result<bool, Error> {
+    state
+        .operations
+        .cancel_download_for_progress(&progress_id, window.label())
 }
 
 fn private_tempdir_in(prefix: &str, parent: &Path) -> Result<tempfile::TempDir, Error> {
@@ -2225,7 +2241,13 @@ mod tests {
         let ticket = state.operations.prepare_download("test").unwrap();
         let lease = state
             .operations
-            .claim_download(&ticket, "test", "test download", MAX_ACTIVE_DOWNLOADS)
+            .claim_download(
+                &ticket,
+                "test",
+                "test download",
+                &ticket,
+                MAX_ACTIVE_DOWNLOADS,
+            )
             .unwrap();
         (ticket, lease)
     }
@@ -2633,7 +2655,13 @@ mod tests {
         let first = operations.prepare_download("owner").unwrap();
         assert!(operations.cancel_download(&first, "owner").unwrap());
         assert!(matches!(
-            operations.claim_download(&first, "owner", "download", MAX_ACTIVE_DOWNLOADS),
+            operations.claim_download(
+                &first,
+                "owner",
+                "download",
+                "progress",
+                MAX_ACTIVE_DOWNLOADS
+            ),
             Err(Error::Cancellation)
         ));
         assert!(!operations.cancel_download(&first, "owner").unwrap());
@@ -5865,7 +5893,13 @@ mod tests {
         let app = test_progress_app();
         let lease = state
             .operations
-            .claim_download(&job_id, "test", "test download", MAX_ACTIVE_DOWNLOADS)
+            .claim_download(
+                &job_id,
+                "test",
+                "test download",
+                progress_id,
+                MAX_ACTIVE_DOWNLOADS,
+            )
             .unwrap();
 
         let err = download_to_destination(
@@ -5955,11 +5989,17 @@ mod tests {
             let app_handle = app.handle().clone();
             let owned_state = Arc::clone(&state);
             let job_id = state.operations.prepare_download("test").unwrap();
+            let progress_id = format!("caller-drop-{publication_fail}");
             let lease = state
                 .operations
-                .claim_download(&job_id, "test", "test download", MAX_ACTIVE_DOWNLOADS)
+                .claim_download(
+                    &job_id,
+                    "test",
+                    "test download",
+                    &progress_id,
+                    MAX_ACTIVE_DOWNLOADS,
+                )
                 .unwrap();
-            let progress_id = format!("caller-drop-{publication_fail}");
             let filename = format!("caller-drop-{publication_fail}.bin");
             let task_progress = progress_id.clone();
             let task_filename = filename.clone();

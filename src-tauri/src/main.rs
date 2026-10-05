@@ -108,8 +108,9 @@ use crate::{
         get_players, merge_players, write_db_game,
     },
     fs::{
-        cancel_download, download_engine_archive, download_file, download_lichess_games,
-        file_exists, prepare_download, release_download, verify_signed_bytes,
+        cancel_download, cancel_download_for_progress, download_engine_archive, download_file,
+        download_lichess_games, file_exists, prepare_download, release_download,
+        verify_signed_bytes,
     },
     opening::{get_opening_from_fens, get_opening_from_name, search_opening_name},
 };
@@ -2138,6 +2139,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             download_engine_archive,
             download_lichess_games,
             cancel_download,
+            cancel_download_for_progress,
             prepare_download,
             release_download,
             get_tournaments,
@@ -3574,6 +3576,125 @@ mod blocking_offload_scans {
         let workflow = gateway_closure(body, "run_accepted_blocking");
         assert!(accept < native && native < gateway, "{body}");
         assert_eq!(workflow.trim(), "workflow", "{body}");
+    }
+
+    #[test]
+    fn download_claims_record_their_progress_id_and_webview_owner_once() {
+        let fs = include_str!("fs.rs");
+        for (source, signature, owner, label, progress_id) in [
+            (
+                fs,
+                "pub async fn download_file(",
+                "window.label()",
+                "download publication",
+                "id",
+            ),
+            (
+                fs,
+                "pub async fn download_engine_archive(",
+                "window.label()",
+                "download_engine_archive",
+                "id",
+            ),
+            (
+                fs,
+                "async fn download_lichess_games_runtime<",
+                "owner",
+                "download_lichess_games",
+                "progress_id",
+            ),
+            (
+                include_str!("chesscom.rs"),
+                "pub async fn download_chess_com_games(",
+                "window.label()",
+                "download_chess_com_games",
+                "progress_id",
+            ),
+        ] {
+            let body = body_at_indent(source, signature);
+            assert_eq!(
+                body.matches("claim_download(").count(),
+                1,
+                "{signature}: {body}"
+            );
+            let compact: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+            let compact_label: String = label.chars().filter(|c| !c.is_whitespace()).collect();
+            assert!(
+                compact.contains(&format!(
+                    "claim_download(&job_id,{owner},\"{compact_label}\",&{progress_id},"
+                )),
+                "{signature}: {body}"
+            );
+            if owner == "window.label()" {
+                assert_eq!(body.matches(owner).count(), 1, "{signature}: {body}");
+            }
+        }
+
+        let lichess_command = body_at_indent(fs, "pub async fn download_lichess_games(");
+        assert_eq!(
+            lichess_command.matches("window.label()").count(),
+            1,
+            "{lichess_command}"
+        );
+        let lichess = body_at_indent(fs, "async fn download_lichess_games_runtime<");
+        assert_eq!(
+            lichess.matches("format!(\"lichess_").count(),
+            1,
+            "{lichess}"
+        );
+        assert!(
+            lichess.find("let progress_id =").unwrap() < lichess.find("claim_download(").unwrap(),
+            "{lichess}"
+        );
+        let compact: String = lichess.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(
+            compact.contains("download_to_destination(&progress_id,"),
+            "{lichess}"
+        );
+        let destination = body_at_indent(fs, "async fn download_to_destination_inner<");
+        assert!(
+            destination.contains("begin_progress(&state.progress_state, app, id.to_owned())"),
+            "{destination}"
+        );
+
+        let chesscom = include_str!("chesscom.rs");
+        let command = body_at_indent(chesscom, "pub async fn download_chess_com_games(");
+        assert_eq!(
+            command.matches("format!(\"chesscom_").count(),
+            1,
+            "{command}"
+        );
+        assert!(
+            command.find("let progress_id =").unwrap() < command.find("claim_download(").unwrap(),
+            "{command}"
+        );
+        let compact: String = command.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(
+            compact.contains("download_chess_com_games_core(destination,filename,progress_id,"),
+            "{command}"
+        );
+        let core = body_at_indent(chesscom, "async fn download_chess_com_games_core<");
+        assert!(
+            core.contains("begin_progress(&state.progress_state, &app, progress_id)"),
+            "{core}"
+        );
+        assert!(!core.contains("format!(\"chesscom_"), "{core}");
+
+        for (signature, call) in [
+            (
+                "pub async fn cancel_download(",
+                "cancel_download(&id,window.label())",
+            ),
+            (
+                "pub fn cancel_download_for_progress(",
+                "cancel_download_for_progress(&progress_id,window.label())",
+            ),
+        ] {
+            let body = body_at_indent(fs, signature);
+            let compact: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+            assert_eq!(compact.matches(call).count(), 1, "{body}");
+            assert_eq!(body.matches("window.label()").count(), 1, "{body}");
+        }
     }
 
     #[test]

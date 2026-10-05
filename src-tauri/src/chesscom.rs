@@ -226,10 +226,12 @@ pub async fn download_chess_com_games(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
 ) -> Result<ArtifactPublication, Error> {
+    let progress_id = format!("chesscom_{player}");
     let lease = state.operations.claim_download(
         &job_id,
         window.label(),
         "download_chess_com_games",
+        &progress_id,
         crate::fs::MAX_ACTIVE_DOWNLOADS,
     )?;
     let lower_player = player.to_ascii_lowercase();
@@ -243,7 +245,7 @@ pub async fn download_chess_com_games(
         download_chess_com_games_core(
             destination,
             filename,
-            player,
+            progress_id,
             lower_player,
             first_month,
             app,
@@ -285,7 +287,7 @@ fn report_terminal_progress<R: tauri::Runtime>(
 async fn download_chess_com_games_core<R: tauri::Runtime>(
     destination: PathRef,
     filename: String,
-    player: String,
+    progress_id: String,
     lower_player: String,
     first_month: Option<(i32, u32)>,
     app: tauri::AppHandle<R>,
@@ -297,7 +299,7 @@ async fn download_chess_com_games_core<R: tauri::Runtime>(
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
-    let progress = begin_progress(&state.progress_state, &app, format!("chesscom_{player}"))?;
+    let progress = begin_progress(&state.progress_state, &app, progress_id)?;
 
     let result = async {
         let staged = match tokio::time::timeout(export_timeout, async {
@@ -594,10 +596,12 @@ mod tests {
         state: AppState,
         timeout: Duration,
     ) -> Result<ArtifactPublication, Error> {
+        let progress_id = "chesscom_felix".to_owned();
         let lease = state.operations.claim_download(
             &job_id,
             "test",
             "download_chess_com_games",
+            &progress_id,
             crate::fs::MAX_ACTIVE_DOWNLOADS,
         )?;
         let cancellation = lease.token();
@@ -608,7 +612,7 @@ mod tests {
             download_chess_com_games_core(
                 destination,
                 filename,
-                "felix".into(),
+                progress_id,
                 "felix".into(),
                 None,
                 app,

@@ -890,6 +890,14 @@ async cancelDownload(id: string) : Promise<Result<boolean, ErrorPayload>> {
     else return { status: "error", error: e  as any };
 }
 },
+async cancelDownloadForProgress(progressId: string) : Promise<Result<boolean, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("cancel_download_for_progress", { progressId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async prepareDownload() : Promise<Result<string, ErrorPayload>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("prepare_download") };

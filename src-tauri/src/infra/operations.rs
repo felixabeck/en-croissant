@@ -139,6 +139,7 @@ struct AcceptedEntry {
     label: String,
     cancellation: CancellationToken,
     download: bool,
+    progress_id: Option<String>,
     committing: bool,
 }
 
@@ -353,6 +354,7 @@ impl OperationRegistry {
                 label: label.to_owned(),
                 cancellation: cancellation.clone(),
                 download: false,
+                progress_id: None,
                 committing: false,
             },
         );
@@ -373,6 +375,7 @@ impl OperationRegistry {
         ticket: &str,
         owner: &str,
         label: &str,
+        progress_id: &str,
         download_cap: usize,
     ) -> Result<OperationLease, Error> {
         let mut state = self.state()?;
@@ -405,6 +408,16 @@ impl OperationRegistry {
                 ReservationKind::Download.claimed_error().into(),
             ));
         }
+        if state.accepted.values().any(|accepted| {
+            accepted.download
+                && accepted.owner == owner
+                && accepted.progress_id.as_deref() == Some(progress_id)
+                && !accepted.cancellation.is_cancelled()
+        }) {
+            return Err(Error::Conflict(
+                "download progress is already active".into(),
+            ));
+        }
         if state.accepted.len() >= MAX_ACCEPTED_OPERATIONS {
             return Err(Error::ResourceLimit(
                 "too many accepted native operations".into(),
@@ -431,6 +444,7 @@ impl OperationRegistry {
                 label: label.to_owned(),
                 cancellation: cancellation.clone(),
                 download: true,
+                progress_id: Some(progress_id.to_owned()),
                 committing: false,
             },
         );
@@ -486,11 +500,45 @@ impl OperationRegistry {
                 "download belongs to another webview".into(),
             ));
         }
+        Ok(Self::cancel_accepted_download(entry))
+    }
+
+    fn cancel_accepted_download(entry: &AcceptedEntry) -> bool {
         if entry.committing {
-            return Ok(false);
+            return false;
         }
         entry.cancellation.cancel();
-        Ok(true)
+        true
+    }
+
+    pub fn cancel_download_for_progress(
+        &self,
+        progress_id: &str,
+        owner: &str,
+    ) -> Result<bool, Error> {
+        let state = self.state()?;
+        let mut already_cancelled = false;
+        for entry in state.accepted.values().filter(|entry| {
+            entry.download
+                && entry.owner == owner
+                && entry.progress_id.as_deref() == Some(progress_id)
+        }) {
+            if entry.cancellation.is_cancelled() {
+                already_cancelled = true;
+                continue;
+            }
+            return Ok(Self::cancel_accepted_download(entry));
+        }
+        Ok(already_cancelled)
+    }
+
+    pub fn has_live_download_for_progress(&self, progress_id: &str) -> Result<bool, Error> {
+        let state = self.state()?;
+        Ok(state.accepted.values().any(|entry| {
+            entry.download
+                && entry.progress_id.as_deref() == Some(progress_id)
+                && !entry.cancellation.is_cancelled()
+        }))
     }
 
     pub fn release_download(&self, ticket: &str, owner: &str) -> Result<(), Error> {
@@ -907,6 +955,145 @@ mod tests {
     }
 
     #[test]
+    fn progress_lookup_is_owner_isolated_and_cancels_only_the_matching_download() {
+        let registry = OperationRegistry::default();
+        let other_ticket = registry.prepare_download("other").unwrap();
+        let other = registry
+            .claim_download(&other_ticket, "other", "download", "shared", 8)
+            .unwrap();
+        assert!(!registry
+            .cancel_download_for_progress("shared", "main")
+            .unwrap());
+        assert!(!other.token().is_cancelled());
+        let ticket = registry.prepare_download("main").unwrap();
+        let download = registry
+            .claim_download(&ticket, "main", "download", "shared", 8)
+            .unwrap();
+        let unrelated_ticket = registry.prepare_download("main").unwrap();
+        let unrelated = registry
+            .claim_download(&unrelated_ticket, "main", "download", "different", 8)
+            .unwrap();
+        let accepted = registry.accept("ownerless accepted").unwrap();
+
+        assert!(!registry
+            .cancel_download_for_progress("missing", "main")
+            .unwrap());
+        assert!(registry
+            .cancel_download_for_progress("shared", "main")
+            .unwrap());
+        assert!(download.token().is_cancelled());
+        assert!(!other.token().is_cancelled());
+        assert!(!unrelated.token().is_cancelled());
+        assert!(!accepted.token().is_cancelled());
+        assert!(matches!(
+            download.commit_gate().begin_commit(),
+            Err(Error::Cancellation)
+        ));
+    }
+
+    #[test]
+    fn duplicate_uncancelled_progress_claim_keeps_the_ticket_reserved_without_a_lease() {
+        let registry = OperationRegistry::default();
+        let ticket = registry.prepare_download("main").unwrap();
+        let download = registry
+            .claim_download(&ticket, "main", "first", "progress", 8)
+            .unwrap();
+        let duplicate = registry.prepare_download("main").unwrap();
+        assert!(matches!(
+            registry.claim_download(&duplicate, "main", "duplicate", "progress", 8),
+            Err(Error::Conflict(_))
+        ));
+        {
+            let state = registry.state().unwrap();
+            assert_eq!(state.accepted.len(), 1);
+            assert!(!state.accepted.contains_key(&duplicate));
+            assert!(matches!(
+                state.reads.get(&duplicate).unwrap().state,
+                ReadState::Reserved { .. }
+            ));
+        }
+        registry.release_download(&duplicate, "main").unwrap();
+        assert!(!registry.state().unwrap().reads.contains_key(&duplicate));
+        assert!(!download.token().is_cancelled());
+    }
+
+    #[test]
+    fn cancelled_download_does_not_block_retry_and_lookup_selects_the_uncancelled_one() {
+        let registry = OperationRegistry::default();
+        let ticket = registry.prepare_download("main").unwrap();
+        let first = registry
+            .claim_download(&ticket, "main", "first", "progress", 8)
+            .unwrap();
+        assert!(registry.cancel_download(&ticket, "main").unwrap());
+        assert!(registry
+            .cancel_download_for_progress("progress", "main")
+            .unwrap());
+        assert_eq!(registry.outstanding_labels().unwrap(), vec!["first"]);
+        assert!(!registry.has_live_download_for_progress("progress").unwrap());
+        let retry_ticket = registry.prepare_download("main").unwrap();
+        let retry = registry
+            .claim_download(&retry_ticket, "main", "retry", "progress", 8)
+            .unwrap();
+        assert!(registry.has_live_download_for_progress("progress").unwrap());
+        assert!(registry
+            .cancel_download_for_progress("progress", "main")
+            .unwrap());
+        assert!(retry.token().is_cancelled());
+        assert!(first.token().is_cancelled());
+        assert!(matches!(
+            retry.commit_gate().begin_commit(),
+            Err(Error::Cancellation)
+        ));
+        assert!(registry
+            .cancel_download_for_progress("progress", "main")
+            .unwrap());
+        drop(first);
+        drop(retry);
+        assert!(!registry
+            .cancel_download_for_progress("progress", "main")
+            .unwrap());
+    }
+
+    #[test]
+    fn progress_lookup_does_not_cancel_a_committing_retry_even_with_a_cancelled_match() {
+        let registry = OperationRegistry::default();
+        let first_ticket = registry.prepare_download("main").unwrap();
+        let first = registry
+            .claim_download(&first_ticket, "main", "first", "progress", 8)
+            .unwrap();
+        first.token().cancel();
+        let ticket = registry.prepare_download("main").unwrap();
+        let committing = registry
+            .claim_download(&ticket, "main", "committing", "progress", 8)
+            .unwrap();
+        committing.commit_gate().begin_commit().unwrap();
+        assert!(!registry
+            .cancel_download_for_progress("progress", "main")
+            .unwrap());
+        assert!(!committing.token().is_cancelled());
+        assert!(registry.has_live_download_for_progress("progress").unwrap());
+        let duplicate = registry.prepare_download("main").unwrap();
+        assert!(matches!(
+            registry.claim_download(&duplicate, "main", "duplicate", "progress", 8),
+            Err(Error::Conflict(_))
+        ));
+    }
+
+    #[test]
+    fn progress_lookup_and_live_check_return_typed_registry_failures() {
+        let registry = OperationRegistry::default();
+        registry.poison_for_test();
+        assert!(matches!(
+            registry.cancel_download_for_progress("progress", "main"),
+            Err(Error::Conflict(_))
+        ));
+        assert!(matches!(
+            registry.has_live_download_for_progress("progress"),
+            Err(Error::Conflict(_))
+        ));
+    }
+
+    #[test]
     fn download_reservations_are_cancelled_before_claim_and_owner_bound() {
         let registry = OperationRegistry::default();
         let ticket = registry.prepare_download("first").unwrap();
@@ -917,7 +1104,7 @@ mod tests {
         assert!(registry.cancel_download(&ticket, "first").unwrap());
         assert!(registry.cancel_download(&ticket, "first").unwrap());
         assert!(matches!(
-            registry.claim_download(&ticket, "first", "download", 1),
+            registry.claim_download(&ticket, "first", "download", "progress", 1),
             Err(Error::Cancellation)
         ));
         assert!(!registry.cancel_download(&ticket, "first").unwrap());
@@ -932,7 +1119,7 @@ mod tests {
             Err(Error::Conflict(_))
         ));
         assert!(matches!(
-            registry.claim_download(&read, "owner", "download", 1),
+            registry.claim_download(&read, "owner", "download", "progress", 1),
             Err(Error::Conflict(_))
         ));
         registry.cancel_read(&read, "owner").unwrap();
@@ -1006,13 +1193,19 @@ mod tests {
             .enumerate()
             .map(|(index, _)| {
                 registry
-                    .claim_download(&tickets[index], &format!("owner-{index}"), "download", 32)
+                    .claim_download(
+                        &tickets[index],
+                        &format!("owner-{index}"),
+                        "download",
+                        "progress",
+                        32,
+                    )
                     .unwrap()
             })
             .collect();
         let excess = registry.prepare_download("excess").unwrap();
         assert!(matches!(
-            registry.claim_download(&excess, "excess", "download", 32),
+            registry.claim_download(&excess, "excess", "download", "progress", 32),
             Err(Error::ResourceLimit(_))
         ));
         let accepted: Vec<_> = (downloads.len()..MAX_ACCEPTED_OPERATIONS)
@@ -1034,7 +1227,7 @@ mod tests {
         drop(accepted);
         let recovered = registry.prepare_download("recovered").unwrap();
         assert!(registry
-            .claim_download(&recovered, "recovered", "download", 32)
+            .claim_download(&recovered, "recovered", "download", "progress", 32)
             .is_ok());
     }
 

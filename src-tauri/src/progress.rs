@@ -9,7 +9,7 @@ use specta::Type;
 use tauri::Manager;
 use tauri_specta::Event;
 
-use crate::{error::Error, AppState};
+use crate::{error::Error, infra::operations::OperationRegistry, AppState};
 
 const PROGRESS_CAPACITY: usize = 1_000;
 const RUNNING_TTL: Duration = Duration::from_secs(60 * 60);
@@ -238,12 +238,28 @@ impl ProgressStore {
     /// Clearing removes visible state and advances the global generation clock,
     /// preventing an old producer from recreating the cleared ID.
     pub fn clear(&self, id: &str) -> Result<u64, Error> {
+        self.clear_unless_live_running(id, false)
+            .map(|(generation, _)| generation)
+    }
+
+    fn clear_unless_live_running(
+        &self,
+        id: &str,
+        live_download: bool,
+    ) -> Result<(u64, bool), Error> {
         let mut state = self
             .state
             .lock()
             .map_err(|_| Error::Conflict("progress store poisoned".into()))?;
+        if live_download {
+            if let Some(stored) = state.entries.get(id) {
+                if stored.item.state == ProgressState::Running {
+                    return Ok((stored.item.generation, false));
+                }
+            }
+        }
         state.entries.remove(id);
-        Ok(Self::next_generation(&mut state))
+        Ok((Self::next_generation(&mut state), true))
     }
 }
 
@@ -453,15 +469,27 @@ pub fn clear_progress(
     state: tauri::State<'_, crate::AppState>,
     app: tauri::AppHandle,
 ) -> Result<u64, Error> {
-    clear_progress_with(&state.progress_state, id, |item| emit(&app, item, true))
+    clear_progress_with(&state.progress_state, &state.operations, id, |item| {
+        emit(&app, item, true)
+    })
 }
 
 fn clear_progress_with(
     store: &ProgressStore,
+    operations: &OperationRegistry,
     id: String,
     emit_cleared: impl FnOnce(ProgressItem) -> Result<(), Error>,
 ) -> Result<u64, Error> {
-    let generation = store.clear(&id)?;
+    // The registry check releases its mutex before the progress store is locked.
+    let live_download = operations.has_live_download_for_progress(&id)?;
+    let (generation, cleared) = if live_download {
+        store.clear_unless_live_running(&id, true)?
+    } else {
+        (store.clear(&id)?, true)
+    };
+    if !cleared {
+        return Ok(generation);
+    }
     let item = ProgressItem {
         id: id.clone(),
         generation,
@@ -504,13 +532,144 @@ mod tests {
     fn clear_returns_generation_when_the_cleared_event_cannot_be_emitted() {
         let store = ProgressStore::default();
         store.start("job".into()).unwrap();
-        let generation = clear_progress_with(&store, "job".into(), |_item| {
-            Err(Error::Conflict("event channel unavailable".into()))
-        })
+        let generation = clear_progress_with(
+            &store,
+            &OperationRegistry::default(),
+            "job".into(),
+            |_item| Err(Error::Conflict("event channel unavailable".into())),
+        )
         .unwrap();
 
         assert!(generation > 0);
         assert!(store.get("job").unwrap().is_none());
+    }
+
+    #[test]
+    fn clear_preserves_live_running_download_generation_and_emits_nothing() {
+        let store = ProgressStore::default();
+        let operations = OperationRegistry::default();
+        let ticket = operations.prepare_download("other-owner").unwrap();
+        let _download = operations
+            .claim_download(&ticket, "other-owner", "download", "job", 8)
+            .unwrap();
+        let lease = store.start("job".into()).unwrap();
+        store
+            .transition(&lease, 35.0, ProgressState::Running)
+            .unwrap();
+        let before = store.get("job").unwrap().unwrap();
+        let generation = clear_progress_with(&store, &operations, "job".into(), |_| {
+            panic!("a preserved running item must not emit a clear")
+        })
+        .unwrap();
+        assert_eq!(generation, lease.generation);
+        assert_eq!(store.get("job").unwrap().unwrap(), before);
+        assert_eq!(
+            store.state.lock().unwrap().generation_clock,
+            lease.generation
+        );
+        assert!(
+            store
+                .transition(&lease, 50.0, ProgressState::Running)
+                .unwrap()
+                .1
+        );
+    }
+
+    #[test]
+    fn clear_removes_running_progress_after_download_cancel_or_lease_drop() {
+        for drop_lease in [false, true] {
+            let store = ProgressStore::default();
+            let operations = OperationRegistry::default();
+            let ticket = operations.prepare_download("main").unwrap();
+            let download = operations
+                .claim_download(&ticket, "main", "download", "job", 8)
+                .unwrap();
+            let lease = store.start("job".into()).unwrap();
+            if drop_lease {
+                drop(download);
+            } else {
+                operations
+                    .cancel_download_for_progress("job", "main")
+                    .unwrap();
+            }
+            let mut emitted = Vec::new();
+            let generation = clear_progress_with(&store, &operations, "job".into(), |item| {
+                emitted.push(item);
+                Ok(())
+            })
+            .unwrap();
+            assert!(generation > lease.generation);
+            assert!(store.get("job").unwrap().is_none());
+            assert!(matches!(
+                store.transition(&lease, 50.0, ProgressState::Running),
+                Err(Error::StaleProgressLease)
+            ));
+            assert_eq!(emitted.len(), 1);
+            assert_eq!(emitted[0].generation, generation);
+            assert_eq!(emitted[0].state, ProgressState::Cancelled);
+        }
+    }
+
+    #[test]
+    fn clear_clears_terminal_or_absent_items_even_with_a_live_download() {
+        for terminal in [
+            Some(ProgressState::Succeeded),
+            Some(ProgressState::Failed),
+            Some(ProgressState::Cancelled),
+            None,
+        ] {
+            let store = ProgressStore::default();
+            let operations = OperationRegistry::default();
+            let ticket = operations.prepare_download("main").unwrap();
+            let download = operations
+                .claim_download(&ticket, "main", "download", "job", 8)
+                .unwrap();
+            let previous_generation = if let Some(terminal) = terminal {
+                let lease = store.start("job".into()).unwrap();
+                store.transition(&lease, 35.0, terminal).unwrap();
+                lease.generation
+            } else {
+                0
+            };
+            let mut emitted = Vec::new();
+            let generation = clear_progress_with(&store, &operations, "job".into(), |item| {
+                emitted.push(item);
+                Ok(())
+            })
+            .unwrap();
+            assert!(generation > previous_generation);
+            assert!(store.get("job").unwrap().is_none());
+            assert_eq!(emitted.len(), 1);
+            assert_eq!(emitted[0].generation, generation);
+            assert!(!download.token().is_cancelled());
+        }
+    }
+
+    #[test]
+    fn clear_does_not_preserve_an_unrelated_running_item_and_propagates_registry_failure() {
+        let store = ProgressStore::default();
+        let operations = OperationRegistry::default();
+        let ticket = operations.prepare_download("main").unwrap();
+        let _download = operations
+            .claim_download(&ticket, "main", "download", "other", 8)
+            .unwrap();
+        let lease = store.start("job".into()).unwrap();
+        let generation =
+            clear_progress_with(&store, &operations, "job".into(), |_| Ok(())).unwrap();
+        assert!(generation > lease.generation);
+        assert!(store.get("job").unwrap().is_none());
+        let lease = store.start("job".into()).unwrap();
+        operations.poison_for_test();
+        assert!(matches!(
+            clear_progress_with(&store, &operations, "job".into(), |_| panic!(
+                "registry failure must not emit"
+            )),
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(
+            store.get("job").unwrap().unwrap().generation,
+            lease.generation
+        );
     }
 
     #[test]

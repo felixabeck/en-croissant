@@ -6,7 +6,7 @@ import { warn } from "@/platform/native";
 
 /**
  * Why a cancellation did not take effect. `lost` means the download settled on its own
- * (it finished, or no job was registered), `request` that the cancel IPC itself failed -
+ * (it finished, or native lookup found no cancellable download), `request` that the cancel IPC itself failed -
  * the card notifies only the latter - and `busy` that a job for this progress id is
  * already running.
  */
@@ -94,8 +94,10 @@ export function runDownloadJob<T>(
 
 /**
  * Cancels the running download for `progressId` and answers what the UI may hide: the generation
- * the job's own progress clear returned, or `null` when that clear was refused. It rejects with a
- * `reason` of `lost` when the download settled on its own (or no job is registered) and `request`
+ * the job's own progress clear returned, or `null` when that clear failed. With no local job,
+ * owner-checked native lookup cancels the surviving download and answers `null` without clearing.
+ * It rejects with a `reason` of `lost` when the download settled on its own or lookup found no
+ * cancellable download, and `request`
  * when the cancellation could not be delivered - only the latter is notified here, because the
  * job's own failure is already reported by the wrapper around `runDownloadJob`.
  */
@@ -104,7 +106,17 @@ export async function cancelDownloadJob(
     errorTitle?: string,
 ): Promise<CancelOutcome> {
     const entry = jobs.get(progressId);
-    if (!entry) throw downloadCancelError("lost");
+    if (!entry) {
+        let cancelled: boolean;
+        try {
+            cancelled = await tauri.cancelDownloadForProgress(progressId);
+        } catch (error) {
+            if (errorTitle !== undefined) notifyUnlessCancelled(errorTitle, error);
+            throw downloadCancelError("request", error);
+        }
+        if (cancelled) return { clearedGeneration: null };
+        throw downloadCancelError("lost");
+    }
     entry.cancelRequested = true;
 
     if (entry.ticket !== null) {

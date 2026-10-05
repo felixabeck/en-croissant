@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
     cancelDownload: vi.fn(),
+    cancelDownloadForProgress: vi.fn(),
     clearProgress: vi.fn(),
     notifyUnlessCancelled: vi.fn(),
     warn: vi.fn(),
@@ -21,6 +22,7 @@ vi.mock("@/platform/tauri", async () => {
         tauri: {
             ...actual.tauri,
             cancelDownload: mocks.cancelDownload,
+            cancelDownloadForProgress: mocks.cancelDownloadForProgress,
             clearProgress: mocks.clearProgress,
         },
         withDownloadTicket: mocks.withDownloadTicket,
@@ -32,6 +34,7 @@ import { cancelDownloadJob, runDownloadJob } from "./downloadJobs";
 
 beforeEach(() => {
     mocks.cancelDownload.mockReset().mockResolvedValue(true);
+    mocks.cancelDownloadForProgress.mockReset().mockResolvedValue(false);
     mocks.clearProgress.mockReset().mockResolvedValue(42n);
     mocks.notifyUnlessCancelled.mockReset();
     mocks.warn.mockReset().mockResolvedValue(undefined);
@@ -89,6 +92,7 @@ describe("download jobs", () => {
         await expect(running).rejects.toMatchObject({ message: "Cancellation" });
         await expect(cancel).resolves.toEqual({ clearedGeneration: 42n });
         expect(mocks.clearProgress).toHaveBeenCalledWith("job");
+        expect(mocks.cancelDownloadForProgress).not.toHaveBeenCalled();
     });
 
     test("keeps cancellation pending while native preparation is delayed", async () => {
@@ -203,5 +207,65 @@ describe("download jobs", () => {
         await runDownloadJob("job", async () => undefined);
 
         await expect(cancelDownloadJob("job")).rejects.toMatchObject({ reason: "lost" });
+    });
+
+    test("cancels by native progress lookup with no local job and does not clear", async () => {
+        mocks.cancelDownloadForProgress.mockResolvedValue(true);
+
+        await expect(cancelDownloadJob("surviving", "Download failed")).resolves.toEqual({
+            clearedGeneration: null,
+        });
+        expect(mocks.cancelDownloadForProgress).toHaveBeenCalledExactlyOnceWith("surviving");
+        expect(mocks.cancelDownload).not.toHaveBeenCalled();
+        expect(mocks.clearProgress).not.toHaveBeenCalled();
+        expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
+    });
+
+    test("a refused native progress cancellation rejects lost without notifying", async () => {
+        await expect(cancelDownloadJob("missing", "Download failed")).rejects.toMatchObject({
+            reason: "lost",
+        });
+        expect(mocks.cancelDownloadForProgress).toHaveBeenCalledExactlyOnceWith("missing");
+        expect(mocks.clearProgress).not.toHaveBeenCalled();
+        expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
+    });
+
+    test.each([undefined, "Download failed"])(
+        "a failed native lookup rejects request and notifies once when titled (%s)",
+        async (title) => {
+            const failure = new Error("lookup IPC failed");
+            mocks.cancelDownloadForProgress.mockRejectedValue(failure);
+
+            await expect(cancelDownloadJob("surviving", title)).rejects.toMatchObject({
+                reason: "request",
+                cause: failure,
+            });
+            expect(mocks.clearProgress).not.toHaveBeenCalled();
+            expect(mocks.notifyUnlessCancelled.mock.calls).toEqual(
+                title === undefined ? [] : [[title, failure]],
+            );
+        },
+    );
+
+    test("a refused duplicate native claim keeps its failure and awaits the surviving generation", async () => {
+        const failure = new Error("download progress is already active");
+        let settleClear!: (generation: bigint) => void;
+        mocks.clearProgress.mockImplementation(
+            () => new Promise<bigint>((resolve) => (settleClear = resolve)),
+        );
+        const running = runDownloadJob("job", async () => {
+            throw failure;
+        });
+        const cancel = cancelDownloadJob("job", "Download failed");
+        const runningResult = running.catch((error: unknown) => error);
+        const cancelResult = cancel.catch((error: unknown) => error);
+
+        await vi.waitFor(() => expect(mocks.clearProgress).toHaveBeenCalledExactlyOnceWith("job"));
+        expect(() => runDownloadJob("job", async () => undefined)).toThrow("busy");
+        settleClear(42n);
+        expect(await runningResult).toBe(failure);
+        expect(await cancelResult).toBe(failure);
+        expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
+        expect(mocks.cancelDownloadForProgress).not.toHaveBeenCalled();
     });
 });

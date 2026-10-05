@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
     setProgressState: vi.fn(),
     clearProgress: vi.fn(),
     cancelDownload: vi.fn(),
+    cancelDownloadForProgress: vi.fn(),
     downloadLichessGames: vi.fn(),
     downloadChessComGames: vi.fn(),
     prepareNativeRead: vi.fn(),
@@ -53,6 +54,7 @@ vi.mock("@/bindings/generated", () => ({
         setProgressState: mocks.setProgressState,
         clearProgress: mocks.clearProgress,
         cancelDownload: mocks.cancelDownload,
+        cancelDownloadForProgress: mocks.cancelDownloadForProgress,
         downloadLichessGames: mocks.downloadLichessGames,
         downloadChessComGames: mocks.downloadChessComGames,
         prepareNativeRead: mocks.prepareNativeRead,
@@ -186,6 +188,9 @@ describe("tauri command facade", () => {
         // cancelDownload returns only a boolean; downloadJobs obtains clearedGeneration here.
         mocks.cancelDownload.mockResolvedValueOnce({ status: "ok", data: true });
         await expect(tauri.cancelDownload("ticket")).resolves.toBe(true);
+        mocks.cancelDownloadForProgress.mockResolvedValueOnce({ status: "ok", data: true });
+        await expect(tauri.cancelDownloadForProgress("job")).resolves.toBe(true);
+        expect(mocks.cancelDownloadForProgress).toHaveBeenCalledWith("job");
         mocks.clearProgress.mockResolvedValueOnce({ status: "ok", data: 9 });
         await expect(tauri.clearProgress("job")).resolves.toBe(9n);
     });
