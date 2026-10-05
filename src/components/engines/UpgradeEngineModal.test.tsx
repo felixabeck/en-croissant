@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   retire: vi.fn(),
   reconcile: vi.fn(),
   cancel: vi.fn(),
+  cancelDownloadForProgress: vi.fn(),
   clear: vi.fn(),
   report: vi.fn(),
   notify: vi.fn(),
@@ -42,6 +43,7 @@ vi.mock("@/platform/tauri", async (original) => ({
     retireEngineBinary: mocks.retire,
     reconcileEngineAttachments: mocks.reconcile,
     cancelDownload: mocks.cancel,
+    cancelDownloadForProgress: mocks.cancelDownloadForProgress,
     clearProgress: mocks.clear,
   },
 }));
@@ -86,8 +88,10 @@ vi.mock("@/hooks/useProgress", () => ({
   useProgress: (id: string) => ({
     progress: mocks.progress.get(id) ?? 0,
     finished: mocks.progress.get(id) === 100,
-    isActive: false,
-    item: mocks.progress.get(id) === 100 ? { state: "succeeded" } : null,
+    isActive: mocks.progress.has(id) && mocks.progress.get(id) !== 100,
+    item: mocks.progress.has(id)
+      ? { generation: 1n, state: mocks.progress.get(id) === 100 ? "succeeded" : "running" }
+      : null,
     clear: () => mocks.clear(id),
     fence: vi.fn(),
   }),
@@ -204,6 +208,7 @@ beforeEach(async () => {
   mocks.config.mockReset().mockResolvedValue(config);
   mocks.retire.mockReset().mockResolvedValue(undefined);
   mocks.cancel.mockReset().mockResolvedValue(true);
+  mocks.cancelDownloadForProgress.mockReset().mockResolvedValue(true);
   mocks.clear.mockReset().mockImplementation(async (id: string) => {
     mocks.progress.delete(id);
     return 1n;
@@ -248,6 +253,21 @@ test("success saves once before retiring the old pair and keeps the same list po
   expect(engines[1]).toMatchObject({ id: old.id, name: "Stockfish 19" });
   expect(engines[2]).toEqual(last);
   expect(mocks.notify).not.toHaveBeenCalled();
+});
+
+test("a running upgrade with no local job renders Cancel and calls native lookup", async () => {
+  const id = `engine-upgrade:${old.id}:${catalog.downloadLink}`;
+  await render();
+  expect(host.textContent).not.toContain("Common.Cancel");
+  mocks.progress.set(id, 45);
+  await render();
+  expect(host.querySelector("[data-progress]")?.textContent).toBe("45");
+  await click("Common.Cancel");
+  expect(mocks.cancelDownloadForProgress).toHaveBeenCalledExactlyOnceWith(id);
+  expect(mocks.cancel).not.toHaveBeenCalled();
+  expect(mocks.clear).not.toHaveBeenCalled();
+  expect(mocks.download).not.toHaveBeenCalled();
+  expect(store.get(enginesAtom)).toEqual([old]);
 });
 
 test.each([true, false])(
@@ -313,6 +333,7 @@ test("committing withdraws cancel and ignores cancellation while save, retiremen
   expect(mocks.retire).not.toHaveBeenCalled();
   await act(async () => mocks.close!());
   expect(mocks.cancel).not.toHaveBeenCalled();
+  expect(mocks.cancelDownloadForProgress).not.toHaveBeenCalled();
   expect(mocks.clear).not.toHaveBeenCalled();
 
   await act(async () => finishSave());
@@ -480,6 +501,8 @@ test.each([false, true])(
     await click("Common.Install");
     await vi.waitFor(() => expect(complete).toEqual(expect.any(Function)));
     await click("Common.Cancel");
+    expect(mocks.cancel).toHaveBeenCalledExactlyOnceWith("ticket");
+    expect(mocks.cancelDownloadForProgress).not.toHaveBeenCalled();
     expect(mocks.notify).toHaveBeenCalledTimes(fails ? 1 : 0);
     if (fails) {
       mocks.progress.set(progressId, 100);

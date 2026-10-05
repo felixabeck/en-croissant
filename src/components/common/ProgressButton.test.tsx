@@ -1,6 +1,13 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import type { ProgressEvent, ProgressItem } from "@/bindings";
+
+const nativeProgress = vi.hoisted(() => ({
+  enabled: false,
+  getProgress: vi.fn(),
+  listener: undefined as ((event: { payload: ProgressEvent }) => void) | undefined,
+}));
 
 const progress = vi.hoisted(() => ({
   progress: 100,
@@ -14,12 +21,26 @@ const progress = vi.hoisted(() => ({
     progress: 100,
     finished: true,
     state: "failed" as "failed" | "succeeded" | "cancelled" | "running",
-  },
+  } as ProgressItem,
 }));
 const notifyListenerError = vi.hoisted(() => vi.fn());
 
-vi.mock("@/hooks/useProgress", () => ({
-  useProgress: () => progress,
+vi.mock("@/hooks/useProgress", async (original) => {
+  const actual = await original<typeof import("@/hooks/useProgress")>();
+  return {
+    useProgress: (id: string) => (nativeProgress.enabled ? actual.useProgress(id) : progress),
+  };
+});
+vi.mock("@/platform/tauri", () => ({
+  tauri: { getProgress: nativeProgress.getProgress },
+  tauriSubscriptions: {
+    progress: vi.fn(async (listener: (event: { payload: ProgressEvent }) => void) => {
+      nativeProgress.listener = listener;
+      return () => {
+        nativeProgress.listener = undefined;
+      };
+    }),
+  },
 }));
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (key: string) => key }),
@@ -42,7 +63,7 @@ vi.mock("@mantine/core", () => ({
     </button>
   ),
   Group: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  Progress: () => <div data-testid="progress" />,
+  Progress: ({ value }: { value: number }) => <output data-testid="progress">{value}</output>,
 }));
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -51,6 +72,9 @@ let host: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
+  nativeProgress.enabled = false;
+  nativeProgress.listener = undefined;
+  nativeProgress.getProgress.mockReset().mockResolvedValue(null);
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -297,8 +321,129 @@ test("a successful non-clearing cancel with no generation fences the displayed g
   await act(async () => host.querySelector<HTMLButtonElement>("[data-testid='cancel']")!.click());
 
   expect(progress.clear).not.toHaveBeenCalled();
-  expect(progress.fence).toHaveBeenCalledWith(null);
+  expect(progress.fence).toHaveBeenCalledWith(2n);
   expect(setInProgress).toHaveBeenCalledWith(false);
+});
+
+test("a null acknowledgement with nothing displayed at press time keeps the null fence", async () => {
+  Object.assign(progress, { item: null });
+  const onCancel = vi.fn().mockResolvedValue({ clearedGeneration: null });
+  await act(async () => {
+    root.render(
+      <ProgressButton
+        id="job"
+        initInstalled={false}
+        onClick={() => undefined}
+        onCancel={onCancel}
+        clearOnCancel={false}
+        labels={{ completed: "Done", action: "Run", inProgress: "Running" }}
+        inProgress
+        setInProgress={() => undefined}
+      />,
+    );
+  });
+  await act(async () => host.querySelector<HTMLButtonElement>("[data-testid='cancel']")!.click());
+  expect(progress.fence).toHaveBeenCalledExactlyOnceWith(null);
+});
+
+test("a non-clearing cancel without an outcome keeps the null fence", async () => {
+  progress.isActive = true;
+  const onCancel = vi.fn().mockResolvedValue(undefined);
+  await act(async () => {
+    root.render(
+      <ProgressButton
+        id="job"
+        initInstalled={false}
+        onClick={() => undefined}
+        onCancel={onCancel}
+        clearOnCancel={false}
+        labels={{ completed: "Done", action: "Run", inProgress: "Running" }}
+        inProgress
+        setInProgress={() => undefined}
+      />,
+    );
+  });
+  await act(async () => host.querySelector<HTMLButtonElement>("[data-testid='cancel']")!.click());
+  expect(progress.fence).toHaveBeenCalledExactlyOnceWith(null);
+});
+
+async function reportProgress(generation: bigint, value: number) {
+  await act(async () =>
+    nativeProgress.listener!({
+      payload: {
+        id: "job",
+        generation,
+        progress: value,
+        finished: false,
+        state: "running",
+        cleared: false,
+      },
+    }),
+  );
+}
+
+async function renderNativeProgress(onCancel: () => Promise<{ clearedGeneration: null }>) {
+  nativeProgress.enabled = true;
+  await act(async () =>
+    root.render(
+      <ProgressButton
+        id="job"
+        initInstalled={false}
+        onClick={() => undefined}
+        onCancel={onCancel}
+        clearOnCancel={false}
+        labels={{ completed: "Done", action: "Run", inProgress: "Running" }}
+        inProgress={false}
+        setInProgress={() => undefined}
+      />,
+    ),
+  );
+}
+
+test("a late null cancel acknowledgement leaves a newer generation visible and updating", async () => {
+  let acknowledge!: (outcome: { clearedGeneration: null }) => void;
+  const onCancel = vi.fn(
+    () =>
+      new Promise<{ clearedGeneration: null }>((resolve) => {
+        acknowledge = resolve;
+      }),
+  );
+  await renderNativeProgress(onCancel);
+  await reportProgress(3n, 30);
+  await act(async () => host.querySelector<HTMLButtonElement>("[data-testid='cancel']")!.click());
+  await reportProgress(4n, 40);
+  await act(async () => acknowledge({ clearedGeneration: null }));
+  expect(host.querySelector("[data-testid='progress']")?.textContent).toBe("40");
+  expect(host.querySelector("[data-testid='cancel']")).not.toBeNull();
+  await reportProgress(4n, 65);
+  expect(host.querySelector("[data-testid='progress']")?.textContent).toBe("65");
+});
+
+test("out-of-order Cancel answers hide only the generations each press displayed", async () => {
+  const answers: Array<(outcome: { clearedGeneration: null }) => void> = [];
+  const onCancel = vi.fn(
+    () =>
+      new Promise<{ clearedGeneration: null }>((resolve) => {
+        answers.push(resolve);
+      }),
+  );
+  await renderNativeProgress(onCancel);
+  await reportProgress(3n, 30);
+  await act(async () => host.querySelector<HTMLButtonElement>("[data-testid='cancel']")!.click());
+  await reportProgress(4n, 40);
+  await act(async () => host.querySelector<HTMLButtonElement>("[data-testid='cancel']")!.click());
+  expect(onCancel).toHaveBeenCalledTimes(2);
+  await act(async () => answers[1]({ clearedGeneration: null }));
+  expect(host.querySelector("[data-testid='progress']")).toBeNull();
+  expect(host.querySelector("[data-testid='cancel']")).toBeNull();
+  await reportProgress(5n, 50);
+  await act(async () => answers[0]({ clearedGeneration: null }));
+  expect(host.querySelector("[data-testid='progress']")?.textContent).toBe("50");
+  expect(host.querySelector("[data-testid='cancel']")).not.toBeNull();
+  await reportProgress(4n, 90);
+  expect(host.querySelector("[data-testid='progress']")?.textContent).toBe("50");
+  await reportProgress(5n, 70);
+  expect(host.querySelector("[data-testid='progress']")?.textContent).toBe("70");
 });
 
 test("a rejected cancel keeps the running UI and is not reported by the button", async () => {

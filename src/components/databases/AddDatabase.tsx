@@ -335,7 +335,7 @@ function DatabaseCard({
             onClick={() => {
               void downloadDatabase();
             }}
-            onCancel={hasJob ? () => cancelDownloadJob(progressId, t("Common.Error")) : undefined}
+            onCancel={() => cancelDownloadJob(progressId, t("Common.Error"))}
             clearOnCancel={false}
             inProgress={inProgress || hasJob}
             setInProgress={setInProgress}

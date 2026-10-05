@@ -59,6 +59,7 @@ function ProgressButton({
 
   const handleCancel = useCallback(async () => {
     const cancellingId = id;
+    const cancellingGeneration = item?.generation;
     let outcome: Awaited<ReturnType<NonNullable<Props["onCancel"]>>>;
     try {
       outcome = onCancel ? await onCancel() : undefined;
@@ -71,13 +72,18 @@ function ProgressButton({
       if (clearOnCancel) {
         await clear();
       } else {
-        fence(outcome && "clearedGeneration" in outcome ? outcome.clearedGeneration : null);
+        fence(
+          outcome && "clearedGeneration" in outcome
+            ? (outcome.clearedGeneration ??
+                (cancellingGeneration === undefined ? null : cancellingGeneration + 1n))
+            : null,
+        );
       }
       if (currentId.current === cancellingId) setInProgress(false);
     } catch (error) {
       notifyListenerError(error);
     }
-  }, [clear, clearOnCancel, fence, id, onCancel, setInProgress]);
+  }, [clear, clearOnCancel, fence, id, item?.generation, onCancel, setInProgress]);
 
   let label: string;
   if (completed) {

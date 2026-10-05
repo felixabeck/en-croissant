@@ -1,9 +1,10 @@
-import { act } from "react";
+import { act, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { CatalogVerificationError } from "@/utils/signedCatalog";
 import { defaultPuzzleDatabaseProgressId } from "@/utils/db";
 import AddPuzzle from "./AddPuzzle";
+import type { ProgressEvent } from "@/bindings";
 
 const mocks = vi.hoisted(() => ({
   catalogError: undefined as unknown,
@@ -14,16 +15,17 @@ const mocks = vi.hoisted(() => ({
   issueDownloadDestination: vi.fn(),
   downloadFile: vi.fn(),
   cancelDownload: vi.fn(),
+  cancelDownloadForProgress: vi.fn(),
   clearProgress: vi.fn(),
+  getProgress: vi.fn(),
+  realProgressButton: false,
+  progressListener: undefined as ((event: { payload: ProgressEvent }) => void) | undefined,
   withDownloadTicket: vi.fn((run: (ticket: string) => Promise<unknown>) => run("prepared-ticket")),
-  progressButtonProps: null as null | {
-    id: string;
-    initInstalled: boolean;
-    onClick: () => void;
-    onCancel?: () => Promise<unknown>;
-    clearOnCancel?: boolean;
-    inProgress: boolean;
-  },
+  progressButtonProps: null as
+    | null
+    | (Omit<ComponentProps<typeof import("../common/ProgressButton").default>, "onClick"> & {
+        onClick: () => void;
+      }),
 }));
 
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
@@ -58,7 +60,17 @@ vi.mock("@/platform/tauri", () => ({
     issuePuzzleDownloadDestination: mocks.issueDownloadDestination,
     downloadFile: mocks.downloadFile,
     cancelDownload: mocks.cancelDownload,
+    cancelDownloadForProgress: mocks.cancelDownloadForProgress,
     clearProgress: mocks.clearProgress,
+    getProgress: mocks.getProgress,
+  },
+  tauriSubscriptions: {
+    progress: async (listener: (event: { payload: ProgressEvent }) => void) => {
+      mocks.progressListener = listener;
+      return () => {
+        mocks.progressListener = undefined;
+      };
+    },
   },
   withDownloadTicket: mocks.withDownloadTicket,
 }));
@@ -82,28 +94,32 @@ vi.mock("@mantine/core", () => ({
   Divider: () => <hr />,
   Group: ({ children }: any) => <div>{children}</div>,
   Paper: ({ children }: any) => <div>{children}</div>,
+  Progress: ({ value }: { value: number }) => <output data-progress>{value}</output>,
   Text: ({ children }: any) => <span>{children}</span>,
 }));
 vi.mock("../common/AppModal", () => ({
   default: ({ children, opened }: any) => (opened ? <div>{children}</div> : null),
 }));
-vi.mock("../common/ProgressButton", () => ({
-  default: (props: {
-    id: string;
-    initInstalled: boolean;
-    onClick: () => void;
-    labels: { action: string };
-    onCancel?: () => Promise<unknown>;
-    clearOnCancel?: boolean;
-    inProgress: boolean;
-  }) => {
-    mocks.progressButtonProps = props;
-    return (
-      <button type="button" onClick={props.onClick}>
-        {props.labels.action}
-      </button>
-    );
-  },
+vi.mock("../common/ProgressButton", async (original) => {
+  const actual = await original<typeof import("../common/ProgressButton")>();
+  return {
+    default: (props: ComponentProps<typeof actual.default>) => {
+      mocks.progressButtonProps = { ...props, onClick: () => props.onClick(props.id) };
+      if (mocks.realProgressButton) return <actual.default {...props} />;
+      return (
+        <button type="button" onClick={() => props.onClick(props.id)}>
+          {props.labels.action}
+        </button>
+      );
+    },
+  };
+});
+vi.mock("../common/IconAction", () => ({
+  default: ({ label, onClick }: { label: string; onClick: () => void }) => (
+    <button type="button" onClick={onClick}>
+      {label}
+    </button>
+  ),
 }));
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -126,6 +142,10 @@ beforeEach(() => {
   mocks.catalogError = undefined;
   mocks.defaultDatabases = undefined;
   mocks.progressButtonProps = null;
+  mocks.realProgressButton = false;
+  mocks.progressListener = undefined;
+  mocks.getProgress.mockReset().mockResolvedValue(null);
+  mocks.cancelDownloadForProgress.mockReset().mockResolvedValue(true);
   mocks.cancelDownload.mockResolvedValue(true);
   mocks.clearProgress.mockResolvedValue(1n);
   host = document.createElement("div");
@@ -210,6 +230,38 @@ test("wires progress id from the download URL, not the manifest index", async ()
     defaultPuzzleDatabaseProgressId("https://example.test/tactics.db3"),
   );
   expect(mocks.progressButtonProps?.id).not.toBe("puzzle_db_0");
+});
+
+test("a running puzzle download with no local job renders Cancel and calls native lookup", async () => {
+  mocks.defaultDatabases = [tacticsManifest];
+  mocks.realProgressButton = true;
+  await render();
+  expect(host.textContent).not.toContain("Common.Cancel");
+  const id = defaultPuzzleDatabaseProgressId(tacticsManifest.downloadLink);
+  await act(async () =>
+    mocks.progressListener!({
+      payload: {
+        id,
+        generation: 7n,
+        progress: 45,
+        finished: false,
+        state: "running",
+        cleared: false,
+      },
+    }),
+  );
+  expect(mocks.progressButtonProps?.inProgress).toBe(false);
+  expect(host.querySelector("[data-progress]")?.textContent).toBe("45");
+  const cancel = [...host.querySelectorAll("button")].find(
+    (button) => button.textContent === "Common.Cancel",
+  );
+  expect(cancel).toBeDefined();
+  await act(async () => cancel!.click());
+  expect(mocks.cancelDownloadForProgress).toHaveBeenCalledExactlyOnceWith(id);
+  expect(mocks.cancelDownload).not.toHaveBeenCalled();
+  expect(mocks.clearProgress).not.toHaveBeenCalled();
+  expect(host.querySelector("[data-progress]")).toBeNull();
+  expect(host.textContent).not.toContain("Common.Cancel");
 });
 
 test("keeps a cancelled download destination silent", async () => {

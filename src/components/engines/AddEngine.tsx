@@ -249,9 +249,7 @@ function EngineCard({
       onClick={() => {
         void downloadEngine();
       }}
-      onCancel={
-        hasJob && progressId ? () => cancelDownloadJob(progressId, t("Common.Error")) : undefined
-      }
+      onCancel={progressId ? () => cancelDownloadJob(progressId, t("Common.Error")) : undefined}
       inProgress={inProgress || hasJob}
       setInProgress={setInProgress}
     />

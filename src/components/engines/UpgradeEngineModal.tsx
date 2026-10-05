@@ -209,7 +209,13 @@ function UpgradeCard({
         finalizing: t("Common.Extracting"),
       }}
       onClick={upgrade}
-      onCancel={!committing && (active || hasJob) ? cancel : undefined}
+      onCancel={
+        committing
+          ? undefined
+          : active || hasJob
+            ? cancel
+            : () => cancelDownloadJob(id, t("Common.Error"))
+      }
       inProgress={active || hasJob}
       setInProgress={() => undefined}
       disabled={busy}

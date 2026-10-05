@@ -1,9 +1,10 @@
-import { act } from "react";
+import { act, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { UseFormReturnType } from "@mantine/form";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { defaultEngineProgressId, type LocalEngine } from "@/utils/engines";
 import AddEngine from "./AddEngine";
+import type { ProgressEvent } from "@/bindings";
 
 const mocks = vi.hoisted(() => ({
   engines: [] as Array<{
@@ -32,6 +33,10 @@ const mocks = vi.hoisted(() => ({
   installDefaultEngine: vi.fn(),
   clearProgress: vi.fn(),
   cancelDownload: vi.fn(),
+  cancelDownloadForProgress: vi.fn(),
+  getProgress: vi.fn(),
+  realProgressButton: false,
+  progressListener: undefined as ((event: { payload: ProgressEvent }) => void) | undefined,
   withDownloadTicket: vi.fn((run: (ticket: string) => Promise<unknown>) => run("prepared-ticket")),
   notifyUnlessCancelled: vi.fn(),
   notificationShow: vi.fn(),
@@ -40,15 +45,11 @@ const mocks = vi.hoisted(() => ({
   downloadEngineArchive: vi.fn(),
   registerInstalledEngine: vi.fn(),
   getEngineConfig: vi.fn(),
-  progressButtonProps: null as null | {
-    id: string;
-    initInstalled: boolean;
-    completeOnProgressSuccess?: boolean;
-    onClick: () => void;
-    onCancel?: () => Promise<unknown>;
-    clearOnCancel?: boolean;
-    inProgress: boolean;
-  },
+  progressButtonProps: null as
+    | null
+    | (Omit<ComponentProps<typeof import("../common/ProgressButton").default>, "onClick"> & {
+        onClick: () => void;
+      }),
 }));
 
 vi.mock("@/state/atoms", () => ({
@@ -77,11 +78,21 @@ vi.mock("@/platform/tauri", () => ({
   tauri: {
     clearProgress: mocks.clearProgress,
     cancelDownload: mocks.cancelDownload,
+    cancelDownloadForProgress: mocks.cancelDownloadForProgress,
+    getProgress: mocks.getProgress,
     getEngineWorkspace: mocks.getEngineWorkspace,
     engineArchiveDestination: mocks.engineArchiveDestination,
     downloadEngineArchive: mocks.downloadEngineArchive,
     registerInstalledEngine: mocks.registerInstalledEngine,
     getEngineConfig: mocks.getEngineConfig,
+  },
+  tauriSubscriptions: {
+    progress: async (listener: (event: { payload: ProgressEvent }) => void) => {
+      mocks.progressListener = listener;
+      return () => {
+        mocks.progressListener = undefined;
+      };
+    },
   },
   withDownloadTicket: mocks.withDownloadTicket,
   cancellationError: () => new Error("Cancellation"),
@@ -109,23 +120,26 @@ vi.mock("react-i18next", () => ({
 vi.mock("../common/AppModal", () => ({
   default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
-vi.mock("../common/ProgressButton", () => ({
-  default: (props: {
-    id: string;
-    initInstalled: boolean;
-    completeOnProgressSuccess?: boolean;
-    onClick: () => void;
-    onCancel?: () => Promise<unknown>;
-    clearOnCancel?: boolean;
-    inProgress: boolean;
-  }) => {
-    mocks.progressButtonProps = props;
-    return (
-      <button type="button" onClick={props.onClick}>
-        progress
-      </button>
-    );
-  },
+vi.mock("../common/ProgressButton", async (original) => {
+  const actual = await original<typeof import("../common/ProgressButton")>();
+  return {
+    default: (props: ComponentProps<typeof actual.default>) => {
+      mocks.progressButtonProps = { ...props, onClick: () => props.onClick(props.id) };
+      if (mocks.realProgressButton) return <actual.default {...props} />;
+      return (
+        <button type="button" onClick={() => props.onClick(props.id)}>
+          progress
+        </button>
+      );
+    },
+  };
+});
+vi.mock("../common/IconAction", () => ({
+  default: ({ label, onClick }: { label: string; onClick: () => void }) => (
+    <button type="button" onClick={onClick}>
+      {label}
+    </button>
+  ),
 }));
 vi.mock("./EngineForm", () => ({
   default: ({
@@ -154,14 +168,17 @@ vi.mock("./EngineForm", () => ({
 vi.mock("@mantine/core", () => ({
   Alert: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   Box: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  Button: ({ children }: { children: React.ReactNode }) => (
-    <button type="button">{children}</button>
+  Button: ({ children, onClick, disabled }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
+    <button type="button" onClick={onClick} disabled={disabled}>
+      {children}
+    </button>
   ),
   Center: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   Group: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   Image: () => null,
   Loader: () => null,
   Paper: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  Progress: ({ value }: { value: number }) => <output data-progress>{value}</output>,
   ScrollArea: { Autosize: ({ children }: { children: React.ReactNode }) => <div>{children}</div> },
   SimpleGrid: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   Tabs: Object.assign(({ children }: { children: React.ReactNode }) => <div>{children}</div>, {
@@ -175,6 +192,7 @@ vi.mock("@tabler/icons-react", () => ({
   IconAlertCircle: () => null,
   IconDatabase: () => null,
   IconTrophy: () => null,
+  IconX: () => null,
 }));
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -186,6 +204,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.engines = [];
   mocks.progressButtonProps = null;
+  mocks.realProgressButton = false;
+  mocks.progressListener = undefined;
+  mocks.getProgress.mockReset().mockResolvedValue(null);
+  mocks.cancelDownloadForProgress.mockReset().mockResolvedValue(true);
   mocks.submitLocal = undefined;
   mocks.localSaved = undefined;
   mocks.form = undefined;
@@ -253,6 +275,37 @@ test("wires installed state and progress id from the download URL", async () => 
   expect(mocks.progressButtonProps?.id).not.toBe("engine_0");
   expect(mocks.progressButtonProps?.initInstalled).toBe(true);
   expect(mocks.progressButtonProps?.completeOnProgressSuccess).toBe(false);
+});
+
+test("a running engine download with no local job renders Cancel and calls native lookup", async () => {
+  mocks.realProgressButton = true;
+  await act(async () => root.render(<AddEngine opened setOpened={() => undefined} />));
+  expect(host.textContent).not.toContain("Common.Cancel");
+  const id = defaultEngineProgressId(mocks.defaultEngines[0].downloadLink);
+  await act(async () =>
+    mocks.progressListener!({
+      payload: {
+        id,
+        generation: 7n,
+        progress: 45,
+        finished: false,
+        state: "running",
+        cleared: false,
+      },
+    }),
+  );
+  expect(mocks.progressButtonProps?.inProgress).toBe(false);
+  expect(host.querySelector("[data-progress]")?.textContent).toBe("45");
+  const cancel = [...host.querySelectorAll("button")].find(
+    (button) => button.textContent === "Common.Cancel",
+  );
+  expect(cancel).toBeDefined();
+  await act(async () => cancel!.click());
+  expect(mocks.cancelDownloadForProgress).toHaveBeenCalledExactlyOnceWith(id);
+  expect(mocks.cancelDownload).not.toHaveBeenCalled();
+  expect(mocks.clearProgress).not.toHaveBeenCalled();
+  expect(host.querySelector("[data-progress]")).toBeNull();
+  expect(host.textContent).not.toContain("Common.Cancel");
 });
 
 test("renders translated validation errors from actual local form validation", async () => {
