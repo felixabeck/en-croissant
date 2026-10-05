@@ -5674,3 +5674,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** the lookup then has exactly one candidate, so its boolean answer keeps `d-20260920-02`'s meaning. Reversal path: drop the claim check and the `clear_progress` live branch together and define a multi-match answer.
 * **Decided by:** Claude Code, drain session 7b604ce0-e244-4017-b0cc-0bc1bff00242 (drain run 780d1f80-4b2d-41f8-9afc-9847377b5c91), full auto, reviewed plan tasks/plans/2026-10-05-reload-download-cancel.md (planned ahead by session 7e2867a5-6bc6-4286-adc6-b5a5515e36a1, refreshed by 80ec0d38-02f8-4316-a527-300e28e9d7df, 4 review rounds) · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"3ab1f15557c5a46b8ea9f35640b3948089f40e3c7ce42b3666b8692d784ae68d","input_sha256":"8669577174c13152e2b0ab50d692a99535392706506c8d8f5f313c125cbae350","kind":"mutation-receipt","operation":"5fb422af4efa568249a8392ff0b3bccc04754768c5d92e127105ebbd29b769a2","options":{"section":null},"request_id_sha256":null,"results":["d-20261005-08"],"target":"decisions-ledger","v":1} -->
+
+### d-20261005-09 — Do the lifecycle paths stop an analysis's engine, or only its registry token?
+
+* **Question:** When the destroy path or the new previous-document sweep cancels an analysis reservation, does it also signal the supervised analysis engine as `cancel_analysis` does?
+* **Governs:** f-20260919-10
+* **Chosen:** the same supervised-engine signal as `cancel_analysis`, through one shared helper used by all three callers (`cancel_analysis`, the destroy path, the startup sweep).
+* **Rejected:** token-only cancellation — the engine keeps searching the current move after its consumer is gone, until the analysis loop's next token check.
+* **Reason:** rule 11 — the second caller of "cancel an analysis" arrives in this change, so it is extracted now. Reversal path: drop the helper call from the two lifecycle paths.
+* **Decided by:** Claude Code, drain session 7b604ce0-e244-4017-b0cc-0bc1bff00242 (drain run 780d1f80-4b2d-41f8-9afc-9847377b5c91), full auto, reviewed plan tasks/plans/2026-10-05-reload-download-cancel.md (planned ahead by session 7e2867a5-6bc6-4286-adc6-b5a5515e36a1, refreshed by 80ec0d38-02f8-4316-a527-300e28e9d7df, 4 review rounds) · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"5ec339de37207b131b8246d613511ec871491da4290bbf839c23a534d64af230","input_sha256":"ca3bf10b4df3a3fc7bf1a9adc1214c3eafc1c0cfcd56c4b89dfb1e43b2c7c76f","kind":"mutation-receipt","operation":"7181436939639611a608b993d01cecf1598022c7e7eea5bd7acd65d178f71a31","options":{"section":null},"request_id_sha256":null,"results":["d-20261005-09"],"target":"decisions-ledger","v":1} -->
