@@ -1,56 +1,53 @@
-import { act, type ComponentProps } from "react";
+import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { UseFormReturnType } from "@mantine/form";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { defaultEngineProgressId, type LocalEngine } from "@/utils/engines";
 import AddEngine from "./AddEngine";
-import type { ProgressEvent } from "@/bindings";
+import {
+  expectRestoredDownloadCancellation,
+  resetProgressButtonTestHarness,
+} from "@/tests/progressButtonTestHarness";
 
-const mocks = vi.hoisted(() => ({
-  engines: [] as Array<{
-    id: string;
-    type: "local";
-    name: string;
-    downloadLink?: string;
-  }>,
-  setEngines: vi.fn(),
-  saveEngines: vi.fn(),
-  submitLocal: undefined as undefined | ((value: unknown) => Promise<unknown>),
-  localSaved: undefined as undefined | (() => void),
-  form: undefined as UseFormReturnType<LocalEngine> | undefined,
-  defaultEngines: [
-    {
-      type: "local" as const,
-      id: "manifest-1",
-      name: "Stockfish",
-      version: "17",
-      path: "stockfish-17/stockfish",
-      sha256: "a".repeat(64),
-      signature: "sig",
-      downloadLink: "https://example.com/engines/stockfish.zip",
-    },
-  ],
-  installDefaultEngine: vi.fn(),
-  clearProgress: vi.fn(),
-  cancelDownload: vi.fn(),
-  cancelDownloadForProgress: vi.fn(),
-  getProgress: vi.fn(),
-  realProgressButton: false,
-  progressListener: undefined as ((event: { payload: ProgressEvent }) => void) | undefined,
-  withDownloadTicket: vi.fn((run: (ticket: string) => Promise<unknown>) => run("prepared-ticket")),
-  notifyUnlessCancelled: vi.fn(),
-  notificationShow: vi.fn(),
-  getEngineWorkspace: vi.fn(),
-  engineArchiveDestination: vi.fn(),
-  downloadEngineArchive: vi.fn(),
-  registerInstalledEngine: vi.fn(),
-  getEngineConfig: vi.fn(),
-  progressButtonProps: null as
-    | null
-    | (Omit<ComponentProps<typeof import("../common/ProgressButton").default>, "onClick"> & {
-        onClick: () => void;
-      }),
-}));
+const mocks = await vi.hoisted(async () => {
+  const { createProgressButtonTestHarness } = await import("@/tests/progressButtonTestHarness");
+  return Object.assign(createProgressButtonTestHarness(), {
+    engines: [] as Array<{
+      id: string;
+      type: "local";
+      name: string;
+      downloadLink?: string;
+    }>,
+    setEngines: vi.fn(),
+    saveEngines: vi.fn(),
+    submitLocal: undefined as undefined | ((value: unknown) => Promise<unknown>),
+    localSaved: undefined as undefined | (() => void),
+    form: undefined as UseFormReturnType<LocalEngine> | undefined,
+    defaultEngines: [
+      {
+        type: "local" as const,
+        id: "manifest-1",
+        name: "Stockfish",
+        version: "17",
+        path: "stockfish-17/stockfish",
+        sha256: "a".repeat(64),
+        signature: "sig",
+        downloadLink: "https://example.com/engines/stockfish.zip",
+      },
+    ],
+    installDefaultEngine: vi.fn(),
+    withDownloadTicket: vi.fn((run: (ticket: string) => Promise<unknown>) =>
+      run("prepared-ticket"),
+    ),
+    notifyUnlessCancelled: vi.fn(),
+    notificationShow: vi.fn(),
+    getEngineWorkspace: vi.fn(),
+    engineArchiveDestination: vi.fn(),
+    downloadEngineArchive: vi.fn(),
+    registerInstalledEngine: vi.fn(),
+    getEngineConfig: vi.fn(),
+  });
+});
 
 vi.mock("@/state/atoms", () => ({
   enginesAtom: Symbol("enginesAtom"),
@@ -87,12 +84,7 @@ vi.mock("@/platform/tauri", () => ({
     getEngineConfig: mocks.getEngineConfig,
   },
   tauriSubscriptions: {
-    progress: async (listener: (event: { payload: ProgressEvent }) => void) => {
-      mocks.progressListener = listener;
-      return () => {
-        mocks.progressListener = undefined;
-      };
-    },
+    progress: mocks.subscribeProgress,
   },
   withDownloadTicket: mocks.withDownloadTicket,
   cancellationError: () => new Error("Cancellation"),
@@ -121,18 +113,12 @@ vi.mock("../common/AppModal", () => ({
   default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
 vi.mock("../common/ProgressButton", async (original) => {
-  const actual = await original<typeof import("../common/ProgressButton")>();
-  return {
-    default: (props: ComponentProps<typeof actual.default>) => {
-      mocks.progressButtonProps = { ...props, onClick: () => props.onClick(props.id) };
-      if (mocks.realProgressButton) return <actual.default {...props} />;
-      return (
-        <button type="button" onClick={() => props.onClick(props.id)}>
-          progress
-        </button>
-      );
-    },
-  };
+  const { mockProgressButton } = await import("@/tests/progressButtonTestHarness");
+  return mockProgressButton(
+    mocks,
+    await original<typeof import("../common/ProgressButton")>(),
+    "progress",
+  );
 });
 vi.mock("../common/IconAction", () => ({
   default: ({ label, onClick }: { label: string; onClick: () => void }) => (
@@ -203,16 +189,10 @@ let root: Root;
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.engines = [];
-  mocks.progressButtonProps = null;
-  mocks.realProgressButton = false;
-  mocks.progressListener = undefined;
-  mocks.getProgress.mockReset().mockResolvedValue(null);
-  mocks.cancelDownloadForProgress.mockReset().mockResolvedValue(true);
+  resetProgressButtonTestHarness(mocks);
   mocks.submitLocal = undefined;
   mocks.localSaved = undefined;
   mocks.form = undefined;
-  mocks.clearProgress.mockResolvedValue(1n);
-  mocks.cancelDownload.mockResolvedValue(true);
   mocks.saveEngines.mockReset().mockResolvedValue({ saved: true, synchronized: true });
   mocks.getEngineWorkspace.mockReset().mockResolvedValue({ id: { id: "root" } });
   mocks.engineArchiveDestination.mockReset().mockResolvedValue({ id: "destination" });
@@ -280,32 +260,11 @@ test("wires installed state and progress id from the download URL", async () => 
 test("a running engine download with no local job renders Cancel and calls native lookup", async () => {
   mocks.realProgressButton = true;
   await act(async () => root.render(<AddEngine opened setOpened={() => undefined} />));
-  expect(host.textContent).not.toContain("Common.Cancel");
-  const id = defaultEngineProgressId(mocks.defaultEngines[0].downloadLink);
-  await act(async () =>
-    mocks.progressListener!({
-      payload: {
-        id,
-        generation: 7n,
-        progress: 45,
-        finished: false,
-        state: "running",
-        cleared: false,
-      },
-    }),
+  await expectRestoredDownloadCancellation(
+    mocks,
+    host,
+    defaultEngineProgressId(mocks.defaultEngines[0].downloadLink),
   );
-  expect(mocks.progressButtonProps?.inProgress).toBe(false);
-  expect(host.querySelector("[data-progress]")?.textContent).toBe("45");
-  const cancel = [...host.querySelectorAll("button")].find(
-    (button) => button.textContent === "Common.Cancel",
-  );
-  expect(cancel).toBeDefined();
-  await act(async () => cancel!.click());
-  expect(mocks.cancelDownloadForProgress).toHaveBeenCalledExactlyOnceWith(id);
-  expect(mocks.cancelDownload).not.toHaveBeenCalled();
-  expect(mocks.clearProgress).not.toHaveBeenCalled();
-  expect(host.querySelector("[data-progress]")).toBeNull();
-  expect(host.textContent).not.toContain("Common.Cancel");
 });
 
 test("renders translated validation errors from actual local form validation", async () => {

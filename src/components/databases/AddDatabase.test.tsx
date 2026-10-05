@@ -1,48 +1,47 @@
-import { act, type ComponentProps } from "react";
+import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { getDefaultStore } from "jotai";
 import { databaseConversionStateAtom } from "@/state/atoms";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { CatalogVerificationError } from "@/utils/signedCatalog";
 import { defaultDatabaseProgressId } from "@/utils/db";
-import type { ProgressEvent } from "@/bindings";
+import {
+  clickProgressCancel,
+  expectRestoredDownloadCancellation,
+  reportRunningProgress,
+  resetProgressButtonTestHarness,
+} from "@/tests/progressButtonTestHarness";
 
-const mocks = vi.hoisted(() => ({
-  catalogError: undefined as unknown,
-  getDatabaseWorkspace: vi.fn(),
-  createWorkspaceDatabase: vi.fn(),
-  listWorkspaceDatabases: vi.fn(),
-  convertPgn: vi.fn(),
-  deleteDatabase: vi.fn(),
-  logError: vi.fn(),
-  issuePgnWorkspace: vi.fn(),
-  databaseDownloadDestination: vi.fn(),
-  downloadFile: vi.fn(),
-  cancelDownload: vi.fn(),
-  cancelDownloadForProgress: vi.fn(),
-  clearProgress: vi.fn(),
-  getProgress: vi.fn(),
-  progressListener: undefined as ((event: { payload: ProgressEvent }) => void) | undefined,
-  realProgressButton: false,
-  withDownloadTicket: vi.fn((run: (ticket: string) => Promise<unknown>) => run("prepared-ticket")),
-  getDatabases: vi.fn(),
-  notify: vi.fn(),
-  defaultDatabases: [] as Array<{
-    title: string;
-    description: string;
-    player_count: number;
-    game_count: number;
-    storage_size: number;
-    downloadLink: string;
-    sha256: string;
-    signature: string;
-  }>,
-  progressButtonProps: null as
-    | null
-    | (Omit<ComponentProps<typeof import("../common/ProgressButton").default>, "onClick"> & {
-        onClick: () => void;
-      }),
-}));
+const mocks = await vi.hoisted(async () => {
+  const { createProgressButtonTestHarness } = await import("@/tests/progressButtonTestHarness");
+  return Object.assign(createProgressButtonTestHarness(), {
+    catalogError: undefined as unknown,
+    getDatabaseWorkspace: vi.fn(),
+    createWorkspaceDatabase: vi.fn(),
+    listWorkspaceDatabases: vi.fn(),
+    convertPgn: vi.fn(),
+    deleteDatabase: vi.fn(),
+    logError: vi.fn(),
+    issuePgnWorkspace: vi.fn(),
+    databaseDownloadDestination: vi.fn(),
+    downloadFile: vi.fn(),
+    withDownloadTicket: vi.fn((run: (ticket: string) => Promise<unknown>) =>
+      run("prepared-ticket"),
+    ),
+    getDatabases: vi.fn(),
+    notify: vi.fn(),
+    defaultDatabases: [] as Array<{
+      title: string;
+      description: string;
+      player_count: number;
+      game_count: number;
+      storage_size: number;
+      downloadLink: string;
+      sha256: string;
+      signature: string;
+    }>,
+  });
+});
 
 vi.mock("@/platform/tauri", async () => {
   const actual = await vi.importActual<typeof import("@/platform/tauri")>("@/platform/tauri");
@@ -51,12 +50,7 @@ vi.mock("@/platform/tauri", async () => {
     tauri: mocks,
     withDownloadTicket: mocks.withDownloadTicket,
     tauriSubscriptions: {
-      progress: async (listener: (event: { payload: ProgressEvent }) => void) => {
-        mocks.progressListener = listener;
-        return () => {
-          mocks.progressListener = undefined;
-        };
-      },
+      progress: mocks.subscribeProgress,
     },
   };
 });
@@ -92,18 +86,12 @@ vi.mock("../common/FileInput", () => ({
   ),
 }));
 vi.mock("../common/ProgressButton", async (original) => {
-  const actual = await original<typeof import("../common/ProgressButton")>();
-  return {
-    default: (props: ComponentProps<typeof actual.default>) => {
-      mocks.progressButtonProps = { ...props, onClick: () => props.onClick(props.id) };
-      if (mocks.realProgressButton) return <actual.default {...props} />;
-      return (
-        <button type="button" onClick={() => props.onClick(props.id)}>
-          progress
-        </button>
-      );
-    },
-  };
+  const { mockProgressButton } = await import("@/tests/progressButtonTestHarness");
+  return mockProgressButton(
+    mocks,
+    await original<typeof import("../common/ProgressButton")>(),
+    "progress",
+  );
 });
 vi.mock("../common/IconAction", () => ({
   default: ({ label, onClick }: { label: string; onClick: () => void }) => (
@@ -171,14 +159,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.catalogError = undefined;
   mocks.defaultDatabases = [];
-  mocks.progressButtonProps = null;
-  mocks.realProgressButton = false;
-  mocks.progressListener = undefined;
-  mocks.getProgress.mockReset().mockResolvedValue(null);
-  mocks.cancelDownloadForProgress.mockReset().mockResolvedValue(true);
+  resetProgressButtonTestHarness(mocks);
   mocks.withDownloadTicket.mockReset().mockImplementation((run) => run("prepared-ticket"));
-  mocks.cancelDownload.mockResolvedValue(true);
-  mocks.clearProgress.mockResolvedValue(1n);
   mocks.deleteDatabase.mockReset().mockResolvedValue(undefined);
   mocks.logError.mockReset().mockResolvedValue(undefined);
   mocks.getDatabases.mockReset().mockResolvedValue([]);
@@ -302,45 +284,15 @@ test("installs a downloaded database with the URL-keyed progress id", async () =
   expect(mocks.notify).not.toHaveBeenCalled();
 });
 
-async function reportRunningDatabaseProgress(value = 45) {
-  await act(async () =>
-    mocks.progressListener!({
-      payload: {
-        id: defaultDatabaseProgressId(manifestDb.downloadLink),
-        generation: 7n,
-        progress: value,
-        finished: false,
-        state: "running",
-        cleared: false,
-      },
-    }),
-  );
-}
-
-async function clickDatabaseCancel() {
-  const cancel = [...host.querySelectorAll("button")].find(
-    (button) => button.textContent === "Common.Cancel",
-  );
-  expect(cancel).toBeDefined();
-  await act(async () => cancel!.click());
-}
-
 test("a running database with no local job renders Cancel and calls native lookup", async () => {
   mocks.defaultDatabases = [manifestDb];
   mocks.realProgressButton = true;
   await renderAddDatabase();
-  expect(host.textContent).not.toContain("Common.Cancel");
-  await reportRunningDatabaseProgress();
-  expect(mocks.progressButtonProps?.inProgress).toBe(false);
-  expect(host.querySelector("[data-progress]")?.textContent).toBe("45");
-  await clickDatabaseCancel();
-  expect(mocks.cancelDownloadForProgress).toHaveBeenCalledExactlyOnceWith(
+  await expectRestoredDownloadCancellation(
+    mocks,
+    host,
     defaultDatabaseProgressId(manifestDb.downloadLink),
   );
-  expect(mocks.cancelDownload).not.toHaveBeenCalled();
-  expect(mocks.clearProgress).not.toHaveBeenCalled();
-  expect(host.querySelector("[data-progress]")).toBeNull();
-  expect(host.textContent).not.toContain("Common.Cancel");
 });
 
 test("cancelling a pre-claim local attempt preserves the surviving bar and its next Cancel uses lookup", async () => {
@@ -357,14 +309,14 @@ test("cancelling a pre-claim local attempt preserves the surviving bar and its n
   await act(async () => mocks.progressButtonProps!.onClick());
   expect(mocks.getDatabaseWorkspace).toHaveBeenCalledOnce();
   expect(mocks.downloadFile).not.toHaveBeenCalled();
-  await reportRunningDatabaseProgress();
+  await reportRunningProgress(mocks, defaultDatabaseProgressId(manifestDb.downloadLink));
   expect(host.querySelector("[data-progress]")?.textContent).toBe("45");
   mocks.cancelDownload.mockImplementation(async (ticket: string) => {
     expect(ticket).toBe("prepared-ticket");
     rejectWorkspace(new Error("Cancellation"));
     return true;
   });
-  await clickDatabaseCancel();
+  await clickProgressCancel(host);
   expect(mocks.cancelDownload).toHaveBeenCalledExactlyOnceWith("prepared-ticket");
   expect(mocks.clearProgress).toHaveBeenCalledExactlyOnceWith(
     defaultDatabaseProgressId(manifestDb.downloadLink),
@@ -373,9 +325,9 @@ test("cancelling a pre-claim local attempt preserves the surviving bar and its n
   expect(mocks.progressButtonProps?.inProgress).toBe(false);
   expect(host.querySelector("[data-progress]")?.textContent).toBe("45");
   expect(host.textContent).toContain("Common.Cancel");
-  await reportRunningDatabaseProgress(60);
+  await reportRunningProgress(mocks, defaultDatabaseProgressId(manifestDb.downloadLink), 60);
   expect(host.querySelector("[data-progress]")?.textContent).toBe("60");
-  await clickDatabaseCancel();
+  await clickProgressCancel(host);
   expect(mocks.cancelDownloadForProgress).toHaveBeenCalledExactlyOnceWith(
     defaultDatabaseProgressId(manifestDb.downloadLink),
   );
