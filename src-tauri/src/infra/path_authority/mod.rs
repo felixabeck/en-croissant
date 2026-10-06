@@ -12707,7 +12707,7 @@ mod tests {
             .unwrap();
         let snapshot = resolved.pgn_snapshot().unwrap();
         let _ = resolved
-            .replace_pgn_atomic(&snapshot, |_source, target| {
+            .replace_pgn_atomic(&snapshot, &CancellationToken::new(), |_source, target| {
                 target.write_all(b"1. d4 *").map_err(Error::from)
             })
             .unwrap();
@@ -12969,7 +12969,7 @@ mod tests {
         fs::write(&replacement, b"external").unwrap();
         fs::rename(&replacement, &path).unwrap();
         assert!(resolved
-            .replace_pgn_atomic(&snapshot, |_, temp| temp
+            .replace_pgn_atomic(&snapshot, &CancellationToken::new(), |_, temp| temp
                 .write_all(b"new")
                 .map_err(Error::from))
             .is_err());
@@ -13005,7 +13005,7 @@ mod tests {
         fs::rename(&slot, dir.path().join("slot-old")).unwrap();
         std::os::unix::fs::symlink(&attacker, &slot).unwrap();
         assert!(resolved
-            .replace_pgn_atomic(&snapshot, |_, temp| temp
+            .replace_pgn_atomic(&snapshot, &CancellationToken::new(), |_, temp| temp
                 .write_all(b"new")
                 .map_err(Error::from))
             .is_err());
@@ -13666,7 +13666,7 @@ mod tests {
             .unwrap();
         let snapshot = resolved.pgn_snapshot().unwrap();
         let _ = resolved
-            .replace_pgn_atomic(&snapshot, |_source, target| {
+            .replace_pgn_atomic(&snapshot, &CancellationToken::new(), |_source, target| {
                 target.write_all(b"1. e4 *").map_err(Error::from)
             })
             .unwrap();
@@ -13704,7 +13704,7 @@ mod tests {
             .unwrap();
         let snapshot = resolved.pgn_snapshot().unwrap();
         let _ = resolved
-            .replace_pgn_atomic(&snapshot, |_source, target| {
+            .replace_pgn_atomic(&snapshot, &CancellationToken::new(), |_source, target| {
                 target.write_all(b"1. c4 *").map_err(Error::from)
             })
             .unwrap();
@@ -20314,7 +20314,7 @@ mod tests {
             .unwrap();
         let snapshot = resolved.pgn_snapshot().unwrap();
         let _ = resolved
-            .replace_pgn_atomic(&snapshot, |_source, target| {
+            .replace_pgn_atomic(&snapshot, &CancellationToken::new(), |_source, target| {
                 target.write_all(b"1. d4 *").map_err(Error::from)
             })
             .unwrap();

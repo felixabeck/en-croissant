@@ -629,6 +629,7 @@ impl ResolvedPath {
     pub(crate) fn replace_pgn_atomic<F>(
         &self,
         expected: &PgnSnapshot,
+        cancellation: &CancellationToken,
         write: F,
     ) -> Result<AtomicInstalledFile, Error>
     where
@@ -653,6 +654,9 @@ impl ResolvedPath {
             parent,
             leaf,
             || {
+                if cancellation.is_cancelled() {
+                    return Err(Error::Cancellation);
+                }
                 self.revalidate_logical_parent()?;
                 let current = self.fresh_pgn_snapshot()?;
                 if current.identity != expected.identity || current.revision != expected.revision {

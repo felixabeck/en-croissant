@@ -899,7 +899,7 @@ fn edit_existing(
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
-    resolved.replace_pgn_atomic(&snapshot, |source, temporary| {
+    resolved.replace_pgn_atomic(&snapshot, cancellation, |source, temporary| {
         if cancellation.is_cancelled() {
             return Err(Error::Cancellation);
         }
@@ -1836,6 +1836,59 @@ mod tests {
             Some(rebind),
         )
         .await
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn edit_existing_file_sync_cancellation_preserves_original_pgn() {
+        use crate::infra::fs::{
+            set_test_atomic_file_injector, AtomicFileFaultPoint, AtomicWriterInjector,
+        };
+
+        struct CancelOnSync(CancellationToken);
+        impl AtomicWriterInjector for CancelOnSync {
+            fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+                if point == AtomicFileFaultPoint::FileSync {
+                    self.0.cancel();
+                }
+                Ok(())
+            }
+        }
+        struct InjectorReset;
+        impl Drop for InjectorReset {
+            fn drop(&mut self) {
+                set_test_atomic_file_injector(None);
+            }
+        }
+
+        let directory = tempfile::tempdir().expect("PGN directory");
+        let path = directory.path().join("games.pgn");
+        let original = b"[Event \"before\"]\n\n1. e4 *\n";
+        std::fs::write(&path, original).expect("PGN");
+        let resolved = writable_for(&directory, &path);
+        let snapshot = resolved.pgn_snapshot().expect("snapshot");
+        let key = snapshot_key(&snapshot);
+        let range = GameRange {
+            start: 0,
+            end: snapshot.revision.size,
+        };
+        let cancellation = CancellationToken::new();
+        set_test_atomic_file_injector(Some(std::sync::Arc::new(CancelOnSync(
+            cancellation.clone(),
+        ))));
+        let injector = InjectorReset;
+        let result = edit_existing(
+            &resolved,
+            key,
+            snapshot,
+            range,
+            Some(b"[Event \"after\"]\n\n1. d4 *\n".to_vec()),
+            &cancellation,
+        );
+        drop(injector);
+        assert!(cancellation.is_cancelled());
+        assert!(matches!(result, Err(Error::Cancellation)), "{result:?}");
+        assert_eq!(std::fs::read(&path).expect("original PGN"), original);
     }
 
     #[test]

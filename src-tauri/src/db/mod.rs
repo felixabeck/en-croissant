@@ -3560,8 +3560,8 @@ pub async fn export_to_pgn(
     let repository = Arc::clone(&state.database_repository);
     crate::infra::operations::run_native_operation(operation, "export_to_pgn", async move {
         BLOCKING_GATEWAY
-            .spawn_cancellable(cancellation, move |_| {
-                export_to_pgn_blocking(&authority, &repository, file, destination)
+            .spawn_cancellable(cancellation, move |token| {
+                export_to_pgn_blocking(&authority, &repository, file, destination, token)
             })
             .await
     })
@@ -3573,6 +3573,7 @@ fn export_to_pgn_blocking(
     repository: &DatabaseRepository,
     file: DatabaseHandle,
     destination: FileWorkspaceHandle,
+    cancellation: &CancellationToken,
 ) -> Result<(), Error> {
     #[cfg(test)]
     database_command_checkpoint("export_to_pgn", &file);
@@ -3589,10 +3590,11 @@ fn export_to_pgn_blocking(
         (resolved, snapshot)
     };
 
-    let mut database_connection = get_db_or_create(repository, &target, None, authority, &file)?;
+    let mut database_connection =
+        get_db_or_create(repository, &target, Some(cancellation), authority, &file)?;
     let db = &mut *database_connection;
 
-    let installed = resolved.replace_pgn_atomic(&snapshot, |_, temporary| {
+    let installed = resolved.replace_pgn_atomic(&snapshot, cancellation, |_, temporary| {
         let (white_players, black_players) = diesel::alias!(players as white, players as black);
         let rows = games::table
             .inner_join(white_players.on(games::white_id.eq(white_players.field(players::id))))
@@ -3600,7 +3602,15 @@ fn export_to_pgn_blocking(
             .inner_join(events::table.on(games::event_id.eq(events::id)))
             .inner_join(sites::table.on(games::site_id.eq(sites::id)))
             .load_iter::<(Game, Player, Player, Event, Site), DefaultLoadingMode>(db)?;
-        write_pgn_rows(temporary, rows)
+        #[cfg(test)]
+        let rows = rows.inspect(|_| {
+            EXPORT_ROW_COUNT.with(|counter| {
+                if let Some(counter) = counter.borrow().as_ref() {
+                    counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            });
+        });
+        write_pgn_rows(temporary, rows, cancellation)
     })?;
     crate::infra::fs::require_durable(
         installed.outcome,
@@ -3608,13 +3618,22 @@ fn export_to_pgn_blocking(
     )
 }
 
-fn write_pgn_rows<W, I>(destination: W, rows: I) -> Result<(), Error>
+fn write_pgn_rows<W, I>(
+    destination: W,
+    rows: I,
+    cancellation: &CancellationToken,
+) -> Result<(), Error>
 where
     W: Write,
     I: IntoIterator<Item = diesel::QueryResult<(Game, Player, Player, Event, Site)>>,
 {
     let mut writer = BufWriter::new(destination);
-    for row in rows {
+    let mut rows = rows.into_iter();
+    loop {
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
+        let Some(row) = rows.next() else { break };
         #[cfg(test)]
         if let Some(block) = take_export_write_block() {
             block.entered.wait();
@@ -3666,6 +3685,9 @@ struct ExportWriteBlock {
 #[cfg(test)]
 std::thread_local! {
     static EXPORT_WRITE_BLOCK: std::cell::RefCell<Option<Arc<ExportWriteBlock>>> = const {
+        std::cell::RefCell::new(None)
+    };
+    static EXPORT_ROW_COUNT: std::cell::RefCell<Option<Arc<std::sync::atomic::AtomicUsize>>> = const {
         std::cell::RefCell::new(None)
     };
 }
@@ -5605,6 +5627,7 @@ mod tests {
                 &state.database_repository,
                 handle,
                 destination,
+                &CancellationToken::new(),
             )
         })
         .is_ok());
@@ -5786,6 +5809,7 @@ mod tests {
                     &app.state::<AppState>().database_repository,
                     handle,
                     destination,
+                    &CancellationToken::new(),
                 )
             },
         );
@@ -6114,6 +6138,7 @@ mod tests {
                     &app.state::<AppState>().database_repository,
                     handle,
                     destination,
+                    &CancellationToken::new(),
                 )
             },
         );
@@ -6149,6 +6174,7 @@ mod tests {
                     &app.state::<AppState>().database_repository,
                     handle,
                     destination,
+                    &CancellationToken::new(),
                 )
             },
         );
@@ -6974,6 +7000,181 @@ mod tests {
         }
     }
 
+    struct CancelAtomicExportAt {
+        point: crate::infra::fs::AtomicFileFaultPoint,
+        cancellation: CancellationToken,
+    }
+
+    impl crate::infra::fs::AtomicWriterInjector for CancelAtomicExportAt {
+        fn inject(&self, point: crate::infra::fs::AtomicFileFaultPoint) -> std::io::Result<()> {
+            if point == self.point {
+                self.cancellation.cancel();
+            }
+            Ok(())
+        }
+    }
+
+    fn install_atomic_export_cancellation(
+        point: crate::infra::fs::AtomicFileFaultPoint,
+        cancellation: &CancellationToken,
+    ) -> AtomicInjectorReset {
+        crate::infra::fs::set_test_atomic_file_injector(Some(Arc::new(CancelAtomicExportAt {
+            point,
+            cancellation: cancellation.clone(),
+        })));
+        AtomicInjectorReset
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn export_to_pgn_command_shutdown_cancel_reaches_the_worker() {
+        let (dir, app, handle, database) = blocking_database_case();
+        let inputs = prepare_database_command_case(
+            DatabaseCommandCase::ExportToPgn,
+            dir.path(),
+            &app,
+            &database,
+        );
+        let (entered, release) = install_database_command_checkpoint("export_to_pgn", &handle);
+        let command_app = app.clone();
+        let command = tokio::spawn(async move {
+            run_database_command_case(
+                DatabaseCommandCase::ExportToPgn,
+                command_app,
+                handle,
+                inputs,
+            )
+            .await
+        });
+        entered
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("export worker did not enter its core");
+        app.state::<AppState>()
+            .operations
+            .seal_and_request_cancellation()
+            .unwrap();
+        release.send(()).unwrap();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), command)
+            .await
+            .expect("cancelled export must finish")
+            .unwrap();
+        assert!(matches!(result, Err(Error::Cancellation)), "{result:?}");
+        assert_eq!(
+            std::fs::read(dir.path().join("export.pgn")).unwrap(),
+            b"old"
+        );
+        assert_no_atomic_export_residue(dir.path());
+    }
+
+    #[test]
+    fn export_mid_stream_cancellation_stops_before_pulling_another_row() {
+        let (dir, app, handle, database) = blocking_database_case();
+        insert_named_game(&app, &database, "First", "Black", "Event", "Site");
+        insert_named_game(&app, &database, "Second", "Black", "Event", "Site");
+        let destination_path = dir.path().join("export.pgn");
+        std::fs::write(&destination_path, b"old").unwrap();
+        let destination = grant_pgn_destination(&app, &destination_path);
+        let cancellation = CancellationToken::new();
+        let worker_cancellation = cancellation.clone();
+        let block = Arc::new(ExportWriteBlock {
+            entered: std::sync::Barrier::new(2),
+            release: std::sync::Barrier::new(2),
+        });
+        let worker_block = Arc::clone(&block);
+        let worker = std::thread::spawn(move || {
+            let counter = Arc::new(AtomicUsize::new(0));
+            EXPORT_ROW_COUNT.with(|current| *current.borrow_mut() = Some(Arc::clone(&counter)));
+            EXPORT_WRITE_BLOCK.with(|current| *current.borrow_mut() = Some(worker_block));
+            let state = app.state::<AppState>();
+            let result = export_to_pgn_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                handle,
+                destination,
+                &worker_cancellation,
+            );
+            EXPORT_ROW_COUNT.with(|current| current.borrow_mut().take());
+            (result, counter.load(Ordering::Relaxed))
+        });
+        block.entered.wait();
+        cancellation.cancel();
+        block.release.wait();
+        let (result, yielded) = worker.join().unwrap();
+        assert!(matches!(result, Err(Error::Cancellation)), "{result:?}");
+        assert_eq!(std::fs::read(&destination_path).unwrap(), b"old");
+        assert_no_atomic_export_residue(dir.path());
+        assert_eq!(yielded, 1, "cancelled export pulled another row");
+    }
+
+    #[test]
+    fn export_file_sync_cancellation_preserves_destination_and_cleans_temporary() {
+        let (dir, app, handle, database) = blocking_database_case();
+        insert_named_game(&app, &database, "White", "Black", "Event", "Site");
+        let destination_path = dir.path().join("export.pgn");
+        std::fs::write(&destination_path, b"old").unwrap();
+        let destination = grant_pgn_destination(&app, &destination_path);
+        let cancellation = CancellationToken::new();
+        let state = app.state::<AppState>();
+        let injector = install_atomic_export_cancellation(
+            crate::infra::fs::AtomicFileFaultPoint::FileSync,
+            &cancellation,
+        );
+        let result = export_to_pgn_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle,
+            destination,
+            &cancellation,
+        );
+        drop(injector);
+        assert!(cancellation.is_cancelled());
+        assert!(matches!(result, Err(Error::Cancellation)), "{result:?}");
+        assert_eq!(std::fs::read(&destination_path).unwrap(), b"old");
+        assert_no_atomic_export_residue(dir.path());
+    }
+
+    #[test]
+    fn export_cancellation_after_precommit_reports_complete_published_destination() {
+        let (dir, app, handle, database) = blocking_database_case();
+        insert_named_game(&app, &database, "First", "Black", "Event", "Site");
+        insert_named_game(&app, &database, "Second", "Black", "Event", "Site");
+        let destination_path = dir.path().join("export.pgn");
+        std::fs::write(&destination_path, b"old").unwrap();
+        let destination = grant_pgn_destination(&app, &destination_path);
+        let cancellation = CancellationToken::new();
+        let state = app.state::<AppState>();
+        let injector = install_atomic_export_cancellation(
+            crate::infra::fs::AtomicFileFaultPoint::TempMetadata,
+            &cancellation,
+        );
+        let result = export_to_pgn_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle,
+            destination,
+            &cancellation,
+        );
+        drop(injector);
+        assert!(cancellation.is_cancelled());
+        result.unwrap();
+        let exported = std::fs::read(&destination_path).unwrap();
+        let mut importer = Importer::new(None);
+        let games: Vec<_> = BufferedReader::new(exported.as_slice())
+            .into_iter(&mut importer)
+            .map(|game| {
+                game.expect("exported PGN parses")
+                    .expect("exported game retained")
+            })
+            .collect();
+        assert_eq!(games.len(), 2);
+        let mut whites: Vec<_> = games
+            .iter()
+            .map(|game| game.white_name.as_deref())
+            .collect();
+        whites.sort();
+        assert_eq!(whites, vec![Some("First"), Some("Second")]);
+        assert_no_atomic_export_residue(dir.path());
+    }
+
     #[test]
     fn export_streams_complete_pgn_through_atomic_destination() {
         let (dir, app, handle, database) = blocking_database_case();
@@ -6987,6 +7188,7 @@ mod tests {
             &state.database_repository,
             handle,
             destination,
+            &CancellationToken::new(),
         )
         .unwrap();
         let pgn = std::fs::read_to_string(destination_path).unwrap();
@@ -7028,6 +7230,7 @@ mod tests {
                 &state.database_repository,
                 handle,
                 destination,
+                &CancellationToken::new(),
             );
             drop(injector);
 
@@ -7062,6 +7265,7 @@ mod tests {
                 &state.database_repository,
                 handle,
                 destination,
+                &CancellationToken::new(),
             );
             drop(injector);
 
@@ -7109,6 +7313,7 @@ mod tests {
                 &state.database_repository,
                 handle,
                 destination,
+                &CancellationToken::new(),
             )
         });
         result.unwrap();
@@ -7170,6 +7375,7 @@ mod tests {
             &state.database_repository,
             handle,
             destination,
+            &CancellationToken::new(),
         )
         .unwrap();
 
@@ -7222,6 +7428,7 @@ mod tests {
                 &state.database_repository,
                 handle,
                 destination,
+                &CancellationToken::new(),
             )
             .is_err());
             assert_eq!(std::fs::read(destination_path).unwrap(), b"old");
@@ -7234,7 +7441,11 @@ mod tests {
         let destination = dir.path().join("export.pgn");
         std::fs::write(&destination, b"old").unwrap();
         let result = crate::infra::fs::atomic_replace(&destination, |file| {
-            write_pgn_rows(file, vec![Err(diesel::result::Error::NotFound)])
+            write_pgn_rows(
+                file,
+                vec![Err(diesel::result::Error::NotFound)],
+                &CancellationToken::new(),
+            )
         });
         assert!(matches!(result, Err(Error::Diesel(_))));
         assert_eq!(std::fs::read(destination).unwrap(), b"old");
@@ -7256,6 +7467,7 @@ mod tests {
                         fail_flush,
                     },
                     vec![Ok(export_row("E".repeat(event_size)))],
+                    &CancellationToken::new(),
                 )
             });
             assert!(result.is_err());
@@ -7279,6 +7491,7 @@ mod tests {
                 first_write_at: Arc::clone(&first_write_at),
             },
             rows,
+            &CancellationToken::new(),
         )
         .unwrap();
         assert_eq!(produced.load(Ordering::Relaxed), total);
@@ -7306,6 +7519,7 @@ mod tests {
                 &state.database_repository,
                 handle,
                 destination,
+                &CancellationToken::new(),
             )
         });
         block.entered.wait();
@@ -7681,6 +7895,7 @@ mod tests {
             &state.database_repository,
             handle,
             grant_pgn_destination(&app, &destination_path),
+            &CancellationToken::new(),
         )
         .unwrap();
         let exported = std::fs::read_to_string(destination_path).unwrap();
@@ -7777,6 +7992,7 @@ mod tests {
             &state.database_repository,
             handle,
             destination,
+            &CancellationToken::new(),
         )
         .unwrap();
         let exported = std::fs::read_to_string(destination_path).unwrap();
