@@ -26,6 +26,8 @@ const temporaryRoots = [];
 const UPDATER_SPECIFIER = "@tauri-apps/plugin-updater";
 const TAURI_PATHS = ["components/probe.ts", "bindings/generated.ts"];
 const REACH = ["direct @tauri-apps module access"];
+const BROKEN_PARSE_MESSAGE =
+  "Cannot parse src/broken.ts: Unexpected token (1:6)\n\n> 1 | const = ;\n    |       ^";
 
 afterAll(() => {
   for (const root of temporaryRoots) rmSync(root, { recursive: true, force: true });
@@ -53,7 +55,7 @@ function expectUnresolvable(path, source) {
   expect(violations).not.toContain("direct @tauri-apps module access");
 }
 
-describe("O1 module reference positions", () => {
+describe("module reference positions", () => {
   test.each([
     ["named import", `import { check } from "${UPDATER_SPECIFIER}";`],
     ["type-only import", `import type { Update } from "${UPDATER_SPECIFIER}";`],
@@ -93,7 +95,7 @@ describe("O1 module reference positions", () => {
   });
 });
 
-describe("O1 non-code text is silent", () => {
+describe("non-code text is silent", () => {
   test.each([
     ["line comment", `// we do not use ${UPDATER_SPECIFIER} here`],
     ["block comment", `/* import { check } from "${UPDATER_SPECIFIER}" */`],
@@ -113,7 +115,7 @@ describe("O1 non-code text is silent", () => {
   });
 });
 
-describe("O1 parse scope", () => {
+describe("parse scope", () => {
   test("a .jsx path holding JSX and no Tauri reference is silent", () => {
     expectSilent(
       "components/probe.jsx",
@@ -122,13 +124,17 @@ describe("O1 parse scope", () => {
   });
 });
 
-describe("O2 specifier resolution", () => {
+describe("specifier resolution", () => {
   test.each([
     ["concatenation", 'await import("@tauri-apps/" + "plugin-updater")'],
     ["interpolated template", 'await import(`${"@tauri-apps/plugin-updater"}`)'],
     ["const binding", `const p = "${UPDATER_SPECIFIER}"; import(p)`],
     ["const as const", `const p = "${UPDATER_SPECIFIER}" as const; import(p)`],
     ["two-step alias", `const a = "${UPDATER_SPECIFIER}"; const b = a; import(b)`],
+    [
+      "repeated const in concatenation",
+      'const a = "a"; import("@t" + a + "uri-" + a + "pps/plugin-updater")',
+    ],
   ])("%s reaches on both paths", (_name, source) => {
     for (const path of TAURI_PATHS) expectReach(path, source);
   });
@@ -139,7 +145,7 @@ describe("O2 specifier resolution", () => {
   });
 });
 
-describe("O2 known limits", () => {
+describe("known limits", () => {
   test.each([
     ["parameter", "function load(s) { return import(s); }"],
     ["defaulted parameter", 'function load(s = "./local") { return import(s); }'],
@@ -152,6 +158,15 @@ describe("O2 known limits", () => {
     ["reassigned let", `let p = "${UPDATER_SPECIFIER}"; p = "other"; import(p)`],
   ])("%s is unresolvable on both paths", (_name, source) => {
     for (const path of TAURI_PATHS) expectUnresolvable(path, source);
+  });
+
+  test.each([
+    ["self-referential concatenation", 'var p = p + "x"; import(p)'],
+    ["self-referential template", "const p = `${p}/x`; import(p)"],
+    ["mutual concatenation", 'let a = b + "x"; let b = a + "y"; import(a)'],
+  ])("%s is unresolvable and does not throw", (_name, source) => {
+    expect(() => inspectSource("components/probe.ts", source)).not.toThrow();
+    expectUnresolvable("components/probe.ts", source);
   });
 
   test("a locale translation import is silent", () => {
@@ -207,7 +222,11 @@ describe("source boundary forms", () => {
     ["bare listen", "foo.ts", 'listen("x", cb)', /raw listen/],
     ["object listen", "foo.ts", "events.foo.listen(cb)", /raw \.listen/],
     ["computed listen", "foo.ts", 'obj["listen"](cb)', /raw \.listen/],
+    ["optional object listen", "foo.ts", "events.foo?.listen(cb)", /raw \.listen/],
+    ["optional listen method", "foo.ts", "events.foo.listen?.(cb)", /raw \.listen/],
+    ["optional bare listen", "foo.ts", 'listen?.("x", cb)', /raw listen/],
     ["tauriEvents", "foo.ts", "tauriEvents.foo", /tauriEvents/],
+    ["optional tauriEvents", "foo.ts", "tauriEvents?.foo", /tauriEvents/],
     [
       "Tauri facade native import",
       "platform/tauri.ts",
@@ -347,6 +366,14 @@ describe("native facade contract", () => {
     );
   });
 
+  test("rejects an empty named re-export of a denylisted module", () => {
+    expectViolation(
+      "platform/native.ts",
+      `${NATIVE_SOURCE}\nexport {} from "@tauri-apps/plugin-fs";\n`,
+      /named Tauri re-exports/,
+    );
+  });
+
   test("rejects a missing allowlisted export", () => {
     const withoutExit = NATIVE_SOURCE.replace(
       'export { exit, relaunch } from "@tauri-apps/plugin-process";\n',
@@ -369,7 +396,7 @@ describe("native facade contract", () => {
   });
 });
 
-describe("O6 parse failure", () => {
+describe("parse failure", () => {
   test("runTauriBoundaryCheck throws Cannot parse for broken renderer source", () => {
     expect(() =>
       runTauriBoundaryCheck({
@@ -382,7 +409,30 @@ describe("O6 parse failure", () => {
           return VALID_SECURITY_CONFIG;
         },
       }),
-    ).toThrow(/^Cannot parse src\/broken\.ts:/);
+    ).toThrow(
+      /^Cannot parse src\/broken\.ts: Unexpected token \(1:6\)\n\n> 1 \| const = ;\n    \|       \^$/,
+    );
+  });
+
+  test("does not relabel a non-parse error as Cannot parse", () => {
+    let caught;
+    try {
+      runTauriBoundaryCheck({
+        workspaceRoot: "/fixture",
+        listFiles: () => ["src/probe.ts", "src/platform/native.ts"],
+        readFile: (path) => {
+          if (path.endsWith("probe.ts")) return 1;
+          if (path.endsWith("native.ts")) return NATIVE_SOURCE;
+          if (path.endsWith("main.json")) return '{"permissions":[]}';
+          return VALID_SECURITY_CONFIG;
+        },
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(TypeError);
+    expect(caught.message).toBe("this.input.charCodeAt is not a function");
+    expect(caught.message).not.toMatch(/Cannot parse/);
   });
 });
 
@@ -647,6 +697,6 @@ describe("CLI", () => {
       encoding: "utf8",
     });
     expect(result.status).toBe(1);
-    expect(result.stderr).toMatch(/^Cannot parse src\/broken\.ts:/m);
+    expect(result.stderr).toContain(BROKEN_PARSE_MESSAGE);
   });
 });

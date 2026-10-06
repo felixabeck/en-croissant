@@ -38,7 +38,11 @@ import { listWorkingTreeFiles } from "./working-tree-files.mjs";
 import {
   PARAM_OF,
   VALUE_WRAPPERS,
+  cannotParseError,
+  errorDetail,
   followsAlias,
+  nodeLine,
+  nodeText,
   parseTsSource,
   resolveChain,
 } from "./parse-ts-source.mjs";
@@ -59,20 +63,6 @@ const TYPE_NODES = new Set([
 ]);
 const MAX_LEDGER_BUFFER = 64 * 1024 * 1024;
 
-function errorDetail(error) {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function nodeText(source, node) {
-  if (node?.start !== undefined && node?.end !== undefined)
-    return source.slice(node.start, node.end).replace(/\s+/gu, " ").trim();
-  return node?.type ?? "<unknown>";
-}
-
-function nodeLine(node) {
-  return node?.loc?.start?.line ?? "?";
-}
-
 function resolveSpecifier(specifier, importingPath) {
   const basePath = importSpecifierBasePath(importingPath, specifier, { allowAnyDotRelative: true });
   return basePath === undefined ? null : `${basePath}.ts`;
@@ -86,12 +76,11 @@ function acceptedModule(specifier, importingPath) {
 }
 
 function parseSource(source, workspaceRoot, listedPath) {
+  const filename = resolve(workspaceRoot, listedPath);
   try {
-    return parseTsSource(source, resolve(workspaceRoot, listedPath));
+    return parseTsSource(source, filename);
   } catch (error) {
-    const absolutePath = resolve(workspaceRoot, listedPath);
-    const detail = errorDetail(error).replace(`${absolutePath}: `, "");
-    throw new Error(`Cannot parse ${listedPath}: ${detail}`);
+    throw cannotParseError(error, listedPath, filename);
   }
 }
 

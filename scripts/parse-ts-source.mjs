@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { parseSync } from "@babel/core";
 
 export function parseTsSource(source, path) {
@@ -19,6 +20,31 @@ export function parseTsSource(source, path) {
     presets: [],
     plugins: [],
   });
+}
+
+export function errorDetail(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export function nodeText(source, node) {
+  if (node?.start !== undefined && node?.end !== undefined)
+    return source.slice(node.start, node.end).replace(/\s+/gu, " ").trim();
+  return node?.type ?? "<unknown>";
+}
+
+export function nodeLine(node) {
+  return node?.loc?.start?.line ?? "?";
+}
+
+/**
+ * Shared `Cannot parse <listedPath>: <detail>` error. Babel prefixes its message with
+ * `${resolve(filename)}: ` (cwd-resolved; an absolute filename is unchanged), which is
+ * stripped so both checkers report the listed path rather than a cwd-dependent one.
+ */
+export function cannotParseError(error, listedPath, filename) {
+  const prefix = `${resolve(filename)}: `;
+  const detail = errorDetail(error).replace(prefix, "");
+  return new Error(`Cannot parse ${listedPath}: ${detail}`);
 }
 
 // THE binding walk. One file, required by every probe in the plan and, in the
@@ -67,10 +93,11 @@ function followsAlias(binding) {
  * binding, because a chain that reaches an ImportSpecifier stops there. Throwing instead
  * would redden the gate on a cycle in code that has nothing to do with the facade.
  *
- * `options.stopAtParam` is a per-caller switch that does not move `seen`. When true, any
- * `binding.kind === "param"` is a terminal — including a defaulted parameter, which
- * `followsAlias` would otherwise follow. Specifier evaluation must not treat a
- * caller-overridable default as a known value; the IPC consumer gate leaves this off.
+ * `options.stopAtParam` is forwarded on every recursive call and only changes where the
+ * walk stops. When true, any `binding.kind === "param"` is a terminal — including a
+ * defaulted parameter, which `followsAlias` would otherwise follow. Specifier evaluation
+ * must not treat a caller-overridable default as a known value; the IPC consumer gate
+ * leaves this off.
  */
 function resolveChain(node, scope, seen = new Set(), options) {
   node = unwrap(node);
@@ -91,4 +118,4 @@ function resolveChain(node, scope, seen = new Set(), options) {
   );
 }
 
-export { VALUE_WRAPPERS, PARAM_OF, followsAlias, resolveChain };
+export { VALUE_WRAPPERS, PARAM_OF, followsAlias, resolveChain, unwrap };

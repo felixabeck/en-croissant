@@ -4,15 +4,26 @@
 //   flagged (the generated-rule known limit).
 // - Out of scope (deliberate evasion): `eval`, `new Function`,
 //   `globalThis["req" + "uire"]`, a destructured `const { mock } = vi`,
-//   reaching Tauri through `window.__TAURI_INTERNALS__`, and a relative path
-//   into `node_modules/@tauri-apps/…`.
+//   `require` reached through an alias or a sequence (`const r = require; r(...)`,
+//   `(0, require)(...)`), `vi` imported or bound under another name,
+//   `import.meta.glob`, `jest.mock`, reaching Tauri through
+//   `window.__TAURI_INTERNALS__`, and a relative path into
+//   `node_modules/@tauri-apps/…`.
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { traverse } from "@babel/core";
 import { isEntrypoint } from "./entrypoint.mjs";
 import { listWorkingTreeFiles } from "./working-tree-files.mjs";
-import { VALUE_WRAPPERS, parseTsSource, resolveChain } from "./parse-ts-source.mjs";
+import {
+  cannotParseError,
+  errorDetail,
+  nodeLine,
+  nodeText,
+  parseTsSource,
+  resolveChain,
+  unwrap,
+} from "./parse-ts-source.mjs";
 
 // Exact required re-export set for platform/native.ts, not an optional permit
 // list. `exported` is the name in the specifier module; `local` is the name
@@ -90,16 +101,6 @@ function couldBeTauriPrefix(prefix) {
   return prefix === "" || "@tauri-apps/".startsWith(prefix) || prefix.startsWith("@tauri-apps/");
 }
 
-function unwrap(node) {
-  while (node && VALUE_WRAPPERS.has(node.type)) node = node.expression;
-  return node;
-}
-
-function nodeSource(source, node) {
-  if (node?.start != null && node?.end != null) return source.slice(node.start, node.end);
-  return "";
-}
-
 function nodeName(node) {
   if (node?.type === "Identifier") return node.name;
   if (node?.type === "StringLiteral") return node.value;
@@ -110,15 +111,6 @@ function isMemberAccess(node) {
   return node?.type === "MemberExpression" || node?.type === "OptionalMemberExpression";
 }
 
-function isDynamicImport(node) {
-  const inner = unwrap(node);
-  return Boolean(
-    inner &&
-    (inner.type === "ImportExpression" ||
-      (inner.type === "CallExpression" && inner.callee?.type === "Import")),
-  );
-}
-
 function dynamicImportArgument(node) {
   const inner = unwrap(node);
   if (inner?.type === "ImportExpression") return inner.source;
@@ -127,19 +119,13 @@ function dynamicImportArgument(node) {
   return undefined;
 }
 
-function tsImportTypeArgument(node) {
-  const argument = node.argument;
-  if (argument?.type === "StringLiteral") return argument;
-  if (argument?.type === "TSLiteralType") return argument.literal;
-  return argument;
-}
-
-function evaluateStatic(node, scope, { coerceNumber = false } = {}) {
+function evaluateStatic(node, scope, { coerceNumber = false, seen = new Set() } = {}) {
   node = unwrap(node);
   if (!node) return { resolved: false, prefix: "" };
 
   if (node.type === "StringLiteral") return { resolved: true, value: node.value };
   if (node.type === "NumericLiteral") {
+    // coerceNumber mirrors JS string coercion inside a template or `+`; a bare numeric specifier stays unresolved.
     if (coerceNumber) return { resolved: true, value: String(node.value) };
     return { resolved: false, prefix: "" };
   }
@@ -148,7 +134,7 @@ function evaluateStatic(node, scope, { coerceNumber = false } = {}) {
     for (let i = 0; i < node.quasis.length; i++) {
       value += node.quasis[i].value.cooked ?? "";
       if (i < node.expressions.length) {
-        const inner = evaluateStatic(node.expressions[i], scope, { coerceNumber: true });
+        const inner = evaluateStatic(node.expressions[i], scope, { coerceNumber: true, seen });
         if (!inner.resolved) return { resolved: false, prefix: value };
         value += inner.value;
       }
@@ -156,24 +142,23 @@ function evaluateStatic(node, scope, { coerceNumber = false } = {}) {
     return { resolved: true, value };
   }
   if (node.type === "BinaryExpression" && node.operator === "+") {
-    const left = evaluateStatic(node.left, scope, { coerceNumber: true });
+    const left = evaluateStatic(node.left, scope, { coerceNumber: true, seen });
     if (!left.resolved) return { resolved: false, prefix: left.prefix };
-    const right = evaluateStatic(node.right, scope, { coerceNumber: true });
+    const right = evaluateStatic(node.right, scope, { coerceNumber: true, seen });
     if (!right.resolved) return { resolved: false, prefix: left.value };
     return { resolved: true, value: left.value + right.value };
   }
   if (node.type === "Identifier") {
-    const result = resolveChain(node, scope, new Set(), STOP_AT_PARAM);
+    const pathSeen = new Set(seen);
+    const result = resolveChain(node, scope, pathSeen, STOP_AT_PARAM);
     if (
-      result.cyclic ||
       !result.node ||
       result.node.type === "Identifier" ||
-      result.node.type === "ImportSpecifier" ||
-      result.binding?.kind === "param"
+      result.node.type === "ImportSpecifier"
     ) {
       return { resolved: false, prefix: "" };
     }
-    return evaluateStatic(result.node, result.scope, { coerceNumber });
+    return evaluateStatic(result.node, result.scope, { coerceNumber, seen: pathSeen });
   }
   return { resolved: false, prefix: "" };
 }
@@ -181,7 +166,7 @@ function evaluateStatic(node, scope, { coerceNumber = false } = {}) {
 function staticPropertyName(member, scope) {
   if (!member.computed && member.property?.type === "Identifier") return member.property.name;
   if (member.computed) {
-    const evaluated = evaluateStatic(unwrap(member.property), scope);
+    const evaluated = evaluateStatic(member.property, scope);
     if (evaluated.resolved) return evaluated.value;
   }
   return undefined;
@@ -196,7 +181,7 @@ function isViModuleMethod(callee, scope) {
 
 function analyzeSource(ast, source) {
   const references = [];
-  const skipDynamic = new Set();
+  const mockPromiseImports = new Set();
   const flags = {
     barrelRuntime: false,
     rawDotListen: false,
@@ -211,31 +196,24 @@ function analyzeSource(ast, source) {
       node: path.node,
       specifier: evaluated.resolved ? evaluated.value : undefined,
       prefix: evaluated.resolved ? evaluated.value : (evaluated.prefix ?? ""),
-      sourceText: nodeSource(source, specifierNode),
-      line: specifierNode?.loc?.start?.line ?? path.node?.loc?.start?.line ?? 1,
+      sourceText: nodeText(source, specifierNode),
+      line: nodeLine(specifierNode),
     });
-  }
-
-  function visitImportEquals(path) {
-    const moduleReference = path.node.moduleReference;
-    if (moduleReference?.type === "TSExternalModuleReference") {
-      addReference("static", moduleReference.expression, path);
-    }
   }
 
   function visitCall(path) {
     const node = path.node;
-    if (skipDynamic.has(node)) return;
+    if (mockPromiseImports.has(node)) return;
 
     const callee = unwrap(node.callee);
 
     if (isViModuleMethod(callee, path.scope)) {
       const first = node.arguments[0];
       let specifierNode = first;
-      const inner = unwrap(first);
-      if (isDynamicImport(inner)) {
-        skipDynamic.add(inner);
-        specifierNode = dynamicImportArgument(inner);
+      const mockSpecifier = dynamicImportArgument(first);
+      if (mockSpecifier !== undefined) {
+        mockPromiseImports.add(unwrap(first));
+        specifierNode = mockSpecifier;
       }
       addReference("mock", specifierNode, path);
       return;
@@ -284,12 +262,17 @@ function analyzeSource(ast, source) {
     ExportAllDeclaration(path) {
       if (path.node.source) addReference("static", path.node.source, path);
     },
-    TSImportEqualsDeclaration: visitImportEquals,
+    TSImportEqualsDeclaration(path) {
+      const moduleReference = path.node.moduleReference;
+      if (moduleReference?.type === "TSExternalModuleReference") {
+        addReference("static", moduleReference.expression, path);
+      }
+    },
     TSImportType(path) {
-      addReference("type-query", tsImportTypeArgument(path.node), path);
+      addReference("type-query", path.node.argument, path);
     },
     ImportExpression(path) {
-      if (skipDynamic.has(path.node)) return;
+      if (mockPromiseImports.has(path.node)) return;
       addReference("dynamic", path.node.source, path);
     },
     CallExpression: visitCall,
@@ -332,10 +315,17 @@ function inspectNativeSource(references, allowlist, denylist) {
         violations.push(`native export star is forbidden: ${ref.specifier}`);
         continue;
       }
-      for (const specifier of node.specifiers) {
-        if (specifier.type !== "ExportSpecifier") continue;
+      const namedSpecifiers = node.specifiers.filter(
+        (specifier) => specifier.type === "ExportSpecifier",
+      );
+      if (namedSpecifiers.length === 0) {
+        violations.push("native facade may only use named Tauri re-exports");
+        continue;
+      }
+      for (const specifier of namedSpecifiers) {
         actual.push({
           specifier: ref.specifier,
+          // Babel's ExportSpecifier.local is the module-side name (this file's exported) and Babel's exported is the re-exported name (this file's local).
           exported: nodeName(specifier.local),
           local: nodeName(specifier.exported),
         });
@@ -492,13 +482,8 @@ function readJsonFile(readFile, path) {
   try {
     return JSON.parse(source);
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`Cannot parse ${path}: ${detail}`);
+    throw new Error(`Cannot parse ${path}: ${errorDetail(error)}`);
   }
-}
-
-function errorDetail(error) {
-  return error instanceof Error ? error.message : String(error);
 }
 
 export function runTauriBoundaryCheck({
@@ -525,8 +510,10 @@ export function runTauriBoundaryCheck({
         violations.push(`${listedPath}: ${message}`);
       }
     } catch (error) {
-      const detail = errorDetail(error).replace(`${sourcePath}: `, "");
-      throw new Error(`Cannot parse ${listedPath}: ${detail}`);
+      if (error?.code === "BABEL_PARSE_ERROR") {
+        throw cannotParseError(error, listedPath, sourcePath);
+      }
+      throw error;
     }
   }
   if (!nativeInspected) {
