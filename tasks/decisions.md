@@ -5751,3 +5751,42 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** 1000 ms is Felix's "about 1 second"; one hook removes the triplicated key derivation (rule 11). Reversal path: lower the threshold constant or restore per-reader rendering.
 * **Decided by:** Claude Code, interactive session a2b7ad99-4750-4430-b26c-f280fe05e9e3, full auto, reviewed plan tasks/plans/2026-10-05-warm-engine-analysis.md (4 review rounds, review record tasks/handoffs/2026-10-05-warm-engine-analysis-review.md) · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":35,"effect_sha256":"8f36f3669c9bbef2e686c9dcf3c0ed04c198282d21107188a2da372e7378e7eb","input_sha256":"8e152e6edfb953693ca2e831b4a28d7d793ea112ed8ece985296af56d8e77a5a","kind":"mutation-receipt","operation":"eec1eb1bebeaeb9fd952b890102434e429c9dd4bb0f3c175e69c546f0cda0afa","options":{"section":null},"request_id_sha256":null,"results":["d-20261005-13","d-20261005-14","d-20261005-15","d-20261005-16"],"target":"decisions-ledger","v":1} -->
+
+## 2026-10-06 — recorded through the decisions lock
+
+### d-20261006-01 — Mask comments and keep the regexes, or replace the Tauri boundary scanner with a Babel-backed check?
+
+* **Question:** Should `scripts/check-tauri-command-boundary.mjs` hand comment-masked text to its existing regexes, or decide the renderer boundary from the Babel AST through the shared `scripts/parse-ts-source.mjs`?
+* **Governs:** f-20260920-20
+* **Chosen:** the Babel AST through the existing `scripts/parse-ts-source.mjs`: module references only at syntax positions (import/export declarations, `import x = require`, dynamic `import()`, `require()`, `TSImportType`, Vitest's module-path API), specifiers evaluated statically; every specifier-gap regex deleted.
+* **Rejected:** a JavaScript comment-masking pre-pass in front of the existing regexes.
+* **Reason:** masking JavaScript correctly needs regex-literal versus division context, which is parser knowledge; masking alone leaves concatenation, literal-template interpolation and constant bindings unevaluated (two of the finding's three known limits), so the syntax enumeration keeps its missing end condition. The "shared primitive" with `f-20260829-04` did not materialise: that run shipped a Rust-grammar masker (`scripts/rust-source-mask.mjs`); the JavaScript primitive that exists and is shared is the Babel parser. No new dependency; measured cost ~1.1–2.0 s parse+traverse over 409–433 files inside the contract gate, whose IPC consumer member already parses the tree. Supersedes `d-20260831-29` on evidence it did not have: two measured loading forms missed after nine hand-closed ones, a quadratic gap, a native-facade false positive, and the existence of a shared parse primitive. Reversal path: restore the regex scanner from git.
+* **Decided by:** Claude Code, drain session 8a53384e-b9f0-4371-944a-cd1d4da3c158 (run c77de5ef), full auto, reviewed plan tasks/plans/2026-10-05-tauri-boundary-ast.md (4 review rounds, review record tasks/handoffs/2026-10-06-f-20260920-20-review.md) · **Superseded-by:** -
+
+### d-20261006-02 — What does the Tauri boundary gate do with a dynamic module specifier it cannot evaluate?
+
+* **Question:** When a dynamic, type-query or mock module reference has a specifier the checker cannot evaluate statically, does the gate pass it, refuse it, or decide by its static prefix?
+* **Governs:** f-20260920-20
+* **Chosen:** refuse it (`module specifier is not statically resolvable: <source>`) when its known static prefix does not rule out `@tauri-apps/` (empty, a prefix of `@tauri-apps/`, or starting with it); pass it otherwise. A parameter is never a known value (`resolveChain` gains a per-caller parameter-stop option). For the `bindings/generated` rule an unresolved specifier is a named, tested known limit.
+* **Rejected:** passing every unresolvable specifier as a tested residual (`d-20260831-29`'s choice); refusing every unresolvable specifier (reddens the legitimate locale import in `src/utils/db.test.ts`).
+* **Reason:** the finding requires the gate to state its limits rather than imply completeness; the IPC consumer gate's `C5` is the repository precedent for refusing an unresolvable reach; the prefix rule is exact on today's tree (the only two non-literal specifiers both start `../translation/`). Reversal path: drop the prefix rule and pass unresolved specifiers.
+* **Decided by:** Claude Code, drain session 8a53384e-b9f0-4371-944a-cd1d4da3c158 (run c77de5ef), full auto, reviewed plan tasks/plans/2026-10-05-tauri-boundary-ast.md · **Superseded-by:** -
+
+### d-20261006-03 — Which `vi` calls does the Tauri boundary checker treat as module references?
+
+* **Question:** Which Vitest `vi.*` calls name a module and are therefore checked for `@tauri-apps/*` and `bindings/generated` reach?
+* **Governs:** f-20260920-20
+* **Chosen:** Vitest's module-path API: `mock`, `doMock`, `unmock`, `doUnmock`, `importActual`, `importMock`, including the module-promise overload `vi.mock(import("…"), factory)` whose inner import supplies the specifier. `d-20260831-32` (generated-bindings mocks are legal) stands.
+* **Rejected:** `vi.mock` only (today; `vi.importActual("@tauri-apps/…")` reaches around the facade identically); any `vi.*` call (`vi.fn(impl)` would make every mock factory an unresolvable specifier).
+* **Reason:** the position set is closed by Vitest's documented module-path API rather than by observed spellings. Reversal path: shrink the method set in the checker.
+* **Decided by:** Claude Code, drain session 8a53384e-b9f0-4371-944a-cd1d4da3c158 (run c77de5ef), full auto, reviewed plan tasks/plans/2026-10-05-tauri-boundary-ast.md · **Superseded-by:** -
+
+### d-20261006-04 — Do the Tauri boundary checker's listener rules match raw text or AST calls?
+
+* **Question:** Should the `raw listen()`, `raw .listen()` and `raw tauriEvents access` rules stay raw-text regexes beside the new AST checks, or match calls and member accesses on the AST?
+* **Governs:** f-20260920-20
+* **Chosen:** calls and member accesses on the AST: a call whose callee is the identifier `listen`, a call or optional call on a member whose property is `listen` (identifier or computed static string), and a member access on the identifier `tauriEvents`. Messages unchanged.
+* **Rejected:** keeping raw-text regexes for these three rules beside an AST for the rest.
+* **Reason:** two mechanisms for one question in one file (universal rule 11; `d-20260921-02`'s one-mechanism precedent), and the raw-text form carries the same comment/string false-positive defect the finding names. Behavioural change, intended: a declaration named `listen` and text in comments or strings no longer match. Reversal path: restore the three regexes.
+* **Decided by:** Claude Code, drain session 8a53384e-b9f0-4371-944a-cd1d4da3c158 (run c77de5ef), full auto, reviewed plan tasks/plans/2026-10-05-tauri-boundary-ast.md · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":35,"effect_sha256":"ebf537f896e35fcc75c3d7a11eefbcd76f4214db880b48b360298bb13df89ceb","input_sha256":"560863ff83392d66198420acf747587347089393cfd3f04dea807078a4c147ee","kind":"mutation-receipt","operation":"5e6d71cc0a83f755076e9d8ff3431b30424cbeed3cd7d9ee01eadea9fde840ad","options":{"section":null},"request_id_sha256":null,"results":["d-20261006-01","d-20261006-02","d-20261006-03","d-20261006-04"],"target":"decisions-ledger","v":1} -->
