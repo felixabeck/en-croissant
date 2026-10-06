@@ -1,7 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { performance } from "node:perf_hooks";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
 import {
@@ -25,37 +24,8 @@ const VALID_SECURITY_CONFIG = JSON.stringify({
 });
 const temporaryRoots = [];
 const UPDATER_SPECIFIER = "@tauri-apps/plugin-updater";
-const B0_ORACLE_FORMS = [
-  ["A", `import { check } from "${UPDATER_SPECIFIER}";`, "must-stay-a-violation"],
-  ["B", `await import("${UPDATER_SPECIFIER}");`, "must-stay-a-violation"],
-  ["C", `await import(\`${UPDATER_SPECIFIER}\`);`, "must-flip"],
-  ["D", `await import(/* c */ "${UPDATER_SPECIFIER}");`, "must-flip"],
-  ["E", `require(\`${UPDATER_SPECIFIER}\`);`, "must-flip"],
-  ["F", `require(/* c */ "${UPDATER_SPECIFIER}");`, "must-flip"],
-  ["G", `vi.mock(\`${UPDATER_SPECIFIER}\`);`, "must-flip"],
-  ["H", `vi.mock(/* c */ "${UPDATER_SPECIFIER}");`, "must-flip"],
-  ["I", `import "${UPDATER_SPECIFIER}";`, "must-stay-a-violation"],
-  ["J", 'await import("@tauri-apps/" + "plugin-updater");', "must-stay-silent"],
-  ["K", `// we do not use ${UPDATER_SPECIFIER} here`, "must-stay-silent"],
-  ["L", `const msg = "install ${UPDATER_SPECIFIER}";`, "must-stay-silent"],
-  ["M", `const m = await import(// c\r"${UPDATER_SPECIFIER}");`, "must-be-violation"],
-  ["N", `import /* c */ "${UPDATER_SPECIFIER}";`, "must-be-violation"],
-  ["O", `import { check } from /* c */ "${UPDATER_SPECIFIER}";`, "must-be-violation"],
-  ["P", `const m = require /* c */ ("${UPDATER_SPECIFIER}");`, "must-be-violation"],
-  ["Q", `const m = await import /* c */ ("${UPDATER_SPECIFIER}");`, "must-be-violation"],
-  ["R", `vi.mock /* c */ ("${UPDATER_SPECIFIER}");`, "must-be-violation"],
-  ["S", `const m = await import\n// c\n("${UPDATER_SPECIFIER}");`, "must-be-violation"],
-  ["T", `vi /* c */ .mock("${UPDATER_SPECIFIER}");`, "must-be-violation"],
-  ["U", `vi . mock("${UPDATER_SPECIFIER}");`, "must-be-violation"],
-];
-const B0_ORACLE_CASES = B0_ORACLE_FORMS.flatMap(([row, source, expected]) =>
-  ["components/probe.ts", "bindings/generated.ts"].map((path) => ({
-    row,
-    path,
-    source,
-    expected,
-  })),
-);
+const TAURI_PATHS = ["components/probe.ts", "bindings/generated.ts"];
+const REACH = ["direct @tauri-apps module access"];
 
 afterAll(() => {
   for (const root of temporaryRoots) rmSync(root, { recursive: true, force: true });
@@ -67,12 +37,135 @@ function expectViolation(path, source, message, options) {
   );
 }
 
-describe("source boundary forms", () => {
-  test.each(B0_ORACLE_CASES)("B0 row $row on $path is $expected", ({ path, source, expected }) => {
-    const violations = inspectSource(path, source);
-    expect(violations.length > 0).toBe(expected !== "must-stay-silent");
+function expectReach(path, source) {
+  expect(inspectSource(path, source)).toEqual(REACH);
+}
+
+function expectSilent(path, source) {
+  expect(inspectSource(path, source)).toEqual([]);
+}
+
+function expectUnresolvable(path, source) {
+  const violations = inspectSource(path, source);
+  expect(
+    violations.some((message) => message.includes("module specifier is not statically resolvable")),
+  ).toBe(true);
+  expect(violations).not.toContain("direct @tauri-apps module access");
+}
+
+describe("O1 module reference positions", () => {
+  test.each([
+    ["named import", `import { check } from "${UPDATER_SPECIFIER}";`],
+    ["type-only import", `import type { Update } from "${UPDATER_SPECIFIER}";`],
+    ["side-effect import", `import "${UPDATER_SPECIFIER}";`],
+    ["export from", `export { check } from "${UPDATER_SPECIFIER}";`],
+    ["import equals require", `import x = require("${UPDATER_SPECIFIER}");`],
+    ["import type equals require", `import type x = require("${UPDATER_SPECIFIER}");`],
+    ["dynamic import", `await import("${UPDATER_SPECIFIER}");`],
+    ["require", `require("${UPDATER_SPECIFIER}");`],
+    ["typeof import", `type T = typeof import("${UPDATER_SPECIFIER}");`],
+    ["vi.mock string", `vi.mock("${UPDATER_SPECIFIER}");`],
+    ["vi.doMock string", `vi.doMock("${UPDATER_SPECIFIER}");`],
+    ["vi.unmock string", `vi.unmock("${UPDATER_SPECIFIER}");`],
+    ["vi.doUnmock string", `vi.doUnmock("${UPDATER_SPECIFIER}");`],
+    ["vi.importActual string", `vi.importActual("${UPDATER_SPECIFIER}");`],
+    ["vi.importMock string", `vi.importMock("${UPDATER_SPECIFIER}");`],
+    ["vi.mock module-promise", `vi.mock(import("${UPDATER_SPECIFIER}"));`],
+    ["wrapped vi.mock", `(vi as any).mock("${UPDATER_SPECIFIER}");`],
+    ["computed vi.mock", `vi["mock"]("${UPDATER_SPECIFIER}");`],
+    ["dynamic import comment", `await import(/* c */ "${UPDATER_SPECIFIER}");`],
+    ["require template", `require(\`${UPDATER_SPECIFIER}\`);`],
+    ["require comment", `require(/* c */ "${UPDATER_SPECIFIER}");`],
+    ["vi.mock template", `vi.mock(\`${UPDATER_SPECIFIER}\`);`],
+    ["vi.mock comment", `vi.mock(/* c */ "${UPDATER_SPECIFIER}");`],
+    ["dynamic import CR comment", `const m = await import(// c\r"${UPDATER_SPECIFIER}");`],
+    ["side-effect import comment", `import /* c */ "${UPDATER_SPECIFIER}";`],
+    ["from comment", `import { check } from /* c */ "${UPDATER_SPECIFIER}";`],
+    ["require between tokens", `const m = require /* c */ ("${UPDATER_SPECIFIER}");`],
+    ["import between tokens", `const m = await import /* c */ ("${UPDATER_SPECIFIER}");`],
+    ["vi.mock between tokens", `vi.mock /* c */ ("${UPDATER_SPECIFIER}");`],
+    ["import newline comment", `const m = await import\n// c\n("${UPDATER_SPECIFIER}");`],
+    ["vi comment member", `vi /* c */ .mock("${UPDATER_SPECIFIER}");`],
+    ["vi spaced member", `vi . mock("${UPDATER_SPECIFIER}");`],
+    ["substitution-free import template", `await import(\`${UPDATER_SPECIFIER}\`);`],
+  ])("%s reaches on both paths", (_name, source) => {
+    for (const path of TAURI_PATHS) expectReach(path, source);
+  });
+});
+
+describe("O1 non-code text is silent", () => {
+  test.each([
+    ["line comment", `// we do not use ${UPDATER_SPECIFIER} here`],
+    ["block comment", `/* import { check } from "${UPDATER_SPECIFIER}" */`],
+    ["string literal", `const msg = "install ${UPDATER_SPECIFIER}";`],
+    ["template literal", "const msg = `install @tauri-apps/plugin-updater`;"],
+    ["regex literal", "const pattern = /@tauri-apps\\/plugin-updater/;"],
+    ["includes probe", 'source.includes("@tauri-apps/plugin-updater")'],
+  ])("%s", (_name, source) => {
+    for (const path of TAURI_PATHS) expectSilent(path, source);
   });
 
+  test("JSX text on a .tsx path is silent", () => {
+    expectSilent(
+      "components/probe.tsx",
+      `export default function Probe() { return <div>${UPDATER_SPECIFIER}</div>; }`,
+    );
+  });
+});
+
+describe("O1 parse scope", () => {
+  test("a .jsx path holding JSX and no Tauri reference is silent", () => {
+    expectSilent(
+      "components/probe.jsx",
+      "export default function Probe() { return <div>hello</div>; }",
+    );
+  });
+});
+
+describe("O2 specifier resolution", () => {
+  test.each([
+    ["concatenation", 'await import("@tauri-apps/" + "plugin-updater")'],
+    ["interpolated template", 'await import(`${"@tauri-apps/plugin-updater"}`)'],
+    ["const binding", `const p = "${UPDATER_SPECIFIER}"; import(p)`],
+    ["const as const", `const p = "${UPDATER_SPECIFIER}" as const; import(p)`],
+    ["two-step alias", `const a = "${UPDATER_SPECIFIER}"; const b = a; import(b)`],
+  ])("%s reaches on both paths", (_name, source) => {
+    for (const path of TAURI_PATHS) expectReach(path, source);
+  });
+
+  test("constant-bound non-Tauri imports are silent", () => {
+    expectSilent("foo.ts", 'const p = "@/platform/native" as const; import(p)');
+    expectSilent("foo.ts", 'const p = "../translation/x.json"; import(p)');
+  });
+});
+
+describe("O2 known limits", () => {
+  test.each([
+    ["parameter", "function load(s) { return import(s); }"],
+    ["defaulted parameter", 'function load(s = "./local") { return import(s); }'],
+    [
+      "alias of a defaulted parameter",
+      'function load(s = "./local") { const p = s; return import(p); }',
+    ],
+    ["interpolated Tauri template", "import(`@tauri-apps/${name}`)"],
+    ["concatenation with a name", 'import("@tauri-" + name)'],
+    ["reassigned let", `let p = "${UPDATER_SPECIFIER}"; p = "other"; import(p)`],
+  ])("%s is unresolvable on both paths", (_name, source) => {
+    for (const path of TAURI_PATHS) expectUnresolvable(path, source);
+  });
+
+  test("a locale translation import is silent", () => {
+    expectSilent("foo.ts", "import(`../translation/${locale}.json`)");
+  });
+
+  test("an unresolved relative bindings path is the generated-rule known limit", () => {
+    const source = "import(`../bindings/${name}`)";
+    expectSilent("foo.ts", source);
+    expectSilent("bindings/generated.ts", source);
+  });
+});
+
+describe("source boundary forms", () => {
   test.each([
     ["from a plugin", "foo.ts", 'import { platform } from "@tauri-apps/plugin-os"', /@tauri-apps/],
     ["from the root API", "foo.ts", 'import { event } from "@tauri-apps/api"', /@tauri-apps/],
@@ -113,12 +206,19 @@ describe("source boundary forms", () => {
     ],
     ["bare listen", "foo.ts", 'listen("x", cb)', /raw listen/],
     ["object listen", "foo.ts", "events.foo.listen(cb)", /raw \.listen/],
+    ["computed listen", "foo.ts", 'obj["listen"](cb)', /raw \.listen/],
     ["tauriEvents", "foo.ts", "tauriEvents.foo", /tauriEvents/],
     [
       "Tauri facade native import",
       "platform/tauri.ts",
       'import { anything } from "@tauri-apps/plugin-fs"',
       /@tauri-apps/,
+    ],
+    [
+      "generated typeof import",
+      "foo.ts",
+      'type T = typeof import("@/bindings/generated")',
+      /bindings\/generated/,
     ],
   ])("rejects %s", (_name, path, source, message) => {
     expectViolation(path, source, message);
@@ -145,54 +245,25 @@ describe("source boundary forms", () => {
     ],
     ["a type-only barrel import", "foo.ts", 'import type { Score } from "@/bindings"'],
     ["a WebviewWindow listener", "components/TopBar.tsx", "appWindow.onResized(() => {})"],
-    ["a variable dynamic import", "foo.ts", 'const p = "@tauri-apps/api/event"; import(p)'],
     [
       "a generated-bindings mock",
       "foo.test.ts",
       'vi.mock("@/bindings/generated", () => ({ commands: {}, events: {} }))',
     ],
+    [
+      "a generated-bindings module-promise mock",
+      "foo.test.ts",
+      'vi.mock(import("@/bindings/generated"))',
+    ],
+    ["a listen declaration", "foo.ts", "function listen() {}"],
+    ["listen in a comment", "foo.ts", "// listen(\nconst x = 1;"],
+    ["listen in a string", "foo.ts", 'const msg = "listen(cb)";'],
+    [".listen in a comment", "foo.ts", "// foo.listen(\nconst x = 1;"],
+    [".listen in a string", "foo.ts", 'const msg = ".listen(cb)";'],
+    ["tauriEvents in a comment", "foo.ts", "// tauriEvents.foo\nconst x = 1;"],
+    ["tauriEvents in a string", "foo.ts", 'const msg = "tauriEvents.foo";'],
   ])("allows %s", (_name, path, source) => {
     expect(inspectSource(path, source)).toEqual([]);
-  });
-
-  test("handles long comment gaps without catastrophic backtracking", () => {
-    const sources = [
-      "from " + "/".repeat(200) + "x",
-      "from " + "//x ".repeat(200) + "z",
-      "from " + "/*x*/".repeat(200) + "z",
-    ];
-    const startedAt = performance.now();
-
-    for (const source of sources) {
-      expect(inspectSource("components/probe.ts", source)).toEqual([]);
-    }
-    expect(performance.now() - startedAt).toBeLessThan(1000);
-  });
-
-  // The gap scans comments, so a `from` followed by an unterminated line comment
-  // scans to end of input. On a file that is one enormous line of `from//` that
-  // makes the scan quadratic: measured 3.5 ms at 6 KB, 13.6 ms at 12 KB, 75.4 ms
-  // at 29 KB, 304.9 ms at 59 KB. Line structure removes it entirely - the same
-  // 59 KB wrapped at 80 columns is 1.0 ms - and the real 57 KB
-  // src/bindings/generated.ts is 0.42 ms, with the whole gate at 0.20 s over 368
-  // files. The bound below is therefore generous on purpose: it exists to catch a
-  // return to exponential behaviour, not to pin the quadratic constant. The
-  // standing fix is a comment-masking pre-pass, which would let every gap collapse
-  // back to `\s*` - see f-20260920-20, where masking and a parser are weighed.
-  test("stays proportionate on a pathological single-line source", () => {
-    const pathological = "from//".repeat(10_000);
-    const wrapped = pathological.replace(/(.{80})/g, "$1\n");
-
-    const startedPathological = performance.now();
-    expect(inspectSource("components/probe.ts", pathological)).toEqual([]);
-    const pathologicalMs = performance.now() - startedPathological;
-
-    const startedWrapped = performance.now();
-    expect(inspectSource("components/probe.ts", wrapped)).toEqual([]);
-    const wrappedMs = performance.now() - startedWrapped;
-
-    expect(pathologicalMs).toBeLessThan(5000);
-    expect(wrappedMs).toBeLessThan(1000);
   });
 });
 
@@ -207,6 +278,15 @@ describe("native facade contract", () => {
       'export { check, type Update } from /* c */ "@tauri-apps/plugin-updater";',
     );
     expect(inspectSource("platform/native.ts", withComment)).toEqual([]);
+  });
+
+  test("accepts a commented-out listen re-export on the native facade", () => {
+    expect(
+      inspectSource(
+        "platform/native.ts",
+        `${NATIVE_SOURCE}\n// export { listen } from "@tauri-apps/api/event"\n`,
+      ),
+    ).toEqual([]);
   });
 
   test.each([
@@ -226,6 +306,11 @@ describe("native facade contract", () => {
       /export star.*plugin-fs/,
     ],
     [
+      "namespaced menu export star",
+      'export * as ns from "@tauri-apps/api/menu"',
+      /export star.*@tauri-apps\/api\/menu/,
+    ],
+    [
       "aliased invoke",
       'export { invoke as convertFileSrc } from "@tauri-apps/api/core"',
       /denylist.*invoke as convertFileSrc/,
@@ -235,6 +320,7 @@ describe("native facade contract", () => {
       'export { invoke, convertFileSrc } from "@tauri-apps/api/core"',
       /denylist.*invoke/,
     ],
+    ["dynamic plugin import", 'await import("@tauri-apps/plugin-os")', /named Tauri re-exports/],
   ])("rejects %s", (_name, source, message) => {
     expectViolation("platform/native.ts", source, message);
   });
@@ -280,6 +366,23 @@ describe("native facade contract", () => {
       ]),
     );
     expect(inspectSource("platform/native.ts", NATIVE_SOURCE)).toEqual([]);
+  });
+});
+
+describe("O6 parse failure", () => {
+  test("runTauriBoundaryCheck throws Cannot parse for broken renderer source", () => {
+    expect(() =>
+      runTauriBoundaryCheck({
+        workspaceRoot: "/fixture",
+        listFiles: () => ["src/broken.ts", "src/platform/native.ts"],
+        readFile: (path) => {
+          if (path.endsWith("broken.ts")) return "const = ;";
+          if (path.endsWith("native.ts")) return NATIVE_SOURCE;
+          if (path.endsWith("main.json")) return '{"permissions":[]}';
+          return VALID_SECURITY_CONFIG;
+        },
+      }),
+    ).toThrow(/^Cannot parse src\/broken\.ts:/);
   });
 });
 
@@ -534,5 +637,16 @@ describe("CLI", () => {
     });
     expect(result.status).not.toBe(0);
     expect(result.stderr).toMatch(/src\/leak\.ts.*@tauri-apps/);
+  });
+
+  test("exits 1 when a listed renderer file cannot be parsed", () => {
+    const root = createCliWorkspace({ nativeSource: NATIVE_SOURCE });
+    writeFileSync(join(root, "src/broken.ts"), "const = ;\n");
+    const result = spawnSync(process.execPath, [CHECKER], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/^Cannot parse src\/broken\.ts:/m);
   });
 });

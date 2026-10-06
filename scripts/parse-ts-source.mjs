@@ -10,7 +10,8 @@ export function parseTsSource(source, path) {
     // same string in both environments.
     highlightCode: false,
     parserOpts: {
-      plugins: path.endsWith(".tsx") ? ["typescript", "jsx"] : ["typescript"],
+      plugins:
+        path.endsWith(".tsx") || path.endsWith(".jsx") ? ["typescript", "jsx"] : ["typescript"],
       sourceType: "module",
     },
     babelrc: false,
@@ -65,8 +66,13 @@ function followsAlias(binding) {
  * names nothing is out of reach). It is never C5 — a cyclic chain cannot hold the facade
  * binding, because a chain that reaches an ImportSpecifier stops there. Throwing instead
  * would redden the gate on a cycle in code that has nothing to do with the facade.
+ *
+ * `options.stopAtParam` is a per-caller switch that does not move `seen`. When true, any
+ * `binding.kind === "param"` is a terminal — including a defaulted parameter, which
+ * `followsAlias` would otherwise follow. Specifier evaluation must not treat a
+ * caller-overridable default as a known value; the IPC consumer gate leaves this off.
  */
-function resolveChain(node, scope, seen = new Set()) {
+function resolveChain(node, scope, seen = new Set(), options) {
   node = unwrap(node);
   if (!node || node.type !== "Identifier") return { node, scope };
   const binding = scope.getBinding(node.name);
@@ -75,11 +81,13 @@ function resolveChain(node, scope, seen = new Set()) {
   seen.add(binding);
   const bindingNode = binding.path.node;
   if (bindingNode.type === "ImportSpecifier") return { node: bindingNode, scope, binding };
+  if (options?.stopAtParam && binding.kind === "param") return { node, scope, binding };
   if (!followsAlias(binding)) return { node, scope, binding };
   return resolveChain(
     bindingNode.type === "VariableDeclarator" ? bindingNode.init : bindingNode.right,
     binding.scope,
     seen,
+    options,
   );
 }
 

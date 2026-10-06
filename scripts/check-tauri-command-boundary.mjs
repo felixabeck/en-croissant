@@ -1,7 +1,18 @@
+// Renderer module-reference gate (AST). Known limits, stated rather than implied complete:
+// - An unresolved specifier whose known prefix rules out `@tauri-apps/` is allowed.
+//   Accidental runtime assembly of a relative path to `bindings/generated` is not
+//   flagged (the generated-rule known limit).
+// - Out of scope (deliberate evasion): `eval`, `new Function`,
+//   `globalThis["req" + "uire"]`, a destructured `const { mock } = vi`,
+//   reaching Tauri through `window.__TAURI_INTERNALS__`, and a relative path
+//   into `node_modules/@tauri-apps/…`.
+
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { traverse } from "@babel/core";
 import { isEntrypoint } from "./entrypoint.mjs";
 import { listWorkingTreeFiles } from "./working-tree-files.mjs";
+import { VALUE_WRAPPERS, parseTsSource, resolveChain } from "./parse-ts-source.mjs";
 
 // Exact required re-export set for platform/native.ts, not an optional permit
 // list. `exported` is the name in the specifier module; `local` is the name
@@ -47,47 +58,21 @@ export const NATIVE_EXPORT_DENYLIST = Object.freeze(
   ].map(Object.freeze),
 );
 
-const TAURI_SPECIFIER = String.raw`@tauri-apps/(?:api(?:/[^"']*)?|plugin-[^"']*)`;
-const SPECIFIER_GAP = String.raw`(?:\s|\/\/[^\r\n\u2028\u2029]*(?=[\r\n\u2028\u2029]|$)|\/\*(?:[^*]|\*(?!\/))*\*\/)*`;
-const FROM_SPECIFIER = new RegExp(
-  String.raw`\bfrom${SPECIFIER_GAP}["'](${TAURI_SPECIFIER})["']`,
-  "g",
-);
-const SIDE_EFFECT_SPECIFIER = new RegExp(
-  String.raw`\bimport${SPECIFIER_GAP}["'](${TAURI_SPECIFIER})["']`,
-  "g",
-);
-const TEMPLATE_TAURI_SPECIFIER = '@tauri-apps/(?:api(?:/[^"`]*)?|plugin-[^"`]*)';
-const CALL_SPECIFIER = [
-  new RegExp(
-    String.raw`\b(?:import|require|vi${SPECIFIER_GAP}\.${SPECIFIER_GAP}mock)${SPECIFIER_GAP}\(${SPECIFIER_GAP}["'](${TAURI_SPECIFIER})["']`,
-    "g",
-  ),
-  new RegExp(
-    String.raw`\b(?:import|require|vi${SPECIFIER_GAP}\.${SPECIFIER_GAP}mock)${SPECIFIER_GAP}\(${SPECIFIER_GAP}` +
-      "`(?![^`]*\\$\\{)(" +
-      TEMPLATE_TAURI_SPECIFIER +
-      ")`",
-    "g",
-  ),
-];
+const TAURI_SPECIFIER = /^@tauri-apps\/(?:api(?:\/.*)?|plugin-.+)$/;
 const GENERATED_BINDINGS_IMPORT_ALLOWLIST = new Set([
   "@tauri-apps/api/core",
   "@tauri-apps/api/event",
   "@tauri-apps/api/webviewWindow",
 ]);
-const NATIVE_EXPORT = new RegExp(
-  String.raw`\bexport\s*\{([\s\S]*?)\}${SPECIFIER_GAP}from${SPECIFIER_GAP}["'](${TAURI_SPECIFIER})["']`,
-  "g",
-);
-const NATIVE_EXPORT_STAR = new RegExp(
-  String.raw`\bexport\s*\*\s*(?:as\s+[A-Za-z_$][\w$]*)?${SPECIFIER_GAP}from${SPECIFIER_GAP}["'](${TAURI_SPECIFIER})["']`,
-  "g",
-);
-const MODULE_CALL = /\b(?:import|require)\s*\(\s*["']([^"']+)["']/g;
-const MODULE_FROM = /\bfrom\s*["']([^"']+)["']/g;
-const MODULE_SIDE_EFFECT = /\bimport\s*["']([^"']+)["']/g;
-const BINDINGS_IMPORT = /\bimport\s+(?!type\b)\{([\s\S]*?)\}\s*from\s*["']([^"']+)["']/g;
+const VI_MODULE_METHODS = new Set([
+  "mock",
+  "doMock",
+  "unmock",
+  "doUnmock",
+  "importActual",
+  "importMock",
+]);
+const STOP_AT_PARAM = Object.freeze({ stopAtParam: true });
 
 function isGeneratedBindings(specifier) {
   return /(?:^|\/)bindings\/generated(?:\.[^/]+)?$/.test(specifier);
@@ -97,33 +82,227 @@ function isBindingsBarrel(specifier) {
   return /(?:^|\/)bindings$/.test(specifier);
 }
 
-function hasMatchingSpecifier(source, patterns, predicate) {
-  return patterns.some((pattern) => {
-    pattern.lastIndex = 0;
-    return [...source.matchAll(pattern)].some((match) => predicate(match[1]));
-  });
+function isTauriSpecifier(specifier) {
+  return TAURI_SPECIFIER.test(specifier);
 }
 
-function parseNativeExports(source) {
-  NATIVE_EXPORT.lastIndex = 0;
-  return [...source.matchAll(NATIVE_EXPORT)].flatMap((match) =>
-    match[1]
-      .split(",")
-      .map((item) => item.trim())
-      .filter(Boolean)
-      .map((item) => {
-        if (/^type\s+as\s+/.test(item)) {
-          return {
-            specifier: match[2],
-            exported: "type",
-            local: item.replace(/^type\s+as\s+/, ""),
-          };
-        }
-        const declaration = item.replace(/^type\s+/, "");
-        const [exported, local = exported] = declaration.split(/\s+as\s+/);
-        return { specifier: match[2], exported, local };
-      }),
+function couldBeTauriPrefix(prefix) {
+  return prefix === "" || "@tauri-apps/".startsWith(prefix) || prefix.startsWith("@tauri-apps/");
+}
+
+function unwrap(node) {
+  while (node && VALUE_WRAPPERS.has(node.type)) node = node.expression;
+  return node;
+}
+
+function nodeSource(source, node) {
+  if (node?.start != null && node?.end != null) return source.slice(node.start, node.end);
+  return "";
+}
+
+function nodeName(node) {
+  if (node?.type === "Identifier") return node.name;
+  if (node?.type === "StringLiteral") return node.value;
+  return "";
+}
+
+function isMemberAccess(node) {
+  return node?.type === "MemberExpression" || node?.type === "OptionalMemberExpression";
+}
+
+function isDynamicImport(node) {
+  const inner = unwrap(node);
+  return Boolean(
+    inner &&
+    (inner.type === "ImportExpression" ||
+      (inner.type === "CallExpression" && inner.callee?.type === "Import")),
   );
+}
+
+function dynamicImportArgument(node) {
+  const inner = unwrap(node);
+  if (inner?.type === "ImportExpression") return inner.source;
+  if (inner?.type === "CallExpression" && inner.callee?.type === "Import")
+    return inner.arguments[0];
+  return undefined;
+}
+
+function tsImportTypeArgument(node) {
+  const argument = node.argument;
+  if (argument?.type === "StringLiteral") return argument;
+  if (argument?.type === "TSLiteralType") return argument.literal;
+  return argument;
+}
+
+function evaluateStatic(node, scope, { coerceNumber = false } = {}) {
+  node = unwrap(node);
+  if (!node) return { resolved: false, prefix: "" };
+
+  if (node.type === "StringLiteral") return { resolved: true, value: node.value };
+  if (node.type === "NumericLiteral") {
+    if (coerceNumber) return { resolved: true, value: String(node.value) };
+    return { resolved: false, prefix: "" };
+  }
+  if (node.type === "TemplateLiteral") {
+    let value = "";
+    for (let i = 0; i < node.quasis.length; i++) {
+      value += node.quasis[i].value.cooked ?? "";
+      if (i < node.expressions.length) {
+        const inner = evaluateStatic(node.expressions[i], scope, { coerceNumber: true });
+        if (!inner.resolved) return { resolved: false, prefix: value };
+        value += inner.value;
+      }
+    }
+    return { resolved: true, value };
+  }
+  if (node.type === "BinaryExpression" && node.operator === "+") {
+    const left = evaluateStatic(node.left, scope, { coerceNumber: true });
+    if (!left.resolved) return { resolved: false, prefix: left.prefix };
+    const right = evaluateStatic(node.right, scope, { coerceNumber: true });
+    if (!right.resolved) return { resolved: false, prefix: left.value };
+    return { resolved: true, value: left.value + right.value };
+  }
+  if (node.type === "Identifier") {
+    const result = resolveChain(node, scope, new Set(), STOP_AT_PARAM);
+    if (
+      result.cyclic ||
+      !result.node ||
+      result.node.type === "Identifier" ||
+      result.node.type === "ImportSpecifier" ||
+      result.binding?.kind === "param"
+    ) {
+      return { resolved: false, prefix: "" };
+    }
+    return evaluateStatic(result.node, result.scope, { coerceNumber });
+  }
+  return { resolved: false, prefix: "" };
+}
+
+function staticPropertyName(member, scope) {
+  if (!member.computed && member.property?.type === "Identifier") return member.property.name;
+  if (member.computed) {
+    const evaluated = evaluateStatic(unwrap(member.property), scope);
+    if (evaluated.resolved) return evaluated.value;
+  }
+  return undefined;
+}
+
+function isViModuleMethod(callee, scope) {
+  if (!isMemberAccess(callee)) return false;
+  const object = unwrap(callee.object);
+  if (object?.type !== "Identifier" || object.name !== "vi") return false;
+  return VI_MODULE_METHODS.has(staticPropertyName(callee, scope));
+}
+
+function analyzeSource(ast, source) {
+  const references = [];
+  const skipDynamic = new Set();
+  const flags = {
+    barrelRuntime: false,
+    rawDotListen: false,
+    rawListen: false,
+    rawTauriEvents: false,
+  };
+
+  function addReference(kind, specifierNode, path) {
+    const evaluated = evaluateStatic(specifierNode, path.scope);
+    references.push({
+      kind,
+      node: path.node,
+      specifier: evaluated.resolved ? evaluated.value : undefined,
+      prefix: evaluated.resolved ? evaluated.value : (evaluated.prefix ?? ""),
+      sourceText: nodeSource(source, specifierNode),
+      line: specifierNode?.loc?.start?.line ?? path.node?.loc?.start?.line ?? 1,
+    });
+  }
+
+  function visitImportEquals(path) {
+    const moduleReference = path.node.moduleReference;
+    if (moduleReference?.type === "TSExternalModuleReference") {
+      addReference("static", moduleReference.expression, path);
+    }
+  }
+
+  function visitCall(path) {
+    const node = path.node;
+    if (skipDynamic.has(node)) return;
+
+    const callee = unwrap(node.callee);
+
+    if (isViModuleMethod(callee, path.scope)) {
+      const first = node.arguments[0];
+      let specifierNode = first;
+      const inner = unwrap(first);
+      if (isDynamicImport(inner)) {
+        skipDynamic.add(inner);
+        specifierNode = dynamicImportArgument(inner);
+      }
+      addReference("mock", specifierNode, path);
+      return;
+    }
+
+    if (callee?.type === "Import") {
+      addReference("dynamic", node.arguments[0], path);
+      return;
+    }
+
+    if (callee?.type === "Identifier" && callee.name === "require") {
+      addReference("dynamic", node.arguments[0], path);
+      return;
+    }
+
+    if (isMemberAccess(callee) && staticPropertyName(callee, path.scope) === "listen") {
+      flags.rawDotListen = true;
+    } else if (callee?.type === "Identifier" && callee.name === "listen") {
+      flags.rawListen = true;
+    }
+  }
+
+  function visitTauriEvents(node) {
+    const object = unwrap(node.object);
+    if (object?.type === "Identifier" && object.name === "tauriEvents") {
+      flags.rawTauriEvents = true;
+    }
+  }
+
+  traverse(ast, {
+    ImportDeclaration(path) {
+      addReference("static", path.node.source, path);
+      const declaration = path.node;
+      if (declaration.importKind === "type") return;
+      const spec = declaration.source?.value;
+      if (typeof spec !== "string" || !isBindingsBarrel(spec)) return;
+      for (const specifier of declaration.specifiers) {
+        if (specifier.type !== "ImportSpecifier" || specifier.importKind === "type") continue;
+        const imported = nodeName(specifier.imported);
+        if (imported === "commands" || imported === "events") flags.barrelRuntime = true;
+      }
+    },
+    ExportNamedDeclaration(path) {
+      if (path.node.source) addReference("static", path.node.source, path);
+    },
+    ExportAllDeclaration(path) {
+      if (path.node.source) addReference("static", path.node.source, path);
+    },
+    TSImportEqualsDeclaration: visitImportEquals,
+    TSImportType(path) {
+      addReference("type-query", tsImportTypeArgument(path.node), path);
+    },
+    ImportExpression(path) {
+      if (skipDynamic.has(path.node)) return;
+      addReference("dynamic", path.node.source, path);
+    },
+    CallExpression: visitCall,
+    OptionalCallExpression: visitCall,
+    MemberExpression(path) {
+      visitTauriEvents(path.node);
+    },
+    OptionalMemberExpression(path) {
+      visitTauriEvents(path.node);
+    },
+  });
+
+  return { references, flags };
 }
 
 function tripleKey({ specifier, exported, local }) {
@@ -134,9 +313,38 @@ function describeTriple({ specifier, exported, local }) {
   return `${specifier}:${exported}${local === exported ? "" : ` as ${local}`}`;
 }
 
-function inspectNativeSource(source, allowlist, denylist) {
+function inspectNativeSource(references, allowlist, denylist) {
   const violations = [];
-  const actual = parseNativeExports(source);
+  const actual = [];
+
+  for (const ref of references) {
+    if (ref.specifier === undefined || !isTauriSpecifier(ref.specifier)) continue;
+    const node = ref.node;
+    if (node.type === "ExportAllDeclaration") {
+      violations.push(`native export star is forbidden: ${ref.specifier}`);
+      continue;
+    }
+    if (node.type === "ExportNamedDeclaration" && node.source) {
+      const hasNamespace = node.specifiers.some(
+        (specifier) => specifier.type === "ExportNamespaceSpecifier",
+      );
+      if (hasNamespace) {
+        violations.push(`native export star is forbidden: ${ref.specifier}`);
+        continue;
+      }
+      for (const specifier of node.specifiers) {
+        if (specifier.type !== "ExportSpecifier") continue;
+        actual.push({
+          specifier: ref.specifier,
+          exported: nodeName(specifier.local),
+          local: nodeName(specifier.exported),
+        });
+      }
+      continue;
+    }
+    violations.push("native facade may only use named Tauri re-exports");
+  }
+
   const actualKeys = new Set(actual.map(tripleKey));
   const allowedKeys = new Set(allowlist.map(tripleKey));
 
@@ -160,34 +368,12 @@ function inspectNativeSource(source, allowlist, denylist) {
     }
   }
 
-  NATIVE_EXPORT_STAR.lastIndex = 0;
-  for (const match of source.matchAll(NATIVE_EXPORT_STAR)) {
-    violations.push(`native export star is forbidden: ${match[1]}`);
-  }
-
-  const withoutNamedExports = source.replace(NATIVE_EXPORT, "").replace(NATIVE_EXPORT_STAR, "");
-  if (
-    hasMatchingSpecifier(
-      withoutNamedExports,
-      [FROM_SPECIFIER, SIDE_EFFECT_SPECIFIER, ...CALL_SPECIFIER],
-      () => true,
-    )
-  ) {
-    violations.push("native facade may only use named Tauri re-exports");
+  for (const ref of references) {
+    if (ref.specifier === undefined && couldBeTauriPrefix(ref.prefix)) {
+      violations.push("native facade may only use named Tauri re-exports");
+    }
   }
   return violations;
-}
-
-function importsRuntimeBindings(source) {
-  BINDINGS_IMPORT.lastIndex = 0;
-  return [...source.matchAll(BINDINGS_IMPORT)].some((match) => {
-    if (!isBindingsBarrel(match[2])) return false;
-    return match[1].split(",").some((item) => {
-      const declaration = item.trim();
-      if (/^type\b/.test(declaration)) return false;
-      return /^(?:commands|events)\b/.test(declaration);
-    });
-  });
 }
 
 export function inspectSource(
@@ -195,40 +381,49 @@ export function inspectSource(
   source,
   { allowlist = NATIVE_EXPORT_ALLOWLIST, denylist = NATIVE_EXPORT_DENYLIST } = {},
 ) {
+  const ast = parseTsSource(source, path);
+  const { references, flags } = analyzeSource(ast, source);
   const violations = [];
   const isTauriFacade = path === "platform/tauri.ts";
   const isNativeFacade = path === "platform/native.ts";
   const isGeneratedBindingsPath = path === "bindings/generated.ts";
 
   if (isNativeFacade) {
-    violations.push(...inspectNativeSource(source, allowlist, denylist));
-  } else if (
-    hasMatchingSpecifier(
-      source,
-      [FROM_SPECIFIER, SIDE_EFFECT_SPECIFIER, ...CALL_SPECIFIER],
-      (specifier) =>
-        !isGeneratedBindingsPath || !GENERATED_BINDINGS_IMPORT_ALLOWLIST.has(specifier),
-    )
-  ) {
-    violations.push("direct @tauri-apps module access");
+    violations.push(...inspectNativeSource(references, allowlist, denylist));
+  } else {
+    for (const ref of references) {
+      if (ref.specifier === undefined || !isTauriSpecifier(ref.specifier)) continue;
+      if (
+        isGeneratedBindingsPath &&
+        ref.kind === "static" &&
+        GENERATED_BINDINGS_IMPORT_ALLOWLIST.has(ref.specifier)
+      ) {
+        continue;
+      }
+      violations.push("direct @tauri-apps module access");
+    }
+  }
+
+  for (const ref of references) {
+    if (ref.specifier !== undefined || !couldBeTauriPrefix(ref.prefix)) continue;
+    violations.push(
+      `module specifier is not statically resolvable: ${ref.sourceText} (line ${ref.line})`,
+    );
   }
 
   if (!isTauriFacade && !isGeneratedBindingsPath) {
-    if (
-      hasMatchingSpecifier(
-        source,
-        [MODULE_FROM, MODULE_SIDE_EFFECT, MODULE_CALL],
-        isGeneratedBindings,
-      )
-    ) {
-      violations.push("direct bindings/generated module access");
+    for (const ref of references) {
+      if (ref.kind === "mock" || ref.specifier === undefined) continue;
+      if (isGeneratedBindings(ref.specifier)) {
+        violations.push("direct bindings/generated module access");
+      }
     }
-    if (importsRuntimeBindings(source)) {
+    if (flags.barrelRuntime) {
       violations.push("runtime commands/events import from bindings barrel");
     }
-    if (/\.listen\s*\(/.test(source)) violations.push("raw .listen() call");
-    if (/\btauriEvents\s*\./.test(source)) violations.push("raw tauriEvents access");
-    if (/(?:^|[^\w.])listen\s*\(/m.test(source)) violations.push("raw listen() call");
+    if (flags.rawDotListen) violations.push("raw .listen() call");
+    if (flags.rawTauriEvents) violations.push("raw tauriEvents access");
+    if (flags.rawListen) violations.push("raw listen() call");
   }
 
   return [...new Set(violations)];
@@ -302,6 +497,10 @@ function readJsonFile(readFile, path) {
   }
 }
 
+function errorDetail(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export function runTauriBoundaryCheck({
   workspaceRoot = process.cwd(),
   listFiles = (root) => listWorkingTreeFiles({ workspaceRoot: root }),
@@ -321,8 +520,13 @@ export function runTauriBoundaryCheck({
     }
     const sourcePath = listedPath.replace(/^src\//, "");
     if (sourcePath === "platform/native.ts") nativeInspected = true;
-    for (const message of inspectSource(sourcePath, source)) {
-      violations.push(`${listedPath}: ${message}`);
+    try {
+      for (const message of inspectSource(sourcePath, source)) {
+        violations.push(`${listedPath}: ${message}`);
+      }
+    } catch (error) {
+      const detail = errorDetail(error).replace(`${sourcePath}: `, "");
+      throw new Error(`Cannot parse ${listedPath}: ${detail}`);
     }
   }
   if (!nativeInspected) {
