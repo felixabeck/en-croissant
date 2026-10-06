@@ -2908,8 +2908,24 @@ fn delete_database_blocking(
 
 #[cfg(test)]
 std::thread_local! {
+    static UNLINK_PRIMARY_AFTER_IDENTITY_PROBE_HOOK:
+        std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
     static UNLINK_SIDECAR_AFTER_IDENTITY_PROBE_HOOK:
         std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn set_unlink_primary_after_identity_probe_hook(hook: Option<Box<dyn FnOnce()>>) {
+    UNLINK_PRIMARY_AFTER_IDENTITY_PROBE_HOOK.with(|slot| *slot.borrow_mut() = hook);
+}
+
+#[cfg(test)]
+fn run_unlink_primary_after_identity_probe_hook() {
+    UNLINK_PRIMARY_AFTER_IDENTITY_PROBE_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
 }
 
 #[cfg(test)]
@@ -2990,8 +3006,9 @@ fn inject_unlink_probe_fault<T, E: From<std::io::Error>>(
 /// `PermissionDenied` at any probe stage keeps either index name and deletion continues.
 /// A preferred file whose header and source are not a decodable archive is removed;
 /// the same defect on the legacy name keeps that file.
-/// An Ok result means the primary is gone; any retained error must be reported
-/// after cache and registry cleanup, including a later SQLite sidecar failure.
+/// An Ok result means the primary was removed or was already missing at unlink;
+/// any retained error must be reported after cache and registry cleanup, including
+/// a later SQLite sidecar failure.
 fn unlink_database_files(
     target: &DatabaseFileTarget,
     expected_source: &IndexSource,
@@ -3128,7 +3145,10 @@ fn unlink_database_files(
         )?;
     }
 
-    let primary_result = remove_entry_at(target.parent(), target.leaf(), target.identity(), false);
+    #[cfg(test)]
+    run_unlink_primary_after_identity_probe_hook();
+    let mut primary_result =
+        remove_entry_at(target.parent(), target.leaf(), target.identity(), false);
     match primary_result {
         Ok(()) => unlinked += 1,
         Err(Error::CommittedDurabilityUncertain(_)) => {
@@ -3142,6 +3162,7 @@ fn unlink_database_files(
             }
             return Err(Error::Conflict("database changed before deletion".into()));
         }
+        Err(ref error) if error.is_missing_entry() => primary_result = Ok(()),
         Err(error) => {
             if let Some(sidecar_error) = durability {
                 log::warn!(
@@ -11572,6 +11593,107 @@ mod deletion_tests {
     use super::*;
     use std::path::Path;
     use tauri::Manager;
+
+    #[test]
+    fn deletion_missing_primary_after_identity_probe_runs_cache_and_registry_cleanup() {
+        assert_deletion_missing_primary_after_identity_probe(false);
+    }
+
+    #[test]
+    fn deletion_missing_primary_before_release_failure_counts_only_removed_sidecars() {
+        assert_deletion_missing_primary_after_identity_probe(true);
+    }
+
+    fn assert_deletion_missing_primary_after_identity_probe(fail_release: bool) {
+        let (dir, app, handle, database) = blocking_database_case();
+        let state = app.state::<AppState>();
+        let cache_key = seed_search_cache_for_database(&app, &database);
+        let index = get_index_path(&database);
+        let wal = database.with_extension("db3-wal");
+        let shm = database.with_extension("db3-shm");
+        std::fs::write(&wal, b"").unwrap();
+        std::fs::write(&shm, b"").unwrap();
+        assert!(index.exists());
+        if fail_release {
+            state.database_repository.fail_next_deletion_release();
+        }
+
+        let result = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let database_for_hook = database.clone();
+                    set_unlink_primary_after_identity_probe_hook(Some(Box::new(move || {
+                        std::fs::remove_file(database_for_hook).unwrap();
+                    })));
+                    delete_database_blocking(
+                        &state.pgn_path_authority,
+                        &state.database_repository,
+                        &state.search_cache,
+                        handle.clone(),
+                        &CancellationToken::new(),
+                    )
+                })
+                .join()
+                .unwrap()
+        });
+        if fail_release {
+            // This call removes the preferred index, WAL and SHM, but not the primary.
+            assert!(
+                matches!(result, Err(Error::PartialRemoval { removed_entries: 3, cause })
+                if matches!(*cause, Error::Conflict(ref message)
+                    if message == "injected database deletion release failure"))
+            );
+        } else {
+            assert!(result.is_ok(), "{result:?}");
+        }
+        assert!(!database.exists());
+        assert!(!index.exists());
+        assert!(!wal.exists());
+        assert!(!shm.exists());
+        assert!(state.search_cache.get_result(&cache_key).is_none());
+        assert_database_registry_entry_removed(dir.path(), &handle);
+    }
+
+    #[test]
+    fn deletion_release_failure_counts_primary_index_and_sqlite_sidecars() {
+        let (dir, app, handle, database) = blocking_database_case();
+        let state = app.state::<AppState>();
+        let cache_key = seed_search_cache_for_database(&app, &database);
+        let index = get_index_path(&database);
+        let wal = database.with_extension("db3-wal");
+        let shm = database.with_extension("db3-shm");
+        std::fs::write(&wal, b"").unwrap();
+        std::fs::write(&shm, b"").unwrap();
+        assert!(index.exists());
+        state.database_repository.fail_next_deletion_release();
+
+        let result = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    delete_database_blocking(
+                        &state.pgn_path_authority,
+                        &state.database_repository,
+                        &state.search_cache,
+                        handle.clone(),
+                        &CancellationToken::new(),
+                    )
+                })
+                .join()
+                .unwrap()
+        });
+        // The primary, preferred index, WAL and SHM are the fixture's four entries.
+        assert!(
+            matches!(result, Err(Error::PartialRemoval { removed_entries: 4, cause })
+            if matches!(*cause, Error::Conflict(ref message)
+                if message == "injected database deletion release failure"))
+        );
+        assert!(!database.exists());
+        assert!(!index.exists());
+        assert!(!wal.exists());
+        assert!(!shm.exists());
+        assert!(state.search_cache.get_result(&cache_key).is_none());
+        assert_database_registry_entry_removed(dir.path(), &handle);
+    }
 
     #[test]
     fn deletion_release_failure_after_primary_runs_cache_and_registry_cleanup() {
