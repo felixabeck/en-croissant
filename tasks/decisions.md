@@ -5974,7 +5974,7 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Chosen:** when the primary entry is gone — unlinked by this call or already missing. Every later failure, including the exclusive-lease release in `DatabaseRepository::delete_exclusive_inner`, is post-commit, and cache invalidation and registry removal still run.
 * **Rejected:** committed only when the lease closure returned `Ok` (the previous behaviour: a lease-release failure after the unlink skipped registry cleanup, in the puzzle tail also cache invalidation, and reported a raw error).
 * **Reason:** the finding's symptom (a user told nothing happened to a database that is gone) and `.claude/rules/async-resource-invariants.md` (cleanup on every exit path). Reversal path: return the closure's result again instead of handing the `CommittedRemoval` out.
-* **Decided by:** Claude Code, drain session eed08af5-58ff-40a1-9aa7-f2b51f9b1321 (drain run 0ab86bf9-7e6e-42ce-b073-c494cb240f4f), full auto, adopted reviewed plan tasks/plans/2026-10-06-f-20260917-08-committed-removal.md · **Superseded-by:** -
+* **Decided by:** Claude Code, drain session eed08af5-58ff-40a1-9aa7-f2b51f9b1321 (drain run 0ab86bf9-7e6e-42ce-b073-c494cb240f4f), full auto, adopted reviewed plan tasks/plans/2026-10-06-f-20260917-08-committed-removal.md · **Superseded-by:** d-20261007-01
 
 ### d-20261006-25 — What does a puzzle deletion count when the puzzle file was already missing?
 
@@ -5984,7 +5984,7 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Rejected:** the previous constant 1.
 * **Reason:** the count is shown to the user in the `PartialRemoval` message and must be true; `CommittedRemoval` requires the site to supply it. Reversal path: seed the count with 1 in the already-missing arm.
 * **Decided by:** Claude Code, drain session eed08af5-58ff-40a1-9aa7-f2b51f9b1321 (drain run 0ab86bf9-7e6e-42ce-b073-c494cb240f4f), full auto, adopted reviewed plan tasks/plans/2026-10-06-f-20260917-08-committed-removal.md · **Superseded-by:** -
-<!-- ledger-meta {"command":"record-decision","effect_lines":35,"effect_sha256":"a51574958d20a635893d06a50e27c6df1267094dabfd0dc9163c4c4dc4b93758","input_sha256":"5f94b42a2ae64e085864d96a1d35e76fa6c0ec9bc25289330c1de27a5290c216","kind":"mutation-receipt","operation":"e13031795389fda923ba917e3fe257c69fadee125fe91d6a1738767065f98c4f","options":{"section":null},"request_id_sha256":null,"results":["d-20261006-22","d-20261006-23","d-20261006-24","d-20261006-25"],"target":"decisions-ledger","v":1} -->
+<!-- ledger-meta {"command":"record-decision","effect_lines":35,"effect_sha256":"1f7c4f209c7a71d61c907024f240e0e0ec4e076a8f36cccef260555aeb74202d","input_sha256":"5f94b42a2ae64e085864d96a1d35e76fa6c0ec9bc25289330c1de27a5290c216","kind":"mutation-receipt","operation":"e13031795389fda923ba917e3fe257c69fadee125fe91d6a1738767065f98c4f","options":{"section":null},"request_id_sha256":null,"results":["d-20261006-22","d-20261006-23","d-20261006-24","d-20261006-25"],"target":"decisions-ledger","v":1} -->
 
 ## 2026-10-07 — recorded through the decisions lock
 
