@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     db::{puzzle_themes, puzzles, themes, DatabaseIdentity, DatabaseRepository, Puzzle},
-    error::Error,
+    error::{CommittedRemoval, Error},
     file_workspace::map_picker_join,
     infra::blocking::BLOCKING_GATEWAY,
 };
@@ -630,87 +630,96 @@ async fn delete_puzzle_database_resolved(
     puzzle_cache: Arc<tokio::sync::Mutex<PuzzleCache>>,
     cancellation: tokio_util::sync::CancellationToken,
 ) -> Result<(), Error> {
-    let delete_resolved =
-        |resolved: &crate::infra::path_authority::ResolvedPath| -> Result<Option<Error>, Error> {
-            match resolved.delete_puzzle_database() {
-                Ok(()) => Ok(None),
-                Err(error) if error.is_missing_entry() => Ok(None),
-                Err(error @ Error::CommittedDurabilityUncertain(_)) => Ok(Some(error)),
-                Err(error) => Err(error),
-            }
-        };
     let deleted_path = path.clone();
-    let deletion_and_cleanup = BLOCKING_GATEWAY
+    let (committed_removal, canonical_path) = BLOCKING_GATEWAY
         .spawn_cancellable(cancellation, move |token| {
-            let (canonical_path, deletion_error) = match puzzle_binding(&resolved) {
-                Ok((target, _)) => {
-                    let canonical_path = target.path().to_owned();
-                    let deletion_error =
-                        match repository.delete_exclusive_cancellable(&target, token, || {
-                            match delete_resolved(&resolved)? {
-                                Some(error) => Err(error),
-                                None => Ok(()),
-                            }
-                        }) {
-                            Ok(()) => None,
-                            Err(error @ Error::CommittedDurabilityUncertain(_)) => Some(error),
-                            Err(error) => return Err(error),
-                        };
-                    (Some(canonical_path), deletion_error)
-                }
-                Err(error) if error.is_missing_entry() => {
-                    if token.is_cancelled() {
-                        return Err(Error::Cancellation);
-                    }
-                    (None, delete_resolved(&resolved)?)
-                }
-                Err(error) => return Err(error),
-            };
-            let cleanup = authority
-                .lock()
-                .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))
-                .and_then(|mut authority| {
-                    authority
-                        .as_mut()
-                        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-                        .remove_puzzle_database(&file)
-                });
-            Ok::<(Result<(), Error>, Option<PathBuf>, Option<Error>), Error>((
-                cleanup,
-                canonical_path,
-                deletion_error,
-            ))
+            delete_puzzle_database_blocking(&resolved, &path, &file, &repository, &authority, token)
         })
-        .await;
-    let (registry_cleanup, canonical_path, deletion_error) = match deletion_and_cleanup {
-        Ok(result) => result,
+        .await?;
+    finish_puzzle_database_deletion(
+        committed_removal,
+        &deleted_path,
+        canonical_path,
+        &puzzle_cache,
+    )
+    .await
+}
+
+fn delete_puzzle_database_blocking(
+    resolved: &crate::infra::path_authority::ResolvedPath,
+    path: &Path,
+    file: &crate::infra::path_authority::PathRef,
+    repository: &DatabaseRepository,
+    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    token: &CancellationToken,
+) -> Result<(CommittedRemoval, Option<PathBuf>), Error> {
+    let delete_resolved = || match resolved.delete_puzzle_database() {
+        Ok(()) => Ok(CommittedRemoval::new(1, None)),
+        Err(error) if error.is_missing_entry() => Ok(CommittedRemoval::new(0, None)),
+        Err(error @ Error::CommittedDurabilityUncertain(_)) => {
+            Ok(CommittedRemoval::new(1, Some(error)))
+        }
+        Err(error) => Err(error),
+    };
+    let (mut committed_removal, canonical_path) = match puzzle_binding(resolved) {
+        Ok((target, _)) => {
+            let mut committed_removal = None;
+            let unlink_result = repository.delete_exclusive_cancellable(&target, token, || {
+                committed_removal = Some(delete_resolved()?);
+                Ok(())
+            });
+            let Some(mut committed_removal) = committed_removal else {
+                unlink_result?;
+                return Err(Error::Conflict(
+                    "puzzle deletion completed without a committed outcome".into(),
+                ));
+            };
+            committed_removal.record(
+                unlink_result,
+                "puzzle database lease release",
+                target.path(),
+            );
+            (committed_removal, Some(target.path().to_owned()))
+        }
+        Err(error) if error.is_missing_entry() => {
+            if token.is_cancelled() {
+                return Err(Error::Cancellation);
+            }
+            (delete_resolved()?, None)
+        }
         Err(error) => return Err(error),
     };
+    let registry_result = authority
+        .lock()
+        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))
+        .and_then(|mut authority| {
+            authority
+                .as_mut()
+                .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
+                .remove_puzzle_database(file)
+        });
+    committed_removal.record(
+        registry_result,
+        "puzzle database registry cleanup",
+        canonical_path.as_deref().unwrap_or(path),
+    );
+    Ok((committed_removal, canonical_path))
+}
+
+async fn finish_puzzle_database_deletion(
+    committed_removal: CommittedRemoval,
+    deleted_path: &Path,
+    canonical_path: Option<PathBuf>,
+    puzzle_cache: &tokio::sync::Mutex<PuzzleCache>,
+) -> Result<(), Error> {
     let mut cache = puzzle_cache.lock().await;
-    cache.invalidate_database(&deleted_path);
+    cache.invalidate_database(deleted_path);
     if let Some(canonical_path) = canonical_path.as_ref() {
-        if canonical_path != &deleted_path {
+        if canonical_path != deleted_path {
             cache.invalidate_database(canonical_path);
         }
     }
-    if let Some(deletion_error) = deletion_error {
-        if let Err(cleanup_error) = registry_cleanup {
-            let database_path = canonical_path.as_deref().unwrap_or(&deleted_path);
-            log::warn!(
-                "puzzle database registry cleanup failed after durability uncertainty for {}: {cleanup_error}",
-                database_path.display()
-            );
-        }
-        return Err(deletion_error);
-    }
-    match registry_cleanup {
-        Ok(()) => Ok(()),
-        Err(error @ Error::CommittedDurabilityUncertain(_)) => Err(error),
-        Err(error) => Err(Error::PartialRemoval {
-            removed_entries: 1,
-            cause: Box::new(error),
-        }),
-    }
+    committed_removal.finish()
 }
 
 #[tauri::command]
@@ -885,29 +894,19 @@ mod workspace_tests {
     }
 }
 
-#[cfg(all(test, unix))]
-mod tests {
-    use std::time::Duration;
-
+#[cfg(test)]
+mod deletion_tests {
+    use super::*;
     use diesel::connection::SimpleConnection;
 
-    use super::*;
-    use tauri::Manager;
-
-    async fn yield_until(mut ready: impl FnMut() -> bool) {
-        while !ready() {
-            tokio::task::yield_now().await;
-        }
-    }
-
-    fn puzzle_database(
+    pub(super) fn puzzle_database(
         name: &str,
         rating: i32,
     ) -> (tempfile::TempDir, PathBuf, DatabaseRepository) {
         write_puzzle_database(tempfile::tempdir().unwrap(), Path::new(name), rating)
     }
 
-    fn write_puzzle_database(
+    pub(super) fn write_puzzle_database(
         directory: tempfile::TempDir,
         relative: &Path,
         rating: i32,
@@ -921,7 +920,7 @@ mod tests {
         let path = directory.path().join(relative);
         let repository = DatabaseRepository::default();
         let mut database_connection = repository
-            .schema_specific_connection(&crate::db::test_target(&path))
+            .initialization_connection(&crate::db::test_target(&path), None)
             .unwrap();
         let db = &mut *database_connection;
         db.batch_execute(
@@ -944,21 +943,22 @@ mod tests {
         (directory, path, repository)
     }
 
-    struct PuzzleDeletionFixture {
-        _directory: tempfile::TempDir,
-        path: PathBuf,
-        repository: Arc<DatabaseRepository>,
-        authority: Arc<std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>>,
-        cache: Arc<tokio::sync::Mutex<PuzzleCache>>,
-        handle: crate::infra::path_authority::PathRef,
-        resolved: crate::infra::path_authority::ResolvedPath,
+    pub(super) struct PuzzleDeletionFixture {
+        pub(super) _directory: tempfile::TempDir,
+        pub(super) path: PathBuf,
+        pub(super) repository: Arc<DatabaseRepository>,
+        pub(super) authority:
+            Arc<std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>>,
+        pub(super) cache: Arc<tokio::sync::Mutex<PuzzleCache>>,
+        pub(super) handle: crate::infra::path_authority::PathRef,
+        pub(super) resolved: crate::infra::path_authority::ResolvedPath,
     }
 
-    fn puzzle_deletion_fixture(name: &str) -> PuzzleDeletionFixture {
+    pub(super) fn puzzle_deletion_fixture(name: &str) -> PuzzleDeletionFixture {
         puzzle_deletion_fixture_at(Path::new(name))
     }
 
-    fn puzzle_deletion_fixture_at(relative: &Path) -> PuzzleDeletionFixture {
+    pub(super) fn puzzle_deletion_fixture_at(relative: &Path) -> PuzzleDeletionFixture {
         let (directory, path, repository) =
             write_puzzle_database(tempfile::tempdir().unwrap(), relative, 1200);
         let registry = directory.path().join("registry.json");
@@ -1004,7 +1004,7 @@ mod tests {
         }
     }
 
-    fn authority_contains(
+    pub(super) fn authority_contains(
         authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
         handle: &crate::infra::path_authority::PathRef,
     ) -> bool {
@@ -1016,6 +1016,388 @@ mod tests {
             .descriptors()
             .iter()
             .any(|descriptor| descriptor.id == *handle)
+    }
+
+    #[test]
+    fn confirmed_puzzle_deletion_releases_authority_for_same_path_recreation() {
+        let (directory, path, _repository) = puzzle_database("recreated.db3", 1200);
+        let registry = directory.path().join("registry.json");
+        let operations = vec![
+            crate::infra::path_authority::PathOperation::PuzzleRead,
+            crate::infra::path_authority::PathOperation::PuzzleDelete,
+        ];
+        let mut authority =
+            crate::infra::path_authority::PathAuthority::open(registry, vec![]).unwrap();
+        let original = authority
+            .get_or_create_persistent_file(&path, "Puzzle database", operations.clone())
+            .unwrap()
+            .id;
+        std::fs::remove_file(&path).unwrap();
+        authority.remove_puzzle_database(&original).unwrap();
+        std::fs::write(&path, b"replacement database bytes").unwrap();
+        let replacement = authority
+            .get_or_create_persistent_file(&path, "Puzzle database", operations)
+            .unwrap()
+            .id;
+        assert_ne!(original, replacement);
+    }
+
+    #[test]
+    fn command_flow_deletes_file_invalidates_cache_and_prunes_authority() {
+        let PuzzleDeletionFixture {
+            _directory,
+            path,
+            repository,
+            authority,
+            cache,
+            handle,
+            resolved,
+        } = puzzle_deletion_fixture("ordinary-delete.db3");
+
+        let result = tauri::async_runtime::block_on(delete_puzzle_database_resolved(
+            resolved,
+            path.clone(),
+            handle.clone(),
+            repository,
+            Arc::clone(&authority),
+            Arc::clone(&cache),
+            tokio_util::sync::CancellationToken::new(),
+        ));
+
+        assert!(result.is_ok(), "ordinary deletion failed: {result:?}");
+        assert!(!path.exists());
+        assert!(tauri::async_runtime::block_on(cache.lock()).key.is_none());
+        assert!(!authority_contains(&authority, &handle));
+    }
+
+    #[test]
+    fn command_flow_pre_delete_identity_failure_preserves_file_cache_and_authority() {
+        let PuzzleDeletionFixture {
+            _directory,
+            path,
+            repository,
+            authority,
+            cache,
+            handle,
+            resolved,
+        } = puzzle_deletion_fixture("replaced-before-delete.db3");
+        let replacement = path.with_extension("replacement");
+        std::fs::write(&replacement, b"replacement puzzle database").unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::rename(&replacement, &path).unwrap();
+
+        let result = tauri::async_runtime::block_on(delete_puzzle_database_resolved(
+            resolved,
+            path.clone(),
+            handle.clone(),
+            repository,
+            Arc::clone(&authority),
+            Arc::clone(&cache),
+            tokio_util::sync::CancellationToken::new(),
+        ));
+
+        assert!(matches!(result, Err(Error::Conflict(_))));
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"replacement puzzle database"
+        );
+        assert!(tauri::async_runtime::block_on(cache.lock()).key.is_some());
+        assert!(authority_contains(&authority, &handle));
+    }
+
+    #[test]
+    fn command_flow_treats_already_missing_file_as_deleted() {
+        let PuzzleDeletionFixture {
+            _directory,
+            path,
+            repository,
+            authority,
+            cache,
+            handle,
+            resolved,
+        } = puzzle_deletion_fixture("already-missing.db3");
+        std::fs::remove_file(&path).unwrap();
+
+        let result = tauri::async_runtime::block_on(delete_puzzle_database_resolved(
+            resolved,
+            path.clone(),
+            handle.clone(),
+            repository,
+            Arc::clone(&authority),
+            Arc::clone(&cache),
+            tokio_util::sync::CancellationToken::new(),
+        ));
+
+        assert!(result.is_ok(), "idempotent deletion failed: {result:?}");
+        assert!(!path.exists());
+        assert!(tauri::async_runtime::block_on(cache.lock()).key.is_none());
+        assert!(!authority_contains(&authority, &handle));
+    }
+
+    #[test]
+    fn command_flow_invalidates_cache_after_delete_even_when_authority_cleanup_fails() {
+        let PuzzleDeletionFixture {
+            _directory,
+            path,
+            repository,
+            authority,
+            cache,
+            handle,
+            resolved,
+        } = puzzle_deletion_fixture("cleanup-failure.db3");
+        let poison = Arc::clone(&authority);
+        assert!(std::thread::spawn(move || {
+            let _guard = poison.lock().unwrap();
+            panic!("poison authority cleanup lock");
+        })
+        .join()
+        .is_err());
+        let result = tauri::async_runtime::block_on(delete_puzzle_database_resolved(
+            resolved,
+            path.clone(),
+            handle.clone(),
+            repository,
+            Arc::clone(&authority),
+            Arc::clone(&cache),
+            tokio_util::sync::CancellationToken::new(),
+        ));
+
+        assert!(matches!(
+            result,
+            Err(Error::PartialRemoval {
+                removed_entries: 1,
+                cause,
+            }) if matches!(*cause, Error::Conflict(_))
+        ));
+        assert!(!path.exists(), "physical deletion must remain committed");
+        assert!(tauri::async_runtime::block_on(cache.lock()).key.is_none());
+        assert!(authority_contains(&authority, &handle));
+    }
+
+    #[test]
+    fn command_flow_unlinks_via_retained_parent_when_the_parent_path_is_renamed() {
+        let fixture = puzzle_deletion_fixture_at(Path::new("nested/parent-rename.db3"));
+        let nested = fixture.path.parent().unwrap().to_owned();
+        let moved = nested.with_file_name("moved");
+        std::fs::rename(&nested, &moved).unwrap();
+        let moved_file = moved.join(fixture.path.file_name().unwrap());
+        assert!(moved_file.exists());
+
+        let result = tauri::async_runtime::block_on(delete_puzzle_database_resolved(
+            fixture.resolved,
+            fixture.path.clone(),
+            fixture.handle.clone(),
+            fixture.repository,
+            Arc::clone(&fixture.authority),
+            Arc::clone(&fixture.cache),
+            tokio_util::sync::CancellationToken::new(),
+        ));
+
+        assert!(
+            result.is_ok(),
+            "retained-parent unlink after parent rename failed: {result:?}"
+        );
+        assert!(!moved_file.exists());
+        assert!(tauri::async_runtime::block_on(fixture.cache.lock())
+            .key
+            .is_none());
+        assert!(!authority_contains(&fixture.authority, &fixture.handle));
+    }
+
+    #[test]
+    fn command_flow_invalidates_canonical_cache_when_the_caller_path_differs() {
+        let fixture = puzzle_deletion_fixture("canon-diff.db3");
+        let canonical = fixture.path.canonicalize().unwrap();
+        let aliased = canonical.with_file_name("not-the-canonical-leaf.db3");
+        assert_ne!(
+            aliased, canonical,
+            "the caller path must differ from the minted canonical path"
+        );
+
+        let result = tauri::async_runtime::block_on(delete_puzzle_database_resolved(
+            fixture.resolved,
+            aliased,
+            fixture.handle.clone(),
+            fixture.repository,
+            Arc::clone(&fixture.authority),
+            Arc::clone(&fixture.cache),
+            tokio_util::sync::CancellationToken::new(),
+        ));
+
+        assert!(result.is_ok(), "aliased-path deletion failed: {result:?}");
+        assert!(!canonical.exists());
+        assert!(tauri::async_runtime::block_on(fixture.cache.lock())
+            .key
+            .is_none());
+        assert!(!authority_contains(&fixture.authority, &fixture.handle));
+    }
+
+    #[test]
+    fn command_flow_deletion_release_failure_runs_cache_and_registry_cleanup() {
+        let fixture = puzzle_deletion_fixture("release-failure.db3");
+        fixture.repository.fail_next_deletion_release();
+
+        let result = tauri::async_runtime::block_on(delete_puzzle_database_resolved(
+            fixture.resolved,
+            fixture.path.clone(),
+            fixture.handle.clone(),
+            fixture.repository,
+            Arc::clone(&fixture.authority),
+            Arc::clone(&fixture.cache),
+            CancellationToken::new(),
+        ));
+
+        assert!(
+            matches!(result, Err(Error::PartialRemoval { removed_entries: 1, cause })
+            if matches!(*cause, Error::Conflict(ref message)
+                if message == "injected database deletion release failure"))
+        );
+        assert!(!fixture.path.exists());
+        assert!(tauri::async_runtime::block_on(fixture.cache.lock())
+            .key
+            .is_none());
+        assert!(!authority_contains(&fixture.authority, &fixture.handle));
+    }
+
+    #[test]
+    fn command_flow_already_missing_file_registry_failure_counts_zero_removed_entries() {
+        let fixture = puzzle_deletion_fixture("missing-cleanup-failure.db3");
+        std::fs::remove_file(&fixture.path).unwrap();
+        let poison = Arc::clone(&fixture.authority);
+        assert!(std::thread::spawn(move || {
+            let _guard = poison.lock().unwrap();
+            panic!("poison authority cleanup lock");
+        })
+        .join()
+        .is_err());
+
+        let result = tauri::async_runtime::block_on(delete_puzzle_database_resolved(
+            fixture.resolved,
+            fixture.path.clone(),
+            fixture.handle.clone(),
+            fixture.repository,
+            Arc::clone(&fixture.authority),
+            Arc::clone(&fixture.cache),
+            CancellationToken::new(),
+        ));
+
+        assert!(
+            matches!(result, Err(Error::PartialRemoval { removed_entries: 0, cause })
+            if matches!(*cause, Error::Conflict(ref message)
+                if message == "path authority lock was poisoned"))
+        );
+        assert!(!fixture.path.exists());
+        assert!(tauri::async_runtime::block_on(fixture.cache.lock())
+            .key
+            .is_none());
+        assert!(authority_contains(&fixture.authority, &fixture.handle));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::time::Duration;
+
+    use diesel::connection::SimpleConnection;
+
+    use super::deletion_tests::*;
+    use super::*;
+    use tauri::Manager;
+
+    async fn yield_until(mut ready: impl FnMut() -> bool) {
+        while !ready() {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    fn delete_puzzle_with_log_capture(
+        fixture: &PuzzleDeletionFixture,
+    ) -> (Result<(), Error>, Vec<crate::error::CapturedLogRecord>) {
+        let capture = crate::error::LogCaptureScope::start();
+        crate::infra::fs::set_test_removal_injector(Some(Arc::new(
+            crate::infra::fs::RemovalFault(crate::infra::fs::RemovalFaultPoint::ParentSync),
+        )));
+        // Capture on the thread running the blocking tail: the logger's scope is thread-local.
+        let result = delete_puzzle_database_blocking(
+            &fixture.resolved,
+            &fixture.path,
+            &fixture.handle,
+            &fixture.repository,
+            &fixture.authority,
+            &CancellationToken::new(),
+        );
+        crate::infra::fs::set_test_removal_injector(None);
+        let result = result.and_then(|(removal, canonical_path)| {
+            tauri::async_runtime::block_on(finish_puzzle_database_deletion(
+                removal,
+                &fixture.path,
+                canonical_path,
+                &fixture.cache,
+            ))
+        });
+        (result, capture.records())
+    }
+
+    #[test]
+    fn puzzle_durability_before_registry_failure_logs_failure_and_invalidates_cache() {
+        let fixture = puzzle_deletion_fixture("durability-registry-failure.db3");
+        let poison = Arc::clone(&fixture.authority);
+        assert!(std::thread::spawn(move || {
+            let _guard = poison.lock().unwrap();
+            panic!("poison authority cleanup lock");
+        })
+        .join()
+        .is_err());
+
+        let (result, records) = delete_puzzle_with_log_capture(&fixture);
+
+        assert!(matches!(
+            result,
+            Err(Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::WorkspaceRemoval
+            ))
+        ));
+        assert!(!fixture.path.exists());
+        assert!(tauri::async_runtime::block_on(fixture.cache.lock())
+            .key
+            .is_none());
+        assert!(authority_contains(&fixture.authority, &fixture.handle));
+        assert!(records.iter().any(|record| record.level == log::Level::Warn
+            && record
+                .message
+                .contains("puzzle database registry cleanup failed after durability uncertainty")
+            && record.message.contains("kept category: Durability")
+            && record
+                .message
+                .contains("Conflict: path authority lock was poisoned")));
+    }
+
+    #[test]
+    fn puzzle_durability_before_deletion_release_failure_logs_failure_and_runs_cleanup() {
+        let fixture = puzzle_deletion_fixture("durability-release-failure.db3");
+        fixture.repository.fail_next_deletion_release();
+
+        let (result, records) = delete_puzzle_with_log_capture(&fixture);
+
+        assert!(matches!(
+            result,
+            Err(Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::WorkspaceRemoval
+            ))
+        ));
+        assert!(!fixture.path.exists());
+        assert!(tauri::async_runtime::block_on(fixture.cache.lock())
+            .key
+            .is_none());
+        assert!(!authority_contains(&fixture.authority, &fixture.handle));
+        assert!(records.iter().any(|record| record.level == log::Level::Warn
+            && record
+                .message
+                .contains("puzzle database lease release failed after durability uncertainty")
+            && record.message.contains("kept category: Durability")
+            && record
+                .message
+                .contains("Conflict: injected database deletion release failure")));
     }
 
     #[test]
@@ -1315,58 +1697,6 @@ mod tests {
     }
 
     #[test]
-    fn confirmed_puzzle_deletion_releases_authority_for_same_path_recreation() {
-        let (directory, path, _repository) = puzzle_database("recreated.db3", 1200);
-        let registry = directory.path().join("registry.json");
-        let operations = vec![
-            crate::infra::path_authority::PathOperation::PuzzleRead,
-            crate::infra::path_authority::PathOperation::PuzzleDelete,
-        ];
-        let mut authority =
-            crate::infra::path_authority::PathAuthority::open(registry, vec![]).unwrap();
-        let original = authority
-            .get_or_create_persistent_file(&path, "Puzzle database", operations.clone())
-            .unwrap()
-            .id;
-        std::fs::remove_file(&path).unwrap();
-        authority.remove_puzzle_database(&original).unwrap();
-        std::fs::write(&path, b"replacement database bytes").unwrap();
-        let replacement = authority
-            .get_or_create_persistent_file(&path, "Puzzle database", operations)
-            .unwrap()
-            .id;
-        assert_ne!(original, replacement);
-    }
-
-    #[test]
-    fn command_flow_deletes_file_invalidates_cache_and_prunes_authority() {
-        let PuzzleDeletionFixture {
-            _directory,
-            path,
-            repository,
-            authority,
-            cache,
-            handle,
-            resolved,
-        } = puzzle_deletion_fixture("ordinary-delete.db3");
-
-        let result = tauri::async_runtime::block_on(delete_puzzle_database_resolved(
-            resolved,
-            path.clone(),
-            handle.clone(),
-            repository,
-            Arc::clone(&authority),
-            Arc::clone(&cache),
-            tokio_util::sync::CancellationToken::new(),
-        ));
-
-        assert!(result.is_ok(), "ordinary deletion failed: {result:?}");
-        assert!(!path.exists());
-        assert!(tauri::async_runtime::block_on(cache.lock()).key.is_none());
-        assert!(!authority_contains(&authority, &handle));
-    }
-
-    #[test]
     fn command_flow_puzzle_delete_cleans_up_after_durability_uncertainty() {
         let PuzzleDeletionFixture {
             _directory,
@@ -1512,110 +1842,6 @@ mod tests {
     }
 
     #[test]
-    fn command_flow_pre_delete_identity_failure_preserves_file_cache_and_authority() {
-        let PuzzleDeletionFixture {
-            _directory,
-            path,
-            repository,
-            authority,
-            cache,
-            handle,
-            resolved,
-        } = puzzle_deletion_fixture("replaced-before-delete.db3");
-        let replacement = path.with_extension("replacement");
-        std::fs::write(&replacement, b"replacement puzzle database").unwrap();
-        std::fs::remove_file(&path).unwrap();
-        std::fs::rename(&replacement, &path).unwrap();
-
-        let result = tauri::async_runtime::block_on(delete_puzzle_database_resolved(
-            resolved,
-            path.clone(),
-            handle.clone(),
-            repository,
-            Arc::clone(&authority),
-            Arc::clone(&cache),
-            tokio_util::sync::CancellationToken::new(),
-        ));
-
-        assert!(matches!(result, Err(Error::Conflict(_))));
-        assert_eq!(
-            std::fs::read(&path).unwrap(),
-            b"replacement puzzle database"
-        );
-        assert!(tauri::async_runtime::block_on(cache.lock()).key.is_some());
-        assert!(authority_contains(&authority, &handle));
-    }
-
-    #[test]
-    fn command_flow_treats_already_missing_file_as_deleted() {
-        let PuzzleDeletionFixture {
-            _directory,
-            path,
-            repository,
-            authority,
-            cache,
-            handle,
-            resolved,
-        } = puzzle_deletion_fixture("already-missing.db3");
-        std::fs::remove_file(&path).unwrap();
-
-        let result = tauri::async_runtime::block_on(delete_puzzle_database_resolved(
-            resolved,
-            path.clone(),
-            handle.clone(),
-            repository,
-            Arc::clone(&authority),
-            Arc::clone(&cache),
-            tokio_util::sync::CancellationToken::new(),
-        ));
-
-        assert!(result.is_ok(), "idempotent deletion failed: {result:?}");
-        assert!(!path.exists());
-        assert!(tauri::async_runtime::block_on(cache.lock()).key.is_none());
-        assert!(!authority_contains(&authority, &handle));
-    }
-
-    #[test]
-    fn command_flow_invalidates_cache_after_delete_even_when_authority_cleanup_fails() {
-        let PuzzleDeletionFixture {
-            _directory,
-            path,
-            repository,
-            authority,
-            cache,
-            handle,
-            resolved,
-        } = puzzle_deletion_fixture("cleanup-failure.db3");
-        let poison = Arc::clone(&authority);
-        assert!(std::thread::spawn(move || {
-            let _guard = poison.lock().unwrap();
-            panic!("poison authority cleanup lock");
-        })
-        .join()
-        .is_err());
-        let result = tauri::async_runtime::block_on(delete_puzzle_database_resolved(
-            resolved,
-            path.clone(),
-            handle.clone(),
-            repository,
-            Arc::clone(&authority),
-            Arc::clone(&cache),
-            tokio_util::sync::CancellationToken::new(),
-        ));
-
-        assert!(matches!(
-            result,
-            Err(Error::PartialRemoval {
-                removed_entries: 1,
-                cause,
-            }) if matches!(*cause, Error::Conflict(_))
-        ));
-        assert!(!path.exists(), "physical deletion must remain committed");
-        assert!(tauri::async_runtime::block_on(cache.lock()).key.is_none());
-        assert!(authority_contains(&authority, &handle));
-    }
-
-    #[test]
     fn cache_key_uses_the_resolved_puzzle_binding() {
         let fixture = puzzle_deletion_fixture("cache-key.db3");
         let expected = crate::infra::path_authority::opened_file_identity(
@@ -1722,64 +1948,6 @@ mod tests {
         assert!(!body.contains("establish("));
         assert!(!body.contains("database_identity_expected"));
         assert!(!body.contains("Pool::builder"));
-    }
-
-    #[test]
-    fn command_flow_unlinks_via_retained_parent_when_the_parent_path_is_renamed() {
-        let fixture = puzzle_deletion_fixture_at(Path::new("nested/parent-rename.db3"));
-        let nested = fixture.path.parent().unwrap().to_owned();
-        let moved = nested.with_file_name("moved");
-        std::fs::rename(&nested, &moved).unwrap();
-        let moved_file = moved.join(fixture.path.file_name().unwrap());
-        assert!(moved_file.exists());
-
-        let result = tauri::async_runtime::block_on(delete_puzzle_database_resolved(
-            fixture.resolved,
-            fixture.path.clone(),
-            fixture.handle.clone(),
-            fixture.repository,
-            Arc::clone(&fixture.authority),
-            Arc::clone(&fixture.cache),
-            tokio_util::sync::CancellationToken::new(),
-        ));
-
-        assert!(
-            result.is_ok(),
-            "retained-parent unlink after parent rename failed: {result:?}"
-        );
-        assert!(!moved_file.exists());
-        assert!(tauri::async_runtime::block_on(fixture.cache.lock())
-            .key
-            .is_none());
-        assert!(!authority_contains(&fixture.authority, &fixture.handle));
-    }
-
-    #[test]
-    fn command_flow_invalidates_canonical_cache_when_the_caller_path_differs() {
-        let fixture = puzzle_deletion_fixture("canon-diff.db3");
-        let canonical = fixture.path.canonicalize().unwrap();
-        let aliased = canonical.with_file_name("not-the-canonical-leaf.db3");
-        assert_ne!(
-            aliased, canonical,
-            "the caller path must differ from the minted canonical path"
-        );
-
-        let result = tauri::async_runtime::block_on(delete_puzzle_database_resolved(
-            fixture.resolved,
-            aliased,
-            fixture.handle.clone(),
-            fixture.repository,
-            Arc::clone(&fixture.authority),
-            Arc::clone(&fixture.cache),
-            tokio_util::sync::CancellationToken::new(),
-        ));
-
-        assert!(result.is_ok(), "aliased-path deletion failed: {result:?}");
-        assert!(!canonical.exists());
-        assert!(tauri::async_runtime::block_on(fixture.cache.lock())
-            .key
-            .is_none());
-        assert!(!authority_contains(&fixture.authority, &fixture.handle));
     }
 
     #[cfg(unix)]
