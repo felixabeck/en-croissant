@@ -1302,28 +1302,6 @@ async fn analyze_position_with_owner(
     Ok(current_analysis)
 }
 
-async fn fail_analysis_progress_before_child<R: tauri::Runtime>(
-    progress_state: &crate::progress::ProgressStore,
-    app: &tauri::AppHandle<R>,
-    progress: &crate::progress::ProgressLease,
-    error: Error,
-) -> Error {
-    if let Err(terminal) = update_progress_with_state(
-        progress_state,
-        app,
-        progress,
-        0.0,
-        analysis_terminal_state(&error),
-    ) {
-        log::warn!(
-            "analysis terminal progress generation {} failed: {}",
-            progress.generation,
-            terminal.category()
-        );
-    }
-    error
-}
-
 async fn finish_analysis_failure<R: tauri::Runtime>(
     guard: Option<RegistrationGuard>,
     progress_state: &crate::progress::ProgressStore,
@@ -1394,7 +1372,8 @@ async fn analyze_game_core<R: tauri::Runtime>(
     {
         Ok(admission) => admission,
         Err(error) => {
-            return Err(fail_analysis_progress_before_child(
+            return Err(finish_analysis_failure(
+                None,
                 &state.progress_state,
                 &app,
                 &progress_lease,
@@ -1414,7 +1393,8 @@ async fn analyze_game_core<R: tauri::Runtime>(
     {
         Ok(launch) => launch,
         Err(error) => {
-            return Err(fail_analysis_progress_before_child(
+            return Err(finish_analysis_failure(
+                None,
                 &state.progress_state,
                 &app,
                 &progress_lease,
@@ -1444,7 +1424,8 @@ async fn analyze_game_core<R: tauri::Runtime>(
     {
         Ok(process) => process,
         Err(error) => {
-            return Err(fail_analysis_progress_before_child(
+            return Err(finish_analysis_failure(
+                None,
                 &state.progress_state,
                 &app,
                 &progress_lease,
@@ -1453,12 +1434,11 @@ async fn analyze_game_core<R: tauri::Runtime>(
             .await);
         }
     };
-    let mut guard = Some(guard);
     macro_rules! fail_analysis_progress {
-        ($error:expr) => {{
+        ($guard:expr, $error:expr) => {{
             let error = $error;
             return Err(finish_analysis_failure(
-                guard.take(),
+                $guard,
                 &state.progress_state,
                 &app,
                 &progress_lease,
@@ -1470,7 +1450,7 @@ async fn analyze_game_core<R: tauri::Runtime>(
 
     for (i, (_, moves, _)) in fens.iter().enumerate() {
         if let Err(cancelled) = ensure_analysis_owner_active(&supervised, &cancellation) {
-            fail_analysis_progress!(cancelled);
+            fail_analysis_progress!(Some(guard), cancelled);
         }
 
         if let Err(error) = update_progress_with_state(
@@ -1480,7 +1460,7 @@ async fn analyze_game_core<R: tauri::Runtime>(
             (i as f32 / fens.len() as f32) * 100.0,
             ProgressState::Running,
         ) {
-            fail_analysis_progress!(error);
+            fail_analysis_progress!(Some(guard), error);
         }
 
         let configured_options = EngineOptions {
@@ -1496,7 +1476,7 @@ async fn analyze_game_core<R: tauri::Runtime>(
         .await
         {
             Ok(resolved) => resolved,
-            Err(error) => fail_analysis_progress!(error),
+            Err(error) => fail_analysis_progress!(Some(guard), error),
         };
         for option in &mut resolved {
             restore_inherited_resource_provenance(
@@ -1509,14 +1489,14 @@ async fn analyze_game_core<R: tauri::Runtime>(
             .set_options(configured_options, resolved, Some(cancellation.clone()))
             .await
         {
-            fail_analysis_progress!(error);
+            fail_analysis_progress!(Some(guard), error);
         }
 
         match analyze_position_with_owner(&mut proc, &supervised, &cancellation, &go_mode, moves)
             .await
         {
             Ok(current_analysis) => analysis.push(current_analysis),
-            Err(error) => fail_analysis_progress!(error),
+            Err(error) => fail_analysis_progress!(Some(guard), error),
         }
     }
 
@@ -1525,17 +1505,13 @@ async fn analyze_game_core<R: tauri::Runtime>(
         fens.reverse();
     }
 
-    let cleanup = match guard.take() {
-        Some(guard) => guard.terminate_now().await,
-        None => Ok(()),
-    };
-    if let Err(error) = cleanup {
-        fail_analysis_progress!(error);
+    if let Err(error) = guard.terminate_now().await {
+        fail_analysis_progress!(None, error);
     }
 
     let present = if options.annotate_novelties {
         let Some(reference) = options.reference_db.clone() else {
-            fail_analysis_progress!(Error::MissingReferenceDatabase);
+            fail_analysis_progress!(None, Error::MissingReferenceDatabase);
         };
         let queries: Vec<GameQuery> = fens
             .iter()
@@ -1555,7 +1531,7 @@ async fn analyze_game_core<R: tauri::Runtime>(
             permit = state.new_request.clone().acquire_owned() => permit.map_err(|_| Error::Conflict("position search permit unavailable".into())),
         } {
             Ok(permit) => permit,
-            Err(error) => fail_analysis_progress!(error),
+            Err(error) => fail_analysis_progress!(None, error),
         };
         match BLOCKING_GATEWAY
             .spawn_cancellable(cancellation.clone(), move |worker_cancellation| {
@@ -1572,7 +1548,7 @@ async fn analyze_game_core<R: tauri::Runtime>(
             .await
         {
             Ok(present) => present,
-            Err(error) => fail_analysis_progress!(error),
+            Err(error) => fail_analysis_progress!(None, error),
         }
     } else {
         Vec::new()
@@ -1590,7 +1566,7 @@ async fn analyze_game_core<R: tauri::Runtime>(
         }
     }
     if let Err(cancelled) = ensure_analysis_not_cancelled(&cancellation) {
-        fail_analysis_progress!(cancelled);
+        fail_analysis_progress!(None, cancelled);
     }
     update_progress_with_state(
         &state.progress_state,
@@ -3206,6 +3182,52 @@ done
         assert_safe_resource_logs(&logs);
         assert!(supervisor.get_exact(&key).is_none());
         assert_resource_wire_capture(&_directory, "resource-bytes");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn report_core_missing_reference_after_termination_preserves_primary_error() {
+        let (directory, app, engine, _) = resource_engine_fixture();
+        let id = "report-missing-reference";
+        let state = app.state::<AppState>().inner().clone();
+        let supervisor = state.engine_supervisor.clone();
+        let state_for_core = state.clone();
+        let core = tokio::spawn(async move {
+            analyze_game_core(
+                id.into(),
+                engine,
+                "report-missing-reference-engine".into(),
+                GoMode::Depth(1),
+                AnalysisOptions {
+                    fen: start_fen().to_string(),
+                    moves: Vec::new(),
+                    annotate_novelties: true,
+                    reference_db: None,
+                    reversed: false,
+                },
+                Vec::new(),
+                state_for_core,
+                app,
+                CancellationToken::new(),
+            )
+            .await
+        });
+        let key = EngineKey::new("analysis".into(), id.into()).unwrap();
+        let (_, result) =
+            collect_barriered_resource_logs(&directory, &supervisor, &key, core).await;
+        assert!(
+            matches!(result, Err(Error::MissingReferenceDatabase)),
+            "post-termination failure must preserve the primary error: {result:?}"
+        );
+        let progress = state.progress_state.get(id).unwrap().unwrap();
+        assert_eq!(progress.state, ProgressState::Failed);
+        assert!(progress.finished);
+        assert!(supervisor.get_exact(&key).is_none());
+        let capture = std::fs::read_to_string(directory.path().join("capture.log")).unwrap();
+        assert_eq!(
+            capture.lines().filter(|line| *line == "wire=quit").count(),
+            1
+        );
     }
 
     #[cfg(unix)]
