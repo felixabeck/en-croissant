@@ -235,7 +235,7 @@ fn current_scan_line_hook() -> Option<BoundedHook> {
 }
 
 #[cfg(test)]
-pub(crate) type CreatePostRegisterHook = Box<dyn FnOnce(&CancellationToken) + Send>;
+pub(crate) type CreatePostRegisterHook = Box<dyn FnOnce() + Send>;
 
 #[derive(Default)]
 struct PgnRepositoryInner {
@@ -972,21 +972,15 @@ fn observe_count_hook(repository: &PgnRepository) -> Result<(), Error> {
     Ok(())
 }
 
-fn count_from_games(games: Arc<[GameRange]>) -> Result<i32, Error> {
-    i32::try_from(games.len())
-        .map_err(|_| Error::ResourceLimit("PGN count exceeds IPC limit".into()))
-}
-
 fn count_after_scan(
-    key: CacheKey,
     games: Arc<[GameRange]>,
     cancellation: &CancellationToken,
 ) -> Result<i32, Error> {
-    let _ = key;
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
-    count_from_games(games)
+    i32::try_from(games.len())
+        .map_err(|_| Error::ResourceLimit("PGN count exceeds IPC limit".into()))
 }
 
 pub async fn count_pgn_games_core(
@@ -998,8 +992,8 @@ pub async fn count_pgn_games_core(
         return Err(Error::Cancellation);
     }
     observe_count_hook(repository)?;
-    let (key, games) = scan_current(resolved.pgn_snapshot()?, repository, cancellation).await?;
-    count_after_scan(key, games, cancellation)
+    let (_, games) = scan_current(resolved.pgn_snapshot()?, repository, cancellation).await?;
+    count_after_scan(games, cancellation)
 }
 
 pub(crate) fn count_pgn_games_core_blocking(
@@ -1011,8 +1005,8 @@ pub(crate) fn count_pgn_games_core_blocking(
         return Err(Error::Cancellation);
     }
     observe_count_hook(repository)?;
-    let (key, games) = scan_current_blocking(snapshot, repository, cancellation)?;
-    count_after_scan(key, games, cancellation)
+    let (_, games) = scan_current_blocking(snapshot, repository, cancellation)?;
+    count_after_scan(games, cancellation)
 }
 
 #[tauri::command]
@@ -3468,13 +3462,33 @@ mod tests {
             .set_modified(std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1))
             .expect("set post-epoch mtime");
         let snapshot = snapshot_for(&directory, &path);
+        let metadata = std::fs::metadata(&path).expect("PGN metadata");
+        assert_eq!(snapshot.revision.size, metadata.len());
+        assert_eq!(
+            snapshot.revision.mtime_nanos,
+            i128::try_from(
+                metadata
+                    .modified()
+                    .expect("PGN mtime")
+                    .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                    .expect("post-epoch mtime")
+                    .as_nanos()
+            )
+            .expect("mtime fits signed nanoseconds")
+        );
         assert!(snapshot.revision.mtime_nanos > 0);
         let rendered = revision_string(&snapshot);
-        let mtime = snapshot.revision.mtime_nanos.to_string();
-        assert!(
-            rendered.contains(&mtime),
-            "post-1970 mtime digits must stay in the revision string: {rendered}"
+        let (device, inode) = snapshot.identity.pair();
+        assert_eq!(
+            rendered,
+            format!(
+                "{device}:{inode}:{}:{}:{}",
+                snapshot.revision.size,
+                snapshot.revision.mtime_nanos,
+                snapshot.revision.ctime_nanos
+            )
         );
+        let mtime = snapshot.revision.mtime_nanos.to_string();
         assert!(
             !mtime.starts_with('-'),
             "post-1970 mtime digits must stay unsigned: {mtime}"

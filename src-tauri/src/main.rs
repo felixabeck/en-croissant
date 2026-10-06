@@ -4794,6 +4794,11 @@ mod blocking_offload_scans {
         let db = include_str!("db/mod.rs");
         let search = include_str!("db/search.rs");
         let pgn = include_str!("pgn.rs");
+        // Limit hook lookup to free functions, before the same-named repository methods.
+        let pgn_scan_hooks = pgn
+            .split_once("impl PgnRepository {")
+            .expect("repository implementation")
+            .0;
         for (file, source, name) in [
             (
                 "puzzle.rs",
@@ -4816,10 +4821,16 @@ mod blocking_offload_scans {
             ("pgn.rs", pgn, "scan_current_blocking"),
             ("pgn.rs", pgn, "count_pgn_games_core_blocking"),
             ("pgn.rs", pgn, "cached_scan"),
+            ("pgn.rs", pgn, "snapshot_key"),
             ("pgn.rs", pgn, "scan_file"),
             ("pgn.rs", pgn, "scan_games_cancelled"),
+            ("pgn.rs", pgn, "is_tag_header"),
+            ("pgn.rs", pgn, "update_brace_comment"),
+            ("pgn.rs", pgn, "malformed"),
+            ("pgn.rs", pgn, "read_bounded_line"),
+            ("pgn.rs", pgn_scan_hooks, "set_scan_line_hook"),
+            ("pgn.rs", pgn_scan_hooks, "current_scan_line_hook"),
             ("pgn.rs", pgn, "observe_count_hook"),
-            ("pgn.rs", pgn, "count_from_games"),
             ("pgn.rs", pgn, "count_after_scan"),
             ("db/search.rs", search, "load_search_index"),
             ("db/mod.rs", db, "generate_search_index"),
@@ -4827,7 +4838,15 @@ mod blocking_offload_scans {
             ("db/search.rs", search, "is_position_in_db"),
             ("db/mod.rs", db, "get_db_or_create"),
         ] {
-            let body = body_at_indent(source, &fn_signature(source, name));
+            let signature = fn_signature(source, name);
+            if file == "pgn.rs" {
+                assert_eq!(
+                    source.matches(&signature).count(),
+                    1,
+                    "{file}::{name} must resolve unambiguously"
+                );
+            }
+            let body = body_at_indent(source, &signature);
             for token in ["BLOCKING_GATEWAY", "block_on", "Handle::current", ".await"] {
                 assert!(
                     !body.contains(token),

@@ -228,7 +228,8 @@ fn join_cleanup(left: Result<(), Error>, right: Result<(), Error>) -> Result<(),
 
 /// Only objects this call created are removed, each checked against the identity it was created
 /// with; a replaced leaf is left in place and reported as a failed cleanup; every removal is
-/// attempted. `repository` is passed only after the count offered an index to the cache.
+/// attempted. `repository` is passed once a count was attempted, to invalidate any index the count
+/// may have cached for this PGN identity; invalidating an absent entry is harmless.
 fn rollback_created_workspace_file(
     parent: &fs::File,
     pgn_leaf: &OsStr,
@@ -1048,7 +1049,7 @@ fn create_workspace_file_blocking(
     };
     #[cfg(test)]
     if let Some(hook) = pgn_repository.take_create_post_register_hook()? {
-        hook(cancellation);
+        hook();
     }
     let entry = WorkspaceEntry {
         handle,
@@ -2365,11 +2366,12 @@ mod tests {
 
     /// Counting injector for one atomic-file fault point.
     ///
-    /// `index` is the 0-based hit count of `point` only. On a workspace file create the
-    /// Rename and ParentSync hits are 0 = PGN install, 1 = sidecar install, 2 = registry
-    /// persist. On a directory create they are 0 = directory create, then registry persist.
-    /// On a file rename, ParentSync 0 is the sidecar rewrite and Rename 1 is the registry
-    /// rebind.
+    /// `index` is the 0-based hit count of `point` only. On a workspace file create, Rename
+    /// and ParentSync each hit 0 = PGN install, 1 = sidecar install, 2 = registry persist.
+    /// On a directory create, Rename hit 0 = registry persist; ParentSync hits 0 = directory
+    /// create, 1 = registry persist. On a file rename, Rename and ParentSync each hit
+    /// 0 = sidecar rewrite, 1 = registry rebind; the paired moves emit neither fault point.
+    /// A failed registry persistence attempt is retried, adding hits for the points it reaches.
     struct FailAtFaultPoint {
         point: AtomicFileFaultPoint,
         index: usize,
@@ -4017,26 +4019,25 @@ mod tests {
         assert!(registry_has_display_name(&directory, "dir-sync"));
     }
 
-    /// Fails the sidecar's rename, the second atomic rename of a workspace file creation; when
-    /// `replace_pgn` is set it first swaps the just-installed PGN for a different regular file.
+    /// Fails atomic renames from the sidecar's onward, the second atomic rename of a workspace
+    /// file creation; when `replace_pgn` is set it swaps the just-installed PGN for a different
+    /// regular file before returning the injected error.
     struct SidecarRenameFault {
-        renames: AtomicUsize,
+        fault: FailAtFaultPoint,
         replace_pgn: Option<PathBuf>,
     }
 
     impl AtomicWriterInjector for SidecarRenameFault {
         fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
-            if point != AtomicFileFaultPoint::Rename
-                || self.renames.fetch_add(1, Ordering::SeqCst) == 0
-            {
+            let Err(error) = self.fault.inject(point) else {
                 return Ok(());
-            }
+            };
             if let Some(pgn) = &self.replace_pgn {
                 let replacement = pgn.with_extension("replacement");
                 fs::write(&replacement, b"replacement")?;
                 fs::rename(&replacement, pgn)?;
             }
-            Err(std::io::Error::other("sidecar rename failed"))
+            Err(error)
         }
     }
 
@@ -4049,7 +4050,7 @@ mod tests {
             .path()
             .to_path_buf();
         set_test_atomic_file_injector(Some(Arc::new(SidecarRenameFault {
-            renames: AtomicUsize::new(0),
+            fault: FailAtFaultPoint::fail_from(AtomicFileFaultPoint::Rename, 1),
             replace_pgn: replace_pgn.then(|| root.join("game.pgn")),
         })));
         let result = create_workspace_file_blocking(
@@ -4343,7 +4344,7 @@ mod tests {
         let operations = state.operations.clone();
         state
             .pgn_repository
-            .set_create_post_register_hook(Some(Box::new(move |_token| {
+            .set_create_post_register_hook(Some(Box::new(move || {
                 operations
                     .seal_and_request_cancellation()
                     .expect("cancel accepted operation");
