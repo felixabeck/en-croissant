@@ -4775,11 +4775,11 @@ mod blocking_offload_scans {
             .find("novelty_lookup_blocking")
             .expect("analyze_game must call novelty_lookup_blocking");
         let terminate_between = body
-            .match_indices("terminate_exact")
+            .match_indices("terminate_now()")
             .any(|(index, _)| index > last_position && index < first_novelty);
         assert!(
             terminate_between,
-            "analyze_game must call terminate_exact after the UCI loop and before novelty_lookup_blocking: {body}"
+            "analyze_game must terminate the engine through its registration guard (terminate_now) after the UCI loop and before novelty_lookup_blocking: {body}"
         );
     }
 

@@ -1063,12 +1063,8 @@ impl GameEngineConstruction {
         }
     }
 
-    fn own(&mut self, supervisor: &Arc<EngineSupervisor>, engine: &RegisteredGameEngine) {
-        self.guards.push(RegistrationGuard::new(
-            supervisor.clone(),
-            engine.key.clone(),
-            engine.generation,
-        ));
+    fn own(&mut self, guard: RegistrationGuard) {
+        self.guards.push(guard);
     }
 
     async fn abandon(self, primary: Error) -> Error {
@@ -1195,7 +1191,7 @@ async fn spawn_configured_game_engine(
     options: &[EngineOption],
     authority: std::sync::Arc<std::sync::Mutex<Option<PathAuthority>>>,
     chess960: bool,
-) -> Result<RegisteredGameEngine, Error> {
+) -> Result<(RegisteredGameEngine, RegistrationGuard), Error> {
     let GameEngineRegistration {
         supervisor,
         key,
@@ -1213,7 +1209,7 @@ async fn spawn_configured_game_engine(
         &admission,
     )
     .await?;
-    let supervised = spawn_configured_game_engine_with_resolved(
+    let (supervised, guard) = spawn_configured_game_engine_with_resolved(
         supervisor,
         executable,
         resolved,
@@ -1222,11 +1218,14 @@ async fn spawn_configured_game_engine(
         chess960,
     )
     .await?;
-    Ok(RegisteredGameEngine {
-        actor: supervised.actor,
-        key,
-        generation: supervised.generation,
-    })
+    Ok((
+        RegisteredGameEngine {
+            actor: supervised.actor,
+            key,
+            generation: supervised.generation,
+        },
+        guard,
+    ))
 }
 
 fn game_engine_registration_for_side(
@@ -1282,13 +1281,13 @@ async fn spawn_configured_game_engine_with_resolved(
     admission: AdmissionLease,
     key: EngineKey,
     chess960: bool,
-) -> Result<crate::engine::SupervisedEngine, Error> {
+) -> Result<(crate::engine::SupervisedEngine, RegistrationGuard), Error> {
     let hook_key = key.clone();
     spawn_registered(supervisor, key, executable, admission, move |engine| {
         initialize_configured_game_engine(engine, resolved, chess960, hook_key)
     })
     .await
-    .map(|(supervised, ())| supervised)
+    .map(|(supervised, guard, ())| (supervised, guard))
 }
 
 /// The after-spawn hook every game engine's initialization fires. It is keyed by engine
@@ -1335,7 +1334,7 @@ async fn spawn_configured_game_engine_with_executable(
     options: &[EngineOption],
     authority: &std::sync::Mutex<Option<PathAuthority>>,
     chess960: bool,
-) -> Result<RegisteredGameEngine, Error> {
+) -> Result<(RegisteredGameEngine, RegistrationGuard), Error> {
     let GameEngineRegistration {
         supervisor,
         key,
@@ -1370,7 +1369,7 @@ async fn spawn_configured_game_engine_with_executable(
         .flat_map(|option| std::mem::take(&mut option.resources))
         .collect();
     let executable = executable.with_resource_leases(child_leases);
-    let supervised = spawn_configured_game_engine_with_resolved(
+    let (supervised, guard) = spawn_configured_game_engine_with_resolved(
         supervisor,
         executable,
         resolved,
@@ -1379,11 +1378,14 @@ async fn spawn_configured_game_engine_with_executable(
         chess960,
     )
     .await?;
-    Ok(RegisteredGameEngine {
-        actor: supervised.actor,
-        key,
-        generation: supervised.generation,
-    })
+    Ok((
+        RegisteredGameEngine {
+            actor: supervised.actor,
+            key,
+            generation: supervised.generation,
+        },
+        guard,
+    ))
 }
 
 pub(crate) fn game_side_engine_key(
@@ -1632,7 +1634,7 @@ impl GameManager {
             },
         ) = (white_registration, &config.white)
         {
-            let registered = match spawn_configured_game_engine(
+            let (registered, guard) = match spawn_configured_game_engine(
                 registration,
                 handle.clone(),
                 options,
@@ -1646,7 +1648,7 @@ impl GameManager {
                     return Err(construction.abandon(primary).await);
                 }
             };
-            construction.own(&engine_supervisor, &registered);
+            construction.own(guard);
             controller.white_engine = Some(registered);
         }
 
@@ -1666,8 +1668,8 @@ impl GameManager {
             )
             .await
             {
-                Ok(registered) => {
-                    construction.own(&engine_supervisor, &registered);
+                Ok((registered, guard)) => {
+                    construction.own(guard);
                     controller.black_engine = Some(registered);
                 }
                 Err(primary) => {
@@ -4068,7 +4070,7 @@ mod tests {
         let supervisor = Arc::new(EngineSupervisor::default());
         let key =
             game_side_engine_key("production-game", 1, "white", "production-game-engine").unwrap();
-        let registered = spawn_configured_game_engine(
+        let (_registered, guard) = spawn_configured_game_engine(
             GameEngineRegistration {
                 supervisor: supervisor.clone(),
                 key: key.clone(),
@@ -4083,10 +4085,7 @@ mod tests {
         .await
         .unwrap();
         assert!(supervisor.get_exact(&key).is_some());
-        supervisor
-            .terminate_exact(&registered.key, registered.generation)
-            .await
-            .unwrap();
+        guard.terminate_now().await.unwrap();
     }
 
     #[cfg(target_os = "macos")]
@@ -4181,10 +4180,13 @@ done
             Err(Error::Conflict(ref message))
                 if message == "engine resource changed after authorization" => {}
             Err(other) => panic!("expected the authorization conflict, got {other:?}"),
-            Ok(registered) => panic!(
-                "expected the authorization conflict, but the engine started as {:?}",
-                registered.key
-            ),
+            Ok((registered, mut guard)) => {
+                guard.disarm();
+                panic!(
+                    "expected the authorization conflict, but the engine started as {:?}",
+                    registered.key
+                )
+            }
         }
         let capture =
             std::fs::read_to_string(directory.path().join("capture.log")).unwrap_or_default();
@@ -4326,7 +4328,7 @@ done
         );
         let supervisor = Arc::new(EngineSupervisor::default());
         let key = game_side_engine_key("resource-game", 1, "white", "resource-engine").unwrap();
-        let registered = spawn_configured_game_engine_with_executable(
+        let (registered, mut guard) = spawn_configured_game_engine_with_executable(
             GameEngineRegistration {
                 supervisor: supervisor.clone(),
                 key: key.clone(),
@@ -4345,6 +4347,7 @@ done
         )
         .await
         .unwrap();
+        guard.disarm();
 
         let manager = GameManager::new();
         let mut controller =
@@ -6178,7 +6181,11 @@ done
         assert!(registration_cleanup_messages(&registered.key, registered.generation).is_empty());
         assert!(game_cleanup_messages(game_id, 1, "construction abandoned").is_empty());
         let mut construction = GameEngineConstruction::new(game_id.into(), 1);
-        construction.own(&supervisor, &registered);
+        construction.own(RegistrationGuard::new(
+            supervisor.clone(),
+            registered.key.clone(),
+            registered.generation,
+        ));
 
         let error = construction
             .abandon(Error::Conflict("construction primary sentinel".into()))
@@ -6240,7 +6247,11 @@ done
             Err(std::io::Error::other(format!("{game_id}-primary-cleanup-cause")).into()),
         );
         let mut construction = GameEngineConstruction::new(game_id.into(), 1);
-        construction.own(&supervisor, &registered);
+        construction.own(RegistrationGuard::new(
+            supervisor.clone(),
+            registered.key.clone(),
+            registered.generation,
+        ));
 
         let error = construction.abandon(primary).await;
 

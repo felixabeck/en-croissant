@@ -29,7 +29,7 @@ use crate::{
     engine::{
         resolve_launch, resolve_option_leases, spawn_registered, verify_option_resources,
         AdmissionLease, EngineActor, EngineDeadlines, EngineKey, EngineLog, EngineOption,
-        EngineRequestId, GoMode, ResolvedEngineOption, SupervisedEngine,
+        EngineRequestId, GoMode, RegistrationGuard, ResolvedEngineOption, SupervisedEngine,
     },
     error::Error,
     infra::{
@@ -213,13 +213,17 @@ impl EngineProcess {
         key: EngineKey,
         executable: EngineExecutable,
         admission: AdmissionLease,
-    ) -> Result<(Self, crate::engine::SupervisedEngine), Error> {
-        let (supervised, ()) =
+    ) -> Result<(Self, crate::engine::SupervisedEngine, RegistrationGuard), Error> {
+        let (supervised, guard, ()) =
             spawn_registered(supervisor, key, executable, admission, |actor| async move {
                 actor.init_uci().await
             })
             .await?;
-        Ok((Self::from_actor(supervised.actor.clone()), supervised))
+        Ok((
+            Self::from_actor(supervised.actor.clone()),
+            supervised,
+            guard,
+        ))
     }
 
     fn from_actor(base: Arc<EngineActor>) -> Self {
@@ -1321,15 +1325,16 @@ async fn fail_analysis_progress_before_child<R: tauri::Runtime>(
 }
 
 async fn finish_analysis_failure<R: tauri::Runtime>(
-    supervisor: &crate::engine::EngineSupervisor,
-    key: &EngineKey,
-    generation: u64,
+    guard: Option<RegistrationGuard>,
     progress_state: &crate::progress::ProgressStore,
     app: &tauri::AppHandle<R>,
     progress: &crate::progress::ProgressLease,
     error: Error,
 ) -> Error {
-    let cleanup = supervisor.terminate_exact(key, generation).await;
+    let cleanup = match guard {
+        Some(guard) => guard.terminate_now().await,
+        None => Ok(()),
+    };
     if let Err(terminal) = update_progress_with_state(
         progress_state,
         app,
@@ -1429,7 +1434,7 @@ async fn analyze_game_core<R: tauri::Runtime>(
     let (report_options, inherited_values) =
         prepare_report_options(&uci_options, &inherited_values);
 
-    let (mut proc, supervised) = match EngineProcess::new(
+    let (mut proc, supervised, guard) = match EngineProcess::new(
         state.engine_supervisor.clone(),
         analysis_key.clone(),
         executable,
@@ -1448,13 +1453,12 @@ async fn analyze_game_core<R: tauri::Runtime>(
             .await);
         }
     };
+    let mut guard = Some(guard);
     macro_rules! fail_analysis_progress {
         ($error:expr) => {{
             let error = $error;
             return Err(finish_analysis_failure(
-                state.engine_supervisor.as_ref(),
-                &analysis_key,
-                supervised.generation,
+                guard.take(),
                 &state.progress_state,
                 &app,
                 &progress_lease,
@@ -1521,11 +1525,11 @@ async fn analyze_game_core<R: tauri::Runtime>(
         fens.reverse();
     }
 
-    if let Err(error) = state
-        .engine_supervisor
-        .terminate_exact(&analysis_key, supervised.generation)
-        .await
-    {
+    let cleanup = match guard.take() {
+        Some(guard) => guard.terminate_now().await,
+        None => Ok(()),
+    };
+    if let Err(error) = cleanup {
         fail_analysis_progress!(error);
     }
 
@@ -2071,9 +2075,11 @@ mod tests {
         let progress_state = crate::progress::ProgressStore::default();
         let progress = begin_progress(&progress_state, &app, "analysis-sequence".into()).unwrap();
         let error = finish_analysis_failure(
-            supervisor.as_ref(),
-            &key,
-            supervised.generation,
+            Some(RegistrationGuard::new(
+                supervisor.clone(),
+                key.clone(),
+                supervised.generation,
+            )),
             &progress_state,
             &app,
             &progress,
@@ -2127,15 +2133,31 @@ mod tests {
         EngineHandle,
         crate::infra::path_authority::EngineResourceHandle,
     ) {
+        resource_engine_fixture_with_quit(false)
+    }
+
+    #[cfg(unix)]
+    fn resource_engine_fixture_with_quit(
+        hold_quit: bool,
+    ) -> (
+        tempfile::TempDir,
+        tauri::AppHandle<tauri::test::MockRuntime>,
+        EngineHandle,
+        crate::infra::path_authority::EngineResourceHandle,
+    ) {
         use crate::infra::path_authority::{EngineResourceHandleKind, PathClass};
         use std::os::unix::fs::PermissionsExt;
 
         let directory = tempfile::tempdir().unwrap();
+        if hold_quit {
+            std::fs::write(directory.path().join("hold-quit"), b"").unwrap();
+        }
         let script = directory.path().join("resource-flow-engine.sh");
         std::fs::write(
             &script,
             r#"#!/bin/sh
 capture="$PWD/capture.log"
+printf 'pid=%s\n' "$$" >> "$capture"
 while IFS= read -r line; do
     printf 'wire=%s\n' "$line" >> "$capture"
     case "$line" in
@@ -2194,7 +2216,9 @@ while IFS= read -r line; do
             echo "bestmove e2e4"
             ;;
         quit)
-            exit 0
+            if [ ! -f "$PWD/hold-quit" ]; then
+                exit 0
+            fi
             ;;
     esac
 done
@@ -2235,6 +2259,161 @@ done
         let app = engine_test_app();
         *app.state::<AppState>().pgn_path_authority.lock().unwrap() = Some(authority);
         (directory, app, engine, resource)
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_fixture_capture(directory: &tempfile::TempDir, marker: &str) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let capture = std::fs::read_to_string(directory.path().join("capture.log"))
+                    .unwrap_or_default();
+                if capture.lines().any(|line| line == marker) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("fixture must reach the requested wire barrier");
+    }
+
+    #[cfg(unix)]
+    async fn assert_abandoned_engine_removed(
+        directory: &tempfile::TempDir,
+        supervisor: &crate::engine::EngineSupervisor,
+        tab: &str,
+        key: Option<&EngineKey>,
+    ) {
+        let capture = std::fs::read_to_string(directory.path().join("capture.log")).unwrap();
+        let pid: libc::pid_t = capture
+            .lines()
+            .find_map(|line| line.strip_prefix("pid="))
+            .unwrap()
+            .parse()
+            .unwrap();
+        let removed = tokio::time::timeout(Duration::from_secs(12), async {
+            loop {
+                let registered = key.map_or_else(
+                    || !supervisor.registered_keys_for_tab(tab).is_empty(),
+                    |key| supervisor.get_exact(key).is_some(),
+                );
+                // Signal zero only observes the fixture process; it sends no signal.
+                let alive = unsafe { libc::kill(pid, 0) } == 0;
+                if !registered && !alive {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        // Keep a failing regression run from leaving its child registered.
+        if removed.is_err() {
+            supervisor.terminate_all().await.unwrap();
+        }
+        assert!(
+            removed.is_ok(),
+            "aborted future left its generation registered or child alive"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn config_probe_abort_during_termination_removes_generation() {
+        let (directory, app, engine, _) = resource_engine_fixture_with_quit(true);
+        let state = app.state::<AppState>().inner().clone();
+        let supervisor = state.engine_supervisor.clone();
+        let probe = tokio::spawn(async move { get_engine_config_core(engine, &state).await });
+        wait_for_fixture_capture(&directory, "wire=quit").await;
+        assert_eq!(supervisor.registered_keys_for_tab("engine-config").len(), 1);
+        probe.abort();
+        assert!(probe.await.unwrap_err().is_cancelled());
+        assert_abandoned_engine_removed(&directory, &supervisor, "engine-config", None).await;
+    }
+
+    #[cfg(unix)]
+    async fn assert_report_abort_removes_generation(id: &str, barrier: &str, fail: bool) {
+        let (directory, app, engine, _) = resource_engine_fixture_with_quit(barrier == "wire=quit");
+        let state = app.state::<AppState>().inner().clone();
+        let supervisor = state.engine_supervisor.clone();
+        let key = EngineKey::new("analysis".into(), id.into()).unwrap();
+        let other_key = EngineKey::new("other-tab".into(), id.into()).unwrap();
+        let (other_actor, _) = EngineActor::recording_test_actor(&[]);
+        let other = supervisor
+            .replace_handle(
+                other_key.clone(),
+                other_actor,
+                "other-engine".into(),
+                crate::infra::path_authority::PathRef {
+                    id: "other-path".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        let core = tokio::spawn({
+            let id = id.to_string();
+            let cancellation = cancellation.clone();
+            async move {
+                analyze_game_core(
+                    id,
+                    engine,
+                    "report-engine".into(),
+                    GoMode::Depth(1),
+                    AnalysisOptions {
+                        fen: start_fen().to_string(),
+                        moves: Vec::new(),
+                        annotate_novelties: false,
+                        reference_db: None,
+                        reversed: false,
+                    },
+                    Vec::new(),
+                    state,
+                    app,
+                    cancellation,
+                )
+                .await
+            }
+        });
+        wait_for_fixture_capture(&directory, "go-ready").await;
+        if fail {
+            cancellation.cancel();
+        }
+        if barrier == "wire=quit" {
+            std::fs::write(directory.path().join("release"), b"").unwrap();
+            wait_for_fixture_capture(&directory, barrier).await;
+        }
+        assert!(supervisor.get_exact(&key).is_some());
+        core.abort();
+        assert!(core.await.unwrap_err().is_cancelled());
+        // Let the shell read termination commands after the mid-search abort.
+        std::fs::write(directory.path().join("release"), b"").unwrap();
+        assert_abandoned_engine_removed(&directory, &supervisor, "analysis", Some(&key)).await;
+        assert_eq!(
+            supervisor.get_exact(&other_key).unwrap().generation,
+            other.generation
+        );
+        supervisor
+            .terminate_exact(&other_key, other.generation)
+            .await
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn report_abort_mid_search_removes_generation() {
+        assert_report_abort_removes_generation("abort-search", "go-ready", false).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn report_abort_during_success_termination_removes_generation() {
+        assert_report_abort_removes_generation("abort-success", "wire=quit", false).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn report_abort_during_failure_termination_removes_generation() {
+        assert_report_abort_removes_generation("abort-failure", "wire=quit", true).await;
     }
 
     #[cfg(unix)]
@@ -4399,7 +4578,7 @@ done
         assert!(body.contains("Uuid::new_v4()"));
         assert!(body.contains("EngineKey::new(\"engine-config\""));
         assert!(body.contains("spawn_registered("));
-        assert!(body.contains("terminate_exact(&key, supervised.generation)"));
+        assert!(body.contains("terminate_now()"));
     }
 
     fn pos(fen: &str) -> Chess {
@@ -4737,6 +4916,13 @@ pub async fn get_engine_config(
     engine: EngineHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<EngineConfig, Error> {
+    get_engine_config_core(engine, state.inner()).await
+}
+
+pub(crate) async fn get_engine_config_core(
+    engine: EngineHandle,
+    state: &AppState,
+) -> Result<EngineConfig, Error> {
     let executable_ref = engine.id.clone();
     let probe_id = uuid::Uuid::new_v4().to_string();
     let key = EngineKey::new("engine-config".into(), probe_id.clone())?;
@@ -4752,7 +4938,7 @@ pub async fn get_engine_config(
         &admission,
     )
     .await?;
-    let (supervised, config) = spawn_registered(
+    let (_, guard, config) = spawn_registered(
         state.engine_supervisor.clone(),
         key.clone(),
         executable,
@@ -4760,9 +4946,6 @@ pub async fn get_engine_config(
         collect_engine_configuration,
     )
     .await?;
-    state
-        .engine_supervisor
-        .terminate_exact(&key, supervised.generation)
-        .await?;
+    guard.terminate_now().await?;
     Ok(config)
 }

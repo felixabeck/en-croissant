@@ -1901,6 +1901,15 @@ impl EngineSupervisor {
         self.actors.get(key).map(|entry| entry.clone())
     }
 
+    #[cfg(test)]
+    pub(crate) fn registered_keys_for_tab(&self, tab: &str) -> Vec<EngineKey> {
+        self.actors
+            .iter()
+            .filter(|entry| entry.key().tab == tab)
+            .map(|entry| entry.key().clone())
+            .collect()
+    }
+
     pub fn cancel_exact(&self, key: &EngineKey, generation: u64) -> bool {
         let Some(current) = self.actors.get(key) else {
             return false;
@@ -2606,15 +2615,15 @@ fn with_path_authority<T>(
 }
 
 /// Spawns and publishes an actor before any protocol initialization begins.
-/// The registration guard owns cancellation cleanup until initialization has
-/// either completed or synchronously removed the exact generation.
+/// The caller owns the returned armed guard until ownership is transferred or
+/// termination completes. Dropping it terminates exactly the published generation.
 pub(crate) async fn spawn_registered<T, F, Fut>(
     supervisor: Arc<EngineSupervisor>,
     key: EngineKey,
     executable: EngineExecutable,
     admission: AdmissionLease,
     initialize: F,
-) -> Result<(SupervisedEngine, T), Error>
+) -> Result<(SupervisedEngine, RegistrationGuard, T), Error>
 where
     F: FnOnce(Arc<EngineActor>) -> Fut,
     Fut: std::future::Future<Output = Result<T, Error>>,
@@ -2634,7 +2643,7 @@ async fn initialize_registered_actor<T, F, Fut>(
     engine_id: String,
     executable_ref: PathRef,
     initialize: F,
-) -> Result<(SupervisedEngine, T), Error>
+) -> Result<(SupervisedEngine, RegistrationGuard, T), Error>
 where
     F: FnOnce(Arc<EngineActor>) -> Fut,
     Fut: std::future::Future<Output = Result<T, Error>>,
@@ -2651,7 +2660,7 @@ async fn initialize_admitted_actor<T, F, Fut>(
     actor: Arc<EngineActor>,
     admission: AdmissionLease,
     initialize: F,
-) -> Result<(SupervisedEngine, T), Error>
+) -> Result<(SupervisedEngine, RegistrationGuard, T), Error>
 where
     F: FnOnce(Arc<EngineActor>) -> Fut,
     Fut: std::future::Future<Output = Result<T, Error>>,
@@ -2668,7 +2677,7 @@ where
         Ok(supervised) => supervised,
         Err(primary) => return Err(primary),
     };
-    let mut guard = RegistrationGuard::new(supervisor.clone(), key.clone(), supervised.generation);
+    let guard = RegistrationGuard::new(supervisor.clone(), key.clone(), supervised.generation);
     let initialized = initialize(actor);
     tokio::pin!(initialized);
     let initialized = match operation_cancellation {
@@ -2680,10 +2689,7 @@ where
         None => initialized.await,
     };
     match initialized {
-        Ok(value) => {
-            guard.disarm();
-            Ok((supervised, value))
-        }
+        Ok(value) => Ok((supervised, guard, value)),
         Err(primary) => {
             let cleanup = guard.terminate_now().await;
             Err(Error::with_cleanup(primary, cleanup))
@@ -4939,7 +4945,7 @@ mod tests {
         tokio::spawn(async move {
             initialize_admitted_actor(supervisor, key, actor, admission, |_| async { Ok(()) })
                 .await
-                .map(|_| ())
+                .map(|(_, mut guard, ())| guard.disarm())
         })
     }
 
@@ -5497,6 +5503,9 @@ mod tests {
                     result.is_ok(),
                     matches!(outcome, PendingPublicationOutcome::Publication)
                 );
+                if let Ok((_, mut guard, ())) = result {
+                    guard.disarm();
+                }
             }
             assert!(supervisor.pending_actors.is_empty());
             assert_eq!(
@@ -5680,7 +5689,8 @@ mod tests {
             path_ref("probe-path"),
             |actor| async move { actor.init_uci().await },
         )
-        .await;
+        .await
+        .map(|(_, mut guard, ())| guard.disarm());
 
         match result {
             Err(Error::OperationAndCleanup { primary, cleanup }) => {
@@ -5721,6 +5731,7 @@ mod tests {
                     |actor| async move { actor.init_uci().await },
                 )
                 .await
+                .map(|(_, mut guard, ())| guard.disarm())
             }
         });
         while supervisor.get_exact(&key).is_none() {
@@ -5745,6 +5756,71 @@ mod tests {
         .await
         .expect("Drop cleanup failure must be logged");
         wait_for_registration_removed(&supervisor, &key, generation).await;
+    }
+
+    #[tokio::test]
+    async fn registered_initialization_hands_off_armed_generation_guard() {
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let other_key = EngineKey::new("handoff".into(), "other".into()).unwrap();
+        let ((other_actor, _), other_calls) = actor_with(&[], false, None);
+        let other = supervisor
+            .replace(other_key.clone(), other_actor)
+            .await
+            .unwrap();
+
+        for disposition in ["drop", "disarm", "terminate"] {
+            let key = EngineKey::new("handoff".into(), disposition.into()).unwrap();
+            let ((actor, _), calls) = actor_with(&[], false, None);
+            let (published, mut guard, value) = initialize_registered_actor(
+                supervisor.clone(),
+                key.clone(),
+                Arc::new(actor),
+                disposition.into(),
+                path_ref("handoff-path"),
+                |_| async { Ok(17) },
+            )
+            .await
+            .unwrap();
+            assert_eq!(value, 17);
+            assert_eq!(
+                supervisor.get_exact(&key).unwrap().generation,
+                published.generation
+            );
+            match disposition {
+                "drop" => {
+                    drop(guard);
+                    wait_for_registration_removed(&supervisor, &key, published.generation).await;
+                }
+                "disarm" => {
+                    guard.disarm();
+                    drop(guard);
+                    tokio::task::yield_now().await;
+                    assert_eq!(
+                        supervisor.get_exact(&key).unwrap().generation,
+                        published.generation
+                    );
+                    assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
+                    supervisor
+                        .terminate_exact(&key, published.generation)
+                        .await
+                        .unwrap();
+                }
+                "terminate" => guard.terminate_now().await.unwrap(),
+                _ => unreachable!(),
+            }
+            assert!(supervisor.get_exact(&key).is_none());
+            assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
+            assert_eq!(supervisor.registered_keys_for_tab("handoff").len(), 1);
+            assert_eq!(
+                supervisor.get_exact(&other_key).unwrap().generation,
+                other.generation
+            );
+            assert_eq!(other_calls.load(AtomicOrdering::SeqCst), 0);
+        }
+        supervisor
+            .terminate_exact(&other_key, other.generation)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -6483,6 +6559,7 @@ mod tests {
                     |actor| async move { actor.init_uci().await },
                 )
                 .await
+                .map(|(_, mut guard, ())| guard.disarm())
             }
         });
 
@@ -6567,6 +6644,7 @@ mod tests {
                     |actor| async move { actor.init_uci().await },
                 )
                 .await
+                .map(|(_, mut guard, ())| guard.disarm())
             }
         });
         while supervisor.get_exact(&key).is_none() {
@@ -6604,6 +6682,7 @@ mod tests {
                         |actor| async move { actor.init_uci().await },
                     )
                     .await
+                    .map(|(_, mut guard, ())| guard.disarm())
                 }
             }));
             keys.push(key);
@@ -8092,16 +8171,24 @@ mod tests {
             .unwrap();
         let ((actor, _), terminated) = actor_with(&[], false, None);
         let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
-        let initializing = tokio::spawn(initialize_admitted_actor(
-            supervisor.clone(),
-            key.clone(),
-            Arc::new(actor),
-            admission,
-            move |_| async move {
-                let _ = entered_tx.send(());
-                std::future::pending::<Result<(), Error>>().await
-            },
-        ));
+        let initializing = tokio::spawn({
+            let supervisor = supervisor.clone();
+            let key = key.clone();
+            async move {
+                initialize_admitted_actor(
+                    supervisor.clone(),
+                    key.clone(),
+                    Arc::new(actor),
+                    admission,
+                    move |_| async move {
+                        let _ = entered_tx.send(());
+                        std::future::pending::<Result<(), Error>>().await
+                    },
+                )
+                .await
+                .map(|(_, mut guard, ())| guard.disarm())
+            }
+        });
         tokio::time::timeout(Duration::from_secs(1), entered_rx)
             .await
             .unwrap()
