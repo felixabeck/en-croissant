@@ -3482,7 +3482,9 @@ fn search_index_deletion_unlinks_once_between_invalidations() {
     let before_exclusive = &body[..body.find("delete_exclusive_cancellable(").unwrap()];
     assert!(!before_exclusive.contains("invalidate_database"), "{body}");
     let closure = &body[body.find("delete_exclusive_cancellable(").unwrap()
-        ..body.find("ifletErr(error)=unlink_result").unwrap()];
+        ..body
+            .find("letSome(mutcommitted_removal)=committed_removalelse")
+            .unwrap()];
     assert_in_order(
         closure,
         &[

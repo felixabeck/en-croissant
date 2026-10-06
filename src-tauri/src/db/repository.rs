@@ -366,6 +366,8 @@ pub struct DatabaseRepository {
     state: Mutex<RepositoryState>,
     build_changed: Condvar,
     retire_wait: Duration,
+    #[cfg(test)]
+    fail_next_deletion_release: std::sync::atomic::AtomicBool,
 }
 
 impl Default for DatabaseRepository {
@@ -375,6 +377,8 @@ impl Default for DatabaseRepository {
             state: Mutex::new(RepositoryState::default()),
             build_changed: Condvar::new(),
             retire_wait: RETIRE_WAIT_TIMEOUT,
+            #[cfg(test)]
+            fail_next_deletion_release: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -387,6 +391,7 @@ impl DatabaseRepository {
             state: Mutex::new(RepositoryState::default()),
             build_changed: Condvar::new(),
             retire_wait,
+            fail_next_deletion_release: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -877,6 +882,15 @@ impl DatabaseRepository {
     }
 
     fn release_deletion(&self, mut tombstone: TombstoneGuard<'_>) -> Result<(), Error> {
+        #[cfg(test)]
+        if self
+            .fail_next_deletion_release
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(Error::Conflict(
+                "injected database deletion release failure".into(),
+            ));
+        }
         let mut state = self
             .state
             .lock()
@@ -884,6 +898,12 @@ impl DatabaseRepository {
         state.tombstones.remove(&tombstone.path);
         tombstone.disarm();
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_deletion_release(&self) {
+        self.fail_next_deletion_release
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     fn entry(

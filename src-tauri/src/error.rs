@@ -481,6 +481,68 @@ impl Error {
 
 const SQLITE_NOTADB: i32 = 26;
 
+/// Owns failure precedence once a removal's primary entry is gone.
+#[derive(Debug)]
+#[must_use]
+pub(crate) struct CommittedRemoval {
+    removed_entries: usize,
+    failure: Option<Error>,
+}
+
+impl CommittedRemoval {
+    pub(crate) fn new(removed_entries: usize, failure: Option<Error>) -> Self {
+        Self {
+            removed_entries,
+            failure,
+        }
+    }
+
+    pub(crate) fn add_removed_entries(&mut self, count: usize) {
+        self.removed_entries += count;
+    }
+
+    pub(crate) fn record(
+        &mut self,
+        result: Result<(), Error>,
+        subject: &str,
+        path: &std::path::Path,
+    ) {
+        if let Err(error) = result {
+            if let Some(kept) = &self.failure {
+                let failure = if matches!(kept, Error::CommittedDurabilityUncertain(_)) {
+                    "durability uncertainty"
+                } else {
+                    "partial removal"
+                };
+                log::warn!(
+                    "{subject} failed after {failure} for {} (kept category: {:?}): {}",
+                    path.display(),
+                    kept.category(),
+                    error.diagnostic()
+                );
+            } else {
+                self.failure = Some(error);
+            }
+        }
+    }
+
+    pub(crate) fn finish(self) -> Result<(), Error> {
+        match self.failure {
+            None => Ok(()),
+            Some(error @ Error::CommittedDurabilityUncertain(_)) => Err(error),
+            Some(error) => Err(Error::PartialRemoval {
+                removed_entries: self.removed_entries,
+                cause: Box::new(error),
+            }),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn into_parts(self) -> (usize, Option<Error>) {
+        (self.removed_entries, self.failure)
+    }
+}
+
 #[cfg(test)]
 mod missing_entry_tests {
     use super::*;
@@ -917,6 +979,133 @@ impl Drop for LogCaptureScope {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn committed_removal_succeeds_without_failure() {
+        let mut removal = CommittedRemoval::new(1, None);
+        removal.record(Ok(()), "test cleanup", std::path::Path::new("database.db3"));
+        assert!(removal.finish().is_ok());
+    }
+
+    #[test]
+    fn committed_removal_wraps_initial_hard_failure() {
+        let error = CommittedRemoval::new(2, Some(Error::Conflict("first hard failure".into())))
+            .finish()
+            .unwrap_err();
+        assert_eq!(
+            serde_json::to_value(&error).unwrap()["category"],
+            "partial-removal"
+        );
+        assert!(
+            matches!(error, Error::PartialRemoval { removed_entries: 2, cause }
+            if matches!(*cause, Error::Conflict(ref message) if message == "first hard failure"))
+        );
+    }
+
+    #[test]
+    fn committed_removal_records_first_failure_and_counts_later_entries() {
+        let mut removal = CommittedRemoval::new(1, None);
+        removal.record(
+            Err(Error::Conflict("first recorded failure".into())),
+            "test cleanup",
+            std::path::Path::new("database.db3"),
+        );
+        removal.add_removed_entries(2);
+        removal.record(Ok(()), "test cleanup", std::path::Path::new("database.db3"));
+        let error = removal.finish().unwrap_err();
+        assert_eq!(
+            serde_json::to_value(&error).unwrap()["category"],
+            "partial-removal"
+        );
+        assert!(
+            matches!(error, Error::PartialRemoval { removed_entries: 3, cause }
+            if matches!(*cause, Error::Conflict(ref message) if message == "first recorded failure"))
+        );
+    }
+
+    #[test]
+    fn committed_removal_preserves_durability_uncertainty() {
+        let error = CommittedRemoval::new(
+            1,
+            Some(Error::CommittedDurabilityUncertain(
+                DurabilityStage::RegistryReplacement,
+            )),
+        )
+        .finish()
+        .unwrap_err();
+        assert_eq!(
+            serde_json::to_value(&error).unwrap()["category"],
+            "durability"
+        );
+        assert!(matches!(
+            error,
+            Error::CommittedDurabilityUncertain(DurabilityStage::RegistryReplacement)
+        ));
+    }
+
+    #[test]
+    fn committed_removal_keeps_durability_before_hard_failure_and_logs_diagnostic() {
+        let capture = LogCaptureScope::start();
+        let mut removal = CommittedRemoval::new(
+            1,
+            Some(Error::CommittedDurabilityUncertain(
+                DurabilityStage::WorkspaceRemoval,
+            )),
+        );
+        removal.record(
+            Err(Error::from(std::io::Error::other("later native failure"))),
+            "test sidecar removal",
+            std::path::Path::new("database.db3"),
+        );
+        let error = removal.finish().unwrap_err();
+        assert_eq!(
+            serde_json::to_value(&error).unwrap()["category"],
+            "durability"
+        );
+        assert!(matches!(
+            error,
+            Error::CommittedDurabilityUncertain(DurabilityStage::WorkspaceRemoval)
+        ));
+        assert!(capture
+            .records()
+            .iter()
+            .any(|record| record.level == log::Level::Warn
+                && record.message.contains("test sidecar removal")
+                && record.message.contains("database.db3")
+                && record.message.contains("kept category: Durability")
+                && record.message.contains("I/O failure: later native failure")));
+    }
+
+    #[test]
+    fn committed_removal_keeps_hard_failure_before_durability_and_logs_it() {
+        let capture = LogCaptureScope::start();
+        let mut removal =
+            CommittedRemoval::new(1, Some(Error::Conflict("first hard failure".into())));
+        let later = Error::CommittedDurabilityUncertain(DurabilityStage::RegistryReplacement);
+        let diagnostic = later.diagnostic();
+        removal.record(
+            Err(later),
+            "test registry cleanup",
+            std::path::Path::new("database.db3"),
+        );
+        let error = removal.finish().unwrap_err();
+        assert_eq!(
+            serde_json::to_value(&error).unwrap()["category"],
+            "partial-removal"
+        );
+        assert!(
+            matches!(error, Error::PartialRemoval { removed_entries: 1, cause }
+            if matches!(*cause, Error::Conflict(ref message) if message == "first hard failure"))
+        );
+        assert!(capture
+            .records()
+            .iter()
+            .any(|record| record.level == log::Level::Warn
+                && record.message.contains("test registry cleanup")
+                && record.message.contains("database.db3")
+                && record.message.contains("kept category: Conflict")
+                && record.message.contains(&diagnostic)));
+    }
 
     #[test]
     fn shared_error_preserves_all_observable_surfaces() {

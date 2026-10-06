@@ -30,7 +30,7 @@ use crate::{
         ops::*,
         schema::*,
     },
-    error::Error,
+    error::{CommittedRemoval, Error},
     infra::{
         blocking::BLOCKING_GATEWAY,
         path_authority::{
@@ -798,6 +798,17 @@ fn seed_search_cache_for_database(
         .search_cache
         .insert_result(key.clone(), (Vec::new(), Vec::new()));
     key
+}
+
+#[cfg(test)]
+fn assert_database_registry_entry_removed(root: &std::path::Path, handle: &DatabaseHandle) {
+    let registry: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("registry.json")).unwrap()).unwrap();
+    assert!(!registry["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry["id"]["id"] == handle.path_ref().id));
 }
 
 #[cfg(test)]
@@ -2866,25 +2877,22 @@ fn delete_database_blocking(
         Err(error) => return Err(error),
     };
     let expected_source = IndexSource::from_database_identity(&identity)?;
-    let mut primary_gone = false;
-    let mut unlinked = 0;
-    let mut deletion_error = None;
+    let mut committed_removal: Option<CommittedRemoval> = None;
     let unlink_result = repository.delete_exclusive_cancellable(&target, cancellation, || {
         search_cache.invalidate_database(target.path());
         let result = unlink_database_files(&target, &expected_source);
         search_cache.invalidate_database(target.path());
         let result = result?;
-        unlinked = result.0;
-        primary_gone = true;
-        deletion_error = result.1;
+        committed_removal = Some(result);
         Ok(())
     });
-    if primary_gone {
+    if committed_removal.is_some() {
         content_validation::forget(repository, target.path());
     }
-    if let Err(error) = unlink_result {
-        return finish_database_deletion(primary_gone, unlinked, Err(error));
-    }
+    let Some(mut committed_removal) = committed_removal else {
+        return unlink_result;
+    };
+    committed_removal.record(unlink_result, "database lease release", target.path());
 
     let registry_result = (|| {
         authority
@@ -2894,38 +2902,8 @@ fn delete_database_blocking(
             .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
             .remove_database(&file)
     })();
-    if let Some(error) = deletion_error {
-        if let Err(cleanup_error) = registry_result {
-            let failure = if matches!(error, Error::CommittedDurabilityUncertain(_)) {
-                "durability uncertainty"
-            } else {
-                "partial removal"
-            };
-            log::warn!(
-                "database registry cleanup failed after {failure} for {}: {}",
-                target.path().display(),
-                cleanup_error.diagnostic()
-            );
-        }
-        return finish_database_deletion(primary_gone, unlinked, Err(error));
-    }
-    finish_database_deletion(primary_gone, unlinked, registry_result)
-}
-
-fn finish_database_deletion(
-    primary_gone: bool,
-    unlinked: usize,
-    tail: Result<(), Error>,
-) -> Result<(), Error> {
-    match tail {
-        Ok(()) => Ok(()),
-        Err(error) if !primary_gone => Err(error),
-        Err(error @ Error::CommittedDurabilityUncertain(_)) => Err(error),
-        Err(error) => Err(Error::PartialRemoval {
-            removed_entries: unlinked,
-            cause: Box::new(error),
-        }),
-    }
+    committed_removal.record(registry_result, "database registry cleanup", target.path());
+    committed_removal.finish()
 }
 
 #[cfg(test)]
@@ -3017,7 +2995,7 @@ fn inject_unlink_probe_fault<T, E: From<std::io::Error>>(
 fn unlink_database_files(
     target: &DatabaseFileTarget,
     expected_source: &IndexSource,
-) -> Result<(usize, Option<Error>), Error> {
+) -> Result<CommittedRemoval, Error> {
     fn remember_sidecar_error(
         error: Error,
         parent: &File,
@@ -3041,10 +3019,13 @@ fn unlink_database_files(
             | crate::infra::path_authority::ProbeErrorClass::MappedFile
             | crate::infra::path_authority::ProbeErrorClass::Other => {
                 if matches!(error, Error::CommittedDurabilityUncertain(_)) {
-                    if let Some(previous) = retained.replace(error) {
+                    if retained.is_some() {
                         log::warn!(
-                            "database sidecar removal durability remained uncertain: {previous}"
+                            "database sidecar removal durability remained uncertain: {}",
+                            error.diagnostic()
                         );
+                    } else {
+                        *retained = Some(error);
                     }
                     Ok(())
                 } else {
@@ -3147,14 +3128,11 @@ fn unlink_database_files(
         )?;
     }
 
-    match remove_entry_at(target.parent(), target.leaf(), target.identity(), false) {
+    let primary_result = remove_entry_at(target.parent(), target.leaf(), target.identity(), false);
+    match primary_result {
         Ok(()) => unlinked += 1,
-        Err(Error::CommittedDurabilityUncertain(error)) => {
+        Err(Error::CommittedDurabilityUncertain(_)) => {
             unlinked += 1;
-            if durability.is_some() {
-                log::warn!("database primary removal durability remained uncertain: {error}");
-            }
-            durability = Some(Error::CommittedDurabilityUncertain(error));
         }
         Err(Error::Conflict(_)) => {
             if let Some(sidecar_error) = durability {
@@ -3173,27 +3151,32 @@ fn unlink_database_files(
             return Err(error);
         }
     }
+    let mut committed_removal = CommittedRemoval::new(unlinked, durability);
+    committed_removal.record(primary_result, "database primary removal", target.path());
     for (leaf, identity) in sqlite_sidecars {
         #[cfg(test)]
         run_unlink_sidecar_after_identity_probe_hook();
-        if let Err(error) = remove_sidecar(
-            target.parent(),
-            &leaf,
-            identity,
-            &mut unlinked,
-            &mut durability,
-        ) {
-            // The primary is already gone. Keep the completed count so the
-            // caller performs cleanup and reports this as partial removal.
+        let result = remove_entry_at(target.parent(), &leaf, identity, false);
+        if result.is_ok() || matches!(result, Err(Error::CommittedDurabilityUncertain(_))) {
+            committed_removal.add_removed_entries(1);
+        }
+        let result = result.or_else(|error| {
+            if matches!(error, Error::CommittedDurabilityUncertain(_)) {
+                Err(error)
+            } else {
+                remember_sidecar_error(error, target.parent(), &leaf, &mut None)
+            }
+        });
+        if let Err(error) = &result {
             log::warn!(
                 "database SQLite sidecar removal failed after primary deletion for {}: {}",
                 leaf.to_string_lossy(),
                 error.diagnostic()
             );
-            return Ok((unlinked, Some(error)));
         }
+        committed_removal.record(result, "database SQLite sidecar removal", target.path());
     }
-    Ok((unlinked, durability))
+    Ok(committed_removal)
 }
 
 #[cfg(all(test, unix))]
@@ -4199,7 +4182,9 @@ mod tests {
             &expected_source,
         );
         assert!(matches!(result, Ok(None)));
-        let result = unlink_database_files(&target, &expected_source).unwrap();
+        let result = unlink_database_files(&target, &expected_source)
+            .unwrap()
+            .into_parts();
         std::fs::set_permissions(&legacy, std::fs::Permissions::from_mode(0o600)).unwrap();
         assert_eq!(result.0, 1);
         assert!(result.1.is_none());
@@ -4225,7 +4210,9 @@ mod tests {
         let source = IndexSource::from_database(&database, 0).unwrap();
         let target = DatabaseFileTarget::for_test_path(&database).unwrap();
         std::fs::set_permissions(&preferred, std::fs::Permissions::from_mode(0o000)).unwrap();
-        let result = unlink_database_files(&target, &source).unwrap();
+        let result = unlink_database_files(&target, &source)
+            .unwrap()
+            .into_parts();
         std::fs::set_permissions(&preferred, std::fs::Permissions::from_mode(0o600)).unwrap();
         assert_eq!(result.0, 1);
         assert!(result.1.is_none());
@@ -4244,7 +4231,9 @@ mod tests {
         let target = DatabaseFileTarget::for_test_path(&database).unwrap();
         let _faults = scoped_removal_failures([crate::infra::fs::RemovalFaultPoint::ParentSync]);
 
-        let result = unlink_database_files(&target, &expected_source).unwrap();
+        let result = unlink_database_files(&target, &expected_source)
+            .unwrap()
+            .into_parts();
         assert_eq!(result.0, 2);
         assert!(matches!(
             result.1,
@@ -4347,6 +4336,92 @@ mod tests {
         assert!(!database.exists());
         assert!(capture.messages().iter().any(|message| message
             .contains("database registry cleanup failed after durability uncertainty")));
+    }
+
+    #[test]
+    fn primary_durability_before_sqlite_sidecar_failure_runs_cleanup() {
+        let (dir, app, handle, database) = blocking_database_case();
+        let state = app.state::<AppState>();
+        let cache_key = seed_search_cache_for_database(&app, &database);
+        std::fs::remove_file(get_index_path(&database)).unwrap();
+        let wal = database.with_extension("db3-wal");
+        let replacement = dir.path().join("replacement-wal");
+        std::fs::write(&wal, b"").unwrap();
+        std::fs::write(&replacement, b"keep replacement WAL").unwrap();
+        let wal_for_hook = wal.clone();
+        set_unlink_sidecar_after_identity_probe_hook(Some(Box::new(move || {
+            std::fs::rename(&replacement, &wal_for_hook).unwrap();
+        })));
+        let capture = crate::error::LogCaptureScope::start();
+        let _faults = scoped_removal_failures([crate::infra::fs::RemovalFaultPoint::ParentSync]);
+
+        let result = delete_database_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle.clone(),
+            &CancellationToken::new(),
+        );
+        assert!(matches!(
+            result,
+            Err(Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::WorkspaceRemoval
+            ))
+        ));
+        assert!(!database.exists());
+        assert_eq!(std::fs::read(&wal).unwrap(), b"keep replacement WAL");
+        assert!(state.search_cache.get_result(&cache_key).is_none());
+        assert!(!database_is_registered(&app, &handle));
+        assert_database_registry_entry_removed(dir.path(), &handle);
+        assert!(capture
+            .records()
+            .iter()
+            .any(|record| record.level == log::Level::Warn
+                && record.message.contains(
+                    "database SQLite sidecar removal failed after durability uncertainty"
+                )
+                && record.message.contains("kept category: Durability")
+                && record.message.contains("Conflict: ")));
+    }
+
+    #[test]
+    fn primary_durability_before_deletion_release_failure_runs_cleanup() {
+        let (dir, app, handle, database) = blocking_database_case();
+        let state = app.state::<AppState>();
+        let cache_key = seed_search_cache_for_database(&app, &database);
+        std::fs::remove_file(get_index_path(&database)).unwrap();
+        state.database_repository.fail_next_deletion_release();
+        let capture = crate::error::LogCaptureScope::start();
+        let _faults = scoped_removal_failures([crate::infra::fs::RemovalFaultPoint::ParentSync]);
+
+        let result = delete_database_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle.clone(),
+            &CancellationToken::new(),
+        );
+        assert!(matches!(
+            result,
+            Err(Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::WorkspaceRemoval
+            ))
+        ));
+        assert!(!database.exists());
+        assert!(state.search_cache.get_result(&cache_key).is_none());
+        assert!(!database_is_registered(&app, &handle));
+        assert_database_registry_entry_removed(dir.path(), &handle);
+        assert!(capture
+            .records()
+            .iter()
+            .any(|record| record.level == log::Level::Warn
+                && record
+                    .message
+                    .contains("database lease release failed after durability uncertainty")
+                && record.message.contains("kept category: Durability")
+                && record
+                    .message
+                    .contains("Conflict: injected database deletion release failure")));
     }
 
     #[test]
@@ -11498,6 +11573,48 @@ mod deletion_tests {
     use std::path::Path;
     use tauri::Manager;
 
+    #[test]
+    fn deletion_release_failure_after_primary_runs_cache_and_registry_cleanup() {
+        let (dir, app, handle, database) = blocking_database_case();
+        let state = app.state::<AppState>();
+        let cache_key = seed_search_cache_for_database(&app, &database);
+        std::fs::remove_file(get_index_path(&database)).unwrap();
+        state.database_repository.fail_next_deletion_release();
+
+        let result = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    delete_database_blocking(
+                        &state.pgn_path_authority,
+                        &state.database_repository,
+                        &state.search_cache,
+                        handle.clone(),
+                        &CancellationToken::new(),
+                    )
+                })
+                .join()
+                .unwrap()
+        });
+        assert!(
+            matches!(result, Err(Error::PartialRemoval { removed_entries: 1, cause })
+            if matches!(*cause, Error::Conflict(ref message)
+                if message == "injected database deletion release failure"))
+        );
+        assert!(!database.exists());
+        assert!(state.search_cache.get_result(&cache_key).is_none());
+        assert_database_registry_entry_removed(dir.path(), &handle);
+
+        // Reusing the same repository proves the failure was one-shot and released the tombstone.
+        let mut connection = SqliteConnection::establish(database.to_str().unwrap()).unwrap();
+        connection.batch_execute(CREATE_TABLES_SQL).unwrap();
+        drop(connection);
+        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
+        assert!(state
+            .database_repository
+            .delete_exclusive_cancellable(&target, &CancellationToken::new(), || Ok(()))
+            .is_ok());
+    }
+
     struct UnlinkProbeFaultGuard;
 
     impl UnlinkProbeFaultGuard {
@@ -11566,7 +11683,9 @@ mod deletion_tests {
             .unwrap()
             .expect_durable();
         let target = DatabaseFileTarget::for_test_deletion(&database).unwrap();
-        let result = unlink_database_files(&target, &expected_source).unwrap();
+        let result = unlink_database_files(&target, &expected_source)
+            .unwrap()
+            .into_parts();
         assert_eq!(result.0, 2);
         assert!(result.1.is_none());
         assert!(!database.exists());
@@ -11596,7 +11715,9 @@ mod deletion_tests {
         assert_eq!(std::fs::read(&database).unwrap(), database_bytes);
         assert_eq!(std::fs::read(&preferred).unwrap(), index_bytes);
 
-        let result = unlink_database_files(&target, &expected_source).unwrap();
+        let result = unlink_database_files(&target, &expected_source)
+            .unwrap()
+            .into_parts();
         assert_eq!(result.0, 2);
         assert!(result.1.is_none());
         assert!(!database.exists());
@@ -11612,7 +11733,9 @@ mod deletion_tests {
         let preferred = get_index_path(&database);
         std::fs::write(&preferred, b"not an archive").unwrap();
         let target = DatabaseFileTarget::for_test_deletion(&database).unwrap();
-        let result = unlink_database_files(&target, &expected_source).unwrap();
+        let result = unlink_database_files(&target, &expected_source)
+            .unwrap()
+            .into_parts();
         assert_eq!(result.0, 2);
         assert!(result.1.is_none());
         assert!(!database.exists());
@@ -11635,7 +11758,9 @@ mod deletion_tests {
         bytes[8..16].copy_from_slice(&16_u64.to_le_bytes());
         std::fs::write(&preferred, bytes).unwrap();
         let target = DatabaseFileTarget::for_test_deletion(&database).unwrap();
-        let result = unlink_database_files(&target, &expected_source).unwrap();
+        let result = unlink_database_files(&target, &expected_source)
+            .unwrap()
+            .into_parts();
         assert_eq!(result.0, 2);
         assert!(result.1.is_none());
         assert!(!database.exists());
@@ -11658,7 +11783,9 @@ mod deletion_tests {
         let bytes = std::fs::read(&preferred).unwrap();
         let expected_source = IndexSource::from_database(&database, 0).unwrap();
         let target = DatabaseFileTarget::for_test_deletion(&database).unwrap();
-        let result = unlink_database_files(&target, &expected_source).unwrap();
+        let result = unlink_database_files(&target, &expected_source)
+            .unwrap()
+            .into_parts();
         assert_eq!(result.0, 1);
         assert!(result.1.is_none());
         assert!(!database.exists());
@@ -11691,7 +11818,8 @@ mod deletion_tests {
                 let target = DatabaseFileTarget::for_test_deletion(&database).unwrap();
                 let _fault =
                     UnlinkProbeFaultGuard::permission_denied(stage, sidecar.file_name().unwrap());
-                let result = unlink_database_files(&target, &source);
+                let result =
+                    unlink_database_files(&target, &source).map(CommittedRemoval::into_parts);
                 assert!(
                     UNLINK_PROBE_FAULT.with(|slot| slot.borrow().is_none()),
                     "{stage:?}, preferred={preferred}"
@@ -11723,7 +11851,9 @@ mod deletion_tests {
         std::fs::write(&legacy, bytes).unwrap();
         assert!(MmapSearchIndex::open_file(File::open(&legacy).unwrap()).is_err());
         let target = DatabaseFileTarget::for_test_deletion(&database).unwrap();
-        let result = unlink_database_files(&target, &source).unwrap();
+        let result = unlink_database_files(&target, &source)
+            .unwrap()
+            .into_parts();
         assert_eq!(result.0, 2);
         assert!(result.1.is_none());
         assert!(!database.exists());
@@ -11753,7 +11883,9 @@ mod deletion_tests {
             );
             assert!(legacy_for_hook.exists());
         })));
-        let result = unlink_database_files(&target, &source).unwrap();
+        let result = unlink_database_files(&target, &source)
+            .unwrap()
+            .into_parts();
         assert_eq!(result.0, 3);
         assert!(result.1.is_none());
         assert!(!database.exists());
@@ -11879,57 +12011,17 @@ mod deletion_tests {
     }
 
     #[test]
-    fn finish_database_deletion_returns_ok_when_the_tail_succeeds() {
-        assert!(finish_database_deletion(true, 2, Ok(())).is_ok());
-    }
-
-    #[test]
-    fn finish_database_deletion_preserves_sidecar_only_error() {
-        let result = finish_database_deletion(
-            false,
-            1,
-            Err(Error::from(std::io::Error::other("sidecar failure"))),
-        );
-        let error = result.unwrap_err();
-        assert!(matches!(error, Error::Io(_)));
-        assert!(!error.to_string().starts_with("Partially removed:"));
-    }
-
-    #[test]
-    fn finish_database_deletion_wraps_post_primary_failure() {
-        let error =
-            finish_database_deletion(true, 1, Err(Error::Conflict("x".into()))).unwrap_err();
-        assert!(matches!(error, Error::PartialRemoval { .. }));
-        assert!(error.to_string().starts_with("Partially removed:"));
-    }
-
-    #[test]
-    fn finish_database_deletion_preserves_durability_uncertainty() {
-        let error = finish_database_deletion(
-            true,
-            1,
-            Err(Error::CommittedDurabilityUncertain(
-                crate::error::DurabilityStage::RegistryReplacement,
-            )),
-        )
-        .unwrap_err();
-        assert!(matches!(
-            error,
-            Error::CommittedDurabilityUncertain(crate::error::DurabilityStage::RegistryReplacement)
-        ));
-    }
-
-    #[test]
     fn delete_database_uses_fd_relative_target_and_outcome_mapper() {
         let source = include_str!("mod.rs");
         let body = source
             .split("fn delete_database_blocking")
             .nth(1)
             .unwrap()
-            .split("fn finish_database_deletion")
+            .split("\n}\n")
             .next()
             .unwrap();
-        assert!(body.contains("finish_database_deletion"));
+        assert!(body.contains("CommittedRemoval"));
+        assert!(body.contains("committed_removal.finish()"));
         assert!(body.contains("resolve_database("));
         assert!(!body.contains("database_file_target("));
         assert!(!body.contains("database_path("));
@@ -11973,7 +12065,10 @@ mod deletion_tests {
         let target = DatabaseFileTarget::for_test_path(&database).unwrap();
 
         assert_eq!(
-            unlink_database_files(&target, &expected_source).unwrap().0,
+            unlink_database_files(&target, &expected_source)
+                .unwrap()
+                .into_parts()
+                .0,
             1
         );
         assert!(!database.exists());
@@ -11995,7 +12090,10 @@ mod deletion_tests {
         let target = DatabaseFileTarget::for_test_path(&database).unwrap();
 
         assert_eq!(
-            unlink_database_files(&target, &expected_source).unwrap().0,
+            unlink_database_files(&target, &expected_source)
+                .unwrap()
+                .into_parts()
+                .0,
             2
         );
         assert!(!database.exists());
@@ -12046,7 +12144,10 @@ mod deletion_tests {
         let target = DatabaseFileTarget::for_test_path(&database).unwrap();
 
         assert_eq!(
-            unlink_database_files(&target, &expected_source).unwrap().0,
+            unlink_database_files(&target, &expected_source)
+                .unwrap()
+                .into_parts()
+                .0,
             1
         );
         assert!(!database.exists());
@@ -12091,7 +12192,9 @@ mod deletion_tests {
         let vanished_target = DatabaseFileTarget::for_test_path(&vanished_database).unwrap();
         std::fs::remove_file(&vanished_preferred).unwrap();
 
-        let result = unlink_database_files(&vanished_target, &vanished_source).unwrap();
+        let result = unlink_database_files(&vanished_target, &vanished_source)
+            .unwrap()
+            .into_parts();
         assert_eq!(result.0, 1);
         assert!(!vanished_database.exists());
     }
@@ -12129,7 +12232,9 @@ mod deletion_tests {
         std::fs::write(&corrupt_legacy, b"corrupt archive").unwrap();
         let corrupt_target = DatabaseFileTarget::for_test_path(&corrupt_database).unwrap();
 
-        let result = unlink_database_files(&corrupt_target, &corrupt_source).unwrap();
+        let result = unlink_database_files(&corrupt_target, &corrupt_source)
+            .unwrap()
+            .into_parts();
         assert_eq!(result.0, 1);
         assert!(!corrupt_database.exists());
         assert!(corrupt_legacy.exists());
