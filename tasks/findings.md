@@ -9157,6 +9157,9 @@ Code b7f52cd4, 285a96d4, 8d8e4274, 25636945. Windows runtime is rust-windows-tes
 * **Rejected:** per-chunk checks; a SQLite progress-handler scope over the streaming export query; an export-only pre-commit check; the download commit gate (see `d-20261006-10`).
 <!-- ledger-meta {"command":"close","effect_lines":9,"effect_sha256":"d115ecc4ca81d8a234bd5373acc307417ebd1c0bc4c66bbe69eb148400fb481f","header_sha256":"3991c518fb58d8a4cbe5755f5f45b063ac90e84d150a8bcd3637a2c47e811663","header_status":"handled","input_sha256":"94b2dfa76d431d15024f445940a8e85a81d353ec929740f89653a70362cbeae0","kind":"mutation-receipt","operation":"9876137b5aa71af022325577ceacca456dd94d4c03eda6fe7518fde774b73a49","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-18"],"target":"f-20260914-18","v":1} -->
 
+* **Correction to the closing note (records lens, 2026-10-06):** "after a cancel no further row is read, decoded or written" overstates the per-row guarantee. The token is checked only before each row is pulled. A row already pulled when the cancel arrives still decodes and writes, and the cancel is observed at the next checkpoint, which prevents any further pull. The mid-stream test pins exactly that: one row is yielded, then `Cancellation`.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"82f170a0b9631d343de5c937b317508668dd634b6220dac688e8fc18badf1885","input_sha256":"195000927d780a1557b9865a1defcffc86bcfdf2ec4ae472ebc5ee90a48daf0d","kind":"mutation-receipt","operation":"cd0a0f7c986c8f0c17ba11a3b4c0936f15c7056d3870118a99d75367510d3655","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-18"],"target":"f-20260914-18","v":1} -->
+
 ### Index creation and deletion honour cancellation only at worker admission
 
 * **ID:** f-20260914-19 · **Status:** handled · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
