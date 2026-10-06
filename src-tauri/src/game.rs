@@ -1209,23 +1209,10 @@ async fn spawn_configured_game_engine(
         &admission,
     )
     .await?;
-    let (supervised, guard) = spawn_configured_game_engine_with_resolved(
-        supervisor,
-        executable,
-        resolved,
-        admission,
-        key.clone(),
-        chess960,
+    spawn_configured_game_engine_with_resolved(
+        supervisor, executable, resolved, admission, key, chess960,
     )
-    .await?;
-    Ok((
-        RegisteredGameEngine {
-            actor: supervised.actor,
-            key,
-            generation: supervised.generation,
-        },
-        guard,
-    ))
+    .await
 }
 
 fn game_engine_registration_for_side(
@@ -1281,13 +1268,23 @@ async fn spawn_configured_game_engine_with_resolved(
     admission: AdmissionLease,
     key: EngineKey,
     chess960: bool,
-) -> Result<(crate::engine::SupervisedEngine, RegistrationGuard), Error> {
+) -> Result<(RegisteredGameEngine, RegistrationGuard), Error> {
     let hook_key = key.clone();
+    let registered_key = key.clone();
     spawn_registered(supervisor, key, executable, admission, move |engine| {
         initialize_configured_game_engine(engine, resolved, chess960, hook_key)
     })
     .await
-    .map(|(supervised, guard, ())| (supervised, guard))
+    .map(|(supervised, guard, ())| {
+        (
+            RegisteredGameEngine {
+                actor: supervised.actor,
+                key: registered_key,
+                generation: supervised.generation,
+            },
+            guard,
+        )
+    })
 }
 
 /// The after-spawn hook every game engine's initialization fires. It is keyed by engine
@@ -1369,23 +1366,10 @@ async fn spawn_configured_game_engine_with_executable(
         .flat_map(|option| std::mem::take(&mut option.resources))
         .collect();
     let executable = executable.with_resource_leases(child_leases);
-    let (supervised, guard) = spawn_configured_game_engine_with_resolved(
-        supervisor,
-        executable,
-        resolved,
-        admission,
-        key.clone(),
-        chess960,
+    spawn_configured_game_engine_with_resolved(
+        supervisor, executable, resolved, admission, key, chess960,
     )
-    .await?;
-    Ok((
-        RegisteredGameEngine {
-            actor: supervised.actor,
-            key,
-            generation: supervised.generation,
-        },
-        guard,
-    ))
+    .await
 }
 
 pub(crate) fn game_side_engine_key(
