@@ -5790,3 +5790,49 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** two mechanisms for one question in one file (universal rule 11; `d-20260921-02`'s one-mechanism precedent), and the raw-text form carries the same comment/string false-positive defect the finding names. Behavioural change, intended: a declaration named `listen` and text in comments or strings no longer match. Reversal path: restore the three regexes.
 * **Decided by:** Claude Code, drain session 8a53384e-b9f0-4371-944a-cd1d4da3c158 (run c77de5ef), full auto, reviewed plan tasks/plans/2026-10-05-tauri-boundary-ast.md · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":35,"effect_sha256":"ebf537f896e35fcc75c3d7a11eefbcd76f4214db880b48b360298bb13df89ceb","input_sha256":"560863ff83392d66198420acf747587347089393cfd3f04dea807078a4c147ee","kind":"mutation-receipt","operation":"5e6d71cc0a83f755076e9d8ff3431b30424cbeed3cd7d9ee01eadea9fde840ad","options":{"section":null},"request_id_sha256":null,"results":["d-20261006-01","d-20261006-02","d-20261006-03","d-20261006-04"],"target":"decisions-ledger","v":1} -->
+
+### d-20261006-05 — After an on-disk workspace create, does an ordinary later failure compensate or report?
+
+* **Question:** After `create_workspace_file` or `create_workspace_directory` has put an entry on disk, does an ordinary (non-`CommittedDurabilityUncertain`) failure of a later step roll the entry back, or report it as applied-despite-error?
+* **Governs:** f-20260914-02
+* **Chosen:** compensate with an identity-checked removal of everything the call created (for a directory: empty-only, never recursive), folded through `Error::with_cleanup`; a committed-uncertain registration is kept and reported. When an earlier step's parent sync was uncertain and a later ordinary error occurs, the rollback still runs and the later error is reported.
+* **Rejected:** reporting every such failure as applied-despite-error (the registry is unchanged after an ordinary registration error, so the relist would find an unregistered entry and register it behind the user's back); skipping the rollback when an earlier sync was uncertain (contradicts `d-20260906-03`'s combine contract for workspace create, which was recorded with exactly that sidecar-failure rollback in place).
+* **Reason:** `d-20260901-06` decided this for `create_workspace_directory` and `create_database_child`; `register_workspace_child_observed_with_parent` leaves the registry unchanged on every ordinary error and adopts the entry only under `CommittedDurabilityUncertain(RegistryReplacement)`. Reversal path: replace the rollback fold in the two create paths with an applied-despite-error return.
+* **Decided by:** Claude Code, drain session 1d868981-1167-493d-8dda-1fb6df09dc4b (drain run c77de5ef-14cb-4958-9bea-040d095f5e2c), full auto, reviewed plan tasks/plans/2026-10-05-workspace-create-post-commit.md (planned ahead, 4 review rounds) · **Superseded-by:** -
+
+### d-20261006-06 — Where is a created workspace file's game count established?
+
+* **Question:** `create_workspace_file` counts the new PGN's games after the PGN, sidecar and registry record are committed, so a count failure is reported as a failed create while the file stays. Where is the count taken instead?
+* **Governs:** f-20260914-02
+* **Chosen:** on the installed file, inside the blocking core, after the sidecar install and before registration, through a descriptor verified against the installed identity and the repository's shared lookup/scan/retain step (the index is offered to the cache under the file's key); any count failure is an ordinary failure before registration and is rolled back. The command returns the core's result with no further fallible step.
+* **Rejected:** counting the request bytes or source snapshot before publication plus a post-install cache warm (two scans of a large import, and a warm whose failure must be swallowed); a new applied-despite-error variant for a post-registration count failure (the renderer would relist and the listing would hit the same count failure); a nullable count (`FileMetadata.numGames` is required by its consumers).
+* **Reason:** supersedes the count clause of `d-20260927-02` ("a post-install count failure keeps the installed file and returns the error") on evidence it did not weigh: a kept unscannable file makes every later listing of the workspace fail (`list_file_workspace_core` fails the listing on one count error), and no renderer flow recovers a plain count error, so the kept file is reported as a failed create; its own rejection reason was the previous mandate's scope (`f-20260908-04`). The rest of `d-20260927-02` (verbatim byte copy, revision binding) stands. Reversal path: move the count back after the core in `create_workspace_file`.
+* **Decided by:** Claude Code, drain session 1d868981-1167-493d-8dda-1fb6df09dc4b (drain run c77de5ef-14cb-4958-9bea-040d095f5e2c), full auto, reviewed plan tasks/plans/2026-10-05-workspace-create-post-commit.md · **Superseded-by:** -
+
+### d-20261006-07 — How is a workspace directory whose post-create parent sync failed reported?
+
+* **Question:** `create_dir_at` returns `Error::Io` when the directory was created but the parent sync failed, so `create_workspace_directory` reports a created directory as a plain failure. How is it reported instead?
+* **Governs:** f-20260914-02
+* **Chosen:** `create_dir_at`'s create-then-sync is split into a committed-uncertain outcome; the workspace directory path reports it as `CommittedDurabilityUncertain(DurabilityStage::WorkspaceDirectoryCreation)`, a new stage displayed as "workspace directory creation", which the renderer recovers by refreshing like the file stages. The other three `create_dir_at` callers keep today's `Error::Io` through one adapter.
+* **Rejected:** reusing `DurabilityStage::DirectoryInstall` (it names the engine-archive install); changing every caller's error (the other callers are internal steps whose current error is not a misreport of a committed user operation).
+* **Reason:** `d-20260906-03`'s report contract assigns workspace file/directory creation to committed-uncertain reporting. Reversal path: drop the stage and return the adapter's `Error::Io` to the workspace path.
+* **Decided by:** Claude Code, drain session 1d868981-1167-493d-8dda-1fb6df09dc4b (drain run c77de5ef-14cb-4958-9bea-040d095f5e2c), full auto, reviewed plan tasks/plans/2026-10-05-workspace-create-post-commit.md · **Superseded-by:** -
+
+### d-20261006-08 — What does a workspace directory create rollback remove?
+
+* **Question:** When a workspace directory create rolls back, what may it remove, given that an external program can touch the new leaf between our steps?
+* **Governs:** f-20260914-02
+* **Chosen:** the directory only, and only while it is still the observed identity and still empty (one identity-checked, empty-only removal in `infra/fs.rs` with `remove_entry_at`'s parent-sync outcome, on both platforms). A directory whose identity was never observed is never removed and is reported as not removed (`OperationAndCleanup`).
+* **Rejected:** today's recursive `remove_entry_at(.., true)` (deletes files an external program placed inside); an empty-only removal by name after an observation failure (could remove a different empty directory an external program put there); creating under a temporary name and publishing with a no-replace rename (a crash between the two leaves a hidden temporary directory in the user's workspace); a plain error over the left-in-place directory (the defect of `f-20260914-02`).
+* **Reason:** a new directory's rollback has no business deleting anything an external program put inside it, and nothing is removed by name alone. Reversal path: route the directory rollback back through `remove_entry_at(.., true)`.
+* **Decided by:** Claude Code, drain session 1d868981-1167-493d-8dda-1fb6df09dc4b (drain run c77de5ef-14cb-4958-9bea-040d095f5e2c), full auto, reviewed plan tasks/plans/2026-10-05-workspace-create-post-commit.md · **Superseded-by:** -
+
+### d-20261006-09 — How does a PGN snapshot represent a pre-1970 modification time?
+
+* **Question:** `pgn_snapshot_file` refuses a pre-1970 modification time, so every count, page read and revision query of such a file fails, and counting inside create would make a pre-1970 create fail. How is the time represented?
+* **Governs:** f-20260914-02
+* **Chosen:** a signed nanosecond count in the snapshot revision and the repository cache key, for every snapshot, in one implementation in `pgn_snapshot_file`; revision strings of post-1970 files stay byte-identical.
+* **Rejected:** keeping the refusal (contradicts the tested negative `lastModified` of `d-20261003-06`/`d-20261003-07` once create counts in-core); a signed variant only inside the new constructor (two revision encodings for one file, so a later listing's cache key would differ from the create's).
+* **Reason:** one revision rule per file (universal rule 11); `d-20261003-07` already defines pre-1970 times as negative. Reversal path: restore the unsigned `mtime_nanos` and the `InvalidInput` refusal.
+* **Decided by:** Claude Code, drain session 1d868981-1167-493d-8dda-1fb6df09dc4b (drain run c77de5ef-14cb-4958-9bea-040d095f5e2c), full auto, reviewed plan tasks/plans/2026-10-05-workspace-create-post-commit.md · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":44,"effect_sha256":"6280249ff02defc5df752eb3131dc1b38dbefdf4e5aed29510bc32680b0dbfc6","input_sha256":"a7738966b3f1fe9575ce0c6b52043c8fa041a74503eb4d6243efd5adea2e13af","kind":"mutation-receipt","operation":"df5bba214c5283f280f0493d12ae35785ead51f84ef5143db9debc5aadfe0e4e","options":{"section":null},"request_id_sha256":null,"results":["d-20261006-05","d-20261006-06","d-20261006-07","d-20261006-08","d-20261006-09"],"target":"decisions-ledger","v":1} -->
