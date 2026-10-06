@@ -10992,6 +10992,9 @@ Accepted for now, with `stays proportionate on a pathological single-line source
   * **Filed elsewhere during the run:** agent-kit inbox — Grok 1.0.46 read-only lenses still advertise `push` mid-run (recurrence of agent-kit `f-20260911-01`; 10 of 14 Grok diff lenses failed their profile check and ran as disclosed native fallbacks); ChessFable inbox — Windows flake in `collect_tree_entries_lists_the_workspace_shape_on_every_platform` (CI run 37456253894).
 <!-- ledger-meta {"command":"close","effect_lines":6,"effect_sha256":"e730dda77828cca9caa3c17f18188c3a6c556ab7e3b2e9c1d73d17202b938125","header_sha256":"1b6f4c05a71996749251fcbd6dac4192b7d2baf870b4f805ce07085a4dcf5686","header_status":"handled","input_sha256":"f5910ac9b2474ce95c8e2225d18f6e01eb3080f7c87c49168815d03b7c5fa8a5","kind":"mutation-receipt","operation":"f75f43baef2fa41a4d5c5174516fc13522eb9b10485acf45d787bbef535075f2","options":{"section":null},"request_id_sha256":null,"results":["f-20260920-20"],"target":"f-20260920-20","v":1} -->
 
+* **Correction to the closing note:** "10 of 14 Grok diff lenses failed their profile check" counts launches, not lenses — 10 of 14 diff-lens launches (6 distinct lenses, four of them retried once) failed, as `tasks/handoffs/2026-10-06-f-20260920-20-review.md` states.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"5f12f60bd731a9af99324075a36233023823c435014332c32cfbbf14a5d60451","input_sha256":"1f7ecb7fde86aa42757e7adb7c955bfb9f6e1d34a9b7ad80b00ab0ea98eec250","kind":"mutation-receipt","operation":"c2a72718a7a69fbe6d4d89a8a0cf39bb0554f630ae8bdc5f11b6e703b3d54922","options":{"section":null},"request_id_sha256":null,"results":["f-20260920-20"],"target":"f-20260920-20","v":1} -->
+
 ---
 
 ## 2026-09-21 — filed through the inbox spool
