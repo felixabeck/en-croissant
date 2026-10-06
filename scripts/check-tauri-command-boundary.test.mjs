@@ -659,17 +659,25 @@ describe("working-tree enumeration and reads", () => {
   });
 
   test("names a capability file that cannot be read", () => {
-    expect(() =>
+    let caught;
+    try {
       runTauriBoundaryCheck({
         workspaceRoot: "/fixture",
         listFiles: () => ["src/platform/native.ts"],
         readFile: (path) => {
           if (path.endsWith("native.ts")) return NATIVE_SOURCE;
-          if (path.endsWith("main.json")) throw new Error("EACCES: permission denied");
+          if (path.endsWith("main.json")) {
+            throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+          }
           return VALID_SECURITY_CONFIG;
         },
-      }),
-    ).toThrow(/^Cannot read .*capabilities\/main\.json/);
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught.message).toMatch(/^Cannot read /);
+    expect(caught.message).toMatch(/capabilities\/main\.json: EACCES: permission denied$/);
+    expect(caught.cause.code).toBe("EACCES");
   });
 
   test("names a non-ENOENT working-tree read failure", () => {
