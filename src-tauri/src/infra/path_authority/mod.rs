@@ -9398,6 +9398,58 @@ pub(crate) mod portable_tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn engine_image_cleanup_changed_set_write_failure_preserves_both_causes_and_intents() {
+        use crate::infra::fs::{
+            install_test_atomic_file_injector, scoped_test_removal_injector, AtomicFileFaultPoint,
+            CancelAtomicFileAt, RemovalFault, RemovalFaultPoint,
+        };
+        let mut f = EngineImageCleanupFixture::new();
+        let missing_leaf = OsString::from(uuid::Uuid::new_v4().to_string());
+        let (_, missing_identity) = f
+            .image_dir
+            .atomic_replace_leaf_identified(&missing_leaf, |file| {
+                file.write_all(b"missing image").map_err(Error::from)
+            })
+            .unwrap();
+        for (leaf, identity) in [(&missing_leaf, missing_identity), (&f.leaf, f.installed)] {
+            assert_eq!(
+                f.authority
+                    .record_engine_image_cleanup(&f.image_dir, leaf, identity)
+                    .diagnostic(),
+                "recorded"
+            );
+        }
+        let intents = f.authority.image_cleanup.clone();
+        assert_eq!(intents.len(), 2);
+        fs::remove_file(f.image_dir.path().join(&missing_leaf)).unwrap();
+
+        let _removal_guard =
+            scoped_test_removal_injector(Arc::new(RemovalFault(RemovalFaultPoint::BeforeTopOpen)));
+        let _write_guard = install_test_atomic_file_injector(Arc::new(CancelAtomicFileAt {
+            cancel_at: AtomicFileFaultPoint::Cleanup,
+            fail_at: Some(AtomicFileFaultPoint::Write),
+            cancellation: tokio_util::sync::CancellationToken::new(),
+        }));
+        let error = f
+            .authority
+            .cleanup_engine_images(&f.image_dir, false)
+            .unwrap_err();
+        assert!(matches!(error, Error::OperationAndCleanup { .. }));
+        let diagnostic = error.diagnostic();
+        assert!(
+            diagnostic.contains("injected Write failure"),
+            "{diagnostic}"
+        );
+        assert!(
+            diagnostic.contains("injected removal failure"),
+            "{diagnostic}"
+        );
+        assert_eq!(f.authority.image_cleanup, intents);
+        assert!(f.image_dir.path().join(&f.leaf).is_file());
+    }
+
+    #[cfg(unix)]
     fn assert_engine_image_cleanup_retry_failure(
         injector: Arc<dyn crate::infra::fs::AtomicWriterInjector + Send + Sync>,
         registry_diagnostic: &str,

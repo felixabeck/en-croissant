@@ -4038,6 +4038,38 @@ mod blocking_offload_scans {
     }
 
     #[test]
+    fn shutdown_cleanup_dispatch_preserves_native_error_diagnostics() {
+        let main = body_at_indent(include_str!("main.rs"), "fn main()");
+        let exit = main
+            .split_once("let tauri::RunEvent::ExitRequested")
+            .expect("ExitRequested event branch")
+            .1;
+        let dispatch = body_at_indent(exit, "tauri::async_runtime::spawn(async move {");
+        for call in [
+            "shutdown_engine_attachments(app_handle.clone())",
+            "shutdown_engine_launch_root(authority)",
+        ] {
+            let mapping = dispatch
+                .split_once(call)
+                .unwrap_or_else(|| panic!("shutdown dispatch must call {call}: {dispatch}"))
+                .1
+                .split_once('}')
+                .expect("shutdown cleanup closure end")
+                .0
+                .split_whitespace()
+                .collect::<String>();
+            assert!(
+                mapping.starts_with(".await.map_err(|error|error.diagnostic())"),
+                "{call} must retain native diagnostics: {mapping}"
+            );
+            assert!(
+                !mapping.contains(".to_string()"),
+                "{call} must not redact native diagnostics: {mapping}"
+            );
+        }
+    }
+
+    #[test]
     fn sound_startup_keeps_all_four_outcomes_distinguishable() {
         let main = include_str!("main.rs");
         let setup = body_at_indent(main, ".setup(move |app| {");
