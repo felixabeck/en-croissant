@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: be4d092434a610b3bbc4ca3fd471d8a20a38e1c7a04a81da9163015ef9862853
+# agent-kit-sha256: 1b5a295315e4780f8688f8f7ca2edb2d8cafa2e175bcc11a85d3e42b90b69648
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -81,6 +81,40 @@ from datetime import datetime, timezone
 from enum import Enum, auto
 from pathlib import Path, PurePosixPath
 from typing import Literal, cast
+
+SUPERVISOR_CONTRACT_ENV = "FINDINGS_SUPERVISOR_CONTRACT"
+# Malformed declarations fall back to the oldest gated behaviour, always safe for a declaring caller.
+SUPERVISOR_CONTRACT_BASELINE = 1
+
+
+def _parse_supervisor_contract_level(value: str | None) -> int | None:
+    """Parse a declaration silently, falling back to the oldest declared level."""
+    if value is None or value == "":
+        return None
+    if not value.isascii() or not value.isdecimal():
+        return SUPERVISOR_CONTRACT_BASELINE
+    # Accumulate digits so Python's decimal conversion limit cannot raise.
+    level = 0
+    for digit in value:
+        level = level * 10 + ord(digit) - ord("0")
+    return level or SUPERVISOR_CONTRACT_BASELINE
+
+
+# Consume before the import-time git probe so children and hooks stay undeclared.
+_SUPERVISOR_CONTRACT_LEVEL = _parse_supervisor_contract_level(
+    os.environ.pop(SUPERVISOR_CONTRACT_ENV, None)
+)
+
+
+def supervisor_contract_level() -> int | None:
+    """Return the level a declaring caller (the drain supervisor) understands.
+
+    None means undeclared: newest behaviour. Behaviour gated on this level keeps
+    old behaviour for lower declared levels
+    (references/python-interpreter-contract.md §7).
+    """
+    return _SUPERVISOR_CONTRACT_LEVEL
+
 
 # Named so the formatter cannot rewrite them. `ruff format` at target-version py314
 # strips redundant parentheses from an explicit `except (A, B):` tuple literal, and
