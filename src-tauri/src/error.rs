@@ -142,6 +142,9 @@ pub enum RootFailure {
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// Shares a pending actor's terminal failure without changing its observable error.
+    #[error(transparent)]
+    Shared(std::sync::Arc<Error>),
     #[error("{error}")]
     RootFailure {
         error: Box<Error>,
@@ -329,6 +332,9 @@ pub fn sanitized_io_error(error: &std::io::Error, message: String) -> std::io::E
 impl Error {
     /// True only for an I/O error reporting absence as defined by [`is_missing_entry_io`].
     pub fn is_missing_entry(&self) -> bool {
+        if let Self::Shared(error) = self {
+            return error.is_missing_entry();
+        }
         matches!(self, Self::Io(error) if is_missing_entry_io(error))
     }
 
@@ -344,6 +350,7 @@ impl Error {
 
     pub(crate) fn root_failure(&self) -> Option<RootFailure> {
         match self {
+            Self::Shared(error) => error.root_failure(),
             Self::RootFailure { reason, .. } => Some(*reason),
             _ => None,
         }
@@ -352,6 +359,7 @@ impl Error {
     /// Only use for failures from resolving, enumerating or acquiring the chosen root.
     pub(crate) fn root_failure_reason(&self) -> Option<RootFailure> {
         match self {
+            Self::Shared(error) => error.root_failure_reason(),
             Self::RootFailure { reason, .. } => Some(*reason),
             Self::Io(_) if self.is_missing_entry() => Some(RootFailure::Missing),
             Self::Io(error) => match error.kind() {
@@ -375,6 +383,7 @@ impl Error {
 
     pub(crate) fn unlabelled(&self) -> &Self {
         match self {
+            Self::Shared(error) => error.unlabelled(),
             Self::RootFailure { error, .. } => error.unlabelled(),
             _ => self,
         }
@@ -382,6 +391,9 @@ impl Error {
 
     /// Returns the local diagnostic without changing the message exposed on the wire.
     pub(crate) fn diagnostic(&self) -> String {
+        if let Self::Shared(error) = self {
+            return error.diagnostic();
+        }
         if let Self::RootFailure { error, .. } = self {
             return error.diagnostic();
         }
@@ -415,6 +427,7 @@ impl Error {
 
     pub fn category(&self) -> ErrorCategory {
         match self {
+            Self::Shared(error) => error.category(),
             Self::RootFailure { error, .. } => error.category(),
             Self::Io(_) if self.is_missing_entry() => ErrorCategory::MissingResource,
             Self::Io(error) => match error.kind() {
@@ -904,6 +917,44 @@ impl Drop for LogCaptureScope {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_error_preserves_all_observable_surfaces() {
+        let errors = [
+            Error::Io(Box::new(std::io::Error::other("shared I/O sentinel"))),
+            Error::EngineTimeout("shared timeout sentinel".into()),
+            Error::OperationAndCleanup {
+                primary: "shared primary sentinel".into(),
+                cleanup: "shared cleanup sentinel".into(),
+            },
+            Error::Io(Box::new(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "shared root sentinel",
+            )))
+            .with_root_failure(RootFailure::Missing),
+        ];
+        for original in errors {
+            let original = std::sync::Arc::new(original);
+            let shared = Error::Shared(original.clone());
+            assert_eq!(shared.category(), original.category());
+            assert_eq!(shared.to_string(), original.to_string());
+            assert_eq!(shared.diagnostic(), original.diagnostic());
+            assert_eq!(shared.root_failure(), original.root_failure());
+            assert_eq!(
+                serde_json::to_value(&shared).unwrap(),
+                serde_json::to_value(&*original).unwrap()
+            );
+            let original_source = std::error::Error::source(&*original);
+            let shared_source = std::error::Error::source(&shared);
+            assert_eq!(
+                shared_source.map(ToString::to_string),
+                original_source.map(ToString::to_string)
+            );
+            if let (Some(shared_source), Some(original_source)) = (shared_source, original_source) {
+                assert!(std::ptr::eq(shared_source, original_source));
+            }
+        }
+    }
 
     #[test]
     fn is_sqlite_notadb_diesel_code_26() {

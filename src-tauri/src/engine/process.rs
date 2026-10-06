@@ -14,7 +14,7 @@ use dashmap::DashMap;
 use log::error;
 use serde::Serialize;
 use specta::Type;
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex, Notify};
 use tokio::{
     io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, ChildStdout, Command},
@@ -1098,6 +1098,7 @@ pub struct EngineSupervisor {
     next_generation: AtomicU64,
     sealed: AtomicBool,
     actors: DashMap<EngineKey, SupervisedEngine>,
+    pending_actors: Arc<DashMap<u64, Arc<PendingActor>>>,
     admissions: Arc<DashMap<EngineKey, EngineAdmission>>,
     admission_coordination: StdMutex<()>,
     registration: Mutex<()>,
@@ -1117,6 +1118,7 @@ impl Default for EngineSupervisor {
             next_generation: AtomicU64::default(),
             sealed: AtomicBool::default(),
             actors: DashMap::default(),
+            pending_actors: Arc::default(),
             admissions: Arc::default(),
             admission_coordination: StdMutex::default(),
             registration: Mutex::default(),
@@ -1487,22 +1489,18 @@ impl EngineSupervisor {
         engine_id: String,
         executable: PathRef,
     ) -> Result<SupervisedEngine, Error> {
-        let mut actor_guard = PendingActorGuard::new(actor.clone(), key.clone(), None);
         let admission = match self
             .admit(key.clone(), engine_id.clone(), executable.clone(), false)
             .await
         {
-            Ok(admission) => {
-                actor_guard.set_generation(admission.generation());
-                admission
-            }
+            Ok(admission) => admission,
             Err(primary) => {
-                let error = reject_actor(&actor, primary).await;
-                actor_guard.disarm();
-                return Err(error);
+                return Err(Error::with_cleanup(primary, actor.terminate().await));
             }
         };
-        let result = self.publish_admitted(key, actor, admission).await;
+        let pending = self.track_pending_actor(key.clone(), actor, &admission);
+        let mut actor_guard = PendingActorGuard::new(pending.clone(), self.pending_actors.clone());
+        let result = self.publish_admitted(key, pending, admission).await;
         actor_guard.disarm();
         result
     }
@@ -1510,20 +1508,21 @@ impl EngineSupervisor {
     async fn publish_admitted(
         &self,
         key: EngineKey,
-        actor: Arc<EngineActor>,
+        pending: Arc<PendingActor>,
         admission: AdmissionLease,
     ) -> Result<SupervisedEngine, Error> {
         let lifecycle = self.lifecycle_lease(&key);
         let _transition = lifecycle.lock().await;
-        self.publish_admitted_locked(key, actor, admission).await
+        self.publish_admitted_locked(key, pending, admission).await
     }
 
     async fn publish_admitted_locked(
         &self,
         key: EngineKey,
-        actor: Arc<EngineActor>,
+        pending: Arc<PendingActor>,
         mut admission: AdmissionLease,
     ) -> Result<SupervisedEngine, Error> {
+        let actor = pending.actor.clone();
         let _ = actor
             .registration_identity
             .set((key.clone(), admission.generation()));
@@ -1534,14 +1533,14 @@ impl EngineSupervisor {
                 bound_key == &key && *generation == admission.generation()
             }));
         if let Some(error) = admission.cancel_error() {
-            return Err(reject_actor(&actor, error).await);
+            return Err(reject_actor(&pending, self.pending_actors.clone(), error).await);
         }
         if let Err(error) = self.validate_admission_policy(
             &key,
             &admission.admission.engine_id,
             &admission.admission.executable,
         ) {
-            return Err(reject_actor(&actor, error).await);
+            return Err(reject_actor(&pending, self.pending_actors.clone(), error).await);
         }
         if let Some(previous) = self.actors.get(&key).map(|entry| entry.clone()) {
             previous.mark_cancelled();
@@ -1550,7 +1549,7 @@ impl EngineSupervisor {
             let terminate = previous_actor.terminate().await;
             self.actors.remove(&key);
             if let Err(primary) = combine_shutdown_results(stop, terminate) {
-                return Err(reject_actor(&actor, primary).await);
+                return Err(reject_actor(&pending, self.pending_actors.clone(), primary).await);
             }
         }
         let registration = self.registration.lock().await;
@@ -1560,7 +1559,7 @@ impl EngineSupervisor {
             &admission.admission.executable,
         ) {
             drop(registration);
-            return Err(reject_actor(&actor, error).await);
+            return Err(reject_actor(&pending, self.pending_actors.clone(), error).await);
         }
         let published = {
             let _coordination = self
@@ -1588,6 +1587,7 @@ impl EngineSupervisor {
                     }
                 ));
                 self.actors.insert(key, entry.clone());
+                self.pending_actors.remove(&generation);
                 self.admissions.remove_if(&admission.key, |_, current| {
                     current.generation == generation
                 });
@@ -1596,7 +1596,9 @@ impl EngineSupervisor {
         };
         drop(registration);
         let Some(entry) = published else {
-            return Err(reject_actor(&actor, Error::Cancellation).await);
+            return Err(
+                reject_actor(&pending, self.pending_actors.clone(), Error::Cancellation).await,
+            );
         };
         admission.disarm();
         Ok(entry)
@@ -1680,10 +1682,10 @@ impl EngineSupervisor {
             )
             .await?;
             let actor = Arc::new(EngineActor::spawn(executable, EngineDeadlines::default()).await?);
-            let mut guard =
-                PendingActorGuard::new(actor.clone(), key.clone(), Some(search.generation));
+            let pending = self.track_pending_actor(key.clone(), actor, &admission);
+            let mut guard = PendingActorGuard::new(pending.clone(), self.pending_actors.clone());
             let published = self
-                .publish_admitted_locked(key.clone(), actor, admission)
+                .publish_admitted_locked(key.clone(), pending, admission)
                 .await;
             guard.disarm();
             let current = published?;
@@ -1922,14 +1924,7 @@ impl EngineSupervisor {
         self.cancel_admissions_matching(|key, _| key.tab == tab);
         drop(_coordination);
         drop(registration);
-        let mut failures = Vec::new();
-        loop {
-            failures.extend(self.terminate_matching(|key, _| key.tab == tab).await);
-            if !self.actors.iter().any(|entry| entry.key().tab == tab) {
-                break;
-            }
-        }
-        aggregate_shutdown_failures(failures)
+        self.drain_matching(|key, _, _| key.tab == tab).await
     }
 
     pub async fn retire_engine(&self, engine_id: String) -> Result<(), Error> {
@@ -1992,29 +1987,10 @@ impl EngineSupervisor {
             });
         }
         drop(registration);
-        let mut failures = Vec::new();
-        loop {
-            failures.extend(
-                self.terminate_matching(|key, engine| {
-                    matches(key, &engine.engine_id, &engine.executable)
-                })
-                .await,
-            );
-            if !self.actors.iter().any(|entry| {
-                matches(
-                    entry.key(),
-                    &entry.value().engine_id,
-                    &entry.value().executable,
-                )
-            }) {
-                break;
-            }
-        }
-        aggregate_shutdown_failures(failures)
+        self.drain_matching(matches).await
     }
 
     pub async fn terminate_all(&self) -> Result<(), Error> {
-        let mut failures = Vec::new();
         self.sealed.store(true, Ordering::SeqCst);
         // Synchronize with admission and the final `publish_admitted` check.
         // Once this barrier is crossed, no production path can add an actor.
@@ -2029,16 +2005,53 @@ impl EngineSupervisor {
         }
         drop(_coordination);
         drop(registration);
+        self.drain_matching(|_, _, _| true).await
+    }
+
+    async fn drain_matching(
+        &self,
+        matches: impl Fn(&EngineKey, &str, &PathRef) -> bool,
+    ) -> Result<(), Error> {
+        let mut failures = Vec::new();
         loop {
-            let targets: Vec<_> = self
-                .actors
-                .iter()
-                .map(|entry| (entry.key().clone(), entry.value().generation))
-                .collect();
-            if targets.is_empty() {
+            // Publication moves between the two sets under this same barrier.
+            let (targets, pending) = {
+                let _coordination = self
+                    .admission_coordination
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let targets: Vec<_> = self
+                    .actors
+                    .iter()
+                    .filter(|entry| matches(entry.key(), &entry.engine_id, &entry.executable))
+                    .map(|entry| (entry.key().clone(), entry.value().generation))
+                    .collect();
+                let pending: Vec<_> = self
+                    .pending_actors
+                    .iter()
+                    .filter(|entry| matches(&entry.key, &entry.engine_id, &entry.executable))
+                    .map(|entry| entry.value().clone())
+                    .collect();
+                (targets, pending)
+            };
+            if targets.is_empty() && pending.is_empty() {
                 break;
             }
-            failures.extend(self.terminate_targets(targets).await);
+            let pending =
+                futures_util::future::join_all(pending.into_iter().map(|entry| async move {
+                    entry
+                        .terminate(self.pending_actors.clone())
+                        .await
+                        .err()
+                        .map(|error| ActorShutdownFailure {
+                            key: entry.key.clone(),
+                            generation: entry.generation,
+                            error,
+                        })
+                }));
+            let (registered, pending) = tokio::join!(self.terminate_targets(targets), pending);
+            failures.extend(registered);
+            failures.extend(pending.into_iter().flatten());
         }
         aggregate_shutdown_failures(failures)
     }
@@ -2063,22 +2076,38 @@ impl EngineSupervisor {
             .collect()
     }
 
-    async fn terminate_matching<P>(&self, predicate: P) -> Vec<ActorShutdownFailure>
-    where
-        P: Fn(&EngineKey, &SupervisedEngine) -> bool,
-    {
-        let targets = self
-            .actors
-            .iter()
-            .filter(|entry| predicate(entry.key(), entry.value()))
-            .map(|entry| (entry.key().clone(), entry.value().generation))
-            .collect();
-        self.terminate_targets(targets).await
+    fn track_pending_actor(
+        &self,
+        key: EngineKey,
+        actor: Arc<EngineActor>,
+        admission: &AdmissionLease,
+    ) -> Arc<PendingActor> {
+        let _coordination = self
+            .admission_coordination
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let generation = admission.generation();
+        let _ = actor.registration_identity.set((key.clone(), generation));
+        let pending = Arc::new(PendingActor {
+            actor,
+            key,
+            generation,
+            engine_id: admission.admission.engine_id.clone(),
+            executable: admission.admission.executable.clone(),
+            termination: StdMutex::default(),
+            completed: Notify::new(),
+        });
+        self.pending_actors.insert(generation, pending.clone());
+        pending
     }
 }
 
-async fn reject_actor(actor: &EngineActor, primary: Error) -> Error {
-    Error::with_cleanup(primary, actor.terminate().await)
+async fn reject_actor(
+    pending: &Arc<PendingActor>,
+    entries: Arc<DashMap<u64, Arc<PendingActor>>>,
+    primary: Error,
+) -> Error {
+    Error::with_cleanup(primary, pending.terminate(entries).await)
 }
 
 struct ActorShutdownFailure {
@@ -2095,43 +2124,96 @@ pub(crate) struct RegistrationGuard {
     search: bool,
 }
 
-struct PendingActorGuard {
-    actor: Option<Arc<EngineActor>>,
+struct PendingActor {
+    actor: Arc<EngineActor>,
     key: EngineKey,
-    generation: Option<u64>,
+    generation: u64,
+    engine_id: String,
+    executable: PathRef,
+    termination: StdMutex<PendingTermination>,
+    completed: Notify,
+}
+
+#[derive(Default)]
+struct PendingTermination {
+    started: bool,
+    result: Option<Result<(), Arc<Error>>>,
+}
+
+impl PendingActor {
+    fn start_termination(self: &Arc<Self>, entries: Arc<DashMap<u64, Arc<Self>>>) {
+        let mut termination = self
+            .termination
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if termination.started {
+            return;
+        }
+        termination.started = true;
+        let entry = self.clone();
+        tokio::spawn(async move {
+            let result = entry.actor.terminate().await.map_err(Arc::new);
+            if let Err(error) = &result {
+                log_pending_actor_cleanup_error(&entry.key, entry.generation, error);
+            }
+            let mut termination = entry
+                .termination
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            termination.result = Some(result);
+            entries.remove(&entry.generation);
+            drop(termination);
+            entry.completed.notify_waiters();
+        });
+    }
+
+    async fn terminate(
+        self: &Arc<Self>,
+        entries: Arc<DashMap<u64, Arc<Self>>>,
+    ) -> Result<(), Error> {
+        self.start_termination(entries);
+        loop {
+            let completed = self.completed.notified();
+            tokio::pin!(completed);
+            completed.as_mut().enable();
+            let result = self
+                .termination
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .result
+                .clone();
+            if let Some(result) = result {
+                return result.map_err(Error::Shared);
+            }
+            completed.await;
+        }
+    }
+}
+
+struct PendingActorGuard {
+    entry: Option<Arc<PendingActor>>,
+    entries: Arc<DashMap<u64, Arc<PendingActor>>>,
 }
 
 impl PendingActorGuard {
-    fn new(actor: Arc<EngineActor>, key: EngineKey, generation: Option<u64>) -> Self {
+    fn new(entry: Arc<PendingActor>, entries: Arc<DashMap<u64, Arc<PendingActor>>>) -> Self {
         Self {
-            actor: Some(actor),
-            key,
-            generation,
+            entry: Some(entry),
+            entries,
         }
     }
 
-    #[cfg(test)]
-    fn set_generation(&mut self, generation: u64) {
-        self.generation = Some(generation);
-    }
-
     fn disarm(&mut self) {
-        self.actor = None;
+        self.entry = None;
     }
 }
 
 impl Drop for PendingActorGuard {
     fn drop(&mut self) {
-        let Some(actor) = self.actor.take() else {
+        let Some(entry) = self.entry.take() else {
             return;
         };
-        let key = self.key.clone();
-        let generation = self.generation;
-        tokio::spawn(async move {
-            if let Err(error) = actor.terminate().await {
-                log_pending_actor_cleanup_error(&key, generation, &error);
-            }
-        });
+        entry.start_termination(self.entries.clone());
     }
 }
 
@@ -2148,10 +2230,7 @@ static PENDING_ACTOR_CLEANUP_ERRORS: StdMutex<Vec<String>> = StdMutex::new(Vec::
 #[cfg(test)]
 static SHUTDOWN_FAILURE_LOGS: StdMutex<Vec<String>> = StdMutex::new(Vec::new());
 
-fn log_pending_actor_cleanup_error(key: &EngineKey, generation: Option<u64>, error: &Error) {
-    let generation = generation
-        .map(|generation| generation.to_string())
-        .unwrap_or_else(|| "not-yet-assigned".into());
+fn log_pending_actor_cleanup_error(key: &EngineKey, generation: u64, error: &Error) {
     let message = format!(
         "dropped engine admission actor cleanup failed for {}:{} generation={generation} category={}",
         key.tab,
@@ -2578,10 +2657,11 @@ where
     Fut: std::future::Future<Output = Result<T, Error>>,
 {
     let operation_cancellation = admission.operation_cancellation();
+    let pending = supervisor.track_pending_actor(key.clone(), actor.clone(), &admission);
     let mut actor_guard =
-        PendingActorGuard::new(actor.clone(), key.clone(), Some(admission.generation()));
+        PendingActorGuard::new(pending.clone(), supervisor.pending_actors.clone());
     let published = supervisor
-        .publish_admitted(key.clone(), actor.clone(), admission)
+        .publish_admitted(key.clone(), pending, admission)
         .await;
     actor_guard.disarm();
     let supervised = match published {
@@ -4780,6 +4860,492 @@ mod tests {
 
     struct TerminateErrorIo;
 
+    struct GatedTerminateIo {
+        gate: Arc<TerminationReplyGate>,
+        calls: Arc<AtomicUsize>,
+        failure: Option<&'static str>,
+    }
+
+    #[async_trait]
+    impl UciIo for GatedTerminateIo {
+        async fn write_line(&mut self, _: &str) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn read_line(&mut self) -> Result<Option<String>, Error> {
+            std::future::pending().await
+        }
+
+        async fn terminate(&mut self, _: Duration, _: Duration) -> Result<(), Error> {
+            self.gate.park().await;
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            match self.failure {
+                Some(sentinel) => Err(io::Error::other(sentinel).into()),
+                None => Ok(()),
+            }
+        }
+    }
+
+    fn gated_pending_actor(
+        failure: Option<&'static str>,
+    ) -> (
+        Arc<EngineActor>,
+        Arc<TerminationReplyGate>,
+        Arc<AtomicUsize>,
+    ) {
+        let gate = TerminationReplyGate::new();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let actor = Arc::new(EngineActor::new(
+            Box::new(GatedTerminateIo {
+                gate: gate.clone(),
+                calls: calls.clone(),
+                failure,
+            }),
+            EngineDeadlines::default(),
+        ));
+        (actor, gate, calls)
+    }
+
+    async fn pending_test_wait<T>(future: impl std::future::Future<Output = T>) -> T {
+        timeout(Duration::from_secs(2), future)
+            .await
+            .expect("pending actor operation must finish")
+    }
+
+    async fn wait_for_pending_actor(supervisor: &EngineSupervisor, generation: u64) {
+        pending_test_wait(async {
+            while !supervisor.pending_actors.contains_key(&generation) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+    }
+
+    async fn wait_for_pending_termination(gate: &TerminationReplyGate) {
+        pending_test_wait(async {
+            while !gate.parked.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+    }
+
+    fn spawn_admitted_publisher(
+        supervisor: Arc<EngineSupervisor>,
+        key: EngineKey,
+        actor: Arc<EngineActor>,
+        admission: AdmissionLease,
+    ) -> tokio::task::JoinHandle<Result<(), Error>> {
+        tokio::spawn(async move {
+            initialize_admitted_actor(supervisor, key, actor, admission, |_| async { Ok(()) })
+                .await
+                .map(|_| ())
+        })
+    }
+
+    fn assert_pending_shutdown_log(key: &EngineKey, generation: u64) {
+        let identity = format!("for {}:{} generation={generation} ", key.tab, key.engine);
+        let logs = SHUTDOWN_FAILURE_LOGS.lock().unwrap();
+        assert!(
+            logs.iter()
+                .any(|message| message.contains(&identity)
+                    && message.contains("category=I/O failure"))
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_v1_dropped_publisher_exit_awaits_reap() {
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let key = EngineKey::new("pending-v1".into(), "engine".into()).unwrap();
+        let admission = supervisor
+            .admit(key.clone(), "owner".into(), path_ref("v1"), false)
+            .await
+            .unwrap();
+        let generation = admission.generation();
+        let lifecycle = supervisor.lifecycle_lease(&key);
+        let transition = lifecycle.lock().await;
+        let (actor, gate, calls) = gated_pending_actor(None);
+        let publisher = spawn_admitted_publisher(supervisor.clone(), key.clone(), actor, admission);
+        wait_for_pending_actor(&supervisor, generation).await;
+        publisher.abort();
+        assert!(pending_test_wait(publisher)
+            .await
+            .unwrap_err()
+            .is_cancelled());
+        wait_for_pending_termination(&gate).await;
+        let drain = supervisor.terminate_all();
+        tokio::pin!(drain);
+        assert!(futures_util::poll!(&mut drain).is_pending());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        gate.open();
+        pending_test_wait(drain).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(supervisor.pending_actors.is_empty());
+        drop(transition);
+        assert!(supervisor.get_exact(&key).is_none());
+    }
+
+    #[tokio::test]
+    async fn pending_v2_live_publisher_exit_bypasses_lifecycle() {
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let key = EngineKey::new("pending-v2".into(), "engine".into()).unwrap();
+        let admission = supervisor
+            .admit(key.clone(), "owner".into(), path_ref("v2"), false)
+            .await
+            .unwrap();
+        let generation = admission.generation();
+        let lifecycle = supervisor.lifecycle_lease(&key);
+        let transition = lifecycle.lock().await;
+        let (actor, gate, calls) = gated_pending_actor(None);
+        let publisher = spawn_admitted_publisher(supervisor.clone(), key.clone(), actor, admission);
+        wait_for_pending_actor(&supervisor, generation).await;
+        let drain = supervisor.terminate_all();
+        tokio::pin!(drain);
+        assert!(futures_util::poll!(&mut drain).is_pending());
+        wait_for_pending_termination(&gate).await;
+        gate.open();
+        pending_test_wait(drain).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(!publisher.is_finished());
+        assert!(supervisor.pending_actors.is_empty());
+        drop(transition);
+        assert!(matches!(
+            pending_test_wait(publisher).await.unwrap(),
+            Err(Error::Cancellation)
+        ));
+        assert!(supervisor.get_exact(&key).is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn pending_v2b_exit_attaches_to_inline_rejection() {
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let key = EngineKey::new("pending-v2b".into(), "engine".into()).unwrap();
+        let admission = supervisor
+            .admit(key.clone(), "owner".into(), path_ref("v2b"), false)
+            .await
+            .unwrap();
+        admission.admission.cancelled.store(true, Ordering::SeqCst);
+        let (actor, gate, calls) = gated_pending_actor(None);
+        let publisher = spawn_admitted_publisher(supervisor.clone(), key.clone(), actor, admission);
+        wait_for_pending_termination(&gate).await;
+        let drain = supervisor.terminate_all();
+        tokio::pin!(drain);
+        assert!(futures_util::poll!(&mut drain).is_pending());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        gate.open();
+        pending_test_wait(drain).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(matches!(
+            pending_test_wait(publisher).await.unwrap(),
+            Err(Error::Cancellation)
+        ));
+        assert!(supervisor.pending_actors.is_empty());
+        assert!(supervisor.get_exact(&key).is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn pending_v3_tab_drain_leaves_other_publisher_live() {
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let a = EngineKey::new("pending-v3-a".into(), "engine".into()).unwrap();
+        let b = EngineKey::new("pending-v3-b".into(), "engine".into()).unwrap();
+        let admission_a = supervisor
+            .admit(a.clone(), "owner".into(), path_ref("shared"), false)
+            .await
+            .unwrap();
+        let admission_b = supervisor
+            .admit(b.clone(), "owner".into(), path_ref("shared"), false)
+            .await
+            .unwrap();
+        let generation_a = admission_a.generation();
+        let generation_b = admission_b.generation();
+        let lifecycle_a = supervisor.lifecycle_lease(&a);
+        let lifecycle_b = supervisor.lifecycle_lease(&b);
+        let transition_a = lifecycle_a.lock().await;
+        let transition_b = lifecycle_b.lock().await;
+        let (actor_a, gate_a, calls_a) = gated_pending_actor(None);
+        let ((actor_b, _), calls_b) = actor_with(&[], false, None);
+        let publisher_a =
+            spawn_admitted_publisher(supervisor.clone(), a.clone(), actor_a, admission_a);
+        let publisher_b = spawn_admitted_publisher(
+            supervisor.clone(),
+            b.clone(),
+            Arc::new(actor_b),
+            admission_b,
+        );
+        wait_for_pending_actor(&supervisor, generation_a).await;
+        wait_for_pending_actor(&supervisor, generation_b).await;
+        let drain = supervisor.terminate_tab(&a.tab);
+        tokio::pin!(drain);
+        assert!(futures_util::poll!(&mut drain).is_pending());
+        wait_for_pending_termination(&gate_a).await;
+        gate_a.open();
+        pending_test_wait(drain).await.unwrap();
+        assert_eq!(calls_a.load(Ordering::SeqCst), 1);
+        assert_eq!(calls_b.load(Ordering::SeqCst), 0);
+        assert!(supervisor.pending_actors.contains_key(&generation_b));
+        drop(transition_a);
+        drop(transition_b);
+        assert!(matches!(
+            pending_test_wait(publisher_a).await.unwrap(),
+            Err(Error::Cancellation)
+        ));
+        pending_test_wait(publisher_b).await.unwrap().unwrap();
+        assert!(supervisor.get_exact(&a).is_none());
+        assert!(supervisor.get_exact(&b).is_some());
+        assert!(supervisor.pending_actors.is_empty());
+        assert_eq!(calls_b.load(Ordering::SeqCst), 0);
+        pending_test_wait(supervisor.terminate_all()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn pending_v4_retirement_matches_admission_identity() {
+        // Exercise all predicates routed through retire_matching, including owner-id matching.
+        for retirement in 0..3 {
+            let supervisor = Arc::new(EngineSupervisor::default());
+            let e = EngineKey::new(format!("pending-v4-{retirement}"), "key-e".into()).unwrap();
+            let f = EngineKey::new(format!("pending-v4-{retirement}"), "key-f".into()).unwrap();
+            let path_e = path_ref("retired-image");
+            let path_f = path_ref("current-image");
+            let admission_e = supervisor
+                .admit(e.clone(), "owner-e".into(), path_e.clone(), false)
+                .await
+                .unwrap();
+            let admission_f = supervisor
+                .admit(f.clone(), "owner-f".into(), path_f.clone(), false)
+                .await
+                .unwrap();
+            let generation_e = admission_e.generation();
+            let generation_f = admission_f.generation();
+            let lifecycle_e = supervisor.lifecycle_lease(&e);
+            let lifecycle_f = supervisor.lifecycle_lease(&f);
+            let transition_e = lifecycle_e.lock().await;
+            let transition_f = lifecycle_f.lock().await;
+            let (actor_e, gate_e, calls_e) = gated_pending_actor(None);
+            let ((actor_f, _), calls_f) = actor_with(&[], false, None);
+            let publisher_e =
+                spawn_admitted_publisher(supervisor.clone(), e.clone(), actor_e, admission_e);
+            let publisher_f = spawn_admitted_publisher(
+                supervisor.clone(),
+                f.clone(),
+                Arc::new(actor_f),
+                admission_f,
+            );
+            wait_for_pending_actor(&supervisor, generation_e).await;
+            wait_for_pending_actor(&supervisor, generation_f).await;
+            let drain = async {
+                match retirement {
+                    0 => supervisor.retire_engine("owner-e".into()).await,
+                    1 => {
+                        supervisor
+                            .retire_engine_binary("owner-e".into(), path_e, path_f)
+                            .await
+                    }
+                    _ => supervisor.retire_executables(vec![path_e]).await,
+                }
+            };
+            tokio::pin!(drain);
+            assert!(futures_util::poll!(&mut drain).is_pending());
+            wait_for_pending_termination(&gate_e).await;
+            gate_e.open();
+            pending_test_wait(drain).await.unwrap();
+            assert_eq!(calls_e.load(Ordering::SeqCst), 1);
+            assert_eq!(calls_f.load(Ordering::SeqCst), 0);
+            assert!(supervisor.pending_actors.contains_key(&generation_f));
+            drop(transition_e);
+            drop(transition_f);
+            assert!(pending_test_wait(publisher_e).await.unwrap().is_err());
+            pending_test_wait(publisher_f).await.unwrap().unwrap();
+            assert!(supervisor.get_exact(&e).is_none());
+            assert!(supervisor.get_exact(&f).is_some());
+            assert!(supervisor.pending_actors.is_empty());
+            assert_eq!(calls_f.load(Ordering::SeqCst), 0);
+            pending_test_wait(supervisor.terminate_all()).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn pending_v5_failure_is_shared_by_drain_drop_and_rejection() {
+        const SENTINEL: &str = "pending-v5-termination-diagnostic-sentinel";
+        for starter in 0..3 {
+            let supervisor = Arc::new(EngineSupervisor::default());
+            let key = EngineKey::new(format!("pending-v5-{starter}"), "engine".into()).unwrap();
+            let admission = supervisor
+                .admit(key.clone(), "owner".into(), path_ref("v5"), false)
+                .await
+                .unwrap();
+            let generation = admission.generation();
+            if starter == 2 {
+                admission.admission.cancelled.store(true, Ordering::SeqCst);
+            }
+            let lifecycle = supervisor.lifecycle_lease(&key);
+            let transition = lifecycle.lock().await;
+            let (actor, gate, calls) = gated_pending_actor(Some(SENTINEL));
+            let publisher =
+                spawn_admitted_publisher(supervisor.clone(), key.clone(), actor, admission);
+            wait_for_pending_actor(&supervisor, generation).await;
+            let entry = supervisor
+                .pending_actors
+                .get(&generation)
+                .unwrap()
+                .value()
+                .clone();
+            let publisher = if starter == 1 {
+                publisher.abort();
+                assert!(pending_test_wait(publisher)
+                    .await
+                    .unwrap_err()
+                    .is_cancelled());
+                None
+            } else {
+                Some(publisher)
+            };
+            if starter == 2 {
+                drop(transition);
+            }
+            if starter != 0 {
+                wait_for_pending_termination(&gate).await;
+            }
+            let drain = supervisor.terminate_all();
+            tokio::pin!(drain);
+            assert!(futures_util::poll!(&mut drain).is_pending());
+            wait_for_pending_termination(&gate).await;
+            // A second awaiting owner must receive the same failure, even after map removal.
+            let attached = entry.terminate(supervisor.pending_actors.clone());
+            tokio::pin!(attached);
+            assert!(futures_util::poll!(&mut attached).is_pending());
+            gate.open();
+            let error = pending_test_wait(drain).await.unwrap_err();
+            let attached_error = pending_test_wait(attached).await.unwrap_err();
+            let original = Error::from(io::Error::other(SENTINEL));
+            for error in [&error, &attached_error] {
+                assert_eq!(error.category(), original.category());
+                assert_eq!(error.to_string(), original.to_string());
+                assert_eq!(error.diagnostic(), original.diagnostic());
+                assert!(error.diagnostic().contains(SENTINEL));
+            }
+            assert_pending_shutdown_log(&key, generation);
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert!(supervisor.pending_actors.is_empty());
+            if starter == 0 {
+                // The live publisher remains blocked; cancellation starts its guard cleanup.
+                let publisher = publisher.unwrap();
+                publisher.abort();
+                assert!(pending_test_wait(publisher)
+                    .await
+                    .unwrap_err()
+                    .is_cancelled());
+            } else if let Some(publisher) = publisher {
+                match pending_test_wait(publisher).await.unwrap().unwrap_err() {
+                    Error::OperationAndCleanup { primary, cleanup } => {
+                        assert_eq!(primary, "Cancellation");
+                        assert_eq!(cleanup, original.diagnostic());
+                    }
+                    other => panic!("expected shared rejection cleanup, got {other:?}"),
+                }
+            }
+            let logs = PENDING_ACTOR_CLEANUP_ERRORS.lock().unwrap();
+            assert!(logs.iter().any(|message| message.contains(&format!(
+                "{}:{} generation={generation}",
+                key.tab, key.engine
+            ))));
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn pending_v8_cancelled_inline_owner_preserves_failure_and_reap() {
+        const SENTINEL: &str = "pending-v8-cancelled-owner-diagnostic-sentinel";
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let key = EngineKey::new("pending-v8".into(), "engine".into()).unwrap();
+        let admission = supervisor
+            .admit(key.clone(), "owner".into(), path_ref("v8"), false)
+            .await
+            .unwrap();
+        let generation = admission.generation();
+        admission.admission.cancelled.store(true, Ordering::SeqCst);
+        let (actor, gate, calls) = gated_pending_actor(Some(SENTINEL));
+        let publisher = spawn_admitted_publisher(supervisor.clone(), key.clone(), actor, admission);
+        wait_for_pending_termination(&gate).await;
+        publisher.abort();
+        assert!(pending_test_wait(publisher)
+            .await
+            .unwrap_err()
+            .is_cancelled());
+        let drain = supervisor.terminate_all();
+        tokio::pin!(drain);
+        // Poll through the barrier and pending scan while termination is still gated.
+        assert!(futures_util::poll!(&mut drain).is_pending());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        gate.open();
+        let error = pending_test_wait(drain).await.unwrap_err();
+        let original = Error::from(io::Error::other(SENTINEL));
+        assert_eq!(error.category(), original.category());
+        assert_eq!(error.to_string(), original.to_string());
+        assert_eq!(error.diagnostic(), original.diagnostic());
+        assert!(error.diagnostic().contains(SENTINEL));
+        assert_pending_shutdown_log(&key, generation);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(supervisor.pending_actors.is_empty());
+        assert!(supervisor.get_exact(&key).is_none());
+    }
+
+    #[tokio::test]
+    async fn pending_v6_entries_leave_on_publication_rejection_and_drop() {
+        for outcome in 0..3 {
+            let supervisor = Arc::new(EngineSupervisor::default());
+            let key = EngineKey::new(format!("pending-v6-{outcome}"), "engine".into()).unwrap();
+            let admission = supervisor
+                .admit(key.clone(), "owner".into(), path_ref("v6"), false)
+                .await
+                .unwrap();
+            let generation = admission.generation();
+            if outcome == 1 {
+                admission.admission.cancelled.store(true, Ordering::SeqCst);
+            }
+            let ((actor, _), calls) = actor_with(&[], false, None);
+            if outcome == 2 {
+                let lifecycle = supervisor.lifecycle_lease(&key);
+                let transition = lifecycle.lock().await;
+                let publisher = spawn_admitted_publisher(
+                    supervisor.clone(),
+                    key.clone(),
+                    Arc::new(actor),
+                    admission,
+                );
+                wait_for_pending_actor(&supervisor, generation).await;
+                publisher.abort();
+                assert!(pending_test_wait(publisher)
+                    .await
+                    .unwrap_err()
+                    .is_cancelled());
+                pending_test_wait(async {
+                    while supervisor.pending_actors.contains_key(&generation) {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await;
+                drop(transition);
+            } else {
+                let result = pending_test_wait(initialize_admitted_actor(
+                    supervisor.clone(),
+                    key.clone(),
+                    Arc::new(actor),
+                    admission,
+                    |_| async { Ok(()) },
+                ))
+                .await;
+                assert_eq!(result.is_ok(), outcome == 0);
+            }
+            assert!(supervisor.pending_actors.is_empty());
+            assert_eq!(supervisor.get_exact(&key).is_some(), outcome == 0);
+            assert_eq!(calls.load(Ordering::SeqCst), usize::from(outcome != 0));
+            pending_test_wait(supervisor.terminate_all()).await.unwrap();
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+        }
+    }
+
     struct PendingTerminateErrorIo;
 
     struct ObservedTerminateErrorIo {
@@ -5426,7 +5992,11 @@ mod tests {
             .expect("retire the admitted engine before publication");
 
         match supervisor
-            .publish_admitted(key.clone(), actor, admission)
+            .publish_admitted(
+                key.clone(),
+                supervisor.track_pending_actor(key.clone(), actor, &admission),
+                admission,
+            )
             .await
         {
             Err(Error::OperationAndCleanup { primary, cleanup }) => {
@@ -5542,22 +6112,27 @@ mod tests {
 
     #[tokio::test]
     async fn pending_actor_cleanup_log_carries_key_and_generation() {
+        let supervisor = EngineSupervisor::default();
         let key = EngineKey::new("pending-log-tab".into(), "pending-log-engine".into()).unwrap();
         let actor = Arc::new(EngineActor::new(
             Box::new(TerminateErrorIo),
             EngineDeadlines::default(),
         ));
-        drop(PendingActorGuard::new(actor, key, Some(42)));
-        let unassigned_key =
-            EngineKey::new("pending-log-tab".into(), "unassigned-engine".into()).unwrap();
-        let unassigned_actor = Arc::new(EngineActor::new(
-            Box::new(TerminateErrorIo),
-            EngineDeadlines::default(),
-        ));
+        supervisor.next_generation.store(41, Ordering::SeqCst);
+        let admission = supervisor
+            .admit(
+                key.clone(),
+                key.engine.clone(),
+                path_ref("pending-log-path"),
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(admission.generation(), 42);
+        let pending = supervisor.track_pending_actor(key, actor, &admission);
         drop(PendingActorGuard::new(
-            unassigned_actor,
-            unassigned_key,
-            None,
+            pending,
+            supervisor.pending_actors.clone(),
         ));
 
         tokio::time::timeout(Duration::from_secs(1), async {
@@ -5571,12 +6146,7 @@ mod tests {
                         && message.contains("generation=42")
                         && message.contains("category=I/O failure")
                 });
-                let unassigned = logged.iter().any(|message| {
-                    message.contains("pending-log-tab:unassigned-engine")
-                        && message.contains("generation=not-yet-assigned")
-                        && message.contains("category=I/O failure")
-                });
-                if assigned && unassigned {
+                if assigned {
                     break;
                 }
                 tokio::task::yield_now().await;
@@ -7079,7 +7649,11 @@ mod tests {
             let key = key.clone();
             async move {
                 supervisor
-                    .publish_admitted(key, Arc::new(actor), admission)
+                    .publish_admitted(
+                        key.clone(),
+                        supervisor.track_pending_actor(key, Arc::new(actor), &admission),
+                        admission,
+                    )
                     .await
             }
         });
@@ -7318,7 +7892,11 @@ mod tests {
 
         assert!(matches!(
             supervisor
-                .publish_admitted(key.clone(), Arc::new(actor), admission)
+                .publish_admitted(
+                    key.clone(),
+                    supervisor.track_pending_actor(key.clone(), Arc::new(actor), &admission),
+                    admission
+                )
                 .await,
             Err(Error::Cancellation)
         ));
