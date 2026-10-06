@@ -13374,3 +13374,18 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
 * **Defect:** the f-20260914-34 diff review (closure round 2, `review-minimalism`, confidence 94) found the engine-test authority construction copied across tests; `df56aad8` extracted `PathAuthority::open_for_engine_test` and routed the three exact copies in `engine/process.rs`. The copies in `game.rs` and `chess.rs` were not routed, because that run had not loaded those files (rule 4b). Variants that reuse a separately built launch root (`game.rs` ~4119, `main.rs` ~3263/~3309) keep their own construction.
 * **Fix:** route every copy of exactly that shape in `game.rs` and `chess.rs` tests through `PathAuthority::open_for_engine_test(directory.path()).unwrap()`, keeping variants whose launch root is used later; prove with `cargo clippy --all-targets -D warnings`, `cargo test` and `pnpm rust:windows:check`.
 * **Found by:** Codex `review-minimalism` diff lens, f-20260914-34 drain build (closure round 2), 2026-10-06; source verified by the orchestrator.
+
+---
+
+## 2026-10-06 — filed through the inbox spool
+
+### Files page mutation dialogs close silently when the change landed but its durability is uncertain
+
+* **ID:** f-20261006-07 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
+* **Filed from:** cd187b0b-1781-4d36-b3c9-966e59eab603
+* **Where:** `src/components/files/FilesPage.tsx:157-186` (`submitAction`: create file, create folder, rename) and `:140-155` (move), both through `runAppliedMutationWithRefresh` (`src/platform/errors.ts:284-300`); tests pinning the behaviour at `src/components/files/FilesPage.test.tsx:480` ("applied-despite-error create refreshes and closes without operationFailed") and `:513`. BASE `ecbe66fa`.
+* **Defect:** when a workspace mutation returns `CommittedDurabilityUncertain` (renderer category `applied-despite-error`), `runAppliedMutationWithRefresh` relists and resolves to `undefined`, and the dialog closes exactly as on a durable success. The user is never told that the change landed but may not survive a crash or power loss, although `d-20260906-03` rejected "treating uncertainty as success anywhere a user is promised a saved file" for the backend half of the same contract. The trash path is the only Files mutation that keeps a separate applied-despite-error warning (`FilesPage.tsx:188-191`).
+* **Why it matters:** `.claude/rules/async-resource-invariants.md` (every exit path reported truthfully); `f-20260919-07` adds a metadata-edit dialog through the same submit path and inherits the silent close.
+* **Open question:** should the Files create, rename, move and metadata dialogs show a non-blocking "saved, but the disk did not confirm it" notice after the relist (one shared message for the `durability` category, `d-20260901-34`), and does that notice belong in `runAppliedMutationWithRefresh` itself, so every caller gets it, or in each dialog? Coordinate with `f-20261005-04` (category-specific copy for the same dialogs) and `f-20261003-09` (operation-and-cleanup relist).
+* **Related:** `f-20261005-04` (open, Root `-`), `f-20261003-09` (open, Root `-`), `d-20260830-05`, `d-20260831-01`, `d-20260906-03`.
+* **Found by:** Codex `review-error-handling` lens, round 1 of the `f-20260919-07` PLAN-ONLY review, drain session cd187b0b-1781-4d36-b3c9-966e59eab603, 2026-10-06; confirmed by reading `src/platform/errors.ts:284-300` and `src/components/files/FilesPage.test.tsx:480`.
