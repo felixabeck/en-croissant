@@ -27,7 +27,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::infra::fs::DirectoryEntryKind;
 use crate::infra::fs::{
-    check_directory_listing_bound, DirectoryEntry, MAX_DIRECTORY_LISTING_ENTRIES,
+    check_directory_listing_bound, DirectoryEntry, RegularFileAccess, MAX_DIRECTORY_LISTING_ENTRIES,
 };
 use crate::infra::path_authority::{CapabilityDirectory, PreparedEntry};
 use std::ffi::OsStr;
@@ -218,6 +218,60 @@ fn durability_uncertainty(
     })
 }
 
+fn join_cleanup(left: Result<(), Error>, right: Result<(), Error>) -> Result<(), Error> {
+    match (left, right) {
+        (Ok(()), other) => other,
+        (Err(first), Ok(())) => Err(first),
+        (Err(first), Err(second)) => Err(Error::with_cleanup(first, Err(second))),
+    }
+}
+
+fn rollback_created_workspace_file(
+    parent: &fs::File,
+    pgn_leaf: &OsStr,
+    pgn_identity: (u64, u64),
+    sidecar: Option<(&OsStr, (u64, u64))>,
+    repository: Option<&pgn::PgnRepository>,
+) -> Result<(), Error> {
+    let sidecar_cleanup = match sidecar {
+        Some((leaf, identity)) => crate::infra::fs::remove_entry_at(parent, leaf, identity, false),
+        None => Ok(()),
+    };
+    let pgn_cleanup = crate::infra::fs::remove_entry_at(parent, pgn_leaf, pgn_identity, false);
+    let cache_cleanup = match repository {
+        Some(repository) => repository.invalidate(
+            &crate::infra::path_authority::PgnSnapshotIdentity::from_pair(pgn_identity),
+        ),
+        None => Ok(()),
+    };
+    join_cleanup(join_cleanup(sidecar_cleanup, pgn_cleanup), cache_cleanup)
+}
+
+fn unidentified_directory_cleanup() -> Error {
+    Error::InvalidInput("created directory could not be identified and was not removed".into())
+}
+
+fn count_installed_workspace_pgn(
+    parent: &fs::File,
+    leaf: &OsStr,
+    identity: (u64, u64),
+    repository: &pgn::PgnRepository,
+    cancellation: &CancellationToken,
+) -> Result<i32, Error> {
+    let file = crate::infra::fs::open_regular_at(parent, leaf, RegularFileAccess::ReadOnly)?;
+    let snapshot = crate::infra::path_authority::ResolvedPath::pgn_snapshot_from_identified_file(
+        file, identity,
+    )?;
+    pgn::count_pgn_games_core_blocking(snapshot, cancellation, repository)
+}
+
+fn first_uncertain_stage(
+    earlier: Option<crate::error::DurabilityStage>,
+    later: crate::error::DurabilityStage,
+) -> crate::error::DurabilityStage {
+    earlier.unwrap_or(later)
+}
+
 fn ensure_registered_descendant(
     root: &WorkspaceMutationTarget,
     entry: &WorkspaceMutationTarget,
@@ -312,7 +366,7 @@ pub(crate) fn set_workspace_listing_pre_register_hook(hook: Option<Box<dyn FnMut
     WORKSPACE_LISTING_PRE_REGISTER_HOOK.with(|slot| *slot.borrow_mut() = hook);
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 fn set_workspace_created_child_pre_register_hook(hook: Option<Box<dyn FnOnce()>>) {
     WORKSPACE_CREATED_CHILD_PRE_REGISTER_HOOK.with(|slot| *slot.borrow_mut() = hook);
 }
@@ -796,12 +850,12 @@ pub async fn create_workspace_file(
 ) -> Result<WorkspaceEntry, Error> {
     let operation = state.operations.accept("create_workspace_file")?;
     let cancellation = operation.token();
-    let count_cancellation = cancellation.clone();
     let state = state.inner().clone();
     crate::infra::operations::run_native_operation(operation, "create_workspace_file", async move {
         let pgn_path_authority = Arc::clone(&state.pgn_path_authority);
         let workspace_mutation = Arc::clone(&state.workspace_mutation);
-        let mut entry = BLOCKING_GATEWAY
+        let pgn_repository = state.pgn_repository.clone();
+        BLOCKING_GATEWAY
             .spawn_cancellable(cancellation, move |token| {
                 create_workspace_file_blocking(
                     workspace,
@@ -811,20 +865,11 @@ pub async fn create_workspace_file(
                     content,
                     &pgn_path_authority,
                     &workspace_mutation,
+                    &pgn_repository,
                     token,
                 )
             })
-            .await?;
-        let resolved = {
-            authority(&state.pgn_path_authority)?
-                .as_mut()
-                .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-                .resolve(entry.handle.path_ref(), PathOperation::ReadPgn, &[])?
-        };
-        entry.game_count = Some(
-            pgn::count_pgn_games_core(resolved, &count_cancellation, &state.pgn_repository).await?,
-        );
-        Ok(entry)
+            .await
     })
     .await
 }
@@ -840,6 +885,7 @@ fn create_workspace_file_blocking(
     content: WorkspaceFileContent,
     pgn_path_authority: &Mutex<Option<PathAuthority>>,
     workspace_mutation: &Mutex<()>,
+    pgn_repository: &pgn::PgnRepository,
     cancellation: &CancellationToken,
 ) -> Result<WorkspaceEntry, Error> {
     let metadata_bytes = serialize_metadata(&metadata)?;
@@ -937,43 +983,51 @@ fn create_workspace_file_blocking(
         crate::error::DurabilityStage::WorkspacePgnCreation,
     );
     let info_leaf = sidecar_leaf(&target_leaf)?;
-    let sidecar_outcome = match crate::infra::fs::atomic_replace_at(
+    let sidecar = match crate::infra::fs::atomic_replace_at_identified_with_precommit(
         parent_dir,
         &info_leaf,
+        || Ok(()),
         |file| {
             use std::io::Write;
             file.write_all(&metadata_bytes).map_err(Error::from)
         },
     ) {
-        Ok(outcome) => outcome,
+        Ok(sidecar) => sidecar,
         Err(error) => {
-            // Only the file this call installed may be rolled back; a concurrent replacement of
-            // the leaf is left in place and reported as a failed cleanup.
-            let rollback = crate::infra::fs::remove_entry_at(
+            let cleanup = rollback_created_workspace_file(
                 parent_dir,
                 &target_leaf,
                 installed.identity,
-                false,
+                None,
+                None,
             );
-            return match rollback {
-                Ok(()) => Err(error),
-                Err(rollback) => {
-                    log::error!(
-                            "workspace sidecar creation failed: {error}; PGN rollback failed: {rollback}"
-                        );
-                    Err(Error::OperationAndCleanup {
-                        primary: error.to_string(),
-                        cleanup: rollback.to_string(),
-                    })
-                }
-            };
+            return Err(Error::with_cleanup(error, cleanup));
         }
     };
     let sidecar_uncertainty = durability_uncertainty(
-        sidecar_outcome,
+        sidecar.outcome,
         crate::error::DurabilityStage::WorkspaceSidecarCreation,
     );
-    let handle = register_created_entry(
+    let game_count = match count_installed_workspace_pgn(
+        parent_dir,
+        &target_leaf,
+        installed.identity,
+        pgn_repository,
+        cancellation,
+    ) {
+        Ok(count) => count,
+        Err(error) => {
+            let cleanup = rollback_created_workspace_file(
+                parent_dir,
+                &target_leaf,
+                installed.identity,
+                Some((&info_leaf, sidecar.identity)),
+                Some(pgn_repository),
+            );
+            return Err(Error::with_cleanup(error, cleanup));
+        }
+    };
+    let handle = match register_created_entry(
         pgn_path_authority,
         &workspace,
         &target,
@@ -981,14 +1035,36 @@ fn create_workspace_file_blocking(
         installed.identity,
         parent_target.identity,
         false,
-    )?;
+    ) {
+        Ok(handle) => handle,
+        Err(Error::CommittedDurabilityUncertain(stage)) => {
+            return Err(Error::CommittedDurabilityUncertain(first_uncertain_stage(
+                pgn_uncertainty.or(sidecar_uncertainty),
+                stage,
+            )));
+        }
+        Err(error) => {
+            let cleanup = rollback_created_workspace_file(
+                parent_dir,
+                &target_leaf,
+                installed.identity,
+                Some((&info_leaf, sidecar.identity)),
+                Some(pgn_repository),
+            );
+            return Err(Error::with_cleanup(error, cleanup));
+        }
+    };
+    #[cfg(test)]
+    if let Some(hook) = pgn_repository.take_create_post_register_hook()? {
+        hook(cancellation);
+    }
     let entry = WorkspaceEntry {
         handle,
         kind: WorkspaceEntryKind::File,
         name,
         children: vec![],
         metadata: Some(metadata),
-        game_count: None,
+        game_count: Some(game_count),
         last_modified: installed.modified_seconds,
     };
     if let Some(error) = pgn_uncertainty.or(sidecar_uncertainty) {
@@ -1053,7 +1129,10 @@ fn create_workspace_directory_inner(
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
-    crate::infra::fs::create_dir_at(parent_dir, &target_leaf)?;
+    let directory_uncertainty = durability_uncertainty(
+        crate::infra::fs::create_dir_at_committed(parent_dir, &target_leaf)?,
+        crate::error::DurabilityStage::WorkspaceDirectoryCreation,
+    );
     #[cfg(test)]
     WORKSPACE_CREATED_DIRECTORY_PRE_OBSERVE_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
@@ -1061,7 +1140,15 @@ fn create_workspace_directory_inner(
         }
     });
     let (identity, modified_seconds) =
-        crate::infra::fs::entry_observation_at(parent_dir, &target_leaf, true)?;
+        match crate::infra::fs::entry_observation_at(parent_dir, &target_leaf, true) {
+            Ok(observed) => observed,
+            Err(error) => {
+                return Err(Error::with_cleanup(
+                    error,
+                    Err(unidentified_directory_cleanup()),
+                ));
+            }
+        };
     let handle = match register_created_entry(
         pgn_path_authority,
         &workspace,
@@ -1072,23 +1159,19 @@ fn create_workspace_directory_inner(
         true,
     ) {
         Ok(handle) => handle,
-        Err(error @ Error::CommittedDurabilityUncertain(_)) => return Err(error),
+        Err(Error::CommittedDurabilityUncertain(stage)) => {
+            return Err(Error::CommittedDurabilityUncertain(first_uncertain_stage(
+                directory_uncertainty,
+                stage,
+            )));
+        }
         Err(error) => {
-            match crate::infra::fs::remove_entry_at(parent_dir, &target_leaf, identity, true) {
-                Ok(()) => return Err(error),
-                Err(rollback) => {
-                    log::error!(
-                        "workspace directory registration failed: {error}; rollback failed: {rollback}"
-                    );
-                    return Err(Error::OperationAndCleanup {
-                        primary: error.to_string(),
-                        cleanup: rollback.to_string(),
-                    });
-                }
-            }
+            let cleanup =
+                crate::infra::fs::remove_empty_directory_at(parent_dir, &target_leaf, identity);
+            return Err(Error::with_cleanup(error, cleanup));
         }
     };
-    Ok(WorkspaceEntry {
+    let entry = WorkspaceEntry {
         handle,
         kind: WorkspaceEntryKind::Directory,
         name,
@@ -1096,7 +1179,11 @@ fn create_workspace_directory_inner(
         metadata: None,
         game_count: None,
         last_modified: modified_seconds,
-    })
+    };
+    if let Some(stage) = directory_uncertainty {
+        return Err(Error::CommittedDurabilityUncertain(stage));
+    }
+    Ok(entry)
 }
 
 #[tauri::command]
@@ -1576,7 +1663,6 @@ mod tests {
     use super::*;
     #[cfg(unix)]
     use crate::engine::EngineKey;
-    #[cfg(unix)]
     use crate::infra::fs::AtomicFileFaultPoint;
     #[cfg(unix)]
     use crate::infra::fs::{set_test_removal_injector, RemovalFault, RemovalFaultPoint};
@@ -1592,6 +1678,7 @@ mod tests {
     use std::io::{Seek, Write};
     #[cfg(unix)]
     use std::os::unix::fs::MetadataExt;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
     use tauri::Manager;
     use tempfile::TempDir;
@@ -2048,10 +2135,10 @@ mod tests {
         assert!(matches!(map_picker_join(error), Error::Cancellation));
     }
 
-    #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn production_workspace_file_tail_finishes_after_command_caller_drop() {
         let (directory, state, workspace) = workspace_state();
+        let listed_workspace = workspace.clone();
         let (hook, entered, release) = crate::pgn::BoundedHook::new();
         state.pgn_repository.set_count_hook(Some(hook)).unwrap();
         let app = tauri::test::mock_app();
@@ -2090,10 +2177,29 @@ mod tests {
         })
         .await
         .unwrap();
+        let state = app.state::<AppState>();
         assert_eq!(
             fs::read_to_string(directory.path().join("workspace/completed.pgn")).unwrap(),
             "1. e4 *"
         );
+        assert!(directory.path().join("workspace/completed.info").is_file());
+        assert!(registry_has_display_name(&directory, "completed.pgn"));
+        let (entries, _) = collect_tree_entries(
+            &state.pgn_path_authority,
+            &listed_workspace,
+            &CancellationToken::new(),
+        )
+        .expect("list completed create");
+        let created = entries
+            .iter()
+            .find(|entry| entry.name == "completed")
+            .expect("created entry is registered");
+        let resolved = resolve_created_pgn(&state, &created.handle);
+        let count =
+            pgn::count_pgn_games_core(resolved, &CancellationToken::new(), &state.pgn_repository)
+                .await
+                .expect("count completed create");
+        assert_eq!(count, 1);
     }
 
     /// Grants and promotes `selected` as a persistent PGN workspace in a fresh authority whose
@@ -2176,8 +2282,159 @@ mod tests {
                 WorkspaceFileContent::Text { pgn: "*".into() },
                 &state.pgn_path_authority,
                 &state.workspace_mutation,
+                &state.pgn_repository,
                 &CancellationToken::new(),
             )
+        }
+    }
+
+    fn registry_display_names(directory: &TempDir) -> Vec<String> {
+        let json: serde_json::Value = serde_json::from_slice(
+            &fs::read(directory.path().join("registry.json")).expect("read workspace registry"),
+        )
+        .expect("parse workspace registry");
+        json["entries"]
+            .as_array()
+            .expect("registry entries")
+            .iter()
+            .filter_map(|entry| entry["display_name"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    fn registry_has_display_name(directory: &TempDir, name: &str) -> bool {
+        registry_display_names(directory)
+            .iter()
+            .any(|entry| entry == name)
+    }
+
+    fn create_named_text(
+        state: &AppState,
+        workspace: &FileWorkspaceHandle,
+        name: &str,
+        pgn: &str,
+    ) -> Result<WorkspaceEntry, Error> {
+        create_workspace_file_blocking(
+            workspace.clone(),
+            workspace.clone(),
+            name.into(),
+            WorkspaceMetadata::default(),
+            WorkspaceFileContent::Text { pgn: pgn.into() },
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+            &state.pgn_repository,
+            &CancellationToken::new(),
+        )
+    }
+
+    fn resolve_created_pgn(
+        state: &AppState,
+        handle: &FileWorkspaceHandle,
+    ) -> crate::infra::path_authority::ResolvedPath {
+        authority(&state.pgn_path_authority)
+            .expect("authority lock")
+            .as_mut()
+            .expect("authority")
+            .resolve(handle.path_ref(), PathOperation::ReadPgn, &[])
+            .expect("resolve created PGN")
+    }
+
+    async fn assert_count_is_cache_hit(
+        state: &AppState,
+        handle: &FileWorkspaceHandle,
+        expected: i32,
+    ) {
+        let resolved = resolve_created_pgn(state, handle);
+        let (hook, mut entered, _release) = pgn::BoundedHook::new();
+        state
+            .pgn_repository
+            .set_scan_line_hook(Some(hook))
+            .expect("set scan-line hook");
+        let count =
+            pgn::count_pgn_games_core(resolved, &CancellationToken::new(), &state.pgn_repository)
+                .await
+                .expect("count after create");
+        state
+            .pgn_repository
+            .set_scan_line_hook(None)
+            .expect("clear scan-line hook");
+        assert_eq!(count, expected);
+        assert!(
+            entered.try_recv().is_err(),
+            "follow-up count must be a repository cache hit"
+        );
+    }
+
+    struct FailAfterRenames {
+        skip: usize,
+        seen: AtomicUsize,
+    }
+
+    impl AtomicWriterInjector for FailAfterRenames {
+        fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+            if point != AtomicFileFaultPoint::Rename {
+                return Ok(());
+            }
+            if self.seen.fetch_add(1, Ordering::SeqCst) < self.skip {
+                return Ok(());
+            }
+            Err(std::io::Error::other("registry persistence test failure"))
+        }
+    }
+
+    struct ParentSyncAfter {
+        skip: usize,
+        seen: AtomicUsize,
+    }
+
+    impl AtomicWriterInjector for ParentSyncAfter {
+        fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+            if point != AtomicFileFaultPoint::ParentSync {
+                return Ok(());
+            }
+            if self.seen.fetch_add(1, Ordering::SeqCst) < self.skip {
+                return Ok(());
+            }
+            Err(std::io::Error::other("injected parent sync fault"))
+        }
+    }
+
+    struct ParentSyncOnly {
+        index: usize,
+        seen: AtomicUsize,
+    }
+
+    impl AtomicWriterInjector for ParentSyncOnly {
+        fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+            if point != AtomicFileFaultPoint::ParentSync {
+                return Ok(());
+            }
+            if self.seen.fetch_add(1, Ordering::SeqCst) == self.index {
+                return Err(std::io::Error::other("injected parent sync fault"));
+            }
+            Ok(())
+        }
+    }
+
+    struct UncertainPgnThenFailedRegistry {
+        parent_syncs: AtomicUsize,
+        renames: AtomicUsize,
+    }
+
+    impl AtomicWriterInjector for UncertainPgnThenFailedRegistry {
+        fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+            match point {
+                AtomicFileFaultPoint::ParentSync
+                    if self.parent_syncs.fetch_add(1, Ordering::SeqCst) == 0 =>
+                {
+                    Err(std::io::Error::other("pgn parent sync uncertain"))
+                }
+                AtomicFileFaultPoint::Rename
+                    if self.renames.fetch_add(1, Ordering::SeqCst) >= 2 =>
+                {
+                    Err(std::io::Error::other("registry persistence test failure"))
+                }
+                _ => Ok(()),
+            }
         }
     }
 
@@ -2206,6 +2463,9 @@ mod tests {
             WORKSPACE_CREATED_FILE_POST_WRITE_HOOK.with(|slot| slot.borrow_mut().take());
             let created = result.expect("pre-epoch create response");
             assert!(created.last_modified < 0);
+            if !is_dir {
+                assert_eq!(created.game_count, Some(1));
+            }
             assert_eq!(
                 created.last_modified,
                 enumerated_workspace_entry(&root, leaf).modified_seconds
@@ -2333,6 +2593,7 @@ mod tests {
             },
             &state.pgn_path_authority,
             &state.workspace_mutation,
+            &state.pgn_repository,
             &CancellationToken::new(),
         )
         .expect("write through the canonical workspace");
@@ -2364,6 +2625,7 @@ mod tests {
             },
             &state.pgn_path_authority,
             &state.workspace_mutation,
+            &state.pgn_repository,
             &CancellationToken::new(),
         );
         assert!(result.is_err());
@@ -3345,6 +3607,7 @@ mod tests {
             WorkspaceFileContent::Text { pgn: "*".into() },
             &state.pgn_path_authority,
             &state.workspace_mutation,
+            &state.pgn_repository,
             &CancellationToken::new(),
         );
         assert!(matches!(create, Err(Error::ResourceLimit(_))));
@@ -3360,6 +3623,7 @@ mod tests {
             WorkspaceFileContent::Text { pgn: "*".into() },
             &state.pgn_path_authority,
             &state.workspace_mutation,
+            &state.pgn_repository,
             &CancellationToken::new(),
         )
         .unwrap();
@@ -3491,6 +3755,7 @@ mod tests {
             WorkspaceFileContent::Text { pgn: "*".into() },
             &state.pgn_path_authority,
             &state.workspace_mutation,
+            &state.pgn_repository,
             &CancellationToken::new(),
         )
         .expect("created file");
@@ -3739,10 +4004,9 @@ mod tests {
         assert_rename_landed(&state, &root, &handle);
     }
 
-    #[cfg(unix)]
     #[test]
     fn create_workspace_directory_parent_sync_keeps_completed_directory() {
-        let (_directory, state, workspace) = workspace_state();
+        let (directory, state, workspace) = workspace_state();
         let root =
             mutation_target(&state.pgn_path_authority, &workspace).expect("workspace target");
         set_test_atomic_file_injector(Some(Arc::new(crate::infra::fs::ParentSyncFault(
@@ -3756,28 +4020,29 @@ mod tests {
             &state.workspace_mutation,
             &CancellationToken::new(),
         )
-        .expect_err("uncertain registry durability must be surfaced");
+        .expect_err("directory parent-sync uncertainty must be surfaced");
         set_test_atomic_file_injector(None);
-        assert!(matches!(error, Error::CommittedDurabilityUncertain(_)));
+        assert!(matches!(
+            error,
+            Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::WorkspaceDirectoryCreation
+            )
+        ));
         assert!(root.path().join("created").is_dir());
+        assert!(registry_has_display_name(&directory, "created"));
     }
 
     /// Fails the sidecar's rename, the second atomic rename of a workspace file creation; when
     /// `replace_pgn` is set it first swaps the just-installed PGN for a different regular file.
-    #[cfg(unix)]
     struct SidecarRenameFault {
-        renames: std::sync::atomic::AtomicUsize,
+        renames: AtomicUsize,
         replace_pgn: Option<PathBuf>,
     }
 
-    #[cfg(unix)]
     impl AtomicWriterInjector for SidecarRenameFault {
         fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
             if point != AtomicFileFaultPoint::Rename
-                || self
-                    .renames
-                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-                    == 0
+                || self.renames.fetch_add(1, Ordering::SeqCst) == 0
             {
                 return Ok(());
             }
@@ -3790,7 +4055,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     fn create_game_under_sidecar_fault(
         replace_pgn: bool,
     ) -> (TempDir, PathBuf, Result<WorkspaceEntry, Error>) {
@@ -3800,7 +4064,7 @@ mod tests {
             .path()
             .to_path_buf();
         set_test_atomic_file_injector(Some(Arc::new(SidecarRenameFault {
-            renames: std::sync::atomic::AtomicUsize::new(0),
+            renames: AtomicUsize::new(0),
             replace_pgn: replace_pgn.then(|| root.join("game.pgn")),
         })));
         let result = create_workspace_file_blocking(
@@ -3816,13 +4080,13 @@ mod tests {
             },
             &state.pgn_path_authority,
             &state.workspace_mutation,
+            &state.pgn_repository,
             &CancellationToken::new(),
         );
         set_test_atomic_file_injector(None);
         (directory, root, result)
     }
 
-    #[cfg(unix)]
     #[test]
     fn create_workspace_file_rolls_back_its_pgn_when_the_sidecar_fails() {
         let (_directory, root, result) = create_game_under_sidecar_fault(false);
@@ -3831,7 +4095,6 @@ mod tests {
         assert!(!root.join("game.info").exists());
     }
 
-    #[cfg(unix)]
     #[test]
     fn create_workspace_file_rollback_leaves_a_replaced_pgn_in_place() {
         let (_directory, root, result) = create_game_under_sidecar_fault(true);
@@ -3840,6 +4103,596 @@ mod tests {
             "{result:?}"
         );
         assert_eq!(fs::read(root.join("game.pgn")).unwrap(), b"replacement");
+    }
+
+    #[test]
+    fn create_workspace_file_rolls_back_an_ordinary_registration_failure() {
+        let (directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
+        set_test_atomic_file_injector(Some(Arc::new(FailAfterRenames {
+            skip: 2,
+            seen: AtomicUsize::new(0),
+        })));
+        let error = create_named_text(&state, &workspace, "reg-fail", "1. e4 *")
+            .expect_err("ordinary registration failure");
+        set_test_atomic_file_injector(None);
+        assert!(
+            !matches!(error, Error::OperationAndCleanup { .. }),
+            "{error:?}"
+        );
+        assert!(!root.join("reg-fail.pgn").exists());
+        assert!(!root.join("reg-fail.info").exists());
+        assert!(!registry_has_display_name(&directory, "reg-fail"));
+        let retry = create_named_text(&state, &workspace, "reg-fail", "1. d4 *")
+            .expect("retry after rolled-back create");
+        assert_eq!(retry.game_count, Some(1));
+        assert!(root.join("reg-fail.pgn").is_file());
+    }
+
+    #[test]
+    fn create_workspace_file_registration_rollback_leaves_a_replaced_pgn() {
+        let (directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
+        let pgn = root.join("keep-pgn.pgn");
+        set_workspace_created_child_pre_register_hook(Some(Box::new(move || {
+            let replacement = pgn.with_extension("swap");
+            fs::write(&replacement, b"keep-pgn-bytes").expect("replacement PGN");
+            fs::rename(&replacement, &pgn).expect("replace installed PGN");
+        })));
+        set_test_atomic_file_injector(Some(Arc::new(FailAfterRenames {
+            skip: 2,
+            seen: AtomicUsize::new(0),
+        })));
+        let error = create_named_text(&state, &workspace, "keep-pgn", "1. e4 *")
+            .expect_err("replaced PGN cannot be rolled back");
+        set_workspace_created_child_pre_register_hook(None);
+        set_test_atomic_file_injector(None);
+        assert!(
+            matches!(error, Error::OperationAndCleanup { .. }),
+            "{error:?}"
+        );
+        assert_eq!(
+            fs::read(root.join("keep-pgn.pgn")).unwrap(),
+            b"keep-pgn-bytes"
+        );
+        assert!(!root.join("keep-pgn.info").exists());
+        assert!(!registry_has_display_name(&directory, "keep-pgn"));
+    }
+
+    #[test]
+    fn create_workspace_file_registration_rollback_leaves_a_replaced_sidecar() {
+        let (directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
+        let sidecar = root.join("keep-side.info");
+        set_workspace_created_child_pre_register_hook(Some(Box::new(move || {
+            let replacement = sidecar.with_extension("swap");
+            fs::write(&replacement, b"keep-sidecar-bytes").expect("replacement sidecar");
+            fs::rename(&replacement, &sidecar).expect("replace installed sidecar");
+        })));
+        set_test_atomic_file_injector(Some(Arc::new(FailAfterRenames {
+            skip: 2,
+            seen: AtomicUsize::new(0),
+        })));
+        let error = create_named_text(&state, &workspace, "keep-side", "1. e4 *")
+            .expect_err("replaced sidecar cannot be rolled back");
+        set_workspace_created_child_pre_register_hook(None);
+        set_test_atomic_file_injector(None);
+        assert!(
+            matches!(error, Error::OperationAndCleanup { .. }),
+            "{error:?}"
+        );
+        assert_eq!(
+            fs::read(root.join("keep-side.info")).unwrap(),
+            b"keep-sidecar-bytes"
+        );
+        assert!(!root.join("keep-side.pgn").exists());
+        assert!(!registry_has_display_name(&directory, "keep-side"));
+    }
+
+    #[test]
+    fn create_workspace_file_registry_parent_sync_uncertainty_keeps_the_entry() {
+        let (directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
+        set_test_atomic_file_injector(Some(Arc::new(ParentSyncAfter {
+            skip: 2,
+            seen: AtomicUsize::new(0),
+        })));
+        let error = create_named_text(&state, &workspace, "reg-sync", "*")
+            .expect_err("registry parent-sync uncertainty");
+        set_test_atomic_file_injector(None);
+        assert!(matches!(
+            error,
+            Error::CommittedDurabilityUncertain(crate::error::DurabilityStage::RegistryReplacement)
+        ));
+        assert!(root.join("reg-sync.pgn").is_file());
+        assert!(root.join("reg-sync.info").is_file());
+        let (entries, _) = collect_tree_entries(
+            &state.pgn_path_authority,
+            &workspace,
+            &CancellationToken::new(),
+        )
+        .expect("list registered file");
+        let created = entries
+            .iter()
+            .find(|entry| entry.name == "reg-sync")
+            .expect("registered");
+        resolve_created_pgn(&state, &created.handle);
+        assert!(registry_has_display_name(&directory, "reg-sync"));
+    }
+
+    #[test]
+    fn create_workspace_file_sidecar_parent_sync_uncertainty_is_reported() {
+        let (_directory, state, workspace) = workspace_state();
+        set_test_atomic_file_injector(Some(Arc::new(ParentSyncOnly {
+            index: 1,
+            seen: AtomicUsize::new(0),
+        })));
+        let error = create_named_text(&state, &workspace, "side-sync", "*")
+            .expect_err("sidecar parent-sync uncertainty");
+        set_test_atomic_file_injector(None);
+        assert!(matches!(
+            error,
+            Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::WorkspaceSidecarCreation
+            )
+        ));
+        let (entries, _) = collect_tree_entries(
+            &state.pgn_path_authority,
+            &workspace,
+            &CancellationToken::new(),
+        )
+        .expect("list registered file");
+        assert!(entries.iter().any(|entry| entry.name == "side-sync"));
+    }
+
+    #[test]
+    fn create_workspace_file_sidecar_uncertainty_outranks_registry_uncertainty() {
+        let (_directory, state, workspace) = workspace_state();
+        set_test_atomic_file_injector(Some(Arc::new(ParentSyncAfter {
+            skip: 1,
+            seen: AtomicUsize::new(0),
+        })));
+        let error = create_named_text(&state, &workspace, "side-first", "*")
+            .expect_err("sidecar outranks registry");
+        set_test_atomic_file_injector(None);
+        assert!(matches!(
+            error,
+            Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::WorkspaceSidecarCreation
+            )
+        ));
+        let (entries, _) = collect_tree_entries(
+            &state.pgn_path_authority,
+            &workspace,
+            &CancellationToken::new(),
+        )
+        .expect("list registered file");
+        assert!(entries.iter().any(|entry| entry.name == "side-first"));
+    }
+
+    #[test]
+    fn create_workspace_file_pgn_uncertainty_is_reported_when_later_steps_complete() {
+        let (_directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
+        set_test_atomic_file_injector(Some(Arc::new(ParentSyncAfter {
+            skip: 0,
+            seen: AtomicUsize::new(0),
+        })));
+        let error = create_named_text(&state, &workspace, "pgn-first", "*")
+            .expect_err("PGN uncertainty is first");
+        set_test_atomic_file_injector(None);
+        assert!(matches!(
+            error,
+            Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::WorkspacePgnCreation
+            )
+        ));
+        assert!(root.join("pgn-first.pgn").is_file());
+        assert!(root.join("pgn-first.info").is_file());
+        let (entries, _) = collect_tree_entries(
+            &state.pgn_path_authority,
+            &workspace,
+            &CancellationToken::new(),
+        )
+        .expect("list registered file");
+        assert!(entries.iter().any(|entry| entry.name == "pgn-first"));
+    }
+
+    #[test]
+    fn create_workspace_file_ordinary_registration_error_outranks_pgn_uncertainty() {
+        let (_directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
+        set_test_atomic_file_injector(Some(Arc::new(UncertainPgnThenFailedRegistry {
+            parent_syncs: AtomicUsize::new(0),
+            renames: AtomicUsize::new(0),
+        })));
+        let error = create_named_text(&state, &workspace, "combine", "*")
+            .expect_err("ordinary error outranks uncertainty");
+        set_test_atomic_file_injector(None);
+        assert!(
+            !matches!(error, Error::CommittedDurabilityUncertain(_)),
+            "{error:?}"
+        );
+        assert!(!root.join("combine.pgn").exists());
+        assert!(!root.join("combine.info").exists());
+    }
+
+    #[test]
+    fn create_workspace_file_unclosed_brace_comment_rolls_back() {
+        let (directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
+        let error = create_named_text(&state, &workspace, "unclosed", "{ unclosed comment")
+            .expect_err("unclosed brace comment");
+        assert!(
+            !matches!(error, Error::OperationAndCleanup { .. }),
+            "{error:?}"
+        );
+        assert_workspace_entry_names(&root, &[]);
+        assert!(!registry_has_display_name(&directory, "unclosed"));
+    }
+
+    #[tokio::test]
+    async fn create_workspace_file_text_two_games_is_a_cache_hit() {
+        let (_directory, state, workspace) = workspace_state();
+        let created = create_named_text(
+            &state,
+            &workspace,
+            "two",
+            "[Event \"A\"]\n\n1. e4 *\n\n[Event \"B\"]\n\n1. d4 *\n",
+        )
+        .expect("two-game create");
+        assert_eq!(created.game_count, Some(2));
+        assert_count_is_cache_hit(&state, &created.handle, 2).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn create_workspace_file_returns_the_core_result_after_post_register_faults() {
+        let (directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
+        let pgn = root.join("o2.pgn");
+        state
+            .pgn_repository
+            .set_create_post_register_hook(Some(Box::new(move |token| {
+                token.cancel();
+                let replacement = pgn.with_extension("swap");
+                fs::write(&replacement, b"replaced-after-register").expect("replacement");
+                fs::rename(&replacement, &pgn).expect("replace installed PGN");
+            })))
+            .expect("set post-register hook");
+        let app = tauri::test::mock_app();
+        app.manage(state);
+        let created = create_workspace_file(
+            workspace.clone(),
+            workspace,
+            "o2".into(),
+            WorkspaceMetadata::default(),
+            WorkspaceFileContent::Text { pgn: "*".into() },
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("command returns the core result");
+        assert_eq!(created.game_count, Some(1));
+        assert_eq!(
+            fs::read(directory.path().join("workspace/o2.pgn")).unwrap(),
+            b"replaced-after-register"
+        );
+    }
+
+    #[test]
+    fn create_workspace_file_invalidates_the_count_cache_on_registration_rollback() {
+        let (_directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
+        let captured = Arc::new(StdMutex::new(None));
+        let captured_in_hook = Arc::clone(&captured);
+        let root_in_hook = root.clone();
+        set_workspace_created_child_pre_register_hook(Some(Box::new(move || {
+            *captured_in_hook.lock().expect("identity") =
+                Some(enumerated_workspace_entry(&root_in_hook, "rolled.pgn").identity);
+        })));
+        set_test_atomic_file_injector(Some(Arc::new(FailAfterRenames {
+            skip: 2,
+            seen: AtomicUsize::new(0),
+        })));
+        create_named_text(&state, &workspace, "rolled", "1. e4 *")
+            .expect_err("ordinary registration failure");
+        set_workspace_created_child_pre_register_hook(None);
+        set_test_atomic_file_injector(None);
+        let identity = captured.lock().expect("identity").take().expect("hook ran");
+        assert!(!state
+            .pgn_repository
+            .has_cached_identity(
+                crate::infra::path_authority::PgnSnapshotIdentity::from_pair(identity)
+            )
+            .expect("cache lookup"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn create_workspace_file_listing_during_count_does_not_block_a_retry() {
+        let (directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
+        let list_workspace = workspace.clone();
+        let retry_workspace = workspace.clone();
+        let (hook, entered, release) = pgn::BoundedHook::new();
+        state
+            .pgn_repository
+            .set_count_hook(Some(hook))
+            .expect("set count hook");
+        let app = tauri::test::mock_app();
+        app.manage(state);
+        let app_handle = app.handle().clone();
+        let caller = tokio::spawn(async move {
+            let state = app_handle.state::<AppState>();
+            create_workspace_file(
+                workspace.clone(),
+                workspace,
+                "stale-limit".into(),
+                WorkspaceMetadata::default(),
+                WorkspaceFileContent::Text { pgn: "*".into() },
+                state,
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), entered)
+            .await
+            .expect("count starts")
+            .expect("count hook");
+        let listed = collect_tree_entries(
+            &app.state::<AppState>().pgn_path_authority,
+            &list_workspace,
+            &CancellationToken::new(),
+        )
+        .expect("listing registers the installed PGN");
+        assert!(listed.0.iter().any(|entry| entry.name == "stale-limit"));
+        app.state::<AppState>()
+            .operations
+            .seal_and_request_cancellation()
+            .expect("cancel accepted operation");
+        release.send(()).expect("release count hook");
+        let result = caller.await.expect("join create");
+        assert!(matches!(result, Err(Error::Cancellation)), "{result:?}");
+        assert!(!root.join("stale-limit.pgn").exists());
+        assert!(!root.join("stale-limit.info").exists());
+        app.state::<AppState>()
+            .pgn_repository
+            .set_count_hook(None)
+            .expect("clear count hook");
+        let second = create_named_text(
+            app.state::<AppState>().inner(),
+            &retry_workspace,
+            "stale-limit",
+            "1. d4 *",
+        )
+        .expect("retry before a further listing");
+        let second_identity =
+            mutation_target(&app.state::<AppState>().pgn_path_authority, &second.handle)
+                .expect("second identity")
+                .identity;
+        let (entries, _) = collect_tree_entries(
+            &app.state::<AppState>().pgn_path_authority,
+            &retry_workspace,
+            &CancellationToken::new(),
+        )
+        .expect("listing after retry");
+        let matches: Vec<_> = entries
+            .iter()
+            .filter(|entry| entry.name == "stale-limit")
+            .collect();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(
+            mutation_target(
+                &app.state::<AppState>().pgn_path_authority,
+                &matches[0].handle
+            )
+            .expect("listed identity")
+            .identity,
+            second_identity
+        );
+        assert_eq!(
+            registry_display_names(&directory)
+                .iter()
+                .filter(|name| *name == "stale-limit")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn create_workspace_directory_rolls_back_an_ordinary_registration_failure() {
+        let (directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
+        set_test_atomic_file_injector(Some(Arc::new(FailAfterRenames {
+            skip: 0,
+            seen: AtomicUsize::new(0),
+        })));
+        let error = create_workspace_directory_inner(
+            workspace.clone(),
+            workspace,
+            "dir-fail".into(),
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+            &CancellationToken::new(),
+        )
+        .expect_err("ordinary directory registration failure");
+        set_test_atomic_file_injector(None);
+        assert!(
+            !matches!(error, Error::OperationAndCleanup { .. }),
+            "{error:?}"
+        );
+        assert!(!root.join("dir-fail").exists());
+        assert!(!registry_has_display_name(&directory, "dir-fail"));
+    }
+
+    #[test]
+    fn create_workspace_directory_keeps_a_non_empty_directory_on_rollback() {
+        let (_directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
+        let child = root.join("dir-filled/inside.txt");
+        set_workspace_created_child_pre_register_hook(Some(Box::new(move || {
+            fs::write(&child, b"keep").expect("external file");
+        })));
+        set_test_atomic_file_injector(Some(Arc::new(FailAfterRenames {
+            skip: 0,
+            seen: AtomicUsize::new(0),
+        })));
+        let error = create_workspace_directory_inner(
+            workspace.clone(),
+            workspace,
+            "dir-filled".into(),
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+            &CancellationToken::new(),
+        )
+        .expect_err("non-empty directory is not removed");
+        set_workspace_created_child_pre_register_hook(None);
+        set_test_atomic_file_injector(None);
+        assert!(
+            matches!(error, Error::OperationAndCleanup { .. }),
+            "{error:?}"
+        );
+        assert_eq!(
+            fs::read(root.join("dir-filled/inside.txt")).unwrap(),
+            b"keep"
+        );
+    }
+
+    #[test]
+    fn create_workspace_directory_rollback_leaves_a_replaced_empty_directory() {
+        let (_directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
+        let target = root.join("dir-swap");
+        set_workspace_created_child_pre_register_hook(Some(Box::new(move || {
+            fs::rename(&target, target.with_file_name("dir-swap-saved")).expect("save observed");
+            fs::create_dir(&target).expect("replacement empty directory");
+        })));
+        set_test_atomic_file_injector(Some(Arc::new(FailAfterRenames {
+            skip: 0,
+            seen: AtomicUsize::new(0),
+        })));
+        let error = create_workspace_directory_inner(
+            workspace.clone(),
+            workspace,
+            "dir-swap".into(),
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+            &CancellationToken::new(),
+        )
+        .expect_err("replacement directory is not ours");
+        set_workspace_created_child_pre_register_hook(None);
+        set_test_atomic_file_injector(None);
+        assert!(
+            matches!(error, Error::OperationAndCleanup { .. }),
+            "{error:?}"
+        );
+        assert!(root.join("dir-swap").is_dir());
+        assert!(root.join("dir-swap-saved").is_dir());
+    }
+
+    #[test]
+    fn create_workspace_directory_rollback_leaves_a_replaced_file() {
+        let (_directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
+        let target = root.join("dir-file");
+        set_workspace_created_child_pre_register_hook(Some(Box::new(move || {
+            fs::rename(&target, target.with_file_name("dir-file-saved")).expect("save observed");
+            fs::write(&target, b"replacement-file").expect("replacement file");
+        })));
+        set_test_atomic_file_injector(Some(Arc::new(FailAfterRenames {
+            skip: 0,
+            seen: AtomicUsize::new(0),
+        })));
+        let error = create_workspace_directory_inner(
+            workspace.clone(),
+            workspace,
+            "dir-file".into(),
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+            &CancellationToken::new(),
+        )
+        .expect_err("replacement file is not ours");
+        set_workspace_created_child_pre_register_hook(None);
+        set_test_atomic_file_injector(None);
+        assert!(
+            matches!(error, Error::OperationAndCleanup { .. }),
+            "{error:?}"
+        );
+        assert_eq!(
+            fs::read(root.join("dir-file")).unwrap(),
+            b"replacement-file"
+        );
+    }
+
+    #[test]
+    fn create_workspace_directory_observation_failure_does_not_remove_by_name() {
+        let (directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
+
+        crate::infra::fs::set_entry_observation_fault(Some(Error::from(std::io::Error::other(
+            "injected observation",
+        ))));
+        let injected = create_workspace_directory_inner(
+            workspace.clone(),
+            workspace.clone(),
+            "obs-fault".into(),
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+            &CancellationToken::new(),
+        )
+        .expect_err("injected observation");
+        crate::infra::fs::set_entry_observation_fault(None);
+        assert!(
+            matches!(injected, Error::OperationAndCleanup { .. }),
+            "{injected:?}"
+        );
+        assert!(root.join("obs-fault").is_dir());
+        assert_eq!(fs::read_dir(root.join("obs-fault")).unwrap().count(), 0);
+        assert!(!registry_has_display_name(&directory, "obs-fault"));
+
+        let removed_path = root.join("obs-gone");
+        WORKSPACE_CREATED_DIRECTORY_PRE_OBSERVE_HOOK.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                fs::remove_dir(&removed_path).expect("remove created directory");
+            }));
+        });
+        let removed = create_workspace_directory_inner(
+            workspace.clone(),
+            workspace.clone(),
+            "obs-gone".into(),
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+            &CancellationToken::new(),
+        )
+        .expect_err("missing directory observation");
+        WORKSPACE_CREATED_DIRECTORY_PRE_OBSERVE_HOOK.with(|slot| slot.borrow_mut().take());
+        assert!(
+            matches!(removed, Error::OperationAndCleanup { .. }),
+            "{removed:?}"
+        );
+        assert!(!root.join("obs-gone").exists());
+        assert!(!registry_has_display_name(&directory, "obs-gone"));
+
+        let replaced_path = root.join("obs-file");
+        WORKSPACE_CREATED_DIRECTORY_PRE_OBSERVE_HOOK.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                fs::remove_dir(&replaced_path).expect("remove created directory");
+                fs::write(&replaced_path, b"obs-bytes").expect("replacement file");
+            }));
+        });
+        let replaced = create_workspace_directory_inner(
+            workspace.clone(),
+            workspace,
+            "obs-file".into(),
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+            &CancellationToken::new(),
+        )
+        .expect_err("replaced-by-file observation");
+        WORKSPACE_CREATED_DIRECTORY_PRE_OBSERVE_HOOK.with(|slot| slot.borrow_mut().take());
+        assert!(
+            matches!(replaced, Error::OperationAndCleanup { .. }),
+            "{replaced:?}"
+        );
+        assert_eq!(fs::read(root.join("obs-file")).unwrap(), b"obs-bytes");
+        assert!(!registry_has_display_name(&directory, "obs-file"));
     }
 
     fn workspace_entry_names(root: &Path) -> Vec<String> {
@@ -3892,6 +4745,7 @@ mod tests {
     ) -> WorkspaceCopyTask {
         let pgn_path_authority = Arc::clone(&state.pgn_path_authority);
         let workspace_mutation = Arc::clone(&state.workspace_mutation);
+        let pgn_repository = state.pgn_repository.clone();
         let name = name.to_string();
         tokio::task::spawn_blocking(move || {
             pgn::set_read_chunk_hook(Some(hook));
@@ -3903,6 +4757,7 @@ mod tests {
                 WorkspaceFileContent::Copy { source, revision },
                 &pgn_path_authority,
                 &workspace_mutation,
+                &pgn_repository,
                 &cancellation,
             );
             let chunks = pgn::copy_chunk_count();
@@ -3991,6 +4846,7 @@ mod tests {
         .expect("create copied file");
 
         assert_eq!(created.game_count, Some(1_001));
+        assert_count_is_cache_hit(app.state::<AppState>().inner(), &created.handle, 1_001).await;
         assert_eq!(
             fs::read(root.join("copy.pgn")).expect("read copied corpus"),
             corpus.as_bytes()
@@ -4029,6 +4885,7 @@ mod tests {
                 },
                 &state.pgn_path_authority,
                 &state.workspace_mutation,
+                &state.pgn_repository,
                 &CancellationToken::new(),
             );
             assert!(matches!(result, Err(Error::InvalidInput(_))), "{result:?}");
@@ -4057,6 +4914,7 @@ mod tests {
             },
             &state.pgn_path_authority,
             &state.workspace_mutation,
+            &state.pgn_repository,
             &CancellationToken::new(),
         );
 
@@ -4263,7 +5121,12 @@ mod tests {
         let (_directory, state, workspace) = workspace_state();
         let root = workspace_root(&state.pgn_path_authority, &workspace).expect("workspace root");
         let source_path = root.join("source.pgn");
-        let corpus = vec![b'x'; CORPUS_BYTES];
+        let mut corpus = b"[Event \"X\"]\n\n1. e4 {".to_vec();
+        while corpus.len() + 4 < CORPUS_BYTES {
+            corpus.extend_from_slice(b"x\n");
+        }
+        corpus.resize(CORPUS_BYTES - 4, b'x');
+        corpus.extend_from_slice(b"} *\n");
         fs::write(&source_path, &corpus).expect("write multi-megabyte source");
         let source = registered_child_file(&state, &workspace, &source_path);
         let revision = source_revision(&state, &source);
@@ -4280,6 +5143,7 @@ mod tests {
                 WorkspaceFileContent::Copy { source, revision },
                 &state.pgn_path_authority,
                 &state.workspace_mutation,
+                &state.pgn_repository,
                 &CancellationToken::new(),
             )
         });
@@ -4342,15 +5206,9 @@ mod tests {
         let result = caller.await.expect("join create command");
 
         assert!(matches!(result, Err(Error::Cancellation)), "{result:?}");
-        assert_eq!(
-            fs::read(root.join("count-cancelled.pgn")).unwrap(),
-            b"[Event \"Count cancellation\"]\n\n1. e4 *"
-        );
-        let sidecar: WorkspaceMetadata = serde_json::from_slice(
-            &fs::read(root.join("count-cancelled.info")).expect("installed sidecar remains"),
-        )
-        .expect("metadata sidecar");
-        assert_eq!(sidecar, WorkspaceMetadata::default());
+        assert!(!root.join("count-cancelled.pgn").exists());
+        assert!(!root.join("count-cancelled.info").exists());
+        assert!(!registry_has_display_name(&directory, "count-cancelled"));
         drop(directory);
     }
 
@@ -4506,6 +5364,7 @@ mod tests {
             },
             &state.pgn_path_authority,
             &state.workspace_mutation,
+            &state.pgn_repository,
             &CancellationToken::new(),
         )
         .unwrap();
@@ -4642,6 +5501,7 @@ mod tests {
             },
             &state.pgn_path_authority,
             &state.workspace_mutation,
+            &state.pgn_repository,
             &CancellationToken::new(),
         )
         .unwrap();

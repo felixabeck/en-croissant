@@ -229,13 +229,22 @@ impl ResolvedPath {
         }
     }
 
+    /// Snapshot of an already-opened regular file whose identity the caller has proved.
+    /// A descriptor whose identity differs from `expected` is refused with `Conflict`.
+    pub(crate) fn pgn_snapshot_from_identified_file(
+        file: fs::File,
+        expected: (u64, u64),
+    ) -> Result<PgnSnapshot, Error> {
+        let snapshot = Self::pgn_snapshot_file(file)?;
+        if snapshot.identity.pair() != expected {
+            return Err(Error::Conflict("workspace PGN changed concurrently".into()));
+        }
+        Ok(snapshot)
+    }
+
     fn pgn_snapshot_file(file: fs::File) -> Result<PgnSnapshot, Error> {
         let meta = file.metadata()?;
-        let modified = meta
-            .modified()?
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_err(|e| Error::InvalidInput(format!("invalid PGN modification time: {e}")))?
-            .as_nanos();
+        let modified = signed_unix_nanos(meta.modified()?)?;
         #[cfg(unix)]
         let ctime_nanos = {
             use std::os::unix::fs::MetadataExt;
@@ -722,12 +731,19 @@ impl PgnSnapshotIdentity {
     pub(crate) fn pair(&self) -> (u64, u64) {
         (self.0.a, self.0.b)
     }
+
+    pub(crate) fn from_pair(pair: (u64, u64)) -> Self {
+        Self(super::Identity {
+            a: pair.0,
+            b: pair.1,
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct PgnSnapshotRevision {
     pub size: u64,
-    pub mtime_nanos: u128,
+    pub mtime_nanos: i128,
     pub ctime_nanos: i128,
 }
 pub(crate) struct PgnSnapshot {
@@ -739,6 +755,18 @@ pub(crate) struct PgnSnapshot {
 impl PgnSnapshot {
     pub(crate) fn current_revision(&self) -> Result<PgnSnapshotRevision, Error> {
         Ok(ResolvedPath::pgn_snapshot_file(self.file.try_clone()?)?.revision)
+    }
+}
+
+fn signed_unix_nanos(time: SystemTime) -> Result<i128, Error> {
+    const MESSAGE: &str = "PGN modification time is out of range";
+    match time.duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(duration) => {
+            i128::try_from(duration.as_nanos()).map_err(|_| Error::InvalidInput(MESSAGE.into()))
+        }
+        Err(error) => i128::try_from(error.duration().as_nanos())
+            .map(|nanos| -nanos)
+            .map_err(|_| Error::InvalidInput(MESSAGE.into())),
     }
 }
 
@@ -1126,6 +1154,53 @@ pub(super) fn resolve_windows(
         leaf: None,
         target,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn anonymous_pgn(bytes: &[u8]) -> fs::File {
+        let mut file = tempfile::tempfile().expect("anonymous PGN");
+        file.write_all(bytes).expect("write PGN");
+        file.seek(std::io::SeekFrom::Start(0)).expect("rewind");
+        file
+    }
+
+    #[test]
+    fn identified_snapshot_refuses_a_descriptor_with_a_different_identity() {
+        let matching_file = anonymous_pgn(b"1. e4 *");
+        let other_file = anonymous_pgn(b"1. d4 *");
+        let expected = opened_file_identity(&matching_file).expect("matching identity");
+        let snapshot = ResolvedPath::pgn_snapshot_from_identified_file(matching_file, expected)
+            .expect("matching identity is accepted");
+        assert_eq!(snapshot.identity.pair(), expected);
+        let error = match ResolvedPath::pgn_snapshot_from_identified_file(other_file, expected) {
+            Ok(_) => panic!("different identity is refused"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, Error::Conflict(_)), "{error:?}");
+    }
+
+    #[test]
+    fn snapshot_mtime_accepts_pre_epoch_seconds_and_keeps_post_epoch_revision_digits() {
+        let file = anonymous_pgn(b"1. e4 *");
+        file.set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1))
+            .expect("set post-epoch mtime");
+        let post = ResolvedPath::pgn_snapshot_file(file.try_clone().expect("clone"))
+            .expect("post-epoch snapshot");
+        assert!(post.revision.mtime_nanos > 0);
+        let post_revision = format!("{}", post.revision.mtime_nanos);
+        assert!(
+            !post_revision.starts_with('-'),
+            "post-1970 revision digits must stay unsigned in form: {post_revision}"
+        );
+        file.set_modified(SystemTime::UNIX_EPOCH - Duration::from_secs(1))
+            .expect("set pre-epoch mtime");
+        let pre = ResolvedPath::pgn_snapshot_file(file).expect("pre-epoch snapshot");
+        assert!(pre.revision.mtime_nanos < 0);
+    }
 }
 
 /// Runtime half of the executable no-op pin (R1-07). The counterpart cannot be compiled on the

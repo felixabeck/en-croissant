@@ -4807,6 +4807,12 @@ mod blocking_offload_scans {
             ),
             ("file_workspace.rs", file_workspace, "trash_entry"),
             ("file_workspace.rs", file_workspace, "restore_entry"),
+            ("pgn.rs", include_str!("pgn.rs"), "scan_current_blocking"),
+            (
+                "pgn.rs",
+                include_str!("pgn.rs"),
+                "count_pgn_games_core_blocking",
+            ),
             ("db/search.rs", search, "load_search_index"),
             ("db/mod.rs", db, "generate_search_index"),
             ("db/mod.rs", db, "generate_search_index_locked"),
@@ -4831,7 +4837,6 @@ mod blocking_offload_scans {
                 "pub(crate) async fn list_file_workspace_core(",
                 "count_pgn_games_core",
             ),
-            ("async fn create_workspace_file(", "count_pgn_games_core"),
             ("async fn permanently_delete_entry(", "retire_executables"),
         ] {
             let body = body_at_indent(source, signature);

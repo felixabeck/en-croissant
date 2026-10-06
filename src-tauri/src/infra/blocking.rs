@@ -16,8 +16,8 @@ pub static BLOCKING_GATEWAY: Lazy<BlockingGateway> =
 /// again. Acquiring several permits in sequence from an async body is fine; acquiring one inside
 /// another is the deadlock.
 ///
-/// `create_workspace_file` awaits `count_pgn_games_core`, which awaits `scan_current`
-/// (`pgn.rs:336`), which takes a permit — that is a legal sequential acquisition and must not
+/// `list_file_workspace_core` awaits `count_pgn_games_core`, which awaits `scan_current`
+/// (`pgn.rs`), which takes a permit — that is a legal sequential acquisition and must not
 /// become a nested one. The semaphore has `BLOCKING_GATEWAY_PERMITS` (4) permits, so four
 /// nested acquisitions hang the process with no error.
 pub struct BlockingGateway {

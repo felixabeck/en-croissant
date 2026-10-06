@@ -3083,7 +3083,7 @@ mod win {
         )
     }
 
-    pub(super) fn create_dir_at(parent: &File, name: &OsStr) -> Result<(), Error> {
+    pub(super) fn create_dir_at(parent: &File, name: &OsStr) -> Result<AtomicFileOutcome, Error> {
         drop(
             open_windows_child(
                 parent,
@@ -3096,8 +3096,35 @@ mod win {
             )
             .map_err(map_create_collision)?,
         );
-        parent.sync_all()?;
-        Ok(())
+        Ok(super::parent_sync_as_atomic_outcome(parent))
+    }
+
+    pub(super) fn remove_empty_directory_at(
+        parent: &File,
+        name: &OsStr,
+        expected: (u64, u64),
+    ) -> Result<(), Error> {
+        super::single_leaf(name)?;
+        assert_entry_identity(parent, name, expected, true)?;
+        let opened = open_windows_child(
+            parent,
+            name,
+            FILE_OPEN,
+            child_delete_access(true),
+            null(),
+            true,
+            true,
+        )?;
+        if opened_file_identity(&opened)? != expected {
+            return Err(Error::Conflict(
+                "workspace entry changed concurrently".into(),
+            ));
+        }
+        if !enumerate_directory(&opened, &CancellationToken::new(), None)?.is_empty() {
+            return Err(Error::Conflict("workspace directory is not empty".into()));
+        }
+        unlink_posix(&opened)?;
+        super::sync_parent_after_workspace_removal(parent)
     }
 
     pub(super) fn entry_observation_at(
@@ -4415,6 +4442,8 @@ pub(crate) fn entry_observation_at(
     name: &OsStr,
     dir: bool,
 ) -> Result<((u64, u64), i64), Error> {
+    #[cfg(test)]
+    take_entry_observation_fault()?;
     use rustix::fs::{self as rfs, AtFlags, FileType};
     let stat = rfs::statat(parent, name, AtFlags::SYMLINK_NOFOLLOW)
         .map_err(|error| Error::Io(Box::new(error.into())))?;
@@ -4439,6 +4468,8 @@ pub(crate) fn entry_observation_at(
     name: &OsStr,
     dir: bool,
 ) -> Result<((u64, u64), i64), Error> {
+    #[cfg(test)]
+    take_entry_observation_fault()?;
     win::entry_observation_at(parent, name, dir)
 }
 
@@ -4462,20 +4493,72 @@ pub(crate) fn set_entry_observation_post_stat_hook(hook: Option<Box<dyn FnOnce()
     ENTRY_OBSERVATION_POST_STAT_HOOK.with(|slot| *slot.borrow_mut() = hook);
 }
 
-#[cfg(unix)]
-pub(crate) fn create_dir_at(parent: &File, name: &OsStr) -> Result<(), Error> {
-    single_leaf(name)?;
-    use rustix::fs::{self as rfs, Mode};
-    rfs::mkdirat(parent, name, Mode::from_raw_mode(0o700))
-        .map_err(|error| Error::Io(Box::new(error.into())))?;
-    parent.sync_all()?;
-    Ok(())
+#[cfg(test)]
+std::thread_local! {
+    static ENTRY_OBSERVATION_FAULT: std::cell::RefCell<Option<Error>> =
+        const { std::cell::RefCell::new(None) };
 }
 
-#[cfg(windows)]
-pub(crate) fn create_dir_at(parent: &File, name: &OsStr) -> Result<(), Error> {
+#[cfg(test)]
+pub(crate) fn set_entry_observation_fault(error: Option<Error>) {
+    ENTRY_OBSERVATION_FAULT.with(|slot| *slot.borrow_mut() = error);
+}
+
+#[cfg(test)]
+fn take_entry_observation_fault() -> Result<(), Error> {
+    match ENTRY_OBSERVATION_FAULT.with(|slot| slot.borrow_mut().take()) {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+fn parent_sync_as_atomic_outcome(parent: &File) -> AtomicFileOutcome {
+    #[cfg(test)]
+    if let Err(error) = inject_atomic_file(AtomicFileFaultPoint::ParentSync) {
+        let Error::Io(error) = error else {
+            unreachable!("atomic file injectors only produce I/O errors");
+        };
+        return AtomicFileOutcome::CommittedDurabilityUncertain(*error);
+    }
+    match parent.sync_all() {
+        Ok(()) => AtomicFileOutcome::DurableCommit,
+        Err(error) => AtomicFileOutcome::CommittedDurabilityUncertain(error),
+    }
+}
+
+fn map_create_dir_adapter(outcome: Result<AtomicFileOutcome, Error>) -> Result<(), Error> {
+    match outcome {
+        Ok(AtomicFileOutcome::DurableCommit) => Ok(()),
+        Ok(AtomicFileOutcome::CommittedDurabilityUncertain(error)) => {
+            Err(Error::Io(Box::new(error)))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Exclusive create-then-parent-sync. A successful create whose parent sync fails is a
+/// committed-uncertain outcome; a failed create is an ordinary error.
+#[must_use = "the directory may exist without a durable parent; decide what CommittedDurabilityUncertain means at this site"]
+pub(crate) fn create_dir_at_committed(
+    parent: &File,
+    name: &OsStr,
+) -> Result<AtomicFileOutcome, Error> {
     single_leaf(name)?;
-    win::create_dir_at(parent, name)
+    #[cfg(unix)]
+    {
+        use rustix::fs::{self as rfs, Mode};
+        rfs::mkdirat(parent, name, Mode::from_raw_mode(0o700))
+            .map_err(|error| Error::Io(Box::new(error.into())))?;
+        Ok(parent_sync_as_atomic_outcome(parent))
+    }
+    #[cfg(windows)]
+    {
+        win::create_dir_at(parent, name)
+    }
+}
+
+pub(crate) fn create_dir_at(parent: &File, name: &OsStr) -> Result<(), Error> {
+    map_create_dir_adapter(create_dir_at_committed(parent, name))
 }
 
 #[cfg(all(test, unix))]
@@ -4868,7 +4951,11 @@ pub(crate) fn remove_entry_at(
         rfs::unlinkat(parent, name, AtFlags::empty())
             .map_err(|error| Error::Io(Box::new(error.into())))?;
     }
-    #[cfg(test)]
+    sync_parent_after_workspace_removal(parent)
+}
+
+fn sync_parent_after_workspace_removal(parent: &File) -> Result<(), Error> {
+    #[cfg(all(test, unix))]
     if let Err(error) = unix::inject_removal(unix::RemovalFaultPoint::ParentSync) {
         log::warn!("workspace removal parent sync failed: {error}");
         return Err(Error::CommittedDurabilityUncertain(
@@ -4884,6 +4971,22 @@ pub(crate) fn remove_entry_at(
     Ok(())
 }
 
+#[cfg(unix)]
+pub(crate) fn remove_empty_directory_at(
+    parent: &File,
+    name: &OsStr,
+    expected: (u64, u64),
+) -> Result<(), Error> {
+    use rustix::fs::{self as rfs, AtFlags};
+    single_leaf(name)?;
+    assert_entry_identity(parent, name, expected, true)?;
+    #[cfg(test)]
+    unix::inject_removal(unix::RemovalFaultPoint::BeforeTopOpen)?;
+    rfs::unlinkat(parent, name, AtFlags::REMOVEDIR)
+        .map_err(|error| Error::Io(Box::new(error.into())))?;
+    sync_parent_after_workspace_removal(parent)
+}
+
 #[cfg(windows)]
 pub(crate) fn remove_entry_at(
     parent: &File,
@@ -4892,6 +4995,15 @@ pub(crate) fn remove_entry_at(
     is_dir: bool,
 ) -> Result<(), Error> {
     win::remove_entry_at(parent, name, expected, is_dir)
+}
+
+#[cfg(windows)]
+pub(crate) fn remove_empty_directory_at(
+    parent: &File,
+    name: &OsStr,
+    expected: (u64, u64),
+) -> Result<(), Error> {
+    win::remove_empty_directory_at(parent, name, expected)
 }
 
 #[cfg(unix)]
@@ -6378,6 +6490,63 @@ mod tests {
             }
             other => panic!("expected AlreadyExists, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn create_dir_at_parent_sync_failure_is_io_for_adapter() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let parent = test_parent(temp.path());
+        set_test_atomic_file_injector(Some(Arc::new(ParentSyncFault("uncertain"))));
+        let adapter = create_dir_at(&parent, OsStr::new("folder"));
+        let committed = create_dir_at_committed(&parent, OsStr::new("other"));
+        set_test_atomic_file_injector(None);
+        assert!(
+            matches!(adapter, Err(Error::Io(_))),
+            "adapter must keep Error::Io: {adapter:?}"
+        );
+        assert!(temp.path().join("folder").is_dir());
+        assert!(
+            matches!(
+                committed,
+                Ok(AtomicFileOutcome::CommittedDurabilityUncertain(_))
+            ),
+            "committed path reports uncertainty: {committed:?}"
+        );
+        assert!(temp.path().join("other").is_dir());
+    }
+
+    #[test]
+    fn remove_empty_directory_at_removes_only_the_observed_empty_directory() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let parent = test_parent(temp.path());
+        create_dir_at(&parent, OsStr::new("empty")).expect("create empty");
+        let identity = entry_identity_at(&parent, OsStr::new("empty"), true).expect("identity");
+        remove_empty_directory_at(&parent, OsStr::new("empty"), identity).expect("remove empty");
+        assert!(!temp.path().join("empty").exists());
+
+        create_dir_at(&parent, OsStr::new("filled")).expect("create filled");
+        std::fs::write(temp.path().join("filled/child.txt"), b"keep").expect("child");
+        let filled = entry_identity_at(&parent, OsStr::new("filled"), true).expect("filled");
+        let filled_error = remove_empty_directory_at(&parent, OsStr::new("filled"), filled)
+            .expect_err("non-empty directory is not removed");
+        assert!(
+            filled_error.to_string().contains("not empty") || matches!(filled_error, Error::Io(_)),
+            "{filled_error:?}"
+        );
+        assert_eq!(
+            std::fs::read(temp.path().join("filled/child.txt")).expect("child intact"),
+            b"keep"
+        );
+
+        std::fs::write(temp.path().join("file"), b"bytes").expect("file");
+        let file_identity = entry_identity_at(&parent, OsStr::new("file"), false).expect("file");
+        let file_error = remove_empty_directory_at(&parent, OsStr::new("file"), file_identity)
+            .expect_err("a file is not removed as a directory");
+        assert!(matches!(file_error, Error::Conflict(_)), "{file_error:?}");
+        assert_eq!(
+            std::fs::read(temp.path().join("file")).expect("file intact"),
+            b"bytes"
+        );
     }
 
     #[test]

@@ -17,6 +17,7 @@ pub enum DurabilityStage {
     PgnCapabilityRebind,
     RegistryReplacement,
     SearchIndexReplacement,
+    WorkspaceDirectoryCreation,
     WorkspacePgnCreation,
     WorkspaceRemoval,
     WorkspaceSidecarCreation,
@@ -46,6 +47,7 @@ impl std::fmt::Display for DurabilityStage {
             Self::PgnCapabilityRebind => "PGN file capability rebind after a committed edit",
             Self::RegistryReplacement => "registry replacement",
             Self::SearchIndexReplacement => "search index replacement",
+            Self::WorkspaceDirectoryCreation => "workspace directory creation",
             Self::WorkspacePgnCreation => "workspace PGN creation",
             Self::WorkspaceRemoval => "workspace removal",
             Self::WorkspaceSidecarCreation => "workspace sidecar creation",
@@ -997,6 +999,12 @@ mod tests {
             err.to_string(),
             "Committed but durability uncertain: registry replacement"
         );
+        let directory =
+            Error::CommittedDurabilityUncertain(DurabilityStage::WorkspaceDirectoryCreation);
+        assert_eq!(
+            directory.to_string(),
+            "Committed but durability uncertain: workspace directory creation"
+        );
     }
 
     #[test]
@@ -1020,6 +1028,7 @@ mod tests {
             DurabilityStage::PgnCapabilityRebind,
             DurabilityStage::RegistryReplacement,
             DurabilityStage::SearchIndexReplacement,
+            DurabilityStage::WorkspaceDirectoryCreation,
             DurabilityStage::WorkspacePgnCreation,
             DurabilityStage::WorkspaceRemoval,
             DurabilityStage::WorkspaceSidecarCreation,

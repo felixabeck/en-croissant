@@ -110,7 +110,7 @@ const MAX_CACHE_BYTES: usize = 4 * 1024 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FileRevision {
     size: u64,
-    mtime_nanos: u128,
+    mtime_nanos: i128,
     ctime_nanos: i128,
 }
 
@@ -234,6 +234,9 @@ fn current_scan_line_hook() -> Option<BoundedHook> {
     TEST_SCAN_LINE_HOOK.with(|cell| cell.borrow().clone())
 }
 
+#[cfg(test)]
+pub(crate) type CreatePostRegisterHook = Box<dyn FnOnce(&CancellationToken) + Send>;
+
 #[derive(Default)]
 struct PgnRepositoryInner {
     cache: HashMap<CacheKey, CachedScan>,
@@ -254,6 +257,8 @@ struct PgnRepositoryInner {
     post_commit_hook: Option<BoundedHook>,
     #[cfg(test)]
     atomic_file_injector: Option<Arc<dyn crate::infra::fs::AtomicWriterInjector + Send + Sync>>,
+    #[cfg(test)]
+    create_post_register_hook: Option<CreatePostRegisterHook>,
 }
 
 /// Bounded PGN state. Cache entries are revision-specific; edit locks are retained only while
@@ -303,14 +308,23 @@ impl PgnRepository {
     }
 
     #[cfg(test)]
-    fn set_scan_line_hook(&self, hook: Option<BoundedHook>) -> Result<(), Error> {
+    pub(crate) fn set_scan_line_hook(&self, hook: Option<BoundedHook>) -> Result<(), Error> {
         self.inner()?.scan_line_hook = hook;
         Ok(())
     }
 
     #[cfg(test)]
-    fn scan_line_hook(&self) -> Result<Option<BoundedHook>, Error> {
+    pub(crate) fn scan_line_hook(&self) -> Result<Option<BoundedHook>, Error> {
         Ok(self.inner()?.scan_line_hook.clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_cached_identity(
+        &self,
+        identity: crate::infra::path_authority::PgnSnapshotIdentity,
+    ) -> Result<bool, Error> {
+        let inner = self.inner()?;
+        Ok(inner.cache.keys().any(|key| key.identity == identity))
     }
 
     #[cfg(test)]
@@ -343,6 +357,22 @@ impl PgnRepository {
     pub(crate) fn set_count_hook(&self, hook: Option<BoundedHook>) -> Result<(), Error> {
         self.inner()?.count_hook = hook;
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_create_post_register_hook(
+        &self,
+        hook: Option<CreatePostRegisterHook>,
+    ) -> Result<(), Error> {
+        self.inner()?.create_post_register_hook = hook;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_create_post_register_hook(
+        &self,
+    ) -> Result<Option<CreatePostRegisterHook>, Error> {
+        Ok(self.inner()?.create_post_register_hook.take())
     }
 
     #[cfg(test)]
@@ -435,7 +465,7 @@ impl PgnRepository {
         Ok(())
     }
 
-    fn invalidate(
+    pub(crate) fn invalidate(
         &self,
         identity: &crate::infra::path_authority::PgnSnapshotIdentity,
     ) -> Result<(), Error> {
@@ -634,7 +664,7 @@ fn scan_file(
     Ok((key, games))
 }
 
-async fn scan_current(
+fn scan_current_blocking(
     snapshot: crate::infra::path_authority::PgnSnapshot,
     repository: &PgnRepository,
     cancellation: &CancellationToken,
@@ -654,27 +684,49 @@ async fn scan_current(
     }
     #[cfg(test)]
     let scan_line_hook = repository.scan_line_hook()?;
-    let (key, games) = BLOCKING_GATEWAY
-        .spawn_cancellable(cancellation.clone(), move |token| {
-            #[cfg(test)]
-            let _guard = scan_line_hook.map(|hook| {
-                set_scan_line_hook(Some(hook));
-                struct HookGuard;
-                impl Drop for HookGuard {
-                    fn drop(&mut self) {
-                        set_scan_line_hook(None);
-                    }
-                }
-                HookGuard
-            });
-            scan_file(snapshot, token)
-        })
-        .await?;
+    #[cfg(test)]
+    let _guard = scan_line_hook.map(|hook| {
+        set_scan_line_hook(Some(hook));
+        struct HookGuard;
+        impl Drop for HookGuard {
+            fn drop(&mut self) {
+                set_scan_line_hook(None);
+            }
+        }
+        HookGuard
+    });
+    let (key, games) = scan_file(snapshot, cancellation)?;
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
     repository.retain_if_within_budget(key.clone(), games.clone())?;
     Ok((key, games))
+}
+
+async fn scan_current(
+    snapshot: crate::infra::path_authority::PgnSnapshot,
+    repository: &PgnRepository,
+    cancellation: &CancellationToken,
+) -> Result<(CacheKey, Arc<[GameRange]>), Error> {
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
+    let key = snapshot_key(&snapshot);
+    if let Some(games) = repository.get(&key)? {
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
+        return Ok((key, games));
+    }
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
+    let repository = repository.clone();
+    BLOCKING_GATEWAY
+        .spawn_cancellable(cancellation.clone(), move |token| {
+            scan_current_blocking(snapshot, &repository, token)
+        })
+        .await
 }
 
 fn checked_index(n: i32) -> Result<usize, Error> {
@@ -908,6 +960,20 @@ pub async fn count_pgn_games(
     .await
 }
 
+fn observe_count_hook(repository: &PgnRepository) -> Result<(), Error> {
+    #[cfg(test)]
+    if let Some(hook) = repository.count_hook()? {
+        hook.notify_and_wait();
+    }
+    let _ = repository;
+    Ok(())
+}
+
+fn count_from_games(games: Arc<[GameRange]>) -> Result<i32, Error> {
+    i32::try_from(games.len())
+        .map_err(|_| Error::ResourceLimit("PGN count exceeds IPC limit".into()))
+}
+
 pub async fn count_pgn_games_core(
     resolved: crate::infra::path_authority::ResolvedPath,
     cancellation: &CancellationToken,
@@ -916,17 +982,30 @@ pub async fn count_pgn_games_core(
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
-    #[cfg(test)]
-    if let Some(hook) = repository.count_hook()? {
-        hook.notify_and_wait();
-    }
+    observe_count_hook(repository)?;
     let (key, games) = scan_current(resolved.pgn_snapshot()?, repository, cancellation).await?;
     let _ = key;
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
-    i32::try_from(games.len())
-        .map_err(|_| Error::ResourceLimit("PGN count exceeds IPC limit".into()))
+    count_from_games(games)
+}
+
+pub(crate) fn count_pgn_games_core_blocking(
+    snapshot: crate::infra::path_authority::PgnSnapshot,
+    cancellation: &CancellationToken,
+    repository: &PgnRepository,
+) -> Result<i32, Error> {
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
+    observe_count_hook(repository)?;
+    let (key, games) = scan_current_blocking(snapshot, repository, cancellation)?;
+    let _ = key;
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
+    count_from_games(games)
 }
 
 #[tauri::command]
@@ -3368,6 +3447,28 @@ mod tests {
         .await
         .expect("cached scan");
         assert!(Arc::ptr_eq(&scanned, &hit));
+    }
+
+    #[test]
+    fn post_epoch_revision_string_keeps_unsigned_mtime_digits() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("timed.pgn");
+        std::fs::write(&path, b"1. e4 *").expect("write PGN");
+        let file = File::open(&path).expect("open PGN");
+        file.set_modified(std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1))
+            .expect("set post-epoch mtime");
+        let snapshot = snapshot_for(&directory, &path);
+        assert!(snapshot.revision.mtime_nanos > 0);
+        let rendered = revision_string(&snapshot);
+        let mtime = snapshot.revision.mtime_nanos.to_string();
+        assert!(
+            rendered.contains(&mtime),
+            "post-1970 mtime digits must stay in the revision string: {rendered}"
+        );
+        assert!(
+            !mtime.starts_with('-'),
+            "post-1970 mtime digits must stay unsigned: {mtime}"
+        );
     }
 
     /// A same-length in-place rewrite that restores the last-write timestamp must still miss the
