@@ -2404,20 +2404,6 @@ impl EngineImageCleanupIntent {
     }
 }
 
-#[cfg(all(test, unix))]
-type EngineImageCleanupReplace = Box<
-    dyn FnMut(
-        &Path,
-        Box<dyn FnOnce(&mut fs::File) -> Result<(), Error>>,
-    ) -> Result<AtomicFileOutcome, Error>,
->;
-
-#[cfg(all(test, unix))]
-std::thread_local! {
-    pub(crate) static ENGINE_IMAGE_CLEANUP_REPLACE: std::cell::RefCell<Option<EngineImageCleanupReplace>> =
-        const { std::cell::RefCell::new(None) };
-}
-
 pub(crate) fn require_durable(durability: CommitDurability) -> Result<(), Error> {
     match durability {
         CommitDurability::Durable => Ok(()),
@@ -6333,10 +6319,6 @@ impl PathAuthority {
         leaf: &OsStr,
         installed: VerifiedIdentity,
     ) -> EngineImageCleanupIntent {
-        #[cfg(all(test, unix))]
-        if let Some(replace) = ENGINE_IMAGE_CLEANUP_REPLACE.with(|slot| slot.borrow_mut().take()) {
-            return self.record_engine_image_cleanup_with(dir, leaf, installed, replace);
-        }
         self.record_engine_image_cleanup_with(dir, leaf, installed, |target, write| {
             atomic_replace(target, write)
         })
@@ -7485,7 +7467,7 @@ impl PathAuthority {
         let original_cleanup = self.image_cleanup.clone();
         let mut next_cleanup = original_cleanup.clone();
         let mut failures = Vec::new();
-        let mut durability_uncertain = None;
+        let mut registry_persistence_error = None;
         for id in ids {
             let Some(stored) = original_cleanup.get(&id).cloned() else {
                 continue;
@@ -7554,28 +7536,22 @@ impl PathAuthority {
                         "engine image cleanup registry sync is uncertain at {stage}; completed intents are adopted"
                     );
                     self.registry_durability_pending = true;
-                    durability_uncertain = Some(Error::CommittedDurabilityUncertain(stage));
+                    registry_persistence_error = Some(Error::CommittedDurabilityUncertain(stage));
                 }
                 Err(error) => {
                     self.image_cleanup = original_cleanup;
                     return match failures.into_iter().next() {
-                        Some(cleanup) => Err(Error::OperationAndCleanup {
-                            primary: error.to_string(),
-                            cleanup: cleanup.to_string(),
-                        }),
+                        Some(cleanup) => Err(Error::with_cleanup(error, Err(cleanup))),
                         None => Err(error),
                     };
                 }
             }
         } else if self.registry_durability_pending {
-            durability_uncertain = self.retry_registry_durability().err();
+            registry_persistence_error = self.retry_registry_durability().err();
         }
-        if let Some(error) = durability_uncertain {
+        if let Some(error) = registry_persistence_error {
             return match failures.into_iter().next() {
-                Some(cleanup) => Err(Error::OperationAndCleanup {
-                    primary: error.to_string(),
-                    cleanup: cleanup.to_string(),
-                }),
+                Some(cleanup) => Err(Error::with_cleanup(error, Err(cleanup))),
                 None => Err(error),
             };
         }
@@ -9167,29 +9143,6 @@ pub(crate) mod portable_tests {
     };
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-    #[cfg(unix)]
-    pub(crate) struct EngineImageRemovalGuard(
-        Option<Arc<dyn crate::infra::fs::RemovalInjector + Send + Sync>>,
-    );
-
-    #[cfg(unix)]
-    impl Drop for EngineImageRemovalGuard {
-        fn drop(&mut self) {
-            crate::infra::fs::set_test_removal_injector(self.0.take());
-        }
-    }
-
-    #[cfg(unix)]
-    pub(crate) fn scoped_engine_image_removal_fault(
-        point: crate::infra::fs::RemovalFaultPoint,
-    ) -> EngineImageRemovalGuard {
-        let previous = crate::infra::fs::current_test_removal_injector();
-        crate::infra::fs::set_test_removal_injector(Some(Arc::new(
-            crate::infra::fs::RemovalFault(point),
-        )));
-        EngineImageRemovalGuard(previous)
-    }
-
     pub(crate) struct EngineImageCleanupFixture {
         _temp: tempfile::TempDir,
         pub(crate) registry: PathBuf,
@@ -9411,7 +9364,7 @@ pub(crate) mod portable_tests {
     #[cfg(unix)]
     #[test]
     fn engine_image_cleanup_retained_intent_retries_persistence_when_removal_still_fails() {
-        use crate::infra::fs::RemovalFaultPoint;
+        use crate::infra::fs::{scoped_test_removal_injector, RemovalFault, RemovalFaultPoint};
         let mut f = EngineImageCleanupFixture::new();
         let outcome = f.authority.record_engine_image_cleanup_with(
             &f.image_dir,
@@ -9424,7 +9377,8 @@ pub(crate) mod portable_tests {
             },
         );
         assert!(matches!(outcome, EngineImageCleanupIntent::Retained(_)));
-        let guard = scoped_engine_image_removal_fault(RemovalFaultPoint::BeforeTopOpen);
+        let guard =
+            scoped_test_removal_injector(Arc::new(RemovalFault(RemovalFaultPoint::BeforeTopOpen)));
         let error = f
             .authority
             .cleanup_engine_images(&f.image_dir, true)
@@ -9441,6 +9395,95 @@ pub(crate) mod portable_tests {
         );
         drop(guard);
         f.reload_and_remove();
+    }
+
+    #[cfg(unix)]
+    fn assert_engine_image_cleanup_retry_failure(
+        injector: Arc<dyn crate::infra::fs::AtomicWriterInjector + Send + Sync>,
+        registry_diagnostic: &str,
+        persisted: bool,
+    ) {
+        use crate::infra::fs::{
+            install_test_atomic_file_injector, scoped_test_removal_injector, AtomicFileFaultPoint,
+            CancelAtomicFileAt, RemovalFault, RemovalFaultPoint,
+        };
+        let mut f = EngineImageCleanupFixture::new();
+        let initial_guard = install_test_atomic_file_injector(Arc::new(CancelAtomicFileAt {
+            cancel_at: AtomicFileFaultPoint::Cleanup,
+            fail_at: Some(AtomicFileFaultPoint::Write),
+            cancellation: tokio_util::sync::CancellationToken::new(),
+        }));
+        let outcome = f
+            .authority
+            .record_engine_image_cleanup(&f.image_dir, &f.leaf, f.installed);
+        assert!(matches!(outcome, EngineImageCleanupIntent::Retained(_)));
+        drop(initial_guard);
+        let intent = f.authority.image_cleanup.clone();
+        assert_eq!(intent.len(), 1);
+        assert!(f.authority.registry_durability_pending);
+        assert!(!f.registry.exists());
+
+        let removal_guard =
+            scoped_test_removal_injector(Arc::new(RemovalFault(RemovalFaultPoint::BeforeTopOpen)));
+        let retry_guard = install_test_atomic_file_injector(injector);
+        let error = f
+            .authority
+            .cleanup_engine_images(&f.image_dir, true)
+            .unwrap_err();
+        let Error::OperationAndCleanup { primary, cleanup } = &error else {
+            panic!("expected composed cleanup error: {}", error.diagnostic());
+        };
+        assert!(primary.contains(registry_diagnostic), "{primary}");
+        assert!(cleanup.contains("injected removal failure"), "{cleanup}");
+        let diagnostic = error.diagnostic();
+        assert!(diagnostic.contains(registry_diagnostic), "{diagnostic}");
+        assert!(
+            diagnostic.contains("injected removal failure"),
+            "{diagnostic}"
+        );
+        assert!(f.authority.registry_durability_pending);
+        assert_eq!(f.authority.image_cleanup, intent);
+        assert!(f.image_dir.path().join(&f.leaf).is_file());
+        drop(retry_guard);
+        drop(removal_guard);
+        if persisted {
+            assert_eq!(
+                PathAuthority::open(f.registry.clone(), vec![])
+                    .unwrap()
+                    .image_cleanup,
+                intent
+            );
+            f.reload_and_remove();
+        } else {
+            assert!(!f.registry.exists());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn engine_image_cleanup_retained_intent_retry_write_failure_preserves_both_causes() {
+        use crate::infra::fs::{AtomicFileFaultPoint, CancelAtomicFileAt};
+        assert_engine_image_cleanup_retry_failure(
+            Arc::new(CancelAtomicFileAt {
+                cancel_at: AtomicFileFaultPoint::Cleanup,
+                fail_at: Some(AtomicFileFaultPoint::Write),
+                cancellation: tokio_util::sync::CancellationToken::new(),
+            }),
+            "injected Write failure",
+            false,
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn engine_image_cleanup_retained_intent_retry_uncertainty_preserves_both_causes() {
+        assert_engine_image_cleanup_retry_failure(
+            Arc::new(crate::infra::fs::ParentSyncFault(
+                "registry retry parent sync failed",
+            )),
+            "registry replacement",
+            true,
+        );
     }
 
     #[cfg(unix)]

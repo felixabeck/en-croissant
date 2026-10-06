@@ -4205,6 +4205,8 @@ mod win {
 }
 
 #[cfg(all(test, unix))]
+pub(crate) use unix::scoped_test_removal_injector;
+#[cfg(all(test, unix))]
 pub(crate) use unix::{
     current_test_removal_injector, set_test_removal_injector, RemovalFault, RemovalFaultPoint,
     RemovalInjector,

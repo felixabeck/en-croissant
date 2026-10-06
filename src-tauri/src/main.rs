@@ -2485,14 +2485,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             async {
                                 shutdown_engine_attachments(app_handle.clone())
                                     .await
-                                    .map_err(|error| error.to_string())
+                                    .map_err(|error| error.diagnostic())
                             },
                             {
                                 let authority = std::sync::Arc::clone(&state.pgn_path_authority);
                                 async move {
                                     shutdown_engine_launch_root(authority)
                                         .await
-                                        .map_err(|error| error.to_string())
+                                        .map_err(|error| error.diagnostic())
                                 }
                             },
                             SHUTDOWN_BUDGET,
@@ -5027,7 +5027,30 @@ mod blocking_offload_scans {
                 branch.rfind("engine_image_error_after_cleanup(").is_some(),
                 "the post-install {refusal:?} branch must remove the installed orphan: {after_install}"
             );
+            let arguments = after_install[refusal_at..]
+                .split_once("));")
+                .expect("end of the cleanup call")
+                .0;
+            assert!(
+                arguments.trim_end().ends_with("None,"),
+                "the post-install {refusal:?} branch has no authority: {arguments}"
+            );
         }
+        let registration = after_install
+            .split_once("register_engine_image(")
+            .expect("registration after install")
+            .1;
+        let arguments = registration
+            .split_once("engine_image_error_after_cleanup(")
+            .expect("registration error cleanup")
+            .1
+            .split_once(")),")
+            .expect("end of the registration error cleanup call")
+            .0;
+        assert!(
+            arguments.trim_end().ends_with("Some(authority),"),
+            "registration error cleanup must forward the authority: {arguments}"
+        );
         let cleanup = body_at_indent(main, "fn engine_image_error_after_cleanup(");
         assert!(cleanup.contains("remove_leaf_identified("), "{cleanup}");
         assert!(cleanup.contains("Error::with_cleanup("), "{cleanup}");
@@ -5045,8 +5068,7 @@ mod blocking_offload_scans {
     #[cfg(unix)]
     #[test]
     fn engine_image_orphan_removal_failure_records_intent_and_preserves_both_errors() {
-        use crate::infra::fs::RemovalFaultPoint;
-        use crate::infra::path_authority::portable_tests::scoped_engine_image_removal_fault;
+        use crate::infra::fs::{scoped_test_removal_injector, RemovalFault, RemovalFaultPoint};
         use crate::infra::path_authority::portable_tests::EngineImageCleanupFixture;
         let mut f = EngineImageCleanupFixture::new();
         f.authority.seal_engine_attachments();
@@ -5055,7 +5077,9 @@ mod blocking_offload_scans {
             .register_engine_image(&f.image_dir, &f.leaf, f.installed, "image".into())
             .unwrap_err();
         let primary = original.diagnostic();
-        let guard = scoped_engine_image_removal_fault(RemovalFaultPoint::BeforeTopOpen);
+        let guard = scoped_test_removal_injector(std::sync::Arc::new(RemovalFault(
+            RemovalFaultPoint::BeforeTopOpen,
+        )));
         let error = crate::engine_image_error_after_cleanup(
             &f.image_dir,
             &f.leaf,
@@ -5109,8 +5133,7 @@ mod blocking_offload_scans {
     #[cfg(unix)]
     #[test]
     fn engine_image_orphan_removal_failure_without_authority_reports_no_intent() {
-        use crate::infra::fs::RemovalFaultPoint;
-        use crate::infra::path_authority::portable_tests::scoped_engine_image_removal_fault;
+        use crate::infra::fs::{scoped_test_removal_injector, RemovalFault, RemovalFaultPoint};
         use crate::infra::path_authority::portable_tests::EngineImageCleanupFixture;
         for original in [
             "path authority lock was poisoned",
@@ -5119,7 +5142,9 @@ mod blocking_offload_scans {
             let f = EngineImageCleanupFixture::new();
             let original = crate::Error::Conflict(original.into());
             let primary = original.diagnostic();
-            let guard = scoped_engine_image_removal_fault(RemovalFaultPoint::BeforeTopOpen);
+            let guard = scoped_test_removal_injector(std::sync::Arc::new(RemovalFault(
+                RemovalFaultPoint::BeforeTopOpen,
+            )));
             let error = crate::engine_image_error_after_cleanup(
                 &f.image_dir,
                 &f.leaf,
@@ -5141,29 +5166,31 @@ mod blocking_offload_scans {
     #[cfg(unix)]
     #[test]
     fn engine_image_cleanup_helper_reports_registry_write_failure_and_admission_refusal() {
-        use crate::infra::fs::RemovalFaultPoint;
-        use crate::infra::path_authority::portable_tests::scoped_engine_image_removal_fault;
-        use crate::infra::path_authority::{
-            portable_tests::EngineImageCleanupFixture, ENGINE_IMAGE_CLEANUP_REPLACE,
+        use crate::infra::fs::{
+            install_test_atomic_file_injector, scoped_test_removal_injector, AtomicFileFaultPoint,
+            CancelAtomicFileAt, RemovalFault, RemovalFaultPoint,
         };
+        use crate::infra::path_authority::portable_tests::EngineImageCleanupFixture;
         for admission in [false, true] {
             let mut f = EngineImageCleanupFixture::new();
             let before = if admission {
                 f.fill_admission_bound();
                 Some(std::fs::read(&f.registry).unwrap())
             } else {
-                ENGINE_IMAGE_CLEANUP_REPLACE.with(|slot| {
-                    *slot.borrow_mut() = Some(Box::new(|_, _| {
-                        Err(crate::Error::Io(Box::new(std::io::Error::other(
-                            "registry write failed",
-                        ))))
-                    }))
-                });
                 None
             };
+            let atomic_guard = (!admission).then(|| {
+                install_test_atomic_file_injector(std::sync::Arc::new(CancelAtomicFileAt {
+                    cancel_at: AtomicFileFaultPoint::Cleanup,
+                    fail_at: Some(AtomicFileFaultPoint::Write),
+                    cancellation: tokio_util::sync::CancellationToken::new(),
+                }))
+            });
             let original = crate::Error::Conflict("original registration failure".into());
             let primary = original.diagnostic();
-            let guard = scoped_engine_image_removal_fault(RemovalFaultPoint::BeforeTopOpen);
+            let guard = scoped_test_removal_injector(std::sync::Arc::new(RemovalFault(
+                RemovalFaultPoint::BeforeTopOpen,
+            )));
             let error = crate::engine_image_error_after_cleanup(
                 &f.image_dir,
                 &f.leaf,
@@ -5172,10 +5199,11 @@ mod blocking_offload_scans {
                 Some(&mut f.authority),
             );
             drop(guard);
+            drop(atomic_guard);
             let expected = if admission {
                 "not recorded: Resource limit: path registry identifier limit reached"
             } else {
-                "not recorded, retained in memory: I/O failure: registry write failed"
+                "not recorded, retained in memory: I/O failure: injected Write failure"
             };
             assert_engine_image_cleanup_diagnostic(&error, &primary, &f.leaf, expected);
             if let Some(before) = before {
@@ -5193,11 +5221,12 @@ mod blocking_offload_scans {
     #[cfg(unix)]
     #[test]
     fn engine_image_cleanup_after_unlink_uncertainty_returns_original_without_intent() {
-        use crate::infra::fs::RemovalFaultPoint;
-        use crate::infra::path_authority::portable_tests::scoped_engine_image_removal_fault;
+        use crate::infra::fs::{scoped_test_removal_injector, RemovalFault, RemovalFaultPoint};
         use crate::infra::path_authority::portable_tests::EngineImageCleanupFixture;
         let mut f = EngineImageCleanupFixture::new();
-        let guard = scoped_engine_image_removal_fault(RemovalFaultPoint::ParentSync);
+        let guard = scoped_test_removal_injector(std::sync::Arc::new(RemovalFault(
+            RemovalFaultPoint::ParentSync,
+        )));
         let error = crate::engine_image_error_after_cleanup(
             &f.image_dir,
             &f.leaf,
