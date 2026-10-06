@@ -1175,38 +1175,15 @@ mod deletion_tests {
     }
 
     #[test]
-    fn command_flow_unlinks_via_retained_parent_when_the_parent_path_is_renamed() {
-        let fixture = puzzle_deletion_fixture_at(Path::new("nested/parent-rename.db3"));
-        let nested = fixture.path.parent().unwrap().to_owned();
-        let moved = nested.with_file_name("moved");
-        std::fs::rename(&nested, &moved).unwrap();
-        let moved_file = moved.join(fixture.path.file_name().unwrap());
-        assert!(moved_file.exists());
-
-        let result = tauri::async_runtime::block_on(delete_puzzle_database_resolved(
-            fixture.resolved,
-            fixture.path.clone(),
-            fixture.handle.clone(),
-            fixture.repository,
-            Arc::clone(&fixture.authority),
-            Arc::clone(&fixture.cache),
-            tokio_util::sync::CancellationToken::new(),
-        ));
-
-        assert!(
-            result.is_ok(),
-            "retained-parent unlink after parent rename failed: {result:?}"
-        );
-        assert!(!moved_file.exists());
-        assert!(tauri::async_runtime::block_on(fixture.cache.lock())
-            .key
-            .is_none());
-        assert!(!authority_contains(&fixture.authority, &fixture.handle));
-    }
-
-    #[test]
     fn command_flow_invalidates_canonical_cache_when_the_caller_path_differs() {
         let fixture = puzzle_deletion_fixture("canon-diff.db3");
+        {
+            let (target, _) = puzzle_binding(&fixture.resolved).unwrap();
+            let mut cache = tauri::async_runtime::block_on(fixture.cache.lock());
+            let mut key = cache.key.take().unwrap();
+            key.database_path = target.path().to_owned();
+            cache.key = Some(key);
+        }
         let canonical = fixture.path.canonicalize().unwrap();
         let aliased = canonical.with_file_name("not-the-canonical-leaf.db3");
         assert_ne!(
@@ -1310,7 +1287,7 @@ mod tests {
         }
     }
 
-    fn delete_puzzle_with_log_capture(
+    fn delete_puzzle_with_parent_sync_fault_and_log_capture(
         fixture: &PuzzleDeletionFixture,
     ) -> (Result<(), Error>, Vec<crate::error::CapturedLogRecord>) {
         let capture = crate::error::LogCaptureScope::start();
@@ -1339,6 +1316,36 @@ mod tests {
     }
 
     #[test]
+    fn command_flow_unlinks_via_retained_parent_when_the_parent_path_is_renamed() {
+        let fixture = puzzle_deletion_fixture_at(Path::new("nested/parent-rename.db3"));
+        let nested = fixture.path.parent().unwrap().to_owned();
+        let moved = nested.with_file_name("moved");
+        std::fs::rename(&nested, &moved).unwrap();
+        let moved_file = moved.join(fixture.path.file_name().unwrap());
+        assert!(moved_file.exists());
+
+        let result = tauri::async_runtime::block_on(delete_puzzle_database_resolved(
+            fixture.resolved,
+            fixture.path.clone(),
+            fixture.handle.clone(),
+            fixture.repository,
+            Arc::clone(&fixture.authority),
+            Arc::clone(&fixture.cache),
+            tokio_util::sync::CancellationToken::new(),
+        ));
+
+        assert!(
+            result.is_ok(),
+            "retained-parent unlink after parent rename failed: {result:?}"
+        );
+        assert!(!moved_file.exists());
+        assert!(tauri::async_runtime::block_on(fixture.cache.lock())
+            .key
+            .is_none());
+        assert!(!authority_contains(&fixture.authority, &fixture.handle));
+    }
+
+    #[test]
     fn puzzle_durability_before_registry_failure_logs_failure_and_invalidates_cache() {
         let fixture = puzzle_deletion_fixture("durability-registry-failure.db3");
         let poison = Arc::clone(&fixture.authority);
@@ -1349,7 +1356,7 @@ mod tests {
         .join()
         .is_err());
 
-        let (result, records) = delete_puzzle_with_log_capture(&fixture);
+        let (result, records) = delete_puzzle_with_parent_sync_fault_and_log_capture(&fixture);
 
         assert!(matches!(
             result,
@@ -1377,7 +1384,7 @@ mod tests {
         let fixture = puzzle_deletion_fixture("durability-release-failure.db3");
         fixture.repository.fail_next_deletion_release();
 
-        let (result, records) = delete_puzzle_with_log_capture(&fixture);
+        let (result, records) = delete_puzzle_with_parent_sync_fault_and_log_capture(&fixture);
 
         assert!(matches!(
             result,
