@@ -1585,6 +1585,7 @@ fn issue_engine_image_blocking<R: tauri::Runtime>(
                 leaf,
                 installed,
                 Error::Conflict("path authority lock was poisoned".into()),
+                None,
             ));
         }
     };
@@ -1596,13 +1597,18 @@ fn issue_engine_image_blocking<R: tauri::Runtime>(
                 leaf,
                 installed,
                 Error::Conflict("path authority is not initialized".into()),
+                None,
             ));
         }
     };
     match authority.register_engine_image(&image_dir, leaf, installed, display_name) {
         Ok(handle) => Ok(handle),
         Err(error) => Err(engine_image_error_after_cleanup(
-            &image_dir, leaf, installed, error,
+            &image_dir,
+            leaf,
+            installed,
+            error,
+            Some(authority),
         )),
     }
 }
@@ -1625,11 +1631,33 @@ fn engine_image_error_after_cleanup(
     leaf: &OsStr,
     installed: crate::infra::path_authority::VerifiedIdentity,
     original: Error,
+    authority: Option<&mut crate::infra::path_authority::PathAuthority>,
 ) -> Error {
-    if let Err(cleanup) = image_dir.remove_leaf_identified(leaf, installed) {
-        log::error!("failed to remove an unregistered engine image {leaf:?}: {cleanup}");
+    match image_dir.remove_leaf_identified(leaf, installed) {
+        Ok(()) => original,
+        Err(error) if error.is_missing_entry() => original,
+        Err(Error::CommittedDurabilityUncertain(stage)) => {
+            log::warn!("engine image {leaf:?} was removed but parent sync is uncertain at {stage}");
+            original
+        }
+        Err(removal) => {
+            let intent = authority.map_or_else(
+                || "not recorded: no path authority".into(),
+                |authority| {
+                    authority
+                        .record_engine_image_cleanup(image_dir, leaf, installed)
+                        .diagnostic()
+                },
+            );
+            Error::with_cleanup(
+                original,
+                Err(Error::Conflict(format!(
+                    "failed to remove unregistered engine image {leaf:?}: {}; cleanup intent {intent}",
+                    removal.diagnostic()
+                ))),
+            )
+        }
     }
-    original
 }
 
 #[tauri::command]
@@ -5002,81 +5030,264 @@ mod blocking_offload_scans {
         }
         let cleanup = body_at_indent(main, "fn engine_image_error_after_cleanup(");
         assert!(cleanup.contains("remove_leaf_identified("), "{cleanup}");
-        assert!(cleanup.contains("log::error!("), "{cleanup}");
+        assert!(cleanup.contains("Error::with_cleanup("), "{cleanup}");
+        assert!(
+            cleanup.contains("record_engine_image_cleanup("),
+            "{cleanup}"
+        );
+        assert!(!cleanup.contains("log::error!("), "{cleanup}");
+        assert!(
+            cleanup.contains("engine image {leaf:?} was removed but parent sync"),
+            "{cleanup}"
+        );
     }
 
     #[cfg(unix)]
     #[test]
-    fn engine_image_orphan_removal_failure_preserves_the_original_error() {
-        use crate::infra::{
-            fs::{set_test_removal_injector, RemovalFault, RemovalFaultPoint},
-            path_authority::{ensure_app_owned_default_dir, AppDataDir, AppOwnedDefaultRoot},
-        };
-        use crate::{engine_image_error_after_cleanup, Error};
-        use std::{ffi::OsStr, io::Write, sync::Arc};
-
-        let dir = tempfile::tempdir().unwrap();
-        let image_dir = ensure_app_owned_default_dir(
-            &AppDataDir::for_test(dir.path()),
-            AppOwnedDefaultRoot::EngineImages,
-        )
-        .unwrap();
-        let leaf = OsStr::new("orphan.png");
-        let (_, installed) = image_dir
-            .atomic_replace_leaf_identified(leaf, |file| {
-                file.write_all(b"orphan").map_err(Error::from)
-            })
-            .unwrap();
-        set_test_removal_injector(Some(Arc::new(RemovalFault(
-            RemovalFaultPoint::BeforeTopOpen,
-        ))));
-
-        let error = engine_image_error_after_cleanup(
-            &image_dir,
-            leaf,
-            installed,
-            Error::Conflict("original registration failure".into()),
+    fn engine_image_orphan_removal_failure_records_intent_and_preserves_both_errors() {
+        use crate::infra::fs::RemovalFaultPoint;
+        use crate::infra::path_authority::portable_tests::scoped_engine_image_removal_fault;
+        use crate::infra::path_authority::portable_tests::EngineImageCleanupFixture;
+        let mut f = EngineImageCleanupFixture::new();
+        f.authority.seal_engine_attachments();
+        let original = f
+            .authority
+            .register_engine_image(&f.image_dir, &f.leaf, f.installed, "image".into())
+            .unwrap_err();
+        let primary = original.diagnostic();
+        let guard = scoped_engine_image_removal_fault(RemovalFaultPoint::BeforeTopOpen);
+        let error = crate::engine_image_error_after_cleanup(
+            &f.image_dir,
+            &f.leaf,
+            f.installed,
+            original,
+            Some(&mut f.authority),
         );
-        set_test_removal_injector(None);
-
-        assert!(matches!(
-            error,
-            Error::Conflict(message) if message == "original registration failure"
-        ));
-        assert!(image_dir.path().join(leaf).is_file());
+        drop(guard);
+        assert_engine_image_cleanup_diagnostic(
+            &error,
+            &primary,
+            &f.leaf,
+            "cleanup intent recorded",
+        );
+        assert!(f.image_dir.path().join(&f.leaf).is_file());
+        f.reload_and_remove();
     }
 
     #[cfg(unix)]
+    fn assert_engine_image_cleanup_diagnostic(
+        error: &crate::Error,
+        primary: &str,
+        leaf: &std::ffi::OsStr,
+        outcome: &str,
+    ) {
+        let crate::Error::OperationAndCleanup {
+            primary: actual_primary,
+            cleanup,
+        } = error
+        else {
+            panic!(
+                "expected composed engine image error: {}",
+                error.diagnostic()
+            );
+        };
+        assert_eq!(actual_primary, primary);
+        for expected in [leaf.to_str().unwrap(), "injected removal failure", outcome] {
+            assert!(
+                cleanup.contains(expected),
+                "missing {expected:?}: {cleanup}"
+            );
+            assert!(
+                error.diagnostic().contains(expected),
+                "missing {expected:?}: {}",
+                error.diagnostic()
+            );
+        }
+        assert!(error.diagnostic().contains(primary));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn engine_image_orphan_removal_failure_without_authority_reports_no_intent() {
+        use crate::infra::fs::RemovalFaultPoint;
+        use crate::infra::path_authority::portable_tests::scoped_engine_image_removal_fault;
+        use crate::infra::path_authority::portable_tests::EngineImageCleanupFixture;
+        for original in [
+            "path authority lock was poisoned",
+            "path authority is not initialized",
+        ] {
+            let f = EngineImageCleanupFixture::new();
+            let original = crate::Error::Conflict(original.into());
+            let primary = original.diagnostic();
+            let guard = scoped_engine_image_removal_fault(RemovalFaultPoint::BeforeTopOpen);
+            let error = crate::engine_image_error_after_cleanup(
+                &f.image_dir,
+                &f.leaf,
+                f.installed,
+                original,
+                None,
+            );
+            drop(guard);
+            assert_engine_image_cleanup_diagnostic(
+                &error,
+                &primary,
+                &f.leaf,
+                "not recorded: no path authority",
+            );
+            f.assert_no_intent();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn engine_image_cleanup_helper_reports_registry_write_failure_and_admission_refusal() {
+        use crate::infra::fs::RemovalFaultPoint;
+        use crate::infra::path_authority::portable_tests::scoped_engine_image_removal_fault;
+        use crate::infra::path_authority::{
+            portable_tests::EngineImageCleanupFixture, ENGINE_IMAGE_CLEANUP_REPLACE,
+        };
+        for admission in [false, true] {
+            let mut f = EngineImageCleanupFixture::new();
+            let before = if admission {
+                f.fill_admission_bound();
+                Some(std::fs::read(&f.registry).unwrap())
+            } else {
+                ENGINE_IMAGE_CLEANUP_REPLACE.with(|slot| {
+                    *slot.borrow_mut() = Some(Box::new(|_, _| {
+                        Err(crate::Error::Io(Box::new(std::io::Error::other(
+                            "registry write failed",
+                        ))))
+                    }))
+                });
+                None
+            };
+            let original = crate::Error::Conflict("original registration failure".into());
+            let primary = original.diagnostic();
+            let guard = scoped_engine_image_removal_fault(RemovalFaultPoint::BeforeTopOpen);
+            let error = crate::engine_image_error_after_cleanup(
+                &f.image_dir,
+                &f.leaf,
+                f.installed,
+                original,
+                Some(&mut f.authority),
+            );
+            drop(guard);
+            let expected = if admission {
+                "not recorded: Resource limit: path registry identifier limit reached"
+            } else {
+                "not recorded, retained in memory: I/O failure: registry write failed"
+            };
+            assert_engine_image_cleanup_diagnostic(&error, &primary, &f.leaf, expected);
+            if let Some(before) = before {
+                assert_eq!(std::fs::read(&f.registry).unwrap(), before);
+            } else {
+                assert!(!f.registry.exists());
+                f.authority
+                    .cleanup_engine_images(&f.image_dir, false)
+                    .unwrap();
+                assert!(!f.image_dir.path().join(&f.leaf).exists());
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn engine_image_cleanup_after_unlink_uncertainty_returns_original_without_intent() {
+        use crate::infra::fs::RemovalFaultPoint;
+        use crate::infra::path_authority::portable_tests::scoped_engine_image_removal_fault;
+        use crate::infra::path_authority::portable_tests::EngineImageCleanupFixture;
+        let mut f = EngineImageCleanupFixture::new();
+        let guard = scoped_engine_image_removal_fault(RemovalFaultPoint::ParentSync);
+        let error = crate::engine_image_error_after_cleanup(
+            &f.image_dir,
+            &f.leaf,
+            f.installed,
+            crate::Error::Conflict("registration failed".into()),
+            Some(&mut f.authority),
+        );
+        drop(guard);
+        assert!(
+            matches!(error, crate::Error::Conflict(message) if message == "registration failed")
+        );
+        assert!(!f.image_dir.path().join(&f.leaf).exists());
+        f.assert_no_intent();
+    }
+
+    #[test]
+    fn engine_image_cleanup_already_absent_returns_original_without_intent() {
+        use crate::infra::path_authority::portable_tests::EngineImageCleanupFixture;
+        let mut f = EngineImageCleanupFixture::new();
+        f.image_dir
+            .remove_leaf_identified(&f.leaf, f.installed)
+            .unwrap();
+        let error = crate::engine_image_error_after_cleanup(
+            &f.image_dir,
+            &f.leaf,
+            f.installed,
+            crate::Error::Conflict("registration failed".into()),
+            Some(&mut f.authority),
+        );
+        assert!(
+            matches!(error, crate::Error::Conflict(message) if message == "registration failed")
+        );
+        f.assert_no_intent();
+    }
+
+    #[test]
+    fn engine_image_cleanup_helper_wire_form_omits_leaf_and_native_paths() {
+        use crate::infra::path_authority::portable_tests::EngineImageCleanupFixture;
+        let mut f = EngineImageCleanupFixture::new();
+        // A different installed identity makes descriptor removal refuse on every target.
+        let other = f.image_dir.identity();
+        let original = crate::Error::Conflict(format!(
+            "registration failed under {}",
+            f.app_data.display()
+        ));
+        let error = crate::engine_image_error_after_cleanup(
+            &f.image_dir,
+            &f.leaf,
+            other,
+            original,
+            Some(&mut f.authority),
+        );
+        assert!(matches!(error, crate::Error::OperationAndCleanup { .. }));
+        let wire = serde_json::to_value(&error).unwrap();
+        assert_eq!(wire["category"], "operation-and-cleanup");
+        assert_eq!(
+            wire["message"],
+            "Operation failed; temporary cleanup also failed"
+        );
+        let payload = serde_json::to_string(&wire).unwrap();
+        assert!(!payload.contains(f.leaf.to_str().unwrap()), "{payload}");
+        assert!(
+            !payload.contains(&f.app_data.to_string_lossy().to_string()),
+            "{payload}"
+        );
+        let encoded_path = serde_json::to_string(&f.app_data.to_string_lossy()).unwrap();
+        assert!(
+            !payload.contains(&encoded_path[1..encoded_path.len() - 1]),
+            "{payload}"
+        );
+        assert!(f.image_dir.path().join(&f.leaf).is_file());
+    }
+
     #[test]
     fn engine_image_post_install_error_removes_the_orphan() {
-        use crate::infra::path_authority::{
-            ensure_app_owned_default_dir, AppDataDir, AppOwnedDefaultRoot,
-        };
+        use crate::infra::path_authority::portable_tests::EngineImageCleanupFixture;
         use crate::{engine_image_error_after_cleanup, Error};
-        use std::{ffi::OsStr, io::Write};
-
-        let dir = tempfile::tempdir().unwrap();
-        let image_dir = ensure_app_owned_default_dir(
-            &AppDataDir::for_test(dir.path()),
-            AppOwnedDefaultRoot::EngineImages,
-        )
-        .unwrap();
-        let leaf = OsStr::new("orphan.png");
-        let (_, installed) = image_dir
-            .atomic_replace_leaf_identified(leaf, |file| {
-                file.write_all(b"orphan").map_err(Error::from)
-            })
-            .unwrap();
+        let mut f = EngineImageCleanupFixture::new();
 
         let error = engine_image_error_after_cleanup(
-            &image_dir,
-            leaf,
-            installed,
+            &f.image_dir,
+            &f.leaf,
+            f.installed,
             Error::Conflict("registration failed".into()),
+            Some(&mut f.authority),
         );
 
-        assert!(matches!(error, Error::Conflict(_)));
-        assert!(!image_dir.path().join(leaf).exists());
+        assert!(matches!(error, Error::Conflict(message) if message == "registration failed"));
+        assert!(!f.image_dir.path().join(&f.leaf).exists());
+        f.assert_no_intent();
     }
 
     /// A one-directional "who calls `ensure_app_owned_default_dir`" scan cannot see the swap

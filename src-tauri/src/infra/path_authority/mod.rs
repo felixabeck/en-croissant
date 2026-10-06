@@ -2382,6 +2382,42 @@ pub enum CommitDurability {
     DurabilityUncertain(crate::error::DurabilityStage),
 }
 
+const UNREGISTERED_ENGINE_IMAGE_DISPLAY_NAME: &str = "Unregistered engine image";
+
+pub(crate) enum EngineImageCleanupIntent {
+    Recorded,
+    DurabilityUncertain,
+    Retained(Error),
+    NotRecorded(Error),
+}
+
+impl EngineImageCleanupIntent {
+    pub(crate) fn diagnostic(&self) -> String {
+        match self {
+            Self::Recorded => "recorded".into(),
+            Self::DurabilityUncertain => "recorded, durability uncertain".into(),
+            Self::Retained(error) => {
+                format!("not recorded, retained in memory: {}", error.diagnostic())
+            }
+            Self::NotRecorded(error) => format!("not recorded: {}", error.diagnostic()),
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+type EngineImageCleanupReplace = Box<
+    dyn FnMut(
+        &Path,
+        Box<dyn FnOnce(&mut fs::File) -> Result<(), Error>>,
+    ) -> Result<AtomicFileOutcome, Error>,
+>;
+
+#[cfg(all(test, unix))]
+std::thread_local! {
+    pub(crate) static ENGINE_IMAGE_CLEANUP_REPLACE: std::cell::RefCell<Option<EngineImageCleanupReplace>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 pub(crate) fn require_durable(durability: CommitDurability) -> Result<(), Error> {
     match durability {
         CommitDurability::Durable => Ok(()),
@@ -6289,6 +6325,120 @@ impl PathAuthority {
         ))
     }
 
+    /// Keeps an installed, unregistered UUID image reachable by startup and shutdown cleanup.
+    /// Sealed attachments still admit cleanup intents while issuance leases drain.
+    pub(crate) fn record_engine_image_cleanup(
+        &mut self,
+        dir: &AuthorizedDir,
+        leaf: &OsStr,
+        installed: VerifiedIdentity,
+    ) -> EngineImageCleanupIntent {
+        #[cfg(all(test, unix))]
+        if let Some(replace) = ENGINE_IMAGE_CLEANUP_REPLACE.with(|slot| slot.borrow_mut().take()) {
+            return self.record_engine_image_cleanup_with(dir, leaf, installed, replace);
+        }
+        self.record_engine_image_cleanup_with(dir, leaf, installed, |target, write| {
+            atomic_replace(target, write)
+        })
+    }
+
+    fn record_engine_image_cleanup_with<F>(
+        &mut self,
+        dir: &AuthorizedDir,
+        leaf: &OsStr,
+        installed: VerifiedIdentity,
+        mut replace: F,
+    ) -> EngineImageCleanupIntent
+    where
+        F: FnMut(
+            &Path,
+            Box<dyn FnOnce(&mut fs::File) -> Result<(), Error>>,
+        ) -> Result<AtomicFileOutcome, Error>,
+    {
+        if crate::infra::fs::single_leaf(leaf).is_err()
+            || leaf
+                .to_str()
+                .is_none_or(|leaf| uuid::Uuid::parse_str(leaf).is_err())
+        {
+            return EngineImageCleanupIntent::NotRecorded(Error::InvalidInput(
+                "engine image cleanup leaf must be one UUID component".into(),
+            ));
+        }
+        let baseline = match self.registry_admission_snapshot(
+            &self.persistent,
+            &self.active_database_root,
+            &self.active_puzzle_root,
+            &self.active_engine_root,
+            &self.pending_artifacts,
+            &self.provisional_attachments,
+            &self.retired_attachments,
+            &self.image_cleanup,
+        ) {
+            Ok(baseline) => baseline,
+            Err(error) => return EngineImageCleanupIntent::NotRecorded(error),
+        };
+        let id = loop {
+            let id = uuid::Uuid::new_v4().to_string();
+            if !self.persistent.contains_key(&id)
+                && !self.retired_attachments.contains_key(&id)
+                && !self.image_cleanup.contains_key(&id)
+            {
+                break id;
+            }
+        };
+        self.image_cleanup.insert(
+            id.clone(),
+            StoredEntry {
+                id: PathRef { id: id.clone() },
+                display_name: UNREGISTERED_ENGINE_IMAGE_DISPLAY_NAME.into(),
+                class: PathClass::PersistentFile,
+                operations: canonical_operations(EntryPurpose::EngineImage),
+                path: NativePath::from_path(&dir.path().join(leaf)),
+                identity: Identity {
+                    a: installed.pair().0,
+                    b: installed.pair().1,
+                },
+                parent_identity: Some(Identity {
+                    a: dir.identity().pair().0,
+                    b: dir.identity().pair().1,
+                }),
+                target_is_dir: false,
+                purpose: Some(EntryPurpose::EngineImage),
+            },
+        );
+        let mut write_started = false;
+        let result = self.save_entries_with_baseline(
+            &self.persistent,
+            &self.active_database_root,
+            &self.active_puzzle_root,
+            &self.active_engine_root,
+            &self.pending_artifacts,
+            Some(baseline),
+            |target, write| {
+                write_started = true;
+                replace(target, write)
+            },
+        );
+        match result {
+            Ok(CommitDurability::Durable) => {
+                self.registry_durability_pending = false;
+                EngineImageCleanupIntent::Recorded
+            }
+            Ok(CommitDurability::DurabilityUncertain(_)) => {
+                self.registry_durability_pending = true;
+                EngineImageCleanupIntent::DurabilityUncertain
+            }
+            Err(error) if write_started => {
+                self.registry_durability_pending = true;
+                EngineImageCleanupIntent::Retained(error)
+            }
+            Err(error) => {
+                self.image_cleanup.remove(&id);
+                EngineImageCleanupIntent::NotRecorded(error)
+            }
+        }
+    }
+
     pub(crate) fn register_opening_book(
         &mut self,
         path: &Path,
@@ -7417,6 +7567,8 @@ impl PathAuthority {
                     };
                 }
             }
+        } else if self.registry_durability_pending {
+            durability_uncertain = self.retry_registry_durability().err();
         }
         if let Some(error) = durability_uncertain {
             return match failures.into_iter().next() {
@@ -9014,6 +9166,282 @@ pub(crate) mod portable_tests {
         Arc,
     };
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    #[cfg(unix)]
+    pub(crate) struct EngineImageRemovalGuard(
+        Option<Arc<dyn crate::infra::fs::RemovalInjector + Send + Sync>>,
+    );
+
+    #[cfg(unix)]
+    impl Drop for EngineImageRemovalGuard {
+        fn drop(&mut self) {
+            crate::infra::fs::set_test_removal_injector(self.0.take());
+        }
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn scoped_engine_image_removal_fault(
+        point: crate::infra::fs::RemovalFaultPoint,
+    ) -> EngineImageRemovalGuard {
+        let previous = crate::infra::fs::current_test_removal_injector();
+        crate::infra::fs::set_test_removal_injector(Some(Arc::new(
+            crate::infra::fs::RemovalFault(point),
+        )));
+        EngineImageRemovalGuard(previous)
+    }
+
+    pub(crate) struct EngineImageCleanupFixture {
+        _temp: tempfile::TempDir,
+        pub(crate) registry: PathBuf,
+        pub(crate) authority: PathAuthority,
+        pub(crate) app_data: PathBuf,
+        pub(crate) image_dir: AuthorizedDir,
+        pub(crate) leaf: OsString,
+        pub(crate) installed: VerifiedIdentity,
+    }
+
+    impl EngineImageCleanupFixture {
+        pub(crate) fn new() -> Self {
+            let temp = tempfile::tempdir().unwrap();
+            let image_dir = ensure_app_owned_default_dir(
+                &AppDataDir::for_test(temp.path()),
+                AppOwnedDefaultRoot::EngineImages,
+            )
+            .unwrap();
+            let app_data = image_dir.path().parent().unwrap().to_path_buf();
+            let registry = app_data.join("registry.json");
+            let authority = PathAuthority::open(registry.clone(), vec![]).unwrap();
+            let leaf = OsString::from(uuid::Uuid::new_v4().to_string());
+            let (_, installed) = image_dir
+                .atomic_replace_leaf_identified(&leaf, |file| {
+                    file.write_all(b"unregistered image").map_err(Error::from)
+                })
+                .unwrap();
+            Self {
+                _temp: temp,
+                registry,
+                authority,
+                app_data,
+                image_dir,
+                leaf,
+                installed,
+            }
+        }
+
+        pub(crate) fn assert_no_intent(&self) {
+            assert!(self.authority.image_cleanup.is_empty());
+            assert!(!self.authority.registry_durability_pending);
+            assert!(!self.registry.exists());
+        }
+
+        pub(crate) fn reload_and_remove(self) {
+            drop(self.authority);
+            let mut reopened = PathAuthority::open(self.registry.clone(), vec![]).unwrap();
+            assert_eq!(reopened.image_cleanup.len(), 1);
+            let images = ensure_app_owned_default_dir(
+                &AppDataDir::for_test(&self.app_data),
+                AppOwnedDefaultRoot::EngineImages,
+            )
+            .unwrap();
+            reopened.cleanup_engine_images(&images, false).unwrap();
+            assert!(!images.path().join(&self.leaf).exists());
+            drop(reopened);
+            assert!(PathAuthority::open(self.registry.clone(), vec![])
+                .unwrap()
+                .image_cleanup
+                .is_empty());
+        }
+
+        pub(crate) fn fill_admission_bound(&mut self) {
+            let template = StoredEntry {
+                id: PathRef::fresh(),
+                display_name: UNREGISTERED_ENGINE_IMAGE_DISPLAY_NAME.into(),
+                class: PathClass::PersistentFile,
+                operations: canonical_operations(EntryPurpose::EngineImage),
+                path: NativePath::from_path(&self.image_dir.path().join(&self.leaf)),
+                identity: Identity {
+                    a: self.installed.pair().0,
+                    b: self.installed.pair().1,
+                },
+                parent_identity: Some(Identity {
+                    a: self.image_dir.identity().pair().0,
+                    b: self.image_dir.identity().pair().1,
+                }),
+                target_is_dir: false,
+                purpose: Some(EntryPurpose::EngineImage),
+            };
+            for _ in 0..MAX_AUTHORITY_IDS {
+                let mut entry = template.clone();
+                entry.id = PathRef::fresh();
+                self.authority
+                    .image_cleanup
+                    .insert(entry.id.id.clone(), entry);
+            }
+            self.authority.save().unwrap();
+        }
+    }
+
+    #[test]
+    fn engine_image_cleanup_intent_persists_reloads_and_removes() {
+        let mut f = EngineImageCleanupFixture::new();
+        assert_eq!(
+            f.authority
+                .record_engine_image_cleanup(&f.image_dir, &f.leaf, f.installed)
+                .diagnostic(),
+            "recorded"
+        );
+        let stored = f.authority.image_cleanup.values().next().unwrap();
+        assert_eq!(stored.display_name, UNREGISTERED_ENGINE_IMAGE_DISPLAY_NAME);
+        assert_eq!(
+            stored.parent_identity,
+            Some(Identity {
+                a: f.image_dir.identity().pair().0,
+                b: f.image_dir.identity().pair().1
+            })
+        );
+        f.reload_and_remove();
+    }
+
+    #[test]
+    fn engine_image_cleanup_intent_is_allowed_while_sealed() {
+        let mut f = EngineImageCleanupFixture::new();
+        f.authority.seal_engine_attachments();
+        assert_eq!(
+            f.authority
+                .record_engine_image_cleanup(&f.image_dir, &f.leaf, f.installed)
+                .diagnostic(),
+            "recorded"
+        );
+        f.reload_and_remove();
+    }
+
+    #[test]
+    fn engine_image_cleanup_intent_write_failure_is_retained_and_cleanup_persists() {
+        let mut f = EngineImageCleanupFixture::new();
+        let outcome = f.authority.record_engine_image_cleanup_with(
+            &f.image_dir,
+            &f.leaf,
+            f.installed,
+            |_, _| {
+                Err(Error::Io(Box::new(std::io::Error::other(
+                    "registry write failed",
+                ))))
+            },
+        );
+        assert!(outcome
+            .diagnostic()
+            .contains("not recorded, retained in memory: I/O failure: registry write failed"));
+        assert_eq!(f.authority.image_cleanup.len(), 1);
+        assert!(f.authority.registry_durability_pending);
+        assert!(!f.registry.exists());
+        assert!(f.image_dir.path().join(&f.leaf).is_file());
+        f.authority
+            .cleanup_engine_images(&f.image_dir, false)
+            .unwrap();
+        assert!(!f.image_dir.path().join(&f.leaf).exists());
+        assert!(!f.authority.registry_durability_pending);
+        assert!(PathAuthority::open(f.registry.clone(), vec![])
+            .unwrap()
+            .image_cleanup
+            .is_empty());
+    }
+
+    #[test]
+    fn engine_image_cleanup_intent_uncertain_write_is_committed_and_pending() {
+        let mut f = EngineImageCleanupFixture::new();
+        let outcome = f.authority.record_engine_image_cleanup_with(
+            &f.image_dir,
+            &f.leaf,
+            f.installed,
+            |target, write| {
+                assert!(matches!(
+                    atomic_replace(target, write)?,
+                    AtomicFileOutcome::DurableCommit
+                ));
+                Ok(AtomicFileOutcome::CommittedDurabilityUncertain(
+                    std::io::Error::other("registry parent sync failed"),
+                ))
+            },
+        );
+        assert_eq!(outcome.diagnostic(), "recorded, durability uncertain");
+        assert_eq!(f.authority.image_cleanup.len(), 1);
+        assert!(f.authority.registry_durability_pending);
+        f.reload_and_remove();
+    }
+
+    #[test]
+    fn engine_image_cleanup_intent_admission_refusal_restores_state_and_disk() {
+        let mut f = EngineImageCleanupFixture::new();
+        f.fill_admission_bound();
+        let before = f.authority.image_cleanup.clone();
+        let bytes = fs::read(&f.registry).unwrap();
+        let outcome = f.authority.record_engine_image_cleanup_with(
+            &f.image_dir,
+            &f.leaf,
+            f.installed,
+            |_, _| panic!("admission must refuse before writing"),
+        );
+        assert!(outcome
+            .diagnostic()
+            .contains("not recorded: Resource limit: path registry identifier limit reached"));
+        assert_eq!(f.authority.image_cleanup, before);
+        assert_eq!(fs::read(&f.registry).unwrap(), bytes);
+        assert!(!f.authority.registry_durability_pending);
+        assert!(f.image_dir.path().join(&f.leaf).is_file());
+    }
+
+    #[test]
+    fn engine_image_cleanup_intent_invalid_leaf_has_no_side_effects() {
+        let mut f = EngineImageCleanupFixture::new();
+        for leaf in [
+            "not-a-uuid",
+            "00000000-0000-0000-0000-000000000000/child",
+            "../00000000-0000-0000-0000-000000000000",
+        ] {
+            let outcome = f.authority.record_engine_image_cleanup(
+                &f.image_dir,
+                OsStr::new(leaf),
+                f.installed,
+            );
+            assert!(outcome.diagnostic().starts_with("not recorded:"));
+            f.assert_no_intent();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn engine_image_cleanup_retained_intent_retries_persistence_when_removal_still_fails() {
+        use crate::infra::fs::RemovalFaultPoint;
+        let mut f = EngineImageCleanupFixture::new();
+        let outcome = f.authority.record_engine_image_cleanup_with(
+            &f.image_dir,
+            &f.leaf,
+            f.installed,
+            |_, _| {
+                Err(Error::Io(Box::new(std::io::Error::other(
+                    "registry write failed",
+                ))))
+            },
+        );
+        assert!(matches!(outcome, EngineImageCleanupIntent::Retained(_)));
+        let guard = scoped_engine_image_removal_fault(RemovalFaultPoint::BeforeTopOpen);
+        let error = f
+            .authority
+            .cleanup_engine_images(&f.image_dir, true)
+            .unwrap_err();
+        assert!(error.diagnostic().contains("injected removal failure"));
+        assert!(!f.authority.registry_durability_pending);
+        assert!(f.image_dir.path().join(&f.leaf).is_file());
+        assert_eq!(
+            PathAuthority::open(f.registry.clone(), vec![])
+                .unwrap()
+                .image_cleanup
+                .len(),
+            1
+        );
+        drop(guard);
+        f.reload_and_remove();
+    }
 
     #[cfg(unix)]
     pub(crate) fn reload_with_undecodable_root(registry_path: &Path) -> PathAuthority {
