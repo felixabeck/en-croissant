@@ -47,10 +47,8 @@ export function cannotParseError(error, listedPath, filename) {
   return new Error(`Cannot parse ${listedPath}: ${detail}`);
 }
 
-// THE binding walk. One file, required by every probe in the plan and, in the
-// implementation, exported from scripts/parse-ts-source.mjs with the same text and ESM
-// export syntax. Divergence between copies of this walk caused FF1, FF2, GG1, GG2, GG3,
-// HH1 and HH2; there is now nothing to diverge.
+// The one shared constant-alias walk used by every Babel gate in scripts/, kept
+// in one place because divergent copies of it caused real gate defects.
 const VALUE_WRAPPERS = new Set([
   "TSAsExpression",
   "TSSatisfiesExpression",

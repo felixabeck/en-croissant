@@ -125,7 +125,8 @@ function evaluateStatic(node, scope, { coerceNumber = false, seen = new Set() } 
 
   if (node.type === "StringLiteral") return { resolved: true, value: node.value };
   if (node.type === "NumericLiteral") {
-    // coerceNumber mirrors JS string coercion inside a template or `+`; a bare numeric specifier stays unresolved.
+    // coerceNumber mirrors JS string coercion inside a template or `+`; a bare
+    // numeric specifier stays unresolved.
     if (coerceNumber) return { resolved: true, value: String(node.value) };
     return { resolved: false, prefix: "" };
   }
@@ -191,13 +192,14 @@ function analyzeSource(ast, source) {
 
   function addReference(kind, specifierNode, path) {
     const evaluated = evaluateStatic(specifierNode, path.scope);
+    const textNode = specifierNode ?? path.node;
     references.push({
       kind,
       node: path.node,
       specifier: evaluated.resolved ? evaluated.value : undefined,
       prefix: evaluated.resolved ? evaluated.value : (evaluated.prefix ?? ""),
-      sourceText: nodeText(source, specifierNode),
-      line: nodeLine(specifierNode),
+      sourceText: nodeText(source, textNode),
+      line: nodeLine(textNode),
     });
   }
 
@@ -478,7 +480,12 @@ export function inspectCsp(csp) {
 }
 
 function readJsonFile(readFile, path) {
-  const source = readFile(path);
+  let source;
+  try {
+    source = readFile(path);
+  } catch (error) {
+    throw new Error(`Cannot read ${path}: ${errorDetail(error)}`);
+  }
   try {
     return JSON.parse(source);
   } catch (error) {
@@ -501,7 +508,7 @@ export function runTauriBoundaryCheck({
       source = readFile(resolve(workspaceRoot, listedPath));
     } catch (error) {
       if (error?.code === "ENOENT") continue;
-      throw error;
+      throw new Error(`Cannot read ${listedPath}: ${errorDetail(error)}`);
     }
     const sourcePath = listedPath.replace(/^src\//, "");
     if (sourcePath === "platform/native.ts") nativeInspected = true;
@@ -513,7 +520,7 @@ export function runTauriBoundaryCheck({
       if (error?.code === "BABEL_PARSE_ERROR") {
         throw cannotParseError(error, listedPath, sourcePath);
       }
-      throw error;
+      throw new Error(`Cannot inspect ${listedPath}: ${errorDetail(error)}`, { cause: error });
     }
   }
   if (!nativeInspected) {

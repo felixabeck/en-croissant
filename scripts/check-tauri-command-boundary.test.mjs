@@ -160,6 +160,24 @@ describe("known limits", () => {
     for (const path of TAURI_PATHS) expectUnresolvable(path, source);
   });
 
+  test("a zero-argument require reports the call text and line", () => {
+    expect(inspectSource("components/probe.ts", "require()")).toEqual([
+      "module specifier is not statically resolvable: require() (line 1)",
+    ]);
+  });
+
+  test("a parameter specifier reports the exact unresolvable message", () => {
+    expect(inspectSource("components/probe.ts", "function load(s) { return import(s); }")).toEqual([
+      "module specifier is not statically resolvable: s (line 1)",
+    ]);
+  });
+
+  test("an unresolvable specifier on line 2 reports that line", () => {
+    expect(inspectSource("components/probe.ts", "const x = 1;\nimport(s)")).toEqual([
+      "module specifier is not statically resolvable: s (line 2)",
+    ]);
+  });
+
   test.each([
     ["self-referential concatenation", 'var p = p + "x"; import(p)'],
     ["self-referential template", "const p = `${p}/x`; import(p)"],
@@ -430,9 +448,10 @@ describe("parse failure", () => {
     } catch (error) {
       caught = error;
     }
-    expect(caught).toBeInstanceOf(TypeError);
-    expect(caught.message).toBe("this.input.charCodeAt is not a function");
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught.message).toMatch(/^Cannot inspect src\/probe\.ts: /);
     expect(caught.message).not.toMatch(/Cannot parse/);
+    expect(caught.cause).toBeInstanceOf(TypeError);
   });
 });
 
@@ -631,6 +650,36 @@ describe("working-tree enumeration and reads", () => {
         },
       }),
     ).toThrow(/capabilities\/main\.json/);
+  });
+
+  test("names a capability file that cannot be read", () => {
+    expect(() =>
+      runTauriBoundaryCheck({
+        workspaceRoot: "/fixture",
+        listFiles: () => ["src/platform/native.ts"],
+        readFile: (path) => {
+          if (path.endsWith("native.ts")) return NATIVE_SOURCE;
+          if (path.endsWith("main.json")) throw new Error("EACCES: permission denied");
+          return VALID_SECURITY_CONFIG;
+        },
+      }),
+    ).toThrow(/^Cannot read .*capabilities\/main\.json/);
+  });
+
+  test("names a non-ENOENT working-tree read failure", () => {
+    expect(() =>
+      runTauriBoundaryCheck({
+        workspaceRoot: "/fixture",
+        listFiles: () => ["src/probe.ts"],
+        readFile: (path) => {
+          if (path.endsWith("probe.ts")) {
+            throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+          }
+          if (path.endsWith("main.json")) return '{"permissions":[]}';
+          return VALID_SECURITY_CONFIG;
+        },
+      }),
+    ).toThrow(/^Cannot read src\/probe\.ts: EACCES: permission denied$/);
   });
 
   test("rethrows a non-ENOENT working-tree read failure", () => {
