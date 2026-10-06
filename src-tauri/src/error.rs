@@ -284,6 +284,7 @@ pub enum Error {
     )]
     PartialRemoval {
         removed_entries: usize,
+        #[source]
         cause: Box<Error>,
     },
 
@@ -481,7 +482,9 @@ impl Error {
 
 const SQLITE_NOTADB: i32 = 26;
 
-/// Owns failure precedence once a removal's primary entry is gone.
+/// Constructed only once the primary entry is gone; keeps the first recorded failure, whatever its class.
+/// Later failures are logged at warn with their diagnostic and dropped, never combined.
+/// `finish` returns a kept `CommittedDurabilityUncertain` unchanged and wraps any other kept failure in `PartialRemoval`.
 #[derive(Debug)]
 #[must_use]
 pub(crate) struct CommittedRemoval {
@@ -1437,6 +1440,28 @@ mod tests {
             .messages()
             .iter()
             .any(|message| message.contains(CAUSE)));
+    }
+
+    #[test]
+    fn partial_removal_diagnostic_keeps_cause_without_changing_payload() {
+        let err = Error::PartialRemoval {
+            removed_entries: 1,
+            cause: Box::new(Error::Conflict("path authority lock was poisoned".into())),
+        };
+        assert!(err
+            .diagnostic()
+            .contains("path authority lock was poisoned"));
+        assert_eq!(
+            err.to_string(),
+            "Partially removed: 1 entries were deleted before failing: conflict"
+        );
+        assert_eq!(err.category(), ErrorCategory::PartialRemoval);
+        let payload = serde_json::to_value(&err).expect("serialize error");
+        assert_eq!(
+            payload["message"],
+            "Partially removed: 1 entries were deleted before failing: conflict"
+        );
+        assert_eq!(payload["category"], "partial-removal");
     }
 
     #[test]
