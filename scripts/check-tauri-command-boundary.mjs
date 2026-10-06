@@ -484,7 +484,7 @@ function readJsonFile(readFile, path) {
   try {
     source = readFile(path);
   } catch (error) {
-    throw new Error(`Cannot read ${path}: ${errorDetail(error)}`);
+    throw new Error(`Cannot read ${path}: ${errorDetail(error)}`, { cause: error });
   }
   try {
     return JSON.parse(source);
@@ -508,7 +508,7 @@ export function runTauriBoundaryCheck({
       source = readFile(resolve(workspaceRoot, listedPath));
     } catch (error) {
       if (error?.code === "ENOENT") continue;
-      throw new Error(`Cannot read ${listedPath}: ${errorDetail(error)}`);
+      throw new Error(`Cannot read ${listedPath}: ${errorDetail(error)}`, { cause: error });
     }
     const sourcePath = listedPath.replace(/^src\//, "");
     if (sourcePath === "platform/native.ts") nativeInspected = true;

@@ -166,6 +166,12 @@ describe("known limits", () => {
     ]);
   });
 
+  test("a zero-argument vi.mock reports the call text and line", () => {
+    expect(inspectSource("components/probe.ts", "vi.mock()")).toEqual([
+      "module specifier is not statically resolvable: vi.mock() (line 1)",
+    ]);
+  });
+
   test("a parameter specifier reports the exact unresolvable message", () => {
     expect(inspectSource("components/probe.ts", "function load(s) { return import(s); }")).toEqual([
       "module specifier is not statically resolvable: s (line 1)",
@@ -667,7 +673,8 @@ describe("working-tree enumeration and reads", () => {
   });
 
   test("names a non-ENOENT working-tree read failure", () => {
-    expect(() =>
+    let caught;
+    try {
       runTauriBoundaryCheck({
         workspaceRoot: "/fixture",
         listFiles: () => ["src/probe.ts"],
@@ -678,21 +685,12 @@ describe("working-tree enumeration and reads", () => {
           if (path.endsWith("main.json")) return '{"permissions":[]}';
           return VALID_SECURITY_CONFIG;
         },
-      }),
-    ).toThrow(/^Cannot read src\/probe\.ts: EACCES: permission denied$/);
-  });
-
-  test("rethrows a non-ENOENT working-tree read failure", () => {
-    const failure = Object.assign(new Error("is a directory"), { code: "EISDIR" });
-    expect(() =>
-      runTauriBoundaryCheck({
-        workspaceRoot: "/fixture",
-        listFiles: () => ["src/unreadable.ts"],
-        readFile: () => {
-          throw failure;
-        },
-      }),
-    ).toThrow(/is a directory/);
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught.message).toBe("Cannot read src/probe.ts: EACCES: permission denied");
+    expect(caught.cause.code).toBe("EACCES");
   });
 });
 
