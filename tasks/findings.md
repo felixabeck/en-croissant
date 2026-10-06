@@ -10995,6 +10995,9 @@ Accepted for now, with `stays proportionate on a pathological single-line source
 * **Correction to the closing note:** "10 of 14 Grok diff lenses failed their profile check" counts launches, not lenses — 10 of 14 diff-lens launches (6 distinct lenses, four of them retried once) failed, as `tasks/handoffs/2026-10-06-f-20260920-20-review.md` states.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"5f12f60bd731a9af99324075a36233023823c435014332c32cfbbf14a5d60451","input_sha256":"1f7ecb7fde86aa42757e7adb7c955bfb9f6e1d34a9b7ad80b00ab0ea98eec250","kind":"mutation-receipt","operation":"c2a72718a7a69fbe6d4d89a8a0cf39bb0554f630ae8bdc5f11b6e703b3d54922","options":{"section":null},"request_id_sha256":null,"results":["f-20260920-20"],"target":"f-20260920-20","v":1} -->
 
+* **Second correction to the closing note:** the closing note's `I1` is the diff-review round-4 issue, renamed `J1` in the review record because `I1`–`I7` are the plan-review ids. And not every failed Grok launch re-ran natively: the four round-1 failures (correctness, root-cause, minimalism, code-quality) re-ran as disclosed native Claude fallbacks; the two round-2 failures (tests, error-handling) were input only, with the round-2 closure resting on the native correctness fallback and round 3 run by native tests and error-handling lenses. The repair leaf was resumed four times, not three.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"421042333def1756304b3ef74a153b1a92085133dc852394a9eaa196a9a3ee0e","input_sha256":"cde5e84e39e03695ba29cac17a972ae494667292ba5f7a16696b550c2cd86b0a","kind":"mutation-receipt","operation":"d6140f302dc8267e77f735482e6815d0e466986e5d66066abfa46687725918b2","options":{"section":null},"request_id_sha256":null,"results":["f-20260920-20"],"target":"f-20260920-20","v":1} -->
+
 ---
 
 ## 2026-09-21 — filed through the inbox spool
