@@ -5071,22 +5071,7 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let mut authority = {
-            #[cfg(target_os = "macos")]
-            {
-                PathAuthority::open_with_launch_root(
-                    directory.path().join("registry.json"),
-                    Vec::new(),
-                    crate::infra::path_authority::EngineLaunchRoot::for_test(directory.path())
-                        .unwrap(),
-                )
-                .unwrap()
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                PathAuthority::open(directory.path().join("registry.json"), Vec::new()).unwrap()
-            }
-        };
+        let mut authority = PathAuthority::open_for_engine_test(directory.path()).unwrap();
         let engine = authority
             .register_engine_file(&script, "pending-interactive-engine")
             .unwrap();
@@ -10576,22 +10561,7 @@ mod tests {
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
         let replacement = script.clone();
-        let authority = {
-            #[cfg(target_os = "macos")]
-            {
-                PathAuthority::open_with_launch_root(
-                    directory.path().join("registry.json"),
-                    Vec::new(),
-                    crate::infra::path_authority::EngineLaunchRoot::for_test(directory.path())
-                        .unwrap(),
-                )
-                .unwrap()
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                PathAuthority::open(directory.path().join("registry.json"), Vec::new()).unwrap()
-            }
-        };
+        let authority = PathAuthority::open_for_engine_test(directory.path()).unwrap();
         let mut authority = authority;
         let engine = authority
             .register_engine_file(&script, "authorized-engine")
@@ -10920,22 +10890,7 @@ mod tests {
         let root = std::thread::current().id();
         let trace = Arc::new(std::sync::Mutex::new(Vec::<(&'static str, ThreadId)>::new()));
         crate::infra::path_authority::set_engine_resolution_trace(Some(trace.clone()));
-        let mut authority = {
-            #[cfg(target_os = "macos")]
-            {
-                PathAuthority::open_with_launch_root(
-                    directory.path().join("registry.json"),
-                    Vec::new(),
-                    crate::infra::path_authority::EngineLaunchRoot::for_test(directory.path())
-                        .unwrap(),
-                )
-                .unwrap()
-            }
-            #[cfg(target_os = "linux")]
-            {
-                PathAuthority::open(directory.path().join("registry.json"), Vec::new()).unwrap()
-            }
-        };
+        let mut authority = PathAuthority::open_for_engine_test(directory.path()).unwrap();
         let engine = authority
             .register_engine_file(&script, "thread-engine")
             .unwrap();

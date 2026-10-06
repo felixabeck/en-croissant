@@ -4724,6 +4724,24 @@ impl PathAuthority {
         )
     }
 
+    /// Opens the engine-test authority with the platform's launch root.
+    #[cfg(test)]
+    #[cfg_attr(not(unix), allow(dead_code))]
+    pub(crate) fn open_for_engine_test(directory: &Path) -> Result<Self, Error> {
+        #[cfg(target_os = "macos")]
+        {
+            Self::open_with_launch_root(
+                directory.join("registry.json"),
+                Vec::new(),
+                EngineLaunchRoot::for_test(directory)?,
+            )
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Self::open(directory.join("registry.json"), Vec::new())
+        }
+    }
+
     /// The production entry point, so startup does not assemble a clock and a capacity at the
     /// call site.
     pub(crate) fn open_for_app(
