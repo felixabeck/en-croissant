@@ -761,7 +761,7 @@ impl DatabaseRepository {
 
     /// Evicts every resource owned by this canonical database. A future open
     /// receives a fresh pool and therefore cannot use a deleted/replaced file.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub fn close_and_invalidate(
         &self,
         target: &crate::infra::path_authority::DatabaseFileTarget,
@@ -1027,7 +1027,7 @@ impl DatabaseRepository {
         Ok(())
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     fn remove_entry(&self, key: &EntryKey) -> Result<Option<Arc<DatabaseEntry>>, Error> {
         Ok(self
             .state
@@ -1666,7 +1666,7 @@ impl DatabaseEntry {
             .ok_or_else(|| Error::Conflict("database is being replaced or deleted".into()))
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     fn retire_and_wait(&self, timeout: Duration) -> Result<(), Error> {
         self.retire_and_wait_cancellable(timeout, None)
     }

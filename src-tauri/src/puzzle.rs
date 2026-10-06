@@ -991,6 +991,10 @@ mod deletion_tests {
             max_rating: u16::MAX,
             theme: None,
         };
+        // Windows cannot remove or replace a file held open by an SQLite connection.
+        repository
+            .close_and_invalidate(&crate::db::test_target(&path))
+            .unwrap();
         let mut cache = PuzzleCache::new();
         cache.replace(cache_key, vec![]);
         PuzzleDeletionFixture {
@@ -1020,7 +1024,7 @@ mod deletion_tests {
 
     #[test]
     fn confirmed_puzzle_deletion_releases_authority_for_same_path_recreation() {
-        let (directory, path, _repository) = puzzle_database("recreated.db3", 1200);
+        let (directory, path, repository) = puzzle_database("recreated.db3", 1200);
         let registry = directory.path().join("registry.json");
         let operations = vec![
             crate::infra::path_authority::PathOperation::PuzzleRead,
@@ -1032,6 +1036,10 @@ mod deletion_tests {
             .get_or_create_persistent_file(&path, "Puzzle database", operations.clone())
             .unwrap()
             .id;
+        // Windows cannot remove or replace a file held open by an SQLite connection.
+        repository
+            .close_and_invalidate(&crate::db::test_target(&path))
+            .unwrap();
         std::fs::remove_file(&path).unwrap();
         authority.remove_puzzle_database(&original).unwrap();
         std::fs::write(&path, b"replacement database bytes").unwrap();
