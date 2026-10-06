@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: 1b5a295315e4780f8688f8f7ca2edb2d8cafa2e175bcc11a85d3e42b90b69648
+# agent-kit-sha256: c20afdc5c781b2a7e7a8511f9e46d44a2540c61845cac2e41215e796762c4293
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -3276,8 +3276,9 @@ def _count_pending_inbox(inbox: Path) -> tuple[int, bool, list[Path]]:
     # Leaving it out here is the worst of the three: `related` would answer
     # "this looks new" about a finding that is already filed but unmergeable,
     # so the duplicate gets written AND the unresolved refusal stays quiet.
-    sources += sorted(claim.glob("*.md"))
-    if legacy.exists():
+    if _entry_exists(claim, directory=True):
+        sources += sorted(claim.glob("*.md"))
+    if _entry_exists(legacy):
         sources.append(legacy)
     # A merge running in another terminal renames these files out from under the
     # glob. That is normal and means the entries are being consumed right now, so
@@ -3286,8 +3287,10 @@ def _count_pending_inbox(inbox: Path) -> tuple[int, bool, list[Path]]:
     for p in sources:
         try:
             read.append((p, p.read_text(encoding="utf-8")))
-        except FileNotFoundError:
-            continue
+        except FileNotFoundError as exc:
+            if _entry_state(p) != _ENTRY_BROKEN:
+                continue
+            raise LedgerError(f"could not read pending filing {p}: {exc}") from exc
     # Count ENTRIES, not allocated ids. `header_ids` deliberately reports only ids
     # that are taken, and a spooled entry carries `**ID:** f-PENDING` by contract --
     # so counting ids reported 0 pending for exactly the normal case, and `related`
@@ -3316,7 +3319,9 @@ def _warn_pending_inbox(inbox: Path) -> None:
             1 for path in intake.iterdir()
             if not path.is_symlink() and path.is_file()
         )
-    except FileNotFoundError:
+    except FileNotFoundError as exc:
+        if _entry_state(intake) == _ENTRY_BROKEN:
+            print(f"WARN intake {intake.name}: {exc}", file=sys.stderr)
         intake_count = 0
     except OSError as exc:
         print(f"WARN intake {intake.name}: {exc}", file=sys.stderr)
@@ -3390,13 +3395,18 @@ def validate_plan_adopted_column(path: Path) -> list[str]:
     """D6: well-formed ``plan_adopted_per_round`` cells, only when a header names it.
 
     A missing file, or a table whose header row does not name the column, is
-    not an error — today's ledgers have no such column. Unfenced tables only:
+    not an error — today's ledgers have no such column. A dangling link or an
+    entry that cannot be looked up is not missing and is reported as a
+    "could not read" issue. Unfenced tables only:
     a fenced format example must not be validated as data. Blank lines between
     row groups under one header do not end the table; a new header row or a
     non-table line does. A pipe row whose cell count differs from the header
     is malformed (an interior ``|`` in a cell is the usual cause).
     """
-    if not path.is_file():
+    state = _entry_state(path)
+    if state == _ENTRY_BROKEN:
+        return [f"could not read {path}: it is a dangling link or cannot be looked up"]
+    if state == _ENTRY_ABSENT or not path.is_file():
         return []
     try:
         text = path.read_text(encoding="utf-8")
@@ -4344,7 +4354,7 @@ def _standing_answers_claim(
 ) -> tuple[Path, set[str], bool]:
     """Read ids and the repair marker from an answers claim without mutating it."""
     claim = spool.with_name(f"{spool.name}.claim")
-    if not claim.exists():
+    if not _entry_exists(claim, directory=True):
         return claim, set(), False
     if not claim.is_dir():
         raise LedgerError(f"answers claim {claim} exists but is not a directory")
@@ -4352,7 +4362,7 @@ def _standing_answers_claim(
     intent_path = _claim_intent_path(claim)
     manual_repair = False
     identifiers: set[str] = set()
-    if intent_path.exists():
+    if _entry_state(intent_path) != _ENTRY_ABSENT:
         record, manual_repair, raw_ids = _read_answers_claim_intent(
             claim,
             error_context="inspect",
@@ -4406,7 +4416,12 @@ def _manual_repair_answers_claim_ids(spool: Path) -> tuple[str, ...]:
     """Read the durable manual-repair marker without touching an answers claim."""
     claim = spool.with_name(f"{spool.name}.claim")
     intent_path = _claim_intent_path(claim)
-    if not intent_path.is_file():
+    state = _entry_state(intent_path)
+    # A broken intent (_ENTRY_BROKEN) deliberately falls through to the reader,
+    # whose "could not read" refusal stops apply-answers with exit 1.
+    if state == _ENTRY_ABSENT or (
+        state == _ENTRY_PRESENT and not intent_path.is_file()
+    ):
         return ()
     _record, marker, raw_ids = _read_answers_claim_intent(
         claim,
@@ -4581,8 +4596,13 @@ def _pick_claim_records(
     diagnostics: list[str] = []
     try:
         paths = sorted(directory.iterdir())
-    except FileNotFoundError:
-        return records, diagnostics
+    except FileNotFoundError as exc:
+        if _entry_state(directory) != _ENTRY_BROKEN:
+            return records, diagnostics
+        raise LedgerError(
+            f"pick claim directory {directory} is a dangling link or cannot be looked up; "
+            "repair or remove it by hand, then retry"
+        ) from exc
     for path in paths:
         fid = path.stem
         if path.suffix != ".json" or ID_RE.fullmatch(fid) is None:
@@ -5070,8 +5090,10 @@ def _read_receipt(path: Path) -> dict[str, str] | None:
     """Read one receipt, refusing every shape whose recovery is ambiguous."""
     try:
         raw = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return None
+    except FileNotFoundError as exc:
+        if _entry_state(path) != _ENTRY_BROKEN:
+            return None
+        raise LedgerError(f"could not read filing receipt {path}: {exc}") from exc
     except (OSError, UnicodeError) as exc:
         raise LedgerError(f"could not read filing receipt {path}: {exc}") from exc
     try:
@@ -5149,8 +5171,12 @@ def _receipt_index(inbox: Path, digests: set[str]) -> ReceiptIndex:
     directory = receipt_directory(inbox)
     try:
         entries = os.scandir(directory)
-    except FileNotFoundError:
-        return index
+    except FileNotFoundError as exc:
+        if _entry_state(directory) != _ENTRY_BROKEN:
+            return index
+        raise LedgerError(
+            f"could not enumerate filing receipts {directory}: {exc}"
+        ) from exc
     except OSError as exc:
         raise LedgerError(
             f"could not enumerate filing receipts {directory}: {exc}"
@@ -5266,8 +5292,13 @@ def _enumerate_orphan_parts(spool: Path) -> tuple[list[Path], bool]:
     """
     try:
         entries = sorted(spool.iterdir())
-    except FileNotFoundError:
-        return [], True
+    except FileNotFoundError as exc:
+        if _entry_state(spool) != _ENTRY_BROKEN:
+            return [], True
+        errno_name = _errno_name(exc)
+        raise LedgerError(
+            f"could not enumerate findings spool {spool} ({errno_name}): {exc}"
+        ) from exc
     except OSError as exc:
         errno_name = _errno_name(exc)
         raise LedgerError(
@@ -7336,7 +7367,7 @@ def _validate_answers_files(
 
     for name, value in result.items():
         path = claim / name
-        if not path.exists():
+        if _entry_state(path) == _ENTRY_ABSENT:
             continue
         if quarantined is not None and name in quarantined:
             continue
@@ -7392,10 +7423,13 @@ def _read_claim_intent(
     claim: Path, *, strict: bool = True
 ) -> ClaimIntent | None:
     """Read one claim intent and preserve whether it uses a legacy shape."""
-    if not claim.exists():
+    if not _entry_exists(claim, directory=True):
         return None
     intent_path = _claim_intent_path(claim)
     claimed = tuple(sorted(claim.glob("*.md")))
+    # The claim itself was proven present above; a missing or dangling intent
+    # with claimed members is refused just below, while one without members is
+    # handled by the caller.
     if not intent_path.exists():
         if not claimed:
             return None
@@ -7598,7 +7632,7 @@ def _recover_claim(
     durable_replay: bool = False,
 ) -> None:
     """Finish or replay a stranded claim using its durable intent record."""
-    if not claim.exists():
+    if not _entry_exists(claim, directory=True):
         return
 
     intent = _read_claim_intent(claim, strict=False)
@@ -7885,6 +7919,72 @@ def _allocate_receipt_path(
     return _receipt_path(inbox, entry_text, filing_token=_unique_suffix())
 
 
+# A deliberate local copy of leaf_terminal.entry_state (decision d-20261004-01's
+# predicate), because this file imports no supervisor module and must stay a
+# single vendorable script; tests/test_leaf_terminal.py runs one matrix against
+# both copies. After a failed read only a broken lookup refuses; an entry that
+# appeared since the read keeps the absent answer it had at the read.
+_ENTRY_PRESENT = "present"
+_ENTRY_ABSENT = "absent"
+_ENTRY_BROKEN = "broken"
+_ENTRY_LOOKUP_ERRORS = (OSError, ValueError)
+
+
+def _entry_state(path) -> str:
+    """Return presence, proven absence or broken lookup for a filesystem entry."""
+    try:
+        try:
+            os.stat(path)
+        except OSError:
+            pass
+        else:
+            return _ENTRY_PRESENT
+        try:
+            os.lstat(path)
+        except FileNotFoundError:
+            ancestor = os.path.dirname(path) or "."
+            while True:
+                try:
+                    os.lstat(ancestor)
+                except FileNotFoundError:
+                    parent = os.path.dirname(ancestor) or "."
+                    if parent == ancestor:
+                        return _ENTRY_BROKEN
+                    ancestor = parent
+                else:
+                    return (_ENTRY_ABSENT if stat.S_ISDIR(os.stat(ancestor).st_mode)
+                            else _ENTRY_BROKEN)
+    except _ENTRY_LOOKUP_ERRORS:
+        return _ENTRY_BROKEN
+    return _ENTRY_BROKEN
+
+
+def _entry_exists(path: Path, *, directory: bool = False) -> bool:
+    """Present is True, proven absent is False; a broken lookup raises LedgerError.
+
+    With ``directory=True`` a present directory must also open with
+    ``os.scandir`` or ``LedgerError`` is raised; a present non-directory still
+    answers True (kind handling stays with the caller).
+    """
+    state = _entry_state(path)
+    if state == _ENTRY_ABSENT:
+        return False
+    if state == _ENTRY_BROKEN:
+        raise LedgerError(
+            f"{path} is a dangling link or cannot be looked up; "
+            "repair or remove it by hand, then retry"
+        )
+    if directory and stat.S_ISDIR(os.stat(path).st_mode):
+        try:
+            with os.scandir(path) as entries:
+                next(entries, None)
+        except OSError as exc:
+            raise LedgerError(
+                f"{path} cannot be listed: {exc}; repair its permissions, then retry"
+            ) from exc
+    return True
+
+
 def _resolved_repo_path(path: Path) -> Path:
     """Resolve a caller path before comparing it with the repository root."""
     try:
@@ -7898,8 +7998,13 @@ def _canonical_ledger_path(path: Path) -> Path:
     resolved = _resolved_repo_path(path)
     try:
         details = resolved.stat()
-    except FileNotFoundError:
-        return resolved
+    except FileNotFoundError as exc:
+        if _entry_state(path) != _ENTRY_BROKEN:
+            return resolved
+        raise LedgerError(
+            f"could not inspect ledger path {path}: it is a dangling link or cannot be looked up "
+            f"(resolves to {resolved}); repair or remove it by hand, then retry"
+        ) from exc
     except OSError as exc:
         raise LedgerError(f"could not inspect ledger path {resolved}: {exc}") from exc
     if stat.S_ISREG(details.st_mode) and details.st_nlink > 1:
@@ -8379,7 +8484,9 @@ def _reconcile_prepared_claim(
         path for path, path_state in path_states.items() if path_state == {"present"}
     }
     remaining_paths = [
-        path for path in intent.claimed if path.exists() and path not in present_paths
+        path
+        for path in intent.claimed
+        if _entry_state(path) != _ENTRY_ABSENT and path not in present_paths
     ]
     if not remaining_paths:
         release_spool(claim, spool, [], publish_locked=True)
@@ -9106,20 +9213,27 @@ def _refuse_entryless_filings(inbox: Path, legacy: Path) -> None:
     the publish lock every writer takes, so the refusal leaves the inbox as it
     was. An empty legacy single-file inbox has no receipt and is removed.
     """
+    if _entry_state(legacy) == _ENTRY_BROKEN:
+        raise LedgerError(
+            f"could not read legacy inbox {legacy}: it is a dangling link or cannot be looked up; "
+            "repair or remove it by hand, then retry"
+        )
     try:
-        if legacy.exists() and not legacy.read_text(encoding="utf-8").strip():
+        if _entry_exists(legacy) and not legacy.read_text(encoding="utf-8").strip():
             legacy.unlink()
     except (OSError, UnicodeError) as exc:
         raise LedgerError(f"could not read legacy inbox {legacy}: {exc}") from exc
     filings = sorted(inbox.glob("*.md"))
-    if legacy.exists():
+    if _entry_exists(legacy):
         filings.append(legacy)
     entryless: list[str] = []
     for path in filings:
         try:
             text = path.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            continue
+        except FileNotFoundError as exc:
+            if _entry_state(path) != _ENTRY_BROKEN:
+                continue
+            raise LedgerError(f"could not read filing {path}: {exc}") from exc
         except (OSError, UnicodeError) as exc:
             raise LedgerError(f"could not read filing {path}: {exc}") from exc
         if not _unfenced_header_matches(text)[1]:
@@ -9594,8 +9708,10 @@ def inbox_filed_by(inbox: Path, sessions: set[str]) -> list[str]:
     """List attributed entries and parts completely, without locks or writes."""
     try:
         paths = sorted(inbox.iterdir())
-    except FileNotFoundError:
-        return []
+    except FileNotFoundError as exc:
+        if _entry_state(inbox) != _ENTRY_BROKEN:
+            return []
+        raise LedgerError(f"could not enumerate findings inbox {inbox}: {exc}") from exc
     except OSError as exc:
         raise LedgerError(f"could not enumerate findings inbox {inbox}: {exc}") from exc
     names = []
@@ -9770,9 +9886,13 @@ def cmd_file_status(args: argparse.Namespace) -> int:
         published = args.inbox / receipt["published"]
         try:
             actual_digest = _sha256_bytes(published.read_bytes())
-        except FileNotFoundError:
-            print("none")
-            return 0
+        except FileNotFoundError as exc:
+            if _entry_state(published) != _ENTRY_BROKEN:
+                print("none")
+                return 0
+            raise LedgerError(
+                f"could not verify publishing receipt {receipt_path}: {exc}"
+            ) from exc
         except OSError as exc:
             raise LedgerError(
                 f"could not verify publishing receipt {receipt_path}: {exc}"
@@ -9982,10 +10102,19 @@ def _intake_covered(inbox: Path, entry: str, token: str | None = None) -> bool:
     published = inbox / receipt["published"]
     try:
         return _sha256_bytes(published.read_bytes()) == _sha256_text(entry)
-    except FileNotFoundError:
+    except FileNotFoundError as exc:
+        if _entry_state(published) == _ENTRY_BROKEN:
+            raise LedgerError(
+                f"could not read published filing {published}: {exc}"
+            ) from exc
         # A prepared claim has substituted its allocated id; its receipt is
         # still published until the ledger commit, and the claim owns the bytes.
-        return (inbox.with_name(f"{inbox.name}.claim") / receipt["published"]).is_file()
+        member = inbox.with_name(f"{inbox.name}.claim") / receipt["published"]
+        if _entry_state(member) == _ENTRY_BROKEN:
+            raise LedgerError(
+                f"could not read claimed filing {member}: {exc}"
+            ) from exc
+        return member.is_file()
 
 
 def _intake_recovery_entry(raw: bytes, ledger_text: str) -> str:
@@ -11376,8 +11505,13 @@ def _probe_answers_spool(spool: Path) -> None:
     """Raise when an answers spool exists but cannot be consumed safely."""
     try:
         spool_mode = os.lstat(spool).st_mode
-    except FileNotFoundError:
-        return
+    except FileNotFoundError as exc:
+        if _entry_state(spool) != _ENTRY_BROKEN:
+            return
+        errno_name = _errno_name(exc)
+        raise LedgerError(
+            f"could not inspect answers spool {spool} ({errno_name}): {exc}"
+        ) from exc
     except OSError as exc:
         errno_name = _errno_name(exc)
         raise LedgerError(
@@ -11493,7 +11627,7 @@ def _cmd_answer(args: argparse.Namespace) -> int:
     with _publish_lock(publish_lock_path(spool)):
         spool.mkdir(parents=True, exist_ok=True)
         candidates = list(spool.glob("*.md")) + list(spool.glob(".*.part"))
-        if claim.exists():
+        if _entry_exists(claim, directory=True):
             if not claim.is_dir():
                 raise LedgerError(
                     f"answers claim {claim} exists but is not a directory"
@@ -11576,7 +11710,7 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
     # Check the leftover claim first. A refused batch normally leaves the spool
     # empty, so testing for an empty or absent spool first would hide the stop
     # signal that says answers are stranded outside the ledger.
-    if not claim.exists():
+    if not _entry_exists(claim, directory=True):
         _probe_answers_spool(spool)
     claimed: list[Path] | None = None
     applied: list[str] = []
