@@ -5948,3 +5948,40 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** same file set and defect class; the slice is one signature change. Reversal path: none needed.
 * **Decided by:** Claude Code, drain session 242e290f-6c04-4b2d-b232-29a2961c45f0 (drain run 0ab86bf9-7e6e-42ce-b073-c494cb240f4f), full auto, adopted reviewed plan tasks/plans/2026-10-06-published-generation-guard-handoff.md · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":17,"effect_sha256":"d2410fee0bdcfff10f3753b93205a05317499e21df2f7c2fbcbec0713a550ad8","input_sha256":"4534604b22fd36b9cd2202cf4a9a203c95defc4bfb31eb6b025458f3eab55338","kind":"mutation-receipt","operation":"e679c56b619bb709d573d839a4c51e2e8357b366b53741e534ce291694dca4f6","options":{"section":null},"request_id_sha256":null,"results":["d-20261006-20","d-20261006-21"],"target":"decisions-ledger","v":1} -->
+
+### d-20261006-22 — Where does the post-commit removal policy of database and puzzle deletion live?
+
+* **Question:** Database and puzzle deletion each encode "which error reaches the renderer once the primary file is gone". Where does the one copy live?
+* **Governs:** f-20260917-08
+* **Chosen:** a crate-private `#[must_use]` `CommittedRemoval` type in `src-tauri/src/error.rs`, beside `Error::with_cleanup`, carrying the removed-entry count and at most one failure, with the precedence as its own methods.
+* **Rejected:** a helper in `db/mod.rs` (puzzle deletion's error policy would live in the database module, and both tails' tuple threading would stay); a helper in `infra/` (a filesystem module would own a renderer-category concern).
+* **Reason:** `error.rs` already owns the mapping from `Error` to the wire category and `with_cleanup`, the sibling combinator; a type is the only option that also removes both tails' tuple threading. Reversal path: move the type; the call sites do not change shape.
+* **Decided by:** Claude Code, drain session eed08af5-58ff-40a1-9aa7-f2b51f9b1321 (drain run 0ab86bf9-7e6e-42ce-b073-c494cb240f4f), full auto, adopted reviewed plan tasks/plans/2026-10-06-f-20260917-08-committed-removal.md · **Superseded-by:** -
+
+### d-20261006-23 — Which failure wins when two post-commit steps of a removal fail?
+
+* **Question:** After the primary entry of a database or puzzle removal is gone, two later steps (sidecar removal, lease release, registry removal) can both fail. Which one is returned?
+* **Governs:** f-20260917-08
+* **Chosen:** the first in operation order, whatever its class; the later one is logged at `warn` with its `diagnostic()` and dropped, never combined into `OperationAndCleanup`. A kept `CommittedDurabilityUncertain` is returned unchanged; any other kept failure becomes `PartialRemoval { removed_entries, cause }`.
+* **Rejected:** durability uncertainty outranks a hard failure; a hard failure outranks durability uncertainty (`d-20260906-03`'s combine contract for workspace create/rename).
+* **Reason:** both tails already kept the first failure; both outcomes map to the same renderer category (`applied-despite-error`); and it retires `unlink_database_files`'s post-primary SQLite-sidecar loop letting a later hard failure replace a retained durability uncertainty. Reversal path: change one method in `error.rs`.
+* **Decided by:** Claude Code, drain session eed08af5-58ff-40a1-9aa7-f2b51f9b1321 (drain run 0ab86bf9-7e6e-42ce-b073-c494cb240f4f), full auto, adopted reviewed plan tasks/plans/2026-10-06-f-20260917-08-committed-removal.md · **Superseded-by:** -
+
+### d-20261006-24 — When is a database or puzzle removal committed?
+
+* **Question:** From which point does a failure count as post-commit (cleanup still runs, `applied-despite-error` category) rather than a raw pre-commit failure?
+* **Governs:** f-20260917-08
+* **Chosen:** when the primary entry is gone — unlinked by this call or already missing. Every later failure, including the exclusive-lease release in `DatabaseRepository::delete_exclusive_inner`, is post-commit, and cache invalidation and registry removal still run.
+* **Rejected:** committed only when the lease closure returned `Ok` (the previous behaviour: a lease-release failure after the unlink skipped registry cleanup, in the puzzle tail also cache invalidation, and reported a raw error).
+* **Reason:** the finding's symptom (a user told nothing happened to a database that is gone) and `.claude/rules/async-resource-invariants.md` (cleanup on every exit path). Reversal path: return the closure's result again instead of handing the `CommittedRemoval` out.
+* **Decided by:** Claude Code, drain session eed08af5-58ff-40a1-9aa7-f2b51f9b1321 (drain run 0ab86bf9-7e6e-42ce-b073-c494cb240f4f), full auto, adopted reviewed plan tasks/plans/2026-10-06-f-20260917-08-committed-removal.md · **Superseded-by:** -
+
+### d-20261006-25 — What does a puzzle deletion count when the puzzle file was already missing?
+
+* **Question:** `PartialRemoval { removed_entries, .. }` reports a count the renderer shows. What is it for a puzzle deletion whose file was already gone?
+* **Governs:** f-20260917-08
+* **Chosen:** 0 removed entries.
+* **Rejected:** the previous constant 1.
+* **Reason:** the count is shown to the user in the `PartialRemoval` message and must be true; `CommittedRemoval` requires the site to supply it. Reversal path: seed the count with 1 in the already-missing arm.
+* **Decided by:** Claude Code, drain session eed08af5-58ff-40a1-9aa7-f2b51f9b1321 (drain run 0ab86bf9-7e6e-42ce-b073-c494cb240f4f), full auto, adopted reviewed plan tasks/plans/2026-10-06-f-20260917-08-committed-removal.md · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":35,"effect_sha256":"a51574958d20a635893d06a50e27c6df1267094dabfd0dc9163c4c4dc4b93758","input_sha256":"5f94b42a2ae64e085864d96a1d35e76fa6c0ec9bc25289330c1de27a5290c216","kind":"mutation-receipt","operation":"e13031795389fda923ba917e3fe257c69fadee125fe91d6a1738767065f98c4f","options":{"section":null},"request_id_sha256":null,"results":["d-20261006-22","d-20261006-23","d-20261006-24","d-20261006-25"],"target":"decisions-ledger","v":1} -->
