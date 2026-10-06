@@ -5929,3 +5929,22 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** the only shape in which every owner sees the failure and no cancellation strands the child. Reversal path: remove the shared termination; the await-case verification goes red first.
 * **Decided by:** Claude Code, drain session a1330039-2a64-416c-babe-3eee05aac68a (drain run 0ab86bf9-7e6e-42ce-b073-c494cb240f4f), full auto, adopted reviewed plan tasks/plans/2026-10-06-aborted-publication-termination-owner.md · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":35,"effect_sha256":"0a8341e3cd81dc327a93c4e0589606ed1f900f4f327bdf2480b831acae02c2a2","input_sha256":"e7819d1edd4d23ef304246e4bd4ebfb76d0bb8173556cc916c33b95ff3d72970","kind":"mutation-receipt","operation":"3e380f0a0b4228b31894fd90286cc41473941d0e004e1065fa08fab9e2f26cd0","options":{"section":null},"request_id_sha256":null,"results":["d-20261006-16","d-20261006-17","d-20261006-18","d-20261006-19"],"target":"decisions-ledger","v":1} -->
+
+### d-20261006-20 — Who owns a published engine generation after `spawn_registered` returns?
+
+* **Question:** After `spawn_registered` publishes an engine generation and returns, who terminates that generation if the caller's future is dropped before its own `terminate_exact` — a guard returned to the caller, a guard each caller re-arms, or a supervisor-owned probing operation?
+* **Governs:** f-20260914-35, f-20260926-03
+* **Chosen:** the caller, through the armed `RegistrationGuard` that `initialize_admitted_actor` no longer disarms on success and that `spawn_registered` (and the test-only `initialize_registered_actor`) now return beside the `SupervisedEngine`. `get_engine_config` and `analyze_game_core` terminate through `terminate_now()`; game construction's `GameEngineConstruction::own` takes the returned guard instead of constructing a second one.
+* **Rejected:** each caller re-arming `RegistrationGuard::new` right after the return (`game.rs` already does; config probe and report analysis would be the second and third copy of one ownership step, rule 11, and a fourth caller could forget it); running the probe inside a supervisor-owned operation (`d-20260927-03` rejected an `OperationLease` wrapper and made `RegistrationGuard` the crate's one per-generation cancellation owner).
+* **Reason:** ownership by type — no successful return leaves a generation unowned at any await. The finding's worry that a drop guard "needs an owned asynchronous termination" does not apply: a `RegistrationGuard`'s generation stays registered until its spawned termination completes, so every drain (including `terminate_all` at exit) still reaches it (`d-20261006-17`). Reversal path: return `(SupervisedEngine, T)` again and re-arm per caller.
+* **Decided by:** Claude Code, drain session 242e290f-6c04-4b2d-b232-29a2961c45f0 (drain run 0ab86bf9-7e6e-42ce-b073-c494cb240f4f), full auto, adopted reviewed plan tasks/plans/2026-10-06-published-generation-guard-handoff.md · **Superseded-by:** -
+
+### d-20261006-21 — Does `f-20260926-03` (report analysis) join the `f-20260914-35` slice?
+
+* **Question:** Changing `spawn_registered`'s success value changes `EngineProcess::new`'s only input. Is `analyze_game_core`'s unowned published engine (`f-20260926-03`) fixed in the same slice?
+* **Governs:** f-20260914-35, f-20260926-03
+* **Chosen:** yes; `analyze_game_core` holds the returned guard across every await and terminates through it at both termination sites.
+* **Rejected:** disarming the returned guard at once in `EngineProcess::new` and leaving `f-20260926-03` open — a deliberately unowned span in the same file, area and defect class.
+* **Reason:** same file set and defect class; the slice is one signature change. Reversal path: none needed.
+* **Decided by:** Claude Code, drain session 242e290f-6c04-4b2d-b232-29a2961c45f0 (drain run 0ab86bf9-7e6e-42ce-b073-c494cb240f4f), full auto, adopted reviewed plan tasks/plans/2026-10-06-published-generation-guard-handoff.md · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":17,"effect_sha256":"d2410fee0bdcfff10f3753b93205a05317499e21df2f7c2fbcbec0713a550ad8","input_sha256":"4534604b22fd36b9cd2202cf4a9a203c95defc4bfb31eb6b025458f3eab55338","kind":"mutation-receipt","operation":"e679c56b619bb709d573d839a4c51e2e8357b366b53741e534ce291694dca4f6","options":{"section":null},"request_id_sha256":null,"results":["d-20261006-20","d-20261006-21"],"target":"decisions-ledger","v":1} -->
