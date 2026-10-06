@@ -4793,6 +4793,7 @@ mod blocking_offload_scans {
         let file_workspace = include_str!("file_workspace.rs");
         let db = include_str!("db/mod.rs");
         let search = include_str!("db/search.rs");
+        let pgn = include_str!("pgn.rs");
         for (file, source, name) in [
             (
                 "puzzle.rs",
@@ -4807,12 +4808,19 @@ mod blocking_offload_scans {
             ),
             ("file_workspace.rs", file_workspace, "trash_entry"),
             ("file_workspace.rs", file_workspace, "restore_entry"),
-            ("pgn.rs", include_str!("pgn.rs"), "scan_current_blocking"),
             (
-                "pgn.rs",
-                include_str!("pgn.rs"),
-                "count_pgn_games_core_blocking",
+                "file_workspace.rs",
+                file_workspace,
+                "count_installed_workspace_pgn",
             ),
+            ("pgn.rs", pgn, "scan_current_blocking"),
+            ("pgn.rs", pgn, "count_pgn_games_core_blocking"),
+            ("pgn.rs", pgn, "cached_scan"),
+            ("pgn.rs", pgn, "scan_file"),
+            ("pgn.rs", pgn, "scan_games_cancelled"),
+            ("pgn.rs", pgn, "observe_count_hook"),
+            ("pgn.rs", pgn, "count_from_games"),
+            ("pgn.rs", pgn, "count_after_scan"),
             ("db/search.rs", search, "load_search_index"),
             ("db/mod.rs", db, "generate_search_index"),
             ("db/mod.rs", db, "generate_search_index_locked"),

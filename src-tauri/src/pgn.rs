@@ -664,23 +664,36 @@ fn scan_file(
     Ok((key, games))
 }
 
+type ScanCacheLookup = (CacheKey, Option<Arc<[GameRange]>>);
+
+fn cached_scan(
+    snapshot: &crate::infra::path_authority::PgnSnapshot,
+    repository: &PgnRepository,
+    cancellation: &CancellationToken,
+) -> Result<ScanCacheLookup, Error> {
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
+    let key = snapshot_key(snapshot);
+    if let Some(games) = repository.get(&key)? {
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
+        return Ok((key, Some(games)));
+    }
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
+    Ok((key, None))
+}
+
 fn scan_current_blocking(
     snapshot: crate::infra::path_authority::PgnSnapshot,
     repository: &PgnRepository,
     cancellation: &CancellationToken,
 ) -> Result<(CacheKey, Arc<[GameRange]>), Error> {
-    if cancellation.is_cancelled() {
-        return Err(Error::Cancellation);
-    }
-    let key = snapshot_key(&snapshot);
-    if let Some(games) = repository.get(&key)? {
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancellation);
-        }
+    if let (key, Some(games)) = cached_scan(&snapshot, repository, cancellation)? {
         return Ok((key, games));
-    }
-    if cancellation.is_cancelled() {
-        return Err(Error::Cancellation);
     }
     #[cfg(test)]
     let scan_line_hook = repository.scan_line_hook()?;
@@ -708,18 +721,8 @@ async fn scan_current(
     repository: &PgnRepository,
     cancellation: &CancellationToken,
 ) -> Result<(CacheKey, Arc<[GameRange]>), Error> {
-    if cancellation.is_cancelled() {
-        return Err(Error::Cancellation);
-    }
-    let key = snapshot_key(&snapshot);
-    if let Some(games) = repository.get(&key)? {
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancellation);
-        }
+    if let (key, Some(games)) = cached_scan(&snapshot, repository, cancellation)? {
         return Ok((key, games));
-    }
-    if cancellation.is_cancelled() {
-        return Err(Error::Cancellation);
     }
     let repository = repository.clone();
     BLOCKING_GATEWAY
@@ -974,6 +977,18 @@ fn count_from_games(games: Arc<[GameRange]>) -> Result<i32, Error> {
         .map_err(|_| Error::ResourceLimit("PGN count exceeds IPC limit".into()))
 }
 
+fn count_after_scan(
+    key: CacheKey,
+    games: Arc<[GameRange]>,
+    cancellation: &CancellationToken,
+) -> Result<i32, Error> {
+    let _ = key;
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
+    count_from_games(games)
+}
+
 pub async fn count_pgn_games_core(
     resolved: crate::infra::path_authority::ResolvedPath,
     cancellation: &CancellationToken,
@@ -984,11 +999,7 @@ pub async fn count_pgn_games_core(
     }
     observe_count_hook(repository)?;
     let (key, games) = scan_current(resolved.pgn_snapshot()?, repository, cancellation).await?;
-    let _ = key;
-    if cancellation.is_cancelled() {
-        return Err(Error::Cancellation);
-    }
-    count_from_games(games)
+    count_after_scan(key, games, cancellation)
 }
 
 pub(crate) fn count_pgn_games_core_blocking(
@@ -1001,11 +1012,7 @@ pub(crate) fn count_pgn_games_core_blocking(
     }
     observe_count_hook(repository)?;
     let (key, games) = scan_current_blocking(snapshot, repository, cancellation)?;
-    let _ = key;
-    if cancellation.is_cancelled() {
-        return Err(Error::Cancellation);
-    }
-    count_from_games(games)
+    count_after_scan(key, games, cancellation)
 }
 
 #[tauri::command]
@@ -3454,8 +3461,11 @@ mod tests {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("timed.pgn");
         std::fs::write(&path, b"1. e4 *").expect("write PGN");
-        let file = File::open(&path).expect("open PGN");
-        file.set_modified(std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1))
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("open PGN")
+            .set_modified(std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1))
             .expect("set post-epoch mtime");
         let snapshot = snapshot_for(&directory, &path);
         assert!(snapshot.revision.mtime_nanos > 0);

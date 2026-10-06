@@ -1347,7 +1347,8 @@ fn windows_create_collision_is_already_exists() {
         !body.contains("windows_open_status_error"),
         "collision translation must not edit the shared mapper: {body}"
     );
-    let create_dir = compact(&source[braced_body(source, "pub(super) fn create_dir_at(")]);
+    let create_dir =
+        compact(&source[braced_body(source, "pub(super) fn create_dir_at_committed(")]);
     assert!(create_dir.contains("map_create_collision"), "{create_dir}");
     let create_regular = compact(&source[braced_body(source, "pub(super) fn create_regular_at(")]);
     assert!(
@@ -1439,8 +1440,14 @@ fn windows_recursive_removal_keeps_unix_containment() {
     let remove = compact(&source[braced_body(source, "pub(super) fn remove_entry_at(")]);
     assert!(remove.contains("Error::PartialRemoval"), "{remove}");
     assert!(
-        remove.contains("DurabilityStage::WorkspaceRemoval"),
+        remove.contains("sync_parent_after_workspace_removal(parent)"),
         "{remove}"
+    );
+    let parent_sync =
+        compact(&source[braced_body(source, "fn sync_parent_after_workspace_removal(")]);
+    assert!(
+        parent_sync.contains("DurabilityStage::WorkspaceRemoval"),
+        "{parent_sync}"
     );
     let enumerator = compact(&source[braced_body(source, "fn enumerated_kind(")]);
     assert!(

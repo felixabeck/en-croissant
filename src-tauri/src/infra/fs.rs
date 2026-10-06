@@ -3083,7 +3083,10 @@ mod win {
         )
     }
 
-    pub(super) fn create_dir_at(parent: &File, name: &OsStr) -> Result<AtomicFileOutcome, Error> {
+    pub(super) fn create_dir_at_committed(
+        parent: &File,
+        name: &OsStr,
+    ) -> Result<AtomicFileOutcome, Error> {
         drop(
             open_windows_child(
                 parent,
@@ -3099,6 +3102,24 @@ mod win {
         Ok(super::parent_sync_as_atomic_outcome(parent))
     }
 
+    fn unlink_windows_child_at(
+        parent: &File,
+        name: &OsStr,
+        expected: (u64, u64),
+        is_dir: bool,
+        access: u32,
+        before_unlink: impl FnOnce(&File) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        let opened = open_windows_child(parent, name, FILE_OPEN, access, null(), is_dir, true)?;
+        if opened_file_identity(&opened)? != expected {
+            return Err(Error::Conflict(
+                "workspace entry changed concurrently".into(),
+            ));
+        }
+        before_unlink(&opened)?;
+        unlink_posix(&opened)
+    }
+
     pub(super) fn remove_empty_directory_at(
         parent: &File,
         name: &OsStr,
@@ -3106,24 +3127,19 @@ mod win {
     ) -> Result<(), Error> {
         super::single_leaf(name)?;
         assert_entry_identity(parent, name, expected, true)?;
-        let opened = open_windows_child(
+        unlink_windows_child_at(
             parent,
             name,
-            FILE_OPEN,
+            expected,
+            true,
             child_delete_access(true),
-            null(),
-            true,
-            true,
+            |opened| {
+                if !enumerate_directory(opened, &CancellationToken::new(), None)?.is_empty() {
+                    return Err(Error::Conflict("workspace directory is not empty".into()));
+                }
+                Ok(())
+            },
         )?;
-        if opened_file_identity(&opened)? != expected {
-            return Err(Error::Conflict(
-                "workspace entry changed concurrently".into(),
-            ));
-        }
-        if !enumerate_directory(&opened, &CancellationToken::new(), None)?.is_empty() {
-            return Err(Error::Conflict("workspace directory is not empty".into()));
-        }
-        unlink_posix(&opened)?;
         super::sync_parent_after_workspace_removal(parent)
     }
 
@@ -3714,29 +3730,16 @@ mod win {
                 };
             }
         } else {
-            let opened = open_windows_child(
+            unlink_windows_child_at(
                 parent,
                 name,
-                FILE_OPEN,
-                child_delete_access(false),
-                null(),
+                expected,
                 false,
-                true,
+                child_delete_access(false),
+                |_| Ok(()),
             )?;
-            if opened_file_identity(&opened)? != expected {
-                return Err(Error::Conflict(
-                    "workspace entry changed concurrently".into(),
-                ));
-            }
-            unlink_posix(&opened)?;
         }
-        if let Err(error) = parent.sync_all() {
-            log::warn!("workspace removal parent sync failed: {error}");
-            return Err(Error::CommittedDurabilityUncertain(
-                crate::error::DurabilityStage::WorkspaceRemoval,
-            ));
-        }
-        Ok(())
+        super::sync_parent_after_workspace_removal(parent)
     }
 
     pub(super) fn remove_optional_regular_at(parent: &File, name: &OsStr) -> Result<(), Error> {
@@ -4526,16 +4529,6 @@ fn parent_sync_as_atomic_outcome(parent: &File) -> AtomicFileOutcome {
     }
 }
 
-fn map_create_dir_adapter(outcome: Result<AtomicFileOutcome, Error>) -> Result<(), Error> {
-    match outcome {
-        Ok(AtomicFileOutcome::DurableCommit) => Ok(()),
-        Ok(AtomicFileOutcome::CommittedDurabilityUncertain(error)) => {
-            Err(Error::Io(Box::new(error)))
-        }
-        Err(error) => Err(error),
-    }
-}
-
 /// Exclusive create-then-parent-sync. A successful create whose parent sync fails is a
 /// committed-uncertain outcome; a failed create is an ordinary error.
 #[must_use = "the directory may exist without a durable parent; decide what CommittedDurabilityUncertain means at this site"]
@@ -4553,12 +4546,18 @@ pub(crate) fn create_dir_at_committed(
     }
     #[cfg(windows)]
     {
-        win::create_dir_at(parent, name)
+        win::create_dir_at_committed(parent, name)
     }
 }
 
 pub(crate) fn create_dir_at(parent: &File, name: &OsStr) -> Result<(), Error> {
-    map_create_dir_adapter(create_dir_at_committed(parent, name))
+    match create_dir_at_committed(parent, name) {
+        Ok(AtomicFileOutcome::DurableCommit) => Ok(()),
+        Ok(AtomicFileOutcome::CommittedDurabilityUncertain(error)) => {
+            Err(Error::Io(Box::new(error)))
+        }
+        Err(error) => Err(error),
+    }
 }
 
 #[cfg(all(test, unix))]

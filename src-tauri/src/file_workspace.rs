@@ -226,6 +226,9 @@ fn join_cleanup(left: Result<(), Error>, right: Result<(), Error>) -> Result<(),
     }
 }
 
+/// Only objects this call created are removed, each checked against the identity it was created
+/// with; a replaced leaf is left in place and reported as a failed cleanup; every removal is
+/// attempted. `repository` is passed only after the count offered an index to the cache.
 fn rollback_created_workspace_file(
     parent: &fs::File,
     pgn_leaf: &OsStr,
@@ -247,8 +250,8 @@ fn rollback_created_workspace_file(
     join_cleanup(join_cleanup(sidecar_cleanup, pgn_cleanup), cache_cleanup)
 }
 
-fn unidentified_directory_cleanup() -> Error {
-    Error::InvalidInput("created directory could not be identified and was not removed".into())
+fn unidentified_directory_not_removed() -> Error {
+    Error::Conflict("created directory could not be identified and was not removed".into())
 }
 
 fn count_installed_workspace_pgn(
@@ -263,13 +266,6 @@ fn count_installed_workspace_pgn(
         file, identity,
     )?;
     pgn::count_pgn_games_core_blocking(snapshot, cancellation, repository)
-}
-
-fn first_uncertain_stage(
-    earlier: Option<crate::error::DurabilityStage>,
-    later: crate::error::DurabilityStage,
-) -> crate::error::DurabilityStage {
-    earlier.unwrap_or(later)
 }
 
 fn ensure_registered_descendant(
@@ -874,8 +870,9 @@ pub async fn create_workspace_file(
     .await
 }
 
-// This core deliberately mirrors the flat command boundary plus its two shared owners. Grouping
-// those values would introduce a one-off request type with no second consumer.
+// This core deliberately mirrors the flat command boundary plus its three shared owners (path
+// authority, mutation lock, PGN repository). Grouping those values would introduce a one-off
+// request type with no second consumer.
 #[allow(clippy::too_many_arguments)]
 fn create_workspace_file_blocking(
     workspace: FileWorkspaceHandle,
@@ -983,27 +980,23 @@ fn create_workspace_file_blocking(
         crate::error::DurabilityStage::WorkspacePgnCreation,
     );
     let info_leaf = sidecar_leaf(&target_leaf)?;
-    let sidecar = match crate::infra::fs::atomic_replace_at_identified_with_precommit(
-        parent_dir,
-        &info_leaf,
-        || Ok(()),
-        |file| {
+    let sidecar =
+        match crate::infra::fs::atomic_replace_at_identified(parent_dir, &info_leaf, |file| {
             use std::io::Write;
             file.write_all(&metadata_bytes).map_err(Error::from)
-        },
-    ) {
-        Ok(sidecar) => sidecar,
-        Err(error) => {
-            let cleanup = rollback_created_workspace_file(
-                parent_dir,
-                &target_leaf,
-                installed.identity,
-                None,
-                None,
-            );
-            return Err(Error::with_cleanup(error, cleanup));
-        }
-    };
+        }) {
+            Ok(sidecar) => sidecar,
+            Err(error) => {
+                let cleanup = rollback_created_workspace_file(
+                    parent_dir,
+                    &target_leaf,
+                    installed.identity,
+                    None,
+                    None,
+                );
+                return Err(Error::with_cleanup(error, cleanup));
+            }
+        };
     let sidecar_uncertainty = durability_uncertainty(
         sidecar.outcome,
         crate::error::DurabilityStage::WorkspaceSidecarCreation,
@@ -1038,10 +1031,9 @@ fn create_workspace_file_blocking(
     ) {
         Ok(handle) => handle,
         Err(Error::CommittedDurabilityUncertain(stage)) => {
-            return Err(Error::CommittedDurabilityUncertain(first_uncertain_stage(
-                pgn_uncertainty.or(sidecar_uncertainty),
-                stage,
-            )));
+            return Err(Error::CommittedDurabilityUncertain(
+                pgn_uncertainty.or(sidecar_uncertainty).unwrap_or(stage),
+            ));
         }
         Err(error) => {
             let cleanup = rollback_created_workspace_file(
@@ -1145,7 +1137,7 @@ fn create_workspace_directory_inner(
             Err(error) => {
                 return Err(Error::with_cleanup(
                     error,
-                    Err(unidentified_directory_cleanup()),
+                    Err(unidentified_directory_not_removed()),
                 ));
             }
         };
@@ -1160,10 +1152,9 @@ fn create_workspace_directory_inner(
     ) {
         Ok(handle) => handle,
         Err(Error::CommittedDurabilityUncertain(stage)) => {
-            return Err(Error::CommittedDurabilityUncertain(first_uncertain_stage(
-                directory_uncertainty,
-                stage,
-            )));
+            return Err(Error::CommittedDurabilityUncertain(
+                directory_uncertainty.unwrap_or(stage),
+            ));
         }
         Err(error) => {
             let cleanup =
@@ -2265,14 +2256,7 @@ mod tests {
         is_dir: bool,
     ) -> Result<WorkspaceEntry, Error> {
         if is_dir {
-            create_workspace_directory_inner(
-                workspace.clone(),
-                workspace.clone(),
-                "created".into(),
-                &state.pgn_path_authority,
-                &state.workspace_mutation,
-                &CancellationToken::new(),
-            )
+            create_named_directory(state, workspace, "created")
         } else {
             create_workspace_file_blocking(
                 workspace.clone(),
@@ -2326,6 +2310,21 @@ mod tests {
         )
     }
 
+    fn create_named_directory(
+        state: &AppState,
+        workspace: &FileWorkspaceHandle,
+        name: &str,
+    ) -> Result<WorkspaceEntry, Error> {
+        create_workspace_directory_inner(
+            workspace.clone(),
+            workspace.clone(),
+            name.into(),
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+            &CancellationToken::new(),
+        )
+    }
+
     fn resolve_created_pgn(
         state: &AppState,
         handle: &FileWorkspaceHandle,
@@ -2364,77 +2363,75 @@ mod tests {
         );
     }
 
-    struct FailAfterRenames {
-        skip: usize,
-        seen: AtomicUsize,
-    }
-
-    impl AtomicWriterInjector for FailAfterRenames {
-        fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
-            if point != AtomicFileFaultPoint::Rename {
-                return Ok(());
-            }
-            if self.seen.fetch_add(1, Ordering::SeqCst) < self.skip {
-                return Ok(());
-            }
-            Err(std::io::Error::other("registry persistence test failure"))
-        }
-    }
-
-    struct ParentSyncAfter {
-        skip: usize,
-        seen: AtomicUsize,
-    }
-
-    impl AtomicWriterInjector for ParentSyncAfter {
-        fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
-            if point != AtomicFileFaultPoint::ParentSync {
-                return Ok(());
-            }
-            if self.seen.fetch_add(1, Ordering::SeqCst) < self.skip {
-                return Ok(());
-            }
-            Err(std::io::Error::other("injected parent sync fault"))
-        }
-    }
-
-    struct ParentSyncOnly {
+    /// Counting injector for one atomic-file fault point.
+    ///
+    /// `index` is the 0-based hit count of `point` only. On a workspace file create the
+    /// Rename and ParentSync hits are 0 = PGN install, 1 = sidecar install, 2 = registry
+    /// persist. On a directory create they are 0 = directory create, then registry persist.
+    /// On a file rename, ParentSync 0 is the sidecar rewrite and Rename 1 is the registry
+    /// rebind.
+    struct FailAtFaultPoint {
+        point: AtomicFileFaultPoint,
         index: usize,
+        only: bool,
         seen: AtomicUsize,
     }
 
-    impl AtomicWriterInjector for ParentSyncOnly {
-        fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
-            if point != AtomicFileFaultPoint::ParentSync {
-                return Ok(());
+    impl FailAtFaultPoint {
+        fn fail_from(point: AtomicFileFaultPoint, skip: usize) -> Self {
+            Self {
+                point,
+                index: skip,
+                only: false,
+                seen: AtomicUsize::new(0),
             }
-            if self.seen.fetch_add(1, Ordering::SeqCst) == self.index {
-                return Err(std::io::Error::other("injected parent sync fault"));
+        }
+
+        fn fail_only(point: AtomicFileFaultPoint, index: usize) -> Self {
+            Self {
+                point,
+                index,
+                only: true,
+                seen: AtomicUsize::new(0),
             }
-            Ok(())
+        }
+
+        fn and(self, other: Self) -> FailAtFaultPoints {
+            FailAtFaultPoints {
+                first: self,
+                second: other,
+            }
         }
     }
 
-    struct UncertainPgnThenFailedRegistry {
-        parent_syncs: AtomicUsize,
-        renames: AtomicUsize,
+    impl AtomicWriterInjector for FailAtFaultPoint {
+        fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+            if point != self.point {
+                return Ok(());
+            }
+            let hit = self.seen.fetch_add(1, Ordering::SeqCst);
+            let fail = if self.only {
+                hit == self.index
+            } else {
+                hit >= self.index
+            };
+            if fail {
+                Err(std::io::Error::other("injected atomic-file fault"))
+            } else {
+                Ok(())
+            }
+        }
     }
 
-    impl AtomicWriterInjector for UncertainPgnThenFailedRegistry {
+    struct FailAtFaultPoints {
+        first: FailAtFaultPoint,
+        second: FailAtFaultPoint,
+    }
+
+    impl AtomicWriterInjector for FailAtFaultPoints {
         fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
-            match point {
-                AtomicFileFaultPoint::ParentSync
-                    if self.parent_syncs.fetch_add(1, Ordering::SeqCst) == 0 =>
-                {
-                    Err(std::io::Error::other("pgn parent sync uncertain"))
-                }
-                AtomicFileFaultPoint::Rename
-                    if self.renames.fetch_add(1, Ordering::SeqCst) >= 2 =>
-                {
-                    Err(std::io::Error::other("registry persistence test failure"))
-                }
-                _ => Ok(()),
-            }
+            self.first.inject(point)?;
+            self.second.inject(point)
         }
     }
 
@@ -3931,20 +3928,8 @@ mod tests {
     fn rename_workspace_file_reports_uncertain_sidecar_after_a_durable_rebind() {
         // Fails only the first parent sync, which is the sidecar rewrite; the registry rebind
         // that follows commits durably, so the `(Some(stage), Ok(()))` arm is the one exercised.
-        struct FirstParentSyncFault(std::sync::atomic::AtomicBool);
-        impl AtomicWriterInjector for FirstParentSyncFault {
-            fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
-                if point == AtomicFileFaultPoint::ParentSync
-                    && !self.0.swap(true, std::sync::atomic::Ordering::SeqCst)
-                {
-                    Err(std::io::Error::other("uncertain"))
-                } else {
-                    Ok(())
-                }
-            }
-        }
         let (_directory, state, root, handle, result) = rename_under_injector(Some(Arc::new(
-            FirstParentSyncFault(std::sync::atomic::AtomicBool::new(false)),
+            FailAtFaultPoint::fail_only(AtomicFileFaultPoint::ParentSync, 0),
         )));
         assert!(matches!(
             result,
@@ -3960,24 +3945,9 @@ mod tests {
     fn rename_workspace_file_lets_a_failed_rebind_outrank_the_sidecar_uncertainty() {
         // The sidecar rewrite loses its parent sync; the registry rebind that follows fails
         // outright at its rename, so the hard error is the one reported, not the uncertainty.
-        struct UncertainSidecarThenFailedRegistry(std::sync::atomic::AtomicBool);
-        impl AtomicWriterInjector for UncertainSidecarThenFailedRegistry {
-            fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
-                let sidecar_done = self.0.load(std::sync::atomic::Ordering::SeqCst);
-                match point {
-                    AtomicFileFaultPoint::ParentSync if !sidecar_done => {
-                        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
-                        Err(std::io::Error::other("uncertain"))
-                    }
-                    AtomicFileFaultPoint::Rename if sidecar_done => {
-                        Err(std::io::Error::other("registry rename failed"))
-                    }
-                    _ => Ok(()),
-                }
-            }
-        }
         let (_directory, _state, root, _handle, result) = rename_under_injector(Some(Arc::new(
-            UncertainSidecarThenFailedRegistry(std::sync::atomic::AtomicBool::new(false)),
+            FailAtFaultPoint::fail_only(AtomicFileFaultPoint::ParentSync, 0)
+                .and(FailAtFaultPoint::fail_from(AtomicFileFaultPoint::Rename, 1)),
         )));
         assert!(
             matches!(result, Err(Error::Io(_))),
@@ -4012,15 +3982,8 @@ mod tests {
         set_test_atomic_file_injector(Some(Arc::new(crate::infra::fs::ParentSyncFault(
             "uncertain",
         ))));
-        let error = create_workspace_directory_inner(
-            workspace.clone(),
-            workspace,
-            "created".into(),
-            &state.pgn_path_authority,
-            &state.workspace_mutation,
-            &CancellationToken::new(),
-        )
-        .expect_err("directory parent-sync uncertainty must be surfaced");
+        let error = create_named_directory(&state, &workspace, "created")
+            .expect_err("directory parent-sync uncertainty must be surfaced");
         set_test_atomic_file_injector(None);
         assert!(matches!(
             error,
@@ -4030,6 +3993,28 @@ mod tests {
         ));
         assert!(root.path().join("created").is_dir());
         assert!(registry_has_display_name(&directory, "created"));
+    }
+
+    #[test]
+    fn create_workspace_directory_create_parent_sync_uncertainty_is_reported_when_registry_is_durable(
+    ) {
+        let (directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
+        set_test_atomic_file_injector(Some(Arc::new(FailAtFaultPoint::fail_only(
+            AtomicFileFaultPoint::ParentSync,
+            0,
+        ))));
+        let error = create_named_directory(&state, &workspace, "dir-sync")
+            .expect_err("directory create parent-sync uncertainty must be surfaced");
+        set_test_atomic_file_injector(None);
+        assert!(matches!(
+            error,
+            Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::WorkspaceDirectoryCreation
+            )
+        ));
+        assert!(root.join("dir-sync").is_dir());
+        assert!(registry_has_display_name(&directory, "dir-sync"));
     }
 
     /// Fails the sidecar's rename, the second atomic rename of a workspace file creation; when
@@ -4109,10 +4094,10 @@ mod tests {
     fn create_workspace_file_rolls_back_an_ordinary_registration_failure() {
         let (directory, state, workspace) = workspace_state();
         let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
-        set_test_atomic_file_injector(Some(Arc::new(FailAfterRenames {
-            skip: 2,
-            seen: AtomicUsize::new(0),
-        })));
+        set_test_atomic_file_injector(Some(Arc::new(FailAtFaultPoint::fail_from(
+            AtomicFileFaultPoint::Rename,
+            2,
+        ))));
         let error = create_named_text(&state, &workspace, "reg-fail", "1. e4 *")
             .expect_err("ordinary registration failure");
         set_test_atomic_file_injector(None);
@@ -4139,10 +4124,10 @@ mod tests {
             fs::write(&replacement, b"keep-pgn-bytes").expect("replacement PGN");
             fs::rename(&replacement, &pgn).expect("replace installed PGN");
         })));
-        set_test_atomic_file_injector(Some(Arc::new(FailAfterRenames {
-            skip: 2,
-            seen: AtomicUsize::new(0),
-        })));
+        set_test_atomic_file_injector(Some(Arc::new(FailAtFaultPoint::fail_from(
+            AtomicFileFaultPoint::Rename,
+            2,
+        ))));
         let error = create_named_text(&state, &workspace, "keep-pgn", "1. e4 *")
             .expect_err("replaced PGN cannot be rolled back");
         set_workspace_created_child_pre_register_hook(None);
@@ -4169,10 +4154,10 @@ mod tests {
             fs::write(&replacement, b"keep-sidecar-bytes").expect("replacement sidecar");
             fs::rename(&replacement, &sidecar).expect("replace installed sidecar");
         })));
-        set_test_atomic_file_injector(Some(Arc::new(FailAfterRenames {
-            skip: 2,
-            seen: AtomicUsize::new(0),
-        })));
+        set_test_atomic_file_injector(Some(Arc::new(FailAtFaultPoint::fail_from(
+            AtomicFileFaultPoint::Rename,
+            2,
+        ))));
         let error = create_named_text(&state, &workspace, "keep-side", "1. e4 *")
             .expect_err("replaced sidecar cannot be rolled back");
         set_workspace_created_child_pre_register_hook(None);
@@ -4193,10 +4178,10 @@ mod tests {
     fn create_workspace_file_registry_parent_sync_uncertainty_keeps_the_entry() {
         let (directory, state, workspace) = workspace_state();
         let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
-        set_test_atomic_file_injector(Some(Arc::new(ParentSyncAfter {
-            skip: 2,
-            seen: AtomicUsize::new(0),
-        })));
+        set_test_atomic_file_injector(Some(Arc::new(FailAtFaultPoint::fail_from(
+            AtomicFileFaultPoint::ParentSync,
+            2,
+        ))));
         let error = create_named_text(&state, &workspace, "reg-sync", "*")
             .expect_err("registry parent-sync uncertainty");
         set_test_atomic_file_injector(None);
@@ -4206,6 +4191,7 @@ mod tests {
         ));
         assert!(root.join("reg-sync.pgn").is_file());
         assert!(root.join("reg-sync.info").is_file());
+        assert!(registry_has_display_name(&directory, "reg-sync"));
         let (entries, _) = collect_tree_entries(
             &state.pgn_path_authority,
             &workspace,
@@ -4217,16 +4203,15 @@ mod tests {
             .find(|entry| entry.name == "reg-sync")
             .expect("registered");
         resolve_created_pgn(&state, &created.handle);
-        assert!(registry_has_display_name(&directory, "reg-sync"));
     }
 
     #[test]
     fn create_workspace_file_sidecar_parent_sync_uncertainty_is_reported() {
-        let (_directory, state, workspace) = workspace_state();
-        set_test_atomic_file_injector(Some(Arc::new(ParentSyncOnly {
-            index: 1,
-            seen: AtomicUsize::new(0),
-        })));
+        let (directory, state, workspace) = workspace_state();
+        set_test_atomic_file_injector(Some(Arc::new(FailAtFaultPoint::fail_only(
+            AtomicFileFaultPoint::ParentSync,
+            1,
+        ))));
         let error = create_named_text(&state, &workspace, "side-sync", "*")
             .expect_err("sidecar parent-sync uncertainty");
         set_test_atomic_file_injector(None);
@@ -4236,22 +4221,16 @@ mod tests {
                 crate::error::DurabilityStage::WorkspaceSidecarCreation
             )
         ));
-        let (entries, _) = collect_tree_entries(
-            &state.pgn_path_authority,
-            &workspace,
-            &CancellationToken::new(),
-        )
-        .expect("list registered file");
-        assert!(entries.iter().any(|entry| entry.name == "side-sync"));
+        assert!(registry_has_display_name(&directory, "side-sync"));
     }
 
     #[test]
     fn create_workspace_file_sidecar_uncertainty_outranks_registry_uncertainty() {
-        let (_directory, state, workspace) = workspace_state();
-        set_test_atomic_file_injector(Some(Arc::new(ParentSyncAfter {
-            skip: 1,
-            seen: AtomicUsize::new(0),
-        })));
+        let (directory, state, workspace) = workspace_state();
+        set_test_atomic_file_injector(Some(Arc::new(FailAtFaultPoint::fail_from(
+            AtomicFileFaultPoint::ParentSync,
+            1,
+        ))));
         let error = create_named_text(&state, &workspace, "side-first", "*")
             .expect_err("sidecar outranks registry");
         set_test_atomic_file_injector(None);
@@ -4261,23 +4240,17 @@ mod tests {
                 crate::error::DurabilityStage::WorkspaceSidecarCreation
             )
         ));
-        let (entries, _) = collect_tree_entries(
-            &state.pgn_path_authority,
-            &workspace,
-            &CancellationToken::new(),
-        )
-        .expect("list registered file");
-        assert!(entries.iter().any(|entry| entry.name == "side-first"));
+        assert!(registry_has_display_name(&directory, "side-first"));
     }
 
     #[test]
     fn create_workspace_file_pgn_uncertainty_is_reported_when_later_steps_complete() {
-        let (_directory, state, workspace) = workspace_state();
+        let (directory, state, workspace) = workspace_state();
         let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
-        set_test_atomic_file_injector(Some(Arc::new(ParentSyncAfter {
-            skip: 0,
-            seen: AtomicUsize::new(0),
-        })));
+        set_test_atomic_file_injector(Some(Arc::new(FailAtFaultPoint::fail_from(
+            AtomicFileFaultPoint::ParentSync,
+            0,
+        ))));
         let error = create_named_text(&state, &workspace, "pgn-first", "*")
             .expect_err("PGN uncertainty is first");
         set_test_atomic_file_injector(None);
@@ -4289,23 +4262,40 @@ mod tests {
         ));
         assert!(root.join("pgn-first.pgn").is_file());
         assert!(root.join("pgn-first.info").is_file());
-        let (entries, _) = collect_tree_entries(
-            &state.pgn_path_authority,
-            &workspace,
-            &CancellationToken::new(),
-        )
-        .expect("list registered file");
-        assert!(entries.iter().any(|entry| entry.name == "pgn-first"));
+        assert!(registry_has_display_name(&directory, "pgn-first"));
+    }
+
+    #[test]
+    fn create_workspace_file_pgn_parent_sync_uncertainty_is_reported_when_later_steps_are_durable()
+    {
+        let (directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
+        set_test_atomic_file_injector(Some(Arc::new(FailAtFaultPoint::fail_only(
+            AtomicFileFaultPoint::ParentSync,
+            0,
+        ))));
+        let error = create_named_text(&state, &workspace, "pgn-sync", "*")
+            .expect_err("PGN parent-sync uncertainty");
+        set_test_atomic_file_injector(None);
+        assert!(matches!(
+            error,
+            Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::WorkspacePgnCreation
+            )
+        ));
+        assert!(root.join("pgn-sync.pgn").is_file());
+        assert!(root.join("pgn-sync.info").is_file());
+        assert!(registry_has_display_name(&directory, "pgn-sync"));
     }
 
     #[test]
     fn create_workspace_file_ordinary_registration_error_outranks_pgn_uncertainty() {
         let (_directory, state, workspace) = workspace_state();
         let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
-        set_test_atomic_file_injector(Some(Arc::new(UncertainPgnThenFailedRegistry {
-            parent_syncs: AtomicUsize::new(0),
-            renames: AtomicUsize::new(0),
-        })));
+        set_test_atomic_file_injector(Some(Arc::new(
+            FailAtFaultPoint::fail_only(AtomicFileFaultPoint::ParentSync, 0)
+                .and(FailAtFaultPoint::fail_from(AtomicFileFaultPoint::Rename, 2)),
+        )));
         let error = create_named_text(&state, &workspace, "combine", "*")
             .expect_err("ordinary error outranks uncertainty");
         set_test_atomic_file_injector(None);
@@ -4350,10 +4340,13 @@ mod tests {
         let (directory, state, workspace) = workspace_state();
         let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
         let pgn = root.join("o2.pgn");
+        let operations = state.operations.clone();
         state
             .pgn_repository
-            .set_create_post_register_hook(Some(Box::new(move |token| {
-                token.cancel();
+            .set_create_post_register_hook(Some(Box::new(move |_token| {
+                operations
+                    .seal_and_request_cancellation()
+                    .expect("cancel accepted operation");
                 let replacement = pgn.with_extension("swap");
                 fs::write(&replacement, b"replaced-after-register").expect("replacement");
                 fs::rename(&replacement, &pgn).expect("replace installed PGN");
@@ -4389,10 +4382,10 @@ mod tests {
             *captured_in_hook.lock().expect("identity") =
                 Some(enumerated_workspace_entry(&root_in_hook, "rolled.pgn").identity);
         })));
-        set_test_atomic_file_injector(Some(Arc::new(FailAfterRenames {
-            skip: 2,
-            seen: AtomicUsize::new(0),
-        })));
+        set_test_atomic_file_injector(Some(Arc::new(FailAtFaultPoint::fail_from(
+            AtomicFileFaultPoint::Rename,
+            2,
+        ))));
         create_named_text(&state, &workspace, "rolled", "1. e4 *")
             .expect_err("ordinary registration failure");
         set_workspace_created_child_pre_register_hook(None);
@@ -4500,19 +4493,12 @@ mod tests {
     fn create_workspace_directory_rolls_back_an_ordinary_registration_failure() {
         let (directory, state, workspace) = workspace_state();
         let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
-        set_test_atomic_file_injector(Some(Arc::new(FailAfterRenames {
-            skip: 0,
-            seen: AtomicUsize::new(0),
-        })));
-        let error = create_workspace_directory_inner(
-            workspace.clone(),
-            workspace,
-            "dir-fail".into(),
-            &state.pgn_path_authority,
-            &state.workspace_mutation,
-            &CancellationToken::new(),
-        )
-        .expect_err("ordinary directory registration failure");
+        set_test_atomic_file_injector(Some(Arc::new(FailAtFaultPoint::fail_from(
+            AtomicFileFaultPoint::Rename,
+            0,
+        ))));
+        let error = create_named_directory(&state, &workspace, "dir-fail")
+            .expect_err("ordinary directory registration failure");
         set_test_atomic_file_injector(None);
         assert!(
             !matches!(error, Error::OperationAndCleanup { .. }),
@@ -4530,19 +4516,12 @@ mod tests {
         set_workspace_created_child_pre_register_hook(Some(Box::new(move || {
             fs::write(&child, b"keep").expect("external file");
         })));
-        set_test_atomic_file_injector(Some(Arc::new(FailAfterRenames {
-            skip: 0,
-            seen: AtomicUsize::new(0),
-        })));
-        let error = create_workspace_directory_inner(
-            workspace.clone(),
-            workspace,
-            "dir-filled".into(),
-            &state.pgn_path_authority,
-            &state.workspace_mutation,
-            &CancellationToken::new(),
-        )
-        .expect_err("non-empty directory is not removed");
+        set_test_atomic_file_injector(Some(Arc::new(FailAtFaultPoint::fail_from(
+            AtomicFileFaultPoint::Rename,
+            0,
+        ))));
+        let error = create_named_directory(&state, &workspace, "dir-filled")
+            .expect_err("non-empty directory is not removed");
         set_workspace_created_child_pre_register_hook(None);
         set_test_atomic_file_injector(None);
         assert!(
@@ -4564,19 +4543,12 @@ mod tests {
             fs::rename(&target, target.with_file_name("dir-swap-saved")).expect("save observed");
             fs::create_dir(&target).expect("replacement empty directory");
         })));
-        set_test_atomic_file_injector(Some(Arc::new(FailAfterRenames {
-            skip: 0,
-            seen: AtomicUsize::new(0),
-        })));
-        let error = create_workspace_directory_inner(
-            workspace.clone(),
-            workspace,
-            "dir-swap".into(),
-            &state.pgn_path_authority,
-            &state.workspace_mutation,
-            &CancellationToken::new(),
-        )
-        .expect_err("replacement directory is not ours");
+        set_test_atomic_file_injector(Some(Arc::new(FailAtFaultPoint::fail_from(
+            AtomicFileFaultPoint::Rename,
+            0,
+        ))));
+        let error = create_named_directory(&state, &workspace, "dir-swap")
+            .expect_err("replacement directory is not ours");
         set_workspace_created_child_pre_register_hook(None);
         set_test_atomic_file_injector(None);
         assert!(
@@ -4596,19 +4568,12 @@ mod tests {
             fs::rename(&target, target.with_file_name("dir-file-saved")).expect("save observed");
             fs::write(&target, b"replacement-file").expect("replacement file");
         })));
-        set_test_atomic_file_injector(Some(Arc::new(FailAfterRenames {
-            skip: 0,
-            seen: AtomicUsize::new(0),
-        })));
-        let error = create_workspace_directory_inner(
-            workspace.clone(),
-            workspace,
-            "dir-file".into(),
-            &state.pgn_path_authority,
-            &state.workspace_mutation,
-            &CancellationToken::new(),
-        )
-        .expect_err("replacement file is not ours");
+        set_test_atomic_file_injector(Some(Arc::new(FailAtFaultPoint::fail_from(
+            AtomicFileFaultPoint::Rename,
+            0,
+        ))));
+        let error = create_named_directory(&state, &workspace, "dir-file")
+            .expect_err("replacement file is not ours");
         set_workspace_created_child_pre_register_hook(None);
         set_test_atomic_file_injector(None);
         assert!(
@@ -4629,15 +4594,8 @@ mod tests {
         crate::infra::fs::set_entry_observation_fault(Some(Error::from(std::io::Error::other(
             "injected observation",
         ))));
-        let injected = create_workspace_directory_inner(
-            workspace.clone(),
-            workspace.clone(),
-            "obs-fault".into(),
-            &state.pgn_path_authority,
-            &state.workspace_mutation,
-            &CancellationToken::new(),
-        )
-        .expect_err("injected observation");
+        let injected = create_named_directory(&state, &workspace, "obs-fault")
+            .expect_err("injected observation");
         crate::infra::fs::set_entry_observation_fault(None);
         assert!(
             matches!(injected, Error::OperationAndCleanup { .. }),
@@ -4653,15 +4611,8 @@ mod tests {
                 fs::remove_dir(&removed_path).expect("remove created directory");
             }));
         });
-        let removed = create_workspace_directory_inner(
-            workspace.clone(),
-            workspace.clone(),
-            "obs-gone".into(),
-            &state.pgn_path_authority,
-            &state.workspace_mutation,
-            &CancellationToken::new(),
-        )
-        .expect_err("missing directory observation");
+        let removed = create_named_directory(&state, &workspace, "obs-gone")
+            .expect_err("missing directory observation");
         WORKSPACE_CREATED_DIRECTORY_PRE_OBSERVE_HOOK.with(|slot| slot.borrow_mut().take());
         assert!(
             matches!(removed, Error::OperationAndCleanup { .. }),
@@ -4677,15 +4628,8 @@ mod tests {
                 fs::write(&replaced_path, b"obs-bytes").expect("replacement file");
             }));
         });
-        let replaced = create_workspace_directory_inner(
-            workspace.clone(),
-            workspace,
-            "obs-file".into(),
-            &state.pgn_path_authority,
-            &state.workspace_mutation,
-            &CancellationToken::new(),
-        )
-        .expect_err("replaced-by-file observation");
+        let replaced = create_named_directory(&state, &workspace, "obs-file")
+            .expect_err("replaced-by-file observation");
         WORKSPACE_CREATED_DIRECTORY_PRE_OBSERVE_HOOK.with(|slot| slot.borrow_mut().take());
         assert!(
             matches!(replaced, Error::OperationAndCleanup { .. }),
@@ -5168,7 +5112,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn create_workspace_file_count_cancellation_leaves_the_installed_file_and_sidecar() {
+    async fn create_workspace_file_count_cancellation_rolls_back_the_installed_file_and_sidecar() {
         let (directory, state, workspace) = workspace_state();
         let root = workspace_root(&state.pgn_path_authority, &workspace).expect("workspace root");
         let (hook, entered, release) = pgn::BoundedHook::new();
