@@ -5846,3 +5846,49 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** the finding's two gaps are the Rust row loop and the post-write window; both close with existing primitives, consistent with `d-20261004-14` and `d-20260908-13`. Reversal path: remove the `cancellation` parameters and the two checks.
 * **Decided by:** Claude Code, drain session f2814e4f-e203-4718-b690-2ff287b9f42b (drain run 0ab86bf9-7e6e-42ce-b073-c494cb240f4f), full auto, adopted reviewed plan tasks/plans/2026-10-06-export-cancellation.md · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"eaeb247e31dd9dcb2609120655cd7ff94456c8a8619a700bb83f9ba14c2bd1f2","input_sha256":"7e5f41c788579c079de46f2b6408e5978f4e64db608346fdff40ada164c16c22","kind":"mutation-receipt","operation":"ace262c6c1aa3d520aa57c515316b941b7f57243d2429f5c0145572e0d7701e6","options":{"section":null},"request_id_sha256":null,"results":["d-20261006-10"],"target":"decisions-ledger","v":1} -->
+
+### d-20261006-11 — Is a failed post-install engine-image removal persisted as a cleanup record, surfaced alongside the primary error, or both?
+
+* **Question:** When `issue_engine_image` installed a UUID leaf, a later step failed, and removing the leaf also failed, the helper logs the removal failure and returns only the original error; startup cleanup only visits persisted `image_cleanup` records, so the leaf is orphaned. Is the removal failure persisted as a cleanup record, surfaced to the caller, or both?
+* **Governs:** f-20260914-21
+* **Chosen:** both. The returned error becomes `Error::with_cleanup(original, Err(cleanup))` whose cleanup diagnostic names the leaf UUID, the removal failure and the intent outcome; where the path authority is held, a persisted `image_cleanup` intent makes the existing startup and shutdown `cleanup_engine_images` retry the removal.
+* **Rejected:** surface only (the orphan survives every restart); persist only (the error claims the operation's side effects were cleaned up when they were not).
+* **Reason:** each closes a different half of the finding. Supersedes the "A removal failure is logged" clause of `d-20260905-09` on evidence it did not weigh: a logged-only orphan is unreachable by every later cleanup, which only visits persisted records. The rest of `d-20260905-09` (cleanup bound to `Err`, identity-checked removal, at most one leaf per failed install, the original error never masked — it is the composed error's `primary`) stands. Reversal path: return `original` from `engine_image_error_after_cleanup` and drop the intent producer.
+* **Decided by:** Claude Code, drain session 2ae9236c-7bae-4665-8b5f-168eac087688 (drain run 0ab86bf9-7e6e-42ce-b073-c494cb240f4f), full auto, adopted reviewed plan tasks/plans/2026-10-06-engine-image-cleanup-intent.md · **Superseded-by:** -
+
+### d-20261006-12 — When the engine-image cleanup intent's registry write fails, is the in-memory intent rolled back?
+
+* **Question:** The cleanup intent is inserted into `image_cleanup` and then persisted. If the registry write fails, is the in-memory record rolled back (the reconcile path's convention) or kept?
+* **Governs:** f-20260914-21
+* **Chosen:** kept, with `registry_durability_pending` set; `cleanup_engine_images` re-saves a pending registry even when its set is unchanged (generalised `retry_registry_durability`), so a shutdown pass persists it. Admission refusals (and any error before the write starts) are rolled back.
+* **Rejected:** rollback on a write failure (drops the only route to the leaf when the likeliest companion failure, an unwritable registry, occurs).
+* **Reason:** a cleanup record never resolves as authority and cleanup acts only on identity agreement, so an unpersisted record cannot widen access; keeping admission refusals would bypass the registry bound. Reversal path: restore `image_cleanup` on every save `Err` and drop the generalised retry.
+* **Decided by:** Claude Code, drain session 2ae9236c-7bae-4665-8b5f-168eac087688 (drain run 0ab86bf9-7e6e-42ce-b073-c494cb240f4f), full auto, adopted reviewed plan tasks/plans/2026-10-06-engine-image-cleanup-intent.md · **Superseded-by:** -
+
+### d-20261006-13 — Is the engine-image cleanup intent written before or after the removal attempt?
+
+* **Question:** Is the `image_cleanup` intent for an installed, unregistered engine image written ahead of the unlink or only after the unlink failed?
+* **Governs:** f-20260914-21
+* **Chosen:** after, only when the removal failed.
+* **Rejected:** a write-ahead intent before the unlink (two registry saves on every failed registration, and it still does not cover the crash window before registration, which is `f-20261004-12`'s question).
+* **Reason:** the failing-removal path is the only one that needs a record. Reversal path: move the producer call ahead of `remove_leaf_identified`.
+* **Decided by:** Claude Code, drain session 2ae9236c-7bae-4665-8b5f-168eac087688 (drain run 0ab86bf9-7e6e-42ce-b073-c494cb240f4f), full auto, adopted reviewed plan tasks/plans/2026-10-06-engine-image-cleanup-intent.md · **Superseded-by:** -
+
+### d-20261006-14 — Is an engine-image removal whose unlink succeeded but whose parent sync failed a cleanup failure?
+
+* **Question:** `remove_entry_at` returns `CommittedDurabilityUncertain(WorkspaceRemoval)` after a successful unlink when the parent-directory sync fails. Is that a failed cleanup that is surfaced and recorded?
+* **Governs:** f-20260914-21
+* **Chosen:** no — it counts as removed: a warning naming the leaf UUID is logged, no intent is recorded, and the original error is returned unchanged. A missing entry (`Error::is_missing_entry`) also counts as removed.
+* **Rejected:** surfacing it as "cleanup also failed" and recording an intent (the entry is gone; the intent would only be dropped as missing at startup and the report would be false).
+* **Reason:** consistent with `d-20260830-04` / `d-20260906-03`, which treat a committed step with uncertain durability as committed. Reversal path: classify `CommittedDurabilityUncertain` as a removal failure in `engine_image_error_after_cleanup`.
+* **Decided by:** Claude Code, drain session 2ae9236c-7bae-4665-8b5f-168eac087688 (drain run 0ab86bf9-7e6e-42ce-b073-c494cb240f4f), full auto, adopted reviewed plan tasks/plans/2026-10-06-engine-image-cleanup-intent.md · **Superseded-by:** -
+
+### d-20261006-15 — Does the engine-image cleanup helper keep its own error log once the removal failure is part of the returned error?
+
+* **Question:** `engine_image_error_after_cleanup` logs a removal failure with `log::error!`. Once that failure is part of the returned error, does the helper keep its own log line?
+* **Governs:** f-20260914-21
+* **Chosen:** no — the composed error's cleanup diagnostic names the leaf UUID, the removal failure and the intent outcome, and `run_native_operation` already logs `error.diagnostic()` for every non-cancellation failure, so the failure is logged once at the boundary. The helper keeps only the warning for the unlinked-but-unsynced case, which is not returned.
+* **Rejected:** keeping the helper log (the same failure logged twice).
+* **Reason:** one log line per failure at the native operation boundary. Reversal path: re-add the `log::error!` in the helper.
+* **Decided by:** Claude Code, drain session 2ae9236c-7bae-4665-8b5f-168eac087688 (drain run 0ab86bf9-7e6e-42ce-b073-c494cb240f4f), full auto, adopted reviewed plan tasks/plans/2026-10-06-engine-image-cleanup-intent.md · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":44,"effect_sha256":"52dc6e50710a0056a24311fbbe0abae40062bd720b5f966a232171639a4bac85","input_sha256":"4c4f36866edfdc7b4eb24dfecd78dea2255c0fa4a392f248b1903bc2313fbb7f","kind":"mutation-receipt","operation":"ea8d080e980bfe443a866c9abbe4b1478790deb03620bbd4a22914b510c77003","options":{"section":null},"request_id_sha256":null,"results":["d-20261006-11","d-20261006-12","d-20261006-13","d-20261006-14","d-20261006-15"],"target":"decisions-ledger","v":1} -->
