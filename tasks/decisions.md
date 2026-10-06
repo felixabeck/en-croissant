@@ -5892,3 +5892,40 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** one log line per failure at the native operation boundary. Reversal path: re-add the `log::error!` in the helper.
 * **Decided by:** Claude Code, drain session 2ae9236c-7bae-4665-8b5f-168eac087688 (drain run 0ab86bf9-7e6e-42ce-b073-c494cb240f4f), full auto, adopted reviewed plan tasks/plans/2026-10-06-engine-image-cleanup-intent.md · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":44,"effect_sha256":"52dc6e50710a0056a24311fbbe0abae40062bd720b5f966a232171639a4bac85","input_sha256":"4c4f36866edfdc7b4eb24dfecd78dea2255c0fa4a392f248b1903bc2313fbb7f","kind":"mutation-receipt","operation":"ea8d080e980bfe443a866c9abbe4b1478790deb03620bbd4a22914b510c77003","options":{"section":null},"request_id_sha256":null,"results":["d-20261006-11","d-20261006-12","d-20261006-13","d-20261006-14","d-20261006-15"],"target":"decisions-ledger","v":1} -->
+
+### d-20261006-16 — Who owns the termination of an engine actor whose publication is aborted?
+
+* **Question:** A spawned engine actor whose publication is aborted is terminated by a detached task from `PendingActorGuard::drop` that no drain awaits. Is that termination owned by the supervisor (a pending-actor set the drains await) or performed inline by the caller, with the `Drop` backstop reduced to a logged invariant violation?
+* **Governs:** f-20260914-34
+* **Chosen:** a supervisor-owned pending-actor set keyed by admission generation; `terminate_all`, `terminate_tab` and `retire_matching` drain and await matching pending entries next to registered actors, through one shared drain. The dropped-publisher `Drop` still starts the termination early but no longer owns it alone.
+* **Rejected:** inline termination by the caller with the `Drop` reduced to a log (every rejection is already inline; the guard fires only on a dropped future where no caller remains, so logging would leak the child, against `d-20260927-07`); a `tokio_util::task::TaskTracker` of termination tasks (cannot be filtered by tab or engine, does not cover a live inline rejection racing exit).
+* **Reason:** the drains are the only owners every exit path reaches, and application exit already awaits `terminate_all` inside `SHUTDOWN_BUDGET`. Reversal path: remove the set and the drains' pending half.
+* **Decided by:** Claude Code, drain session a1330039-2a64-416c-babe-3eee05aac68a (drain run 0ab86bf9-7e6e-42ce-b073-c494cb240f4f), full auto, adopted reviewed plan tasks/plans/2026-10-06-aborted-publication-termination-owner.md · **Superseded-by:** -
+
+### d-20261006-17 — Is `RegistrationGuard`'s spawned cleanup merged with the pending-actor guard?
+
+* **Question:** `RegistrationGuard::drop` also spawns a cleanup task. Is it routed through the same mechanism as the pending-actor guard?
+* **Governs:** f-20260914-34
+* **Chosen:** no. Its actor is already registered in `actors`, every drain reaches it there, and drains already await it through the per-key lifecycle lease.
+* **Rejected:** one generic "spawn cleanup from Drop" helper — the two share only the spawn-and-log call, not an ownership model (rule 11's coincidental-resemblance exception).
+* **Reason:** different ownership models. Reversal path: route both through one helper if a third guard of either shape appears.
+* **Decided by:** Claude Code, drain session a1330039-2a64-416c-babe-3eee05aac68a (drain run 0ab86bf9-7e6e-42ce-b073-c494cb240f4f), full auto, adopted reviewed plan tasks/plans/2026-10-06-aborted-publication-termination-owner.md · **Superseded-by:** -
+
+### d-20261006-18 — Do exact single-generation terminations drain the pending-actor set?
+
+* **Question:** Do `terminate_exact`, `release_generation` and `kill_engine` also terminate a matching pending (spawned, unpublished) actor?
+* **Governs:** f-20260914-34
+* **Chosen:** no; a reserved-but-unpublished generation on `kill_engine` is owned by `f-20260914-23`.
+* **Rejected:** widening `terminate_exact` here, which would change that finding's mandate without its review.
+* **Reason:** keeps each finding's mandate intact. Reversal path: add the pending half to `terminate_exact` under `f-20260914-23`.
+* **Decided by:** Claude Code, drain session a1330039-2a64-416c-babe-3eee05aac68a (drain run 0ab86bf9-7e6e-42ce-b073-c494cb240f4f), full auto, adopted reviewed plan tasks/plans/2026-10-06-aborted-publication-termination-owner.md · **Superseded-by:** -
+
+### d-20261006-19 — How do a drain, an inline rejection and a dropped publisher's cleanup share one pending actor's termination?
+
+* **Question:** Several owners (inline rejection, a drain, a dropped publisher) can need the same pending actor terminated concurrently. How is the termination and its result shared?
+* **Governs:** f-20260914-34
+* **Chosen:** one entry-owned termination task per pending entry, started by the first owner and attached to by the others; no owner's cancellation interrupts it; it calls `EngineActor::terminate` exactly once, logs a failure with key and generation, records the result and removes the entry. Every owner receives an error equivalent to the original on `category()`, `Display`/serialized message, `diagnostic()` and `root_failure()`, through one internal `Arc`-sharing `Error` representation with unchanged payload and `specta::Type`.
+* **Rejected:** each owner calling `EngineActor::terminate` independently (a second concurrent caller gets `EngineDisconnected`, mapped to `Ok`, so a drain racing a failed cleanup reports success); a termination run inside the starting owner's future with takeover (after `Terminate` was sent the failure reaches only the original reply); extending result sharing to registered actors (`f-20260927-01` / `f-20261001-14`).
+* **Reason:** the only shape in which every owner sees the failure and no cancellation strands the child. Reversal path: remove the shared termination; the await-case verification goes red first.
+* **Decided by:** Claude Code, drain session a1330039-2a64-416c-babe-3eee05aac68a (drain run 0ab86bf9-7e6e-42ce-b073-c494cb240f4f), full auto, adopted reviewed plan tasks/plans/2026-10-06-aborted-publication-termination-owner.md · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":35,"effect_sha256":"0a8341e3cd81dc327a93c4e0589606ed1f900f4f327bdf2480b831acae02c2a2","input_sha256":"e7819d1edd4d23ef304246e4bd4ebfb76d0bb8173556cc916c33b95ff3d72970","kind":"mutation-receipt","operation":"3e380f0a0b4228b31894fd90286cc41473941d0e004e1065fa08fab9e2f26cd0","options":{"section":null},"request_id_sha256":null,"results":["d-20261006-16","d-20261006-17","d-20261006-18","d-20261006-19"],"target":"decisions-ledger","v":1} -->
