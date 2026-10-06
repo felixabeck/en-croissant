@@ -13345,3 +13345,16 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
 * **Why it matters:** One test-support contract with many hand-rolled variants: a reader cannot tell which sites are panic-safe, and the next test author copies whichever variant is nearest.
 * **Change:** Route every install/reset pair through `crate::infra::fs::install_test_atomic_file_injector` (keep the returned guard alive for the injected scope, drop it explicitly where the test asserts after the injected call), delete the private guard types, and leave no direct `set_test_atomic_file_injector(None)` outside `infra/fs.rs`'s guard. Proof: `cargo test --manifest-path src-tauri/Cargo.toml`, clippy `--all-targets -D warnings`, `pnpm rust:windows:check` (cfg-gated sites).
 * **Found by:** orchestrator (Claude Code), 2026-10-06, while arbitrating the `review-minimalism` finding on the f-20260914-18 cumulative diff (drain session f2814e4f-e203-4718-b690-2ff287b9f42b); the write leaf reported the remaining copies in `infra/blocking.rs` and `error.rs` as outside its file set. Pre-existing pattern; not this run's area beyond the three files it consolidated.
+
+---
+
+## 2026-10-06 — filed through the inbox spool
+
+### Game and chess tests still copy the platform-gated engine-test PathAuthority construction instead of `PathAuthority::open_for_engine_test`
+
+* **ID:** f-20261006-06 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Filed from:** a1330039-2a64-416c-babe-3eee05aac68a
+* **Where:** `src-tauri/src/game.rs` tests (~3743, ~4051, ~4207: `#[cfg(target_os = "macos")] PathAuthority::open_with_launch_root(dir/"registry.json", Vec::new(), EngineLaunchRoot::for_test(dir).unwrap())` / otherwise `PathAuthority::open(dir/"registry.json", Vec::new())`); `src-tauri/src/chess.rs` tests (~2209); the shared helper `PathAuthority::open_for_engine_test` in `src-tauri/src/infra/path_authority/mod.rs` (added in `df56aad8`).
+* **Defect:** the f-20260914-34 diff review (closure round 2, `review-minimalism`, confidence 94) found the engine-test authority construction copied across tests; `df56aad8` extracted `PathAuthority::open_for_engine_test` and routed the three exact copies in `engine/process.rs`. The copies in `game.rs` and `chess.rs` were not routed, because that run had not loaded those files (rule 4b). Variants that reuse a separately built launch root (`game.rs` ~4119, `main.rs` ~3263/~3309) keep their own construction.
+* **Fix:** route every copy of exactly that shape in `game.rs` and `chess.rs` tests through `PathAuthority::open_for_engine_test(directory.path()).unwrap()`, keeping variants whose launch root is used later; prove with `cargo clippy --all-targets -D warnings`, `cargo test` and `pnpm rust:windows:check`.
+* **Found by:** Codex `review-minimalism` diff lens, f-20260914-34 drain build (closure round 2), 2026-10-06; source verified by the orchestrator.
