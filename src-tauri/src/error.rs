@@ -1014,53 +1014,38 @@ mod tests {
 
     #[test]
     fn every_durability_label_serializes_without_native_diagnostics() {
-        let stages = [
-            DurabilityStage::ArchiveCommitMarker,
-            DurabilityStage::ArchiveReservationJournal,
-            DurabilityStage::DatabasePgnReplacement,
-            DurabilityStage::DirectoryInstall,
-            DurabilityStage::DownloadTargetReplacement,
-            DurabilityStage::NativeExport,
-            DurabilityStage::OldDirectoryCleanup,
-            DurabilityStage::OldDirectoryCleanupSync,
-            DurabilityStage::PgnEdit,
-            DurabilityStage::PgnCacheInvalidation,
-            DurabilityStage::PgnCapabilityRebind,
-            DurabilityStage::RegistryReplacement,
-            DurabilityStage::SearchIndexReplacement,
-            DurabilityStage::WorkspaceDirectoryCreation,
-            DurabilityStage::WorkspacePgnCreation,
-            DurabilityStage::WorkspaceRemoval,
-            DurabilityStage::WorkspaceSidecarCreation,
-            DurabilityStage::WorkspaceSidecarReplacement,
-            DurabilityStage::PracticePositions,
-            DurabilityStage::PracticeReviewShard,
-            DurabilityStage::PracticeState,
+        // An unlisted durability stage fails to compile.
+        macro_rules! durability_stages {
+            ($($variant:ident),* $(,)?) => {{
+                let _exhaustive = |stage: DurabilityStage| match stage {
+                    $(DurabilityStage::$variant)|* => (),
+                };
+                [$(DurabilityStage::$variant),*]
+            }};
+        }
+        let stages = durability_stages![
+            ArchiveCommitMarker,
+            ArchiveReservationJournal,
+            DatabasePgnReplacement,
+            DirectoryInstall,
+            DownloadTargetReplacement,
+            NativeExport,
+            OldDirectoryCleanup,
+            OldDirectoryCleanupSync,
+            PgnEdit,
+            PgnCacheInvalidation,
+            PgnCapabilityRebind,
+            RegistryReplacement,
+            SearchIndexReplacement,
+            WorkspaceDirectoryCreation,
+            WorkspacePgnCreation,
+            WorkspaceRemoval,
+            WorkspaceSidecarCreation,
+            WorkspaceSidecarReplacement,
+            PracticePositions,
+            PracticeReviewShard,
+            PracticeState,
         ];
-        // A new stage must be added to both the array and this exhaustive match.
-        let _exhaustive = |stage: DurabilityStage| match stage {
-            DurabilityStage::ArchiveCommitMarker
-            | DurabilityStage::ArchiveReservationJournal
-            | DurabilityStage::DatabasePgnReplacement
-            | DurabilityStage::DirectoryInstall
-            | DurabilityStage::DownloadTargetReplacement
-            | DurabilityStage::NativeExport
-            | DurabilityStage::OldDirectoryCleanup
-            | DurabilityStage::OldDirectoryCleanupSync
-            | DurabilityStage::PgnEdit
-            | DurabilityStage::PgnCacheInvalidation
-            | DurabilityStage::PgnCapabilityRebind
-            | DurabilityStage::RegistryReplacement
-            | DurabilityStage::SearchIndexReplacement
-            | DurabilityStage::WorkspaceDirectoryCreation
-            | DurabilityStage::WorkspacePgnCreation
-            | DurabilityStage::WorkspaceRemoval
-            | DurabilityStage::WorkspaceSidecarCreation
-            | DurabilityStage::WorkspaceSidecarReplacement
-            | DurabilityStage::PracticePositions
-            | DurabilityStage::PracticeReviewShard
-            | DurabilityStage::PracticeState => (),
-        };
         for stage in stages {
             let error = Error::CommittedDurabilityUncertain(stage);
             let serialized = serde_json::to_string(&error).expect("serialize durability error");
