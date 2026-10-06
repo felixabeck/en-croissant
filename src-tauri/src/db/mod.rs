@@ -801,16 +801,6 @@ fn seed_search_cache_for_database(
 }
 
 #[cfg(test)]
-struct AtomicInjectorReset;
-
-#[cfg(test)]
-impl Drop for AtomicInjectorReset {
-    fn drop(&mut self) {
-        crate::infra::fs::set_test_atomic_file_injector(None);
-    }
-}
-
-#[cfg(test)]
 struct FailAtomicExportAt(crate::infra::fs::AtomicFileFaultPoint);
 
 #[cfg(test)]
@@ -827,9 +817,8 @@ impl crate::infra::fs::AtomicWriterInjector for FailAtomicExportAt {
 #[cfg(test)]
 fn install_atomic_export_failure(
     point: crate::infra::fs::AtomicFileFaultPoint,
-) -> AtomicInjectorReset {
-    crate::infra::fs::set_test_atomic_file_injector(Some(Arc::new(FailAtomicExportAt(point))));
-    AtomicInjectorReset
+) -> crate::infra::fs::AtomicInjectorReset {
+    crate::infra::fs::install_test_atomic_file_injector(Arc::new(FailAtomicExportAt(point)))
 }
 
 #[tauri::command]
@@ -7000,31 +6989,6 @@ mod tests {
         }
     }
 
-    struct CancelAtomicExportAt {
-        point: crate::infra::fs::AtomicFileFaultPoint,
-        cancellation: CancellationToken,
-    }
-
-    impl crate::infra::fs::AtomicWriterInjector for CancelAtomicExportAt {
-        fn inject(&self, point: crate::infra::fs::AtomicFileFaultPoint) -> std::io::Result<()> {
-            if point == self.point {
-                self.cancellation.cancel();
-            }
-            Ok(())
-        }
-    }
-
-    fn install_atomic_export_cancellation(
-        point: crate::infra::fs::AtomicFileFaultPoint,
-        cancellation: &CancellationToken,
-    ) -> AtomicInjectorReset {
-        crate::infra::fs::set_test_atomic_file_injector(Some(Arc::new(CancelAtomicExportAt {
-            point,
-            cancellation: cancellation.clone(),
-        })));
-        AtomicInjectorReset
-    }
-
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn export_to_pgn_command_shutdown_cancel_reaches_the_worker() {
         let (dir, app, handle, database) = blocking_database_case();
@@ -7114,10 +7078,13 @@ mod tests {
         let destination = grant_pgn_destination(&app, &destination_path);
         let cancellation = CancellationToken::new();
         let state = app.state::<AppState>();
-        let injector = install_atomic_export_cancellation(
-            crate::infra::fs::AtomicFileFaultPoint::FileSync,
-            &cancellation,
-        );
+        let injector = crate::infra::fs::install_test_atomic_file_injector(Arc::new(
+            crate::infra::fs::CancelAtomicFileAt {
+                cancel_at: crate::infra::fs::AtomicFileFaultPoint::FileSync,
+                fail_at: None,
+                cancellation: cancellation.clone(),
+            },
+        ));
         let result = export_to_pgn_blocking(
             &state.pgn_path_authority,
             &state.database_repository,
@@ -7133,6 +7100,48 @@ mod tests {
     }
 
     #[test]
+    fn export_cancellation_with_cleanup_failure_preserves_both_errors_and_destination() {
+        use crate::infra::fs::{
+            install_test_atomic_file_injector, AtomicFileFaultPoint, CancelAtomicFileAt,
+        };
+
+        let (dir, app, handle, database) = blocking_database_case();
+        insert_named_game(&app, &database, "White", "Black", "Event", "Site");
+        let destination_path = dir.path().join("export.pgn");
+        std::fs::write(&destination_path, b"old").unwrap();
+        let destination = grant_pgn_destination(&app, &destination_path);
+        let cancellation = CancellationToken::new();
+        let state = app.state::<AppState>();
+        let injector = install_test_atomic_file_injector(Arc::new(CancelAtomicFileAt {
+            cancel_at: AtomicFileFaultPoint::FileSync,
+            fail_at: Some(AtomicFileFaultPoint::Cleanup),
+            cancellation: cancellation.clone(),
+        }));
+        let result = export_to_pgn_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle,
+            destination,
+            &cancellation,
+        );
+        drop(injector);
+        assert!(cancellation.is_cancelled());
+        assert_eq!(std::fs::read(&destination_path).unwrap(), b"old");
+        // The cleanup injection reports failure, but the real unlink still removes the temporary.
+        assert_no_atomic_export_residue(dir.path());
+        match result {
+            Err(Error::OperationAndCleanup { primary, cleanup }) => {
+                assert_eq!(primary, Error::Cancellation.to_string());
+                assert_eq!(
+                    cleanup,
+                    Error::from(std::io::Error::other("injected Cleanup failure")).to_string()
+                );
+            }
+            other => panic!("expected cancellation and cleanup failure, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn export_cancellation_after_precommit_reports_complete_published_destination() {
         let (dir, app, handle, database) = blocking_database_case();
         insert_named_game(&app, &database, "First", "Black", "Event", "Site");
@@ -7142,10 +7151,13 @@ mod tests {
         let destination = grant_pgn_destination(&app, &destination_path);
         let cancellation = CancellationToken::new();
         let state = app.state::<AppState>();
-        let injector = install_atomic_export_cancellation(
-            crate::infra::fs::AtomicFileFaultPoint::TempMetadata,
-            &cancellation,
-        );
+        let injector = crate::infra::fs::install_test_atomic_file_injector(Arc::new(
+            crate::infra::fs::CancelAtomicFileAt {
+                cancel_at: crate::infra::fs::AtomicFileFaultPoint::TempMetadata,
+                fail_at: None,
+                cancellation: cancellation.clone(),
+            },
+        ));
         let result = export_to_pgn_blocking(
             &state.pgn_path_authority,
             &state.database_repository,

@@ -471,6 +471,45 @@ pub(crate) fn set_test_atomic_file_injector(
 }
 
 #[cfg(test)]
+pub(crate) struct AtomicInjectorReset;
+
+#[cfg(test)]
+impl Drop for AtomicInjectorReset {
+    fn drop(&mut self) {
+        set_test_atomic_file_injector(None);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn install_test_atomic_file_injector(
+    injector: Arc<dyn AtomicWriterInjector + Send + Sync>,
+) -> AtomicInjectorReset {
+    set_test_atomic_file_injector(Some(injector));
+    AtomicInjectorReset
+}
+
+#[cfg(all(test, unix))]
+pub(crate) struct CancelAtomicFileAt {
+    pub(crate) cancel_at: AtomicFileFaultPoint,
+    pub(crate) fail_at: Option<AtomicFileFaultPoint>,
+    pub(crate) cancellation: CancellationToken,
+}
+
+#[cfg(all(test, unix))]
+impl AtomicWriterInjector for CancelAtomicFileAt {
+    fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+        if point == self.cancel_at {
+            self.cancellation.cancel();
+        }
+        if Some(point) == self.fail_at {
+            Err(std::io::Error::other(format!("injected {point:?} failure")))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn current_test_atomic_file_injector(
 ) -> Option<Arc<dyn AtomicWriterInjector + Send + Sync>> {
     TEST_ATOMIC_FILE_INJECTOR.with(|current| current.borrow().clone())
@@ -480,6 +519,18 @@ pub(crate) fn current_test_atomic_file_injector(
 fn io(err: std::io::Error) -> Error {
     Error::Io(Box::new(err))
 }
+
+#[cfg(any(unix, windows))]
+fn operation_and_cleanup_error(temp_name: &OsStr, primary: Error, cleanup: Error) -> Error {
+    log::error!(
+        "atomic replacement failed: {primary}; temporary {temp_name:?} cleanup failed: {cleanup}"
+    );
+    Error::OperationAndCleanup {
+        primary: primary.to_string(),
+        cleanup: cleanup.to_string(),
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn inject_atomic_file(point: AtomicFileFaultPoint) -> Result<(), Error> {
     current_test_atomic_file_injector()
@@ -1692,15 +1743,7 @@ mod unix {
             .map(|error| io(error.into()));
         match injected.or(unlink) {
             None => primary,
-            Some(cleanup) => {
-                log::error!(
-                    "atomic replacement failed: {primary}; temporary cleanup failed: {cleanup}"
-                );
-                Error::OperationAndCleanup {
-                    primary: primary.to_string(),
-                    cleanup: cleanup.to_string(),
-                }
-            }
+            Some(cleanup) => operation_and_cleanup_error(temp, primary, cleanup),
         }
     }
 
@@ -3764,7 +3807,7 @@ mod win {
         unlink_posix(&opened)
     }
 
-    fn cleanup(temp: &mut File, primary: Error) -> Error {
+    fn cleanup(temp: &mut File, temp_name: &OsStr, primary: Error) -> Error {
         #[cfg(test)]
         let injected = inject_atomic_file(AtomicFileFaultPoint::Cleanup).err();
         #[cfg(not(test))]
@@ -3772,15 +3815,7 @@ mod win {
         let removal = injected.or_else(|| delete_temp(temp).err());
         match removal {
             None => primary,
-            Some(cleanup) => {
-                log::error!(
-                    "atomic replacement failed: {primary}; temporary cleanup failed: {cleanup}"
-                );
-                Error::OperationAndCleanup {
-                    primary: primary.to_string(),
-                    cleanup: cleanup.to_string(),
-                }
-            }
+            Some(cleanup) => operation_and_cleanup_error(temp_name, primary, cleanup),
         }
     }
 
@@ -4046,11 +4081,11 @@ mod win {
         fn cleanup(
             &self,
             _dir: &File,
-            _temp_name: &OsStr,
+            temp_name: &OsStr,
             temp: &mut File,
             primary: Error,
         ) -> Error {
-            cleanup(temp, primary)
+            cleanup(temp, temp_name, primary)
         }
     }
 

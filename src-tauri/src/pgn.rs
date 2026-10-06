@@ -1243,16 +1243,8 @@ async fn commit_pgn_mutation(
                 hook.notify_and_wait();
             }
             #[cfg(test)]
-            let _injector_guard = atomic_injector.map(|inj| {
-                crate::infra::fs::set_test_atomic_file_injector(Some(inj));
-                struct InjectorGuard;
-                impl Drop for InjectorGuard {
-                    fn drop(&mut self) {
-                        crate::infra::fs::set_test_atomic_file_injector(None);
-                    }
-                }
-                InjectorGuard
-            });
+            let _injector_guard =
+                atomic_injector.map(crate::infra::fs::install_test_atomic_file_injector);
             let installed = edit_existing(
                 &resolved,
                 key.clone(),
@@ -1842,24 +1834,8 @@ mod tests {
     #[cfg(unix)]
     fn edit_existing_file_sync_cancellation_preserves_original_pgn() {
         use crate::infra::fs::{
-            set_test_atomic_file_injector, AtomicFileFaultPoint, AtomicWriterInjector,
+            install_test_atomic_file_injector, AtomicFileFaultPoint, CancelAtomicFileAt,
         };
-
-        struct CancelOnSync(CancellationToken);
-        impl AtomicWriterInjector for CancelOnSync {
-            fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
-                if point == AtomicFileFaultPoint::FileSync {
-                    self.0.cancel();
-                }
-                Ok(())
-            }
-        }
-        struct InjectorReset;
-        impl Drop for InjectorReset {
-            fn drop(&mut self) {
-                set_test_atomic_file_injector(None);
-            }
-        }
 
         let directory = tempfile::tempdir().expect("PGN directory");
         let path = directory.path().join("games.pgn");
@@ -1873,10 +1849,11 @@ mod tests {
             end: snapshot.revision.size,
         };
         let cancellation = CancellationToken::new();
-        set_test_atomic_file_injector(Some(std::sync::Arc::new(CancelOnSync(
-            cancellation.clone(),
-        ))));
-        let injector = InjectorReset;
+        let injector = install_test_atomic_file_injector(std::sync::Arc::new(CancelAtomicFileAt {
+            cancel_at: AtomicFileFaultPoint::FileSync,
+            fail_at: None,
+            cancellation: cancellation.clone(),
+        }));
         let result = edit_existing(
             &resolved,
             key,
