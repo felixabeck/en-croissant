@@ -1106,9 +1106,11 @@ pub struct EngineSupervisor {
     retired_executables: StdMutex<RetiredSet<PathRef>>,
     retired_binaries: StdMutex<RetiredSet<(String, PathRef)>>,
     // `lifecycle` provides the per-key transition locks. Lifecycle transitions
-    // may capture actor snapshots before awaiting the exact-key lock, but they
-    // recheck under that lock before mutation. `actors` itself is concurrent,
-    // but cannot make remove → await shutdown → insert atomic.
+    // may capture an actor before awaiting the per-key lock and recheck under
+    // that lock before mutating an actor they still own. Kill and
+    // `handoff_published_locked` instead cancel and move actors into
+    // `pending_actors` under registration, then admission coordination,
+    // without taking the lifecycle lock.
     lifecycle: KeyedLocks<EngineKey>,
 }
 
@@ -1658,6 +1660,7 @@ impl EngineSupervisor {
                 return Err(Error::Cancellation);
             }
             if let Err(primary) = current.actor.stop_current().await {
+                let primary = cancelled_interactive_start_error(primary, &search.cancelled);
                 let cleanup = self.reap_published(&key, current.generation).await;
                 return Err(Error::with_cleanup(primary, cleanup));
             }
@@ -1701,6 +1704,7 @@ impl EngineSupervisor {
             match initialized {
                 Ok(warm) => *current.interactive.lock().await = Some(warm),
                 Err(primary) => {
+                    let primary = cancelled_interactive_start_error(primary, &search.cancelled);
                     let cleanup = self.reap_published(&key, current.generation).await;
                     return Err(Error::with_cleanup(primary, cleanup));
                 }
@@ -1728,6 +1732,7 @@ impl EngineSupervisor {
                 Err(Error::Cancellation)
             }
             Err(primary) => {
+                let primary = cancelled_interactive_start_error(primary, &search.cancelled);
                 let cleanup = self.reap_published(&key, current.generation).await;
                 Err(Error::with_cleanup(primary, cleanup))
             }
@@ -1872,7 +1877,11 @@ impl EngineSupervisor {
             return Ok(false);
         };
         if !target_generations.contains(&current.owner_generation()) {
-            if let Some(generation) = selected_actor {
+            // Equal actor generations mean the published actor now serves another search.
+            // Leave that actor published so a stale exact stop cannot reap its new owner.
+            if let Some(generation) =
+                selected_actor.filter(|generation| *generation != current.generation)
+            {
                 self.reap_published(key, generation).await?;
             }
             return Ok(false);
@@ -1957,15 +1966,13 @@ impl EngineSupervisor {
                 .pending_actors
                 .entry(generation)
                 .or_insert_with(|| {
-                    Arc::new(PendingActor {
-                        actor: current.actor.clone(),
-                        key: key.clone(),
+                    Arc::new(PendingActor::new(
+                        current.actor.clone(),
+                        key.clone(),
                         generation,
-                        engine_id: current.engine_id.clone(),
-                        executable: current.executable.clone(),
-                        termination: StdMutex::default(),
-                        completed: Notify::new(),
-                    })
+                        current.engine_id.clone(),
+                        current.executable.clone(),
+                    ))
                 })
                 .clone();
             self.actors
@@ -2194,17 +2201,26 @@ impl EngineSupervisor {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let generation = admission.generation();
         let _ = actor.registration_identity.set((key.clone(), generation));
-        let pending = Arc::new(PendingActor {
+        let pending = Arc::new(PendingActor::new(
             actor,
             key,
             generation,
-            engine_id: admission.admission.engine_id.clone(),
-            executable: admission.admission.executable.clone(),
-            termination: StdMutex::default(),
-            completed: Notify::new(),
-        });
+            admission.admission.engine_id.clone(),
+            admission.admission.executable.clone(),
+        ));
         self.pending_actors.insert(generation, pending.clone());
         pending
+    }
+}
+
+fn cancelled_interactive_start_error(primary: Error, cancelled: &AtomicBool) -> Error {
+    match primary {
+        Error::Cancellation | Error::AnalysisCancelled | Error::EngineDisconnected
+            if cancelled.load(Ordering::SeqCst) =>
+        {
+            Error::Cancellation
+        }
+        primary => primary,
     }
 }
 
@@ -2247,6 +2263,24 @@ struct PendingTermination {
 }
 
 impl PendingActor {
+    fn new(
+        actor: Arc<EngineActor>,
+        key: EngineKey,
+        generation: u64,
+        engine_id: String,
+        executable: PathRef,
+    ) -> Self {
+        Self {
+            actor,
+            key,
+            generation,
+            engine_id,
+            executable,
+            termination: StdMutex::default(),
+            completed: Notify::new(),
+        }
+    }
+
     fn start_termination(self: &Arc<Self>, entries: Arc<DashMap<u64, Arc<Self>>>) {
         let mut termination = self
             .termination
@@ -2338,7 +2372,7 @@ static SHUTDOWN_FAILURE_LOGS: StdMutex<Vec<String>> = StdMutex::new(Vec::new());
 
 fn log_pending_actor_termination_error(key: &EngineKey, generation: u64, error: &Error) {
     let message = format!(
-        "pending engine admission actor termination failed for {}:{} generation={generation} category={}",
+        "engine actor termination failed for {}:{} generation={generation} category={}",
         key.tab,
         key.engine,
         error.category()
@@ -6891,7 +6925,7 @@ mod tests {
                     Err(poisoned) => poisoned.into_inner().clone(),
                 };
                 let assigned = logged.iter().any(|message| {
-                    message.starts_with("pending engine admission actor termination failed for ")
+                    message.starts_with("engine actor termination failed for ")
                         && message.contains("pending-log-tab:pending-log-engine")
                         && message.contains("generation=42")
                         && message.contains("category=I/O failure")
@@ -7291,6 +7325,136 @@ mod tests {
         );
         actor.stop_request(b).await.unwrap();
         actor.terminate().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn stale_exact_stop_leaves_reused_actor_published() {
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let key = EngineKey::new("stale-stop".into(), "engine".into()).unwrap();
+        let ((actor, _), terminated) = actor_with(&[], false, None);
+        let current = supervisor.replace(key.clone(), actor).await.unwrap();
+        let first = SupervisedSearch::new(100, Arc::new(AtomicBool::new(false)));
+        current.bind_search(first.clone());
+        let lifecycle = supervisor.lifecycle_lease(&key);
+        let transition = lifecycle.lock().await;
+        let stop = tokio::spawn({
+            let supervisor = supervisor.clone();
+            let key = key.clone();
+            async move { supervisor.stop_search(&key, Some(first.generation)).await }
+        });
+        wait_for_flag(&first.cancelled, "stale stop to capture the first search").await;
+        assert!(!stop.is_finished());
+        let second = SupervisedSearch::new(101, Arc::new(AtomicBool::new(false)));
+        current.bind_search(second.clone());
+        assert!(!second.cancelled.load(Ordering::SeqCst));
+        assert!(!current.cancelled.load(Ordering::SeqCst));
+        drop(transition);
+
+        assert!(!pending_test_wait(stop).await.unwrap().unwrap());
+        assert_eq!(
+            supervisor.get_exact(&key).unwrap().generation,
+            current.generation
+        );
+        assert!(!second.cancelled.load(Ordering::SeqCst));
+        assert!(!current.cancelled.load(Ordering::SeqCst));
+        assert_eq!(terminated.load(Ordering::SeqCst), 0);
+        supervisor
+            .release_generation(&key, second.generation)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn kill_engine_cancelled_warm_start_returns_cancellation() {
+        struct CancelledOptionWriteIo {
+            io: FakeIo,
+            cancelled: Arc<AtomicBool>,
+        }
+
+        #[async_trait]
+        impl UciIo for CancelledOptionWriteIo {
+            async fn write_line(&mut self, line: &str) -> Result<(), Error> {
+                self.io.write_line(line).await?;
+                if line == "setoption name UCI_Chess960 value false" {
+                    assert!(!self.cancelled.load(Ordering::SeqCst));
+                    self.cancelled.store(true, Ordering::SeqCst);
+                    return Err(Error::EngineDisconnected);
+                }
+                Ok(())
+            }
+
+            async fn read_line(&mut self) -> Result<Option<String>, Error> {
+                self.io.read_line().await
+            }
+
+            async fn terminate(&mut self, quit: Duration, reap: Duration) -> Result<(), Error> {
+                self.io.terminate(quit, reap).await
+            }
+        }
+
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let key = EngineKey::new("cancelled-warm-start".into(), "engine".into()).unwrap();
+        let executable = path_ref("warm-image");
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let actor = Arc::new(EngineActor::new(
+            Box::new(CancelledOptionWriteIo {
+                io: FakeIo::new(
+                    writes.clone(),
+                    [Some("uciok".into()), Some("readyok".into())],
+                ),
+                cancelled: cancelled.clone(),
+            }),
+            EngineDeadlines::default(),
+        ));
+        let current = supervisor
+            .replace_handle(
+                key.clone(),
+                actor.clone(),
+                key.engine.clone(),
+                executable.clone(),
+            )
+            .await
+            .unwrap();
+        *current.interactive.lock().await = Some(
+            crate::chess::WarmEngine::new(actor, Vec::new(), &cancelled)
+                .await
+                .unwrap(),
+        );
+        let mut admission = supervisor
+            .admit(key.clone(), key.engine.clone(), executable.clone(), false)
+            .await
+            .unwrap();
+        // The option writer cancels the exact search flag after WarmEngine::start begins.
+        admission.admission.cancelled = cancelled.clone();
+        supervisor
+            .admissions
+            .insert(key.clone(), admission.admission.clone());
+        assert!(!cancelled.load(Ordering::SeqCst));
+        let result = supervisor
+            .start_interactive_search(
+                key.clone(),
+                EngineHandle {
+                    id: executable,
+                    kind: crate::infra::path_authority::EngineHandleKind::Engine,
+                },
+                Arc::new(StdMutex::new(None)),
+                admission,
+                crate::chess::EngineOptions {
+                    fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1".into(),
+                    ..crate::chess::EngineOptions::default()
+                },
+                &GoMode::Infinite,
+            )
+            .await;
+        assert!(matches!(result, Err(Error::Cancellation)));
+        assert!(cancelled.load(Ordering::SeqCst));
+        assert!(writes
+            .lock()
+            .await
+            .iter()
+            .any(|line| line == "setoption name UCI_Chess960 value false"));
+        assert!(supervisor.get_exact(&key).is_none());
     }
 
     #[tokio::test]

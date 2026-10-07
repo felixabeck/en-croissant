@@ -2960,6 +2960,38 @@ done
     }
 
     #[tokio::test]
+    async fn kill_engine_command_cancels_reserved_generation() {
+        let app = engine_test_app();
+        let state = app.state::<AppState>();
+        let key = EngineKey::new("kill-command".into(), "engine".into()).unwrap();
+        let engine = EngineHandle {
+            id: crate::infra::path_authority::PathRef {
+                id: "kill-command-image".into(),
+            },
+            kind: crate::infra::path_authority::EngineHandleKind::Engine,
+        };
+        let generation = prepare_engine_search(
+            key.engine.clone(),
+            engine.clone(),
+            key.tab.clone(),
+            app.state(),
+        )
+        .await
+        .unwrap();
+        kill_engine(key.engine.clone(), key.tab.clone(), app.state())
+            .await
+            .unwrap();
+        assert!(matches!(
+            state
+                .engine_supervisor
+                .consume_engine_search(key.clone(), key.engine.clone(), engine.id, &generation,)
+                .await,
+            Err(Error::Cancellation)
+        ));
+        assert!(state.engine_supervisor.get_exact(&key).is_none());
+    }
+
+    #[tokio::test]
     async fn kill_engine_cancelled_interactive_search_normalizes_only_expected_stop_consequences() {
         let supervisor = crate::engine::EngineSupervisor::default();
         let key = EngineKey::new("kill-disconnected".into(), "engine".into()).unwrap();
