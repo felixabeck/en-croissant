@@ -1071,7 +1071,8 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_uncancelled_progress_claim_respects_exclusive_admission_across_owners() {
+    fn duplicate_uncancelled_progress_claim_respects_exclusive_admission_across_owners(
+    ) -> Result<(), Error> {
         let registry = OperationRegistry::default();
         let first_ticket = registry.prepare_download("first").unwrap();
         let first = registry
@@ -1130,10 +1131,45 @@ mod tests {
                 8,
             )
             .unwrap();
+        let fifth_ticket = registry.prepare_download("fifth")?;
+        let fifth = registry.claim_download(
+            &fifth_ticket,
+            "fifth",
+            "fifth",
+            "fifth-progress",
+            "other-account",
+            true,
+            8,
+        );
+        assert!(
+            fifth.is_ok(),
+            "exclusive other-account claim must be admitted"
+        );
+        let fifth = fifth?;
+        assert_eq!(registry.state()?.accepted.len(), 2);
+        drop(fifth);
         let other_ticket = registry.prepare_download("fourth").unwrap();
         assert!(
             matches!(registry.claim_download(&other_ticket, "fourth", "other", "other-progress", "shared", true, 8), Err(Error::Conflict(message)) if message == "download progress is already active")
         );
+        assert!(registry.cancel_download_for_progress("exclusive-progress", "third")?);
+        assert!(active.token().is_cancelled());
+        let sixth_ticket = registry.prepare_download("sixth")?;
+        let sixth = registry.claim_download(
+            &sixth_ticket,
+            "sixth",
+            "sixth",
+            "sixth-progress",
+            "shared",
+            true,
+            8,
+        );
+        assert!(
+            sixth.is_ok(),
+            "exclusive shared claim after cancel must be admitted"
+        );
+        let sixth = sixth?;
+        drop(sixth);
         drop(active);
         assert!(registry
             .claim_download(
@@ -1146,6 +1182,7 @@ mod tests {
                 8
             )
             .is_ok());
+        Ok(())
     }
 
     #[test]
