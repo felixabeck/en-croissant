@@ -21,7 +21,7 @@ import {
     reconcilePendingTreeRemovals,
 } from "./workspace";
 
-const native = vi.hoisted(() => ({ warn: vi.fn() }));
+const native = vi.hoisted(() => ({ warn: vi.fn().mockResolvedValue(undefined) }));
 const persistError = vi.hoisted(() => ({ reportPersistError: vi.fn() }));
 vi.mock("@/platform/native", () => native);
 vi.mock("./persistError", () => persistError);
