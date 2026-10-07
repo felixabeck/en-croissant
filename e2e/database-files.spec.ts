@@ -4,6 +4,7 @@ import {
     filesWorkspaceFixture,
     pgnFileCommands,
     assertFilesColumnsNotClipped,
+    assertNothingClipped,
     selectFilesTreeRow,
     test,
     type MockScenario,
@@ -37,20 +38,7 @@ test("database-files: metadata-only editing fits 320px and relists the chosen ty
     await dialog.getByRole("textbox", { name: /file type/i }).click();
     await page.getByRole("option", { name: "Repertoire", exact: true }).click();
     await assertNoHorizontalOverflow();
-    const overflowing = await dialog.evaluate((element) => {
-        const bounds = element.getBoundingClientRect();
-        return Array.from(element.querySelectorAll("input, button")).some((control) => {
-            const box = control.getBoundingClientRect();
-            if (box.width === 0 || box.height === 0) return false;
-            return (
-                box.left < bounds.left - 1 ||
-                box.right > bounds.right + 1 ||
-                box.left < -1 ||
-                box.right > window.innerWidth + 1
-            );
-        });
-    });
-    expect(overflowing).toBe(false);
+    await assertNothingClipped(dialog);
     await assertAccessible();
     await dialog.getByRole("button", { name: "Confirm", exact: true }).click();
     await expect(dialog).toBeHidden();

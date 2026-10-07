@@ -18,6 +18,7 @@ import {
   TextInput,
   Title,
 } from "@mantine/core";
+import { useMediaQuery } from "@mantine/hooks";
 import { IconSearch } from "@tabler/icons-react";
 import { useAtom } from "jotai";
 import { useEffect, useRef, useState } from "react";
@@ -59,6 +60,7 @@ function findEntry(entries: Entry[], key: string): Entry | null {
 
 export default function FilesPage() {
   const { t } = useTranslation();
+  const compactDialog = useMediaQuery("(max-width: 30em)");
   const picker = useNativePicker();
   const [workspace, setWorkspace] = useAtom(fileWorkspaceAtom);
   const [, setWorkspaceDisplayName] = useAtom(fileWorkspaceDisplayNameAtom);
@@ -157,9 +159,14 @@ export default function FilesPage() {
   }
   async function submitAction() {
     const nameUnchanged = selected?.type === "file" && name === selected.name;
-    if (!workspace || !parent || !name.trim()) return;
-    setActionError("");
+    if (!workspace || !parent) return;
     const editing = action === fileAction.edit || action === fileAction.rename;
+    if (
+      !name.trim() &&
+      (action === fileAction.file || action === fileAction.folder || (editing && !nameUnchanged))
+    )
+      return;
+    setActionError("");
     const chosenType =
       action === fileAction.edit
         ? fileType
@@ -323,7 +330,6 @@ export default function FilesPage() {
                   <ScrollArea.Autosize mah={TREE_MAX_HEIGHT} mih={TREE_MIN_HEIGHT}>
                     <DirectoryTree
                       files={data}
-                      refreshDirectory={async () => mutate()}
                       selectedFile={selected}
                       setSelectedFile={setSelectedEntry}
                       onRequestDelete={async (entry) => setDeleteTarget(entry)}
@@ -414,6 +420,7 @@ export default function FilesPage() {
       )}
       <AppModal
         opened={action !== null}
+        fullScreen={compactDialog}
         onClose={() => setAction(null)}
         title={
           action === fileAction.edit
@@ -459,6 +466,7 @@ export default function FilesPage() {
       </AppModal>
       <AppModal
         opened={moveTarget !== null}
+        fullScreen={compactDialog}
         onClose={() => setMoveTarget(null)}
         title={t("Files.MoveFile", { defaultValue: "Move file" })}
       >

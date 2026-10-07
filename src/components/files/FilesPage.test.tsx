@@ -1,6 +1,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { installMatchMediaStub } from "@/tests/matchMedia";
 
 const mocks = vi.hoisted(() => ({
   mutate: vi.fn(),
@@ -250,6 +251,7 @@ function commandError(category: "durability" | "partial-removal", message: strin
 }
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+installMatchMediaStub();
 
 let container: HTMLDivElement;
 let root: Root;
@@ -266,6 +268,14 @@ function dialogButton(name: string) {
   return [...container.querySelector('[role="dialog"]')!.querySelectorAll("button")].find(
     (element) => element.textContent === name,
   )!;
+}
+
+async function setDialogName(value: string) {
+  const input = container.querySelector('[role="dialog"] input') as HTMLInputElement;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
 }
 
 async function settle() {
@@ -497,14 +507,7 @@ test("applied-despite-error create refreshes and closes without operationFailed"
   );
   click("Create file");
   await settle();
-  const input = container.querySelector('[role="dialog"] input')! as HTMLInputElement;
-  await act(async () => {
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
-      input,
-      "created",
-    );
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-  });
+  await setDialogName("created");
   await act(async () => dialogButton("Confirm").click());
 
   expect(mocks.createWorkspaceFile).toHaveBeenCalledWith(
@@ -751,14 +754,6 @@ function tree() {
   return container.querySelector('[data-testid="tree"]')!;
 }
 
-async function setDialogName(value: string) {
-  const input = container.querySelector('[role="dialog"] input') as HTMLInputElement;
-  await act(async () => {
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-  });
-}
-
 function setDialogType(value: string) {
   const select = container.querySelector('[role="dialog"] select') as HTMLSelectElement;
   act(() => {
@@ -768,7 +763,7 @@ function setDialogType(value: string) {
 }
 
 describe("metadata and rename submissions", () => {
-  test.each(["sample", " study", "study "])(
+  test.each(["sample", " study", "study ", " "])(
     "untouched listed name %s writes only metadata and preserves tags",
     async (name) => {
       const selected = { ...entry, name, metadata: { type: "game", tags: ["original", "tag"] } };
@@ -784,6 +779,7 @@ describe("metadata and rename submissions", () => {
       );
       setDialogType("repertoire");
       await act(async () => dialogButton("Confirm").click());
+      expect(mocks.writeWorkspaceFileMetadata).toHaveBeenCalledOnce();
       expect(mocks.writeWorkspaceFileMetadata).toHaveBeenCalledWith(workspace, entry.handle, {
         type: "repertoire",
         tags: ["original", "tag"],
@@ -837,6 +833,19 @@ describe("metadata and rename submissions", () => {
     );
     expect(mocks.writeWorkspaceFileMetadata).not.toHaveBeenCalled();
     expect(mocks.mutate).toHaveBeenCalledOnce();
+  });
+
+  test.each(["", " "])("Rename changed to blank %j sends no IPC", async (name) => {
+    click("Select sample file");
+    click("Rename");
+    await setDialogName(name);
+    await act(async () => dialogButton("Confirm").click());
+    expect(mocks.renameWorkspaceFile).not.toHaveBeenCalled();
+    expect(mocks.writeWorkspaceFileMetadata).not.toHaveBeenCalled();
+    expect(mocks.createWorkspaceFile).not.toHaveBeenCalled();
+    expect(mocks.createWorkspaceDirectory).not.toHaveBeenCalled();
+    expect(mocks.mutate).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="dialog"]')).not.toBeNull();
   });
 
   test.each([true, false])(

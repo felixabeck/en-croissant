@@ -49,7 +49,6 @@ export default function DirectoryTree({
   filter,
 }: {
   files: Entry[];
-  refreshDirectory: () => Promise<unknown>;
   selectedFile: Entry | null;
   setSelectedFile: (file: Entry | null) => void;
   onRequestDelete: (file: Entry) => void | Promise<void>;

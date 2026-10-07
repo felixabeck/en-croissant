@@ -121,7 +121,6 @@ test("supports ARIA-tree roving focus, keyboard expansion, selection, and opaque
       <Provider store={store}>
         <DirectoryTree
           files={[directory, rootFile]}
-          refreshDirectory={async () => undefined}
           selectedFile={selected}
           setSelectedFile={setSelected}
           onRequestDelete={onRequestDelete}
@@ -202,7 +201,6 @@ test("filters the visible navigation model and opens a filtered file with Enter"
       <Provider store={store}>
         <DirectoryTree
           files={[directory, rootFile]}
-          refreshDirectory={async () => undefined}
           selectedFile={selected}
           setSelectedFile={setSelected}
           onRequestDelete={vi.fn()}
@@ -268,7 +266,6 @@ test("routes context, M, and drag move intents with opaque entry handles", async
       <Provider store={store}>
         <DirectoryTree
           files={[directory, rootFile]}
-          refreshDirectory={async () => undefined}
           selectedFile={selected}
           setSelectedFile={setSelected}
           onRequestDelete={vi.fn()}
