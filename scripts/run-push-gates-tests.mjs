@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { writeSync } from "node:fs";
+import { existsSync, readdirSync, writeSync } from "node:fs";
 import { PassThrough } from "node:stream";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { availableParallelism } from "node:os";
@@ -1720,6 +1720,44 @@ test("a passing lane retains its complete output line across a short final write
     commands.map((command) => `$ ${command}\n${line}`).join(""),
   );
 });
+
+test(
+  "a lane header ENOSPC fails the task without leaking its descriptor",
+  { skip: !existsSync("/dev/full") || !existsSync("/proc/self/fd") },
+  async (t) => {
+    const cwd = await temporarySchedulerRoot(t);
+    const events = [];
+    const descriptorsBefore = readdirSync("/proc/self/fd").length;
+    const result = await runPushGates([], {
+      cwd,
+      env: { ...process.env },
+      spawnProcess: makeMockSpawner({ events }),
+      async beforeStep({ name, index }) {
+        if (name !== "contract" || index !== 0) return;
+        const base = join(cwd, "artifacts", "gates");
+        const runs = await readdir(base);
+        assert.equal(runs.length, 1);
+        await symlink("/dev/full", join(base, runs[0], "contract.log"));
+      },
+    });
+    const descriptorsAfter = readdirSync("/proc/self/fd").length;
+    const lane = result.results.find((task) => task.name === "contract");
+    assert.equal(result.exitCode, 1);
+    assert.equal(lane.status, "failed");
+    assert.equal(lane.code, 1);
+    assert.equal(lane.error.code, "ENOSPC");
+    assert.equal(lane.failedCommand, "pnpm gates:contract:check");
+    assert.deepEqual(
+      events.filter((event) => event.type === "start").map((event) => event.command),
+      ["pnpm mutation:guard:check"],
+    );
+    assert.equal(
+      descriptorsAfter,
+      descriptorsBefore,
+      "a failed header write must close its descriptor",
+    );
+  },
+);
 
 test("gate log write failures preserve command results and fail successful commands", async (t) => {
   for (const [commandCode, expectedCode] of [
