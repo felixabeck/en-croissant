@@ -3616,12 +3616,7 @@ mod tests {
         key: &EngineKey,
         generation: u64,
     ) {
-        wait_until(|| {
-            supervisor
-                .get_exact(key)
-                .is_none_or(|engine| engine.generation != generation)
-        })
-        .await;
+        wait_until(|| !supervisor.owns_generation(key, generation)).await;
     }
 
     #[cfg(unix)]

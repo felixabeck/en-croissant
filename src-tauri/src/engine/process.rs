@@ -2017,6 +2017,31 @@ impl EngineSupervisor {
             .collect()
     }
 
+    #[cfg(test)]
+    pub(crate) fn owned_keys_for_tab(&self, tab: &str) -> Vec<EngineKey> {
+        let mut keys = self.registered_keys_for_tab(tab);
+        for entry in self
+            .pending_actors
+            .iter()
+            .filter(|entry| entry.key.tab == tab)
+        {
+            if !keys.contains(&entry.key) {
+                keys.push(entry.key.clone());
+            }
+        }
+        keys
+    }
+
+    #[cfg(test)]
+    pub(crate) fn owns_generation(&self, key: &EngineKey, generation: u64) -> bool {
+        self.get_exact(key)
+            .is_some_and(|entry| entry.generation == generation)
+            || self
+                .pending_actors
+                .get(&generation)
+                .is_some_and(|entry| &entry.key == key)
+    }
+
     pub fn cancel_exact(&self, key: &EngineKey, generation: u64) -> bool {
         let Some(current) = self.actors.get(key) else {
             return false;
@@ -4993,10 +5018,7 @@ mod tests {
     ) {
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
-                if supervisor
-                    .get_exact(key)
-                    .is_none_or(|entry| entry.generation != generation)
-                {
+                if !supervisor.owns_generation(key, generation) {
                     break;
                 }
                 tokio::task::yield_now().await;
@@ -6445,8 +6467,8 @@ mod tests {
             .terminate_now()
             .await
             .expect_err("fake actor termination must fail");
-        assert!(matches!(error, Error::Io(_)));
-        assert!(supervisor.get_exact(&key).is_none());
+        assert!(matches!(error.without_shared(), Error::Io(_)));
+        assert!(!supervisor.owns_generation(&key, supervised.generation));
         assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
         let messages = registration_cleanup_messages(&key, supervised.generation);
         assert_eq!(
@@ -9239,19 +9261,24 @@ mod tests {
             ])
             .await;
         assert_eq!(failures.len(), 2);
-        assert!(matches!(failures[0].error, Error::EngineTimeout(_)));
         assert!(matches!(
-            failures[1].error,
+            failures[0].error.without_shared(),
+            Error::EngineTimeout(_)
+        ));
+        assert!(matches!(
+            failures[1].error.without_shared(),
             Error::OperationAndCleanup { .. }
         ));
         assert_eq!(timeout_calls.load(AtomicOrdering::SeqCst), 1);
         assert_eq!(combined_calls.load(AtomicOrdering::SeqCst), 1);
-        assert!(supervisor.get_exact(&timeout_key).is_none());
-        assert!(supervisor.get_exact(&combined_key).is_none());
+        assert!(!supervisor.owns_generation(&timeout_key, timeout.generation));
+        assert!(!supervisor.owns_generation(&combined_key, combined.generation));
 
         assert!(matches!(
-            aggregate_shutdown_failures(failures),
-            Err(Error::EngineTimeout(_))
+            aggregate_shutdown_failures(failures)
+                .expect_err("shutdown must preserve the first failure")
+                .without_shared(),
+            Error::EngineTimeout(_)
         ));
         let logs = match SHUTDOWN_FAILURE_LOGS.lock() {
             Ok(logs) => logs.clone(),

@@ -2259,8 +2259,8 @@ done
         let removed = tokio::time::timeout(Duration::from_secs(12), async {
             loop {
                 let registered = key.map_or_else(
-                    || !supervisor.registered_keys_for_tab(tab).is_empty(),
-                    |key| supervisor.get_exact(key).is_some(),
+                    || !supervisor.owned_keys_for_tab(tab).is_empty(),
+                    |key| supervisor.owned_keys_for_tab(tab).contains(key),
                 );
                 // Signal zero only observes the fixture process; it sends no signal.
                 let alive = unsafe { libc::kill(pid, 0) } == 0;
@@ -2289,7 +2289,7 @@ done
         let supervisor = state.engine_supervisor.clone();
         let probe = tokio::spawn(async move { get_engine_config_core(engine, &state).await });
         wait_for_fixture_capture(&directory, "wire=quit").await;
-        assert_eq!(supervisor.registered_keys_for_tab("engine-config").len(), 1);
+        assert_eq!(supervisor.owned_keys_for_tab("engine-config").len(), 1);
         probe.abort();
         assert!(probe.await.unwrap_err().is_cancelled());
         assert_abandoned_engine_removed(&directory, &supervisor, "engine-config", None).await;
@@ -2347,7 +2347,7 @@ done
             std::fs::write(directory.path().join("release"), b"").unwrap();
             wait_for_fixture_capture(&directory, barrier).await;
         }
-        assert!(supervisor.get_exact(&key).is_some());
+        assert!(supervisor.owned_keys_for_tab("analysis").contains(&key));
         core.abort();
         assert!(core.await.unwrap_err().is_cancelled());
         // Let the shell read termination commands after the mid-search abort.

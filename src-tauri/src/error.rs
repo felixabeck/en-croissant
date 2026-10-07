@@ -330,6 +330,17 @@ pub fn sanitized_io_error(error: &std::io::Error, message: String) -> std::io::E
     std::io::Error::new(kind, message)
 }
 
+#[cfg(test)]
+impl Error {
+    pub(crate) fn without_shared(&self) -> &Self {
+        let mut error = self;
+        while let Self::Shared(inner) = error {
+            error = inner;
+        }
+        error
+    }
+}
+
 impl Error {
     /// True only for an I/O error reporting absence as defined by [`is_missing_entry_io`].
     pub fn is_missing_entry(&self) -> bool {
