@@ -1,22 +1,38 @@
 #!/usr/bin/env node
 
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   chmodSync,
+  closeSync,
   copyFileSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   renameSync,
   rmSync,
   unlinkSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import { arch, platform, release, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { signalExitCode } from "./child-supervisor.mjs";
+import { performance } from "node:perf_hooks";
+import {
+  CHILD_TERMINATION_TIMEOUT_MS,
+  E2E_LANE_TERMINATION_TIMEOUT_MS,
+  installMultiChildSignalForwarding,
+  signalExitCode,
+  superviseChild,
+} from "./child-supervisor.mjs";
+import {
+  formatFailureTrailer,
+  obtainLogDirectory,
+  readLogTail,
+  transcriptFileName,
+} from "./gate-logs.mjs";
 import { isEntrypoint } from "./entrypoint.mjs";
 import { playwrightImage } from "./playwright-image.mjs";
 import { RUST_COVERAGE_TOOLCHAIN } from "./toolchain-versions.mjs";
@@ -261,81 +277,262 @@ function receiptStatus({ gate, repoRoot, now, ttlMs, fingerprintToolchain, comma
   return { hit: true, reason: `exact tree verified ${Math.floor(age / 60000)} minutes ago` };
 }
 
-function runGate({ gate, repoRoot, now, fingerprintToolchain, command, output }) {
+function writeTranscript(fd, value) {
+  const buffer = Buffer.isBuffer(value) ? value : Buffer.from(String(value));
+  let offset = 0;
+  while (offset < buffer.length) {
+    const written = writeSync(fd, buffer, offset, buffer.length - offset);
+    if (written === 0) throw new Error("transcript write made no progress");
+    offset += written;
+  }
+}
+
+// A caller's closed pipe must never cancel the gate or its retained transcript. Keep the
+// error listener until every write callback and its subsequent error event have settled.
+function forwardTo(stream) {
+  let stopped = false;
+  let pending = 0;
+  let resolveDrained;
+  const onError = () => {
+    stopped = true;
+  };
+  stream.on("error", onError);
+  return {
+    write(chunk) {
+      if (stopped) return;
+      pending += 1;
+      const settled = (error) => {
+        if (error) stopped = true;
+        pending -= 1;
+        if (pending === 0) resolveDrained?.();
+      };
+      try {
+        stream.write(chunk, settled);
+      } catch (error) {
+        settled(error);
+      }
+    },
+    async flush() {
+      if (pending > 0) await new Promise((resolve) => (resolveDrained = resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+    },
+    async dispose() {
+      await this.flush();
+      stream.off("error", onError);
+    },
+  };
+}
+
+async function runGate({
+  gate,
+  repoRoot,
+  now,
+  fingerprintToolchain,
+  command,
+  output,
+  env,
+  forwardedStdout,
+  forwardedStderr,
+  writeCapturedOutput,
+}) {
   if (!removeReceipt(repoRoot, gate)) {
     output.error(`gate receipt unavailable: ${gate} — stale receipt could not be removed`);
     return EXIT_USAGE;
   }
 
-  const before = treeState(repoRoot);
-  const toolchain = fingerprintToolchain(gate, repoRoot);
-  const metadataBefore = trackedFileMetadata(repoRoot);
-  output.log(`gate running: ${gate}`);
-  output.log(`  command: ${command}`);
-  const result = spawnSync(command, {
-    cwd: repoRoot,
-    env: process.env,
-    shell: true,
-    stdio: "inherit",
-  });
-  if (result.error) {
-    output.error(`gate could not start: ${result.error.message}`);
+  let transcriptPath;
+  let fd;
+  try {
+    const directory = obtainLogDirectory(repoRoot, {
+      env,
+      warn: (message) => output.error(message),
+    });
+    transcriptPath = join(directory, transcriptFileName(gate));
+    fd = openSync(transcriptPath, "wx", 0o600);
+  } catch (error) {
+    output.error(`gate transcript unavailable: ${gate} — ${error.message}`);
     return EXIT_USAGE;
   }
-  if (result.status !== 0) {
-    const status = result.status ?? (result.signal ? signalExitCode(result.signal) : EXIT_USAGE);
-    const signal = result.signal ? `, signal ${result.signal}` : "";
-    output.error(`gate failed: ${gate} (exit ${status}${signal})`);
-    return status;
-  }
 
-  output.log(`gate passed: ${gate}`);
-  const after = treeState(repoRoot);
-  const metadataAfter = trackedFileMetadata(repoRoot);
-  // Tree hashes detect persistent content changes; tracked-file size/mtime_ns snapshots also
-  // detect a tracked file rewritten and restored when the filesystem records a new mtime.
-  // Residual window: a mutation and revert entirely between the two samples, within one mtime
-  // granularity tick, can remain undetected.
-  if (!before || !after || !metadataBefore || !metadataAfter) {
-    output.error(`gate receipt refused: ${gate} — could not observe the tree`);
-    return EXIT_PROOF_NOT_ESTABLISHED;
+  const stdout = forwardTo(forwardedStdout);
+  const stderr = forwardTo(forwardedStderr);
+  if (output === console) {
+    output = {
+      log: (message) => stdout.write(`${message}\n`),
+      error: (message) => stderr.write(`${message}\n`),
+    };
   }
-  if (before.tree !== after.tree || metadataBefore !== metadataAfter) {
-    output.error(`gate receipt refused: ${gate} — tree changed during the gate`);
-    return EXIT_PROOF_NOT_ESTABLISHED;
-  }
-  if (!before.clean || !after.clean) {
-    output.log(`gate receipt not recorded: ${gate} — working tree is dirty`);
-    return 0;
-  }
-  if (!toolchain) {
-    output.log(`gate receipt not recorded: ${gate} — toolchain fingerprint unavailable`);
-    return 0;
-  }
-
-  const finalState = treeState(repoRoot);
-  if (!finalState?.clean || finalState.tree !== before.tree) {
-    output.error(`gate receipt refused: ${gate} — tree changed before receipt writing`);
-    return EXIT_PROOF_NOT_ESTABLISHED;
-  }
-  const payload = {
-    schemaVersion: SCHEMA_VERSION,
-    gate,
-    tree: before.tree,
-    command,
-    platform: `${platform()}-${arch()}-${release()}`,
-    toolchain,
-    createdAt: new Date(now()).toISOString(),
+  let logError;
+  const capture = (chunk) => {
+    try {
+      writeCapturedOutput(fd, chunk);
+    } catch (error) {
+      logError ??= error;
+    }
   };
-  if (!writeReceipt(repoRoot, gate, payload)) {
-    output.log(`gate passed but receipt could not be written: ${gate}`);
+  try {
+    const before = treeState(repoRoot);
+    const toolchain = fingerprintToolchain(gate, repoRoot);
+    const metadataBefore = trackedFileMetadata(repoRoot);
+    output.log(`gate running: ${gate}`);
+    output.log(`  command: ${command}`);
+    const startedAt = performance.now();
+    capture(
+      `gate: ${gate}\ncommand: ${command}\ntree: ${before?.tree ?? "unavailable"}\nstarted: ${new Date(now()).toISOString()}\n\n`,
+    );
+    const signalForwarding = installMultiChildSignalForwarding({ label: "gate receipt" });
+    let result;
+    let runnerError;
+    let supervisor;
+    let child;
+    const onStdout = (chunk) => {
+      capture(chunk);
+      stdout.write(chunk);
+    };
+    const onStderr = (chunk) => {
+      capture(chunk);
+      stderr.write(chunk);
+    };
+    try {
+      child = spawn(command, {
+        cwd: repoRoot,
+        env,
+        shell: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      child.stdout.on("data", onStdout);
+      child.stderr.on("data", onStderr);
+      supervisor = superviseChild(child, {
+        killProcessGroup: false,
+        terminationTimeoutMs:
+          gate === "e2e-container" ? E2E_LANE_TERMINATION_TIMEOUT_MS : CHILD_TERMINATION_TIMEOUT_MS,
+      });
+      signalForwarding.attach(supervisor, gate);
+      const completion = await Promise.race([
+        supervisor.done.then((outcome) => ({ type: "exit", result: outcome })),
+        signalForwarding.signalRequested.then(() => supervisor.exitOrTerminationFailure()),
+      ]);
+      if (completion.type === "termination-failed") runnerError = completion.error;
+      else result = completion.result;
+    } catch (error) {
+      runnerError = error;
+      if (supervisor) {
+        try {
+          await signalForwarding.terminateAll();
+        } catch (cleanupError) {
+          runnerError = cleanupError;
+        }
+      }
+    } finally {
+      try {
+        await signalForwarding.termination;
+      } catch (error) {
+        runnerError ??= error;
+      }
+      signalForwarding.uninstall();
+      child?.stdout?.off("data", onStdout);
+      child?.stderr?.off("data", onStderr);
+    }
+    const signal = signalForwarding.requestedSignal ?? result?.signal;
+    let status = signalForwarding.requestedSignal
+      ? signalExitCode(signalForwarding.requestedSignal)
+      : result?.error || !result
+        ? EXIT_USAGE
+        : (result.code ?? (signal ? signalExitCode(signal) : EXIT_USAGE));
+    if (runnerError && status === 0) status = 1;
+    capture(
+      `\nexit: ${status}${signal ? `, signal ${signal}` : ""}\nduration: ${(performance.now() - startedAt).toFixed(1)} ms\n`,
+    );
+    try {
+      closeSync(fd);
+    } catch (error) {
+      logError ??= error;
+    }
+    fd = undefined;
+    if (logError && status === 0) status = 1;
+    const fail = async (exitStatus, failureSignal = signal, errors = []) => {
+      await Promise.all([stdout.flush(), stderr.flush()]);
+      output.error(readLogTail(transcriptPath));
+      const detail = errors.length
+        ? ` — ${errors.map((error) => error.message ?? String(error)).join("; ")}`
+        : "";
+      output.error(
+        formatFailureTrailer(
+          `gate failed: ${gate} (exit ${exitStatus}${failureSignal ? `, signal ${failureSignal}` : ""})${detail}`,
+          transcriptPath,
+          "transcript",
+        ),
+      );
+      return exitStatus;
+    };
+    if (status !== 0) {
+      const errors = [result?.error, runnerError, logError].filter(Boolean);
+      return await fail(status, signal, errors);
+    }
+
+    const refuseReceipt = async (reason) => {
+      await Promise.all([stdout.flush(), stderr.flush()]);
+      output.error(
+        formatFailureTrailer(
+          `gate receipt refused: ${gate} — ${reason}`,
+          transcriptPath,
+          "transcript",
+        ),
+      );
+      return EXIT_PROOF_NOT_ESTABLISHED;
+    };
+    output.log(`gate passed: ${gate}`);
+    output.log(`gate transcript: ${transcriptPath}`);
+    const after = treeState(repoRoot);
+    const metadataAfter = trackedFileMetadata(repoRoot);
+    // Tree hashes detect persistent content changes; tracked-file size/mtime_ns snapshots also
+    // detect a tracked file rewritten and restored when the filesystem records a new mtime.
+    // Residual window: a mutation and revert entirely between the two samples, within one mtime
+    // granularity tick, can remain undetected.
+    if (!before || !after || !metadataBefore || !metadataAfter) {
+      return await refuseReceipt("could not observe the tree");
+    }
+    if (before.tree !== after.tree || metadataBefore !== metadataAfter) {
+      return await refuseReceipt("tree changed during the gate");
+    }
+    if (!before.clean || !after.clean) {
+      output.log(`gate receipt not recorded: ${gate} — working tree is dirty`);
+      return 0;
+    }
+    if (!toolchain) {
+      output.log(`gate receipt not recorded: ${gate} — toolchain fingerprint unavailable`);
+      return 0;
+    }
+
+    const finalState = treeState(repoRoot);
+    if (!finalState?.clean || finalState.tree !== before.tree) {
+      return await refuseReceipt("tree changed before receipt writing");
+    }
+    const payload = {
+      schemaVersion: SCHEMA_VERSION,
+      gate,
+      tree: before.tree,
+      command,
+      platform: `${platform()}-${arch()}-${release()}`,
+      toolchain,
+      createdAt: new Date(now()).toISOString(),
+    };
+    if (!writeReceipt(repoRoot, gate, payload)) {
+      output.log(`gate passed but receipt could not be written: ${gate}`);
+      return 0;
+    }
+    output.log(`gate receipt recorded: ${gate} (${before.tree.slice(0, 12)})`);
     return 0;
+  } finally {
+    try {
+      if (fd !== undefined) closeSync(fd);
+    } finally {
+      await Promise.all([stdout.dispose(), stderr.dispose()]);
+    }
   }
-  output.log(`gate receipt recorded: ${gate} (${before.tree.slice(0, 12)})`);
-  return 0;
 }
 
-export function executeAction({
+export async function executeAction({
   action,
   gate,
   repoRoot = projectRoot,
@@ -344,6 +541,10 @@ export function executeAction({
   fingerprintToolchain = toolchainFingerprint,
   command = GATES[gate],
   output = console,
+  env = process.env,
+  forwardedStdout = process.stdout,
+  forwardedStderr = process.stderr,
+  writeCapturedOutput = writeTranscript,
 }) {
   if (!Object.hasOwn(GATES, gate) || !["check", "ensure", "run"].includes(action)) {
     output.error("Usage: gate-receipt.mjs <check|ensure|run> <gate>");
@@ -362,9 +563,20 @@ export function executeAction({
     if (status.hit) return 0;
     if (action === "check") return EXIT_MISS;
   }
-  return runGate({ gate, repoRoot, now, fingerprintToolchain, command, output });
+  return runGate({
+    gate,
+    repoRoot,
+    now,
+    fingerprintToolchain,
+    command,
+    output,
+    env,
+    forwardedStdout,
+    forwardedStderr,
+    writeCapturedOutput,
+  });
 }
 
 if (isEntrypoint(import.meta.url)) {
-  process.exitCode = executeAction({ action: process.argv[2], gate: process.argv[3] });
+  process.exitCode = await executeAction({ action: process.argv[2], gate: process.argv[3] });
 }

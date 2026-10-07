@@ -184,6 +184,11 @@ tracked file — `pnpm bindings:generate`, a stale `pnpm bindings:check`, `pnpm 
 `pnpm format`, `pnpm lint:fix` — runs concurrently with any of them, in this session, a parallel
 script, or a review lens working in the checkout (`f-20260906-06`).
 
+Each gate transcript lands in `artifacts/gates/<run>/receipt-<gate>.log`, with the newest 100
+runs retained and the scheduler's run directory shared when run as a lane.
+A failed gate's last own output line names its transcript; through `pnpm gate:*`, only pnpm's
+one `ELIFECYCLE` line follows.
+
 `bindings:check` stays in P1 after the `dist/` build and before receipt-backed lanes because it
 compiles against `dist/` and conditionally rewrites `src/bindings/generated.ts` when stale. The
 contract lane's `lint:ci` runs `i18next-cli extract --ci`, which is also a conditional rewriter.
