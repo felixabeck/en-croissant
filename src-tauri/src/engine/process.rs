@@ -7427,71 +7427,15 @@ mod tests {
 
     #[tokio::test]
     async fn kill_engine_cancelled_warm_start_returns_cancellation() {
-        let supervisor = Arc::new(EngineSupervisor::default());
-        let key = EngineKey::new("cancelled-warm-start".into(), "engine".into()).unwrap();
-        let executable = path_ref("warm-image");
-        let writes = Arc::new(Mutex::new(Vec::new()));
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let actor = Arc::new(EngineActor::new(
-            Box::new(CancelledWriteIo {
-                io: FakeIo::new(
-                    writes.clone(),
-                    [Some("uciok".into()), Some("readyok".into())],
-                ),
-                cancelled: cancelled.clone(),
-                cancel_command: "setoption name UCI_Chess960 value false",
-                terminate_error: None,
-            }),
-            EngineDeadlines::default(),
-        ));
-        let current = supervisor
-            .replace_handle(
-                key.clone(),
-                actor.clone(),
-                key.engine.clone(),
-                executable.clone(),
-            )
-            .await
-            .unwrap();
-        *current.interactive.lock().await = Some(
-            crate::chess::WarmEngine::new(actor, Vec::new(), &cancelled)
-                .await
-                .unwrap(),
-        );
-        let mut admission = supervisor
-            .admit(key.clone(), key.engine.clone(), executable.clone(), false)
-            .await
-            .unwrap();
         // The option writer cancels the exact search flag after WarmEngine::start begins.
-        admission.admission.cancelled = cancelled.clone();
-        supervisor
-            .admissions
-            .insert(key.clone(), admission.admission.clone());
-        assert!(!cancelled.load(Ordering::SeqCst));
-        let result = supervisor
-            .start_interactive_search(
-                key.clone(),
-                EngineHandle {
-                    id: executable,
-                    kind: crate::infra::path_authority::EngineHandleKind::Engine,
-                },
-                Arc::new(StdMutex::new(None)),
-                admission,
-                crate::chess::EngineOptions {
-                    fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1".into(),
-                    ..crate::chess::EngineOptions::default()
-                },
-                &GoMode::Infinite,
-            )
-            .await;
+        let result = cancelled_interactive_start_with_write_failure(
+            "cancelled-warm-start",
+            "setoption name UCI_Chess960 value false",
+            true,
+            None,
+        )
+        .await;
         assert!(matches!(result, Err(Error::Cancellation)));
-        assert!(cancelled.load(Ordering::SeqCst));
-        assert!(writes
-            .lock()
-            .await
-            .iter()
-            .any(|line| line == "setoption name UCI_Chess960 value false"));
-        assert!(supervisor.get_exact(&key).is_none());
     }
 
     async fn cancelled_interactive_start_with_write_failure(
