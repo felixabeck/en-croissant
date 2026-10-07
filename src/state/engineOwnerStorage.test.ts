@@ -790,6 +790,20 @@ test("unique random-era claims resolve before list hydration; a removed selectio
     expect((await hydratePlayer(restarted)).id).not.toBe("sibling");
 });
 
+test("a sibling with the same name and a different handle assessed alone cannot capture a legacy snapshot", async () => {
+    seedLegacyOwners([
+        { ...engine, id: "sibling", handle: { ...engine.handle, id: { id: "other-executable" } } },
+    ]);
+    const run = await runtime();
+    await hydrateList(run, 1);
+    localStorage.setItem("game-player1-settings", serializeStorageValue(legacyPlayer(preIdEngine)));
+    const restarted = await runtime(true);
+    const selected = await hydratePlayer(restarted);
+    expect(selected.id).toMatch(/^legacy-engine-identity:/);
+    expect(selected.id).not.toBe("sibling");
+    expect((await hydrateList(restarted, 1))[0].id).toBe("sibling");
+});
+
 test.each(["quota", "conflict"])(
     "failed engines migration agrees with a durable player in a fresh runtime: %s",
     async (failure) => {

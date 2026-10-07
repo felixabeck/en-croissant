@@ -109,6 +109,8 @@ const engineHandleSchema: z.ZodType<EngineHandle> = z.object({
 export const localEngineSchema = z.object({
     type: z.literal("local"),
     id: z.string().default(() => crypto.randomUUID()),
+    // Absent means never assessed; null means assessed and not a legacy claim.
+    // An object keeps this record's historical identity and whether its group was ambiguous.
     legacyAssessment: z
         .object({ identity: z.string(), ambiguous: z.boolean() })
         .nullable()

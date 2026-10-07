@@ -297,14 +297,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 const IDENTITY_PREFIX = "legacy-engine-identity:";
+const FNV1A_OFFSET_BASIS = 0xcbf29ce484222325n;
+const FNV1A_PRIME = 0x100000001b3n;
 const POSITION_PREFIX = "legacy-engine-position:";
 
 /** FNV-1a over an unambiguous pair of UTF-16 strings, with fixed 64-bit state. */
 function legacyIdentity(handleId: string, name: string): string {
-    let digest = 0xcbf29ce484222325n;
+    let digest = FNV1A_OFFSET_BASIS;
     const pair = JSON.stringify([handleId, name]);
     for (let index = 0; index < pair.length; index++) {
-        digest = BigInt.asUintN(64, (digest ^ BigInt(pair.charCodeAt(index))) * 0x100000001b3n);
+        digest = BigInt.asUintN(64, (digest ^ BigInt(pair.charCodeAt(index))) * FNV1A_PRIME);
     }
     return `${IDENTITY_PREFIX}${digest.toString(16).padStart(16, "0")}`;
 }
@@ -467,12 +469,7 @@ function isLegacyIdentityMigration(key: EngineOwnerKey, raw: unknown, parsed: un
             ) {
                 return false;
             }
-            if (isRecord(value) && typeof value.id === "string") {
-                migrated ||= value.id !== (parsedValue as { id: string }).id;
-                seenRawIds.add(value.id);
-            } else {
-                migrated = true;
-            }
+            if (isRecord(value) && typeof value.id === "string") seenRawIds.add(value.id);
             seenParsedIds.add((parsedValue as { id: string }).id);
             migrated ||= !equal(value, parsedValue);
         }
