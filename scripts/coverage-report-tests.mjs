@@ -1412,6 +1412,14 @@ const malformedLcovCases = [
   },
 ];
 
+// These stage rows 93/97/100/103 in the other field-count direction and are not CLI-staged because those rows already are.
+const oppositeFieldCountCases = [
+  malformedCounterCase(93, "DA requires 2 or 3 fields", "DA:1,1,checksum,extra"),
+  malformedCounterCase(97, "FN requires 2 fields", "FN:1"),
+  malformedCounterCase(100, "FNDA requires 2 fields", "FNDA:1", "FN:1,f"),
+  malformedCounterCase(103, "BRDA requires 4 fields", "BRDA:1,0,0,1,extra"),
+];
+
 function malformedMessage(entry) {
   if (entry.line === undefined) {
     return `Malformed LCOV at end of input: ${entry.reason} ${JSON.stringify(entry.sf)}`;
@@ -1421,24 +1429,7 @@ function malformedMessage(entry) {
 }
 
 test("parseLcov rejects each malformed-input rule with its complete diagnostic", async (t) => {
-  for (const entry of malformedLcovCases) {
-    await t.test(`row ${entry.row}: ${entry.reason}`, () => {
-      assert.throws(() => parseLcov(entry.input), {
-        name: "Error",
-        message: malformedMessage(entry),
-      });
-    });
-  }
-});
-
-test("parseLcov rejects the opposite field-count direction with its complete diagnostic", async (t) => {
-  const cases = [
-    malformedCounterCase(93, "DA requires 2 or 3 fields", "DA:1,1,checksum,extra"),
-    malformedCounterCase(97, "FN requires 2 fields", "FN:1"),
-    malformedCounterCase(100, "FNDA requires 2 fields", "FNDA:1", "FN:1,f"),
-    malformedCounterCase(103, "BRDA requires 4 fields", "BRDA:1,0,0,1,extra"),
-  ];
-  for (const entry of cases) {
+  for (const entry of [...malformedLcovCases, ...oppositeFieldCountCases]) {
     await t.test(`row ${entry.row}: ${entry.reason}`, () => {
       assert.throws(() => parseLcov(entry.input), {
         name: "Error",
