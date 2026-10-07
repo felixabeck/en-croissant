@@ -13574,3 +13574,18 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
 * **Why it matters:** `.claude/rules/persisted-state.md` requires a persisted value naming something contextual to be corrected with a derived effective value rather than a destructive reset; here a read failure of one key destroys durable data in another.
 * **Related:** f-20260921-05 (its plan review, round 1, error-handling and persisted-state lenses, raised this against that plan's "withhold the player migration write while `engines` is untrusted" clause; the destruction is pre-existing and not caused by legacy ids), f-20260906-15 (handled; added the id-based picker reconciliation).
 * **Found by:** f-20260921-05 PLAN-ONLY plan review round 1 (`review-error-handling`, `review-persisted-state`), 2026-10-07; the orchestrator confirmed `EnginesSelect.tsx:31-37` and `engineOwnerStorage.ts:404-410` before filing.
+
+---
+
+## 2026-10-07 — filed through the inbox spool
+
+### `db/repository.rs` hand-copies the repository-state poison mapping nineteen times and no test drives it
+
+* **ID:** f-20261007-06 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Filed from:** a5e2d9b5-81c8-448d-8d69-8d80453d982e
+* **Where:** `src-tauri/src/db/repository.rs` — every `entry.state.lock()` / `.state.lock()` site, e.g. `:409`, `:421`, `:450`, `:697`, `:862`, `:1121`, `:1253` (19 occurrences of `Error::Conflict("database repository state poisoned".into())`, all in this one file).
+* **Defect:** each site maps a poisoned per-database state mutex to `Error::Conflict("database repository state poisoned")` by hand, and no test poisons that mutex (the only poison test in the file, `panicking_hook_configuration_does_not_poison_following_configuration` at `:2145`, concerns the test-hook mutex). A wrong or missing mapping at one of the nineteen copies is invisible to every gate.
+* **Why it matters:** the same class as `f-20260922-01` (path-authority lock mapping copied ~53 times, untested), one module wide instead of ten files wide. `.claude/rules/async-resource-invariants.md` requires a typed error path on every renderer-reachable operation, and universal rule 11 asks for the shared accessor at the second copy. A poisoned repository state mutex is the state left behind by a panic inside a held guard, so this text is the only diagnostic the user gets.
+* **Candidate fix:** one private accessor on the repository entry (e.g. `fn state(&self) -> Result<MutexGuard<'_, _>, Error>`) that owns the mapping, all nineteen sites routed through it, plus one test that poisons the mutex through a panicking thread and asserts the exact `Conflict` Display from one public repository operation.
+* **Related:** found while planning `f-20260922-01` (PLAN-ONLY drain lane, 2026-10-07); deliberately not folded in, because that finding's mandate is the path-authority mutex and `db/repository.rs` is not one of its files (rule 12a adoption gate).
+* **Found by:** the orchestrator of the `f-20260922-01` planner, by `git grep -n "repository state poisoned" -- src-tauri/src` (19 hits, one file) and reading `:400-425`.
