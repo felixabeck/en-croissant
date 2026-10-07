@@ -1632,14 +1632,31 @@ async fn permanently_delete_entry(
             ))
         })
         .await?;
-    if let Err(error) = state
+    let retirement_result = state
         .engine_supervisor
         .retire_executables(dropped_engine_executables)
-        .await
-    {
-        log::warn!("workspace removal engine retirement failed: {error}");
+        .await;
+    match (result, retirement_result) {
+        (Ok(count), Err(error)) => {
+            log::warn!(
+                "workspace removal engine retirement failed: {}",
+                error.diagnostic()
+            );
+            Err(Error::PartialRemoval {
+                removed_entries: count,
+                cause: Box::new(error),
+            })
+        }
+        (Ok(_), Ok(())) => Ok(()),
+        (Err(kept), Err(error)) => {
+            log::warn!(
+                "workspace removal engine retirement failed: {}",
+                error.diagnostic()
+            );
+            Err(kept)
+        }
+        (Err(kept), Ok(())) => Err(kept),
     }
-    result
 }
 
 // Dropped executables must reach `retire_executables` on the error path as well
@@ -1652,7 +1669,7 @@ fn permanently_delete_entry_blocking(
     workspace: &FileWorkspaceHandle,
     entry: &FileWorkspaceHandle,
     cancellation: &CancellationToken,
-) -> (Vec<PathRef>, Result<(), Error>) {
+) -> (Vec<PathRef>, Result<usize, Error>) {
     let mut dropped_engine_executables = Vec::<PathRef>::new();
     let result = (|| {
         let _guard = lock_std_cancellable(
@@ -1700,8 +1717,8 @@ fn permanently_delete_entry_blocking(
 
         if let Some(error @ Error::PartialRemoval { .. }) = removal_error {
             match registry_result {
-                Ok(CommitDurability::Durable) => {}
-                Ok(CommitDurability::DurabilityUncertain(stage)) => {
+                Ok((CommitDurability::Durable, _)) => {}
+                Ok((CommitDurability::DurabilityUncertain(stage), _)) => {
                     log::warn!("partial workspace removal registry durability uncertain: {stage}");
                 }
                 Err(registry_error) => {
@@ -1713,8 +1730,8 @@ fn permanently_delete_entry_blocking(
             return Err(error);
         }
 
-        let registry_durability = match registry_result {
-            Ok(durability) => durability,
+        let (registry_durability, count) = match registry_result {
+            Ok(committed) => committed,
             Err(error) => {
                 log::warn!("workspace removal registry reconciliation failed: {error}");
                 if let Some(sidecar_error) = sidecar_error {
@@ -1753,7 +1770,7 @@ fn permanently_delete_entry_blocking(
         if let CommitDurability::DurabilityUncertain(stage) = registry_durability {
             return Err(Error::CommittedDurabilityUncertain(stage));
         }
-        Ok(())
+        Ok(count)
     })();
     (dropped_engine_executables, result)
 }
@@ -1761,7 +1778,6 @@ fn permanently_delete_entry_blocking(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(unix)]
     use crate::engine::EngineKey;
     use crate::infra::fs::AtomicFileFaultPoint;
     #[cfg(unix)]
@@ -2870,7 +2886,6 @@ mod tests {
             .expect("registered file")
     }
 
-    #[cfg(unix)]
     fn registered_engine_file(state: &AppState, path: &Path) -> PathRef {
         authority(&state.pgn_path_authority)
             .expect("authority lock")
@@ -2881,6 +2896,48 @@ mod tests {
             .id
     }
 
+    fn registered_engine_directory(
+        state: &AppState,
+        workspace: &FileWorkspaceHandle,
+    ) -> (PathBuf, FileWorkspaceHandle, PathRef) {
+        let (child, entry) = registered_child_directory(state, workspace, "victim");
+        fs::remove_file(child.join("removed")).expect("remove default fixture content");
+        let executable_path = child.join("engine");
+        fs::write(&executable_path, b"engine").expect("engine executable");
+        let executable = registered_engine_file(state, &executable_path);
+        (child, entry, executable)
+    }
+
+    async fn supervise_test_actor(
+        state: &AppState,
+        key: &EngineKey,
+        engine_id: &str,
+        executable: PathRef,
+        actor: Arc<crate::engine::EngineActor>,
+    ) {
+        state
+            .engine_supervisor
+            .replace_handle(key.clone(), actor, engine_id.into(), executable)
+            .await
+            .expect("registered supervised engine");
+    }
+
+    async fn assert_executable_retired(state: &AppState, executable: PathRef) {
+        let (actor, _) = crate::engine::EngineActor::recording_test_actor(&[]);
+        assert!(matches!(
+            state
+                .engine_supervisor
+                .replace_handle(
+                    EngineKey::new("tab".into(), "retired path".into()).expect("engine key"),
+                    actor,
+                    "different-application-engine".into(),
+                    executable,
+                )
+                .await,
+            Err(Error::Conflict(message)) if message == "engine executable is retired"
+        ));
+    }
+
     #[cfg(unix)]
     async fn supervise_test_engine(
         state: &AppState,
@@ -2889,11 +2946,7 @@ mod tests {
         executable: PathRef,
     ) {
         let (actor, _) = crate::engine::EngineActor::recording_test_actor(&[]);
-        state
-            .engine_supervisor
-            .replace_handle(key.clone(), actor, engine_id.into(), executable)
-            .await
-            .expect("registered supervised engine");
+        supervise_test_actor(state, key, engine_id, executable, actor).await;
     }
 
     #[cfg(unix)]
@@ -2980,10 +3033,8 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     struct RegistryWriteFailure;
 
-    #[cfg(unix)]
     impl AtomicWriterInjector for RegistryWriteFailure {
         fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
             if point == AtomicFileFaultPoint::Write {
@@ -3119,6 +3170,114 @@ mod tests {
             .starts_with("Partially removed:"));
         assert!(!serialized.contains("/private/registry"));
         assert!(!serialized.contains(r"C:\private\registry"));
+    }
+
+    #[tokio::test]
+    async fn retirement_failure_after_committed_delete_is_partial_removal() {
+        let (_directory, state, workspace) = workspace_state();
+        let (child, entry, executable) = registered_engine_directory(&state, &workspace);
+        supervise_test_actor(
+            &state,
+            &EngineKey::new("tab".into(), "operation".into()).expect("engine key"),
+            "application-engine",
+            executable.clone(),
+            crate::engine::EngineActor::failing_terminate_test_actor("retirement failure"),
+        )
+        .await;
+
+        let error = permanently_delete_entry(&state, &workspace, &entry, CancellationToken::new())
+            .await
+            .expect_err("retirement failure after committed delete must be reported");
+
+        assert_eq!(
+            error.category(),
+            crate::error::ErrorCategory::PartialRemoval
+        );
+        let Error::PartialRemoval {
+            removed_entries,
+            cause,
+        } = error
+        else {
+            panic!("expected partial removal");
+        };
+        assert_eq!(removed_entries, 2);
+        assert_eq!(cause.category(), crate::error::ErrorCategory::Io);
+        assert!(cause.diagnostic().contains("retirement failure"));
+        assert!(!child.join("engine").exists());
+        assert!(!child.exists());
+        assert_executable_retired(&state, executable).await;
+    }
+
+    #[tokio::test]
+    async fn registry_and_retirement_failure_keeps_durability_error() {
+        let (_directory, state, workspace) = workspace_state();
+        let (child, entry, executable) = registered_engine_directory(&state, &workspace);
+        supervise_test_actor(
+            &state,
+            &EngineKey::new("tab".into(), "operation".into()).expect("engine key"),
+            "application-engine",
+            executable.clone(),
+            crate::engine::EngineActor::failing_terminate_test_actor("retirement failure"),
+        )
+        .await;
+        set_test_atomic_file_injector(Some(Arc::new(RegistryWriteFailure)));
+        let result =
+            permanently_delete_entry(&state, &workspace, &entry, CancellationToken::new()).await;
+        set_test_atomic_file_injector(None);
+
+        assert!(matches!(
+            result,
+            Err(Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::RegistryReplacement
+            ))
+        ));
+        assert!(!child.exists());
+        assert_executable_retired(&state, executable).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn walk_partial_removal_survives_retirement_failure() {
+        let mut counts = Vec::new();
+        for fail_retirement in [false, true] {
+            let (_directory, state, workspace) = workspace_state();
+            let (child, entry, executable) = registered_engine_directory(&state, &workspace);
+            let actor = if fail_retirement {
+                crate::engine::EngineActor::failing_terminate_test_actor("retirement failure")
+            } else {
+                crate::engine::EngineActor::recording_test_actor(&[]).0
+            };
+            supervise_test_actor(
+                &state,
+                &EngineKey::new("tab".into(), "operation".into()).expect("engine key"),
+                "application-engine",
+                executable.clone(),
+                actor,
+            )
+            .await;
+
+            let error = delete_entry_with_fault(
+                &state,
+                &workspace,
+                &entry,
+                RemovalFaultPoint::AfterEntryRemoved,
+            )
+            .await
+            .expect_err("walk failure must remain the primary outcome");
+            let Error::PartialRemoval {
+                removed_entries,
+                cause,
+            } = error
+            else {
+                panic!("expected partial removal");
+            };
+            counts.push(removed_entries);
+            assert_eq!(cause.category(), crate::error::ErrorCategory::Io);
+            assert!(child.exists());
+            assert!(!child.join("engine").exists());
+            assert_executable_retired(&state, executable).await;
+        }
+        assert_eq!(counts, vec![1, 1]);
     }
 
     #[cfg(unix)]

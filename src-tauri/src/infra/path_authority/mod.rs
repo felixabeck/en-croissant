@@ -7141,20 +7141,26 @@ impl PathAuthority {
 
     pub(crate) fn remove_database(&mut self, handle: &DatabaseHandle) -> Result<(), Error> {
         let mut dropped_engine_executables = Vec::new();
-        require_durable(self.remove_workspace_entry(
-            &FileWorkspaceHandle::new(handle.path_ref().clone()),
-            WorkspaceRemovalStatus::Complete,
-            &mut dropped_engine_executables,
-        )?)
+        require_durable(
+            self.remove_workspace_entry(
+                &FileWorkspaceHandle::new(handle.path_ref().clone()),
+                WorkspaceRemovalStatus::Complete,
+                &mut dropped_engine_executables,
+            )?
+            .0,
+        )
     }
 
     pub(crate) fn remove_puzzle_database(&mut self, handle: &PathRef) -> Result<(), Error> {
         let mut dropped_engine_executables = Vec::new();
-        require_durable(self.remove_workspace_entry(
-            &FileWorkspaceHandle::new(handle.clone()),
-            WorkspaceRemovalStatus::Complete,
-            &mut dropped_engine_executables,
-        )?)
+        require_durable(
+            self.remove_workspace_entry(
+                &FileWorkspaceHandle::new(handle.clone()),
+                WorkspaceRemovalStatus::Complete,
+                &mut dropped_engine_executables,
+            )?
+            .0,
+        )
     }
 
     fn database_root_path(&mut self, root: &DatabaseRootHandle) -> Result<PathBuf, Error> {
@@ -8387,7 +8393,7 @@ impl PathAuthority {
         handle: &FileWorkspaceHandle,
         status: WorkspaceRemovalStatus,
         dropped_engine_executables: &mut Vec<PathRef>,
-    ) -> Result<CommitDurability, Error> {
+    ) -> Result<(CommitDurability, usize), Error> {
         let removed = self
             .persistent
             .get(&handle.path_ref().id)
@@ -8450,8 +8456,12 @@ impl PathAuthority {
         // what was persisted, so the unavailable records remain until a later successful,
         // explicit reconciliation. Residual accumulation is therefore limited to registry-save
         // failures rather than ordinary workspace create-and-delete use.
+        let count = removed_ids
+            .iter()
+            .filter(|id| !self.pending_unpersisted_removals.contains(*id))
+            .count();
         match self.commit_candidate_with_pending(candidate, pending_artifacts, None) {
-            Ok(durability) => Ok(durability),
+            Ok(durability) => Ok((durability, count)),
             Err(error) => {
                 self.pending_unpersisted_removals.extend(removed_ids);
                 Err(error)
@@ -11095,6 +11105,99 @@ pub(crate) mod portable_tests {
             Err(Error::Conflict(_))
         ));
         assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn remove_workspace_entry_count_excludes_pending_unpersisted_removals() -> Result<(), Error> {
+        use crate::infra::fs::{
+            set_test_atomic_file_injector, AtomicFileFaultPoint, AtomicWriterInjector,
+        };
+
+        struct RegistryWriteFailure;
+        impl AtomicWriterInjector for RegistryWriteFailure {
+            fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+                if point == AtomicFileFaultPoint::Write {
+                    Err(std::io::Error::other("registry write failure"))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+
+        let (_directory, mut authority, workspace, root) = directory_listing_bound_fixture()?;
+        let victim = root.join("victim");
+        fs::create_dir(&victim)?;
+        let entry = authority.register_workspace_child_observed_with_parent(
+            &workspace,
+            &[OsString::from("victim")],
+            "victim",
+            IdentityBinding::new(identity(&victim)?, Some(identity(&root)?)),
+            true,
+            PathOperation::ReadPgn,
+        )?;
+        let executable_path = victim.join("engine");
+        fs::write(&executable_path, b"engine")?;
+        let executable = authority
+            .register_engine_file(&executable_path, "engine")?
+            .id;
+        let mut pending_entries = Vec::new();
+        for name in ["victim/pending.pgn", "outside.pgn"] {
+            let path = root.join(name);
+            fs::write(&path, b"*")?;
+            let components = Path::new(name)
+                .components()
+                .map(|component| component.as_os_str().to_os_string())
+                .collect::<Vec<_>>();
+            let pending = authority.register_workspace_child_observed_with_parent(
+                &workspace,
+                &components,
+                name,
+                IdentityBinding::new(identity(&path)?, Some(identity(path.parent().unwrap())?)),
+                false,
+                PathOperation::ReadPgn,
+            )?;
+            pending_entries.push((path, pending));
+        }
+
+        let mut dropped = Vec::new();
+        for (path, pending) in &pending_entries {
+            fs::remove_file(path)?;
+            let persistent_before = authority.persistent.clone();
+            set_test_atomic_file_injector(Some(Arc::new(RegistryWriteFailure)));
+            let result = authority.remove_workspace_entry(
+                pending,
+                WorkspaceRemovalStatus::Complete,
+                &mut dropped,
+            );
+            set_test_atomic_file_injector(None);
+            assert!(result.is_err());
+            assert!(authority.persistent == persistent_before);
+            assert!(authority
+                .pending_unpersisted_removals
+                .contains(&pending.path_ref().id));
+        }
+
+        let persistent_before = authority.persistent.clone();
+        let pending_before = authority.pending_unpersisted_removals.clone();
+        assert_eq!(pending_before.len(), 2);
+        fs::remove_dir_all(&victim)?;
+        let (durability, count) = authority.remove_workspace_entry(
+            &entry,
+            WorkspaceRemovalStatus::Complete,
+            &mut dropped,
+        )?;
+
+        assert!(matches!(durability, CommitDurability::Durable));
+        let newly_removed = persistent_before
+            .keys()
+            .filter(|id| !authority.persistent.contains_key(*id) && !pending_before.contains(*id))
+            .count();
+        assert_eq!(count, newly_removed);
+        assert_eq!(count, 2);
+        assert_eq!(persistent_before.len() - authority.persistent.len(), 4);
+        assert!(authority.pending_unpersisted_removals.is_empty());
+        assert_eq!(dropped, vec![executable]);
+        Ok(())
     }
 
     #[test]
@@ -13810,6 +13913,7 @@ mod tests {
                 WorkspaceRemovalStatus::Complete,
                 &mut dropped_engine_executables,
             )
+            .map(|(durability, _)| durability)
             .unwrap();
         set_test_atomic_file_injector(None);
 
@@ -13921,6 +14025,7 @@ mod tests {
                 WorkspaceRemovalStatus::Partial,
                 &mut dropped_engine_executables,
             )
+            .map(|(durability, _)| durability)
             .unwrap();
 
         assert!(authority
@@ -13977,6 +14082,7 @@ mod tests {
                 WorkspaceRemovalStatus::Complete,
                 &mut dropped_engine_executables,
             )
+            .map(|(durability, _)| durability)
             .unwrap();
 
         assert_eq!(authority.active_database_root, None);
@@ -19216,6 +19322,7 @@ mod tests {
                 WorkspaceRemovalStatus::Complete,
                 &mut dropped,
             )
+            .map(|(durability, _)| durability)
             .is_err());
         set_test_atomic_file_injector(None);
         assert!(path_authority
@@ -20381,6 +20488,7 @@ mod tests {
                 WorkspaceRemovalStatus::Complete,
                 &mut dropped_engine_executables,
             )
+            .map(|(durability, _)| durability)
             .is_err());
         set_test_atomic_file_injector(None);
         assert_eq!(dropped_engine_executables, vec![engine_handle.id]);
@@ -21116,6 +21224,7 @@ mod tests {
                 WorkspaceRemovalStatus::Partial,
                 &mut dropped,
             )
+            .map(|(durability, _)| durability)
             .unwrap();
         assert!(!partial_authority
             .persistent
@@ -22367,6 +22476,7 @@ mod tests {
                     WorkspaceRemovalStatus::Complete,
                     &mut dropped,
                 )
+                .map(|(durability, _)| durability)
                 .unwrap();
             assert!(authority.persistent.is_empty());
             assert!(authority.session_protected_ids.is_empty());
