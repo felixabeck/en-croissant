@@ -13647,3 +13647,18 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
 
 **Correction (records review of the f-20260922-01 push, 2026-10-07):** the shared warn-with-console-fallback helper this entry's `Open question` names does not live at `src/platform/log.ts`, which does not exist. Commit `57d9f382` extracted it as `warnSafely` in `src/platform/errors.ts:256`, and `tabStorage.ts` and `sound.ts` import it from there; route both sites through that function.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"bcc29029def3936e74a3cc60151937471f45548b7dad509b65bc3633f797454e","input_sha256":"0c98b44cdfb017bfc4ab915b153bb6ed9e4366b5c27557f1c056da8fd25b5bbb","kind":"mutation-receipt","operation":"9c5cef43ebc73455fb8b11ad0e7a37a37fcbe2b99e49abc95bec68372750b564","options":{"section":null},"request_id_sha256":null,"results":["f-20261007-08"],"target":"f-20261007-08","v":1} -->
+
+---
+
+## 2026-10-07 — filed through the inbox spool
+
+### One stale engine attachment id makes every engine-settings save and the startup attachment reconcile fail with InvalidInput
+
+* **ID:** f-20261007-09 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Filed from:** 2a22787f-5af5-4f83-a7b0-3e9cbecbc726
+* **Where:** `src-tauri/src/infra/path_authority/mod.rs:7366-7377` (`reconcile_engine_attachments`: every retained id must be in `persistent` or `retired_attachments`, otherwise the whole action returns `InvalidInput("unknown retained engine attachment")`), `:7354-7358` (the raw-count limit precedes any filtering); `src/state/engineOwnerStorage.ts:180-196` (`enqueueEngineOwnerSave` prepares the union of every owner key's attachment ids), `:271-283` (`reconcileStartupEngineAttachments` forwards the persisted snapshot unchanged with `startup: true`), `:110-130` (the startup snapshot validates shape only, never native membership).
+* **Defect:** renderer engine-owner records are validated for shape, not for registry membership, so a persisted attachment id whose native record is gone (registry replaced or reset, a retired attachment surviving in a record written outside the coordinator, legacy state) stays in localStorage. Every later engine-settings save sends the union of all owner keys' ids through `prepare`, which rejects the whole action on that one unknown id, so the save is refused (`saved: false`) for every engine edit until the stale id is removed by hand; the startup `reconcile` with the same snapshot fails the same way, so omitted attachments are never retired and managed-image cleanup never runs.
+* **Why it matters:** `.claude/rules/async-resource-invariants.md` — fail the one item, not the process; here one dead reference blocks every save of an unrelated engine and the whole cleanup path.
+* **Open question:** which side owns stale attachment references — should native `prepare`/startup `reconcile` discard ids it does not know (and what then stops a save from durably naming a capability that does not exist), or should the renderer prune ids native reports as unknown from its owner records (a typed per-id result instead of one `InvalidInput`), and how does that interact with the prepare-before-save ordering of `d-20260906-10`?
+* **Related:** `f-20260924-01` (same stale-renderer-id class for `reconcile_startup_owners`; its plan keeps engine attachments out of scope and its fix also stops a rejected path-owner reconcile from skipping the startup attachment reconcile), `f-20260901-13` (handled, introduced the attachment protocol), `d-20260906-10`.
+* **Found by:** locate probe of the `f-20260924-01` plan-only run, drain session 2a22787f-5af5-4f83-a7b0-3e9cbecbc726, 2026-10-07.
