@@ -634,13 +634,7 @@ pub async fn kill_engine(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
     let key = EngineKey::new(tab, engine)?;
-    if let Some(process) = state.engine_supervisor.get_exact(&key) {
-        state
-            .engine_supervisor
-            .terminate_exact(&key, process.generation)
-            .await?;
-    }
-    Ok(())
+    state.engine_supervisor.kill_engine(&key).await
 }
 #[tauri::command]
 #[specta::specta]
@@ -2965,10 +2959,28 @@ done
         probe.actor.terminate().await.unwrap();
     }
 
-    #[test]
-    fn cancelled_interactive_search_normalizes_only_expected_stop_consequences() {
+    #[tokio::test]
+    async fn kill_engine_cancelled_interactive_search_normalizes_only_expected_stop_consequences() {
+        let supervisor = crate::engine::EngineSupervisor::default();
+        let key = EngineKey::new("kill-disconnected".into(), "engine".into()).unwrap();
+        let (actor, _) = EngineActor::recording_test_actor(&[]);
+        let published = supervisor
+            .replace_handle(
+                key.clone(),
+                actor,
+                "engine".into(),
+                crate::infra::path_authority::PathRef {
+                    id: "kill-image".into(),
+                },
+            )
+            .await
+            .unwrap();
+        supervisor.kill_engine(&key).await.unwrap();
         assert!(matches!(
-            classify_interactive_search_result(Err(Error::EngineDisconnected), true),
+            classify_interactive_search_result(
+                Err(Error::EngineDisconnected),
+                published.cancelled.load(Ordering::SeqCst)
+            ),
             Err(Error::Cancellation)
         ));
         assert!(matches!(

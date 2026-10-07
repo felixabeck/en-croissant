@@ -1387,6 +1387,9 @@ impl EngineSupervisor {
                     "engine search reservation is invalid or expired".into(),
                 ));
             }
+            if admission.cancelled.load(Ordering::SeqCst) {
+                return Err(Error::Cancellation);
+            }
             if admission.engine_id != engine_id
                 || admission.executable != executable
                 || !admission.prepared
@@ -1394,9 +1397,6 @@ impl EngineSupervisor {
                 return Err(Error::Conflict(
                     "engine search reservation does not match the request".into(),
                 ));
-            }
-            if admission.cancelled.load(Ordering::SeqCst) {
-                return Err(Error::Cancellation);
             }
             self.admissions.insert(
                 key.clone(),
@@ -1542,12 +1542,18 @@ impl EngineSupervisor {
         ) {
             return Err(reject_actor(&pending, self.pending_actors.clone(), error).await);
         }
-        if let Some(previous) = self.actors.get(&key).map(|entry| entry.clone()) {
-            previous.mark_cancelled();
-            let previous_actor = previous.actor.clone();
-            let stop = previous_actor.stop_current().await;
-            let terminate = previous_actor.terminate().await;
-            self.actors.remove(&key);
+        let previous = {
+            let _registration = self.registration.lock().await;
+            let _coordination = self
+                .admission_coordination
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            self.get_exact(&key)
+                .and_then(|previous| self.handoff_published_locked(&key, previous.generation))
+        };
+        if let Some(previous) = previous {
+            let stop = previous.actor.stop_current().await;
+            let terminate = previous.terminate(self.pending_actors.clone()).await;
             if let Err(primary) = combine_shutdown_results(stop, terminate) {
                 return Err(reject_actor(&pending, self.pending_actors.clone(), primary).await);
             }
@@ -1652,8 +1658,7 @@ impl EngineSupervisor {
                 return Err(Error::Cancellation);
             }
             if let Err(primary) = current.actor.stop_current().await {
-                let cleanup = current.actor.terminate().await;
-                self.actors.remove(&key);
+                let cleanup = self.reap_published(&key, current.generation).await;
                 return Err(Error::with_cleanup(primary, cleanup));
             }
             if search.cancelled.load(Ordering::SeqCst) {
@@ -1696,9 +1701,7 @@ impl EngineSupervisor {
             match initialized {
                 Ok(warm) => *current.interactive.lock().await = Some(warm),
                 Err(primary) => {
-                    current.mark_cancelled();
-                    let cleanup = current.actor.terminate().await;
-                    self.actors.remove(&key);
+                    let cleanup = self.reap_published(&key, current.generation).await;
                     return Err(Error::with_cleanup(primary, cleanup));
                 }
             }
@@ -1725,9 +1728,7 @@ impl EngineSupervisor {
                 Err(Error::Cancellation)
             }
             Err(primary) => {
-                current.mark_cancelled();
-                let cleanup = current.actor.terminate().await;
-                self.actors.remove(&key);
+                let cleanup = self.reap_published(&key, current.generation).await;
                 Err(Error::with_cleanup(primary, cleanup))
             }
         }
@@ -1757,16 +1758,7 @@ impl EngineSupervisor {
         }
         let lifecycle = self.lifecycle_lease(key);
         let _transition = lifecycle.lock().await;
-        let Some(current) = self.actors.get(key).map(|entry| entry.clone()) else {
-            return Ok(());
-        };
-        if current.generation != generation {
-            return Ok(());
-        }
-        current.mark_cancelled();
-        let result = current.actor.terminate().await;
-        self.actors.remove(key);
-        result
+        self.reap_published(key, generation).await
     }
 
     #[cfg(test)]
@@ -1830,6 +1822,10 @@ impl EngineSupervisor {
         if target_generations.is_empty() {
             return Ok(false);
         }
+        let selected_actor = self
+            .get_exact(key)
+            .filter(|current| target_generations.contains(&current.owner_generation()))
+            .map(|current| current.generation);
         if let Some(current) = self.get_exact(key) {
             if let Some(search) = current
                 .current_search()
@@ -1870,9 +1866,15 @@ impl EngineSupervisor {
         let lifecycle = self.lifecycle_lease(key);
         let _transition = lifecycle.lock().await;
         let Some(current) = self.actors.get(key).map(|entry| entry.clone()) else {
+            if let Some(generation) = selected_actor {
+                self.reap_published(key, generation).await?;
+            }
             return Ok(false);
         };
         if !target_generations.contains(&current.owner_generation()) {
+            if let Some(generation) = selected_actor {
+                self.reap_published(key, generation).await?;
+            }
             return Ok(false);
         }
         if !release {
@@ -1882,9 +1884,7 @@ impl EngineSupervisor {
                 return match stop {
                     Ok(()) => Ok(true),
                     Err(primary) => {
-                        current.mark_cancelled();
-                        let cleanup = current.actor.terminate().await;
-                        self.actors.remove(key);
+                        let cleanup = self.reap_published(key, current.generation).await;
                         Err(Error::with_cleanup(primary, cleanup))
                     }
                 };
@@ -1892,9 +1892,106 @@ impl EngineSupervisor {
         }
         current.mark_cancelled();
         let stop = current.actor.stop_current().await;
-        let terminate = current.actor.terminate().await;
-        self.actors.remove(key);
+        let terminate = self.reap_published(key, current.generation).await;
         combine_shutdown_results(stop, terminate).map(|_| false)
+    }
+
+    /// Cancels work already admitted for this key without waiting for its launch lock.
+    pub async fn kill_engine(&self, key: &EngineKey) -> Result<(), Error> {
+        let (published, pending) = {
+            let _registration = self.registration.lock().await;
+            let _coordination = self
+                .admission_coordination
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(mut admission) = self.admissions.get_mut(key) {
+                admission.cancelled.store(true, Ordering::SeqCst);
+                admission.prepared = false;
+            }
+            let published = self
+                .get_exact(key)
+                .and_then(|current| self.handoff_published_locked(key, current.generation));
+            let pending: Vec<_> = self
+                .pending_actors
+                .iter()
+                .filter(|entry| {
+                    &entry.key == key
+                        && published
+                            .as_ref()
+                            .is_none_or(|published| published.generation != entry.generation)
+                })
+                .map(|entry| entry.value().clone())
+                .collect();
+            (published, pending)
+        };
+        let published = async {
+            match published {
+                Some(entry) => entry.terminate(self.pending_actors.clone()).await,
+                None => Ok(()),
+            }
+        };
+        let pending = futures_util::future::join_all(
+            pending
+                .into_iter()
+                .map(|entry| async move { entry.terminate(self.pending_actors.clone()).await }),
+        );
+        let (published, pending) = tokio::join!(published, pending);
+        pending
+            .into_iter()
+            .fold(published, combine_shutdown_results)
+    }
+
+    // Caller holds registration, then admission coordination. Insert before removal so
+    // every drain can see the child until the shared termination task completes.
+    fn handoff_published_locked(
+        &self,
+        key: &EngineKey,
+        generation: u64,
+    ) -> Option<Arc<PendingActor>> {
+        if let Some(current) = self
+            .get_exact(key)
+            .filter(|entry| entry.generation == generation)
+        {
+            current.mark_cancelled();
+            let pending = self
+                .pending_actors
+                .entry(generation)
+                .or_insert_with(|| {
+                    Arc::new(PendingActor {
+                        actor: current.actor.clone(),
+                        key: key.clone(),
+                        generation,
+                        engine_id: current.engine_id.clone(),
+                        executable: current.executable.clone(),
+                        termination: StdMutex::default(),
+                        completed: Notify::new(),
+                    })
+                })
+                .clone();
+            self.actors
+                .remove_if(key, |_, entry| entry.generation == generation);
+            Some(pending)
+        } else {
+            self.pending_actors
+                .get(&generation)
+                .filter(|entry| &entry.key == key)
+                .map(|entry| entry.value().clone())
+        }
+    }
+
+    async fn reap_published(&self, key: &EngineKey, generation: u64) -> Result<(), Error> {
+        let pending = {
+            let _registration = self.registration.lock().await;
+            let _coordination = self
+                .admission_coordination
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            self.handoff_published_locked(key, generation)
+        };
+        match pending {
+            Some(entry) => entry.terminate(self.pending_actors.clone()).await,
+            None => Ok(()),
+        }
     }
 
     pub fn get_exact(&self, key: &EngineKey) -> Option<SupervisedEngine> {
@@ -4934,6 +5031,416 @@ mod tests {
             }
         })
         .await;
+    }
+
+    async fn kill_engine_prepared(supervisor: &EngineSupervisor, key: &EngineKey) -> String {
+        supervisor
+            .prepare_engine_search(key.clone(), key.engine.clone(), path_ref("kill-image"))
+            .await
+            .unwrap()
+    }
+
+    async fn kill_engine_consume(
+        supervisor: &EngineSupervisor,
+        key: &EngineKey,
+        generation: &str,
+    ) -> Result<AdmissionLease, Error> {
+        supervisor
+            .consume_engine_search(
+                key.clone(),
+                key.engine.clone(),
+                path_ref("kill-image"),
+                generation,
+            )
+            .await
+    }
+
+    // Models the fresh launch after its cancellation check, holding the production lifecycle
+    // lease across the untracked-child window and using the production publication path.
+    fn kill_engine_paused_launch(
+        supervisor: Arc<EngineSupervisor>,
+        key: EngineKey,
+        admission: AdmissionLease,
+        actor: Arc<EngineActor>,
+        pause: Arc<TerminationReplyGate>,
+    ) -> tokio::task::JoinHandle<Result<(), Error>> {
+        tokio::spawn(async move {
+            let lifecycle = supervisor.lifecycle_lease(&key);
+            let _transition = lifecycle.lock().await;
+            assert!(admission.cancel_error().is_none());
+            pause.park().await;
+            let pending = supervisor.track_pending_actor(key.clone(), actor, &admission);
+            let mut guard =
+                PendingActorGuard::new(pending.clone(), supervisor.pending_actors.clone());
+            let published = supervisor
+                .publish_admitted_locked(key, pending, admission)
+                .await;
+            guard.disarm();
+            published?
+                .actor
+                .start_search(&GoMode::Infinite)
+                .await
+                .map(|_| ())
+        })
+    }
+
+    #[tokio::test]
+    async fn kill_engine_prepared_is_cancelled_and_later_and_other_keys_admit() {
+        let supervisor = EngineSupervisor::default();
+        let key = EngineKey::new("kill-v1".into(), "engine".into()).unwrap();
+        let other = EngineKey::new("kill-v1".into(), "other".into()).unwrap();
+        let generation = kill_engine_prepared(&supervisor, &key).await;
+        let other_generation = kill_engine_prepared(&supervisor, &other).await;
+        supervisor.kill_engine(&key).await.unwrap();
+        assert!(supervisor.get_exact(&key).is_none());
+        assert!(matches!(
+            kill_engine_consume(&supervisor, &key, &generation).await,
+            Err(Error::Cancellation)
+        ));
+        let admission = supervisor.admissions.get(&key).unwrap();
+        assert!(!admission.prepared);
+        assert_eq!(admission.generation.to_string(), generation);
+        drop(admission);
+        assert!(kill_engine_consume(&supervisor, &other, &other_generation)
+            .await
+            .is_ok());
+        let next = kill_engine_prepared(&supervisor, &key).await;
+        assert_ne!(generation, next);
+        assert!(matches!(
+            kill_engine_consume(&supervisor, &key, &generation).await,
+            Err(Error::Conflict(_))
+        ));
+        assert!(kill_engine_consume(&supervisor, &key, &next).await.is_ok());
+        supervisor.kill_engine(&key).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn kill_engine_clears_prepared_capacity() {
+        let supervisor = EngineSupervisor::default();
+        let key = EngineKey::new("kill-capacity".into(), "engine".into()).unwrap();
+        kill_engine_prepared(&supervisor, &key).await;
+        supervisor.kill_engine(&key).await.unwrap();
+        for index in 0..MAX_PENDING_ENGINE_SEARCHES {
+            let other = EngineKey::new("kill-capacity".into(), format!("engine-{index}")).unwrap();
+            kill_engine_prepared(&supervisor, &other).await;
+        }
+        let extra = EngineKey::new("kill-capacity".into(), "extra".into()).unwrap();
+        assert!(matches!(
+            supervisor
+                .prepare_engine_search(extra, "extra".into(), path_ref("kill-image"))
+                .await,
+            Err(Error::ResourceLimit(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn kill_engine_other_key_actors_are_untouched() {
+        let supervisor = EngineSupervisor::default();
+        let key = EngineKey::new("kill-isolation".into(), "engine".into()).unwrap();
+        let other = EngineKey::new("kill-isolation-other-tab".into(), "engine".into()).unwrap();
+        let (actor, _) = actor(&[]);
+        let published = supervisor.replace(other.clone(), actor).await.unwrap();
+        let generation = kill_engine_prepared(&supervisor, &other).await;
+        let admission = kill_engine_consume(&supervisor, &other, &generation)
+            .await
+            .unwrap();
+        let (actor, gate, calls) = gated_pending_actor(None);
+        let pending = supervisor.track_pending_actor(other.clone(), actor, &admission);
+        kill_engine_prepared(&supervisor, &key).await;
+        pending_test_wait(supervisor.kill_engine(&key))
+            .await
+            .unwrap();
+        assert_eq!(
+            supervisor.get_exact(&other).unwrap().generation,
+            published.generation
+        );
+        assert!(!published.cancelled.load(Ordering::SeqCst));
+        assert!(admission.cancel_error().is_none());
+        assert!(supervisor.pending_actors.contains_key(&pending.generation));
+        assert!(!gate.parked.load(Ordering::SeqCst));
+        gate.open();
+        pending
+            .terminate(supervisor.pending_actors.clone())
+            .await
+            .unwrap();
+        supervisor
+            .terminate_exact(&other, published.generation)
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn kill_engine_consumed_untracked_launch_cannot_publish_or_go() {
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let key = EngineKey::new("kill-v2".into(), "engine".into()).unwrap();
+        let generation = kill_engine_prepared(&supervisor, &key).await;
+        let admission = kill_engine_consume(&supervisor, &key, &generation)
+            .await
+            .unwrap();
+        let ((actor, writes), calls) = actor_with(&[], false, None);
+        let pause = TerminationReplyGate::new();
+        let launch = kill_engine_paused_launch(
+            supervisor.clone(),
+            key.clone(),
+            admission,
+            Arc::new(actor),
+            pause.clone(),
+        );
+        wait_for_pending_termination(&pause).await;
+        pending_test_wait(supervisor.kill_engine(&key))
+            .await
+            .unwrap();
+        assert!(!launch.is_finished());
+        assert!(supervisor.pending_actors.is_empty());
+        pause.open();
+        assert!(matches!(
+            pending_test_wait(launch).await.unwrap(),
+            Err(Error::Cancellation)
+        ));
+        assert!(supervisor.get_exact(&key).is_none());
+        assert!(supervisor.pending_actors.is_empty());
+        assert!(!writes
+            .lock()
+            .await
+            .iter()
+            .any(|line| line.starts_with("go")));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn kill_engine_published_and_new_prepared_reservation_are_stopped() {
+        let supervisor = EngineSupervisor::default();
+        let key = EngineKey::new("kill-v3".into(), "engine".into()).unwrap();
+        let ((actor, _), calls) = actor_with(&[], false, None);
+        let published = supervisor.replace(key.clone(), actor).await.unwrap();
+        let generation = kill_engine_prepared(&supervisor, &key).await;
+        assert_ne!(published.generation.to_string(), generation);
+        supervisor.kill_engine(&key).await.unwrap();
+        assert!(supervisor.get_exact(&key).is_none());
+        assert!(published.cancelled.load(Ordering::SeqCst));
+        assert!(matches!(
+            kill_engine_consume(&supervisor, &key, &generation).await,
+            Err(Error::Cancellation)
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn kill_engine_waits_for_tracked_pending_and_shares_failure() {
+        for failure in [None, Some("kill-v4-reap-failure")] {
+            let supervisor = EngineSupervisor::default();
+            let key = EngineKey::new(format!("kill-v4-{failure:?}"), "engine".into()).unwrap();
+            let generation = kill_engine_prepared(&supervisor, &key).await;
+            let admission = kill_engine_consume(&supervisor, &key, &generation)
+                .await
+                .unwrap();
+            let (actor, gate, calls) = gated_pending_actor(failure);
+            let pending = supervisor.track_pending_actor(key.clone(), actor, &admission);
+            // Another owner has already begun the reap before Kill crosses the barrier.
+            pending.start_termination(supervisor.pending_actors.clone());
+            wait_for_pending_termination(&gate).await;
+            let kill = supervisor.kill_engine(&key);
+            tokio::pin!(kill);
+            assert!(futures_util::poll!(&mut kill).is_pending());
+            assert!(supervisor
+                .pending_actors
+                .contains_key(&admission.generation()));
+            gate.open();
+            let result = pending_test_wait(kill).await;
+            if let Some(sentinel) = failure {
+                let error = result.unwrap_err();
+                assert!(matches!(error, Error::Shared(_)));
+                assert!(error.diagnostic().contains(sentinel));
+            } else {
+                result.unwrap();
+            }
+            assert!(supervisor.pending_actors.is_empty());
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn kill_engine_combines_published_and_pending_failures() {
+        let supervisor = EngineSupervisor::default();
+        let key = EngineKey::new("kill-v5".into(), "engine".into()).unwrap();
+        let (actor, published_gate, published_calls) =
+            gated_pending_actor(Some("kill-published-failure"));
+        let published = supervisor
+            .replace_handle(key.clone(), actor, "engine".into(), path_ref("kill-image"))
+            .await
+            .unwrap();
+        let generation = kill_engine_prepared(&supervisor, &key).await;
+        let admission = kill_engine_consume(&supervisor, &key, &generation)
+            .await
+            .unwrap();
+        let (actor, pending_gate, pending_calls) =
+            gated_pending_actor(Some("kill-pending-failure"));
+        supervisor.track_pending_actor(key.clone(), actor, &admission);
+        let kill = supervisor.kill_engine(&key);
+        tokio::pin!(kill);
+        assert!(futures_util::poll!(&mut kill).is_pending());
+        wait_for_pending_termination(&published_gate).await;
+        wait_for_pending_termination(&pending_gate).await;
+        let exact = supervisor.terminate_exact(&key, published.generation);
+        tokio::pin!(exact);
+        assert!(futures_util::poll!(&mut exact).is_pending());
+        published_gate.open();
+        let exact_error = pending_test_wait(exact).await.unwrap_err();
+        assert!(matches!(exact_error, Error::Shared(_)));
+        assert!(exact_error.diagnostic().contains("kill-published-failure"));
+        // Exact termination has finished while the other generation is still blocked.
+        assert!(futures_util::poll!(&mut kill).is_pending());
+        pending_gate.open();
+        let error = pending_test_wait(kill).await.unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Operation failed; temporary cleanup also failed"
+        );
+        match error {
+            Error::OperationAndCleanup { primary, cleanup } => {
+                assert!(primary.contains("kill-published-failure"));
+                assert!(cleanup.contains("kill-pending-failure"));
+            }
+            other => panic!("expected combined failures, got {other:?}"),
+        }
+        assert_eq!(published_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(pending_calls.load(Ordering::SeqCst), 1);
+        assert!(supervisor.pending_actors.is_empty());
+    }
+
+    #[tokio::test]
+    async fn kill_engine_exact_termination_does_not_reap_other_generation() {
+        let supervisor = EngineSupervisor::default();
+        let key = EngineKey::new("kill-exact-scope".into(), "engine".into()).unwrap();
+        let (actor, published_gate, published_calls) = gated_pending_actor(None);
+        let published = supervisor
+            .replace_handle(key.clone(), actor, "engine".into(), path_ref("kill-image"))
+            .await
+            .unwrap();
+        let generation = kill_engine_prepared(&supervisor, &key).await;
+        let admission = kill_engine_consume(&supervisor, &key, &generation)
+            .await
+            .unwrap();
+        let (actor, pending_gate, pending_calls) = gated_pending_actor(None);
+        let pending = supervisor.track_pending_actor(key.clone(), actor, &admission);
+        let exact = supervisor.terminate_exact(&key, published.generation);
+        tokio::pin!(exact);
+        assert!(futures_util::poll!(&mut exact).is_pending());
+        wait_for_pending_termination(&published_gate).await;
+        assert!(!pending_gate.parked.load(Ordering::SeqCst));
+        published_gate.open();
+        pending_test_wait(exact).await.unwrap();
+        assert!(supervisor.pending_actors.contains_key(&pending.generation));
+        assert!(admission.cancel_error().is_none());
+        assert_eq!(pending_calls.load(Ordering::SeqCst), 0);
+        pending_gate.open();
+        supervisor.kill_engine(&key).await.unwrap();
+        assert_eq!(published_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(pending_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn kill_engine_published_reap_and_drains_ignore_paused_launch_lock() {
+        for all in [false, true] {
+            let supervisor = Arc::new(EngineSupervisor::default());
+            let key = EngineKey::new(format!("kill-v8-{all}"), "engine".into()).unwrap();
+            let (actor, gate, calls) = gated_pending_actor(None);
+            let published = supervisor
+                .replace_handle(key.clone(), actor, "engine".into(), path_ref("old-image"))
+                .await
+                .unwrap();
+            let search =
+                SupervisedSearch::new(published.generation, Arc::new(AtomicBool::new(false)));
+            published.bind_search(search.clone());
+            let generation = kill_engine_prepared(&supervisor, &key).await;
+            let admission = kill_engine_consume(&supervisor, &key, &generation)
+                .await
+                .unwrap();
+            let ((actor, writes), late_calls) = actor_with(&[], false, None);
+            let pause = TerminationReplyGate::new();
+            let launch = kill_engine_paused_launch(
+                supervisor.clone(),
+                key.clone(),
+                admission,
+                Arc::new(actor),
+                pause.clone(),
+            );
+            wait_for_pending_termination(&pause).await;
+            let kill = supervisor.kill_engine(&key);
+            tokio::pin!(kill);
+            assert!(futures_util::poll!(&mut kill).is_pending());
+            wait_for_pending_termination(&gate).await;
+            assert!(supervisor.get_exact(&key).is_none());
+            assert!(supervisor
+                .pending_actors
+                .contains_key(&published.generation));
+            assert!(!published
+                .try_publish(|| -> Result<(), Error> { panic!("cancelled actor emitted") })
+                .unwrap());
+            assert!(search.cancelled.load(Ordering::SeqCst));
+            assert!(!search
+                .try_publish(|| -> Result<(), Error> { panic!("cancelled search emitted") })
+                .unwrap());
+            let drain = async {
+                if all {
+                    supervisor.terminate_all().await
+                } else {
+                    supervisor.terminate_tab(&key.tab).await
+                }
+            };
+            tokio::pin!(drain);
+            assert!(futures_util::poll!(&mut drain).is_pending());
+            assert!(futures_util::poll!(&mut kill).is_pending());
+            gate.open();
+            pending_test_wait(kill).await.unwrap();
+            pending_test_wait(drain).await.unwrap();
+            assert!(!launch.is_finished());
+            assert!(supervisor.pending_actors.is_empty());
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            pause.open();
+            assert!(matches!(
+                pending_test_wait(launch).await.unwrap(),
+                Err(Error::Cancellation)
+            ));
+            assert!(supervisor.get_exact(&key).is_none());
+            assert!(supervisor.pending_actors.is_empty());
+            assert!(!writes
+                .lock()
+                .await
+                .iter()
+                .any(|line| line.starts_with("go")));
+            assert_eq!(late_calls.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn kill_engine_dropped_waiter_leaves_shared_reap_for_drain() {
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let key = EngineKey::new("kill-drop".into(), "engine".into()).unwrap();
+        let (actor, gate, calls) = gated_pending_actor(None);
+        let published = supervisor
+            .replace_handle(key.clone(), actor, "engine".into(), path_ref("kill-image"))
+            .await
+            .unwrap();
+        let kill = tokio::spawn({
+            let supervisor = supervisor.clone();
+            let key = key.clone();
+            async move { supervisor.kill_engine(&key).await }
+        });
+        wait_for_pending_termination(&gate).await;
+        kill.abort();
+        assert!(pending_test_wait(kill).await.unwrap_err().is_cancelled());
+        assert!(supervisor
+            .pending_actors
+            .contains_key(&published.generation));
+        let drain = supervisor.terminate_tab(&key.tab);
+        tokio::pin!(drain);
+        assert!(futures_util::poll!(&mut drain).is_pending());
+        gate.open();
+        pending_test_wait(drain).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(supervisor.pending_actors.is_empty());
     }
 
     fn spawn_admitted_publisher(
