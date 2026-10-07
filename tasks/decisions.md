@@ -6237,3 +6237,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** the seam that removes the copies is the seam that makes them testable; privacy turns "a wrong or missing mapping is invisible" into a compile error. Plan `tasks/plans/2026-10-07-shared-path-authority.md`, reviewed in three rounds (r1=5 r2=0 r3=0), handoff `tasks/handoffs/2026-10-07-f-20260922-01-review.md`. Reversal path: reintroduce direct `.lock()` access by making the inner mutex `pub(crate)` and set this entry's `Superseded-by`.
 * **Decided by:** Claude Code, drain planner lane (drain run a28f99b3-2237-4fa8-b5ca-715d97e8cd6a), full auto; recorded by adopting session 1dacb397-5433-4e1d-964e-c0b7fbf1e44a · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"fea081131c1ed6278b814a214cd86a679a90b866a16fb35e899c92b08ef83244","input_sha256":"bf3e30a80b3308741f5aeed56696dfd7bf336db9e25c07e0e9cc7b584be36c5b","kind":"mutation-receipt","operation":"744e5ae2210d1f477d1bf70bdb314a2a5c6309692b734aeec4cdb3c48f4ac288","options":{"section":null},"request_id_sha256":null,"results":["d-20261007-26"],"target":"decisions-ledger","v":1} -->
+
+### d-20261007-27 — Does extracting the path-authority lock owner change the renderer-visible error text?
+
+* **Question:** When the poisoned-lock and not-initialized mappings move into one `From<AuthorityUnavailable> for Error`, do the renderer-visible messages change?
+* **Governs:** f-20260922-01
+* **Chosen:** no — byte-identical `Conflict: path authority lock was poisoned` / `Conflict: path authority is not initialized`, category `conflict`, `rootFailure` absent.
+* **Rejected:** a single combined "path authority unavailable" text.
+* **Reason:** the texts are the diagnostics Felix reads after a damaged-state failure (f-20260922-01 "Why it matters"), and the renderer branches on the category only (`src/platform/errors.ts`). Reversal path: change the two literals in `shared.rs` and set this entry's `Superseded-by`.
+* **Decided by:** Claude Code, drain planner lane (drain run a28f99b3-2237-4fa8-b5ca-715d97e8cd6a), full auto; recorded by adopting session 1dacb397-5433-4e1d-964e-c0b7fbf1e44a · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"6dd3b2808c3e99b4cb19713a8252ee7db96d310a8c68e546957ca80a4aa5ac15","input_sha256":"c239b368c35d3a9faf448d94bbc738663afc27afc11fbc491178f635a647f9f5","kind":"mutation-receipt","operation":"01ee5b3bf07b5ab4f40b35420a69ce3616a1510458f89d59140553d4093d0cdf","options":{"section":null},"request_id_sha256":null,"results":["d-20261007-27"],"target":"decisions-ledger","v":1} -->
