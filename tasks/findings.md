@@ -10488,7 +10488,7 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 
 ### A workspace file's type cannot be changed: no native command writes metadata alone, and a same-name rename is rejected
 
-* **ID:** f-20260919-07 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260919-07 · **Status:** handled · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/file_workspace.rs` (`rename_workspace_file_blocking`, the only writer of the
   `.info` sidecar after creation), `src/bindings/generated.ts` (`renameWorkspaceFile`), and the
   empty `EditModal` stub formerly in `src/components/files/Modals.tsx`.
@@ -10516,6 +10516,40 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 * **Related:** `f-20260905-14` (Files page lost its file card; its run restores the card with a
   Rename action only and deferred type editing here).
 * **Found by:** the `f-20260905-14` build run, locate stage, 2026-09-19.
+* **Handled 2026-10-07** (Claude Code, drain session 14f3c3e5-96b4-42a6-9360-923747ebf378, build tier,
+  adopted reviewed plan `tasks/plans/2026-10-07-workspace-file-type-editing.md`; review history
+  `tasks/handoffs/2026-10-07-f-20260919-07-review.md`). The open question is settled by `d-20261007-02`:
+  a new command, because the listed display name does not round-trip to the leaf, so only the caller
+  knows the name was left untouched.
+  * `de483f27`: native `write_workspace_file_metadata(workspace, entry, metadata)` — accepted-operation
+    ownership, cancellable blocking dispatch, the `workspace_mutation` lock, registered-descendant and
+    directory refusal — through one private core `replace_workspace_file_metadata`, which installs the
+    `.info` with `atomic_replace_at_with_precommit` and rechecks the PGN's identity and the cancellation
+    token in the precommit; uncertainty is `WorkspaceSidecarReplacement`. A rename whose normalised
+    target leaf equals the source leaf now runs only that core instead of failing with `I/O failure`, and
+    the rename path's post-move sidecar write uses it too (post-move failure contract unchanged; owned by
+    `f-20261006-03`, annotated with review issues I4/I6). Specta-registered, binding regenerated, every
+    workspace-command inventory extended. Renderer: the card's "Edit metadata" IconAction returns
+    (`d-20260919-12`) and opens the shared dialog in an edit mode with a required type Select; an
+    unchanged raw name sends the metadata command, a changed one the rename with the chosen type; tags
+    carried (`d-20261007-04`). Three card snapshots re-recorded in the pinned container (icon only).
+  * `1edeacd7`: `verify:app` drives the real card control and dialog against the release binary and
+    asserts no dialog error, the Repertoire filter lists the file, the `.info` on disk says `repertoire`,
+    and the PGN kept its name, each with a measured staged-failure row.
+  * Review repairs: `a3afe5ef` (fixed "invalid PGN metadata" message instead of the raw Serde
+    diagnostic, Windows-canonical test path, test name), `b41a1550` (blank-name guard only where a name
+    is used, so a file listed as " " can change type; shared `assertNothingClipped`; the edit dialog goes
+    full-screen below 30em because "Repertoire" clipped at 320px / 200%; dead `refreshDirectory` prop
+    removed), `3232b2ed` (named `COMPACT_DIALOG_QUERY`, one shared type-options array).
+  * Proof: cargo test, clippy, fmt, rust:windows:check, bindings:check, vitest files suite, container
+    e2e 83/83, checks:pre-review, and `pnpm verify:app` with the four new checks green; its three `$8`
+    board-hint reds are the pre-existing `f-20261005-07` (same result with the unchanged script).
+  * Rejected: overloading `rename_workspace_file` with an unchanged name as "sidecar only" (cannot tell a
+    type edit from a rename for `study.pgn.pgn`); a rollback after a committed `paired_rename` here
+    (`d-20261007-05`); making the Move dialog full-screen too — its destination Select still clips
+    "Collection root" full-screen, filed separately (inbox
+    `20261007-033743-1453562-1791337063589345642-6.md`).
+<!-- ledger-meta {"command":"close","effect_lines":33,"effect_sha256":"4f623009e6c2b6ccdfb556054a75edcf2840c1b480fea955660073bd1ad9cceb","header_sha256":"16d3dc01642fa4fb48676d5b0e82000285aaab9691b5e62734612aac7128d317","header_status":"handled","input_sha256":"44908d5afb21180e882f6a9443d0410908118311a184780891943131bcc946e7","kind":"mutation-receipt","operation":"51d9589e94c4d0dcf5ba34bff32a13076475f7bdebf11bcc7332b19e06e4fcff","options":{"section":null},"request_id_sha256":null,"results":["f-20260919-07"],"target":"f-20260919-07","v":1} -->
 
 ---
 
