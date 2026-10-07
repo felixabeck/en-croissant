@@ -133,6 +133,11 @@ const MAX_PENDING_ARTIFACTS: usize = 256;
 /// `open` until the app-data context gained its own constructor; naming it keeps startup from
 /// carrying the number at the call site.
 const DEFAULT_DIALOG_CAPACITY: usize = 256;
+/// Lifetime of a PGN-file dialog grant while it is available for resolution or promotion.
+pub(crate) const PGN_FILE_DIALOG_GRANT_TTL: Duration = Duration::from_secs(30 * 60);
+/// Maximum permitted-operation resolution attempts before a PGN-file dialog grant is consumed.
+/// Promotion consumes the entire grant regardless of its remaining uses.
+pub(crate) const PGN_FILE_DIALOG_GRANT_USES: u32 = 128;
 const MAX_REGISTRY_BYTES: usize = 16 * 1024 * 1024;
 const MAX_LEGACY_REGISTRY_BYTES: u64 = 64 * 1024 * 1024;
 fn map_db3_children_cancellable<T>(
@@ -4574,8 +4579,8 @@ impl PathAuthority {
                 display_name.clone(),
                 PathClass::BoundedDialogGrant,
                 operations.clone(),
-                Duration::from_secs(30 * 60),
-                128,
+                PGN_FILE_DIALOG_GRANT_TTL,
+                PGN_FILE_DIALOG_GRANT_USES,
             )?;
             let commit = self.promote_dialog(
                 &grant,
@@ -4708,8 +4713,8 @@ impl PathAuthority {
                 display_name.clone(),
                 PathClass::BoundedDialogGrant,
                 operations.clone(),
-                Duration::from_secs(30 * 60),
-                128,
+                PGN_FILE_DIALOG_GRANT_TTL,
+                PGN_FILE_DIALOG_GRANT_USES,
             )?;
             let commit = self.promote_dialog(
                 &grant,

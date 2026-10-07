@@ -769,8 +769,8 @@ fn issue_pgn_workspace_blocking(
             crate::infra::path_authority::PathOperation::ReadPgn,
             crate::infra::path_authority::PathOperation::WritePgn,
         ],
-        Duration::from_secs(1_800),
-        128,
+        crate::infra::path_authority::PGN_FILE_DIALOG_GRANT_TTL,
+        crate::infra::path_authority::PGN_FILE_DIALOG_GRANT_USES,
     )?;
     let commit = authority.promote_dialog(
         &grant,
