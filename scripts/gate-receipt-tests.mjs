@@ -18,6 +18,9 @@ import {
   transcriptFileName,
 } from "./gate-logs.mjs";
 
+// The push-gate scheduler exports its own run directory to this lane; fixtures must not inherit it.
+delete process.env[GATE_LOG_DIRECTORY_ENV];
+
 const EXPECTED_GATES = {
   "backend-test": "cargo test --manifest-path src-tauri/Cargo.toml --all-targets",
   "backend-coverage": "pnpm test:coverage:backend && pnpm coverage:backend:check",
