@@ -415,17 +415,6 @@ impl Error {
         diagnostic
     }
 
-    /// Preserves the operation error and appends a cleanup failure when one exists.
-    pub(crate) fn with_cleanup(primary: Error, cleanup: Result<(), Error>) -> Error {
-        match cleanup {
-            Ok(()) => primary,
-            Err(cleanup) => Self::OperationAndCleanup {
-                primary: primary.diagnostic(),
-                cleanup: cleanup.diagnostic(),
-            },
-        }
-    }
-
     pub fn category(&self) -> ErrorCategory {
         match self {
             Self::Shared(error) => error.category(),
@@ -477,6 +466,27 @@ impl Error {
             Self::EnginePositionRejected(_) => ErrorCategory::EnginePositionRejected,
             Self::PuzzleThemesUnavailable => ErrorCategory::PuzzleThemesUnavailable,
         }
+    }
+
+    /// Preserves the operation error and appends a cleanup failure when one exists.
+    pub(crate) fn with_cleanup(primary: Error, cleanup: Result<(), Error>) -> Error {
+        match cleanup {
+            Ok(()) => primary,
+            Err(cleanup) => Self::OperationAndCleanup {
+                primary: primary.diagnostic(),
+                cleanup: cleanup.diagnostic(),
+            },
+        }
+    }
+}
+
+/// Classifies expected search-stop consequences without hiding cleanup failures.
+pub(crate) fn cancelled_search_error(error: Error, cancelled: bool) -> Error {
+    match error {
+        Error::Cancellation | Error::AnalysisCancelled | Error::EngineDisconnected if cancelled => {
+            Error::Cancellation
+        }
+        error => error,
     }
 }
 

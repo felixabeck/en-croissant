@@ -31,7 +31,7 @@ use crate::{
         AdmissionLease, EngineActor, EngineDeadlines, EngineKey, EngineLog, EngineOption,
         EngineRequestId, GoMode, RegistrationGuard, ResolvedEngineOption, SupervisedEngine,
     },
-    error::Error,
+    error::{cancelled_search_error, Error},
     infra::{
         blocking::BLOCKING_GATEWAY,
         path_authority::{
@@ -694,15 +694,10 @@ fn classify_interactive_search_result(
     run_result: Result<(), Error>,
     cancelled: bool,
 ) -> Result<(), Error> {
-    if !cancelled {
-        return run_result;
-    }
     match run_result {
-        Ok(())
-        | Err(Error::Cancellation | Error::AnalysisCancelled | Error::EngineDisconnected) => {
-            Err(Error::Cancellation)
-        }
-        Err(error) => Err(error),
+        Ok(()) if cancelled => Err(Error::Cancellation),
+        Ok(()) => Ok(()),
+        Err(error) => Err(cancelled_search_error(error, cancelled)),
     }
 }
 

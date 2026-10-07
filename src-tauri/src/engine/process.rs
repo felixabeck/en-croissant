@@ -26,7 +26,7 @@ use vampirc_uci::UciMessage;
 #[cfg(all(test, unix))]
 use std::collections::HashMap;
 
-use crate::error::Error;
+use crate::error::{cancelled_search_error, Error};
 use crate::infra::{
     blocking::{BlockingGateway, BLOCKING_GATEWAY},
     keyed_locks::{KeyedLockLease, KeyedLocks},
@@ -1660,7 +1660,8 @@ impl EngineSupervisor {
                 return Err(Error::Cancellation);
             }
             if let Err(primary) = current.actor.stop_current().await {
-                let primary = cancelled_interactive_start_error(primary, &search.cancelled);
+                let primary =
+                    cancelled_search_error(primary, search.cancelled.load(Ordering::SeqCst));
                 let cleanup = self.reap_published(&key, current.generation).await;
                 return Err(Error::with_cleanup(primary, cleanup));
             }
@@ -1704,7 +1705,8 @@ impl EngineSupervisor {
             match initialized {
                 Ok(warm) => *current.interactive.lock().await = Some(warm),
                 Err(primary) => {
-                    let primary = cancelled_interactive_start_error(primary, &search.cancelled);
+                    let primary =
+                        cancelled_search_error(primary, search.cancelled.load(Ordering::SeqCst));
                     let cleanup = self.reap_published(&key, current.generation).await;
                     return Err(Error::with_cleanup(primary, cleanup));
                 }
@@ -1732,7 +1734,8 @@ impl EngineSupervisor {
                 Err(Error::Cancellation)
             }
             Err(primary) => {
-                let primary = cancelled_interactive_start_error(primary, &search.cancelled);
+                let primary =
+                    cancelled_search_error(primary, search.cancelled.load(Ordering::SeqCst));
                 let cleanup = self.reap_published(&key, current.generation).await;
                 Err(Error::with_cleanup(primary, cleanup))
             }
@@ -2210,17 +2213,6 @@ impl EngineSupervisor {
         ));
         self.pending_actors.insert(generation, pending.clone());
         pending
-    }
-}
-
-fn cancelled_interactive_start_error(primary: Error, cancelled: &AtomicBool) -> Error {
-    match primary {
-        Error::Cancellation | Error::AnalysisCancelled | Error::EngineDisconnected
-            if cancelled.load(Ordering::SeqCst) =>
-        {
-            Error::Cancellation
-        }
-        primary => primary,
     }
 }
 
@@ -3440,6 +3432,10 @@ impl EngineActor {
         executable: EngineExecutable,
         deadlines: EngineDeadlines,
     ) -> Result<Self, Error> {
+        #[cfg(test)]
+        if let Some(actor) = SPAWN_ACTOR_OVERRIDE.with(|slot| slot.borrow_mut().take()) {
+            return Ok(actor);
+        }
         let resources = Arc::from(executable.resource_leases().to_vec());
         Ok(Self::from_runtime_with_resources(
             EngineRuntime::spawn(executable, deadlines).await?,
@@ -3755,6 +3751,39 @@ pub(crate) async fn verify_option_resources_in(
         result = tokio::time::timeout(actor.resource_verify, &mut verify) => {
             result.map_err(|_| Error::EngineTimeout("verifying engine option resources".into()))?
         }
+    }
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static SPAWN_ACTOR_OVERRIDE: std::cell::RefCell<Option<EngineActor>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+struct SpawnActorOverrideGuard {
+    // The override must be consumed and cleared on the thread where it was set.
+    _same_thread: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+#[cfg(test)]
+impl SpawnActorOverrideGuard {
+    fn new(actor: EngineActor) -> Self {
+        SPAWN_ACTOR_OVERRIDE.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            assert!(slot.is_none(), "a spawn override is already armed");
+            *slot = Some(actor);
+        });
+        Self {
+            _same_thread: std::marker::PhantomData,
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for SpawnActorOverrideGuard {
+    fn drop(&mut self) {
+        SPAWN_ACTOR_OVERRIDE.with(|slot| *slot.borrow_mut() = None);
     }
 }
 
@@ -7364,46 +7393,54 @@ mod tests {
             .unwrap();
     }
 
+    struct CancelledWriteIo {
+        io: FakeIo,
+        cancelled: Arc<AtomicBool>,
+        cancel_command: &'static str,
+        terminate_error: Option<&'static str>,
+    }
+
+    #[async_trait]
+    impl UciIo for CancelledWriteIo {
+        async fn write_line(&mut self, line: &str) -> Result<(), Error> {
+            self.io.write_line(line).await?;
+            if line == self.cancel_command {
+                assert!(!self.cancelled.load(Ordering::SeqCst));
+                self.cancelled.store(true, Ordering::SeqCst);
+                return Err(Error::EngineDisconnected);
+            }
+            Ok(())
+        }
+
+        async fn read_line(&mut self) -> Result<Option<String>, Error> {
+            self.io.read_line().await
+        }
+
+        async fn terminate(&mut self, quit: Duration, reap: Duration) -> Result<(), Error> {
+            self.io.terminate(quit, reap).await?;
+            match self.terminate_error {
+                Some(error) => Err(io::Error::other(error).into()),
+                None => Ok(()),
+            }
+        }
+    }
+
     #[tokio::test]
     async fn kill_engine_cancelled_warm_start_returns_cancellation() {
-        struct CancelledOptionWriteIo {
-            io: FakeIo,
-            cancelled: Arc<AtomicBool>,
-        }
-
-        #[async_trait]
-        impl UciIo for CancelledOptionWriteIo {
-            async fn write_line(&mut self, line: &str) -> Result<(), Error> {
-                self.io.write_line(line).await?;
-                if line == "setoption name UCI_Chess960 value false" {
-                    assert!(!self.cancelled.load(Ordering::SeqCst));
-                    self.cancelled.store(true, Ordering::SeqCst);
-                    return Err(Error::EngineDisconnected);
-                }
-                Ok(())
-            }
-
-            async fn read_line(&mut self) -> Result<Option<String>, Error> {
-                self.io.read_line().await
-            }
-
-            async fn terminate(&mut self, quit: Duration, reap: Duration) -> Result<(), Error> {
-                self.io.terminate(quit, reap).await
-            }
-        }
-
         let supervisor = Arc::new(EngineSupervisor::default());
         let key = EngineKey::new("cancelled-warm-start".into(), "engine".into()).unwrap();
         let executable = path_ref("warm-image");
         let writes = Arc::new(Mutex::new(Vec::new()));
         let cancelled = Arc::new(AtomicBool::new(false));
         let actor = Arc::new(EngineActor::new(
-            Box::new(CancelledOptionWriteIo {
+            Box::new(CancelledWriteIo {
                 io: FakeIo::new(
                     writes.clone(),
                     [Some("uciok".into()), Some("readyok".into())],
                 ),
                 cancelled: cancelled.clone(),
+                cancel_command: "setoption name UCI_Chess960 value false",
+                terminate_error: None,
             }),
             EngineDeadlines::default(),
         ));
@@ -7455,6 +7492,157 @@ mod tests {
             .iter()
             .any(|line| line == "setoption name UCI_Chess960 value false"));
         assert!(supervisor.get_exact(&key).is_none());
+    }
+
+    async fn cancelled_interactive_start_with_write_failure(
+        tab: &str,
+        cancel_command: &'static str,
+        warm: bool,
+        terminate_error: Option<&'static str>,
+    ) -> Result<
+        (
+            crate::chess::EngineProcess,
+            SupervisedEngine,
+            SupervisedSearch,
+        ),
+        Error,
+    > {
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let key = EngineKey::new(tab.into(), "engine".into()).unwrap();
+        let (_launch_directory, engine, authority) = if warm {
+            (
+                None,
+                EngineHandle {
+                    id: path_ref("cancelled-start-image"),
+                    kind: crate::infra::path_authority::EngineHandleKind::Engine,
+                },
+                None,
+            )
+        } else {
+            let directory = tempfile::tempdir().unwrap();
+            let engine_file = directory.path().join("cancelled-init-engine");
+            std::fs::write(&engine_file, b"fake engine bytes").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&engine_file, std::fs::Permissions::from_mode(0o700))
+                    .unwrap();
+            }
+            let mut authority = PathAuthority::open_for_engine_test(directory.path()).unwrap();
+            let engine = authority
+                .register_engine_file(&engine_file, "cancelled-init-engine")
+                .unwrap();
+            (Some(directory), engine, Some(authority))
+        };
+        let executable = engine.id.clone();
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let actor = Arc::new(EngineActor::new(
+            Box::new(CancelledWriteIo {
+                io: FakeIo::new(
+                    writes.clone(),
+                    [Some("uciok".into()), Some("readyok".into())],
+                ),
+                cancelled: cancelled.clone(),
+                cancel_command,
+                terminate_error,
+            }),
+            EngineDeadlines::default(),
+        ));
+        let _spawn_override = if warm {
+            let current = supervisor
+                .replace_handle(
+                    key.clone(),
+                    actor.clone(),
+                    key.engine.clone(),
+                    executable.clone(),
+                )
+                .await
+                .unwrap();
+            *current.interactive.lock().await = Some(
+                crate::chess::WarmEngine::new(actor.clone(), Vec::new(), &cancelled)
+                    .await
+                    .unwrap(),
+            );
+            if cancel_command == "stop" {
+                actor.start_search(&GoMode::Infinite).await.unwrap();
+            }
+            None
+        } else {
+            assert!(supervisor.get_exact(&key).is_none());
+            Some(SpawnActorOverrideGuard::new(
+                Arc::try_unwrap(actor)
+                    .ok()
+                    .expect("the fresh actor must have one owner"),
+            ))
+        };
+        let mut admission = supervisor
+            .admit(key.clone(), key.engine.clone(), executable.clone(), false)
+            .await
+            .unwrap();
+        admission.admission.cancelled = cancelled.clone();
+        supervisor
+            .admissions
+            .insert(key.clone(), admission.admission.clone());
+        assert!(!cancelled.load(Ordering::SeqCst));
+        let result = supervisor
+            .start_interactive_search(
+                key.clone(),
+                engine,
+                Arc::new(StdMutex::new(authority)),
+                admission,
+                crate::chess::EngineOptions {
+                    fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1".into(),
+                    ..crate::chess::EngineOptions::default()
+                },
+                &GoMode::Infinite,
+            )
+            .await;
+        assert!(cancelled.load(Ordering::SeqCst));
+        assert!(writes
+            .lock()
+            .await
+            .iter()
+            .any(|line| line == cancel_command));
+        assert!(supervisor.get_exact(&key).is_none());
+        if !warm {
+            assert!(SPAWN_ACTOR_OVERRIDE.with(|slot| slot.borrow().is_none()));
+        }
+        result
+    }
+
+    #[tokio::test]
+    async fn kill_engine_cancelled_stop_returns_cancellation() {
+        let result =
+            cancelled_interactive_start_with_write_failure("cancelled-stop", "stop", true, None)
+                .await;
+        assert!(matches!(result, Err(Error::Cancellation)));
+    }
+
+    #[tokio::test]
+    async fn kill_engine_cancelled_init_returns_cancellation() {
+        let result =
+            cancelled_interactive_start_with_write_failure("cancelled-init", "uci", false, None)
+                .await;
+        assert!(matches!(result, Err(Error::Cancellation)));
+    }
+
+    #[tokio::test]
+    async fn kill_engine_cancelled_warm_start_keeps_cleanup_failure() {
+        let result = cancelled_interactive_start_with_write_failure(
+            "cancelled-warm-start-cleanup",
+            "setoption name UCI_Chess960 value false",
+            true,
+            Some("fake cancelled warm-start terminate failed"),
+        )
+        .await;
+        match result {
+            Err(Error::OperationAndCleanup { primary, cleanup }) => {
+                assert!(primary.contains("Cancellation"));
+                assert!(cleanup.contains("fake cancelled warm-start terminate failed"));
+            }
+            _ => panic!("expected cancellation with a termination failure"),
+        }
     }
 
     #[tokio::test]
