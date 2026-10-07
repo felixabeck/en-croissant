@@ -6130,3 +6130,40 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** d-20261004-06 already records that the backend queues a second conversion into the same target behind the write lock instead of refusing it. That target is one database file. Account exports have no equivalent serialization, so the account string stays the exclusive admission key and the ticket stays the event id. Reversal path of the choice: pass the account string to `begin_progress` again and point `AccountCard`'s listener back at `accountKey`.
 * **Decided by:** Grok, autonomously under full auto, drain session 8d5c0775-a29f-45c4-9bec-a3b3895837a5 (drain run 80fae550-0102-4ac3-83d7-2a39c45de07d), cumulative diff review of f-20260914-14 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"8207da1a81aedcb311396ae5c376c3caf41f8be623f6a430dd8ea5c0757be6ac","input_sha256":"f0f7a18190069e6cd4106149fa591b0c25d446737b3daaa68aaa587abc4713b2","kind":"mutation-receipt","operation":"494f9fea06266e1e68a818d42d911aab65c762d02404f9966ef10910b169913c","options":{"section":null},"request_id_sha256":null,"results":["d-20261007-15"],"target":"decisions-ledger","v":1} -->
+
+### d-20261007-16 — Does Kill cancel an already-reserved generation, or wait until that generation is published and then terminate it?
+
+* **Question:** Does Kill cancel an already-reserved generation, or wait until that generation is published and then terminate it?
+* **Governs:** f-20260914-23
+* **Chosen:** cancel under the publication barrier and reap a published actor without taking the lifecycle lock. The reserved generation never publishes and never reaches `go`.
+* **Rejected:** wait for publication, then terminate. Also rejected: calling unchanged `terminate_exact`, which waits on the lifecycle lock held across spawn.
+* **Reason:** the publication check already refuses a flagged admission, and the lifecycle wait leaves the published engine running for the whole fresh launch. Reversal path: make Kill await the in-flight `start_interactive_search` before returning.
+* **Decided by:** Grok, drain session 803e3b54-ecf6-42cb-a06a-c289c0600244 (drain run 80fae550-0102-4ac3-83d7-2a39c45de07d), full auto, adopted reviewed plan tasks/plans/2026-10-07-kill-engine-reserved-generation.md · **Superseded-by:** -
+
+### d-20261007-17 — Does this finding add a pending-actor await to `terminate_exact`?
+
+* **Question:** Does this finding add a pending-actor await to `terminate_exact`?
+* **Governs:** f-20260914-23
+* **Chosen:** no scan of other generations. Kill joins pending actors for its key. `terminate_exact` joins only the pending reap of the generation it is already terminating (`d-20261006-18`).
+* **Rejected:** widening `terminate_exact` so every exact caller drains a pending actor of a different generation.
+* **Reason:** the reserved generation is often not the published generation, and draining it from every exact caller is outside this mandate. Reversal path: move that other-generation await into `terminate_exact` and delete Kill's extra await.
+* **Decided by:** Grok, drain session 803e3b54-ecf6-42cb-a06a-c289c0600244 (drain run 80fae550-0102-4ac3-83d7-2a39c45de07d), full auto, adopted reviewed plan tasks/plans/2026-10-07-kill-engine-reserved-generation.md · **Superseded-by:** -
+
+### d-20261007-18 — After Kill flags a reservation, what does a later `consume_engine_search` of that generation return?
+
+* **Question:** After Kill flags a reservation, what does a later `consume_engine_search` of that generation return?
+* **Governs:** f-20260914-23
+* **Chosen:** `Error::Cancellation`. The entry stays, `prepared` is cleared, and the check order is generation, then the flag, then identity and `prepared`.
+* **Rejected:** the current remove-and-`Conflict` result of `cancel_admission_exact`.
+* **Reason:** `Conflict` is shown as an analysis error after Kill; `errorUnlessCancelled` drops only the message `Cancellation`. Reversal path: remove the entry and accept the `Conflict` toast.
+* **Decided by:** Grok, drain session 803e3b54-ecf6-42cb-a06a-c289c0600244 (drain run 80fae550-0102-4ac3-83d7-2a39c45de07d), full auto, adopted reviewed plan tasks/plans/2026-10-07-kill-engine-reserved-generation.md · **Superseded-by:** -
+
+### d-20261007-19 — Once Kill no longer takes the lifecycle lock, where does a published actor live until its reap finishes, and who calls `EngineActor::terminate`?
+
+* **Question:** Once Kill no longer takes the lifecycle lock, where does a published actor live until its reap finishes, and who calls `EngineActor::terminate`?
+* **Governs:** f-20260914-23
+* **Chosen:** `mark_cancelled`, then the existing pending-actor entry. The shared task is the only `EngineActor::terminate`. Drains that already scan `pending_actors` await it.
+* **Rejected:** delete the `actors` entry and terminate with nothing left for `drain_matching`. Also rejected: a second direct `terminate`, and result sharing for an actor that stays registered.
+* **Reason:** `drain_matching` only sees `actors` and `pending_actors`, and `d-20261006-16` makes those drains the owner shutdown reaches. A second `terminate` can return `Ok(())`. Reversal path: shared termination for actors that remain in `actors`, under `f-20261001-14`.
+* **Decided by:** Grok, drain session 803e3b54-ecf6-42cb-a06a-c289c0600244 (drain run 80fae550-0102-4ac3-83d7-2a39c45de07d), full auto, adopted reviewed plan tasks/plans/2026-10-07-kill-engine-reserved-generation.md · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":35,"effect_sha256":"cd01b1955532bf8cd27ff0f3c6d4396fa1475b1bff3e3f5659c0bef318015350","input_sha256":"10a5f7a7878897af081f659826c89d88d695ee20edef80e72a3947e4a8be435c","kind":"mutation-receipt","operation":"e872696f705e09704f258a92f907c02c0e2ffb5fa8df3491281c80572611bfb8","options":{"section":null},"request_id_sha256":null,"results":["d-20261007-16","d-20261007-17","d-20261007-18","d-20261007-19"],"target":"decisions-ledger","v":1} -->
