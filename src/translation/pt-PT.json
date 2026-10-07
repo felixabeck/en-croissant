@@ -547,6 +547,7 @@
     "Files.DeletePermanently": "Eliminar permanentemente",
     "Files.DeletePermanentlyConfirm": "Eliminar {{name}} permanentemente?",
     "Files.DestinationFolder": "Pasta de destino",
+    "Files.EditMetadata": "Editar metadados",
     "Files.EmptyWorkspace": "Escolha uma coleção PGN para a gerir com permissões de ficheiros nativas.",
     "Files.FileType": "Tipo de ficheiro",
     "Files.FileType.Folder": "Pasta",

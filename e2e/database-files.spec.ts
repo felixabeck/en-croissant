@@ -11,6 +11,70 @@ import {
 
 const { openingDirectory, pgnFile } = filesWorkspaceFixture;
 
+test("database-files: metadata-only editing fits 320px and relists the chosen type", async ({
+    page,
+    mockScenario,
+    assertNoHorizontalOverflow,
+    assertAccessible,
+}) => {
+    await page.setViewportSize({ width: 320, height: 900 });
+    const initial = { ...pgnFile, metadata: { type: "other", tags: ["keep"] } };
+    const edited = { ...initial, metadata: { type: "repertoire", tags: ["keep"] } };
+    await mockScenario({
+        commands: filesWorkspaceCommands([[initial], [edited]], {
+            ...pgnFileCommands,
+            write_workspace_file_metadata: { result: null },
+        }),
+    });
+    await page.goto("/files");
+    await page.getByRole("button", { name: /choose collection/i }).click();
+    await selectFilesTreeRow(page, initial.name);
+    await page.getByRole("button", { name: "Edit metadata", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Edit metadata", exact: true });
+    const name = dialog.getByRole("textbox", { name: "Name", exact: true });
+    await expect(name).toBeFocused();
+    await expect(name).toHaveValue(initial.name);
+    await dialog.getByRole("textbox", { name: /file type/i }).click();
+    await page.getByRole("option", { name: "Repertoire", exact: true }).click();
+    await assertNoHorizontalOverflow();
+    const overflowing = await dialog.evaluate((element) => {
+        const bounds = element.getBoundingClientRect();
+        return Array.from(element.querySelectorAll("input, button")).some((control) => {
+            const box = control.getBoundingClientRect();
+            if (box.width === 0 || box.height === 0) return false;
+            return (
+                box.left < bounds.left - 1 ||
+                box.right > bounds.right + 1 ||
+                box.left < -1 ||
+                box.right > window.innerWidth + 1
+            );
+        });
+    });
+    expect(overflowing).toBe(false);
+    await assertAccessible();
+    await dialog.getByRole("button", { name: "Confirm", exact: true }).click();
+    await expect(dialog).toBeHidden();
+    await expect(
+        page.locator(".mantine-Badge-root").filter({ hasText: "Repertoire" }),
+    ).toBeVisible();
+    const mutations = await page.evaluate(() =>
+        window.__E2E_TAURI__
+            .invocations()
+            .filter((call) =>
+                ["write_workspace_file_metadata", "rename_workspace_file"].includes(call.command),
+            ),
+    );
+    expect(mutations).toHaveLength(1);
+    expect(mutations[0]).toEqual({
+        command: "write_workspace_file_metadata",
+        args: {
+            workspace: filesWorkspaceFixture.workspace,
+            entry: initial.handle,
+            metadata: edited.metadata,
+        },
+    });
+});
+
 test("database-files: grants a workspace and creates a folder through typed IPC", async ({
     page,
     mockScenario,

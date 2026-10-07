@@ -348,6 +348,14 @@ async renameWorkspaceFile(workspace: FileWorkspaceHandle, entry: FileWorkspaceHa
     else return { status: "error", error: e  as any };
 }
 },
+async writeWorkspaceFileMetadata(workspace: FileWorkspaceHandle, entry: FileWorkspaceHandle, metadata: WorkspaceMetadata) : Promise<Result<null, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("write_workspace_file_metadata", { workspace, entry, metadata }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async trashWorkspaceEntry(workspace: FileWorkspaceHandle, entry: FileWorkspaceHandle) : Promise<Result<null, ErrorPayload>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("trash_workspace_entry", { workspace, entry }) };

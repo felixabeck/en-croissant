@@ -540,6 +540,7 @@
     "Files.DeletePermanently": "Dauerhaft löschen",
     "Files.DeletePermanentlyConfirm": "{{name}} dauerhaft löschen?",
     "Files.DestinationFolder": "Zielordner",
+    "Files.EditMetadata": "Metadaten bearbeiten",
     "Files.EmptyWorkspace": "Wähle eine PGN-Sammlung, um sie mit nativen Dateiberechtigungen zu verwalten.",
     "Files.FileType": "Dateityp",
     "Files.FileType.Folder": "Ordner",

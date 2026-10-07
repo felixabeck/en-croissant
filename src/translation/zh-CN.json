@@ -533,6 +533,7 @@
     "Files.DeletePermanently": "永久删除",
     "Files.DeletePermanentlyConfirm": "要永久删除 {{name}} 吗？",
     "Files.DestinationFolder": "目标文件夹",
+    "Files.EditMetadata": "编辑元数据",
     "Files.EmptyWorkspace": "选择一个 PGN 收藏集，以原生文件权限管理它。",
     "Files.FileType": "文件类型",
     "Files.FileType.Folder": "文件夹",

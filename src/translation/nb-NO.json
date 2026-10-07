@@ -540,6 +540,7 @@
     "Files.DeletePermanently": "Slett permanent",
     "Files.DeletePermanentlyConfirm": "Slette {{name}} permanent?",
     "Files.DestinationFolder": "Målmappe",
+    "Files.EditMetadata": "Rediger metadata",
     "Files.EmptyWorkspace": "Velg en PGN-samling for å administrere den med innebygde filtillatelser.",
     "Files.FileType": "Fil type",
     "Files.FileType.Folder": "Mappe",

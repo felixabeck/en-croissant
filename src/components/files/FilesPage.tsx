@@ -34,7 +34,7 @@ import AppModal from "../common/AppModal";
 import type { Entry, FileType } from "./file";
 import { FILE_TYPES, workspaceEntryToEntry } from "./file";
 
-const fileAction = { file: "file", folder: "folder", rename: "rename" } as const;
+const fileAction = { file: "file", folder: "folder", rename: "rename", edit: "edit" } as const;
 type FileAction = (typeof fileAction)[keyof typeof fileAction];
 const FILE_CARD_MIN_HEIGHT = "32rem";
 const TREE_MAX_HEIGHT = "60vh";
@@ -67,6 +67,7 @@ export default function FilesPage() {
   const [filter, setFilter] = useState<FileType | "">("");
   const [action, setAction] = useState<FileAction | null>(null);
   const [name, setName] = useState("");
+  const [fileType, setFileType] = useState<FileType>("other");
   const [actionError, setActionError] = useState("");
   const [trashed, setTrashed] = useState<Entry | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Entry | null>(null);
@@ -155,8 +156,26 @@ export default function FilesPage() {
     }
   }
   async function submitAction() {
+    const nameUnchanged = selected?.type === "file" && name === selected.name;
     if (!workspace || !parent || !name.trim()) return;
     setActionError("");
+    const editing = action === fileAction.edit || action === fileAction.rename;
+    const chosenType =
+      action === fileAction.edit
+        ? fileType
+        : selected?.type === "file"
+          ? selected.metadata.type
+          : "other";
+    if (
+      editing &&
+      selected?.type === "file" &&
+      nameUnchanged &&
+      chosenType === selected.metadata.type
+    ) {
+      setAction(null);
+      setName("");
+      return;
+    }
     try {
       await runAppliedMutationWithRefresh(async () => {
         if (action === fileAction.file)
@@ -172,11 +191,15 @@ export default function FilesPage() {
           );
         if (action === fileAction.folder)
           await tauri.createWorkspaceDirectory(workspace, parent, name);
-        if (action === fileAction.rename && selected?.type === "file")
-          await tauri.renameWorkspaceFile(workspace, selected.handle, name, {
-            type: selected.metadata.type,
+        if (editing && selected?.type === "file") {
+          const metadata = {
+            type: chosenType,
             tags: selected.metadata.tags,
-          });
+          };
+          if (nameUnchanged)
+            await tauri.writeWorkspaceFileMetadata(workspace, selected.handle, metadata);
+          else await tauri.renameWorkspaceFile(workspace, selected.handle, name, metadata);
+        }
       }, mutate);
       setAction(null);
       setName("");
@@ -327,6 +350,7 @@ export default function FilesPage() {
                     styles={wrappingButton}
                     onClick={() => {
                       setName(selected.name);
+                      setActionError("");
                       setAction(fileAction.rename);
                     }}
                   >
@@ -352,7 +376,16 @@ export default function FilesPage() {
                     between its game list and preview. A fixed height left a wide, short window's list
                     two rows high; the floor keeps a 200% font scale usable, where the page scrolls. */}
                 <Box flex={1} mih={FILE_CARD_MIN_HEIGHT}>
-                  <FileCard key={fileWorkspaceKey(selected.handle)} selected={selected} />
+                  <FileCard
+                    key={fileWorkspaceKey(selected.handle)}
+                    selected={selected}
+                    onEditMetadata={() => {
+                      setName(selected.name);
+                      setFileType(selected.metadata.type);
+                      setActionError("");
+                      setAction(fileAction.edit);
+                    }}
+                  />
                 </Box>
               </Stack>
             ) : selected?.type === "directory" ? (
@@ -383,15 +416,18 @@ export default function FilesPage() {
         opened={action !== null}
         onClose={() => setAction(null)}
         title={
-          action === fileAction.rename
-            ? t("Files.RenameFile", { defaultValue: "Rename file" })
-            : action === fileAction.folder
-              ? t("Files.CreateFolder", { defaultValue: "Create folder" })
-              : t("Files.CreateFile", { defaultValue: "Create file" })
+          action === fileAction.edit
+            ? t("Files.EditMetadata")
+            : action === fileAction.rename
+              ? t("Files.RenameFile", { defaultValue: "Rename file" })
+              : action === fileAction.folder
+                ? t("Files.CreateFolder", { defaultValue: "Create folder" })
+                : t("Files.CreateFile", { defaultValue: "Create file" })
         }
       >
-        <Stack>
+        <Stack miw={0}>
           <TextInput
+            miw={0}
             ref={actionInputRef}
             autoFocus
             data-autofocus
@@ -400,7 +436,25 @@ export default function FilesPage() {
             onChange={(event) => setName(event.currentTarget.value)}
             error={actionError}
           />
-          <Button onClick={submitAction}>{t("Common.Confirm", { defaultValue: "Confirm" })}</Button>
+          {action === fileAction.edit && (
+            <Select
+              miw={0}
+              required
+              allowDeselect={false}
+              label={t("Files.FileType")}
+              value={fileType}
+              onChange={(value) => {
+                if (value) setFileType(value as FileType);
+              }}
+              data={FILE_TYPES.map(({ value, translationKey }) => ({
+                value,
+                label: t(translationKey),
+              }))}
+            />
+          )}
+          <Button miw={0} styles={wrappingButton} onClick={submitAction}>
+            {t("Common.Confirm", { defaultValue: "Confirm" })}
+          </Button>
         </Stack>
       </AppModal>
       <AppModal

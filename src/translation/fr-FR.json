@@ -547,6 +547,7 @@
     "Files.DeletePermanently": "Supprimer définitivement",
     "Files.DeletePermanentlyConfirm": "Supprimer définitivement {{name}} ?",
     "Files.DestinationFolder": "Dossier de destination",
+    "Files.EditMetadata": "Modifier les métadonnées",
     "Files.EmptyWorkspace": "Choisissez une collection PGN à gérer avec les autorisations de fichiers natives.",
     "Files.FileType": "Type de fichier",
     "Files.FileType.Folder": "Dossier",

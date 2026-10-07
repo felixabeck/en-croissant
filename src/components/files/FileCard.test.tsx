@@ -149,13 +149,13 @@ describe("FileCard", () => {
       },
     );
 
-    await renderWithMantine(<FileCard selected={sampleFileA} />, root);
+    await renderWithMantine(<FileCard onEditMetadata={vi.fn()} selected={sampleFileA} />, root);
 
     expect(mocks.readGames).toHaveBeenCalledTimes(1);
     expect(signals[0].aborted).toBe(false);
 
     // Rapid switch to file B
-    await renderWithMantine(<FileCard selected={sampleFileB} />, root);
+    await renderWithMantine(<FileCard onEditMetadata={vi.fn()} selected={sampleFileB} />, root);
 
     expect(signals[0].aborted).toBe(true);
     expect(mocks.readGames).toHaveBeenCalledTimes(2);
@@ -186,7 +186,7 @@ describe("FileCard", () => {
       },
     );
 
-    await renderWithMantine(<FileCard selected={sampleFileA} />, root);
+    await renderWithMantine(<FileCard onEditMetadata={vi.fn()} selected={sampleFileA} />, root);
 
     expect(capturedSignal).toBeDefined();
     expect(capturedSignal.aborted).toBe(false);
@@ -200,7 +200,7 @@ describe("FileCard", () => {
   test("cancelled readGames does not show failure notification", async () => {
     mocks.readGames.mockRejectedValue(cancellationError());
 
-    await renderWithMantine(<FileCard selected={sampleFileA} />, root);
+    await renderWithMantine(<FileCard onEditMetadata={vi.fn()} selected={sampleFileA} />, root);
 
     expect(mocks.showNotification).not.toHaveBeenCalled();
     expect(container.querySelector("[data-testid='game-preview']")).toBeNull();
@@ -218,7 +218,7 @@ describe("FileCard", () => {
       .mockResolvedValueOnce([stampedGame("pgn-from-game-A", "a")])
       .mockRejectedValueOnce(error);
 
-    await renderWithMantine(<FileCard selected={sampleFileA} />, root);
+    await renderWithMantine(<FileCard onEditMetadata={vi.fn()} selected={sampleFileA} />, root);
     expect(container.querySelector("[data-testid='game-preview']")?.textContent).toBe(
       "pgn-from-game-A",
     );
@@ -261,7 +261,10 @@ describe("FileCard", () => {
   test("renders neither the game selector nor the preview for an empty file", async () => {
     mocks.readGames.mockResolvedValueOnce([]);
 
-    await renderWithMantine(<FileCard selected={{ ...sampleFileA, numGames: 0 }} />, root);
+    await renderWithMantine(
+      <FileCard onEditMetadata={vi.fn()} selected={{ ...sampleFileA, numGames: 0 }} />,
+      root,
+    );
 
     expect(mocks.readGames).toHaveBeenCalledTimes(1);
     expect(container.querySelector("[data-testid='game-selector']")).toBeNull();
@@ -277,7 +280,7 @@ describe("FileCard", () => {
         }),
     );
 
-    await renderWithMantine(<FileCard selected={sampleFileA} />, root);
+    await renderWithMantine(<FileCard onEditMetadata={vi.fn()} selected={sampleFileA} />, root);
 
     expect(mocks.readGames).toHaveBeenCalledTimes(1);
     expect(container.querySelector("[data-testid='game-selector']")).not.toBeNull();
@@ -297,7 +300,7 @@ describe("FileCard", () => {
     const error = new Error("Failed to read game A");
     mocks.readGames.mockRejectedValueOnce(error);
 
-    await renderWithMantine(<FileCard selected={sampleFileA} />, root);
+    await renderWithMantine(<FileCard onEditMetadata={vi.fn()} selected={sampleFileA} />, root);
 
     expect(mocks.readGames).toHaveBeenCalledTimes(1);
     expect(mocks.readGames).toHaveBeenCalledWith(sampleFileA.handle, 0, 0, {
@@ -317,7 +320,7 @@ describe("FileCard", () => {
     const error = new Error("Failed to read game");
     mocks.readGames.mockRejectedValue(error);
 
-    await renderWithMantine(<FileCard selected={sampleFileA} />, root);
+    await renderWithMantine(<FileCard onEditMetadata={vi.fn()} selected={sampleFileA} />, root);
 
     expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", error);
     expect(container.querySelector("[data-testid='game-preview']")).toBeNull();
@@ -332,11 +335,11 @@ describe("FileCard", () => {
         }),
     );
 
-    await renderWithMantine(<FileCard selected={sampleFileA} />, root);
+    await renderWithMantine(<FileCard onEditMetadata={vi.fn()} selected={sampleFileA} />, root);
 
     // Switch to file B before A fails
     mocks.readGames.mockResolvedValueOnce([stampedGame("pgn-b", "b")]);
-    await renderWithMantine(<FileCard selected={sampleFileB} />, root);
+    await renderWithMantine(<FileCard onEditMetadata={vi.fn()} selected={sampleFileB} />, root);
 
     // Now A fails late
     await act(async () => {
@@ -350,11 +353,12 @@ describe("FileCard", () => {
   test("a relisted copy of the same file keeps the page and reads no games again", async () => {
     mocks.readGames.mockResolvedValue([stampedGame("pgn-a", "a")]);
 
-    await renderWithMantine(<FileCard selected={sampleFileA} />, root);
+    await renderWithMantine(<FileCard onEditMetadata={vi.fn()} selected={sampleFileA} />, root);
     expect(mocks.readGames).toHaveBeenCalledTimes(1);
 
     await renderWithMantine(
       <FileCard
+        onEditMetadata={vi.fn()}
         selected={{ ...sampleFileA, name: "renamed", handle: { ...sampleFileA.handle } }}
       />,
       root,
@@ -365,13 +369,20 @@ describe("FileCard", () => {
     expect(container.querySelector("[data-testid='game-preview']")?.textContent).toBe("pgn-a");
   });
 
-  test("renders no metadata-edit control", async () => {
+  test("renders the metadata-edit control and invokes its callback", async () => {
     mocks.readGames.mockResolvedValue([stampedGame("pgn-a", "a")]);
 
-    await renderWithMantine(<FileCard selected={sampleFileA} />, root);
+    await renderWithMantine(<FileCard onEditMetadata={vi.fn()} selected={sampleFileA} />, root);
 
-    expect(container.querySelector('[aria-label="Files.EditMetadata"]')).toBeNull();
-    expect(container.textContent).not.toContain("Files.EditMetadata");
+    const onEditMetadata = vi.fn();
+    await renderWithMantine(
+      <FileCard selected={sampleFileA} onEditMetadata={onEditMetadata} />,
+      root,
+    );
+    const edit = container.querySelector('[aria-label="Files.EditMetadata"]') as HTMLButtonElement;
+    expect(edit).not.toBeNull();
+    act(() => edit.click());
+    expect(onEditMetadata).toHaveBeenCalledOnce();
     expect(container.querySelector('[aria-label="Common.Open"]')).not.toBeNull();
   });
 
@@ -386,7 +397,7 @@ describe("FileCard", () => {
     });
     const seed = vi.spyOn(tabStorage, "seed");
 
-    await renderWithMantine(<FileCard selected={sampleFileA} />, root);
+    await renderWithMantine(<FileCard onEditMetadata={vi.fn()} selected={sampleFileA} />, root);
     await vi.waitFor(() => expect(container.textContent).toContain("Old preview"));
     await act(async () => {
       container.querySelector<HTMLButtonElement>('[aria-label="Common.Open"]')!.click();

@@ -540,6 +540,7 @@
     "Files.DeletePermanently": "Kalıcı olarak sil",
     "Files.DeletePermanentlyConfirm": "{{name}} kalıcı olarak silinsin mi?",
     "Files.DestinationFolder": "Hedef klasör",
+    "Files.EditMetadata": "Üst verileri düzenle",
     "Files.EmptyWorkspace": "Yerel dosya izinleriyle yönetmek için bir PGN koleksiyonu seçin.",
     "Files.FileType": "Dosya türü",
     "Files.FileType.Folder": "Klasör",

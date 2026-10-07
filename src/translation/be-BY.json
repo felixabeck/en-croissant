@@ -554,6 +554,7 @@
     "Files.DeletePermanently": "Выдаліць назаўсёды",
     "Files.DeletePermanentlyConfirm": "Выдаліць {{name}} назаўсёды?",
     "Files.DestinationFolder": "Мэтавая папка",
+    "Files.EditMetadata": "Рэдагаваць метаданыя",
     "Files.EmptyWorkspace": "Выберыце калекцыю PGN, каб кіраваць ёю з уласцівымі файлавай сістэме дазволамі.",
     "Files.FileType": "Тып файла",
     "Files.FileType.Folder": "Тэчка",

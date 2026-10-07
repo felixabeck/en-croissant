@@ -81,6 +81,7 @@ use crate::file_workspace::{
     create_workspace_directory, create_workspace_file, issue_file_workspace, list_file_workspace,
     map_picker_join, move_workspace_entry, permanently_delete_workspace_entry,
     rename_workspace_file, restore_workspace_entry, trash_workspace_entry,
+    write_workspace_file_metadata,
 };
 use crate::lexer::lex_pgn;
 use crate::lichess::{
@@ -2157,6 +2158,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             create_workspace_directory,
             move_workspace_entry,
             rename_workspace_file,
+            write_workspace_file_metadata,
             trash_workspace_entry,
             restore_workspace_entry,
             permanently_delete_workspace_entry,
@@ -3920,6 +3922,7 @@ mod blocking_offload_scans {
                     "create_workspace_directory",
                     "move_workspace_entry",
                     "rename_workspace_file",
+                    "write_workspace_file_metadata",
                     "trash_workspace_entry",
                     "restore_workspace_entry",
                     "permanently_delete_workspace_entry",
@@ -4321,6 +4324,10 @@ mod blocking_offload_scans {
                 "pub async fn rename_workspace_file(",
                 "rename_workspace_file_blocking",
             ),
+            (
+                "pub async fn write_workspace_file_metadata(",
+                "write_workspace_file_metadata_blocking",
+            ),
             ("pub async fn trash_workspace_entry(", "trash_entry"),
             ("pub async fn restore_workspace_entry(", "restore_entry"),
             (
@@ -4487,6 +4494,7 @@ mod blocking_offload_scans {
             "fn restore_entry(",
             "fn move_workspace_entry_blocking(",
             "fn rename_workspace_file_blocking(",
+            "fn write_workspace_file_metadata_blocking(",
             "fn create_workspace_file_blocking(",
             "fn permanently_delete_entry_blocking(",
         ] {

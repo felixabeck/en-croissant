@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   createWorkspaceFile: vi.fn(),
   createWorkspaceDirectory: vi.fn(),
   renameWorkspaceFile: vi.fn(),
+  writeWorkspaceFileMetadata: vi.fn(),
   issueFileWorkspace: vi.fn(),
   setWorkspace: vi.fn(),
   setWorkspaceDisplayName: vi.fn(),
@@ -35,6 +36,7 @@ vi.mock("@/platform/tauri", async () => {
       createWorkspaceFile: mocks.createWorkspaceFile,
       createWorkspaceDirectory: mocks.createWorkspaceDirectory,
       renameWorkspaceFile: mocks.renameWorkspaceFile,
+      writeWorkspaceFileMetadata: mocks.writeWorkspaceFileMetadata,
       issueFileWorkspace: mocks.issueFileWorkspace,
     },
   };
@@ -198,12 +200,23 @@ vi.mock("./DirectoryTree", () => ({
 vi.mock("./FileCard", async () => {
   const { useEffect, useRef } = await vi.importActual<typeof import("react")>("react");
   return {
-    default: function FileCardStub({ selected }: { selected: { name: string } }) {
+    default: function FileCardStub({
+      selected,
+      onEditMetadata,
+    }: {
+      selected: { name: string };
+      onEditMetadata: () => void;
+    }) {
       const mountName = useRef(selected.name);
       useEffect(() => {
         mocks.cardMounts.push(mountName.current);
       }, []);
-      return <section data-testid="file-card">{selected.name}</section>;
+      return (
+        <>
+          <section data-testid="file-card">{selected.name}</section>
+          <button onClick={onEditMetadata}>Files.EditMetadata</button>
+        </>
+      );
     },
   };
 });
@@ -283,6 +296,7 @@ beforeEach(async () => {
   mocks.createWorkspaceFile.mockResolvedValue(undefined);
   mocks.createWorkspaceDirectory.mockResolvedValue(undefined);
   mocks.renameWorkspaceFile.mockResolvedValue(undefined);
+  mocks.writeWorkspaceFileMetadata.mockResolvedValue(undefined);
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -736,6 +750,120 @@ describe("listing failures", () => {
 function tree() {
   return container.querySelector('[data-testid="tree"]')!;
 }
+
+async function setDialogName(value: string) {
+  const input = container.querySelector('[role="dialog"] input') as HTMLInputElement;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
+function setDialogType(value: string) {
+  const select = container.querySelector('[role="dialog"] select') as HTMLSelectElement;
+  act(() => {
+    select.value = value;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+}
+
+describe("metadata and rename submissions", () => {
+  test.each(["sample", " study", "study "])(
+    "untouched listed name %s writes only metadata and preserves tags",
+    async (name) => {
+      const selected = { ...entry, name, metadata: { type: "game", tags: ["original", "tag"] } };
+      mocks.data = [selected, destination];
+      await rerender();
+      click("Select sample file");
+      click("Files.EditMetadata");
+      expect((container.querySelector('[role="dialog"] input') as HTMLInputElement).value).toBe(
+        name,
+      );
+      expect((container.querySelector('[role="dialog"] select') as HTMLSelectElement).value).toBe(
+        "game",
+      );
+      setDialogType("repertoire");
+      await act(async () => dialogButton("Confirm").click());
+      expect(mocks.writeWorkspaceFileMetadata).toHaveBeenCalledWith(workspace, entry.handle, {
+        type: "repertoire",
+        tags: ["original", "tag"],
+      });
+      expect(mocks.renameWorkspaceFile).not.toHaveBeenCalled();
+      expect(mocks.mutate).toHaveBeenCalledOnce();
+      expect(container.querySelector('[role="dialog"]')).toBeNull();
+    },
+  );
+
+  test("changed name and type rename with the chosen type and original tags", async () => {
+    mocks.data = [{ ...entry, metadata: { type: "game", tags: ["keep"] } }, destination];
+    await rerender();
+    click("Select sample file");
+    click("Files.EditMetadata");
+    await setDialogName("changed");
+    setDialogType("puzzle");
+    await act(async () => dialogButton("Confirm").click());
+    expect(mocks.renameWorkspaceFile).toHaveBeenCalledWith(workspace, entry.handle, "changed", {
+      type: "puzzle",
+      tags: ["keep"],
+    });
+    expect(mocks.writeWorkspaceFileMetadata).not.toHaveBeenCalled();
+    expect(mocks.mutate).toHaveBeenCalledOnce();
+  });
+
+  test.each(["Rename", "Files.EditMetadata"])(
+    "unchanged %s closes without IPC or relist",
+    async (trigger) => {
+      click("Select sample file");
+      click(trigger);
+      await act(async () => dialogButton("Confirm").click());
+      expect(mocks.renameWorkspaceFile).not.toHaveBeenCalled();
+      expect(mocks.writeWorkspaceFileMetadata).not.toHaveBeenCalled();
+      expect(mocks.mutate).not.toHaveBeenCalled();
+      expect(container.querySelector('[role="dialog"]')).toBeNull();
+    },
+  );
+
+  test("changed Rename stays name-only and sends the current metadata", async () => {
+    click("Select sample file");
+    click("Rename");
+    expect(container.querySelector('[role="dialog"] select')).toBeNull();
+    await setDialogName("changed");
+    await act(async () => dialogButton("Confirm").click());
+    expect(mocks.renameWorkspaceFile).toHaveBeenCalledWith(
+      workspace,
+      entry.handle,
+      "changed",
+      entry.metadata,
+    );
+    expect(mocks.writeWorkspaceFileMetadata).not.toHaveBeenCalled();
+    expect(mocks.mutate).toHaveBeenCalledOnce();
+  });
+
+  test.each([true, false])(
+    "metadata rejection applied=%s retains the shared failure contract",
+    async (applied) => {
+      mocks.writeWorkspaceFileMetadata.mockRejectedValueOnce(
+        applied
+          ? commandError(
+              "durability",
+              "Committed but durability uncertain: workspace sidecar replacement",
+            )
+          : new Error("write denied"),
+      );
+      click("Select sample file");
+      click("Files.EditMetadata");
+      setDialogType("repertoire");
+      await act(async () => dialogButton("Confirm").click());
+      expect(mocks.mutate).toHaveBeenCalledTimes(applied ? 1 : 0);
+      expect(container.querySelector('[role="dialog"]') === null).toBe(applied);
+      expect(
+        container.textContent?.includes(
+          "The file operation could not be completed. Please try again.",
+        ),
+      ).toBe(!applied);
+    },
+  );
+});
 
 function card() {
   return container.querySelector('[data-testid="file-card"]');

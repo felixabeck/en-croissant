@@ -554,6 +554,7 @@
     "Files.DeletePermanently": "Удалить безвозвратно",
     "Files.DeletePermanentlyConfirm": "Удалить «{{name}}» безвозвратно?",
     "Files.DestinationFolder": "Папка назначения",
+    "Files.EditMetadata": "Изменить метаданные",
     "Files.EmptyWorkspace": "Выберите коллекцию PGN, чтобы управлять ею с помощью встроенных прав доступа к файлам.",
     "Files.FileType": "Тип файла",
     "Files.FileType.Folder": "Папка",

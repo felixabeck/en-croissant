@@ -218,6 +218,103 @@ fn durability_uncertainty(
     })
 }
 
+fn replace_workspace_file_metadata(
+    parent: &fs::File,
+    pgn_leaf: &OsStr,
+    pgn_identity: (u64, u64),
+    metadata_bytes: &[u8],
+    cancellation: &CancellationToken,
+) -> Result<Option<crate::error::DurabilityStage>, Error> {
+    let info_leaf = sidecar_leaf(pgn_leaf)?;
+    let outcome = crate::infra::fs::atomic_replace_at_with_precommit(
+        parent,
+        &info_leaf,
+        || {
+            crate::infra::fs::assert_entry_identity(parent, pgn_leaf, pgn_identity, false)?;
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancellation);
+            }
+            Ok(())
+        },
+        |file| {
+            use std::io::Write;
+            file.write_all(metadata_bytes).map_err(Error::from)
+        },
+    )?;
+    Ok(durability_uncertainty(
+        outcome,
+        crate::error::DurabilityStage::WorkspaceSidecarReplacement,
+    ))
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn write_workspace_file_metadata(
+    workspace: FileWorkspaceHandle,
+    entry: FileWorkspaceHandle,
+    metadata: WorkspaceMetadata,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), Error> {
+    let operation = state.operations.accept("write_workspace_file_metadata")?;
+    let cancellation = operation.token();
+    let pgn_path_authority = Arc::clone(&state.pgn_path_authority);
+    let workspace_mutation = Arc::clone(&state.workspace_mutation);
+    crate::infra::operations::run_native_operation(
+        operation,
+        "write_workspace_file_metadata",
+        async move {
+            BLOCKING_GATEWAY
+                .spawn_cancellable(cancellation, move |token| {
+                    write_workspace_file_metadata_blocking(
+                        workspace,
+                        entry,
+                        metadata,
+                        &pgn_path_authority,
+                        &workspace_mutation,
+                        token,
+                    )
+                })
+                .await
+        },
+    )
+    .await
+}
+
+fn write_workspace_file_metadata_blocking(
+    workspace: FileWorkspaceHandle,
+    entry: FileWorkspaceHandle,
+    metadata: WorkspaceMetadata,
+    pgn_path_authority: &Mutex<Option<PathAuthority>>,
+    workspace_mutation: &Mutex<()>,
+    cancellation: &CancellationToken,
+) -> Result<(), Error> {
+    let metadata_bytes = serialize_metadata(&metadata)?;
+    let _guard = lock_std_cancellable(
+        workspace_mutation,
+        cancellation,
+        "workspace mutation lock was poisoned",
+    )?;
+    let root = mutation_target(pgn_path_authority, &workspace)?;
+    let source = mutation_target(pgn_path_authority, &entry)?;
+    ensure_registered_descendant(&root, &source)?;
+    if source.is_dir {
+        return Err(Error::InvalidInput("workspace entry must be a file".into()));
+    }
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
+    match replace_workspace_file_metadata(
+        &source.parent,
+        &source.leaf,
+        source.identity,
+        &metadata_bytes,
+        cancellation,
+    )? {
+        Some(stage) => Err(Error::CommittedDurabilityUncertain(stage)),
+        None => Ok(()),
+    }
+}
+
 fn join_cleanup(left: Result<(), Error>, right: Result<(), Error>) -> Result<(), Error> {
     match (left, right) {
         (Ok(()), other) => other,
@@ -1305,23 +1402,32 @@ fn rename_workspace_file_blocking(
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
+    if target_leaf == source.leaf {
+        return match replace_workspace_file_metadata(
+            &source.parent,
+            &source.leaf,
+            source.identity,
+            &metadata_bytes,
+            cancellation,
+        )? {
+            Some(stage) => Err(Error::CommittedDurabilityUncertain(stage)),
+            None => Ok(()),
+        };
+    }
     let target_parent_identity =
         crate::infra::path_authority::opened_file_identity(&source.parent)?;
     paired_rename(&source, &source.parent, &target_leaf)?;
-    let info_leaf = sidecar_leaf(&target_leaf)?;
-    let sidecar_outcome =
-        crate::infra::fs::atomic_replace_at(&source.parent, &info_leaf, |file| {
-            use std::io::Write;
-            file.write_all(&metadata_bytes).map_err(Error::from)
-        })?;
+    let sidecar_uncertainty = replace_workspace_file_metadata(
+        &source.parent,
+        &target_leaf,
+        source.identity,
+        &metadata_bytes,
+        cancellation,
+    )?;
     // The PGN rename and the sidecar rename both landed; the registry must follow them even
     // when the sidecar's parent sync is uncertain, so the rebind happens before reporting. The
     // first uncertain stage is the one reported, as in `create_workspace_file_blocking`; a
     // rebind failure that is not an uncertainty outranks it.
-    let sidecar_uncertainty = durability_uncertainty(
-        sidecar_outcome,
-        crate::error::DurabilityStage::WorkspaceSidecarReplacement,
-    );
     let rebind = rebind_after_move(
         pgn_path_authority,
         &entry,
@@ -1705,6 +1811,7 @@ mod tests {
         CreateDirectory,
         Move,
         Rename,
+        WriteMetadata,
         Trash,
         Restore,
         PermanentlyDelete,
@@ -1790,6 +1897,7 @@ mod tests {
             QueuedWorkspaceCommand::CreateDirectory,
             QueuedWorkspaceCommand::Move,
             QueuedWorkspaceCommand::Rename,
+            QueuedWorkspaceCommand::WriteMetadata,
             QueuedWorkspaceCommand::Trash,
             QueuedWorkspaceCommand::Restore,
             QueuedWorkspaceCommand::PermanentlyDelete,
@@ -1877,6 +1985,15 @@ mod tests {
                         )
                         .await
                     }
+                    QueuedWorkspaceCommand::WriteMetadata => {
+                        write_workspace_file_metadata(
+                            command_workspace,
+                            command_source.clone(),
+                            WorkspaceMetadata::default(),
+                            state,
+                        )
+                        .await
+                    }
                     QueuedWorkspaceCommand::Trash => {
                         trash_workspace_entry(command_workspace, command_source.clone(), state)
                             .await
@@ -1945,6 +2062,7 @@ mod tests {
             QueuedWorkspaceCommand::CreateDirectory,
             QueuedWorkspaceCommand::Move,
             QueuedWorkspaceCommand::Rename,
+            QueuedWorkspaceCommand::WriteMetadata,
             QueuedWorkspaceCommand::Trash,
             QueuedWorkspaceCommand::Restore,
             QueuedWorkspaceCommand::PermanentlyDelete,
@@ -2017,6 +2135,15 @@ mod tests {
                         )
                         .await
                     }
+                    QueuedWorkspaceCommand::WriteMetadata => {
+                        write_workspace_file_metadata(
+                            command_workspace,
+                            command_source.clone(),
+                            WorkspaceMetadata::default(),
+                            state,
+                        )
+                        .await
+                    }
                     QueuedWorkspaceCommand::Trash => {
                         trash_workspace_entry(command_workspace, command_source.clone(), state)
                             .await
@@ -2079,6 +2206,16 @@ mod tests {
                             .expect("renamed authority")
                             .path(),
                         root.join("renamed.pgn")
+                    );
+                }
+                QueuedWorkspaceCommand::WriteMetadata => {
+                    assert!(source_path.is_file());
+                    assert!(root.join("source.info").is_file());
+                    assert_eq!(
+                        mutation_target(&state.pgn_path_authority, &source)
+                            .expect("metadata authority")
+                            .path(),
+                        source_path
                     );
                 }
                 QueuedWorkspaceCommand::Trash => {
@@ -3728,6 +3865,455 @@ mod tests {
             ),
             Some(crate::error::DurabilityStage::WorkspaceSidecarCreation)
         );
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum MetadataEdit {
+        Metadata,
+        SameLeaf,
+        Rename,
+    }
+
+    fn edit_metadata(
+        mode: MetadataEdit,
+        state: &AppState,
+        workspace: &FileWorkspaceHandle,
+        entry: &FileWorkspaceHandle,
+        metadata: WorkspaceMetadata,
+        cancellation: &CancellationToken,
+    ) -> Result<(), Error> {
+        match mode {
+            MetadataEdit::Metadata => write_workspace_file_metadata_blocking(
+                workspace.clone(),
+                entry.clone(),
+                metadata,
+                &state.pgn_path_authority,
+                &state.workspace_mutation,
+                cancellation,
+            ),
+            MetadataEdit::SameLeaf | MetadataEdit::Rename => rename_workspace_file_blocking(
+                workspace.clone(),
+                entry.clone(),
+                if matches!(mode, MetadataEdit::SameLeaf) {
+                    "before.pgn"
+                } else {
+                    "after"
+                }
+                .into(),
+                metadata,
+                &state.pgn_path_authority,
+                &state.workspace_mutation,
+                cancellation,
+            ),
+        }
+    }
+
+    fn edited_metadata() -> WorkspaceMetadata {
+        WorkspaceMetadata {
+            file_type: WorkspaceFileType::Repertoire,
+            tags: vec!["original".into()],
+        }
+    }
+
+    struct MetadataPrecommitHook(StdMutex<Option<Box<dyn FnOnce() + Send>>>);
+
+    impl AtomicWriterInjector for MetadataPrecommitHook {
+        fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+            if point == AtomicFileFaultPoint::PreCommitRevalidate {
+                if let Some(hook) = self.0.lock().expect("hook lock").take() {
+                    hook();
+                }
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn metadata_edits_replace_or_create_sidecars_without_changing_the_pgn_or_registry() {
+        for mode in [
+            MetadataEdit::Metadata,
+            MetadataEdit::SameLeaf,
+            MetadataEdit::Rename,
+        ] {
+            for existing in [false, true] {
+                let (directory, state, workspace) = workspace_state();
+                let root = workspace_root(&state.pgn_path_authority, &workspace).unwrap();
+                let path = root.join("before.pgn");
+                let pgn_bytes = b"[Event \"Keep\"]\n\n1. e4 *\n";
+                fs::write(&path, pgn_bytes).unwrap();
+                let entry = registered_child_file(&state, &workspace, &path);
+                let original = WorkspaceMetadata {
+                    file_type: WorkspaceFileType::Game,
+                    tags: edited_metadata().tags,
+                };
+                if existing {
+                    fs::write(
+                        root.join("before.info"),
+                        serialize_metadata(&original).unwrap(),
+                    )
+                    .unwrap();
+                }
+                let identity = mutation_target(&state.pgn_path_authority, &entry)
+                    .unwrap()
+                    .identity;
+                let registry_before = fs::read(directory.path().join("registry.json")).unwrap();
+                let metadata = edited_metadata();
+                edit_metadata(
+                    mode,
+                    &state,
+                    &workspace,
+                    &entry,
+                    metadata.clone(),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+                let leaf = if matches!(mode, MetadataEdit::Rename) {
+                    "after"
+                } else {
+                    "before"
+                };
+                assert_eq!(
+                    fs::read(root.join(format!("{leaf}.pgn"))).unwrap(),
+                    pgn_bytes
+                );
+                assert_eq!(
+                    serde_json::from_slice::<WorkspaceMetadata>(
+                        &fs::read(root.join(format!("{leaf}.info"))).unwrap()
+                    )
+                    .unwrap(),
+                    metadata
+                );
+                let resolved = mutation_target(&state.pgn_path_authority, &entry).unwrap();
+                assert_eq!(resolved.identity, identity);
+                assert_eq!(resolved.path(), root.join(format!("{leaf}.pgn")));
+                if !matches!(mode, MetadataEdit::Rename) {
+                    assert_eq!(
+                        fs::read(directory.path().join("registry.json")).unwrap(),
+                        registry_before
+                    );
+                } else {
+                    assert!(!path.exists());
+                    assert!(!root.join("before.info").exists());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn metadata_command_refuses_directory_unknown_foreign_and_oversized_inputs() {
+        let (directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).unwrap();
+        let path = root.join("before.pgn");
+        fs::write(&path, "*").unwrap();
+        let entry = registered_child_file(&state, &workspace, &path);
+        fs::write(root.join("before.info"), b"original").unwrap();
+        let (_folder_path, folder) = registered_child_directory(&state, &workspace, "folder");
+        let (_foreign_directory, foreign_state, foreign_workspace) = workspace_state();
+        let foreign_root =
+            workspace_root(&foreign_state.pgn_path_authority, &foreign_workspace).unwrap();
+        let foreign_path = foreign_root.join("foreign.pgn");
+        fs::write(&foreign_path, "*").unwrap();
+        let foreign = registered_child_file(&foreign_state, &foreign_workspace, &foreign_path);
+        let unknown = FileWorkspaceHandle::new(PathRef {
+            id: "unregistered".into(),
+        });
+        let snapshot = fs::read(directory.path().join("registry.json")).unwrap();
+        for refused in [&folder, &unknown, &foreign] {
+            let error = edit_metadata(
+                MetadataEdit::Metadata,
+                &state,
+                &workspace,
+                refused,
+                edited_metadata(),
+                &CancellationToken::new(),
+            )
+            .unwrap_err();
+            assert!(matches!(error, Error::InvalidInput(_)));
+        }
+        // A registered file in another collection of the SAME authority is also refused.
+        assert_eq!(
+            fs::read(directory.path().join("registry.json")).unwrap(),
+            snapshot
+        );
+        let outside_root = directory.path().join("outside");
+        fs::create_dir(&outside_root).unwrap();
+        let outside_workspace = {
+            let mut guard = authority(&state.pgn_path_authority).unwrap();
+            let authority = guard.as_mut().unwrap();
+            let grant = authority
+                .grant_dialog_operations(
+                    &outside_root,
+                    "Outside",
+                    PathClass::BoundedDialogGrant,
+                    vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+                    Duration::from_secs(60),
+                    4,
+                )
+                .unwrap();
+            FileWorkspaceHandle::new(
+                authority
+                    .promote_dialog(
+                        &grant,
+                        PathClass::PersistentCustomRoot,
+                        "Outside",
+                        vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+                    )
+                    .unwrap()
+                    .id,
+            )
+        };
+        let outside = outside_root.join("outside.pgn");
+        fs::write(&outside, "*").unwrap();
+        let outside_entry = registered_child_file(&state, &outside_workspace, &outside);
+        let registry_with_outside = fs::read(directory.path().join("registry.json")).unwrap();
+        assert!(edit_metadata(
+            MetadataEdit::Metadata,
+            &state,
+            &workspace,
+            &outside_entry,
+            edited_metadata(),
+            &CancellationToken::new()
+        )
+        .is_err());
+        assert_eq!(
+            fs::read(directory.path().join("registry.json")).unwrap(),
+            registry_with_outside
+        );
+        let oversized = WorkspaceMetadata {
+            file_type: WorkspaceFileType::Game,
+            tags: vec!["x".repeat(MAX_WORKSPACE_METADATA_BYTES)],
+        };
+        assert!(matches!(
+            edit_metadata(
+                MetadataEdit::Metadata,
+                &state,
+                &workspace,
+                &entry,
+                oversized,
+                &CancellationToken::new()
+            ),
+            Err(Error::ResourceLimit(_))
+        ));
+        assert_eq!(fs::read(&path).unwrap(), b"*");
+        assert_eq!(fs::read(root.join("before.info")).unwrap(), b"original");
+        assert!(!root.join("folder.info").exists());
+    }
+
+    #[test]
+    fn metadata_precommit_refuses_replaced_removed_and_nonregular_pgns_without_sidecar_commit() {
+        for mode in [
+            MetadataEdit::Metadata,
+            MetadataEdit::SameLeaf,
+            MetadataEdit::Rename,
+        ] {
+            for change in ["replace", "remove", "directory"] {
+                for existing in [false, true] {
+                    let (directory, state, workspace) = workspace_state();
+                    let root = workspace_root(&state.pgn_path_authority, &workspace).unwrap();
+                    let source = root.join("before.pgn");
+                    fs::write(&source, "*").unwrap();
+                    let entry = registered_child_file(&state, &workspace, &source);
+                    if existing {
+                        fs::write(root.join("before.info"), b"original-sidecar").unwrap();
+                    }
+                    let registry_before = fs::read(directory.path().join("registry.json")).unwrap();
+                    let leaf = if matches!(mode, MetadataEdit::Rename) {
+                        "after"
+                    } else {
+                        "before"
+                    };
+                    let target = root.join(format!("{leaf}.pgn"));
+                    let displaced = root.join("displaced.pgn");
+                    let hook_target = target.clone();
+                    let hook_displaced = displaced.clone();
+                    set_test_atomic_file_injector(Some(Arc::new(MetadataPrecommitHook(
+                        StdMutex::new(Some(Box::new(move || {
+                            // Retain the original inode so replacement cannot reuse its identity.
+                            fs::rename(&hook_target, hook_displaced).unwrap();
+                            match change {
+                                "replace" => fs::write(&hook_target, b"substitute").unwrap(),
+                                "directory" => fs::create_dir(&hook_target).unwrap(),
+                                _ => {}
+                            }
+                        }))),
+                    ))));
+                    let result = edit_metadata(
+                        mode,
+                        &state,
+                        &workspace,
+                        &entry,
+                        edited_metadata(),
+                        &CancellationToken::new(),
+                    );
+                    set_test_atomic_file_injector(None);
+                    let error = result.unwrap_err();
+                    if change == "remove" {
+                        assert!(error.is_missing_entry(), "{mode:?}: {error}");
+                    } else {
+                        assert!(matches!(error, Error::Conflict(_)), "{mode:?}: {error}");
+                    }
+                    assert_eq!(fs::read(displaced).unwrap(), b"*");
+                    if change == "replace" {
+                        assert_eq!(fs::read(&target).unwrap(), b"substitute");
+                    }
+                    if change == "directory" {
+                        assert!(target.is_dir());
+                    }
+                    let sidecar = root.join(format!("{leaf}.info"));
+                    if existing {
+                        assert_eq!(fs::read(sidecar).unwrap(), b"original-sidecar");
+                    } else {
+                        assert!(!sidecar.exists());
+                    }
+                    assert_eq!(
+                        fs::read(directory.path().join("registry.json")).unwrap(),
+                        registry_before
+                    );
+                    // Rename's ordinary failure stays after the move, before registry rebind.
+                    if matches!(mode, MetadataEdit::Rename) {
+                        assert!(!source.exists());
+                        assert!(!root.join("before.info").exists());
+                        assert!(registry_has_display_name(&directory, "before"));
+                    }
+                    assert!(fs::read_dir(&root).unwrap().all(|entry| !entry
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".atomic-")));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sidecar_only_edits_report_workspace_sidecar_durability_uncertainty() {
+        for mode in [MetadataEdit::Metadata, MetadataEdit::SameLeaf] {
+            let (directory, state, workspace) = workspace_state();
+            let root = workspace_root(&state.pgn_path_authority, &workspace).unwrap();
+            let path = root.join("before.pgn");
+            fs::write(&path, "*").unwrap();
+            let entry = registered_child_file(&state, &workspace, &path);
+            let registry_before = fs::read(directory.path().join("registry.json")).unwrap();
+            set_test_atomic_file_injector(Some(Arc::new(crate::infra::fs::ParentSyncFault(
+                "uncertain",
+            ))));
+            let result = edit_metadata(
+                mode,
+                &state,
+                &workspace,
+                &entry,
+                edited_metadata(),
+                &CancellationToken::new(),
+            );
+            set_test_atomic_file_injector(None);
+            assert!(matches!(
+                result,
+                Err(Error::CommittedDurabilityUncertain(
+                    crate::error::DurabilityStage::WorkspaceSidecarReplacement
+                ))
+            ));
+            assert_eq!(
+                serde_json::from_slice::<WorkspaceMetadata>(
+                    &fs::read(root.join("before.info")).unwrap()
+                )
+                .unwrap(),
+                edited_metadata()
+            );
+            assert_eq!(
+                mutation_target(&state.pgn_path_authority, &entry)
+                    .unwrap()
+                    .path(),
+                path
+            );
+            assert_eq!(
+                fs::read(directory.path().join("registry.json")).unwrap(),
+                registry_before
+            );
+        }
+    }
+
+    #[test]
+    fn sidecar_only_edits_cancel_before_commit_without_changing_files_or_registry() {
+        for mode in [MetadataEdit::Metadata, MetadataEdit::SameLeaf] {
+            let (directory, state, workspace) = workspace_state();
+            let root = workspace_root(&state.pgn_path_authority, &workspace).unwrap();
+            let path = root.join("before.pgn");
+            fs::write(&path, "*").unwrap();
+            let entry = registered_child_file(&state, &workspace, &path);
+            fs::write(root.join("before.info"), b"original").unwrap();
+            let registry_before = fs::read(directory.path().join("registry.json")).unwrap();
+            let cancellation = CancellationToken::new();
+            let cancel = cancellation.clone();
+            set_test_atomic_file_injector(Some(Arc::new(MetadataPrecommitHook(StdMutex::new(
+                Some(Box::new(move || cancel.cancel())),
+            )))));
+            let result = edit_metadata(
+                mode,
+                &state,
+                &workspace,
+                &entry,
+                edited_metadata(),
+                &cancellation,
+            );
+            set_test_atomic_file_injector(None);
+            assert!(matches!(result, Err(Error::Cancellation)));
+            assert_eq!(fs::read(&path).unwrap(), b"*");
+            assert_eq!(fs::read(root.join("before.info")).unwrap(), b"original");
+            assert_eq!(
+                fs::read(directory.path().join("registry.json")).unwrap(),
+                registry_before
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sidecar_only_edits_refuse_symlinks_directories_and_fifos() {
+        for mode in [MetadataEdit::Metadata, MetadataEdit::SameLeaf] {
+            for kind in ["symlink", "directory", "fifo"] {
+                let (directory, state, workspace) = workspace_state();
+                let root = workspace_root(&state.pgn_path_authority, &workspace).unwrap();
+                let path = root.join("before.pgn");
+                fs::write(&path, "*").unwrap();
+                let entry = registered_child_file(&state, &workspace, &path);
+                let info = root.join("before.info");
+                let sentinel = root.join("sentinel");
+                fs::write(&sentinel, b"untouched").unwrap();
+                match kind {
+                    "symlink" => std::os::unix::fs::symlink(&sentinel, &info).unwrap(),
+                    "directory" => fs::create_dir(&info).unwrap(),
+                    _ => {
+                        assert!(std::process::Command::new("mkfifo")
+                            .arg(&info)
+                            .status()
+                            .unwrap()
+                            .success());
+                    }
+                }
+                let before = fs::symlink_metadata(&info).unwrap();
+                let registry_before = fs::read(directory.path().join("registry.json")).unwrap();
+                assert!(edit_metadata(
+                    mode,
+                    &state,
+                    &workspace,
+                    &entry,
+                    edited_metadata(),
+                    &CancellationToken::new()
+                )
+                .is_err());
+                let after = fs::symlink_metadata(&info).unwrap();
+                assert_eq!(
+                    (before.dev(), before.ino(), before.mode()),
+                    (after.dev(), after.ino(), after.mode())
+                );
+                assert_eq!(fs::read(sentinel).unwrap(), b"untouched");
+                assert_eq!(fs::read(&path).unwrap(), b"*");
+                assert_eq!(
+                    fs::read(directory.path().join("registry.json")).unwrap(),
+                    registry_before
+                );
+            }
+        }
     }
 
     /// Creates `before.pgn` with an empty tag list, renames it to `after.pgn` with the tag

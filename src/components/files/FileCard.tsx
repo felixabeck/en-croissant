@@ -1,6 +1,6 @@
 import { tauri } from "@/platform/tauri";
 import { Badge, Box, Divider, Group, Stack, Text } from "@mantine/core";
-import { IconZoomCheck } from "@tabler/icons-react";
+import { IconEdit, IconZoomCheck } from "@tabler/icons-react";
 import { useNavigate } from "@tanstack/react-router";
 import { useAtom } from "jotai";
 import { useEffect, useRef, useState } from "react";
@@ -28,7 +28,13 @@ function rootFontSizePx() {
 
 // The parent keys this card by the handle key, so a different file remounts it (resetting the
 // page and the game-name cache) while a relisted copy of the same file keeps both.
-function FileCard({ selected }: { selected: FileMetadata }) {
+function FileCard({
+  selected,
+  onEditMetadata,
+}: {
+  selected: FileMetadata;
+  onEditMetadata: () => void;
+}) {
   const { t } = useTranslation();
 
   const [, setTabs] = useAtom(tabsAtom);
@@ -88,11 +94,16 @@ function FileCard({ selected }: { selected: FileMetadata }) {
       </Stack>
       <Divider />
 
-      {/* Not `grow`: equal thirds leave each part 17px wide at 320px and a 200% font scale. */}
-      <Group align="center" justify="space-between" wrap="wrap" px="xs" miw={0}>
-        <IconAction label={t("Common.Open")} size="sm" onClick={openGame}>
-          <IconZoomCheck />
-        </IconAction>
+      {/* Keep the icons together: three separately spaced items wrap the game count at 200%. */}
+      <Group align="center" justify="space-between" wrap="wrap" px={{ base: 0, lg: "xs" }} miw={0}>
+        <Group gap={0} wrap="nowrap">
+          <IconAction label={t("Common.Open")} size="sm" onClick={openGame}>
+            <IconZoomCheck />
+          </IconAction>
+          <IconAction label={t("Files.EditMetadata")} size="sm" onClick={onEditMetadata}>
+            <IconEdit />
+          </IconAction>
+        </Group>
         <Text ta="center" c="dimmed" miw={0}>
           {t("Files.GameCountSuffix", {
             count: selected.numGames,

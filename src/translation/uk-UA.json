@@ -554,6 +554,7 @@
     "Files.DeletePermanently": "Видалити назавжди",
     "Files.DeletePermanentlyConfirm": "Видалити {{name}} назавжди?",
     "Files.DestinationFolder": "Тека призначення",
+    "Files.EditMetadata": "Редагувати метадані",
     "Files.EmptyWorkspace": "Виберіть колекцію PGN, щоб керувати нею з нативними дозволами файлів.",
     "Files.FileType": "Тип файлу",
     "Files.FileType.Folder": "Папка",

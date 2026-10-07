@@ -540,6 +540,7 @@
     "Files.DeletePermanently": "Delete permanently",
     "Files.DeletePermanentlyConfirm": "Permanently delete {{name}}?",
     "Files.DestinationFolder": "Destination folder",
+    "Files.EditMetadata": "Edit metadata",
     "Files.EmptyWorkspace": "Choose a PGN collection to manage it with native file permissions.",
     "Files.FileType": "File type",
     "Files.FileType.Folder": "Folder",
