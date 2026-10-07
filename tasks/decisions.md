@@ -6297,3 +6297,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** refusal would turn a theoretical race into a guaranteed outage on that filesystem; unguarded is today's behaviour. Reversal path: change the unsupported branch in the instance-lock admission to the refusal path.
 * **Decided by:** Claude Code, drain planner lane (drain run a28f99b3-2237-4fa8-b5ca-715d97e8cd6a), full auto, plan review r1–r5; recorded by adopting session fa6786ed-3e23-4701-b1a3-05a243d9a80b, plan tasks/plans/2026-10-07-single-instance-guard.md · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"4231dcfc9878109b5dbb0c2243e5e9589c825589381b145526195b62f76d0b75","input_sha256":"5e3a8db21fc571cb402753f7e1e3f2fcf9bb71a2d1fa51e4ed0367d76c859438","kind":"mutation-receipt","operation":"9110b5802dd36ef6f8036794a23d0d27c2353ce54052a9e1fd974eed531d428c","options":{"section":null},"request_id_sha256":null,"results":["d-20261007-32"],"target":"decisions-ledger","v":1} -->
+
+### d-20261007-33 — Where does the cross-process advisory-lock primitive live?
+
+* **Question:** Where does the advisory-lock primitive used by the instance lock live?
+* **Governs:** f-20260922-07
+* **Chosen:** one function in `src-tauri/src/infra/fs.rs` (blocking and non-blocking exclusive lock; unix `rustix::fs::flock`, Windows `LockFileEx`), used by practice's deck lock, the macOS engine-launch sweep and the instance lock (rule 11).
+* **Rejected:** `std::fs::File::try_lock` (does not compile on the pinned backend-coverage nightly `nightly-2025-06-01`, E0658 `file_lock`); a third hand-written copy.
+* **Reason:** the codebase already had two copies of the primitive; the third use extracts it. Reversal path: none needed; the function is internal.
+* **Decided by:** Claude Code, drain planner lane (drain run a28f99b3-2237-4fa8-b5ca-715d97e8cd6a), full auto, plan review r1–r5; recorded by adopting session fa6786ed-3e23-4701-b1a3-05a243d9a80b, plan tasks/plans/2026-10-07-single-instance-guard.md · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"250848c875409d241b2ed9cc5e54c53ea970b119ed4f94d6c09cbaaeb7ca6c15","input_sha256":"1ed4d741d433884e4edddd8b71de56600868b176fdd199449d662fb78dd62851","kind":"mutation-receipt","operation":"d4dd054c6b9714a10c7fa4a113337a6a4a4713ac7553751c8a9b6fa8be00e459","options":{"section":null},"request_id_sha256":null,"results":["d-20261007-33"],"target":"decisions-ledger","v":1} -->
