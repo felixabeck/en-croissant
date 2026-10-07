@@ -6099,7 +6099,7 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Chosen:** The event id is the download ticket. The account string is the admission key, not the event id.
 * **Rejected:** Account string as the event id, with a refusal standing in for a distinct operation id.
 * **Reason:** `ipc-events.md` requires the broadcast id to identify the operation the receiver asked for. The ticket is already that operation. The account string cannot tell two exports apart, which is the defect. `d-20261004-06` is not reversed: conversions do not share one output file, and these exports do, so the account string becomes the exclusive admission key rather than the event id. Reversal path: pass the account string to `begin_progress` again and point `AccountCard`'s listener back at `accountKey`.
-* **Decided by:** Grok, autonomously under full auto, drain session 8d5c0775-a29f-45c4-9bec-a3b3895837a5 (drain run 80fae550-0102-4ac3-83d7-2a39c45de07d), adopted reviewed plan tasks/plans/2026-10-07-account-export-progress-id.md · **Superseded-by:** -
+* **Decided by:** Grok, autonomously under full auto, drain session 8d5c0775-a29f-45c4-9bec-a3b3895837a5 (drain run 80fae550-0102-4ac3-83d7-2a39c45de07d), adopted reviewed plan tasks/plans/2026-10-07-account-export-progress-id.md · **Superseded-by:** d-20261007-15
 
 ### d-20261007-13 — May two webviews export the same account at the same time once each export has its own progress id?
 
@@ -6118,7 +6118,7 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Rejected:** A ref on the card instance.
 * **Reason:** The mandate's receiver is the account card. The card is remounted while the download stays pending. The atom already survives that remount. A ref does not. Today the card recomputes `accountKey`, so remount still matches frames. After the event id is the ticket, that id is not recomputable. Reversal path: keep the ticket only on the instance and accept a remounted card that stays pending without further percentage updates.
 * **Decided by:** Grok, autonomously under full auto, drain session 8d5c0775-a29f-45c4-9bec-a3b3895837a5 (drain run 80fae550-0102-4ac3-83d7-2a39c45de07d), adopted reviewed plan tasks/plans/2026-10-07-account-export-progress-id.md · **Superseded-by:** -
-<!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"695cc3d6563846df5915c80a6bbb138569c853dd02a40ffd3438fb4205e3e5e1","input_sha256":"0999634cae55aad09ed8f2b51d256e30b03c2767176f3cdbaece6c295d3ce8a9","kind":"mutation-receipt","operation":"8e26d4b1067eef41478c8d1f5f94196234f9984748d4930bf6f2a8cbcaa60c5d","options":{"section":null},"request_id_sha256":null,"results":["d-20261007-12","d-20261007-13","d-20261007-14"],"target":"decisions-ledger","v":1} -->
+<!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"59fee5740fbe8f409ca985f852c4ba18f918623ab94f633620994bc8dd6d13bb","input_sha256":"0999634cae55aad09ed8f2b51d256e30b03c2767176f3cdbaece6c295d3ce8a9","kind":"mutation-receipt","operation":"8e26d4b1067eef41478c8d1f5f94196234f9984748d4930bf6f2a8cbcaa60c5d","options":{"section":null},"request_id_sha256":null,"results":["d-20261007-12","d-20261007-13","d-20261007-14"],"target":"decisions-ledger","v":1} -->
 
 ### d-20261007-15 — Does the standing account-export progress choice change because conversions share a database file?
 
