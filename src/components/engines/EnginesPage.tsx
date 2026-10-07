@@ -198,7 +198,11 @@ export default function EnginesPage() {
         ) : (
           <Paper withBorder style={{ borderWidth: 2 }} p="md" h="100%">
             {selectedEngine.type === "local" ? (
-              <EngineSettings selected={selected} setSelected={setSelected} />
+              <EngineSettings
+                key={selectedEngine.id}
+                selected={selected}
+                setSelected={setSelected}
+              />
             ) : (
               <Stack>
                 <Divider variant="dashed" label={t("Common.GeneralSettings")} />
@@ -661,27 +665,31 @@ function EngineSettings({
           opened={deleteModal}
           onClose={toggleDeleteModal}
           onConfirm={async () => {
+            setSelected(null);
             try {
-              await retireEngine(engine);
+              await setEngines(async (prev) => (await prev).filter((e) => e.id !== engine.id));
             } catch (error) {
               notifyUnlessCancelled(t("Common.Error"), error);
+            } finally {
+              try {
+                await retireEngine(engine);
+              } catch (error) {
+                notifyUnlessCancelled(t("Common.Error"), error);
+              }
             }
-            setEngines(async (prev) => (await prev).filter((e) => e.id !== engine.id));
-            setSelected(null);
-            toggleDeleteModal();
           }}
           confirmLabel={t("Common.Remove")}
         />
       </Stack>
       <JSONModal
-        key={engine.id}
+        key={`${engine.id}:json`}
         opened={jsonModal}
         toggleOpened={toggleJSONModal}
         engine={engine}
         setEngine={(v) => setEngines(async (prev) => replaceEngineById(await prev, targetId, v))}
       />
       <UpgradeEngineModal
-        key={engine.id}
+        key={`${engine.id}:upgrade`}
         engine={engine}
         opened={upgradeOpened}
         setOpened={setUpgradeOpened}
