@@ -12,7 +12,7 @@ import {
     TREE_STORAGE_VERSION,
 } from "./tabStorage";
 
-const native = vi.hoisted(() => ({ warn: vi.fn() }));
+const native = vi.hoisted(() => ({ warn: vi.fn().mockResolvedValue(undefined) }));
 const persistError = vi.hoisted(() => ({ reportPersistError: vi.fn() }));
 const CANONICAL_GLYPH_NAGS = [
     1, 3, 2, 4, 5, 6, 18, 16, 14, 10, 13, 15, 17, 19, 146, 32, 36, 40, 132, 44, 138, 140, 7, 22, 9,
@@ -1430,6 +1430,40 @@ test("rewrite and deferred flush retain recoverable state when storage temporari
     expect(storage.read("flush-failure")).not.toBeNull();
 });
 
+test("migration rewrite failures fall back to console when native logging rejects", async () => {
+    const raw = JSON.stringify(defaultTree());
+    sessionStorage.setItem("rewrite-log-failure", raw);
+    const logError = new Error("log IPC failed");
+    native.warn.mockRejectedValueOnce(logError);
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementationOnce(() => {
+        throw new DOMException("quota", "QuotaExceededError");
+    });
+
+    try {
+        expect(storage.read("rewrite-log-failure")?.state).toMatchObject({
+            root: defaultTree().root,
+        });
+        expect(sessionStorage.getItem("rewrite-log-failure")).toBe(raw);
+        expect(native.warn).toHaveBeenCalledOnce();
+        expect(native.warn).toHaveBeenCalledWith(expect.stringContaining("migrate tree storage"));
+
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(consoleWarn).toHaveBeenCalledOnce();
+        expect(consoleWarn).toHaveBeenCalledWith(
+            expect.stringContaining("migrate tree storage"),
+            logError,
+        );
+        expect(persistError.reportPersistError).not.toHaveBeenCalled();
+    } finally {
+        setItem.mockRestore();
+        consoleWarn.mockRestore();
+    }
+});
+
 test.each([42, null, undefined])(
     "wraps a non-Error storage failure with its original cause: %s",
     (cause) => {
@@ -1505,6 +1539,37 @@ test("lifecycle flush failures warn and retain pending state without notifying",
     expect(native.warn).toHaveBeenCalledWith(expect.stringContaining("persist tree storage"));
     expect(persistError.reportPersistError).not.toHaveBeenCalled();
     setItem.mockRestore();
+});
+
+test("flush failures fall back to console when native logging rejects", async () => {
+    const logError = new Error("log IPC failed");
+    native.warn.mockRejectedValueOnce(logError);
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+        throw new DOMException("quota", "QuotaExceededError");
+    });
+    storage.write("quit-log-failure", { version: 0, state: defaultTree() });
+
+    try {
+        expect(storage.flush()).toEqual(["quit-log-failure"]);
+        expect(storage.pendingCount()).toBe(1);
+        expect(native.warn).toHaveBeenCalledOnce();
+        expect(native.warn).toHaveBeenCalledWith(expect.stringContaining("persist tree storage"));
+
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(consoleWarn).toHaveBeenCalledOnce();
+        expect(consoleWarn).toHaveBeenCalledWith(
+            expect.stringContaining("persist tree storage"),
+            logError,
+        );
+        expect(persistError.reportPersistError).not.toHaveBeenCalled();
+    } finally {
+        setItem.mockRestore();
+        consoleWarn.mockRestore();
+    }
 });
 
 test("notified flush reports the first write failure once when several keys fail", () => {

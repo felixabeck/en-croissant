@@ -7,6 +7,10 @@ import { z } from "zod";
 import type { PersistStorage, StorageValue } from "zustand/middleware";
 import { decodeCompressedOrJson, serializeStorageValue } from "./debouncedStorage";
 
+function warnStorageFailure(message: string): void {
+    void warn(message).catch((logError) => console.warn(message, logError));
+}
+
 export const TREE_STORAGE_VERSION = 1;
 const DEBOUNCE_MS = 300;
 const FAILED_ADMISSION_PREFIX = "chessfable:failed-tab-admission:";
@@ -409,7 +413,7 @@ export class TabStorageRepository {
             try {
                 sessionStorage.setItem(tabId, serializeStorageValue(decoded));
             } catch (error) {
-                void warn(`Could not migrate tree storage ${tabId}: ${String(error)}`);
+                warnStorageFailure(`Could not migrate tree storage ${tabId}: ${String(error)}`);
             }
         }
         this.setReadStatus(tabId, { kind: "available" });
@@ -755,7 +759,7 @@ export class TabStorageRepository {
                 this.setReadStatus(tabId, { kind: "available" });
             } catch (error) {
                 failedTabIds.push(tabId);
-                void warn(`Could not persist tree storage ${tabId}: ${String(error)}`);
+                warnStorageFailure(`Could not persist tree storage ${tabId}: ${String(error)}`);
                 if (notifyError === undefined) notifyError = error;
             }
         }
