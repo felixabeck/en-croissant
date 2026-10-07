@@ -1,5 +1,5 @@
 import type { ErrorCategory, ErrorPayload, RootFailure } from "@/bindings";
-import { error as logError } from "./native";
+import { error as logError, warn as logWarn } from "./native";
 
 export type AppErrorCategory =
     | "cancelled"
@@ -250,6 +250,13 @@ export async function logFailureSafely(
             loggerFailure: safeFailureContext(loggingCause),
         });
     }
+}
+
+/** Reports a warning through the native log and keeps it on the console if the native logger rejects. */
+export function warnSafely(message: string): void {
+    void logWarn(message).catch((loggingCause: unknown) =>
+        console.warn(message, { loggerFailure: safeFailureContext(loggingCause) }),
+    );
 }
 
 export function errorUnlessCancelled(error: unknown): AppError | null {

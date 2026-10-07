@@ -1,5 +1,5 @@
 import { getDefaultStore } from "jotai";
-import { warn } from "@/platform/native";
+import { warnSafely } from "@/platform/errors";
 import { tauri } from "@/platform/tauri";
 import { soundCollectionAtom, soundVolumeAtom } from "@/state/atoms";
 
@@ -70,13 +70,7 @@ export function playSound(capture: boolean, check: boolean) {
             (error) => {
                 if (soundServerPortFailed) return;
                 soundServerPortFailed = true;
-                void warn(`Sound server port request failed: ${String(error)}`).catch((logError) =>
-                    console.warn(
-                        "Sound server port request failed, and the log facade did too:",
-                        error,
-                        logError,
-                    ),
-                );
+                warnSafely(`Sound server port request failed: ${String(error)}`);
             },
         )
         // Distinct from the playback error above: this one is the setup body throwing, most

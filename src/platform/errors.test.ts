@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { TauriCommandError } from "./tauri";
 import {
     errorUnlessCancelled,
@@ -6,7 +6,52 @@ import {
     runAppliedMutationWithRefresh,
     runDestructiveWithRefresh,
     runWithAppliedRecovery,
+    warnSafely,
 } from "./errors";
+
+const native = vi.hoisted(() => ({ warn: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("./native", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("./native")>()),
+    warn: native.warn,
+}));
+
+describe("warnSafely", () => {
+    beforeEach(() => {
+        native.warn.mockReset().mockResolvedValue(undefined);
+    });
+
+    afterEach(() => vi.restoreAllMocks());
+
+    test("reports through the native logger without a console fallback when it resolves", async () => {
+        const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        const message = "Could not report a warning";
+
+        expect(warnSafely(message)).toBeUndefined();
+        await Promise.resolve();
+
+        expect(native.warn).toHaveBeenCalledExactlyOnceWith(message);
+        expect(consoleWarn).not.toHaveBeenCalled();
+    });
+
+    test("falls back to console with a sanitized logger failure without an unhandled rejection", async () => {
+        native.warn.mockRejectedValueOnce(
+            new Error("logger failed at /private/logger.log token=secret"),
+        );
+        const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        const message = "Could not report a warning";
+
+        expect(warnSafely(message)).toBeUndefined();
+        await Promise.resolve();
+
+        expect(native.warn).toHaveBeenCalledExactlyOnceWith(message);
+        expect(consoleWarn).toHaveBeenCalledExactlyOnceWith(message, {
+            loggerFailure: {
+                category: "unexpected",
+                message: "logger failed at [path] token=[redacted]",
+            },
+        });
+    });
+});
 
 describe("normalizeError", () => {
     test.each(["changed", "missing", "unusable", "permission", "too-large"] as const)(

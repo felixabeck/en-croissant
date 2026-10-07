@@ -1,4 +1,4 @@
-import { warn } from "@/platform/native";
+import { warnSafely } from "@/platform/errors";
 import { ANNOTATION_INFO, MAX_NAG } from "@/utils/annotation";
 import { reportPersistError } from "@/state/persistError";
 import { splitPgnComment } from "@/utils/pgnComment";
@@ -6,10 +6,6 @@ import { getResolvedPathLength } from "@/utils/treeReducer";
 import { z } from "zod";
 import type { PersistStorage, StorageValue } from "zustand/middleware";
 import { decodeCompressedOrJson, serializeStorageValue } from "./debouncedStorage";
-
-function warnStorageFailure(message: string): void {
-    void warn(message).catch((logError) => console.warn(message, logError));
-}
 
 export const TREE_STORAGE_VERSION = 1;
 const DEBOUNCE_MS = 300;
@@ -413,7 +409,7 @@ export class TabStorageRepository {
             try {
                 sessionStorage.setItem(tabId, serializeStorageValue(decoded));
             } catch (error) {
-                warnStorageFailure(`Could not migrate tree storage ${tabId}: ${String(error)}`);
+                warnSafely(`Could not migrate tree storage ${tabId}: ${String(error)}`);
             }
         }
         this.setReadStatus(tabId, { kind: "available" });
@@ -759,7 +755,7 @@ export class TabStorageRepository {
                 this.setReadStatus(tabId, { kind: "available" });
             } catch (error) {
                 failedTabIds.push(tabId);
-                warnStorageFailure(`Could not persist tree storage ${tabId}: ${String(error)}`);
+                warnSafely(`Could not persist tree storage ${tabId}: ${String(error)}`);
                 if (notifyError === undefined) notifyError = error;
             }
         }

@@ -1453,10 +1453,9 @@ test("migration rewrite failures fall back to console when native logging reject
         await Promise.resolve();
 
         expect(consoleWarn).toHaveBeenCalledOnce();
-        expect(consoleWarn).toHaveBeenCalledWith(
-            expect.stringContaining("migrate tree storage"),
-            logError,
-        );
+        expect(consoleWarn).toHaveBeenCalledWith(expect.stringContaining("migrate tree storage"), {
+            loggerFailure: expect.anything(),
+        });
         expect(persistError.reportPersistError).not.toHaveBeenCalled();
     } finally {
         setItem.mockRestore();
@@ -1561,10 +1560,9 @@ test("flush failures fall back to console when native logging rejects", async ()
         await Promise.resolve();
 
         expect(consoleWarn).toHaveBeenCalledOnce();
-        expect(consoleWarn).toHaveBeenCalledWith(
-            expect.stringContaining("persist tree storage"),
-            logError,
-        );
+        expect(consoleWarn).toHaveBeenCalledWith(expect.stringContaining("persist tree storage"), {
+            loggerFailure: expect.anything(),
+        });
         expect(persistError.reportPersistError).not.toHaveBeenCalled();
     } finally {
         setItem.mockRestore();

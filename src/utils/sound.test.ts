@@ -203,11 +203,13 @@ describe("playSound", () => {
             await settle();
 
             expect(mocks.warn).toHaveBeenCalledOnce();
+            expect(mocks.warn).toHaveBeenCalledWith(
+                `Sound server port request failed: ${String(soundError)}`,
+            );
             expect(consoleWarn).toHaveBeenCalledOnce();
             expect(consoleWarn).toHaveBeenCalledWith(
-                "Sound server port request failed, and the log facade did too:",
-                soundError,
-                logError,
+                `Sound server port request failed: ${String(soundError)}`,
+                { loggerFailure: expect.anything() },
             );
         } finally {
             consoleWarn.mockRestore();
