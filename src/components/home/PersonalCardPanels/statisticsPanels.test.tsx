@@ -189,7 +189,10 @@ async function render(component: React.ReactNode) {
   await act(async () => root.render(component));
 }
 
+// The panels read today's date; pin it so the fixture's seven-day window does not expire.
 beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-10-02T12:00:00Z"));
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -198,6 +201,7 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
+  vi.useRealTimers();
 });
 
 test("Overview sums duplicate daily keys into result totals and month buckets", async () => {
