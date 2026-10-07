@@ -3,7 +3,7 @@ use std::{
     future::Future,
     io::{Read, Seek, Write},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::Mutex,
     time::Duration,
 };
 
@@ -819,25 +819,19 @@ pub(crate) async fn download_to_destination<R: tauri::Runtime>(
 }
 
 fn cleanup_download_reservation_best_effort(
-    authority: &Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     reservation: &crate::infra::path_authority::PendingArtifactReservation,
 ) {
-    let mut guard = match authority.lock() {
-        Ok(guard) => guard,
-        Err(_) => {
-            let stage = "lock";
-            let category = crate::error::ErrorCategory::Conflict;
-            log::warn!("download reservation cleanup failed at {stage}: {category}");
-            return;
-        }
-    };
-    let Some(authority) = guard.as_mut() else {
-        let stage = "initialization";
-        let category = crate::error::ErrorCategory::Conflict;
+    if let Err(unavailable) = authority.with_mut(|authority| {
+        authority.abandon_download_artifact(reservation);
+    }) {
+        let stage = match unavailable {
+            crate::infra::path_authority::AuthorityUnavailable::Poisoned => "lock",
+            crate::infra::path_authority::AuthorityUnavailable::Uninitialized => "initialization",
+        };
+        let category = Error::from(unavailable).category();
         log::warn!("download reservation cleanup failed at {stage}: {category}");
-        return;
-    };
-    authority.abandon_download_artifact(reservation);
+    }
 }
 
 fn report_download_terminal_progress<R: tauri::Runtime>(
@@ -912,27 +906,22 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
     // visible progress. No failed setup may leave a running progress entry.
     let filename = std::ffi::OsString::from(filename);
     let (op, resolved) = {
-        let mut authority_guard = state
-            .pgn_path_authority
-            .lock()
-            .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-        let authority = authority_guard
-            .as_mut()
-            .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-        let operations = authority.download_operations(&destination)?;
-        let op = OpClass::from_operations(&operations)?;
-        if op.payload_format() != PayloadFormat::PlainFile {
-            return Err(Error::InvalidInput(
-                "Payload download requires a plain-file operation".into(),
-            ));
-        }
-        validate_artifact_integrity(op, url, integrity)?;
-        let resolved = authority.resolve(
-            &destination,
-            crate::infra::path_authority::PathOperation::DownloadFile,
-            std::slice::from_ref(&filename),
-        )?;
-        (op, resolved)
+        state.pgn_path_authority.with_mut(|authority| {
+            let operations = authority.download_operations(&destination)?;
+            let op = OpClass::from_operations(&operations)?;
+            if op.payload_format() != PayloadFormat::PlainFile {
+                return Err(Error::InvalidInput(
+                    "Payload download requires a plain-file operation".into(),
+                ));
+            }
+            validate_artifact_integrity(op, url, integrity)?;
+            let resolved = authority.resolve(
+                &destination,
+                crate::infra::path_authority::PathOperation::DownloadFile,
+                std::slice::from_ref(&filename),
+            )?;
+            Ok::<_, Error>((op, resolved))
+        })??
     };
     let mut staged_file = tempfile::tempfile().map_err(|error| Error::Io(Box::new(error)))?;
     if cancellation.is_cancelled() {
@@ -1002,20 +991,15 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
             }
         };
         let reservation_result = (|| {
-            let mut authority = state
-                .pgn_path_authority
-                .lock()
-                .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-            let authority = authority
-                .as_mut()
-                .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-            authority.reserve_download_artifact(
-                &destination,
-                filename.clone(),
-                payload,
-                filename.to_string_lossy().into_owned(),
-                vec![crate::infra::path_authority::PathOperation::ReadPgn],
-            )
+            state.pgn_path_authority.with_mut(|authority| {
+                authority.reserve_download_artifact(
+                    &destination,
+                    filename.clone(),
+                    payload,
+                    filename.to_string_lossy().into_owned(),
+                    vec![crate::infra::path_authority::PathOperation::ReadPgn],
+                )
+            })?
         })();
         match reservation_result {
             Ok(reservation) => Some(reservation),
@@ -1128,30 +1112,22 @@ pub(crate) async fn install_staged_pgn_artifact(
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
-    let reservation = state
-        .pgn_path_authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .reserve_download_artifact(
+    let reservation = state.pgn_path_authority.with_mut(|authority| {
+        authority.reserve_download_artifact(
             &destination,
             filename.clone(),
             payload,
             filename.to_string_lossy().into_owned(),
             vec![crate::infra::path_authority::PathOperation::ReadPgn],
-        )?;
-    let resolved = state
-        .pgn_path_authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .resolve(
+        )
+    })??;
+    let resolved = state.pgn_path_authority.with_mut(|authority| {
+        authority.resolve(
             &destination,
             crate::infra::path_authority::PathOperation::DownloadFile,
             std::slice::from_ref(&filename),
-        )?;
+        )
+    })??;
     let installation_reservation = reservation.clone();
     let commit_gate = commit_gate.cloned();
     let install = crate::infra::blocking::BLOCKING_GATEWAY
@@ -1270,11 +1246,7 @@ async fn download_lichess_games_runtime<R: tauri::Runtime>(
     )?;
     let operations = state
         .pgn_path_authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .download_operations(&destination)?;
+        .with_mut(|authority| authority.download_operations(&destination))??;
     if OpClass::from_operations(&operations)? != OpClass::Lichess {
         return Err(Error::InvalidInput(
             "Lichess download requires a Lichess destination".into(),
@@ -1309,26 +1281,21 @@ fn resolve_engine_archive_destination(
     destination: &crate::infra::path_authority::PathRef,
     directory_name: &std::ffi::OsStr,
 ) -> Result<(OpClass, crate::infra::path_authority::ResolvedPath), Error> {
-    let mut authority_guard = state
-        .pgn_path_authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-    let authority = authority_guard
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-    let operations = authority.download_operations(destination)?;
-    let op = OpClass::from_operations(&operations)?;
-    if op != OpClass::Engine {
-        return Err(Error::InvalidInput(
-            "engine archive requires an engine destination".into(),
-        ));
-    }
-    let resolved = authority.resolve(
-        destination,
-        crate::infra::path_authority::PathOperation::DownloadArchive,
-        &[directory_name.to_os_string()],
-    )?;
-    Ok((op, resolved))
+    state.pgn_path_authority.with_mut(|authority| {
+        let operations = authority.download_operations(destination)?;
+        let op = OpClass::from_operations(&operations)?;
+        if op != OpClass::Engine {
+            return Err(Error::InvalidInput(
+                "engine archive requires an engine destination".into(),
+            ));
+        }
+        let resolved = authority.resolve(
+            destination,
+            crate::infra::path_authority::PathOperation::DownloadArchive,
+            &[directory_name.to_os_string()],
+        )?;
+        Ok((op, resolved))
+    })?
 }
 
 /// Downloads and atomically installs an engine archive into an authority-managed directory.
@@ -2031,7 +1998,7 @@ pub async fn file_exists(
     file: crate::infra::path_authority::PathRef,
     state: tauri::State<'_, AppState>,
 ) -> Result<bool, Error> {
-    let authority = Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     crate::infra::operations::run_accepted_blocking(&state.operations, "file_exists", move || {
         file_exists_blocking(&authority, file)
     })
@@ -2039,16 +2006,10 @@ pub async fn file_exists(
 }
 
 fn file_exists_blocking(
-    authority: &Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     file: crate::infra::path_authority::PathRef,
 ) -> Result<bool, Error> {
-    let mut authority_guard = authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-    let authority = authority_guard
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-    file_exists_with_authority(authority, &file)
+    authority.with_mut(|authority| file_exists_with_authority(authority, &file))?
 }
 
 fn resolve_engine_binary_for_inspection(
@@ -2310,7 +2271,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let (authority, destination) = database_destination(&dir);
         let state = AppState::default();
-        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        state.pgn_path_authority.install(authority).unwrap();
         let app = tauri::test::mock_app();
 
         let (job_id, lease) = test_download_lease(&state);
@@ -2342,7 +2303,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let (authority, destination) = database_destination(&dir);
         let state = AppState::default();
-        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        state.pgn_path_authority.install(authority).unwrap();
         let app = tauri::test::mock_app();
 
         let job_id = state.operations.prepare_download("test").unwrap();
@@ -2368,7 +2329,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let (authority, destination) = database_destination(&dir);
         let state = AppState::default();
-        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        state.pgn_path_authority.install(authority).unwrap();
 
         let error = match resolve_engine_archive_destination(
             &state,
@@ -4434,7 +4395,7 @@ mod tests {
             http_transport: Arc::new(zip_response(payloads[0].clone())),
             ..AppState::default()
         };
-        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        state.pgn_path_authority.install(authority).unwrap();
         let app = test_progress_app();
         let mut paths = Vec::new();
         let mut handles = Vec::new();
@@ -4464,6 +4425,7 @@ mod tests {
             let relative = format!("{directory}/stockfish/engine");
             let handle = state
                 .pgn_path_authority
+                .raw_for_test()
                 .lock()
                 .unwrap()
                 .as_mut()
@@ -4517,6 +4479,7 @@ mod tests {
             );
             let adopted = state
                 .pgn_path_authority
+                .raw_for_test()
                 .lock()
                 .unwrap()
                 .as_mut()
@@ -4655,7 +4618,7 @@ mod tests {
             }),
             ..AppState::default()
         });
-        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        state.pgn_path_authority.install(authority).unwrap();
         let app = test_progress_app();
         let app_handle = app.handle().clone();
         let (job_id, lease) = test_download_lease(&state);
@@ -4708,7 +4671,7 @@ mod tests {
             }),
             ..AppState::default()
         });
-        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        state.pgn_path_authority.install(authority).unwrap();
         let app = test_progress_app();
         let (job_id, lease) = test_download_lease(&state);
         let cancel_id = job_id.clone();
@@ -4762,7 +4725,7 @@ mod tests {
                 http_transport: mock_successful_transport(payload),
                 ..AppState::default()
             };
-            *state.pgn_path_authority.lock().unwrap() = Some(authority);
+            state.pgn_path_authority.install(authority).unwrap();
             let state = Arc::new(state);
             let app = test_progress_app();
             let app_handle = app.handle().clone();
@@ -4811,7 +4774,7 @@ mod tests {
                 http_transport: mock_successful_transport(payload),
                 ..AppState::default()
             };
-            *state.pgn_path_authority.lock().unwrap() = Some(authority);
+            state.pgn_path_authority.install(authority).unwrap();
             let state = Arc::new(state);
             let app = test_progress_app();
             let app_handle = app.handle().clone();
@@ -4863,7 +4826,7 @@ mod tests {
                 http_transport: Arc::new(zip_response(payload.clone())),
                 ..AppState::default()
             };
-            *state.pgn_path_authority.lock().unwrap() = Some(authority);
+            state.pgn_path_authority.install(authority).unwrap();
             let state = Arc::new(state);
             let app = test_progress_app();
             let (job_id, lease) = test_download_lease(&state);
@@ -4909,7 +4872,7 @@ mod tests {
                 http_transport: Arc::new(zip_response(payload.clone())),
                 ..AppState::default()
             };
-            *state.pgn_path_authority.lock().unwrap() = Some(authority);
+            state.pgn_path_authority.install(authority).unwrap();
             let state = Arc::new(state);
             let app = test_progress_app();
             let (job_id, lease) = test_download_lease(&state);
@@ -5093,6 +5056,47 @@ mod tests {
         (authority, root_id, download_root)
     }
 
+    #[test]
+    fn reservation_cleanup_unavailability_keeps_the_reservation_and_exact_warning() {
+        use crate::infra::path_authority::{AuthorityUnavailable, SharedPathAuthority};
+        for unavailable in [
+            AuthorityUnavailable::Poisoned,
+            AuthorityUnavailable::Uninitialized,
+        ] {
+            let directory = tempdir().unwrap();
+            let (mut authority, destination, _) = test_downloads_destination(&directory);
+            let reservation = authority
+                .reserve_download_artifact(
+                    &destination,
+                    std::ffi::OsString::from("reserved.pgn"),
+                    (7, "digest".into()),
+                    "reserved",
+                    vec![crate::infra::path_authority::PathOperation::ReadPgn],
+                )
+                .unwrap();
+            assert!(authority.has_pending_artifact_filename(Path::new("reserved.pgn")));
+            let registry = directory.path().join("path-authority.json");
+            let before = std::fs::read(&registry).unwrap();
+            let owner = SharedPathAuthority::installed(authority);
+            match unavailable {
+                AuthorityUnavailable::Poisoned => owner.poison(),
+                AuthorityUnavailable::Uninitialized => owner.uninstall(),
+            }
+            let capture = crate::error::LogCaptureScope::start();
+            cleanup_download_reservation_best_effort(&owner, &reservation);
+            let expected = match unavailable {
+                AuthorityUnavailable::Poisoned => {
+                    "download reservation cleanup failed at lock: conflict"
+                }
+                AuthorityUnavailable::Uninitialized => {
+                    "download reservation cleanup failed at initialization: conflict"
+                }
+            };
+            assert_eq!(capture.messages(), vec![expected]);
+            assert_eq!(std::fs::read(&registry).unwrap(), before);
+        }
+    }
+
     fn test_progress_app() -> tauri::App<tauri::test::MockRuntime> {
         let app = tauri::test::mock_app();
         tauri_specta::Builder::<tauri::test::MockRuntime>::new()
@@ -5131,7 +5135,7 @@ mod tests {
             http_transport: Arc::new(zip_response(zip_payload())),
             ..AppState::default()
         };
-        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        state.pgn_path_authority.install(authority).unwrap();
         let app = test_progress_app();
         let progress_id = "payload_zip_refused";
         let (job_id, lease) = test_download_lease(&state);
@@ -5184,7 +5188,7 @@ mod tests {
             http_transport: transport.clone(),
             ..AppState::default()
         };
-        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        state.pgn_path_authority.install(authority).unwrap();
         let app = test_progress_app();
         let progress_id = "payload_engine_refused";
         let (job_id, lease) = test_download_lease(&state);
@@ -5219,7 +5223,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let (authority, destination, download_root) = test_downloads_destination(&dir);
         let mut state = AppState::default();
-        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        state.pgn_path_authority.install(authority).unwrap();
         let app = test_progress_app();
 
         // 1. download_to_destination caller with temporary-file install and injected target parent-sync failure
@@ -5261,7 +5265,7 @@ mod tests {
             pgn_content
         );
         {
-            let auth = state.pgn_path_authority.lock().unwrap();
+            let auth = state.pgn_path_authority.raw_for_test().lock().unwrap();
             assert!(auth
                 .as_ref()
                 .unwrap()
@@ -5300,7 +5304,7 @@ mod tests {
             staged_content
         );
         {
-            let auth = state.pgn_path_authority.lock().unwrap();
+            let auth = state.pgn_path_authority.raw_for_test().lock().unwrap();
             assert!(auth
                 .as_ref()
                 .unwrap()
@@ -5314,7 +5318,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let (authority, destination, download_root) = test_downloads_destination(&dir);
         let mut state = AppState::default();
-        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        state.pgn_path_authority.install(authority).unwrap();
         let app = test_progress_app();
         let pgn_content: &'static [u8] = b"1. e4 c5 2. Nf3 d6";
         state.http_transport = mock_successful_transport(pgn_content);
@@ -5365,7 +5369,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let (authority, destination, download_root) = test_downloads_destination(&dir);
         let state = AppState::default();
-        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        state.pgn_path_authority.install(authority).unwrap();
         let state = Arc::new(state);
         let target = download_root.join("held-install.pgn");
         std::fs::write(&target, b"previous").unwrap();
@@ -5408,7 +5412,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let (authority, destination, download_root) = test_downloads_destination(&dir);
         let state = AppState::default();
-        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        state.pgn_path_authority.install(authority).unwrap();
         let cancellation = CancellationToken::new();
         crate::infra::fs::set_test_atomic_file_injector(Some(Arc::new(CancelSecondParentSync {
             seen: std::sync::atomic::AtomicUsize::new(0),
@@ -5434,6 +5438,7 @@ mod tests {
         );
         assert!(state
             .pgn_path_authority
+            .raw_for_test()
             .lock()
             .unwrap()
             .as_ref()
@@ -5504,7 +5509,7 @@ mod tests {
             action: None,
         })));
         let mut state = AppState::default();
-        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        state.pgn_path_authority.install(authority).unwrap();
         let app = test_progress_app();
         let pgn_content: &'static [u8] = b"1. e4 e5 2. Nf3 Nc6";
         state.http_transport = mock_successful_transport(pgn_content);
@@ -5549,7 +5554,7 @@ mod tests {
             action: None,
         })));
         let state = AppState::default();
-        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        state.pgn_path_authority.install(authority).unwrap();
         let mut staged = tempfile::NamedTempFile::new().unwrap();
         staged.write_all(b"1. d4 Nf6 2. c4 g6").unwrap();
 
@@ -5584,7 +5589,7 @@ mod tests {
         authority.set_activation_observer(Some(observer));
 
         let mut state = AppState::default();
-        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        state.pgn_path_authority.install(authority).unwrap();
         let app = test_progress_app();
 
         let pgn_content: &'static [u8] = b"1. e4 e5 2. Nf3 Nc6";
@@ -5617,7 +5622,7 @@ mod tests {
         assert_eq!(progress_item.state, ProgressState::Failed);
         assert!(progress_item.finished);
 
-        let mut auth = state.pgn_path_authority.lock().unwrap();
+        let mut auth = state.pgn_path_authority.raw_for_test().lock().unwrap();
         let auth = auth.as_mut().unwrap();
         assert_eq!(auth.descriptors().len(), 1);
         assert!(auth.has_pending_artifact_filename(Path::new("games.pgn")));
@@ -5649,7 +5654,7 @@ mod tests {
             })),
         });
         authority.set_activation_observer(Some(observer));
-        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        state.pgn_path_authority.install(authority).unwrap();
         let app = test_progress_app();
 
         let (job_id, lease) = test_download_lease(&state);
@@ -5703,7 +5708,7 @@ mod tests {
             let state = weak
                 .upgrade()
                 .expect("state must be alive during transport request");
-            *state.pgn_path_authority.lock().unwrap() = None;
+            state.pgn_path_authority.uninstall();
             Ok(mock_successful_response(self.payload))
         }
     }
@@ -5721,7 +5726,7 @@ mod tests {
         state.http_transport = transport.clone();
         let state = Arc::new(state);
         *transport.state_weak.lock().unwrap() = Arc::downgrade(&state);
-        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        state.pgn_path_authority.install(authority).unwrap();
         let app = test_progress_app();
 
         let (job_id, lease) = test_download_lease(&state);
@@ -5787,7 +5792,7 @@ mod tests {
             })),
         });
         authority.set_activation_observer(Some(observer));
-        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        state.pgn_path_authority.install(authority).unwrap();
         let app = test_progress_app();
 
         let (job_id, lease) = test_download_lease(&state);
@@ -5810,7 +5815,7 @@ mod tests {
         .expect("registered pgn artifact publication must be present");
 
         {
-            let mut auth = state.pgn_path_authority.lock().unwrap();
+            let mut auth = state.pgn_path_authority.raw_for_test().lock().unwrap();
             let auth = auth.as_mut().unwrap();
             assert!(auth
                 .resolve(
@@ -5899,7 +5904,7 @@ mod tests {
         state.http_transport = transport.clone();
         let state = Arc::new(state);
         *transport.state_weak.lock().unwrap() = Arc::downgrade(&state);
-        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        state.pgn_path_authority.install(authority).unwrap();
         let app = test_progress_app();
         let lease = state
             .operations
@@ -5995,7 +6000,7 @@ mod tests {
                 http_transport: transport.clone(),
                 ..AppState::default()
             };
-            *state.pgn_path_authority.lock().unwrap() = Some(authority);
+            state.pgn_path_authority.install(authority).unwrap();
             let state = Arc::new(state);
             let app = test_progress_app();
             let app_handle = app.handle().clone();
@@ -6041,7 +6046,7 @@ mod tests {
                 .unwrap();
             operation.abort();
             if publication_fail {
-                *state.pgn_path_authority.lock().unwrap() = None;
+                state.pgn_path_authority.uninstall();
             }
             transport.release.notify_one();
             tokio::time::timeout(Duration::from_secs(2), async {

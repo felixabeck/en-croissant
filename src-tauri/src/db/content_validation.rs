@@ -28,7 +28,7 @@ use crate::{
             atomic_replace_at_with_precommit, open_regular_at, require_durable, RegularFileAccess,
         },
         operations::{run_native_operation, OperationRegistry},
-        path_authority::{DatabaseFileTarget, DatabaseHandle, PathAuthority, PathOperation},
+        path_authority::{DatabaseFileTarget, DatabaseHandle, PathOperation},
     },
 };
 
@@ -247,7 +247,7 @@ pub(super) fn write_passed_stamp(
 /// cannot be published. The missing stamp will make the next metadata read scan.
 pub(super) fn publish_passed_stamp(
     repository: &DatabaseRepository,
-    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     file: &DatabaseHandle,
     identity: &DatabaseIdentity,
 ) {
@@ -270,7 +270,7 @@ pub(super) fn publish_passed_stamp(
 
 pub(super) fn publish_committed_pass(
     repository: &DatabaseRepository,
-    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     file: &DatabaseHandle,
     target: &DatabaseFileTarget,
 ) {
@@ -285,7 +285,7 @@ pub(super) fn publish_committed_pass(
 }
 
 fn mutate_target(
-    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     file: &DatabaseHandle,
 ) -> Result<DatabaseFileTarget, Error> {
     super::resolve_database(authority, file, PathOperation::DatabaseMutate)
@@ -297,7 +297,7 @@ pub(super) fn inspect(
     repository: &DatabaseRepository,
     target: &DatabaseFileTarget,
     identity: &DatabaseIdentity,
-    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     file: &DatabaseHandle,
 ) -> Result<bool, Error> {
     let mut state = repository.content_validation.state.lock();
@@ -437,7 +437,7 @@ impl Drop for ScanGuard {
 
 pub(super) async fn schedule<R: tauri::Runtime>(
     repository: Arc<DatabaseRepository>,
-    authority: Arc<std::sync::Mutex<Option<PathAuthority>>>,
+    authority: crate::infra::path_authority::SharedPathAuthority,
     operations: &OperationRegistry,
     app: tauri::AppHandle<R>,
     file: DatabaseHandle,
@@ -446,7 +446,7 @@ pub(super) async fn schedule<R: tauri::Runtime>(
 ) {
     // Another metadata read may have observed a missing stamp before a scan
     // finished. Re-read outside the state lock before admitting another scan.
-    let stamp_authority = Arc::clone(&authority);
+    let stamp_authority = authority.clone();
     let stamp_file = file.clone();
     if BLOCKING_GATEWAY
         .spawn(move || {

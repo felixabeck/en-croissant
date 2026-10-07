@@ -580,7 +580,7 @@ mod tests {
             http_transport: transport,
             ..Default::default()
         };
-        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        state.pgn_path_authority.install(authority).unwrap();
         let app = tauri::test::mock_app();
         tauri_specta::Builder::<tauri::test::MockRuntime>::new()
             .events(tauri_specta::collect_events!(
@@ -924,6 +924,7 @@ mod tests {
         assert_eq!(std::fs::read(root.join("late.pgn")).unwrap(), b"1. e4 e5\n");
         assert!(state
             .pgn_path_authority
+            .raw_for_test()
             .lock()
             .unwrap()
             .as_ref()
@@ -963,6 +964,7 @@ mod tests {
         );
         assert!(state
             .pgn_path_authority
+            .raw_for_test()
             .lock()
             .unwrap()
             .as_ref()

@@ -41,7 +41,7 @@ use crate::{
     infra::{
         blocking::BLOCKING_GATEWAY,
         path_authority::{
-            classify_probe_error, DatabaseFileTarget, DatabaseHandle, PathAuthority, PathOperation,
+            classify_probe_error, DatabaseFileTarget, DatabaseHandle, PathOperation,
             ProbeErrorClass,
         },
     },
@@ -180,7 +180,7 @@ fn is_end_reachable(end: u16, pos: u16) -> bool {
 
 #[cfg(all(test, unix))]
 pub(crate) fn load_search_index(
-    authority: &Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     repository: &DatabaseRepository,
     search_cache: &Arc<SearchCache>,
     handle: &DatabaseHandle,
@@ -219,7 +219,7 @@ fn run_after_fast_identity_probe_hook() {
 /// the authority-bound file and its bound SQLite open, so one probe describes one object
 /// through an A-B-A leaf swap (`f-20260912-07`, `f-20260929-01`).
 pub(crate) fn load_search_index_cancellable(
-    authority: &Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     repository: &DatabaseRepository,
     search_cache: &Arc<SearchCache>,
     handle: &DatabaseHandle,
@@ -589,7 +589,7 @@ pub async fn search_position(
     let operation = crate::native_read_operation(ticket, &window, &state, "search_position")?;
     let cancellation = operation.token();
     let progress = JobProgress::new(app.clone(), tab_id)?;
-    let authority = Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     let repository = Arc::clone(&state.database_repository);
     let search_cache = Arc::clone(&state.search_cache);
     let new_request = state.new_request.clone();
@@ -640,7 +640,7 @@ async fn acquire_search_request(
 // decision D-B).
 #[allow(clippy::too_many_arguments)]
 fn search_position_blocking<R: tauri::Runtime>(
-    authority: &Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     repository: &DatabaseRepository,
     search_cache: &Arc<SearchCache>,
     permit: OwnedSemaphorePermit,
@@ -887,7 +887,7 @@ fn search_position_blocking<R: tauri::Runtime>(
 
 #[cfg(all(test, unix))]
 pub fn is_position_in_db(
-    authority: &Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     repository: &DatabaseRepository,
     search_cache: &Arc<SearchCache>,
     file: &DatabaseHandle,
@@ -904,7 +904,7 @@ pub fn is_position_in_db(
 }
 
 pub(crate) fn is_position_in_db_cancellable(
-    authority: &Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     repository: &DatabaseRepository,
     search_cache: &Arc<SearchCache>,
     file: &DatabaseHandle,

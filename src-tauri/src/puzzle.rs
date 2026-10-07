@@ -91,16 +91,11 @@ fn resolve_puzzle(
 }
 
 fn resolve_puzzle_with_authority(
-    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     file: &crate::infra::path_authority::PathRef,
     operation: crate::infra::path_authority::PathOperation,
 ) -> Result<crate::infra::path_authority::ResolvedPath, Error> {
-    authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .resolve(file, operation, &[])
+    authority.with_mut(|authority| authority.resolve(file, operation, &[]))?
 }
 
 fn puzzle_binding(
@@ -362,30 +357,26 @@ pub struct PuzzleDatabaseInfo {
 /// Refuses an unusable selected root; creates and activates the default only without a selection.
 fn active_or_default_puzzle_workspace(
     app_data: &dyn Fn() -> Result<crate::infra::path_authority::AppDataDir, Error>,
-    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
 ) -> Result<crate::infra::path_authority::PuzzleRootDescriptor, Error> {
-    let mut authority_lock = authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-    let authority = authority_lock
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-    if let Some(workspace) = authority.active_puzzle_root()? {
-        return Ok(workspace);
-    }
-    let authorized_dir = crate::infra::path_authority::ensure_app_owned_default_dir(
-        &app_data()?,
-        crate::infra::path_authority::AppOwnedDefaultRoot::Puzzles,
-    )?;
-    let root = authority.get_or_create_puzzle_root(
-        authorized_dir.path(),
-        "Puzzles",
-        Some(authorized_dir.identity()),
-    )?;
-    authority.set_active_puzzle_root(&root)?;
-    authority
-        .active_puzzle_root()?
-        .ok_or_else(|| Error::Conflict("new puzzle workspace became unavailable".into()))
+    authority.with_mut(|authority| {
+        if let Some(workspace) = authority.active_puzzle_root()? {
+            return Ok(workspace);
+        }
+        let authorized_dir = crate::infra::path_authority::ensure_app_owned_default_dir(
+            &app_data()?,
+            crate::infra::path_authority::AppOwnedDefaultRoot::Puzzles,
+        )?;
+        let root = authority.get_or_create_puzzle_root(
+            authorized_dir.path(),
+            "Puzzles",
+            Some(authorized_dir.identity()),
+        )?;
+        authority.set_active_puzzle_root(&root)?;
+        authority
+            .active_puzzle_root()?
+            .ok_or_else(|| Error::Conflict("new puzzle workspace became unavailable".into()))
+    })?
 }
 
 #[tauri::command]
@@ -405,7 +396,7 @@ pub async fn issue_puzzle_workspace(
     })
     .await
     .map_err(map_picker_join)??;
-    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     crate::infra::operations::run_accepted_blocking(
         &state.operations,
         "issue_puzzle_workspace",
@@ -415,24 +406,20 @@ pub async fn issue_puzzle_workspace(
 }
 
 fn issue_puzzle_workspace_blocking(
-    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     path: PathBuf,
 ) -> Result<crate::infra::path_authority::PuzzleRootDescriptor, Error> {
     let display_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "Puzzles".into());
-    let mut authority_lock = authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-    let authority = authority_lock
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-    let root = authority.get_or_create_puzzle_root(&path, display_name, None)?;
-    authority.set_active_puzzle_root(&root)?;
-    authority
-        .active_puzzle_root()?
-        .ok_or_else(|| Error::Conflict("selected puzzle workspace became unavailable".into()))
+    authority.with_mut(|authority| {
+        let root = authority.get_or_create_puzzle_root(&path, display_name, None)?;
+        authority.set_active_puzzle_root(&root)?;
+        authority
+            .active_puzzle_root()?
+            .ok_or_else(|| Error::Conflict("selected puzzle workspace became unavailable".into()))
+    })?
 }
 
 /// Returns the selected puzzle workspace or refuses an unusable selection. With no selection,
@@ -443,7 +430,7 @@ pub async fn get_puzzle_workspace(
     app: tauri::AppHandle,
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<crate::infra::path_authority::PuzzleRootDescriptor, Error> {
-    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     // `active_or_default_puzzle_workspace` already holds the whole body, so it is the blocking
     // function; a `get_puzzle_workspace_blocking` forwarding to it would be a pass-through.
     crate::infra::operations::run_accepted_blocking(
@@ -465,7 +452,7 @@ pub async fn issue_puzzle_download_destination(
     app: tauri::AppHandle,
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<crate::infra::path_authority::PathRef, Error> {
-    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     crate::infra::operations::run_accepted_blocking(
         &state.operations,
         "issue_puzzle_download_destination",
@@ -475,19 +462,14 @@ pub async fn issue_puzzle_download_destination(
 }
 
 fn issue_puzzle_download_destination_blocking<R: tauri::Runtime>(
-    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     app: tauri::AppHandle<R>,
 ) -> Result<crate::infra::path_authority::PathRef, Error> {
     let workspace = active_or_default_puzzle_workspace(
         &|| crate::infra::path_authority::AppDataDir::for_app(&app),
         authority,
     )?;
-    authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .puzzle_download_destination(&workspace.root)
+    authority.with_mut(|authority| authority.puzzle_download_destination(&workspace.root))?
 }
 
 #[tauri::command]
@@ -500,10 +482,10 @@ pub async fn list_puzzle_databases(
 ) -> Result<Vec<PuzzleDatabaseInfo>, Error> {
     let operation = crate::native_read_operation(ticket, &window, &state, "list_puzzle_databases")?;
     let cancellation = operation.token();
-    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     let repository = Arc::clone(&state.database_repository);
     crate::infra::operations::run_native_operation(operation, "list_puzzle_databases", async move {
-        let worker_authority = Arc::clone(&authority);
+        let worker_authority = authority.clone();
         let files = BLOCKING_GATEWAY
             .spawn_cancellable(cancellation.clone(), move |token| {
                 if token.is_cancelled() {
@@ -523,7 +505,7 @@ pub async fn list_puzzle_databases(
             }
             databases.push(
                 puzzle_database_info_for_file(
-                    Arc::clone(&authority),
+                    authority.clone(),
                     Arc::clone(&repository),
                     file.file,
                     cancellation.clone(),
@@ -541,23 +523,20 @@ pub async fn list_puzzle_databases(
 
 fn list_puzzle_databases_blocking<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     cancellation: &CancellationToken,
 ) -> Result<Vec<crate::infra::path_authority::PuzzleDatabaseDescriptor>, Error> {
     let workspace = active_or_default_puzzle_workspace(
         &|| crate::infra::path_authority::AppDataDir::for_app(app),
         authority,
     )?;
-    authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .list_puzzle_children_cancellable(&workspace.root, cancellation)
+    authority.with_mut(|authority| {
+        authority.list_puzzle_children_cancellable(&workspace.root, cancellation)
+    })?
 }
 
 async fn puzzle_database_info_for_file(
-    authority: Arc<std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>>,
+    authority: crate::infra::path_authority::SharedPathAuthority,
     repository: Arc<DatabaseRepository>,
     file: crate::infra::path_authority::PathRef,
     cancellation: CancellationToken,
@@ -605,7 +584,7 @@ pub async fn delete_puzzle_database(
             )?;
             let path = resolved.puzzle_database_path()?;
             let repository = state.database_repository.clone();
-            let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+            let authority = state.pgn_path_authority.clone();
             delete_puzzle_database_resolved(
                 resolved,
                 path,
@@ -626,7 +605,7 @@ async fn delete_puzzle_database_resolved(
     path: PathBuf,
     file: crate::infra::path_authority::PathRef,
     repository: Arc<DatabaseRepository>,
-    authority: Arc<std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>>,
+    authority: crate::infra::path_authority::SharedPathAuthority,
     puzzle_cache: Arc<tokio::sync::Mutex<PuzzleCache>>,
     cancellation: tokio_util::sync::CancellationToken,
 ) -> Result<(), Error> {
@@ -650,7 +629,7 @@ fn delete_puzzle_database_blocking(
     path: &Path,
     file: &crate::infra::path_authority::PathRef,
     repository: &DatabaseRepository,
-    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     token: &CancellationToken,
 ) -> Result<(CommittedRemoval, Option<PathBuf>), Error> {
     let delete_resolved = || match resolved.delete_puzzle_database() {
@@ -690,14 +669,9 @@ fn delete_puzzle_database_blocking(
         Err(error) => return Err(error),
     };
     let registry_result = authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))
-        .and_then(|mut authority| {
-            authority
-                .as_mut()
-                .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-                .remove_puzzle_database(file)
-        });
+        .with_mut(|authority| authority.remove_puzzle_database(file))
+        .map_err(Error::from)
+        .and_then(|result| result);
     committed_removal.record(
         registry_result,
         "puzzle database registry cleanup",
@@ -793,7 +767,7 @@ mod workspace_tests {
     use super::*;
 
     fn puzzle_workspace_body(
-        authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+        authority: &crate::infra::path_authority::SharedPathAuthority,
         lookup: &dyn Fn() -> Result<crate::infra::path_authority::AppDataDir, Error>,
     ) -> Result<crate::infra::path_authority::PathRef, Error> {
         active_or_default_puzzle_workspace(lookup, authority)
@@ -834,14 +808,15 @@ mod workspace_tests {
         let path_b = directory.path().join("puzzles-b");
         std::fs::create_dir(&path_a).unwrap();
         std::fs::create_dir(&path_b).unwrap();
-        let authority = std::sync::Mutex::new(Some(
+        let authority = crate::infra::path_authority::SharedPathAuthority::installed(
             PathAuthority::open(directory.path().join("registry.json"), vec![]).unwrap(),
-        ));
+        );
 
         let workspace_a = issue_puzzle_workspace_blocking(&authority, path_a.clone()).unwrap();
         assert_eq!(workspace_a.display_name, "puzzles-a");
         assert_eq!(
             authority
+                .raw_for_test()
                 .lock()
                 .unwrap()
                 .as_mut()
@@ -863,6 +838,7 @@ mod workspace_tests {
         let workspace_b = issue_puzzle_workspace_blocking(&authority, path_b).unwrap();
         assert_eq!(
             authority
+                .raw_for_test()
                 .lock()
                 .unwrap()
                 .as_mut()
@@ -883,6 +859,7 @@ mod workspace_tests {
         assert_eq!(error.root_failure_reason(), Some(RootFailure::Missing));
         assert_eq!(
             authority
+                .raw_for_test()
                 .lock()
                 .unwrap()
                 .as_mut()
@@ -947,8 +924,7 @@ mod deletion_tests {
         pub(super) _directory: tempfile::TempDir,
         pub(super) path: PathBuf,
         pub(super) repository: Arc<DatabaseRepository>,
-        pub(super) authority:
-            Arc<std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>>,
+        pub(super) authority: crate::infra::path_authority::SharedPathAuthority,
         pub(super) cache: Arc<tokio::sync::Mutex<PuzzleCache>>,
         pub(super) handle: crate::infra::path_authority::PathRef,
         pub(super) resolved: crate::infra::path_authority::ResolvedPath,
@@ -1001,7 +977,7 @@ mod deletion_tests {
             _directory: directory,
             path,
             repository: Arc::new(repository),
-            authority: Arc::new(std::sync::Mutex::new(Some(authority))),
+            authority: crate::infra::path_authority::SharedPathAuthority::installed(authority),
             cache: Arc::new(tokio::sync::Mutex::new(cache)),
             handle,
             resolved,
@@ -1009,10 +985,11 @@ mod deletion_tests {
     }
 
     pub(super) fn authority_contains(
-        authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+        authority: &crate::infra::path_authority::SharedPathAuthority,
         handle: &crate::infra::path_authority::PathRef,
     ) -> bool {
         authority
+            .raw_for_test()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_mut()
@@ -1067,7 +1044,7 @@ mod deletion_tests {
             path.clone(),
             handle.clone(),
             repository,
-            Arc::clone(&authority),
+            authority.clone(),
             Arc::clone(&cache),
             tokio_util::sync::CancellationToken::new(),
         ));
@@ -1099,7 +1076,7 @@ mod deletion_tests {
             path.clone(),
             handle.clone(),
             repository,
-            Arc::clone(&authority),
+            authority.clone(),
             Arc::clone(&cache),
             tokio_util::sync::CancellationToken::new(),
         ));
@@ -1131,7 +1108,7 @@ mod deletion_tests {
             path.clone(),
             handle.clone(),
             repository,
-            Arc::clone(&authority),
+            authority.clone(),
             Arc::clone(&cache),
             tokio_util::sync::CancellationToken::new(),
         ));
@@ -1153,19 +1130,13 @@ mod deletion_tests {
             handle,
             resolved,
         } = puzzle_deletion_fixture("cleanup-failure.db3");
-        let poison = Arc::clone(&authority);
-        assert!(std::thread::spawn(move || {
-            let _guard = poison.lock().unwrap();
-            panic!("poison authority cleanup lock");
-        })
-        .join()
-        .is_err());
+        authority.poison();
         let result = tauri::async_runtime::block_on(delete_puzzle_database_resolved(
             resolved,
             path.clone(),
             handle.clone(),
             repository,
-            Arc::clone(&authority),
+            authority.clone(),
             Arc::clone(&cache),
             tokio_util::sync::CancellationToken::new(),
         ));
@@ -1204,7 +1175,7 @@ mod deletion_tests {
             aliased,
             fixture.handle.clone(),
             fixture.repository,
-            Arc::clone(&fixture.authority),
+            fixture.authority.clone(),
             Arc::clone(&fixture.cache),
             tokio_util::sync::CancellationToken::new(),
         ));
@@ -1227,7 +1198,7 @@ mod deletion_tests {
             fixture.path.clone(),
             fixture.handle.clone(),
             fixture.repository,
-            Arc::clone(&fixture.authority),
+            fixture.authority.clone(),
             Arc::clone(&fixture.cache),
             CancellationToken::new(),
         ));
@@ -1248,20 +1219,14 @@ mod deletion_tests {
     fn command_flow_already_missing_file_registry_failure_counts_zero_removed_entries() {
         let fixture = puzzle_deletion_fixture("missing-cleanup-failure.db3");
         std::fs::remove_file(&fixture.path).unwrap();
-        let poison = Arc::clone(&fixture.authority);
-        assert!(std::thread::spawn(move || {
-            let _guard = poison.lock().unwrap();
-            panic!("poison authority cleanup lock");
-        })
-        .join()
-        .is_err());
+        fixture.authority.poison();
 
         let result = tauri::async_runtime::block_on(delete_puzzle_database_resolved(
             fixture.resolved,
             fixture.path.clone(),
             fixture.handle.clone(),
             fixture.repository,
-            Arc::clone(&fixture.authority),
+            fixture.authority.clone(),
             Arc::clone(&fixture.cache),
             CancellationToken::new(),
         ));
@@ -1337,7 +1302,7 @@ mod tests {
             fixture.path.clone(),
             fixture.handle.clone(),
             fixture.repository,
-            Arc::clone(&fixture.authority),
+            fixture.authority.clone(),
             Arc::clone(&fixture.cache),
             tokio_util::sync::CancellationToken::new(),
         ));
@@ -1356,13 +1321,7 @@ mod tests {
     #[test]
     fn puzzle_durability_before_registry_failure_logs_failure_and_invalidates_cache() {
         let fixture = puzzle_deletion_fixture("durability-registry-failure.db3");
-        let poison = Arc::clone(&fixture.authority);
-        assert!(std::thread::spawn(move || {
-            let _guard = poison.lock().unwrap();
-            panic!("poison authority cleanup lock");
-        })
-        .join()
-        .is_err());
+        fixture.authority.poison();
 
         let (result, records) = delete_puzzle_with_parent_sync_fault_and_log_capture(&fixture);
 
@@ -1730,7 +1689,7 @@ mod tests {
             path.clone(),
             handle.clone(),
             repository,
-            Arc::clone(&authority),
+            authority.clone(),
             Arc::clone(&cache),
             tokio_util::sync::CancellationToken::new(),
         ));
@@ -1760,7 +1719,7 @@ mod tests {
         let held_connection = repository.schema_specific_connection(&target).unwrap();
         let state = crate::AppState {
             database_repository: Arc::clone(&repository),
-            pgn_path_authority: Arc::clone(&authority),
+            pgn_path_authority: authority.clone(),
             puzzle_cache: Arc::clone(&cache),
             ..Default::default()
         };
@@ -1813,7 +1772,7 @@ mod tests {
         let held_connection = repository.schema_specific_connection(&target).unwrap();
         let state = crate::AppState {
             database_repository: Arc::clone(&repository),
-            pgn_path_authority: Arc::clone(&authority),
+            pgn_path_authority: authority.clone(),
             puzzle_cache: Arc::clone(&cache),
             ..Default::default()
         };
@@ -1981,7 +1940,7 @@ mod tests {
             fixture.path.clone(),
             fixture.handle.clone(),
             fixture.repository,
-            Arc::clone(&fixture.authority),
+            fixture.authority.clone(),
             Arc::clone(&fixture.cache),
             tokio_util::sync::CancellationToken::new(),
         ));
@@ -2204,14 +2163,14 @@ mod tests {
         assert!(!serialized.contains("no such table: themes"));
     }
 
-    /// The `Mutex<Option<PathAuthority>>` the workspace helpers take, with `root_path` already
+    /// The `crate::infra::path_authority::SharedPathAuthority` the workspace helpers take, with `root_path` already
     /// registered as the **active** puzzle root. Its registry lives under `registry_dir`.
     /// Returned rather than asserted here, because one caller needs the handle's `PathRef`.
     fn puzzle_workspace_authority(
         registry_dir: &Path,
         root_path: &Path,
     ) -> (
-        std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+        crate::infra::path_authority::SharedPathAuthority,
         crate::infra::path_authority::PuzzleRootHandle,
     ) {
         let mut authority = crate::infra::path_authority::PathAuthority::open(
@@ -2223,7 +2182,10 @@ mod tests {
             .get_or_create_puzzle_root(root_path, "Puzzles", None)
             .unwrap();
         authority.set_active_puzzle_root(&root).unwrap();
-        (std::sync::Mutex::new(Some(authority)), root)
+        (
+            crate::infra::path_authority::SharedPathAuthority::installed(authority),
+            root,
+        )
     }
 
     /// The seeding check every case below runs before calling. The guard is taken and dropped
@@ -2231,10 +2193,10 @@ mod tests {
     /// under test locks the same mutex, so a guard still alive at the call site deadlocks
     /// rather than fails.
     fn assert_active_puzzle_root(
-        authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+        authority: &crate::infra::path_authority::SharedPathAuthority,
         message: &str,
     ) {
-        let mut guard = authority.lock().unwrap();
+        let mut guard = authority.raw_for_test().lock().unwrap();
         assert!(
             guard
                 .as_mut()
@@ -2272,6 +2234,7 @@ mod tests {
 
         assert_eq!(&destination, root.path_ref());
         let resolved = authority
+            .raw_for_test()
             .lock()
             .unwrap()
             .as_mut()
@@ -2318,7 +2281,7 @@ mod tests {
             .unwrap();
         let root = crate::infra::path_authority::PuzzleRootHandle::new(commit.id);
         authority.set_active_puzzle_root(&root).unwrap();
-        let authority = std::sync::Mutex::new(Some(authority));
+        let authority = crate::infra::path_authority::SharedPathAuthority::installed(authority);
         assert_active_puzzle_root(
             &authority,
             "a root without DownloadFile must still be the active puzzle workspace",
@@ -2361,7 +2324,7 @@ mod tests {
 
     #[test]
     fn puzzle_workspace_without_an_authority_is_a_conflict() {
-        let authority = std::sync::Mutex::new(None);
+        let authority = crate::infra::path_authority::SharedPathAuthority::uninitialized();
         let app = tauri::test::mock_app();
         let error =
             list_puzzle_databases_blocking(app.handle(), &authority, &CancellationToken::new())

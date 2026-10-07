@@ -34,9 +34,7 @@ use crate::{
     error::{cancelled_search_error, Error},
     infra::{
         blocking::BLOCKING_GATEWAY,
-        path_authority::{
-            DatabaseHandle, EngineExecutable, EngineHandle, PathAuthority, PathOperation,
-        },
+        path_authority::{DatabaseHandle, EngineExecutable, EngineHandle, PathOperation},
     },
     progress::{begin_progress, update_progress_with_state, ProgressState},
     AppState, SearchCache,
@@ -1510,7 +1508,7 @@ async fn analyze_game_core<R: tauri::Runtime>(
                 })
             })
             .collect();
-        let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+        let authority = state.pgn_path_authority.clone();
         let repository = std::sync::Arc::clone(&state.database_repository);
         let search_cache = std::sync::Arc::clone(&state.search_cache);
         let permit = match tokio::select! {
@@ -1572,7 +1570,7 @@ async fn analyze_game_core<R: tauri::Runtime>(
 /// `analysis.novelty = !found`. A full-index scan per ply is the cost this
 /// offload exists to bound.
 pub(crate) fn novelty_lookup_blocking(
-    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     repository: &DatabaseRepository,
     search_cache: &std::sync::Arc<SearchCache>,
     permit: OwnedSemaphorePermit,
@@ -2244,15 +2242,18 @@ done
         std::fs::write(&resource_path, b"resource-bytes").unwrap();
 
         #[cfg(target_os = "macos")]
-        let mut authority = PathAuthority::open_with_launch_root(
+        let mut authority = crate::infra::path_authority::PathAuthority::open_with_launch_root(
             directory.path().join("registry.json"),
             Vec::new(),
             crate::infra::path_authority::EngineLaunchRoot::for_test(directory.path()).unwrap(),
         )
         .unwrap();
         #[cfg(not(target_os = "macos"))]
-        let mut authority =
-            PathAuthority::open(directory.path().join("registry.json"), Vec::new()).unwrap();
+        let mut authority = crate::infra::path_authority::PathAuthority::open(
+            directory.path().join("registry.json"),
+            Vec::new(),
+        )
+        .unwrap();
         let engine = authority
             .register_engine_file(&script, "resource-flow-engine")
             .unwrap();
@@ -2271,7 +2272,10 @@ done
             .unwrap();
 
         let app = engine_test_app();
-        *app.state::<AppState>().pgn_path_authority.lock().unwrap() = Some(authority);
+        app.state::<AppState>()
+            .pgn_path_authority
+            .install(authority)
+            .unwrap();
         (directory, app, engine, resource)
     }
 
@@ -3215,7 +3219,7 @@ done
         #[cfg(target_os = "linux")]
         let (initial, refreshed) = {
             let state = app.state::<AppState>();
-            let mut authority = state.pgn_path_authority.lock().unwrap();
+            let mut authority = state.pgn_path_authority.raw_for_test().lock().unwrap();
             let authority = authority.as_mut().unwrap();
             let initial_option =
                 resolve_engine_option_leases(authority, std::slice::from_ref(&option))
@@ -3705,7 +3709,7 @@ done
         };
         let mut resolved = {
             let state = app.state::<AppState>();
-            let mut authority = state.pgn_path_authority.lock().unwrap();
+            let mut authority = state.pgn_path_authority.raw_for_test().lock().unwrap();
             resolve_engine_option_leases(
                 authority.as_mut().unwrap(),
                 std::slice::from_ref(&resource_option),
@@ -4009,6 +4013,7 @@ done
         let replacement = app
             .state::<AppState>()
             .pgn_path_authority
+            .raw_for_test()
             .lock()
             .unwrap()
             .as_mut()

@@ -1,3 +1,5 @@
+#[cfg(test)]
+use crate::infra::path_authority::PathAuthority;
 use std::{
     collections::{HashSet, VecDeque},
     hash::Hash,
@@ -30,7 +32,7 @@ use crate::error::{cancelled_search_error, Error};
 use crate::infra::{
     blocking::{BlockingGateway, BLOCKING_GATEWAY},
     keyed_locks::{KeyedLockLease, KeyedLocks},
-    path_authority::{EngineExecutable, EngineHandle, PathAuthority, PathOperation, PathRef},
+    path_authority::{EngineExecutable, EngineHandle, PathOperation, PathRef},
 };
 
 use super::{
@@ -1618,7 +1620,7 @@ impl EngineSupervisor {
         self: &Arc<Self>,
         key: EngineKey,
         engine: EngineHandle,
-        authority: Arc<StdMutex<Option<PathAuthority>>>,
+        authority: crate::infra::path_authority::SharedPathAuthority,
         mut admission: AdmissionLease,
         options: crate::chess::EngineOptions,
         mode: &GoMode,
@@ -2641,7 +2643,7 @@ struct LaunchResult {
 }
 
 pub(crate) async fn resolve_launch(
-    authority: Arc<std::sync::Mutex<Option<PathAuthority>>>,
+    authority: crate::infra::path_authority::SharedPathAuthority,
     engine: EngineHandle,
     operation: PathOperation,
     options: &[EngineOption],
@@ -2671,11 +2673,11 @@ pub(crate) async fn resolve_launch(
             if is_cancelled() {
                 return Ok(Err(PinFailure::Primary(Error::Cancellation)));
             }
-            let (executable, mut resolved) = with_path_authority(&authority, |authority| {
+            let (executable, mut resolved) = authority.with_mut(|authority| {
                 let executable = authority.engine_executable(&engine, operation)?;
                 let resolved = resolve_engine_option_leases(authority, &options)?;
-                Ok((executable, resolved))
-            })?;
+                Ok::<_, Error>((executable, resolved))
+            })??;
             if is_cancelled() {
                 return Ok(Err(PinFailure::Primary(Error::Cancellation)));
             }
@@ -2732,7 +2734,7 @@ pub(crate) async fn resolve_launch(
 }
 
 pub(crate) async fn resolve_option_leases(
-    authority: Arc<std::sync::Mutex<Option<PathAuthority>>>,
+    authority: crate::infra::path_authority::SharedPathAuthority,
     options: &[EngineOption],
     cancellation: CancellationToken,
 ) -> Result<Vec<ResolvedEngineOption>, Error> {
@@ -2742,24 +2744,9 @@ pub(crate) async fn resolve_option_leases(
             if cancellation.is_cancelled() {
                 return Err(Error::Cancellation);
             }
-            with_path_authority(&authority, |authority| {
-                resolve_engine_option_leases(authority, &options)
-            })
+            authority.with_mut(|authority| resolve_engine_option_leases(authority, &options))?
         })
         .await
-}
-
-fn with_path_authority<T>(
-    authority: &std::sync::Arc<std::sync::Mutex<Option<PathAuthority>>>,
-    access: impl FnOnce(&mut PathAuthority) -> Result<T, Error>,
-) -> Result<T, Error> {
-    let mut guard = authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-    let authority = guard
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-    access(authority)
 }
 
 /// Spawns and publishes an actor before any protocol initialization begins.
@@ -5684,7 +5671,7 @@ mod tests {
         let engine = authority
             .register_engine_file(&script, "pending-interactive-engine")
             .unwrap();
-        let authority = Arc::new(StdMutex::new(Some(authority)));
+        let authority = crate::infra::path_authority::SharedPathAuthority::installed(authority);
         let supervisor = Arc::new(EngineSupervisor::default());
         let key = EngineKey::new("pending-interactive".into(), "engine".into()).unwrap();
         let admission = supervisor
@@ -7566,7 +7553,12 @@ mod tests {
             .start_interactive_search(
                 key.clone(),
                 engine,
-                Arc::new(StdMutex::new(authority)),
+                match authority {
+                    Some(authority) => {
+                        crate::infra::path_authority::SharedPathAuthority::installed(authority)
+                    }
+                    None => crate::infra::path_authority::SharedPathAuthority::uninitialized(),
+                },
                 admission,
                 crate::chess::EngineOptions {
                     fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1".into(),
@@ -11494,7 +11486,7 @@ mod tests {
         let engine = authority
             .register_engine_file(&script, "authorized-engine")
             .unwrap();
-        let authority = Arc::new(std::sync::Mutex::new(Some(authority)));
+        let authority = crate::infra::path_authority::SharedPathAuthority::installed(authority);
         let supervisor = Arc::new(EngineSupervisor::default());
         let key = EngineKey::new("replacement".into(), "authorized-engine".into()).unwrap();
         let admission = supervisor
@@ -11577,7 +11569,7 @@ mod tests {
         let resource = authority
             .promote_engine_resource(&grant, EngineResourceHandleKind::File, "resource")
             .unwrap();
-        let authority = Arc::new(std::sync::Mutex::new(Some(authority)));
+        let authority = crate::infra::path_authority::SharedPathAuthority::installed(authority);
         let supervisor = Arc::new(EngineSupervisor::default());
         let key = EngineKey::new("resolve-launch-resource".into(), engine.id.id.clone()).unwrap();
         let admission = supervisor
@@ -11694,7 +11686,7 @@ mod tests {
         std::fs::remove_dir(&first_path).unwrap();
         std::fs::write(&first_path, b"replaced").unwrap();
 
-        let authority = Arc::new(std::sync::Mutex::new(Some(authority)));
+        let authority = crate::infra::path_authority::SharedPathAuthority::installed(authority);
         let supervisor = Arc::new(EngineSupervisor::default());
         let key = EngineKey::new("duplicate-directory".into(), engine.id.id.clone()).unwrap();
         let admission = supervisor
@@ -11772,7 +11764,7 @@ mod tests {
         }
         let first = resources[..32].to_vec();
         let second = resources[32..].to_vec();
-        let authority = Arc::new(std::sync::Mutex::new(Some(authority)));
+        let authority = crate::infra::path_authority::SharedPathAuthority::installed(authority);
         let supervisor = Arc::new(EngineSupervisor::default());
         let key = EngineKey::new("duplicate-evalfile".into(), engine.id.id.clone()).unwrap();
         let admission = supervisor
@@ -11837,7 +11829,7 @@ mod tests {
             .unwrap();
         #[cfg(target_os = "macos")]
         let launch_root = authority.engine_launch_root().unwrap();
-        let authority = Arc::new(std::sync::Mutex::new(Some(authority)));
+        let authority = crate::infra::path_authority::SharedPathAuthority::installed(authority);
         let supervisor = Arc::new(EngineSupervisor::default());
         let key = EngineKey::new("thread-test".into(), "thread-engine".into()).unwrap();
         let admission = supervisor
@@ -11891,7 +11883,7 @@ mod tests {
         let engine = authority
             .register_engine_file(&script, "missing-root-engine")
             .unwrap();
-        let authority = Arc::new(std::sync::Mutex::new(Some(authority)));
+        let authority = crate::infra::path_authority::SharedPathAuthority::installed(authority);
         let supervisor = Arc::new(EngineSupervisor::default());
         let key = EngineKey::new("missing-root".into(), "missing-root-engine".into()).unwrap();
         let admission = supervisor
@@ -11949,7 +11941,7 @@ mod tests {
         let engine = authority
             .register_engine_file(&script, "reclaim-log-engine")
             .unwrap();
-        let authority = Arc::new(std::sync::Mutex::new(Some(authority)));
+        let authority = crate::infra::path_authority::SharedPathAuthority::installed(authority);
         let supervisor = Arc::new(EngineSupervisor::default());
         let key = EngineKey::new("reclaim-log-tab".into(), "reclaim-log-engine".into()).unwrap();
         let admission = supervisor
@@ -12001,7 +11993,7 @@ engine_id=stale-engine category=I/O failure",
         let engine = authority
             .register_engine_file(&script, "value-failure-engine")
             .unwrap();
-        let authority = Arc::new(std::sync::Mutex::new(Some(authority)));
+        let authority = crate::infra::path_authority::SharedPathAuthority::installed(authority);
         let supervisor = Arc::new(EngineSupervisor::default());
         let key = EngineKey::new("value-failure".into(), "value-failure-engine".into()).unwrap();
         let admission = supervisor
@@ -12053,7 +12045,7 @@ engine_id=stale-engine category=I/O failure",
         let engine = authority
             .register_engine_file(&script, "pin-failure-engine")
             .unwrap();
-        let authority = Arc::new(std::sync::Mutex::new(Some(authority)));
+        let authority = crate::infra::path_authority::SharedPathAuthority::installed(authority);
         let supervisor = Arc::new(EngineSupervisor::default());
         let key = EngineKey::new("pin-failure".into(), "pin-failure-engine".into()).unwrap();
         let admission = supervisor
@@ -12115,7 +12107,7 @@ engine_id=pin-failure-engine primary_category=I/O failure cleanup_category=I/O f
         let engine = authority
             .register_engine_file(&script, "post-pin-cancel-engine")
             .unwrap();
-        let authority = Arc::new(std::sync::Mutex::new(Some(authority)));
+        let authority = crate::infra::path_authority::SharedPathAuthority::installed(authority);
         let supervisor = Arc::new(EngineSupervisor::default());
         let key =
             EngineKey::new("post-pin-cancel".into(), "post-pin-cancel-engine".into()).unwrap();

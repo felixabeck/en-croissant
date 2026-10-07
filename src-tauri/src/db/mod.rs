@@ -1,3 +1,5 @@
+#[cfg(test)]
+use crate::infra::path_authority::PathAuthority;
 #[cfg(all(test, unix))]
 pub(crate) mod allocation_probe;
 mod bound_sqlite;
@@ -34,7 +36,7 @@ use crate::{
     infra::{
         blocking::BLOCKING_GATEWAY,
         path_authority::{
-            DatabaseFileTarget, DatabaseHandle, FileWorkspaceHandle, PathAuthority, PathOperation,
+            DatabaseFileTarget, DatabaseHandle, FileWorkspaceHandle, PathOperation,
             RegularFileMetadata,
         },
     },
@@ -196,7 +198,7 @@ pub(crate) fn get_db_or_create(
     repository: &crate::db::DatabaseRepository,
     target: &DatabaseFileTarget,
     cancellation: Option<&CancellationToken>,
-    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     file: &DatabaseHandle,
 ) -> Result<repository::DatabaseConnection, Error> {
     let connection = repository.connection(target, cancellation)?;
@@ -218,18 +220,13 @@ pub(crate) fn get_db_or_create(
 /// checked path only after the opaque handle and the exact requested operation
 /// have been validated; no renderer path is ever parsed here.
 pub(crate) fn resolve_database(
-    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     handle: &DatabaseHandle,
     operation: PathOperation,
 ) -> Result<DatabaseFileTarget, Error> {
     #[cfg(test)]
     RESOLVE_DATABASE_OPERATIONS.with(|operations| operations.borrow_mut().push(operation));
-    authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .database_file_target(handle, operation)
+    authority.with_mut(|authority| authority.database_file_target(handle, operation))?
 }
 
 fn update_info_count(
@@ -298,7 +295,7 @@ fn with_validated_mutation(
     search_cache: &SearchCache,
     target: &DatabaseFileTarget,
     cancellation: &CancellationToken,
-    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     file: &DatabaseHandle,
     operation: impl FnOnce(&mut SqliteConnection) -> Result<(), Error>,
 ) -> Result<(), Error> {
@@ -717,7 +714,7 @@ fn database_app_with_grant(
     let commit =
         authority.grant_persistent_file_for_test(registered_path, display_name, operations);
     let state = AppState::default();
-    *state.pgn_path_authority.lock().unwrap() = Some(authority);
+    state.pgn_path_authority.install(authority).unwrap();
     let app = tauri::test::mock_app();
     app.manage(state);
     (app.handle().clone(), DatabaseHandle::new(commit.id))
@@ -871,7 +868,7 @@ async fn convert_pgn_command_core<R: tauri::Runtime>(
 ) -> Result<(), Error> {
     let operation = state.operations.accept("convert_pgn")?;
     let cancellation = operation.token();
-    let authority = Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     let repository = Arc::clone(&state.database_repository);
     let search_cache = Arc::clone(&state.search_cache);
     crate::infra::operations::run_native_operation(operation, "convert_pgn", async move {
@@ -976,7 +973,7 @@ fn read_import_games(
 // decision D-B).
 #[allow(clippy::too_many_arguments)]
 fn convert_pgn_blocking<R: tauri::Runtime>(
-    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     repository: &DatabaseRepository,
     search_cache: &SearchCache,
     files: Vec<FileWorkspaceHandle>,
@@ -1017,13 +1014,7 @@ fn convert_pgn_blocking<R: tauri::Runtime>(
                     };
                     context.run(|context| {
                         cancellation_check(cancellation)?;
-                        let file = {
-                            let mut authority = authority.lock().map_err(|_| {
-                                Error::Conflict("path authority lock was poisoned".into())
-                            })?;
-                            let authority = authority.as_mut().ok_or_else(|| {
-                                Error::Conflict("path authority is not initialized".into())
-                            })?;
+                        let file = authority.with_mut(|authority| {
                             context.display_name =
                                 Some(authority.display_name(file_handle.path_ref())?);
                             let resolved = authority.resolve(
@@ -1031,8 +1022,8 @@ fn convert_pgn_blocking<R: tauri::Runtime>(
                                 PathOperation::ReadPgn,
                                 &[],
                             )?;
-                            resolved.into_read_file()?
-                        };
+                            resolved.into_read_file()
+                        })??;
                         let current_file_name = context.display_name.clone();
                         let extension = current_file_name
                             .as_deref()
@@ -1090,7 +1081,7 @@ fn convert_pgn_blocking<R: tauri::Runtime>(
 
 pub fn generate_search_index(
     handle: &DatabaseHandle,
-    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     repository: &DatabaseRepository,
     search_cache: &SearchCache,
     cancellation: &CancellationToken,
@@ -1133,7 +1124,7 @@ fn generate_search_index_locked(
     repository: &DatabaseRepository,
     search_cache: &SearchCache,
     cancellation: &CancellationToken,
-    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     file: &DatabaseHandle,
 ) -> Result<(), Error> {
     cancellation_check(cancellation)?;
@@ -1325,11 +1316,11 @@ pub async fn get_db_info<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     state: tauri::State<'_, AppState>,
 ) -> Result<DatabaseInfo, Error> {
-    let authority = Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     let repository = Arc::clone(&state.database_repository);
     let read_file = file.clone();
     let read_repository = Arc::clone(&repository);
-    let read_authority = Arc::clone(&authority);
+    let read_authority = authority.clone();
     let metadata = crate::infra::operations::run_accepted_blocking(
         &state.operations,
         "get_db_info",
@@ -1364,7 +1355,7 @@ impl std::ops::Deref for DatabaseMetadata {
 }
 
 fn get_db_info_blocking(
-    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     repository: &DatabaseRepository,
     file: DatabaseHandle,
 ) -> Result<DatabaseMetadata, Error> {
@@ -1430,7 +1421,7 @@ pub async fn create_indexes(
 ) -> Result<(), Error> {
     let operation = state.operations.accept("create_indexes")?;
     let cancellation = operation.token();
-    let authority = Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     let repository = Arc::clone(&state.database_repository);
     crate::infra::operations::run_native_operation(operation, "create_indexes", async move {
         BLOCKING_GATEWAY
@@ -1443,7 +1434,7 @@ pub async fn create_indexes(
 }
 
 fn run_required_index_ddl(
-    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     repository: &DatabaseRepository,
     file: DatabaseHandle,
     cancellation: &CancellationToken,
@@ -1465,7 +1456,7 @@ fn run_required_index_ddl(
 }
 
 fn create_indexes_blocking(
-    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     repository: &DatabaseRepository,
     file: DatabaseHandle,
     cancellation: &CancellationToken,
@@ -1488,7 +1479,7 @@ pub async fn delete_indexes(
 ) -> Result<(), Error> {
     let operation = state.operations.accept("delete_indexes")?;
     let cancellation = operation.token();
-    let authority = Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     let repository = Arc::clone(&state.database_repository);
     crate::infra::operations::run_native_operation(operation, "delete_indexes", async move {
         BLOCKING_GATEWAY
@@ -1501,7 +1492,7 @@ pub async fn delete_indexes(
 }
 
 fn delete_indexes_blocking(
-    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     repository: &DatabaseRepository,
     file: DatabaseHandle,
     cancellation: &CancellationToken,
@@ -1526,7 +1517,7 @@ pub async fn edit_db_info(
 ) -> Result<(), Error> {
     let operation = state.operations.accept("edit_db_info")?;
     let cancellation = operation.token();
-    let authority = Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     let repository = Arc::clone(&state.database_repository);
     let search_cache = Arc::clone(&state.search_cache);
     crate::infra::operations::run_native_operation(operation, "edit_db_info", async move {
@@ -1548,7 +1539,7 @@ pub async fn edit_db_info(
 }
 
 fn edit_db_info_blocking(
-    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     repository: &DatabaseRepository,
     search_cache: &SearchCache,
     file: DatabaseHandle,
@@ -1719,7 +1710,7 @@ pub async fn get_games(
 ) -> Result<QueryResponse<Vec<NormalizedGame>>, Error> {
     let operation = crate::native_read_operation(ticket, &window, &state, "get_games")?;
     let cancellation = operation.token();
-    let authority = Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     let repository = Arc::clone(&state.database_repository);
     crate::infra::operations::run_native_operation(operation, "get_games", async move {
         BLOCKING_GATEWAY
@@ -1732,7 +1723,7 @@ pub async fn get_games(
 }
 
 fn get_games_blocking(
-    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     repository: &DatabaseRepository,
     file: DatabaseHandle,
     query: GameQuery,
@@ -1963,7 +1954,7 @@ pub async fn get_latest_game_timestamp(
     file: DatabaseHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<f64>, Error> {
-    let authority = Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     let repository = Arc::clone(&state.database_repository);
     crate::infra::operations::run_accepted_blocking(
         &state.operations,
@@ -1974,7 +1965,7 @@ pub async fn get_latest_game_timestamp(
 }
 
 fn get_latest_game_timestamp_blocking(
-    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     repository: &DatabaseRepository,
     file: DatabaseHandle,
 ) -> Result<Option<f64>, Error> {
@@ -2070,7 +2061,7 @@ pub async fn get_player(
     id: i32,
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<Player>, Error> {
-    let authority = Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     let repository = Arc::clone(&state.database_repository);
     crate::infra::operations::run_accepted_blocking(&state.operations, "get_player", move || {
         get_player_blocking(&authority, &repository, file, id)
@@ -2079,7 +2070,7 @@ pub async fn get_player(
 }
 
 fn get_player_blocking(
-    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     repository: &DatabaseRepository,
     file: DatabaseHandle,
     id: i32,
@@ -2106,7 +2097,7 @@ pub async fn get_players(
 ) -> Result<QueryResponse<Vec<Player>>, Error> {
     let operation = crate::native_read_operation(ticket, &window, &state, "get_players")?;
     let cancellation = operation.token();
-    let authority = Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     let repository = Arc::clone(&state.database_repository);
     crate::infra::operations::run_native_operation(operation, "get_players", async move {
         BLOCKING_GATEWAY
@@ -2119,7 +2110,7 @@ pub async fn get_players(
 }
 
 fn get_players_blocking(
-    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     repository: &DatabaseRepository,
     file: DatabaseHandle,
     query: PlayerQuery,
@@ -2215,7 +2206,7 @@ pub async fn get_tournaments(
 ) -> Result<QueryResponse<Vec<Event>>, Error> {
     let operation = crate::native_read_operation(ticket, &window, &state, "get_tournaments")?;
     let cancellation = operation.token();
-    let authority = Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     let repository = Arc::clone(&state.database_repository);
     crate::infra::operations::run_native_operation(operation, "get_tournaments", async move {
         BLOCKING_GATEWAY
@@ -2228,7 +2219,7 @@ pub async fn get_tournaments(
 }
 
 fn get_tournaments_blocking(
-    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     repository: &DatabaseRepository,
     file: DatabaseHandle,
     query: TournamentQuery,
@@ -2382,7 +2373,7 @@ pub async fn get_players_game_info(
     let operation = crate::native_read_operation(ticket, &window, &state, "get_players_game_info")?;
     let cancellation = operation.token();
     let progress = JobProgress::best_effort(app.clone(), progress_id, "get_players_game_info");
-    let authority = Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     let repository = Arc::clone(&state.database_repository);
     let lease = progress.as_ref().map(JobProgress::lease);
     let worker_app = app.clone();
@@ -2410,7 +2401,7 @@ pub async fn get_players_game_info(
 }
 
 fn get_players_game_info_blocking<R: tauri::Runtime>(
-    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     repository: &DatabaseRepository,
     file: DatabaseHandle,
     id: i32,
@@ -2844,7 +2835,7 @@ pub async fn delete_database(
 ) -> Result<(), Error> {
     let operation = state.operations.accept("delete_database")?;
     let cancellation = operation.token();
-    let authority = Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     let repository = Arc::clone(&state.database_repository);
     let search_cache = Arc::clone(&state.search_cache);
     crate::infra::operations::run_native_operation(operation, "delete_database", async move {
@@ -2858,7 +2849,7 @@ pub async fn delete_database(
 }
 
 fn delete_database_blocking(
-    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     repository: &DatabaseRepository,
     search_cache: &SearchCache,
     file: DatabaseHandle,
@@ -2894,14 +2885,7 @@ fn delete_database_blocking(
     };
     committed_removal.record(unlink_result, "database lease release", target.path());
 
-    let registry_result = (|| {
-        authority
-            .lock()
-            .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
-            .as_mut()
-            .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-            .remove_database(&file)
-    })();
+    let registry_result = (|| authority.with_mut(|authority| authority.remove_database(&file))?)();
     committed_removal.record(registry_result, "database registry cleanup", target.path());
     committed_removal.finish()
 }
@@ -3324,7 +3308,7 @@ pub async fn delete_duplicated_games(
 ) -> Result<(), Error> {
     let operation = state.operations.accept("delete_duplicated_games")?;
     let cancellation = operation.token();
-    let authority = Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     let repository = Arc::clone(&state.database_repository);
     let search_cache = Arc::clone(&state.search_cache);
     crate::infra::operations::run_native_operation(
@@ -3348,7 +3332,7 @@ pub async fn delete_duplicated_games(
 }
 
 fn delete_duplicated_games_blocking(
-    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     repository: &DatabaseRepository,
     search_cache: &SearchCache,
     file: DatabaseHandle,
@@ -3398,7 +3382,7 @@ pub async fn delete_empty_games(
 ) -> Result<(), Error> {
     let operation = state.operations.accept("delete_empty_games")?;
     let cancellation = operation.token();
-    let authority = Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     let repository = Arc::clone(&state.database_repository);
     let search_cache = Arc::clone(&state.search_cache);
     crate::infra::operations::run_native_operation(operation, "delete_empty_games", async move {
@@ -3412,7 +3396,7 @@ pub async fn delete_empty_games(
 }
 
 fn delete_empty_games_blocking(
-    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     repository: &DatabaseRepository,
     search_cache: &SearchCache,
     file: DatabaseHandle,
@@ -3549,7 +3533,7 @@ pub async fn export_to_pgn(
     crate::infra::platform_support::off_unix_refusal("PGN atomic replacement", cfg!(unix))?;
     let operation = state.operations.accept("export_to_pgn")?;
     let cancellation = operation.token();
-    let authority = Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     let repository = Arc::clone(&state.database_repository);
     crate::infra::operations::run_native_operation(operation, "export_to_pgn", async move {
         BLOCKING_GATEWAY
@@ -3562,7 +3546,7 @@ pub async fn export_to_pgn(
 }
 
 fn export_to_pgn_blocking(
-    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     repository: &DatabaseRepository,
     file: DatabaseHandle,
     destination: FileWorkspaceHandle,
@@ -3571,17 +3555,11 @@ fn export_to_pgn_blocking(
     #[cfg(test)]
     database_command_checkpoint("export_to_pgn", &file);
     let target = resolve_database(authority, &file, PathOperation::DatabaseExport)?;
-    let (resolved, snapshot) = {
-        let mut authority = authority
-            .lock()
-            .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-        let resolved = authority
-            .as_mut()
-            .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-            .resolve(destination.path_ref(), PathOperation::WritePgn, &[])?;
+    let (resolved, snapshot) = authority.with_mut(|authority| {
+        let resolved = authority.resolve(destination.path_ref(), PathOperation::WritePgn, &[])?;
         let snapshot = resolved.pgn_snapshot()?;
-        (resolved, snapshot)
-    };
+        Ok::<_, Error>((resolved, snapshot))
+    })??;
 
     let mut database_connection =
         get_db_or_create(repository, &target, Some(cancellation), authority, &file)?;
@@ -3699,7 +3677,7 @@ pub async fn delete_db_game(
 ) -> Result<(), Error> {
     let operation = state.operations.accept("delete_db_game")?;
     let cancellation = operation.token();
-    let authority = Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     let repository = Arc::clone(&state.database_repository);
     let search_cache = Arc::clone(&state.search_cache);
     crate::infra::operations::run_native_operation(operation, "delete_db_game", async move {
@@ -3720,7 +3698,7 @@ pub async fn delete_db_game(
 }
 
 fn delete_db_game_blocking(
-    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     repository: &DatabaseRepository,
     search_cache: &SearchCache,
     file: DatabaseHandle,
@@ -3760,7 +3738,7 @@ pub async fn write_db_game(
 ) -> Result<(), Error> {
     let operation = state.operations.accept("write_db_game")?;
     let cancellation = operation.token();
-    let authority = Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     let repository = Arc::clone(&state.database_repository);
     let search_cache = Arc::clone(&state.search_cache);
     crate::infra::operations::run_native_operation(operation, "write_db_game", async move {
@@ -3782,7 +3760,7 @@ pub async fn write_db_game(
 }
 
 fn write_db_game_blocking(
-    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     repository: &DatabaseRepository,
     search_cache: &SearchCache,
     file: DatabaseHandle,
@@ -3894,7 +3872,7 @@ pub async fn merge_players(
 ) -> Result<(), Error> {
     let operation = state.operations.accept("merge_players")?;
     let cancellation = operation.token();
-    let authority = Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     let repository = Arc::clone(&state.database_repository);
     let search_cache = Arc::clone(&state.search_cache);
     crate::infra::operations::run_native_operation(operation, "merge_players", async move {
@@ -3916,7 +3894,7 @@ pub async fn merge_players(
 }
 
 fn merge_players_blocking(
-    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     repository: &DatabaseRepository,
     search_cache: &SearchCache,
     file: DatabaseHandle,
@@ -4035,7 +4013,7 @@ pub async fn preload_reference_db(
 ) -> Result<(), Error> {
     let operation = crate::native_read_operation(ticket, &window, &state, "preload_reference_db")?;
     let cancellation = operation.token();
-    let authority = Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     let repository = Arc::clone(&state.database_repository);
     let search_cache = Arc::clone(&state.search_cache);
     crate::infra::operations::run_native_operation(operation, "preload_reference_db", async move {
@@ -4049,7 +4027,7 @@ pub async fn preload_reference_db(
 }
 
 fn preload_reference_db_blocking(
-    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     repository: &DatabaseRepository,
     search_cache: &Arc<SearchCache>,
     file: DatabaseHandle,
@@ -4173,6 +4151,7 @@ mod tests {
         let state = app.state::<AppState>();
         let registered = state
             .pgn_path_authority
+            .raw_for_test()
             .lock()
             .expect("path authority lock")
             .as_mut()
@@ -4619,7 +4598,7 @@ mod tests {
             .unwrap();
         let handle = DatabaseHandle::new(committed.id);
         let state = AppState::default();
-        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        state.pgn_path_authority.install(authority).unwrap();
         let app = tauri::test::mock_app();
         app.manage(state);
         std::fs::remove_dir_all(&parent).unwrap();
@@ -6494,7 +6473,7 @@ mod tests {
         operations: Vec<PathOperation>,
     ) -> FileWorkspaceHandle {
         let state = app.state::<AppState>();
-        let mut guard = state.pgn_path_authority.lock().unwrap();
+        let mut guard = state.pgn_path_authority.raw_for_test().lock().unwrap();
         let authority = guard.as_mut().unwrap();
         let commit = authority.grant_persistent_file_for_test(path, display_name, operations);
         FileWorkspaceHandle::new(commit.id)
@@ -6973,7 +6952,7 @@ mod tests {
         path: &Path,
     ) -> FileWorkspaceHandle {
         let state = app.state::<AppState>();
-        let mut guard = state.pgn_path_authority.lock().unwrap();
+        let mut guard = state.pgn_path_authority.raw_for_test().lock().unwrap();
         let authority = guard.as_mut().unwrap();
         let commit = authority.grant_persistent_file_for_test(
             path,
@@ -7634,6 +7613,7 @@ mod tests {
         assert!(app
             .state::<AppState>()
             .pgn_path_authority
+            .raw_for_test()
             .try_lock()
             .is_ok());
         block.release.wait();
@@ -10936,7 +10916,7 @@ mod tests {
         let (entered, release) = install_database_command_checkpoint("convert_pgn", &handle);
         let worker_app = app.clone();
         let worker_state = worker_app.state::<AppState>();
-        let worker_authority = std::sync::Arc::clone(&worker_state.pgn_path_authority);
+        let worker_authority = worker_state.pgn_path_authority.clone();
         let worker_repository = std::sync::Arc::clone(&worker_state.database_repository);
         let worker_cache = std::sync::Arc::clone(&worker_state.search_cache);
         let worker_file = grant_import_file(&app, &source);

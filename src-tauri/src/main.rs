@@ -467,8 +467,7 @@ pub struct AppState {
     new_request: Arc<Semaphore>,
     pub(crate) search_cache: Arc<SearchCache>,
     pub pgn_repository: crate::pgn::PgnRepository,
-    pub pgn_path_authority:
-        Arc<std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>>,
+    pub pgn_path_authority: crate::infra::path_authority::SharedPathAuthority,
     pub(crate) workspace_mutation: Arc<std::sync::Mutex<()>>,
 
     engine_supervisor: Arc<EngineSupervisor>,
@@ -503,7 +502,7 @@ impl AppState {
             new_request: Arc::new(Semaphore::new(2)),
             search_cache: Arc::new(SearchCache::default()),
             pgn_repository: Default::default(),
-            pgn_path_authority: Arc::new(std::sync::Mutex::new(None)),
+            pgn_path_authority: crate::infra::path_authority::SharedPathAuthority::uninitialized(),
             workspace_mutation: Arc::new(std::sync::Mutex::new(())),
             engine_supervisor: Arc::new(EngineSupervisor::default()),
             auth: Arc::new(AuthLifecycle::default()),
@@ -665,20 +664,16 @@ async fn reconcile_startup_path_owners<'a>(
     owners: crate::infra::path_authority::StartupPathOwners,
     state: tauri::State<'a, AppState>,
 ) -> Result<(), Error> {
-    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     crate::infra::operations::run_accepted_blocking(
         &state.operations,
         "reconcile_startup_path_owners",
         move || {
-            let mut guard = authority
-                .lock()
-                .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-            let authority = guard
-                .as_mut()
-                .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-            crate::infra::path_authority::require_durable(
-                authority.reconcile_startup_owners(owners)?,
-            )
+            authority.with_mut(|authority| {
+                crate::infra::path_authority::require_durable(
+                    authority.reconcile_startup_owners(owners)?,
+                )
+            })?
         },
     )
     .await
@@ -695,26 +690,22 @@ async fn reconcile_engine_attachments(
         &action,
         crate::infra::path_authority::EngineAttachmentAction::Reconcile { startup: true, .. }
     );
-    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     crate::infra::operations::run_accepted_blocking(
         &state.operations,
         "reconcile_engine_attachments",
         move || {
-            let mut guard = authority
-                .lock()
-                .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-            let authority = guard
-                .as_mut()
-                .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-            authority.reconcile_engine_attachments(action)?;
-            if startup {
-                let image_dir = crate::infra::path_authority::ensure_app_owned_default_dir(
-                    &crate::infra::path_authority::AppDataDir::for_app(&app)?,
-                    crate::infra::path_authority::AppOwnedDefaultRoot::EngineImages,
-                )?;
-                authority.cleanup_engine_images(&image_dir, false)?;
-            }
-            Ok(())
+            authority.with_mut(|authority| {
+                authority.reconcile_engine_attachments(action)?;
+                if startup {
+                    let image_dir = crate::infra::path_authority::ensure_app_owned_default_dir(
+                        &crate::infra::path_authority::AppDataDir::for_app(&app)?,
+                        crate::infra::path_authority::AppOwnedDefaultRoot::EngineImages,
+                    )?;
+                    authority.cleanup_engine_images(&image_dir, false)?;
+                }
+                Ok(())
+            })?
         },
     )
     .await
@@ -738,7 +729,7 @@ async fn issue_pgn_workspace(
     })
     .await
     .map_err(map_picker_join)??;
-    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     crate::infra::operations::run_accepted_blocking(
         &state.operations,
         "issue_pgn_workspace",
@@ -748,44 +739,40 @@ async fn issue_pgn_workspace(
 }
 
 fn issue_pgn_workspace_blocking(
-    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     path: PathBuf,
 ) -> Result<crate::infra::path_authority::FileWorkspaceDescriptor, Error> {
     let display_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "PGN".into());
-    let mut authority_guard = authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-    let authority = authority_guard
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-    let grant = authority.grant_dialog_operations(
-        &path,
-        display_name.clone(),
-        crate::infra::path_authority::PathClass::BoundedDialogGrant,
-        vec![
-            crate::infra::path_authority::PathOperation::ReadPgn,
-            crate::infra::path_authority::PathOperation::WritePgn,
-        ],
-        crate::infra::path_authority::PGN_FILE_DIALOG_GRANT_TTL,
-        crate::infra::path_authority::PGN_FILE_DIALOG_GRANT_USES,
-    )?;
-    let commit = authority.promote_dialog(
-        &grant,
-        crate::infra::path_authority::PathClass::PersistentFile,
-        display_name.clone(),
-        vec![
-            crate::infra::path_authority::PathOperation::ReadPgn,
-            crate::infra::path_authority::PathOperation::WritePgn,
-        ],
-    )?;
-    Ok(crate::infra::path_authority::FileWorkspaceDescriptor {
-        handle: crate::infra::path_authority::FileWorkspaceHandle::new(commit.id),
-        display_name,
-        availability: crate::infra::path_authority::PathAvailability::Available,
-    })
+    authority.with_mut(|authority| {
+        let grant = authority.grant_dialog_operations(
+            &path,
+            display_name.clone(),
+            crate::infra::path_authority::PathClass::BoundedDialogGrant,
+            vec![
+                crate::infra::path_authority::PathOperation::ReadPgn,
+                crate::infra::path_authority::PathOperation::WritePgn,
+            ],
+            crate::infra::path_authority::PGN_FILE_DIALOG_GRANT_TTL,
+            crate::infra::path_authority::PGN_FILE_DIALOG_GRANT_USES,
+        )?;
+        let commit = authority.promote_dialog(
+            &grant,
+            crate::infra::path_authority::PathClass::PersistentFile,
+            display_name.clone(),
+            vec![
+                crate::infra::path_authority::PathOperation::ReadPgn,
+                crate::infra::path_authority::PathOperation::WritePgn,
+            ],
+        )?;
+        Ok(crate::infra::path_authority::FileWorkspaceDescriptor {
+            handle: crate::infra::path_authority::FileWorkspaceHandle::new(commit.id),
+            display_name,
+            availability: crate::infra::path_authority::PathAvailability::Available,
+        })
+    })?
 }
 
 /// Native-only save destination picker for database export. The selection is immediately
@@ -810,7 +797,7 @@ async fn issue_pgn_export_destination(
     })
     .await
     .map_err(map_picker_join)??;
-    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     crate::infra::operations::run_accepted_blocking(
         &state.operations,
         "issue_pgn_export_destination",
@@ -820,20 +807,14 @@ async fn issue_pgn_export_destination(
 }
 
 fn issue_pgn_export_destination_blocking(
-    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     path: PathBuf,
 ) -> Result<crate::infra::path_authority::FileWorkspaceDescriptor, Error> {
     let display_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "PGN export".into());
-    let mut authority_guard = authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-    authority_guard
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .create_pgn_export_destination(&path, display_name)
+    authority.with_mut(|authority| authority.create_pgn_export_destination(&path, display_name))?
 }
 
 async fn save_native_export(
@@ -969,7 +950,7 @@ async fn issue_download_destination(
     })
     .await
     .map_err(map_picker_join)??;
-    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     crate::infra::operations::run_accepted_blocking(
         &state.operations,
         "issue_download_destination",
@@ -979,35 +960,31 @@ async fn issue_download_destination(
 }
 
 fn issue_download_destination_blocking(
-    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     path: PathBuf,
 ) -> Result<crate::infra::path_authority::PathRef, Error> {
     let display_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "Download destination".into());
-    let mut authority = authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-    let authority = authority
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-    let grant = authority.grant_dialog(
-        &path,
-        display_name.clone(),
-        crate::infra::path_authority::PathClass::SingleDialogGrant,
-        crate::infra::path_authority::PathOperation::DownloadFile,
-        Duration::from_secs(300),
-        1,
-    )?;
-    Ok(authority
-        .promote_dialog(
-            &grant,
-            crate::infra::path_authority::PathClass::PersistentCustomRoot,
-            display_name,
-            vec![crate::infra::path_authority::PathOperation::DownloadFile],
-        )?
-        .id)
+    authority.with_mut(|authority| {
+        let grant = authority.grant_dialog(
+            &path,
+            display_name.clone(),
+            crate::infra::path_authority::PathClass::SingleDialogGrant,
+            crate::infra::path_authority::PathOperation::DownloadFile,
+            Duration::from_secs(300),
+            1,
+        )?;
+        Ok(authority
+            .promote_dialog(
+                &grant,
+                crate::infra::path_authority::PathClass::PersistentCustomRoot,
+                display_name,
+                vec![crate::infra::path_authority::PathOperation::DownloadFile],
+            )?
+            .id)
+    })?
 }
 
 #[tauri::command]
@@ -1016,7 +993,7 @@ async fn download_destination_is_known(
     destination: crate::infra::path_authority::PathRef,
     state: tauri::State<'_, AppState>,
 ) -> Result<bool, Error> {
-    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     crate::infra::operations::run_accepted_blocking(
         &state.operations,
         "download_destination_is_known",
@@ -1026,16 +1003,10 @@ async fn download_destination_is_known(
 }
 
 fn download_destination_is_known_blocking(
-    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     destination: crate::infra::path_authority::PathRef,
 ) -> Result<bool, Error> {
-    let authority = authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-    let authority = authority
-        .as_ref()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-    Ok(authority.download_destination_is_known(&destination))
+    authority.with_mut(|authority| Ok(authority.download_destination_is_known(&destination)))?
 }
 
 /// Native-only database-root selection.  A directory is promoted immediately
@@ -1060,7 +1031,7 @@ async fn issue_database_workspace(
     })
     .await
     .map_err(map_picker_join)??;
-    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     crate::infra::operations::run_accepted_blocking(
         &state.operations,
         "issue_database_workspace",
@@ -1070,22 +1041,18 @@ async fn issue_database_workspace(
 }
 
 fn issue_database_workspace_blocking(
-    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     path: PathBuf,
 ) -> Result<crate::infra::path_authority::DatabaseRootHandle, Error> {
     let display_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "Databases".into());
-    let mut authority_lock = authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-    let authority = authority_lock
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-    let root = authority.get_or_create_database_root(&path, display_name, None)?;
-    authority.set_active_database_root(&root)?;
-    Ok(root)
+    authority.with_mut(|authority| {
+        let root = authority.get_or_create_database_root(&path, display_name, None)?;
+        authority.set_active_database_root(&root)?;
+        Ok(root)
+    })?
 }
 
 /// Returns the active database root or refuses an unusable selection. With no selection,
@@ -1096,7 +1063,7 @@ async fn get_database_workspace(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<crate::infra::path_authority::DatabaseRootHandle, Error> {
-    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     crate::infra::operations::run_accepted_blocking(
         &state.operations,
         "get_database_workspace",
@@ -1110,20 +1077,16 @@ async fn get_database_workspace(
 }
 
 fn get_database_workspace_blocking(
-    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     app_data: &dyn Fn() -> Result<crate::infra::path_authority::AppDataDir, Error>,
 ) -> Result<crate::infra::path_authority::DatabaseRootHandle, Error> {
-    let mut authority_lock = authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-    let authority = authority_lock
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-    if let Some(root) = authority.active_database_root()? {
-        return Ok(root);
-    }
-    let app_data = app_data()?;
-    get_default_database_workspace(authority, &app_data)
+    authority.with_mut(|authority| {
+        if let Some(root) = authority.active_database_root()? {
+            return Ok(root);
+        }
+        let app_data = app_data()?;
+        get_default_database_workspace(authority, &app_data)
+    })?
 }
 
 fn get_default_database_workspace(
@@ -1154,7 +1117,7 @@ async fn list_workspace_databases(
 ) -> Result<Vec<crate::infra::path_authority::DatabaseDescriptor>, Error> {
     let operation = native_read_operation(ticket, &window, &state, "list_workspace_databases")?;
     let cancellation = operation.token();
-    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     crate::infra::operations::run_native_operation(
         operation,
         "list_workspace_databases",
@@ -1177,17 +1140,14 @@ async fn list_workspace_databases(
 }
 
 fn list_workspace_databases_blocking(
-    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     root: crate::infra::path_authority::DatabaseRootHandle,
     cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<Vec<crate::infra::path_authority::DatabaseDescriptor>, Error> {
     let result = (|| {
-        authority
-            .lock()
-            .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
-            .as_mut()
-            .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-            .list_database_children_cancellable(&root, cancellation)
+        authority.with_mut(|authority| {
+            authority.list_database_children_cancellable(&root, cancellation)
+        })?
     })();
     result.map_err(|error| {
         crate::infra::path_authority::probe_listing_root_failure(
@@ -1207,7 +1167,7 @@ async fn create_workspace_database(
     filename: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<crate::infra::path_authority::DatabaseHandle, Error> {
-    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     crate::infra::operations::run_accepted_blocking(
         &state.operations,
         "create_workspace_database",
@@ -1217,19 +1177,16 @@ async fn create_workspace_database(
 }
 
 fn create_workspace_database_blocking(
-    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     root: crate::infra::path_authority::DatabaseRootHandle,
     filename: String,
 ) -> Result<crate::infra::path_authority::DatabaseHandle, Error> {
     if filename.is_empty() || filename.contains('/') || filename.contains('\\') {
         return Err(Error::InvalidInput("invalid database filename".into()));
     }
-    authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .create_database_child(&root, std::ffi::OsStr::new(&filename))
+    authority.with_mut(|authority| {
+        authority.create_database_child(&root, std::ffi::OsStr::new(&filename))
+    })?
 }
 
 #[tauri::command]
@@ -1238,7 +1195,7 @@ async fn database_download_destination(
     root: crate::infra::path_authority::DatabaseRootHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<crate::infra::path_authority::PathRef, Error> {
-    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     crate::infra::operations::run_accepted_blocking(
         &state.operations,
         "database_download_destination",
@@ -1248,15 +1205,10 @@ async fn database_download_destination(
 }
 
 fn database_download_destination_blocking(
-    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     root: crate::infra::path_authority::DatabaseRootHandle,
 ) -> Result<crate::infra::path_authority::PathRef, Error> {
-    authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .database_download_destination(&root)
+    authority.with_mut(|authority| authority.database_download_destination(&root))?
 }
 
 #[tauri::command]
@@ -1278,7 +1230,7 @@ async fn issue_engine_workspace(
     })
     .await
     .map_err(map_picker_join)??;
-    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     crate::infra::operations::run_accepted_blocking(
         &state.operations,
         "issue_engine_workspace",
@@ -1288,18 +1240,14 @@ async fn issue_engine_workspace(
 }
 
 fn issue_engine_workspace_blocking(
-    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     path: PathBuf,
 ) -> Result<crate::infra::path_authority::EngineRootHandle, Error> {
-    let mut lock = authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-    let authority = lock
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-    let root = authority.get_or_create_engine_root(&path, "Engines", None)?;
-    authority.set_active_engine_root(&root)?;
-    Ok(root)
+    authority.with_mut(|authority| {
+        let root = authority.get_or_create_engine_root(&path, "Engines", None)?;
+        authority.set_active_engine_root(&root)?;
+        Ok(root)
+    })?
 }
 
 /// Returns the active engine root or refuses an unusable selection. The app-owned default
@@ -1310,7 +1258,7 @@ async fn get_engine_workspace(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<crate::infra::path_authority::EngineRootHandle, Error> {
-    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     crate::infra::operations::run_accepted_blocking(
         &state.operations,
         "get_engine_workspace",
@@ -1324,29 +1272,25 @@ async fn get_engine_workspace(
 }
 
 fn get_engine_workspace_blocking(
-    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     app_data: &dyn Fn() -> Result<crate::infra::path_authority::AppDataDir, Error>,
 ) -> Result<crate::infra::path_authority::EngineRootHandle, Error> {
-    let mut lock = authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-    let authority = lock
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-    if let Some(root) = authority.active_engine_root()? {
-        return Ok(root);
-    }
-    let authorized_dir = crate::infra::path_authority::ensure_app_owned_default_dir(
-        &app_data()?,
-        crate::infra::path_authority::AppOwnedDefaultRoot::Engines,
-    )?;
-    let root = authority.get_or_create_engine_root(
-        authorized_dir.path(),
-        "Engines",
-        Some(authorized_dir.identity()),
-    )?;
-    authority.set_active_engine_root(&root)?;
-    Ok(root)
+    authority.with_mut(|authority| {
+        if let Some(root) = authority.active_engine_root()? {
+            return Ok(root);
+        }
+        let authorized_dir = crate::infra::path_authority::ensure_app_owned_default_dir(
+            &app_data()?,
+            crate::infra::path_authority::AppOwnedDefaultRoot::Engines,
+        )?;
+        let root = authority.get_or_create_engine_root(
+            authorized_dir.path(),
+            "Engines",
+            Some(authorized_dir.identity()),
+        )?;
+        authority.set_active_engine_root(&root)?;
+        Ok(root)
+    })?
 }
 
 #[tauri::command]
@@ -1366,7 +1310,7 @@ async fn issue_engine_binary(
     })
     .await
     .map_err(map_picker_join)??;
-    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     crate::infra::operations::run_accepted_blocking(
         &state.operations,
         "issue_engine_binary",
@@ -1376,19 +1320,14 @@ async fn issue_engine_binary(
 }
 
 fn issue_engine_binary_blocking(
-    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     path: PathBuf,
 ) -> Result<crate::infra::path_authority::EngineHandle, Error> {
     let label = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "Engine".into());
-    authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .register_engine_file(&path, label)
+    authority.with_mut(|authority| authority.register_engine_file(&path, label))?
 }
 
 /// Native-only resource picker for UCI file/directory options.  The dialog
@@ -1417,7 +1356,7 @@ async fn issue_engine_resource(
     })
     .await
     .map_err(map_picker_join)??;
-    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     crate::infra::operations::run_accepted_blocking(
         &state.operations,
         "issue_engine_resource",
@@ -1427,7 +1366,7 @@ async fn issue_engine_resource(
 }
 
 fn issue_engine_resource_blocking(
-    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     path: PathBuf,
     directory: bool,
 ) -> Result<crate::infra::path_authority::EngineResourceHandle, Error> {
@@ -1435,29 +1374,25 @@ fn issue_engine_resource_blocking(
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "Engine resource".into());
-    let mut lock = authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-    let authority = lock
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-    let grant = authority.grant_dialog(
-        &path,
-        label.clone(),
-        crate::infra::path_authority::PathClass::SingleDialogGrant,
-        crate::infra::path_authority::PathOperation::EngineResourceRead,
-        Duration::from_secs(300),
-        1,
-    )?;
-    authority.promote_engine_resource(
-        &grant,
-        if directory {
-            crate::infra::path_authority::EngineResourceHandleKind::Directory
-        } else {
-            crate::infra::path_authority::EngineResourceHandleKind::File
-        },
-        label,
-    )
+    authority.with_mut(|authority| {
+        let grant = authority.grant_dialog(
+            &path,
+            label.clone(),
+            crate::infra::path_authority::PathClass::SingleDialogGrant,
+            crate::infra::path_authority::PathOperation::EngineResourceRead,
+            Duration::from_secs(300),
+            1,
+        )?;
+        authority.promote_engine_resource(
+            &grant,
+            if directory {
+                crate::infra::path_authority::EngineResourceHandleKind::Directory
+            } else {
+                crate::infra::path_authority::EngineResourceHandleKind::File
+            },
+            label,
+        )
+    })?
 }
 
 #[derive(serde::Serialize, specta::Type)]
@@ -1507,7 +1442,7 @@ async fn issue_engine_image(
     })
     .await
     .map_err(map_picker_join)??;
-    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     let operation = state.operations.accept("issue_engine_image")?;
     crate::infra::operations::run_native_operation(operation, "issue_engine_image", async move {
         issue_engine_image_blocking_async(authority, app, path, None).await
@@ -1516,7 +1451,7 @@ async fn issue_engine_image(
 }
 
 fn issue_engine_image_blocking<R: tauri::Runtime>(
-    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     app: tauri::AppHandle<R>,
     path: PathBuf,
     app_data_override: Option<crate::infra::path_authority::AppDataDir>,
@@ -1526,22 +1461,18 @@ fn issue_engine_image_blocking<R: tauri::Runtime>(
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "Engine image".into());
     let (issuance_lease, grant) = {
-        let mut lock = authority
-            .lock()
-            .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-        let authority = lock
-            .as_mut()
-            .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-        let issuance_lease = authority.begin_engine_image_issuance()?;
-        let grant = authority.grant_dialog(
-            &path,
-            display_name.clone(),
-            crate::infra::path_authority::PathClass::SingleDialogGrant,
-            crate::infra::path_authority::PathOperation::ImageRead,
-            Duration::from_secs(300),
-            1,
-        )?;
-        (issuance_lease, grant)
+        authority.with_mut(|authority| {
+            let issuance_lease = authority.begin_engine_image_issuance()?;
+            let grant = authority.grant_dialog(
+                &path,
+                display_name.clone(),
+                crate::infra::path_authority::PathClass::SingleDialogGrant,
+                crate::infra::path_authority::PathOperation::ImageRead,
+                Duration::from_secs(300),
+                1,
+            )?;
+            Ok::<_, Error>((issuance_lease, grant))
+        })??
     };
     // The lease intentionally spans descriptor reads, the complete blocking copy, registration,
     // and error cleanup. A dropped command future cannot let shutdown unlink this image early.
@@ -1578,46 +1509,31 @@ fn issue_engine_image_blocking<R: tauri::Runtime>(
             );
         }
     }
-    let mut lock = match authority.lock() {
-        Ok(lock) => lock,
-        Err(_) => {
-            return Err(engine_image_error_after_cleanup(
+    match authority.with_mut(|authority| {
+        match authority.register_engine_image(&image_dir, leaf, installed, display_name) {
+            Ok(handle) => Ok(handle),
+            Err(error) => Err(engine_image_error_after_cleanup(
                 &image_dir,
                 leaf,
                 installed,
-                Error::Conflict("path authority lock was poisoned".into()),
-                None,
-            ));
+                error,
+                Some(authority),
+            )),
         }
-    };
-    let authority = match lock.as_mut() {
-        Some(authority) => authority,
-        None => {
-            return Err(engine_image_error_after_cleanup(
-                &image_dir,
-                leaf,
-                installed,
-                Error::Conflict("path authority is not initialized".into()),
-                None,
-            ));
-        }
-    };
-    match authority.register_engine_image(&image_dir, leaf, installed, display_name) {
-        Ok(handle) => Ok(handle),
-        Err(error) => Err(engine_image_error_after_cleanup(
+    }) {
+        Ok(result) => result,
+        Err(unavailable) => Err(engine_image_error_after_cleanup(
             &image_dir,
             leaf,
             installed,
-            error,
-            Some(authority),
+            Error::from(unavailable),
+            None,
         )),
     }
 }
 
 async fn issue_engine_image_blocking_async<R: tauri::Runtime>(
-    authority: std::sync::Arc<
-        std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
-    >,
+    authority: crate::infra::path_authority::SharedPathAuthority,
     app: tauri::AppHandle<R>,
     path: PathBuf,
     app_data_override: Option<crate::infra::path_authority::AppDataDir>,
@@ -1667,7 +1583,7 @@ async fn read_engine_image(
     image: crate::infra::path_authority::EngineImageHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<EngineImageData, Error> {
-    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     crate::infra::operations::run_accepted_blocking(
         &state.operations,
         "read_engine_image",
@@ -1677,7 +1593,7 @@ async fn read_engine_image(
 }
 
 fn read_engine_image_blocking(
-    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     image: crate::infra::path_authority::EngineImageHandle,
 ) -> Result<EngineImageData, Error> {
     let (file, declared) = crate::infra::path_authority::engine_image_reader_for(
@@ -1715,7 +1631,7 @@ async fn issue_opening_book(
     })
     .await
     .map_err(map_picker_join)??;
-    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     crate::infra::operations::run_accepted_blocking(
         &state.operations,
         "issue_opening_book",
@@ -1725,19 +1641,14 @@ async fn issue_opening_book(
 }
 
 fn issue_opening_book_blocking(
-    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     path: PathBuf,
 ) -> Result<crate::infra::path_authority::OpeningBookHandle, Error> {
     let label = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "Opening book".into());
-    authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .register_opening_book(&path, label)
+    authority.with_mut(|authority| authority.register_opening_book(&path, label))?
 }
 
 #[tauri::command]
@@ -1746,7 +1657,7 @@ async fn engine_archive_destination(
     root: crate::infra::path_authority::EngineRootHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<crate::infra::path_authority::PathRef, Error> {
-    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     crate::infra::operations::run_accepted_blocking(
         &state.operations,
         "engine_archive_destination",
@@ -1756,15 +1667,10 @@ async fn engine_archive_destination(
 }
 
 fn engine_archive_destination_blocking(
-    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     root: crate::infra::path_authority::EngineRootHandle,
 ) -> Result<crate::infra::path_authority::PathRef, Error> {
-    authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .engine_archive_destination(&root)
+    authority.with_mut(|authority| authority.engine_archive_destination(&root))?
 }
 
 #[tauri::command]
@@ -1774,7 +1680,7 @@ async fn register_installed_engine(
     relative_path: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<crate::infra::path_authority::EngineHandle, Error> {
-    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     crate::infra::operations::run_accepted_blocking(
         &state.operations,
         "register_installed_engine",
@@ -1784,16 +1690,11 @@ async fn register_installed_engine(
 }
 
 fn register_installed_engine_blocking(
-    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     root: crate::infra::path_authority::EngineRootHandle,
     relative_path: String,
 ) -> Result<crate::infra::path_authority::EngineHandle, Error> {
-    authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .register_installed_engine(&root, &relative_path)
+    authority.with_mut(|authority| authority.register_installed_engine(&root, &relative_path))?
 }
 
 #[tauri::command]
@@ -1803,7 +1704,7 @@ async fn open_engine_workspace(
     root: crate::infra::path_authority::EngineRootHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     crate::infra::operations::run_accepted_blocking(
         &state.operations,
         "open_engine_workspace",
@@ -1813,17 +1714,12 @@ async fn open_engine_workspace(
 }
 
 fn open_engine_workspace_blocking(
-    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     app: tauri::AppHandle,
     root: crate::infra::path_authority::EngineRootHandle,
 ) -> Result<(), Error> {
     use tauri_plugin_opener::OpenerExt;
-    let path = authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .engine_root_path(&root)?;
+    let path = authority.with_mut(|authority| authority.engine_root_path(&root))??;
     app.opener()
         .open_path(path.to_string_lossy(), None::<&str>)
         .map_err(|error| Error::InvalidInput(format!("cannot open engine workspace: {error}")))
@@ -1994,21 +1890,13 @@ where
 }
 
 async fn shutdown_engine_launch_root(
-    authority: std::sync::Arc<
-        std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
-    >,
+    authority: crate::infra::path_authority::SharedPathAuthority,
 ) -> Result<(), Error> {
     #[cfg(target_os = "macos")]
     {
         let report = BLOCKING_GATEWAY
             .spawn(move || {
-                let guard = authority
-                    .lock()
-                    .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-                let authority = guard
-                    .as_ref()
-                    .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-                Ok(authority.engine_launch_root()?.reclaim())
+                authority.with_mut(|authority| Ok(authority.engine_launch_root()?.reclaim()))?
             })
             .await?;
         for (leaf, error) in &report.failed {
@@ -2036,42 +1924,32 @@ async fn shutdown_engine_launch_root(
 }
 
 async fn shutdown_engine_attachments(app: tauri::AppHandle) -> Result<(), Error> {
-    let authority = std::sync::Arc::clone(&app.state::<AppState>().pgn_path_authority);
-    seal_and_drain_engine_image_issuances(std::sync::Arc::clone(&authority)).await?;
+    let authority = app.state::<AppState>().pgn_path_authority.clone();
+    seal_and_drain_engine_image_issuances(authority.clone()).await?;
     BLOCKING_GATEWAY
         .spawn(move || {
             let app_data = crate::infra::path_authority::AppDataDir::for_app(&app)?;
-            let mut guard = authority
-                .lock()
-                .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-            let authority = guard
-                .as_mut()
-                .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-            let image_dir = crate::infra::path_authority::ensure_app_owned_default_dir(
-                &app_data,
-                crate::infra::path_authority::AppOwnedDefaultRoot::EngineImages,
-            )?;
-            authority.cleanup_engine_images(&image_dir, false)
+            authority.with_mut(|authority| {
+                let image_dir = crate::infra::path_authority::ensure_app_owned_default_dir(
+                    &app_data,
+                    crate::infra::path_authority::AppOwnedDefaultRoot::EngineImages,
+                )?;
+                authority.cleanup_engine_images(&image_dir, false)
+            })?
         })
         .await
 }
 
 async fn seal_and_drain_engine_image_issuances(
-    authority: std::sync::Arc<
-        std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
-    >,
+    authority: crate::infra::path_authority::SharedPathAuthority,
 ) -> Result<(), Error> {
-    let authority_for_seal = std::sync::Arc::clone(&authority);
+    let authority_for_seal = authority.clone();
     let active_issuances = BLOCKING_GATEWAY
         .spawn(move || {
-            let mut guard = authority_for_seal
-                .lock()
-                .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-            let authority = guard
-                .as_mut()
-                .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-            authority.seal_engine_attachments();
-            Ok::<_, Error>(authority.active_image_issuances())
+            authority_for_seal.with_mut(|authority| {
+                authority.seal_engine_attachments();
+                Ok::<_, Error>(authority.active_image_issuances())
+            })?
         })
         .await?;
     active_issuances.wait_for_zero().await;
@@ -2360,10 +2238,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 (),
             )
             .map_err(|error| format!("path authority initialization failed: {error}"))?;
-            *app.state::<AppState>()
+            app.state::<AppState>()
                 .pgn_path_authority
-                .lock()
-                .map_err(|_| "path authority lock poisoned")? = Some(authority);
+                .install(authority)
+                .map_err(|_| "path authority lock poisoned")?;
 
             // #[cfg(any(windows, target_os = "macos"))]
             // set_shadow(&app.get_webview_window("main").unwrap(), true).unwrap();
@@ -2490,7 +2368,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     .map_err(|error| error.diagnostic())
                             },
                             {
-                                let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+                                let authority = state.pgn_path_authority.clone();
                                 async move {
                                     shutdown_engine_launch_root(authority)
                                         .await
@@ -3261,14 +3139,14 @@ mod tests {
         .unwrap();
         let leaf_path = leaf.path();
         drop(leaf);
-        let authority = Arc::new(Mutex::new(Some(
+        let authority = crate::infra::path_authority::SharedPathAuthority::installed(
             PathAuthority::open_with_launch_root(
                 directory.path().join("registry.json"),
                 Vec::new(),
                 root.clone(),
             )
             .unwrap(),
-        )));
+        );
         let supervisor = EngineSupervisor::default();
         let games = GameManager::new();
         let operations = OperationRegistry::default();
@@ -3307,14 +3185,14 @@ mod tests {
             )
             .unwrap();
         drop(failure_leaf);
-        let failure_authority = Arc::new(Mutex::new(Some(
+        let failure_authority = crate::infra::path_authority::SharedPathAuthority::installed(
             PathAuthority::open_with_launch_root(
                 failure_directory.path().join("registry.json"),
                 Vec::new(),
                 failure_root,
             )
             .unwrap(),
-        )));
+        );
         crate::infra::fs::set_test_removal_injector(Some(Arc::new(
             crate::infra::fs::RemovalFault(crate::infra::fs::RemovalFaultPoint::BeforeTopOpen),
         )));
@@ -3516,9 +3394,9 @@ mod tests {
         let png = b"\x89PNG\r\n\x1a\n";
         std::fs::write(&source, png).unwrap();
         std::fs::write(&late_source, png).unwrap();
-        let authority = Arc::new(Mutex::new(Some(
+        let authority = crate::infra::path_authority::SharedPathAuthority::installed(
             crate::infra::path_authority::PathAuthority::open(registry, vec![]).unwrap(),
-        )));
+        );
         let entered = Arc::new(Barrier::new(2));
         let release = Arc::new(Barrier::new(2));
         *IMAGE_ISSUANCE_TEST_GATE
@@ -3529,7 +3407,7 @@ mod tests {
             release: release.clone(),
         });
         let app = tauri::test::mock_app();
-        let issuing_authority = Arc::clone(&authority);
+        let issuing_authority = authority.clone();
         let issuing_app = app.handle().clone();
         let issuing = tokio::spawn(issue_engine_image_blocking_async(
             issuing_authority,
@@ -3542,12 +3420,11 @@ mod tests {
         // The production blocking issuer has acquired its RAII lease but has not copied bytes.
         entered.wait();
 
-        let mut draining = tokio::spawn(seal_and_drain_engine_image_issuances(Arc::clone(
-            &authority,
-        )));
+        let mut draining = tokio::spawn(seal_and_drain_engine_image_issuances(authority.clone()));
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 if authority
+                    .raw_for_test()
                     .lock()
                     .unwrap()
                     .as_ref()
@@ -3580,7 +3457,7 @@ mod tests {
             "cancelling the async caller must not release the blocking issuance lease"
         );
         let refusal = issue_engine_image_blocking_async(
-            Arc::clone(&authority),
+            authority.clone(),
             app.handle().clone(),
             late_source,
             Some(crate::infra::path_authority::AppDataDir::for_test(
@@ -4961,7 +4838,7 @@ mod blocking_offload_scans {
     }
 
     /// Helper-level tests in `path_authority.rs` pin that the helpers keep the split, but they
-    /// do not constrain the callers. Re-acquiring `authority.lock()` around
+    /// do not constrain the callers. Taking `authority.with_mut(…)` around
     /// `read_engine_image_bytes` puts the whole up-to-10 MiB read back under the process-wide
     /// mutex, and those tests stay green. This is the caller-side half, and it is what goes red
     /// when a call site puts the read back under the guard — or stops going through the split
@@ -5017,25 +4894,27 @@ mod blocking_offload_scans {
                 }
             }
 
-            let mut search_from = 0;
-            while let Some(rel) = body[search_from..].find(".lock(") {
-                let i = search_from + rel;
-                if i < reader {
-                    // A guard taken at a strictly deeper block level than the read has
-                    // provably been dropped by the time the read runs, because the block
-                    // closed. A guard taken at the read's own level would still be alive.
-                    assert!(
-                        depth_at[i] > depth_at[reader],
-                        "{signature} must drop any authority lock taken before \
+            for acquisition in [".lock(", ".with_mut(", ".with_mut_cancellable("] {
+                let mut search_from = 0;
+                while let Some(rel) = body[search_from..].find(acquisition) {
+                    let i = search_from + rel;
+                    if i < reader {
+                        // A guard taken at a strictly deeper block level than the read has
+                        // provably been dropped by the time the read runs, because the block
+                        // closed. A guard taken at the read's own level would still be alive.
+                        assert!(
+                            depth_at[i] > depth_at[reader],
+                            "{signature} must drop any authority lock taken before \
                          {reader_token} before the read runs: {body}"
-                    );
-                } else if i < read_end {
-                    panic!(
-                        "{signature} must not re-acquire an authority lock around \
+                        );
+                    } else if i < read_end {
+                        panic!(
+                            "{signature} must not re-acquire an authority lock around \
                          {read_token}: {body}"
-                    );
+                        );
+                    }
+                    search_from = i + acquisition.len();
                 }
-                search_from = i + ".lock(".len();
             }
         }
     }
@@ -5058,36 +4937,36 @@ mod blocking_offload_scans {
             "engine-image installation must handle uncertain parent durability: {body}"
         );
         assert!(!body.contains("let (_, installed)"), "{body}");
-        assert_eq!(
-            body.matches("engine_image_error_after_cleanup(").count(),
-            3,
-            "the poisoned, uninitialized, and registration errors must all remove the orphan: {body}"
-        );
         let install_at = body
             .find("atomic_replace_leaf_identified(")
             .expect("install through the descriptor");
         let after_install = &body[install_at..];
-        for refusal in [
-            "path authority lock was poisoned",
-            "path authority is not initialized",
-        ] {
-            let refusal_at = after_install.find(refusal).unwrap_or_else(|| {
-                panic!("the post-install lock must retain {refusal:?}: {after_install}")
-            });
-            let branch = &after_install[..refusal_at];
-            assert!(
-                branch.rfind("engine_image_error_after_cleanup(").is_some(),
-                "the post-install {refusal:?} branch must remove the installed orphan: {after_install}"
-            );
-            let arguments = after_install[refusal_at..]
-                .split_once("));")
-                .expect("end of the cleanup call")
-                .0;
-            assert!(
-                arguments.trim_end().ends_with("None,"),
-                "the post-install {refusal:?} branch has no authority: {arguments}"
-            );
-        }
+        assert!(
+            after_install.contains("match authority.with_mut(|authority|"),
+            "{after_install}"
+        );
+        let unavailable = after_install
+            .split_once("Err(unavailable) =>")
+            .expect("both typed acquisition failures share the cleanup arm")
+            .1;
+        assert!(
+            unavailable
+                .trim_start()
+                .starts_with("Err(engine_image_error_after_cleanup("),
+            "{unavailable}"
+        );
+        let arguments = unavailable
+            .split_once("engine_image_error_after_cleanup(")
+            .unwrap()
+            .1
+            .split_once(")),")
+            .expect("end of acquisition error cleanup")
+            .0;
+        assert!(
+            arguments.contains("Error::from(unavailable)"),
+            "{arguments}"
+        );
+        assert!(arguments.trim_end().ends_with("None,"), "{arguments}");
         let registration = after_install
             .split_once("register_engine_image(")
             .expect("registration after install")
@@ -5188,11 +5067,11 @@ mod blocking_offload_scans {
         use crate::infra::fs::{scoped_test_removal_injector, RemovalFault, RemovalFaultPoint};
         use crate::infra::path_authority::portable_tests::EngineImageCleanupFixture;
         for original in [
-            "path authority lock was poisoned",
-            "path authority is not initialized",
+            crate::infra::path_authority::AuthorityUnavailable::Poisoned,
+            crate::infra::path_authority::AuthorityUnavailable::Uninitialized,
         ] {
             let f = EngineImageCleanupFixture::new();
-            let original = crate::Error::Conflict(original.into());
+            let original = crate::Error::from(original);
             let primary = original.diagnostic();
             let guard = scoped_test_removal_injector(std::sync::Arc::new(RemovalFault(
                 RemovalFaultPoint::BeforeTopOpen,
@@ -5543,8 +5422,9 @@ mod blocking_offload_scans {
 
 #[cfg(test)]
 mod close_splashscreen_tests {
-    use super::{show_labeled_main_window, Error};
+    use super::{reconcile_startup_path_owners, show_labeled_main_window, AppState, Error};
     use crate::error::ErrorCategory;
+    use tauri::Manager;
 
     #[test]
     fn missing_main_window_is_typed_invalid_input() {
@@ -5559,6 +5439,62 @@ mod close_splashscreen_tests {
             payload["message"],
             "Invalid input: no window labeled 'main' found"
         );
+    }
+
+    #[tokio::test]
+    async fn unavailable_authority_commands_preserve_renderer_payloads() {
+        use crate::infra::path_authority::{
+            AuthorityUnavailable, DatabaseHandle, PathRef, StartupPathOwners,
+        };
+        for unavailable in [
+            AuthorityUnavailable::Poisoned,
+            AuthorityUnavailable::Uninitialized,
+        ] {
+            let state = AppState::default();
+            match unavailable {
+                AuthorityUnavailable::Poisoned => state.pgn_path_authority.poison(),
+                AuthorityUnavailable::Uninitialized => state.pgn_path_authority.uninstall(),
+            }
+            let app = tauri::test::mock_app();
+            app.manage(state);
+            let accepted = reconcile_startup_path_owners(
+                StartupPathOwners {
+                    retained_ids: vec![],
+                    trusted_families: vec![],
+                },
+                app.state::<AppState>(),
+            )
+            .await
+            .unwrap_err();
+            let gateway = crate::db::create_indexes(
+                DatabaseHandle::new(PathRef {
+                    id: "unavailable-database".into(),
+                }),
+                app.state::<AppState>(),
+            )
+            .await
+            .unwrap_err();
+            let expected = match unavailable {
+                AuthorityUnavailable::Poisoned => "Conflict: path authority lock was poisoned",
+                AuthorityUnavailable::Uninitialized => {
+                    "Conflict: path authority is not initialized"
+                }
+            };
+            for error in [accepted, gateway] {
+                assert_eq!(
+                    serde_json::to_value(error).unwrap(),
+                    serde_json::json!({
+                        "tag": "backend-error", "category": "conflict", "message": expected,
+                    })
+                );
+            }
+            assert!(app
+                .state::<AppState>()
+                .operations
+                .outstanding_labels()
+                .unwrap()
+                .is_empty());
+        }
     }
 
     #[test]

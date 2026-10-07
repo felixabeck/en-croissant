@@ -1933,27 +1933,23 @@ pub(crate) fn list_practice_decks_in(
 }
 
 pub(crate) fn authorize_practice_command(
-    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     file_id: &str,
     requires_read_pgn: bool,
 ) -> Result<(), Error> {
-    let mut authority_lock = authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-    let authority = authority_lock
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-    authority.authorize_practice_deck(
-        &crate::infra::path_authority::PathRef {
-            id: file_id.to_owned(),
-        },
-        requires_read_pgn,
-    )
+    authority.with_mut(|authority| {
+        authority.authorize_practice_deck(
+            &crate::infra::path_authority::PathRef {
+                id: file_id.to_owned(),
+            },
+            requires_read_pgn,
+        )
+    })?
 }
 
 fn run_practice_command_blocking<T, F>(
     app: &tauri::AppHandle,
-    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     file_id: Option<&str>,
     requires_read_pgn: bool,
     operation: F,
@@ -1973,7 +1969,7 @@ where
 
 async fn run_practice_command<T, F>(
     app: tauri::AppHandle,
-    authority: Arc<std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>>,
+    authority: crate::infra::path_authority::SharedPathAuthority,
     file_id: String,
     requires_read_pgn: bool,
     operation: F,
@@ -1997,7 +1993,7 @@ where
 
 async fn run_accepted_practice_command<T, F>(
     app: tauri::AppHandle,
-    authority: Arc<std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>>,
+    authority: crate::infra::path_authority::SharedPathAuthority,
     operations: &crate::infra::operations::OperationRegistry,
     operation_name: &'static str,
     file_id: Option<String>,
@@ -2028,7 +2024,7 @@ pub async fn load_practice_deck(
     app: tauri::AppHandle,
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<Option<PracticeDeckSnapshot>, Error> {
-    let authority = Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     let authorization_file_id = file_id.clone();
     run_practice_command(
         app,
@@ -2056,7 +2052,7 @@ pub async fn record_practice_review(
     app: tauri::AppHandle,
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<u32, Error> {
-    let authority = Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     let authorization_file_id = file_id.clone();
     run_practice_command(
         app,
@@ -2091,7 +2087,7 @@ pub async fn sync_practice_positions(
     app: tauri::AppHandle,
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<u32, Error> {
-    let authority = Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     let authorization_file_id = file_id.clone();
     run_practice_command(
         app,
@@ -2123,7 +2119,7 @@ pub async fn reset_practice_deck(
     app: tauri::AppHandle,
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<u32, Error> {
-    let authority = Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     let authorization_file_id = file_id.clone();
     run_practice_command(
         app,
@@ -2154,7 +2150,7 @@ pub async fn load_practice_reviews(
     app: tauri::AppHandle,
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<PracticeReviewPage, Error> {
-    let authority = Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     let authorization_file_id = file_id.clone();
     run_practice_command(
         app,
@@ -2175,7 +2171,7 @@ pub async fn migrate_practice_deck(
     app: tauri::AppHandle,
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<PracticeMigrationOutcome, Error> {
-    let authority = Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     let authorization_file_id = file_id.clone();
     run_accepted_practice_command(
         app,
@@ -2199,7 +2195,7 @@ pub async fn acknowledge_practice_orphans(
     app: tauri::AppHandle,
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<(), Error> {
-    let authority = Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     let authorization_file_id = file_id.clone();
     run_practice_command(
         app,
@@ -2227,7 +2223,7 @@ pub async fn repair_practice_deck(
     app: tauri::AppHandle,
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<(), Error> {
-    let authority = Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     let authorization_file_id = file_id.clone();
     run_practice_command(
         app,
@@ -2245,7 +2241,7 @@ pub async fn list_practice_decks(
     app: tauri::AppHandle,
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<PracticeDeckInventory, Error> {
-    let authority = Arc::clone(&state.pgn_path_authority);
+    let authority = state.pgn_path_authority.clone();
     run_accepted_practice_command(
         app,
         authority,

@@ -1,3 +1,5 @@
+#[cfg(test)]
+use crate::infra::path_authority::PathAuthority;
 use std::{
     collections::{HashMap, VecDeque},
     io::{BufRead, BufReader, Cursor, Read},
@@ -37,9 +39,7 @@ use crate::{
     error::Error,
     infra::blocking::BLOCKING_GATEWAY,
     infra::keyed_locks::{KeyedLockLease, KeyedLocks},
-    infra::path_authority::{
-        EngineExecutable, EngineHandle, OpeningBookHandle, PathAuthority, PathOperation,
-    },
+    infra::path_authority::{EngineExecutable, EngineHandle, OpeningBookHandle, PathOperation},
 };
 
 #[cfg(all(test, unix))]
@@ -1189,7 +1189,7 @@ async fn spawn_configured_game_engine(
     registration: GameEngineRegistration,
     engine: EngineHandle,
     options: &[EngineOption],
-    authority: std::sync::Arc<std::sync::Mutex<Option<PathAuthority>>>,
+    authority: crate::infra::path_authority::SharedPathAuthority,
     chess960: bool,
 ) -> Result<(RegisteredGameEngine, RegistrationGuard), Error> {
     let GameEngineRegistration {
@@ -1329,7 +1329,7 @@ async fn spawn_configured_game_engine_with_executable(
     registration: GameEngineRegistration,
     executable: EngineExecutable,
     options: &[EngineOption],
-    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     chess960: bool,
 ) -> Result<(RegisteredGameEngine, RegistrationGuard), Error> {
     let GameEngineRegistration {
@@ -1341,17 +1341,8 @@ async fn spawn_configured_game_engine_with_executable(
     let admission = supervisor
         .admit_for_launch(key.clone(), engine_id.clone(), executable_ref.clone())
         .await?;
-    let mut resolved = {
-        let mut authority = authority
-            .lock()
-            .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-        resolve_engine_option_leases(
-            authority
-                .as_mut()
-                .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?,
-            options,
-        )?
-    };
+    let mut resolved =
+        authority.with_mut(|authority| resolve_engine_option_leases(authority, options))??;
     #[cfg(target_os = "macos")]
     for option in &resolved {
         for resource in &option.resources {
@@ -1579,7 +1570,7 @@ impl GameManager {
         game_id: GameId,
         config: GameConfig,
         app: AppHandle<R>,
-        authority: std::sync::Arc<std::sync::Mutex<Option<PathAuthority>>>,
+        authority: crate::infra::path_authority::SharedPathAuthority,
         engine_supervisor: Arc<EngineSupervisor>,
     ) -> Result<GameState, Error> {
         self.ensure_accepting_starts()?;
@@ -2542,7 +2533,7 @@ fn choose_weighted_target(weights: &[u16], mut target: u64) -> usize {
 
 async fn apply_opening_book(
     config: GameConfig,
-    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
 ) -> Result<OpeningBookResult, Error> {
     let Some(opening_book) = &config.opening_book else {
         return Ok(OpeningBookResult {
@@ -2552,12 +2543,8 @@ async fn apply_opening_book(
         });
     };
 
-    let snapshot = authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .opening_book_descriptor(&opening_book.book)?;
+    let snapshot =
+        authority.with_mut(|authority| authority.opening_book_descriptor(&opening_book.book))??;
     let max_ply = opening_book.max_ply.max(1);
 
     let cancellation = CancellationToken::new();
@@ -3689,7 +3676,7 @@ mod tests {
     struct TestGameEngineBundle {
         _directory: tempfile::TempDir,
         config: GameConfig,
-        authority: Arc<std::sync::Mutex<Option<PathAuthority>>>,
+        authority: crate::infra::path_authority::SharedPathAuthority,
         white_engine_id: String,
         black_engine_id: String,
     }
@@ -3767,7 +3754,7 @@ mod tests {
                 initial_moves: Vec::new(),
                 opening_book: None,
             },
-            authority: Arc::new(std::sync::Mutex::new(Some(path_authority))),
+            authority: crate::infra::path_authority::SharedPathAuthority::installed(path_authority),
             white_engine_id,
             black_engine_id,
         }
@@ -3836,7 +3823,7 @@ mod tests {
                 game_id.into(),
                 human_config(),
                 app.handle().clone(),
-                Arc::new(std::sync::Mutex::new(None)),
+                crate::infra::path_authority::SharedPathAuthority::uninitialized(),
                 Arc::new(EngineSupervisor::default()),
             )
             .await
@@ -3968,9 +3955,9 @@ mod tests {
             directory.path().to_path_buf(),
             Vec::new(),
         );
-        let authority = std::sync::Mutex::new(Some(
+        let authority = crate::infra::path_authority::SharedPathAuthority::installed(
             PathAuthority::open(directory.path().join("registry.json"), Vec::new()).unwrap(),
-        ));
+        );
         let supervisor = Arc::new(EngineSupervisor::default());
         let key = game_side_engine_key("game-id", 9, "white", "application-engine-id").unwrap();
         let registration = tokio::spawn({
@@ -4045,7 +4032,7 @@ mod tests {
         let engine = authority
             .register_engine_file(&script, "production-game-engine")
             .unwrap();
-        let authority = Arc::new(std::sync::Mutex::new(Some(authority)));
+        let authority = crate::infra::path_authority::SharedPathAuthority::installed(authority);
         let supervisor = Arc::new(EngineSupervisor::default());
         let key =
             game_side_engine_key("production-game", 1, "white", "production-game-engine").unwrap();
@@ -4116,7 +4103,7 @@ done
         let resource = authority
             .promote_engine_resource(&grant, EngineResourceHandleKind::Directory, "tables")
             .unwrap();
-        let authority = Arc::new(std::sync::Mutex::new(Some(authority)));
+        let authority = crate::infra::path_authority::SharedPathAuthority::installed(authority);
         let replaced = Arc::new(AtomicBool::new(false));
         let replaced_for_hook = replaced.clone();
         let tables_for_hook = tables.clone();
@@ -4201,7 +4188,7 @@ done
         let engine = authority
             .register_engine_file(&script, "sealed-game-engine")
             .unwrap();
-        let authority = Arc::new(std::sync::Mutex::new(Some(authority)));
+        let authority = crate::infra::path_authority::SharedPathAuthority::installed(authority);
         let supervisor = Arc::new(EngineSupervisor::default());
         supervisor.terminate_all().await.unwrap();
         let key = game_side_engine_key("sealed-game", 1, "white", "sealed-game-engine").unwrap();
@@ -4280,11 +4267,11 @@ done
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
         let resource_path = directory.path().join("weights.nnue");
         std::fs::write(&resource_path, b"weights").unwrap();
-        let authority = std::sync::Mutex::new(Some(
+        let authority = crate::infra::path_authority::SharedPathAuthority::installed(
             PathAuthority::open(directory.path().join("registry.json"), Vec::new()).unwrap(),
-        ));
+        );
         let resource_handle = {
-            let mut authority = authority.lock().unwrap();
+            let mut authority = authority.raw_for_test().lock().unwrap();
             let authority = authority.as_mut().unwrap();
             let grant = authority
                 .grant_dialog(

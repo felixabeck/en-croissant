@@ -3306,17 +3306,17 @@ fn workspace_bodies_are_single_ungated_delegations() {
     let rows: &[(&str, &str, &[&str])] = &[
         (
             "fn mutation_target(",
-            "fnmutation_target(pgn_path_authority:&Mutex<Option<PathAuthority>>,entry:&FileWorkspaceHandle,)->Result<WorkspaceMutationTarget,Error>",
+            "fnmutation_target(pgn_path_authority:&SharedPathAuthority,entry:&FileWorkspaceHandle,)->Result<WorkspaceMutationTarget,Error>",
             &[".workspace_mutation_target(entry)"],
         ),
         (
             "fn register_created_entry(",
-            "fnregister_created_entry(pgn_path_authority:&Mutex<Option<PathAuthority>>,workspace:&FileWorkspaceHandle,path:&Path,display_name:String,identity:(u64,u64),parent_identity:(u64,u64),is_dir:bool,)->Result<FileWorkspaceHandle,Error>",
+            "fnregister_created_entry(pgn_path_authority:&SharedPathAuthority,workspace:&FileWorkspaceHandle,path:&Path,display_name:String,identity:(u64,u64),parent_identity:(u64,u64),is_dir:bool,)->Result<FileWorkspaceHandle,Error>",
             &[".register_workspace_child_observed_with_parent("],
         ),
         (
             "fn collect_tree_entries(",
-            "fncollect_tree_entries(pgn_path_authority:&Mutex<Option<PathAuthority>>,workspace:&FileWorkspaceHandle,token:&CancellationToken,)->Result<(Vec<WorkspaceEntry>,Vec<FileWorkspaceHandle>),Error>",
+            "fncollect_tree_entries(pgn_path_authority:&SharedPathAuthority,workspace:&FileWorkspaceHandle,token:&CancellationToken,)->Result<(Vec<WorkspaceEntry>,Vec<FileWorkspaceHandle>),Error>",
             &[
                 ".capability_directory(workspace.path_ref(),PathOperation::ReadPgn)?",
                 "dir.entries(token,&mut|name|",

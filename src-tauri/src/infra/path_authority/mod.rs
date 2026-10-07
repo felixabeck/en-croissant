@@ -40,10 +40,13 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+mod shared;
+pub use shared::{AuthorityUnavailable, SharedPathAuthority};
+
 /// Re-check only the chosen root after a failed listing; retain the original failure text.
 /// Callers run this on a blocking worker, after releasing their listing lock.
 pub(crate) fn probe_listing_root_failure(
-    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     root: &PathRef,
     operation: PathOperation,
     original: Error,
@@ -60,23 +63,15 @@ pub(crate) fn probe_listing_root_failure(
         return original;
     }
     let probe = (|| {
-        let mut lock = match crate::infra::cancellable_lock::lock_std_cancellable(
-            authority,
-            cancellation,
-            "path authority lock was poisoned",
-        ) {
-            Ok(lock) => lock,
-            Err(Error::Cancellation) => return Err(Error::Cancellation),
+        let directory = match authority.with_mut_cancellable(cancellation, |authority| {
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancellation);
+            }
+            authority.capability_directory(root, operation)
+        })? {
+            Ok(directory) => directory?,
             Err(_) => return Ok(()),
         };
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancellation);
-        }
-        let Some(authority) = lock.as_mut() else {
-            return Ok(());
-        };
-        let directory = authority.capability_directory(root, operation)?;
-        drop(lock);
         directory.entries(cancellation, &mut |_| false)?;
         Ok(())
     })();
@@ -3522,37 +3517,27 @@ fn sha256_reader_cancellable(
 /// occurs outside the authority lock. Locks to persist the post-rename marker and prepare,
 /// drops the lock to verify the descriptor, then reacquires the lock to commit.
 pub(crate) async fn activate_download_artifact_runtime(
-    authority: &Arc<std::sync::Mutex<Option<PathAuthority>>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     reservation: &PendingArtifactReservation,
     installed_identity: (u64, u64),
     installed_ctime_nanos: i128,
 ) -> Result<ArtifactPublication, Error> {
-    let authority = Arc::clone(authority);
+    let authority = authority.clone();
     let reservation = reservation.clone();
     crate::infra::blocking::BLOCKING_GATEWAY
         .spawn(move || {
             let prepared = {
-                let mut guard = authority
-                    .lock()
-                    .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-                let auth = guard
-                    .as_mut()
-                    .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-                auth.mark_download_artifact_committed(
-                    &reservation,
-                    installed_identity,
-                    installed_ctime_nanos,
-                )?;
-                auth.prepare_download_artifact(&reservation)?
+                authority.with_mut(|auth| {
+                    auth.mark_download_artifact_committed(
+                        &reservation,
+                        installed_identity,
+                        installed_ctime_nanos,
+                    )?;
+                    auth.prepare_download_artifact(&reservation)
+                })??
             };
             let verified = prepared.verify()?;
-            let mut guard = authority
-                .lock()
-                .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-            let auth = guard
-                .as_mut()
-                .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-            auth.commit_download_artifact(verified)
+            authority.with_mut(|auth| auth.commit_download_artifact(verified))?
         })
         .await
 }
@@ -8914,17 +8899,11 @@ impl PathAuthority {
 /// Takes the process-wide authority lock only long enough to open and bound the
 /// image descriptor. The guard is dropped before this function returns.
 pub(crate) fn engine_image_reader_for(
-    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    authority: &crate::infra::path_authority::SharedPathAuthority,
     image: &EngineImageHandle,
     max_bytes: usize,
 ) -> Result<(VerifiedFile, u64), Error> {
-    let mut lock = authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-    let authority = lock
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-    authority.open_engine_image(image, max_bytes)
+    authority.with_mut(|authority| authority.open_engine_image(image, max_bytes))?
 }
 
 /// Consumes the no-follow descriptor. `declared` is capped before it sizes the allocation, and
@@ -9706,7 +9685,7 @@ pub(crate) mod portable_tests {
     pub(crate) fn assert_workspace_body_refuses_unusable_selections_without_defaults(
         domain: AppOwnedDefaultRoot,
         body: impl Fn(
-            &std::sync::Mutex<Option<PathAuthority>>,
+            &crate::infra::path_authority::SharedPathAuthority,
             &dyn Fn() -> Result<AppDataDir, Error>,
         ) -> Result<PathRef, Error>,
     ) {
@@ -9757,7 +9736,7 @@ pub(crate) mod portable_tests {
                 _ => unreachable!(),
             }
             let before = fs::read(&registry).unwrap();
-            let authority = std::sync::Mutex::new(Some(authority));
+            let authority = crate::infra::path_authority::SharedPathAuthority::installed(authority);
             let looked_up = std::cell::Cell::new(false);
             let lookup = || {
                 looked_up.set(true);
@@ -9778,16 +9757,16 @@ pub(crate) mod portable_tests {
     pub(crate) fn assert_workspace_body_defaults_only_without_a_selection(
         domain: AppOwnedDefaultRoot,
         body: impl FnOnce(
-            &std::sync::Mutex<Option<PathAuthority>>,
+            &crate::infra::path_authority::SharedPathAuthority,
             &dyn Fn() -> Result<AppDataDir, Error>,
         ) -> Result<PathRef, Error>,
     ) {
         let dir = tempfile::tempdir().unwrap();
         let app_path = dir.path().join("app-data");
         fs::create_dir(&app_path).unwrap();
-        let authority = std::sync::Mutex::new(Some(
+        let authority = crate::infra::path_authority::SharedPathAuthority::installed(
             PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap(),
-        ));
+        );
         let id = body(&authority, &|| Ok(AppDataDir::for_test(&app_path))).unwrap();
         let leaf = APP_OWNED_DEFAULT_ROOT_LEAVES
             .iter()
@@ -9795,10 +9774,12 @@ pub(crate) mod portable_tests {
             .unwrap()
             .1;
         assert!(app_path.join(leaf).is_dir(), "{domain:?}");
-        let selected =
-            active_app_owned_test_root(authority.lock().unwrap().as_mut().unwrap(), domain)
-                .unwrap()
-                .unwrap();
+        let selected = active_app_owned_test_root(
+            authority.raw_for_test().lock().unwrap().as_mut().unwrap(),
+            domain,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(selected, id, "{domain:?}");
     }
 
@@ -9924,7 +9905,7 @@ pub(crate) mod portable_tests {
 
     fn root_failure_database_fixture() -> (
         tempfile::TempDir,
-        std::sync::Mutex<Option<PathAuthority>>,
+        crate::infra::path_authority::SharedPathAuthority,
         DatabaseRootHandle,
         PathBuf,
     ) {
@@ -9943,7 +9924,7 @@ pub(crate) mod portable_tests {
             .unwrap();
         (
             directory,
-            std::sync::Mutex::new(Some(authority)),
+            crate::infra::path_authority::SharedPathAuthority::installed(authority),
             handle,
             root,
         )
@@ -10033,6 +10014,7 @@ pub(crate) mod portable_tests {
                 fs::create_dir(&root).unwrap();
             }
             let original = registry
+                .raw_for_test()
                 .lock()
                 .unwrap()
                 .as_mut()
@@ -10122,14 +10104,9 @@ pub(crate) mod portable_tests {
             let (_directory, registry, handle, _root) = root_failure_database_fixture();
             let registry = Arc::new(registry);
             if poison {
-                let registry = Arc::clone(&registry);
-                let _ = std::thread::spawn(move || {
-                    let _lock = registry.lock().unwrap();
-                    panic!("test poison");
-                })
-                .join();
+                registry.poison();
             } else {
-                *registry.lock().unwrap() = None;
+                registry.uninstall();
             }
             let error = crate::list_workspace_databases_blocking(
                 &registry,
@@ -10219,10 +10196,11 @@ pub(crate) mod portable_tests {
     fn root_failure_probe_cancellation_while_waiting_for_authority_is_unlabelled() {
         let (_directory, registry, handle, _root) = root_failure_database_fixture();
         let registry = Arc::new(registry);
-        let observer = crate::infra::cancellable_lock::observe_std_lock_wait(&registry);
-        let held = registry.lock().unwrap();
+        let observer =
+            crate::infra::cancellable_lock::observe_std_lock_wait(registry.raw_for_test());
+        let held = registry.raw_for_test().lock().unwrap();
         let token = CancellationToken::new();
-        let worker_registry = Arc::clone(&registry);
+        let worker_registry = registry.clone();
         let worker_token = token.clone();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
@@ -10288,6 +10266,7 @@ pub(crate) mod portable_tests {
         fs::rename(&root, directory.path().join("old-root")).unwrap();
         fs::create_dir(&root).unwrap();
         let error = registry
+            .raw_for_test()
             .lock()
             .unwrap()
             .as_mut()
@@ -11323,7 +11302,8 @@ pub(crate) mod portable_tests {
         );
         authority.persistent.remove("revoked");
 
-        let command_authority = std::sync::Mutex::new(Some(authority));
+        let command_authority =
+            crate::infra::path_authority::SharedPathAuthority::installed(authority);
         for id in ["unknown", "revoked", "staged", "wrong-purpose"] {
             assert!(
                 crate::practice::authorize_practice_command(&command_authority, id, true).is_err(),
@@ -11890,7 +11870,7 @@ mod tests {
     }
 
     type EngineImageReaderForFn = fn(
-        &std::sync::Mutex<Option<PathAuthority>>,
+        &crate::infra::path_authority::SharedPathAuthority,
         &EngineImageHandle,
         usize,
     ) -> Result<(VerifiedFile, u64), Error>;
@@ -11913,7 +11893,11 @@ mod tests {
     fn registered_engine_image(
         dir: &tempfile::TempDir,
         contents: &[u8],
-    ) -> (Mutex<Option<PathAuthority>>, EngineImageHandle, PathBuf) {
+    ) -> (
+        crate::infra::path_authority::SharedPathAuthority,
+        EngineImageHandle,
+        PathBuf,
+    ) {
         let image_dir = ensure_app_owned_default_dir(
             &AppDataDir::for_test(dir.path()),
             AppOwnedDefaultRoot::EngineImages,
@@ -11930,7 +11914,11 @@ mod tests {
         let handle = authority
             .register_engine_image(&image_dir, leaf, installed, "image".into())
             .expect("adopted image handle");
-        (Mutex::new(Some(authority)), handle, image)
+        (
+            crate::infra::path_authority::SharedPathAuthority::installed(authority),
+            handle,
+            image,
+        )
     }
 
     #[cfg(unix)]
@@ -15904,7 +15892,7 @@ mod tests {
     }
 
     struct TestActivationObserver {
-        authority: std::sync::Weak<std::sync::Mutex<Option<PathAuthority>>>,
+        authority: std::sync::Weak<crate::infra::path_authority::SharedPathAuthority>,
         caller_thread_id: std::thread::ThreadId,
         observed_stages: std::sync::Mutex<Vec<ActivationObserverStage>>,
     }
@@ -15924,7 +15912,7 @@ mod tests {
                     .authority
                     .upgrade()
                     .expect("authority must exist during verification");
-                let try_lock = authority_arc.try_lock();
+                let try_lock = authority_arc.raw_for_test().try_lock();
                 assert!(
                     try_lock.is_ok(),
                     "authority mutex must be unlocked during stage {stage:?}"
@@ -16028,7 +16016,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let payload_bytes = b"1. e4 e5 2. Nf3 Nc6 3. Bb5";
         let fixture = InstalledArtifactFixture::with_payload(dir.path(), payload_bytes);
-        let authority = Arc::new(std::sync::Mutex::new(Some(fixture.authority)));
+        let authority = Arc::new(SharedPathAuthority::installed(fixture.authority));
 
         let observer = Arc::new(TestActivationObserver {
             authority: Arc::downgrade(&authority),
@@ -16037,6 +16025,7 @@ mod tests {
         });
 
         authority
+            .raw_for_test()
             .lock()
             .unwrap()
             .as_mut()
@@ -16053,6 +16042,7 @@ mod tests {
         .expect("runtime activation must succeed");
 
         let mut resolved = authority
+            .raw_for_test()
             .lock()
             .unwrap()
             .as_mut()
@@ -16444,10 +16434,12 @@ mod tests {
     {
         let dir = tempfile::tempdir().unwrap();
         let fixture = InstalledArtifactFixture::uncommitted(dir.path(), b"content");
-        let authority = Arc::new(std::sync::Mutex::new(Some(fixture.authority)));
+        let authority =
+            crate::infra::path_authority::SharedPathAuthority::installed(fixture.authority);
 
         let observer = Arc::new(CountingObserver(std::sync::atomic::AtomicUsize::new(0)));
         authority
+            .raw_for_test()
             .lock()
             .unwrap()
             .as_mut()
@@ -16482,7 +16474,7 @@ mod tests {
             "verification observer must not be called when marker durability fails"
         );
 
-        let auth_guard = authority.lock().unwrap();
+        let auth_guard = authority.raw_for_test().lock().unwrap();
         let auth = auth_guard.as_ref().unwrap();
         assert!(auth
             .pending_artifacts
@@ -16496,10 +16488,12 @@ mod tests {
     {
         let dir = tempfile::tempdir().unwrap();
         let fixture = InstalledArtifactFixture::uncommitted(dir.path(), b"content");
-        let authority = Arc::new(std::sync::Mutex::new(Some(fixture.authority)));
+        let authority =
+            crate::infra::path_authority::SharedPathAuthority::installed(fixture.authority);
 
         let observer = Arc::new(CountingObserver(std::sync::atomic::AtomicUsize::new(0)));
         authority
+            .raw_for_test()
             .lock()
             .unwrap()
             .as_mut()
@@ -16527,7 +16521,7 @@ mod tests {
         );
 
         {
-            let auth_guard = authority.lock().unwrap();
+            let auth_guard = authority.raw_for_test().lock().unwrap();
             let auth = auth_guard.as_ref().unwrap();
             assert!(auth
                 .pending_artifacts

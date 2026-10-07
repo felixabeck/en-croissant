@@ -11,7 +11,7 @@ use crate::{
     infra::path_authority::{
         workspace_sidecar_leaf as sidecar_leaf, CommitDurability, FileWorkspaceDescriptor,
         FileWorkspaceHandle, IdentityBinding, PathAuthority, PathClass, PathOperation, PathRef,
-        WorkspaceMutationTarget, WorkspaceRemovalStatus,
+        SharedPathAuthority, WorkspaceMutationTarget, WorkspaceRemovalStatus,
     },
     pgn, AppState,
 };
@@ -20,7 +20,7 @@ use specta::Type;
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 use tokio_util::sync::CancellationToken;
@@ -98,14 +98,6 @@ pub struct WorkspaceEntry {
     pub metadata: Option<WorkspaceMetadata>,
     pub game_count: Option<i32>,
     pub last_modified: i64,
-}
-
-fn authority(
-    pgn_path_authority: &Mutex<Option<PathAuthority>>,
-) -> Result<MutexGuard<'_, Option<PathAuthority>>, Error> {
-    pgn_path_authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))
 }
 
 fn validate_name(name: &str) -> Result<&str, Error> {
@@ -192,23 +184,18 @@ fn listed_mtime(entry: &DirectoryEntry) -> i64 {
 }
 
 fn workspace_root(
-    pgn_path_authority: &Mutex<Option<PathAuthority>>,
+    pgn_path_authority: &SharedPathAuthority,
     workspace: &FileWorkspaceHandle,
 ) -> Result<PathBuf, Error> {
-    authority(pgn_path_authority)?
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .workspace_root(workspace, PathOperation::ReadPgn)
+    pgn_path_authority
+        .with_mut(|authority| authority.workspace_root(workspace, PathOperation::ReadPgn))?
 }
 
 fn mutation_target(
-    pgn_path_authority: &Mutex<Option<PathAuthority>>,
+    pgn_path_authority: &SharedPathAuthority,
     entry: &FileWorkspaceHandle,
 ) -> Result<WorkspaceMutationTarget, Error> {
-    authority(pgn_path_authority)?
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .workspace_mutation_target(entry)
+    pgn_path_authority.with_mut(|authority| authority.workspace_mutation_target(entry))?
 }
 
 fn durability_uncertainty(
@@ -259,7 +246,7 @@ pub async fn write_workspace_file_metadata(
 ) -> Result<(), Error> {
     let operation = state.operations.accept("write_workspace_file_metadata")?;
     let cancellation = operation.token();
-    let pgn_path_authority = Arc::clone(&state.pgn_path_authority);
+    let pgn_path_authority = state.pgn_path_authority.clone();
     let workspace_mutation = Arc::clone(&state.workspace_mutation);
     crate::infra::operations::run_native_operation(
         operation,
@@ -286,7 +273,7 @@ fn write_workspace_file_metadata_blocking(
     workspace: FileWorkspaceHandle,
     entry: FileWorkspaceHandle,
     metadata: WorkspaceMetadata,
-    pgn_path_authority: &Mutex<Option<PathAuthority>>,
+    pgn_path_authority: &SharedPathAuthority,
     workspace_mutation: &Mutex<()>,
     cancellation: &CancellationToken,
 ) -> Result<(), Error> {
@@ -380,7 +367,7 @@ fn ensure_registered_descendant(
 }
 
 fn workspace_components(
-    pgn_path_authority: &Mutex<Option<PathAuthority>>,
+    pgn_path_authority: &SharedPathAuthority,
     workspace: &FileWorkspaceHandle,
     path: &Path,
 ) -> Result<Vec<std::ffi::OsString>, Error> {
@@ -395,7 +382,7 @@ fn workspace_components(
 }
 
 fn register_created_entry(
-    pgn_path_authority: &Mutex<Option<PathAuthority>>,
+    pgn_path_authority: &SharedPathAuthority,
     workspace: &FileWorkspaceHandle,
     path: &Path,
     display_name: String,
@@ -410,10 +397,8 @@ fn register_created_entry(
             hook();
         }
     });
-    authority(pgn_path_authority)?
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .register_workspace_child_observed_with_parent(
+    pgn_path_authority.with_mut(|authority| {
+        authority.register_workspace_child_observed_with_parent(
             workspace,
             &components,
             display_name,
@@ -421,6 +406,7 @@ fn register_created_entry(
             is_dir,
             PathOperation::WritePgn,
         )
+    })?
 }
 
 pub(crate) fn map_picker_join(error: tokio::task::JoinError) -> Error {
@@ -484,7 +470,7 @@ const MAX_WORKSPACE_LISTING_DEPTH: usize = 64;
 // `collect_tree_entries`, `create_workspace_directory_inner`, `trash_entry`,
 // `restore_entry`.
 fn collect_tree_entries(
-    pgn_path_authority: &Mutex<Option<PathAuthority>>,
+    pgn_path_authority: &SharedPathAuthority,
     workspace: &FileWorkspaceHandle,
     token: &CancellationToken,
 ) -> Result<(Vec<WorkspaceEntry>, Vec<FileWorkspaceHandle>), Error> {
@@ -673,33 +659,29 @@ fn collect_tree_entries(
     }
 
     let (root, snapshot) = {
-        let mut lock = authority(pgn_path_authority)?;
-        let path_authority = lock
-            .as_mut()
-            .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-        let root =
-            path_authority.capability_directory(workspace.path_ref(), PathOperation::ReadPgn)?;
-        let snapshot =
-            path_authority.workspace_listing_snapshot(workspace, OsStr::new(TRASH_DIRECTORY))?;
-        (root, snapshot)
+        pgn_path_authority.with_mut(|path_authority| {
+            let root = path_authority
+                .capability_directory(workspace.path_ref(), PathOperation::ReadPgn)?;
+            let snapshot = path_authority
+                .workspace_listing_snapshot(workspace, OsStr::new(TRASH_DIRECTORY))?;
+            Ok::<_, Error>((root, snapshot))
+        })??
     };
     let staged = walk(&root, Vec::new(), 0, token, &mut 0)?;
     let mut missing = Vec::new();
     let mut prepared = Vec::new();
-    let mut lock = authority(pgn_path_authority)?;
-    let path_authority = lock
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-    let entries = prepare_staged(
-        staged,
-        path_authority,
-        workspace,
-        token,
-        &mut missing,
-        &mut prepared,
-    )?;
-    path_authority.commit_directory_listing(snapshot, prepared, token)?;
-    Ok((entries, missing))
+    pgn_path_authority.with_mut(|path_authority| {
+        let entries = prepare_staged(
+            staged,
+            path_authority,
+            workspace,
+            token,
+            &mut missing,
+            &mut prepared,
+        )?;
+        path_authority.commit_directory_listing(snapshot, prepared, token)?;
+        Ok((entries, missing))
+    })?
 }
 
 fn set_workspace_game_count(
@@ -735,7 +717,7 @@ pub async fn issue_file_workspace(
     })
     .await
     .map_err(map_picker_join)??;
-    let pgn_path_authority = Arc::clone(&state.pgn_path_authority);
+    let pgn_path_authority = state.pgn_path_authority.clone();
     crate::infra::operations::run_accepted_blocking(
         &state.operations,
         "issue_file_workspace",
@@ -745,41 +727,39 @@ pub async fn issue_file_workspace(
 }
 
 fn issue_file_workspace_blocking(
-    pgn_path_authority: &Mutex<Option<PathAuthority>>,
+    pgn_path_authority: &SharedPathAuthority,
     path: PathBuf,
 ) -> Result<FileWorkspaceDescriptor, Error> {
     let display_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "PGN collection".into());
-    let mut authority = authority(pgn_path_authority)?;
-    let authority = authority
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-    let temporary = authority.grant_dialog_operations(
-        &path,
-        display_name.clone(),
-        PathClass::BoundedDialogGrant,
-        vec![PathOperation::ReadPgn, PathOperation::WritePgn],
-        Duration::from_secs(300),
-        1,
-    )?;
-    let committed = authority.promote_dialog(
-        &temporary,
-        PathClass::PersistentCustomRoot,
-        display_name.clone(),
-        vec![PathOperation::ReadPgn, PathOperation::WritePgn],
-    )?;
-    Ok(FileWorkspaceDescriptor {
-        handle: FileWorkspaceHandle::new(committed.id),
-        display_name,
-        availability: crate::infra::path_authority::PathAvailability::Available,
-    })
+    pgn_path_authority.with_mut(|authority| {
+        let temporary = authority.grant_dialog_operations(
+            &path,
+            display_name.clone(),
+            PathClass::BoundedDialogGrant,
+            vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+            Duration::from_secs(300),
+            1,
+        )?;
+        let committed = authority.promote_dialog(
+            &temporary,
+            PathClass::PersistentCustomRoot,
+            display_name.clone(),
+            vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+        )?;
+        Ok(FileWorkspaceDescriptor {
+            handle: FileWorkspaceHandle::new(committed.id),
+            display_name,
+            availability: crate::infra::path_authority::PathAvailability::Available,
+        })
+    })?
 }
 
 pub(crate) async fn list_file_workspace_core(
     workspace: &FileWorkspaceHandle,
-    authority_arc: &Arc<Mutex<Option<PathAuthority>>>,
+    authority_arc: &SharedPathAuthority,
     repository: &crate::pgn::PgnRepository,
     cancellation: &CancellationToken,
 ) -> Result<Vec<WorkspaceEntry>, Error> {
@@ -787,7 +767,7 @@ pub(crate) async fn list_file_workspace_core(
         if cancellation.is_cancelled() {
             return Err(Error::Cancellation);
         }
-        let pgn_path_authority = Arc::clone(authority_arc);
+        let pgn_path_authority = authority_arc.clone();
         let workspace_for_tree = workspace.clone();
         let (mut entries, missing) = BLOCKING_GATEWAY
             .spawn_cancellable(cancellation.clone(), move |token| {
@@ -805,10 +785,9 @@ pub(crate) async fn list_file_workspace_core(
                 return Err(Error::Cancellation);
             }
             let resolved = {
-                authority(authority_arc)?
-                    .as_mut()
-                    .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-                    .resolve(handle.path_ref(), PathOperation::ReadPgn, &[])?
+                authority_arc.with_mut(|authority| {
+                    authority.resolve(handle.path_ref(), PathOperation::ReadPgn, &[])
+                })??
             };
             let game_count = pgn::count_pgn_games_core(resolved, cancellation, repository).await?;
             set_workspace_game_count(&mut entries, &handle, game_count);
@@ -828,7 +807,7 @@ pub(crate) async fn list_file_workspace_core(
             if matches!(error.unlabelled(), Error::Cancellation) || error.root_failure().is_some() {
                 return Err(error);
             }
-            let authority = Arc::clone(authority_arc);
+            let authority = authority_arc.clone();
             let root = workspace.path_ref().clone();
             BLOCKING_GATEWAY
                 .spawn_cancellable(cancellation.clone(), move |token| {
@@ -855,7 +834,7 @@ pub async fn list_file_workspace(
 ) -> Result<Vec<WorkspaceEntry>, Error> {
     let operation = crate::native_read_operation(ticket, &window, &state, "list_file_workspace")?;
     let cancellation = operation.token();
-    let authority_arc = Arc::clone(&state.pgn_path_authority);
+    let authority_arc = state.pgn_path_authority.clone();
     let repository = state.pgn_repository.clone();
     crate::infra::operations::run_native_operation(operation, "list_file_workspace", async move {
         list_file_workspace_core(&workspace, &authority_arc, &repository, &cancellation).await
@@ -906,32 +885,30 @@ fn paired_rename(
 }
 
 fn rebind_after_move(
-    pgn_path_authority: &Mutex<Option<PathAuthority>>,
+    pgn_path_authority: &SharedPathAuthority,
     entry: &FileWorkspaceHandle,
     source: &WorkspaceMutationTarget,
     target: &Path,
     target_parent_identity: (u64, u64),
 ) -> Result<(), Error> {
-    let mut authority = authority(pgn_path_authority)?;
-    let authority = authority
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-    if source.is_dir {
-        authority.rebase_workspace_entries(source.path(), target)
-    } else {
-        #[cfg(test)]
-        WORKSPACE_REBIND_PRE_REGISTER_HOOK.with(|slot| {
-            if let Some(hook) = slot.borrow_mut().take() {
-                hook();
-            }
-        });
-        authority.rebind_workspace_entry(
-            entry,
-            target,
-            target.file_stem().unwrap_or_default().to_string_lossy(),
-            target_parent_identity,
-        )
-    }
+    pgn_path_authority.with_mut(|authority| {
+        if source.is_dir {
+            authority.rebase_workspace_entries(source.path(), target)
+        } else {
+            #[cfg(test)]
+            WORKSPACE_REBIND_PRE_REGISTER_HOOK.with(|slot| {
+                if let Some(hook) = slot.borrow_mut().take() {
+                    hook();
+                }
+            });
+            authority.rebind_workspace_entry(
+                entry,
+                target,
+                target.file_stem().unwrap_or_default().to_string_lossy(),
+                target_parent_identity,
+            )
+        }
+    })?
 }
 
 #[tauri::command]
@@ -948,7 +925,7 @@ pub async fn create_workspace_file(
     let cancellation = operation.token();
     let state = state.inner().clone();
     crate::infra::operations::run_native_operation(operation, "create_workspace_file", async move {
-        let pgn_path_authority = Arc::clone(&state.pgn_path_authority);
+        let pgn_path_authority = state.pgn_path_authority.clone();
         let workspace_mutation = Arc::clone(&state.workspace_mutation);
         let pgn_repository = state.pgn_repository.clone();
         BLOCKING_GATEWAY
@@ -980,7 +957,7 @@ fn create_workspace_file_blocking(
     name: String,
     metadata: WorkspaceMetadata,
     content: WorkspaceFileContent,
-    pgn_path_authority: &Mutex<Option<PathAuthority>>,
+    pgn_path_authority: &SharedPathAuthority,
     workspace_mutation: &Mutex<()>,
     pgn_repository: &pgn::PgnRepository,
     cancellation: &CancellationToken,
@@ -1006,10 +983,9 @@ fn create_workspace_file_blocking(
         WorkspaceFileContent::Text { .. } => None,
         WorkspaceFileContent::Copy { source, revision } => {
             let resolved = {
-                authority(pgn_path_authority)?
-                    .as_mut()
-                    .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-                    .resolve(source.path_ref(), PathOperation::ReadPgn, &[])?
+                pgn_path_authority.with_mut(|authority| {
+                    authority.resolve(source.path_ref(), PathOperation::ReadPgn, &[])
+                })??
             };
             let snapshot = resolved.pgn_snapshot()?;
             if pgn::revision_string(&snapshot) != revision.as_str() {
@@ -1175,7 +1151,7 @@ pub async fn create_workspace_directory(
 ) -> Result<WorkspaceEntry, Error> {
     let operation = state.operations.accept("create_workspace_directory")?;
     let cancellation = operation.token();
-    let pgn_path_authority = Arc::clone(&state.pgn_path_authority);
+    let pgn_path_authority = state.pgn_path_authority.clone();
     let workspace_mutation = Arc::clone(&state.workspace_mutation);
     crate::infra::operations::run_native_operation(
         operation,
@@ -1202,7 +1178,7 @@ fn create_workspace_directory_inner(
     workspace: FileWorkspaceHandle,
     parent: FileWorkspaceHandle,
     name: String,
-    pgn_path_authority: &Mutex<Option<PathAuthority>>,
+    pgn_path_authority: &SharedPathAuthority,
     workspace_mutation: &Mutex<()>,
     cancellation: &CancellationToken,
 ) -> Result<WorkspaceEntry, Error> {
@@ -1287,7 +1263,7 @@ pub async fn move_workspace_entry(
 ) -> Result<(), Error> {
     let operation = state.operations.accept("move_workspace_entry")?;
     let cancellation = operation.token();
-    let pgn_path_authority = Arc::clone(&state.pgn_path_authority);
+    let pgn_path_authority = state.pgn_path_authority.clone();
     let workspace_mutation = Arc::clone(&state.workspace_mutation);
     crate::infra::operations::run_native_operation(operation, "move_workspace_entry", async move {
         BLOCKING_GATEWAY
@@ -1310,7 +1286,7 @@ fn move_workspace_entry_blocking(
     workspace: FileWorkspaceHandle,
     entry: FileWorkspaceHandle,
     target_directory: FileWorkspaceHandle,
-    pgn_path_authority: &Mutex<Option<PathAuthority>>,
+    pgn_path_authority: &SharedPathAuthority,
     workspace_mutation: &Mutex<()>,
     cancellation: &CancellationToken,
 ) -> Result<(), Error> {
@@ -1353,7 +1329,7 @@ pub async fn rename_workspace_file(
 ) -> Result<(), Error> {
     let operation = state.operations.accept("rename_workspace_file")?;
     let cancellation = operation.token();
-    let pgn_path_authority = Arc::clone(&state.pgn_path_authority);
+    let pgn_path_authority = state.pgn_path_authority.clone();
     let workspace_mutation = Arc::clone(&state.workspace_mutation);
     crate::infra::operations::run_native_operation(operation, "rename_workspace_file", async move {
         BLOCKING_GATEWAY
@@ -1378,7 +1354,7 @@ fn rename_workspace_file_blocking(
     entry: FileWorkspaceHandle,
     name: String,
     metadata: WorkspaceMetadata,
-    pgn_path_authority: &Mutex<Option<PathAuthority>>,
+    pgn_path_authority: &SharedPathAuthority,
     workspace_mutation: &Mutex<()>,
     cancellation: &CancellationToken,
 ) -> Result<(), Error> {
@@ -1454,7 +1430,7 @@ pub async fn trash_workspace_entry(
 ) -> Result<(), Error> {
     let operation = state.operations.accept("trash_workspace_entry")?;
     let cancellation = operation.token();
-    let pgn_path_authority = Arc::clone(&state.pgn_path_authority);
+    let pgn_path_authority = state.pgn_path_authority.clone();
     let workspace_mutation = Arc::clone(&state.workspace_mutation);
     crate::infra::operations::run_native_operation(operation, "trash_workspace_entry", async move {
         BLOCKING_GATEWAY
@@ -1473,7 +1449,7 @@ pub async fn trash_workspace_entry(
 }
 
 fn trash_entry(
-    pgn_path_authority: &Mutex<Option<PathAuthority>>,
+    pgn_path_authority: &SharedPathAuthority,
     workspace_mutation: &Mutex<()>,
     workspace: &FileWorkspaceHandle,
     entry: &FileWorkspaceHandle,
@@ -1531,7 +1507,7 @@ pub async fn restore_workspace_entry(
 ) -> Result<(), Error> {
     let operation = state.operations.accept("restore_workspace_entry")?;
     let cancellation = operation.token();
-    let pgn_path_authority = Arc::clone(&state.pgn_path_authority);
+    let pgn_path_authority = state.pgn_path_authority.clone();
     let workspace_mutation = Arc::clone(&state.workspace_mutation);
     crate::infra::operations::run_native_operation(
         operation,
@@ -1554,7 +1530,7 @@ pub async fn restore_workspace_entry(
 }
 
 fn restore_entry(
-    pgn_path_authority: &Mutex<Option<PathAuthority>>,
+    pgn_path_authority: &SharedPathAuthority,
     workspace_mutation: &Mutex<()>,
     workspace: &FileWorkspaceHandle,
     entry: &FileWorkspaceHandle,
@@ -1617,7 +1593,7 @@ async fn permanently_delete_entry(
     entry: &FileWorkspaceHandle,
     cancellation: tokio_util::sync::CancellationToken,
 ) -> Result<(), Error> {
-    let pgn_path_authority = Arc::clone(&state.pgn_path_authority);
+    let pgn_path_authority = state.pgn_path_authority.clone();
     let workspace_mutation = Arc::clone(&state.workspace_mutation);
     let workspace = workspace.clone();
     let entry = entry.clone();
@@ -1666,7 +1642,7 @@ async fn permanently_delete_entry(
 // The `Ok` value counts registry entries this delete removed, which the caller reports
 // if engine retirement fails.
 fn permanently_delete_entry_blocking(
-    pgn_path_authority: &Mutex<Option<PathAuthority>>,
+    pgn_path_authority: &SharedPathAuthority,
     workspace_mutation: &Mutex<()>,
     workspace: &FileWorkspaceHandle,
     entry: &FileWorkspaceHandle,
@@ -1711,10 +1687,13 @@ fn permanently_delete_entry_blocking(
             WorkspaceRemovalStatus::Complete
         };
         let registry_result = (|| {
-            authority(pgn_path_authority)?
-                .as_mut()
-                .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-                .remove_workspace_entry(entry, removal_status, &mut dropped_engine_executables)
+            pgn_path_authority.with_mut(|authority| {
+                authority.remove_workspace_entry(
+                    entry,
+                    removal_status,
+                    &mut dropped_engine_executables,
+                )
+            })?
         })();
 
         if let Some(error @ Error::PartialRemoval { .. }) = removal_error {
@@ -1944,7 +1923,11 @@ mod tests {
                 .path()
                 .to_path_buf();
             let descriptor_ids_before = {
-                let mut authority = authority(&state.pgn_path_authority).expect("authority");
+                let mut authority = state
+                    .pgn_path_authority
+                    .raw_for_test()
+                    .lock()
+                    .expect("authority");
                 authority
                     .as_mut()
                     .expect("initialized authority")
@@ -2062,7 +2045,11 @@ mod tests {
                 "{command:?}"
             );
             let descriptor_ids_after = {
-                let mut authority = authority(&state.pgn_path_authority).expect("authority");
+                let mut authority = state
+                    .pgn_path_authority
+                    .raw_for_test()
+                    .lock()
+                    .expect("authority");
                 authority
                     .as_mut()
                     .expect("initialized authority")
@@ -2382,7 +2369,10 @@ mod tests {
                 .id,
         );
         let state = AppState::default();
-        *state.pgn_path_authority.lock().expect("authority lock") = Some(path_authority);
+        state
+            .pgn_path_authority
+            .install(path_authority)
+            .expect("authority lock");
         (state, workspace)
     }
 
@@ -2487,7 +2477,10 @@ mod tests {
         state: &AppState,
         handle: &FileWorkspaceHandle,
     ) -> crate::infra::path_authority::ResolvedPath {
-        authority(&state.pgn_path_authority)
+        state
+            .pgn_path_authority
+            .raw_for_test()
+            .lock()
             .expect("authority lock")
             .as_mut()
             .expect("authority")
@@ -2707,7 +2700,10 @@ mod tests {
         let replacement = enumerated_workspace_entry(&root, "created");
         assert_eq!(created.last_modified, installed.modified_seconds);
         assert_ne!(created.last_modified, replacement.modified_seconds);
-        let registered = authority(&state.pgn_path_authority)
+        let registered = state
+            .pgn_path_authority
+            .raw_for_test()
+            .lock()
             .expect("authority lock")
             .as_ref()
             .expect("authority")
@@ -2818,39 +2814,37 @@ mod tests {
 
     #[cfg(unix)]
     fn metadata_from_path(
-        pgn_path_authority: &Mutex<Option<PathAuthority>>,
+        pgn_path_authority: &SharedPathAuthority,
         workspace: &FileWorkspaceHandle,
         path: &Path,
     ) -> Result<WorkspaceMetadata, Error> {
         let components = workspace_components(pgn_path_authority, workspace, path)?;
-        let mut guard = authority(pgn_path_authority)?;
-        let authority = guard
-            .as_mut()
-            .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-        let mut directory =
-            authority.capability_directory(workspace.path_ref(), PathOperation::ReadPgn)?;
-        let token = CancellationToken::new();
-        for component in &components[..components.len().saturating_sub(1)] {
-            let entries = directory.entries(&token, &mut |name| name == component)?;
-            let entry = entries
+        pgn_path_authority.with_mut(|authority| {
+            let mut directory =
+                authority.capability_directory(workspace.path_ref(), PathOperation::ReadPgn)?;
+            let token = CancellationToken::new();
+            for component in &components[..components.len().saturating_sub(1)] {
+                let entries = directory.entries(&token, &mut |name| name == component)?;
+                let entry = entries
+                    .into_iter()
+                    .find(|entry| entry.name == *component)
+                    .ok_or_else(|| {
+                        Error::Io(Box::new(std::io::Error::from(std::io::ErrorKind::NotFound)))
+                    })?;
+                directory = directory.open_child_directory(&entry)?;
+            }
+            let leaf = components
+                .last()
+                .ok_or_else(|| Error::InvalidInput("PGN has no filename".into()))?;
+            let entry = directory
+                .entries(&token, &mut |name| name == leaf)?
                 .into_iter()
-                .find(|entry| entry.name == *component)
+                .find(|entry| entry.name == *leaf)
                 .ok_or_else(|| {
                     Error::Io(Box::new(std::io::Error::from(std::io::ErrorKind::NotFound)))
                 })?;
-            directory = directory.open_child_directory(&entry)?;
-        }
-        let leaf = components
-            .last()
-            .ok_or_else(|| Error::InvalidInput("PGN has no filename".into()))?;
-        let entry = directory
-            .entries(&token, &mut |name| name == leaf)?
-            .into_iter()
-            .find(|entry| entry.name == *leaf)
-            .ok_or_else(|| {
-                Error::Io(Box::new(std::io::Error::from(std::io::ErrorKind::NotFound)))
-            })?;
-        metadata_from(&directory, &entry)
+            metadata_from(&directory, &entry)
+        })?
     }
 
     /// Reads the identity from a retained, no-follow parent descriptor through
@@ -2870,7 +2864,10 @@ mod tests {
         .expect("file identity");
         let components = workspace_components(&state.pgn_path_authority, workspace, path)
             .expect("workspace components");
-        authority(&state.pgn_path_authority)
+        state
+            .pgn_path_authority
+            .raw_for_test()
+            .lock()
             .expect("authority lock")
             .as_mut()
             .expect("authority")
@@ -2889,7 +2886,10 @@ mod tests {
     }
 
     fn registered_engine_file(state: &AppState, path: &Path) -> PathRef {
-        authority(&state.pgn_path_authority)
+        state
+            .pgn_path_authority
+            .raw_for_test()
+            .lock()
             .expect("authority lock")
             .as_mut()
             .expect("authority")
@@ -3074,7 +3074,10 @@ mod tests {
             mutation_target(&state.pgn_path_authority, &entry).is_err(),
             "deleted object is retained as unavailable"
         );
-        assert!(authority(&state.pgn_path_authority)
+        assert!(state
+            .pgn_path_authority
+            .raw_for_test()
+            .lock()
             .expect("authority lock")
             .as_mut()
             .expect("authority")
@@ -3155,7 +3158,10 @@ mod tests {
             mutation_target(&state.pgn_path_authority, &removed_entry).is_err(),
             "failed registry save retains removed descendant as unavailable"
         );
-        assert!(authority(&state.pgn_path_authority)
+        assert!(state
+            .pgn_path_authority
+            .raw_for_test()
+            .lock()
             .expect("authority lock")
             .as_mut()
             .expect("authority")
@@ -3945,7 +3951,10 @@ mod tests {
         let identity = (metadata.dev(), metadata.ino());
         let components = workspace_components(&state.pgn_path_authority, &workspace, &game)
             .expect("workspace components");
-        let entry = authority(&state.pgn_path_authority)
+        let entry = state
+            .pgn_path_authority
+            .raw_for_test()
+            .lock()
             .expect("authority lock")
             .as_mut()
             .expect("authority")
@@ -4175,7 +4184,7 @@ mod tests {
         let outside_root = directory.path().join("outside");
         fs::create_dir(&outside_root).unwrap();
         let outside_workspace = {
-            let mut guard = authority(&state.pgn_path_authority).unwrap();
+            let mut guard = state.pgn_path_authority.raw_for_test().lock().unwrap();
             let authority = guard.as_mut().unwrap();
             let grant = authority
                 .grant_dialog_operations(
@@ -4521,7 +4530,11 @@ mod tests {
             .expect("renamed file parent descriptor");
         let expected_parent = crate::infra::path_authority::opened_file_identity(&parent)
             .expect("renamed parent identity");
-        let mut authority = authority(&state.pgn_path_authority).expect("authority lock");
+        let mut authority = state
+            .pgn_path_authority
+            .raw_for_test()
+            .lock()
+            .expect("authority lock");
         let authority = authority.as_mut().expect("path authority");
         assert_eq!(
             authority.parent_identity_for_test(handle.path_ref()),
@@ -5391,7 +5404,10 @@ mod tests {
     }
 
     fn source_revision(state: &AppState, source: &FileWorkspaceHandle) -> String {
-        let resolved = authority(&state.pgn_path_authority)
+        let resolved = state
+            .pgn_path_authority
+            .raw_for_test()
+            .lock()
             .expect("authority lock")
             .as_mut()
             .expect("authority")
@@ -5414,7 +5430,7 @@ mod tests {
         cancellation: CancellationToken,
         hook: pgn::BoundedHook,
     ) -> WorkspaceCopyTask {
-        let pgn_path_authority = Arc::clone(&state.pgn_path_authority);
+        let pgn_path_authority = state.pgn_path_authority.clone();
         let workspace_mutation = Arc::clone(&state.workspace_mutation);
         let pgn_repository = state.pgn_repository.clone();
         let name = name.to_string();
@@ -5918,7 +5934,7 @@ mod tests {
 
         let listing_task = tokio::spawn({
             let workspace = workspace.clone();
-            let authority = Arc::clone(&state.pgn_path_authority);
+            let authority = state.pgn_path_authority.clone();
             let repository = state.pgn_repository.clone();
             let token = token.clone();
             async move { list_file_workspace_core(&workspace, &authority, &repository, &token).await }
@@ -5955,7 +5971,10 @@ mod tests {
         assert_eq!(missing.len(), 1);
         let _ = entries;
 
-        let resolved = authority(&state.pgn_path_authority)
+        let resolved = state
+            .pgn_path_authority
+            .raw_for_test()
+            .lock()
             .unwrap()
             .as_mut()
             .unwrap()
@@ -5973,7 +5992,7 @@ mod tests {
         workspace: &FileWorkspaceHandle,
         directory_name: &str,
     ) -> (u64, u64) {
-        let mut authority = authority(&state.pgn_path_authority).unwrap();
+        let mut authority = state.pgn_path_authority.raw_for_test().lock().unwrap();
         let authority = authority.as_mut().unwrap();
         let root = authority
             .capability_directory(workspace.path_ref(), PathOperation::ReadPgn)
@@ -6014,7 +6033,7 @@ mod tests {
             .unwrap();
         let observed_parent = workspace_child_parent_identity(&state, &workspace, "sub");
         {
-            let mut authority = authority(&state.pgn_path_authority).unwrap();
+            let mut authority = state.pgn_path_authority.raw_for_test().lock().unwrap();
             let authority = authority.as_mut().unwrap();
             assert_eq!(
                 authority.parent_identity_for_test(listed.handle.path_ref()),
@@ -6040,7 +6059,7 @@ mod tests {
         )
         .unwrap();
         {
-            let mut authority = authority(&state.pgn_path_authority).unwrap();
+            let mut authority = state.pgn_path_authority.raw_for_test().lock().unwrap();
             let authority = authority.as_mut().unwrap();
             assert_eq!(
                 authority.parent_identity_for_test(created.handle.path_ref()),
@@ -6123,7 +6142,7 @@ mod tests {
             .find(|entry| entry.name == "a")
             .unwrap();
         {
-            let mut authority = authority(&state.pgn_path_authority).unwrap();
+            let mut authority = state.pgn_path_authority.raw_for_test().lock().unwrap();
             let authority = authority.as_mut().unwrap();
             assert_eq!(
                 authority.parent_identity_for_test(child.handle.path_ref()),
@@ -6178,7 +6197,7 @@ mod tests {
         .unwrap();
 
         {
-            let mut authority = authority(&state.pgn_path_authority).unwrap();
+            let mut authority = state.pgn_path_authority.raw_for_test().lock().unwrap();
             let authority = authority.as_mut().unwrap();
             assert_eq!(
                 authority.parent_identity_for_test(created.handle.path_ref()),
@@ -6237,7 +6256,7 @@ mod tests {
         .unwrap();
 
         {
-            let mut authority = authority(&state.pgn_path_authority).unwrap();
+            let mut authority = state.pgn_path_authority.raw_for_test().lock().unwrap();
             let authority = authority.as_mut().unwrap();
             assert_eq!(
                 authority.parent_identity_for_test(source.handle.path_ref()),
@@ -6286,7 +6305,7 @@ mod tests {
         )
         .unwrap();
         {
-            let mut authority = authority(&state.pgn_path_authority).unwrap();
+            let mut authority = state.pgn_path_authority.raw_for_test().lock().unwrap();
             let authority = authority.as_mut().unwrap();
             assert_eq!(
                 authority.parent_identity_for_test(source.handle.path_ref()),
@@ -6331,7 +6350,7 @@ mod tests {
         )
         .unwrap();
         {
-            let mut authority = authority(&state.pgn_path_authority).unwrap();
+            let mut authority = state.pgn_path_authority.raw_for_test().lock().unwrap();
             let authority = authority.as_mut().unwrap();
             assert_eq!(
                 authority.parent_identity_for_test(child.handle.path_ref()),
@@ -6358,7 +6377,7 @@ mod root_failure_tests {
 
     fn root_failure_fixture() -> (
         tempfile::TempDir,
-        Arc<Mutex<Option<PathAuthority>>>,
+        SharedPathAuthority,
         FileWorkspaceHandle,
         PathBuf,
     ) {
@@ -6383,7 +6402,7 @@ mod root_failure_tests {
             .id;
         (
             directory,
-            Arc::new(Mutex::new(Some(registry))),
+            SharedPathAuthority::installed(registry),
             FileWorkspaceHandle::new(id),
             root,
         )
@@ -6558,14 +6577,9 @@ mod root_failure_tests {
         for poison in [false, true] {
             let (_directory, registry, workspace, _root) = root_failure_fixture();
             if poison {
-                let registry = Arc::clone(&registry);
-                let _ = std::thread::spawn(move || {
-                    let _lock = registry.lock().unwrap();
-                    panic!("test poison");
-                })
-                .join();
+                registry.poison();
             } else {
-                *registry.lock().unwrap() = None;
+                registry.uninstall();
             }
             let error = list_file_workspace_core(
                 &workspace,
@@ -6700,12 +6714,7 @@ mod workspace_directory_enumeration_tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use tempfile::TempDir;
 
-    fn workspace_fixture() -> (
-        TempDir,
-        Mutex<Option<PathAuthority>>,
-        FileWorkspaceHandle,
-        PathBuf,
-    ) {
+    fn workspace_fixture() -> (TempDir, SharedPathAuthority, FileWorkspaceHandle, PathBuf) {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("workspace");
         fs::create_dir(&root).unwrap();
@@ -6727,7 +6736,7 @@ mod workspace_directory_enumeration_tests {
             .id;
         (
             directory,
-            Mutex::new(Some(authority)),
+            SharedPathAuthority::installed(authority),
             FileWorkspaceHandle::new(id),
             root,
         )
@@ -6835,7 +6844,7 @@ mod workspace_directory_enumeration_tests {
         assert!(missing
             .iter()
             .all(|handle| { missing.iter().filter(|other| *other == handle).count() == 1 }));
-        let mut guard = authority.lock().unwrap();
+        let mut guard = authority.raw_for_test().lock().unwrap();
         let authority = guard.as_mut().unwrap();
         let snapshot = authority.persistent_snapshot_for_test();
         // APFS cannot store non-UTF-8 file names
@@ -6913,7 +6922,10 @@ mod workspace_directory_enumeration_tests {
     fn directory_listing_bound_workspace_counts_dropped_names_without_registry_writes(
     ) -> Result<(), Error> {
         let (_directory, registry, workspace, root) = workspace_fixture();
-        let before = authority(&registry)?
+        let before = registry
+            .raw_for_test()
+            .lock()
+            .unwrap()
             .as_ref()
             .ok_or_else(|| Error::Conflict("test authority missing".into()))?
             .persistent_snapshot_for_test();
@@ -6931,7 +6943,10 @@ mod workspace_directory_enumeration_tests {
             Err(ref error) if matches!(error.unlabelled(), Error::ResourceLimit(_))
         ));
         assert_eq!(
-            authority(&registry)?
+            registry
+                .raw_for_test()
+                .lock()
+                .unwrap()
                 .as_ref()
                 .ok_or_else(|| Error::Conflict("test authority missing".into()))?
                 .persistent_snapshot_for_test(),
@@ -6944,7 +6959,10 @@ mod workspace_directory_enumeration_tests {
     fn directory_listing_bound_workspace_staged_nodes_are_bounded_across_directories(
     ) -> Result<(), Error> {
         let (_directory, registry, workspace, root) = workspace_fixture();
-        let before = authority(&registry)?
+        let before = registry
+            .raw_for_test()
+            .lock()
+            .unwrap()
             .as_ref()
             .ok_or_else(|| Error::Conflict("test authority missing".into()))?
             .persistent_snapshot_for_test();
@@ -6960,7 +6978,10 @@ mod workspace_directory_enumeration_tests {
             Err(ref error) if matches!(error.unlabelled(), Error::ResourceLimit(_))
         ));
         assert_eq!(
-            authority(&registry)?
+            registry
+                .raw_for_test()
+                .lock()
+                .unwrap()
                 .as_ref()
                 .ok_or_else(|| Error::Conflict("test authority missing".into()))?
                 .persistent_snapshot_for_test(),
@@ -6984,14 +7005,17 @@ mod workspace_directory_enumeration_tests {
             repository.set_count_hook(Some(hook))?;
             let token = CancellationToken::new();
             let task = tokio::spawn({
-                let registry = Arc::clone(&registry);
+                let registry = registry.clone();
                 let workspace = workspace.clone();
                 let repository = repository.clone();
                 let token = token.clone();
                 async move { list_file_workspace_core(&workspace, &registry, &repository, &token).await }
             });
             tokio::time::timeout(Duration::from_secs(5), entered).await??;
-            let snapshot = authority(&registry)?
+            let snapshot = registry
+                .raw_for_test()
+                .lock()
+                .unwrap()
                 .as_ref()
                 .ok_or_else(|| Error::Conflict("test authority missing".into()))?
                 .persistent_snapshot_for_test();
@@ -7010,7 +7034,10 @@ mod workspace_directory_enumeration_tests {
                 assert!(result.is_err(), "game count must reject malformed UTF-8");
             }
             assert_eq!(
-                authority(&registry)?
+                registry
+                    .raw_for_test()
+                    .lock()
+                    .unwrap()
                     .as_ref()
                     .ok_or_else(|| Error::Conflict("test authority missing".into()))?
                     .persistent_snapshot_for_test(),
@@ -7033,7 +7060,10 @@ mod workspace_directory_enumeration_tests {
         fs::write(&trash_file, b"*")?;
         let file_stat = fs::metadata(&trash_file)?;
         let parent_stat = fs::metadata(root.join(TRASH_DIRECTORY))?;
-        let trash_handle = authority(&registry)?
+        let trash_handle = registry
+            .raw_for_test()
+            .lock()
+            .unwrap()
             .as_mut()
             .ok_or_else(|| Error::Conflict("test authority missing".into()))?
             .register_workspace_child_observed_with_parent(
@@ -7047,7 +7077,7 @@ mod workspace_directory_enumeration_tests {
                 false,
                 PathOperation::ReadPgn,
             )?;
-        let registry_for_hook = Arc::clone(&registry);
+        let registry_for_hook = registry.clone();
         let workspace_for_hook = workspace.clone();
         let root_for_hook = root.clone();
         set_capability_directory_post_entries_hook(Some(Box::new(move || {
@@ -7055,7 +7085,10 @@ mod workspace_directory_enumeration_tests {
                 fs::write(root_for_hook.join("late.pgn"), b"*")?;
                 let stat = fs::metadata(root_for_hook.join("late.pgn"))?;
                 let parent = fs::metadata(&root_for_hook)?;
-                authority(&registry_for_hook)?
+                registry_for_hook
+                    .raw_for_test()
+                    .lock()
+                    .unwrap()
                     .as_mut()
                     .ok_or_else(|| Error::Conflict("test authority missing".into()))?
                     .register_workspace_child_observed_with_parent(
@@ -7076,7 +7109,7 @@ mod workspace_directory_enumeration_tests {
         let result = collect_tree_entries(&registry, &workspace, &CancellationToken::new());
         set_capability_directory_post_entries_hook(None);
         assert!(result?.0.is_empty());
-        let mut lock = authority(&registry)?;
+        let mut lock = registry.raw_for_test().lock().unwrap();
         let authority = lock
             .as_mut()
             .ok_or_else(|| Error::Conflict("test authority missing".into()))?;
@@ -7121,7 +7154,7 @@ mod workspace_directory_enumeration_tests {
             .unwrap()
             .id;
         let workspace = FileWorkspaceHandle::new(id);
-        let authority = Mutex::new(Some(authority));
+        let authority = SharedPathAuthority::installed(authority);
         let (entries, _) =
             collect_tree_entries(&authority, &workspace, &CancellationToken::new()).unwrap();
         assert_eq!(entries[0].name, "a");
@@ -7160,6 +7193,7 @@ mod workspace_directory_enumeration_tests {
                 .ino(),
         );
         let snapshot = authority
+            .raw_for_test()
             .lock()
             .unwrap()
             .as_ref()
@@ -7253,6 +7287,7 @@ mod workspace_directory_enumeration_tests {
         set_capability_directory_post_entries_hook(None);
         assert!(matches!(result, Err(Error::Conflict(_))), "{result:?}");
         assert!(!authority
+            .raw_for_test()
             .lock()
             .unwrap()
             .as_ref()
@@ -7268,6 +7303,7 @@ mod workspace_directory_enumeration_tests {
         let pgn = root.join("a.pgn");
         fs::write(&pgn, b"*").unwrap();
         let before = authority
+            .raw_for_test()
             .lock()
             .unwrap()
             .as_ref()
@@ -7284,6 +7320,7 @@ mod workspace_directory_enumeration_tests {
         assert!(matches!(result, Err(Error::Conflict(_))));
         assert_eq!(
             authority
+                .raw_for_test()
                 .lock()
                 .unwrap()
                 .as_ref()
@@ -7297,6 +7334,7 @@ mod workspace_directory_enumeration_tests {
         fs::create_dir(&sub).unwrap();
         fs::write(sub.join("inner.pgn"), b"*").unwrap();
         let before = authority
+            .raw_for_test()
             .lock()
             .unwrap()
             .as_ref()
@@ -7313,6 +7351,7 @@ mod workspace_directory_enumeration_tests {
         set_workspace_listing_pre_confirm_hook(None);
         assert!(matches!(result, Err(Error::Conflict(_))));
         let after = authority
+            .raw_for_test()
             .lock()
             .unwrap()
             .as_ref()
@@ -7332,6 +7371,7 @@ mod workspace_directory_enumeration_tests {
         let pgn = sub.join("a.pgn");
         fs::write(&pgn, b"*").unwrap();
         let before = authority
+            .raw_for_test()
             .lock()
             .unwrap()
             .as_ref()
@@ -7347,6 +7387,7 @@ mod workspace_directory_enumeration_tests {
         crate::infra::fs::set_read_directory_pre_stat_hook(None);
         assert!(result.is_err());
         let after = authority
+            .raw_for_test()
             .lock()
             .unwrap()
             .as_ref()
@@ -7375,6 +7416,7 @@ mod workspace_directory_enumeration_tests {
         let (_directory, authority, workspace, root) = workspace_fixture();
         fs::create_dir(root.join("sub")).unwrap();
         let before = authority
+            .raw_for_test()
             .lock()
             .unwrap()
             .as_ref()
@@ -7388,6 +7430,7 @@ mod workspace_directory_enumeration_tests {
         assert!(matches!(result, Err(Error::Cancellation)));
         assert_eq!(
             authority
+                .raw_for_test()
                 .lock()
                 .unwrap()
                 .as_ref()
@@ -7440,6 +7483,7 @@ mod workspace_directory_enumeration_tests {
         assert_eq!(listed.children.len(), 1);
         assert_eq!(listed.children[0].name, "a");
         let after = authority
+            .raw_for_test()
             .lock()
             .unwrap()
             .as_ref()
@@ -7487,6 +7531,7 @@ mod workspace_directory_enumeration_tests {
             fs::create_dir(&current).unwrap();
         }
         let before = authority
+            .raw_for_test()
             .lock()
             .unwrap()
             .as_ref()
@@ -7498,6 +7543,7 @@ mod workspace_directory_enumeration_tests {
         ));
         assert_eq!(
             authority
+                .raw_for_test()
                 .lock()
                 .unwrap()
                 .as_ref()
@@ -7588,7 +7634,7 @@ mod workspace_directory_enumeration_tests {
                 .collect::<Vec<_>>(),
             ["inner"]
         );
-        let mut authority = authority.lock().unwrap();
+        let mut authority = authority.raw_for_test().lock().unwrap();
         fn assert_refusing(authority: &mut PathAuthority, entries: &[WorkspaceEntry]) {
             for entry in entries {
                 assert!(
@@ -7622,6 +7668,7 @@ mod workspace_directory_enumeration_tests {
         set_workspace_listing_pre_register_hook(None);
         assert!(matches!(result, Err(Error::Cancellation)));
         let snapshot = authority
+            .raw_for_test()
             .lock()
             .unwrap()
             .as_ref()
@@ -7652,6 +7699,7 @@ mod workspace_directory_enumeration_tests {
         set_workspace_listing_pre_register_hook(None);
         assert!(matches!(result, Err(Error::Cancellation)));
         let snapshot = authority
+            .raw_for_test()
             .lock()
             .unwrap()
             .as_ref()
@@ -7703,7 +7751,10 @@ mod workspace_directory_enumeration_tests {
             set_test_atomic_file_injector(Some(injector.clone()));
             let result = collect_tree_entries(&registry, &workspace, &CancellationToken::new());
             set_test_atomic_file_injector(None);
-            let snapshot = authority(&registry)?
+            let snapshot = registry
+                .raw_for_test()
+                .lock()
+                .unwrap()
                 .as_ref()
                 .ok_or_else(|| Error::Conflict("test authority missing".into()))?
                 .persistent_snapshot_for_test();

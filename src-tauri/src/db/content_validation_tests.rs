@@ -46,6 +46,7 @@ fn import_example(app: &App, handle: &DatabaseHandle, directory: &Path) -> Resul
     let state = app.state::<AppState>();
     let commit = state
         .pgn_path_authority
+        .raw_for_test()
         .lock()
         .unwrap()
         .as_mut()
@@ -341,7 +342,7 @@ async fn content_validation_schedule_rechecks_a_newly_published_current_stamp() 
     assert!(stamp_path(&path).is_file());
     content_validation::schedule(
         Arc::clone(&state.database_repository),
-        Arc::clone(&state.pgn_path_authority),
+        state.pgn_path_authority.clone(),
         &state.operations,
         app.clone(),
         handle,

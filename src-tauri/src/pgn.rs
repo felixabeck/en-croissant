@@ -22,19 +22,14 @@ fn resolve_pgn(
     file: &crate::infra::path_authority::FileWorkspaceHandle,
     operation: crate::infra::path_authority::PathOperation,
 ) -> Result<crate::infra::path_authority::ResolvedPath, Error> {
-    let mut authority = state
+    state
         .pgn_path_authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-    authority
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .resolve(file.path_ref(), operation, &[])
+        .with_mut(|authority| authority.resolve(file.path_ref(), operation, &[]))?
 }
 
 #[derive(Clone)]
 pub(crate) struct PgnCapabilityRebind {
-    authority: Arc<std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>>,
+    authority: crate::infra::path_authority::SharedPathAuthority,
     path_ref: crate::infra::path_authority::PathRef,
 }
 
@@ -44,33 +39,23 @@ impl PgnCapabilityRebind {
         expected_identity: (u64, u64),
         installed_identity: (u64, u64),
     ) -> Result<(), Error> {
-        let mut authority = self
-            .authority
-            .lock()
-            .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-        let authority = authority
-            .as_mut()
-            .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-        authority.rebind_pgn_file_after_replace(
-            &self.path_ref,
-            expected_identity,
-            installed_identity,
-        )
+        self.authority.with_mut(|authority| {
+            authority.rebind_pgn_file_after_replace(
+                &self.path_ref,
+                expected_identity,
+                installed_identity,
+            )
+        })?
     }
 
     fn resolve_read(&self) -> Result<crate::infra::path_authority::ResolvedPath, Error> {
-        let mut authority = self
-            .authority
-            .lock()
-            .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-        authority
-            .as_mut()
-            .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-            .resolve(
+        self.authority.with_mut(|authority| {
+            authority.resolve(
                 &self.path_ref,
                 crate::infra::path_authority::PathOperation::ReadPgn,
                 &[],
             )
+        })?
     }
 }
 
@@ -1312,7 +1297,7 @@ pub async fn delete_game(
     )?;
     let repository = state.pgn_repository.clone();
     let rebind = PgnCapabilityRebind {
-        authority: Arc::clone(&state.pgn_path_authority),
+        authority: state.pgn_path_authority.clone(),
         path_ref: file.path_ref().clone(),
     };
     delete_game_core(
@@ -1395,7 +1380,7 @@ pub async fn write_game(
     )?;
     let repository = state.pgn_repository.clone();
     let rebind = PgnCapabilityRebind {
-        authority: Arc::clone(&state.pgn_path_authority),
+        authority: state.pgn_path_authority.clone(),
         path_ref: file.path_ref().clone(),
     };
     write_game_core(lease, resolved, n, pgn, expected, repository, Some(rebind)).await
@@ -1740,7 +1725,7 @@ mod tests {
             )?;
             let repository = state.pgn_repository.clone();
             let rebind = PgnCapabilityRebind {
-                authority: Arc::clone(&state.pgn_path_authority),
+                authority: state.pgn_path_authority.clone(),
                 path_ref: handle.path_ref().clone(),
             };
             (lease, resolved, readback_path, repository, rebind)
@@ -1778,7 +1763,7 @@ mod tests {
             )?;
             let repository = state.pgn_repository.clone();
             let rebind = PgnCapabilityRebind {
-                authority: Arc::clone(&state.pgn_path_authority),
+                authority: state.pgn_path_authority.clone(),
                 path_ref: handle.path_ref().clone(),
             };
             (lease, resolved, repository, rebind)
@@ -1813,7 +1798,7 @@ mod tests {
             )?;
             let repository = state.pgn_repository.clone();
             let rebind = PgnCapabilityRebind {
-                authority: Arc::clone(&state.pgn_path_authority),
+                authority: state.pgn_path_authority.clone(),
                 path_ref: handle.path_ref().clone(),
             };
             (lease, resolved, repository, rebind)
@@ -1927,8 +1912,8 @@ mod tests {
         let app = mock_app();
         let authority_arc = {
             let state = app.state::<AppState>();
-            let authority_arc = Arc::clone(&state.pgn_path_authority);
-            *authority_arc.lock().expect("path authority lock") = Some(authority);
+            let authority_arc = state.pgn_path_authority.clone();
+            authority_arc.install(authority).unwrap();
             authority_arc
         };
 
@@ -1986,7 +1971,7 @@ mod tests {
 
         let reloaded =
             PathAuthority::open(registry.clone(), vec![]).expect("reload path authority");
-        *authority_arc.lock().expect("path authority lock") = Some(reloaded);
+        authority_arc.install(reloaded).unwrap();
         let (resolved, repository) = {
             let state = app.state::<AppState>();
             let resolved = resolve_pgn(&state, &handle, PathOperation::ReadPgn)
@@ -2019,10 +2004,10 @@ mod tests {
             PathAuthority::open(registry.clone(), vec![]).expect("open path authority");
         let handle = promote_pgn_file(&mut authority, &path);
         let app = mock_app();
-        *app.state::<AppState>()
+        app.state::<AppState>()
             .pgn_path_authority
-            .lock()
-            .expect("path authority lock") = Some(authority);
+            .install(authority)
+            .expect("path authority lock");
         // The registry cannot be replaced any more, so the rebind that follows the PGN
         // replacement fails with a raw NotFound after the game is already on disk.
         std::fs::remove_dir_all(&registry_directory).expect("remove registry directory");
@@ -2063,10 +2048,10 @@ mod tests {
         let app = mock_app();
         {
             let state = app.state::<AppState>();
-            *state
+            state
                 .pgn_path_authority
-                .lock()
-                .expect("path authority lock") = Some(authority);
+                .install(authority)
+                .expect("path authority lock");
         }
 
         write_through_capability(
@@ -2148,8 +2133,8 @@ mod tests {
         let app = mock_app();
         let authority_arc = {
             let state = app.state::<AppState>();
-            let authority_arc = Arc::clone(&state.pgn_path_authority);
-            *authority_arc.lock().expect("path authority lock") = Some(authority);
+            let authority_arc = state.pgn_path_authority.clone();
+            authority_arc.install(authority).unwrap();
             authority_arc
         };
         write_through_capability(&app, &child, 0, "[Event \"After\"]\n\n1. d4 *\n".into())
@@ -2158,7 +2143,10 @@ mod tests {
 
         assert_eq!(fs_identity(&workspace_path), root_identity);
         {
-            let mut authority = authority_arc.lock().expect("path authority lock");
+            let mut authority = authority_arc
+                .raw_for_test()
+                .lock()
+                .expect("path authority lock");
             let authority = authority.as_mut().expect("path authority");
             assert_eq!(
                 authority.parent_identity_for_test(child.path_ref()),
@@ -2174,6 +2162,7 @@ mod tests {
             root_identity
         );
         let resolved_root = authority_arc
+            .raw_for_test()
             .lock()
             .expect("path authority lock")
             .as_mut()
@@ -2234,10 +2223,10 @@ mod tests {
         let app = mock_app();
         {
             let state = app.state::<AppState>();
-            *state
+            state
                 .pgn_path_authority
-                .lock()
-                .expect("path authority lock") = Some(authority);
+                .install(authority)
+                .expect("path authority lock");
         }
 
         let initial = file_revision_through_capability(&app, &handle)
@@ -2296,10 +2285,10 @@ mod tests {
         let app = mock_app();
         {
             let state = app.state::<AppState>();
-            *state
+            state
                 .pgn_path_authority
-                .lock()
-                .expect("path authority lock") = Some(authority);
+                .install(authority)
+                .expect("path authority lock");
         }
         file_revision_through_capability(&app, &handle)
             .await
@@ -2321,10 +2310,10 @@ mod tests {
         let replace_app = mock_app();
         {
             let state = replace_app.state::<AppState>();
-            *state
+            state
                 .pgn_path_authority
-                .lock()
-                .expect("path authority lock") = Some(replace_authority);
+                .install(replace_authority)
+                .expect("path authority lock");
         }
         file_revision_through_capability(&replace_app, &replace_handle)
             .await
@@ -2954,10 +2943,10 @@ mod tests {
         let app = mock_app();
         {
             let state = app.state::<AppState>();
-            *state
+            state
                 .pgn_path_authority
-                .lock()
-                .expect("path authority lock") = Some(authority);
+                .install(authority)
+                .expect("path authority lock");
         }
         let before = {
             let state = app.state::<AppState>();
@@ -3061,10 +3050,10 @@ mod tests {
         let handle = promote_pgn_file(&mut authority, &path);
         let app = mock_app();
         let state = app.state::<AppState>();
-        *state
+        state
             .pgn_path_authority
-            .lock()
-            .expect("path authority lock") = Some(authority);
+            .install(authority)
+            .expect("path authority lock");
         let result = write_game_core(
             state
                 .operations
@@ -3081,7 +3070,7 @@ mod tests {
             WriteExpectation::Append,
             state.pgn_repository.clone(),
             Some(PgnCapabilityRebind {
-                authority: Arc::clone(&state.pgn_path_authority),
+                authority: state.pgn_path_authority.clone(),
                 path_ref: handle.path_ref().clone(),
             }),
         )
@@ -3116,10 +3105,10 @@ mod tests {
         let handle = promote_pgn_file(&mut authority, &path);
         let app = mock_app();
         let state = app.state::<AppState>();
-        *state
+        state
             .pgn_path_authority
-            .lock()
-            .expect("path authority lock") = Some(authority);
+            .install(authority)
+            .expect("path authority lock");
         let (hook, entered, release) = BoundedHook::new();
         state
             .pgn_repository
@@ -3162,10 +3151,10 @@ mod tests {
         let handle = promote_pgn_file(&mut authority, &path);
         let app = mock_app();
         let state = app.state::<AppState>();
-        *state
+        state
             .pgn_path_authority
-            .lock()
-            .expect("path authority lock") = Some(authority);
+            .install(authority)
+            .expect("path authority lock");
         let (hook, entered, release) = BoundedHook::new();
         state
             .pgn_repository
