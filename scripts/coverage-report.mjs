@@ -1,11 +1,11 @@
 /**
  * The failure matrix for this artefact.
  *
- * `push-review-policy.md:211-219` asks that a verification artefact whose output is read as
+ * `push-review-policy.md:300-307` asks that a verification artefact whose output is read as
  * evidence outside a test run carry, in its own header, the message and exit status each of its
- * assertions was *seen* to produce; `:221-243` asks that the enumeration be complete, every path
- * staged or argued. This script is such an artefact — `package.json:37,40` and
- * `.github/workflows/test.yml:157,230` cite its exit status for both coverage ratchets and both
+ * assertions was *seen* to produce; `:376-380` asks that the enumeration be complete, every path
+ * staged or argued. This script is such an artefact — `package.json:48,52` and
+ * `.github/workflows/test.yml:154,226` cite its exit status for both coverage ratchets and both
  * area-floor gates — and until 2026-09-22 it had no matrix at all (`f-20260921-02`).
  *
  * **Every row below was run.** The enumeration was rebuilt from this source rather than copied
@@ -16,7 +16,7 @@
  * from the previous matrix, and each inherited the last one's errors; that is why this one starts
  * from the file.
  *
- * **93 distinct failure paths**, plus one swallowed cleanup path that deliberately produces no
+ * **114 distinct failure paths**, plus one swallowed cleanup path that deliberately produces no
  * failure of its own (row 32) and one shared sink (row 41). Rows 8–13, 15–17, 19–20, 22–26,
  * and 33–40 are not staged by a test; every other path is staged. No row is *argued*: that is
  * reserved for a path reachable only by editing the verifier, doing harm that outlives the run,
@@ -30,195 +30,195 @@
  *
  *  #  site                what fails                          message (to its distinguishing part)
  * --- ------------------- ---------------------------------- ------------------------------------
- *  1  :471    assignArea   no area claims a production file   `Unmapped production file: src/other.ts`
- *  2  :472    assignArea   two areas claim the same file      `Production file belongs to multiple
+ *  1  :565    assignArea   no area claims a production file   `Unmapped production file: src/other.ts`
+ *  2  :566    assignArea   two areas claim the same file      `Production file belongs to multiple
  *                                                             coverage areas: src/utils/a.ts
  *                                                             (utilities, second)`
- *  3  :520                 an area's declared source is not   `Coverage area utilities has the
+ *  3  :614                 an area's declared source is not   `Coverage area utilities has the
  *                          the source the file came from      wrong source for src/utils/example.ts`
- *  4  :595                 a production file has no LCOV      `Coverage data missing for production
+ *  4  :689                 a production file has no LCOV      `Coverage data missing for production
  *                          record at all                      files: src/utils/example.ts`
- *  5  :609                 an undeclared blank record         `Coverage measurement is blank for
+ *  5  :703                 an undeclared blank record         `Coverage measurement is blank for
  *                          (condition 1)                      production files: src/utils/blank.ts.`
- *  6  :544                 a declared path outside the        `Coverage statementFree declarations
+ *  6  :638                 a declared path outside the        `Coverage statementFree declarations
  *                          measured set (condition 2)         are outside the measured production
  *                                                             set: src/gone.ts.`
- *  7  :621                 a declared path that is measured   `Coverage statementFree declarations
+ *  7  :715                 a declared path that is measured   `Coverage statementFree declarations
  *                          and not blank (condition 3)        are no longer blank:
  *                                                             src/utils/example.ts.`
- *  8  :626                 a configured area with no          `Coverage data missing for area:
+ *  8  :720                 a configured area with no          `Coverage data missing for area:
  *                          measured file at all               empty` — not staged by a test
- *  9  :494    ->           the source root is unreadable      `EACCES: permission denied, scandir
+ *  9  :588    ->           the source root is unreadable      `EACCES: permission denied, scandir
  *      files-below.mjs:5   (readdir at the root)              '<root>/src'` — not staged by a test
  * 10  files-below.mjs:5    a directory *below* the source     `EACCES: permission denied, scandir
  *      via :9 recursion    root is unreadable                 '<root>/src/locked'` — not staged by a test
- * 11  :488                 config of the wrong shape: `{}`    TypeError: `config.sources is not
+ * 11  :582                 config of the wrong shape: `{}`    TypeError: `config.sources is not
  *                                                             iterable` — not staged by a test
- * 12  :516                 `{"sources":[],"areas":null}`      TypeError: `Cannot read properties of
+ * 12  :610                 `{"sources":[],"areas":null}`      TypeError: `Cannot read properties of
  *                                                             null (reading 'map')` — not staged by a test
- * 13  :507    ->           a source with no `include` list    TypeError: `Cannot read properties of
+ * 13  :601    ->           a source with no `include` list    TypeError: `Cannot read properties of
  *      coverage-scope.mjs:34                                   undefined (reading 'some')` — not staged by a test
- * 14  :508    ->           a source with no `exclude` list    TypeError: `Cannot read properties of
+ * 14  :602    ->           a source with no `exclude` list    TypeError: `Cannot read properties of
  *      coverage-scope.mjs:39                                   undefined (reading 'map')` — not staged by a test
- * 14a :529                 a `statementFree` that is not an    TypeError: `(source.statementFree ??
+ * 14a :623                 a `statementFree` that is not an    TypeError: `(source.statementFree ??
  *                          array: `{}`                        []).map is not a function`
- * 14b :529                 a `statementFree` entry that is     TypeError: `Cannot destructure
+ * 14b :623                 a `statementFree` entry that is     TypeError: `Cannot destructure
  *                          not an object: `[null]`            property 'path' of 'object null' as
  *                                                             it is null.`
- * 15  :382    parseLcov    given something not a string       TypeError: `Cannot read properties of
+ * 15  :432    parseLcov    given something not a string       TypeError: `Cannot read properties of
  *                                                             null (reading 'replaceAll')` — not staged by a test
- * 16  :676                 the baseline's version is not 1    `Unsupported coverage baseline format`
+ * 16  :770                 the baseline's version is not 1    `Unsupported coverage baseline format`
  *                          or it carries no `areas` — not staged by a test
- * 17  :660                 no recorded scope, checked         `Coverage baseline is missing its
+ * 17  :754                 no recorded scope, checked         `Coverage baseline is missing its
  *                          against a config                   recorded scope` — not staged by a test
- * 18  :663                 the recorded scope no longer       `Coverage measurement scope changed:
+ * 18  :757                 the recorded scope no longer       `Coverage measurement scope changed:
  *                          matches the config                 source ids and roots, include globs,
  *                                                             exclude globs, statementFree
  *                                                             declarations, or area ids, sources,
  *                                                             and paths ... Re-record the scope
  *                                                             subtree by hand ...`
- * 19  :680                 a measured area the baseline       `Missing baseline for area: utilities`
+ * 19  :774                 a measured area the baseline       `Missing baseline for area: utilities`
  *                          does not carry — not staged by a test
- * 20  :685                 a baseline area missing one        `Missing functions baseline for area:
+ * 20  :779                 a baseline area missing one        `Missing functions baseline for area:
  *                          metric                             utilities` — not staged by a test
- * 21  :718                 a covered count or ratio           `utilities lines regressed: 1/2,
+ * 21  :812                 a covered count or ratio           `utilities lines regressed: 1/2,
  *                          regressed                          baseline 2/2`
- * 22  :724                 a baseline area absent from the    `Baseline references unknown area:
+ * 22  :818                 a baseline area absent from the    `Baseline references unknown area:
  *                          report                             ghost` — not staged by a test
- * 23  :675                 a baseline of the wrong shape:     TypeError: `Cannot read properties of
+ * 23  :769                 a baseline of the wrong shape:     TypeError: `Cannot read properties of
  *                          `null`                             null (reading 'version')` — not staged by a test
- * 24  :736                 an area with no                    `Missing minimum coverage for area:
+ * 24  :830                 an area with no                    `Missing minimum coverage for area:
  *                          `minimumCoverage`                  utilities` — not staged by a test
- * 25  :738                 an area with no entry in the       `Missing coverage report for area:
+ * 25  :832                 an area with no entry in the       `Missing coverage report for area:
  *                          report. Reachable through the      utilities`
  *                          exported API, not through the
  *                          CLI, and it stays for that — not staged by a test
- * 26  :742                 a minimum that is not a            `Invalid lines minimum coverage for
+ * 26  :836                 a minimum that is not a            `Invalid lines minimum coverage for
  *                          percentage                         area: utilities` — not staged by a test
- * 27  :748                 a measured area below its floor    `utilities lines is below minimum
+ * 27  :842                 a measured area below its floor    `utilities lines is below minimum
  *                                                             coverage: 50.00% < 80.00%`
- * 28  :1022                the temporary write rejects        the rejection, unchanged:
+ * 28  :1116                the temporary write rejects        the rejection, unchanged:
  *                                                             `writeFile refused`
- * 29  :1040                the formatter exits non-zero       `Failed to format coverage baseline
+ * 29  :1134                the formatter exits non-zero       `Failed to format coverage baseline
  *                                                             with <path>: status=23; signal=null;
  *                                                             stderr="rejected"`
- * 29b :1040                the formatter is killed by a       `... status=null; signal=SIGTERM;
+ * 29b :1134                the formatter is killed by a       `... status=null; signal=SIGTERM;
  *                          signal                             stderr=""` -- `status !== 0` is true
  *                                                             for `null`, so a kill is caught
  *                                                             rather than reported as success
- * 30  :1040                the formatter binary is missing    `... status=null; signal=null;
+ * 30  :1134                the formatter binary is missing    `... status=null; signal=null;
  *                                                             stderr=""; error.code=ENOENT;
  *                                                             error.message="spawnSync <path>
  *                                                             ENOENT"`
- * 31  :1044                the rename into place rejects      the rejection, unchanged:
+ * 31  :1138                the rename into place rejects      the rejection, unchanged:
  *                                                             `rename refused`
- * 32  :1013                cleanup's unlink rejects after a   **no failure of its own**: the
+ * 32  :1107                cleanup's unlink rejects after a   **no failure of its own**: the
  *                          failure. Deliberately swallowed    primary error is rethrown unchanged
  *                          so it cannot replace the           (`rename refused`) and the temporary
  *                          actionable error                   file survives as evidence
- * 33  :1064                an option with no value            `Missing value for --config`
+ * 33  :1158                an option with no value            `Missing value for --config`
  *                                                             — exit 1; not staged by a test
- * 34  :1067                an unknown argument                `Unknown argument: --nope` — exit 1; not staged by a test
- * 35  :1071                a required option omitted          `Usage: coverage-report.mjs --config
+ * 34  :1161                an unknown argument                `Unknown argument: --nope` — exit 1; not staged by a test
+ * 35  :1165                a required option omitted          `Usage: coverage-report.mjs --config
  *                                                             <file> ...` — exit 1; not staged by a test
- * 36  :1094                the config file does not exist     `ENOENT: no such file or directory,
+ * 36  :1188                the config file does not exist     `ENOENT: no such file or directory,
  *                                                             open '<root>/missing.json'` — exit 1; not staged by a test
- * 37  :1094                the config file is not JSON        SyntaxError: `Expected property name
+ * 37  :1188                the config file is not JSON        SyntaxError: `Expected property name
  *                                                             or '}' in JSON at position 2` — exit 1; not staged by a test
- * 38  :1105                an LCOV file does not exist        `ENOENT: ... '<root>/missing.info'`
+ * 38  :1199                an LCOV file does not exist        `ENOENT: ... '<root>/missing.info'`
  *                                                             — exit 1; not staged by a test
- * 39  :1125                the baseline file does not exist   `ENOENT: ... '<root>/missing.json'`
+ * 39  :1219                the baseline file does not exist   `ENOENT: ... '<root>/missing.json'`
  *                                                             — exit 1; not staged by a test
- * 40  :1125                the baseline file is not JSON      SyntaxError, as row 37 — exit 1; not staged by a test
- * 41  :1138                `main().catch` — the shared sink,  every CLI throw, reached through
+ * 40  :1219                the baseline file is not JSON      SyntaxError, as row 37 — exit 1; not staged by a test
+ * 41  :1232                `main().catch` — the shared sink,  every CLI throw, reached through
  *                          **not an independent failure**     the CLI, prints `error.message` on
  *                                                             stderr and exits **1**. Measured with
  *                                                             row 18's throw: exit 1, message on
  *                                                             stderr, nothing on stdout
- * 42  :815    write guard  prior baseline is not JSON          `Invalid prior coverage baseline at
+ * 42  :909    write guard  prior baseline is not JSON          `Invalid prior coverage baseline at
  *                                                             <path>: <JSON parse message>` — exit 1
- * 43  :764    validate     prior version or `areas` is         `Invalid prior coverage baseline
+ * 43  :858    validate     prior version or `areas` is         `Invalid prior coverage baseline
  *                          wrong-shaped                        from <path>: expected version 1
  *                                                             and an areas object` — exit 1
- * 44  :770    validate     a prior area's metrics container    `Invalid prior coverage baseline
+ * 44  :864    validate     a prior area's metrics container    `Invalid prior coverage baseline
  *                          is not an object                     from <path>: utilities must
  *                                                             contain all metrics` — exit 1
- * 45  :784    validate     a prior area is missing one metric  `Invalid prior coverage baseline
+ * 45  :878    validate     a prior area is missing one metric  `Invalid prior coverage baseline
  *                                                             from <path>: utilities lines must
  *                                                             have non-negative integer covered
  *                                                             and total counts with covered <=
  *                                                             total` — exit 1
- * 46  :784    validate     prior `covered` is not an integer  same invalid-count message, with
+ * 46  :878    validate     prior `covered` is not an integer  same invalid-count message, with
  *                                                             `covered: "bad"` — exit 1
- * 47  :784    validate     prior `covered` is negative        same invalid-count message, with
+ * 47  :878    validate     prior `covered` is negative        same invalid-count message, with
  *                                                             `covered: -1` — exit 1
- * 48  :784    validate     prior `covered > total`             same invalid-count message, with
+ * 48  :878    validate     prior `covered > total`             same invalid-count message, with
  *                                                             `covered: 2, total: 1` — exit 1
- * 49  :784    validate     prior `covered` is fractional      same invalid-count message, with
+ * 49  :878    validate     prior `covered` is fractional      same invalid-count message, with
  *                                                             `covered: 1.5` — exit 1
- * 50  :784    validate     prior `total` is fractional        same invalid-count message, with
+ * 50  :878    validate     prior `total` is fractional        same invalid-count message, with
  *                                                             `total: 2.5` — exit 1
- * 51  :784    validate     prior `total` is negative          same invalid-count message, with
+ * 51  :878    validate     prior `total` is negative          same invalid-count message, with
  *                                                             `total: -1` — exit 1
- * 52  :1002   write guard  covered count decreases while the  `Coverage baseline write refused
+ * 52  :1096   write guard  covered count decreases while the  `Coverage baseline write refused
  *                          ratio stays level                    (decreases: utilities lines
  *                                                             (covered count 10 → 9)); ...` — exit 1
- * 53  :1002   write guard  ratio decreases while `covered`   `Coverage baseline write refused
+ * 53  :1096   write guard  ratio decreases while `covered`   `Coverage baseline write refused
  *                          rises                                (decreases: utilities lines
  *                                                             (ratio 50.00% → 46.15%)); ...` — exit 1
- * 54  :1002   write guard  an area is removed                 `Coverage baseline write refused
+ * 54  :1096   write guard  an area is removed                 `Coverage baseline write refused
  *                                                             (... retired lines (area removed)
  *                                                             ...); ...` — exit 1
- * 55  :890→1002 ratio check `0/0 → 0/1` is a decrease          `Coverage baseline write refused
+ * 55  :984→1096 ratio check `0/0 → 0/1` is a decrease          `Coverage baseline write refused
  *                                                             (... utilities lines (ratio
  *                                                             100.00% → 0.00%)); ...` — exit 1
- * 56  :1002   write guard  recorded scope changes             `Coverage baseline write refused
+ * 56  :1096   write guard  recorded scope changes             `Coverage baseline write refused
  *                                                             (... scope keys changed:
  *                                                             sources[0].exclude[0]); ...` — exit 1
- * 57  :1002   write guard  an area is added                   `Coverage baseline write refused
+ * 57  :1096   write guard  an area is added                   `Coverage baseline write refused
  *                                                             (... areas changed: added=[puzzles],
  *                                                             removed=[]); ...` — exit 1
- * 58  :952    authorize    `tasks/decisions.md` is missing    `Instrument change authorization
+ * 58  :1046    authorize    `tasks/decisions.md` is missing    `Instrument change authorization
  *                                                             requires tasks/decisions.md for
  *                                                             decision d-20260927-23 governing
  *                                                             f-20260829-04` — exit 1
- * 59  :960    authorize    decision id has no entry           `No decision entry found for
+ * 59  :1054    authorize    decision id has no entry           `No decision entry found for
  *                                                             --instrument-change d-20260927-23
  *                                                             in tasks/decisions.md` — exit 1
- * 60  :964    authorize    `Governs:` misses the exact finding `Decision d-20260927-23 does not
+ * 60  :1058    authorize    `Governs:` misses the exact finding `Decision d-20260927-23 does not
  *                                                             govern finding f-20260829-04` — exit 1
- * 61  :1059   parse         `--instrument-change` has no value `Missing value for
+ * 61  :1153   parse         `--instrument-change` has no value `Missing value for
  *                                                             --instrument-change` — exit 1
- * 62  :1059   parse         `--finding` has no value           `Missing value for --finding` — exit 1
- * 63  :1083   parse         authorization flags without       `--instrument-change and --finding
+ * 62  :1153   parse         `--finding` has no value           `Missing value for --finding` — exit 1
+ * 63  :1177   parse         authorization flags without       `--instrument-change and --finding
  *                          `--write-baseline`                 require --write-baseline` — exit 1
- * 64  :1086   parse         only `--instrument-change`        `--instrument-change and --finding
+ * 64  :1180   parse         only `--instrument-change`        `--instrument-change and --finding
  *                                                             must be used together` — exit 1
- * 65  :1086   parse         only `--finding`                  `--instrument-change and --finding
+ * 65  :1180   parse         only `--finding`                  `--instrument-change and --finding
  *                                                             must be used together` — exit 1
- * 66  :831    git           `rev-parse` fails for another     `Failed to inspect prior coverage
+ * 66  :925    git           `rev-parse` fails for another     `Failed to inspect prior coverage
  *                          reason than not-a-repository        baseline with git rev-parse
  *                                                             --is-inside-work-tree: status=37;
  *                                                             stderr="fatal: simulated repository
  *                                                             metadata error\n"` — exit 1
- * 67  :804    git           git cannot be spawned             `Failed to inspect prior coverage
+ * 67  :898    git           git cannot be spawned             `Failed to inspect prior coverage
  *                                                             baseline with git rev-parse
  *                                                             --is-inside-work-tree: status=null;
  *                                                             stderr=""; error.code=ENOENT;
  *                                                             error.message="spawnSync git
  *                                                             ENOENT"` — exit 1
- * 68  :836    git           `ls-tree` fails for unborn `HEAD` `Failed to inspect prior coverage
+ * 68  :930    git           `ls-tree` fails for unborn `HEAD` `Failed to inspect prior coverage
  *                                                             baseline with git ls-tree
  *                                                             --full-name HEAD -- scratch-
  *                                                             baseline.json: status=128;
  *                                                             stderr="fatal: Not a valid object
  *                                                             name HEAD\n"` — exit 1
- * 69  :841    git           `ls-tree` output is ambiguous or  `Failed to inspect prior coverage
+ * 69  :935    git           `ls-tree` output is ambiguous or  `Failed to inspect prior coverage
  *                          malformed                            baseline with git ls-tree
  *                                                             --full-name HEAD -- scratch-
  *                                                             baseline.json: expected one tracked
  *                                                             file entry; stderr=""` — exit 1
- * 70  :848    git           `show` fails for a tracked path    `Failed to inspect prior coverage
+ * 70  :942    git           `show` fails for a tracked path    `Failed to inspect prior coverage
  *                                                             baseline with git show
  *                                                             HEAD:scratch-baseline.json:
  *                                                             status=38; stderr="fatal: simulated
@@ -286,12 +286,33 @@
  *     resolveModulePath    a reason other than ENOENT/ENOTDIR   access test-only module candidate
  *                          (parent directory chmod 000)         …: EACCES: permission denied …`
  *                                                             — exit 1
- * 90  :556   mapping-only an area has no production files; test "area claims no production file":
+ * 90  :650   mapping-only an area has no production files; test "area claims no production file":
  *                          `Coverage areas claim no production files: empty` — exit 1
- * 91  :1075  parse         `--mapping-only` with `--lcov`; test "mapping-only rejects LCOV arguments":
+ * 91  :1169  parse         `--mapping-only` with `--lcov`; test "mapping-only rejects LCOV arguments":
  *                          `--mapping-only cannot be combined with --lcov` — exit 1
- * 92  :1078  parse         `--mapping-only` with `--write-baseline`; test "mapping-only rejects baseline writes":
+ * 92  :1172  parse         `--mapping-only` with `--write-baseline`; test "mapping-only rejects baseline writes":
  *                          `--mapping-only cannot be combined with --write-baseline` — exit 1
+ * 93  :464   parseLcov DA has neither 2 nor 3 fields       `Malformed LCOV ... DA requires 2 or 3 fields` — exit 1
+ * 94  :468             DA line is not canonical and >= 1   `Malformed LCOV ... DA line must be a canonical decimal >= 1` — exit 1
+ * 95  :471             DA hits are not canonical decimal   `Malformed LCOV ... DA hits must be a canonical decimal` — exit 1
+ * 96  :474             present DA checksum is empty        `Malformed LCOV ... DA checksum must be non-empty when present` — exit 1
+ * 97  :480             FN has other than 2 fields          `Malformed LCOV ... FN requires 2 fields` — exit 1
+ * 98  :483             FN line is not canonical and >= 1   `Malformed LCOV ... FN line must be a canonical decimal >= 1` — exit 1
+ * 99  :485             FN name is empty                    `Malformed LCOV ... FN name must be non-empty` — exit 1
+ * 100 :503             FNDA has other than 2 fields        `Malformed LCOV ... FNDA requires 2 fields` — exit 1
+ * 101 :506             FNDA hits are not canonical decimal `Malformed LCOV ... FNDA hits must be a canonical decimal` — exit 1
+ * 102 :508             FNDA name is empty                  `Malformed LCOV ... FNDA name must be non-empty` — exit 1
+ * 103 :517             BRDA has other than 4 fields        `Malformed LCOV ... BRDA requires 4 fields` — exit 1
+ * 104 :520             BRDA line is not canonical and >= 1 `Malformed LCOV ... BRDA line must be a canonical decimal >= 1` — exit 1
+ * 105 :523             BRDA block is not canonical decimal `Malformed LCOV ... BRDA block must be a canonical decimal` — exit 1
+ * 106 :526             BRDA branch is not canonical decimal `Malformed LCOV ... BRDA branch must be a canonical decimal` — exit 1
+ * 107 :529             BRDA taken is neither decimal nor - `Malformed LCOV ... BRDA taken must be a canonical decimal or -` — exit 1
+ * 108 :445             empty SF path                       `Malformed LCOV ... SF path is empty` — exit 1
+ * 109 :446             SF while a record is open           `Malformed LCOV ... SF before end_of_record` — exit 1
+ * 110 :460             counter with no open record         `Malformed LCOV ... counter without an open record` — exit 1
+ * 111 :435             end_of_record with no open record   `Malformed LCOV ... end_of_record without an open record` — exit 1
+ * 112 :537             input ends with an open record      `Malformed LCOV at end of input: open record for SF "..."` — exit 1
+ * 113 :511             FNDA has no earlier matching FN     `Malformed LCOV ... FNDA has no earlier matching FN` — exit 1
  *
  * **The rows the blank-measurement work added or changed were also staged against the real
  * frontend LCOV**, not only against fixtures, because that is the artefact an operator runs. Rows
@@ -323,11 +344,35 @@
  * `ls-tree`, and failing `show` results. The tracked-`HEAD`, untracked-disk, first-write, accepted increase,
  * and accepted authorization cases also use scratch baselines; none names a repository baseline.
  *
- * What this matrix does **not** cover, stated rather than implied: `parseLcov`'s tolerance of
- * malformed counter lines, which fail no assertion and are merged as written — a non-numeric hit
- * count is coerced, and an `FNDA` with no matching `FN` in its record becomes a phantom function
- * (`f-20260922-05`) — and the behaviour of any consumer of this script beyond its exit status and
- * `error.message`.
+ * **Malformed-LCOV rows 93–113** are each staged by a CLI subtest in
+ * `scripts/coverage-report-tests.mjs`, asserting exit 1, the complete unique diagnostic and empty
+ * stdout. Row 95 is also staged through `--write-baseline`, with unchanged scratch baseline bytes.
+ * Diagnostics name the 1-based input line, JSON-quoted raw line and the open record's raw SF.
+ * Row 112 names the open SF at end of input instead of a line.
+ *
+ * **Real-instrument negative controls, measured 2026-10-07:** scratch copies under /tmp of the
+ * just-written frontend `coverage/lcov.info` (41,466 lines) and backend
+ * `backend-coverage/lcov.info` (140,818 lines), run through the CLI with each package script's
+ * own --config/--baseline and --lcov pointing at the copy. Both untouched files exited 0.
+ * Four damaged copies, four runs, all exit 1. `<repo>` abbreviates the absolute checkout path:
+ *
+ *   row 112 frontend, final end_of_record removed:
+ *           `Malformed LCOV at end of input: open record for SF "src/utils/lichess/explorer.ts"`
+ *   row 112 backend, final end_of_record removed:
+ *           `Malformed LCOV at end of input: open record for SF "<repo>/src-tauri/src/sound.rs"`
+ *   row 95  frontend, first DA at input line 39, DA:46,1 → DA:46,x:
+ *           `Malformed LCOV at line 39 in SF "src/App.tsx": DA hits must be a canonical decimal: "DA:46,x"`
+ *   row 95  backend, first DA at input line 52, DA:27,47 → DA:27,x:
+ *           `Malformed LCOV at line 52 in SF "<repo>/src-tauri/src/cancellable_read.rs": DA hits must be a canonical decimal: "DA:27,x"`
+ *
+ * What this matrix does **not** cover, stated rather than implied: unknown keys are ignored,
+ * including damaged counter keys, to tolerate informational keys from future instruments.
+ * Summary lines are not cross-checked, because llvm-cov's own summaries disagree with records in
+ * 45 of 49 backend records measured 2026-10-07. Repeated DA or BRDA identities within a record take
+ * the maximum hit count. Repeated identical FN declarations remain distinct functions. Line
+ * numbers count the joined input when several `--lcov` files are supplied. Current callers each
+ * pass one LCOV (`package.json:48,52`), so those numbers are file-local. Source-side line existence
+ * (`f-20260920-20`) and consumer behaviour beyond exit status and `error.message` remain unchecked.
  */
 import { spawnSync } from "node:child_process";
 import { readFile, rename as renameFile, unlink as unlinkFile, writeFile } from "node:fs/promises";
@@ -339,12 +384,9 @@ import { scanRustTestOnly, validateExclusionConfig } from "./rust-test-only.mjs"
 
 const METRICS = ["lines", "functions", "branches"];
 
-// Counter identities are built from LCOV field values, which are unvalidated text: a field may
-// contain any character, including whatever separator the identity would otherwise be joined on.
-// `FN:<line>,<name>` splits on the first comma, so `FN:1,f:g` is line `1`, name `f:g` while
-// `FN:1:f,g` is line `1:f`, name `g` -- two declarations a colon-joined key merged into one. Every
-// other separator has an input that does the same to it. Encoding the fields as a JSON array is
-// injective for arbitrary strings, so the question does not arise again.
+// Integer fields are canonical decimals, but function names and DA checksums remain opaque text
+// and can contain identity separators. JSON array encoding preserves their field boundaries and
+// is injective for arbitrary strings, including colons, NULs, quotes and backslashes.
 const identity = (...fields) => JSON.stringify(fields);
 
 function emptyMetrics() {
@@ -362,6 +404,14 @@ function emptyMetrics() {
 export function parseLcov(lcov, identify = (file) => file, includeLine = () => true) {
   const reports = new Map();
   let report;
+  const canonicalDecimal = /^(0|[1-9][0-9]*)$/;
+
+  function malformed(reason, rawLine, lineNumber) {
+    const record = report ? ` in SF ${JSON.stringify(report.sourceFile)}` : "";
+    return new Error(
+      `Malformed LCOV at line ${lineNumber}${record}: ${reason}: ${JSON.stringify(rawLine)}`,
+    );
+  }
 
   function addCounter(counters, identity, hits) {
     counters.set(identity, Math.max(counters.get(identity) ?? 0, hits));
@@ -379,8 +429,10 @@ export function parseLcov(lcov, identify = (file) => file, includeLine = () => t
     }
   }
 
-  for (const rawLine of lcov.replaceAll("\r\n", "\n").split("\n")) {
+  for (const [index, rawLine] of lcov.replaceAll("\r\n", "\n").split("\n").entries()) {
+    const lineNumber = index + 1;
     if (rawLine === "end_of_record") {
+      if (!report) throw malformed("end_of_record without an open record", rawLine, lineNumber);
       mergeReport(report);
       report = undefined;
       continue;
@@ -390,7 +442,10 @@ export function parseLcov(lcov, identify = (file) => file, includeLine = () => t
     const key = separator === -1 ? rawLine : rawLine.slice(0, separator);
     const value = separator === -1 ? "" : rawLine.slice(separator + 1);
     if (key === "SF") {
+      if (!value) throw malformed("SF path is empty", rawLine, lineNumber);
+      if (report) throw malformed("SF before end_of_record", rawLine, lineNumber);
       report = {
+        sourceFile: value,
         file: identify(value),
         lines: new Map(),
         functions: new Map(),
@@ -401,13 +456,33 @@ export function parseLcov(lcov, identify = (file) => file, includeLine = () => t
       };
       continue;
     }
-    if (!report) continue;
+    if (!["DA", "FN", "FNDA", "BRDA"].includes(key)) continue;
+    if (!report) throw malformed("counter without an open record", rawLine, lineNumber);
+    const fields = value.split(",");
     if (key === "DA") {
-      const [line, hits, checksum = ""] = value.split(",");
+      if (fields.length !== 2 && fields.length !== 3) {
+        throw malformed("DA requires 2 or 3 fields", rawLine, lineNumber);
+      }
+      const [line, hits, checksum = ""] = fields;
+      if (!canonicalDecimal.test(line) || line === "0") {
+        throw malformed("DA line must be a canonical decimal >= 1", rawLine, lineNumber);
+      }
+      if (!canonicalDecimal.test(hits)) {
+        throw malformed("DA hits must be a canonical decimal", rawLine, lineNumber);
+      }
+      if (fields.length === 3 && !checksum) {
+        throw malformed("DA checksum must be non-empty when present", rawLine, lineNumber);
+      }
       if (includeLine(report.file, Number(line))) {
         addCounter(report.lines, identity(line, checksum), Number(hits));
       }
     } else if (key === "FN") {
+      if (fields.length !== 2) throw malformed("FN requires 2 fields", rawLine, lineNumber);
+      const [line, name] = fields;
+      if (!canonicalDecimal.test(line) || line === "0") {
+        throw malformed("FN line must be a canonical decimal >= 1", rawLine, lineNumber);
+      }
+      if (!name) throw malformed("FN name must be non-empty", rawLine, lineNumber);
       // The occurrence index counts same-named declarations *on the same line*, not same-named
       // declarations anywhere in the file. Both spellings disambiguate the only case that needs
       // it -- two functions sharing a name and a line -- but only this one is independent of
@@ -415,7 +490,6 @@ export function parseLcov(lcov, identify = (file) => file, includeLine = () => t
       // order. Counting per name made `FN:10,f; FN:20,f` and `FN:20,f; FN:10,f` four distinct
       // functions instead of two. `functionIdsByName` keeps declaration order regardless, because
       // that is what pairs an `FNDA` line with its `FN`.
-      const [line, name] = value.split(",");
       const functionsWithName = report.functionIdsByName.get(name) ?? [];
       const declarationKey = identity(line, name);
       const sameLine = report.functionsByDeclaration.get(declarationKey) ?? 0;
@@ -426,24 +500,44 @@ export function parseLcov(lcov, identify = (file) => file, includeLine = () => t
       functionsWithName.push({ identity: functionIdentity, included });
       report.functionIdsByName.set(name, functionsWithName);
     } else if (key === "FNDA") {
-      const [hits, name] = value.split(",");
+      if (fields.length !== 2) throw malformed("FNDA requires 2 fields", rawLine, lineNumber);
+      const [hits, name] = fields;
+      if (!canonicalDecimal.test(hits)) {
+        throw malformed("FNDA hits must be a canonical decimal", rawLine, lineNumber);
+      }
+      if (!name) throw malformed("FNDA name must be non-empty", rawLine, lineNumber);
       const occurrence = report.functionDataOccurrences.get(name) ?? 0;
-      // `null` where a declaration would carry its line: no `FN` line can produce it, so an
-      // `FNDA` with no matching declaration cannot collide with a real function.
       const declaration = report.functionIdsByName.get(name)?.[occurrence];
+      if (!declaration) throw malformed("FNDA has no earlier matching FN", rawLine, lineNumber);
       report.functionDataOccurrences.set(name, occurrence + 1);
-      if (!declaration || declaration.included) {
-        const functionIdentity = declaration?.identity ?? identity(null, name, occurrence);
-        addCounter(report.functions, functionIdentity, Number(hits));
+      if (declaration.included) {
+        addCounter(report.functions, declaration.identity, Number(hits));
       }
     } else if (key === "BRDA") {
-      const [line, block, branch, hits] = value.split(",");
+      if (fields.length !== 4) throw malformed("BRDA requires 4 fields", rawLine, lineNumber);
+      const [line, block, branch, hits] = fields;
+      if (!canonicalDecimal.test(line) || line === "0") {
+        throw malformed("BRDA line must be a canonical decimal >= 1", rawLine, lineNumber);
+      }
+      if (!canonicalDecimal.test(block)) {
+        throw malformed("BRDA block must be a canonical decimal", rawLine, lineNumber);
+      }
+      if (!canonicalDecimal.test(branch)) {
+        throw malformed("BRDA branch must be a canonical decimal", rawLine, lineNumber);
+      }
+      if (hits !== "-" && !canonicalDecimal.test(hits)) {
+        throw malformed("BRDA taken must be a canonical decimal or -", rawLine, lineNumber);
+      }
       if (includeLine(report.file, Number(line))) {
         addCounter(report.branches, identity(line, block, branch), hits === "-" ? 0 : Number(hits));
       }
     }
   }
-  mergeReport(report);
+  if (report) {
+    throw new Error(
+      `Malformed LCOV at end of input: open record for SF ${JSON.stringify(report.sourceFile)}`,
+    );
+  }
   return [...reports.values()].map((report) => ({
     file: report.file,
     metrics: {

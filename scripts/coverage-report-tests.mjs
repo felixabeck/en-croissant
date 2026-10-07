@@ -1330,27 +1330,285 @@ test("counts two same-named functions declared on one line as two", () => {
   assert.deepEqual(declarations[0].metrics.functions, { covered: 1, total: 2 });
 });
 
-test("keeps two counters apart whatever characters their field values contain", () => {
-  // Identities are assembled from unvalidated LCOV field values, so no separator is safe: for any
-  // choice there is an input containing it. Each pair below is two different counters that a joined
-  // key collapses into one -- and because the per-declaration counter restarts in each record, the
-  // collapse only shows once two records for one file are merged, which is exactly what this report
-  // now does for two spellings of one path. All three counter kinds are covered, because each
-  // builds its own identity and could be reverted on its own.
+test("keeps opaque function names and DA checksums distinct across merged records", () => {
+  // Integer fields are canonical now. Free-text names and checksums still accept separator
+  // characters, and JSON encoding must preserve them when records for one file are merged.
   const record = (counters) => `TN:\nSF:a.ts\n${counters}\nend_of_record\n`;
-  // Each pair is chosen so that *every* joined form collapses it, not only one particular
-  // separator: the colon pair catches a colon join, the `\u0000` pairs catch that join, and only
-  // an injective encoding survives both.
-  const cases = [
-    ["functions", "FN:1,f:g\nFNDA:1,f:g", "FN:1:f,g\nFNDA:0,g"],
-    ["functions", "FN:1,a\u0000b\nFNDA:1,a\u0000b", "FN:1\u0000a,b\nFNDA:0,b"],
-    ["lines", "DA:1,1,a\u0000b", "DA:1\u0000a,0,b"],
-    ["branches", "BRDA:1,0,a\u0000b,1", "BRDA:1\u00000,a,b,0"],
-  ];
-  for (const [metric, first, second] of cases) {
-    const merged = parseLcov(`${record(first)}${record(second)}`);
-    assert.deepEqual(merged[0].metrics[metric], { covered: 1, total: 2 }, metric);
+  for (const text of ["f:g", "a\u0000b", 'quote"', "back\\slash", " name "]) {
+    const first = `FN:1,${text}\nFNDA:1,${text}\nDA:1,1,${text}`;
+    const second = `FN:1,${text}:0\nFNDA:0,${text}:0\nDA:1,0,${text}:0`;
+    const [merged] = parseLcov(`${record(first)}${record(second)}${record(first)}`);
+    assert.deepEqual(merged.metrics.functions, { covered: 1, total: 2 }, text);
+    assert.deepEqual(merged.metrics.lines, { covered: 1, total: 2 }, text);
   }
+});
+
+function malformedCounterCase(row, reason, raw, earlier = "") {
+  const sf = "src/utils/example.ts";
+  return {
+    row,
+    reason,
+    raw,
+    sf,
+    line: earlier ? 3 : 2,
+    input: `SF:${sf}\n${earlier ? `${earlier}\n` : ""}${raw}\nend_of_record\n`,
+  };
+}
+
+// One fixture per new failure-matrix row. Field-count fixtures keep every present field valid.
+const malformedLcovCases = [
+  malformedCounterCase(93, "DA requires 2 or 3 fields", "DA:1"),
+  malformedCounterCase(94, "DA line must be a canonical decimal >= 1", "DA:bogus,1"),
+  malformedCounterCase(95, "DA hits must be a canonical decimal", "DA:1,bogus"),
+  malformedCounterCase(96, "DA checksum must be non-empty when present", "DA:1,1,"),
+  malformedCounterCase(97, "FN requires 2 fields", "FN:10,20,f"),
+  malformedCounterCase(98, "FN line must be a canonical decimal >= 1", "FN:0,f"),
+  malformedCounterCase(99, "FN name must be non-empty", "FN:1,"),
+  malformedCounterCase(100, "FNDA requires 2 fields", "FNDA:1,f,extra", "FN:1,f"),
+  malformedCounterCase(101, "FNDA hits must be a canonical decimal", "FNDA:x,f", "FN:1,f"),
+  malformedCounterCase(102, "FNDA name must be non-empty", "FNDA:1,", "FN:1,f"),
+  malformedCounterCase(103, "BRDA requires 4 fields", "BRDA:1,0,0"),
+  malformedCounterCase(104, "BRDA line must be a canonical decimal >= 1", "BRDA:0,0,0,1"),
+  malformedCounterCase(105, "BRDA block must be a canonical decimal", "BRDA:1,e0,0,1"),
+  malformedCounterCase(106, "BRDA branch must be a canonical decimal", "BRDA:1,0,expression,1"),
+  malformedCounterCase(107, "BRDA taken must be a canonical decimal or -", "BRDA:1,0,0,x"),
+  { row: 108, reason: "SF path is empty", raw: "SF:", line: 1, input: "SF:\nend_of_record\n" },
+  {
+    row: 109,
+    reason: "SF before end_of_record",
+    raw: "SF:other.ts",
+    sf: "src/utils/example.ts",
+    line: 2,
+    input: "SF:src/utils/example.ts\nSF:other.ts\nend_of_record\n",
+  },
+  {
+    row: 110,
+    reason: "counter without an open record",
+    raw: "DA:1,1",
+    line: 2,
+    input: "TN:\nDA:1,1\n",
+  },
+  {
+    row: 111,
+    reason: "end_of_record without an open record",
+    raw: "end_of_record",
+    line: 1,
+    input: "end_of_record\n",
+  },
+  {
+    row: 112,
+    reason: "open record for SF",
+    sf: "src/utils/example.ts",
+    input: "SF:src/utils/example.ts\nDA:1,1\n",
+  },
+  {
+    row: 113,
+    reason: "FNDA has no earlier matching FN",
+    raw: "FNDA:1,f",
+    sf: "src/utils/example.ts",
+    line: 5,
+    input:
+      "SF:src/utils/example.ts\nFN:1,f\nend_of_record\nSF:src/utils/example.ts\nFNDA:1,f\nend_of_record\n",
+  },
+];
+
+function malformedMessage(entry) {
+  if (entry.line === undefined) {
+    return `Malformed LCOV at end of input: ${entry.reason} ${JSON.stringify(entry.sf)}`;
+  }
+  const record = entry.sf === undefined ? "" : ` in SF ${JSON.stringify(entry.sf)}`;
+  return `Malformed LCOV at line ${entry.line}${record}: ${entry.reason}: ${JSON.stringify(entry.raw)}`;
+}
+
+test("parseLcov rejects each malformed-input rule with its complete diagnostic", async (t) => {
+  for (const entry of malformedLcovCases) {
+    await t.test(`row ${entry.row}: ${entry.reason}`, () => {
+      assert.throws(() => parseLcov(entry.input), {
+        name: "Error",
+        message: malformedMessage(entry),
+      });
+    });
+  }
+});
+
+test("every malformed-input matrix row is staged through the CLI", async (t) => {
+  const config = cliConfig();
+  const baselineContents = JSON.stringify(
+    baselineFor(config, { utilities: metrics("lines", 1, 2) }),
+  );
+  for (const entry of malformedLcovCases) {
+    await t.test(`row ${entry.row}: ${entry.reason}`, async (t) => {
+      const { root } = await fixture();
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const result = await runCoverageCli(root, { config, lcov: entry.input, baselineContents });
+      assert.equal(result.error, undefined);
+      assert.equal(result.status, 1, result.stderr);
+      assert.equal(result.stdout, "");
+      assert.equal(result.stderr, `${malformedMessage(entry)}\n`);
+      for (const candidate of malformedLcovCases) {
+        const token =
+          candidate.line === undefined
+            ? `Malformed LCOV at end of input: ${candidate.reason} `
+            : `: ${candidate.reason}: `;
+        assert.equal(result.stderr.includes(token), candidate === entry, candidate.reason);
+      }
+      t.diagnostic(`staged row ${entry.row}: exit 1, ${result.stderr.trim()}`);
+    });
+  }
+});
+
+test("malformed LCOV refuses a baseline write before touching its bytes", async (t) => {
+  const { root } = await fixture();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const entry = malformedLcovCases.find(({ row }) => row === 95);
+  const config = cliConfig();
+  const baselineContents = JSON.stringify(
+    baselineFor(config, { utilities: metrics("lines", 1, 2) }),
+  );
+  const result = await runCoverageCli(root, {
+    config,
+    lcov: entry.input,
+    baselineContents,
+    writeBaseline: true,
+  });
+  assert.equal(result.status, 1, result.stderr);
+  assert.equal(result.stdout, "");
+  assert.equal(result.stderr, `${malformedMessage(entry)}\n`);
+  await assertScratchBaselineUnchanged(root, baselineContents);
+});
+
+test("canonical-decimal grammar rejects coercible numbers and damaged integer separators", () => {
+  const invalid = [
+    "",
+    "01",
+    " 1",
+    "1 ",
+    "+1",
+    "-1",
+    "1.0",
+    "1e2",
+    "NaN",
+    "Infinity",
+    "1\u0000a",
+    "1:f",
+  ];
+  const fields = [
+    ["DA line", (value) => `DA:${value},1`],
+    ["DA hits", (value) => `DA:1,${value}`],
+    ["FN line", (value) => `FN:${value},f`],
+    ["FNDA hits", (value) => `FNDA:${value},f`],
+    ["BRDA line", (value) => `BRDA:${value},0,0,1`],
+    ["BRDA block", (value) => `BRDA:1,${value},0,1`],
+    ["BRDA branch", (value) => `BRDA:1,0,${value},1`],
+    ["BRDA taken", (value) => `BRDA:1,0,0,${value}`],
+  ];
+  for (const [field, counter] of fields) {
+    for (const value of invalid) {
+      assert.throws(
+        () => parseLcov(`SF:a.ts\nFN:1,f\n${counter(value)}\nend_of_record\n`),
+        (error) =>
+          error.message.startsWith("Malformed LCOV") && error.message.includes(`${field} must be`),
+        `${field}: ${JSON.stringify(value)}`,
+      );
+    }
+  }
+  for (const raw of ["DA:0,1", "FN:0,f", "BRDA:0,0,0,1"]) {
+    assert.throws(() => parseLcov(`SF:a.ts\n${raw}\nend_of_record`), /canonical decimal >= 1/);
+  }
+  // These integer-field separator cases belonged to the former identity-injectivity fixture.
+  for (const raw of [
+    "FN:1:f,g",
+    "FN:1\u0000a,b",
+    "DA:1\u0000a,0,b",
+    "BRDA:1\u00000,a,b,0",
+    "BRDA:1,0,a\u0000b,1",
+  ]) {
+    assert.throws(() => parseLcov(`SF:a.ts\n${raw}\nend_of_record`), /Malformed LCOV/);
+  }
+});
+
+test("validation precedes exclusions for every counter kind and paired FNDA", () => {
+  for (const row of [94, 95, 98, 101, 105, 113]) {
+    const entry = malformedLcovCases.find((entry) => entry.row === row);
+    assert.throws(
+      () =>
+        parseLcov(
+          entry.input,
+          (file) => file,
+          () => false,
+        ),
+      { message: malformedMessage(entry) },
+    );
+  }
+});
+
+test("record diagnostics preserve raw SF and line text and stop at the first violation", () => {
+  const sf = 'raw\\path"\u0000.ts';
+  const raw = 'DA:1,x,"\u0000';
+  assert.throws(
+    () =>
+      parseLcov(`TN:\r\n\r\nSF:${sf}\r\n${raw}\r\nFN:0,f\r\nend_of_record`, () => "normalised.ts"),
+    {
+      message: malformedMessage({
+        line: 4,
+        sf,
+        raw,
+        reason: "DA hits must be a canonical decimal",
+      }),
+    },
+  );
+  for (const raw of ["DA:1,1", "FN:1,f", "FNDA:1,f", "BRDA:1,0,0,1"]) {
+    assert.throws(() => parseLcov(raw), /counter without an open record/);
+  }
+  assert.throws(
+    () => parseLcov("SF:a.ts\nFNDA:1,f\nFN:1,f\nend_of_record"),
+    /FNDA has no earlier matching FN/,
+  );
+  assert.throws(
+    () => parseLcov("SF:a.ts\nFN:1,f\nFNDA:0,f\nFNDA:1,f\nend_of_record"),
+    /FNDA has no earlier matching FN/,
+  );
+});
+
+test("accepts producer forms, ignored keys, checksums and maximum-hit merging unchanged", () => {
+  const input = [
+    "TN:",
+    "VER:future",
+    "unknown:ignored",
+    "",
+    "SF:a.ts",
+    "FN:1,declared-only",
+    "DA:1,0",
+    "DA:1,2",
+    "DA:2,0,opaque:checksum",
+    "BRDA:1,0,0,-",
+    "BRDA:1,0,0,3",
+    "BRDA:2,0,1,-",
+    "LF:999",
+    "LH:999",
+    "FNF:999",
+    "FNH:999",
+    "BRF:999",
+    "BRH:999",
+    "unknown:inside",
+    "end_of_record",
+    "VER:outside",
+    "",
+  ].join("\r\n");
+  assert.deepEqual(parseLcov(input), [
+    {
+      file: "a.ts",
+      metrics: {
+        lines: { covered: 1, total: 2 },
+        functions: { covered: 0, total: 1 },
+        branches: { covered: 1, total: 2 },
+      },
+    },
+  ]);
+  assert.deepEqual(parseLcov("SF:a.ts\nBRDA:1,0,0,-\nend_of_record")[0].metrics.branches, {
+    covered: 0,
+    total: 1,
+  });
 });
 
 test("gives a function the same identity whatever order the records declare it in", async () => {
