@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: c20afdc5c781b2a7e7a8511f9e46d44a2540c61845cac2e41215e796762c4293
+# agent-kit-sha256: 4dea910968a8bb23cd81b0f9b1d21f0a53954e82a41c08e10181c63efae4f428
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -1592,6 +1592,193 @@ class LedgerError(Exception):
     pass
 
 
+class LedgerReadRefused(LedgerError):
+    """Committed ledger preservation could not be established."""
+
+
+LEDGER_ROLLBACK_PREFIX = "ledger rollback refused:"
+LEDGER_KEPT_CHANGING_CAUSE = "the committed ledger kept changing during the read"
+LEDGER_READ_ATTEMPTS = 3
+_GUARDED_LEDGER_PATHS: dict[Path, str] = {}
+_LEDGER_ROLLBACK_CACHE: dict[tuple[str, str, str], tuple[list[str], int]] = {}
+_LEDGER_BLOB_CACHE: dict[str, bytes] = {}
+
+
+def _ledger_content(
+    text: str, kind: str, *, strict: bool = True
+) -> tuple[frozenset[str], frozenset[tuple[str, str]]]:
+    """Extract the append-only identities using the ordinary ledger parsers."""
+    path = Path(f"{kind}.md")
+    metadata, issues = _scan_ledger_metadata(text, path)
+    if kind == "findings":
+        lines, headings, orphans = _unfenced_header_matches(text)
+        mask = _fence_mask(lines)
+        if not load_vocabulary(lines, mask):
+            issues.append("missing area vocabulary")
+        if orphans:
+            issues.append("orphaned finding headers")
+        attached = {index for index, _, _ in headings}
+        issues += [
+            f"finding heading without a header: {line}"
+            for index, (line, state) in enumerate(zip(lines, mask, strict=True))
+            if state is FenceState.OUTSIDE and line.startswith("### ") and index not in attached
+        ]
+        ids = frozenset(match.group("id") for _, _, match in headings)
+    elif kind == "decisions":
+        lines, headings = _decision_heading_matches(text)
+        ids = frozenset(match.group("id") for _, match in headings)
+        mask = _fence_mask(lines)
+        issues += [
+            f"malformed decision heading: {line}"
+            for line, state in zip(lines, mask, strict=True)
+            if state is FenceState.OUTSIDE and line.startswith("### d-")
+            and DECISION_RE.match(line) is None
+        ]
+    else:
+        raise ValueError("ledger kind must be findings or decisions")
+    if strict and issues:
+        raise LedgerError("could not parse ledger identities: " + ", ".join(issues))
+    receipts = frozenset(
+        (str(meta.data["command"]), str(meta.data["operation"]))
+        for meta in metadata
+        if meta.data.get("kind") == MUTATION_RECEIPT_KIND
+        and isinstance(meta.data.get("command"), str)
+        and isinstance(meta.data.get("operation"), str)
+    )
+    return ids, receipts
+
+
+def _ledger_rollback(parent: str, candidate: str, kind: str) -> tuple[list[str], int]:
+    """Return dropped entry IDs and the count of dropped receipt identities."""
+    # Controller SQLite owns exports, and enrolment regenerates markdown into
+    # one. The writer refuses to write or commit them, so this guard does not apply.
+    if is_controller_export(parent) or is_controller_export(candidate):
+        return [], 0
+    try:
+        parent_ids, parent_receipts = _ledger_content(parent, kind)
+    except LedgerError as exc:
+        raise LedgerError(f"HEAD does not validate ({exc})") from exc
+    candidate_ids, candidate_receipts = _ledger_content(candidate, kind, strict=False)
+    return sorted(parent_ids - candidate_ids), len(parent_receipts - candidate_receipts)
+
+
+def _ledger_guard_refusal(cause: str) -> bool:
+    return (
+        cause.startswith(LEDGER_ROLLBACK_PREFIX)
+        or LEDGER_KEPT_CHANGING_CAUSE in cause
+    )
+
+
+def _rollback_remedy(path: Path) -> str:
+    return (
+        "A concurrent commit's pre-commit stash may be holding the file. "
+        "Retry once that commit has finished. If it persists, inspect "
+        f"git diff HEAD -- {path}"
+    )
+
+
+def _ledger_parent_bytes(root: Path, blob: str) -> bytes:
+    if blob not in _LEDGER_BLOB_CACHE:
+        result = _git_for_ledger_bytes(root, "cat-file", "blob", blob)
+        if result.returncode != 0:
+            raise LedgerError(f"could not read committed ledger blob {blob}")
+        _LEDGER_BLOB_CACHE[blob] = result.stdout
+    return _LEDGER_BLOB_CACHE[blob]
+
+
+def _refuse_ledger_rollback(
+    root: Path, path: Path, blob: str | None, parent: str, candidate: bytes, kind: str
+) -> None:
+    if blob is None:
+        return
+    key = (blob, _sha256_bytes(candidate), kind)
+    try:
+        if key not in _LEDGER_ROLLBACK_CACHE:
+            _LEDGER_ROLLBACK_CACHE[key] = _ledger_rollback(
+                _ledger_parent_bytes(root, blob).decode("utf-8"), candidate.decode("utf-8"), kind
+            )
+        ids, receipts = _LEDGER_ROLLBACK_CACHE[key]
+    except (LedgerError, UnicodeError) as exc:
+        raise LedgerReadRefused(
+            f"{LEDGER_ROLLBACK_PREFIX} {path}, parent {parent}: {exc}"
+        ) from exc
+    if ids or receipts:
+        raise LedgerReadRefused(
+            f"{LEDGER_ROLLBACK_PREFIX} {path}, parent {parent}: "
+            f"dropped IDs {', '.join(ids) or '(none)'}, {receipts} receipt identities"
+        )
+
+
+def _head_ledger_blob(root: Path, relative: str) -> str | None:
+    result = _git_for_ledger(root, "rev-parse", "--verify", "-q", "HEAD^{commit}")
+    if result.returncode == 1 and not result.stdout.strip() and not result.stderr.strip():
+        return None
+    if result.returncode != 0:
+        raise LedgerError(f"could not resolve HEAD: {_git_failure_detail(result)}")
+    return _head_file_blob(root, result.stdout.strip(), relative)
+
+
+def _read_working_ledger(path: Path, *, binary: bool) -> bytes | str:
+    """Read a working ledger against a stable HEAD blob for persisting CLI calls."""
+    def read() -> bytes | str:
+        return path.read_bytes() if binary else path.read_text(encoding="utf-8")
+
+    if not _GUARDED_LEDGER_PATHS:
+        return read()
+    resolved = _resolved_repo_path(path)
+    kind = _GUARDED_LEDGER_PATHS.get(resolved)
+    if kind is None:
+        return read()
+    root = cast(Path, REPO_ROOT).resolve()
+    if not resolved.is_relative_to(root):
+        return read()
+    relative = _repo_relative(resolved, root)
+    try:
+        for _ in range(LEDGER_READ_ATTEMPTS):
+            before = _head_ledger_blob(root, relative)
+            missing: FileNotFoundError | None = None
+            try:
+                candidate = read()
+            except FileNotFoundError as exc:
+                missing = exc
+                candidate = b"" if binary else ""
+            after = _head_ledger_blob(root, relative)
+            if before != after:
+                continue
+            candidate_bytes = candidate if isinstance(candidate, bytes) else candidate.encode("utf-8")
+            _refuse_ledger_rollback(root, path, before, f"HEAD blob {before}", candidate_bytes, kind)
+            if missing is not None:
+                raise missing
+            return candidate
+    except LedgerError as exc:
+        if isinstance(exc, LedgerReadRefused):
+            raise LedgerReadRefused(f"{exc}. {_rollback_remedy(path)}") from exc
+        raise LedgerReadRefused(
+            f"{LEDGER_ROLLBACK_PREFIX} {path}, parent HEAD blob: {exc}. {_rollback_remedy(path)}"
+        ) from exc
+    raise LedgerReadRefused(
+        f"{path}: {LEDGER_KEPT_CHANGING_CAUSE}. Retry. "
+        + _rollback_remedy(path)
+    )
+
+
+def _read_ledger_bytes(path: Path) -> bytes:
+    return cast(bytes, _read_working_ledger(path, binary=True))
+
+
+def _read_ledger_text(path: Path) -> str:
+    return cast(str, _read_working_ledger(path, binary=False))
+
+
+def _ledger_path_exists(path: Path) -> bool:
+    if path.exists():
+        return True
+    if _GUARDED_LEDGER_PATHS and _resolved_repo_path(path) in _GUARDED_LEDGER_PATHS:
+        with suppress(FileNotFoundError):
+            _read_ledger_text(path)
+    return False
+
+
 class PublishLockBusyError(LedgerError):
     """The bounded publish fence did not become available."""
 
@@ -1831,7 +2018,7 @@ def _decision_matches_expectation(
 
 def _ledger_snapshot_valid(path: Path, ledger_kind: str) -> bool:
     """Read-only structural and receipt validation for one standalone ledger."""
-    text = path.read_text(encoding="utf-8")
+    text = _read_ledger_text(path)
     metadata, issues = _scan_ledger_metadata(text, path)
     issues += _receipt_effect_issues(text, path, metadata)
     if ledger_kind == "findings":
@@ -2037,6 +2224,8 @@ def cmd_merge_driver(args: argparse.Namespace) -> int:
                     merged, cast(Path, REPO_ROOT) / args.path
                 ) as candidate:
                     valid = _ledger_snapshot_valid(candidate, ledger_kind)
+            except LedgerReadRefused:
+                raise
             except (LedgerError, OSError, UnicodeError) as exc:
                 valid = False
                 reason = f"the appended blocks could not be validated: {exc}"
@@ -2077,6 +2266,8 @@ def cmd_merge_driver(args: argparse.Namespace) -> int:
                     if valid
                     else False
                 )
+            except LedgerReadRefused:
+                raise
             except (LedgerError, OSError, UnicodeError) as exc:
                 print(
                     f"merge-driver: could not validate git merge-file result for "
@@ -2133,6 +2324,8 @@ def _ledger_snapshot_preserved(before: Path, after: Path, ledger_kind: str) -> b
             and _decision_matches_expectation(decision, item)
             for item in captured_decisions
         )
+    except LedgerReadRefused:
+        raise
     except (LedgerError, OSError, UnicodeError):
         return False
 
@@ -2190,7 +2383,7 @@ def _receipt_postcondition(
 
     def holds(findings_path: Path, decisions_path: Path) -> bool:
         path = decisions_path if decisions else findings_path
-        text = path.read_text(encoding="utf-8")
+        text = _read_ledger_text(path)
         metadata, issues = _scan_ledger_metadata(text, path)
         issues += _receipt_effect_issues(text, path, metadata)
         return not issues and any(
@@ -2231,7 +2424,7 @@ def _answers_postcondition(
     expected: dict[str, AnswerExpectation],
 ) -> Callable[[Path, Path], bool]:
     def holds(findings_path: Path, _decisions_path: Path) -> bool:
-        ledger = _answer_ledger(findings_path.read_text(encoding="utf-8"), expected)
+        ledger = _answer_ledger(_read_ledger_text(findings_path), expected)
         for identifier, answer in expected.items():
             record = {
                 "id": identifier,
@@ -2439,9 +2632,9 @@ def _read_decision_lines(
     path: Path,
 ) -> tuple[list[str], list[FenceState]] | None:
     """Read a decisions ledger and classify each line's fence state once."""
-    if not path.exists():
+    if not _ledger_path_exists(path):
         return None
-    lines = path.read_text(encoding="utf-8").splitlines()
+    lines = _read_ledger_text(path).splitlines()
     return lines, _fence_mask(lines)
 
 
@@ -2506,7 +2699,7 @@ def load_tooling_areas(
 
 def load_tooling_areas_from_path(path: Path) -> frozenset[str]:
     """Load tooling areas from a ledger path already proven readable by ``parse``."""
-    text = path.read_text(encoding="utf-8")
+    text = _read_ledger_text(path)
     return load_tooling_areas_from_text(text)
 
 
@@ -2597,6 +2790,8 @@ def _refuse_controller_export_at(path: Path, command: str) -> None:
     unreadable ledger is left to that read, which already reports it in the
     command's vocabulary.
     """
+    # Unguarded: this marker check persists nothing and must precede intake staging
+    # by contract, while every later full ledger read is guarded.
     try:
         with path.open("rb") as handle:
             head = _controller_export_head(
@@ -2786,7 +2981,7 @@ def parse(
     path: Path = LEDGER, *, text: str | None = None
 ) -> tuple[list[Finding], list[str], frozenset[str]]:
     if text is None:
-        text = path.read_text(encoding="utf-8")
+        text = _read_ledger_text(path)
     controller = _controller_export_payload(text)
     if controller is not None:
         # The manifest sits beside ``tasks/``; derived from the ledger's own path
@@ -3545,9 +3740,9 @@ def _citation_occurrences(
     path: Path, source: str, *, text: str | None = None
 ) -> tuple[list[CitationOccurrence], list[str]]:
     if text is None:
-        if not path.exists():
+        if not _ledger_path_exists(path):
             return [], []
-        text = path.read_text(encoding="utf-8")
+        text = _read_ledger_text(path)
     lines = text.splitlines()
     mask = _fence_mask(lines)
     occurrences: list[CitationOccurrence] = []
@@ -3642,8 +3837,8 @@ def _citation_resolution(
     issues.extend(decision_scan_issues)
     if decision_text is None:
         decision_text = (
-            decisions_path.read_text(encoding="utf-8")
-            if decisions_path.exists()
+            _read_ledger_text(decisions_path)
+            if _ledger_path_exists(decisions_path)
             else ""
         )
     if decision_metadata is None:
@@ -3652,7 +3847,7 @@ def _citation_resolution(
         )
         issues.extend(metadata_issues)
     if ledger_text is None:
-        ledger_text = ledger_path.read_text(encoding="utf-8")
+        ledger_text = _read_ledger_text(ledger_path)
     if ledger_metadata is None:
         ledger_metadata, ledger_metadata_issues = _scan_ledger_metadata(
             ledger_text, ledger_path
@@ -3756,7 +3951,7 @@ def cmd_check(args: argparse.Namespace) -> int:
         print(f"installed git merge driver {MERGE_DRIVER_NAME}", file=sys.stderr)
     findings, problems, vocabulary = parse(args.ledger)
     issues = validate(findings, problems, vocabulary)
-    ledger_text = args.ledger.read_text(encoding="utf-8")
+    ledger_text = _read_ledger_text(args.ledger)
     ledger_metadata, ledger_meta_issues = _scan_ledger_metadata(
         ledger_text, args.ledger
     )
@@ -3771,8 +3966,8 @@ def cmd_check(args: argparse.Namespace) -> int:
     decision_issues += duplicate_decision_ids(args.decisions)
     decision_text = ""
     decision_metadata: list[LedgerMeta] = []
-    if args.decisions.exists():
-        decision_text = args.decisions.read_text(encoding="utf-8")
+    if _ledger_path_exists(args.decisions):
+        decision_text = _read_ledger_text(args.decisions)
         decision_metadata, decision_meta_issues = _scan_ledger_metadata(
             decision_text, args.decisions
         )
@@ -3981,7 +4176,7 @@ def _raw_entry_records(
     chunks only to recover their byte offsets; UTF-8 is round-tripping here, and
     the hash itself is taken from the original bytes, including CRLF and spaces.
     """
-    raw = path.read_bytes() if raw_bytes is None else raw_bytes
+    raw = _read_ledger_bytes(path) if raw_bytes is None else raw_bytes
     text = raw.decode("utf-8") if text is None else text
     lines = text.splitlines()
     chunks = text.splitlines(keepends=True)
@@ -4057,7 +4252,7 @@ def cmd_list(args: argparse.Namespace) -> int:
     ledger_bytes: bytes | None = None
     ledger_text: str | None = None
     if _json_requested(args):
-        ledger_bytes = args.ledger.read_bytes()
+        ledger_bytes = _read_ledger_bytes(args.ledger)
         ledger_text = ledger_bytes.decode("utf-8")
         findings, problems, vocabulary = parse(args.ledger, text=ledger_text)
     else:
@@ -4755,6 +4950,8 @@ def _cmd_next_selection(args: argparse.Namespace) -> int:
         answers_claim, answers_claim_ids, answers_claim_kept = _standing_answers_claim(
             args.ledger.parent / "findings-answers"
         )
+    except LedgerReadRefused:
+        raise
     except LedgerError as exc:
         print(f"refusing to pick while {exc}", file=sys.stderr)
         return 1
@@ -5496,6 +5693,8 @@ def _validate_text_with_metadata(
                 metadata_issues + validate(findings, problems, vocabulary),
                 metadata,
             )
+    except LedgerReadRefused:
+        raise
     except LedgerError as exc:
         return [*metadata_issues, str(exc)], metadata
 
@@ -5534,9 +5733,11 @@ def _normalise_sentry_origin_entry(entry: str, ledger: Path) -> str:
     conventional ``Blocked: none`` form conform before the first validation pass.
     """
     try:
-        ledger_text = ledger.read_text(encoding="utf-8")
+        ledger_text = _read_ledger_text(ledger)
         candidate = _entry_candidate_text(entry, ledger_text)
         findings, problems, _vocabulary = _parse_text(candidate, ledger)
+    except LedgerReadRefused:
+        raise
     except _READ_ERRORS_LEDGER:
         return entry
     if len(findings) != 1 or problems:
@@ -5631,6 +5832,8 @@ def _read_and_validate_entry(
         entry = entry_path.read_text(encoding="utf-8")
         entry = _stamp_filing_entry(entry)
         return _validate_entry_text(entry, ledger, entry_path)
+    except LedgerReadRefused:
+        raise
     except (OSError, UnicodeError, LedgerError) as exc:
         return None, [f"could not read or parse {entry_path}: {exc}"]
 
@@ -5641,9 +5844,11 @@ def _validate_entry_text(
     """Normalise staged text without attributing it to the sweeper."""
     try:
         entry = _normalise_sentry_origin_entry(entry, ledger)
-        ledger_text = ledger.read_text(encoding="utf-8")
+        ledger_text = _read_ledger_text(ledger)
         candidate = _entry_candidate_text(entry, ledger_text)
         findings, problems, vocabulary = _parse_text(candidate, ledger)
+    except LedgerReadRefused:
+        raise
     except (OSError, UnicodeError, LedgerError) as exc:
         return None, [f"could not read or parse {entry_path}: {exc}"]
 
@@ -5689,12 +5894,14 @@ def _validate_entry_text(
 
 
 def _warn_filing_entry(entry: str, ledger: Path, decisions: Path) -> None:
-    """Emit advisory filing context; none of these checks blocks publication."""
+    """Emit advisory filing context, blocking publication only on a ledger guard refusal."""
     try:
-        ledger_text = ledger.read_text(encoding="utf-8")
+        ledger_text = _read_ledger_text(ledger)
         candidate = _entry_candidate_text(entry, ledger_text)
         findings, problems, vocabulary = _parse_text(candidate, ledger)
         existing, _existing_problems, _existing_vocabulary = parse(ledger)
+    except LedgerReadRefused:
+        raise
     except (LedgerError, OSError, UnicodeError) as exc:
         print(f"WARN could not inspect filing context: {exc}", file=sys.stderr)
         return
@@ -5722,6 +5929,8 @@ def _warn_filing_entry(entry: str, ledger: Path, decisions: Path) -> None:
         try:
             with redirect_stdout(sys.stderr):
                 _print_related_decisions([finding], decisions, ledger)
+        except LedgerReadRefused:
+            raise
         except (LedgerError, OSError, UnicodeError) as exc:
             print(
                 f"WARN could not read related decisions for {finding.id}: {exc}",
@@ -6135,7 +6344,7 @@ def _write_if_unchanged(
     replaces the file: a replacement would register a commit attempt for a
     write that changed nothing.
     """
-    current = path.read_text(encoding="utf-8")
+    current = _read_ledger_text(path)
     if current != expected:
         raise LedgerError(
             f"ledger {path} changed after it was read; refusing to overwrite it"
@@ -6161,7 +6370,7 @@ def _ledger_mutation_scope(path: Path) -> Iterator[str]:
         )
     try:
         _sweep_scratch(path.parent, lambda target: target == path.name)
-        text = path.read_text(encoding="utf-8")
+        text = _read_ledger_text(path)
         _refuse_controller_export(path, text, "a ledger mutation")
         yield text
     except LedgerError:
@@ -7113,6 +7322,8 @@ def _immediate_claim_content_proven(
             identifier: (leading, body)
             for identifier, leading, body in _immediate_entry_line_regions(ledger_text)
         }
+    except LedgerReadRefused:
+        raise
     except (OSError, UnicodeError, LedgerError) as exc:
         raise LedgerError(
             f"could not parse ledger {ledger} while recovering {claim}: {exc}"
@@ -7176,6 +7387,8 @@ def _immediate_claim_content_proven(
                     return False
                 if not _ordered_content_preserved(raw_body, ledger_body):
                     return False
+        except LedgerReadRefused:
+            raise
         except (OSError, UnicodeError, LedgerError):
             return False
     return True
@@ -7662,7 +7875,7 @@ def _recover_claim(
         ] or [identifier for identifier in intent.ids if not intent.quarantined]
         if ids:
             try:
-                ledger_text = ledger.read_text(encoding="utf-8")
+                ledger_text = _read_ledger_text(ledger)
             except (OSError, UnicodeError) as exc:
                 raise LedgerError(
                     f"could not read ledger {ledger} while recovering {claim}: {exc}"
@@ -7840,8 +8053,10 @@ def _merge_sources(claimed: list[Path], ledger: Path) -> list[str]:
         normalized = _normalise_sentry_origin_entry(text, ledger)
         try:
             findings, problems, _vocabulary = _parse_text(
-                _entry_candidate_text(normalized, ledger.read_text(encoding="utf-8")), ledger
+                _entry_candidate_text(normalized, _read_ledger_text(ledger)), ledger
             )
+        except LedgerReadRefused:
+            raise
         except (OSError, UnicodeError, LedgerError) as exc:
             raise LedgerError(f"could not parse claimed filing {path}: {exc}") from exc
         if len(findings) == 1 and problems:
@@ -8092,6 +8307,8 @@ def _head_ledger_snapshot(
                     )
                     == 0
                 )
+        except LedgerReadRefused:
+            raise
         except (LedgerError, OSError, UnicodeError, ValueError) as exc:
             valid = False
             detail = str(exc)
@@ -8113,6 +8330,8 @@ def _validate_ledger_paths(findings: Path, decisions: Path) -> tuple[bool, str]:
             result = cmd_check(
                 argparse.Namespace(ledger=findings, decisions=decisions)
             )
+    except LedgerReadRefused:
+        raise
     except (LedgerError, OSError, UnicodeError, ValueError) as exc:
         return False, str(exc)
     if result == 0:
@@ -8128,6 +8347,8 @@ def _validate_candidate_pair(
     try:
         with _candidate_scratch(candidate, near) as scratch:
             return _validate_ledger_paths(scratch, decisions)
+    except LedgerReadRefused:
+        raise
     except (LedgerError, OSError, UnicodeError, ValueError) as exc:
         return False, str(exc)
 
@@ -8140,6 +8361,8 @@ def _candidate_citation_issues(
         with _candidate_scratch(candidate, near) as scratch:
             _resolved, issues = _citation_resolution(scratch, decisions)
             return issues
+    except LedgerReadRefused:
+        raise
     except (LedgerError, OSError, UnicodeError, ValueError) as exc:
         return [str(exc)]
 
@@ -8290,7 +8513,7 @@ def _claim_entry_expectations(
             )
 
     result: dict[str, tuple[Path, FindingExpectation]] = {}
-    ledger_text = ledger.read_text(encoding="utf-8")
+    ledger_text = _read_ledger_text(ledger)
     for path in intent.claimed:
         if path.name not in records_by_file:
             raise LedgerError(
@@ -8301,6 +8524,8 @@ def _claim_entry_expectations(
             merged = _merge_sources([path], ledger)
             text = merged[0] if merged else ""
             entries = _receipt_entry_texts(text)
+        except LedgerReadRefused:
+            raise
         except (OSError, UnicodeError, LedgerError) as exc:
             raise LedgerError(f"could not read {path} while reconciling {claim}: {exc}") from exc
         expected_keys = [
@@ -8518,7 +8743,7 @@ def _reconcile_inbox_claim(
         )
 
     entry_expectations = _claim_entry_expectations(claim, ledger, intent)
-    working_text = ledger.read_text(encoding="utf-8")
+    working_text = _read_ledger_text(ledger)
     working_findings, _problems, _vocabulary = _parse_text(working_text, ledger)
     with _head_ledger_snapshot(ledger, decisions) as snapshot:
         if snapshot.findings_text is None:
@@ -8598,10 +8823,10 @@ def _ledger_bytes_postcondition(
     def holds(findings_path: Path, decisions_path: Path) -> bool:
         try:
             return (
-                (findings_bytes is None or findings_path.read_bytes() == findings_bytes)
+                (findings_bytes is None or _read_ledger_bytes(findings_path) == findings_bytes)
                 and (
                     decisions_bytes is None
-                    or decisions_path.read_bytes() == decisions_bytes
+                    or _read_ledger_bytes(decisions_path) == decisions_bytes
                 )
             )
         except OSError:
@@ -8651,8 +8876,8 @@ def _settle_pending_ledger_dirt(intent: LedgerCommitIntent) -> None:
                 f"pending ledger dirt does not validate ({detail}); repair it before merging"
             )
 
-        findings_bytes = findings.read_bytes() if findings in dirty_paths else None
-        decisions_bytes = decisions.read_bytes() if decisions in dirty_paths else None
+        findings_bytes = _read_ledger_bytes(findings) if findings in dirty_paths else None
+        decisions_bytes = _read_ledger_bytes(decisions) if decisions in dirty_paths else None
         if findings_bytes is not None:
             # Judge the exact bytes the commit carries while both ledgers are
             # locked, so a Controller regeneration cannot slip in afterward.
@@ -8680,6 +8905,8 @@ def _settle_pending_ledger_dirt(intent: LedgerCommitIntent) -> None:
         result = _attempt_ledger_commit(settle_intent, lock_held=True)
         if not result.durable:
             paths = " ".join(str(path) for path in dirty_paths)
+            if _ledger_guard_refusal(result.cause):
+                raise LedgerReadRefused(f"{result.cause}. {_rollback_remedy(primary)}")
             if result.durable_head:
                 raise LedgerError(
                     f"pending ledger dirt produced durable commit {result.durable_head} "
@@ -8747,7 +8974,7 @@ def _reconcile_answers_claim(
         for name, value in intent.files.items()
         if name not in intent.quarantined
     }
-    working_text = ledger.read_text(encoding="utf-8")
+    working_text = _read_ledger_text(ledger)
     # Every later ``records`` is a subset of these, so one parse per ledger text
     # serves every answer, however the quarantine narrows the batch.
     answered_ids = {
@@ -8950,7 +9177,7 @@ def _finalize_inbox_claim_locked(
         )
 
     try:
-        ledger_text = ledger.read_text(encoding="utf-8")
+        ledger_text = _read_ledger_text(ledger)
     except (OSError, UnicodeError) as exc:
         raise LedgerError(f"could not read ledger {ledger} while finalising {claim}: {exc}") from exc
     if not intent.ids or not all(identifier in header_ids(ledger_text) for identifier in intent.ids):
@@ -9024,6 +9251,8 @@ def cmd_finalize_claims(args: argparse.Namespace) -> int:
         mode = _claim_finalisation_mode(args.ledger, merge_without_intent=False)
         if mode == "deferred":
             _deferred_preconditions(args.ledger, decisions)
+    except LedgerReadRefused:
+        raise
     except LedgerError as exc:
         print(f"FAIL {exc}", file=sys.stderr)
         return 1
@@ -9041,7 +9270,7 @@ def cmd_finalize_claims(args: argparse.Namespace) -> int:
     try:
         if mode == "immediate":
             try:
-                original = args.ledger.read_text(encoding="utf-8")
+                original = _read_ledger_text(args.ledger)
                 issues = _validate_text(original, args.ledger)
             except (OSError, UnicodeError) as exc:
                 print(
@@ -9080,6 +9309,8 @@ def cmd_finalize_claims(args: argparse.Namespace) -> int:
                 try:
                     with _publish_lock(publish_lock_path(args.answers)):
                         _mark_answers_claim_manual_repair(claim, exc.ids)
+                except LedgerReadRefused:
+                    raise
                 except (LedgerError, OSError, UnicodeError) as mark_exc:
                     print(
                         f"FAIL {claim}: could not record manual-repair state: "
@@ -9092,6 +9323,8 @@ def cmd_finalize_claims(args: argparse.Namespace) -> int:
                     outcomes.append((claim, FINALIZE_OUTCOME_MANUAL_REPAIR))
                     manual_repair_ids[claim] = exc.ids
                     continue
+            except LedgerReadRefused:
+                raise
             except (LedgerError, OSError, UnicodeError) as exc:
                 print(f"FAIL {claim}: {exc}", file=sys.stderr)
                 outcomes.append((claim, None))
@@ -9164,6 +9397,8 @@ def merge_inbox(
             intent = _ACTIVE_LEDGER_COMMIT
             if intent is not None and os.environ.get(LEDGER_COMMIT_ENV) != "0":
                 _settle_pending_ledger_dirt(intent)
+    except LedgerReadRefused:
+        raise
     except LedgerError as exc:
         print(f"FAIL {exc}", file=sys.stderr)
         return MergeResult(1)
@@ -9193,6 +9428,8 @@ def merge_inbox(
                 return _merge_inbox_publish_locked(
                     inbox, ledger, decisions=decisions, mode=mode
                 )
+            except LedgerReadRefused:
+                raise
             except LedgerError as exc:
                 print(f"FAIL {exc}", file=sys.stderr)
                 return MergeResult(1)
@@ -9306,6 +9543,8 @@ def _merge_inbox_publish_locked(
         )
     try:
         receipt_index = _receipt_index(inbox, _merge_receipt_digests(inbox, legacy))
+    except LedgerReadRefused:
+        raise
     except LedgerError as exc:
         orphan_context = next(iter(inbox.glob(".*.part")), None)
         suffix = (
@@ -9354,7 +9593,7 @@ def _merge_inbox_publish_locked(
     legacy_claimed = (claim / legacy.name).exists()
 
     try:
-        ledger_text = ledger.read_text(encoding="utf-8")
+        ledger_text = _read_ledger_text(ledger)
         _refuse_controller_export(ledger, ledger_text, "merge-inbox")
         sources = _merge_sources(claimed, ledger)
         raw_sources = [
@@ -9367,6 +9606,8 @@ def _merge_inbox_publish_locked(
                 else text
                 for path, text in zip(claimed, sources, strict=True)
             ]
+    except LedgerReadRefused:
+        raise
     except (OSError, UnicodeDecodeError, LedgerError) as exc:
         # Admission failures are about the filed source's status, so leave the
         # published file in the inbox for correction/retry. Other parse and
@@ -9378,6 +9619,8 @@ def _merge_inbox_publish_locked(
                     _return_claimed_file(claimed_path, inbox, legacy)
                 _remove_claim_intent(claim)
                 claim.rmdir()
+            except LedgerReadRefused:
+                raise
             except (OSError, LedgerError) as restore_exc:
                 print(
                     f"FAIL could not restore refused filing claim {claim}: {restore_exc}",
@@ -9421,6 +9664,8 @@ def _merge_inbox_publish_locked(
             parts.append(rewritten)
             assigned += minted
             assigned_by_file[published_path] = minted
+    except LedgerReadRefused:
+        raise
     except LedgerError as exc:
         print(
             f"FAIL {exc}. The ledger is unchanged and the batch is preserved "
@@ -9511,6 +9756,8 @@ def _merge_inbox_publish_locked(
             receipt_ids,
             fixed=fixed,
         )
+    except LedgerReadRefused:
+        raise
     except (LedgerError, OSError) as exc:
         print(
             f"FAIL {exc}. The ledger is unchanged and the batch is preserved "
@@ -9522,6 +9769,8 @@ def _merge_inbox_publish_locked(
         try:
             for path, rewritten in zip(claimed, parts, strict=True):
                 _atomic_write(path, rewritten + "\n", durable_directory=True)
+        except LedgerReadRefused:
+            raise
         except (LedgerError, OSError) as exc:
             print(
                 f"FAIL {exc}. The ledger is unchanged and the batch is preserved "
@@ -9657,6 +9906,8 @@ def _merge_inbox_publish_locked(
 
     try:
         _write_if_unchanged(ledger, ledger_text, candidate, durable_directory=True)
+    except LedgerReadRefused:
+        raise
     except (LedgerError, OSError) as exc:
         print(
             f"FAIL {exc}. The ledger may already have changed and the batch is "
@@ -9974,7 +10225,7 @@ def _stage_intake(inbox: Path, raw: bytes, *, filing_token: str | None = None) -
 
 
 def _filing_citation_issues(entry: str, ledger: Path, decisions: Path) -> list[str]:
-    candidate = ledger.read_text(encoding="utf-8").rstrip() + "\n\n" + entry + "\n"
+    candidate = _read_ledger_text(ledger).rstrip() + "\n\n" + entry + "\n"
     return _candidate_citation_issues(candidate, ledger, decisions)
 
 
@@ -10163,7 +10414,10 @@ def _intake_recovery_entry(raw: bytes, ledger_text: str) -> str:
 
 
 def _sweep_intake(inbox: Path, ledger: Path, decisions: Path) -> None:
-    """Best-effort intake recovery under both merge locks; never block the queue."""
+    """Best-effort intake recovery under both merge locks.
+
+    Block the queue only on a ledger guard refusal.
+    """
     directory = intake_directory(inbox)
     try:
         paths = sorted(directory.iterdir())
@@ -10180,7 +10434,7 @@ def _sweep_intake(inbox: Path, ledger: Path, decisions: Path) -> None:
                 continue
             raw = path.read_bytes()
             token = _intake_filing_token(path)
-            recovery = _intake_recovery_entry(raw, ledger.read_text(encoding="utf-8"))
+            recovery = _intake_recovery_entry(raw, _read_ledger_text(ledger))
             reason = "interrupted staging"
             entry = None
             if not path.name.startswith(".") and path.suffix == ".md":
@@ -10198,6 +10452,8 @@ def _sweep_intake(inbox: Path, ledger: Path, decisions: Path) -> None:
                             print(f"intake-filed {path.name}")
                             continue
                     reason = issues[0] if issues else "entry cannot be filed"
+                except LedgerReadRefused:
+                    raise
                 except (LedgerError, UnicodeError) as exc:
                     if isinstance(exc.__cause__, OSError):
                         raise
@@ -10218,6 +10474,8 @@ def _sweep_intake(inbox: Path, ledger: Path, decisions: Path) -> None:
                         continue
                 reason = issues[0] if issues else reason
             print(f"intake-pending {path.name}: {reason}")
+        except LedgerReadRefused:
+            raise
         except (OSError, LedgerError, UnicodeError) as exc:
             print(f"WARN intake {path.name}: {exc}", file=sys.stderr)
     try:
@@ -10332,6 +10590,8 @@ def cmd_file(args: argparse.Namespace) -> int:
                 raise LedgerError(f"could not publish filing to {inbox}: {exc}") from exc
             promoted = True
             _complete_intake_filing(source, published, replaces)
+    except LedgerReadRefused:
+        raise
     except (LedgerError, OSError, UnicodeError) as exc:
         print(f"FAIL {exc}", file=sys.stderr)
         return 2 if isinstance(exc, (PublishLockBusyError, LedgerDirtyError)) else 1
@@ -11658,6 +11918,8 @@ def cmd_answer(args: argparse.Namespace) -> int:
     """CLI answer wrapper with a typed usage/refusal status."""
     try:
         return _cmd_answer(args)
+    except LedgerReadRefused:
+        raise
     except (LedgerError, OSError, UnicodeError) as exc:
         print(f"FAIL {exc}", file=sys.stderr)
         return 2
@@ -11668,6 +11930,8 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
     spool: Path = args.answers
     try:
         kept_ids = _manual_repair_answers_claim_ids(spool)
+    except LedgerReadRefused:
+        raise
     except LedgerError as exc:
         print(f"FAIL {exc}", file=sys.stderr)
         return 1
@@ -12217,6 +12481,8 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
         try:
             with _publish_lock(publish_lock_path(spool)):
                 _mark_answers_claim_manual_repair(claim, exc.ids)
+        except LedgerReadRefused:
+            raise
         except (LedgerError, OSError, UnicodeError) as mark_exc:
             print(
                 f"FAIL {claim}: could not record manual-repair state: {mark_exc}",
@@ -12275,7 +12541,7 @@ def _plan_only_refuses(args: argparse.Namespace) -> bool:
     if os.environ.get(PLAN_ONLY_ENV) != "1":
         return False
     claim_next = args.command == "next" and bool(getattr(args, "claim", False))
-    if COMMAND_CLASSIFICATION.get(args.command) != "guarded" and not claim_next:
+    if not _invocation_persists(args):
         return False
     if _plan_only_file_exception(args):
         return False
@@ -12284,6 +12550,14 @@ def _plan_only_refuses(args: argparse.Namespace) -> bool:
         file=sys.stderr,
     )
     return True
+
+
+def _invocation_persists(args: argparse.Namespace) -> bool:
+    if args.command == "file" and bool(getattr(args, "status", False)):
+        return False
+    return COMMAND_CLASSIFICATION.get(args.command) == "guarded" or (
+        args.command == "next" and bool(getattr(args, "claim", False))
+    )
 
 
 LEDGER_COMMIT_ENV = "FINDINGS_LEDGER_COMMIT"
@@ -12451,6 +12725,8 @@ def _head_postcondition(intent: LedgerCommitIntent) -> tuple[bool, str]:
             ):
                 return False, "the command's write is not in HEAD"
             return True, ""
+    except LedgerReadRefused:
+        raise
     except (LedgerError, OSError, UnicodeError, ValueError) as exc:
         return False, f"could not verify HEAD: {exc}"
 
@@ -12497,7 +12773,14 @@ def _warn_ledger_commit(
             + " ".join(intent.provisional)
             + " printed above are provisional — a replay re-mints any that were used meanwhile"
         )
-    if durable_head:
+    if _ledger_guard_refusal(cause):
+        prefix = (
+            f"WARNING ledger commit for {intent.ledger} after {intent.command} "
+            f"({identifiers}) was not committed: the ledger rollback guard refused it "
+            "(the bytes drop committed content, or preservation could not be established): "
+        )
+        recovery += ". " + _rollback_remedy(intent.ledger)
+    elif durable_head:
         prefix = (
             f"WARNING ledger commit for {intent.ledger} after {intent.command} "
             f"({identifiers}) is durable as {durable_head} but was not fully verified: "
@@ -12851,7 +13134,7 @@ def _attempt_ledger_commit(
                     durable_head=head,
                     phase="after-update-ref",
                 )
-            if _resolved_repo_path(intent.ledger).read_bytes() != head_bytes.stdout:
+            if _read_ledger_bytes(_resolved_repo_path(intent.ledger)) != head_bytes.stdout:
                 return LedgerCommitResult(True, durable_head=head)
             mode = _head_file_mode(root, head, relative)
             staged = _git_for_ledger(root, "ls-files", "--stage", "--", relative)
@@ -12886,6 +13169,8 @@ def _attempt_ledger_commit(
                     durable_head=head,
                     phase="after-update-ref",
                 )
+        except LedgerReadRefused:
+            raise
         except (LedgerError, OSError, UnicodeError, ValueError) as exc:
             return failed(
                 f"ledger commit is durable but index refresh failed: {exc}",
@@ -12947,7 +13232,7 @@ def _attempt_ledger_commit(
                 return failed(f"no exact bytes were recorded for {path}")
             if require_worktree_match:
                 try:
-                    actual = _resolved_repo_path(path).read_bytes()
+                    actual = _read_ledger_bytes(_resolved_repo_path(path))
                     saved_bytes = saved.read_bytes() if saved is not None else expected or b""
                 except (OSError, UnicodeError) as exc:
                     return failed(f"could not read exact ledger bytes for {path}: {exc}")
@@ -12967,6 +13252,20 @@ def _attempt_ledger_commit(
         old_head = intent.expected_head or current_head
         if intent.expected_head is not None and current_head != intent.expected_head:
             return failed(f"HEAD is {current_head}, not {intent.expected_head}")
+
+        for path, relative, saved, expected in zip(
+            paths, relatives, scratch_paths, expected_bytes, strict=True
+        ):
+            try:
+                blob = _head_file_blob(root, old_head, relative)
+                content = saved.read_bytes() if saved is not None else expected or b""
+                kind = "decisions" if path == intent.decisions else "findings"
+                _refuse_ledger_rollback(root, path, blob, old_head, content, kind)
+            except (LedgerError, OSError, UnicodeError) as exc:
+                cause = str(exc)
+                if not cause.startswith(LEDGER_ROLLBACK_PREFIX):
+                    cause = f"{LEDGER_ROLLBACK_PREFIX} {path}, parent {old_head}: {exc}"
+                return failed(cause)
 
         # A no-op consumer mutation has no semantic postcondition to evaluate.
         # If its exact saved bytes already occupy HEAD, that is durable and must
@@ -13099,6 +13398,11 @@ def _attempt_ledger_commit(
         _discard_scratch(scratch)
         _discard_scratch(companion_scratch)
         return LedgerCommitResult(True, durable_head=new_head, phase="after-update-ref")
+    except LedgerReadRefused as exc:
+        return failed(
+            str(exc), durable_head=installed_head,
+            phase="after-update-ref" if installed_head else "before-update-ref",
+        )
     except (LedgerError, OSError, UnicodeError, ValueError) as exc:
         return failed(
             f"commit helper failed: {exc}",
@@ -13151,7 +13455,7 @@ def cmd_commit_ledger(args: argparse.Namespace) -> int:
                 )
                 return 1
             expected_bytes = expected_path.read_bytes()
-            if ledger.read_bytes() != expected_bytes:
+            if _read_ledger_bytes(ledger) != expected_bytes:
                 _print_commit_metadata(phase="before-update-ref")
                 print(
                     f"FAIL worktree ledger differs from --expected {expected_path}",
@@ -13414,7 +13718,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    global _ACTIVE_LEDGER_COMMIT
+    global _ACTIVE_LEDGER_COMMIT, _GUARDED_LEDGER_PATHS
     parser = build_parser()
     args = parser.parse_args(argv)
     root = _require_git_toplevel()
@@ -13474,6 +13778,9 @@ def main(argv: list[str] | None = None) -> int:
         and bool(getattr(args, "hold_consumer_lock", False))
     )
     command_result: int = 1
+    previous_guard = _GUARDED_LEDGER_PATHS
+    if _invocation_persists(args):
+        _GUARDED_LEDGER_PATHS = {args.ledger: "findings", args.decisions: "decisions"}
     try:
         try:
             command_result = args.func(args)
@@ -13551,6 +13858,8 @@ def main(argv: list[str] | None = None) -> int:
             ):
                 try:
                     finalization = intent.finalize()
+                except LedgerReadRefused:
+                    raise
                 except Exception as exc:  # noqa: BLE001
                     # The ledger write is already durable, so whatever the
                     # finalizer raised — a defect included — is not hidden: its
@@ -13581,6 +13890,9 @@ def main(argv: list[str] | None = None) -> int:
                         f"{answers_option}",
                         file=sys.stderr,
                     )
+        except LedgerReadRefused as exc:
+            print(f"FAIL {exc}", file=sys.stderr)
+            command_result = 1
         except Exception as exc:  # noqa: BLE001
             # The same status-transparency boundary as the commit above: the
             # ledger write is already durable, so a post-commit defect is
@@ -13598,7 +13910,10 @@ def main(argv: list[str] | None = None) -> int:
                         ),
                     )
         finally:
-            _release_consumer_lock(args)
+            try:
+                _release_consumer_lock(args)
+            finally:
+                _GUARDED_LEDGER_PATHS = previous_guard
     return command_result
 
 
