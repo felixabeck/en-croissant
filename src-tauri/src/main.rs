@@ -973,7 +973,7 @@ fn issue_download_destination_blocking(
             display_name.clone(),
             crate::infra::path_authority::PathClass::SingleDialogGrant,
             crate::infra::path_authority::PathOperation::DownloadFile,
-            Duration::from_secs(300),
+            crate::infra::path_authority::PICKER_DIALOG_GRANT_TTL,
             1,
         )?;
         Ok(authority
@@ -1380,7 +1380,7 @@ fn issue_engine_resource_blocking(
             label.clone(),
             crate::infra::path_authority::PathClass::SingleDialogGrant,
             crate::infra::path_authority::PathOperation::EngineResourceRead,
-            Duration::from_secs(300),
+            crate::infra::path_authority::PICKER_DIALOG_GRANT_TTL,
             1,
         )?;
         authority.promote_engine_resource(
@@ -1468,7 +1468,7 @@ fn issue_engine_image_blocking<R: tauri::Runtime>(
                 display_name.clone(),
                 crate::infra::path_authority::PathClass::SingleDialogGrant,
                 crate::infra::path_authority::PathOperation::ImageRead,
-                Duration::from_secs(300),
+                crate::infra::path_authority::PICKER_DIALOG_GRANT_TTL,
                 1,
             )?;
             Ok::<_, Error>((issuance_lease, grant))
@@ -5422,9 +5422,8 @@ mod blocking_offload_scans {
 
 #[cfg(test)]
 mod close_splashscreen_tests {
-    use super::{reconcile_startup_path_owners, show_labeled_main_window, AppState, Error};
+    use super::{show_labeled_main_window, Error};
     use crate::error::ErrorCategory;
-    use tauri::Manager;
 
     #[test]
     fn missing_main_window_is_typed_invalid_input() {
@@ -5440,6 +5439,39 @@ mod close_splashscreen_tests {
             "Invalid input: no window labeled 'main' found"
         );
     }
+
+    #[test]
+    fn existing_main_window_is_shown() {
+        let app = tauri::test::mock_app();
+        tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("create labeled main window");
+        show_labeled_main_window(app.handle()).expect("show existing main window");
+    }
+
+    #[test]
+    fn show_failure_stays_an_opaque_platform_payload() {
+        let error = Error::from(tauri::Error::AssetNotFound(
+            "/private/secret-tauri-asset".into(),
+        ));
+        assert_eq!(error.category(), ErrorCategory::Platform);
+        let serialized = serde_json::to_string(&error).expect("serialize show failure");
+        assert!(
+            !serialized.contains("/private/secret-tauri-asset"),
+            "tauri Display leaked in {serialized}"
+        );
+        let payload: serde_json::Value =
+            serde_json::from_str(&serialized).expect("show failure is JSON");
+        assert_eq!(payload["tag"], "backend-error");
+        assert_eq!(payload["category"], "platform");
+        assert_eq!(payload["message"], "platform failure");
+    }
+}
+
+#[cfg(test)]
+mod authority_unavailable_command_tests {
+    use super::{reconcile_startup_path_owners, AppState};
+    use tauri::Manager;
 
     #[tokio::test]
     async fn unavailable_authority_commands_preserve_renderer_payloads() {
@@ -5495,32 +5527,5 @@ mod close_splashscreen_tests {
                 .unwrap()
                 .is_empty());
         }
-    }
-
-    #[test]
-    fn existing_main_window_is_shown() {
-        let app = tauri::test::mock_app();
-        tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
-            .build()
-            .expect("create labeled main window");
-        show_labeled_main_window(app.handle()).expect("show existing main window");
-    }
-
-    #[test]
-    fn show_failure_stays_an_opaque_platform_payload() {
-        let error = Error::from(tauri::Error::AssetNotFound(
-            "/private/secret-tauri-asset".into(),
-        ));
-        assert_eq!(error.category(), ErrorCategory::Platform);
-        let serialized = serde_json::to_string(&error).expect("serialize show failure");
-        assert!(
-            !serialized.contains("/private/secret-tauri-asset"),
-            "tauri Display leaked in {serialized}"
-        );
-        let payload: serde_json::Value =
-            serde_json::from_str(&serialized).expect("show failure is JSON");
-        assert_eq!(payload["tag"], "backend-error");
-        assert_eq!(payload["category"], "platform");
-        assert_eq!(payload["message"], "platform failure");
     }
 }

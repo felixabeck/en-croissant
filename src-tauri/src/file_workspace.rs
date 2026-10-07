@@ -12,6 +12,7 @@ use crate::{
         workspace_sidecar_leaf as sidecar_leaf, CommitDurability, FileWorkspaceDescriptor,
         FileWorkspaceHandle, IdentityBinding, PathAuthority, PathClass, PathOperation, PathRef,
         SharedPathAuthority, WorkspaceMutationTarget, WorkspaceRemovalStatus,
+        PICKER_DIALOG_GRANT_TTL,
     },
     pgn, AppState,
 };
@@ -21,7 +22,6 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::Duration,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -740,7 +740,7 @@ fn issue_file_workspace_blocking(
             display_name.clone(),
             PathClass::BoundedDialogGrant,
             vec![PathOperation::ReadPgn, PathOperation::WritePgn],
-            Duration::from_secs(300),
+            PICKER_DIALOG_GRANT_TTL,
             1,
         )?;
         let committed = authority.promote_dialog(
@@ -1777,6 +1777,7 @@ mod tests {
     use std::os::unix::fs::MetadataExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
+    use std::time::Duration;
     use tauri::Manager;
     use tempfile::TempDir;
 
@@ -6712,6 +6713,7 @@ mod workspace_directory_enumeration_tests {
     use std::os::unix::fs::FileExt;
     use std::os::unix::fs::MetadataExt;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
     use tempfile::TempDir;
 
     fn workspace_fixture() -> (TempDir, SharedPathAuthority, FileWorkspaceHandle, PathBuf) {

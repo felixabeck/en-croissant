@@ -133,6 +133,8 @@ pub(crate) const PGN_FILE_DIALOG_GRANT_TTL: Duration = Duration::from_secs(30 * 
 /// Maximum permitted-operation resolution attempts before a PGN-file dialog grant is consumed.
 /// Promotion consumes the entire grant regardless of its remaining uses.
 pub(crate) const PGN_FILE_DIALOG_GRANT_USES: u32 = 128;
+/// Lifetime of a dialog grant that a native picker issues and promotes within one command.
+pub(crate) const PICKER_DIALOG_GRANT_TTL: Duration = Duration::from_secs(5 * 60);
 const MAX_REGISTRY_BYTES: usize = 16 * 1024 * 1024;
 const MAX_LEGACY_REGISTRY_BYTES: u64 = 64 * 1024 * 1024;
 fn map_db3_children_cancellable<T>(
@@ -10102,7 +10104,6 @@ pub(crate) mod portable_tests {
     fn root_failure_database_listing_authority_poison_and_initialization_stay_unlabelled() {
         for poison in [false, true] {
             let (_directory, registry, handle, _root) = root_failure_database_fixture();
-            let registry = Arc::new(registry);
             if poison {
                 registry.poison();
             } else {
@@ -10195,7 +10196,6 @@ pub(crate) mod portable_tests {
     #[test]
     fn root_failure_probe_cancellation_while_waiting_for_authority_is_unlabelled() {
         let (_directory, registry, handle, _root) = root_failure_database_fixture();
-        let registry = Arc::new(registry);
         let observer =
             crate::infra::cancellable_lock::observe_std_lock_wait(registry.raw_for_test());
         let held = registry.raw_for_test().lock().unwrap();
