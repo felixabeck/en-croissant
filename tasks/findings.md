@@ -13340,6 +13340,22 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
 * **Correction (2026-10-06, push-review records lens over `c837f832..9314a341`; the trash exclusion verified at `file_workspace.rs:432`):** "the next listing prunes the old record and registers the moved file under a fresh identity" holds for move and rename only. After a failed trash rebind the moved file sits under `.en-croissant-trash`, which the listing excludes (`dir.entries(…, |name| name != TRASH_DIRECTORY)`), so it is not rediscovered at all. After a failed restore rebind the old trash-path record lies under the prefix `directory_listing_snapshot` excludes from its pruning snapshot (`infra/path_authority/mod.rs` ~4263, `excluded_prefix`), so it stays registered beside the newly discovered record. The fix has to handle both consequences per operation.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"c77075d47ee0a565807d8d481c9332fd9bfc987a82d47d4994ee5ddff9088f95","input_sha256":"b3b1e45b8ef3c51415a93e403436dfb856b72e8f7eb7b96b98fbd467a2e19f92","kind":"mutation-receipt","operation":"ab552de342aa406993136f672e70584c23218855b6e50b8450a6303e0f9add95","options":{"section":null},"request_id_sha256":null,"results":["f-20261006-03"],"target":"f-20261006-03","v":1} -->
 
+* **Inherited constraints (2026-10-07, from the f-20260919-07 plan review, issues I4 and I6):** the
+  f-20260919-07 change (`de483f27`) routes the rename path's post-move sidecar write through
+  `replace_workspace_file_metadata` in `src-tauri/src/file_workspace.rs`, whose precommit rechecks the
+  moved PGN's identity; an ordinary failure there, now including that identity `Conflict`, still
+  returns before the rebind with nothing moved back, exactly as this finding describes. Whatever
+  contract this finding chooses for an ordinary failure after a committed `paired_rename` must honour
+  two constraints found in that review: (I6) a reversal may move a sidecar back only while it is the
+  object the rename moved — a substituted `new.info` is left in place and reported as a failed
+  cleanup, because `rename_optional_regular_at` (`src-tauri/src/infra/fs.rs`) checks only the kind,
+  not the moved identity; (I4) an identity-checked PGN reversal after a PGN substitution fails, so its
+  outcome is a cleanup failure (`OperationAndCleanup` through `Error::with_cleanup`), not a plain
+  `Conflict`. The planner of this finding must load
+  `tasks/handoffs/2026-10-07-f-20260919-07-review.md` (issues I3, I4, I6 and decision
+  `d-20261007-05`) before review.
+<!-- ledger-meta {"command":"annotate","effect_lines":14,"effect_sha256":"6fd1e6b7227be908b635c7f7b6eb9015b24221049fc490dce53f4dc2bc5a5eff","input_sha256":"505117a88da6ae2e2b680ea28319032839fe2575752895d6d2a529beb8f72255","kind":"mutation-receipt","operation":"b7b0df82aa209d5961960def197e3a971dcf91e721258a60d196c0177ca6ce35","options":{"section":null},"request_id_sha256":null,"results":["f-20261006-03"],"target":"f-20261006-03","v":1} -->
+
 ---
 
 ## 2026-10-06 — filed through the inbox spool
