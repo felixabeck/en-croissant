@@ -11171,6 +11171,9 @@ This is the second annotation in a row where a claim in this entry turned out to
 * **Out of scope:** `f-20260921-05` (a different legacy-identity file set) stays open. The in-flight start-IPC race named beside this finding stays out of this close.
 <!-- ledger-meta {"command":"close","effect_lines":5,"effect_sha256":"fa1c2370a9aa38b947ae4301ca1db7f975f5d2aef1da5326ba32998c490f7294","header_sha256":"70ce5a9144d2862eef004b6c2f4eaca465f42ca03bd8a48b89e10ba71dff01db","header_status":"handled","input_sha256":"f2c82143d722712b0238a1c371ca2e226d7b774d02ad7005a8246541d90a1cef","kind":"mutation-receipt","operation":"6aaf24c291cbd31552c9c633768f67faaf4507a4a39ed254543d90207957e21a","options":{"section":null},"request_id_sha256":null,"results":["f-20260921-04"],"target":"f-20260921-04","v":1} -->
 
+* **Later status (2026-10-07):** the out-of-scope sentence above was true when this finding closed; `f-20260921-05` was handled later the same day (see its own entry and its build-ledger row).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"ecfb3e8c9525feda50e06477a5597ac60a982ab3a85ab4b63f52e04f941330a9","input_sha256":"43b420fdb5f3869bae4f5ec97eb5642429d92e63ff675ebd5a0013f5b8b5ec82","kind":"mutation-receipt","operation":"604344c49fe0f68b2fe01b56d4f88c97799c1c3c7490e9e84f1d1bb7c02e7b89","options":{"section":null},"request_id_sha256":null,"results":["f-20260921-04"],"target":"f-20260921-04","v":1} -->
+
 ### Legacy identity migration mints a different UUID per storage key, so a pre-id saved selection no longer names its engine
 
 * **ID:** f-20260921-05 · **Status:** handled · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
