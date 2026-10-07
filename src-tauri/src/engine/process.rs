@@ -2017,7 +2017,7 @@ impl EngineSupervisor {
             .collect()
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn owned_keys_for_tab(&self, tab: &str) -> Vec<EngineKey> {
         let mut keys = self.registered_keys_for_tab(tab);
         for entry in self
