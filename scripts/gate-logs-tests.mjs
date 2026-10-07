@@ -18,11 +18,13 @@ import {
   GATE_LOG_DIRECTORY_ENV,
   LOG_TAIL_BYTES,
   MAX_GATE_LOG_RUNS,
+  createLogCapture,
   formatFailureTrailer,
   makeLogDirectory,
   obtainLogDirectory,
   readLogTail,
   transcriptFileName,
+  writeLogChunk,
 } from "./gate-logs.mjs";
 
 function fixture(t) {
@@ -34,6 +36,50 @@ function fixture(t) {
 }
 
 const creationOptions = { now: () => Date.UTC(2026, 9, 7, 12, 34, 56, 789), pid: 123 };
+
+test("writeLogChunk completes strings and buffers across short writes", () => {
+  for (const value of ["complete ä log line\n", Buffer.from("complete ä log line\n")]) {
+    const chunks = [];
+    writeLogChunk(123, value, (fd, buffer, offset, length) => {
+      assert.equal(fd, 123);
+      assert.equal(length, buffer.length - offset);
+      const written = Math.min(3, length);
+      chunks.push(Buffer.from(buffer.subarray(offset, offset + written)));
+      return written;
+    });
+    assert.deepEqual(
+      Buffer.concat(chunks),
+      Buffer.from(value),
+      "short writes must retain every byte",
+    );
+    assert.ok(chunks.length > 1);
+  }
+});
+
+test("writeLogChunk rejects a write that makes no progress", () => {
+  assert.throws(
+    () => writeLogChunk(123, "log line\n", () => 0),
+    /^Error: log write made no progress$/u,
+  );
+});
+
+test("createLogCapture retains the first error and keeps draining later chunks without throwing", () => {
+  const firstError = new Error("first log failure");
+  const laterError = new Error("later log failure");
+  const chunks = [];
+  const logCapture = createLogCapture(123, (fd, chunk) => {
+    assert.equal(fd, 123);
+    chunks.push(chunk);
+    if (chunk === "first") throw firstError;
+    if (chunk === "later") throw laterError;
+  });
+  assert.equal(logCapture.error, undefined);
+  for (const chunk of ["first", "later", "last"]) {
+    assert.doesNotThrow(() => logCapture.capture(chunk));
+    assert.strictEqual(logCapture.error, firstError);
+  }
+  assert.deepEqual(chunks, ["first", "later", "last"]);
+});
 
 test("creation retains the newest 100 real run directories and preserves other entries", (t) => {
   const { root, base } = fixture(t);

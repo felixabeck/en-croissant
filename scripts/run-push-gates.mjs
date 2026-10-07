@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, existsSync, openSync, readFileSync, statSync, writeSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, statSync } from "node:fs";
 import { availableParallelism as defaultAvailableParallelism } from "node:os";
 import { extname, join, relative, resolve, sep } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -17,9 +17,11 @@ import {
 } from "./child-supervisor.mjs";
 import {
   GATE_LOG_DIRECTORY_ENV,
+  createLogCapture,
   formatFailureTrailer,
   makeLogDirectory,
   readLogTail,
+  writeLogChunk,
 } from "./gate-logs.mjs";
 import { E2E_CONTAINER_MEMORY_BYTES } from "./run-e2e-container.mjs";
 import { mutationPackages } from "./frontend-mutation-packages.mjs";
@@ -604,10 +606,6 @@ function logPathFor(logDirectory, name) {
   return join(logDirectory, `${name}.log`);
 }
 
-function appendLog(fd, value) {
-  writeSync(fd, Buffer.isBuffer(value) ? value : String(value));
-}
-
 function commandArgv(command) {
   if (typeof command !== "string") {
     return { executable: command.executable, args: command.args };
@@ -634,7 +632,16 @@ function createTaskResult(logDirectory, name, kind, fields = {}) {
 
 function writeTaskHeader(task, command, append = task.kind === "lane-step") {
   const fd = openSync(task.logPath, append ? "a" : "w");
-  if (command) appendLog(fd, `$ ${command}\n`);
+  try {
+    if (command) writeLogChunk(fd, `$ ${command}\n`);
+  } catch (error) {
+    try {
+      closeSync(fd);
+    } catch {
+      // Preserve the header write error if closing the descriptor also fails.
+    }
+    throw error;
+  }
   return fd;
 }
 
@@ -647,13 +654,12 @@ async function runCommand(
     spawnProcess,
     signalForwarding,
     superviseProcess = defaultSuperviseChild,
-    writeCapturedOutput = appendLog,
+    writeCapturedOutput = writeLogChunk,
   },
 ) {
   const { executable, args } = commandArgv(command);
   const label = commandLabel(command);
   const fd = writeTaskHeader(task, label);
-  let logError;
   let child;
   try {
     child = spawnProcess(executable, args, {
@@ -664,22 +670,14 @@ async function runCommand(
     });
   } catch (error) {
     const message = `spawn ${executable} failed: ${errorMessage(error)}\n`;
-    try {
-      appendLog(fd, message);
-    } catch (writeError) {
-      logError = writeError;
-    }
+    const logCapture = createLogCapture(fd);
+    logCapture.capture(message);
     closeSync(fd);
-    return { code: 127, error, logError };
+    return { code: 127, error, logError: logCapture.error };
   }
 
-  const capture = (chunk) => {
-    try {
-      writeCapturedOutput(fd, chunk);
-    } catch (error) {
-      logError ??= error;
-    }
-  };
+  const logCapture = createLogCapture(fd, writeCapturedOutput);
+  const { capture } = logCapture;
   child.stdout?.on("data", capture);
   child.stderr?.on("data", capture);
   const supervisor = superviseProcess(child, {
@@ -705,6 +703,7 @@ async function runCommand(
     closeSync(fd);
   }
 
+  const logError = logCapture.error;
   if (completion.type === "interrupted") {
     if (completion.outcome.type === "termination-failed") {
       return {
@@ -745,7 +744,7 @@ function skipTask(task, reason) {
   task.code = undefined;
   const fd = writeTaskHeader(task);
   try {
-    appendLog(fd, `Skipped: ${reason}\n`);
+    writeLogChunk(fd, `Skipped: ${reason}\n`);
   } finally {
     closeSync(fd);
   }
@@ -776,7 +775,7 @@ async function runStep(task, command, context) {
     task.error = error;
     const fd = writeTaskHeader(task, commandLabel(command));
     try {
-      appendLog(fd, `beforeStep failed: ${errorMessage(error)}\n`);
+      writeLogChunk(fd, `beforeStep failed: ${errorMessage(error)}\n`);
     } finally {
       closeSync(fd);
     }
@@ -982,7 +981,7 @@ export async function runPushGates(
     discoverChanges = discoverPreReviewChanges,
     runGit = spawnSync,
     beforeStep = undefined,
-    writeCapturedOutput = appendLog,
+    writeCapturedOutput = writeLogChunk,
   } = {},
 ) {
   const args = [...argumentsList];
@@ -1317,7 +1316,7 @@ export async function runPushGates(
     fatalTask.error = fatalError;
     const fd = writeTaskHeader(fatalTask);
     try {
-      appendLog(fd, `Scheduler error: ${errorMessage(fatalError)}\n`);
+      writeLogChunk(fd, `Scheduler error: ${errorMessage(fatalError)}\n`);
     } finally {
       closeSync(fd);
     }

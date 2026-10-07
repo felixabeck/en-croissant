@@ -10,7 +10,13 @@ import { Writable } from "node:stream";
 import { once } from "node:events";
 import { fencedBlocks } from "./check-gate-routing.mjs";
 import { executeAction, GATES, REQUIRED_TOOLS, TOOL_PROBES } from "./gate-receipt.mjs";
-import { GATE_LOG_DIRECTORY_ENV, makeLogDirectory, transcriptFileName } from "./gate-logs.mjs";
+import {
+  GATE_LOG_DIRECTORY_ENV,
+  LOG_TAIL_BYTES,
+  makeLogDirectory,
+  readLogTail,
+  transcriptFileName,
+} from "./gate-logs.mjs";
 
 const EXPECTED_GATES = {
   "backend-test": "cargo test --manifest-path src-tauri/Cargo.toml --all-targets",
@@ -435,6 +441,7 @@ test("changed commands, changed platforms, malformed receipts, and unavailable t
 
 function capturedOutput() {
   const messages = [];
+  const errorMessages = [];
   const stdoutChunks = [];
   const stderrChunks = [];
   const stream = (chunks) =>
@@ -446,12 +453,16 @@ function capturedOutput() {
     });
   return {
     messages,
+    errorMessages,
     stdoutChunks,
     stderrChunks,
     options: {
       output: {
         log: (message) => messages.push(message),
-        error: (message) => messages.push(message),
+        error: (message) => {
+          messages.push(message);
+          errorMessages.push(message);
+        },
       },
       forwardedStdout: stream(stdoutChunks),
       forwardedStderr: stream(stderrChunks),
@@ -515,6 +526,15 @@ test("O2 complete capture: more than 1 MiB on each stream survives with a final 
     /^gate: frontend-build\ncommand: .*\ntree: [0-9a-f]+\nstarted: \d{4}-.*Z\n/u,
   );
   assert.match(transcript, /\nexit: 23\nduration: [\d.]+ ms\n$/u);
+  const tail = readLogTail(path);
+  assert.equal(tail, Buffer.from(transcript).subarray(-LOG_TAIL_BYTES).toString("utf8"));
+  const stderr = captured.errorMessages.join("\n");
+  const tailStart = stderr.indexOf(tail);
+  assert.notEqual(tailStart, -1, "stderr must contain the transcript's last 8 KiB");
+  assert.ok(
+    tailStart + tail.length < stderr.lastIndexOf(captured.messages.at(-1)),
+    "the transcript tail must appear before the final failure trailer",
+  );
   assert.equal(existsSync(join(root, ".gate-receipts", "frontend-build.json")), false);
 });
 

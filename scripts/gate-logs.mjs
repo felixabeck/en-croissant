@@ -3,8 +3,10 @@
  * makeLogDirectory(repoRoot, { now, pid, warn }) creates and prunes a run, while
  * obtainLogDirectory(repoRoot, { env, ...creationOptions }) accepts a validated inherited run
  * or creates one. Relative inherited paths resolve against repoRoot. transcriptFileName(gate)
- * separates receipts from lane logs; readLogTail(path) returns at most LOG_TAIL_BYTES as UTF-8
- * or a one-line read error; formatFailureTrailer(message, path, kind = "log") formats one line.
+ * separates receipts from lane logs; writeLogChunk(fd, value, write) completes each write;
+ * createLogCapture(fd, write) drains chunks while retaining its first error. readLogTail(path)
+ * returns at most LOG_TAIL_BYTES as UTF-8 or a one-line read error;
+ * formatFailureTrailer(message, path, kind = "log") formats one line.
  * Directory creation errors propagate so callers can refuse to start; pruning only warns.
  */
 import {
@@ -17,6 +19,7 @@ import {
   readSync,
   realpathSync,
   rmSync,
+  writeSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
@@ -111,6 +114,32 @@ export function obtainLogDirectory(repoRoot, { env = process.env, ...creationOpt
 
 export function transcriptFileName(gate) {
   return `receipt-${gate}.log`;
+}
+
+export function writeLogChunk(fd, value, write = writeSync) {
+  const buffer = Buffer.isBuffer(value) ? value : Buffer.from(String(value));
+  let offset = 0;
+  while (offset < buffer.length) {
+    const written = write(fd, buffer, offset, buffer.length - offset);
+    if (written === 0) throw new Error("log write made no progress");
+    offset += written;
+  }
+}
+
+export function createLogCapture(fd, write = writeLogChunk) {
+  let error;
+  return {
+    capture(chunk) {
+      try {
+        write(fd, chunk);
+      } catch (writeError) {
+        error ??= writeError;
+      }
+    },
+    get error() {
+      return error;
+    },
+  };
 }
 
 export function readLogTail(path) {

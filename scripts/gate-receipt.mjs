@@ -14,7 +14,6 @@ import {
   rmSync,
   unlinkSync,
   writeFileSync,
-  writeSync,
 } from "node:fs";
 import { arch, platform, release, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -28,10 +27,12 @@ import {
   superviseChild,
 } from "./child-supervisor.mjs";
 import {
+  createLogCapture,
   formatFailureTrailer,
   obtainLogDirectory,
   readLogTail,
   transcriptFileName,
+  writeLogChunk,
 } from "./gate-logs.mjs";
 import { isEntrypoint } from "./entrypoint.mjs";
 import { playwrightImage } from "./playwright-image.mjs";
@@ -277,16 +278,6 @@ function receiptStatus({ gate, repoRoot, now, ttlMs, fingerprintToolchain, comma
   return { hit: true, reason: `exact tree verified ${Math.floor(age / 60000)} minutes ago` };
 }
 
-function writeTranscript(fd, value) {
-  const buffer = Buffer.isBuffer(value) ? value : Buffer.from(String(value));
-  let offset = 0;
-  while (offset < buffer.length) {
-    const written = writeSync(fd, buffer, offset, buffer.length - offset);
-    if (written === 0) throw new Error("transcript write made no progress");
-    offset += written;
-  }
-}
-
 // A caller's closed pipe must never cancel the gate or its retained transcript. Keep the
 // error listener until every write callback and its subsequent error event have settled.
 function forwardTo(stream) {
@@ -362,14 +353,8 @@ async function runGate({
       error: (message) => stderr.write(`${message}\n`),
     };
   }
-  let logError;
-  const capture = (chunk) => {
-    try {
-      writeCapturedOutput(fd, chunk);
-    } catch (error) {
-      logError ??= error;
-    }
-  };
+  const logCapture = createLogCapture(fd, writeCapturedOutput);
+  const { capture } = logCapture;
   try {
     const before = treeState(repoRoot);
     const toolchain = fingerprintToolchain(gate, repoRoot);
@@ -443,6 +428,7 @@ async function runGate({
     capture(
       `\nexit: ${status}${signal ? `, signal ${signal}` : ""}\nduration: ${(performance.now() - startedAt).toFixed(1)} ms\n`,
     );
+    let logError = logCapture.error;
     try {
       closeSync(fd);
     } catch (error) {
@@ -544,7 +530,7 @@ export async function executeAction({
   env = process.env,
   forwardedStdout = process.stdout,
   forwardedStderr = process.stderr,
-  writeCapturedOutput = writeTranscript,
+  writeCapturedOutput = writeLogChunk,
 }) {
   if (!Object.hasOwn(GATES, gate) || !["check", "ensure", "run"].includes(action)) {
     output.error("Usage: gate-receipt.mjs <check|ensure|run> <gate>");

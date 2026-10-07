@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { writeSync } from "node:fs";
 import { PassThrough } from "node:stream";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { availableParallelism } from "node:os";
@@ -22,7 +23,7 @@ import { VITEST_MINIMUM_BUDGET_BYTES, workerCount } from "./gate-parallelism.mjs
 import { E2E_CONTAINER_MEMORY_BYTES } from "./run-e2e-container.mjs";
 import { startNodeCli } from "./mutation-runner-test-harness.mjs";
 import { superviseChild } from "./child-supervisor.mjs";
-import { GATE_LOG_DIRECTORY_ENV, MAX_GATE_LOG_RUNS } from "./gate-logs.mjs";
+import { GATE_LOG_DIRECTORY_ENV, MAX_GATE_LOG_RUNS, writeLogChunk } from "./gate-logs.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const runnerPath = join(repositoryRoot, "scripts/run-push-gates.mjs");
@@ -270,7 +271,7 @@ function laneForCommand(command) {
   ]).get(command);
 }
 
-function makeMockSpawner({ exits = {}, events = [] } = {}) {
+function makeMockSpawner({ exits = {}, events = [], stdout = "" } = {}) {
   return (executable, args, options) => {
     assert.equal(options.shell, undefined, "scheduled commands must spawn without a shell");
     const command = [executable, ...args].join(" ");
@@ -285,7 +286,7 @@ function makeMockSpawner({ exits = {}, events = [] } = {}) {
     setImmediate(() => {
       const code = exits[command] ?? 0;
       child.exitCode = code;
-      child.stdout.end();
+      child.stdout.end(stdout);
       child.stderr.end();
       events.push({ type: "finish", command, code });
       child.emit("close", code, null);
@@ -1689,6 +1690,34 @@ test("P2 memory/CPU placement, concurrency anchor and cgroup-read guards (PG-47,
         assert.equal(cpuReads, 0);
       }
     },
+  );
+});
+
+test("a passing lane retains its complete output line across a short final write", async (t) => {
+  const cwd = await temporarySchedulerRoot(t);
+  const line = "complete lane output ä\n";
+  let shortWrites = 0;
+  const result = await runPushGates([], {
+    cwd,
+    env: { ...process.env },
+    spawnProcess: makeMockSpawner({ stdout: line }),
+    writeCapturedOutput(fd, chunk) {
+      writeLogChunk(fd, chunk, (descriptor, buffer, offset, length) => {
+        const written = length > 1 ? length - 1 : length;
+        if (written < length) shortWrites += 1;
+        return writeSync(descriptor, buffer, offset, written);
+      });
+    },
+  });
+  const lane = result.results.find((task) => task.name === "contract");
+  assert.ok(shortWrites > 0, "the captured-output writer must exercise short writes");
+  assert.equal(result.exitCode, 0);
+  assert.equal(lane.status, "passed");
+  assert.equal(lane.logError, undefined);
+  const commands = PUSH_GATE_SCHEDULE.lanes.find((entry) => entry.name === "contract").commands;
+  assert.equal(
+    await readFile(lane.logPath, "utf8"),
+    commands.map((command) => `$ ${command}\n${line}`).join(""),
   );
 });
 
