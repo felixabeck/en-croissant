@@ -62,6 +62,7 @@ test("a real confirmation drops the default-store engine before pending retireme
   const engine: LocalEngine = {
     type: "local",
     id: "engine-removal-real-store",
+    legacyAssessment: null,
     name: "Stockfish",
     version: "17",
     handle: { id: { id: "engine-removal-real-binary" }, kind: "engine" },

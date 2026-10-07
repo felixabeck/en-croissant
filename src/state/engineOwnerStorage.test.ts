@@ -1,4 +1,4 @@
-import { beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { z } from "zod";
 import { engineSchema, type Engine } from "@/utils/engines";
 import {
@@ -50,6 +50,7 @@ beforeEach(() => {
     mocks.report.mockReset();
     resetEngineOwnerCoordinatorForTests();
 });
+afterEach(() => vi.restoreAllMocks());
 
 test("collects image and resource attachments without executable capabilities", () => {
     expect(collectAttachmentIds("engines", [engine])).toEqual(["image-a", "resource-a"]);
@@ -295,7 +296,7 @@ test("catalog atom publication waits for its one durable save and serializes wit
     expect(store.get(enginesAtom)).toEqual([]);
     releasePrepare();
     expect((await saved).saved).toBe(true);
-    expect(store.get(enginesAtom)).toEqual([engine]);
+    expect(store.get(enginesAtom)).toEqual([{ ...engine, legacyAssessment: null }]);
     await vi.waitFor(() => expect(releaseOrdinary).toEqual(expect.any(Function)));
     expect(writes.mock.calls.filter(([key]) => key === "engines")).toHaveLength(1);
     releaseOrdinary();
@@ -684,3 +685,408 @@ test("lossy player ownership preserves raw bytes and withholds destructive recon
     expect(mocks.reconcile.mock.calls[0][0].action).toBe("prepare");
     expect(localStorage.getItem("game-player2-settings")).toBe(raw);
 });
+
+const { id: _preId, ...preIdEngine } = engine;
+const legacyPlayer = (snapshot = preIdEngine) => ({
+    type: "engine" as const,
+    engine: snapshot,
+    go: { t: "Depth" as const, c: 24 },
+});
+const seedLegacyOwners = (list: unknown[], snapshot = preIdEngine) => {
+    localStorage.setItem("engines", serializeStorageValue(list));
+    for (const key of ["game-player1-settings", "game-player2-settings"])
+        localStorage.setItem(key, serializeStorageValue(legacyPlayer(snapshot)));
+};
+async function runtime(fresh = false) {
+    if (fresh) vi.resetModules();
+    const owner = await import("./engineOwnerStorage");
+    owner.resetEngineOwnerCoordinatorForTests();
+    const atoms = await import("./atoms");
+    const { createStore } = await import("jotai");
+    const store = createStore();
+    return { owner, atoms, store };
+}
+type Runtime = Awaited<ReturnType<typeof runtime>>;
+async function hydrateList(run: Runtime, count: number) {
+    const unsubscribe = run.store.sub(run.atoms.enginesAtom, () => undefined);
+    try {
+        await vi.waitFor(() => expect(run.store.get(run.atoms.enginesAtom)).toHaveLength(count));
+        return run.store.get(run.atoms.enginesAtom)!;
+    } finally {
+        unsubscribe();
+    }
+}
+async function hydratePlayer(run: Runtime, second = false) {
+    const atom = second ? run.atoms.gamePlayer2SettingsAtom : run.atoms.gamePlayer1SettingsAtom;
+    const unsubscribe = run.store.sub(atom, () => undefined);
+    try {
+        await vi.waitFor(() => expect(run.store.get(atom).type).toBe("engine"));
+        const value = run.store.get(atom);
+        if (value.type !== "engine" || !value.engine) throw new Error("missing test engine");
+        return value.engine;
+    } finally {
+        unsubscribe();
+    }
+}
+
+test.each(["players-first", "engines-first"])(
+    "all three real owners agree across drift, order and restart: %s",
+    async (order) => {
+        seedLegacyOwners([{ ...preIdEngine, loaded: true, settings: [] }]);
+        const run = await runtime();
+        if (order === "players-first") {
+            await hydratePlayer(run);
+            await hydratePlayer(run, true);
+        }
+        const list = await hydrateList(run, 1);
+        for (const second of [false, true])
+            expect((await hydratePlayer(run, second)).id).toBe(list[0].id);
+        expect(list[0]).toMatchObject({ loaded: true, settings: [], legacyAssessment: null });
+        const durable = decodeCompressedOrJson(localStorage.getItem("engines")!);
+        expect(durable).toEqual(list);
+        const restarted = await runtime(true);
+        expect(await hydrateList(restarted, 1)).toEqual(list);
+        for (const second of [false, true])
+            expect((await hydratePlayer(restarted, second)).id).toBe(list[0].id);
+    },
+);
+
+test.each(["pre-id", "random", "duplicate-random"])(
+    "ambiguous twins stay unresolved after failed player write and removal: %s (CR-1b)",
+    async (era) => {
+        const a = era === "pre-id" ? preIdEngine : { ...engine, id: "a" };
+        const b = { ...a, settings: [], ...(era === "random" ? { id: "b" } : {}) };
+        seedLegacyOwners([a, b], { ...preIdEngine, settings: [] });
+        const run = await runtime();
+        const list = await hydrateList(run, 2);
+        const write = Storage.prototype.setItem;
+        const refused = vi
+            .spyOn(Storage.prototype, "setItem")
+            .mockImplementation(function (this: Storage, key, value) {
+                if (key.startsWith("game-player")) throw new Error("quota");
+                write.call(this, key, value);
+            });
+        const player = await hydratePlayer(run);
+        expect(list.some((item) => item.id === player.id)).toBe(false);
+        expect(
+            (await run.store.set(run.atoms.enginesAtom, list.slice(1), "after-save")).saved,
+        ).toBe(true);
+        refused.mockRestore();
+        const restarted = await runtime(true);
+        const remaining = await hydrateList(restarted, 1);
+        expect(remaining.some((item) => item.id === player.id)).toBe(false);
+        expect((await hydratePlayer(restarted)).id).toBe(player.id);
+    },
+);
+
+test("unique random-era claims resolve before list hydration; a removed selection cannot use a differently named sibling", async () => {
+    seedLegacyOwners([engine, { ...engine, id: "sibling", name: "Other" }]);
+    const run = await runtime();
+    expect((await hydratePlayer(run)).id).toBe(engine.id);
+    const list = await hydrateList(run, 2);
+    await run.store.set(run.atoms.enginesAtom, list.slice(1), "after-save");
+    localStorage.setItem("game-player1-settings", serializeStorageValue(legacyPlayer()));
+    const restarted = await runtime(true);
+    expect((await hydratePlayer(restarted)).id).not.toBe("sibling");
+});
+
+test.each(["quota", "conflict"])(
+    "failed engines migration agrees with a durable player in a fresh runtime: %s",
+    async (failure) => {
+        seedLegacyOwners([preIdEngine]);
+        const raw = localStorage.getItem("engines");
+        const run = await runtime();
+        if (failure === "quota") {
+            const write = Storage.prototype.setItem;
+            vi.spyOn(Storage.prototype, "setItem").mockImplementation(
+                function (this: Storage, key, value) {
+                    if (key === "engines") throw new Error("quota");
+                    write.call(this, key, value);
+                },
+            );
+        } else {
+            mocks.reconcile.mockImplementationOnce(async () => {
+                localStorage.setItem(
+                    "engines",
+                    serializeStorageValue([{ ...preIdEngine, loaded: true }]),
+                );
+            });
+        }
+        const list = await hydrateList(run, 1);
+        const selected = await hydratePlayer(run);
+        expect(selected.id).toBe(list[0].id);
+        const enginesBytes = failure === "quota" ? localStorage.getItem("engines") : raw;
+        const prepareActions = mocks.reconcile.mock.calls.filter(
+            ([action]) => action.action === "prepare",
+        );
+        const expectedPrepareCount = failure === "conflict" ? 2 : prepareActions.length;
+        expect(enginesBytes).toBe(raw);
+        expect(prepareActions).toHaveLength(expectedPrepareCount);
+        vi.restoreAllMocks();
+        const restarted = await runtime(true);
+        expect((await hydrateList(restarted, 1))[0].id).toBe(selected.id);
+        expect((await hydratePlayer(restarted)).id).toBe(selected.id);
+    },
+);
+
+test.each([
+    ["pre-id", false],
+    ["pre-id", true],
+    ["random", false],
+    ["random", true],
+] as const)(
+    "failed player migration survives a later handle/name edit: %s, engines failure=%s (CR-1e)",
+    async (era, enginesFailure) => {
+        seedLegacyOwners([era === "pre-id" ? preIdEngine : engine]);
+        const run = await runtime();
+        const write = Storage.prototype.setItem;
+        const refused = vi
+            .spyOn(Storage.prototype, "setItem")
+            .mockImplementation(function (this: Storage, key, value) {
+                if (enginesFailure || key.startsWith("game-player")) throw new Error("quota");
+                write.call(this, key, value);
+            });
+        const list = await hydrateList(run, 1);
+        const player = await hydratePlayer(run);
+        const assessment = list[0].type === "local" ? list[0].legacyAssessment : undefined;
+        expect(player.id).toBe(list[0].id);
+        refused.mockRestore();
+        expect(Storage.prototype.setItem).toBe(write);
+        const edited = {
+            ...list[0],
+            name: "Upgraded",
+            handle: { id: { id: "new-binary" }, kind: "engine" as const },
+        };
+        expect((await run.store.set(run.atoms.enginesAtom, [edited], "after-save")).saved).toBe(
+            true,
+        );
+        expect(decodeCompressedOrJson(localStorage.getItem("engines")!)).toMatchObject([
+            { legacyAssessment: assessment },
+        ]);
+        const restarted = await runtime(true);
+        const current = await hydrateList(restarted, 1);
+        expect(current[0].id).toBe(player.id);
+        expect((await hydratePlayer(restarted)).id).toBe(player.id);
+    },
+);
+
+test.each(["read", "decode", "hydrate", "absent"])(
+    "untrusted engines withhold player persistence; absent bytes are trusted: %s",
+    async (mode) => {
+        localStorage.setItem("game-player1-settings", serializeStorageValue(legacyPlayer()));
+        const raw = localStorage.getItem("game-player1-settings");
+        if (mode === "decode") localStorage.setItem("engines", "broken");
+        if (mode === "hydrate")
+            localStorage.setItem("engines", serializeStorageValue([{ ...engine, future: true }]));
+        if (mode === "read") {
+            const read = Storage.prototype.getItem;
+            vi.spyOn(Storage.prototype, "getItem").mockImplementation(
+                function (this: Storage, key) {
+                    if (key === "engines") throw new Error("unreadable");
+                    return read.call(this, key);
+                },
+            );
+        }
+        const run = await runtime();
+        const selected = await hydratePlayer(run);
+        expect(selected.id).toMatch(/^legacy-engine-identity:/);
+        expect(localStorage.getItem("game-player1-settings") === raw).toBe(mode !== "absent");
+        vi.restoreAllMocks();
+        const restarted = await runtime(true);
+        expect((await hydratePlayer(restarted)).id).toBe(selected.id);
+    },
+);
+
+test("real schema repairs deterministically, reserves raw ids, copies input, and keeps remotes assessment-free", async () => {
+    const { enginesSchema } = await import("./atoms");
+    const identity = enginesSchema.parse([preIdEngine])[0].id;
+    const values = [
+        engine,
+        { ...engine },
+        preIdEngine,
+        { ...engine, id: identity, name: "Reserved identity" },
+        { ...engine, id: "legacy-engine-position:1", name: "Reserved position" },
+        { type: "chessdb", name: "Cloud", url: "https://x" },
+        { type: "lichess", name: "Cloud 2", url: "https://y" },
+    ];
+    const copy = structuredClone(values);
+    const first = enginesSchema.parse(values);
+    expect(enginesSchema.parse(values)).toEqual(first);
+    expect(values).toEqual(copy);
+    expect(new Set(first.map(({ id }) => id)).size).toBe(first.length);
+    expect(first[1].id).not.toBe("legacy-engine-position:1");
+    expect(first[2].id).toMatch(/^legacy-engine-position:/);
+    for (const item of first.slice(-2)) {
+        expect(item.id).toMatch(/^legacy-engine-position:/);
+        expect(item).not.toHaveProperty("legacyAssessment");
+    }
+    const run = await runtime();
+    const receipt = await run.store.set(run.atoms.enginesAtom, first.slice(-2), "after-save");
+    expect(receipt.saved).toBe(true);
+    expect(collectAttachmentIds("engines", first)).not.toBeNull();
+    expect(enginesSchema.parse({ invalid: true })).toEqual([]);
+    expect(enginesSchema.parse([engine, { invalid: true }])).toHaveLength(1);
+});
+
+test("player migration keeps copied assessment inert and never re-resolves an existing id", async () => {
+    seedLegacyOwners([engine]);
+    const claim = { identity: "snapshot-only", ambiguous: true };
+    const snapshot = { ...preIdEngine, legacyAssessment: claim };
+    localStorage.setItem("game-player1-settings", serializeStorageValue(legacyPlayer(snapshot)));
+    const run = await runtime();
+    const selected = await hydratePlayer(run);
+    expect(selected).toMatchObject({ id: engine.id, legacyAssessment: claim });
+    localStorage.setItem(
+        "game-player1-settings",
+        serializeStorageValue({
+            ...legacyPlayer(),
+            engine: { ...preIdEngine, id: "removed-id" },
+        }),
+    );
+    const restarted = await runtime(true);
+    expect((await hydratePlayer(restarted)).id).toBe("removed-id");
+    expect(await hydrateList(restarted, 1)).toMatchObject([{ id: engine.id }]);
+});
+
+test.each(["pre-id", "random"])(
+    "copies renamed into an ambiguous identity never acquire claims across restart: %s (CR-1a,c)",
+    async (era) => {
+        seedLegacyOwners(
+            era === "pre-id"
+                ? [preIdEngine, { ...preIdEngine, settings: [] }]
+                : [
+                      { ...engine, id: "a" },
+                      { ...engine, id: "b", settings: [] },
+                  ],
+        );
+        const run = await runtime();
+        const list = await hydrateList(run, 2);
+        const write = Storage.prototype.setItem;
+        const refused = vi
+            .spyOn(Storage.prototype, "setItem")
+            .mockImplementation(function (this: Storage, key, value) {
+                if (key.startsWith("game-player")) throw new Error("quota");
+                write.call(this, key, value);
+            });
+        const selected = await hydratePlayer(run);
+        const source = list[era === "pre-id" ? 0 : 1];
+        const duplicate = { ...source, id: "c", name: "Copy" };
+        await run.store.set(run.atoms.enginesAtom, [...list, duplicate], "after-save");
+        const copied = run.store.get(run.atoms.enginesAtom)!.at(-1)!;
+        expect(copied).toMatchObject({ legacyAssessment: null });
+        await run.store.set(
+            run.atoms.enginesAtom,
+            [...(era === "random" ? [] : list), { ...copied, name: engine.name }],
+            "after-save",
+        );
+        refused.mockRestore();
+        const restarted = await runtime(true);
+        const current = await hydrateList(restarted, era === "random" ? 1 : 3);
+        expect((await hydratePlayer(restarted)).id).toBe(selected.id);
+        expect(current.some((item) => item.id === selected.id)).toBe(false);
+        expect(current.at(-1)).toMatchObject({ legacyAssessment: null });
+    },
+);
+
+test.each(["engines-write", "player-read"])(
+    "ambiguous assessment survives a refused %s, removal and restart (CR-1d,f)",
+    async (failure) => {
+        seedLegacyOwners([
+            { ...engine, id: "a" },
+            { ...engine, id: "b" },
+        ]);
+        const run = await runtime();
+        if (failure === "engines-write") {
+            vi.spyOn(Storage.prototype, "setItem").mockImplementationOnce(() => {
+                throw new Error("quota");
+            });
+        } else {
+            const read = Storage.prototype.getItem;
+            vi.spyOn(Storage.prototype, "getItem").mockImplementation(
+                function (this: Storage, key) {
+                    if (key.startsWith("game-player")) throw new Error("denied");
+                    return read.call(this, key);
+                },
+            );
+        }
+        const list = await hydrateList(run, 2);
+        expect(list).toMatchObject([
+            { legacyAssessment: { ambiguous: true } },
+            { legacyAssessment: { ambiguous: true } },
+        ]);
+        vi.restoreAllMocks();
+        expect(
+            (await run.store.set(run.atoms.enginesAtom, list.slice(1), "after-save")).saved,
+        ).toBe(true);
+        expect(decodeCompressedOrJson(localStorage.getItem("engines")!)).toMatchObject([
+            { legacyAssessment: { ambiguous: true } },
+        ]);
+        const restarted = await runtime(true);
+        expect((await hydratePlayer(restarted)).id).not.toBe("b");
+    },
+);
+
+test.each(["after-save", undefined] as const)(
+    "assessment is engines-owned for edits, JSON replacements, additions and remotes (%s)",
+    async (publication) => {
+        const { enginesSchema } = await import("./atoms");
+        const derived = enginesSchema.parse([{ ...preIdEngine, name: "Mixed" }])[0];
+        const existingClaim = { identity: "older-identity", ambiguous: false };
+        seedLegacyOwners([
+            engine,
+            derived,
+            { ...engine, id: "mixed-random", name: "Mixed" },
+            { ...engine, id: "already", name: "Assessed", legacyAssessment: existingClaim },
+            { ...engine, id: "already-null", name: "Assessed null", legacyAssessment: null },
+        ]);
+        const run = await runtime();
+        const list = await hydrateList(run, 5);
+        expect(list).toMatchObject([
+            { legacyAssessment: { ambiguous: false } },
+            { legacyAssessment: null },
+            { legacyAssessment: { ambiguous: true } },
+            { legacyAssessment: existingClaim },
+            { legacyAssessment: null },
+        ]);
+        expect(list.every((item) => collectAttachmentIds("engines", [item]) !== null)).toBe(true);
+        const changed = list.map((item) => {
+            const { legacyAssessment: _ignored, ...fields } = item as typeof engine & {
+                legacyAssessment?: unknown;
+            };
+            return {
+                ...fields,
+                name: "Edited",
+                settings: [],
+                handle: { id: { id: "edited" }, kind: "engine" as const },
+            };
+        });
+        const remote = {
+            type: "lichess" as const,
+            id: "cloud",
+            name: "Cloud",
+            url: "https://x",
+            legacyAssessment: existingClaim,
+        };
+        const next = [
+            ...changed,
+            { ...engine, id: "added", legacyAssessment: existingClaim },
+            { ...engine, id: "json-other" },
+            remote,
+        ];
+        expect((await run.store.set(run.atoms.enginesAtom, next, publication)).saved).toBe(true);
+        const saved = run.store.get(run.atoms.enginesAtom)!;
+        for (let index = 0; index < list.length; index++) {
+            expect(saved[index]).toMatchObject({
+                legacyAssessment: (list[index] as import("@/utils/engines").LocalEngine)
+                    .legacyAssessment,
+            });
+            expect(saved[index].id).toBe(list[index].id);
+        }
+        expect(saved.slice(5, 7)).toMatchObject([
+            { legacyAssessment: null },
+            { legacyAssessment: null },
+        ]);
+        expect(saved[7]).not.toHaveProperty("legacyAssessment");
+        expect(decodeCompressedOrJson(localStorage.getItem("engines")!)).toEqual(saved);
+    },
+);

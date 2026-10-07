@@ -18,7 +18,7 @@ import type { LocalOptions } from "@/components/panels/database/DatabasePanel";
 import { analysisSearch } from "@/components/panels/analysis/analysisSearch";
 import { AnalysisLineMemory } from "@/components/panels/analysis/analysisLineMemory";
 import type { SuccessDatabaseInfo } from "@/utils/db";
-import { type Engine, type EngineSettings, engineSchema } from "@/utils/engines";
+import { type Engine, type EngineSettings } from "@/utils/engines";
 import {
     type LichessGamesOptions,
     lichessGamesOptionsSchema,
@@ -49,6 +49,8 @@ import { reportPersistError } from "./persistError";
 import { originalPathOwnersSnapshot } from "./pathOwners";
 import {
     createEngineOwnerStorage,
+    enginesSchema,
+    stampLegacyAssessments,
     saveEngineOwnerValue,
     type EngineOwnerSaveReceipt,
 } from "./engineOwnerStorage";
@@ -58,21 +60,11 @@ import { createPracticeDeckAtom, type PracticeData } from "./practiceStorage";
 import { removeFileFreshness } from "./fileFreshness";
 
 export type { PracticeData } from "./practiceStorage";
+export { enginesSchema } from "./engineOwnerStorage";
 
 // Capture durable capability owners before any persisted atom can hydrate, normalize, or repair
 // its source record. App startup consumes this immutable snapshot.
 void originalPathOwnersSnapshot;
-
-const zodArray = <Input, Output>(itemSchema: z.ZodType<Output, z.ZodTypeDef, Input>) => {
-    const catchValue = {} as never;
-
-    const res = z
-        .array(itemSchema.catch(catchValue))
-        .transform((a) => a.filter((o): o is Output => o !== catchValue))
-        .catch([]);
-
-    return res as z.ZodType<Output[], z.ZodTypeDef, Input[]>;
-};
 
 // Tabs
 
@@ -218,18 +210,6 @@ export const fileWorkspaceDisplayNameAtom = atomWithStorage<string>(
     createZodStorage(z.string().max(256), localStorage),
 );
 
-export const enginesSchema = zodArray(engineSchema).transform((engines) => {
-    const ids = new Set<string>();
-
-    return engines.map((engine) => {
-        if (ids.has(engine.id)) {
-            return { ...engine, id: crypto.randomUUID() };
-        }
-        ids.add(engine.id);
-        return engine;
-    });
-});
-
 const asyncStoredEnginesAtom = atomWithStorage<Engine[]>(
     "engines",
     [],
@@ -256,7 +236,10 @@ export const enginesAtom = atom(
     ): Promise<EngineOwnerSaveReceipt> => {
         const run = engineOwnerUpdateSequence.then(async () => {
             const current = get(publishedEnginesAtom) ?? (await get(asyncStoredEnginesAtom));
-            const next = await (typeof update === "function" ? update(current) : update);
+            const next = stampLegacyAssessments(
+                current,
+                await (typeof update === "function" ? update(current) : update),
+            );
             if (publication === "after-save") {
                 const receipt = await saveEngineOwnerValue("engines", serializeStorageValue(next));
                 if (receipt.saved) set(publishedEnginesAtom, next);

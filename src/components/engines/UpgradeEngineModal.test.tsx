@@ -139,6 +139,7 @@ vi.mock("@mantine/core", () => {
 
 const old: LocalEngine = {
   id: "same-id",
+  legacyAssessment: null,
   type: "local",
   name: "Stockfish 18",
   version: "18",
@@ -457,6 +458,60 @@ test("rewrites both same-id durable player snapshots and filters their own setti
   }
   expect(mocks.notify).not.toHaveBeenCalled();
 });
+
+test.each(["pre-id", "random-era"])(
+  "upgrade resolves a never-hydrated pre-id player after changing the %s engine's identity fields",
+  async (era) => {
+    const { id: _id, legacyAssessment: _assessment, ...snapshot } = old;
+    localStorage.setItem(
+      "engines",
+      serializeStorageValue([era === "pre-id" ? snapshot : { ...snapshot, id: old.id }]),
+    );
+    for (const key of ["game-player1-settings", "game-player2-settings"]) {
+      localStorage.setItem(
+        key,
+        serializeStorageValue({
+          type: "engine",
+          engine: snapshot,
+          go: { t: "Depth", c: 12 },
+          engineSettings: snapshot.settings,
+        }),
+      );
+    }
+    const untouched = localStorage.getItem("game-player1-settings");
+    store = createStore();
+    const unsubscribe = store.sub(enginesAtom, () => undefined);
+    try {
+      await vi.waitFor(() => expect(store.get(enginesAtom)).toHaveLength(1));
+      const current = store.get(enginesAtom)![0] as LocalEngine;
+      expect(localStorage.getItem("game-player1-settings")).toBe(untouched);
+      await render(current);
+      await click("Common.Install");
+      for (const key of ["game-player1-settings", "game-player2-settings"]) {
+        expect(decodeCompressedOrJson(localStorage.getItem(key)!)).toMatchObject({
+          engine: { id: current.id, name: "Stockfish 19", handle: { id: { id: "new" } } },
+          go: { t: "Depth", c: 12 },
+          engineSettings: [
+            { name: "Threads", value: "20" },
+            { name: "Hash", value: "8192" },
+            { name: "MultiPV", value: "4" },
+          ],
+        });
+      }
+      expect(store.get(enginesAtom)![0]).toMatchObject({
+        id: current.id,
+        handle: { id: { id: "new" } },
+      });
+      expect(mocks.retire).toHaveBeenCalledWith(current.id, current.handle, {
+        id: { id: "new" },
+        kind: "engine",
+      });
+      expect(mocks.notify).not.toHaveBeenCalled();
+    } finally {
+      unsubscribe();
+    }
+  },
+);
 
 test("a refused player receipt reports an error without undoing the entry", async () => {
   const key = "game-player1-settings";

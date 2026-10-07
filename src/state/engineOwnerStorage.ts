@@ -296,6 +296,118 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+const IDENTITY_PREFIX = "legacy-engine-identity:";
+const POSITION_PREFIX = "legacy-engine-position:";
+
+/** FNV-1a over an unambiguous pair of UTF-16 strings, with fixed 64-bit state. */
+function legacyIdentity(handleId: string, name: string): string {
+    let digest = 0xcbf29ce484222325n;
+    const pair = JSON.stringify([handleId, name]);
+    for (let index = 0; index < pair.length; index++) {
+        digest = BigInt.asUintN(64, (digest ^ BigInt(pair.charCodeAt(index))) * 0x100000001b3n);
+    }
+    return `${IDENTITY_PREFIX}${digest.toString(16).padStart(16, "0")}`;
+}
+
+function recordIdentity(value: unknown): string | null {
+    if (!isRecord(value) || value.type !== "local" || typeof value.name !== "string") return null;
+    const handle = value.handle;
+    if (!isRecord(handle) || !isRecord(handle.id) || typeof handle.id.id !== "string") return null;
+    return legacyIdentity(handle.id.id, value.name);
+}
+
+function identityGroups(values: readonly unknown[]): Map<string, number> {
+    const groups = new Map<string, number>();
+    for (const value of values) {
+        const identity = recordIdentity(value);
+        if (identity !== null) groups.set(identity, (groups.get(identity) ?? 0) + 1);
+    }
+    return groups;
+}
+
+/** Assign on copies before element defaults; reserve even ids on invalid raw entries. */
+function assignLegacyIds(decoded: unknown): unknown {
+    if (!Array.isArray(decoded)) return decoded;
+    const reserved = new Set<string>(
+        decoded.flatMap((value) =>
+            isRecord(value) && typeof value.id === "string" ? [value.id] : [],
+        ),
+    );
+    const groups = identityGroups(decoded);
+    const seen = new Set<string>();
+    return decoded.map((value, index) => {
+        if (!isRecord(value)) return value;
+        if (typeof value.id === "string" && !seen.has(value.id)) {
+            seen.add(value.id);
+            return { ...value };
+        }
+        const identity = recordIdentity(value);
+        let id =
+            typeof value.id !== "string" &&
+            identity !== null &&
+            groups.get(identity) === 1 &&
+            !reserved.has(identity) &&
+            !seen.has(identity)
+                ? identity
+                : `${POSITION_PREFIX}${index}`;
+        // A raw record can already hold a positional id. Bounded probing reserves the whole list.
+        for (let suffix = 0; reserved.has(id) || seen.has(id); suffix++) {
+            id = `${POSITION_PREFIX}${index}:${suffix}`;
+        }
+        seen.add(id);
+        return { ...value, id };
+    });
+}
+
+function assessLegacyEngines(engines: Engine[]): Engine[] {
+    const groups = identityGroups(engines);
+    return engines.map((engine) => {
+        if (engine.type !== "local" || Object.hasOwn(engine, "legacyAssessment")) return engine;
+        const identity = legacyIdentity(engine.handle.id.id, engine.name);
+        const derived =
+            engine.id.startsWith(IDENTITY_PREFIX) || engine.id.startsWith(POSITION_PREFIX);
+        return {
+            ...engine,
+            legacyAssessment: derived
+                ? null
+                : {
+                      identity,
+                      ambiguous: (groups.get(identity) ?? 0) > 1,
+                  },
+        };
+    });
+}
+
+const zodArray = <Input, Output>(itemSchema: z.ZodType<Output, z.ZodTypeDef, Input>) => {
+    const catchValue = {} as never;
+    return z
+        .array(itemSchema.catch(catchValue))
+        .transform((items) => items.filter((item): item is Output => item !== catchValue))
+        .catch([]) as z.ZodType<Output[], z.ZodTypeDef, Input[]>;
+};
+
+export const enginesSchema = z
+    .preprocess(assignLegacyIds, zodArray(engineSchema))
+    .transform(assessLegacyEngines);
+
+/** Only the engines owner controls assessment, including copies submitted by editors. */
+export function stampLegacyAssessments(current: Engine[], next: Engine[]): Engine[] {
+    const previous = new Map(current.map((engine) => [engine.id, engine]));
+    return next.map((engine) => {
+        const { legacyAssessment: _submitted, ...copy } = engine as Engine & {
+            legacyAssessment?: unknown;
+        };
+        if (engine.type !== "local") return copy as Engine;
+        const existing = previous.get(engine.id);
+        if (existing?.type === "local") {
+            return Object.hasOwn(existing, "legacyAssessment")
+                ? ({ ...copy, legacyAssessment: existing.legacyAssessment } as Engine)
+                : (copy as Engine);
+        }
+        return { ...copy, legacyAssessment: null } as Engine;
+    });
+}
+
 function compareLegacyEngineFields(raw: unknown, parsed: unknown): boolean {
     if (!isRecord(raw) || !isRecord(parsed)) return false;
     const { id: _rawId, ...rawWithoutId } = raw;
@@ -334,9 +446,19 @@ function isLegacyIdentityMigration(key: EngineOwnerKey, raw: unknown, parsed: un
         const seenParsedIds = new Set<string>();
         for (const [index, value] of raw.entries()) {
             const parsedValue = parsed[index];
+            // Assessment is the only extra field the engines owner may introduce. Existing
+            // evidence, and every field on a player snapshot, must remain byte-for-byte exact.
+            const comparisonValue =
+                isRecord(value) &&
+                value.type === "local" &&
+                !Object.hasOwn(value, "legacyAssessment") &&
+                isRecord(parsedValue) &&
+                Object.hasOwn(parsedValue, "legacyAssessment")
+                    ? { ...value, legacyAssessment: parsedValue.legacyAssessment }
+                    : value;
             if (
                 !isAllowedEngineIdentityRepair(
-                    value,
+                    comparisonValue,
                     parsedValue,
                     rawIds,
                     seenRawIds,
@@ -352,6 +474,7 @@ function isLegacyIdentityMigration(key: EngineOwnerKey, raw: unknown, parsed: un
                 migrated = true;
             }
             seenParsedIds.add((parsedValue as { id: string }).id);
+            migrated ||= !equal(value, parsedValue);
         }
         return migrated;
     }
@@ -362,7 +485,7 @@ function isLegacyIdentityMigration(key: EngineOwnerKey, raw: unknown, parsed: un
     const { engine: parsedEngine, ...parsedWithoutEngine } = parsed;
     if (!equal(rawWithoutEngine, parsedWithoutEngine)) return false;
     if (rawEngine === null || parsedEngine === null) return false;
-    const wasMissing = isRecord(rawEngine) && rawEngine.id === undefined;
+    const wasMissing = isRecord(rawEngine) && typeof rawEngine.id !== "string";
     return (
         wasMissing &&
         isRecord(parsedEngine) &&
@@ -376,11 +499,67 @@ function parseHydratableOwner(
     decoded: unknown,
     schema: z.ZodTypeAny = schemas[key],
 ) {
-    const parsed = schema.safeParse(decoded);
+    let input = key === "engines" ? assignLegacyIds(decoded) : decoded;
+    let trustedEngines = true;
+    if (
+        key !== "engines" &&
+        isRecord(decoded) &&
+        decoded.type === "engine" &&
+        isRecord(decoded.engine) &&
+        typeof decoded.engine.id !== "string"
+    ) {
+        const identity = recordIdentity(decoded.engine);
+        if (identity === null) return null;
+        const evidence = readHydratableEngines();
+        trustedEngines = evidence !== null;
+        const engines = evidence ?? [];
+        const claims = engines.filter(
+            (engine) =>
+                engine.type === "local" &&
+                engine.legacyAssessment?.identity === identity &&
+                !engine.legacyAssessment.ambiguous,
+        );
+        const id = engines.some((engine) => engine.id === identity)
+            ? identity
+            : claims.length === 1
+              ? claims[0].id
+              : identity;
+        input = { ...decoded, engine: { ...decoded.engine, id } };
+    }
+    const parsed = schema.safeParse(input);
     if (!parsed.success) return null;
     if (equal(decoded, parsed.data)) return { value: parsed.data, migrate: false };
     if (!isLegacyIdentityMigration(key, decoded, parsed.data)) return null;
-    return { value: parsed.data, migrate: true };
+    return { value: parsed.data, migrate: trustedEngines };
+}
+
+function readHydratableEngines(): Engine[] | null {
+    try {
+        const raw = localStorage.getItem("engines");
+        if (raw === null) return [];
+        const decoded = decodeCompressedOrJson(raw);
+        if (decoded === null) return null;
+        const hydrated = parseHydratableOwner("engines", decoded, enginesSchema);
+        if (!hydrated) return null;
+        const engines = hydrated.value as Engine[];
+        const rawList = decoded as Record<string, unknown>[];
+        if (
+            !rawList.some(
+                (engine) => engine.type === "local" && Object.hasOwn(engine, "legacyAssessment"),
+            )
+        ) {
+            return engines;
+        }
+        // Player fallback assessment is permitted only before any local record was assessed.
+        return engines.map((engine, index) => {
+            if (engine.type !== "local" || Object.hasOwn(rawList[index], "legacyAssessment"))
+                return engine;
+            const { legacyAssessment: _assessment, ...unassessed } = engine;
+            return unassessed;
+        });
+    } catch {
+        return null;
+    }
 }
 
 export function createEngineOwnerStorage<Value>(

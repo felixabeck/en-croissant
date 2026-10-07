@@ -109,6 +109,10 @@ const engineHandleSchema: z.ZodType<EngineHandle> = z.object({
 export const localEngineSchema = z.object({
     type: z.literal("local"),
     id: z.string().default(() => crypto.randomUUID()),
+    legacyAssessment: z
+        .object({ identity: z.string(), ambiguous: z.boolean() })
+        .nullable()
+        .optional(),
     name: z.string(),
     version: z.string(),
     handle: engineHandleSchema,
