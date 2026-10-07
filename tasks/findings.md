@@ -13447,3 +13447,8 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
   only in ChessRiddle commits `583beaa7c`, `75385b514`, `b1b1bdf60` and `868dd1aac` (messages and diffs)
   and in that repository's `.claude/skills/push/SKILL.md` §3 "Scoped gate receipts"; load those instead.
 <!-- ledger-meta {"command":"annotate","effect_lines":6,"effect_sha256":"28557ed670ccb3169bb0625489e3af80844f287b588abcd56c8a931abeba8d42","input_sha256":"6826eb430dd8366a0bbd6618a17a1afc354f600757c005e4ed3d58485ad939b2","kind":"mutation-receipt","operation":"5b9476076cb8e1cab6af60677ce4c0afb35441f43c73d02a07a394baa3931d49","options":{"section":null},"request_id_sha256":null,"results":["f-20261007-02"],"target":"f-20261007-02","v":1} -->
+
+* **Addendum to the reference correction (2026-10-07):** the ChessRiddle checkout also holds the
+  git-ignored run plan `tasks/plans/2026-10-06-scoped-gate-receipts.md`, which carries a `## Reviews`
+  section; it is local to that machine and not a durable record, so read it if present but do not rely on it.
+<!-- ledger-meta {"command":"annotate","effect_lines":3,"effect_sha256":"88d68915fa3b9186f6897c9598648e24fba4191f5e3c4db23786fc11ffae459e","input_sha256":"bce8e75d84a8308e85830f7402960d15cdd56e4483dfcaebb5089fff4c924e45","kind":"mutation-receipt","operation":"f8a25e02ce32122c804bcc9d1ecb6fa117d5ee16068803ad55c6831689859055","options":{"section":null},"request_id_sha256":null,"results":["f-20261007-02"],"target":"f-20261007-02","v":1} -->
