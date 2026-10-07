@@ -173,8 +173,10 @@ fn metadata_from(
         METADATA_LIMIT_MESSAGE,
         || Ok(()),
     )?;
-    serde_json::from_slice(&bytes)
-        .map_err(|error| Error::InvalidInput(format!("invalid PGN metadata: {error}")))
+    serde_json::from_slice(&bytes).map_err(|error| {
+        log::warn!("invalid PGN metadata: {error}");
+        Error::InvalidInput("invalid PGN metadata".into())
+    })
 }
 
 /// The listed modification time, in Unix seconds, exactly as the enumerator reported it.
@@ -3519,11 +3521,20 @@ mod tests {
             metadata
         );
 
-        fs::write(sidecar, "not json").expect("invalid metadata");
+        fs::write(&sidecar, "not json").expect("invalid metadata");
         assert!(matches!(
             metadata_from_path(&state.pgn_path_authority, &workspace, &pgn),
             Err(Error::InvalidInput(_))
         ));
+
+        fs::write(&sidecar, r#"{"type":"secret-variant-value","tags":[]}"#)
+            .expect("unknown metadata variant");
+        let error = metadata_from_path(&state.pgn_path_authority, &workspace, &pgn).unwrap_err();
+        assert_eq!(error.to_string(), "Invalid input: invalid PGN metadata");
+        assert!(!error.to_string().contains("secret-variant-value"));
+        let serialized = serde_json::to_value(&error).expect("serialize metadata error");
+        assert_eq!(serialized["message"], "Invalid input: invalid PGN metadata");
+        assert!(!serialized.to_string().contains("secret-variant-value"));
     }
 
     #[cfg(unix)]
@@ -3929,7 +3940,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_edits_replace_or_create_sidecars_without_changing_the_pgn_or_registry() {
+    fn metadata_edits_write_the_sidecar_and_keep_pgn_bytes_and_identity() {
         for mode in [
             MetadataEdit::Metadata,
             MetadataEdit::SameLeaf,
@@ -4030,7 +4041,6 @@ mod tests {
             .unwrap_err();
             assert!(matches!(error, Error::InvalidInput(_)));
         }
-        // A registered file in another collection of the SAME authority is also refused.
         assert_eq!(
             fs::read(directory.path().join("registry.json")).unwrap(),
             snapshot
@@ -4062,10 +4072,13 @@ mod tests {
                     .id,
             )
         };
-        let outside = outside_root.join("outside.pgn");
+        let outside_root_canonical =
+            workspace_root(&state.pgn_path_authority, &outside_workspace).unwrap();
+        let outside = outside_root_canonical.join("outside.pgn");
         fs::write(&outside, "*").unwrap();
         let outside_entry = registered_child_file(&state, &outside_workspace, &outside);
         let registry_with_outside = fs::read(directory.path().join("registry.json")).unwrap();
+        // A registered file in another collection of the SAME authority is also refused.
         assert!(edit_metadata(
             MetadataEdit::Metadata,
             &state,
