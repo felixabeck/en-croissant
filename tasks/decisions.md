@@ -6034,3 +6034,40 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** the type-only edit never moves a PGN, so it is all-or-nothing without any rollback. Reversal path: `f-20261006-03` replaces the early return after the sidecar write with whichever contract it chooses.
 * **Decided by:** Claude Code, drain session 14f3c3e5-96b4-42a6-9360-923747ebf378 (drain run 0ab86bf9-7e6e-42ce-b073-c494cb240f4f), full auto, adopted reviewed plan tasks/plans/2026-10-07-workspace-file-type-editing.md · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":35,"effect_sha256":"2c3ca42972b00028ebd12a08dbd885c45ff00d3f87e63fd3095f2d7ba31b3a1f","input_sha256":"58f8186ef471bb199086462f3b843ec23ea8079ec527cf02a268739618fb587d","kind":"mutation-receipt","operation":"d42098603e5d56986f4b7555bbf9af3402365458b1ad66ab8bad0df5bd6ea9e4","options":{"section":null},"request_id_sha256":null,"results":["d-20261007-02","d-20261007-03","d-20261007-04","d-20261007-05"],"target":"decisions-ledger","v":1} -->
+
+### d-20261007-06 — How does a receipt gate capture its transcript?
+
+* **Question:** `runGate` must keep the gate child's output on disk. Does it capture through a pty, a second inherited fd, a pipe tee, or a caller-side "never pipe a gate" contract?
+* **Governs:** f-20260921-03
+* **Chosen:** a pipe tee: the child is spawned with `stdio: ["ignore", "pipe", "pipe"]`, each chunk is written to the transcript and forwarded to gate-receipt's own stdout/stderr.
+* **Rejected:** a pty via `script(1)` (extra process, util-linux argv, CR/LF and ANSI noise, merged streams, no benefit to any agent caller); a second inherited fd (the child still writes one stream to two places, which is the tee); a caller contract forbidding pipes (unenforceable — the incident was a caller pipe).
+* **Reason:** measured 2026-10-06 (plan premise P5): every agent and scheduler caller already hands the gate a pipe, so its view is unchanged; `cargo test` and `vitest` failure content is identical between pipe and pty after stripping ANSI. Known limit: an interactive TTY caller loses TTY-only decoration. The remaining five gates are measured per gate in the review handoff. Reversal path: replace the tee in `runGate` with a pty spawn; the transcript location and trailer stay.
+* **Decided by:** Claude Code, drain session aa0d130b-da2f-4502-8bdc-30c9d3cb20d4 (drain run 0ab86bf9-7e6e-42ce-b073-c494cb240f4f), full auto, adopted reviewed plan tasks/plans/2026-10-07-gate-failure-transcript.md · **Superseded-by:** -
+
+### d-20261007-07 — Does a failing gate record a negative receipt?
+
+* **Question:** On a red gate, does `gate-receipt.mjs` write a failure entry under `.gate-receipts/` naming the transcript, or nothing?
+* **Governs:** f-20260921-03
+* **Chosen:** nothing under `.gate-receipts/`; the retained transcript, whose header carries gate, command, tree fingerprint and start time, is the failure record.
+* **Rejected:** a negative receipt naming the transcript.
+* **Reason:** `.gate-receipts/` is a success cache with one consumer (`receiptStatus`, "is there reusable proof for this tree?"); a failure entry would gate nothing and add a second record type. Reversal path: write a `<gate>.failed.json` beside the receipt in the failure branch of `runGate`.
+* **Decided by:** Claude Code, drain session aa0d130b-da2f-4502-8bdc-30c9d3cb20d4 (drain run 0ab86bf9-7e6e-42ce-b073-c494cb240f4f), full auto, adopted reviewed plan tasks/plans/2026-10-07-gate-failure-transcript.md · **Superseded-by:** -
+
+### d-20261007-08 — Where are gate transcripts kept, and for how long?
+
+* **Question:** Where does a receipt gate's transcript live, is a failed one retained across reruns, and what bounds the directory?
+* **Governs:** f-20260921-03
+* **Chosen:** `artifacts/gates/<run>/receipt-<gate>.log` (git-ignored through `artifacts/`), sharing the push-gate scheduler's run directory through the `GATE_LOG_DIRECTORY` environment variable when run as a lane; one shared module `scripts/gate-logs.mjs` owns the layout; every run-directory creation keeps the newest 100 run directories.
+* **Rejected:** `.gate-receipts/<gate>.log` overwritten per run (loses the one failure as soon as the agent re-runs); a gate-receipt-only directory with its own retention (second copy of the scheduler's layout, rule 11); no transcript under the scheduler (two behaviours by caller).
+* **Reason:** retention across reruns is the point of the finding; one layout and one bound (100 ≈ two days at the measured ~48 runs/day, ≤ ~140 MB). Reversal path: change the retention constant in `scripts/gate-logs.mjs`.
+* **Decided by:** Claude Code, drain session aa0d130b-da2f-4502-8bdc-30c9d3cb20d4 (drain run 0ab86bf9-7e6e-42ce-b073-c494cb240f4f), full auto, adopted reviewed plan tasks/plans/2026-10-07-gate-failure-transcript.md · **Superseded-by:** -
+
+### d-20261007-09 — What happens when a gate transcript cannot be written?
+
+* **Question:** If the transcript cannot be opened, or a write fails mid-run, does the gate still run and record its receipt?
+* **Governs:** f-20260921-03
+* **Chosen:** refuse before start with exit 2 (`gate transcript unavailable`) when it cannot be opened; fail closed after the child exits when a write failed mid-run (no receipt, exit 1 if the child succeeded, the error named in the final line).
+* **Rejected:** warn and proceed, recording the receipt anyway.
+* **Reason:** matches the push-gate scheduler's existing `logError` rule, so one contract covers both sites. Reversal path: the two branches in `runGate`.
+* **Decided by:** Claude Code, drain session aa0d130b-da2f-4502-8bdc-30c9d3cb20d4 (drain run 0ab86bf9-7e6e-42ce-b073-c494cb240f4f), full auto, adopted reviewed plan tasks/plans/2026-10-07-gate-failure-transcript.md · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":35,"effect_sha256":"efa2be306c31fea99bf535bea72037d55cb22e34f2f70a362726ca026be4d938","input_sha256":"02256589d04a97926bb485bf4c5c392e7660bfcc9e38ad0487068dc8533c243b","kind":"mutation-receipt","operation":"5f84b91703981fac1ba255e100996c2b66405f1d0a153fb0eb8a0981a3e10b8a","options":{"section":null},"request_id_sha256":null,"results":["d-20261007-06","d-20261007-07","d-20261007-08","d-20261007-09"],"target":"decisions-ledger","v":1} -->
