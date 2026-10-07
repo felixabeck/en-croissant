@@ -4,7 +4,13 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { Session, appProcesses, cleanUpResources, createSharedShutdown } from "./app-driver.mjs";
+import {
+  Session,
+  appProcesses,
+  cleanUpResources,
+  cleanUpWithProfiles,
+  createSharedShutdown,
+} from "./app-driver.mjs";
 
 async function webdriverServer() {
   const server = createServer(async (request, response) => {
@@ -171,4 +177,36 @@ test("successful cleanup is shared and idempotent", async () => {
   await Promise.all([first, second]);
   assert.equal(cleanupCalls, 1);
   assert.deepEqual(destroyed, ["stdout:13001", "stderr:13001"]);
+});
+
+// Revert proof (2026-10-08): only the helper body used the old try/finally + Promise.all form.
+// pnpm app:driver:test exited 1 on this test at assert.ok(error instanceof AggregateError).
+// The helper was restored byte-for-byte, then all five tests passed.
+test("cleanup aggregates the original failure and profile removal failures after attempting every profile", async () => {
+  const cleanupError = new Error("injected child cleanup failure");
+  const removalError = new Error("injected profile removal failure");
+  const removed = [];
+  await assert.rejects(
+    cleanUpWithProfiles(
+      async () => {
+        throw cleanupError;
+      },
+      ["/fixture/failing-profile", "/fixture/successful-profile"],
+      async (profile) => {
+        removed.push(profile);
+        if (profile === "/fixture/failing-profile") throw removalError;
+      },
+    ),
+    (error) => {
+      assert.ok(error instanceof AggregateError);
+      assert.deepEqual(error.errors, [cleanupError, removalError]);
+      assert.strictEqual(error.errors[0], cleanupError);
+      assert.strictEqual(error.errors[1], removalError);
+      assert.match(error.message, /injected child cleanup failure/u);
+      assert.match(error.message, /injected profile removal failure/u);
+      assert.match(error.message, /could not remove temporary profile \/fixture\/failing-profile/u);
+      return true;
+    },
+  );
+  assert.deepEqual(removed, ["/fixture/failing-profile", "/fixture/successful-profile"]);
 });

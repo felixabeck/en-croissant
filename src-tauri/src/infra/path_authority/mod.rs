@@ -2594,9 +2594,16 @@ pub(crate) fn admit_instance<R: tauri::Runtime>(
         .path()
         .app_local_data_dir()
         .map_err(|error| instance_lock_failure(error.into()))?;
-    admit_instance_with_lock(app_data, &[&config, &local], |file| {
-        crate::infra::fs::lock_advisory_file(file, crate::infra::fs::AdvisoryLockMode::NonBlocking)
-    })
+    admit_instance_with_lock(
+        app_data,
+        &[("configuration", &config), ("local data", &local)],
+        |file| {
+            crate::infra::fs::lock_advisory_file(
+                file,
+                crate::infra::fs::AdvisoryLockMode::NonBlocking,
+            )
+        },
+    )
 }
 
 fn instance_lock_failure(error: Error) -> Error {
@@ -2618,7 +2625,7 @@ fn startup_acquisition_failure(error: Error, prefix: &str, message: &str) -> Err
 
 fn admit_instance_with_lock(
     app_data: &AppDataDir,
-    extra_roots: &[&Path],
+    extra_roots: &[(&'static str, &Path)],
     mut lock: impl FnMut(&fs::File) -> Result<(), crate::infra::fs::AdvisoryLockError>,
 ) -> Result<InstanceAdmission, Error> {
     use crate::infra::fs::{advisory_lock_is_unsupported, AdvisoryLockError, AdvisoryLockPlatform};
@@ -2631,7 +2638,9 @@ fn admit_instance_with_lock(
     let mut acquire = || -> Result<InstanceAdmission, Error> {
         let mut identities = Vec::new();
         let mut files = Vec::new();
-        for root in std::iter::once(None).chain(extra_roots.iter().copied().map(Some)) {
+        for (role, root) in std::iter::once(("application data", None))
+            .chain(extra_roots.iter().map(|(role, path)| (*role, Some(*path))))
+        {
             let acquired;
             let directory = match root {
                 None => &app_data.directory,
@@ -2660,7 +2669,7 @@ fn admit_instance_with_lock(
                         .raw_os_error()
                         .is_some_and(|code| advisory_lock_is_unsupported(code, platform)) =>
                 {
-                    log::warn!("this filesystem does not support advisory locking. ChessFable starts without an instance lock on this root: {error}");
+                    log::warn!("the {role} directory's filesystem does not support advisory locking. ChessFable starts without an instance lock there: {error}");
                 }
                 Err(AdvisoryLockError::Io(error)) => return Err(error.into()),
             }
@@ -9290,6 +9299,43 @@ pub(crate) mod portable_tests {
     };
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+    // Tauri resolves real user directories even in a mock app, so behavior cannot isolate this wiring.
+    #[test]
+    fn instance_admission_production_wires_all_per_user_roots() {
+        use crate::infra::blocking::source_scan::{body_at_indent, normalise, Literals};
+        let source = include_str!("mod.rs");
+        let production = source
+            .split("#[cfg(test)]\npub(crate) mod portable_tests {")
+            .next()
+            .unwrap();
+        let body = body_at_indent(
+            production,
+            "pub(crate) fn admit_instance<R: tauri::Runtime>(",
+        );
+        let compact = |text: &str| {
+            normalise(text, Literals::Keep)
+                .chars()
+                .filter(|character| !character.is_whitespace())
+                .collect::<String>()
+        };
+        let body = compact(body);
+        let config = body
+            .find("letconfig=app.path().app_config_dir()")
+            .expect("configuration resolution");
+        let local = body
+            .find("letlocal=app.path().app_local_data_dir()")
+            .expect("local-data resolution");
+        let call = body.find(&compact("admit_instance_with_lock(app_data, &[(\"configuration\", &config), (\"local data\", &local)], |file| {")).expect("data, configuration and local-data admission in that order");
+        assert!(config < local && local < call);
+        let production = normalise(production, Literals::Blank);
+        assert_eq!(
+            production.matches("admit_instance_with_lock(").count(),
+            2,
+            "only the definition and the production admission call may occur"
+        );
+        assert_eq!(body.matches("admit_instance_with_lock(").count(), 1);
+    }
+
     #[test]
     fn instance_lock_refuses_competitor_and_keeps_leaf_after_drop() {
         let capture = crate::error::LogCaptureScope::start();
@@ -9325,7 +9371,7 @@ pub(crate) mod portable_tests {
 
     fn admit_test_instance(
         app_data: &AppDataDir,
-        extra_roots: &[&Path],
+        extra_roots: &[(&'static str, &Path)],
     ) -> Result<InstanceAdmission, Error> {
         admit_instance_with_lock(app_data, extra_roots, |file| {
             crate::infra::fs::lock_advisory_file(
@@ -9342,13 +9388,19 @@ pub(crate) mod portable_tests {
         let first = AppDataDir::for_test(&temp.path().join("data-one"));
         let second = AppDataDir::for_test(&temp.path().join("data-two"));
         let config = temp.path().join("config");
-        let InstanceAdmission::Owned(_guard) =
-            admit_test_instance(&first, &[&config, first.as_path()]).unwrap()
-        else {
+        let InstanceAdmission::Owned(_guard) = admit_test_instance(
+            &first,
+            &[("configuration", &config), ("local data", first.as_path())],
+        )
+        .unwrap() else {
             panic!("first process must own its distinct roots");
         };
         assert!(matches!(
-            admit_test_instance(&second, &[&config, second.as_path()]).unwrap(),
+            admit_test_instance(
+                &second,
+                &[("configuration", &config), ("local data", second.as_path())]
+            )
+            .unwrap(),
             InstanceAdmission::HeldElsewhere
         ));
         assert_eq!(capture.records().len(), 1);
@@ -9370,7 +9422,8 @@ pub(crate) mod portable_tests {
             let config = temp.path().join(format!("config-{suffix}"));
             let local = temp.path().join(format!("local-{suffix}"));
             let InstanceAdmission::Owned(guard) =
-                admit_test_instance(&data, &[&config, &local]).unwrap()
+                admit_test_instance(&data, &[("configuration", &config), ("local data", &local)])
+                    .unwrap()
             else {
                 panic!("distinct roots must coexist");
             };
@@ -9385,9 +9438,11 @@ pub(crate) mod portable_tests {
         let capture = crate::error::LogCaptureScope::start();
         let temp = tempfile::tempdir().unwrap();
         let data = AppDataDir::for_test(temp.path());
-        let InstanceAdmission::Owned(guard) =
-            admit_test_instance(&data, &[temp.path(), temp.path()]).unwrap()
-        else {
+        let InstanceAdmission::Owned(guard) = admit_test_instance(
+            &data,
+            &[("configuration", temp.path()), ("local data", temp.path())],
+        )
+        .unwrap() else {
             panic!("repeated roots must not contend with themselves");
         };
         assert_eq!(guard._files.len(), 1);
@@ -9406,37 +9461,42 @@ pub(crate) mod portable_tests {
         let config = temp.path().join("config");
         let local = temp.path().join("local");
         for outcomes in [
-            [Some(unsupported), None, None],
+            [None, Some(unsupported), None],
             [Some(unsupported); 3],
             [None, Some(0), None],
         ] {
             let capture = crate::error::LogCaptureScope::start();
             let mut calls = 0;
-            let result = admit_instance_with_lock(&data, &[&config, &local], |_| {
-                let outcome = outcomes[calls];
-                calls += 1;
-                match outcome {
-                    None => Ok(()),
-                    Some(0) => Err(crate::infra::fs::AdvisoryLockError::Io(
-                        std::io::Error::new(
-                            std::io::ErrorKind::PermissionDenied,
-                            "injected second-root failure",
-                        ),
-                    )),
-                    Some(code) => Err(crate::infra::fs::AdvisoryLockError::Io(
-                        std::io::Error::from_raw_os_error(code),
-                    )),
-                }
-            });
+            let result = admit_instance_with_lock(
+                &data,
+                &[("configuration", &config), ("local data", &local)],
+                |_| {
+                    let outcome = outcomes[calls];
+                    calls += 1;
+                    match outcome {
+                        None => Ok(()),
+                        Some(0) => Err(crate::infra::fs::AdvisoryLockError::Io(
+                            std::io::Error::new(
+                                std::io::ErrorKind::PermissionDenied,
+                                "injected second-root failure",
+                            ),
+                        )),
+                        Some(code) => Err(crate::infra::fs::AdvisoryLockError::Io(
+                            std::io::Error::from_raw_os_error(code),
+                        )),
+                    }
+                },
+            );
             let records = capture.records();
             match outcomes {
-                [Some(_), None, None] => {
+                [None, Some(code), None] if code == unsupported => {
                     let InstanceAdmission::Owned(guard) = result.unwrap() else {
                         panic!("supported roots must remain guarded");
                     };
                     assert_eq!(guard._files.len(), 2);
                     assert_eq!(records.len(), 1);
                     assert_eq!(records[0].level, log::Level::Warn);
+                    assert!(records[0].message.starts_with("the configuration directory's filesystem does not support advisory locking."));
                 }
                 [Some(_), Some(_), Some(_)] => {
                     assert!(matches!(result.unwrap(), InstanceAdmission::Unguarded));
@@ -9444,6 +9504,15 @@ pub(crate) mod portable_tests {
                     assert!(records
                         .iter()
                         .all(|record| record.level == log::Level::Warn));
+                    for (record, role) in
+                        records
+                            .iter()
+                            .zip(["application data", "configuration", "local data"])
+                    {
+                        assert!(record.message.starts_with(&format!(
+                            "the {role} directory's filesystem does not support advisory locking."
+                        )));
+                    }
                 }
                 _ => {
                     assert!(result.is_err());
@@ -9514,7 +9583,7 @@ pub(crate) mod portable_tests {
                 assert_eq!(records[0].level, log::Level::Warn);
                 assert!(records[0]
                     .message
-                    .contains("this filesystem does not support advisory locking"));
+                    .starts_with("the application data directory's filesystem does not support advisory locking."));
             } else {
                 let error = result.err().expect("ordinary error refuses startup");
                 assert_eq!(records[0].level, log::Level::Error);

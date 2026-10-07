@@ -2820,6 +2820,20 @@ try {
       }
     }
   };
+  const assertInstanceRefusal = async (
+    probe,
+    { description, stopStep, survivorMessage, setStep },
+  ) => {
+    await probe.waitForLine("another ChessFable process holds the application data directory");
+    setStep(stopStep);
+    await stopLaunchedChild(probe.child);
+    if (processExists(probe.child.pid)) throw new Error(survivorMessage);
+    instanceCheck(
+      !probe.stdout().includes("Finished rust initialization"),
+      description,
+      probe.stdout(),
+    );
+  };
   let refused;
   let refusalStep = "read the primary registries";
   try {
@@ -2830,15 +2844,14 @@ try {
     const before = await Promise.all([readFile(registryFile), readFile(credentialRegistry)]);
     refusalStep = "wait for same-directory refusal";
     refused = launchInstanceProbe(appEnvironment);
-    await refused.waitForLine("another ChessFable process holds the application data directory");
-    refusalStep = "stop the refused process";
-    await stopLaunchedChild(refused.child);
-    if (processExists(refused.child.pid)) throw new Error("the refused process survived cleanup");
-    instanceCheck(
-      !refused.stdout().includes("Finished rust initialization"),
-      refusalCheck,
-      refused.stdout(),
-    );
+    await assertInstanceRefusal(refused, {
+      description: refusalCheck,
+      stopStep: "stop the refused process",
+      survivorMessage: "the refused process survived cleanup",
+      setStep: (step) => {
+        refusalStep = step;
+      },
+    });
     refusalStep = "read the primary registries after refusal";
     const after = await Promise.all([readFile(registryFile), readFile(credentialRegistry)]);
     instanceCheck(
@@ -2865,18 +2878,14 @@ try {
     registerTemporaryProfile(differentData);
     sharedConfigStep = "wait for shared-configuration refusal";
     sharedConfig = launchInstanceProbe({ ...appEnvironment, XDG_DATA_HOME: differentData });
-    await sharedConfig.waitForLine(
-      "another ChessFable process holds the application data directory",
-    );
-    sharedConfigStep = "stop the shared-configuration process";
-    await stopLaunchedChild(sharedConfig.child);
-    if (processExists(sharedConfig.child.pid))
-      throw new Error("the shared-configuration process survived cleanup");
-    instanceCheck(
-      !sharedConfig.stdout().includes("Finished rust initialization"),
-      sharedConfigCheck,
-      sharedConfig.stdout(),
-    );
+    await assertInstanceRefusal(sharedConfig, {
+      description: sharedConfigCheck,
+      stopStep: "stop the shared-configuration process",
+      survivorMessage: "the shared-configuration process survived cleanup",
+      setStep: (step) => {
+        sharedConfigStep = step;
+      },
+    });
   } catch (error) {
     instanceSetupFailure([sharedConfigCheck], sharedConfigStep, error);
   } finally {
