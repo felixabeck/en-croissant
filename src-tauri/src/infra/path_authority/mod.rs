@@ -3095,8 +3095,7 @@ fn sweep_engine_launch_root(
     own_lock: &OsStr,
     own_instance: &OsStr,
 ) -> Result<(), Error> {
-    use rustix::fs::{self as rfs, FlockOperation};
-    use rustix::io::Errno;
+    use crate::infra::fs::{lock_advisory_file, AdvisoryLockError, AdvisoryLockMode};
     let entries = read_directory_entries_at(
         root.directory.as_file(),
         &CancellationToken::new(),
@@ -3133,10 +3132,10 @@ fn sweep_engine_launch_root(
                 continue;
             }
         };
-        match rfs::flock(&lock, FlockOperation::NonBlockingLockExclusive) {
-            Err(error) if error == Errno::AGAIN || error == Errno::WOULDBLOCK => continue,
+        match lock_advisory_file(&lock, AdvisoryLockMode::NonBlocking) {
+            Err(AdvisoryLockError::HeldElsewhere(_)) => continue,
             Err(error) => {
-                log_launch_sibling_failure(&id, &Error::Io(Box::new(error.into())));
+                log_launch_sibling_failure(&id, &Error::Io(Box::new(error.into_io_error())));
                 continue;
             }
             Ok(()) => {}

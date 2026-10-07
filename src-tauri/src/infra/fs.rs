@@ -26,6 +26,110 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum AdvisoryLockMode {
+    Blocking,
+    #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+    NonBlocking,
+}
+
+#[derive(Debug)]
+pub(crate) enum AdvisoryLockError {
+    HeldElsewhere(std::io::Error),
+    Io(std::io::Error),
+}
+
+impl AdvisoryLockError {
+    pub(crate) fn into_io_error(self) -> std::io::Error {
+        match self {
+            Self::HeldElsewhere(error) | Self::Io(error) => error,
+        }
+    }
+}
+
+// The startup guard will consume this classification in the next phase.
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum AdvisoryLockPlatform {
+    Linux,
+    MacOs,
+    Windows,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn advisory_lock_is_unsupported(
+    raw_os_error: i32,
+    platform: AdvisoryLockPlatform,
+) -> bool {
+    // Native errno values differ between Linux and Darwin. Literal tables keep every platform
+    // testable on every host, including Windows errors without a windows-sys dependency on unix.
+    match platform {
+        AdvisoryLockPlatform::Linux => matches!(raw_os_error, 95 | 38), // EOPNOTSUPP/ENOTSUP, ENOSYS
+        AdvisoryLockPlatform::MacOs => matches!(raw_os_error, 102 | 45 | 78), // EOPNOTSUPP, ENOTSUP, ENOSYS
+        AdvisoryLockPlatform::Windows => matches!(raw_os_error, 50 | 1), // ERROR_NOT_SUPPORTED, ERROR_INVALID_FUNCTION
+    }
+}
+
+/// Exclusively locks an already open regular file until its handle is dropped.
+pub(crate) fn lock_advisory_file(
+    file: &File,
+    mode: AdvisoryLockMode,
+) -> Result<(), AdvisoryLockError> {
+    #[cfg(unix)]
+    {
+        use rustix::{fs::FlockOperation, io::Errno};
+        let operation = match mode {
+            AdvisoryLockMode::Blocking => FlockOperation::LockExclusive,
+            AdvisoryLockMode::NonBlocking => FlockOperation::NonBlockingLockExclusive,
+        };
+        rustix::fs::flock(file, operation).map_err(|error| {
+            if error == Errno::AGAIN || error == Errno::WOULDBLOCK {
+                AdvisoryLockError::HeldElsewhere(error.into())
+            } else {
+                AdvisoryLockError::Io(error.into())
+            }
+        })
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::{
+            Foundation::{ERROR_LOCK_VIOLATION, HANDLE},
+            Storage::FileSystem::{LockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY},
+            System::IO::OVERLAPPED,
+        };
+        let flags = LOCKFILE_EXCLUSIVE_LOCK
+            | match mode {
+                AdvisoryLockMode::Blocking => 0,
+                AdvisoryLockMode::NonBlocking => LOCKFILE_FAIL_IMMEDIATELY,
+            };
+        // SAFETY: an all-zero OVERLAPPED is valid and specifies file offset zero.
+        let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
+        let result = unsafe {
+            // SAFETY: the handle is a live regular file and the OVERLAPPED value is exclusively owned.
+            LockFileEx(
+                file.as_raw_handle() as HANDLE,
+                flags,
+                0,
+                u32::MAX,
+                u32::MAX,
+                &mut overlapped,
+            )
+        };
+        if result == 0 {
+            let error = std::io::Error::last_os_error();
+            return Err(
+                if error.raw_os_error() == Some(ERROR_LOCK_VIOLATION as i32) {
+                    AdvisoryLockError::HeldElsewhere(error)
+                } else {
+                    AdvisoryLockError::Io(error)
+                },
+            );
+        }
+        Ok(())
+    }
+}
+
 pub(crate) const MAX_DIRECTORY_LISTING_ENTRIES: usize = 4_096;
 
 /// Check before materialising the next name or staged workspace node.
@@ -5451,6 +5555,64 @@ mod tests {
         path::PathBuf,
         sync::{Arc, Mutex},
     };
+
+    #[test]
+    fn advisory_lock_contends_then_acquires_after_holder_drops() -> std::io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("advisory.lock");
+        let first = File::options()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        let second = File::options().read(true).write(true).open(&path)?;
+        lock_advisory_file(&first, AdvisoryLockMode::NonBlocking)
+            .map_err(AdvisoryLockError::into_io_error)?;
+        assert!(matches!(
+            lock_advisory_file(&second, AdvisoryLockMode::NonBlocking),
+            Err(AdvisoryLockError::HeldElsewhere(_))
+        ));
+        drop(first);
+        lock_advisory_file(&second, AdvisoryLockMode::NonBlocking)
+            .map_err(AdvisoryLockError::into_io_error)?;
+        Ok(())
+    }
+
+    #[test]
+    fn advisory_lock_blocking_acquires_unheld_file() -> std::io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let file = File::options()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(directory.path().join("advisory.lock"))?;
+        lock_advisory_file(&file, AdvisoryLockMode::Blocking)
+            .map_err(AdvisoryLockError::into_io_error)?;
+        Ok(())
+    }
+
+    #[test]
+    fn advisory_lock_unsupported_errors_are_platform_specific() {
+        use AdvisoryLockPlatform::{Linux, MacOs, Windows};
+        for (platform, unsupported, ordinary) in [
+            (Linux, &[95, 38][..], &[37, 13][..]),
+            (MacOs, &[102, 45, 78][..], &[77, 13][..]),
+            (Windows, &[50, 1][..], &[33, 5][..]),
+        ] {
+            for &code in unsupported {
+                assert!(
+                    advisory_lock_is_unsupported(code, platform),
+                    "{platform:?}: {code}"
+                );
+            }
+            for &code in ordinary {
+                assert!(
+                    !advisory_lock_is_unsupported(code, platform),
+                    "{platform:?}: {code}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn archive_destination_directory_exists_without_following_links() {

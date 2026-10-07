@@ -285,39 +285,10 @@ impl AdvisoryDeckLock {
     fn acquire(directory: &AuthorizedDir, hash: &str) -> Result<Self, Error> {
         let leaf = format!("{hash}{LOCK_SUFFIX}");
         let file = directory.open_or_create_regular_relative(Path::new(&leaf))?;
-        #[cfg(unix)]
-        rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive)
-            .map_err(|error| Error::Io(Box::new(error.into())))?;
-        #[cfg(windows)]
-        lock_windows(&file)?;
+        crate::infra::fs::lock_advisory_file(&file, crate::infra::fs::AdvisoryLockMode::Blocking)
+            .map_err(|error| Error::Io(Box::new(error.into_io_error())))?;
         Ok(Self { _file: file })
     }
-}
-
-#[cfg(windows)]
-fn lock_windows(file: &File) -> Result<(), Error> {
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::{
-        Foundation::HANDLE,
-        Storage::FileSystem::{LockFileEx, LOCKFILE_EXCLUSIVE_LOCK},
-        System::IO::OVERLAPPED,
-    };
-    let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
-    let result = unsafe {
-        // SAFETY: the handle is a live regular file and the OVERLAPPED value is exclusively owned.
-        LockFileEx(
-            file.as_raw_handle() as HANDLE,
-            LOCKFILE_EXCLUSIVE_LOCK,
-            0,
-            u32::MAX,
-            u32::MAX,
-            &mut overlapped,
-        )
-    };
-    if result == 0 {
-        return Err(Error::Io(Box::new(std::io::Error::last_os_error())));
-    }
-    Ok(())
 }
 
 fn with_deck_lock<T>(
