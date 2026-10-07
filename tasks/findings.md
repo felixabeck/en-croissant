@@ -13602,3 +13602,29 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
 * **Candidate fix:** one private accessor on the repository entry (e.g. `fn state(&self) -> Result<MutexGuard<'_, _>, Error>`) that owns the mapping, all nineteen sites routed through it, plus one test that poisons the mutex through a panicking thread and asserts the exact `Conflict` Display from one public repository operation.
 * **Related:** found while planning `f-20260922-01` (PLAN-ONLY drain lane, 2026-10-07); deliberately not folded in, because that finding's mandate is the path-authority mutex and `db/repository.rs` is not one of its files (rule 12a adoption gate).
 * **Found by:** the orchestrator of the `f-20260922-01` planner, by `git grep -n "repository state poisoned" -- src-tauri/src` (19 hits, one file) and reading `:400-425`.
+
+---
+
+## 2026-10-07 — filed through the inbox spool
+
+### Tests that write a tab tree leave the `tabStorage` debounce timer running past environment teardown
+
+* **ID:** f-20261007-07 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Filed from:** 1abd5112-6a94-4620-b2d7-eca2aa0bfc34
+* **Where:** `src/state/store/tabStorage.ts:772-779` (`scheduleFlush` on the module singleton `tabStorage`, `:831`); observed with `src/components/panels/practice/RepertoireInfo.test.tsx` (its `afterEach` at `:68` unmounts and clears both storages but leaves the pending flush timer armed).
+* **Defect:** `tabStorage` is a module-level singleton whose writes arm a `DEBOUNCE_MS` `setTimeout`. A renderer test that writes a tab tree and finishes inside that window leaves the timer pending; it fires after the test file's jsdom environment is torn down, `flush` then fails, and its failure path calls `warn` with no window. On CI run 37650848981 (job `test`, 2026-10-07, commit `a910e028`) that produced "ReferenceError: window is not defined" as an unhandled rejection attributed to `RepertoireInfo.test.tsx`, and Vitest failed the job although all 2874 tests passed. The unhandled rejection itself is `f-20260922-14` (fixed in the same push run by catching the `warn`); the leaked timer remains: a late flush still runs against a torn-down environment and logs noise, and which test file it lands in depends on timing.
+* **Why it matters:** `.claude/rules/async-resource-invariants.md` — every timer has an owner and a cleanup on every exit path; a test run is one of those paths. Timing-dependent cross-file effects are exactly what makes the `test` job flaky.
+* **Fix:** give the repository a test-only way to settle its pending state (flush or cancel the debounce timer) and call it from the shared Vitest setup's `afterEach`, or have the affected suites use fake timers and drain them; prefer the shared setup so a new suite cannot reintroduce it.
+* **Proof:** a test that writes a tree and ends inside the debounce window leaves no pending timer (`vi.getTimerCount()` or a spy on `setTimeout`/`clearTimeout`), and `pnpm test:coverage` reports no unhandled errors.
+* **Related:** `f-20260922-14` (the unhandled `warn` rejection on the same path).
+
+### `LocalImage` and download-progress cleanup silently drop their only failure record when the log call rejects
+
+* **ID:** f-20261007-08 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** 1abd5112-6a94-4620-b2d7-eca2aa0bfc34
+* **Where:** `src/components/common/LocalImage.tsx:40` and `src/hooks/downloadJobs.ts:47`, both `void warn(...).catch(() => undefined)`.
+* **Defect:** each site's `warn` is the only record of a failure (an image read that clears the portrait; a progress-cleanup failure that the job otherwise drops). When the log IPC also rejects, `.catch(() => undefined)` erases that record, the shape `f-20260906-10` rejected for `sound.ts` ("erases the only record in exactly the no-backend case the report exists for"). Raised as blockers (confidence 96–97) by `review-error-handling` and `review-root-cause` in round 4 of the `f-20260914-30` push review, 2026-10-07, while repairing `f-20260922-14`; outside that run's files, so deferred.
+* **Why it matters:** `.claude/rules/async-resource-invariants.md` — every asynchronous operation has an error path, and a failure is reported truthfully rather than lost.
+* **Open question:** `d-20260920-07` chose the silent form for `LocalImage` explicitly ("the promise-safe `void warn(...).catch(() => undefined)` form", modelled on `downloadJobs.ts:47`). Reversing it needs that decision superseded under clause 2 with the `f-20260906-10` evidence it did not weigh. The fix is then to route both sites through the shared warn-with-console-fallback helper that the `f-20260914-30` push run extracts for `tabStorage.ts` and `sound.ts` (`src/platform/log.ts`).
+* **Proof:** a test per site where both the primary operation and `warn` reject asserts the console fallback; removing the fallback fails it.
+* **Related:** `f-20260922-14` (same defect class in `tabStorage.ts`, handled), `f-20260906-10` (the console-fallback precedent).
