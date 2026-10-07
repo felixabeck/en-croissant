@@ -22,6 +22,7 @@ import { VITEST_MINIMUM_BUDGET_BYTES, workerCount } from "./gate-parallelism.mjs
 import { E2E_CONTAINER_MEMORY_BYTES } from "./run-e2e-container.mjs";
 import { startNodeCli } from "./mutation-runner-test-harness.mjs";
 import { superviseChild } from "./child-supervisor.mjs";
+import { GATE_LOG_DIRECTORY_ENV, MAX_GATE_LOG_RUNS } from "./gate-logs.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const runnerPath = join(repositoryRoot, "scripts/run-push-gates.mjs");
@@ -298,6 +299,109 @@ async function temporarySchedulerRoot(t) {
   t.after(() => rm(root, { recursive: true, force: true }));
   return root;
 }
+
+test("every scheduled child inherits the run directory in both push placements and pre-review", async (t) => {
+  for (const [args, budgetBytes] of [
+    [["--rust", "--frontend", "--bindings"], 7 * GIB],
+    [["--rust", "--frontend", "--bindings"], ONE_WAVE_BYTES + GIB],
+    [["--pre-review"], 7 * GIB],
+  ]) {
+    await t.test(`${args.join(" ")} with ${budgetBytes} bytes`, async (subtest) => {
+      const cwd = await temporarySchedulerRoot(subtest);
+      const events = [];
+      const env = { ...process.env, [GATE_LOG_DIRECTORY_ENV]: "/invalid/old-run" };
+      const result = await runPushGates(args, {
+        cwd,
+        env,
+        getGateBudgetBytes: () => budgetBytes,
+        availableParallelism: () => 24,
+        discoverChangedPaths: () => ["src-tauri/src/lib.rs", "src/state/workspace.ts"],
+        spawnProcess: makeMockSpawner({ events }),
+      });
+      assert.equal(result.exitCode, 0);
+      const starts = events.filter(({ type }) => type === "start");
+      assert.ok(starts.length > 1);
+      for (const event of starts) {
+        assert.equal(event.env[GATE_LOG_DIRECTORY_ENV], result.logDirectory, event.command);
+      }
+      assert.equal(env[GATE_LOG_DIRECTORY_ENV], "/invalid/old-run", "caller env stays unchanged");
+    });
+  }
+});
+
+test("scheduler startup prunes old runs before the first child starts", async (t) => {
+  const cwd = await temporarySchedulerRoot(t);
+  const base = join(cwd, "artifacts", "gates");
+  await mkdir(base, { recursive: true });
+  const oldNames = Array.from(
+    { length: 105 },
+    (_, index) => `20200101T${String(index).padStart(9, "0")}Z-1`,
+  );
+  for (const name of oldNames) await mkdir(join(base, name));
+  let checked = false;
+  const result = await runPushGates([], {
+    cwd,
+    env: { ...process.env },
+    async beforeStep() {
+      if (checked) return;
+      checked = true;
+      const names = await readdir(base);
+      assert.equal(names.length, MAX_GATE_LOG_RUNS);
+      assert.deepEqual(
+        names.filter((name) => oldNames.includes(name)),
+        oldNames.slice(6),
+      );
+    },
+    spawnProcess: makeMockSpawner(),
+  });
+  assert.equal(result.exitCode, 0);
+  assert.ok(checked);
+  assert.ok((await readdir(base)).includes(result.logDirectory.split("/").at(-1)));
+});
+
+test("failed schedules finish with all failed paths after their summary and tails", async (t) => {
+  for (const preReview of [false, true]) {
+    await t.test(preReview ? "pre-review" : "push", async (subtest) => {
+      const cwd = await temporarySchedulerRoot(subtest);
+      const originalStdoutWrite = process.stdout.write;
+      let stdout = "";
+      process.stdout.write = function (chunk) {
+        stdout += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+        return true;
+      };
+      let result;
+      try {
+        result = await runPushGates(preReview ? ["--pre-review"] : ["--rust"], {
+          cwd,
+          env: { ...process.env },
+          discoverChangedPaths: () => ["src-tauri/src/lib.rs"],
+          spawnProcess: makeMockSpawner({
+            exits: {
+              "pnpm gate:run frontend-build": 9,
+              "pnpm gates:contract:check": 7,
+              "pnpm coverage:mapping:backend": 8,
+            },
+          }),
+        });
+      } finally {
+        process.stdout.write = originalStdoutWrite;
+      }
+      assert.equal(result.exitCode, 9);
+      const failed = result.results.filter(({ status }) => status === "failed");
+      assert.equal(failed.length, 2);
+      const prefix = preReview ? "pre-review check failed" : "push gate failed";
+      const trailers = failed.map(({ name, logPath }) => `${prefix}: ${name} — log: ${logPath}`);
+      const lines = stdout.trimEnd().split("\n");
+      assert.deepEqual(lines.slice(-trailers.length), trailers);
+      assert.equal(lines.filter((line) => line.startsWith(`${prefix}:`)).length, failed.length);
+      for (const task of failed) {
+        assert.ok(stdout.includes(`${task.name} log tail (${task.logPath}):`));
+        assert.ok(stdout.indexOf(`${task.name} log tail`) < stdout.indexOf(trailers[0]));
+        await readFile(task.logPath, "utf8");
+      }
+    });
+  }
+});
 
 function git(root, args, { allowFailure = false } = {}) {
   const result = spawnSync("git", args, { cwd: root, encoding: "utf8" });
@@ -1794,6 +1898,10 @@ test("interrupted lanes retain shutdown output and record the child's exit", asy
   assert.ok(summary.includes(`contract log tail (${contract.logPath}):`));
   assert.ok(summary.includes(cleanupOutput));
   assert.match(await readFile(contract.logPath, "utf8"), /injected cleanup refusal/u);
+  assert.equal(
+    summary.trimEnd().split("\n").at(-1),
+    `push gate failed: contract — log: ${contract.logPath}`,
+  );
 });
 
 test("scheduler-level beforeStep cancellation and injected spawn failures (PG-51, PG-55, PG-58)", async (t) => {

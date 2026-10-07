@@ -12,7 +12,7 @@ import {
   E2E_CONTAINER_MEMORY_BYTES,
   playwrightArguments,
 } from "./run-e2e-container.mjs";
-import { E2E_LANE_TERMINATION_TIMEOUT_MS } from "./run-push-gates.mjs";
+import { E2E_LANE_TERMINATION_TIMEOUT_MS } from "./child-supervisor.mjs";
 
 const scripts = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(scripts, "..");

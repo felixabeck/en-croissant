@@ -1,26 +1,26 @@
 #!/usr/bin/env node
 
 import { spawn, spawnSync } from "node:child_process";
-import {
-  closeSync,
-  existsSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  statSync,
-  writeSync,
-} from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, statSync, writeSync } from "node:fs";
 import { availableParallelism as defaultAvailableParallelism } from "node:os";
 import { extname, join, relative, resolve, sep } from "node:path";
 import { performance } from "node:perf_hooks";
 import { isEntrypoint } from "./entrypoint.mjs";
 import { gateBudgetBytes, VITEST_MINIMUM_BUDGET_BYTES } from "./gate-parallelism.mjs";
 import {
+  CHILD_TERMINATION_TIMEOUT_MS,
+  E2E_LANE_TERMINATION_TIMEOUT_MS,
   formatNestedError,
   installMultiChildSignalForwarding,
   signalExitCode,
   superviseChild as defaultSuperviseChild,
 } from "./child-supervisor.mjs";
+import {
+  GATE_LOG_DIRECTORY_ENV,
+  formatFailureTrailer,
+  makeLogDirectory,
+  readLogTail,
+} from "./gate-logs.mjs";
 import { E2E_CONTAINER_MEMORY_BYTES } from "./run-e2e-container.mjs";
 import { mutationPackages } from "./frontend-mutation-packages.mjs";
 import { matches } from "./coverage-scope.mjs";
@@ -46,13 +46,6 @@ export const ONE_WAVE_BYTES = 40 * GIB;
 // Two self-sizing lanes split the available CPU evenly; one CPU cannot run both without
 // oversubscribing its worker floors, so mutation follows P2 below this count.
 const MIN_CONCURRENT_SELF_SIZING_CPUS = 2;
-// Two seconds lets gates handle SIGTERM cleanly before their process group is escalated.
-const CHILD_TERMINATION_TIMEOUT_MS = 2_000;
-// This 15-second window covers the 10-second `docker rm -f` timeout and 2-second client
-// termination grace, with 3 seconds left to report cleanup before the lane is killed.
-export const E2E_LANE_TERMINATION_TIMEOUT_MS = 15_000;
-// Failed command output is bounded so one noisy gate cannot flood the summary.
-const LOG_TAIL_BYTES = 8 * 1024;
 
 export const PUSH_GATE_SCHEDULE = Object.freeze({
   p0: Object.freeze([
@@ -607,15 +600,6 @@ function formatDuration(durationMs) {
   return `${(durationMs / 1000).toFixed(1)}s`;
 }
 
-function makeLogDirectory(cwd) {
-  const base = join(cwd, "artifacts", "gates");
-  mkdirSync(base, { recursive: true });
-  const timestamp = `${new Date().toISOString().replaceAll(/[-:.]/gu, "")}-${process.pid}`;
-  const directory = join(base, timestamp);
-  mkdirSync(directory, { recursive: false });
-  return directory;
-}
-
 function logPathFor(logDirectory, name) {
   return join(logDirectory, `${name}.log`);
 }
@@ -960,16 +944,9 @@ function printSummary(results, logDirectory, preReviewMode = false) {
   for (const task of results) {
     if (task.status !== "failed" && task.status !== "interrupted") continue;
     process.stdout.write(`\n${task.name} log tail (${task.logPath}):\n`);
-    try {
-      const contents = readFileSync(task.logPath);
-      const tail = contents
-        .subarray(Math.max(0, contents.length - LOG_TAIL_BYTES))
-        .toString("utf8");
-      process.stdout.write(tail || "(empty log)\n");
-      if (!tail.endsWith("\n")) process.stdout.write("\n");
-    } catch (error) {
-      process.stdout.write(`Unable to read log tail: ${errorMessage(error)}\n`);
-    }
+    const tail = readLogTail(task.logPath);
+    process.stdout.write(tail || "(empty log)\n");
+    if (!tail.endsWith("\n")) process.stdout.write("\n");
     if (task.error) process.stdout.write(`Spawn or runner error: ${errorMessage(task.error)}\n`);
     if (task.terminationError) {
       process.stdout.write(
@@ -979,6 +956,11 @@ function printSummary(results, logDirectory, preReviewMode = false) {
     if (task.logError) {
       process.stdout.write(`Gate log write failed: ${errorMessage(task.logError)}\n`);
     }
+  }
+  for (const task of results) {
+    if (task.status !== "failed" && task.status !== "interrupted") continue;
+    const prefix = preReviewMode ? "pre-review check failed" : "push gate failed";
+    process.stdout.write(`${formatFailureTrailer(`${prefix}: ${task.name}`, task.logPath)}\n`);
   }
 }
 
@@ -1019,6 +1001,7 @@ export async function runPushGates(
   }
   const { blocks } = parsed;
   const logDirectory = makeLogDirectory(cwd);
+  env = { ...env, [GATE_LOG_DIRECTORY_ENV]: logDirectory };
   const signalForwarding = installMultiChildSignalForwarding({
     label: preReviewMode ? "pre-review checks" : "push gate",
   });

@@ -2,6 +2,12 @@ import { constants as osConstants } from "node:os";
 
 const PROCESS_GROUP_POLL_MS = 10;
 
+// Two seconds lets gates handle SIGTERM cleanly before their process group is escalated.
+export const CHILD_TERMINATION_TIMEOUT_MS = 2_000;
+// This 15-second window covers the 10-second `docker rm -f` timeout and 2-second client
+// termination grace, with 3 seconds left to report cleanup before the lane is killed.
+export const E2E_LANE_TERMINATION_TIMEOUT_MS = 15_000;
+
 /** Traverse nested errors once while letting each caller choose how to format their tree. */
 export function formatNestedError(error, format, depth = 0) {
   const message = error instanceof Error ? error.message : String(error);
