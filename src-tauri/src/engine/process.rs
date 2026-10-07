@@ -844,8 +844,8 @@ pub struct EngineActor {
 }
 
 #[cfg(test)]
-struct TerminationReplyGate {
-    parked: AtomicBool,
+pub(crate) struct TerminationReplyGate {
+    pub(crate) parked: AtomicBool,
     released: AtomicBool,
     release: tokio::sync::Notify,
 }
@@ -867,7 +867,7 @@ impl TerminationReplyGate {
         }
     }
 
-    fn open(&self) {
+    pub(crate) fn open(&self) {
         self.released.store(true, Ordering::SeqCst);
         self.release.notify_one();
     }
@@ -3331,6 +3331,17 @@ impl EngineActor {
     }
 
     #[cfg(test)]
+    pub(crate) fn gated_pending_test_actor(
+        failure: Option<&'static str>,
+    ) -> (
+        Arc<Self>,
+        Arc<TerminationReplyGate>,
+        Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        tests::gated_pending_actor(failure)
+    }
+
+    #[cfg(test)]
     pub(crate) fn failing_terminate_test_actor(error: impl Into<String>) -> Arc<Self> {
         Arc::new(Self::new(
             Box::new(GameCleanupTestIo {
@@ -5074,7 +5085,7 @@ mod tests {
         }
     }
 
-    fn gated_pending_actor(
+    pub(super) fn gated_pending_actor(
         failure: Option<&'static str>,
     ) -> (
         Arc<EngineActor>,

@@ -570,6 +570,20 @@ pub struct EngineOptions {
     pub extra_options: Vec<EngineOption>,
 }
 
+async fn terminate_analysis_engines(
+    supervisor: &crate::engine::EngineSupervisor,
+    ids: impl IntoIterator<Item = String>,
+) -> Result<Vec<String>, Error> {
+    let mut failures = Vec::new();
+    for id in ids {
+        let key = EngineKey::new("analysis".into(), id)?;
+        if let Err(error) = supervisor.kill_engine(&key).await {
+            failures.push(error.to_string());
+        }
+    }
+    Ok(failures)
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn kill_engines(
@@ -580,22 +594,7 @@ pub async fn kill_engines(
     let analyses = state
         .operations
         .cancel_analyses_for_tab(window.label(), &tab)?;
-    let mut failures = Vec::new();
-    for id in analyses {
-        let key = EngineKey::new("analysis".into(), id)?;
-        if let Some(process) = state.engine_supervisor.get_exact(&key) {
-            state
-                .engine_supervisor
-                .cancel_exact(&key, process.generation);
-            if let Err(error) = state
-                .engine_supervisor
-                .terminate_exact(&key, process.generation)
-                .await
-            {
-                failures.push(error.to_string());
-            }
-        }
-    }
+    let mut failures = terminate_analysis_engines(&state.engine_supervisor, analyses).await?;
     if let Err(error) = state.engine_supervisor.terminate_tab(&tab).await {
         failures.push(error.to_string());
     }
@@ -1709,6 +1708,56 @@ mod tests {
     use tauri::{Listener, Manager};
 
     use super::*;
+
+    #[tokio::test]
+    async fn terminate_analysis_engines_waits_for_pending_reap_and_keeps_failure() {
+        let supervisor = Arc::new(crate::engine::EngineSupervisor::default());
+        let id = "pending-report".to_string();
+        let key = EngineKey::new("analysis".into(), id.clone()).unwrap();
+        let sentinel = "report-pending-reap-failure";
+        let (actor, gate, calls) = EngineActor::gated_pending_test_actor(Some(sentinel));
+        let published = supervisor
+            .replace_handle(
+                key.clone(),
+                actor,
+                id.clone(),
+                crate::infra::path_authority::PathRef {
+                    id: "report-engine-path".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let guard = RegistrationGuard::new(supervisor.clone(), key.clone(), published.generation);
+        let reap = tokio::spawn(guard.terminate_now());
+        let deadline = std::time::Duration::from_secs(2);
+        tokio::time::timeout(deadline, async {
+            while !gate.parked.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("report termination must reach the gate");
+        assert!(supervisor.get_exact(&key).is_none());
+
+        let teardown = terminate_analysis_engines(&supervisor, [id]);
+        tokio::pin!(teardown);
+        let pending = futures_util::poll!(&mut teardown).is_pending();
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        gate.open();
+        assert!(pending, "report teardown must await the pending reap");
+        let failures = tokio::time::timeout(deadline, teardown)
+            .await
+            .expect("report teardown must finish after the gate opens")
+            .unwrap();
+        let reap_error = tokio::time::timeout(deadline, reap)
+            .await
+            .expect("report owner must finish after the gate opens")
+            .unwrap()
+            .unwrap_err();
+        assert!(reap_error.diagnostic().contains(sentinel));
+        assert_eq!(failures, [reap_error.to_string()]);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
 
     fn assert_rejects_invalid_engine_id(result: Result<(), Error>) {
         assert!(
