@@ -8388,6 +8388,13 @@ impl PathAuthority {
         })
     }
 
+    /// Remove workspace registry entries and return the save's durability and the number of
+    /// registry ids this call removed that an earlier failed save had not already removed.
+    /// The count is returned only with a committed save and becomes `PartialRemoval.removed_entries`
+    /// if the workspace delete's engine retirement fails. Pending ids are excluded because an
+    /// earlier call removed them from its candidate map but failed to save it, so this directory's
+    /// candidate or the commit prune would otherwise count them again. This is neither a count of
+    /// filesystem entries nor the registry-size delta.
     pub(crate) fn remove_workspace_entry(
         &mut self,
         handle: &FileWorkspaceHandle,
@@ -8456,12 +8463,12 @@ impl PathAuthority {
         // what was persisted, so the unavailable records remain until a later successful,
         // explicit reconciliation. Residual accumulation is therefore limited to registry-save
         // failures rather than ordinary workspace create-and-delete use.
-        let count = removed_ids
+        let newly_removed_ids = removed_ids
             .iter()
             .filter(|id| !self.pending_unpersisted_removals.contains(*id))
             .count();
         match self.commit_candidate_with_pending(candidate, pending_artifacts, None) {
-            Ok(durability) => Ok((durability, count)),
+            Ok(durability) => Ok((durability, newly_removed_ids)),
             Err(error) => {
                 self.pending_unpersisted_removals.extend(removed_ids);
                 Err(error)

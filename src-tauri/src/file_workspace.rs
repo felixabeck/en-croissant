@@ -1637,13 +1637,13 @@ async fn permanently_delete_entry(
         .retire_executables(dropped_engine_executables)
         .await;
     match (result, retirement_result) {
-        (Ok(count), Err(error)) => {
+        (Ok(removed_entries), Err(error)) => {
             log::warn!(
                 "workspace removal engine retirement failed: {}",
                 error.diagnostic()
             );
             Err(Error::PartialRemoval {
-                removed_entries: count,
+                removed_entries,
                 cause: Box::new(error),
             })
         }
@@ -1663,6 +1663,8 @@ async fn permanently_delete_entry(
 // as the success path, so they cannot travel through the `Result`. A plain
 // `spawn(..).await?` would drop them on `Err` and leave a running engine holding
 // an unlinked inode.
+// The `Ok` value counts registry entries this delete removed, which the caller reports
+// if engine retirement fails.
 fn permanently_delete_entry_blocking(
     pgn_path_authority: &Mutex<Option<PathAuthority>>,
     workspace_mutation: &Mutex<()>,
@@ -1730,7 +1732,7 @@ fn permanently_delete_entry_blocking(
             return Err(error);
         }
 
-        let (registry_durability, count) = match registry_result {
+        let (registry_durability, removed_entries) = match registry_result {
             Ok(committed) => committed,
             Err(error) => {
                 log::warn!("workspace removal registry reconciliation failed: {error}");
@@ -1770,7 +1772,7 @@ fn permanently_delete_entry_blocking(
         if let CommitDurability::DurabilityUncertain(stage) = registry_durability {
             return Err(Error::CommittedDurabilityUncertain(stage));
         }
-        Ok(count)
+        Ok(removed_entries)
     })();
     (dropped_engine_executables, result)
 }
@@ -3273,6 +3275,8 @@ mod tests {
             };
             counts.push(removed_entries);
             assert_eq!(cause.category(), crate::error::ErrorCategory::Io);
+            assert!(cause.diagnostic().contains("injected removal failure"));
+            assert!(!cause.diagnostic().contains("retirement failure"));
             assert!(child.exists());
             assert!(!child.join("engine").exists());
             assert_executable_retired(&state, executable).await;
@@ -3301,19 +3305,7 @@ mod tests {
         .expect("permanent delete");
 
         assert!(state.engine_supervisor.get_exact(&key).is_none());
-        let (retired_actor, _) = crate::engine::EngineActor::recording_test_actor(&[]);
-        assert!(matches!(
-            state
-                .engine_supervisor
-                .replace_handle(
-                    EngineKey::new("tab".into(), "retired path".into()).expect("engine key"),
-                    retired_actor,
-                    "different-application-engine".into(),
-                    executable,
-                )
-                .await,
-            Err(Error::Conflict(message)) if message == "engine executable is retired"
-        ));
+        assert_executable_retired(&state, executable).await;
 
         let replacement_key =
             EngineKey::new("tab".into(), "replacement path".into()).expect("engine key");
@@ -3393,19 +3385,7 @@ mod tests {
         let state = app.state::<AppState>();
         assert!(!child.exists());
         assert!(state.engine_supervisor.get_exact(&key).is_none());
-        let (actor, _) = crate::engine::EngineActor::recording_test_actor(&[]);
-        assert!(matches!(
-            state
-                .engine_supervisor
-                .replace_handle(
-                    EngineKey::new("tab".into(), "retired-after-drop".into()).unwrap(),
-                    actor,
-                    "other-engine".into(),
-                    executable,
-                )
-                .await,
-            Err(Error::Conflict(message)) if message == "engine executable is retired"
-        ));
+        assert_executable_retired(&state, executable).await;
     }
 
     #[cfg(unix)]
@@ -3472,19 +3452,7 @@ mod tests {
         assert!(!child.exists(), "the workspace unlink completed");
         assert!(registry.is_dir(), "the registry replacement failed");
         assert!(state.engine_supervisor.get_exact(&key).is_none());
-        let (actor, _) = crate::engine::EngineActor::recording_test_actor(&[]);
-        assert!(matches!(
-            state
-                .engine_supervisor
-                .replace_handle(
-                    EngineKey::new("tab".into(), "retired-after-error".into()).unwrap(),
-                    actor,
-                    "other-engine".into(),
-                    executable,
-                )
-                .await,
-            Err(Error::Conflict(message)) if message == "engine executable is retired"
-        ));
+        assert_executable_retired(&state, executable).await;
     }
 
     #[cfg(unix)]
