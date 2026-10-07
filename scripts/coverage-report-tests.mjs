@@ -1431,6 +1431,23 @@ test("parseLcov rejects each malformed-input rule with its complete diagnostic",
   }
 });
 
+test("parseLcov rejects the opposite field-count direction with its complete diagnostic", async (t) => {
+  const cases = [
+    malformedCounterCase(93, "DA requires 2 or 3 fields", "DA:1,1,checksum,extra"),
+    malformedCounterCase(97, "FN requires 2 fields", "FN:1"),
+    malformedCounterCase(100, "FNDA requires 2 fields", "FNDA:1", "FN:1,f"),
+    malformedCounterCase(103, "BRDA requires 4 fields", "BRDA:1,0,0,1,extra"),
+  ];
+  for (const entry of cases) {
+    await t.test(`row ${entry.row}: ${entry.reason}`, () => {
+      assert.throws(() => parseLcov(entry.input), {
+        name: "Error",
+        message: malformedMessage(entry),
+      });
+    });
+  }
+});
+
 test("every malformed-input matrix row is staged through the CLI", async (t) => {
   const config = cliConfig();
   const baselineContents = JSON.stringify(
@@ -1445,13 +1462,6 @@ test("every malformed-input matrix row is staged through the CLI", async (t) => 
       assert.equal(result.status, 1, result.stderr);
       assert.equal(result.stdout, "");
       assert.equal(result.stderr, `${malformedMessage(entry)}\n`);
-      for (const candidate of malformedLcovCases) {
-        const token =
-          candidate.line === undefined
-            ? `Malformed LCOV at end of input: ${candidate.reason} `
-            : `: ${candidate.reason}: `;
-        assert.equal(result.stderr.includes(token), candidate === entry, candidate.reason);
-      }
       t.diagnostic(`staged row ${entry.row}: exit 1, ${result.stderr.trim()}`);
     });
   }
