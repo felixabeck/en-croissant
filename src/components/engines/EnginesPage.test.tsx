@@ -13,7 +13,6 @@ const mocks = vi.hoisted(() => ({
   issueEngineImage: vi.fn(),
   issueEngineResource: vi.fn(),
   reconcileEngineAttachments: vi.fn(),
-  saveEngines: vi.fn(),
   confirmRemoval: vi.fn<() => Promise<void>>(),
   selected: 0,
 }));
@@ -226,10 +225,6 @@ beforeEach(() => {
   });
   mocks.selected = 0;
   settingsMounted = false;
-  mocks.saveEngines.mockImplementation(async (update) => {
-    await publishEngines(update);
-    return { operationId: "save", key: "engines", saved: true, synchronized: true };
-  });
   setAtomEngines.mockImplementation(async (update) => {
     await publishEngines(update);
     return { operationId: "save", key: "engines", saved: true, synchronized: true };
