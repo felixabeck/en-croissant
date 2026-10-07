@@ -368,22 +368,29 @@ describe("trash confirmations", () => {
     expect(container.textContent).not.toContain("list unavailable");
   });
 
-  test("partial permanent-delete keeps its error when relisting fails", async () => {
-    await completeTrash();
-    mocks.mutate.mockClear();
-    mocks.permanentlyDeleteWorkspaceEntry.mockRejectedValueOnce(
-      commandError("durability", "Committed but durability uncertain: parent not found"),
-    );
-    mocks.mutate.mockRejectedValueOnce(new Error("list unavailable"));
-    click("Delete permanently");
-    await act(async () => button("Common.Delete").click());
-    expect(mocks.mutate).toHaveBeenCalledTimes(1);
-    expect(container.textContent).not.toContain("Moved sample.pgn to trash.");
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-      "Part of the operation was completed, and what is shown may no longer match.",
-    );
-    expect(container.textContent).not.toContain("list unavailable");
-  });
+  test.each([
+    ["durability", "Committed but durability uncertain: parent not found"] as const,
+    [
+      "partial-removal",
+      "Partially removed: 2 entries were deleted before failing: I/O failure",
+    ] as const,
+  ])(
+    "partial permanent-delete keeps its %s error when relisting fails",
+    async (category, message) => {
+      await completeTrash();
+      mocks.mutate.mockClear();
+      mocks.permanentlyDeleteWorkspaceEntry.mockRejectedValueOnce(commandError(category, message));
+      mocks.mutate.mockRejectedValueOnce(new Error("list unavailable"));
+      click("Delete permanently");
+      await act(async () => button("Common.Delete").click());
+      expect(mocks.mutate).toHaveBeenCalledTimes(1);
+      expect(container.textContent).not.toContain("Moved sample.pgn to trash.");
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        "Part of the operation was completed, and what is shown may no longer match.",
+      );
+      expect(container.textContent).not.toContain("list unavailable");
+    },
+  );
 
   test.each([
     ["restore", "Undo", "Restore file", "Restore", "restoreWorkspaceEntry"],
