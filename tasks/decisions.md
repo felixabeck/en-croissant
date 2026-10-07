@@ -5997,3 +5997,40 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** the finding's symptom (a user told nothing happened to a database that is gone), the same answer for the same situation in both tails, and `.claude/rules/async-resource-invariants.md` (cleanup on every exit path). Reversal path: return the closure's result again instead of handing the `CommittedRemoval` out, and drop the missing-primary arm.
 * **Decided by:** Claude Code, drain session eed08af5-58ff-40a1-9aa7-f2b51f9b1321 (drain run 0ab86bf9-7e6e-42ce-b073-c494cb240f4f), full auto, cumulative review of f-20260917-08 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"2ae0bf8351a01495659052be48850a18f8f67c3deb2105ed674093b59f777480","input_sha256":"a6dcb183cf525f59a204e853d01ec0ac17a4b4b49085bcd0a2299b525b0fb76c","kind":"mutation-receipt","operation":"3748dde65c655788d403463f8d0efd67ad96f92ebd0790954804614698d3278e","options":{"section":null},"request_id_sha256":null,"results":["d-20261007-01"],"target":"decisions-ledger","v":1} -->
+
+### d-20261007-02 — Metadata-only write: a new command, or an unchanged name in `rename_workspace_file` as sidecar-only?
+
+* **Question:** A workspace file's type must be changeable without renaming it. Is that a new native command, or does `rename_workspace_file` treat an unchanged name as "sidecar only"?
+* **Governs:** f-20260919-07
+* **Chosen:** a new `write_workspace_file_metadata(workspace, entry, metadata)` command sharing one sidecar-replacement core (with a PGN identity recheck in the precommit) with the rename path; the renderer chooses it when the Name field's raw value equals the listed display name. `rename_workspace_file` additionally treats a normalised target leaf byte-equal to the source leaf as sidecar-only, so typing `foo.pgn` for `foo.pgn` no longer fails with `I/O failure`.
+* **Rejected:** inferring "unchanged" inside `rename_workspace_file` from the normalised leaf.
+* **Reason:** the listed display name does not round-trip to the leaf (`file_workspace.rs` strips every trailing `.pgn` and `validate_name` trims): `study.pgn.pgn` lists as `study`, which normalises to `study.pgn`, so the native side cannot tell a type-only edit from a rename and the overload would silently rename such a file or fail if `study.pgn` exists. Only the caller knows the name was left untouched. Reversal path: an `Option<String>` name on `rename_workspace_file` carries the same information through one command; the sidecar core is unchanged either way.
+* **Decided by:** Claude Code, drain session 14f3c3e5-96b4-42a6-9360-923747ebf378 (drain run 0ab86bf9-7e6e-42ce-b073-c494cb240f4f), full auto, adopted reviewed plan tasks/plans/2026-10-07-workspace-file-type-editing.md · **Superseded-by:** -
+
+### d-20261007-03 — Where does the Files page's type editor live?
+
+* **Question:** Which UI edits a workspace file's name and type together?
+* **Governs:** f-20260919-07
+* **Chosen:** the file card regains an `IconAction` labelled "Edit metadata" that opens the existing shared `AppModal` in an edit mode with the Name input and a required, non-clearable type `Select` over `FILE_TYPES`; the labelled Rename button keeps its name-only dialog; both submit through one path.
+* **Rejected:** upstream's five type chips (wider than the column at 320px / 200%, `d-20260919-12`); relabelling the Rename button as the editor (`d-20260919-12` rejected it); a separate modal component (a second copy of the name field and submit path).
+* **Reason:** `d-20260919-12` said the icon returns with the command; one modal keeps one submission path. Reversal path: one JSX block in `FilesPage.tsx` and one prop on `FileCard`.
+* **Decided by:** Claude Code, drain session 14f3c3e5-96b4-42a6-9360-923747ebf378 (drain run 0ab86bf9-7e6e-42ce-b073-c494cb240f4f), full auto, adopted reviewed plan tasks/plans/2026-10-07-workspace-file-type-editing.md · **Superseded-by:** -
+
+### d-20261007-04 — Are workspace file tags editable in the edit dialog?
+
+* **Question:** The sidecar carries `tags` beside `type`. Does the restored edit dialog edit them?
+* **Governs:** f-20260919-07
+* **Chosen:** no; tags are carried through unchanged on every write.
+* **Rejected:** a tags field.
+* **Reason:** upstream's dialog had none and no renderer code displays tags; upstream even discarded them (`tags: []`), which this change does not repeat. Reversal path: add a field to the edit mode; both commands already carry tags.
+* **Decided by:** Claude Code, drain session 14f3c3e5-96b4-42a6-9360-923747ebf378 (drain run 0ab86bf9-7e6e-42ce-b073-c494cb240f4f), full auto, adopted reviewed plan tasks/plans/2026-10-07-workspace-file-type-editing.md · **Superseded-by:** -
+
+### d-20261007-05 — Does f-20260919-07 settle what happens when a rename's sidecar write fails after the PGN moved?
+
+* **Question:** The rename path can fail in its sidecar write after `paired_rename` committed. Does this change add a rollback?
+* **Governs:** f-20260919-07, f-20261006-03
+* **Chosen:** no; the rename keeps today's post-move failure contract (an ordinary sidecar failure, now including the PGN-identity `Conflict`, returns before the rebind with nothing moved back), and `f-20261006-03` settles it for rename, move, trash and restore together. The two constraints found in review (a sidecar reversal must move back only the object the rename moved; an identity-checked PGN reversal after a substitution is a cleanup failure, not a plain `Conflict`) are handed to `f-20261006-03`.
+* **Rejected:** reversing only the rename's sidecar-failure half here (the plan's round-1 choice) — it answers one quarter of an open build-tier design question and needs identity guarantees that belong to that design.
+* **Reason:** the type-only edit never moves a PGN, so it is all-or-nothing without any rollback. Reversal path: `f-20261006-03` replaces the early return after the sidecar write with whichever contract it chooses.
+* **Decided by:** Claude Code, drain session 14f3c3e5-96b4-42a6-9360-923747ebf378 (drain run 0ab86bf9-7e6e-42ce-b073-c494cb240f4f), full auto, adopted reviewed plan tasks/plans/2026-10-07-workspace-file-type-editing.md · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":35,"effect_sha256":"2c3ca42972b00028ebd12a08dbd885c45ff00d3f87e63fd3095f2d7ba31b3a1f","input_sha256":"58f8186ef471bb199086462f3b843ec23ea8079ec527cf02a268739618fb587d","kind":"mutation-receipt","operation":"d42098603e5d56986f4b7555bbf9af3402365458b1ad66ab8bad0df5bd6ea9e4","options":{"section":null},"request_id_sha256":null,"results":["d-20261007-02","d-20261007-03","d-20261007-04","d-20261007-05"],"target":"decisions-ledger","v":1} -->
