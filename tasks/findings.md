@@ -13519,3 +13519,18 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
 * **Why it matters:** `d-20260919-12` holds the Files page to the 320px / 200% layout discipline; this dialog is the one Files form that still fails it, and the e2e suite has no assertion over it.
 * **Related:** `f-20260919-07` (its push review, tests lens R2-3, asked for the browser assertion that exposed this; that change makes only the edit/create/rename dialog full-screen below 30em, constant `COMPACT_DIALOG_QUERY`), `f-20260829-02` (handled; the 320px / 200% clipping class and `assertNothingClipped`).
 * **Found by:** the f-20260919-07 cumulative diff review, closure round 2, 2026-10-07.
+
+---
+
+## 2026-10-07 — filed through the inbox spool
+
+### An unreadable or invalid engines list makes the game-player picker discard the saved engine selection
+
+* **ID:** f-20261007-05 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
+* **Filed from:** e5ac80e2-4c45-4d5f-b424-73ead0be75b8
+* **Where:** `src/state/engineOwnerStorage.ts` (`createEngineOwnerStorage` → `getItem` returns `initialValue` for an unreadable, undecodable or rejected `engines` value), `src/state/atoms.ts` (`enginesAtom` then exposes `[]`), `src/components/boards/EnginesSelect.tsx:31-37` (an id absent from the list is replaced by the first remaining engine or `null`), `src/components/boards/OpponentForm.tsx:78-92` (the replacement also clears per-game engine settings), `src/state/atoms.ts:569-572` (the player owner persists the replacement through the ordinary save route, which writes even when a sibling owner is untrusted, `engineOwnerStorage.ts:209-215`).
+* **Defect:** when the `engines` key cannot be read or hydrated, the engines owner falls back to the same empty list that means "no engines installed". Opening game setup mounts `EnginesSelect`, which treats that fallback as "the selected engine was removed" and replaces the saved selection with `null`, and the player owner persists the replacement. The saved selection and its per-game settings are lost even though the engine still exists in the unreadable bytes, so a later launch that can read `engines` again has nothing left to resolve. The behaviour is independent of legacy-id migration: it happens for any saved selection whenever the engines owner falls back.
+* **Open question:** how does a consumer tell "the engines list could not be loaded" apart from "the engines list is empty" — an explicit hydration-failure state on the engines owner that the picker and submission respect (no automatic replacement write while it holds), or a player-owner write guard that refuses replacement writes while the sibling `engines` owner is untrusted?
+* **Why it matters:** `.claude/rules/persisted-state.md` requires a persisted value naming something contextual to be corrected with a derived effective value rather than a destructive reset; here a read failure of one key destroys durable data in another.
+* **Related:** f-20260921-05 (its plan review, round 1, error-handling and persisted-state lenses, raised this against that plan's "withhold the player migration write while `engines` is untrusted" clause; the destruction is pre-existing and not caused by legacy ids), f-20260906-15 (handled; added the id-based picker reconciliation).
+* **Found by:** f-20260921-05 PLAN-ONLY plan review round 1 (`review-error-handling`, `review-persisted-state`), 2026-10-07; the orchestrator confirmed `EnginesSelect.tsx:31-37` and `engineOwnerStorage.ts:404-410` before filing.
