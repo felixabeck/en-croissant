@@ -1241,6 +1241,12 @@ fn pgn_export_cleanup_is_classified_after_the_durability_guard_on_both_platforms
             .find("!matches!(primary,Error::CommittedDurabilityUncertain(_))")
             .expect("the primary durability guard");
         assert!(guard < cleanup, "{attribute}: {body}");
+        assert!(
+            body.contains(
+                "pgn_export_error_after_cleanup(primary,crate::infra::fs::remove_entry_at(&parent,&leaf,identity,false),&leaf,)"
+            ),
+            "{attribute}: cleanup must pass the descriptor-relative removal result directly to the classifier: {body}"
+        );
     }
 }
 
