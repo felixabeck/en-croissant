@@ -2209,6 +2209,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     log::error!("application data directory could not be acquired: {error}");
                     "application data directory could not be acquired"
                 })?;
+            let admission = crate::infra::path_authority::admit_instance(&app_data)
+                .map_err(|_| "application data directory instance lock could not be acquired")?;
+            match admission {
+                crate::infra::path_authority::InstanceAdmission::Owned(guard) => {
+                    app.manage(guard);
+                }
+                crate::infra::path_authority::InstanceAdmission::Unguarded => {}
+                crate::infra::path_authority::InstanceAdmission::HeldElsewhere => {
+                    use tauri_plugin_dialog::DialogExt;
+                    app.dialog()
+                        .message("ChessFable is already open. Switch to its window to continue.")
+                        .title("ChessFable is already running")
+                        // Skip the window-state exit hook, which would save this refused launch's cache.
+                        .show(|_| std::process::exit(0));
+                    return Ok(());
+                }
+            }
             app.state::<AppState>()
                 .credentials
                 .initialize(&app_data)
@@ -2302,6 +2319,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             #[cfg(desktop)]
             app.handle().plugin(tauri_plugin_cli::init())?;
+
+            let main_window = app
+                .config()
+                .app
+                .windows
+                .first()
+                .ok_or("main window configuration is missing")?;
+            tauri::WebviewWindowBuilder::from_config(app.handle(), main_window)?.build()?;
 
             log::info!("Finished rust initialization");
 
@@ -4061,6 +4086,85 @@ mod blocking_offload_scans {
             call.contains("AppDataDir::for_app(") && !call.contains("credentials\")"),
             "{call}"
         );
+    }
+
+    #[test]
+    fn instance_admission_is_unconditional_and_precedes_shared_state() {
+        let setup = body_at_indent(include_str!("main.rs"), ".setup(move |app| {");
+        let app_data = setup.find("            let app_data = ").unwrap();
+        let app_data_end = setup[app_data..].find("})?;").unwrap() + app_data + "})?;".len();
+        let statement = "            let admission = crate::infra::path_authority::admit_instance(&app_data)\n                .map_err(|_| \"application data directory instance lock could not be acquired\")?;";
+        let admission = setup
+            .find(statement)
+            .expect("complete setup-level propagating admission");
+        assert!(setup[app_data_end..admission].trim().is_empty());
+        let after_admission = &setup[admission + statement.len()..];
+        assert!(after_admission
+            .trim_start()
+            .starts_with("match admission {"));
+        let matched = body_at_indent(setup, "            match admission {");
+        assert_eq!(matched.matches("=>").count(), 3);
+        let variants = matched
+            .lines()
+            .filter(|line| line.contains("InstanceAdmission::"))
+            .map(str::trim)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            variants,
+            [
+                "crate::infra::path_authority::InstanceAdmission::Owned(guard) => {",
+                "crate::infra::path_authority::InstanceAdmission::Unguarded => {}",
+                "crate::infra::path_authority::InstanceAdmission::HeldElsewhere => {",
+            ]
+        );
+        let owned = body_at_indent(
+            matched,
+            "                crate::infra::path_authority::InstanceAdmission::Owned(guard) => {",
+        );
+        assert_eq!(owned.trim(), "crate::infra::path_authority::InstanceAdmission::Owned(guard) => {\n                    app.manage(guard);");
+        let held = body_at_indent(
+            matched,
+            "                crate::infra::path_authority::InstanceAdmission::HeldElsewhere => {",
+        );
+        assert!(held.trim_end().ends_with("return Ok(());"));
+        assert!(held.contains("use tauri_plugin_dialog::DialogExt;"));
+        assert!(held.contains(
+            ".message(\"ChessFable is already open. Switch to its window to continue.\")"
+        ));
+        assert!(held.contains(".title(\"ChessFable is already running\")"));
+        assert!(held.contains(".show(|_| std::process::exit(0));"));
+        assert!(!held.contains(".parent("));
+        assert!(!held
+            .lines()
+            .any(|line| line.trim_start().starts_with("log::")));
+        let returned = setup.find("return Ok(());").unwrap();
+        assert!(admission < returned);
+        assert!(returned < setup.find(".credentials").unwrap());
+        assert!(returned < setup.find("PathAuthority::open_for_app(").unwrap());
+        assert_eq!(setup.matches("admit_instance(").count(), 1);
+    }
+
+    #[test]
+    fn main_window_is_created_from_config_after_cli_registration() {
+        let setup = body_at_indent(include_str!("main.rs"), ".setup(move |app| {");
+        let setup = setup.split("\n        })").next().unwrap();
+        let cli = setup
+            .find("app.handle().plugin(tauri_plugin_cli::init())?;")
+            .unwrap();
+        let config = setup.find("let main_window = app").unwrap();
+        let window = setup
+            .find("tauri::WebviewWindowBuilder::from_config(app.handle(), main_window)?.build()?;")
+            .unwrap();
+        assert!(cli < config && config < window);
+        assert!(setup[config..window].contains(".windows\n                .first()\n                .ok_or(\"main window configuration is missing\")?;"));
+        assert_eq!(setup[window..].trim(), "tauri::WebviewWindowBuilder::from_config(app.handle(), main_window)?.build()?;\n\n            log::info!(\"Finished rust initialization\");\n\n            Ok(())");
+    }
+
+    #[test]
+    fn main_window_config_defers_creation_until_setup() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(config["app"]["windows"][0]["create"], false);
     }
 
     #[test]

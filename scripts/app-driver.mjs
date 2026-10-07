@@ -46,10 +46,11 @@ export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * exists to check for.
  */
 const started = [];
+const temporaryProfiles = new Set();
 let profileDirectory;
 let driverOutput;
 
-function launch(command, args, options = {}) {
+export function launch(command, args, options = {}) {
   const child = spawn(command, args, {
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],
@@ -57,6 +58,10 @@ function launch(command, args, options = {}) {
   });
   started.push(child);
   return child;
+}
+
+export function registerTemporaryProfile(directory) {
+  temporaryProfiles.add(directory);
 }
 
 function outputBuffer() {
@@ -234,7 +239,7 @@ export async function startDriver({ waylandDisplay }) {
       return false;
     }
   });
-  return { output: output.text(), profileDirectory };
+  return { output: output.text(), profileDirectory, appEnvironment: env };
 }
 
 export function driverDiagnostics() {
@@ -481,11 +486,25 @@ export async function cleanUpResources({
   }
 }
 
+export async function stopLaunchedChild(child) {
+  if (!started.includes(child)) return;
+  await cleanUpResources({ children: [child] });
+  const index = started.indexOf(child);
+  if (index !== -1) started.splice(index, 1);
+}
+
 async function cleanUp() {
   const children = started.splice(0).reverse();
   const profileToRemove = profileDirectory;
   profileDirectory = undefined;
-  await cleanUpResources({ children, profileToRemove });
+  try {
+    await cleanUpResources({ children, profileToRemove });
+  } finally {
+    await Promise.all(
+      [...temporaryProfiles].map((path) => rm(path, { recursive: true, force: true })),
+    );
+    temporaryProfiles.clear();
+  }
 }
 
 export function createSharedShutdown(cleanup) {

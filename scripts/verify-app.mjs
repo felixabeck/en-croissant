@@ -4,10 +4,12 @@
 //   pnpm verify:app                 run the checks
 //   pnpm verify:app --screenshot X  also write a PNG of the page to X
 //
-// It asserts sixty-eight independently reported checks, plus one conditional reload check, that no other gate in this repository can:
+// It asserts seventy-two independently reported checks, plus one conditional reload check, that no other gate in this repository can:
 //   group | assertions
 //   startup | 5: production authority, user-file safety, owned-image cleanup, real IPC bridge,
 //             document title
+//   single instance | 4: refusal before initialization, unchanged registry bytes,
+//                        primary responsiveness, different-HOME coexistence
 //   practice durable storage | 14: seeded positions, paged reviews, migration, owner retention,
 //                                legacy-key preservation, renderer ratings, real sync, exact counts
 //   download destinations | 3: persisted destination, fresh-id refusal, database-root refusal
@@ -27,6 +29,32 @@
 //                      +1 conditional Reload-from-disk check
 //   titlebar/process | 3: rendered controls, process-before-close, process-after-close
 //   shutdown | 3: start, bounded completion, sound signal
+//
+// Staged-failure record for the single-instance checks (2026-10-07).
+// B1 bypassed advisory locking, B2 appended one space to the refused launch's path-authority.json,
+// and B3 locked an identifier-wide temporary leaf instead of the application-data leaf. Each
+// Rust break was built with pnpm build and read by pnpm verify:app. The verifier logic stayed
+// unchanged across these runs. After each run, the Rust diff was restored byte-for-byte to the
+// intended Phase 2 changes. The B3 temporary lock leaf was removed after its processes exited.
+// Every completed run also printed the three known $8 hint FAILs (f-20261005-07). B1 additionally
+// printed the Repertoire-filter and metadata-sidecar FAILs. Those checks were left unchanged.
+//   break                         | assertion/message                                                                                        | exit
+//   B1: bypass advisory locking   | FAIL  a second process on the same app-data directory is refused before initialization                    | 1
+//   B1: dependent setup failure   | FAIL  the refused launch leaves authority and credential registry bytes unchanged                        | 1
+//   B1: dependent setup failure   | FAIL  the primary still answers WebDriver after the refused launch                                       | 1
+//   B2: append one registry byte  | FAIL  the refused launch leaves authority and credential registry bytes unchanged                        | 1
+//   B3: identifier-wide lock      | FAIL  a process on a different app-data directory initializes while the primary runs                      | 1
+//   ARGUED, NOT STAGED            | the primary still answers WebDriver after the refused launch                                            | not staged
+// The B1 rows each printed "not attempted: wait for same-directory refusal: timed out waiting
+// for another ChessFable process holds the application data directory". Its dependent rows prove
+// setup-failure reporting, not registry immutability or primary responsiveness. B2 directly
+// exercised the byte comparison. Same-directory refusal stayed ok in both B2 and B3.
+// ARGUED, NOT STAGED: a binary break that stops the primary from the refused launch would find
+// and kill other ChessFable processes, including Felix's real running app. That harm outlives
+// the run, so primary responsiveness is named here and is not counted among the staged assertions.
+// The first B1 attempt aborted before any assertion because the resumed shell lacked the desktop
+// environment and the nested compositor socket timed out. It is not assertion evidence. The
+// completed runs used the existing desktop session's WAYLAND_DISPLAY, XDG_RUNTIME_DIR and bus.
 //
 // STAGED-FAILURE RECORD (push-review-policy §2), one row per assertion. The policy's fifth
 // condition is that an inherited artefact is a finding, not a licence: until every assertion here
@@ -362,7 +390,8 @@
 //                                         | is possible.
 
 import { existsSync } from "node:fs";
-import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { Chess, makeSquare } from "chessops";
@@ -374,11 +403,14 @@ import {
   Session,
   appProcesses,
   driverDiagnostics,
+  launch,
   processExists,
+  registerTemporaryProfile,
   requirePrerequisites,
   shutdown,
   startCompositor,
   startDriver,
+  stopLaunchedChild,
   waitFor,
 } from "./app-driver.mjs";
 
@@ -1013,7 +1045,7 @@ try {
   requirePrerequisites();
 
   const { socket } = await startCompositor();
-  const { profileDirectory } = await startDriver({ waylandDisplay: socket });
+  const { profileDirectory, appEnvironment } = await startDriver({ waylandDisplay: socket });
   const practiceGame = 0;
   const largePracticeId = "verify-practice-large-00000000-0000-4000-8000-000000000001";
   const legacyPracticeId = "verify-practice-legacy-00000000-0000-4000-8000-000000000002";
@@ -2718,6 +2750,115 @@ try {
     () => session.execute("return !document.querySelector('[role=\"dialog\"]')"),
     { timeoutMs: FILES_PROBE_TIMEOUT_MS },
   );
+
+  // Direct launches inherit precisely the primary's profile and off-screen display environment.
+  const launchInstanceProbe = (env) => {
+    const child = launch(APP_BINARY, [], { env });
+    let stdout = "";
+    let stderr = "";
+    let launchError;
+    child.on("error", (error) => {
+      launchError = error;
+    });
+    child.stdout.on("data", (chunk) => {
+      stdout = (stdout + String(chunk)).slice(-64 * 1024);
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr = (stderr + String(chunk)).slice(-64 * 1024);
+    });
+    return {
+      child,
+      stdout: () => stdout,
+      waitForLine: (line) =>
+        waitFor(
+          line,
+          () => {
+            if (launchError) throw launchError;
+            if (stdout.includes(line)) return true;
+            if (child.exitCode !== null || child.signalCode !== null) {
+              throw new Error(`instance probe exited before ${line}: ${stdout}\n${stderr}`);
+            }
+            return false;
+          },
+          { timeoutMs: 15_000 },
+        ),
+    };
+  };
+  const refusalCheck =
+    "a second process on the same app-data directory is refused before initialization";
+  const unchangedCheck =
+    "the refused launch leaves authority and credential registry bytes unchanged";
+  const primaryCheck = "the primary still answers WebDriver after the refused launch";
+  const reportedInstanceChecks = new Set();
+  const instanceCheck = (condition, description, detail) => {
+    check(condition, description, detail);
+    reportedInstanceChecks.add(description);
+  };
+  const instanceSetupFailure = (descriptions, step, error) => {
+    for (const description of descriptions) {
+      if (!reportedInstanceChecks.has(description)) {
+        instanceCheck(false, description, `not attempted: ${step}: ${error.message}`);
+      }
+    }
+  };
+  let refused;
+  let refusalStep = "read the primary registries";
+  try {
+    const credentialRegistry = join(
+      profileDirectory,
+      ".local/share/com.chessriddle.encroissant/credentials/lichess-accounts.json",
+    );
+    const before = await Promise.all([readFile(registryFile), readFile(credentialRegistry)]);
+    refusalStep = "wait for same-directory refusal";
+    refused = launchInstanceProbe(appEnvironment);
+    await refused.waitForLine("another ChessFable process holds the application data directory");
+    refusalStep = "stop the refused process";
+    await stopLaunchedChild(refused.child);
+    if (processExists(refused.child.pid)) throw new Error("the refused process survived cleanup");
+    instanceCheck(
+      !refused.stdout().includes("Finished rust initialization"),
+      refusalCheck,
+      refused.stdout(),
+    );
+    refusalStep = "read the primary registries after refusal";
+    const after = await Promise.all([readFile(registryFile), readFile(credentialRegistry)]);
+    instanceCheck(
+      before.every((bytes, index) => bytes.equals(after[index])),
+      unchangedCheck,
+    );
+    refusalStep = "query the primary WebDriver session after refusal";
+    instanceCheck(
+      await session.execute("return typeof window.__TAURI_INTERNALS__ === 'object'"),
+      primaryCheck,
+    );
+  } catch (error) {
+    instanceSetupFailure([refusalCheck, unchangedCheck, primaryCheck], refusalStep, error);
+  } finally {
+    if (refused) await stopLaunchedChild(refused.child);
+  }
+
+  const coexistenceCheck =
+    "a process on a different app-data directory initializes while the primary runs";
+  let differentProfile;
+  let independent;
+  let coexistenceStep = "create the different-HOME profile";
+  try {
+    differentProfile = await mkdtemp(join(tmpdir(), "chessfable-instance-probe-"));
+    registerTemporaryProfile(differentProfile);
+    coexistenceStep = "wait for different-HOME initialization";
+    independent = launchInstanceProbe({ ...appEnvironment, HOME: differentProfile });
+    await independent.waitForLine("Finished rust initialization");
+    coexistenceStep = "query the primary WebDriver session during coexistence";
+    instanceCheck(
+      await session.execute("return typeof window.__TAURI_INTERNALS__ === 'object'"),
+      coexistenceCheck,
+    );
+  } catch (error) {
+    instanceSetupFailure([coexistenceCheck], coexistenceStep, error);
+  } finally {
+    if (independent) await stopLaunchedChild(independent.child);
+    if (differentProfile) await rm(differentProfile, { recursive: true, force: true });
+  }
 
   const reloadCheck = "a real document reload cancels the previous document's retained reservation";
   try {

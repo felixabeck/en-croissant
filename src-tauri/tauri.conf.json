@@ -67,6 +67,7 @@
     "windows": [
       {
         "title": "ChessFable",
+        "create": false,
         "visible": false,
         "decorations": true
       }

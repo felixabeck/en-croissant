@@ -2571,6 +2571,69 @@ pub(crate) struct AppDataDir {
     directory: fs::File,
 }
 
+pub(crate) struct InstanceLockGuard {
+    _file: fs::File,
+}
+
+pub(crate) enum InstanceAdmission {
+    Owned(InstanceLockGuard),
+    Unguarded,
+    HeldElsewhere,
+}
+
+pub(crate) fn admit_instance(app_data: &AppDataDir) -> Result<InstanceAdmission, Error> {
+    admit_instance_with_lock(app_data, |file| {
+        crate::infra::fs::lock_advisory_file(file, crate::infra::fs::AdvisoryLockMode::NonBlocking)
+    })
+}
+
+fn instance_lock_failure(error: Error) -> Error {
+    log::error!(
+        "application data directory instance lock failed: {}",
+        error.diagnostic()
+    );
+    let message = "application data directory instance lock could not be acquired";
+    match &error {
+        Error::Io(error) => crate::error::sanitized_io_error(error, message.into()),
+        _ => std::io::Error::other(message),
+    }
+    .into()
+}
+
+fn admit_instance_with_lock(
+    app_data: &AppDataDir,
+    lock: impl FnOnce(&fs::File) -> Result<(), crate::infra::fs::AdvisoryLockError>,
+) -> Result<InstanceAdmission, Error> {
+    use crate::infra::fs::{advisory_lock_is_unsupported, AdvisoryLockError, AdvisoryLockPlatform};
+    #[cfg(target_os = "linux")]
+    let platform = AdvisoryLockPlatform::Linux;
+    #[cfg(target_os = "macos")]
+    let platform = AdvisoryLockPlatform::MacOs;
+    #[cfg(windows)]
+    let platform = AdvisoryLockPlatform::Windows;
+    let file = crate::infra::fs::open_or_create_regular_at(
+        &app_data.directory,
+        OsStr::new("instance.lock"),
+    )
+    .map_err(instance_lock_failure)?;
+    match lock(&file) {
+        Ok(()) => Ok(InstanceAdmission::Owned(InstanceLockGuard { _file: file })),
+        Err(AdvisoryLockError::HeldElsewhere(_)) => {
+            log::warn!("another ChessFable process holds the application data directory; this launch exits");
+            Ok(InstanceAdmission::HeldElsewhere)
+        }
+        Err(AdvisoryLockError::Io(error))
+            if error
+                .raw_os_error()
+                .is_some_and(|code| advisory_lock_is_unsupported(code, platform)) =>
+        {
+            log::warn!("this filesystem does not support advisory locking. ChessFable starts without an instance lock: {error}");
+            Ok(InstanceAdmission::Unguarded)
+        }
+        Err(AdvisoryLockError::Io(error)) => Err(instance_lock_failure(error.into())),
+    }
+}
+
 #[cfg(all(test, unix))]
 std::thread_local! {
     static APP_DATA_PRE_OPEN_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
@@ -9189,6 +9252,170 @@ pub(crate) mod portable_tests {
         Arc,
     };
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn instance_lock_refuses_competitor_and_keeps_leaf_after_drop() {
+        let capture = crate::error::LogCaptureScope::start();
+        let temp = tempfile::tempdir().unwrap();
+        let app_data = AppDataDir::for_test(temp.path());
+        fs::write(temp.path().join("instance.lock"), b"retained contents").unwrap();
+        let InstanceAdmission::Owned(guard) = admit_instance(&app_data).unwrap() else {
+            panic!("first admission must own the lock");
+        };
+        assert!(matches!(
+            admit_instance(&app_data).unwrap(),
+            InstanceAdmission::HeldElsewhere
+        ));
+        let records = capture.records();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].level, log::Level::Warn);
+        assert_eq!(
+            records[0].message,
+            "another ChessFable process holds the application data directory; this launch exits"
+        );
+        drop(guard);
+        assert!(temp.path().join("instance.lock").is_file());
+        assert_eq!(
+            fs::read(temp.path().join("instance.lock")).unwrap(),
+            b"retained contents"
+        );
+        assert!(matches!(
+            admit_instance(&app_data).unwrap(),
+            InstanceAdmission::Owned(_)
+        ));
+        assert!(temp.path().join("instance.lock").is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn instance_lock_refuses_symlink_as_error() {
+        let capture = crate::error::LogCaptureScope::start();
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target");
+        fs::write(&target, b"unchanged").unwrap();
+        std::os::unix::fs::symlink(&target, temp.path().join("instance.lock")).unwrap();
+        assert!(admit_instance(&AppDataDir::for_test(temp.path())).is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"unchanged");
+        assert_eq!(capture.records().len(), 1);
+        assert_eq!(capture.records()[0].level, log::Level::Error);
+    }
+
+    #[test]
+    fn instance_lock_injected_errors_log_and_classify_once() {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let (unsupported, ordinary) = {
+            use rustix::io::Errno;
+            (
+                [
+                    Errno::OPNOTSUPP.raw_os_error(),
+                    Errno::NOTSUP.raw_os_error(),
+                    Errno::NOSYS.raw_os_error(),
+                ],
+                [Errno::NOLCK.raw_os_error(), Errno::ACCESS.raw_os_error()],
+            )
+        };
+        #[cfg(windows)]
+        let (unsupported, ordinary) = {
+            use windows_sys::Win32::Foundation::{
+                ERROR_ACCESS_DENIED, ERROR_INVALID_FUNCTION, ERROR_NOT_SUPPORTED,
+                ERROR_NO_SYSTEM_RESOURCES,
+            };
+            (
+                [ERROR_NOT_SUPPORTED as i32, ERROR_INVALID_FUNCTION as i32],
+                [ERROR_NO_SYSTEM_RESOURCES as i32, ERROR_ACCESS_DENIED as i32],
+            )
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let app_data = AppDataDir::for_test(temp.path());
+        for code in unsupported.into_iter().chain(ordinary) {
+            let capture = crate::error::LogCaptureScope::start();
+            let result = admit_instance_with_lock(&app_data, |_| {
+                Err(crate::infra::fs::AdvisoryLockError::Io(
+                    std::io::Error::from_raw_os_error(code),
+                ))
+            });
+            let records = capture.records();
+            assert_eq!(records.len(), 1, "{code}");
+            if unsupported.contains(&code) {
+                assert!(matches!(result, Ok(InstanceAdmission::Unguarded)), "{code}");
+                assert_eq!(records[0].level, log::Level::Warn);
+                assert!(records[0]
+                    .message
+                    .contains("this filesystem does not support advisory locking"));
+            } else {
+                let error = result.err().expect("ordinary error refuses startup");
+                assert_eq!(records[0].level, log::Level::Error);
+                assert_eq!(
+                    error.diagnostic(),
+                    "I/O failure: application data directory instance lock could not be acquired"
+                );
+                assert!(matches!(error, Error::Io(error) if error.raw_os_error().is_none()));
+            }
+        }
+    }
+
+    #[test]
+    fn instance_lock_is_released_after_child_is_killed() {
+        let _capture = crate::error::LogCaptureScope::start();
+        const CHILD_ROOT: &str = "CHESSFABLE_INSTANCE_LOCK_CHILD_ROOT";
+        if let Some(root) = std::env::var_os(CHILD_ROOT) {
+            let root = PathBuf::from(root);
+            let app_data = AppDataDir::for_test(&root);
+            let InstanceAdmission::Owned(_guard) = admit_instance(&app_data).unwrap() else {
+                panic!("child must own the instance lock");
+            };
+            fs::write(root.join("child-ready"), b"ready").unwrap();
+            loop {
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        }
+        struct ChildGuard(std::process::Child);
+        impl Drop for ChildGuard {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let mut child = ChildGuard(std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "infra::path_authority::portable_tests::instance_lock_is_released_after_child_is_killed", "--nocapture"])
+            .env(CHILD_ROOT, temp.path())
+            .spawn().unwrap());
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !temp.path().join("child-ready").exists() && std::time::Instant::now() < deadline {
+            assert!(
+                child.0.try_wait().unwrap().is_none(),
+                "child exited before readiness"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            temp.path().join("child-ready").exists(),
+            "child did not become ready"
+        );
+        let app_data = AppDataDir::for_test(temp.path());
+        assert!(matches!(
+            admit_instance(&app_data).unwrap(),
+            InstanceAdmission::HeldElsewhere
+        ));
+        child.0.kill().unwrap();
+        child.0.wait().unwrap();
+        assert!(temp.path().join("instance.lock").is_file());
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let _guard = loop {
+            match admit_instance(&app_data).expect("post-crash admission must not fail") {
+                InstanceAdmission::Owned(guard) => break guard,
+                InstanceAdmission::HeldElsewhere => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "instance lock was not released after the child exited"
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                InstanceAdmission::Unguarded => panic!("post-crash admission must own the lock"),
+            }
+        };
+    }
 
     pub(crate) struct EngineImageCleanupFixture {
         _temp: tempfile::TempDir,

@@ -40,6 +40,11 @@ Each clause has a repository incident behind it, catalogued in the review lenses
 
 ## What this means concretely
 
+* **One process per application-data directory** is enforced by the instance lock acquired at the
+  start of `.setup`. In-process registries over app-data state (credentials, path authority, engine
+  images, practice) may rely on it. It does not cover a user-picked directory shared by two different
+  app-data directories (release and `.dev` identifiers, a different HOME), nor a filesystem without
+  advisory locks (logged at startup).
 * **Renderer state is not authoritative** for native jobs, credentials, files, databases, engines,
   or games. Persist only versioned, schema-validated user state and reconcile it against native
   state at startup.

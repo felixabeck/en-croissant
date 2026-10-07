@@ -29,7 +29,6 @@ use tokio_util::sync::CancellationToken;
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum AdvisoryLockMode {
     Blocking,
-    #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
     NonBlocking,
 }
 
@@ -47,16 +46,16 @@ impl AdvisoryLockError {
     }
 }
 
-// The startup guard will consume this classification in the next phase.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum AdvisoryLockPlatform {
+    #[cfg(any(test, target_os = "linux"))]
     Linux,
+    #[cfg(any(test, target_os = "macos"))]
     MacOs,
+    #[cfg(any(test, windows))]
     Windows,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn advisory_lock_is_unsupported(
     raw_os_error: i32,
     platform: AdvisoryLockPlatform,
@@ -64,8 +63,11 @@ pub(crate) fn advisory_lock_is_unsupported(
     // Native errno values differ between Linux and Darwin. Literal tables keep every platform
     // testable on every host, including Windows errors without a windows-sys dependency on unix.
     match platform {
+        #[cfg(any(test, target_os = "linux"))]
         AdvisoryLockPlatform::Linux => matches!(raw_os_error, 95 | 38), // EOPNOTSUPP/ENOTSUP, ENOSYS
+        #[cfg(any(test, target_os = "macos"))]
         AdvisoryLockPlatform::MacOs => matches!(raw_os_error, 102 | 45 | 78), // EOPNOTSUPP, ENOTSUP, ENOSYS
+        #[cfg(any(test, windows))]
         AdvisoryLockPlatform::Windows => matches!(raw_os_error, 50 | 1), // ERROR_NOT_SUPPORTED, ERROR_INVALID_FUNCTION
     }
 }
@@ -5612,6 +5614,41 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn advisory_lock_literal_table_matches_native_errno() {
+        use rustix::io::Errno;
+        #[cfg(target_os = "linux")]
+        let platform = AdvisoryLockPlatform::Linux;
+        #[cfg(target_os = "macos")]
+        let platform = AdvisoryLockPlatform::MacOs;
+        for error in [Errno::OPNOTSUPP, Errno::NOTSUP, Errno::NOSYS] {
+            assert!(advisory_lock_is_unsupported(error.raw_os_error(), platform));
+        }
+        assert!(!advisory_lock_is_unsupported(
+            Errno::NOLCK.raw_os_error(),
+            platform
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn advisory_lock_literal_table_matches_native_windows_errors() {
+        use windows_sys::Win32::Foundation::{
+            ERROR_INVALID_FUNCTION, ERROR_LOCK_VIOLATION, ERROR_NOT_SUPPORTED,
+        };
+        for code in [ERROR_NOT_SUPPORTED, ERROR_INVALID_FUNCTION] {
+            assert!(advisory_lock_is_unsupported(
+                code as i32,
+                AdvisoryLockPlatform::Windows
+            ));
+        }
+        assert!(!advisory_lock_is_unsupported(
+            ERROR_LOCK_VIOLATION as i32,
+            AdvisoryLockPlatform::Windows
+        ));
     }
 
     #[test]
