@@ -6287,3 +6287,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** the lock is keyed exactly on the shared state, is released by the kernel on any exit including a crash, and reuses primitives the crate already has. Reversal path: to focus the running window instead of showing a dialog, add a forwarding channel keyed on the app-data directory on top of the lock (the lock stays the authority); removing the guard is reverting the `.setup` acquisition and the `create: false` line.
 * **Decided by:** Claude Code, drain planner lane (drain run a28f99b3-2237-4fa8-b5ca-715d97e8cd6a), full auto, plan review r1–r5; recorded by adopting session fa6786ed-3e23-4701-b1a3-05a243d9a80b, plan tasks/plans/2026-10-07-single-instance-guard.md · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"4ff2b465aea639807b24057fdfb5b8b7cd5caeed6b0a8a4e4235e844c50d4f14","input_sha256":"a303eacc1e1b78891b1635e0e06b0fd3634170c67987b22ba9ce8a8b003c165f","kind":"mutation-receipt","operation":"f49fca35e8994b0499b4957dd31358abcd7d2a186e9167126d5048c16d0310dd","options":{"section":null},"request_id_sha256":null,"results":["d-20261007-31"],"target":"decisions-ledger","v":1} -->
+
+### d-20261007-32 — What does ChessFable do on a filesystem without advisory locks?
+
+* **Question:** What does the app do when the application-data filesystem cannot take the instance lock (advisory locks unsupported)?
+* **Governs:** f-20260922-07
+* **Chosen:** start unguarded and log exactly one warning naming the condition; `ENOLCK` and every other lock or open error stay ordinary startup errors.
+* **Rejected:** refuse to start.
+* **Reason:** refusal would turn a theoretical race into a guaranteed outage on that filesystem; unguarded is today's behaviour. Reversal path: change the unsupported branch in the instance-lock admission to the refusal path.
+* **Decided by:** Claude Code, drain planner lane (drain run a28f99b3-2237-4fa8-b5ca-715d97e8cd6a), full auto, plan review r1–r5; recorded by adopting session fa6786ed-3e23-4701-b1a3-05a243d9a80b, plan tasks/plans/2026-10-07-single-instance-guard.md · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"4231dcfc9878109b5dbb0c2243e5e9589c825589381b145526195b62f76d0b75","input_sha256":"5e3a8db21fc571cb402753f7e1e3f2fcf9bb71a2d1fa51e4ed0367d76c859438","kind":"mutation-receipt","operation":"9110b5802dd36ef6f8036794a23d0d27c2353ce54052a9e1fd974eed531d428c","options":{"section":null},"request_id_sha256":null,"results":["d-20261007-32"],"target":"decisions-ledger","v":1} -->
