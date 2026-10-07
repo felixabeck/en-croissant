@@ -33,7 +33,13 @@ vi.mock("@/platform/tauri", () => ({
 vi.mock("@/utils/chess.com/api", async () => {
   const actual =
     await vi.importActual<typeof import("@/utils/chess.com/api")>("@/utils/chess.com/api");
-  return { ...actual, downloadChessCom: mocks.downloadChessCom };
+  return {
+    ...actual,
+    downloadChessCom: (...args: Parameters<typeof actual.downloadChessCom>) => {
+      args[3]("download:chesscom:Felix");
+      return mocks.downloadChessCom(...args);
+    },
+  };
 });
 vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.notify } }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
@@ -129,7 +135,7 @@ beforeEach(() => {
     handle: { id: { id: "pgn" }, kind: "fileWorkspace" },
     durability: "Durable",
   });
-  mocks.startProgress.mockResolvedValue({ id: "chesscom_Felix", generation: 1n });
+  mocks.startProgress.mockResolvedValue({ id: "download:chesscom:Felix", generation: 1n });
   mocks.convertPgn.mockResolvedValue(undefined);
   mocks.setProgressState.mockResolvedValue(undefined);
   mocks.deleteEmptyGames.mockResolvedValue(undefined);

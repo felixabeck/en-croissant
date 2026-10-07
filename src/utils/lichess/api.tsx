@@ -387,11 +387,13 @@ export async function downloadLichess(
   player: string,
   timestamp: number | null,
   games: number,
+  onTicket: (ticket: string) => void,
 ): Promise<ArtifactPublication> {
   // The destination command is supplied by the native download authority.  The opaque handle
   // selects the credential in the OS keyring; renderer code never forms an Authorization header.
-  const result = await withDownloadTicket((ticket) =>
-    tauri.downloadLichessGames(
+  const result = await withDownloadTicket((ticket) => {
+    onTicket(ticket);
+    return tauri.downloadLichessGames(
       handle,
       destination,
       `${player}_lichess.pgn`,
@@ -399,8 +401,8 @@ export async function downloadLichess(
       timestamp === null ? null : BigInt(timestamp),
       games > 0 ? games * ESTIMATED_PGN_BYTES_PER_GAME : null,
       ticket,
-    ),
-  );
+    );
+  });
   // Return the whole publication so the caller can report its durability without retrying
   // the committed download.
   return result;

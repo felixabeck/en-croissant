@@ -153,6 +153,7 @@ struct AcceptedEntry {
     cancellation: CancellationToken,
     download: bool,
     progress_id: Option<String>,
+    admission_key: Option<String>,
     committing: bool,
 }
 
@@ -368,6 +369,7 @@ impl OperationRegistry {
                 cancellation: cancellation.clone(),
                 download: false,
                 progress_id: None,
+                admission_key: None,
                 committing: false,
             },
         );
@@ -383,12 +385,15 @@ impl OperationRegistry {
         self.prepare_reservation(owner, ReservationKind::Download)
     }
 
+    #[allow(clippy::too_many_arguments)] // Progress identity and admission policy are independent.
     pub fn claim_download(
         &self,
         ticket: &str,
         owner: &str,
         label: &str,
         progress_id: &str,
+        admission_key: &str,
+        exclusive: bool,
         download_cap: usize,
     ) -> Result<OperationLease, Error> {
         let mut state = self.state()?;
@@ -423,8 +428,8 @@ impl OperationRegistry {
         }
         if state.accepted.values().any(|accepted| {
             accepted.download
-                && accepted.owner == owner
-                && accepted.progress_id.as_deref() == Some(progress_id)
+                && (exclusive || accepted.owner == owner)
+                && accepted.admission_key.as_deref() == Some(admission_key)
                 && !accepted.cancellation.is_cancelled()
         }) {
             return Err(Error::Conflict(
@@ -458,6 +463,7 @@ impl OperationRegistry {
                 cancellation: cancellation.clone(),
                 download: true,
                 progress_id: Some(progress_id.to_owned()),
+                admission_key: Some(admission_key.to_owned()),
                 committing: false,
             },
         );
@@ -1016,7 +1022,15 @@ mod tests {
         let registry = OperationRegistry::default();
         let other_ticket = registry.prepare_download("other").unwrap();
         let other = registry
-            .claim_download(&other_ticket, "other", "download", "shared", 8)
+            .claim_download(
+                &other_ticket,
+                "other",
+                "download",
+                "shared",
+                "shared",
+                false,
+                8,
+            )
             .unwrap();
         assert!(!registry
             .cancel_download_for_progress("shared", "main")
@@ -1024,11 +1038,19 @@ mod tests {
         assert!(!other.token().is_cancelled());
         let ticket = registry.prepare_download("main").unwrap();
         let download = registry
-            .claim_download(&ticket, "main", "download", "shared", 8)
+            .claim_download(&ticket, "main", "download", "shared", "shared", false, 8)
             .unwrap();
         let unrelated_ticket = registry.prepare_download("main").unwrap();
         let unrelated = registry
-            .claim_download(&unrelated_ticket, "main", "download", "different", 8)
+            .claim_download(
+                &unrelated_ticket,
+                "main",
+                "download",
+                "different",
+                "different",
+                false,
+                8,
+            )
             .unwrap();
         let accepted = registry.accept("ownerless accepted").unwrap();
 
@@ -1049,15 +1071,101 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_uncancelled_progress_claim_respects_exclusive_admission_across_owners() {
+        let registry = OperationRegistry::default();
+        let first_ticket = registry.prepare_download("first").unwrap();
+        let first = registry
+            .claim_download(
+                &first_ticket,
+                "first",
+                "first",
+                "first-progress",
+                "shared",
+                false,
+                8,
+            )
+            .unwrap();
+        let second_ticket = registry.prepare_download("second").unwrap();
+        let second = registry
+            .claim_download(
+                &second_ticket,
+                "second",
+                "second",
+                "second-progress",
+                "shared",
+                false,
+                8,
+            )
+            .unwrap();
+        let duplicate = registry.prepare_download("first").unwrap();
+        assert!(
+            matches!(registry.claim_download(&duplicate, "first", "duplicate", "different-progress", "shared", false, 8), Err(Error::Conflict(message)) if message == "download progress is already active")
+        );
+        let exclusive = registry.prepare_download("third").unwrap();
+        assert!(
+            matches!(registry.claim_download(&exclusive, "third", "exclusive", "exclusive-progress", "shared", true, 8), Err(Error::Conflict(message)) if message == "download progress is already active")
+        );
+        assert_eq!(registry.state().unwrap().accepted.len(), 2);
+        assert_eq!(
+            registry
+                .state()
+                .unwrap()
+                .accepted
+                .get(&first_ticket)
+                .unwrap()
+                .progress_id
+                .as_deref(),
+            Some("first-progress")
+        );
+        drop(first);
+        drop(second);
+        let active = registry
+            .claim_download(
+                &exclusive,
+                "third",
+                "exclusive",
+                "exclusive-progress",
+                "shared",
+                true,
+                8,
+            )
+            .unwrap();
+        let other_ticket = registry.prepare_download("fourth").unwrap();
+        assert!(
+            matches!(registry.claim_download(&other_ticket, "fourth", "other", "other-progress", "shared", true, 8), Err(Error::Conflict(message)) if message == "download progress is already active")
+        );
+        drop(active);
+        assert!(registry
+            .claim_download(
+                &other_ticket,
+                "fourth",
+                "other",
+                "other-progress",
+                "shared",
+                true,
+                8
+            )
+            .is_ok());
+    }
+
+    #[test]
     fn duplicate_uncancelled_progress_claim_keeps_the_ticket_reserved_without_a_lease() {
         let registry = OperationRegistry::default();
         let ticket = registry.prepare_download("main").unwrap();
         let download = registry
-            .claim_download(&ticket, "main", "first", "progress", 8)
+            .claim_download(&ticket, "main", "first", "progress", "progress", false, 8)
             .unwrap();
         let duplicate = registry.prepare_download("main").unwrap();
         assert!(matches!(
-            registry.claim_download(&duplicate, "main", "duplicate", "progress", 8),
+            registry.claim_download(
+                &duplicate,
+                "main",
+                "duplicate",
+                "progress",
+                "progress",
+                false,
+                8
+            ),
             Err(Error::Conflict(_))
         ));
         {
@@ -1079,7 +1187,7 @@ mod tests {
         let registry = OperationRegistry::default();
         let ticket = registry.prepare_download("main").unwrap();
         let first = registry
-            .claim_download(&ticket, "main", "first", "progress", 8)
+            .claim_download(&ticket, "main", "first", "progress", "progress", false, 8)
             .unwrap();
         assert!(registry.cancel_download(&ticket, "main").unwrap());
         assert!(registry
@@ -1091,7 +1199,15 @@ mod tests {
             .unwrap());
         let retry_ticket = registry.prepare_download("main").unwrap();
         let retry = registry
-            .claim_download(&retry_ticket, "main", "retry", "progress", 8)
+            .claim_download(
+                &retry_ticket,
+                "main",
+                "retry",
+                "progress",
+                "progress",
+                false,
+                8,
+            )
             .unwrap();
         assert!(registry
             .with_live_download_for_progress("progress", |live| live)
@@ -1120,12 +1236,28 @@ mod tests {
         let registry = OperationRegistry::default();
         let first_ticket = registry.prepare_download("main").unwrap();
         let first = registry
-            .claim_download(&first_ticket, "main", "first", "progress", 8)
+            .claim_download(
+                &first_ticket,
+                "main",
+                "first",
+                "progress",
+                "progress",
+                false,
+                8,
+            )
             .unwrap();
         first.token().cancel();
         let ticket = registry.prepare_download("main").unwrap();
         let committing = registry
-            .claim_download(&ticket, "main", "committing", "progress", 8)
+            .claim_download(
+                &ticket,
+                "main",
+                "committing",
+                "progress",
+                "progress",
+                false,
+                8,
+            )
             .unwrap();
         committing.commit_gate().begin_commit().unwrap();
         assert!(!registry
@@ -1137,7 +1269,15 @@ mod tests {
             .unwrap());
         let duplicate = registry.prepare_download("main").unwrap();
         assert!(matches!(
-            registry.claim_download(&duplicate, "main", "duplicate", "progress", 8),
+            registry.claim_download(
+                &duplicate,
+                "main",
+                "duplicate",
+                "progress",
+                "progress",
+                false,
+                8
+            ),
             Err(Error::Conflict(_))
         ));
     }
@@ -1169,7 +1309,7 @@ mod tests {
         assert!(registry.cancel_download(&ticket, "first").unwrap());
         assert!(registry.cancel_download(&ticket, "first").unwrap());
         assert!(matches!(
-            registry.claim_download(&ticket, "first", "download", "progress", 1),
+            registry.claim_download(&ticket, "first", "download", "progress", "progress", false, 1),
             Err(Error::Cancellation)
         ));
         assert!(!registry.cancel_download(&ticket, "first").unwrap());
@@ -1184,7 +1324,7 @@ mod tests {
             Err(Error::Conflict(_))
         ));
         assert!(matches!(
-            registry.claim_download(&read, "owner", "download", "progress", 1),
+            registry.claim_download(&read, "owner", "download", "progress", "progress", false, 1),
             Err(Error::Conflict(_))
         ));
         registry.cancel_read(&read, "owner").unwrap();
@@ -1263,6 +1403,8 @@ mod tests {
                         &format!("owner-{index}"),
                         "download",
                         "progress",
+                        "progress",
+                        false,
                         32,
                     )
                     .unwrap()
@@ -1270,7 +1412,8 @@ mod tests {
             .collect();
         let excess = registry.prepare_download("excess").unwrap();
         assert!(matches!(
-            registry.claim_download(&excess, "excess", "download", "progress", 32),
+            registry
+                .claim_download(&excess, "excess", "download", "progress", "progress", false, 32),
             Err(Error::ResourceLimit(_))
         ));
         let accepted: Vec<_> = (downloads.len()..MAX_ACCEPTED_OPERATIONS)
@@ -1292,7 +1435,15 @@ mod tests {
         drop(accepted);
         let recovered = registry.prepare_download("recovered").unwrap();
         assert!(registry
-            .claim_download(&recovered, "recovered", "download", "progress", 32)
+            .claim_download(
+                &recovered,
+                "recovered",
+                "download",
+                "progress",
+                "progress",
+                false,
+                32
+            )
             .is_ok());
     }
 
@@ -1314,7 +1465,15 @@ mod tests {
             .unwrap();
         let accepted_download = registry.prepare_download("main").unwrap();
         let download_lease = registry
-            .claim_download(&accepted_download, "main", "download", "progress", 8)
+            .claim_download(
+                &accepted_download,
+                "main",
+                "download",
+                "progress",
+                "progress",
+                false,
+                8,
+            )
             .unwrap();
         let accepted = registry.accept("ownerless work").unwrap();
         let other_read = registry.prepare_read("other").unwrap();
@@ -1333,6 +1492,8 @@ mod tests {
                 "other",
                 "other download",
                 "progress",
+                "progress",
+                false,
                 8,
             )
             .unwrap();
@@ -1395,11 +1556,21 @@ mod tests {
         let reserved = registry.prepare_download("main").unwrap();
         let download = registry.prepare_download("main").unwrap();
         let download_lease = registry
-            .claim_download(&download, "main", "download", "progress", 8)
+            .claim_download(
+                &download, "main", "download", "progress", "progress", false, 8,
+            )
             .unwrap();
         let committing = registry.prepare_download("main").unwrap();
         let committing_lease = registry
-            .claim_download(&committing, "main", "committing", "committing", 8)
+            .claim_download(
+                &committing,
+                "main",
+                "committing",
+                "committing",
+                "committing",
+                false,
+                8,
+            )
             .unwrap();
         committing_lease.commit_gate().begin_commit().unwrap();
         let cancelled = registry.cancel_owner("main").unwrap();

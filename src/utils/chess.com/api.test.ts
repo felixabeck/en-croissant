@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import type { ArtifactPublication, PathRef } from "@/bindings";
+import { tauriSubscriptions } from "@/platform/tauri";
 
 const mocks = vi.hoisted(() => ({
     downloadChessComGames: vi.fn(),
     releaseDownload: vi.fn(),
     withDownloadTicket: vi.fn(),
+    progress: vi.fn(),
 }));
 
 vi.mock("@/platform/tauri", async () => {
@@ -16,6 +18,7 @@ vi.mock("@/platform/tauri", async () => {
             downloadChessComGames: mocks.downloadChessComGames,
         },
         withDownloadTicket: mocks.withDownloadTicket,
+        tauriSubscriptions: { ...actual.tauriSubscriptions, progress: mocks.progress },
     };
 });
 
@@ -43,8 +46,53 @@ beforeEach(() => {
 });
 
 describe("downloadChessCom", () => {
+    test("installs the ticket listener before the native entry frame while download is pending", async () => {
+        let listener: Parameters<typeof tauriSubscriptions.progress>[0] | undefined;
+        const observed = vi.fn();
+        mocks.progress.mockImplementation(async (callback) => {
+            listener = callback;
+            return vi.fn();
+        });
+        let resolve!: (value: ArtifactPublication) => void;
+        const nativeResult = new Promise<ArtifactPublication>((settle) => {
+            resolve = settle;
+        });
+        const frame = {
+            payload: {
+                id: "prepared-ticket",
+                generation: 1n,
+                progress: 12,
+                finished: false,
+                state: "running" as const,
+                cleared: false,
+            },
+        };
+        mocks.downloadChessComGames.mockImplementation(() => {
+            listener?.(frame);
+            return nativeResult;
+        });
+        const onTicket = vi.fn((ticket: string) => {
+            void tauriSubscriptions.progress((event) => {
+                if (event.payload.id === ticket) observed(event);
+            });
+        });
+        let settled = false;
+        const result = downloadChessCom(destination, "player", null, onTicket);
+        void result.then(() => {
+            settled = true;
+        });
+        await Promise.resolve();
+        expect(onTicket).toHaveBeenCalledExactlyOnceWith("prepared-ticket");
+        expect(observed).toHaveBeenCalledExactlyOnceWith(frame);
+        expect(settled).toBe(false);
+        resolve(publication);
+        await expect(result).resolves.toEqual(publication);
+    });
+
     test("passes the prepared ticket as the native job id", async () => {
-        await expect(downloadChessCom(destination, "player", 123)).resolves.toEqual(publication);
+        await expect(downloadChessCom(destination, "player", 123, vi.fn())).resolves.toEqual(
+            publication,
+        );
 
         expect(mocks.downloadChessComGames).toHaveBeenCalledWith(
             destination,
@@ -63,7 +111,9 @@ describe("downloadChessCom", () => {
         };
         mocks.downloadChessComGames.mockResolvedValue(uncertain);
 
-        await expect(downloadChessCom(destination, "player", null)).resolves.toEqual(uncertain);
+        await expect(downloadChessCom(destination, "player", null, vi.fn())).resolves.toEqual(
+            uncertain,
+        );
         expect(mocks.downloadChessComGames).toHaveBeenCalledTimes(1);
         expect(mocks.releaseDownload).not.toHaveBeenCalled();
     });
@@ -72,7 +122,7 @@ describe("downloadChessCom", () => {
         const failure = new Error("download failed");
         mocks.downloadChessComGames.mockRejectedValue(failure);
 
-        await expect(downloadChessCom(destination, "player", null)).rejects.toBe(failure);
+        await expect(downloadChessCom(destination, "player", null, vi.fn())).rejects.toBe(failure);
         expect(mocks.releaseDownload).toHaveBeenCalledWith("prepared-ticket");
     });
 });

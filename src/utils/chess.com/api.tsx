@@ -54,16 +54,18 @@ export async function downloadChessCom(
   destination: PathRef,
   player: string,
   timestamp: number | null,
+  onTicket: (ticket: string) => void,
 ): Promise<ArtifactPublication> {
-  const result = await withDownloadTicket((ticket) =>
-    tauri.downloadChessComGames(
+  const result = await withDownloadTicket((ticket) => {
+    onTicket(ticket);
+    return tauri.downloadChessComGames(
       destination,
       `${player}_chesscom.pgn`,
       player,
       timestamp === null ? null : BigInt(timestamp),
       ticket,
-    ),
-  );
+    );
+  });
   // Return the whole publication so the caller can report its durability without retrying
   // the committed download.
   return result;

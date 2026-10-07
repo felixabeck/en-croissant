@@ -226,12 +226,14 @@ pub async fn download_chess_com_games(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
 ) -> Result<ArtifactPublication, Error> {
-    let progress_id = format!("chesscom_{player}");
+    let admission_key = format!("chesscom_{player}");
     let lease = state.operations.claim_download(
         &job_id,
         window.label(),
         "download_chess_com_games",
-        &progress_id,
+        &job_id,
+        &admission_key,
+        true,
         crate::fs::MAX_ACTIVE_DOWNLOADS,
     )?;
     let lower_player = player.to_ascii_lowercase();
@@ -245,7 +247,7 @@ pub async fn download_chess_com_games(
         download_chess_com_games_core(
             destination,
             filename,
-            progress_id,
+            job_id,
             lower_player,
             first_month,
             app,
@@ -287,7 +289,7 @@ fn report_terminal_progress<R: tauri::Runtime>(
 async fn download_chess_com_games_core<R: tauri::Runtime>(
     destination: PathRef,
     filename: String,
-    progress_id: String,
+    job_id: String,
     lower_player: String,
     first_month: Option<(i32, u32)>,
     app: tauri::AppHandle<R>,
@@ -299,7 +301,7 @@ async fn download_chess_com_games_core<R: tauri::Runtime>(
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
-    let progress = begin_progress(&state.progress_state, &app, progress_id)?;
+    let progress = begin_progress(&state.progress_state, &app, job_id)?;
 
     let result = async {
         let staged = match tokio::time::timeout(export_timeout, async {
@@ -596,12 +598,13 @@ mod tests {
         state: AppState,
         timeout: Duration,
     ) -> Result<ArtifactPublication, Error> {
-        let progress_id = "chesscom_felix".to_owned();
         let lease = state.operations.claim_download(
             &job_id,
             "test",
             "download_chess_com_games",
-            &progress_id,
+            &job_id,
+            &job_id,
+            false,
             crate::fs::MAX_ACTIVE_DOWNLOADS,
         )?;
         let cancellation = lease.token();
@@ -612,7 +615,7 @@ mod tests {
             download_chess_com_games_core(
                 destination,
                 filename,
-                progress_id,
+                job_id,
                 "felix".into(),
                 None,
                 app,
@@ -625,12 +628,12 @@ mod tests {
         .await
     }
 
-    async fn wait_for_progress(state: &AppState, expected: ProgressState) {
+    async fn wait_for_progress(state: &AppState, job_id: &str, expected: ProgressState) {
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 if state
                     .progress_state
-                    .get("chesscom_felix")
+                    .get(job_id)
                     .unwrap()
                     .is_some_and(|item| item.state == expected)
                 {
@@ -748,7 +751,7 @@ mod tests {
         let task = tokio::spawn(run_owned_export(
             destination,
             "success.pgn".into(),
-            job_id,
+            job_id.clone(),
             app.handle().clone(),
             state.clone(),
             Duration::from_secs(2),
@@ -760,7 +763,7 @@ mod tests {
         task.abort();
         let _ = task.await;
         release.send(()).unwrap();
-        wait_for_progress(&state, ProgressState::Succeeded).await;
+        wait_for_progress(&state, &job_id, ProgressState::Succeeded).await;
         wait_for_operation_drain(&state).await;
         assert_eq!(
             std::fs::read(root.join("success.pgn")).unwrap(),
@@ -779,7 +782,7 @@ mod tests {
         let task = tokio::spawn(run_owned_export(
             destination,
             "failure.pgn".into(),
-            job_id,
+            job_id.clone(),
             app.handle().clone(),
             state.clone(),
             Duration::from_secs(2),
@@ -791,7 +794,7 @@ mod tests {
         task.abort();
         let _ = task.await;
         release.send(()).unwrap();
-        wait_for_progress(&state, ProgressState::Failed).await;
+        wait_for_progress(&state, &job_id, ProgressState::Failed).await;
         wait_for_operation_drain(&state).await;
         assert_eq!(
             std::fs::read(root.join("failure.pgn")).unwrap(),
@@ -806,10 +809,11 @@ mod tests {
         });
         let (_dir, state, destination, root, app) = export_fixture(bad_transport);
         std::fs::write(root.join("error.pgn"), b"previous").unwrap();
+        let job_id = state.operations.prepare_download("test").unwrap();
         let error = run_owned_export(
             destination,
             "error.pgn".into(),
-            state.operations.prepare_download("test").unwrap(),
+            job_id.clone(),
             app.handle().clone(),
             state.clone(),
             Duration::from_secs(2),
@@ -818,12 +822,7 @@ mod tests {
         .unwrap_err();
         assert!(matches!(error, Error::InvalidInput(_)));
         assert_eq!(
-            state
-                .progress_state
-                .get("chesscom_felix")
-                .unwrap()
-                .unwrap()
-                .state,
+            state.progress_state.get(&job_id).unwrap().unwrap().state,
             ProgressState::Failed
         );
         assert_eq!(std::fs::read(root.join("error.pgn")).unwrap(), b"previous");
@@ -853,12 +852,7 @@ mod tests {
         held.release.notify_waiters();
         assert!(matches!(task.await.unwrap(), Err(Error::Cancellation)));
         assert_eq!(
-            state
-                .progress_state
-                .get("chesscom_felix")
-                .unwrap()
-                .unwrap()
-                .state,
+            state.progress_state.get(&job_id).unwrap().unwrap().state,
             ProgressState::Cancelled
         );
         assert_eq!(std::fs::read(root.join("cancel.pgn")).unwrap(), b"previous");
@@ -874,10 +868,11 @@ mod tests {
         });
         let (_dir, state, destination, root, app) = export_fixture(held.clone());
         std::fs::write(root.join("deadline.pgn"), b"previous").unwrap();
+        let job_id = state.operations.prepare_download("test").unwrap();
         let task = tokio::spawn(run_owned_export(
             destination,
             "deadline.pgn".into(),
-            state.operations.prepare_download("test").unwrap(),
+            job_id.clone(),
             app.handle().clone(),
             state.clone(),
             Duration::from_millis(500),
@@ -894,12 +889,7 @@ mod tests {
         held.release.notify_waiters();
         assert!(matches!(error, Error::EngineTimeout(_)));
         assert_eq!(
-            state
-                .progress_state
-                .get("chesscom_felix")
-                .unwrap()
-                .unwrap()
-                .state,
+            state.progress_state.get(&job_id).unwrap().unwrap().state,
             ProgressState::Failed
         );
         assert_eq!(
@@ -940,12 +930,7 @@ mod tests {
             .unwrap()
             .has_persistent_id(&artifact.handle.id.id));
         assert_eq!(
-            state
-                .progress_state
-                .get("chesscom_felix")
-                .unwrap()
-                .unwrap()
-                .state,
+            state.progress_state.get(&job_id).unwrap().unwrap().state,
             ProgressState::Succeeded
         );
     }
@@ -956,10 +941,11 @@ mod tests {
         let (_dir, state, destination, root, app) = export_fixture(export_transport());
         let (entered, release) =
             hold_atomic_point(crate::infra::fs::AtomicFileFaultPoint::ParentSync, 1, false);
+        let job_id = state.operations.prepare_download("test").unwrap();
         let task = tokio::spawn(run_owned_export(
             destination,
             "cleared.pgn".into(),
-            state.operations.prepare_download("test").unwrap(),
+            job_id.clone(),
             app.handle().clone(),
             state.clone(),
             Duration::from_secs(2),
@@ -968,7 +954,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        state.progress_state.clear("chesscom_felix").unwrap();
+        state.progress_state.clear(&job_id).unwrap();
         release.send(()).unwrap();
         let artifact = task.await.unwrap().unwrap();
         assert_eq!(

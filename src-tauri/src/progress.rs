@@ -547,7 +547,7 @@ mod tests {
             let _download = live_download.then(|| {
                 let ticket = operations.prepare_download("main").unwrap();
                 operations
-                    .claim_download(&ticket, "main", "download", &id, 8)
+                    .claim_download(&ticket, "main", "download", &id, &id, false, 8)
                     .unwrap()
             });
             let observed = Arc::new(AtomicBool::new(false));
@@ -606,7 +606,7 @@ mod tests {
         let operations = OperationRegistry::default();
         let ticket = operations.prepare_download("other-owner").unwrap();
         let _download = operations
-            .claim_download(&ticket, "other-owner", "download", "job", 8)
+            .claim_download(&ticket, "other-owner", "download", "job", "job", false, 8)
             .unwrap();
         let lease = store.start("job".into()).unwrap();
         store
@@ -638,7 +638,7 @@ mod tests {
             let operations = OperationRegistry::default();
             let ticket = operations.prepare_download("main").unwrap();
             let download = operations
-                .claim_download(&ticket, "main", "download", "job", 8)
+                .claim_download(&ticket, "main", "download", "job", "job", false, 8)
                 .unwrap();
             let lease = store.start("job".into()).unwrap();
             if drop_lease {
@@ -678,7 +678,7 @@ mod tests {
             let operations = OperationRegistry::default();
             let ticket = operations.prepare_download("main").unwrap();
             let download = operations
-                .claim_download(&ticket, "main", "download", "job", 8)
+                .claim_download(&ticket, "main", "download", "job", "job", false, 8)
                 .unwrap();
             let previous_generation = if let Some(terminal) = terminal {
                 let lease = store.start("job".into()).unwrap();
@@ -707,7 +707,7 @@ mod tests {
         let operations = OperationRegistry::default();
         let ticket = operations.prepare_download("main").unwrap();
         let _download = operations
-            .claim_download(&ticket, "main", "download", "other", 8)
+            .claim_download(&ticket, "main", "download", "other", "other", false, 8)
             .unwrap();
         let lease = store.start("job".into()).unwrap();
         let generation =

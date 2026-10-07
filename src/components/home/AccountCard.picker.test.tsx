@@ -45,8 +45,20 @@ vi.mock("@/platform/tauri", () => ({
   },
   tauriSubscriptions: { progress: mocks.progress },
 }));
-vi.mock("@/utils/chess.com/api", () => ({ downloadChessCom: mocks.downloadChessCom }));
-vi.mock("@/utils/lichess/api", () => ({ downloadLichess: mocks.downloadLichess }));
+vi.mock("@/utils/chess.com/api", () => ({
+  downloadChessCom: (
+    ...args: Parameters<typeof import("@/utils/chess.com/api").downloadChessCom>
+  ) => {
+    args[3](`download:chesscom:${args[1]}`);
+    return mocks.downloadChessCom(...args);
+  },
+}));
+vi.mock("@/utils/lichess/api", () => ({
+  downloadLichess: (...args: Parameters<typeof import("@/utils/lichess/api").downloadLichess>) => {
+    args[5](`download:lichess:${args[2]}`);
+    return mocks.downloadLichess(...args);
+  },
+}));
 vi.mock("@/utils/db", async () => {
   const actual = await vi.importActual<typeof import("@/utils/db")>("@/utils/db");
   return { ...actual, getDatabases: mocks.getDatabases };
@@ -219,7 +231,7 @@ function configureSuccessfulDownload(type: "chesscom" | "lichess" = "chesscom") 
   const artifact = { id: { id: "pgn" }, kind: "fileWorkspace" as const };
   const root = { id: { id: "database-root" }, kind: "databaseRoot" as const };
   const handle = { id: { id: "database" }, kind: "database" as const };
-  const lease = { id: `${type}_Felix`, generation: 1n };
+  const lease = { id: `download:${type}:Felix`, generation: 1n };
   mocks.getLatestGameTimestamp.mockResolvedValue(null);
   const publication: ArtifactPublication = { handle: artifact, durability: "Durable" };
   mocks.downloadChessCom.mockResolvedValue(publication);
@@ -351,6 +363,97 @@ test.each(["chesscom", "lichess"] as const)(
   },
 );
 
+test.each(["chesscom", "lichess"] as const)(
+  "%s follows its ticket while the download is pending and reuses it for import",
+  async (type) => {
+    configureSuccessfulDownload(type);
+    const download = type === "chesscom" ? mocks.downloadChessCom : mocks.downloadLichess;
+    const pendingDownload = deferred<ArtifactPublication>();
+    download.mockImplementation(() => {
+      mocks.progress.mock.calls[0][0]({
+        payload: {
+          id: `download:${type}:Felix`,
+          generation: 1n,
+          progress: 37,
+          finished: false,
+          state: "running",
+          cleared: false,
+        },
+      });
+      return pendingDownload.promise;
+    });
+    const destination = deferred<{ id: string }>();
+    mocks.issueDownloadDestination.mockReturnValue(destination.promise);
+    await renderCard({ type, accountHandle: "account" });
+
+    await act(async () => downloadButton().click());
+    expect(store.get(accountDownloadsInFlightAtom).has(`${type}_Felix`)).toBe(true);
+    expect(store.get(accountDownloadsInFlightAtom).get(`${type}_Felix`)).toBeNull();
+    await act(async () => destination.resolve({ id: "dest" }));
+    const ticket = `download:${type}:Felix`;
+    expect(store.get(accountDownloadsInFlightAtom).get(`${type}_Felix`)).toBe(ticket);
+    expect(mocks.convertPgn).not.toHaveBeenCalled();
+    expect(host.textContent).toContain("37%");
+    const listener = mocks.progress.mock.calls[0][0];
+    const emit = (id: string, progress: number) =>
+      listener({
+        payload: {
+          id,
+          generation: 1n,
+          progress,
+          finished: false,
+          state: "running",
+          cleared: false,
+        },
+      });
+    await act(async () => emit(ticket, 37));
+    expect(host.textContent).toContain("37%");
+    await act(async () => {
+      emit("different-ticket", 88);
+      emit(`${type}_Felix`, 91);
+    });
+    expect(host.textContent).toContain("37%");
+    expect(host.textContent).not.toContain("88%");
+    expect(host.textContent).not.toContain("91%");
+    expect(mocks.startProgress).not.toHaveBeenCalled();
+
+    await act(async () =>
+      pendingDownload.resolve({
+        handle: { id: { id: "pgn" }, kind: "fileWorkspace" },
+        durability: "Durable",
+      }),
+    );
+    expect(mocks.startProgress).toHaveBeenCalledExactlyOnceWith(ticket);
+    expect(mocks.startProgress).not.toHaveBeenCalledWith(`${type}_Felix`);
+    expect(store.get(accountDownloadsInFlightAtom).size).toBe(0);
+  },
+);
+
+test.each(["chesscom", "lichess"] as const)(
+  "a refused %s export notifies the conflict and removes its in-flight entry",
+  async (type) => {
+    configureSuccessfulDownload(type);
+    mocks.issueDownloadDestination.mockResolvedValue({ id: "dest" });
+    const download = type === "chesscom" ? mocks.downloadChessCom : mocks.downloadLichess;
+    download.mockRejectedValue({
+      tag: "backend-error",
+      category: "conflict",
+      message: "download progress is already active",
+    });
+    await renderCard({ type, accountHandle: "account" });
+    await act(async () => downloadButton().click());
+    expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
+      color: "red",
+      title: "Common.Error",
+      message: "download progress is already active",
+    });
+    expect(mocks.startProgress).not.toHaveBeenCalled();
+    expect(mocks.convertPgn).not.toHaveBeenCalled();
+    expect(store.get(accountDownloadsInFlightAtom).size).toBe(0);
+    expect(downloadButton().disabled).toBe(false);
+  },
+);
+
 test("a finished progress frame leaves Download pending until cleanup and refresh settle", async () => {
   configureSuccessfulDownload();
   mocks.issueDownloadDestination.mockResolvedValue({ id: "dest" });
@@ -365,7 +468,7 @@ test("a finished progress frame leaves Download pending until cleanup and refres
   await act(async () => {
     mocks.progress.mock.calls[0][0]({
       payload: {
-        id: "chesscom_Felix",
+        id: "download:chesscom:Felix",
         generation: 1n,
         progress: 100,
         finished: true,
@@ -425,7 +528,10 @@ test("concurrent account downloads retain each other's pending state", async () 
   expect(buttonB.disabled).toBe(true);
   expect(buttonB.getAttribute("data-pending")).toBe("true");
   expect(store.get(accountDownloadsInFlightAtom)).toEqual(
-    new Set(["chesscom_Felix", "chesscom_Alex"]),
+    new Map([
+      ["chesscom_Felix", "download:chesscom:Felix"],
+      ["chesscom_Alex", "download:chesscom:Alex"],
+    ]),
   );
 
   await act(async () => conversionB.resolve());
@@ -433,7 +539,9 @@ test("concurrent account downloads retain each other's pending state", async () 
   expect(buttonB.getAttribute("data-pending")).toBeNull();
   expect(buttonA.disabled).toBe(true);
   expect(buttonA.getAttribute("data-pending")).toBe("true");
-  expect(store.get(accountDownloadsInFlightAtom)).toEqual(new Set(["chesscom_Felix"]));
+  expect(store.get(accountDownloadsInFlightAtom)).toEqual(
+    new Map([["chesscom_Felix", "download:chesscom:Felix"]]),
+  );
 
   await act(async () => conversionA.resolve());
   expect(buttonA.disabled).toBe(false);
@@ -460,6 +568,22 @@ test("a remounted account stays pending and cannot start a second download", asy
   await act(async () => downloadButton().click());
   expect(mocks.downloadChessCom).toHaveBeenCalledTimes(1);
   expect(mocks.convertPgn).toHaveBeenCalledTimes(1);
+
+  const ticket = store.get(accountDownloadsInFlightAtom).get("chesscom_Felix");
+  expect(ticket).toBe("download:chesscom:Felix");
+  await act(async () => {
+    mocks.progress.mock.calls.at(-1)![0]({
+      payload: {
+        id: ticket,
+        generation: 2n,
+        progress: 64,
+        finished: false,
+        state: "running",
+        cleared: false,
+      },
+    });
+  });
+  expect(host.textContent).toContain("64%");
 
   await act(async () => conversion.resolve());
   expect(downloadButton().disabled).toBe(false);
@@ -657,8 +781,9 @@ test("an unknown persisted destination is replaced before downloading", async ()
     stale,
     expect.anything(),
     expect.anything(),
+    expect.any(Function),
   );
-  expect(mocks.downloadChessCom).toHaveBeenCalledWith(fresh, "Felix", null);
+  expect(mocks.downloadChessCom).toHaveBeenCalledWith(fresh, "Felix", null, expect.any(Function));
   expect(localStorage.getItem(DOWNLOAD_DESTINATION_KEY)).toBe(JSON.stringify(fresh));
 });
 
@@ -674,7 +799,12 @@ test("a known persisted destination is preserved", async () => {
   expect(mocks.downloadDestinationIsKnown).toHaveBeenCalledTimes(1);
   expect(mocks.downloadDestinationIsKnown).toHaveBeenCalledWith(destination);
   expect(mocks.issueDownloadDestination).not.toHaveBeenCalled();
-  expect(mocks.downloadChessCom).toHaveBeenCalledWith(destination, "Felix", null);
+  expect(mocks.downloadChessCom).toHaveBeenCalledWith(
+    destination,
+    "Felix",
+    null,
+    expect.any(Function),
+  );
   expect(localStorage.getItem(DOWNLOAD_DESTINATION_KEY)).toBe(JSON.stringify(destination));
 });
 
@@ -693,7 +823,12 @@ test.each(Object.entries(CATEGORY_CASES) as Array<[AppErrorCategory, { message: 
     expect(mocks.downloadDestinationIsKnown).toHaveBeenCalledTimes(1);
     expect(mocks.downloadDestinationIsKnown).toHaveBeenCalledWith(destination);
     expect(mocks.issueDownloadDestination).not.toHaveBeenCalled();
-    expect(mocks.downloadChessCom).toHaveBeenCalledWith(destination, "Felix", null);
+    expect(mocks.downloadChessCom).toHaveBeenCalledWith(
+      destination,
+      "Felix",
+      null,
+      expect.any(Function),
+    );
     expect(localStorage.getItem(DOWNLOAD_DESTINATION_KEY)).toBe(JSON.stringify(destination));
     expect(mocks.notify).toHaveBeenCalledTimes(1);
     expect(mocks.notify).toHaveBeenCalledWith({
@@ -716,7 +851,12 @@ test("a cancelled download preserves the destination and stays silent", async ()
   expect(mocks.downloadDestinationIsKnown).toHaveBeenCalledTimes(1);
   expect(mocks.downloadDestinationIsKnown).toHaveBeenCalledWith(destination);
   expect(mocks.issueDownloadDestination).not.toHaveBeenCalled();
-  expect(mocks.downloadChessCom).toHaveBeenCalledWith(destination, "Felix", null);
+  expect(mocks.downloadChessCom).toHaveBeenCalledWith(
+    destination,
+    "Felix",
+    null,
+    expect.any(Function),
+  );
   expect(localStorage.getItem(DOWNLOAD_DESTINATION_KEY)).toBe(JSON.stringify(destination));
   expect(mocks.notify).not.toHaveBeenCalled();
 });
@@ -775,7 +915,7 @@ test("convertPgn failure is not masked when marking the lease failed also reject
   const artifact = { id: { id: "pgn" }, kind: "fileWorkspace" as const };
   const root = { id: { id: "database-root" }, kind: "databaseRoot" };
   const handle = { id: { id: "database" }, kind: "database" as const };
-  const lease = { id: "chesscom_Felix", generation: 1n };
+  const lease = { id: "download:chesscom:Felix", generation: 1n };
   mocks.issueDownloadDestination.mockResolvedValue(destination);
   mocks.downloadChessCom.mockResolvedValue({ handle: artifact, durability: "Durable" });
   mocks.getDatabaseWorkspace.mockResolvedValue(root);
@@ -822,7 +962,7 @@ test("a rejecting setProgressState after a successful convert still runs the pos
   const artifact = { id: { id: "pgn" }, kind: "fileWorkspace" as const };
   const root = { id: { id: "database-root" }, kind: "databaseRoot" };
   const handle = { id: { id: "database" }, kind: "database" as const };
-  const lease = { id: "chesscom_Felix", generation: 1n };
+  const lease = { id: "download:chesscom:Felix", generation: 1n };
   mocks.issueDownloadDestination.mockResolvedValue(destination);
   mocks.downloadChessCom.mockResolvedValue({ handle: artifact, durability: "Durable" });
   mocks.getDatabaseWorkspace.mockResolvedValue(root);

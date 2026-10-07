@@ -3772,13 +3772,15 @@ mod blocking_offload_scans {
     #[test]
     fn download_claims_record_their_progress_id_and_webview_owner_once() {
         let fs = include_str!("fs.rs");
-        for (source, signature, owner, label, progress_id) in [
+        for (source, signature, owner, label, progress_id, admission_key, exclusive) in [
             (
                 fs,
                 "pub async fn download_file(",
                 "window.label()",
                 "download publication",
                 "id",
+                "id",
+                false,
             ),
             (
                 fs,
@@ -3786,20 +3788,26 @@ mod blocking_offload_scans {
                 "window.label()",
                 "download_engine_archive",
                 "id",
+                "id",
+                false,
             ),
             (
                 fs,
                 "async fn download_lichess_games_runtime<",
                 "owner",
                 "download_lichess_games",
-                "progress_id",
+                "job_id",
+                "admission_key",
+                true,
             ),
             (
                 include_str!("chesscom.rs"),
                 "pub async fn download_chess_com_games(",
                 "window.label()",
                 "download_chess_com_games",
-                "progress_id",
+                "job_id",
+                "admission_key",
+                true,
             ),
         ] {
             let body = body_at_indent(source, signature);
@@ -3812,7 +3820,7 @@ mod blocking_offload_scans {
             let compact_label: String = label.chars().filter(|c| !c.is_whitespace()).collect();
             assert!(
                 compact.contains(&format!(
-                    "claim_download(&job_id,{owner},\"{compact_label}\",&{progress_id},"
+                    "claim_download(&job_id,{owner},\"{compact_label}\",&{progress_id},&{admission_key},{exclusive},"
                 )),
                 "{signature}: {body}"
             );
@@ -3834,18 +3842,18 @@ mod blocking_offload_scans {
             "{lichess}"
         );
         assert!(
-            lichess.find("let progress_id =").unwrap() < lichess.find("claim_download(").unwrap(),
+            lichess.find("let admission_key =").unwrap() < lichess.find("claim_download(").unwrap(),
             "{lichess}"
         );
         let compact: String = lichess.chars().filter(|c| !c.is_whitespace()).collect();
         assert!(
             compact.contains(
-                "letprogress_id=format!(\"lichess_{}\",crate::lichess::lichess_user_segment(&player)?);"
+                "letadmission_key=format!(\"lichess_{}\",crate::lichess::lichess_user_segment(&player)?);"
             ),
             "{lichess}"
         );
         assert!(
-            compact.contains("download_to_destination(&progress_id,"),
+            compact.contains("download_to_destination(&job_id,"),
             "{lichess}"
         );
         let destination = body_at_indent(fs, "async fn download_to_destination_inner<");
@@ -3862,17 +3870,21 @@ mod blocking_offload_scans {
             "{command}"
         );
         assert!(
-            command.find("let progress_id =").unwrap() < command.find("claim_download(").unwrap(),
+            command.find("let admission_key =").unwrap() < command.find("claim_download(").unwrap(),
             "{command}"
         );
         let compact: String = command.chars().filter(|c| !c.is_whitespace()).collect();
         assert!(
-            compact.contains("download_chess_com_games_core(destination,filename,progress_id,"),
+            compact.contains("letadmission_key=format!(\"chesscom_{player}\");"),
+            "{command}"
+        );
+        assert!(
+            compact.contains("download_chess_com_games_core(destination,filename,job_id,"),
             "{command}"
         );
         let core = body_at_indent(chesscom, "async fn download_chess_com_games_core<");
         assert!(
-            core.contains("begin_progress(&state.progress_state, &app, progress_id)"),
+            core.contains("begin_progress(&state.progress_state, &app, job_id)"),
             "{core}"
         );
         assert!(!core.contains("format!(\"chesscom_"), "{core}");

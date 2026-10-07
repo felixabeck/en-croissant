@@ -489,8 +489,8 @@ export type DatabaseConversionEntry = {
 /** In-memory only: one entry per in-flight conversion, removed by its owning route; never persisted or restored. */
 export const databaseConversionStateAtom = atom<DatabaseConversionEntry[]>([]);
 
-/** In-memory only: account keys whose download action has not settled; owned by AccountCard's download action. */
-export const accountDownloadsInFlightAtom = atom<ReadonlySet<string>>(new Set<string>());
+/** In-memory only: account keys mapped to their pending download ticket; owned by AccountCard's download action. */
+export const accountDownloadsInFlightAtom = atom<ReadonlyMap<string, string | null>>(new Map());
 
 /** Retains one entry per active owner, in start order, until that owner's work settles. */
 export async function runDatabaseConversion<T>(

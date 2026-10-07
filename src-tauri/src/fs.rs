@@ -741,6 +741,8 @@ pub async fn download_file(
         window.label(),
         "download publication",
         &id,
+        &id,
+        false,
         MAX_ACTIVE_DOWNLOADS,
     )?;
     download_to_destination(
@@ -1256,12 +1258,14 @@ async fn download_lichess_games_runtime<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     state: &AppState,
 ) -> Result<crate::infra::path_authority::ArtifactPublication, Error> {
-    let progress_id = format!("lichess_{}", crate::lichess::lichess_user_segment(&player)?);
+    let admission_key = format!("lichess_{}", crate::lichess::lichess_user_segment(&player)?);
     let lease = state.operations.claim_download(
         &job_id,
         owner,
         "download_lichess_games",
-        &progress_id,
+        &job_id,
+        &admission_key,
+        true,
         MAX_ACTIVE_DOWNLOADS,
     )?;
     let operations = state
@@ -1283,7 +1287,7 @@ async fn download_lichess_games_runtime<R: tauri::Runtime>(
         .await?
         .ok_or_else(|| Error::OAuthFailure("authenticated Lichess account unavailable".into()))?;
     download_to_destination(
-        &progress_id,
+        &job_id,
         url.as_str(),
         destination,
         filename,
@@ -1291,7 +1295,7 @@ async fn download_lichess_games_runtime<R: tauri::Runtime>(
         state,
         Some(&token),
         estimated_size,
-        job_id,
+        job_id.clone(),
         lease,
         true,
         None,
@@ -1349,6 +1353,8 @@ pub async fn download_engine_archive(
         window.label(),
         "download_engine_archive",
         &id,
+        &id,
+        false,
         MAX_ACTIVE_DOWNLOADS,
     )?;
     let cancellation = lease.token();
@@ -2246,6 +2252,8 @@ mod tests {
                 "test",
                 "test download",
                 &ticket,
+                &ticket,
+                false,
                 MAX_ACTIVE_DOWNLOADS,
             )
             .unwrap();
@@ -2660,7 +2668,9 @@ mod tests {
                 "owner",
                 "download",
                 "progress",
-                MAX_ACTIVE_DOWNLOADS
+                "progress",
+                false,
+                MAX_ACTIVE_DOWNLOADS,
             ),
             Err(Error::Cancellation)
         ));
@@ -5898,6 +5908,8 @@ mod tests {
                 "test",
                 "test download",
                 progress_id,
+                progress_id,
+                false,
                 MAX_ACTIVE_DOWNLOADS,
             )
             .unwrap();
@@ -5997,6 +6009,8 @@ mod tests {
                     "test",
                     "test download",
                     &progress_id,
+                    &progress_id,
+                    false,
                     MAX_ACTIVE_DOWNLOADS,
                 )
                 .unwrap();

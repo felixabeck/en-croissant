@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { cancellationError } from "@/platform/tauri";
+import { cancellationError, tauriSubscriptions } from "@/platform/tauri";
 import type { ArtifactPublication } from "@/bindings";
 
 const mocks = vi.hoisted(() => ({
@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
     lexPgn: vi.fn(),
     releaseDownload: vi.fn(),
     withDownloadTicket: vi.fn(),
+    progress: vi.fn(),
 }));
 
 vi.mock("@/platform/native", () => ({
@@ -26,6 +27,7 @@ vi.mock("@/platform/tauri", async () => {
             lexPgn: mocks.lexPgn,
         },
         withDownloadTicket: mocks.withDownloadTicket,
+        tauriSubscriptions: { ...actual.tauriSubscriptions, progress: mocks.progress },
     };
 });
 
@@ -152,6 +154,56 @@ describe("convertToNormalized", () => {
 });
 
 describe("downloadLichess", () => {
+    test("installs the ticket listener before the native entry frame while download is pending", async () => {
+        let listener: Parameters<typeof tauriSubscriptions.progress>[0] | undefined;
+        const observed = vi.fn();
+        mocks.progress.mockImplementation(async (callback) => {
+            listener = callback;
+            return vi.fn();
+        });
+        let resolve!: (value: ArtifactPublication) => void;
+        const nativeResult = new Promise<ArtifactPublication>((settle) => {
+            resolve = settle;
+        });
+        const frame = {
+            payload: {
+                id: "prepared-ticket",
+                generation: 1n,
+                progress: 12,
+                finished: false,
+                state: "running" as const,
+                cleared: false,
+            },
+        };
+        mocks.downloadLichessGames.mockImplementation(() => {
+            listener?.(frame);
+            return nativeResult;
+        });
+        const onTicket = vi.fn((ticket: string) => {
+            void tauriSubscriptions.progress((event) => {
+                if (event.payload.id === ticket) observed(event);
+            });
+        });
+        let settled = false;
+        const result = downloadLichess(
+            "account",
+            { id: "destination" },
+            "player",
+            null,
+            0,
+            onTicket,
+        );
+        void result.then(() => {
+            settled = true;
+        });
+        await Promise.resolve();
+        expect(onTicket).toHaveBeenCalledExactlyOnceWith("prepared-ticket");
+        expect(observed).toHaveBeenCalledExactlyOnceWith(frame);
+        expect(settled).toBe(false);
+        resolve(publication);
+        await expect(result).resolves.toEqual(publication);
+    });
+
     beforeEach(() => {
         mocks.downloadLichessGames.mockReset().mockResolvedValue(publication);
         mocks.releaseDownload.mockReset().mockResolvedValue(undefined);
@@ -171,9 +223,9 @@ describe("downloadLichess", () => {
         const handle = { id: "account" };
         const destination = { id: "destination" };
 
-        await expect(downloadLichess(handle.id, destination, "player", 123, 2)).resolves.toEqual(
-            publication,
-        );
+        await expect(
+            downloadLichess(handle.id, destination, "player", 123, 2, vi.fn()),
+        ).resolves.toEqual(publication);
         expect(mocks.downloadLichessGames).toHaveBeenCalledWith(
             handle.id,
             destination,
@@ -193,7 +245,7 @@ describe("downloadLichess", () => {
         mocks.downloadLichessGames.mockResolvedValue(uncertain);
 
         await expect(
-            downloadLichess("account", { id: "destination" }, "player", null, 0),
+            downloadLichess("account", { id: "destination" }, "player", null, 0, vi.fn()),
         ).resolves.toEqual(uncertain);
         expect(mocks.downloadLichessGames).toHaveBeenCalledTimes(1);
         expect(mocks.releaseDownload).not.toHaveBeenCalled();
@@ -204,7 +256,7 @@ describe("downloadLichess", () => {
         mocks.downloadLichessGames.mockRejectedValue(failure);
 
         await expect(
-            downloadLichess("account", { id: "destination" }, "player", null, 0),
+            downloadLichess("account", { id: "destination" }, "player", null, 0, vi.fn()),
         ).rejects.toBe(failure);
         expect(mocks.releaseDownload).toHaveBeenCalledWith("prepared-ticket");
     });

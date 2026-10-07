@@ -11,7 +11,7 @@ import {
   IconRefresh,
   IconTrash,
 } from "@tabler/icons-react";
-import { useAtom } from "jotai";
+import { useAtom, useStore } from "jotai";
 import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useSWRConfig } from "swr";
@@ -121,6 +121,7 @@ export function AccountCard({
   const { mutate } = useSWRConfig();
   const databaseOwner = useNativeRequestOwner("databases");
   const accountKey = `${type}_${title}`;
+  const store = useStore();
   const items = stats.map((stat) => {
     let color = "gray.5";
     let DiffIcon: React.FC<IconProps> = IconArrowRight;
@@ -165,6 +166,7 @@ export function AccountCard({
   async function convert(
     source: FileWorkspaceHandle,
     timestamp: number | null,
+    ticket: string,
   ): Promise<DatabaseHandle> {
     const databaseTitle = title + (type === "lichess" ? " Lichess" : " Chess.com");
     return runDatabaseConversion(
@@ -177,7 +179,7 @@ export function AccountCard({
       async ({ id, setTarget }) => {
         const databaseHandle = await ensureDatabaseHandle();
         setTarget(databaseHandle);
-        const progressLease = await tauri.startProgress(accountKey);
+        const progressLease = await tauri.startProgress(ticket);
         try {
           await tauri.convertPgn(
             id,
@@ -191,7 +193,7 @@ export function AccountCard({
           await tauri.setProgressState(progressLease, 0, "failed").catch(
             logProgressUpdateFailure({
               conversionId: id,
-              progressId: accountKey,
+              progressId: ticket,
               state: "failed",
             }),
           );
@@ -200,7 +202,7 @@ export function AccountCard({
         await tauri.setProgressState(progressLease, 100, "succeeded").catch(
           logProgressUpdateFailure({
             conversionId: id,
-            progressId: accountKey,
+            progressId: ticket,
             state: "succeeded",
           }),
         );
@@ -217,7 +219,8 @@ export function AccountCard({
   useTauriListener(
     subscribeProgress,
     (e) => {
-      if (e.payload.id === accountKey) {
+      const ticket = store.get(accountDownloadsInFlightAtom).get(accountKey);
+      if (typeof ticket === "string" && e.payload.id === ticket) {
         setProgress(e.payload.progress);
       }
     },
@@ -306,9 +309,16 @@ export function AccountCard({
               pending={pending}
               disabled={pending || (type === "lichess" && !accountHandle)}
               onClick={async () => {
-                if (downloadsInFlight.has(accountKey)) return;
-                setDownloadsInFlight((previous) => new Set(previous).add(accountKey));
+                if (store.get(accountDownloadsInFlightAtom).has(accountKey)) return;
+                setDownloadsInFlight((previous) => new Map(previous).set(accountKey, null));
                 try {
+                  let ticket!: string;
+                  const onTicket = (downloadTicket: string) => {
+                    ticket = downloadTicket;
+                    setDownloadsInFlight((previous) =>
+                      new Map(previous).set(accountKey, downloadTicket),
+                    );
+                  };
                   const lastGameDate = database ? await getLastGameDate({ database }) : null;
                   let publication: ArtifactPublication;
                   if (type === "lichess") {
@@ -320,10 +330,16 @@ export function AccountCard({
                       title,
                       lastGameDate,
                       total - downloadedGames,
+                      onTicket,
                     );
                   } else {
                     const destination = await ensureDownloadDestination();
-                    publication = await downloadChessCom(destination, title, lastGameDate);
+                    publication = await downloadChessCom(
+                      destination,
+                      title,
+                      lastGameDate,
+                      onTicket,
+                    );
                   }
                   if (publication.durability !== "Durable") {
                     notifications.show({
@@ -336,7 +352,7 @@ export function AccountCard({
                   }
                   let importFailed = true;
                   try {
-                    const databaseHandle = await convert(publication.handle, lastGameDate);
+                    const databaseHandle = await convert(publication.handle, lastGameDate, ticket);
                     await tauri.deleteEmptyGames(databaseHandle);
                     importFailed = false;
                   } finally {
@@ -347,7 +363,7 @@ export function AccountCard({
                 } finally {
                   setDownloadsInFlight((previous) => {
                     if (!previous.has(accountKey)) return previous;
-                    const next = new Set(previous);
+                    const next = new Map(previous);
                     next.delete(accountKey);
                     return next;
                   });
