@@ -6295,8 +6295,8 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Chosen:** start unguarded and log exactly one warning naming the condition; `ENOLCK` and every other lock or open error stay ordinary startup errors.
 * **Rejected:** refuse to start.
 * **Reason:** refusal would turn a theoretical race into a guaranteed outage on that filesystem; unguarded is today's behaviour. Reversal path: change the unsupported branch in the instance-lock admission to the refusal path.
-* **Decided by:** Claude Code, drain planner lane (drain run a28f99b3-2237-4fa8-b5ca-715d97e8cd6a), full auto, plan review r1–r5; recorded by adopting session fa6786ed-3e23-4701-b1a3-05a243d9a80b, plan tasks/plans/2026-10-07-single-instance-guard.md · **Superseded-by:** -
-<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"4231dcfc9878109b5dbb0c2243e5e9589c825589381b145526195b62f76d0b75","input_sha256":"5e3a8db21fc571cb402753f7e1e3f2fcf9bb71a2d1fa51e4ed0367d76c859438","kind":"mutation-receipt","operation":"9110b5802dd36ef6f8036794a23d0d27c2353ce54052a9e1fd974eed531d428c","options":{"section":null},"request_id_sha256":null,"results":["d-20261007-32"],"target":"decisions-ledger","v":1} -->
+* **Decided by:** Claude Code, drain planner lane (drain run a28f99b3-2237-4fa8-b5ca-715d97e8cd6a), full auto, plan review r1–r5; recorded by adopting session fa6786ed-3e23-4701-b1a3-05a243d9a80b, plan tasks/plans/2026-10-07-single-instance-guard.md · **Superseded-by:** d-20261008-01
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"b5fd02f5f71f4329506f32484511b9d37d51952bbef888c76ea5491b06e4a8bc","input_sha256":"5e3a8db21fc571cb402753f7e1e3f2fcf9bb71a2d1fa51e4ed0367d76c859438","kind":"mutation-receipt","operation":"9110b5802dd36ef6f8036794a23d0d27c2353ce54052a9e1fd974eed531d428c","options":{"section":null},"request_id_sha256":null,"results":["d-20261007-32"],"target":"decisions-ledger","v":1} -->
 
 ### d-20261007-33 — Where does the cross-process advisory-lock primitive live?
 
