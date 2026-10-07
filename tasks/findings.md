@@ -13486,3 +13486,29 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
   git-ignored run plan `tasks/plans/2026-10-06-scoped-gate-receipts.md`, which carries a `## Reviews`
   section; it is local to that machine and not a durable record, so read it if present but do not rely on it.
 <!-- ledger-meta {"command":"annotate","effect_lines":3,"effect_sha256":"88d68915fa3b9186f6897c9598648e24fba4191f5e3c4db23786fc11ffae459e","input_sha256":"bce8e75d84a8308e85830f7402960d15cdd56e4483dfcaebb5089fff4c924e45","kind":"mutation-receipt","operation":"f8a25e02ce32122c804bcc9d1ecb6fa117d5ee16068803ad55c6831689859055","options":{"section":null},"request_id_sha256":null,"results":["f-20261007-02"],"target":"f-20261007-02","v":1} -->
+
+---
+
+## 2026-10-07 — filed through the inbox spool
+
+### A game start admitted across an engine retirement is reported as a generic start failure
+
+* **ID:** f-20261007-03 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Filed from:** 6acd50ba-1edb-48f5-b0f2-7b85cc9f020c
+* **Where:** `src-tauri/src/engine/process.rs` `validate_admission_policy` (`Error::Conflict("engine id is retired")`), `src-tauri/src/error.rs` (`Conflict` → category `conflict`), `src/components/boards/gameCommandError.ts` `createGameCommandError`.
+* **Defect:** when the supervisor refuses or cancels a game-engine admission because its application id was retired, the refusal crosses IPC as the untyped `Conflict` category, which `createGameCommandError` maps to the generic `Board.Opponent.Error.Start` operation error. The renderer's liveness check (`toPlayerConfig`, f-20260906-15) cannot cover a start whose IPC was issued before the removal published and whose native admission is still running when `retire_engine` tombstones the id; that start is correctly refused but told "could not start" instead of `Board.Opponent.Error.MissingEngine`, the message d-20260921-04 chose for a stale selection. The same untyped `Conflict` also carries "application is shutting down" and the executable/binary-pair tombstones, so the renderer cannot discriminate by category today and must not match the message string.
+* **Fix direction:** a typed native refusal (an `Error` variant with its own `ErrorCategory`, regenerated bindings, a `src/platform/errors.ts` classification) that `createGameCommandError` maps to the existing `missing-local-engine` validation code during `start`; no new locale strings (d-20260921-04, d-20260921-05).
+* **Review lens:** ipc-contract.
+* **Related:** f-20260921-04 (open) closes the larger renderer window where the engine list still held a tombstoned id; this residual is the in-flight race that no renderer-side check can close, and it exists unchanged before and after that fix. d-20260901-17, d-20260921-04.
+* **Found by:** the f-20260921-04 PLAN-ONLY planner while tracing `retire_engine` → `validate_admission_policy` → `createGameCommandError`, 2026-10-07.
+
+### The Files Move dialog clips its destination Select at 320px / 200%, even full-screen
+
+* **ID:** f-20261007-04 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
+* **Filed from:** 14f3c3e5-96b4-42a6-9360-923747ebf378
+* **Where:** `src/components/files/FilesPage.tsx`, the Move `AppModal` and its "Destination folder" `Select` (data: `Files.CollectionRoot` plus every directory label of the collection).
+* **Defect:** at a 320px viewport and a 200% font scale (the `database-files` e2e project) the dialog's destination input cannot show its default value: `assertNothingClipped(dialog)` (`e2e/fixtures.ts`) reports `mantine-Select-input: x 271px > 220px` for "Collection root" in the default modal, and still 271px > 252px when the modal is made `fullScreen` below 30em (measured 2026-10-07 in the pinned container by the f-20260919-07 fix leaf, test "Move dialog fits 320px and selects a destination", not committed). Directory labels are user-chosen and unbounded, so any single-line Select clips a long one; the user cannot read which destination is selected.
+* **Open question:** how should the Move dialog present open-ended destination names at narrow widths — a wrapping list (radio group or tree of directories) instead of a single-line Select, a Select whose options and selected value wrap, or a shorter fixed root label plus ellipsis with the full name on focus/title? The answer applies to any future Files form that picks a directory.
+* **Why it matters:** `d-20260919-12` holds the Files page to the 320px / 200% layout discipline; this dialog is the one Files form that still fails it, and the e2e suite has no assertion over it.
+* **Related:** `f-20260919-07` (its push review, tests lens R2-3, asked for the browser assertion that exposed this; that change makes only the edit/create/rename dialog full-screen below 30em, constant `COMPACT_DIALOG_QUERY`), `f-20260829-02` (handled; the 320px / 200% clipping class and `assertNothingClipped`).
+* **Found by:** the f-20260919-07 cumulative diff review, closure round 2, 2026-10-07.
