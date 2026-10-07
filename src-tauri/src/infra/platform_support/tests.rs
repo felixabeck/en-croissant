@@ -1221,6 +1221,30 @@ fn windows_pgn_export_adopts_an_existing_file_and_creates_only_a_missing_one() {
 }
 
 #[test]
+fn pgn_export_cleanup_is_classified_after_the_durability_guard_on_both_platforms() {
+    let source = source_for("infra/path_authority/mod.rs");
+    let signature = "pub(crate) fn create_pgn_export_destination(";
+    for attribute in ["#[cfg(windows)]", "#[cfg(unix)]"] {
+        let start = function_starts(source, signature)
+            .into_iter()
+            .find(|start| direct_attribute(source, *start, attribute))
+            .expect("a platform create_pgn_export_destination arm");
+        let body = compact(&source[body_at(source, start)]);
+        let cleanup = body
+            .find("pgn_export_error_after_cleanup(")
+            .expect("the shared PGN export cleanup classifier");
+        assert!(
+            !body.contains("let_=crate::infra::fs::remove_entry_at"),
+            "{body}"
+        );
+        let guard = body
+            .find("!matches!(primary,Error::CommittedDurabilityUncertain(_))")
+            .expect("the primary durability guard");
+        assert!(guard < cleanup, "{attribute}: {body}");
+    }
+}
+
+#[test]
 fn windows_rename_and_remove_children_carry_delete() {
     let source = source_for("infra/fs.rs");
     let access = compact(&source[braced_body(source, "fn child_delete_access(")]);

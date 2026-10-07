@@ -2413,6 +2413,24 @@ pub(crate) fn require_durable(durability: CommitDurability) -> Result<(), Error>
     }
 }
 
+fn pgn_export_error_after_cleanup(
+    primary: Error,
+    removal: Result<(), Error>,
+    leaf: &OsStr,
+) -> Error {
+    match removal {
+        Ok(()) => primary,
+        Err(error) if error.is_missing_entry() => primary,
+        Err(Error::CommittedDurabilityUncertain(stage)) => {
+            log::warn!(
+                "PGN export leaf {leaf:?} was removed but parent sync is uncertain at {stage}"
+            );
+            primary
+        }
+        Err(removal) => Error::with_cleanup(primary, Err(removal)),
+    }
+}
+
 /// Engine and opening-book registration has no renderer-visible list to recover
 /// from: picker paths never cross IPC, and copied images are UUID-named. Keep
 /// the adopted handle after an uncertain parent sync, matching
@@ -4573,15 +4591,19 @@ impl PathAuthority {
             })
         })();
 
-        if result
-            .as_ref()
-            .is_err_and(|error| !matches!(error, Error::CommittedDurabilityUncertain(_)))
-        {
-            if let Some(identity) = created_identity {
-                let _ = crate::infra::fs::remove_entry_at(&parent, &leaf, identity, false);
+        match result {
+            Err(primary) if !matches!(primary, Error::CommittedDurabilityUncertain(_)) => {
+                match created_identity {
+                    Some(identity) => Err(pgn_export_error_after_cleanup(
+                        primary,
+                        crate::infra::fs::remove_entry_at(&parent, &leaf, identity, false),
+                        &leaf,
+                    )),
+                    None => Err(primary),
+                }
             }
+            other => other,
         }
-        result
     }
 
     /// Turns a native save-dialog choice into one persistent, exact PGN destination. The renderer
@@ -4703,15 +4725,19 @@ impl PathAuthority {
             })
         })();
 
-        if result
-            .as_ref()
-            .is_err_and(|error| !matches!(error, Error::CommittedDurabilityUncertain(_)))
-        {
-            if let Some(identity) = created_identity {
-                let _ = crate::infra::fs::remove_entry_at(&parent, &leaf, identity, false);
+        match result {
+            Err(primary) if !matches!(primary, Error::CommittedDurabilityUncertain(_)) => {
+                match created_identity {
+                    Some(identity) => Err(pgn_export_error_after_cleanup(
+                        primary,
+                        crate::infra::fs::remove_entry_at(&parent, &leaf, identity, false),
+                        &leaf,
+                    )),
+                    None => Err(primary),
+                }
             }
+            other => other,
         }
-        result
     }
 
     #[cfg(any(test, not(target_os = "macos")))]
@@ -14574,6 +14600,105 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn pgn_export_reports_registration_and_removal_failures() {
+        let (dir, real, link, _evil) = pgn_export_test_setup();
+        let mut auth = authority(&dir, Arc::new(TestClock::new(0)));
+        let before = auth.dialogs.len();
+        let removal_guard = crate::infra::fs::scoped_test_removal_injector(Arc::new(RemovalFault(
+            RemovalFaultPoint::BeforeTopOpen,
+        )));
+        set_test_atomic_file_injector(Some(Arc::new(AlwaysIo)));
+        let error = auth
+            .create_pgn_export_destination(&link.join("cleanup-failed.pgn"), "cleanup-failed.pgn")
+            .unwrap_err();
+        set_test_atomic_file_injector(None);
+        drop(removal_guard);
+
+        assert!(real.join("cleanup-failed.pgn").exists());
+        assert!(auth.persistent.is_empty());
+        assert_eq!(auth.dialogs.len(), before);
+        assert!(matches!(error, Error::OperationAndCleanup { .. }));
+        let message = error.to_string();
+        assert_eq!(message, "Operation failed; temporary cleanup also failed");
+        assert!(!message.contains("/private/removal"));
+        assert!(!message.contains(r"C:\private"));
+        let diagnostic = error.diagnostic();
+        let primary = Error::Io(Box::new(std::io::Error::other("write failed")));
+        assert!(diagnostic.contains(&primary.diagnostic()), "{diagnostic}");
+        assert!(
+            diagnostic.contains("injected removal failure"),
+            "{diagnostic}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pgn_export_returns_primary_after_removal_with_uncertain_parent_sync() {
+        let (dir, real, link, _evil) = pgn_export_test_setup();
+        let mut auth = authority(&dir, Arc::new(TestClock::new(0)));
+        let before = auth.dialogs.len();
+        let removal_guard = crate::infra::fs::scoped_test_removal_injector(Arc::new(RemovalFault(
+            RemovalFaultPoint::ParentSync,
+        )));
+        set_test_atomic_file_injector(Some(Arc::new(AlwaysIo)));
+        let logs = crate::error::LogCaptureScope::start();
+        let error = auth
+            .create_pgn_export_destination(&link.join("parent-sync.pgn"), "parent-sync.pgn")
+            .unwrap_err();
+        set_test_atomic_file_injector(None);
+        drop(removal_guard);
+
+        assert!(!real.join("parent-sync.pgn").exists());
+        assert!(auth.persistent.is_empty());
+        assert_eq!(auth.dialogs.len(), before);
+        assert!(matches!(error, Error::Io(_)));
+        let records = logs.records();
+        let export_warnings = records
+            .iter()
+            .filter(|record| {
+                record.level == log::Level::Warn
+                    && record.message.contains("PGN export")
+                    && record.message.contains("parent sync is uncertain")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(export_warnings.len(), 1, "{records:?}");
+        assert!(export_warnings[0].message.contains("was removed"));
+        assert!(
+            records.iter().all(|record| {
+                record.level != log::Level::Error || !record.message.contains("PGN export")
+            }),
+            "{records:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pgn_export_returns_primary_when_created_leaf_is_already_gone() {
+        let (dir, real, link, _evil) = pgn_export_test_setup();
+        let mut auth = authority(&dir, Arc::new(TestClock::new(0)));
+        let before = auth.dialogs.len();
+        let hook_path = real.join("already-gone.pgn");
+        PGN_EXPORT_POST_CREATE_HOOK.with(|slot| {
+            slot.replace(Some(Box::new(move || {
+                fs::remove_file(hook_path).unwrap();
+            })))
+        });
+        set_test_atomic_file_injector(Some(Arc::new(AlwaysIo)));
+        let error = auth
+            .create_pgn_export_destination(&link.join("already-gone.pgn"), "already-gone.pgn")
+            .unwrap_err();
+        set_test_atomic_file_injector(None);
+        set_test_removal_injector(None);
+
+        assert!(matches!(error, Error::Io(_)));
+        assert!(!matches!(error, Error::OperationAndCleanup { .. }));
+        assert!(!real.join("already-gone.pgn").exists());
+        assert!(auth.persistent.is_empty());
+        assert_eq!(auth.dialogs.len(), before);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn pgn_export_cleans_up_created_files_descriptor_relatively_after_failure() {
         let (dir, real, link, _evil) = pgn_export_test_setup();
         let mut auth = authority(&dir, Arc::new(TestClock::new(0)));
@@ -14643,18 +14768,23 @@ mod tests {
         let mut auth = authority(&dir, Arc::new(TestClock::new(0)));
         let hook_path = real.join("new5.pgn");
         let replacement_path = hook_path.clone();
+        let replacement = real.join("replacement.pgn");
+        // Allocate the replacement before removing the original to prevent inode reuse.
+        fs::write(&replacement, b"sentinel").unwrap();
         PGN_EXPORT_POST_CREATE_HOOK.with(|slot| {
             slot.replace(Some(Box::new(move || {
-                fs::remove_file(&replacement_path).unwrap();
-                fs::write(&replacement_path, b"sentinel").unwrap();
+                fs::rename(&replacement, &replacement_path).unwrap();
             })))
         });
-        assert!(auth
+        let error = auth
             .create_pgn_export_destination(&link.join("new5.pgn"), "new5.pgn")
-            .is_err());
+            .unwrap_err();
+        set_test_atomic_file_injector(None);
+        set_test_removal_injector(None);
         assert_eq!(fs::read(&hook_path).unwrap(), b"sentinel");
         assert!(auth.persistent.is_empty());
         assert!(auth.dialogs.is_empty());
+        assert!(matches!(error, Error::OperationAndCleanup { .. }));
     }
 
     #[cfg(unix)]
