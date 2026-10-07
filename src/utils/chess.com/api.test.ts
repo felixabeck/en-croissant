@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import type { ArtifactPublication, PathRef } from "@/bindings";
-import { tauriSubscriptions } from "@/platform/tauri";
+import { assertAccountExportTicketOrder } from "@/utils/tests/accountExportTicketOrder";
 
 const mocks = vi.hoisted(() => ({
     downloadChessComGames: vi.fn(),
@@ -47,46 +47,12 @@ beforeEach(() => {
 
 describe("downloadChessCom", () => {
     test("installs the ticket listener before the native entry frame while download is pending", async () => {
-        let listener: Parameters<typeof tauriSubscriptions.progress>[0] | undefined;
-        const observed = vi.fn();
-        mocks.progress.mockImplementation(async (callback) => {
-            listener = callback;
-            return vi.fn();
+        await assertAccountExportTicketOrder({
+            progressMock: mocks.progress,
+            nativeMock: mocks.downloadChessComGames,
+            download: (onTicket) => downloadChessCom(destination, "player", null, onTicket),
+            publication,
         });
-        let resolve!: (value: ArtifactPublication) => void;
-        const nativeResult = new Promise<ArtifactPublication>((settle) => {
-            resolve = settle;
-        });
-        const frame = {
-            payload: {
-                id: "prepared-ticket",
-                generation: 1n,
-                progress: 12,
-                finished: false,
-                state: "running" as const,
-                cleared: false,
-            },
-        };
-        mocks.downloadChessComGames.mockImplementation(() => {
-            listener?.(frame);
-            return nativeResult;
-        });
-        const onTicket = vi.fn((ticket: string) => {
-            void tauriSubscriptions.progress((event) => {
-                if (event.payload.id === ticket) observed(event);
-            });
-        });
-        let settled = false;
-        const result = downloadChessCom(destination, "player", null, onTicket);
-        void result.then(() => {
-            settled = true;
-        });
-        await Promise.resolve();
-        expect(onTicket).toHaveBeenCalledExactlyOnceWith("prepared-ticket");
-        expect(observed).toHaveBeenCalledExactlyOnceWith(frame);
-        expect(settled).toBe(false);
-        resolve(publication);
-        await expect(result).resolves.toEqual(publication);
     });
 
     test("passes the prepared ticket as the native job id", async () => {

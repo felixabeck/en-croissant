@@ -10,25 +10,29 @@ import type { ManagedDatabaseInfo } from "@/utils/db";
 import { accountDownloadsInFlightAtom, databaseConversionStateAtom } from "@/state/atoms";
 import { AccountCard } from "./AccountCard";
 
-const mocks = vi.hoisted(() => ({
-  issueDownloadDestination: vi.fn(),
-  downloadDestinationIsKnown: vi.fn(),
-  getLatestGameTimestamp: vi.fn(),
-  getDatabaseWorkspace: vi.fn(),
-  listWorkspaceDatabases: vi.fn(),
-  createWorkspaceDatabase: vi.fn(),
-  startProgress: vi.fn(),
-  convertPgn: vi.fn(),
-  setProgressState: vi.fn(),
-  deleteEmptyGames: vi.fn(),
-  getDatabases: vi.fn(),
-  logFailureSafely: vi.fn(),
-  notify: vi.fn(),
-  warn: vi.fn(),
-  downloadChessCom: vi.fn(),
-  downloadLichess: vi.fn(),
-  progress: vi.fn(),
-}));
+const mocks = vi.hoisted(() => {
+  let nextDownloadTicket = 0;
+  return {
+    mintDownloadTicket: () => `opaque-download-ticket-${++nextDownloadTicket}`,
+    issueDownloadDestination: vi.fn(),
+    downloadDestinationIsKnown: vi.fn(),
+    getLatestGameTimestamp: vi.fn(),
+    getDatabaseWorkspace: vi.fn(),
+    listWorkspaceDatabases: vi.fn(),
+    createWorkspaceDatabase: vi.fn(),
+    startProgress: vi.fn(),
+    convertPgn: vi.fn(),
+    setProgressState: vi.fn(),
+    deleteEmptyGames: vi.fn(),
+    getDatabases: vi.fn(),
+    logFailureSafely: vi.fn(),
+    notify: vi.fn(),
+    warn: vi.fn(),
+    downloadChessCom: vi.fn(),
+    downloadLichess: vi.fn(),
+    progress: vi.fn(),
+  };
+});
 
 vi.mock("@/platform/tauri", () => ({
   tauri: {
@@ -49,13 +53,13 @@ vi.mock("@/utils/chess.com/api", () => ({
   downloadChessCom: (
     ...args: Parameters<typeof import("@/utils/chess.com/api").downloadChessCom>
   ) => {
-    args[3](`download:chesscom:${args[1]}`);
+    args[3](mocks.mintDownloadTicket());
     return mocks.downloadChessCom(...args);
   },
 }));
 vi.mock("@/utils/lichess/api", () => ({
   downloadLichess: (...args: Parameters<typeof import("@/utils/lichess/api").downloadLichess>) => {
-    args[5](`download:lichess:${args[2]}`);
+    args[5](mocks.mintDownloadTicket());
     return mocks.downloadLichess(...args);
   },
 }));
@@ -372,7 +376,7 @@ test.each(["chesscom", "lichess"] as const)(
     download.mockImplementation(() => {
       mocks.progress.mock.calls[0][0]({
         payload: {
-          id: `download:${type}:Felix`,
+          id: store.get(accountDownloadsInFlightAtom).get(`${type}_Felix`),
           generation: 1n,
           progress: 37,
           finished: false,
@@ -390,8 +394,10 @@ test.each(["chesscom", "lichess"] as const)(
     expect(store.get(accountDownloadsInFlightAtom).has(`${type}_Felix`)).toBe(true);
     expect(store.get(accountDownloadsInFlightAtom).get(`${type}_Felix`)).toBeNull();
     await act(async () => destination.resolve({ id: "dest" }));
-    const ticket = `download:${type}:Felix`;
-    expect(store.get(accountDownloadsInFlightAtom).get(`${type}_Felix`)).toBe(ticket);
+    const ticket = store.get(accountDownloadsInFlightAtom).get(`${type}_Felix`)!;
+    expect(ticket).not.toContain("Felix");
+    expect(ticket).not.toContain(type);
+    expect(ticket).toMatch(/^opaque-download-ticket-\d+$/);
     expect(mocks.convertPgn).not.toHaveBeenCalled();
     expect(host.textContent).toContain("37%");
     const listener = mocks.progress.mock.calls[0][0];
@@ -425,6 +431,28 @@ test.each(["chesscom", "lichess"] as const)(
     );
     expect(mocks.startProgress).toHaveBeenCalledExactlyOnceWith(ticket);
     expect(mocks.startProgress).not.toHaveBeenCalledWith(`${type}_Felix`);
+    expect(store.get(accountDownloadsInFlightAtom).size).toBe(0);
+
+    const firstTicket = ticket;
+    const secondDownload = deferred<ArtifactPublication>();
+    download.mockReturnValue(secondDownload.promise);
+    mocks.downloadDestinationIsKnown.mockResolvedValue(true);
+    await act(async () => downloadButton().click());
+    const secondTicket = store.get(accountDownloadsInFlightAtom).get(`${type}_Felix`)!;
+    expect(secondTicket).not.toBe(firstTicket);
+    expect(secondTicket).not.toContain("Felix");
+    expect(secondTicket).not.toContain(type);
+    expect(secondTicket).toMatch(/^opaque-download-ticket-\d+$/);
+    await act(async () => emit(firstTicket, 12));
+    expect(host.textContent).not.toContain("12%");
+    await act(async () => emit(secondTicket, 64));
+    expect(host.textContent).toContain("64%");
+    await act(async () =>
+      secondDownload.resolve({
+        handle: { id: { id: "pgn" }, kind: "fileWorkspace" },
+        durability: "Durable",
+      }),
+    );
     expect(store.get(accountDownloadsInFlightAtom).size).toBe(0);
   },
 );
@@ -464,11 +492,12 @@ test("a finished progress frame leaves Download pending until cleanup and refres
   await renderCard();
   await act(async () => downloadButton().click());
   expect(mocks.deleteEmptyGames).toHaveBeenCalledTimes(1);
+  const ticket = store.get(accountDownloadsInFlightAtom).get("chesscom_Felix");
 
   await act(async () => {
     mocks.progress.mock.calls[0][0]({
       payload: {
-        id: "download:chesscom:Felix",
+        id: ticket,
         generation: 1n,
         progress: 100,
         finished: true,
@@ -527,10 +556,19 @@ test("concurrent account downloads retain each other's pending state", async () 
   expect(buttonA.getAttribute("data-pending")).toBe("true");
   expect(buttonB.disabled).toBe(true);
   expect(buttonB.getAttribute("data-pending")).toBe("true");
+  const downloadsInFlight = store.get(accountDownloadsInFlightAtom);
+  const ticketA = downloadsInFlight.get("chesscom_Felix");
+  const ticketB = downloadsInFlight.get("chesscom_Alex");
+  expect(ticketA).not.toBe(ticketB);
+  for (const ticket of [ticketA, ticketB]) {
+    expect(ticket).toMatch(/^opaque-download-ticket-\d+$/);
+    expect(ticket).not.toBe("download:chesscom:Felix");
+    expect(ticket).not.toBe("download:chesscom:Alex");
+  }
   expect(store.get(accountDownloadsInFlightAtom)).toEqual(
     new Map([
-      ["chesscom_Felix", "download:chesscom:Felix"],
-      ["chesscom_Alex", "download:chesscom:Alex"],
+      ["chesscom_Felix", ticketA],
+      ["chesscom_Alex", ticketB],
     ]),
   );
 
@@ -539,9 +577,7 @@ test("concurrent account downloads retain each other's pending state", async () 
   expect(buttonB.getAttribute("data-pending")).toBeNull();
   expect(buttonA.disabled).toBe(true);
   expect(buttonA.getAttribute("data-pending")).toBe("true");
-  expect(store.get(accountDownloadsInFlightAtom)).toEqual(
-    new Map([["chesscom_Felix", "download:chesscom:Felix"]]),
-  );
+  expect(store.get(accountDownloadsInFlightAtom)).toEqual(new Map([["chesscom_Felix", ticketA]]));
 
   await act(async () => conversionA.resolve());
   expect(buttonA.disabled).toBe(false);
@@ -559,6 +595,7 @@ test("a remounted account stays pending and cannot start a second download", asy
   await renderCard();
   await act(async () => downloadButton().click());
   expect(mocks.convertPgn).toHaveBeenCalledTimes(1);
+  const storedTicket = store.get(accountDownloadsInFlightAtom).get("chesscom_Felix");
   await act(async () => root.unmount());
   root = createRoot(host);
   await renderCard();
@@ -570,7 +607,21 @@ test("a remounted account stays pending and cannot start a second download", asy
   expect(mocks.convertPgn).toHaveBeenCalledTimes(1);
 
   const ticket = store.get(accountDownloadsInFlightAtom).get("chesscom_Felix");
-  expect(ticket).toBe("download:chesscom:Felix");
+  expect(ticket).toBe(storedTicket);
+  expect(ticket).toMatch(/^opaque-download-ticket-\d+$/);
+  await act(async () => {
+    mocks.progress.mock.calls.at(-1)![0]({
+      payload: {
+        id: "download:chesscom:Felix",
+        generation: 2n,
+        progress: 12,
+        finished: false,
+        state: "running",
+        cleared: false,
+      },
+    });
+  });
+  expect(host.textContent).not.toContain("12%");
   await act(async () => {
     mocks.progress.mock.calls.at(-1)![0]({
       payload: {
@@ -922,7 +973,11 @@ test("convertPgn failure is not masked when marking the lease failed also reject
   mocks.listWorkspaceDatabases.mockResolvedValue([
     { handle, filename: "Felix_chesscom.db3", availability: "available" },
   ]);
-  mocks.startProgress.mockResolvedValue(lease);
+  let ticket!: string;
+  mocks.startProgress.mockImplementation(async () => {
+    ticket = store.get(accountDownloadsInFlightAtom).get("chesscom_Felix")!;
+    return lease;
+  });
   mocks.convertPgn.mockRejectedValue(new Error("convert failed"));
   mocks.setProgressState.mockRejectedValue(new Error("progress failed"));
   await renderCard();
@@ -937,12 +992,12 @@ test("convertPgn failure is not masked when marking the lease failed also reject
   );
   expect(mocks.setProgressState).toHaveBeenCalledWith(lease, 0, "failed");
   expect(mocks.logFailureSafely).toHaveBeenCalledWith(
-    `Account import progress update (failed) failed for ${lease.id} [${mocks.convertPgn.mock.calls[0][0]}]: progress failed`,
+    `Account import progress update (failed) failed for ${ticket} [${mocks.convertPgn.mock.calls[0][0]}]: progress failed`,
     {
       operation: "account import progress update",
       primaryFailure: { category: "unexpected", message: "progress failed" },
     },
-    `Account import progress logging failed (failed) for ${lease.id} [${mocks.convertPgn.mock.calls[0][0]}]`,
+    `Account import progress logging failed (failed) for ${ticket} [${mocks.convertPgn.mock.calls[0][0]}]`,
   );
   expect(mocks.deleteEmptyGames).not.toHaveBeenCalled();
   expect(mocks.notify).toHaveBeenCalledWith({
@@ -969,7 +1024,11 @@ test("a rejecting setProgressState after a successful convert still runs the pos
   mocks.listWorkspaceDatabases.mockResolvedValue([
     { handle, filename: "Felix_chesscom.db3", availability: "available" },
   ]);
-  mocks.startProgress.mockResolvedValue(lease);
+  let ticket!: string;
+  mocks.startProgress.mockImplementation(async () => {
+    ticket = store.get(accountDownloadsInFlightAtom).get("chesscom_Felix")!;
+    return lease;
+  });
   mocks.convertPgn.mockResolvedValue(undefined);
   mocks.setProgressState.mockRejectedValue(new Error("progress failed"));
   mocks.deleteEmptyGames.mockResolvedValue(undefined);
@@ -985,12 +1044,12 @@ test("a rejecting setProgressState after a successful convert still runs the pos
   );
   expect(mocks.setProgressState).toHaveBeenCalledWith(lease, 100, "succeeded");
   expect(mocks.logFailureSafely).toHaveBeenCalledWith(
-    `Account import progress update (succeeded) failed for ${lease.id} [${mocks.convertPgn.mock.calls[0][0]}]: progress failed`,
+    `Account import progress update (succeeded) failed for ${ticket} [${mocks.convertPgn.mock.calls[0][0]}]: progress failed`,
     {
       operation: "account import progress update",
       primaryFailure: { category: "unexpected", message: "progress failed" },
     },
-    `Account import progress logging failed (succeeded) for ${lease.id} [${mocks.convertPgn.mock.calls[0][0]}]`,
+    `Account import progress logging failed (succeeded) for ${ticket} [${mocks.convertPgn.mock.calls[0][0]}]`,
   );
   expect(mocks.deleteEmptyGames).toHaveBeenCalledWith(handle);
   expect(mocks.notify).not.toHaveBeenCalled();

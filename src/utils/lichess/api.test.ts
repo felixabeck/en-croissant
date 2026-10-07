@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { cancellationError, tauriSubscriptions } from "@/platform/tauri";
+import { cancellationError } from "@/platform/tauri";
 import type { ArtifactPublication } from "@/bindings";
+import { assertAccountExportTicketOrder } from "@/utils/tests/accountExportTicketOrder";
 
 const mocks = vi.hoisted(() => ({
     downloadLichessGames: vi.fn(),
@@ -155,53 +156,13 @@ describe("convertToNormalized", () => {
 
 describe("downloadLichess", () => {
     test("installs the ticket listener before the native entry frame while download is pending", async () => {
-        let listener: Parameters<typeof tauriSubscriptions.progress>[0] | undefined;
-        const observed = vi.fn();
-        mocks.progress.mockImplementation(async (callback) => {
-            listener = callback;
-            return vi.fn();
+        await assertAccountExportTicketOrder({
+            progressMock: mocks.progress,
+            nativeMock: mocks.downloadLichessGames,
+            download: (onTicket) =>
+                downloadLichess("account", { id: "destination" }, "player", null, 0, onTicket),
+            publication,
         });
-        let resolve!: (value: ArtifactPublication) => void;
-        const nativeResult = new Promise<ArtifactPublication>((settle) => {
-            resolve = settle;
-        });
-        const frame = {
-            payload: {
-                id: "prepared-ticket",
-                generation: 1n,
-                progress: 12,
-                finished: false,
-                state: "running" as const,
-                cleared: false,
-            },
-        };
-        mocks.downloadLichessGames.mockImplementation(() => {
-            listener?.(frame);
-            return nativeResult;
-        });
-        const onTicket = vi.fn((ticket: string) => {
-            void tauriSubscriptions.progress((event) => {
-                if (event.payload.id === ticket) observed(event);
-            });
-        });
-        let settled = false;
-        const result = downloadLichess(
-            "account",
-            { id: "destination" },
-            "player",
-            null,
-            0,
-            onTicket,
-        );
-        void result.then(() => {
-            settled = true;
-        });
-        await Promise.resolve();
-        expect(onTicket).toHaveBeenCalledExactlyOnceWith("prepared-ticket");
-        expect(observed).toHaveBeenCalledExactlyOnceWith(frame);
-        expect(settled).toBe(false);
-        resolve(publication);
-        await expect(result).resolves.toEqual(publication);
     });
 
     beforeEach(() => {
