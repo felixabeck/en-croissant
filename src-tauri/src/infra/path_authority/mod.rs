@@ -2572,7 +2572,7 @@ pub(crate) struct AppDataDir {
 }
 
 pub(crate) struct InstanceLockGuard {
-    _file: fs::File,
+    _files: Vec<fs::File>,
 }
 
 pub(crate) enum InstanceAdmission {
@@ -2581,28 +2581,45 @@ pub(crate) enum InstanceAdmission {
     HeldElsewhere,
 }
 
-pub(crate) fn admit_instance(app_data: &AppDataDir) -> Result<InstanceAdmission, Error> {
-    admit_instance_with_lock(app_data, |file| {
+pub(crate) fn admit_instance<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    app_data: &AppDataDir,
+) -> Result<InstanceAdmission, Error> {
+    use tauri::Manager as _;
+    let config = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| instance_lock_failure(error.into()))?;
+    let local = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|error| instance_lock_failure(error.into()))?;
+    admit_instance_with_lock(app_data, &[&config, &local], |file| {
         crate::infra::fs::lock_advisory_file(file, crate::infra::fs::AdvisoryLockMode::NonBlocking)
     })
 }
 
 fn instance_lock_failure(error: Error) -> Error {
-    log::error!(
-        "application data directory instance lock failed: {}",
-        error.diagnostic()
-    );
-    let message = "application data directory instance lock could not be acquired";
+    startup_acquisition_failure(
+        error,
+        "application data directory instance lock failed",
+        "application data directory instance lock could not be acquired",
+    )
+}
+
+fn startup_acquisition_failure(error: Error, prefix: &str, message: &str) -> Error {
+    log::error!("{prefix}: {}", error.diagnostic());
     match &error {
         Error::Io(error) => crate::error::sanitized_io_error(error, message.into()),
-        _ => std::io::Error::other(message),
+        _ => std::io::Error::other(message.to_owned()),
     }
     .into()
 }
 
 fn admit_instance_with_lock(
     app_data: &AppDataDir,
-    lock: impl FnOnce(&fs::File) -> Result<(), crate::infra::fs::AdvisoryLockError>,
+    extra_roots: &[&Path],
+    mut lock: impl FnMut(&fs::File) -> Result<(), crate::infra::fs::AdvisoryLockError>,
 ) -> Result<InstanceAdmission, Error> {
     use crate::infra::fs::{advisory_lock_is_unsupported, AdvisoryLockError, AdvisoryLockPlatform};
     #[cfg(target_os = "linux")]
@@ -2611,27 +2628,52 @@ fn admit_instance_with_lock(
     let platform = AdvisoryLockPlatform::MacOs;
     #[cfg(windows)]
     let platform = AdvisoryLockPlatform::Windows;
-    let file = crate::infra::fs::open_or_create_regular_at(
-        &app_data.directory,
-        OsStr::new("instance.lock"),
-    )
-    .map_err(instance_lock_failure)?;
-    match lock(&file) {
-        Ok(()) => Ok(InstanceAdmission::Owned(InstanceLockGuard { _file: file })),
-        Err(AdvisoryLockError::HeldElsewhere(_)) => {
-            log::warn!("another ChessFable process holds the application data directory; this launch exits");
-            Ok(InstanceAdmission::HeldElsewhere)
+    let mut acquire = || -> Result<InstanceAdmission, Error> {
+        let mut identities = Vec::new();
+        let mut files = Vec::new();
+        for root in std::iter::once(None).chain(extra_roots.iter().copied().map(Some)) {
+            let acquired;
+            let directory = match root {
+                None => &app_data.directory,
+                Some(path) => {
+                    acquired = AppDataDir::acquire_canonical(path)?;
+                    &acquired.directory
+                }
+            };
+            let identity = opened_file_identity(directory)?;
+            if identities.contains(&identity) {
+                continue;
+            }
+            identities.push(identity);
+            let file = crate::infra::fs::open_or_create_regular_at(
+                directory,
+                OsStr::new("instance.lock"),
+            )?;
+            match lock(&file) {
+                Ok(()) => files.push(file),
+                Err(AdvisoryLockError::HeldElsewhere(_)) => {
+                    log::warn!("another ChessFable process holds the application data directory; this launch exits");
+                    return Ok(InstanceAdmission::HeldElsewhere);
+                }
+                Err(AdvisoryLockError::Io(error))
+                    if error
+                        .raw_os_error()
+                        .is_some_and(|code| advisory_lock_is_unsupported(code, platform)) =>
+                {
+                    log::warn!("this filesystem does not support advisory locking. ChessFable starts without an instance lock on this root: {error}");
+                }
+                Err(AdvisoryLockError::Io(error)) => return Err(error.into()),
+            }
         }
-        Err(AdvisoryLockError::Io(error))
-            if error
-                .raw_os_error()
-                .is_some_and(|code| advisory_lock_is_unsupported(code, platform)) =>
-        {
-            log::warn!("this filesystem does not support advisory locking. ChessFable starts without an instance lock: {error}");
+        if files.is_empty() {
             Ok(InstanceAdmission::Unguarded)
+        } else {
+            Ok(InstanceAdmission::Owned(InstanceLockGuard {
+                _files: files,
+            }))
         }
-        Err(AdvisoryLockError::Io(error)) => Err(instance_lock_failure(error.into())),
-    }
+    };
+    acquire().map_err(instance_lock_failure)
 }
 
 #[cfg(all(test, unix))]
@@ -2648,16 +2690,11 @@ pub(crate) fn set_app_data_pre_open_hook(hook: Option<Box<dyn FnOnce()>>) {
 }
 
 fn app_data_acquisition_failure(error: Error) -> Error {
-    log::error!(
-        "application data directory acquisition failed: {}",
-        error.diagnostic()
-    );
-    let message = "application data directory could not be acquired";
-    match &error {
-        Error::Io(error) => crate::error::sanitized_io_error(error, message.into()),
-        _ => std::io::Error::other(message),
-    }
-    .into()
+    startup_acquisition_failure(
+        error,
+        "application data directory acquisition failed",
+        "application data directory could not be acquired",
+    )
 }
 
 impl AppDataDir {
@@ -9259,11 +9296,11 @@ pub(crate) mod portable_tests {
         let temp = tempfile::tempdir().unwrap();
         let app_data = AppDataDir::for_test(temp.path());
         fs::write(temp.path().join("instance.lock"), b"retained contents").unwrap();
-        let InstanceAdmission::Owned(guard) = admit_instance(&app_data).unwrap() else {
+        let InstanceAdmission::Owned(guard) = admit_test_instance(&app_data, &[]).unwrap() else {
             panic!("first admission must own the lock");
         };
         assert!(matches!(
-            admit_instance(&app_data).unwrap(),
+            admit_test_instance(&app_data, &[]).unwrap(),
             InstanceAdmission::HeldElsewhere
         ));
         let records = capture.records();
@@ -9280,10 +9317,146 @@ pub(crate) mod portable_tests {
             b"retained contents"
         );
         assert!(matches!(
-            admit_instance(&app_data).unwrap(),
+            admit_test_instance(&app_data, &[]).unwrap(),
             InstanceAdmission::Owned(_)
         ));
         assert!(temp.path().join("instance.lock").is_file());
+    }
+
+    fn admit_test_instance(
+        app_data: &AppDataDir,
+        extra_roots: &[&Path],
+    ) -> Result<InstanceAdmission, Error> {
+        admit_instance_with_lock(app_data, extra_roots, |file| {
+            crate::infra::fs::lock_advisory_file(
+                file,
+                crate::infra::fs::AdvisoryLockMode::NonBlocking,
+            )
+        })
+    }
+
+    #[test]
+    fn instance_lock_refuses_shared_config_with_distinct_data_roots() {
+        let capture = crate::error::LogCaptureScope::start();
+        let temp = tempfile::tempdir().unwrap();
+        let first = AppDataDir::for_test(&temp.path().join("data-one"));
+        let second = AppDataDir::for_test(&temp.path().join("data-two"));
+        let config = temp.path().join("config");
+        let InstanceAdmission::Owned(_guard) =
+            admit_test_instance(&first, &[&config, first.as_path()]).unwrap()
+        else {
+            panic!("first process must own its distinct roots");
+        };
+        assert!(matches!(
+            admit_test_instance(&second, &[&config, second.as_path()]).unwrap(),
+            InstanceAdmission::HeldElsewhere
+        ));
+        assert_eq!(capture.records().len(), 1);
+        assert_eq!(capture.records()[0].level, log::Level::Warn);
+        // A failed admission must release the data-root lock it acquired before finding contention.
+        assert!(matches!(
+            admit_test_instance(&second, &[]).unwrap(),
+            InstanceAdmission::Owned(_)
+        ));
+    }
+
+    #[test]
+    fn instance_lock_allows_fully_distinct_roots() {
+        let capture = crate::error::LogCaptureScope::start();
+        let temp = tempfile::tempdir().unwrap();
+        let mut guards = Vec::new();
+        for suffix in ["one", "two"] {
+            let data = AppDataDir::for_test(&temp.path().join(format!("data-{suffix}")));
+            let config = temp.path().join(format!("config-{suffix}"));
+            let local = temp.path().join(format!("local-{suffix}"));
+            let InstanceAdmission::Owned(guard) =
+                admit_test_instance(&data, &[&config, &local]).unwrap()
+            else {
+                panic!("distinct roots must coexist");
+            };
+            assert_eq!(guard._files.len(), 3);
+            guards.push(guard);
+        }
+        assert!(capture.records().is_empty());
+    }
+
+    #[test]
+    fn instance_lock_deduplicates_retained_directory_identity() {
+        let capture = crate::error::LogCaptureScope::start();
+        let temp = tempfile::tempdir().unwrap();
+        let data = AppDataDir::for_test(temp.path());
+        let InstanceAdmission::Owned(guard) =
+            admit_test_instance(&data, &[temp.path(), temp.path()]).unwrap()
+        else {
+            panic!("repeated roots must not contend with themselves");
+        };
+        assert_eq!(guard._files.len(), 1);
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
+        assert!(capture.records().is_empty());
+    }
+
+    #[test]
+    fn instance_lock_classifies_per_root_outcomes() {
+        #[cfg(unix)]
+        let unsupported = rustix::io::Errno::NOSYS.raw_os_error();
+        #[cfg(windows)]
+        let unsupported = windows_sys::Win32::Foundation::ERROR_NOT_SUPPORTED as i32;
+        let temp = tempfile::tempdir().unwrap();
+        let data = AppDataDir::for_test(&temp.path().join("data"));
+        let config = temp.path().join("config");
+        let local = temp.path().join("local");
+        for outcomes in [
+            [Some(unsupported), None, None],
+            [Some(unsupported); 3],
+            [None, Some(0), None],
+        ] {
+            let capture = crate::error::LogCaptureScope::start();
+            let mut calls = 0;
+            let result = admit_instance_with_lock(&data, &[&config, &local], |_| {
+                let outcome = outcomes[calls];
+                calls += 1;
+                match outcome {
+                    None => Ok(()),
+                    Some(0) => Err(crate::infra::fs::AdvisoryLockError::Io(
+                        std::io::Error::new(
+                            std::io::ErrorKind::PermissionDenied,
+                            "injected second-root failure",
+                        ),
+                    )),
+                    Some(code) => Err(crate::infra::fs::AdvisoryLockError::Io(
+                        std::io::Error::from_raw_os_error(code),
+                    )),
+                }
+            });
+            let records = capture.records();
+            match outcomes {
+                [Some(_), None, None] => {
+                    let InstanceAdmission::Owned(guard) = result.unwrap() else {
+                        panic!("supported roots must remain guarded");
+                    };
+                    assert_eq!(guard._files.len(), 2);
+                    assert_eq!(records.len(), 1);
+                    assert_eq!(records[0].level, log::Level::Warn);
+                }
+                [Some(_), Some(_), Some(_)] => {
+                    assert!(matches!(result.unwrap(), InstanceAdmission::Unguarded));
+                    assert_eq!(records.len(), 3);
+                    assert!(records
+                        .iter()
+                        .all(|record| record.level == log::Level::Warn));
+                }
+                _ => {
+                    assert!(result.is_err());
+                    assert_eq!(calls, 2);
+                    assert_eq!(records.len(), 1);
+                    assert_eq!(records[0].level, log::Level::Error);
+                }
+            }
+        }
+        assert!(matches!(
+            admit_test_instance(&data, &[]).unwrap(),
+            InstanceAdmission::Owned(_)
+        ));
     }
 
     #[cfg(unix)]
@@ -9294,7 +9467,7 @@ pub(crate) mod portable_tests {
         let target = temp.path().join("target");
         fs::write(&target, b"unchanged").unwrap();
         std::os::unix::fs::symlink(&target, temp.path().join("instance.lock")).unwrap();
-        assert!(admit_instance(&AppDataDir::for_test(temp.path())).is_err());
+        assert!(admit_test_instance(&AppDataDir::for_test(temp.path()), &[]).is_err());
         assert_eq!(fs::read(&target).unwrap(), b"unchanged");
         assert_eq!(capture.records().len(), 1);
         assert_eq!(capture.records()[0].level, log::Level::Error);
@@ -9329,7 +9502,7 @@ pub(crate) mod portable_tests {
         let app_data = AppDataDir::for_test(temp.path());
         for code in unsupported.into_iter().chain(ordinary) {
             let capture = crate::error::LogCaptureScope::start();
-            let result = admit_instance_with_lock(&app_data, |_| {
+            let result = admit_instance_with_lock(&app_data, &[], |_| {
                 Err(crate::infra::fs::AdvisoryLockError::Io(
                     std::io::Error::from_raw_os_error(code),
                 ))
@@ -9361,7 +9534,8 @@ pub(crate) mod portable_tests {
         if let Some(root) = std::env::var_os(CHILD_ROOT) {
             let root = PathBuf::from(root);
             let app_data = AppDataDir::for_test(&root);
-            let InstanceAdmission::Owned(_guard) = admit_instance(&app_data).unwrap() else {
+            let InstanceAdmission::Owned(_guard) = admit_test_instance(&app_data, &[]).unwrap()
+            else {
                 panic!("child must own the instance lock");
             };
             fs::write(root.join("child-ready"), b"ready").unwrap();
@@ -9395,7 +9569,7 @@ pub(crate) mod portable_tests {
         );
         let app_data = AppDataDir::for_test(temp.path());
         assert!(matches!(
-            admit_instance(&app_data).unwrap(),
+            admit_test_instance(&app_data, &[]).unwrap(),
             InstanceAdmission::HeldElsewhere
         ));
         child.0.kill().unwrap();
@@ -9403,7 +9577,7 @@ pub(crate) mod portable_tests {
         assert!(temp.path().join("instance.lock").is_file());
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let _guard = loop {
-            match admit_instance(&app_data).expect("post-crash admission must not fail") {
+            match admit_test_instance(&app_data, &[]).expect("post-crash admission must not fail") {
                 InstanceAdmission::Owned(guard) => break guard,
                 InstanceAdmission::HeldElsewhere => {
                     assert!(

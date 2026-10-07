@@ -4,12 +4,12 @@
 //   pnpm verify:app                 run the checks
 //   pnpm verify:app --screenshot X  also write a PNG of the page to X
 //
-// It asserts seventy-two independently reported checks, plus one conditional reload check, that no other gate in this repository can:
+// It asserts seventy-three independently reported checks, plus one conditional reload check, that no other gate in this repository can:
 //   group | assertions
 //   startup | 5: production authority, user-file safety, owned-image cleanup, real IPC bridge,
 //             document title
-//   single instance | 4: refusal before initialization, unchanged registry bytes,
-//                        primary responsiveness, different-HOME coexistence
+//   single instance | 5: refusal before initialization, unchanged registry bytes,
+//                        primary responsiveness, shared-config refusal, different-HOME coexistence
 //   practice durable storage | 14: seeded positions, paged reviews, migration, owner retention,
 //                                legacy-key preservation, renderer ratings, real sync, exact counts
 //   download destinations | 3: persisted destination, fresh-id refusal, database-root refusal
@@ -31,6 +31,7 @@
 //   shutdown | 3: start, bounded completion, sound signal
 //
 // Staged-failure record for the single-instance checks (2026-10-07).
+// Extended on 2026-10-08 for the distinct application-data, configuration and local-data roots.
 // B1 bypassed advisory locking, B2 appended one space to the refused launch's path-authority.json,
 // and B3 locked an identifier-wide temporary leaf instead of the application-data leaf. Each
 // Rust break was built with pnpm build and read by pnpm verify:app. The verifier logic stayed
@@ -44,14 +45,28 @@
 //   B1: dependent setup failure   | FAIL  the primary still answers WebDriver after the refused launch                                       | 1
 //   B2: append one registry byte  | FAIL  the refused launch leaves authority and credential registry bytes unchanged                        | 1
 //   B3: identifier-wide lock      | FAIL  a process on a different app-data directory initializes while the primary runs                      | 1
-//   ARGUED, NOT STAGED            | the primary still answers WebDriver after the refused launch                                            | not staged
+//   B4: stop matching-HOME peers  | FAIL  the primary still answers WebDriver after the refused launch                                       | 1
+//   B5: omit configuration root  | FAIL  a second process sharing only the configuration directory is refused                               | 1
 // The B1 rows each printed "not attempted: wait for same-directory refusal: timed out waiting
 // for another ChessFable process holds the application data directory". Its dependent rows prove
 // setup-failure reporting, not registry immutability or primary responsiveness. B2 directly
 // exercised the byte comparison. Same-directory refusal stayed ok in both B2 and B3.
-// ARGUED, NOT STAGED: a binary break that stops the primary from the refused launch would find
-// and kill other ChessFable processes, including Felix's real running app. That harm outlives
-// the run, so primary responsiveness is named here and is not counted among the staged assertions.
+// B4 stopped only other processes whose /proc environment HOME exactly matched the refused
+// launch's temporary HOME. The primary's five-second WebDriver request failed with
+// "not attempted: query the primary WebDriver session after refusal: This operation was aborted".
+// Same-directory refusal, unchanged bytes and shared-configuration refusal stayed ok. B4 also
+// printed the different-HOME coexistence, document-reload and retained-reservation FAILs because
+// they queried the stopped primary. The subsequent window-control wait expired, and harness
+// cleanup escalated the stopped WebDriver process group to SIGKILL before exiting with status 1.
+// B5 omitted the configuration root from the binary's admission list. The new assertion printed
+// "not attempted: wait for shared-configuration refusal: timed out waiting for another ChessFable
+// process holds the application data directory". Same-directory refusal, unchanged bytes,
+// primary responsiveness and different-HOME coexistence stayed ok. B4 and B5 each used pnpm build
+// followed by pnpm verify:app, with verifier logic unchanged between them. Both breaks were
+// restored exactly, checked against the intended Rust diff and source hashes, before final proof.
+// B1-B3 retain their earlier evidence: bypassing all locks now means injecting Ok(()) for every
+// root, with the same refusal wait and message, so B1 needed no restage. B2 still changes the
+// shared configuration registry, and B3 replaces the roots with one identifier-wide lock.
 // The first B1 attempt aborted before any assertion because the resumed shell lacked the desktop
 // environment and the nested compositor socket timed out. It is not assertion evidence. The
 // completed runs used the existing desktop session's WAYLAND_DISPLAY, XDG_RUNTIME_DIR and bus.
@@ -404,6 +419,7 @@ import {
   appProcesses,
   driverDiagnostics,
   launch,
+  outputBuffer,
   processExists,
   registerTemporaryProfile,
   requirePrerequisites,
@@ -418,6 +434,7 @@ const screenshotIndex = process.argv.indexOf("--screenshot");
 const screenshotPath = screenshotIndex === -1 ? undefined : process.argv[screenshotIndex + 1];
 const BASE_DIRECTORY_APP_DATA = 14; // @tauri-apps/api BaseDirectory.AppData
 const IPC_PROBE_TIMEOUT_MS = 5_000;
+const INSTANCE_PROBE_TIMEOUT_MS = 15_000;
 const CSP_PROBE_TIMEOUT_MS = 4_000;
 const FILES_PROBE_TIMEOUT_MS = 20_000;
 const PRACTICE_RENDERER_TIMEOUT_MS = 600_000;
@@ -2754,33 +2771,35 @@ try {
   // Direct launches inherit precisely the primary's profile and off-screen display environment.
   const launchInstanceProbe = (env) => {
     const child = launch(APP_BINARY, [], { env });
-    let stdout = "";
-    let stderr = "";
+    const stdout = outputBuffer();
+    const stderr = outputBuffer();
     let launchError;
     child.on("error", (error) => {
       launchError = error;
     });
     child.stdout.on("data", (chunk) => {
-      stdout = (stdout + String(chunk)).slice(-64 * 1024);
+      stdout.push(chunk);
     });
     child.stderr.on("data", (chunk) => {
-      stderr = (stderr + String(chunk)).slice(-64 * 1024);
+      stderr.push(chunk);
     });
     return {
       child,
-      stdout: () => stdout,
+      stdout: () => stdout.text(),
       waitForLine: (line) =>
         waitFor(
           line,
           () => {
             if (launchError) throw launchError;
-            if (stdout.includes(line)) return true;
+            if (stdout.text().includes(line)) return true;
             if (child.exitCode !== null || child.signalCode !== null) {
-              throw new Error(`instance probe exited before ${line}: ${stdout}\n${stderr}`);
+              throw new Error(
+                `instance probe exited before ${line}: ${stdout.text()}\n${stderr.text()}`,
+              );
             }
             return false;
           },
-          { timeoutMs: 15_000 },
+          { timeoutMs: INSTANCE_PROBE_TIMEOUT_MS },
         ),
     };
   };
@@ -2835,6 +2854,34 @@ try {
     instanceSetupFailure([refusalCheck, unchangedCheck, primaryCheck], refusalStep, error);
   } finally {
     if (refused) await stopLaunchedChild(refused.child);
+  }
+
+  const sharedConfigCheck = "a second process sharing only the configuration directory is refused";
+  let differentData;
+  let sharedConfig;
+  let sharedConfigStep = "create the different-data root";
+  try {
+    differentData = await mkdtemp(join(tmpdir(), "chessfable-config-sharing-probe-"));
+    registerTemporaryProfile(differentData);
+    sharedConfigStep = "wait for shared-configuration refusal";
+    sharedConfig = launchInstanceProbe({ ...appEnvironment, XDG_DATA_HOME: differentData });
+    await sharedConfig.waitForLine(
+      "another ChessFable process holds the application data directory",
+    );
+    sharedConfigStep = "stop the shared-configuration process";
+    await stopLaunchedChild(sharedConfig.child);
+    if (processExists(sharedConfig.child.pid))
+      throw new Error("the shared-configuration process survived cleanup");
+    instanceCheck(
+      !sharedConfig.stdout().includes("Finished rust initialization"),
+      sharedConfigCheck,
+      sharedConfig.stdout(),
+    );
+  } catch (error) {
+    instanceSetupFailure([sharedConfigCheck], sharedConfigStep, error);
+  } finally {
+    if (sharedConfig) await stopLaunchedChild(sharedConfig.child);
+    if (differentData) await rm(differentData, { recursive: true, force: true });
   }
 
   const coexistenceCheck =

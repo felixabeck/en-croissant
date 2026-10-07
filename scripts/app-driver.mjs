@@ -33,7 +33,7 @@ export const APP_BINARY = join(projectRoot, "src-tauri", "target", "release", "c
 const DRIVER_PORT = 4444;
 const NATIVE_PORT = 4445;
 const FETCH_TIMEOUT_MS = 5_000;
-const OUTPUT_LIMIT = 64 * 1024;
+export const OUTPUT_LIMIT = 64 * 1024;
 const TERM_TIMEOUT_MS = 5_000;
 const KILL_TIMEOUT_MS = 2_000;
 
@@ -64,7 +64,7 @@ export function registerTemporaryProfile(directory) {
   temporaryProfiles.add(directory);
 }
 
-function outputBuffer() {
+export function outputBuffer() {
   let value = "";
   return {
     push(chunk) {
@@ -497,13 +497,31 @@ async function cleanUp() {
   const children = started.splice(0).reverse();
   const profileToRemove = profileDirectory;
   profileDirectory = undefined;
+  const failures = [];
   try {
     await cleanUpResources({ children, profileToRemove });
-  } finally {
-    await Promise.all(
-      [...temporaryProfiles].map((path) => rm(path, { recursive: true, force: true })),
+  } catch (error) {
+    failures.push(error);
+  }
+  const profiles = [...temporaryProfiles];
+  const removals = await Promise.allSettled(
+    profiles.map((path) => rm(path, { recursive: true, force: true })),
+  );
+  temporaryProfiles.clear();
+  for (const [index, result] of removals.entries()) {
+    if (result.status === "rejected") {
+      failures.push(
+        new Error(
+          `could not remove temporary profile ${profiles[index]}: ${result.reason.message}`,
+        ),
+      );
+    }
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(
+      failures,
+      `cleanup failed: ${failures.map((error) => error.message).join("; ")}`,
     );
-    temporaryProfiles.clear();
   }
 }
 

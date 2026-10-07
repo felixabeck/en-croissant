@@ -2209,8 +2209,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     log::error!("application data directory could not be acquired: {error}");
                     "application data directory could not be acquired"
                 })?;
-            let admission = crate::infra::path_authority::admit_instance(&app_data)
-                .map_err(|_| "application data directory instance lock could not be acquired")?;
+            let admission = crate::infra::path_authority::admit_instance(app.handle(), &app_data)
+                .map_err(|_| {
+                "application data directory instance lock could not be acquired"
+            })?;
             match admission {
                 crate::infra::path_authority::InstanceAdmission::Owned(guard) => {
                     app.manage(guard);
@@ -4093,7 +4095,7 @@ mod blocking_offload_scans {
         let setup = body_at_indent(include_str!("main.rs"), ".setup(move |app| {");
         let app_data = setup.find("            let app_data = ").unwrap();
         let app_data_end = setup[app_data..].find("})?;").unwrap() + app_data + "})?;".len();
-        let statement = "            let admission = crate::infra::path_authority::admit_instance(&app_data)\n                .map_err(|_| \"application data directory instance lock could not be acquired\")?;";
+        let statement = "            let admission = crate::infra::path_authority::admit_instance(app.handle(), &app_data)\n                .map_err(|_| {\n                \"application data directory instance lock could not be acquired\"\n            })?;";
         let admission = setup
             .find(statement)
             .expect("complete setup-level propagating admission");

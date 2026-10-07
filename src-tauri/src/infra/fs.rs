@@ -5594,6 +5594,39 @@ mod tests {
     }
 
     #[test]
+    fn advisory_lock_blocking_waits_for_holder_to_drop() -> std::io::Result<()> {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("advisory.lock");
+        let first = File::options()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        let second = File::options().read(true).write(true).open(&path)?;
+        lock_advisory_file(&first, AdvisoryLockMode::NonBlocking)
+            .map_err(AdvisoryLockError::into_io_error)?;
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            ready_tx.send(()).unwrap();
+            let result = lock_advisory_file(&second, AdvisoryLockMode::Blocking);
+            done_tx.send(result).unwrap();
+        });
+        ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let pending = done_rx.recv_timeout(Duration::from_millis(200));
+        drop(first);
+        assert!(matches!(pending, Err(mpsc::RecvTimeoutError::Timeout)));
+        done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("blocking lock must complete after release")
+            .map_err(AdvisoryLockError::into_io_error)?;
+        thread.join().unwrap();
+        Ok(())
+    }
+
+    #[test]
     fn advisory_lock_unsupported_errors_are_platform_specific() {
         use AdvisoryLockPlatform::{Linux, MacOs, Windows};
         for (platform, unsupported, ordinary) in [
