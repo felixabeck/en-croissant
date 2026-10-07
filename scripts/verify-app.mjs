@@ -4,7 +4,7 @@
 //   pnpm verify:app                 run the checks
 //   pnpm verify:app --screenshot X  also write a PNG of the page to X
 //
-// It asserts sixty-four independently reported checks, plus one conditional reload check, that no other gate in this repository can:
+// It asserts sixty-eight independently reported checks, plus one conditional reload check, that no other gate in this repository can:
 //   group | assertions
 //   startup | 5: production authority, user-file safety, owned-image cleanup, real IPC bridge,
 //             document title
@@ -17,7 +17,9 @@
 //   attachments | 4: prepare, retire, live-session bytes/intent, titlebar cleanup
 //   native reads | 6: mint, cancel, cancelled-ticket refusal, document-reload sweep, retained ticket,
 //                     destroyed-window log
-//   Files | 3: seeded-row-render, double-click-route, opened-game-notation
+//   Files | 7: seeded-row-render, double-click-route, opened-game-notation,
+//              metadata-dialog-no-error, metadata-repertoire-filter, metadata-sidecar-type,
+//              metadata-filename-preserved
 //   Databases | 2: default-root-unusable, selected-root-missing
 //   NAGs | 9: hint path/title/visibility, unknown hint absence, saved edit, four preserved NAGs
 //   file freshness | 5: in-place rewrite, open-tab reload/withhold, native-read timing,
@@ -170,6 +172,26 @@
 //   opened-game-notation                      | FAIL  a real double-click on the unselected Files | 1
 //                                           |   row shows its game — timed out waiting for the  |
 //                                           |   opened game's notation; expected 1.e4e52.d4d5   |
+//
+// Metadata-edit staged failures (2026-10-07). Each break changed only production source read by
+// pnpm build, followed by pnpm verify:app. A: write_workspace_file_metadata_blocking returned
+// InvalidInput("STAGED metadata write refusal") before writing. B: FilesPage sent unchanged-name
+// edits through renameWorkspaceFile with a "-staged-renamed" suffix. Both builds exited 0 and
+// both verification runs printed "6 check(s) failed" and exited 1 (three Files and three NAG hint
+// checks in each). A kept metadata-filename-preserved green; B kept metadata-dialog-no-error green.
+// Both production files were confirmed clean before staging and restored with git checkout after
+// their runs. An earlier option-lookup setup failure is excluded: it never reached the native break.
+// The new scenario now follows the NAG checks to preserve their original navigation sequence;
+// the four assertion bodies used for these measured failures are unchanged.
+//   break | check                       | exact message printed                                              | exit
+//   A     | metadata-dialog-no-error    | FAIL  the Files metadata edit submits without a dialog error        | 1
+//         |                             |       The file operation could not be completed. Please try again.   |
+//   B     | metadata-repertoire-filter  | FAIL  the Repertoire filter lists the metadata-edited workspace file | 1
+//         |                             |       timed out waiting for verify-metadata-only Files row           |
+//   A     | metadata-sidecar-type       | FAIL  the metadata-edited workspace sidecar records repertoire on disk | 1
+//         |                             |       ENOENT: no such file or directory, open '/tmp/chessfable-verify-8rOp69/path-owner-fixture/files-workspace/verify-metadata-only.info' |
+//   B     | metadata-filename-preserved | FAIL  the Files metadata edit preserves the PGN filename             | 1
+//         |                             |       original PGN exists: false; PGN filenames: ["verify-metadata-only-staged-renamed.pgn","verify-nags.pgn","verify-practice-large.pgn","verify-sample.pgn"] |
 
 // Staged-failure record for default-root-unusable (2026-10-03). Both full runs used the same
 // harness inside a 4 GiB scope. The correct release printed 62 ok lines and "all checks passed",
@@ -340,7 +362,7 @@
 //                                         | is possible.
 
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { Chess, makeSquare } from "chessops";
@@ -379,6 +401,7 @@ const PRACTICE_MOVE_CLICK_DELAY_MS = 40;
 const DOUBLE_CLICK_GAP_MS = 60;
 const filesWorkspaceId = "verify-files-workspace";
 const filesRowName = "verify-sample";
+const filesMetadataRowName = "verify-metadata-only";
 // Pawn moves only, so the notation reads the same with and without figurines.
 const filesGamePgn = `[Event "verify:app"]
 [Site "?"]
@@ -1100,6 +1123,10 @@ try {
   await mkdir(downloadDestination, { recursive: true });
   await mkdir(filesWorkspace, { recursive: true });
   await writeFile(join(filesWorkspace, `${filesRowName}.pgn`), filesGamePgn);
+  // Dedicated sidecar-less file: changing its type cannot alter another check's fixture.
+  const filesMetadataPgnPath = join(filesWorkspace, `${filesMetadataRowName}.pgn`);
+  const filesMetadataInfoPath = join(filesWorkspace, `${filesMetadataRowName}.info`);
+  await writeFile(filesMetadataPgnPath, filesGamePgn);
   const nagsGamePath = join(filesWorkspace, `${nagsRowName}.pgn`);
   await writeFile(nagsGamePath, nagsGamePgn);
   const initialLargePracticePgn = practicePgn(initialPracticeTree);
@@ -2530,6 +2557,167 @@ try {
       return true;
     });
   }
+
+  // Metadata-only edit through the real card and modal. Disk assertions depend on submission,
+  // not its success: a rejected write must still leave the filename assertion independently green.
+  const filesMetadataDialogCheck = "the Files metadata edit submits without a dialog error";
+  const filesMetadataFilterCheck = "the Repertoire filter lists the metadata-edited workspace file";
+  const filesMetadataSidecarCheck =
+    "the metadata-edited workspace sidecar records repertoire on disk";
+  const filesMetadataFilenameCheck = "the Files metadata edit preserves the PGN filename";
+  const metadataAttempt = async (action) => {
+    try {
+      return { value: await action() };
+    } catch (error) {
+      return { error: error.message };
+    }
+  };
+  const clickMetadataControl = async (label, lookup, args = []) => {
+    const coordinates = await waitFor(
+      label,
+      () =>
+        session.execute(
+          `
+        const control = ${lookup};
+        if (!control) return false;
+        control.scrollIntoView({ block: 'nearest' });
+        const box = control.getBoundingClientRect();
+        return box.width > 0 && box.height > 0 && !control.disabled && {
+          x: Math.round(box.left + box.width / 2), y: Math.round(box.top + box.height / 2)
+        };`,
+          args,
+        ),
+      { timeoutMs: FILES_PROBE_TIMEOUT_MS },
+    );
+    await clickAt(session, coordinates.x, coordinates.y);
+  };
+  const chooseRepertoire = async (inDialog) => {
+    await clickMetadataControl(
+      inDialog ? "the edit dialog's File type Select" : "the Files page's File type filter",
+      `(() => {
+        const label = [...document.querySelectorAll('label')].find(label =>
+          Boolean(label.closest('[role="dialog"]')) === arguments[0] &&
+          label.textContent.replace(/\\s*\\*$/, '').trim() === 'File type');
+        return label && document.getElementById(label.htmlFor);
+      })()`,
+      [inDialog],
+    );
+    await clickMetadataControl(
+      "the Repertoire option",
+      `[...document.querySelectorAll('[role="option"]')].find(option =>
+        option.textContent.trim() === 'Repertoire' && option.getBoundingClientRect().height > 0)`,
+    );
+  };
+  let metadataSubmitted = false;
+  let originalWorkspacePgnNames;
+  const metadataEdit = await metadataAttempt(async () => {
+    originalWorkspacePgnNames = (await readdir(filesWorkspace))
+      .filter((name) => name.endsWith(".pgn"))
+      .sort();
+    if (existsSync(filesMetadataInfoPath))
+      throw new Error("the metadata fixture already has a sidecar");
+    const row = await filesRowCoordinates(session, filesMetadataRowName);
+    await clickAt(session, row.x, row.y);
+    await clickMetadataControl(
+      "the FileCard Edit metadata control",
+      `document.querySelector('button[aria-label="Edit metadata"]')`,
+    );
+    await waitFor(
+      "the metadata edit dialog with the unchanged Name",
+      () =>
+        session.execute(
+          `
+        const dialog = document.querySelector('[role="dialog"]');
+        const label = dialog && [...dialog.querySelectorAll('label')].find(label => label.textContent.trim() === 'Name');
+        return label && document.getElementById(label.htmlFor)?.value === arguments[0];`,
+          [filesMetadataRowName],
+        ),
+      { timeoutMs: FILES_PROBE_TIMEOUT_MS },
+    );
+    await chooseRepertoire(true);
+    await clickMetadataControl(
+      "the metadata edit Confirm control",
+      `[...document.querySelectorAll('[role="dialog"] button')].find(button => button.textContent.trim() === 'Confirm')`,
+    );
+    metadataSubmitted = true;
+    return waitFor(
+      "the metadata edit to close or report a dialog error",
+      () =>
+        session.execute(`
+        const dialog = document.querySelector('[role="dialog"]');
+        if (!dialog) return { closed: true };
+        const invalid = dialog.querySelector('input[aria-invalid="true"]');
+        const error = invalid && document.getElementById(invalid.getAttribute('aria-describedby'));
+        return invalid && { error: error?.textContent ?? 'the Name input is invalid' };`),
+      { timeoutMs: FILES_PROBE_TIMEOUT_MS },
+    );
+  });
+  const metadataSetupError = metadataSubmitted
+    ? undefined
+    : `not attempted: metadata edit setup: ${metadataEdit.error}`;
+  const metadataDialogError = metadataSetupError ?? metadataEdit.error ?? metadataEdit.value?.error;
+  check(metadataEdit.value?.closed === true, filesMetadataDialogCheck, metadataDialogError);
+
+  const metadataFilter = metadataDialogError
+    ? {
+        error: `not attempted: the metadata edit did not close successfully: ${metadataDialogError}`,
+      }
+    : await metadataAttempt(async () => {
+        await chooseRepertoire(false);
+        await filesRowCoordinates(session, filesMetadataRowName);
+        return session.execute(`
+          const label = [...document.querySelectorAll('label')].find(label =>
+            !label.closest('[role="dialog"]') && label.textContent.trim() === 'File type');
+          return label && document.getElementById(label.htmlFor)?.value === 'Repertoire';`);
+      });
+  check(metadataFilter.value === true, filesMetadataFilterCheck, metadataFilter.error);
+
+  const metadataSidecar = metadataSetupError
+    ? { error: metadataSetupError }
+    : await metadataAttempt(async () => {
+        const metadata = JSON.parse(await readFile(filesMetadataInfoPath, "utf8"));
+        if (metadata.type !== "repertoire")
+          throw new Error(`observed sidecar: ${JSON.stringify(metadata)}`);
+        return true;
+      });
+  check(metadataSidecar.value === true, filesMetadataSidecarCheck, metadataSidecar.error);
+  const metadataFilename = metadataSetupError
+    ? { error: metadataSetupError }
+    : await metadataAttempt(async () => {
+        const currentPgnNames = (await readdir(filesWorkspace))
+          .filter((name) => name.endsWith(".pgn"))
+          .sort();
+        if (
+          !existsSync(filesMetadataPgnPath) ||
+          JSON.stringify(currentPgnNames) !== JSON.stringify(originalWorkspacePgnNames)
+        ) {
+          throw new Error(
+            `original PGN exists: ${existsSync(filesMetadataPgnPath)}; PGN filenames: ${JSON.stringify(currentPgnNames)}`,
+          );
+        }
+        return true;
+      });
+  check(metadataFilename.value === true, filesMetadataFilenameCheck, metadataFilename.error);
+  // Close a failed dialog before the later document-reload and shutdown checks.
+  await session.call("POST", "/actions", {
+    actions: [
+      {
+        type: "key",
+        id: "metadata-dismiss",
+        actions: [
+          { type: "keyDown", value: "\uE00C" },
+          { type: "keyUp", value: "\uE00C" },
+          { type: "keyDown", value: "\uE00C" },
+          { type: "keyUp", value: "\uE00C" },
+        ],
+      },
+    ],
+  });
+  await waitFor(
+    "the metadata dialog to be dismissed",
+    () => session.execute("return !document.querySelector('[role=\"dialog\"]')"),
+    { timeoutMs: FILES_PROBE_TIMEOUT_MS },
+  );
 
   const reloadCheck = "a real document reload cancels the previous document's retained reservation";
   try {
