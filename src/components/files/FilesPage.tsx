@@ -41,6 +41,10 @@ const FILE_CARD_MIN_HEIGHT = "32rem";
 const TREE_MAX_HEIGHT = "60vh";
 const TREE_MIN_HEIGHT = "8rem";
 const EMPTY_PANE_MIN_HEIGHT = "12rem";
+// At 320px/200% the default modal clipped the type Select's "Repertoire";
+// below this width the shared create/rename/edit dialog goes full-screen.
+// Media-query em uses the initial font size: 30em = 480px regardless of the app font scale.
+const COMPACT_DIALOG_QUERY = "(max-width: 30em)";
 // At 320px and a 200% font scale a label is wider than its column: let it wrap instead of clipping.
 const wrappingButton = {
   root: { height: "auto", minHeight: "var(--button-height)" },
@@ -60,7 +64,11 @@ function findEntry(entries: Entry[], key: string): Entry | null {
 
 export default function FilesPage() {
   const { t } = useTranslation();
-  const compactDialog = useMediaQuery("(max-width: 30em)");
+  const compactDialog = useMediaQuery(COMPACT_DIALOG_QUERY);
+  const fileTypeOptions = FILE_TYPES.map(({ value, translationKey }) => ({
+    value,
+    label: t(translationKey),
+  }));
   const picker = useNativePicker();
   const [workspace, setWorkspace] = useAtom(fileWorkspaceAtom);
   const [, setWorkspaceDisplayName] = useAtom(fileWorkspaceDisplayNameAtom);
@@ -284,10 +292,7 @@ export default function FilesPage() {
                 value={filter || null}
                 // Choosing the active type again, or clearing, returns to all types.
                 onChange={(value) => setFilter((value as FileType | null) ?? "")}
-                data={FILE_TYPES.map(({ value, translationKey }) => ({
-                  value,
-                  label: t(translationKey),
-                }))}
+                data={fileTypeOptions}
               />
               {trashed && (
                 <Group wrap="wrap" miw={0}>
@@ -453,10 +458,7 @@ export default function FilesPage() {
               onChange={(value) => {
                 if (value) setFileType(value as FileType);
               }}
-              data={FILE_TYPES.map(({ value, translationKey }) => ({
-                value,
-                label: t(translationKey),
-              }))}
+              data={fileTypeOptions}
             />
           )}
           <Button miw={0} styles={wrappingButton} onClick={submitAction}>
@@ -466,7 +468,6 @@ export default function FilesPage() {
       </AppModal>
       <AppModal
         opened={moveTarget !== null}
-        fullScreen={compactDialog}
         onClose={() => setMoveTarget(null)}
         title={t("Files.MoveFile", { defaultValue: "Move file" })}
       >
