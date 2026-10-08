@@ -6477,3 +6477,40 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The migration removes every counted reach. Reversal path: re-add a justified entry to both arrays with its hash.
 * **Decided by:** Codex, adopted reviewed plan, full auto drain, 2026-10-08. **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"c8ec077be39f3bc74df648f1f4f2f43103e2d85994edaecf46d4fd36bad10b23","input_sha256":"745deee6684e14c3a95a827b9dfbbf7537d38e99f14455be0f130c61721eda62","kind":"mutation-receipt","operation":"80c51acb591a739caa15490ba945b5aa0e14480c076137b864e07e357b07c3ab","options":{"section":null},"request_id_sha256":null,"results":["d-20261008-15","d-20261008-16","d-20261008-17"],"target":"decisions-ledger","v":1} -->
+
+### d-20261008-18 — Which mechanism makes responsive breakpoints follow the app font scale?
+
+* **Question:** Which shared mechanism makes theme breakpoints, standalone width queries and Settings CSS follow the app font scale?
+* **Governs:** f-20260927-08
+* **Chosen:** multiply Mantine default breakpoint values and the two standalone width thresholds by the app font scale in one em-scaling function. A shared hook reads fontSizeAtom, and Settings uses its boolean for both Tabs orientation and the outer compact CSS marker.
+* **Rejected:** container queries, which change the measured box and existing 100% thresholds and cannot set the React orientation prop. Content-driven wrapping changes each grid and cannot set orientation. Pixel queries assume a 16px user-agent default.
+* **Reason:** em queries track the same initial font size as the root percentage and remain identical at 100%. One shared function prevents arithmetic drift. Reversal path: replace the theme scaling and shared hook together with another reviewed mechanism.
+* **Decided by:** Codex, full auto, adopting the reviewed plan. Plan authorship and arbitration shared one context. Detection ran on the same model family as the code executor. **Superseded-by:** -
+
+### d-20261008-19 — Where are theme breakpoints scaled?
+
+* **Question:** Are breakpoints scaled globally or at each responsive component?
+* **Governs:** f-20260927-08
+* **Chosen:** globally in createAppTheme, with the current font scale passed from App and included in its memo dependencies.
+* **Rejected:** per-site breakpoint objects, which duplicate the arithmetic across grids and style props and leave future sites unscaled.
+* **Reason:** the sole theme factory supplies existing and future consumers consistently. Reversal path: replace its breakpoint override and explicitly update every consumer.
+* **Decided by:** Codex, full auto, adopting the reviewed plan. **Superseded-by:** -
+
+### d-20261008-20 — What defines correct layout under font scaling?
+
+* **Question:** What is the oracle for width switches at a different app font scale?
+* **Governs:** f-20260927-08
+* **Chosen:** zoom equivalence. Window width W at scale s uses the layout of W/s at 100%, following d-20260831-16.
+* **Rejected:** adjusting individual thresholds by eye at each scale.
+* **Reason:** one deterministic oracle preserves existing 100% behavior and permits behavioral regression proofs. Reversal path: a new layout contract and corresponding theme, hook and browser assertions.
+* **Decided by:** Codex, full auto, adopting the reviewed plan. **Superseded-by:** -
+
+### d-20261008-21 — Which font scale does StartupStorageFailure use?
+
+* **Question:** Which scale does the startup storage-failure screen pass to the theme factory?
+* **Governs:** f-20260927-08
+* **Chosen:** a named default of 100.
+* **Rejected:** reading the persisted font scale.
+* **Reason:** this screen renders without App, so the root is unscaled, and storage failure is why it exists. Reversal path: change its explicit theme input if its startup contract later changes.
+* **Decided by:** Codex, full auto, adopting the reviewed plan. **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":35,"effect_sha256":"54f6dfb0b50c1b4c122579cabfa65dbf0cb5c82dc14cd55c3b9ba6dab963ee8a","input_sha256":"7dda73d3ad204821846dac3d58367e35a209e8730fd1108d1384e1dbfb6dc58b","kind":"mutation-receipt","operation":"ca999b0ada33c71b679aaa1eb7f9d4703efad2e4ee23698800f24fab72d34295","options":{"section":null},"request_id_sha256":null,"results":["d-20261008-18","d-20261008-19","d-20261008-20","d-20261008-21"],"target":"decisions-ledger","v":1} -->
