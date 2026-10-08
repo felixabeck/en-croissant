@@ -49,6 +49,24 @@ use super::{
 const MAX_OPEN_DATABASES: usize = 16;
 #[cfg(test)]
 const RELEASE_DELAY: Duration = Duration::from_millis(150);
+
+#[cfg(test)]
+fn spawn_after_release_delay<'scope, 'env, F>(
+    scope: &'scope std::thread::Scope<'scope, 'env>,
+    release: F,
+) -> Instant
+where
+    F: FnOnce() + Send + 'scope,
+{
+    // Capture before spawn so parent descheduling cannot shift timing past the release sleep.
+    let started = Instant::now();
+    scope.spawn(move || {
+        std::thread::sleep(RELEASE_DELAY);
+        release();
+    });
+    started
+}
+
 // Maximum number of pooled SQLite connections per database.
 const MAX_CONNECTIONS_PER_DATABASE: u32 = 16;
 // r2d2 retries a failed pooled open until this timeout; tests that drive a refused bound open
@@ -1715,12 +1733,8 @@ mod drain_gate_tests {
         let ticket = gate.enter().expect("open gate issues a ticket");
         gate.close();
         std::thread::scope(|scope| {
-            scope.spawn(move || {
-                std::thread::sleep(RELEASE_DELAY);
-                drop(ticket);
-            });
+            let started = spawn_after_release_delay(scope, move || drop(ticket));
 
-            let started = Instant::now();
             assert!(gate
                 .wait_drained(Duration::from_secs(10), None, "t")
                 .is_ok());
@@ -2595,12 +2609,8 @@ mod tests {
 
         std::thread::scope(|scope| {
             let release_token = cancellation.clone();
-            scope.spawn(move || {
-                std::thread::sleep(RELEASE_DELAY);
-                release_token.cancel();
-            });
+            let started = spawn_after_release_delay(scope, move || release_token.cancel());
 
-            let started = Instant::now();
             let result = repository.delete_exclusive_cancellable(
                 &target,
                 &cancellation,
@@ -2702,14 +2712,12 @@ mod tests {
         assert_eq!(entry.connections.snapshot().outstanding, 2);
 
         std::thread::scope(|scope| {
-            scope.spawn(move || {
-                std::thread::sleep(RELEASE_DELAY);
+            let started = spawn_after_release_delay(scope, move || {
                 drop(first);
                 std::thread::sleep(RELEASE_DELAY);
                 drop(second);
             });
 
-            let started = Instant::now();
             assert!(repository.retire_replaced(&key, &entry, None).is_ok());
             assert!(started.elapsed() >= RELEASE_DELAY * 2);
         });
@@ -2727,12 +2735,8 @@ mod tests {
         let held = entry.get_connection().unwrap();
 
         std::thread::scope(|scope| {
-            scope.spawn(move || {
-                std::thread::sleep(RELEASE_DELAY);
-                drop(held);
-            });
+            let started = spawn_after_release_delay(scope, move || drop(held));
 
-            let started = Instant::now();
             let result = repository
                 .delete_exclusive(&target, || Ok(entry.connections.snapshot().outstanding));
             assert!(matches!(result, Ok(0)));
