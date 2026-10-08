@@ -6601,3 +6601,33 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Push review round 1 identified that reserve_for_deletion returns immediately on an already-cancelled token, while close_retired_entry removes the entry only after connection retirement starts. The test asserts the latter outcome. Observing the connection gate's closed state selects that path independently of parent scheduling. Reversal path: use an explicit connection-drain entry signal if a future implementation no longer closes this gate at the phase boundary.
 * **Decided by:** Codex, full-auto drain 84dcc510-ab78-41fb-a09b-0fda9077ba23 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"38f4189bc3d00fac0d3122a76f42a1037947ad1fae7a047100234a5ee32b0194","input_sha256":"5e23647cf6266d54cb5d43e89774f4ca8727b898f3361dbb94e36fc1f83f2955","kind":"mutation-receipt","operation":"d71cdd5ae09d41f06f18fbf0c15596429583e40a60622115d2ccb3ef485b1675","options":{"section":null},"request_id_sha256":null,"results":["d-20261008-30"],"target":"decisions-ledger","v":1} -->
+
+## 2026-10-09 — recorded through the decisions lock
+
+### d-20261009-01 — Which owner handles cancelled published abort and shutdown retry?
+
+* **Question:** Which owner handles cancelled published abort and shutdown retry?
+* **Governs:** f-20260926-07
+* **Chosen:** The existing removed-session guard for committed abort and finish_retired before shutdown's success retirement in src-tauri/src/game.rs.
+* **Rejected:** A new manager teardown registry or a second guard implementation.
+* **Reason:** Removal needs a local remainder owner, while a cancelled shutdown session remains manager-owned. d-20260927-05 establishes the remainder mechanism. Reversal path: replace both removed-session callers only after proving the same cancellation boundaries, preserving unconditional exact cleanup for shutdown retries.
+* **Decided by:** Codex, full auto adoption of reviewed plan, 2026-10-09. **Superseded-by:** -
+
+### d-20261009-02 — Must latent cancellation safety be implemented without current production cancellation?
+
+* **Question:** Must latent cancellation safety be implemented without current production cancellation?
+* **Governs:** f-20260926-07
+* **Chosen:** Yes, with deterministic future-drop tests in src-tauri/src/game.rs.
+* **Rejected:** Adding a renderer cancellation wrapper or waiting for one.
+* **Reason:** async-resource-invariants.md and d-20260927-07 require cleanup on every exit. Reversal path: none required, future cancellation wrappers rely on this invariant.
+* **Decided by:** Codex, full auto adoption of reviewed plan, 2026-10-09. **Superseded-by:** -
+
+### d-20261009-03 — Who verifies published teardown behavior, and what is excluded?
+
+* **Question:** Who verifies behavior, and what is excluded?
+* **Governs:** f-20260926-07
+* **Chosen:** Agent-run backend tests and the existing real-product shutdown harness, stating its limits.
+* **Rejected:** Felix manually reproducing synthetic future-drop schedules, or a new engine-registration bypass.
+* **Reason:** Portable tests directly control cancellation boundaries. The existing harness verifies product wiring without changing the native-picker contract. Reversal path: extend actual-product checks only if an authorized native registration route becomes available.
+* **Decided by:** Codex, full auto adoption of reviewed plan, 2026-10-09. **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"39641b9e544e3296db638398e82212313b24c93d01c8e8d1ad2ba12151fa8fb9","input_sha256":"61d64947249617ba9b6cdc572f90d2c21d921398c7c8fb67293279b78561aacc","kind":"mutation-receipt","operation":"14c893f7304d13d9ff44be3bb53311714632e435e54f0efacc4525adf6da46e2","options":{"section":null},"request_id_sha256":null,"results":["d-20261009-01","d-20261009-02","d-20261009-03"],"target":"decisions-ledger","v":1} -->
