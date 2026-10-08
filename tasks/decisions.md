@@ -6349,3 +6349,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The defect is that the primitive discards information its callers need; returning it makes every caller handle it explicitly at the type level, without changing cancellation semantics. Reversal path: return `values` only again and move the failure list into an option callback.
 * **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, PLAN-ONLY run 2026-10-07 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"70e0a7ca2252656815f1ca630c48f08837c040654f5f4345c42da3eb14767261","input_sha256":"b3b1f4ad993c2e668013fbbc494bba6e224a4bbee17337f97b3a214772c4bcd5","kind":"mutation-receipt","operation":"81699f665418b57fb943ab0882ef8eeb3f71d9146b7be18a79475bc819ff032b","options":{"section":null},"request_id_sha256":null,"results":["d-20261008-04"],"target":"decisions-ledger","v":1} -->
+
+### d-20261008-05 — Is a database without the player's row a statistics failure?
+
+* **Question:** The summary mapper throws "Player not found in database" when `query_players` finds no row. Once failures are shown, does that count as a failed database?
+* **Governs:** f-20260926-02
+* **Chosen:** No. The database contributes no statistics, shows no notice and logs no error.
+* **Rejected:** keeping it a failure — a downloaded account database with no games for the player (for example a new account) would show a permanent "could not be read" warning although nothing failed.
+* **Reason:** The lookup succeeded and answered "no games"; that is the same outcome as a database with zero matching games, which the empty state already describes. Reversal path: restore the throw in the mapper.
+* **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, PLAN-ONLY run 2026-10-07 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"63cc171457f3f579833294ac41e74152f836d35d1406fd86b53464a1aecaa262","input_sha256":"6731788863665a8cf44ae35c0a95c1ad45b05e6a93facb63b60637bdf1acfacb","kind":"mutation-receipt","operation":"29e775024aa456c7c719e7f105237f9dbee079bbd8d1372b9cab7e97a625c63a","options":{"section":null},"request_id_sha256":null,"results":["d-20261008-05"],"target":"decisions-ledger","v":1} -->
