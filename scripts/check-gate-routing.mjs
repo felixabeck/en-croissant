@@ -783,25 +783,22 @@ function markdownHeadings(markdown) {
   return headings;
 }
 
-function markdownSection(markdown, matchesHeading, { stopAtSubsection = false } = {}) {
+function markdownSection(markdown, matchesHeading, { level = 2, stopAtSubsection = false } = {}) {
   const headings = markdownHeadings(markdown);
-  const homes = headings.filter((heading) => heading.level === 2 && matchesHeading(heading.text));
+  const homes = headings.filter(
+    (heading) => heading.level === level && matchesHeading(heading.text),
+  );
   if (homes.length !== 1) return "";
   const home = homes[0];
   const end = headings.find(
-    (heading) => (stopAtSubsection || heading.level === 2) && heading.start > home.start,
+    (heading) => (stopAtSubsection || heading.level <= level) && heading.start > home.start,
   )?.start;
   return markdown.slice(home.start, end);
 }
 
 function skillSubsection(pushSkill, heading) {
   const section = markdownSection(pushSkill, (text) => /^## 2\./u.test(text));
-  const headings = markdownHeadings(section);
-  const homes = headings.filter((candidate) => candidate.level === 3 && candidate.text === heading);
-  if (homes.length !== 1) return "";
-  const start = homes[0].start;
-  const end = headings.find((candidate) => candidate.start > start)?.start;
-  return section.slice(start, end);
+  return markdownSection(section, (text) => text === heading, { level: 3 });
 }
 
 function shellFencedCommandLines(markdown, { includeCommentLines = false } = {}) {
