@@ -88,6 +88,166 @@ async function fixture() {
 
 const paths = ["scripts/check-example.mjs"];
 
+// Independent spelling anchors, deliberately not imported from the placement registry.
+const LOCAL_PLACEMENTS = [
+  ["bash scripts/setup-rust.sh", "### Rust/Tauri backend"],
+  ["cargo fmt --manifest-path src-tauri/Cargo.toml -- --check", "### Rust/Tauri backend"],
+  [
+    "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings",
+    "### Rust/Tauri backend",
+  ],
+  ["pnpm rust:windows:check", "### Rust/Tauri backend"],
+  ["pnpm gate:ensure backend-test", "### Rust/Tauri backend"],
+  ["env -u KIT_ROOT pnpm findings:kit:check", "### Findings ledger"],
+];
+
+test("pins each local command to its genuine §2 home even when the fence union is unchanged", async (t) => {
+  for (const [command, heading] of LOCAL_PLACEMENTS) {
+    await t.test(command, async () => {
+      const root = await fixture();
+      const skillPath = join(root, ".claude/skills/push/SKILL.md");
+      const skill = await readFile(skillPath, "utf8");
+      const moved = skill
+        .replace(`${command}\n`, "")
+        .replace("pnpm bindings:check\n", `pnpm bindings:check\n${command}\n`);
+      const fenceUnion = (text) =>
+        new Set(
+          fencedBlocks(text)
+            .map((block) => block.contents)
+            .join("\n")
+            .split("\n")
+            .filter(Boolean),
+        );
+      assert.deepEqual(fenceUnion(moved), fenceUnion(skill));
+      await writeFile(skillPath, moved);
+      const problems = await checkGateRouting(root, { paths });
+      assert.ok(
+        problems.includes(
+          `command ${command} must be fenced in ${heading} within .claude/skills/push/SKILL.md §2. Move or add its route in that subsection`,
+        ),
+        problems.join("\n"),
+      );
+      assert.doesNotMatch(
+        problems.join("\n"),
+        /push gate runner command|not run by the push gate runner/u,
+      );
+      await writeFile(skillPath, skill);
+      assert.deepEqual(await checkGateRouting(root, { paths }), []);
+    });
+  }
+});
+
+test("pins both backend coverage scripts through their receipt route", async () => {
+  const root = await fixture();
+  const skillPath = join(root, ".claude/skills/push/SKILL.md");
+  const skill = await readFile(skillPath, "utf8");
+  await writeFile(
+    skillPath,
+    skill
+      .replace("pnpm gate:ensure backend-coverage\n", "")
+      .replace("pnpm bindings:check\n", "pnpm bindings:check\npnpm gate:ensure backend-coverage\n"),
+  );
+  const problems = (await checkGateRouting(root, { paths })).join("\n");
+  for (const script of ["test:coverage:backend", "coverage:backend:check"]) {
+    assert.ok(
+      problems.includes(
+        `package script ${script} must be fenced in ### Rust/Tauri backend within .claude/skills/push/SKILL.md §2`,
+      ),
+      problems,
+    );
+  }
+  assert.doesNotMatch(problems, /push gate runner command|not run by the push gate runner/u);
+});
+
+test("requires one standalone home inside §2 rather than a heading mention or another parent", async (t) => {
+  const heading = "### Rust/Tauri backend";
+  const cases = [
+    ["missing", (skill) => skill.replace(heading, "### Renamed backend")],
+    ["duplicate", (skill) => skill.replace(heading, `${heading}\n\n${heading}`)],
+    ["prose mention", (skill) => skill.replace(heading, `Example: ${heading}`)],
+    ["heading prefix", (skill) => skill.replace(heading, `${heading} example`)],
+    ["fenced heading", (skill) => skill.replace(heading, `\`\`\`text\n${heading}\n\`\`\``)],
+    ["other parent", (skill) => skill.replace(heading, `## Example\n\n${heading}`)],
+    ["missing section", (skill) => skill.replace("## 2. Gates", "## Example Gates")],
+    ["duplicate section", (skill) => skill.replace("## 2. Gates", "## 2. Example\n\n## 2. Gates")],
+  ];
+  for (const [name, mutate] of cases) {
+    await t.test(name, async () => {
+      const root = await fixture();
+      const skillPath = join(root, ".claude/skills/push/SKILL.md");
+      await writeFile(skillPath, mutate(await readFile(skillPath, "utf8")));
+      const problems = (await checkGateRouting(root, { paths })).join("\n");
+      assert.ok(
+        problems.includes(
+          `.claude/skills/push/SKILL.md §2 must contain one unambiguous ${heading} home`,
+        ),
+        problems,
+      );
+      assert.ok(
+        problems.includes(`command bash scripts/setup-rust.sh must be fenced in ${heading}`),
+        problems,
+      );
+    });
+  }
+});
+
+test("reference, pre-review, comments and prose cannot replace an exact local home", async (t) => {
+  for (const destination of [
+    "reference",
+    "pre-review",
+    "comment",
+    "prose",
+    "changed arguments",
+    "changed env prefix",
+  ]) {
+    await t.test(destination, async () => {
+      const root = await fixture();
+      const skillPath = join(root, ".claude/skills/push/SKILL.md");
+      const skill = await readFile(skillPath, "utf8");
+      const command =
+        destination === "changed env prefix"
+          ? "env -u KIT_ROOT pnpm findings:kit:check"
+          : "pnpm rust:windows:check";
+      let changed = skill.replace(`${command}\n`, "");
+      if (destination === "reference")
+        changed += `\n### Reference\n\n\`\`\`bash\n${command}\n\`\`\`\n`;
+      if (destination === "comment") changed = skill.replace(`${command}\n`, `# ${command}\n`);
+      if (destination === "prose")
+        changed = skill
+          .replace(`${command}\n`, "")
+          .replace("### Rust/Tauri backend", `Run \`${command}\`.\n\n### Rust/Tauri backend`);
+      if (destination === "changed arguments")
+        changed = skill.replace(`${command}\n`, `${command} --example\n`);
+      if (destination === "changed env prefix")
+        changed = skill.replace(`${command}\n`, "pnpm findings:kit:check\n");
+      await writeFile(skillPath, changed);
+      const problems = (await checkGateRouting(root, { paths })).join("\n");
+      const heading =
+        destination === "changed env prefix" ? "### Findings ledger" : "### Rust/Tauri backend";
+      assert.ok(
+        problems.includes(
+          `command ${command} must be fenced in ${heading} within .claude/skills/push/SKILL.md §2`,
+        ),
+        problems,
+      );
+    });
+  }
+});
+
+test("ignores heading examples in fences and preserves the §2a boundary", async () => {
+  const root = await fixture();
+  const skillPath = join(root, ".claude/skills/push/SKILL.md");
+  const skill = await readFile(skillPath, "utf8");
+  await writeFile(
+    skillPath,
+    skill.replace(
+      "### Rust/Tauri backend",
+      "```text\n## 2. Example\n### Rust/Tauri backend\n## 3. Example\n```\n\n### Rust/Tauri backend",
+    ),
+  );
+  assert.deepEqual(await checkGateRouting(root, { paths }), []);
+});
+
 test("accepts routed tests, nested scripts, allowed tools, and live sensitive globs", async () => {
   const root = await fixture();
   assert.deepEqual(await checkGateRouting(root, { paths }), []);
@@ -1075,7 +1235,7 @@ test("reports a stale path-scoped CI map key absent from the workflow", async ()
   );
   assert.match(
     (await checkGateRouting(root, { paths })).join("\n"),
-    /PATH_SCOPED_CI_SCRIPTS key mutation:frontend is absent/u,
+    /CI_REQUIRED_SCRIPTS key mutation:frontend is absent/u,
   );
 });
 
