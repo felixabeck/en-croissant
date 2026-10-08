@@ -100,7 +100,7 @@ function PersonalPlayerCard({
           <Tabs.Tab value="ratings">{t("Home.Personal.Ratings")}</Tabs.Tab>
           <Tabs.Tab value="openings">{t("Home.Personal.Openings")}</Tabs.Tab>
         </Tabs.List>
-        <Tabs.Panel value="overview">
+        <Tabs.Panel value="overview" style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
           <OverviewPanel playerName={name} info={info} isDatabase={isDatabase} />
         </Tabs.Panel>
         <Tabs.Panel value="openings" style={{ overflow: "hidden" }}>
