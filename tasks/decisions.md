@@ -6449,3 +6449,31 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Keep the change to one mechanism. Reversal path: `src-tauri/src/engine/types.rs` defaults, `STDERR_REAP_TIMEOUT` in `src-tauri/src/engine/process.rs`, `SHUTDOWN_BUDGET` in `src-tauri/src/main.rs`.
 * **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, PLAN-ONLY run 2026-10-08, adopted by drain session 316cfcb2-f270-4c92-b083-cfe5aa290e0f · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"b1ce3533995b9518957001683ee7facba95d99dd8aa1950e9df625f282317d87","input_sha256":"628b406593b161faeb8c44d2de5583629ebeec49d0dd6e56ed27f01c654d996d","kind":"mutation-receipt","operation":"867106d6c2fcdf8035603b058a1d91583899cb18751976fc6f7189d4d5c9891f","options":{"section":null},"request_id_sha256":null,"results":["d-20261008-14"],"target":"decisions-ledger","v":1} -->
+
+### d-20261008-15 — Bind search-index identity to its mapped descriptor
+
+* **Question:** Derive search-index cache identity from the authority-bound target and opened sidecar descriptor, or retain pathname canonicalisation in infra?
+* **Governs:** f-20260927-07, f-20261001-01
+* **Chosen:** DatabaseFileTarget::path() plus object, length and mtime of the mapped sidecar descriptor plus IndexSource. Invalidation takes &DatabaseFileTarget and matches the database path or object.
+* **Rejected:** A counted infra canonicalisation primitive moves the reach but keeps the TOCTOU window. Object-only and path-only invalidation each regress an existing eviction case.
+* **Reason:** Removes all six pathname reaches and binds identity to the mapped object, following d-20260928-05. The identity probe remains the linearization point from d-20260929-03. Construction moves before mapping, making d-20261005-06's post-map construction failure impossible without changing its invalidation counter mechanism. Reversal path: restore the path constructor and canonicalising invalidation and re-pin R5.
+* **Decided by:** Codex, adopted reviewed plan, full auto drain, 2026-10-08. **Superseded-by:** -
+
+### d-20261008-16 — Propagate preferred-sidecar descriptor stamp failures
+
+* **Question:** Error or fall through to legacy when preferred-sidecar metadata cannot be read?
+* **Governs:** f-20261002-12
+* **Chosen:** Return the descriptor stamp error. The legacy sidecar is never an identity input.
+* **Rejected:** Treating the error as absence can cache preferred bytes under a legacy identity.
+* **Reason:** Metadata must describe the descriptor actually mapped. Reversal path: reconsider only if legacy sidecars become directly served again.
+* **Decided by:** Codex, adopted reviewed plan, full auto drain, 2026-10-08. **Superseded-by:** -
+
+### d-20261008-17 — Empty both R5 pathname expectation baselines
+
+* **Question:** Empty the active R5 baseline alone or both its active baseline and initial ceiling?
+* **Governs:** f-20260927-07
+* **Chosen:** Empty both arrays and retain the R5 machinery and synthetic tests.
+* **Rejected:** Stale initial entries name functions with no pins. Removing the machinery would allow future pins without its guard.
+* **Reason:** The migration removes every counted reach. Reversal path: re-add a justified entry to both arrays with its hash.
+* **Decided by:** Codex, adopted reviewed plan, full auto drain, 2026-10-08. **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"c8ec077be39f3bc74df648f1f4f2f43103e2d85994edaecf46d4fd36bad10b23","input_sha256":"745deee6684e14c3a95a827b9dfbbf7537d38e99f14455be0f130c61721eda62","kind":"mutation-receipt","operation":"80c51acb591a739caa15490ba945b5aa0e14480c076137b864e07e357b07c3ab","options":{"section":null},"request_id_sha256":null,"results":["d-20261008-15","d-20261008-16","d-20261008-17"],"target":"decisions-ledger","v":1} -->
