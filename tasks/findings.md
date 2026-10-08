@@ -11832,13 +11832,21 @@ Rejected: a longer WebDriver timeout, and a full-FEN dedup key.
 
 ### Home personal summary hides per-database statistics failures
 
-* **ID:** f-20260926-02 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260926-02 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src/components/home/Databases.tsx:121` (the personal summary is built through `collectSequential`), `src/utils/collectSequential.ts:9-35`.
 * **Defect:** `collectSequential` deliberately keeps the successful siblings and only logs a failed item, by its index and a generic message. The home personal summary therefore renders the statistics of the databases that succeeded, or the empty state when all failed, with no sign that one database's `getPlayersGameInfo` call failed. Since f-20260907-05, a `load_iter` row error fails that command closed. The user still sees the reduced totals as if they were complete, and the log does not name the database.
 * **Open question:** how should the personal summary mark partial statistics? Options: a per-database error notice, an inline "incomplete" marker on the totals, or failing the whole summary. Which of the three `collectSequential` callers (`Databases.tsx`, `src/utils/db.ts:229`, `src/utils/lichess/api.tsx:195`) should share that contract?
 * **Why deferred:** it is a UI/UX design question outside the fixed f-20260907-05 mandate (bounded statistics memory). The retain-siblings contract predates that change, which only makes a DB read failure reach it as an error instead of a skipped row.
 * **Proof sought:** a component test with two databases, one rejecting, that asserts the visible partial-data indication, and the logged context names the failed database.
 * **Found by:** Codex `review-error-handling` cumulative lens during f-20260907-05, 2026-09-26, confidence 92.
+* **Handled 2026-10-08** by drain session d26408c9-455d-4640-a682-2db58367a729 through `build` (adopted planned-ahead plan, 4 plan rounds; 6 diff-review rounds). Review history: `tasks/handoffs/2026-10-08-f-20260926-02-review.md`.
+  * `collectSequential` resolves to `{ values, failures }` and takes an optional `describe` that names the item in the native log; all three callers take the new shape (`getDatabases`, `convertToNormalized` through `.values`) — e6400116.
+  * The home personal summary identifies a player's databases by the account database filename (one helper, `src/components/home/accountDatabase.ts`, shared with `AccountCard` and `AccountCards`), counts metadata error records and rejected statistics reads as failed databases, names them in a warning notice inside the card (partial) or in a "Could not load statistics" empty state (all failed); a player missing from a database is an empty contribution — e6400116. Decisions d-20261008-03 … d-20261008-07.
+  * The Overview tab scrolls inside the card so the totals stay reachable under the notice — e373c375. E2e pixels for both states in the pinned container, with a mouse-wheel reachability proof — 595b415c, 2cf4cc78.
+  * Review repairs in the same area: summary scoped to the selected player by the effective player name, listing failures surfaced, summary keyed on the selected player's databases, one exported `sessionPlayerName` for summary, card, accounts modal and account-card grouping — 73fe4567, 43eb94ac, 8222ae4c, 6013b620, ae011712.
+  * Proof: `Databases.test.tsx` two-database case with one rejecting asserts the rendered notice and the log line `personal database summary item 1 (Magnus Chess.com) failed: …`; it goes red with `failures: []`. Container e2e 85/85.
+  * Deferred to the inbox: substring owner lookup in `get_players` (db-search) and group removal without credential revocation (oauth-credentials). Rejected: an anonymous "incomplete" marker and failing the whole summary (d-20261008-03).
+<!-- ledger-meta {"command":"close","effect_lines":7,"effect_sha256":"23c6c9b3cac5a53f4f28f5066b33d5102e25c05125db813aed6a72b65ef361c9","header_sha256":"8aa234dd65a70dc0c65786055bb6ca13e8b4702a02f1bea287d8e9cd94b31eed","header_status":"handled","input_sha256":"318e8288f9e49eb4ec786a63f92c4bbaaa131c259896848fe0d2f6067b14e12b","kind":"mutation-receipt","operation":"c86879a719cd749c694185cb337116b76168184192cb76f6cb29524a93156df5","options":{"section":null},"request_id_sha256":null,"results":["f-20260926-02"],"target":"f-20260926-02","v":1} -->
 
 ---
 
