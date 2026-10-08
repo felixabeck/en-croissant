@@ -11482,6 +11482,70 @@ pub(crate) mod portable_tests {
         assert_eq!(fs::read(&registry).unwrap(), disk_before);
     }
 
+    #[test]
+    fn startup_owner_raw_input_cap_scales_with_grandfathered_registry() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = dir.path().join("registry.json");
+        let book_path = dir.path().join("legacy.book");
+        fs::write(&book_path, b"book").unwrap();
+        {
+            let mut initial = PathAuthority::open(registry.clone(), vec![]).unwrap();
+            let book = initial.register_opening_book(&book_path, "legacy").unwrap();
+            let template = initial.persistent.get(&book.id.id).unwrap().clone();
+            for index in 0..(MAX_AUTHORITY_IDS + 1) {
+                let mut entry = template.clone();
+                entry.stored.id.id = format!("legacy-book-{index}");
+                initial.persistent.insert(entry.stored.id.id.clone(), entry);
+            }
+            initial.save().unwrap();
+        }
+        let mut authority = PathAuthority::open(registry.clone(), vec![]).unwrap();
+        assert_eq!(authority.authority_id_input_limit(), MAX_AUTHORITY_IDS + 2);
+        let registry_ids = authority
+            .persistent
+            .keys()
+            .map(|id| PathRef { id: id.clone() })
+            .collect::<Vec<_>>();
+        let input_limit = authority.authority_id_input_limit() + MAX_STARTUP_OWNER_UNKNOWN_IDS;
+        let mut retained_ids = registry_ids.clone();
+        retained_ids.extend((0..MAX_STARTUP_OWNER_UNKNOWN_IDS).map(|index| PathRef {
+            id: format!("unknown-{index}"),
+        }));
+        assert_eq!(retained_ids.len(), input_limit);
+        assert!(retained_ids.len() > MAX_AUTHORITY_IDS + MAX_STARTUP_OWNER_UNKNOWN_IDS);
+        assert_eq!(
+            authority
+                .reconcile_startup_owners(StartupPathOwners {
+                    retained_ids: retained_ids.clone(),
+                    trusted_families: vec![],
+                })
+                .unwrap(),
+            CommitDurability::Durable
+        );
+        for id in &registry_ids {
+            assert!(authority.persistent.contains_key(&id.id));
+        }
+        let persistent_before = authority.persistent.clone();
+        let retained_before = authority.startup_retained_ids.clone();
+        let completed_before = authority.completed_owner_families.clone();
+        let disk_before = fs::read(&registry).unwrap();
+        retained_ids.push(PathRef {
+            id: "one-too-many".into(),
+        });
+        assert_eq!(retained_ids.len(), input_limit + 1);
+        assert!(matches!(
+            authority.reconcile_startup_owners(StartupPathOwners {
+                retained_ids,
+                trusted_families: vec![],
+            }),
+            Err(Error::ResourceLimit(_))
+        ));
+        assert!(authority.persistent == persistent_before);
+        assert_eq!(authority.startup_retained_ids, retained_before);
+        assert_eq!(authority.completed_owner_families, completed_before);
+        assert_eq!(fs::read(&registry).unwrap(), disk_before);
+    }
+
     #[cfg(windows)]
     #[test]
     fn directory_root_open_removal_is_conflict() {
