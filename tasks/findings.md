@@ -13999,7 +13999,7 @@ The earlier cancellation remains historical evidence, superseded by the successf
 ## 2026-10-08 — filed through the inbox spool
 
 ### Remote CI repair: Test
-* **ID:** f-20261008-16 · **Status:** open · **Area:** ci-workflows · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20261008-16 · **Status:** handled · **Area:** ci-workflows · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Filed from:** 766d3079-3cd6-4d27-b3b6-9229799e9f29
 
 * **Found by:** drain remote-CI check (Codex)
@@ -14012,3 +14012,9 @@ The earlier cancellation remains historical evidence, superseded by the successf
 * **Repair scope:** Decision d-20261008-29 fixes the shared timing origin in the test and three neighboring drain and retirement tests. No unresolved product or architecture question remains. The required named lens is review-tests in push round 1.
 * **Measured evidence:** A disposable harness using the original test body from Git reproduced the old elapsed assertion failure with a 300 ms parent delay after spawn. Starting the timer before spawn passed the same schedule. The primary repaired drain tests passed and the exact test passed 30 repetitions. The shared-helper version still requires its own proof and final push review.
 <!-- ledger-meta {"command":"annotate","effect_lines":3,"effect_sha256":"ba4cf6a2ade7aeda375433586a36def8cfe4acab9335a41fd6e5b7bcf6f4a7ae","input_sha256":"eba07c083318a7ff05ac1b988aeab02398037ef8a64601706d6e2712d72ee1e8","kind":"mutation-receipt","operation":"ca1d21042f285ad220f4203d636edd570537fa5e15bffaed18d2b55ce50f8f9d","options":{"section":null},"request_id_sha256":null,"results":["f-20261008-16"],"target":"f-20261008-16","v":1} -->
+
+* **Handled:** Source commit `60e67916` corrects the test measurement origin by capturing Instant before spawning the delayed release child. A shared test-only helper routes the primary drain test and three neighboring database drain and retirement tests through that boundary. The production DrainGate and its ticket lifecycle are unchanged.
+* **Proof:** `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` passed. `cargo test --manifest-path src-tauri/Cargo.toml --locked db::repository:: -- --nocapture` passed all 69 tests. The primary exact test passed 30 repetitions and the three neighboring exact tests passed 10 each. The orchestrator reran all five drain-gate tests successfully. `pnpm checks:pre-review` passed.
+* **Reproduction:** A disposable harness extracted the original test body from Git and preserved the production gate. With a 300 ms parent delay after spawning the releaser, the old elapsed assertion failed, exit 101, and the helper-based assertion passed, exit 0. Evidence: `/tmp/chessfable-f16-helper-proof-Q6Jns0/race-summary.txt`. This measures the reported scheduling race rather than claiming exhaustive schedule coverage.
+* **Decision:** d-20261008-29 records the shared timing origin and rejects widened delays or relaxed assertions. Push review, full affected gates, the remote repair run, and installation are still release steps of this session.
+<!-- ledger-meta {"command":"close","effect_lines":4,"effect_sha256":"97b429ffb015d52bc81e1f1b171fee0d8d0f60c6860b37450b30669235cc85cb","header_sha256":"ecc81cd780e7c647108737a38ac3587502e6b1e819045784adedf37bfe4c4038","header_status":"handled","input_sha256":"19a45b1800d3ad7e1ec4dce009bb71cb01326fe1967fce06329213977b336c53","kind":"mutation-receipt","operation":"4bc7e3ff70ddf869c20deb776a28b261053769eded3b643bebcbbc376631087f","options":{"section":null},"request_id_sha256":null,"results":["f-20261008-16"],"target":"f-20261008-16","v":1} -->
