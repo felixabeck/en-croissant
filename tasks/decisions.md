@@ -6581,3 +6581,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The finding authorizes source-policy placement verification. Current scheduler execution has an independent owner. Reversal requires a separate finding with evidence that this boundary prevents satisfying the mandate.
 * **Decided by:** Codex, adopted full-auto build for f-20260926-01, 2026-10-08 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":17,"effect_sha256":"5b4a214dc4230ae12eaf1fa7333b291d97ecbe166d30d4e7024ea8356430ddae","input_sha256":"7e262955c36f3ecc6df8ccfdcfd1d624f864bc50888124d364f977dc4b0e6abb","kind":"mutation-receipt","operation":"cbdc88974e583d682436bb661a323fbaf767e0fa6b1e53e97535682e5064fcff","options":{"section":null},"request_id_sha256":null,"results":["d-20261008-27","d-20261008-28"],"target":"decisions-ledger","v":1} -->
+
+### d-20261008-29 — Where does a delayed database test's elapsed measurement begin?
+
+* **Question:** Where does the elapsed measurement begin when a database test spawns a delayed ticket release or cancellation?
+* **Governs:** f-20261008-16
+* **Chosen:** A shared test-only delayed-action helper captures Instant before spawning the scoped release child. The four drain and retirement tests use that helper and retain their existing elapsed and result assertions.
+* **Rejected:** Starting the clock after spawning the child, widening the delay, or relaxing the elapsed assertion. Those preserve or hide the scheduler race instead of correcting the measurement origin.
+* **Reason:** Test run 37844909056 failed because the release child's sleep began before the parent's measurement. A disposable harness using the test body from Git reproduced the old assertion failure when the parent was delayed after spawn. The same pattern occurs in three neighboring tests. Reversal path: replace the timing checks with deterministic wait-boundary synchronization if new evidence shows a gap the consistent measurement origin cannot cover.
+* **Decided by:** Codex, full-auto drain 84dcc510-ab78-41fb-a09b-0fda9077ba23 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"0246c1b14dfb66ca4b8e6c04de92a83cf838b0ce5b2476d56fd5a50f8481b5b4","input_sha256":"5e8003343470070c21127a52c4f12867f126b77d2684e6e8701eb800c2db202b","kind":"mutation-receipt","operation":"638477ba0c43b3ef0bbc19639e2c4be97123aceaaedf19878dd180622c4fbf31","options":{"section":null},"request_id_sha256":null,"results":["d-20261008-29"],"target":"decisions-ledger","v":1} -->
