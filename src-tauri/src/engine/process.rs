@@ -273,7 +273,6 @@ struct FakeIo {
     exchange_observation: Option<(ExchangePoint, oneshot::Sender<()>)>,
     blocked_write: Option<String>,
     termination_error: Option<Arc<Error>>,
-    termination_handshake: Option<mpsc::UnboundedSender<()>>,
     termination_gate: Option<Arc<TerminationReplyGate>>,
 }
 
@@ -312,7 +311,6 @@ impl FakeIo {
             exchange_observation: None,
             blocked_write: None,
             termination_error: None,
-            termination_handshake: None,
             termination_gate: None,
         }
     }
@@ -405,9 +403,6 @@ impl UciIo for FakeIo {
     }
 
     async fn terminate(&mut self, _: Duration, _: Duration) -> Result<(), Error> {
-        if let Some(started) = &self.termination_handshake {
-            let _ = started.send(());
-        }
         if let Some(gate) = &self.termination_gate {
             gate.park().await;
         }
@@ -11300,7 +11295,6 @@ mod tests {
     async fn queued_and_later_terminators_report_the_final_reap() {
         for preempted in [false, true] {
             let (started_tx, started) = oneshot::channel();
-            let (reap_tx, mut reap_started) = mpsc::unbounded_channel();
             let failure = Arc::new(Error::RootFailure {
                 error: Box::new(Error::EngineTimeout("injected final reap failure".into())),
                 reason: crate::error::RootFailure::Unusable,
@@ -11311,7 +11305,6 @@ mod tests {
                 Some((ExchangePoint::ReadAfter("isready".into()), started_tx));
             io.termination_error = Some(failure.clone());
             // Park the reap so a timeout-triggered recovery has a queued Terminate.
-            io.termination_handshake = Some(reap_tx);
             let gate = TerminationReplyGate::new();
             io.termination_gate = Some(gate.clone());
             let reaps = io.terminate_calls.clone();
@@ -11335,10 +11328,11 @@ mod tests {
                 .unwrap()
                 .unwrap();
             if !preempted {
-                timeout(Duration::from_secs(2), reap_started.recv())
-                    .await
-                    .unwrap()
-                    .unwrap();
+                wait_for_flag(
+                    &gate.parked,
+                    "timeout-triggered recovery parked in teardown",
+                )
+                .await;
             }
             let termination = tokio::spawn({
                 let actor = actor.clone();
