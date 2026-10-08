@@ -8,9 +8,44 @@
 //     --expect-progress-generation N    require the first lease's exact decimal digits
 //     --expect-clear-rejection          expect the disposable binary's typed clear failure
 //
-// Progress assertions below have unique messages. Their staged-failure matrix is pending the
-// orchestrator's disposable-binary measurements. No runtime or staged-failure proof is claimed
-// by this implementation. The cancellation probe replays the catalog button's production
+// Progress assertion staging: 2026-10-08, disposable APPLICATION INPUTS.
+// Unmodified verifier. Every row below actually emitted its unique failure with exit 1.
+// Durable record of full actual messages, commands, hashes and exact mutation patches:
+// [Progress runtime proof](../tasks/handoffs/2026-10-08-f-20260925-02-review.md)
+// Supplemental logs, exact mutations, commands, input/binary hashes and screenshots:
+// /tmp/build-progress-aa086ec3/runtime/proof-report.md and manifest.json
+// Normal transport 13/13, high rejected-clear renderer 17/17, restoration 13/13, all exit 0.
+// High clock seed 9007199254740992, first exact string generation 9007199254740993.
+// Failure message -> application-input case (all exit 1):
+// progress native event listener registers -> denied-events
+// progress start lease has exact canonical string generation -> start-number
+// progress running event has exact canonical string generation -> event-number
+// progress state-update string lease reaches native with exact identity -> update-reject
+// progress snapshot has exact canonical string generation -> snapshot-number
+// progress terminal state update accepts the string lease -> update-reject
+// progress terminal event has exact canonical string generation -> event-number
+// progress malformed lease rejects without changing the snapshot -> malformed-accept
+// progress invalid clear rejects as a native IPC operation -> null-clear-accept
+// progress deliberate clear failure returns a typed native rejection -> rejection-absent-low
+// progress clear return has exact canonical string generation -> clear-number
+// progress cleared event has exact canonical string generation -> event-number
+// progress clear removes the native snapshot -> clear-retain
+// progress native event listener is released -> denied-events
+// progress high-generation wire event drives the real renderer bar -> low-reject
+// progress cancellation presses the production pre-claim job button -> ui-no-cancel
+// progress rejected-clear null acknowledgement hides the cancelled generation -> ui-no-null-fence
+// progress fenced old native event cannot resurrect the bar -> ui-no-fence
+// progress newer retry remains distinct and visible after rejected clear -> ui-retry-gap
+// progress newer retry continues updating through the real facade -> ui-no-update
+// progress application must name an existing absolute binary path -> option-application
+// expected progress generation must be a canonical unsigned u64 decimal string -> option-generation
+// disposable progress measurement options require --progress-contract -> option-focused
+// timed out waiting for progress renderer startup -> precondition-startup
+// timed out waiting for progress database catalog opener -> precondition-opener
+// timed out waiting for progress database catalog card -> precondition-catalog
+// No argued or unstageable assertions. Disposable source restored byte-for-byte.
+//
+// The cancellation probe replays the catalog button's production
 // onClick handler and presses Cancel synchronously before prepare_download can settle. This
 // exercises the production pre-claim cancellation and failed-clear cleanup without a network
 // download, while a native lease already drives the real facade, hook and ProgressButton.
