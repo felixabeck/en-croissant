@@ -704,3 +704,13 @@ The separate compact tab-height issue is published through findings.py to tasks/
 All implementation and review obligations are closed. Plan review lineage has seven completed rounds with inherited counts preserved, I1..I11 closed, and no carried items. Code review has two completed rounds, F1..F5 closed. The root independently verified each phase, the repair, isolated withdrawals, and the actual native Settings views. Plan authorship and arbitration shared one original context. This root authored and arbitrated the runtime correction and owns implementation arbitration. Detection ran on the same model family as the code.
 
 At this historical checkpoint final push gates, the ordinary push, required pushed-SHA CI and local installation had not run. Their actual results belong in the post-push build-ledger row. No release or deployment is requested. The only remaining execution work at this checkpoint is that push workflow, not an unresolved implementation or review finding.
+
+## Final known-records closure round 3
+
+The mechanical-role records lens approved bad84bf1..f78fa00e with no new finding. It checked the native logs, failure controls, restored results and published inbox entries. R3 wall elapsed approximately 127 seconds. No separate review wait identified, active review wall time unknown. Diff-review adoption counts are r1=5 r2=0 r3=0. All five unique issues are closed. This final addition preserves the review result verbatim and introduces no new system claim beyond that result.
+
+```text
+No factual or contract findings. Native proof logs, failure controls, restored results, and inbox entries support the closure claims. Historical pending statements are explicitly marked.
+
+VERDICT: APPROVED
+```
