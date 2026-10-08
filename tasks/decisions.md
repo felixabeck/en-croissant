@@ -6439,3 +6439,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Release and stop are not on the shutdown path. Known limit: a release racing a Kill or shutdown on the same actor now sees its `stop` fail with `EngineDisconnected` promptly instead of after the exchange — the same outcome the race already had once `Terminate` closed the channel. Reversal path: cancel `interrupt` in the release path in `src-tauri/src/engine/process.rs`.
 * **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, PLAN-ONLY run 2026-10-08, adopted by drain session 316cfcb2-f270-4c92-b083-cfe5aa290e0f · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"1954abf80a2a67aa82fabe376ca631793707912d203ca20ef1721a5df8f7edf6","input_sha256":"87b234a9f2c5c24816d581409dca38c3527cbe06dbe415de6b3f4822f680b3fb","kind":"mutation-receipt","operation":"a6416d1462f580d780a3fa3b7c2efb7f91faddbf34722bb341fad5ee5e455342","options":{"section":null},"request_id_sha256":null,"results":["d-20261008-13"],"target":"decisions-ledger","v":1} -->
+
+### d-20261008-14 — Do any engine deadline or shutdown-budget constants change with termination preemption?
+
+* **Question:** Once termination preempts the in-flight exchange (f-20260927-06), are `readyok`/`uciok`/`stop`/`quit`/`kill_reap`, `STDERR_REAP_TIMEOUT` or `SHUTDOWN_BUDGET` adjusted?
+* **Governs:** f-20260927-06
+* **Chosen:** No constant changes; the shutdown bound (one teardown ≤ 5.2 s inside 15 s) follows from preemption alone.
+* **Rejected:** shrinking `SHUTDOWN_BUDGET` to the new bound — removes the margin the budget shares with game, sound and operation shutdown; enlarging it — unnecessary once preemption holds.
+* **Reason:** Keep the change to one mechanism. Reversal path: `src-tauri/src/engine/types.rs` defaults, `STDERR_REAP_TIMEOUT` in `src-tauri/src/engine/process.rs`, `SHUTDOWN_BUDGET` in `src-tauri/src/main.rs`.
+* **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, PLAN-ONLY run 2026-10-08, adopted by drain session 316cfcb2-f270-4c92-b083-cfe5aa290e0f · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"b1ce3533995b9518957001683ee7facba95d99dd8aa1950e9df625f282317d87","input_sha256":"628b406593b161faeb8c44d2de5583629ebeec49d0dd6e56ed27f01c654d996d","kind":"mutation-receipt","operation":"867106d6c2fcdf8035603b058a1d91583899cb18751976fc6f7189d4d5c9891f","options":{"section":null},"request_id_sha256":null,"results":["d-20261008-14"],"target":"decisions-ledger","v":1} -->
