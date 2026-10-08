@@ -2025,12 +2025,10 @@ impl GameManager {
             game_id.to_owned(),
             EngineDeadlines::default().quit,
         );
-        // The abort itself has already committed: the session is tombstoned and
-        // removed, and a loop that ignored its signal had its engines terminated
-        // directly. A cleanup that ran long is therefore not a failed abort, and
-        // surfacing it as one would show the user an error for an operation that
-        // succeeded and give them nothing they could act on. It is logged, not
-        // returned. Shutdown is the opposite case and does propagate: there the
+        // The abort has committed: the session is tombstoned and removed. The
+        // armed retirement owner is responsible for pending teardown, including
+        // cancellation. Completed cleanup failures are logged, and the committed
+        // abort returns Ok. Shutdown instead propagates cleanup failures: there the
         // caller is `shutdown_backend`, which must know whether a child survived.
         let _ = retirement.finish().await;
         Ok(())
@@ -3702,7 +3700,7 @@ mod tests {
         assert_unrelated_engine_survives(&live.engine_supervisor, unrelated);
     }
 
-    async fn assert_published_teardown_finished(
+    async fn assert_published_teardown_finished_and_cleanup_unrelated_engine(
         manager: &GameManager,
         game_id: &str,
         live: &LiveSession,
@@ -5436,7 +5434,10 @@ done
 
         drop(abort);
         drop(controller);
-        assert_published_teardown_finished(&manager, game_id, &live, &engines, &unrelated).await;
+        assert_published_teardown_finished_and_cleanup_unrelated_engine(
+            &manager, game_id, &live, &engines, &unrelated,
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -5483,7 +5484,10 @@ done
         wait_until(|| retaken.load(Ordering::SeqCst)).await;
         assert_teardown_engines_owned(&supervisor, &engines);
         release_tx.send(()).unwrap();
-        assert_published_teardown_finished(&manager, game_id, &live, &engines, &unrelated).await;
+        assert_published_teardown_finished_and_cleanup_unrelated_engine(
+            &manager, game_id, &live, &engines, &unrelated,
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -5511,7 +5515,10 @@ done
         tokio::task::yield_now().await;
         assert_published_teardown_untouched(&manager, game_id, &live, &engines, &unrelated);
         manager.abort_game(game_id, 1).await.unwrap();
-        assert_published_teardown_finished(&manager, game_id, &live, &engines, &unrelated).await;
+        assert_published_teardown_finished_and_cleanup_unrelated_engine(
+            &manager, game_id, &live, &engines, &unrelated,
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -5526,7 +5533,85 @@ done
             Err(Error::Conflict(message)) if message == "game session is no longer current"));
         assert_published_teardown_untouched(&manager, game_id, &live, &engines, &unrelated);
         manager.abort_game(game_id, 1).await.unwrap();
-        assert_published_teardown_finished(&manager, game_id, &live, &engines, &unrelated).await;
+        assert_published_teardown_finished_and_cleanup_unrelated_engine(
+            &manager, game_id, &live, &engines, &unrelated,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn abort_natural_completion_before_removal_commit_preserves_completed_session() {
+        let game_id = "abort_natural_completion_before_removal_commit_preserves_completed_session";
+        let manager = GameManager::new();
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let (live, engines, unrelated) =
+            published_teardown_fixture(&manager, &supervisor, game_id, healthy_teardown_actors())
+                .await;
+        let completed_state = {
+            let mut controller = live.controller.write().await;
+            assert!(controller.end_game(GameResult::Draw {
+                reason: DrawReason::Agreement,
+            }));
+            serde_json::to_value(controller.get_state()).unwrap()
+        };
+        let metadata = manager.session_metadata.lock().await;
+        let mut completion = Box::pin(manager.complete_exact(game_id, 1, &live.controller));
+        // Tokio's metadata mutex queues completion ahead of abort's commit.
+        assert!(futures_util::poll!(completion.as_mut()).is_pending());
+        let mut abort = Box::pin(manager.abort_game(game_id, 1));
+        assert!(futures_util::poll!(abort.as_mut()).is_pending());
+        assert_published_teardown_untouched(&manager, game_id, &live, &engines, &unrelated);
+        drop(metadata);
+        completion.await;
+
+        assert!(matches!(abort.await,
+            Err(Error::Conflict(message)) if message == "game session changed before abort commit"));
+        // Allow any erroneously armed drop remainder to run before observing it.
+        tokio::task::yield_now().await;
+        assert!(!*live.shutdown.borrow());
+        assert!(live.join.lock().unwrap().is_some());
+        assert_teardown_engines_owned(&supervisor, &engines);
+        for engine in &engines {
+            assert!(supervisor
+                .get_exact(&engine.key)
+                .is_some_and(|entry| entry.generation == engine.generation));
+        }
+        assert_unrelated_engine_survives(&supervisor, &unrelated);
+        assert!(game_cleanup_messages(game_id, 1, "retirement").is_empty());
+        assert!(manager.games.get(game_id).is_none());
+        {
+            let metadata = manager.session_metadata.lock().await;
+            let latest = metadata.latest.get(game_id).unwrap();
+            assert_eq!(latest.session, 1);
+            assert!(matches!(latest.disposition, SessionDisposition::Completed));
+            let snapshots = metadata
+                .snapshots
+                .iter()
+                .filter(|snapshot| snapshot.game_id == game_id)
+                .collect::<Vec<_>>();
+            assert_eq!(snapshots.len(), 1);
+            assert_eq!(snapshots[0].session, 1);
+            assert_eq!(
+                serde_json::to_value(&snapshots[0].state).unwrap(),
+                completed_state,
+            );
+        }
+        assert_eq!(
+            serde_json::to_value(manager.get_game_state(game_id, 1).await.unwrap()).unwrap(),
+            completed_state,
+        );
+
+        // Completion metadata does not own this fixture's responsive loop or engines.
+        live.finish_retired(Duration::from_secs(1)).await.unwrap();
+        for engine in &engines {
+            wait_for_generation_gone(&supervisor, &engine.key, engine.generation).await;
+        }
+        assert!(live.join.lock().unwrap().is_none());
+        assert_unrelated_engine_survives(&supervisor, &unrelated);
+        supervisor
+            .terminate_exact(&unrelated.key, unrelated.generation)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -5565,7 +5650,10 @@ done
             );
             assert!(!messages[0].contains(cause));
         }
-        assert_published_teardown_finished(&manager, game_id, &live, &engines, &unrelated).await;
+        assert_published_teardown_finished_and_cleanup_unrelated_engine(
+            &manager, game_id, &live, &engines, &unrelated,
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -5623,7 +5711,10 @@ done
         assert_unrelated_engine_survives(&supervisor, &unrelated);
         drop(metadata);
         retry.await.unwrap();
-        assert_published_teardown_finished(&manager, game_id, &live, &engines, &unrelated).await;
+        assert_published_teardown_finished_and_cleanup_unrelated_engine(
+            &manager, game_id, &live, &engines, &unrelated,
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -7293,27 +7384,16 @@ done
         let game_id = "retired_session_reports_termination_failure_after_clean_join";
         let manager = Arc::new(GameManager::new());
         let supervisor = Arc::new(EngineSupervisor::default());
-        let unrelated = register_unrelated_test_engine(&supervisor, game_id).await;
         let white_error = format!("{game_id}-white-termination-error");
         let black_error = format!("{game_id}-black-termination-error");
-        let white = register_test_game_engine_with_actor(
+        let (live, [white, black], unrelated) = published_teardown_fixture(
+            &manager,
             &supervisor,
             game_id,
-            1,
-            "white",
-            "retired-failing-white",
-            "retired-failing-white-handle",
-            EngineActor::failing_terminate_test_actor(white_error.clone()),
-        )
-        .await;
-        let black = register_test_game_engine_with_actor(
-            &supervisor,
-            game_id,
-            1,
-            "black",
-            "retired-failing-black",
-            "retired-failing-black-handle",
-            EngineActor::failing_terminate_test_actor(black_error.clone()),
+            [
+                EngineActor::failing_terminate_test_actor(white_error.clone()),
+                EngineActor::failing_terminate_test_actor(black_error.clone()),
+            ],
         )
         .await;
         let white_key = white.key.clone();
@@ -7322,14 +7402,6 @@ done
         let black_generation = black.generation;
         assert!(registration_cleanup_messages(&white_key, white_generation).is_empty());
         assert!(registration_cleanup_messages(&black_key, black_generation).is_empty());
-        let (live, controller) = test_live_session_with_supervisor(game_id, 1, supervisor.clone());
-        set_session_engines(&controller, Some(white), Some(black)).await;
-        let join = loop_exits_without_engine_cleanup(live.shutdown.subscribe());
-        match live.join.lock() {
-            Ok(mut slot) => *slot = Some(join),
-            Err(poisoned) => *poisoned.into_inner() = Some(join),
-        }
-        publish_test_session(&manager, game_id, live.clone()).await;
         assert!(game_cleanup_messages(game_id, 1, "retirement").is_empty());
 
         let error = manager
@@ -7456,27 +7528,16 @@ done
         let game_id = "retired_session_cancellation_remainder_logs_and_reaps_failing_engines";
         let manager = Arc::new(GameManager::new());
         let supervisor = Arc::new(EngineSupervisor::default());
-        let unrelated = register_unrelated_test_engine(&supervisor, game_id).await;
         let white_error = format!("{game_id}-white-termination-error");
         let black_error = format!("{game_id}-black-termination-error");
-        let white = register_test_game_engine_with_actor(
+        let (live, [white, black], unrelated) = published_teardown_fixture(
+            &manager,
             &supervisor,
             game_id,
-            1,
-            "white",
-            "retirement-cancel-white",
-            "retirement-cancel-white-handle",
-            EngineActor::failing_terminate_test_actor(white_error.clone()),
-        )
-        .await;
-        let black = register_test_game_engine_with_actor(
-            &supervisor,
-            game_id,
-            1,
-            "black",
-            "retirement-cancel-black",
-            "retirement-cancel-black-handle",
-            EngineActor::failing_terminate_test_actor(black_error.clone()),
+            [
+                EngineActor::failing_terminate_test_actor(white_error.clone()),
+                EngineActor::failing_terminate_test_actor(black_error.clone()),
+            ],
         )
         .await;
         let white_key = white.key.clone();
@@ -7485,16 +7546,8 @@ done
         let black_generation = black.generation;
         assert!(registration_cleanup_messages(&white_key, white_generation).is_empty());
         assert!(registration_cleanup_messages(&black_key, black_generation).is_empty());
-        let (live, controller) = test_live_session_with_supervisor(game_id, 1, supervisor.clone());
-        set_session_engines(&controller, Some(white), Some(black)).await;
-        let join = loop_exits_without_engine_cleanup(live.shutdown.subscribe());
-        match live.join.lock() {
-            Ok(mut slot) => *slot = Some(join),
-            Err(poisoned) => *poisoned.into_inner() = Some(join),
-        }
-        publish_test_session(&manager, game_id, live.clone()).await;
         assert!(game_cleanup_messages(game_id, 1, "retirement").is_empty());
-        let controller_guard = controller.write().await;
+        let controller_guard = live.controller.write().await;
         let retirement = tokio::spawn({
             let manager = manager.clone();
             let live = live.clone();
