@@ -2177,6 +2177,9 @@ while IFS= read -r line; do
             echo uciok
             ;;
         isready)
+            if [ -f "$PWD/silent-ready" ]; then
+                continue
+            fi
             if [ -f "$PWD/slow-ready" ]; then
                 sleep 0.2
             fi
@@ -3849,106 +3852,134 @@ done
     async fn warm_transition_termination_stops_after_one_slow_exchange_on_fresh_and_reuse_paths() {
         for reused in [false, true] {
             for termination in ["exact", "all", "release"] {
-                let (directory, app, engine, _) = resource_engine_fixture();
-                std::fs::write(directory.path().join("release"), b"").unwrap();
-                let state = app.state::<AppState>().inner().clone();
-                let supervisor = state.engine_supervisor.clone();
-                let key = EngineKey::new("slow-transition".into(), "id".into()).unwrap();
-                if reused {
-                    run_warm_fixture_search(&app, &key, engine.clone(), Vec::new())
-                        .await
-                        .unwrap();
-                }
-                let capture_path = directory.path().join("capture.log");
-                let previous_ready = std::fs::read_to_string(&capture_path)
-                    .unwrap_or_default()
-                    .lines()
-                    .filter(|line| *line == "wire=isready")
-                    .count();
-                let previous_go = std::fs::read_to_string(&capture_path)
-                    .unwrap_or_default()
-                    .lines()
-                    .filter(|line| line.starts_with("wire=go"))
-                    .count();
-                std::fs::write(directory.path().join("slow-ready"), b"").unwrap();
-                let generation = supervisor
-                    .prepare_engine_search(key.clone(), key.engine.clone(), engine.id.clone())
-                    .await
-                    .unwrap();
-                let search_generation = generation.parse::<u64>().unwrap();
-                let start_key = key.clone();
-                let start_state = state.clone();
-                let start_app = app.clone();
-                let search = tokio::spawn(async move {
-                    get_best_moves_core(
-                        start_key.engine,
-                        engine,
-                        start_key.tab,
-                        GoMode::Depth(1),
-                        EngineOptions {
-                            fen: start_fen().to_string(),
-                            ..EngineOptions::default()
-                        },
-                        generation,
-                        start_app,
-                        start_state,
-                    )
-                    .await
-                });
-                // Observe the exchange on the child's wire before requesting termination.
-                tokio::time::timeout(Duration::from_secs(2), async {
-                    loop {
-                        let capture = std::fs::read_to_string(&capture_path).unwrap_or_default();
-                        if capture
-                            .lines()
-                            .filter(|line| *line == "wire=isready")
-                            .count()
-                            > previous_ready
-                        {
-                            break;
-                        }
-                        tokio::time::sleep(Duration::from_millis(2)).await;
-                    }
-                })
-                .await
-                .unwrap();
-                let current = supervisor.get_exact(&key).unwrap();
-                let started = Instant::now();
-                tokio::time::timeout(Duration::from_millis(600), async {
-                    match termination {
-                        "exact" => supervisor.terminate_exact(&key, current.generation).await,
-                        "all" => supervisor.terminate_all().await,
-                        "release" => supervisor.release_generation(&key, search_generation).await,
-                        _ => unreachable!(),
-                    }
-                })
-                .await
-                .unwrap()
-                .unwrap();
-                assert!(started.elapsed() < Duration::from_millis(600));
-                assert!(current.cancelled.load(Ordering::SeqCst));
-                assert!(current
-                    .current_search()
-                    .unwrap()
-                    .cancelled
-                    .load(Ordering::SeqCst));
-                let result = tokio::time::timeout(Duration::from_secs(1), search)
-                    .await
-                    .unwrap()
-                    .unwrap();
-                assert!(
-                    matches!(result, Err(Error::Cancellation)),
-                    "reused={reused}, termination={termination}: {result:?}"
-                );
-                assert!(supervisor.get_exact(&key).is_none());
-                let capture = std::fs::read_to_string(&capture_path).unwrap();
-                assert_eq!(capture.lines().filter(|line| *line == "wire=isready").count(), previous_ready + 1,
-                    "no second readiness exchange: reused={reused}, termination={termination}: {capture}");
-                assert_eq!(capture.lines().filter(|line| line.starts_with("wire=go")).count(), previous_go,
-                    "no go after termination: reused={reused}, termination={termination}: {capture}");
-                assert!(capture.lines().any(|line| line == "wire=quit"));
+                assert_warm_transition_termination(reused, termination, false).await;
             }
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn warm_transition_termination_preempts_silent_readiness_on_fresh_and_reuse_paths() {
+        for reused in [false, true] {
+            for termination in ["exact", "all"] {
+                assert_warm_transition_termination(reused, termination, true).await;
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    async fn assert_warm_transition_termination(reused: bool, termination: &str, silent: bool) {
+        let (directory, app, engine, _) = resource_engine_fixture();
+        std::fs::write(directory.path().join("release"), b"").unwrap();
+        let state = app.state::<AppState>().inner().clone();
+        let supervisor = state.engine_supervisor.clone();
+        let key = EngineKey::new("slow-transition".into(), "id".into()).unwrap();
+        if reused {
+            run_warm_fixture_search(&app, &key, engine.clone(), Vec::new())
+                .await
+                .unwrap();
+        }
+        let capture_path = directory.path().join("capture.log");
+        let previous_ready = std::fs::read_to_string(&capture_path)
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| *line == "wire=isready")
+            .count();
+        let previous_go = std::fs::read_to_string(&capture_path)
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| line.starts_with("wire=go"))
+            .count();
+        let ready_flag = if silent { "silent-ready" } else { "slow-ready" };
+        std::fs::write(directory.path().join(ready_flag), b"").unwrap();
+        let generation = supervisor
+            .prepare_engine_search(key.clone(), key.engine.clone(), engine.id.clone())
+            .await
+            .unwrap();
+        let search_generation = generation.parse::<u64>().unwrap();
+        let start_key = key.clone();
+        let start_state = state.clone();
+        let start_app = app.clone();
+        let search = tokio::spawn(async move {
+            get_best_moves_core(
+                start_key.engine,
+                engine,
+                start_key.tab,
+                GoMode::Depth(1),
+                EngineOptions {
+                    fen: start_fen().to_string(),
+                    ..EngineOptions::default()
+                },
+                generation,
+                start_app,
+                start_state,
+            )
+            .await
+        });
+        // Observe the exchange on the child's wire before requesting termination.
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let capture = std::fs::read_to_string(&capture_path).unwrap_or_default();
+                if capture
+                    .lines()
+                    .filter(|line| *line == "wire=isready")
+                    .count()
+                    > previous_ready
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let current = supervisor.get_exact(&key).unwrap();
+        let started = Instant::now();
+        tokio::time::timeout(Duration::from_millis(600), async {
+            match termination {
+                "exact" => supervisor.terminate_exact(&key, current.generation).await,
+                "all" => supervisor.terminate_all().await,
+                "release" => supervisor.release_generation(&key, search_generation).await,
+                _ => unreachable!(),
+            }
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(started.elapsed() < Duration::from_millis(600));
+        assert!(current.cancelled.load(Ordering::SeqCst));
+        assert!(current
+            .current_search()
+            .unwrap()
+            .cancelled
+            .load(Ordering::SeqCst));
+        let result = tokio::time::timeout(Duration::from_secs(1), search)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(result, Err(Error::Cancellation)),
+            "reused={reused}, termination={termination}: {result:?}"
+        );
+        assert!(supervisor.get_exact(&key).is_none());
+        let capture = std::fs::read_to_string(&capture_path).unwrap();
+        assert_eq!(
+            capture
+                .lines()
+                .filter(|line| *line == "wire=isready")
+                .count(),
+            previous_ready + 1,
+            "no second readiness exchange: reused={reused}, termination={termination}: {capture}"
+        );
+        assert_eq!(
+            capture
+                .lines()
+                .filter(|line| line.starts_with("wire=go"))
+                .count(),
+            previous_go,
+            "no go after termination: reused={reused}, termination={termination}: {capture}"
+        );
+        assert!(capture.lines().any(|line| line == "wire=quit"));
     }
 
     #[cfg(unix)]

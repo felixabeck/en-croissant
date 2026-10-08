@@ -75,9 +75,10 @@ recomputed on the next read.
   another path, and prove a cached `last_best_moves` still belongs to the current position.
 * Bound every wait for a terminal UCI line (`bestmove` after `stop`, `readyok`, `uciok`) by one
   absolute deadline computed once; output cannot reset it. The stop deadline starts before `stop`
-  is written and covers both the write and drain. The actor serializes commands and the stop drain
-  does not observe the termination interrupt, so a separate write budget can push shutdown past
-  `SHUTDOWN_BUDGET`. This is the invariant for `f-20260911-03`.
+  is written and covers both the write and drain. A termination request preempts the in-flight
+  exchange through the actor's interrupt, including a warm transition waiting under its lifecycle
+  lease. Teardown keeps its own bounds and is never interrupted. Every terminator reports the
+  outcome of the reap that ended the actor, including a generation another owner already reaped.
 * Check that stopping one tab's engine cannot kill another tab's.
 
 ## DO NOT

@@ -13,6 +13,10 @@ use std::{
 
 use async_trait::async_trait;
 use dashmap::DashMap;
+use futures_util::{
+    future::{BoxFuture, Shared},
+    FutureExt,
+};
 use log::error;
 use serde::Serialize;
 use specta::Type;
@@ -266,6 +270,18 @@ struct FakeIo {
     terminate_delay: Option<Duration>,
     terminate_started: Option<Arc<AtomicBool>>,
     cancel_after_write: Option<(String, Arc<AtomicBool>)>,
+    exchange_observation: Option<(ExchangePoint, oneshot::Sender<()>)>,
+    blocked_write: Option<String>,
+    termination_error: Option<Arc<Error>>,
+    termination_handshake: Option<mpsc::UnboundedSender<()>>,
+    termination_gate: Option<Arc<TerminationReplyGate>>,
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+enum ExchangePoint {
+    Write(String),
+    ReadAfter(String),
 }
 
 #[cfg(test)]
@@ -293,6 +309,11 @@ impl FakeIo {
             terminate_delay: None,
             terminate_started: None,
             cancel_after_write: None,
+            exchange_observation: None,
+            blocked_write: None,
+            termination_error: None,
+            termination_handshake: None,
+            termination_gate: None,
         }
     }
 }
@@ -301,6 +322,15 @@ impl FakeIo {
 #[async_trait]
 impl UciIo for FakeIo {
     async fn write_line(&mut self, line: &str) -> Result<(), Error> {
+        if matches!(&self.exchange_observation, Some((ExchangePoint::Write(command), _)) if command == line)
+        {
+            if let Some((_, started)) = self.exchange_observation.take() {
+                let _ = started.send(());
+            }
+        }
+        if self.blocked_write.as_deref() == Some(line) {
+            return std::future::pending().await;
+        }
         if self.fail_write || (self.fail_stop && line == "stop") {
             return Err(
                 std::io::Error::new(std::io::ErrorKind::BrokenPipe, "fake stdin closed").into(),
@@ -328,6 +358,25 @@ impl UciIo for FakeIo {
     }
 
     async fn read_line(&mut self) -> Result<Option<String>, Error> {
+        if self.lines.is_empty() {
+            let observed = match &self.exchange_observation {
+                Some((ExchangePoint::ReadAfter(command), _)) => {
+                    self.writes
+                        .lock()
+                        .await
+                        .last()
+                        .map(String::as_str)
+                        .unwrap_or("")
+                        == command
+                }
+                _ => false,
+            };
+            if observed {
+                if let Some((_, started)) = self.exchange_observation.take() {
+                    let _ = started.send(());
+                }
+            }
+        }
         if let Some(observation) = &self.read_observation {
             if let Some(started) = &observation.started {
                 started.store(true, Ordering::SeqCst);
@@ -356,6 +405,12 @@ impl UciIo for FakeIo {
     }
 
     async fn terminate(&mut self, _: Duration, _: Duration) -> Result<(), Error> {
+        if let Some(started) = &self.termination_handshake {
+            let _ = started.send(());
+        }
+        if let Some(gate) = &self.termination_gate {
+            gate.park().await;
+        }
         if let Some(started) = &self.terminate_started {
             started.store(true, Ordering::SeqCst);
         }
@@ -363,7 +418,9 @@ impl UciIo for FakeIo {
             tokio::time::sleep(delay).await;
         }
         self.terminate_calls.fetch_add(1, Ordering::SeqCst);
-        Ok(())
+        self.termination_error
+            .clone()
+            .map_or(Ok(()), |error| Err(Error::Shared(error)))
     }
 }
 
@@ -826,7 +883,11 @@ struct EngineRuntime {
     /// Drain task for this runtime's child stderr. Taken and joined in
     /// `terminate`; aborted in `Drop` if the runtime is discarded first.
     stderr_drain_task: Option<tokio::task::JoinHandle<()>>,
+    termination_outcome: Option<ActorTerminationOutcome>,
 }
+
+type ActorTerminationOutcome = Arc<OnceLock<Result<(), Arc<Error>>>>;
+type ActorJoin = Shared<BoxFuture<'static, Result<(), Arc<Error>>>>;
 
 /// Cloneable client handle for the single-owner engine task. No caller holds a
 /// mutex over process I/O: an in-flight stdout read is always selected against
@@ -839,6 +900,8 @@ pub struct EngineActor {
     // Keep its handle with every clone so lifecycle callers can await its
     // completion instead of detaching it after `Terminate`.
     task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    joined: Arc<StdMutex<Option<ActorJoin>>>,
+    termination_outcome: ActorTerminationOutcome,
     interrupt: CancellationToken,
     registration_identity: Arc<OnceLock<(EngineKey, u64)>>,
     pub(crate) resources: Arc<[Arc<crate::infra::path_authority::EngineResourceLease>]>,
@@ -877,6 +940,12 @@ impl TerminationReplyGate {
 
 #[cfg(test)]
 static TERMINATION_REPLY_GATES: crate::infra::test_hooks::KeyedTestValues<
+    (EngineKey, u64),
+    Arc<TerminationReplyGate>,
+> = crate::infra::test_hooks::KeyedTestValues::new();
+
+#[cfg(test)]
+static DRAIN_SNAPSHOT_GATES: crate::infra::test_hooks::KeyedTestValues<
     (EngineKey, u64),
     Arc<TerminationReplyGate>,
 > = crate::infra::test_hooks::KeyedTestValues::new();
@@ -1745,17 +1814,27 @@ impl EngineSupervisor {
     }
 
     pub async fn terminate_exact(&self, key: &EngineKey, generation: u64) -> Result<(), Error> {
-        {
+        self.terminate_observed(key, generation, None).await
+    }
+
+    async fn terminate_observed(
+        &self,
+        key: &EngineKey,
+        generation: u64,
+        observed: Option<Arc<EngineActor>>,
+    ) -> Result<(), Error> {
+        let observed = {
             let _registration = self.registration.lock().await;
             let _coordination = self
                 .admission_coordination
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if let Some(current) = self
+            let current = self
                 .get_exact(key)
-                .filter(|entry| entry.generation == generation)
-            {
+                .filter(|entry| entry.generation == generation);
+            if let Some(current) = &current {
                 current.mark_cancelled();
+                current.actor.interrupt.cancel();
             }
             if let Some(admission) = self
                 .admissions
@@ -1765,10 +1844,15 @@ impl EngineSupervisor {
             {
                 self.cancel_admission(key, &admission);
             }
-        }
+            current.map(|entry| entry.actor).or(observed)
+        };
         let lifecycle = self.lifecycle_lease(key);
         let _transition = lifecycle.lock().await;
-        self.reap_published(key, generation).await
+        let result = self.reap_published(key, generation).await;
+        match (result, observed) {
+            (Ok(()), Some(actor)) => actor.final_termination_outcome().await,
+            (result, _) => result,
+        }
     }
 
     #[cfg(test)]
@@ -2167,7 +2251,13 @@ impl EngineSupervisor {
                     .actors
                     .iter()
                     .filter(|entry| matches(entry.key(), &entry.engine_id, &entry.executable))
-                    .map(|entry| (entry.key().clone(), entry.value().generation))
+                    .map(|entry| {
+                        (
+                            entry.key().clone(),
+                            entry.value().generation,
+                            entry.actor.clone(),
+                        )
+                    })
                     .collect();
                 let pending: Vec<_> = self
                     .pending_actors
@@ -2179,6 +2269,12 @@ impl EngineSupervisor {
             };
             if targets.is_empty() && pending.is_empty() {
                 break;
+            }
+            #[cfg(test)]
+            for (key, generation, _) in &targets {
+                if let Some(gate) = DRAIN_SNAPSHOT_GATES.take(&(key.clone(), *generation)) {
+                    gate.park().await;
+                }
             }
             let pending =
                 futures_util::future::join_all(pending.into_iter().map(|entry| async move {
@@ -2199,10 +2295,13 @@ impl EngineSupervisor {
         aggregate_shutdown_failures(failures)
     }
 
-    async fn terminate_targets(&self, targets: Vec<(EngineKey, u64)>) -> Vec<ActorShutdownFailure> {
+    async fn terminate_targets(
+        &self,
+        targets: Vec<(EngineKey, u64, Arc<EngineActor>)>,
+    ) -> Vec<ActorShutdownFailure> {
         let results = futures_util::future::join_all(targets.into_iter().map(
-            |(key, generation)| async move {
-                let result = self.terminate_exact(&key, generation).await;
+            |(key, generation, actor)| async move {
+                let result = self.terminate_observed(&key, generation, Some(actor)).await;
                 (key, generation, result)
             },
         ))
@@ -2877,6 +2976,7 @@ impl EngineRuntime {
             logs: BoundedLogs::default(),
             resource_redactions: ResourceRedactions::default(),
             stderr_drain_task: None,
+            termination_outcome: None,
         }
     }
 
@@ -2999,40 +3099,49 @@ impl EngineRuntime {
         &mut self,
         cancellation: &CancellationToken,
     ) -> Result<(), Error> {
-        self.send("uci").await?;
+        self.send("uci", Some(cancellation)).await?;
         self.wait_for_cancellable("uciok", self.deadlines.uciok, cancellation)
             .await?;
-        self.send("isready").await?;
+        self.send("isready", Some(cancellation)).await?;
         self.wait_for_cancellable("readyok", self.deadlines.readyok, cancellation)
             .await
     }
 
-    pub async fn ensure_ready(&mut self) -> Result<(), Error> {
+    pub async fn ensure_ready(
+        &mut self,
+        interrupt: Option<&CancellationToken>,
+    ) -> Result<(), Error> {
         // Only an idle engine's `readyok` closes a search's output: during a
         // search, lines of that search still follow it.
         let idle = self.state == EngineState::Idle;
-        self.send("isready").await?;
-        self.wait_for("readyok", self.deadlines.readyok).await?;
+        self.send("isready", interrupt).await?;
+        self.wait_for("readyok", self.deadlines.readyok, interrupt)
+            .await?;
         if idle {
             self.search_output_unsynchronized = false;
         }
         Ok(())
     }
 
-    pub async fn start_uci_configuration(&mut self) -> Result<(), Error> {
-        self.send("uci").await
+    pub async fn start_uci_configuration(
+        &mut self,
+        interrupt: Option<&CancellationToken>,
+    ) -> Result<(), Error> {
+        self.send("uci", interrupt).await
     }
 
     async fn next_configuration_line_cancellable(
         &mut self,
         cancellation: &CancellationToken,
     ) -> Result<Option<String>, Error> {
-        tokio::select! {
-            _ = cancellation.cancelled() => Err(Error::EngineDisconnected),
-            result = timeout(self.deadlines.uciok, self.read_line()) => {
-                result.map_err(|_| Error::EngineTimeout("waiting for uciok".into()))?
-            }
-        }
+        let deadline = Instant::now() + self.deadlines.uciok;
+        exchange_io(
+            self.read_line(),
+            deadline,
+            "waiting for uciok",
+            Some(cancellation),
+        )
+        .await
     }
 
     async fn set_option_with_resources(
@@ -3041,6 +3150,7 @@ impl EngineRuntime {
         value: &str,
         resource_values: &[String],
         operation_cancellation: Option<&CancellationToken>,
+        interrupt: Option<&CancellationToken>,
     ) -> Result<(), Error> {
         validate_uci_text("option name", name)?;
         validate_uci_text("option value", value)?;
@@ -3056,41 +3166,53 @@ impl EngineRuntime {
         if operation_cancellation.is_some_and(CancellationToken::is_cancelled) {
             return Err(Error::Cancellation);
         }
-        self.send(&format!("setoption name {name} value {value}"))
+        self.send(&format!("setoption name {name} value {value}"), interrupt)
             .await
     }
 
-    pub async fn set_position(&mut self, fen: &str, moves: &[String]) -> Result<(), Error> {
+    pub async fn set_position(
+        &mut self,
+        fen: &str,
+        moves: &[String],
+        interrupt: Option<&CancellationToken>,
+    ) -> Result<(), Error> {
         let position = canonicalize_engine_position(fen, moves)?;
-        self.send(&position.command()).await
+        self.send(&position.command(), interrupt).await
     }
 
-    pub async fn start_search(&mut self, mode: &GoMode) -> Result<EngineRequestId, Error> {
+    pub async fn start_search(
+        &mut self,
+        mode: &GoMode,
+        interrupt: Option<&CancellationToken>,
+    ) -> Result<EngineRequestId, Error> {
         if matches!(
             self.state,
             EngineState::Searching { .. } | EngineState::Stopping { .. }
         ) {
-            self.stop_current().await?;
+            self.stop_current(interrupt).await?;
         }
         // Discard whatever the previous search emitted after its `bestmove`
         // (a delayed `info`, a duplicate `bestmove`) before `go`, so the new
         // request id cannot adopt it. `wait_for` drops every line before
         // `readyok`.
         if self.search_output_unsynchronized {
-            self.ensure_ready().await?;
+            self.ensure_ready(interrupt).await?;
         }
         self.next_request = self
             .next_request
             .checked_add(1)
             .ok_or_else(|| Error::ResourceLimit("engine request generation exhausted".into()))?;
         let id = EngineRequestId(self.next_request);
-        self.send(&mode.to_uci_string()?).await?;
+        self.send(&mode.to_uci_string()?, interrupt).await?;
         self.search_output_unsynchronized = true;
         self.state = EngineState::Searching { request_id: id };
         Ok(id)
     }
 
-    pub async fn stop_current(&mut self) -> Result<(), Error> {
+    pub async fn stop_current(
+        &mut self,
+        interrupt: Option<&CancellationToken>,
+    ) -> Result<(), Error> {
         let deadline = Instant::now() + self.deadlines.stop;
         let send_stop = match self.state {
             EngineState::Searching { request_id } => {
@@ -3105,11 +3227,14 @@ impl EngineRuntime {
         };
         let result = async {
             if send_stop {
-                self.send_with_deadline("stop", deadline).await?;
+                self.send_with_deadline("stop", deadline, interrupt).await?;
             }
-            self.read_until(deadline, "waiting for bestmove after stop", None, |line| {
-                matches!(vampirc_uci::parse_one(line), UciMessage::BestMove { .. })
-            })
+            self.read_until(
+                deadline,
+                "waiting for bestmove after stop",
+                interrupt,
+                |line| matches!(vampirc_uci::parse_one(line), UciMessage::BestMove { .. }),
+            )
             .await
         }
         .await;
@@ -3133,7 +3258,14 @@ impl EngineRuntime {
             .await;
         self.reap_stderr_drain().await;
         self.state = EngineState::Idle;
-        result
+        match &self.termination_outcome {
+            Some(outcome) => {
+                let result = result.map_err(Arc::new);
+                let _ = outcome.set(result.clone());
+                result.map_err(Error::Shared)
+            }
+            None => result,
+        }
     }
 
     async fn reap_stderr_drain(&mut self) {
@@ -3169,19 +3301,32 @@ impl EngineRuntime {
         }
     }
 
-    async fn send(&mut self, command: &str) -> Result<(), Error> {
-        self.send_with_deadline(command, Instant::now() + self.deadlines.readyok)
+    async fn send(
+        &mut self,
+        command: &str,
+        interrupt: Option<&CancellationToken>,
+    ) -> Result<(), Error> {
+        self.send_with_deadline(command, Instant::now() + self.deadlines.readyok, interrupt)
             .await
     }
 
-    async fn send_with_deadline(&mut self, command: &str, deadline: Instant) -> Result<(), Error> {
+    async fn send_with_deadline(
+        &mut self,
+        command: &str,
+        deadline: Instant,
+        interrupt: Option<&CancellationToken>,
+    ) -> Result<(), Error> {
         validate_uci_text("UCI command", command)?;
         self.logs.push(EngineLog::Gui(
             self.resource_redactions.redact(format!("{command}\n")),
         ));
-        timeout_at(deadline, self.io.write_line(command))
-            .await
-            .map_err(|_| Error::EngineTimeout("writing engine command".into()))?
+        exchange_io(
+            self.io.write_line(command),
+            deadline,
+            "writing engine command",
+            interrupt,
+        )
+        .await
     }
 
     async fn read_line(&mut self) -> Result<Option<String>, Error> {
@@ -3199,10 +3344,15 @@ impl EngineRuntime {
         Ok(line)
     }
 
-    async fn wait_for(&mut self, expected: &str, wait: Duration) -> Result<(), Error> {
+    async fn wait_for(
+        &mut self,
+        expected: &str,
+        wait: Duration,
+        interrupt: Option<&CancellationToken>,
+    ) -> Result<(), Error> {
         let deadline = Instant::now() + wait;
         let timeout_label = format!("waiting for {expected}");
-        self.read_until(deadline, &timeout_label, None, |line| {
+        self.read_until(deadline, &timeout_label, interrupt, |line| {
             // UCI acknowledgements are complete protocol tokens. Prefix
             // matching would accept e.g. `uciok-not-really` from a malformed
             // or hostile executable and advance the state machine.
@@ -3217,12 +3367,7 @@ impl EngineRuntime {
         wait: Duration,
         cancellation: &CancellationToken,
     ) -> Result<(), Error> {
-        let deadline = Instant::now() + wait;
-        let timeout_label = format!("waiting for {expected}");
-        self.read_until(deadline, &timeout_label, Some(cancellation), |line| {
-            line.trim() == expected
-        })
-        .await
+        self.wait_for(expected, wait, Some(cancellation)).await
     }
 
     async fn read_until<F>(
@@ -3236,24 +3381,36 @@ impl EngineRuntime {
         F: FnMut(&str) -> bool,
     {
         loop {
-            let line = if let Some(cancellation) = cancellation {
-                tokio::select! {
-                    _ = cancellation.cancelled() => return Err(Error::EngineDisconnected),
-                    line = timeout_at(deadline, self.read_line()) => {
-                        line.map_err(|_| Error::EngineTimeout(timeout_label.into()))?
-                    }
-                }
-            } else {
-                timeout_at(deadline, self.read_line())
-                    .await
-                    .map_err(|_| Error::EngineTimeout(timeout_label.into()))?
-            };
-            let Some(line) = line? else {
+            let Some(line) =
+                exchange_io(self.read_line(), deadline, timeout_label, cancellation).await?
+            else {
                 return Err(Error::EngineDisconnected);
             };
             if is_terminal(&line) {
                 return Ok(());
             }
+        }
+    }
+}
+
+/// One cancellation-before-use boundary for command writes and protocol reads.
+/// Teardown deliberately does not pass through this helper.
+async fn exchange_io<T>(
+    operation: impl std::future::Future<Output = Result<T, Error>>,
+    deadline: Instant,
+    timeout_label: &str,
+    interrupt: Option<&CancellationToken>,
+) -> Result<T, Error> {
+    tokio::select! {
+        biased;
+        _ = async {
+            match interrupt {
+                Some(interrupt) => interrupt.cancelled().await,
+                None => std::future::pending().await,
+            }
+        } => Err(Error::EngineDisconnected),
+        result = timeout_at(deadline, operation) => {
+            result.map_err(|_| Error::EngineTimeout(timeout_label.into()))?
         }
     }
 }
@@ -3422,7 +3579,7 @@ impl EngineActor {
     }
 
     fn from_runtime_with_resources(
-        runtime: EngineRuntime,
+        mut runtime: EngineRuntime,
         resources: Arc<[Arc<crate::infra::path_authority::EngineResourceLease>]>,
     ) -> Self {
         let resource_verify = runtime.deadlines.resource_verify;
@@ -3433,6 +3590,8 @@ impl EngineActor {
         let (control_tx, control_rx) = mpsc::channel(8);
         let interrupt = CancellationToken::new();
         let registration_identity = Arc::new(OnceLock::new());
+        let termination_outcome = Arc::new(OnceLock::new());
+        runtime.termination_outcome = Some(termination_outcome.clone());
         let task = tokio::spawn(engine_actor_loop(
             runtime,
             rx,
@@ -3444,6 +3603,8 @@ impl EngineActor {
             tx,
             control_tx,
             task: Arc::new(Mutex::new(Some(task))),
+            joined: Arc::default(),
+            termination_outcome,
             interrupt,
             registration_identity,
             resources,
@@ -3691,26 +3852,57 @@ impl EngineActor {
             }
         }
         let reaped = self.reap_task().await;
-        // A poisoned actor may already have exited after reaping its child
-        // before this control request can be delivered. That is a successful
-        // shutdown boundary, not a reason to retain its supervisor entry.
-        if matches!(&termination, Err(Error::EngineDisconnected)) && reaped.is_ok() {
-            Ok(())
+        let termination = if matches!(&termination, Err(Error::EngineDisconnected)) {
+            self.recorded_termination_outcome()
         } else {
-            combine_shutdown_results(termination, reaped)
-        }
+            termination
+        };
+        combine_shutdown_results(termination, reaped)
+    }
+
+    fn recorded_termination_outcome(&self) -> Result<(), Error> {
+        self.termination_outcome
+            .get()
+            .cloned()
+            .ok_or(Error::EngineDisconnected)?
+            .map_err(Error::Shared)
+    }
+
+    async fn final_termination_outcome(&self) -> Result<(), Error> {
+        let joined = self.reap_task().await;
+        combine_shutdown_results(self.recorded_termination_outcome(), joined)
     }
 
     async fn reap_task(&self) -> Result<(), Error> {
-        // Take the handle before awaiting so a concurrent lifecycle call never
-        // holds the mutex across an await. The command reply is sent only as
-        // the actor exits, so the caller that takes this handle owns reaping.
-        let task = self.task.lock().await.take();
-        let Some(task) = task else {
-            return Ok(());
+        // Share the join as well as the reap outcome. A concurrent caller must
+        // await completion even if another caller already took the handle.
+        let joined = {
+            let mut task = self.task.lock().await;
+            let mut joined = self
+                .joined
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if joined.is_none() {
+                if let Some(task) = task.take() {
+                    *joined = Some(
+                        async move {
+                            task.await.map_err(|error| {
+                                Arc::new(Error::Conflict(format!(
+                                    "engine actor task failed: {error}"
+                                )))
+                            })
+                        }
+                        .boxed()
+                        .shared(),
+                    );
+                }
+            }
+            joined.clone()
         };
-        task.await
-            .map_err(|error| Error::Conflict(format!("engine actor task failed: {error}")))
+        match joined {
+            Some(joined) => joined.await.map_err(Error::Shared),
+            None => Err(Error::EngineDisconnected),
+        }
     }
     pub async fn logs(&self) -> Result<Vec<EngineLog>, Error> {
         let (reply_tx, reply) = oneshot::channel();
@@ -3974,7 +4166,7 @@ async fn engine_actor_loop(
                 let _ = reply.send(runtime.init_uci_cancellable(&interrupt).await);
             }
             EngineCommand::ConfigureStart(reply) => {
-                let _ = reply.send(runtime.start_uci_configuration().await);
+                let _ = reply.send(runtime.start_uci_configuration(Some(&interrupt)).await);
             }
             EngineCommand::ConfigureNext(reply) => {
                 let _ = reply.send(
@@ -3997,15 +4189,16 @@ async fn engine_actor_loop(
                             &value,
                             &resource_values,
                             operation_cancellation.as_ref(),
+                            Some(&interrupt),
                         )
                         .await,
                 );
             }
             EngineCommand::SetPosition { fen, moves, reply } => {
-                let _ = reply.send(runtime.set_position(&fen, &moves).await);
+                let _ = reply.send(runtime.set_position(&fen, &moves, Some(&interrupt)).await);
             }
             EngineCommand::EnsureReady(reply) => {
-                let result = runtime.ensure_ready().await;
+                let result = runtime.ensure_ready(Some(&interrupt)).await;
                 let result =
                     recover_failed_protocol(&mut runtime, &registration_identity, result).await;
                 let failed = result.is_err();
@@ -4016,7 +4209,7 @@ async fn engine_actor_loop(
                 }
             }
             EngineCommand::StartSearch { mode, reply } => {
-                let started = runtime.start_search(&mode).await;
+                let started = runtime.start_search(&mode, Some(&interrupt)).await;
                 let result =
                     recover_failed_protocol(&mut runtime, &registration_identity, started).await;
                 let failed = result.is_err();
@@ -4034,6 +4227,7 @@ async fn engine_actor_loop(
                     &mut rx,
                     &mut control_rx,
                     &registration_identity,
+                    &interrupt,
                 )
                 .await
                 {
@@ -4042,7 +4236,9 @@ async fn engine_actor_loop(
                 }
             }
             EngineCommand::Stop(reply) => {
-                let result = stop_at_protocol_boundary(&mut runtime, &registration_identity).await;
+                let result =
+                    stop_at_protocol_boundary(&mut runtime, &registration_identity, &interrupt)
+                        .await;
                 let failed = result.is_err();
                 let _ = reply.send(result);
                 if failed {
@@ -4053,7 +4249,8 @@ async fn engine_actor_loop(
             EngineCommand::StopRequest { id, reply } => {
                 let result = if matches!(runtime.state, EngineState::Searching { request_id } | EngineState::Stopping { request_id } if request_id == id)
                 {
-                    stop_at_protocol_boundary(&mut runtime, &registration_identity).await
+                    stop_at_protocol_boundary(&mut runtime, &registration_identity, &interrupt)
+                        .await
                 } else {
                     Ok(())
                 };
@@ -4125,8 +4322,9 @@ async fn recover_failed_protocol<T>(
 async fn stop_at_protocol_boundary(
     runtime: &mut EngineRuntime,
     registration_identity: &OnceLock<(EngineKey, u64)>,
+    interrupt: &CancellationToken,
 ) -> Result<(), Error> {
-    let result = runtime.stop_current().await;
+    let result = runtime.stop_current(Some(interrupt)).await;
     recover_failed_protocol(runtime, registration_identity, result).await
 }
 
@@ -4137,6 +4335,7 @@ async fn service_search_read(
     rx: &mut mpsc::Receiver<EngineCommand>,
     control_rx: &mut mpsc::Receiver<EngineCommand>,
     registration_identity: &OnceLock<(EngineKey, u64)>,
+    interrupt: &CancellationToken,
 ) -> bool {
     if runtime.state != (EngineState::Searching { request_id: id })
         && runtime.state != (EngineState::Stopping { request_id: id })
@@ -4156,7 +4355,7 @@ async fn service_search_read(
                     }
                     EngineCommand::Stop(control_reply) => {
                         let result =
-                            stop_at_protocol_boundary(runtime, registration_identity).await;
+                            stop_at_protocol_boundary(runtime, registration_identity, interrupt).await;
                         let failed = result.is_err();
                         let _ = reply.send(if failed {
                             Err(Error::EngineDisconnected)
@@ -4171,7 +4370,7 @@ async fn service_search_read(
                             let _ = control_reply.send(Ok(()));
                             continue;
                         }
-                        let result = stop_at_protocol_boundary(runtime, registration_identity).await;
+                        let result = stop_at_protocol_boundary(runtime, registration_identity, interrupt).await;
                         let failed = result.is_err();
                         let _ = reply.send(if failed { Err(Error::EngineDisconnected) } else { Ok(None) });
                         let _ = control_reply.send(result);
@@ -4216,7 +4415,7 @@ async fn service_search_read(
                     return false;
                 }
                 Some(EngineCommand::Stop(control_reply)) => {
-                    let result = stop_at_protocol_boundary(runtime, registration_identity).await;
+                    let result = stop_at_protocol_boundary(runtime, registration_identity, interrupt).await;
                     let failed = result.is_err();
                         let _ = reply.send(if failed {
                         Err(Error::EngineDisconnected)
@@ -4438,7 +4637,7 @@ mod tests {
         let mut runtime = EngineRuntime::spawn(executable, EngineDeadlines::default())
             .await
             .unwrap();
-        if let Err(error) = runtime.start_search(&GoMode::Depth(1)).await {
+        if let Err(error) = runtime.start_search(&GoMode::Depth(1), None).await {
             let _ = runtime.terminate().await;
             panic!("partial-line engine search failed to start: {error}");
         }
@@ -6787,10 +6986,18 @@ mod tests {
         wait_for_flag(&terminate_started, "normal-channel termination").await;
         let messages =
             wait_for_registration_cleanup_cause(&key, supervised.generation, CAUSE).await;
-        supervisor
+        let error = supervisor
             .terminate_exact(&key, supervised.generation)
             .await
-            .expect("reap the terminated actor generation");
+            .expect_err("the later terminator must report the failed reap");
+        assert!(error.diagnostic().contains(CAUSE));
+        assert!(supervisor.get_exact(&key).is_none());
+        assert!(actor
+            .terminate()
+            .await
+            .unwrap_err()
+            .diagnostic()
+            .contains(CAUSE));
         wait_for_registration_removed(&supervisor, &key, supervised.generation).await;
         let _ = search_read.await;
         assert!(messages.iter().all(|message| message.contains(CAUSE)));
@@ -6936,10 +7143,11 @@ mod tests {
         let messages = registration_cleanup_messages(&key, generation);
         assert_eq!(messages.len(), 1);
         assert!(messages[0].contains(TERMINATION));
-        supervisor
+        let error = supervisor
             .terminate_exact(&key, generation)
             .await
-            .expect("the exited actor can be reaped idempotently");
+            .expect_err("the exited actor retains its failed reap outcome");
+        assert!(error.diagnostic().contains(TERMINATION));
     }
 
     #[tokio::test]
@@ -8267,7 +8475,7 @@ mod tests {
         for index in 0..MAX_RESOURCE_REDACTIONS {
             let value = format!("/resource/{index}");
             runtime
-                .set_option_with_resources("Book", &value, std::slice::from_ref(&value), None)
+                .set_option_with_resources("Book", &value, std::slice::from_ref(&value), None, None)
                 .await
                 .unwrap();
         }
@@ -8278,6 +8486,7 @@ mod tests {
                     "Book",
                     &overflow,
                     std::slice::from_ref(&overflow),
+                    None,
                     None,
                 )
                 .await,
@@ -9259,8 +9468,16 @@ mod tests {
 
         let failures = supervisor
             .terminate_targets(vec![
-                (timeout_key.clone(), timeout.generation),
-                (combined_key.clone(), combined.generation),
+                (
+                    timeout_key.clone(),
+                    timeout.generation,
+                    timeout.actor.clone(),
+                ),
+                (
+                    combined_key.clone(),
+                    combined.generation,
+                    combined.actor.clone(),
+                ),
             ])
             .await;
         assert_eq!(failures.len(), 2);
@@ -10027,7 +10244,7 @@ mod tests {
         let mut runtime = EngineRuntime::new(Box::new(io), EngineDeadlines::default());
 
         assert!(matches!(
-            runtime.ensure_ready().await,
+            runtime.ensure_ready(None).await,
             Err(Error::EngineDisconnected)
         ));
         assert_eq!(*writes.lock().await, vec!["isready"]);
@@ -10099,12 +10316,12 @@ mod tests {
             },
         );
         runtime
-            .start_search(&GoMode::Depth(1))
+            .start_search(&GoMode::Depth(1), None)
             .await
             .expect("search must start before its stop exchange");
 
         let started = tokio::time::Instant::now();
-        let result = tokio::time::timeout(budget * 3, runtime.stop_current())
+        let result = tokio::time::timeout(budget * 3, runtime.stop_current(None))
             .await
             .expect("chatty stop must finish within its outer bound");
         let elapsed = tokio::time::Instant::now() - started;
@@ -10143,7 +10360,7 @@ mod tests {
             },
         );
 
-        let result = tokio::time::timeout(budget * 3, runtime.ensure_ready())
+        let result = tokio::time::timeout(budget * 3, runtime.ensure_ready(None))
             .await
             .expect("chatty readyok drain must finish within its outer bound");
         let completed_at = write_completion_at(&write_completions, "isready");
@@ -10267,12 +10484,12 @@ mod tests {
             },
         );
         runtime
-            .start_search(&GoMode::Depth(1))
+            .start_search(&GoMode::Depth(1), None)
             .await
             .expect("search must start before stop write exhaustion");
         let started = tokio::time::Instant::now();
 
-        let result = tokio::time::timeout(stop_budget * 3, runtime.stop_current())
+        let result = tokio::time::timeout(stop_budget * 3, runtime.stop_current(None))
             .await
             .expect("stop write must be bounded by the outer deadline");
         let elapsed = tokio::time::Instant::now() - started;
@@ -10306,7 +10523,7 @@ mod tests {
         );
         let started = tokio::time::Instant::now();
 
-        let result = tokio::time::timeout(budget * 3, runtime.ensure_ready())
+        let result = tokio::time::timeout(budget * 3, runtime.ensure_ready(None))
             .await
             .expect("plain send must finish within its outer bound");
         let elapsed = tokio::time::Instant::now() - started;
@@ -10369,16 +10586,18 @@ mod tests {
             },
         );
         runtime
-            .start_search(&GoMode::Depth(1))
+            .start_search(&GoMode::Depth(1), None)
             .await
             .expect("search must start before stopping");
 
-        assert!(tokio::time::timeout(budget * 3 / 5, runtime.stop_current())
-            .await
-            .is_err());
+        assert!(
+            tokio::time::timeout(budget * 3 / 5, runtime.stop_current(None))
+                .await
+                .is_err()
+        );
         assert!(matches!(runtime.state, EngineState::Stopping { .. }));
         let second_started = tokio::time::Instant::now();
-        let result = tokio::time::timeout(budget * 3, runtime.stop_current())
+        let result = tokio::time::timeout(budget * 3, runtime.stop_current(None))
             .await
             .expect("re-entered stop must finish within its outer bound");
         let elapsed = tokio::time::Instant::now() - second_started;
@@ -10740,6 +10959,477 @@ mod tests {
         assert!(actor.task.lock().await.is_none());
     }
 
+    #[derive(Clone, Copy)]
+    enum ExchangeCommand {
+        Init,
+        ConfigureStart,
+        ConfigureNext,
+        SetOption,
+        SetPosition,
+        EnsureReady,
+        StartSearch,
+        Stop,
+        StopRequest,
+        SearchStop { control: bool, request: bool },
+    }
+
+    /// The same requester and handshake drive every exchange path, including
+    /// the Stop arms nested inside a pending search-output read.
+    async fn request_exchange(actor: &EngineActor, command: ExchangeCommand) -> Result<(), Error> {
+        match command {
+            ExchangeCommand::Init => actor.init_uci().await,
+            ExchangeCommand::ConfigureStart => actor.start_uci_configuration().await,
+            ExchangeCommand::ConfigureNext => actor.next_configuration_line().await.map(|_| ()),
+            ExchangeCommand::SetOption => actor.set_option("Threads", "2").await,
+            ExchangeCommand::SetPosition => {
+                actor
+                    .set_position(
+                        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+                        &[],
+                    )
+                    .await
+            }
+            ExchangeCommand::EnsureReady => actor.ensure_ready().await,
+            ExchangeCommand::StartSearch => actor.start_search(&GoMode::Infinite).await.map(|_| ()),
+            ExchangeCommand::Stop => actor.stop_current().await,
+            ExchangeCommand::StopRequest => actor.stop_request(EngineRequestId(1)).await,
+            ExchangeCommand::SearchStop { control, request } => {
+                let (reply_tx, reply) = oneshot::channel();
+                let command = if request {
+                    EngineCommand::StopRequest {
+                        id: EngineRequestId(1),
+                        reply: reply_tx,
+                    }
+                } else {
+                    EngineCommand::Stop(reply_tx)
+                };
+                if control {
+                    actor.request_control(command, reply).await?
+                } else {
+                    actor.request(command, reply).await?
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn termination_preempts_every_actor_exchange() {
+        use ExchangeCommand::*;
+        let write = |command: &str| ExchangePoint::Write(command.into());
+        let read = |command: &str| ExchangePoint::ReadAfter(command.into());
+        let cases = vec![
+            ("init uci write", Init, false, false, vec![], write("uci")),
+            (
+                "init isready write",
+                Init,
+                false,
+                false,
+                vec!["uciok"],
+                write("isready"),
+            ),
+            ("init uciok read", Init, false, false, vec![], read("uci")),
+            (
+                "init readyok read",
+                Init,
+                false,
+                false,
+                vec!["uciok"],
+                read("isready"),
+            ),
+            (
+                "configure uci write",
+                ConfigureStart,
+                false,
+                false,
+                vec![],
+                write("uci"),
+            ),
+            (
+                "configuration read",
+                ConfigureNext,
+                false,
+                false,
+                vec![],
+                read(""),
+            ),
+            (
+                "setoption write",
+                SetOption,
+                false,
+                false,
+                vec![],
+                write("setoption name Threads value 2"),
+            ),
+            (
+                "position write",
+                SetPosition,
+                false,
+                false,
+                vec![],
+                write("position fen rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"),
+            ),
+            (
+                "ensure isready write",
+                EnsureReady,
+                false,
+                false,
+                vec![],
+                write("isready"),
+            ),
+            (
+                "ensure readyok read",
+                EnsureReady,
+                false,
+                false,
+                vec![],
+                read("isready"),
+            ),
+            (
+                "start implicit stop write",
+                StartSearch,
+                true,
+                true,
+                vec![],
+                write("stop"),
+            ),
+            (
+                "start implicit bestmove read",
+                StartSearch,
+                true,
+                true,
+                vec![],
+                read("stop"),
+            ),
+            (
+                "start resynchronizing readyok read",
+                StartSearch,
+                false,
+                true,
+                vec![],
+                read("isready"),
+            ),
+            (
+                "start go write",
+                StartSearch,
+                false,
+                false,
+                vec![],
+                write("go infinite"),
+            ),
+            ("loop stop drain", Stop, true, true, vec![], read("stop")),
+            (
+                "loop stop request drain",
+                StopRequest,
+                true,
+                true,
+                vec![],
+                read("stop"),
+            ),
+            (
+                "search control stop drain",
+                SearchStop {
+                    control: true,
+                    request: false,
+                },
+                true,
+                true,
+                vec![],
+                read("stop"),
+            ),
+            (
+                "search control stop request drain",
+                SearchStop {
+                    control: true,
+                    request: true,
+                },
+                true,
+                true,
+                vec![],
+                read("stop"),
+            ),
+            (
+                "search normal stop drain",
+                SearchStop {
+                    control: false,
+                    request: false,
+                },
+                true,
+                true,
+                vec![],
+                read("stop"),
+            ),
+        ];
+        for (name, command, searching, unsynchronized, lines, point) in cases {
+            let (started_tx, started) = oneshot::channel();
+            let read_started = Arc::new(AtomicBool::new(false));
+            let mut io = FakeIo::new(
+                Arc::default(),
+                lines.into_iter().map(|line| Some(line.into())),
+            );
+            io.pending_when_empty = true;
+            if let ExchangePoint::Write(command) = &point {
+                io.blocked_write = Some(command.clone());
+            }
+            io.exchange_observation = Some((point, started_tx));
+            io.read_observation = read_observation(Some(read_started.clone()), None);
+            let reaps = io.terminate_calls.clone();
+            let mut runtime = EngineRuntime::new(
+                Box::new(io),
+                EngineDeadlines {
+                    readyok: Duration::from_secs(30),
+                    uciok: Duration::from_secs(30),
+                    stop: Duration::from_secs(30),
+                    search: Duration::from_secs(30),
+                    ..EngineDeadlines::default()
+                },
+            );
+            if searching {
+                runtime.state = EngineState::Searching {
+                    request_id: EngineRequestId(1),
+                };
+                runtime.next_request = 1;
+            }
+            runtime.search_output_unsynchronized = unsynchronized;
+            let actor = Arc::new(EngineActor::from_runtime(runtime));
+            let search_read = if matches!(command, SearchStop { .. }) {
+                let actor = actor.clone();
+                let task =
+                    tokio::spawn(async move { actor.next_search_line(EngineRequestId(1)).await });
+                wait_for_flag(&read_started, "search output read before nested Stop").await;
+                Some(task)
+            } else {
+                None
+            };
+            let requester = tokio::spawn({
+                let actor = actor.clone();
+                async move { request_exchange(&actor, command).await }
+            });
+            timeout(Duration::from_secs(2), started)
+                .await
+                .unwrap()
+                .unwrap();
+            timeout(Duration::from_millis(500), actor.terminate())
+                .await
+                .unwrap_or_else(|_| panic!("termination did not preempt {name}"))
+                .unwrap();
+            let result = timeout(Duration::from_millis(500), requester)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                matches!(result, Err(Error::EngineDisconnected)),
+                "{name}: {result:?}"
+            );
+            if let Some(search_read) = search_read {
+                assert!(
+                    matches!(search_read.await.unwrap(), Err(Error::EngineDisconnected)),
+                    "{name}"
+                );
+            }
+            assert_eq!(reaps.load(Ordering::SeqCst), 1, "{name}");
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_exchange_never_starts_io() {
+        let interrupt = CancellationToken::new();
+        interrupt.cancel();
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let mut runtime = EngineRuntime::new(
+            Box::new(FakeIo::new(writes.clone(), [])),
+            EngineDeadlines::default(),
+        );
+        assert!(matches!(
+            runtime.send("uci", Some(&interrupt)).await,
+            Err(Error::EngineDisconnected)
+        ));
+        assert!(writes.lock().await.is_empty());
+    }
+
+    fn assert_same_termination_failure(error: &Error, expected: &Error) {
+        assert_eq!(error.category(), expected.category());
+        assert_eq!(error.to_string(), expected.to_string());
+        assert_eq!(error.diagnostic(), expected.diagnostic());
+        assert_eq!(error.root_failure(), expected.root_failure());
+    }
+
+    #[tokio::test]
+    async fn queued_and_later_terminators_report_the_final_reap() {
+        for preempted in [false, true] {
+            let (started_tx, started) = oneshot::channel();
+            let (reap_tx, mut reap_started) = mpsc::unbounded_channel();
+            let failure = Arc::new(Error::RootFailure {
+                error: Box::new(Error::EngineTimeout("injected final reap failure".into())),
+                reason: crate::error::RootFailure::Unusable,
+            });
+            let mut io = FakeIo::new(Arc::default(), []);
+            io.pending_when_empty = true;
+            io.exchange_observation =
+                Some((ExchangePoint::ReadAfter("isready".into()), started_tx));
+            io.termination_error = Some(failure.clone());
+            // Park the reap so a timeout-triggered recovery has a queued Terminate.
+            io.termination_handshake = Some(reap_tx);
+            let gate = TerminationReplyGate::new();
+            io.termination_gate = Some(gate.clone());
+            let reaps = io.terminate_calls.clone();
+            let actor = Arc::new(EngineActor::new(
+                Box::new(io),
+                EngineDeadlines {
+                    readyok: if preempted {
+                        Duration::from_secs(30)
+                    } else {
+                        Duration::from_millis(50)
+                    },
+                    ..EngineDeadlines::default()
+                },
+            ));
+            let exchange = tokio::spawn({
+                let actor = actor.clone();
+                async move { actor.ensure_ready().await }
+            });
+            timeout(Duration::from_secs(2), started)
+                .await
+                .unwrap()
+                .unwrap();
+            if !preempted {
+                timeout(Duration::from_secs(2), reap_started.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+            }
+            let termination = tokio::spawn({
+                let actor = actor.clone();
+                async move { actor.terminate().await }
+            });
+            // Observe cancellation and the queued request before unblocking teardown.
+            timeout(Duration::from_secs(2), async {
+                while !actor.interrupt.is_cancelled()
+                    || actor.control_tx.capacity() == actor.control_tx.max_capacity()
+                {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            gate.open();
+            let error = timeout(Duration::from_millis(500), termination)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap_err();
+            assert_same_termination_failure(&error, &failure);
+            let later = actor.as_ref().clone();
+            assert_same_termination_failure(&later.terminate().await.unwrap_err(), &failure);
+            let exchange_error = exchange.await.unwrap().unwrap_err();
+            assert!(matches!(exchange_error, Error::OperationAndCleanup { .. }));
+            assert_eq!(reaps.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn later_terminator_reports_unrequested_protocol_recovery_outcome() {
+        for failed in [false, true] {
+            let failure = Arc::new(Error::EngineTimeout(
+                "unrequested recovery reap failure".into(),
+            ));
+            let mut io = FakeIo::new(Arc::default(), []);
+            io.fail_write = true;
+            io.termination_error = failed.then(|| failure.clone());
+            let reaps = io.terminate_calls.clone();
+            let actor = EngineActor::new(Box::new(io), EngineDeadlines::default());
+            assert!(actor.ensure_ready().await.is_err());
+            actor.reap_task().await.unwrap();
+            let result = actor.terminate().await;
+            if failed {
+                assert_same_termination_failure(&result.unwrap_err(), &failure);
+            } else {
+                result.unwrap();
+            }
+            assert_eq!(reaps.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn exact_termination_reports_the_lease_holders_failed_reap() {
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let key = EngineKey::new("failed-lease-reap".into(), "engine".into()).unwrap();
+        let failure = Arc::new(Error::EngineTimeout("lease holder failed reap".into()));
+        let mut io = FakeIo::new(Arc::default(), []);
+        io.termination_error = Some(failure.clone());
+        let reaps = io.terminate_calls.clone();
+        let actor = Arc::new(EngineActor::new(Box::new(io), EngineDeadlines::default()));
+        let current = supervisor
+            .replace_handle(
+                key.clone(),
+                actor.clone(),
+                key.engine.clone(),
+                path_ref("lease-reap"),
+            )
+            .await
+            .unwrap();
+        let lifecycle = supervisor.lifecycle_lease(&key);
+        let transition = lifecycle.lock().await;
+        let terminator = tokio::spawn({
+            let supervisor = supervisor.clone();
+            let key = key.clone();
+            async move { supervisor.terminate_exact(&key, current.generation).await }
+        });
+        timeout(Duration::from_secs(2), actor.interrupt.cancelled())
+            .await
+            .unwrap();
+        // The observed interrupt proves exact termination crossed its barrier
+        // and is waiting for the lease still held by this transition owner.
+        let error = supervisor
+            .reap_published(&key, current.generation)
+            .await
+            .unwrap_err();
+        assert_same_termination_failure(&error, &failure);
+        assert!(supervisor.get_exact(&key).is_none());
+        assert!(!supervisor.pending_actors.contains_key(&current.generation));
+        drop(transition);
+        assert_same_termination_failure(&terminator.await.unwrap().unwrap_err(), &failure);
+        assert_eq!(reaps.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn drain_reports_a_failed_reap_completed_after_its_snapshot() {
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let key = EngineKey::new("failed-snapshot-reap".into(), "engine".into()).unwrap();
+        let failure = Arc::new(Error::EngineTimeout("snapshot target failed reap".into()));
+        let mut io = FakeIo::new(Arc::default(), []);
+        io.termination_error = Some(failure.clone());
+        let reaps = io.terminate_calls.clone();
+        let actor = Arc::new(EngineActor::new(Box::new(io), EngineDeadlines::default()));
+        let current = supervisor
+            .replace_handle(
+                key.clone(),
+                actor,
+                key.engine.clone(),
+                path_ref("snapshot-reap"),
+            )
+            .await
+            .unwrap();
+        let gate = TerminationReplyGate::new();
+        DRAIN_SNAPSHOT_GATES.arm((key.clone(), current.generation), gate.clone());
+        let drain = tokio::spawn({
+            let supervisor = supervisor.clone();
+            async move { supervisor.terminate_all().await }
+        });
+        wait_for_flag(&gate.parked, "drain's actor snapshot").await;
+        assert_same_termination_failure(
+            &supervisor
+                .reap_published(&key, current.generation)
+                .await
+                .unwrap_err(),
+            &failure,
+        );
+        assert!(supervisor.get_exact(&key).is_none());
+        assert!(!supervisor.pending_actors.contains_key(&current.generation));
+        gate.open();
+        assert_same_termination_failure(&drain.await.unwrap().unwrap_err(), &failure);
+        assert_eq!(reaps.load(Ordering::SeqCst), 1);
+    }
+
     fn fake_io() -> FakeIo {
         FakeIo::new(
             Arc::new(Mutex::new(Vec::new())),
@@ -10783,9 +11473,9 @@ mod tests {
             Some(started_tx),
         ));
         started_rx.await.unwrap();
-        runtime.start_search(&GoMode::Depth(1)).await.unwrap();
+        runtime.start_search(&GoMode::Depth(1), None).await.unwrap();
 
-        runtime.stop_current().await.unwrap();
+        runtime.stop_current(None).await.unwrap();
 
         assert!(runtime.stderr_drain_task.is_some());
         assert!(
