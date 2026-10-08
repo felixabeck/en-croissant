@@ -79,6 +79,8 @@ import SoundSelect from "./SoundSelect";
 import ThemeButton from "./ThemeButton";
 import VolumeSlider from "./VolumeSlider";
 
+const COMPACT_SETTINGS_WIDTH_EM = 50;
+
 type SettingCategory =
   | "board"
   | "inputs"
@@ -125,7 +127,7 @@ function TelemetrySwitch() {
 
 export default function Page() {
   const { t, i18n } = useTranslation();
-  const compactTabs = useScaledMaxWidth(50);
+  const compactTabs = useScaledMaxWidth(COMPACT_SETTINGS_WIDTH_EM);
   const [searchQuery, setSearchQuery] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
 

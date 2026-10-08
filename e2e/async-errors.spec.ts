@@ -2,6 +2,7 @@ import type { Locator, Page } from "@playwright/test";
 import type { ErrorPayload } from "../src/bindings/generated";
 import germanCatalogue from "../src/translation/de-DE.json" with { type: "json" };
 import {
+    databaseCommands,
     expect,
     filesWorkspaceCommands,
     filesWorkspaceFixture,
@@ -491,28 +492,15 @@ test("async-errors: wraps a long database title in the list at 320px", async ({
 }) => {
     const title = "Eröffnungsdatenbankzusammenstellung";
     await mockScenario({
-        commands: {
-            list_workspace_databases: {
-                result: [
-                    {
-                        handle: { id: { id: "long-title" }, kind: "database" },
-                        filename: "long-title.db3",
-                        availability: "available",
-                    },
-                ],
-            },
-            get_db_info: {
-                result: {
-                    title,
-                    description: "",
-                    player_count: 0,
-                    event_count: 0,
-                    game_count: 0,
-                    storage_size: 0,
-                    indexed: false,
-                },
-            },
-        },
+        commands: databaseCommands("long-title", "long-title.db3", {
+            title,
+            description: "",
+            player_count: 0,
+            event_count: 0,
+            game_count: 0,
+            storage_size: 0,
+            indexed: false,
+        }),
     });
     await page.goto("/databases");
     // One unbroken word, wider than the stacked panel at 200%: it has to wrap, not be cut.

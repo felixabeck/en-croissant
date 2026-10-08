@@ -1,30 +1,25 @@
 import type { Locator, Page } from "@playwright/test";
-import { assertPageNotClipped, expect, test, type MockScenario } from "./fixtures";
+import {
+    assertNothingClipped,
+    assertPageNotClipped,
+    databaseCommands,
+    expect,
+    filesWorkspaceCommands,
+    test,
+    type MockScenario,
+} from "./fixtures";
 
 const databaseTitle = "Breakpoint database";
 const databaseScenario: MockScenario = {
-    commands: {
-        list_workspace_databases: {
-            result: [
-                {
-                    handle: { id: { id: "breakpoint-db" }, kind: "database" },
-                    filename: "breakpoint.db3",
-                    availability: "available",
-                },
-            ],
-        },
-        get_db_info: {
-            result: {
-                title: databaseTitle,
-                description: "Font scale layout proof",
-                player_count: 1,
-                event_count: 1,
-                game_count: 0,
-                storage_size: 0,
-                indexed: false,
-            },
-        },
-    },
+    commands: databaseCommands("breakpoint-db", "breakpoint.db3", {
+        title: databaseTitle,
+        description: "Font scale layout proof",
+        player_count: 1,
+        event_count: 1,
+        game_count: 0,
+        storage_size: 0,
+        indexed: false,
+    }),
 };
 
 async function seedFontScale(page: Page, scale: 50 | 100) {
@@ -115,6 +110,53 @@ async function assertDatabasePanes(page: Page, stacked: boolean) {
 
 for (const scale of [200, 100] as const) {
     const compact = scale === 200;
+
+    test(`font-scaled-breakpoints: Files create folder dialog at 800px and ${scale}%`, async ({
+        page,
+        mockScenario,
+        capture,
+    }) => {
+        if (scale === 100) await seedFontScale(page, scale);
+        await page.setViewportSize({ width: 800, height: 720 });
+        await mockScenario({ commands: filesWorkspaceCommands([[]]) });
+        await page.goto("/files");
+        await page.getByRole("button", { name: "Choose collection", exact: true }).click();
+        await page.getByRole("button", { name: "Create folder", exact: true }).click();
+        const dialog = page.getByRole("dialog", { name: "Create folder", exact: true });
+        await expect(dialog.getByRole("textbox", { name: "Name", exact: true })).toBeFocused();
+        // At this width only the scaled Files threshold makes the rendered dialog full-screen.
+        if (compact) {
+            await expect
+                .poll(() =>
+                    dialog.evaluate((element) => {
+                        const box = element.getBoundingClientRect();
+                        return Math.max(
+                            Math.abs(box.left),
+                            Math.abs(box.top),
+                            Math.abs(window.innerWidth - box.right),
+                            Math.abs(window.innerHeight - box.bottom),
+                        );
+                    }),
+                )
+                .toBeLessThanOrEqual(1);
+        } else {
+            await expect
+                .poll(() =>
+                    dialog.evaluate((element) => {
+                        const box = element.getBoundingClientRect();
+                        return Math.min(
+                            box.left,
+                            box.top,
+                            window.innerWidth - box.right,
+                            window.innerHeight - box.bottom,
+                        );
+                    }),
+                )
+                .toBeGreaterThan(1);
+        }
+        await assertNothingClipped(dialog);
+        await capture(`files-create-folder-800px-${scale}`);
+    });
 
     test(`font-scaled-breakpoints: open tab setting rows at ${scale}%`, async ({
         page,

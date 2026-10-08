@@ -1,4 +1,5 @@
 import {
+    databaseCommands,
     expect,
     filesWorkspaceCommands,
     filesWorkspaceFixture,
@@ -103,26 +104,15 @@ const databaseKey = "navigation-db";
 const databaseTitle = "Navigation database";
 const databaseScenario: MockScenario = {
     commands: {
-        list_workspace_databases: {
-            result: [
-                {
-                    handle: { id: { id: databaseKey }, kind: "database" },
-                    filename: "navigation.db3",
-                    availability: "available",
-                },
-            ],
-        },
-        get_db_info: {
-            result: {
-                title: databaseTitle,
-                description: "",
-                player_count: 0,
-                event_count: 0,
-                game_count: 0,
-                storage_size: 0,
-                indexed: false,
-            },
-        },
+        ...databaseCommands(databaseKey, "navigation.db3", {
+            title: databaseTitle,
+            description: "",
+            player_count: 0,
+            event_count: 0,
+            game_count: 0,
+            storage_size: 0,
+            indexed: false,
+        }),
         get_games: { result: { data: [], count: 0 } },
         get_players: { result: { data: [], count: 0 } },
         get_tournaments: { result: { data: [], count: 0 } },

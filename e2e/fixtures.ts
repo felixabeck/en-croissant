@@ -1,6 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test as base, type Locator, type Page } from "@playwright/test";
-import type { ErrorPayload } from "../src/bindings/generated";
+import type { DatabaseInfo, ErrorPayload } from "../src/bindings/generated";
 
 type MockCommand = {
     delay?: number;
@@ -333,6 +333,26 @@ export const pgnFileCommands: NonNullable<MockScenario["commands"]> = {
         ],
     },
 };
+
+/** Listing and metadata answers for one available database, in their IPC wire shapes. */
+export function databaseCommands(
+    id: string,
+    filename: string,
+    info: Omit<DatabaseInfo, "filename" | "storage_size"> & { storage_size: number },
+): NonNullable<MockScenario["commands"]> {
+    return {
+        list_workspace_databases: {
+            result: [
+                {
+                    handle: { id: { id }, kind: "database" },
+                    filename,
+                    availability: "available",
+                },
+            ],
+        },
+        get_db_info: { result: info },
+    };
+}
 
 export function filesWorkspaceCommands(
     listResults: unknown[],
