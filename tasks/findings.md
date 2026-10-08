@@ -13958,3 +13958,28 @@ Handled by the commit after `f-20261002-10`'s filing that type-erases `download_
 * **Fix:** Make the tab-list height follow the existing compact boolean, retaining full height for the wide vertical list and allowing intrinsic height for the compact horizontal list. Keep orientation, height and compact CSS driven by that same boolean.
 * **Proof:** A compact Settings viewport test must verify the tab list takes intrinsic height and the panel heading begins within the initial viewport. `toBeVisible` alone is insufficient because it does not require intersection with the viewport. Verify wide layout unchanged and inspect the resulting expected compact screenshot updates in the pinned container. Confirm the native WebKitGTK view too.
 * **Related:** f-20260927-08 and handled f-20260829-02 concern this Settings surface. The inline-height priority is a separate cause from media-query scaling and setting-copy flex sizing. Their existing compact baseline is deliberately preserved in the current run.
+
+---
+
+## 2026-10-08 — filed through the inbox spool
+
+### Upstream macOS ARM platform CI job was cancelled
+
+* **ID:** f-20261008-14 · **Status:** open · **Area:** ci-workflows · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Filed from:** 765c4c8c-60f4-49b7-80b5-a4a1b939f9fe · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-765c4c8c-60f4-49b7-80b5-a4a1b939f9fe-1.jsonl
+* **Where:** GitHub Test run 37798936026 on eb0b812d19395f7d79b278b28b25aea1e51d5d09, job 113385662769, rust-platform (macos-latest, aarch64-apple-darwin).
+* **Defect:** The newest completed macOS ARM platform job is cancelled. The required pnpm ci:remote:check exited 1 during f-20260925-02 preflight, so the upstream has no passing current result for this lane and push policy refuses release.
+* **Proof:** Rerun the cancelled job, inspect its completed conclusion and run pnpm ci:remote:check. It must return 0 before release. The other platform jobs in this run were successful when inspected.
+* **Found by:** Codex orchestrator, pinned progress-generation drain preflight, 2026-10-08.
+* **Related:** No related entry names this cancelled job. Existing Windows and macOS test failures have different mechanisms.
+
+### Reclosing a reopened finding fails against its earlier close receipt
+
+* **ID:** f-20261008-15 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Filed from:** 765c4c8c-60f4-49b7-80b5-a4a1b939f9fe · output /home/felixb/.claude/drain-state/chessfable-0a459a4f.d/attempt-765c4c8c-60f4-49b7-80b5-a4a1b939f9fe-1.jsonl
+* **Where:** `scripts/findings.py`, `_mutate_finding_note` around 11260–11320, `_close_receipt_updates` around 6483, and canonical `agent-kit/scripts/findings.py` equivalents.
+* **Defect:** The normal sequence `close`, `set-header --status open`, then a second `close` fails validation. Reopening correctly refreshes the existing close receipt to the current open header. A later `close` changes the header to handled and creates its new receipt, but does not refresh earlier close receipts. Validation rejects the candidate because the earlier receipt still expects the open header. The refused mutation leaves the valid ledger unchanged.
+* **Proof:** On clean d1b2b6d79505db68380c39c20cf77f43f07abd24, `./scripts/findings.py close f-20260925-02 --note-file /tmp/build-progress-aa086ec3/final-close-note.txt` exited 1 with `tasks/findings.md:11798: close receipt header effect does not match finding f-20260925-02`. The prior closure was bbfd6d50, reopened by 6181965a after an actual final-gate failure. The prior receipt's header_status is open. Source inspection shows set-header invokes `_close_receipt_updates`, while the close note mutation does not. Git status remained clean after refusal.
+* **Fix shape:** Apply the existing receipt-refresh helper to older close receipts when close changes the header, preserving note bytes and locked mutation validation. Add a close/reopen/reclose regression with a distinct second note, assert both receipts match the final handled header, and retain stale-receipt tampering rejection. Fix the canonical kit implementation and sync its vendored copies through the managed route.
+* **Relation:** Related search covered gate-scripts and scripts/findings.py. Existing drift f-20260917-10 and decision-validation f-20260920-14 concern different mechanisms. The single pending CI cancellation entry is unrelated. No shared Root is evidenced.
+* **Found by:** Codex f-20260925-02 drain, 2026-10-08, after all source and fresh native proof passed. This is a separate tooling defect. The progress code requires no change. The existing locked set-header operation can refresh the header and old receipts before repeating close, without disabling validation or manually editing the ledger.
