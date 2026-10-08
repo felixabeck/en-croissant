@@ -6409,3 +6409,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** `async-resource-invariants.md` "cancellation before use"; `engine-lifecycle.md` "every spawn has a kill on every exit path". Reversal path: drop the token from `EngineRuntime`'s writes/reads in `src-tauri/src/engine/process.rs` and size the budget.
 * **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, PLAN-ONLY run 2026-10-08, adopted by drain session 316cfcb2-f270-4c92-b083-cfe5aa290e0f · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"192923682064c88c0437fb39e5bab72897a2f15afb93b3e4a233036badcb60ce","input_sha256":"c745e9233e5851a32f3b639ddb3969662ccc9a0f74a2b190641266ee274f88fb","kind":"mutation-receipt","operation":"1dd42e290be18672a870632c33d61e62b32e1aaed72ab87a21857651d8de19ba","options":{"section":null},"request_id_sha256":null,"results":["d-20261008-10"],"target":"decisions-ledger","v":1} -->
+
+### d-20261008-11 — What error does an engine exchange interrupted by termination return?
+
+* **Question:** When termination preempts an in-flight write or read (d-20261008 preemption decision for f-20260927-06), which error does the requester receive?
+* **Governs:** f-20260927-06
+* **Chosen:** `Error::EngineDisconnected`, the error the existing cancellable reads (`read_until` with a token, `init_uci_cancellable`) already return; `cancelled_search_error` keeps mapping it to `Cancellation` for a cancelled search.
+* **Rejected:** a new error variant — a renderer-visible category and a bindings change with no consumer that distinguishes it.
+* **Reason:** One error for one cause; no IPC change. Reversal path: introduce the variant in `src-tauri/src/error.rs` and return it from the interrupted branches in `src-tauri/src/engine/process.rs`.
+* **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, PLAN-ONLY run 2026-10-08, adopted by drain session 316cfcb2-f270-4c92-b083-cfe5aa290e0f · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"d696d405b4ef5146d7eba1b7ee717db844319b4c991772050f64b9b9d811e1ab","input_sha256":"bcf6dabc4e6308e85e09e1bd33948495418fadf3125d3985b68b57f67a354a30","kind":"mutation-receipt","operation":"e5f56f1452187bed69eb98d3113d939a8a3f79e0d7c45f68126dc3d9b51aeba0","options":{"section":null},"request_id_sha256":null,"results":["d-20261008-11"],"target":"decisions-ledger","v":1} -->
