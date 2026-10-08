@@ -88,6 +88,29 @@ function expectSeedRejected(value: ReturnType<typeof defaultTree>) {
     expect(sessionStorage.getItem("invalid")).toBeNull();
 }
 
+test.each([
+    { scenario: "decodable non-UUID", uuid: false, raw: "tree", expected: true },
+    { scenario: "undecodable UUID", uuid: true, raw: "not a tree", expected: true },
+    { scenario: "undecodable non-UUID", uuid: false, raw: "not a tree", expected: false },
+    { scenario: "absent UUID", uuid: true, raw: null, expected: false },
+    { scenario: "empty UUID", uuid: true, raw: "", expected: true },
+])(
+    "pending-removal target accepts $scenario according to intent authority",
+    ({ uuid, raw, expected }) => {
+        const tabId = uuid ? crypto.randomUUID() : "legacy-tree";
+        if (raw === "tree") persistTree(tabId, defaultTree());
+        else if (raw !== null) sessionStorage.setItem(tabId, raw);
+        const getItem = vi.spyOn(Storage.prototype, "getItem");
+
+        try {
+            expect(storage.hasPendingRemovalTarget(tabId)).toBe(expected);
+            expect(getItem).toHaveBeenCalledExactlyOnceWith(tabId);
+        } finally {
+            getItem.mockRestore();
+        }
+    },
+);
+
 test("legacy NAG migration preserves order, duplicates and children and writes back", () => {
     const tree = defaultTree();
     const { nags: _rootNags, ...root } = tree.root;

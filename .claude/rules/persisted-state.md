@@ -73,7 +73,12 @@ inside a `try` that produces a comprehensible error rather than an unhandled thr
   expose the tree as unreadable; keep a refused read unavailable until an explicit retry succeeds.
   Workspace ID repair may copy those exact bytes to a new key only after verifying the copy and
   before publishing repaired metadata. Only an explicit successful discard may remove the last
-  workspace-owned unreadable value. A version field that nothing migrates is not migration.
+  workspace-owned unreadable value. Once workspace metadata no longer owns a UUID tree key, its
+  recorded pending-removal intent (tab close, replaced import owner, migrated source) removes the
+  stored value whether or not it decodes and retries until the key is absent, while an unowned
+  undecodable value with no recorded intent is never swept, an intent under a non-UUID id still
+  needs a decodable tree, and a refused-admission marker removes only a decodable tree
+  (d-20261008-09). A version field that nothing migrates is not migration.
 
 ## DO NOT
 

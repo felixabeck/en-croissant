@@ -690,6 +690,64 @@ test("a failed close removal is retried after uncertain workspace ownership", as
     expect(sessionStorage.getItem(tabId)).toBeNull();
 });
 
+test.each([
+    { scenario: "a later commit", deniedAtReload: false },
+    { scenario: "another denied removal at reload", deniedAtReload: true },
+])(
+    "an undecodable closed UUID keeps its removal intent through $scenario",
+    async ({ deniedAtReload }) => {
+        sessionStorage.clear();
+        const tabId = crypto.randomUUID();
+        const otherId = crypto.randomUUID();
+        const tab: Tab = {
+            name: "Close",
+            value: tabId,
+            type: "new",
+            gameOrigin: { kind: "none" },
+        };
+        const other: Tab = { ...tab, name: "Other", value: otherId };
+        sessionStorage.setItem(tabId, "not a tree");
+        sessionStorage.setItem(
+            WORKSPACE_STORAGE_KEY,
+            serializeStorageValue({ version: 1, tabs: [tab, other], activeTab: tabId }),
+        );
+        vi.resetModules();
+        const freshAtoms = await import("./atoms");
+        const store = createStore();
+        const deny = denyStorageRemoval(tabId);
+
+        expect(store.set(freshAtoms.closeWorkspaceTabAtom, tabId)).toBe(true);
+        expect(store.get(freshAtoms.tabsAtom)).toEqual([other]);
+        expect(sessionStorage.getItem(tabId)).toBe("not a tree");
+        expect(readStoredWorkspaceValue(sessionStorage, WORKSPACE_STORAGE_KEY)).toMatchObject({
+            treeOwnershipPendingRemovalIds: [tabId],
+        });
+
+        let laterCommitSucceeded = true;
+        if (deniedAtReload) {
+            loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY);
+            deny.mockRestore();
+        } else {
+            deny.mockRestore();
+            laterCommitSucceeded = store.set(freshAtoms.tabsAtom, [{ ...other, name: "Renamed" }]);
+        }
+        expect(laterCommitSucceeded).toBe(true);
+        expect(sessionStorage.getItem(tabId)).toBe("not a tree");
+        expect(readStoredWorkspaceValue(sessionStorage, WORKSPACE_STORAGE_KEY)).toMatchObject({
+            treeOwnershipPendingRemovalIds: [tabId],
+        });
+
+        loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY);
+        expect(sessionStorage.getItem(tabId)).toBeNull();
+        expect(loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY)).not.toHaveProperty(
+            "treeOwnershipPendingRemovalIds",
+        );
+        expect(readStoredWorkspaceValue(sessionStorage, WORKSPACE_STORAGE_KEY)).not.toHaveProperty(
+            "treeOwnershipPendingRemovalIds",
+        );
+    },
+);
+
 test("a refused close save preserves protected ownership through reload", async () => {
     sessionStorage.clear();
     const tabId = crypto.randomUUID();

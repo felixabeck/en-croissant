@@ -690,7 +690,19 @@ export class TabStorageRepository {
         const raw = sessionStorage.getItem(tabId);
         // A null value also decodes to null; this guard keeps it out of the string-only API.
         // Stryker disable next-line ConditionalExpression: both branches return false for null.
-        return raw !== null && decodeLegacyOrCompressed(raw) !== null;
+        return raw !== null && this.isDecodableTreeValue(raw);
+    }
+
+    /** Check whether a recorded removal intent still has an authorized stored value to remove. */
+    hasPendingRemovalTarget(tabId: string): boolean {
+        const raw = sessionStorage.getItem(tabId);
+        if (raw === null) return false;
+        if (this.isDecodableTreeValue(raw)) return true;
+        return tabIdSchema.safeParse(tabId).success;
+    }
+
+    private isDecodableTreeValue(raw: string): boolean {
+        return decodeLegacyOrCompressed(raw) !== null;
     }
 
     /** Reclaim durable trees absent from the retained workspace; other session values stay untouched. */

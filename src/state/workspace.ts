@@ -144,7 +144,9 @@ export function reconcilePendingTreeRemovals(
     newIds: Iterable<string>,
     retainedIds: ReadonlySet<string>,
 ): { ids: string[]; overflowCount: null } | { ids: null; overflowCount: number } {
-    let prior = priorIds.filter((id) => !retainedIds.has(id) && tabStorage.isStoredTree(id));
+    let prior = priorIds.filter(
+        (id) => !retainedIds.has(id) && tabStorage.hasPendingRemovalTarget(id),
+    );
     const additions = [...newIds].filter((id) => !retainedIds.has(id));
     let pending = new Set([...prior, ...additions]);
     if (pending.size > MAX_PENDING_TREE_REMOVALS) {
