@@ -473,6 +473,8 @@ test("async-errors: degrades to a usable account page when the database workspac
     ).toBe(true);
 
     // A native diagnostic is backend-only; it must never reach the document.
+    // Wait until the failed listing has rendered, so the next assertion is not vacuous.
+    await expect(page.locator("body")).toContainText("Statistiken konnten nicht geladen werden");
     await expect(page.locator("body")).not.toContainText("database workspace unavailable");
 
     await assertNoHorizontalOverflow();
