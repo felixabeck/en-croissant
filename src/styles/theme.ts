@@ -3,6 +3,7 @@ import {
     Autocomplete,
     type CSSVariablesResolver,
     createTheme,
+    DEFAULT_THEME,
     Input,
     Modal,
     Textarea,
@@ -19,16 +20,29 @@ export const appCssVariablesResolver: CSSVariablesResolver = (theme) => ({
     dark: {},
 });
 
-/** Sole application theme factory; settings-derived values are injected here. */
+/** Media-query em uses the initial font size, so scale it with the app's root font. */
+export function scaleBreakpoint(widthEm: number, fontSize: number): string {
+    return `${Number((widthEm * (fontSize / 100)).toFixed(10))}em`;
+}
+
+/** Sole application theme factory. Settings-derived values are injected here. */
 export function createAppTheme({
     primaryColor,
     spellCheck,
+    fontSize,
 }: {
     primaryColor: string;
     spellCheck: boolean;
+    fontSize: number;
 }) {
     return createTheme({
         primaryColor,
+        breakpoints: Object.fromEntries(
+            Object.entries(DEFAULT_THEME.breakpoints).map(([key, value]) => [
+                key,
+                scaleBreakpoint(Number.parseFloat(value), fontSize),
+            ]),
+        ),
         colors: {
             dark: [
                 "#C1C2C5",

@@ -40,7 +40,7 @@ installMatchMediaStub({ trackCalls: true });
 
 const theme = mergeMantineTheme(
   DEFAULT_THEME,
-  createAppTheme({ primaryColor: "blue", spellCheck: true }),
+  createAppTheme({ primaryColor: "blue", spellCheck: true, fontSize: 100 }),
 );
 
 let root: Root | undefined;

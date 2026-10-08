@@ -22,7 +22,11 @@ const mocks = vi.hoisted(() => ({
   cardMounts: [] as string[],
   error: undefined as unknown,
 }));
-const stateAtoms = vi.hoisted(() => ({ fileWorkspaceAtom: {}, fileWorkspaceDisplayNameAtom: {} }));
+const stateAtoms = vi.hoisted(() => ({
+  fileWorkspaceAtom: {},
+  fileWorkspaceDisplayNameAtom: {},
+  fontSizeAtom: {},
+}));
 
 vi.mock("@/platform/tauri", async () => {
   const actual = await vi.importActual<typeof import("@/platform/tauri")>("@/platform/tauri");
@@ -43,6 +47,10 @@ vi.mock("@/platform/tauri", async () => {
   };
 });
 vi.mock("jotai", () => ({
+  useAtomValue: (atom: object) => {
+    if (atom !== stateAtoms.fontSizeAtom) throw new Error("Unexpected atom");
+    return 100;
+  },
   useAtom: (atom: object) =>
     atom === stateAtoms.fileWorkspaceAtom
       ? [workspace, mocks.setWorkspace]
@@ -68,7 +76,8 @@ vi.mock("@/i18n", () => ({
     t: (key: string, options?: { defaultValue?: string }) => options?.defaultValue ?? key,
   },
 }));
-vi.mock("@mantine/core", () => ({
+vi.mock("@mantine/core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@mantine/core")>()),
   Button: ({
     children,
     loading,

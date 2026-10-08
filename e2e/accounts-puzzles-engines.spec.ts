@@ -450,6 +450,7 @@ test("accounts-puzzles-engines: navigates empty account, puzzle, and engine stat
     await expect(page.getByText(/puzzle training/i)).toBeVisible();
     await assertNoHorizontalOverflow();
     await assertAccessible();
+    await page.mouse.move(0, 0);
     await capture("accounts-puzzles-engines");
     await expect(page).toHaveScreenshot("accounts-puzzles-engines.png", { fullPage: true });
 });

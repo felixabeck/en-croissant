@@ -212,8 +212,8 @@ export default function App() {
   }, [fontSize]);
 
   const theme = useMemo(
-    () => createAppTheme({ primaryColor, spellCheck }),
-    [primaryColor, spellCheck],
+    () => createAppTheme({ primaryColor, spellCheck, fontSize }),
+    [primaryColor, spellCheck, fontSize],
   );
 
   return (

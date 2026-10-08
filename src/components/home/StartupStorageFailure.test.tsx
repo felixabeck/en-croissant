@@ -130,6 +130,7 @@ test.each(states)(
     expect(createAppTheme).toHaveBeenCalledExactlyOnceWith({
       primaryColor: "blue",
       spellCheck: false,
+      fontSize: 100,
     });
     const { MantineProvider } = await import("@mantine/core");
     expect(MantineProvider).toHaveBeenLastCalledWith(

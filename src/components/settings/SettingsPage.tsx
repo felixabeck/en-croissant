@@ -12,7 +12,7 @@ import {
   TextInput,
   Title,
 } from "@mantine/core";
-import { useHotkeys, useMediaQuery } from "@mantine/hooks";
+import { useHotkeys } from "@mantine/hooks";
 import {
   IconBook,
   IconBrush,
@@ -32,6 +32,7 @@ import { RESET } from "jotai/utils";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { changeLocale } from "@/i18n";
+import { useScaledMaxWidth } from "@/hooks/useScaledMaxWidth";
 import {
   autoPromoteAtom,
   autoSaveAtom,
@@ -124,7 +125,7 @@ function TelemetrySwitch() {
 
 export default function Page() {
   const { t, i18n } = useTranslation();
-  const compactTabs = useMediaQuery("(max-width: 50rem)");
+  const compactTabs = useScaledMaxWidth(50);
   const [searchQuery, setSearchQuery] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -758,7 +759,7 @@ export default function Page() {
   };
 
   return (
-    <Stack h="100%" gap={0}>
+    <Stack h="100%" gap={0} data-compact={compactTabs || undefined}>
       <Group px="md" pt="md" pb="sm" className={classes.searchRow}>
         <Title order={1} size="h3" className="wrap-anywhere" miw={0}>
           {t("SideBar.Settings")}

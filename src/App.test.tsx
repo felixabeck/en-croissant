@@ -560,8 +560,30 @@ describe("App", () => {
     await act(async () => root.render(<App />));
 
     expect(document.documentElement.style.fontSize).toBe("120%");
-    expect(mocks.createAppTheme).toHaveBeenCalledWith({ primaryColor: "blue", spellCheck: true });
+    expect(mocks.createAppTheme).toHaveBeenCalledExactlyOnceWith({
+      primaryColor: "blue",
+      spellCheck: true,
+      fontSize: 120,
+    });
     expect(mocks.closeSplashscreen).toHaveBeenCalledOnce();
+  });
+
+  test("rebuilds the theme when the mounted app's font scale changes", async () => {
+    mockLaunchWithoutCliFile();
+    await act(async () => root.render(<App />));
+    await act(async () => root.render(<App />));
+    expect(mocks.createAppTheme).toHaveBeenCalledTimes(1);
+
+    atomValues.set(mocks.fontSizeAtom, 200);
+    await act(async () => root.render(<App />));
+
+    expect(document.documentElement.style.fontSize).toBe("200%");
+    expect(mocks.createAppTheme).toHaveBeenCalledTimes(2);
+    expect(mocks.createAppTheme).toHaveBeenLastCalledWith({
+      primaryColor: "blue",
+      spellCheck: true,
+      fontSize: 200,
+    });
   });
 
   /** `convert_progress` was lost once because a listener was deleted from this composition file

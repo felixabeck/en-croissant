@@ -3,12 +3,14 @@ import { useTranslation } from "react-i18next";
 import { appCssVariablesResolver, createAppTheme } from "@/styles/theme";
 import enUS from "@/translation/en-US.json";
 
-// Match primaryColorAtom and spellCheckAtom in src/state/atoms.ts without hydrating feature state.
+// Match the preference defaults without hydrating feature state. App's root scaling is not mounted.
 const DEFAULT_PRIMARY_COLOR = "blue";
 const DEFAULT_SPELL_CHECK = false;
+const DEFAULT_FONT_SIZE = 100;
 const theme = createAppTheme({
   primaryColor: DEFAULT_PRIMARY_COLOR,
   spellCheck: DEFAULT_SPELL_CHECK,
+  fontSize: DEFAULT_FONT_SIZE,
 });
 
 export function StartupStorageFailure({

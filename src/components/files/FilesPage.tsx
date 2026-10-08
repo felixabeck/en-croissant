@@ -18,13 +18,13 @@ import {
   TextInput,
   Title,
 } from "@mantine/core";
-import { useMediaQuery } from "@mantine/hooks";
 import { IconSearch } from "@tabler/icons-react";
 import { useAtom } from "jotai";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import useSWR from "swr";
 import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
+import { useScaledMaxWidth } from "@/hooks/useScaledMaxWidth";
 import { fileWorkspaceAtom, fileWorkspaceDisplayNameAtom } from "@/state/atoms";
 import { formatNumber } from "@/utils/format";
 import { fileWorkspaceKey } from "@/utils/pathCapabilities";
@@ -43,8 +43,8 @@ const TREE_MIN_HEIGHT = "8rem";
 const EMPTY_PANE_MIN_HEIGHT = "12rem";
 // At 320px/200% the default modal clipped the type Select's "Repertoire";
 // below this width the shared create/rename/edit dialog goes full-screen.
-// Media-query em uses the initial font size: 30em = 480px regardless of the app font scale.
-const COMPACT_DIALOG_QUERY = "(max-width: 30em)";
+// The threshold follows the app font scale, measured in scaled root-em.
+const COMPACT_DIALOG_WIDTH_EM = 30;
 // At 320px and a 200% font scale a label is wider than its column: let it wrap instead of clipping.
 const wrappingButton = {
   root: { height: "auto", minHeight: "var(--button-height)" },
@@ -64,7 +64,7 @@ function findEntry(entries: Entry[], key: string): Entry | null {
 
 export default function FilesPage() {
   const { t } = useTranslation();
-  const compactDialog = useMediaQuery(COMPACT_DIALOG_QUERY);
+  const compactDialog = useScaledMaxWidth(COMPACT_DIALOG_WIDTH_EM);
   const fileTypeOptions = FILE_TYPES.map(({ value, translationKey }) => ({
     value,
     label: t(translationKey),
