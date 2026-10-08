@@ -727,14 +727,21 @@ fn revision_matches(
         && revision.ctime_nanos == key.revision.ctime_nanos)
 }
 
-fn retry_changed_revision(attempt: usize, cancellation: &CancellationToken) -> Result<(), Error> {
+fn next_revision_attempt(
+    snapshot: &crate::infra::path_authority::PgnSnapshot,
+    repository: &PgnRepository,
+    attempt: &mut usize,
+    cancellation: &CancellationToken,
+) -> Result<crate::infra::path_authority::PgnSnapshot, Error> {
+    repository.invalidate(&snapshot.identity)?;
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
-    if attempt + 1 >= MAX_REVISION_ATTEMPTS {
+    if *attempt + 1 >= MAX_REVISION_ATTEMPTS {
         return Err(Error::StaleGame);
     }
-    Ok(())
+    *attempt += 1;
+    fresh_snapshot(snapshot)
 }
 
 fn cached_scan(
@@ -800,10 +807,7 @@ fn scan_current_blocking(
             repository.retain_if_within_budget(key.clone(), games.clone())?;
             return Ok((key, games));
         }
-        repository.invalidate(&snapshot.identity)?;
-        retry_changed_revision(attempt, cancellation)?;
-        snapshot = fresh_snapshot(&snapshot)?;
-        attempt += 1;
+        snapshot = next_revision_attempt(&snapshot, repository, &mut attempt, cancellation)?;
     }
 }
 
@@ -950,10 +954,7 @@ fn scan_and_read_ranges_blocking<T>(
             let (selection, values) = outcome?;
             return Ok((key, selection, values));
         }
-        repository.invalidate(&snapshot.identity)?;
-        retry_changed_revision(attempt, cancellation)?;
-        snapshot = fresh_snapshot(&snapshot)?;
-        attempt += 1;
+        snapshot = next_revision_attempt(&snapshot, repository, &mut attempt, cancellation)?;
     }
 }
 
@@ -1616,6 +1617,7 @@ mod tests {
     use std::{
         io::{BufWriter, Cursor},
         path::Path,
+        sync::atomic::{AtomicUsize, Ordering},
         time::Duration,
     };
     use tauri::Manager;
@@ -1648,6 +1650,44 @@ mod tests {
         resolved_for(directory, path)
             .pgn_snapshot()
             .expect("snapshot PGN")
+    }
+
+    #[cfg(test)]
+    fn rewrite_padded_pgn(path: &Path, attempts: &AtomicUsize) -> usize {
+        let count = attempts.fetch_add(1, Ordering::SeqCst) + 1;
+        std::fs::write(
+            path,
+            format!("[Event \"A\"]\n\n1. e4 *\n{}", " ".repeat(count)),
+        )
+        .expect("rewrite padded PGN");
+        count
+    }
+
+    #[test]
+    fn revision_matches_compares_size_mtime_and_ctime() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("revision-fields.pgn");
+        std::fs::write(&path, "[Event \"A\"]\n\n1. e4 *\n").expect("initial PGN");
+        let snapshot = snapshot_for(&directory, &path);
+        let key = snapshot_key(&snapshot);
+        assert!(revision_matches(&snapshot, &key).expect("matching revision"));
+
+        let mut size_key = key.clone();
+        size_key.revision.size += 1;
+        let mut mtime_key = key.clone();
+        mtime_key.revision.mtime_nanos += 1;
+        let mut ctime_key = key.clone();
+        ctime_key.revision.ctime_nanos += 1;
+        for (field, changed_key) in [
+            ("size", size_key),
+            ("mtime", mtime_key),
+            ("ctime", ctime_key),
+        ] {
+            assert!(
+                !revision_matches(&snapshot, &changed_key).expect("compare revision field"),
+                "a change to {field} alone must invalidate the revision"
+            );
+        }
     }
 
     async fn assert_read_rewrite(original: &[u8], rewritten: &[u8], page: bool) {
@@ -1750,13 +1790,10 @@ mod tests {
         ).await;
     }
 
-    #[tokio::test]
-    async fn read_revision_retry_reselects_missing_game() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
+    async fn assert_read_retry_after_append(index: i32, appended: &'static str, expected: &str) {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("append-revision.pgn");
         let first = "[Event \"A\"]\n\n1. e4 *\n";
-        let second = "[Event \"Appended\"]\n\n1. d4 *\n";
         std::fs::write(&path, first).expect("first game");
         let repository = PgnRepository::default();
         let attempts = Arc::new(AtomicUsize::new(0));
@@ -1765,19 +1802,19 @@ mod tests {
         repository
             .set_read_attempt_action(Some(Arc::new(move || {
                 if action_attempts.fetch_add(1, Ordering::SeqCst) == 0 {
-                    std::fs::write(&action_path, format!("{first}{second}"))
+                    std::fs::write(&action_path, format!("{first}{appended}"))
                         .expect("append in place");
                 }
             })))
             .expect("attempt action");
         let token = CancellationToken::new();
-        let game = read_game_core(resolved_for(&directory, &path), 1, &token, &repository)
+        let game = read_game_core(resolved_for(&directory, &path), index, &token, &repository)
             .await
-            .expect("missing selection retried");
+            .expect("selection retried after append");
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
         assert!(game.present);
-        assert_eq!(game.pgn, second);
-        assert_eq!(game.stamp, game_stamp(second.as_bytes()));
+        assert_eq!(game.pgn, expected);
+        assert_eq!(game.stamp, game_stamp(expected.as_bytes()));
         assert_eq!(
             game.revision,
             file_revision_core(resolved_for(&directory, &path), &token)
@@ -1787,8 +1824,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn read_revision_retry_reselects_missing_game() {
+        let second = "[Event \"Appended\"]\n\n1. d4 *\n";
+        assert_read_retry_after_append(1, second, second).await;
+    }
+
+    #[tokio::test]
+    async fn read_revision_retry_discards_select_error() {
+        assert_read_retry_after_append(
+            2,
+            "[Event \"Second\"]\n\n1. d4 *\n[Event \"Third\"]\n\n1. c4 *\n",
+            "[Event \"Third\"]\n\n1. c4 *\n",
+        )
+        .await;
+    }
+
+    #[tokio::test]
     async fn read_revision_exhaustion_is_bounded() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("read-churn.pgn");
         std::fs::write(&path, "[Event \"A\"]\n\n1. e4 *\n").expect("initial PGN");
@@ -1798,12 +1850,7 @@ mod tests {
         let action_path = path.clone();
         repository
             .set_read_attempt_action(Some(Arc::new(move || {
-                let count = action_attempts.fetch_add(1, Ordering::SeqCst) + 1;
-                std::fs::write(
-                    &action_path,
-                    format!("[Event \"A\"]\n\n1. e4 *\n{}", " ".repeat(count)),
-                )
-                .expect("rewrite on every read");
+                rewrite_padded_pgn(&action_path, &action_attempts);
             })))
             .expect("attempt action");
         let result = read_game_core(
@@ -1872,7 +1919,6 @@ mod tests {
 
     #[tokio::test]
     async fn scan_revision_exhaustion_is_bounded_and_uncached() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("scan-churn.pgn");
         std::fs::write(&path, "[Event \"A\"]\n\n1. e4 *\n").expect("initial PGN");
@@ -1882,12 +1928,7 @@ mod tests {
         let action_path = path.clone();
         repository
             .set_scan_attempt_action(Some(Arc::new(move || {
-                let count = action_attempts.fetch_add(1, Ordering::SeqCst) + 1;
-                std::fs::write(
-                    &action_path,
-                    format!("[Event \"A\"]\n\n1. e4 *\n{}", " ".repeat(count)),
-                )
-                .expect("rewrite on every scan");
+                rewrite_padded_pgn(&action_path, &action_attempts);
             })))
             .expect("scan action");
         let result = count_pgn_games_core(
@@ -1903,7 +1944,6 @@ mod tests {
 
     #[tokio::test]
     async fn revision_retry_cancellation_takes_precedence() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("cancel-retry.pgn");
         std::fs::write(&path, "[Event \"A\"]\n\n1. e4 *\n").expect("initial PGN");
@@ -1915,12 +1955,7 @@ mod tests {
         let action_path = path.clone();
         repository
             .set_read_attempt_action(Some(Arc::new(move || {
-                let count = action_attempts.fetch_add(1, Ordering::SeqCst) + 1;
-                std::fs::write(
-                    &action_path,
-                    format!("[Event \"A\"]\n\n1. e4 *\n{}", " ".repeat(count)),
-                )
-                .expect("rewrite read attempt");
+                let count = rewrite_padded_pgn(&action_path, &action_attempts);
                 if count == 2 {
                     action_token.cancel();
                 }

@@ -4888,7 +4888,7 @@ mod blocking_offload_scans {
             ("pgn.rs", pgn, "scan_file"),
             ("pgn.rs", pgn, "fresh_snapshot"),
             ("pgn.rs", pgn, "revision_matches"),
-            ("pgn.rs", pgn, "retry_changed_revision"),
+            ("pgn.rs", pgn, "next_revision_attempt"),
             ("pgn.rs", pgn, "scan_and_read_ranges_blocking"),
             ("pgn.rs", pgn, "read_ranges"),
             ("pgn.rs", pgn, "read_range_bytes"),
