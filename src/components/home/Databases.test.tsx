@@ -35,8 +35,10 @@ vi.mock("@/utils/db", async () => {
 vi.mock("@/platform/native", () => ({ error: mocks.logError }));
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
-    t: (key: string, options?: { databases?: string }) =>
-      options?.databases ? `${key}: ${options.databases}` : key,
+    t: (key: string, options?: { databases?: string; error?: unknown }) => {
+      if (options?.error !== undefined) return `${key}: ${options.error}`;
+      return options?.databases ? `${key}: ${options.databases}` : key;
+    },
   }),
 }));
 vi.mock("@/components/files/notifyError", () => ({ notifyListenerError: vi.fn() }));
@@ -660,15 +662,54 @@ test("changing session membership refetches the selected player's summary with u
   expect(mocks.personalCardNotice).toHaveBeenLastCalledWith(undefined);
 });
 
-test("a database listing failure renders the loading error", async () => {
-  mocks.getDatabases.mockRejectedValue(new Error("workspace unreadable"));
+test("a database listing failure renders a diagnostic-free message and logs the failure", async () => {
+  mocks.getDatabases.mockRejectedValue(new Error("database workspace unavailable"));
 
   await renderDatabases();
-  await vi.waitFor(() => expect(container.textContent).toContain("Home.Databases.ErrorLoading"));
+  await vi.waitFor(() => expect(container.textContent).not.toBe(""));
+
+  expect(container.textContent).not.toContain("database workspace unavailable");
+  expect(container.textContent).not.toContain("Home.Databases.ErrorLoading");
+  expect(container.textContent).toContain("Home.Databases.Failed.Title");
+  expect(mocks.logError).toHaveBeenCalledOnce();
+  expect(mocks.logError).toHaveBeenCalledWith(
+    expect.stringContaining("personal database listing failed: database workspace unavailable"),
+  );
 
   expect(mocks.query_players).not.toHaveBeenCalled();
   expect(mocks.getPlayersGameInfo).not.toHaveBeenCalled();
   expect(mocks.personalCardInfo).not.toHaveBeenCalled();
+});
+
+test("a cancelled database listing logs nothing", async () => {
+  mocks.getDatabases.mockRejectedValue(new DOMException("Cancellation", "AbortError"));
+
+  await renderDatabases();
+  await vi.waitFor(() => expect(container.textContent).toContain("Home.Databases.Failed.Title"));
+
+  expect(mocks.logError).not.toHaveBeenCalled();
+});
+
+test("an aborted database listing logs no late failure", async () => {
+  let listingSignal!: AbortSignal;
+  mocks.getDatabases.mockImplementation(
+    ({ signal }: { signal: AbortSignal }) =>
+      new Promise((_resolve, reject) => {
+        listingSignal = signal;
+        signal.addEventListener(
+          "abort",
+          () => reject(new Error("database workspace unavailable")),
+          { once: true },
+        );
+      }),
+  );
+
+  await renderDatabases();
+  await vi.waitFor(() => expect(mocks.getDatabases).toHaveBeenCalledOnce());
+  await act(async () => root.render(null));
+
+  expect(listingSignal.aborted).toBe(true);
+  expect(mocks.logError).not.toHaveBeenCalled();
 });
 
 test("a username-less session does not prevent a healthy account summary from loading", async () => {

@@ -19,6 +19,7 @@ import useSWRImmutable from "swr/immutable";
 import type { PlayerGameInfo } from "@/bindings";
 import { notifyListenerError } from "@/components/files/notifyError";
 import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
+import { errorUnlessCancelled, logFailureSafely, safeFailureContext } from "@/platform/errors";
 import { sessionsAtom } from "@/state/atoms";
 import { useTauriListener } from "@/platform/useTauriListener";
 import { activeDatabaseViewStore } from "@/state/store/database";
@@ -144,7 +145,20 @@ function Databases() {
     databasesKey,
     () =>
       databasesOwner!.run(async (signal) => {
-        const dbs = await getDatabases({ signal });
+        let dbs: ManagedDatabaseInfo[];
+        try {
+          dbs = await getDatabases({ signal });
+        } catch (cause) {
+          if (!signal.aborted && errorUnlessCancelled(cause)) {
+            const failure = safeFailureContext(cause);
+            await logFailureSafely(
+              `personal database listing failed: ${failure.message}`,
+              { operation: "personal database listing", primaryFailure: failure },
+              "Personal database listing logging failed",
+            );
+          }
+          throw cause;
+        }
         return dbs.flatMap((db) => {
           const account = sessions
             .map(sessionAccountDatabase)
@@ -266,9 +280,7 @@ function Databases() {
           </Center>
         </Paper>
       )}
-      {loadError && (
-        <Text ta="center">{t("Home.Databases.ErrorLoading", { error: loadError })}</Text>
-      )}
+      {loadError && <Text ta="center">{t("Home.Databases.Failed.Title")}</Text>}
       {personalInfo &&
         (personalInfo.entries.length === 0 ? (
           <Paper
