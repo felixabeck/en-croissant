@@ -2609,7 +2609,19 @@ mod tests {
 
         std::thread::scope(|scope| {
             let release_token = cancellation.clone();
-            let started = spawn_after_release_delay(scope, move || release_token.cancel());
+            let release_connections = Arc::clone(&entry.connections);
+            let started = spawn_after_release_delay(scope, move || {
+                // Cancel only after deletion has begun draining connections.
+                let deadline = Instant::now() + Duration::from_secs(2);
+                while !release_connections.snapshot().closed {
+                    assert!(
+                        Instant::now() < deadline,
+                        "delete never entered connection drain"
+                    );
+                    std::thread::yield_now();
+                }
+                release_token.cancel();
+            });
 
             let result = repository.delete_exclusive_cancellable(
                 &target,
