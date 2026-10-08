@@ -39,12 +39,12 @@ type PersonalDatabase = {
   username: string;
 };
 
-function getSessionUsername(session: Session): string {
-  const username = session.lichess?.account.username || session.chessCom?.username;
-  if (username === undefined) {
-    throw new Error("Session does not have a username");
-  }
-  return username;
+function sessionPlayerName(session: Session): string {
+  return session.player || session.lichess?.username || session.chessCom?.username || "";
+}
+
+function databaseLabel(db: ManagedDatabaseInfo): string {
+  return db.type === "success" ? db.title || db.filename : db.filename;
 }
 
 function sessionAccountDatabase(
@@ -98,9 +98,7 @@ function StatisticsNotice({
     >
       {t("Home.Databases.Incomplete.Description", {
         defaultValue: "These databases could not be read: {{databases}}",
-        databases: failed
-          .map((db) => (db.type === "success" ? db.title || db.filename : db.filename))
-          .join(", "),
+        databases: failed.map(databaseLabel).join(", "),
       })}
     </Alert>
   );
@@ -126,15 +124,11 @@ function Databases() {
   const { t } = useTranslation();
   const sessions = useAtomValue(sessionsAtom);
 
-  const players = Array.from(
-    new Set(sessions.map((s) => s.player || s.lichess?.username || s.chessCom?.username || "")),
-  );
+  const players = Array.from(new Set(sessions.map(sessionPlayerName)));
   const playerDbNames = players.map((name) => ({
     name,
     databases: sessions
-      .filter(
-        (s) => s.player === name || s.lichess?.username === name || s.chessCom?.username === name,
-      )
+      .filter((s) => sessionPlayerName(s) === name)
       .flatMap((s) => {
         const account = sessionAccountDatabase(s);
         return account ? [account.filename] : [];
@@ -144,22 +138,24 @@ function Databases() {
   const [name, setName] = useState("");
   useEffect(() => {
     if (sessions.length > 0) {
-      setName(sessions[0].player || getSessionUsername(sessions[0]));
+      setName(sessionPlayerName(sessions[0]));
     }
   }, [sessions]);
 
   const databasesKey = sessions.length === 0 ? null : ["personalDatabases", sessions];
   const databasesOwner = useNativeRequestOwner(databasesKey);
-  const { data: databases } = useSWRImmutable<PersonalDatabase[]>(databasesKey, () =>
-    databasesOwner!.run(async (signal) => {
-      const dbs = await getDatabases({ signal });
-      return dbs.flatMap((db) => {
-        const account = sessions
-          .map(sessionAccountDatabase)
-          .find((account) => db.filename === account?.filename);
-        return account ? [{ db, username: account.username }] : [];
-      });
-    }),
+  const { data: databases, error: databasesError } = useSWRImmutable<PersonalDatabase[]>(
+    databasesKey,
+    () =>
+      databasesOwner!.run(async (signal) => {
+        const dbs = await getDatabases({ signal });
+        return dbs.flatMap((db) => {
+          const account = sessions
+            .map(sessionAccountDatabase)
+            .find((account) => db.filename === account?.filename);
+          return account ? [{ db, username: account.username }] : [];
+        });
+      }),
   );
 
   const personalKey = databases && name ? ["personalInfo", name, databases] : null;
@@ -209,7 +205,7 @@ function Databases() {
           {
             signal,
             operation: "personal database summary",
-            describe: ({ db }) => (db.type === "success" ? db.title || db.filename : db.filename),
+            describe: ({ db }) => databaseLabel(db),
           },
         );
         const failedItems = new Set(failures.map(({ item }) => item));
@@ -222,6 +218,7 @@ function Databases() {
       }),
   );
 
+  const loadError = databasesError ?? error;
   const [progress, setProgress] = useState(0);
   const subscribeProgress = useCallback(
     (listener: Parameters<typeof tauriSubscriptions.progress>[0]) =>
@@ -273,7 +270,9 @@ function Databases() {
           </Center>
         </Paper>
       )}
-      {error && <Text ta="center">{t("Home.Databases.ErrorLoading", { error })}</Text>}
+      {loadError && (
+        <Text ta="center">{t("Home.Databases.ErrorLoading", { error: loadError })}</Text>
+      )}
       {personalInfo &&
         (personalInfo.entries.length === 0 ? (
           <Paper

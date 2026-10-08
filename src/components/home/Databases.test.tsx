@@ -485,6 +485,105 @@ test("a renamed account database remains included by filename with the owning us
   expect(container.querySelector("[role='alert']")).toBeNull();
 });
 
+test("the default player uses the session username when account username casing differs", async () => {
+  getDefaultStore().set(sessionsAtom, [
+    {
+      updatedAt: 1,
+      lichess: { username: "magnus", account: { id: "magnus", username: "Magnus" } },
+    },
+  ]);
+  const accountDatabase = database("db-1");
+  const record = { site: "Lichess", player: "Magnus", daily: [], openings: [] };
+  mocks.getDatabases.mockResolvedValue([accountDatabase]);
+  mocks.getPlayersGameInfo.mockResolvedValue({ site_stats_data: [record] });
+
+  await renderDatabases();
+  await vi.waitFor(() => expect(mocks.personalCardInfo).toHaveBeenCalled());
+
+  expect(accountDatabase.filename).toBe("Magnus_lichess.db3");
+  expect(mocks.personalCardInfo).toHaveBeenLastCalledWith({ site_stats_data: [record] });
+  expect(mocks.query_players).toHaveBeenCalledWith(
+    accountDatabase.file,
+    expect.objectContaining({ name: "Magnus" }),
+    expect.anything(),
+  );
+  expect(mocks.getPlayersGameInfo).toHaveBeenCalledWith(
+    expect.any(String),
+    accountDatabase.file,
+    7,
+    expect.anything(),
+  );
+});
+
+test.each([false, true])(
+  "the selected player excludes another player's matching account username (statistics fail: %s)",
+  async (statisticsFail) => {
+    getDefaultStore().set(sessionsAtom, [
+      {
+        player: "bob",
+        updatedAt: 1,
+        lichess: { username: "carol", account: { id: "carol", username: "carol" } },
+      },
+      {
+        player: "Alice",
+        updatedAt: 1,
+        lichess: { username: "bob", account: { id: "bob", username: "bob" } },
+      },
+    ]);
+    const aliceDatabase = { ...database("db-1"), title: "", filename: "bob_lichess.db3" };
+    const bobDatabase = { ...database("db-2"), title: "", filename: "carol_lichess.db3" };
+    const aliceRecord = { site: "Lichess", player: "bob", daily: [], openings: [] };
+    const bobRecord = { site: "Lichess", player: "carol", daily: [], openings: [] };
+    mocks.getDatabases.mockResolvedValue([aliceDatabase, bobDatabase]);
+    mocks.getPlayersGameInfo.mockImplementation(async (_progress, file) => {
+      if (file.id.id === "db-1") {
+        return { site_stats_data: [aliceRecord] };
+      }
+      if (statisticsFail) {
+        throw new Error("statistics unreadable");
+      }
+      return { site_stats_data: [bobRecord] };
+    });
+
+    await renderDatabases();
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain(
+        statisticsFail ? "Home.Databases.Failed.Title" : "player-card",
+      ),
+    );
+    expect(mocks.personalCardInfo.mock.lastCall?.[0]).toEqual(
+      statisticsFail ? undefined : { site_stats_data: [bobRecord] },
+    );
+    expect(mocks.personalCardNotice.mock.lastCall?.[0]).toBeUndefined();
+    expect(container.querySelector("[role='alert']")?.textContent ?? "").toBe(
+      statisticsFail ? "Home.Databases.Incomplete.Description: carol_lichess.db3" : "",
+    );
+    expect(container.textContent).not.toContain("bob_lichess.db3");
+    expect(mocks.query_players).toHaveBeenCalledOnce();
+    expect(mocks.query_players).toHaveBeenCalledWith(
+      bobDatabase.file,
+      expect.objectContaining({ name: "carol" }),
+      expect.anything(),
+    );
+    expect(mocks.query_players).not.toHaveBeenCalledWith(
+      aliceDatabase.file,
+      expect.anything(),
+      expect.anything(),
+    );
+  },
+);
+
+test("a database listing failure renders the loading error", async () => {
+  mocks.getDatabases.mockRejectedValue(new Error("workspace unreadable"));
+
+  await renderDatabases();
+  await vi.waitFor(() => expect(container.textContent).toContain("Home.Databases.ErrorLoading"));
+
+  expect(mocks.query_players).not.toHaveBeenCalled();
+  expect(mocks.getPlayersGameInfo).not.toHaveBeenCalled();
+  expect(mocks.personalCardInfo).not.toHaveBeenCalled();
+});
+
 test("a username-less session does not prevent a healthy account summary from loading", async () => {
   getDefaultStore().set(sessionsAtom, [{ player: "Magnus", updatedAt: 1 }, session]);
   const record = { site: "Lichess", player: "Magnus", daily: [], openings: [] };
