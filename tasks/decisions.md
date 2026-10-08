@@ -6359,3 +6359,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The lookup succeeded and answered "no games"; that is the same outcome as a database with zero matching games, which the empty state already describes. Reversal path: restore the throw in the mapper.
 * **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, PLAN-ONLY run 2026-10-07 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"63cc171457f3f579833294ac41e74152f836d35d1406fd86b53464a1aecaa262","input_sha256":"6731788863665a8cf44ae35c0a95c1ad45b05e6a93facb63b60637bdf1acfacb","kind":"mutation-receipt","operation":"29e775024aa456c7c719e7f105237f9dbee079bbd8d1372b9cab7e97a625c63a","options":{"section":null},"request_id_sha256":null,"results":["d-20261008-05"],"target":"decisions-ledger","v":1} -->
+
+### d-20261008-06 — Where does the partial-statistics notice render?
+
+* **Question:** The summary card fills a fixed-height, overflow-hidden column. Where does the notice go?
+* **Governs:** f-20260926-02
+* **Chosen:** Inside `PersonalPlayerCard`, between the header and the tabs, through a new optional `notice` prop.
+* **Rejected:** above the card in `Databases.tsx` — inside the `h="100%"`/`overflow: hidden` column the card would be pushed down and its bottom clipped; a notification toast — transient, and a reopened home page would show reduced totals with no sign again.
+* **Reason:** Layout traced at `AccountsPage.tsx:21-23` and `PersonalCard.tsx:40-80`. Reversal path: drop the prop and render the notice elsewhere.
+* **Decided by:** Claude Code (Opus 5.5), autonomously under full auto, PLAN-ONLY run 2026-10-07 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"4b3b37afc3b8bcaae9d1d8dee54222336e1c9abd09e3fa0037ff2647e76e21ac","input_sha256":"7b47bb4189b09ed952e706a88c470b9b01de79d4c03104d5b496e4836db925eb","kind":"mutation-receipt","operation":"c24733f65ee990d4b3901eb643c2de0b3ff107d0e8ea06e515042407967a433d","options":{"section":null},"request_id_sha256":null,"results":["d-20261008-06"],"target":"decisions-ledger","v":1} -->
