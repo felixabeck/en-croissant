@@ -280,7 +280,11 @@ function Databases() {
           </Center>
         </Paper>
       )}
-      {loadError && <Text ta="center">{t("Home.Databases.Failed.Title")}</Text>}
+      {loadError && (
+        <Text ta="center" miw={0} style={{ overflowWrap: "anywhere" }}>
+          {t("Home.Databases.Failed.Title")}
+        </Text>
+      )}
       {personalInfo &&
         (personalInfo.entries.length === 0 ? (
           <Paper
